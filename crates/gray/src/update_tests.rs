@@ -54,3 +54,17 @@ fn update_lock_is_exclusive() {
     assert!(probe.try_lock().is_ok());
     let _ = probe.unlock();
 }
+
+#[test]
+fn beta_uses_build_identity_not_cargo_version() {
+    assert!(update_available(
+        "beta",
+        "new-commit",
+        "0.1.0",
+        "old-commit"
+    ));
+    assert!(!update_available("beta", "same", "0.1.0", "same"));
+    assert!(!update_available("beta", "", "0.1.0", "same"));
+    assert!(is_newer("0.2.0-beta.1", "0.1.0"));
+    assert!(is_newer("0.2.0", "0.2.0-beta.1"));
+}

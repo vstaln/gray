@@ -795,7 +795,103 @@ impl JsonlSessionStore {
         Ok(())
     }
 
+    /// Remove superseded on-disk history from the hot file without losing it.
+    /// Streams records into a replacement, retaining the complete original in
+    /// archive. Only valid linear histories are rewritten; branches/torn files
+    /// remain untouched for the normal loader's validation/recovery rules.
+    pub async fn maintain(&self, id: &SessionId) -> Result<bool> {
+        use std::io::{BufRead, Seek, SeekFrom, Write};
+        let _lock_file = self.lock_session_file(id).await?;
+        let _guard = self.lock.lock().await;
+        let path = self.session_path(id)?;
+        let file = match std::fs::File::open(&path) {
+            Ok(file) => file,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(e) => return Err(e.into()),
+        };
+        if file.metadata()?.len() < 8 * 1024 * 1024 {
+            return Ok(false);
+        }
+        let mut reader = std::io::BufReader::new(file);
+        let mut line = String::new();
+        reader.read_line(&mut line)?;
+        let header: Header = match serde_json::from_str(&line) {
+            Ok(header) => header,
+            Err(_) => return Ok(false),
+        };
+        if header.version != SUPPORTED_SESSION_VERSION || header.id != *id {
+            return Ok(false);
+        }
+        let mut replacement = tempfile::NamedTempFile::new_in(&self.root_dir)?;
+        serde_json::to_writer(&mut replacement, &header)?;
+        writeln!(replacement)?;
+        let header_end = replacement.stream_position()?;
+        let mut previous = None;
+        let mut next = 0u64;
+        let mut boundary = false;
+        loop {
+            line.clear();
+            // A single enormous record cannot allocate unbounded memory here.
+            // Return untouched so maintenance never truncates valid user data.
+            let n = std::io::Read::take(&mut reader, 16 * 1024 * 1024 + 1).read_line(&mut line)?;
+            if n == 0 {
+                break;
+            }
+            if !line.ends_with('\n') || n > 16 * 1024 * 1024 {
+                return Ok(false);
+            }
+            if line.trim().is_empty() {
+                continue;
+            }
+            let mut entry: SessionEntry = match serde_json::from_str(&line) {
+                Ok(entry) => entry,
+                Err(_) => return Ok(false),
+            };
+            if entry.parent_id != previous || previous.is_some_and(|p| entry.entry_id <= p) {
+                return Ok(false);
+            }
+            previous = Some(entry.entry_id);
+            if entry.compaction_boundary {
+                replacement.as_file().set_len(header_end)?;
+                replacement.seek(SeekFrom::Start(header_end))?;
+                next = 0;
+                boundary = true;
+                continue;
+            }
+            // Until a compaction marker is found these records cannot be part
+            // of the replacement. Do not serialize megabytes only to truncate
+            // them at the marker (the original is archived intact below).
+            if !boundary {
+                continue;
+            }
+            entry.entry_id = next;
+            entry.parent_id = next.checked_sub(1);
+            next += 1;
+            serde_json::to_writer(&mut replacement, &entry)?;
+            writeln!(replacement)?;
+        }
+        if !boundary {
+            return Ok(false);
+        }
+        replacement.as_file().sync_all()?;
+        let archive_dir = self.root_dir.join("archive");
+        ensure_private_dir(&archive_dir)?;
+        let mut archive = tempfile::Builder::new()
+            .prefix(&format!("{}-", id.as_str()))
+            .suffix(".jsonl")
+            .tempfile_in(&archive_dir)?;
+        std::io::copy(&mut std::fs::File::open(&path)?, &mut archive)?;
+        archive.as_file().sync_all()?;
+        let _ = archive.keep().map_err(|e| SessionError::Io(e.error))?;
+        replacement
+            .persist(&path)
+            .map_err(|e| SessionError::Io(e.error))?;
+        Ok(true)
+    }
+
     pub async fn load(&self, id: &SessionId) -> Result<(SessionMeta, Vec<SessionEntry>)> {
+        let _lock_file = self.lock_session_file(id).await?;
+        let _guard = self.lock.lock().await;
         let path = self.session_path(id)?;
         let content = match tokio::fs::read_to_string(&path).await {
             Ok(c) => c,
@@ -828,6 +924,7 @@ impl JsonlSessionStore {
             }
         };
 
+        let mut damaged_tail = false;
         let entry_lines = &all_lines[1..];
         let mut entries = Vec::with_capacity(entry_lines.len());
         let mut entry_line_nums = Vec::with_capacity(entry_lines.len());
@@ -841,6 +938,7 @@ impl JsonlSessionStore {
                 }
                 Err(e) => {
                     if is_final_line {
+                        damaged_tail = true;
                         log::warn!(
                             "ignoring corrupt or torn final line in {}:{}: {}",
                             path.display(),
@@ -869,6 +967,37 @@ impl JsonlSessionStore {
             &entries,
             &entry_line_nums,
         )?;
+
+        // A resumed session must remain appendable. Preserve the original
+        // before atomically replacing only a damaged final record/newline.
+        if damaged_tail || !content.ends_with('\n') {
+            use std::io::Write;
+            let mut backup = tempfile::Builder::new()
+                .prefix("session-tail-backup-")
+                .tempfile_in(&self.root_dir)?;
+            backup.write_all(content.as_bytes())?;
+            let (_, backup_path) = backup.keep().map_err(|e| SessionError::Io(e.error))?;
+            let mut repaired = String::new();
+            let keep = if damaged_tail {
+                all_lines.len() - 1
+            } else {
+                all_lines.len()
+            };
+            for (_, line) in all_lines.iter().take(keep) {
+                repaired.push_str(line);
+                repaired.push('\n');
+            }
+            let mut replacement = tempfile::NamedTempFile::new_in(&self.root_dir)?;
+            replacement.write_all(repaired.as_bytes())?;
+            replacement.as_file().sync_all()?;
+            replacement
+                .persist(&path)
+                .map_err(|e| SessionError::Io(e.error))?;
+            log::warn!(
+                "repaired session tail; original saved at {}",
+                backup_path.display()
+            );
+        }
 
         let meta = SessionMeta {
             id: header.id,

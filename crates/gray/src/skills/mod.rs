@@ -282,7 +282,9 @@ pub fn rank_skills_for_prompt(skills: &[Skill]) -> Vec<&Skill> {
     out
 }
 
+/// Bound automatic advertising; discovery and explicit invocation remain complete.
 pub fn format_skills_for_prompt(skills: &[Skill]) -> String {
+    const MAX_PROMPT_SKILLS: usize = 40;
     let visible: Vec<&Skill> = rank_skills_for_prompt(skills);
     if visible.is_empty() {
         return String::new();
@@ -296,7 +298,7 @@ pub fn format_skills_for_prompt(skills: &[Skill]) -> String {
         String::new(),
         "<available_skills>".to_string(),
     ];
-    for skill in visible {
+    for skill in visible.iter().take(MAX_PROMPT_SKILLS) {
         lines.push("  <skill>".to_string());
         lines.push(format!("    <name>{}</name>", escape_xml(&skill.name)));
         lines.push(format!(
@@ -310,6 +312,12 @@ pub fn format_skills_for_prompt(skills: &[Skill]) -> String {
         lines.push("  </skill>".to_string());
     }
     lines.push("</available_skills>".to_string());
+    if visible.len() > MAX_PROMPT_SKILLS {
+        lines.push(format!(
+            "{} more skills omitted from this prompt; the user can select them with /skills <name>.",
+            visible.len() - MAX_PROMPT_SKILLS
+        ));
+    }
     lines.join("\n")
 }
 
@@ -410,6 +418,11 @@ fn skill_search_roots(cwd: &Path, agent_dir: &Path) -> Vec<(PathBuf, &'static st
     let global_skills = resolved_agent_dir.join("skills");
     if global_skills.is_dir() {
         roots.push((global_skills.clone(), "user"));
+    }
+    // Transport profiles may explicitly restrict discovery to their selected
+    // skill roots, without changing HOME for tools/provider credentials.
+    if std::env::var("GRAY_SKILLS_ONLY").as_deref() == Ok("1") {
+        return roots;
     }
     // P2-2: pi installs land in `<agent_dir>/plugins/pi/<pkg>/`.
     let pi_plugins = resolved_agent_dir.join("plugins").join("pi");

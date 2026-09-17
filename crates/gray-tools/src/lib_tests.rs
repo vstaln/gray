@@ -215,7 +215,7 @@ async fn registry_execute_applies_aliases_and_coercion() {
 }
 
 #[tokio::test]
-async fn builtin_tools_share_the_registry_ledger() {
+async fn session_tools_share_one_ledger() {
     // Pointer-eq by behavior: the read tool records into the registry Arc
     // and the write tool honors it — no force needed after a full read,
     // and the second write rides on mark_written.
@@ -223,12 +223,11 @@ async fn builtin_tools_share_the_registry_ledger() {
     let p = dir.path().join("note.txt");
     std::fs::write(&p, "hello\n").unwrap();
     let ledger = Arc::new(FileLedger::new());
-    let mut reg = Registry::new(vec![
+    let reg = Registry::new(vec![
         Arc::new(ReadTool::new(ledger.clone())),
         Arc::new(WriteTool::new(ledger.clone())),
         Arc::new(EditTool::new(ledger.clone())),
     ]);
-    reg.set_file_ledger(ledger.clone());
     let ctx = ToolContext {
         cwd: dir.path().to_path_buf(),
         ..ToolContext::default()
@@ -236,8 +235,8 @@ async fn builtin_tools_share_the_registry_ledger() {
     let out = ToolExecutor::execute(&reg, &ctx, "read", json!({"path": "note.txt"})).await;
     assert!(!out.is_error, "{out:?}");
     assert!(
-        reg.file_ledger().get(&p).is_some(),
-        "read must record into Registry::file_ledger"
+        ledger.get(&p).is_some(),
+        "read must record into the session ledger"
     );
     for content in ["hello\nworld\n", "hello\nworld\nagain\n"] {
         let out = ToolExecutor::execute(
@@ -252,9 +251,14 @@ async fn builtin_tools_share_the_registry_ledger() {
 }
 
 #[test]
-fn set_file_ledger_swaps_shared_state() {
-    let mut reg = Registry::new(vec![]);
-    let ledger = Arc::new(FileLedger::new());
-    reg.set_file_ledger(ledger.clone());
-    assert!(Arc::ptr_eq(reg.file_ledger(), &ledger));
+fn coerce_multiple_stringified_edits_preserves_array() {
+    let def = ToolDef::new(
+        "probe",
+        "probe",
+        json!({"type":"object","properties":{"edits":{"type":"array"}}}),
+    );
+    let edits = json!([{"oldText":"a","newText":"b"},{"oldText":"c","newText":"d"}]);
+    for input in [edits.to_string(), format!("```json\n{edits}\n```")] {
+        assert_eq!(coerce_args(&def, json!({"edits":input}))["edits"], edits);
+    }
 }

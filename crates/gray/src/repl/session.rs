@@ -406,7 +406,7 @@ pub(crate) fn dispatch_agent_event(
                     })
                     .or_insert((name.clone(), Some(args.clone())));
                 // pi `markExecutionStarted` + `setArgsComplete`: the live
-                // card flips to its final header + `running…` marker. No
+                // card uses its full header with a leading execution shimmer. No
                 // transcript line here: the result card below is the single
                 // scrollback render, so a duplicate never lands.
                 let header = crate::tool_fmt::format_tool_call_header(&name, args, Some(cwd));
@@ -570,7 +570,7 @@ static AUTO_COMPACT_ENV_ONCE: std::sync::OnceLock<()> = std::sync::OnceLock::new
 /// reseed the context gauge, ensure a session exists, and write the
 /// replacement boundary (reload replays the active transcript, not
 /// original + replacement duplicated).
-async fn persist_compaction_tail(
+pub(crate) async fn persist_compaction_tail(
     agent: &mut Agent,
     config: &Config,
     session_state: &mut Option<SessionState>,

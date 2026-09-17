@@ -148,7 +148,7 @@ pub(crate) fn highlight_line_spans(
         }
     }
 
-    let mut st = Style::default().fg(diff_equal_fg());
+    let mut st = Style::default().fg(crate::theme::theme().text_body);
     if let Some(bg_c) = bg {
         st = st.bg(bg_c);
     }
@@ -348,7 +348,10 @@ pub fn render_diff_hunks(
             lines.push(Line::from(vec![
                 Span::raw("  "),
                 Span::raw(gutter_pad),
-                Span::styled(gap_text, Style::default().fg(diff_gutter_fg())),
+                Span::styled(
+                    gap_text,
+                    Style::default().fg(crate::theme::theme().diff_gutter),
+                ),
             ]));
         }
 
@@ -362,8 +365,8 @@ pub fn render_diff_hunks(
         for line in hunk {
             let bg_color = match line.tag {
                 DiffTag::Equal => None,
-                DiffTag::Delete => Some(diff_delete_bg()),
-                DiffTag::Insert => Some(diff_insert_bg()),
+                DiffTag::Delete => Some(crate::theme::theme().diff_del_bg),
+                DiffTag::Insert => Some(crate::theme::theme().diff_add_bg),
             };
             let prefix_style = if let Some(bg) = bg_color {
                 Style::default().bg(bg)
@@ -382,20 +385,22 @@ pub fn render_diff_hunks(
             };
 
             let gutter_num_style = if let Some(bg) = bg_color {
-                Style::default().fg(diff_gutter_fg()).bg(bg)
+                Style::default()
+                    .fg(crate::theme::theme().diff_gutter)
+                    .bg(bg)
             } else {
-                Style::default().fg(diff_gutter_fg())
+                Style::default().fg(crate::theme::theme().diff_gutter)
             };
             let gutter_pipe_style = gutter_num_style;
             let gutter_sign_style = match line.tag {
                 DiffTag::Equal => gutter_num_style,
                 DiffTag::Delete => Style::default()
-                    .fg(diff_delete_fg())
-                    .bg(diff_delete_bg())
+                    .fg(crate::theme::theme().diff_del_fg)
+                    .bg(crate::theme::theme().diff_del_bg)
                     .add_modifier(Modifier::BOLD),
                 DiffTag::Insert => Style::default()
-                    .fg(diff_insert_fg())
-                    .bg(diff_insert_bg())
+                    .fg(crate::theme::theme().diff_add_fg)
+                    .bg(crate::theme::theme().diff_add_bg)
                     .add_modifier(Modifier::BOLD),
             };
 

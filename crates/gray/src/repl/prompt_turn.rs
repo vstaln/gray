@@ -189,6 +189,7 @@ pub(crate) async fn run_prompt_turn(
     let mut turn_usage: Option<gray_core::event::Usage> = None;
     let turn_start = std::time::Instant::now();
     let mut turn_duration_ms: Option<u64> = None;
+    let history_revision = agent.history_revision();
     let mut run_result = {
         let mut on_event = |ev: &AgentEvent| {
             dispatch_agent_event(
@@ -261,6 +262,17 @@ pub(crate) async fn run_prompt_turn(
         turn_duration_ms = Some(turn_start.elapsed().as_millis().min(u128::from(u64::MAX)) as u64);
     }
 
+    if agent.history_revision() != history_revision {
+        super::session::persist_compaction_tail(
+            agent,
+            config,
+            session_state,
+            cwd,
+            tui.as_ref().map(|(state, _)| state),
+        )
+        .await;
+        initial_count = agent.messages().len();
+    }
     match run_result {
         Ok(_) => {
             persist_turn_messages(

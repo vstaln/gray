@@ -129,3 +129,36 @@ fn cat_n_prefix_disambiguates_multiple_occurrences() {
     );
     assert!(repaired.notes[0].contains("disambiguated 2 occurrences"));
 }
+
+#[test]
+fn fuzzy_edit_preserves_untouched_punctuation() {
+    let result = apply_edits_to_normalized_content(
+        "x—y target z—w  \n",
+        &[e("target", "T"), e("z-w", "Q")],
+        "f",
+    )
+    .unwrap();
+    assert_eq!(result.new_content, "x—y T Q  \n");
+}
+
+#[test]
+fn fuzzy_edit_does_not_redirect_an_exact_sibling() {
+    let result = apply_edits_to_normalized_content(
+        "x—y x-y z—w  \n",
+        &[e("x-y", "EXACT"), e("z-w", "FUZZY")],
+        "f",
+    )
+    .unwrap();
+    assert_eq!(result.new_content, "x—y EXACT FUZZY  \n");
+    assert!(result.notes.is_empty());
+}
+
+#[test]
+fn mixed_exact_and_fuzzy_spans_detect_overlap_in_original_bytes() {
+    let result = apply_edits_to_normalized_content(
+        "x—y z—w\n",
+        &[e("x—y z", "EXACT"), e("z-w", "FUZZY")],
+        "f",
+    );
+    assert!(result.unwrap_err().contains("overlap"));
+}

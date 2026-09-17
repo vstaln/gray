@@ -62,3 +62,21 @@ fn literal_and_chomped_markers_parse() {
     let skill = load_skill_from_file(g.path(), "path");
     assert_eq!(skill.expect("loads").description, "folded here");
 }
+
+#[test]
+fn frontmatter_preserves_crlf_unicode_and_body() {
+    for nl in ["\n", "\r\n"] {
+        let input = [
+            "---",
+            "name: deploy",
+            "description: Ship the app…",
+            "---",
+            "Body…",
+            "",
+        ]
+        .join(nl);
+        let (fm, body) = parse_frontmatter(&input).unwrap();
+        assert_eq!(fm.description.as_deref(), Some("Ship the app…"));
+        assert_eq!(body, format!("Body…{nl}"));
+    }
+}

@@ -1,0 +1,2 @@
+[build.env]
+passthrough = ["GRAY_CHANNEL", "GRAY_BUILD_ID"]

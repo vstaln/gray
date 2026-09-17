@@ -606,3 +606,49 @@ fn elided_stub_keeps_head_and_tail() {
     assert!(content.contains("line 0"), "head lost: {content}");
     assert!(content.contains("line 29"), "tail lost: {content}");
 }
+
+struct ChangingContext(std::sync::atomic::AtomicUsize);
+#[async_trait]
+impl crate::agent::PluginHooks for ChangingContext {
+    async fn prompt_context(&self) -> Option<String> {
+        Some(format!(
+            "CTX-{}",
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+        ))
+    }
+}
+
+#[tokio::test]
+async fn compaction_preserves_last_live_hook_context() {
+    let seen = Arc::default();
+    let hook = Arc::new(ChangingContext(std::sync::atomic::AtomicUsize::new(0)));
+    let script = || {
+        vec![
+            StreamEvent::text_delta("ok"),
+            StreamEvent::message_complete(Some(StopReason::EndTurn), None),
+        ]
+    };
+    let mut agent = trigger_test_agent(script(), Arc::clone(&seen), Arc::default(), Vec::new())
+        .with_hooks(vec![hook.clone()]);
+    for i in 0..2 {
+        agent.provider = Box::new(CapturingProvider::new(script(), Arc::clone(&seen)));
+        agent
+            .run(Message::user("go"), ToolContext::default())
+            .await
+            .unwrap();
+        agent.provider = Box::new(CapturingProvider::new(script(), Arc::clone(&seen)));
+        assert_eq!(
+            run_compaction_call(&agent, agent.messages(), None)
+                .await
+                .unwrap(),
+            "ok"
+        );
+        let requests = seen.lock().unwrap();
+        let live = &requests[i * 2];
+        let compact = &requests[i * 2 + 1];
+        assert_eq!(live.system, Some(format!("S\n\nCTX-{i}")));
+        assert_eq!(compact.system, live.system);
+        assert_eq!(compact.tools, live.tools);
+    }
+    assert_eq!(hook.0.load(std::sync::atomic::Ordering::SeqCst), 2);
+}

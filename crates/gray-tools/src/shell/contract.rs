@@ -13,7 +13,6 @@ use tokio::process::Child;
 
 pub const DEFAULT_TIMEOUT_SECS: u64 = 30;
 pub const MAX_TIMEOUT_SECS: u64 = 600;
-pub const VIEW_BUDGET_BYTES: usize = 50 * 1024;
 pub const VIEW_BUDGET_LINES: usize = 2000;
 pub const VIEW_HEAD_FRACTION: f32 = 0.25; // head 25%, tail 75%
 pub const MEM_HEAD_BYTES: usize = 6 * 1024;

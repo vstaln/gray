@@ -255,7 +255,7 @@ use futures::StreamExt as _;
 
 use crate::message::{ContentBlock, Message, Role, ToolDef};
 
-pub use super::agent_compact::summary_pair;
+pub use super::agent_compact::{estimate_message_tokens, summary_pair};
 
 /// The agent loop: drives a conversation against a [`Provider`], executing
 /// tool calls through a [`ToolExecutor`] until the model stops requesting
@@ -276,11 +276,15 @@ pub struct Agent {
     pub(crate) provider: Box<dyn Provider>,
     pub(crate) executor: std::sync::Arc<dyn ToolExecutor>,
     pub(crate) system: String,
+    /// Effective prefix captured once per turn, including plugin context.
+    pub(crate) turn_system: Option<String>,
     pub(crate) tools: Vec<ToolDef>,
     pub(crate) messages: Vec<Message>,
     pub(crate) tool_timeout: Duration,
     pub(crate) hooks: Vec<Arc<dyn PluginHooks>>,
     pub(crate) context_window: Option<usize>,
+    history_revision: u64,
+    history_rewrite_hook: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 impl Agent {
@@ -290,17 +294,46 @@ impl Agent {
             provider,
             executor,
             system: String::new(),
+            turn_system: None,
             tools: Vec::new(),
             messages: Vec::new(),
             tool_timeout: Duration::from_secs(120),
             hooks: Vec::new(),
             context_window: None,
+            history_revision: 0,
+            history_rewrite_hook: None,
+        }
+    }
+
+    /// Decorate all provider requests, including compaction, with host policy.
+    pub fn map_provider(
+        mut self,
+        wrap: impl FnOnce(Box<dyn Provider>) -> Box<dyn Provider>,
+    ) -> Self {
+        self.provider = wrap(self.provider);
+        self
+    }
+
+    pub fn history_revision(&self) -> u64 {
+        self.history_revision
+    }
+
+    pub fn with_history_rewrite_hook(mut self, hook: Arc<dyn Fn() + Send + Sync>) -> Self {
+        self.history_rewrite_hook = Some(hook);
+        self
+    }
+
+    pub(crate) fn history_rewritten(&mut self) {
+        self.history_revision = self.history_revision.wrapping_add(1);
+        if let Some(hook) = &self.history_rewrite_hook {
+            hook();
         }
     }
 
     /// Sets the system prompt sent with every request.
     pub fn with_system(mut self, system: impl Into<String>) -> Self {
         self.system = system.into();
+        self.turn_system = None;
         self
     }
 
@@ -314,6 +347,7 @@ impl Agent {
     /// means the loop behaves exactly as before.
     pub fn with_hooks(mut self, hooks: Vec<Arc<dyn PluginHooks>>) -> Self {
         self.hooks = hooks;
+        self.turn_system = None;
         self
     }
 
@@ -326,6 +360,7 @@ impl Agent {
     /// Sets the initial conversation messages (useful for resumed sessions).
     pub fn with_messages(mut self, messages: Vec<Message>) -> Self {
         self.messages = messages;
+        self.history_rewritten();
         self
     }
 
@@ -359,14 +394,16 @@ impl Agent {
     /// Updates or replaces the accumulated conversation messages (e.g. after compaction).
     pub fn set_messages(&mut self, messages: Vec<Message>) {
         self.messages = messages;
+        self.history_rewritten();
     }
 
-    /// System prompt sent with every request. `pub(crate)` because the
+    /// Effective system prompt captured for the current/last turn, or the base
+    /// prompt before any turn. `pub(crate)` because the
     /// compaction-v2 trigger call (sibling module `compact`) reuses it
     /// verbatim: private fields are visible only in the defining module, so
     /// the sibling cannot read `self.system` directly.
     pub(crate) fn system_text(&self) -> &str {
-        &self.system
+        self.turn_system.as_deref().unwrap_or(&self.system)
     }
 
     /// Tools advertised to the model. `pub(crate)` for the same reason as

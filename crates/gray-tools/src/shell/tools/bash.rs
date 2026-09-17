@@ -325,7 +325,28 @@ fn finish_inline(
         out.push('\n');
         out.push_str(&fence(&view.body));
     }
+    if let Some((start, end)) = view.omitted_range {
+        // Absolute, shell-quoted path: never expand the display-only ~/ shorthand.
+        let path = log_path.to_string_lossy().replace('\'', "'\"'\"'");
+        let command = if small_log_on_disk(log_path, summary) {
+            // middle_out offsets are sanitized bytes. Recover by line instead,
+            // including the last shown line in case it was cut mid-line.
+            let first = view.shown_lines.0.max(1);
+            let last = first.saturating_add(199);
+            format!("sed -n '{first},{last}p;{last}q' '{path}' | head -c 4096")
+        } else {
+            // Large-log sampling tracks raw offsets, not sanitized ones.
+            let count = end.saturating_sub(start).min(4096);
+            format!("dd if='{path}' bs=1 skip={start} count={count} 2>/dev/null")
+        };
+        out.push_str(&format!("\nRead more: {command}"));
+    }
     ToolOutput::ok(out)
+}
+
+fn small_log_on_disk(log_path: &std::path::Path, summary: &PumpSummary) -> bool {
+    let file_len = std::fs::metadata(log_path).map(|m| m.len()).unwrap_or(0);
+    summary.total_bytes <= INLINE_BUDGET_BYTES as u64 && file_len <= INLINE_BUDGET_BYTES as u64
 }
 
 /// Bounded inline view (≤ ~12 KiB): the whole log read back from disk when
@@ -337,9 +358,7 @@ fn build_view(log_path: &std::path::Path, summary: &PumpSummary) -> View {
     // Byte-bounded: the small path reads the log back from disk — never read
     // an unbounded log on a stale/small summary. Check the real length first
     // and fall back to the bounded in-memory head ++ tail.
-    let file_len = std::fs::metadata(log_path).map(|m| m.len()).unwrap_or(0);
-    let use_disk =
-        summary.total_bytes <= INLINE_BUDGET_BYTES as u64 && file_len <= INLINE_BUDGET_BYTES as u64;
+    let use_disk = small_log_on_disk(log_path, summary);
     // On read error fall through to the memory sample below.
     if use_disk && let Ok(bytes) = std::fs::read(log_path) {
         let mut view = middle_out(&bytes, INLINE_BUDGET_BYTES, VIEW_BUDGET_LINES, 0);

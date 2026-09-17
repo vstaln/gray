@@ -511,12 +511,22 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
         let cur_y = (box_y + 1 + ibox.cur_row as u16).min(area.y + area.height.saturating_sub(1));
         frame.set_cursor_position(Position::new(cur_x, cur_y));
     });
+    let background_result = if res.is_ok() {
+        if let Some(bg) = &mut tui.background {
+            bg.draw(&mut std::io::stdout().lock(), cols, rows)
+        } else {
+            Ok(())
+        }
+    } else {
+        Ok(())
+    };
     let ended = crossterm::execute!(
         std::io::stdout(),
         crossterm::terminal::EndSynchronizedUpdate
     );
     res?;
     ended?;
+    background_result?;
     Ok(())
 }
 

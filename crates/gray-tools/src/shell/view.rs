@@ -78,7 +78,8 @@ pub fn home_relative(p: &Path) -> String {
 
 // ── sanitize (moved here from bash.rs sanitize_binary_output) ───────
 
-/// Drop C0 controls except \t \n \r, lossy UTF-8, CRLF -> LF.
+/// Drop C0 controls except \t \n \r, lossy UTF-8, CRLF and bare CR -> LF.
+/// Progress updates must not carry cursor-reset controls into the terminal UI.
 /// Byte-level filter first: bytes < 0x20 are never part of a multi-byte
 /// UTF-8 sequence, so filtering cannot tear a codepoint.
 fn sanitize(log: &[u8]) -> String {
@@ -87,7 +88,9 @@ fn sanitize(log: &[u8]) -> String {
         .filter(|&&b| b == 0x09 || b == 0x0A || b == 0x0D || b >= 0x20)
         .copied()
         .collect();
-    String::from_utf8_lossy(&filtered).replace("\r\n", "\n")
+    String::from_utf8_lossy(&filtered)
+        .replace("\r\n", "\n")
+        .replace('\r', "\n")
 }
 
 /// Lines = newline count, plus a trailing partial line. Operates on bytes

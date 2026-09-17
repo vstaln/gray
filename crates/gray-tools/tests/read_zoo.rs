@@ -460,3 +460,19 @@ async fn zoo_smoke_every_small_fixture_reads() {
     assert_eq!(tiny.images[0].media_type, "image/png");
     assert!(!tiny.images[0].data.is_empty());
 }
+
+#[tokio::test]
+async fn bulk_read_preserves_vision() {
+    let zoo = Zoo::build().unwrap();
+    let ctx = ToolContext {
+        cwd: zoo.root(),
+        ..Default::default()
+    };
+    let out = ReadTool::default()
+        .execute(&ctx, serde_json::json!({"paths":["tiny.png","empty.txt"]}))
+        .await;
+    assert!(!out.is_error, "{}", out.content);
+    assert_eq!(out.images.len(), 1);
+    assert_eq!(out.images[0].media_type, "image/png");
+    assert!(!out.images[0].data.is_empty());
+}

@@ -57,7 +57,7 @@ pub fn is_image_extension(path: &Path) -> bool {
 /// 5MB (halve and retry up to 3 times, then fail loudly like SizeError).
 /// Returns `(media_type, bytes)`.
 pub fn normalize_image_bytes(bytes: &[u8]) -> Result<(String, Vec<u8>), MediaError> {
-    use image::ImageFormat;
+    use image::{ImageDecoder, ImageFormat};
     let format = image::guess_format(bytes).map_err(|e| MediaError::Decode(e.to_string()))?;
     let out_format = match format {
         ImageFormat::Jpeg => ImageFormat::Jpeg,
@@ -69,8 +69,17 @@ pub fn normalize_image_bytes(bytes: &[u8]) -> Result<(String, Vec<u8>), MediaErr
             )));
         }
     };
-    let mut img = image::load_from_memory(bytes).map_err(|e| MediaError::Decode(e.to_string()))?;
-    for _ in 0..4 {
+    let mut decoder = image::ImageReader::with_format(Cursor::new(bytes), format)
+        .into_decoder()
+        .map_err(|e| MediaError::Decode(e.to_string()))?;
+    let orientation = decoder
+        .orientation()
+        .map_err(|e| MediaError::Decode(e.to_string()))?;
+    let mut img = image::DynamicImage::from_decoder(decoder)
+        .map_err(|e| MediaError::Decode(e.to_string()))?;
+    img.apply_orientation(orientation);
+    let mut last_size = 0;
+    for attempt in 0..4 {
         if img.width().max(img.height()) > MAX_IMAGE_SIDE {
             img = img.resize(
                 MAX_IMAGE_SIDE,
@@ -81,7 +90,8 @@ pub fn normalize_image_bytes(bytes: &[u8]) -> Result<(String, Vec<u8>), MediaErr
         let mut buf = Vec::new();
         img.write_to(&mut Cursor::new(&mut buf), out_format)
             .map_err(|e| MediaError::Decode(e.to_string()))?;
-        if base64_len(&buf) <= MAX_BASE64_BYTES {
+        last_size = base64_len(&buf);
+        if last_size <= MAX_BASE64_BYTES {
             let mime = if out_format == ImageFormat::Jpeg {
                 "image/jpeg"
             } else {
@@ -89,14 +99,14 @@ pub fn normalize_image_bytes(bytes: &[u8]) -> Result<(String, Vec<u8>), MediaErr
             };
             return Ok((mime.to_string(), buf));
         }
+        if attempt == 3 {
+            break;
+        }
         // Still too big: halve and retry (animated GIFs arrive as frame 0).
         let (w, h) = (img.width().max(1) / 2, img.height().max(1) / 2);
         img = img.resize(w.max(1), h.max(1), image::imageops::FilterType::Triangle);
     }
-    Err(MediaError::TooBig(format!(
-        "{} bytes",
-        base64_len(&img.to_rgba8().into_raw())
-    )))
+    Err(MediaError::TooBig(format!("{} bytes", last_size)))
 }
 
 fn base64_len(raw: &[u8]) -> usize {

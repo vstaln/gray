@@ -51,12 +51,10 @@ pub use style::{MarkdownStyle, TableBorders};
 pub use syntax::{Syntect, get_syntect, syntect_to_ratatui_fg};
 pub use syntect;
 
-/// Render markdown to ratatui Lines with full output including checkpoint.
-///
-/// Runs the parser pass followed by the `url_scan` pass so the returned
-/// output's `hyperlinks` mirrors what `StreamingMarkdownRenderer::finish()`
-/// produces for the same input (plain-URL detection for the pretty-mode
-/// `(url)` suffix and bare URLs in prose).
+/// Test-only convenience: one-shot full render with fresh buffers.
+/// (Production renders through `StreamingMarkdownRenderer` or
+/// [`render_markdown_ratatui_with_buffers_width`] with caller-owned buffers.)
+#[cfg(test)]
 pub fn render_markdown_ratatui_full(
     text: &str,
     ms: MarkdownStyle,

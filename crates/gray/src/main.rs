@@ -84,8 +84,21 @@ async fn main() -> anyhow::Result<()> {
         }
     }
     if let Some(prompt) = cli.print.as_deref() {
-        run_print_mode_with_session(&config, prompt, cli.session.as_deref(), cli.continue_last)
+        if cli.json {
+            gray::print::run_print_mode_json(
+                &config,
+                prompt,
+                cli.session.as_deref(),
+                cli.continue_last,
+                cli.max_requests,
+                cli.input_price,
+                cli.output_price,
+            )
             .await?;
+        } else {
+            run_print_mode_with_session(&config, prompt, cli.session.as_deref(), cli.continue_last)
+                .await?;
+        }
     } else {
         gray::update::startup_check().await;
         run_repl_mode(&mut config, cli.continue_last, cli.session.as_deref()).await?;

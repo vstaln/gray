@@ -25,7 +25,7 @@
 //!   `Arc<FileLedger>` (`ReadTool::new(...)`; `Default` keeps a private
 //!   ledger so existing tests compile); read records, write/edit consult.
 //! * `gray-plugin/src/builder.rs` (`ToolsBasicPlugin` holds the `Arc`): the
-//!   `Registry::file_ledger` accessor in `gray-tools/src/lib.rs` is the seam.
+//!   `builder::current_file_ledger()` (gray-plugin) is the seam.
 
 use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;

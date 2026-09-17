@@ -1129,3 +1129,287 @@ fn tool_error_flag_survives_responses_wire_encoding() {
         "error flagged: {v}"
     );
 }
+
+#[tokio::test]
+async fn oversize_tool_index_is_forwarded_not_silently_dropped() {
+    // The agent owns the index guard (hard error); the provider must not
+    // silently drop the call first — that loses model intent with a
+    // clean EndTurn. Index 5000 must arrive downstream.
+    use futures::StreamExt;
+    let server = wiremock::MockServer::start().await;
+    let chunk = serde_json::json!({
+        "choices": [{
+            "delta": { "tool_calls": [{ "index": 5000, "id": "c-huge",
+                "function": {"name": "bash", "arguments": "{}"} }] },
+            "finish_reason": "tool_calls"
+        }]
+    });
+    let body = format!("data: {chunk}\n\ndata: [DONE]\n\n");
+    wiremock::Mock::given(wiremock::matchers::any())
+        .respond_with(
+            wiremock::ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_string(body),
+        )
+        .mount(&server)
+        .await;
+    let provider = OpenAiProvider::new("key", "test-model", server.uri(), None, None)
+        .expect("provider builds");
+    let req = gray_core::message::ChatRequest {
+        system: None,
+        messages: Vec::new(),
+        tools: Vec::new(),
+    };
+    let events: Vec<_> = provider.stream(req).collect().await;
+    assert!(
+        events
+            .iter()
+            .any(|r| matches!(r, Ok(StreamEvent::ToolCallDelta { index: 5000, .. }))),
+        "index 5000 must reach the agent (agent guard decides): {events:?}"
+    );
+}
+
+#[tokio::test]
+async fn responses_twin_ids_require_confirmed_completion() {
+    // Server sends output_item.added with BOTH call_id and item_id (OpenAI's
+    // real shape); args deltas land on the item_id twin. The stream then
+    // drops before response.completed: no call may execute (#68/#72).
+    // Confirmed completion must merge both IDs and keep the full arguments.
+    use futures::StreamExt;
+    for confirmed in [false, true] {
+        let server = wiremock::MockServer::start().await;
+        let added = serde_json::json!({
+            "type": "response.output_item.added",
+            "response_id": "resp_1",
+            "item": {"type": "function_call", "call_id": "call_1", "id": "fc_1", "name": "bash"}
+        });
+        let delta = serde_json::json!({
+            "type": "response.function_call_arguments.delta",
+            "response_id": "resp_1",
+            "item_id": "fc_1",
+            "delta": r#"{"command":"ls"}"#
+        });
+        // Body ends without [DONE] and without response.completed → EOF path.
+        let mut body = format!("data: {added}\n\ndata: {delta}\n\n");
+        if confirmed {
+            body.push_str("data: {\"type\":\"response.completed\"}\n\n");
+        }
+        wiremock::Mock::given(wiremock::matchers::any())
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .insert_header("content-type", "text/event-stream")
+                    .set_body_string(body),
+            )
+            .mount(&server)
+            .await;
+        let provider = OpenAiProvider::new(
+            "key",
+            "muse-test",
+            format!("{}/opencode.ai/zen", server.uri()),
+            None,
+            None,
+        )
+        .expect("provider builds");
+        let req = gray_core::message::ChatRequest {
+            system: None,
+            messages: Vec::new(),
+            tools: Vec::new(),
+        };
+        let events: Vec<_> = provider.stream(req).collect().await;
+        if confirmed {
+            let calls: Vec<_> = events
+                .iter()
+                .filter_map(|event| match event {
+                    Ok(StreamEvent::ToolCallDelta {
+                        id,
+                        arguments_delta,
+                        ..
+                    }) => Some((id.as_deref(), arguments_delta.as_str())),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(calls, vec![(Some("call_1"), r#"{"command":"ls"}"#)]);
+            assert_eq!(
+                events
+                    .iter()
+                    .filter(|event| matches!(event, Ok(StreamEvent::MessageComplete { .. })))
+                    .count(),
+                1
+            );
+        } else {
+            assert!(events.iter().any(|event| matches!(event, Err(e) if e.to_string().contains("before response.completed"))));
+            assert!(!events.iter().any(|event| matches!(
+                event,
+                Ok(StreamEvent::ToolCallDelta { .. } | StreamEvent::MessageComplete { .. })
+            )));
+        }
+    }
+}
+
+#[tokio::test]
+async fn responses_failure_event_is_an_error_not_endturn() {
+    // response.failed must not fall through the catch-all into a successful
+    // EndTurn: the turn must surface the failure (#71).
+    use futures::StreamExt;
+    let server = wiremock::MockServer::start().await;
+    let failed = serde_json::json!({
+        "type": "response.failed",
+        "response": {"id": "resp_1", "error": {"code": "server_error", "message": "kaboom"}}
+    });
+    let body = format!("data: {failed}\n\n");
+    wiremock::Mock::given(wiremock::matchers::any())
+        .respond_with(
+            wiremock::ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_string(body),
+        )
+        .mount(&server)
+        .await;
+    let provider = OpenAiProvider::new(
+        "key",
+        "muse-test",
+        format!("{}/opencode.ai/zen", server.uri()),
+        None,
+        None,
+    )
+    .expect("provider builds");
+    let req = gray_core::message::ChatRequest {
+        system: None,
+        messages: Vec::new(),
+        tools: Vec::new(),
+    };
+    let events: Vec<_> = provider.stream(req).collect().await;
+    assert!(
+        events
+            .iter()
+            .any(|r| matches!(r, Err(e) if e.to_string().contains("kaboom"))),
+        "response.failed must end in an error, got: {events:?}"
+    );
+}
+
+#[test]
+fn chat_tool_images_follow_all_tool_results() {
+    use gray_core::message::Message;
+    let request = ChatRequest {
+        system: None,
+        tools: vec![],
+        messages: vec![
+            Message {
+                role: Role::Assistant,
+                content: vec![
+                    ContentBlock::ToolUse {
+                        id: "a".into(),
+                        name: "read".into(),
+                        args: serde_json::json!({}),
+                    },
+                    ContentBlock::ToolUse {
+                        id: "b".into(),
+                        name: "bash".into(),
+                        args: serde_json::json!({}),
+                    },
+                ],
+            },
+            Message {
+                role: Role::User,
+                content: vec![
+                    ContentBlock::ToolResult {
+                        id: "a".into(),
+                        content: "image".into(),
+                        is_error: false,
+                    },
+                    ContentBlock::image("image/png", "AA=="),
+                ],
+            },
+            Message {
+                role: Role::User,
+                content: vec![ContentBlock::ToolResult {
+                    id: "b".into(),
+                    content: "done".into(),
+                    is_error: false,
+                }],
+            },
+        ],
+    };
+    let mapped = map_chat_request(request, "test", None).unwrap();
+    let value = serde_json::to_value(mapped).unwrap();
+    let roles: Vec<_> = value["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["role"].as_str().unwrap())
+        .collect();
+    assert_eq!(roles, vec!["assistant", "tool", "tool", "user"]);
+    assert_eq!(value["messages"][2]["content"], "done");
+}
+
+#[tokio::test]
+async fn responses_incomplete_and_top_level_error_are_not_success() {
+    use futures::StreamExt;
+    for (event, max_tokens) in [
+        (
+            serde_json::json!({"type":"error","message":"top-level boom"}),
+            false,
+        ),
+        (
+            serde_json::json!({"type":"response.incomplete","response":{"incomplete_details":{"reason":"max_output_tokens"},"usage":{"input_tokens":100,"output_tokens":50,"input_tokens_details":{"cached_tokens":20},"output_tokens_details":{"reasoning_tokens":40}}}}),
+            true,
+        ),
+    ] {
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::any())
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .insert_header("content-type", "text/event-stream")
+                    .set_body_string(format!("data: {event}\n\n")),
+            )
+            .mount(&server)
+            .await;
+        let provider = OpenAiProvider::new(
+            "key",
+            "muse",
+            format!("{}/opencode.ai/zen", server.uri()),
+            None,
+            None,
+        )
+        .unwrap();
+        let events: Vec<_> = provider.stream(empty_chat_req()).collect().await;
+        if max_tokens {
+            assert!(events.iter().any(|e| matches!(
+                e,
+                Ok(StreamEvent::MessageComplete {
+                    stop_reason: Some(StopReason::MaxTokens),
+                    usage: Some(usage),
+                }) if usage.input_tokens == 100 && usage.output_tokens == 50
+                    && usage.cached_tokens == 20 && usage.reasoning_tokens == 40
+            )));
+        } else {
+            assert!(
+                events
+                    .iter()
+                    .any(|e| matches!(e, Err(e) if e.to_string().contains("top-level boom")))
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn chat_eof_never_executes_unconfirmed_tools() {
+    use futures::StreamExt;
+    let server = wiremock::MockServer::start().await;
+    let chunk = serde_json::json!({"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"bash","arguments":"{\"command\":\"ls\""}}]}}]});
+    wiremock::Mock::given(wiremock::matchers::any())
+        .respond_with(
+            wiremock::ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_string(format!("data: {chunk}\n\n")),
+        )
+        .mount(&server)
+        .await;
+    let provider = OpenAiProvider::new("key", "test", server.uri(), None, None).unwrap();
+    let events: Vec<_> = provider.stream(empty_chat_req()).collect().await;
+    assert!(events.iter().any(Result::is_err));
+    assert!(!events.iter().any(|e| matches!(
+        e,
+        Ok(StreamEvent::ToolCallDelta { .. } | StreamEvent::MessageComplete { .. })
+    )));
+}

@@ -52,6 +52,7 @@ async fn echo_returns_exit_zero_with_output() {
     assert!(head.starts_with("exit 0"), "{head}");
     assert!(r.content.contains("hello"), "{}", r.content);
     assert!(r.content.contains("log "), "{}", r.content);
+    assert!(!r.content.contains("Read more:"));
     assert!(
         !r.content.contains("started t"),
         "no task ids anymore: {}",
@@ -102,4 +103,50 @@ async fn empty_command_is_an_error() {
     let ctx = ctx_for(&session);
     let r = BashTool.execute(&ctx, json!({"command": "   "})).await;
     assert!(r.is_error, "{}", r.content);
+}
+
+#[test]
+fn truncated_log_has_executable_bounded_recovery() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("log ' $(false) file");
+    for raw in [
+        b"a\r\n".repeat(4000),
+        b"z".repeat(30000),
+        b"z".repeat(INLINE_BUDGET_BYTES + 1),
+    ] {
+        std::fs::write(&path, &raw).unwrap();
+        let summary = PumpSummary {
+            total_bytes: raw.len() as u64,
+            total_lines: raw.iter().filter(|&&b| b == b'\n').count(),
+            head: raw[..raw.len().min(MEM_HEAD_BYTES)].to_vec(),
+            tail: raw[raw.len().saturating_sub(MEM_TAIL_BYTES)..].to_vec(),
+            has_cr: raw.contains(&b'\r'),
+            log_write_failed: false,
+        };
+        let status = std::process::Command::new("sh")
+            .args(["-c", "exit 0"])
+            .status()
+            .unwrap();
+        let result = finish_inline("probe", &path, status, &summary, Instant::now(), None);
+        let command = result
+            .content
+            .lines()
+            .find_map(|l| l.strip_prefix("Read more: "))
+            .expect("copyable command");
+        let out = std::process::Command::new("sh")
+            .args(["-c", command])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{:?}", out.stderr);
+        assert!(!out.stdout.is_empty());
+        assert!(out.stdout.len() <= 4096);
+        if raw[0] == b'z' {
+            assert_eq!(
+                out.stdout,
+                vec![b'z'; (raw.len() - INLINE_BUDGET_BYTES).min(4096)]
+            );
+        } else {
+            assert!(out.stdout.starts_with(b"a\r\n"));
+        }
+    }
 }

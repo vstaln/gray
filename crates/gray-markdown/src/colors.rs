@@ -22,19 +22,9 @@ pub enum ColorLevel {
 }
 
 impl ColorLevel {
-    /// Returns true if at least basic color is supported.
-    pub fn has_color(self) -> bool {
-        self >= Self::Basic
-    }
-
     /// Returns true if 256-color mode is supported.
     pub fn has_256(self) -> bool {
         self >= Self::Ansi256
-    }
-
-    /// Returns true if 24-bit truecolor is supported.
-    pub fn has_truecolor(self) -> bool {
-        self >= Self::TrueColor
     }
 }
 

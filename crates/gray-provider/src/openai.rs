@@ -22,9 +22,6 @@ const MAX_ATTEMPTS: usize = 3;
 /// Initial retry backoff (exponential, jittered, `Retry-After`-floored).
 const INITIAL_BACKOFF: Duration = Duration::from_millis(50);
 
-/// Upper bound for wire-controlled tool-call indices (hostile-server guard).
-const MAX_TOOL_CALL_INDEX: usize = 4096;
-
 /// An OpenAI-compatible LLM provider implementing the `Provider` trait.
 ///
 /// `Debug` is redacted by hand: the struct carries a plaintext API key,
@@ -554,6 +551,34 @@ fn map_chat_request(
             }
         }
     }
+
+    // Tool-result images must follow the entire contiguous result run.
+    let mut ordered = Vec::with_capacity(messages.len());
+    let mut deferred_images = Vec::new();
+    let mut in_results = false;
+    for message in messages {
+        let image_only = message.role == "user"
+            && message
+                .content
+                .as_ref()
+                .and_then(Value::as_array)
+                .is_some_and(|parts| {
+                    !parts.is_empty() && parts.iter().all(|p| p["type"] == "image_url")
+                });
+        if in_results && image_only {
+            deferred_images.push(message);
+            continue;
+        }
+        if message.role != "tool" {
+            ordered.append(&mut deferred_images);
+            in_results = false;
+        } else {
+            in_results = true;
+        }
+        ordered.push(message);
+    }
+    ordered.append(&mut deferred_images);
+    let mut messages = ordered;
 
     // 3. Map tools — drop empty names that would trigger 400 `name` must be non-empty
     let mut tools: Vec<OpenAiToolDefRequest> = filter_valid_tools(req.tools)
@@ -1914,12 +1939,10 @@ fn stream_unfold_step(
 
                                             if let Some(tool_calls) = choice.delta.tool_calls {
                                                 for tc in tool_calls {
-                                                    // cap wire-controlled indices so a broken/
-                                                    // hostile server can't balloon memory; raise if real
-                                                    // turns ever need more concurrent tool calls.
-                                                    if tc.index >= MAX_TOOL_CALL_INDEX {
-                                                        continue;
-                                                    }
+                                                    // ponytail: no index cap here — the agent
+                                                    // owns the guard (hard error). A silent
+                                                    // drop loses model intent with a clean
+                                                    // EndTurn; forwarding keeps one policy.
                                                     let entry = accumulated_tools
                                                         .entry(tc.index)
                                                         .or_insert_with(|| {
@@ -1980,6 +2003,14 @@ fn stream_unfold_step(
                             ));
                         }
                         None => {
+                            if last_finish_reason.is_none() {
+                                return Some((
+                                    Err(ProviderError::Stream(
+                                        "Chat stream ended without a finish reason".into(),
+                                    )),
+                                    StreamState::Done,
+                                ));
+                            }
                             if !completed {
                                 completed = true;
                                 if let Err(err) = emit_tool_calls_and_completion(
@@ -2283,6 +2314,65 @@ fn stream_unfold_step(
                                         }
                                     }
                                 }
+                                "response.incomplete" => {
+                                    let reason = value["response"]["incomplete_details"]["reason"]
+                                        .as_str()
+                                        .unwrap_or("unknown");
+                                    if reason == "max_output_tokens" {
+                                        if let Some(usage) = value["response"]
+                                            .get("usage")
+                                            .or_else(|| value.get("usage"))
+                                            && let Ok(usage) =
+                                                serde_json::from_value::<OpenAiUsageChunk>(
+                                                    usage.clone(),
+                                                )
+                                        {
+                                            last_usage = Some(map_usage(&usage));
+                                        }
+                                        pending_events.push_back(StreamEvent::MessageComplete {
+                                            stop_reason: Some(StopReason::MaxTokens),
+                                            usage: last_usage,
+                                        });
+                                        tools_by_call_id.clear();
+                                        index_to_call_id.clear();
+                                        completed = true;
+                                    } else {
+                                        return Some((
+                                            Err(ProviderError::Stream(format!(
+                                                "Responses incomplete: {reason}"
+                                            ))),
+                                            StreamState::Done,
+                                        ));
+                                    }
+                                }
+                                "response.failed" | "error" => {
+                                    // Terminal provider failure: surfacing it as
+                                    // an error (never a clean EndTurn) keeps a
+                                    // truncated turn from persisting as success.
+                                    let detail = value
+                                        .get("response")
+                                        .and_then(|r| r.get("error"))
+                                        .or_else(|| value.get("error"))
+                                        .or(Some(&value))
+                                        .map(|e| {
+                                            let code = e
+                                                .get("code")
+                                                .and_then(|v| v.as_str())
+                                                .unwrap_or("");
+                                            let msg = e
+                                                .get("message")
+                                                .and_then(|v| v.as_str())
+                                                .unwrap_or("");
+                                            format!("{code} {msg}")
+                                        })
+                                        .unwrap_or_else(|| typ.to_string());
+                                    return Some((
+                                        Err(ProviderError::Stream(format!(
+                                            "responses stream failed: {detail}"
+                                        ))),
+                                        StreamState::Done,
+                                    ));
+                                }
                                 "response.output_item.done" => {
                                     // Capture completed reasoning items (id +
                                     // encrypted blob) for verbatim replay next
@@ -2387,46 +2477,12 @@ fn stream_unfold_step(
                             ));
                         }
                         None => {
-                            if !completed {
-                                completed = true;
-                                let mut dedup: BTreeMap<usize, (String, String, String)> =
-                                    BTreeMap::new();
-                                for (k, (idx, name, args)) in std::mem::take(&mut tools_by_call_id)
-                                {
-                                    dedup.entry(idx).or_insert((k, name, args));
-                                }
-                                for (idx, (call_id, name, args)) in dedup {
-                                    tools_by_call_id.insert(call_id.clone(), (idx, name, args));
-                                }
-                                index_to_call_id.clear();
-                                for (call_id, (idx, _, _)) in &tools_by_call_id {
-                                    index_to_call_id.insert(*idx, call_id.clone());
-                                }
-                                if let Err(err) = emit_responses_tool_calls_and_completion(
-                                    &mut tools_by_call_id,
-                                    &mut index_to_call_id,
-                                    last_usage,
-                                    &mut pending_events,
-                                ) {
-                                    return Some((Err(err), StreamState::Done));
-                                }
-                                state = StreamState::ResponsesStreaming {
-                                    event_stream,
-                                    tools_by_call_id,
-                                    index_to_call_id,
-                                    last_usage,
-                                    pending_events,
-                                    completed,
-                                    client,
-                                    url,
-                                    api_key,
-                                    body,
-                                    stream_attempt,
-                                    last_response_id,
-                                };
-                            } else {
-                                return None;
-                            }
+                            return Some((
+                                Err(ProviderError::Stream(
+                                    "Responses stream ended before response.completed".into(),
+                                )),
+                                StreamState::Done,
+                            ));
                         }
                     }
                 }

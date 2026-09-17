@@ -5,11 +5,15 @@
 set -eu
 
 CHANNEL="stable"
-case "${1:-}" in
-    ""|stable) CHANNEL="stable" ;;
-    beta|nightly) CHANNEL="beta" ;;
-    *) echo "unknown channel '$1' (use: stable | beta)"; exit 1 ;;
-esac
+SYSTEM=0
+for arg in "$@"; do
+    case "$arg" in
+        stable) CHANNEL="stable" ;;
+        beta|nightly) CHANNEL="beta" ;;
+        --system) SYSTEM=1 ;;
+        *) echo "unknown argument '$arg' (use: stable | beta | --system)"; exit 1 ;;
+    esac
+done
 
 REPO_URL="${GRAY_CDN_URL:-https://gray.alignment.id/dl}"
 
@@ -43,9 +47,9 @@ fi
 
 echo "→ verifying checksum..."
 if have_cmd curl; then
-    curl -fsSL "${REPO_URL}/SHA256SUMS" -o "${TMP}/SHA256SUMS"
+    curl -fsSL "${REPO_URL}/SHA256SUMS-${CHANNEL}" -o "${TMP}/SHA256SUMS"
 elif have_cmd wget; then
-    wget -qO "${TMP}/SHA256SUMS" "${REPO_URL}/SHA256SUMS"
+    wget -qO "${TMP}/SHA256SUMS" "${REPO_URL}/SHA256SUMS-${CHANNEL}"
 else
     echo "need curl or wget to download"; exit 1
 fi
@@ -60,8 +64,6 @@ fi || { echo "checksum mismatch for ${TARBALL} — refusing to install"; exit 1;
 tar xzf "${TMP}/${TARBALL}" -C "$TMP"
 
 # install dir: ~/.local/bin by default; --system or GRAY_INSTALL_DIR for system-wide
-SYSTEM=0
-for a in "$@"; do [ "$a" = "--system" ] && SYSTEM=1; done
 if [ -n "${GRAY_INSTALL_DIR:-}" ]; then
     DEST="${GRAY_INSTALL_DIR}"
 elif [ "$SYSTEM" = "1" ] || [ "$(id -u)" = "0" ]; then
@@ -80,8 +82,13 @@ case ":$PATH:" in
     *":${DEST}:"*) ;;
     *)
         echo "⚠ ${DEST} is not in your PATH"
-        SHELL_RC="$HOME/.bashrc"
-        [ -n "${ZSH_VERSION:-}" ] && SHELL_RC="$HOME/.zshrc"
+        LOGIN_SHELL="${SHELL:-sh}"
+        case "${LOGIN_SHELL##*/}" in
+            zsh) SHELL_RC="$HOME/.zshrc" ;;
+            bash) SHELL_RC="$HOME/.bashrc" ;;
+            fish) echo "  add it:  fish_add_path \"${DEST}\""; exit 0 ;;
+            *) SHELL_RC="$HOME/.profile" ;;
+        esac
         echo "  add it:  echo 'export PATH=\"${DEST}:\$PATH\"' >> ${SHELL_RC}"
         ;;
 esac

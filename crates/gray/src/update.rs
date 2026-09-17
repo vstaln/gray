@@ -7,7 +7,7 @@ const BASE: &str = "https://gray.alignment.id/dl";
 pub const CHANNEL: &str = env!("GRAY_CHANNEL");
 
 fn parse_version(v: &str) -> Option<(u64, u64, u64)> {
-    let mut it = v.trim().split('.');
+    let mut it = v.trim().split(['-', '+']).next()?.split('.');
     Some((
         it.next()?.parse().ok()?,
         it.next()?.parse().ok()?,
@@ -17,13 +17,22 @@ fn parse_version(v: &str) -> Option<(u64, u64, u64)> {
 
 fn is_newer(latest: &str, current: &str) -> bool {
     match (parse_version(latest), parse_version(current)) {
-        (Some(l), Some(c)) => l > c,
+        (Some(l), Some(c)) => l > c || (l == c && current.contains('-') && !latest.contains('-')),
         _ => false,
     }
 }
 
+fn update_available(channel: &str, latest: &str, current: &str, build: &str) -> bool {
+    if channel == "beta" {
+        !latest.trim().is_empty() && latest.trim() != build.trim()
+    } else {
+        is_newer(latest, current)
+    }
+}
+
 async fn latest_version() -> anyhow::Result<String> {
-    let url = format!("{BASE}/latest-{CHANNEL}.txt");
+    let suffix = if CHANNEL == "beta" { "-build" } else { "" };
+    let url = format!("{BASE}/latest-{CHANNEL}{suffix}.txt");
     let txt = reqwest::get(&url).await?.error_for_status()?.text().await?;
     Ok(txt.trim().to_string())
 }
@@ -186,7 +195,7 @@ pub async fn startup_check() {
     else {
         return;
     };
-    if !is_newer(&latest, current) {
+    if !update_available(CHANNEL, &latest, current, env!("GRAY_BUILD_ID")) {
         return;
     }
     if cfg!(windows) {
@@ -198,7 +207,7 @@ pub async fn startup_check() {
     let auto_flag = std::env::var("GRAY_AUTO_UPDATE").ok();
     if auto_update_allowed(CHANNEL, auto_flag.as_deref()) {
         let latest = latest.clone();
-        tokio::spawn(async move {
+        tokio::task::spawn_blocking(move || {
             let Ok(_lock) = acquire_update_lock() else {
                 return;
             };
@@ -208,9 +217,9 @@ pub async fn startup_check() {
                 .output()
                 .is_ok_and(|o| o.status.success());
             if ok {
-                eprintln!(
-                    "\x1b[2mgray {latest} installed in the background — restart to apply\x1b[0m"
-                );
+                crate::profile::queue_profile_warning(format!(
+                    "gray {latest} installed in the background — restart to apply"
+                ));
             }
         });
         return;

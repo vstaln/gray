@@ -10,7 +10,7 @@ async fn append_continues_session_in_place() {
     let before = store.load(&sid).await.unwrap().1.len();
     // Prior history + one new turn: only the new message lands in the file.
     let with_new = vec![Message::user("first"), Message::user("second")];
-    append_new_messages(&store, &sid, before, &with_new)
+    append_new_messages(&store, &sid, before, &with_new, false)
         .await
         .unwrap();
     let (_, entries) = store.load(&sid).await.unwrap();
@@ -24,9 +24,15 @@ async fn append_continues_session_in_place() {
 async fn append_bogus_session_errors() {
     let dir = tempfile::tempdir().unwrap();
     let store = JsonlSessionStore::new(dir.path());
-    let err = append_new_messages(&store, &SessionId::new("bogus"), 0, &[Message::user("x")])
-        .await
-        .unwrap_err();
+    let err = append_new_messages(
+        &store,
+        &SessionId::new("bogus"),
+        0,
+        &[Message::user("x")],
+        false,
+    )
+    .await
+    .unwrap_err();
     assert!(
         err.to_string()
             .contains("failed to append message to session"),
@@ -149,4 +155,38 @@ fn render_error_propagates_for_retry_policy() {
     )
     .unwrap_err();
     assert_eq!(err.kind(), ErrorKind::BrokenPipe);
+}
+
+#[tokio::test]
+async fn rewritten_history_replaces_session_even_after_growing_past_cursor() {
+    for final_count in [1, 2, 3] {
+        let dir = tempfile::tempdir().unwrap();
+        let store = JsonlSessionStore::new(dir.path());
+        let sid = save_session(
+            &store,
+            "m",
+            dir.path(),
+            &[
+                Message::user("old prompt"),
+                Message::assistant("old answer"),
+            ],
+        )
+        .await
+        .unwrap();
+        let replacement: Vec<_> = (0..final_count)
+            .map(|i| Message::user(format!("retained {i}")))
+            .collect();
+        append_new_messages(&store, &sid, 2, &replacement, true)
+            .await
+            .unwrap();
+        let loaded: Vec<_> = store
+            .load(&sid)
+            .await
+            .unwrap()
+            .1
+            .into_iter()
+            .map(|entry| entry.message)
+            .collect();
+        assert_eq!(loaded, replacement, "final_count={final_count}");
+    }
 }

@@ -260,3 +260,33 @@ async fn empty_output_is_header_only() {
         out.content
     );
 }
+
+#[tokio::test]
+async fn progress_is_line_safe_but_log_retains_carriage_returns() {
+    let out = BashTool
+        .execute(
+            &ToolContext::default(),
+            json!({"command": "printf 'heading\\r\\n10%%\\r20%%\\r100%%\\n'"}),
+        )
+        .await;
+    assert!(!out.is_error, "{}", out.content);
+    assert!(
+        out.content.contains("heading\n10%\n20%\n100%\n"),
+        "{:?}",
+        out.content
+    );
+    assert!(!out.content.contains('\r'));
+    let head = first_line(&out);
+    assert!(head.contains("4 lines"), "{head}");
+    assert!(head.contains("CR folded for display"), "{head}");
+    let log_path = head
+        .rsplit(" · log ")
+        .next()
+        .unwrap()
+        .trim_end()
+        .replace('~', &std::env::var("HOME").unwrap());
+    assert_eq!(
+        std::fs::read(log_path).unwrap(),
+        b"heading\r\n10%\r20%\r100%\n"
+    );
+}

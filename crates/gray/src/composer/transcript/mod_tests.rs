@@ -95,19 +95,18 @@ fn user_prompt_wraps_wide_chars_by_cells() {
 
 #[test]
 fn diff_rows_pad_edge_to_edge() {
-    use crate::tool_fmt::{diff_delete_bg, diff_insert_bg};
     let header = Line::from("Ran edit");
     let body = vec![
         Line::from(vec![Span::styled(
             "  1 | - old",
-            Style::default().bg(diff_delete_bg()),
+            Style::default().bg(crate::theme::theme().diff_del_bg),
         )])
-        .style(Style::default().bg(diff_delete_bg())),
+        .style(Style::default().bg(crate::theme::theme().diff_del_bg)),
         Line::from(vec![Span::styled(
             "  1 | + new",
-            Style::default().bg(diff_insert_bg()),
+            Style::default().bg(crate::theme::theme().diff_add_bg),
         )])
-        .style(Style::default().bg(diff_insert_bg())),
+        .style(Style::default().bg(crate::theme::theme().diff_add_bg)),
         Line::from(vec![Span::raw("  2 |   same")]),
     ];
     let lines = format_tool_box_lines(header, &body, 80);

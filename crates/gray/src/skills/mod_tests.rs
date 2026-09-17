@@ -97,3 +97,50 @@ fn pi_plugin_dir_is_a_discovery_root() {
         res.skills.iter().map(|s| &s.name).collect::<Vec<_>>()
     );
 }
+
+#[test]
+fn prompt_block_caps_skill_list_and_says_so() {
+    let skills: Vec<Skill> = (0..60)
+        .map(|i| test_skill(&format!("skill-{i:02}"), &[]))
+        .collect();
+    let out = format_skills_for_prompt(&skills);
+    assert_eq!(
+        out.matches("<skill>").count(),
+        40,
+        "prompt list must be capped"
+    );
+    assert!(
+        out.contains("more skills"),
+        "omission must be visible to the model: {out}"
+    );
+}
+
+#[test]
+fn prompt_block_under_cap_lists_all_without_notice() {
+    let skills: Vec<Skill> = (0..3)
+        .map(|i| test_skill(&format!("skill-{i}"), &[]))
+        .collect();
+    let out = format_skills_for_prompt(&skills);
+    assert_eq!(out.matches("<skill>").count(), 3);
+    assert!(
+        !out.contains("more skills"),
+        "no notice under the cap: {out}"
+    );
+}
+
+#[test]
+fn prompt_cap_counts_only_eligible_unique_skills() {
+    let mut skills = vec![test_skill("duplicate", &[]); 50];
+    let mut disabled = test_skill("disabled", &[]);
+    disabled.disable_model_invocation = true;
+    skills.push(disabled);
+    skills.push(ranked_skill("empty", ""));
+    skills.extend((0..39).map(|i| test_skill(&format!("skill-{i}"), &[])));
+    let out = format_skills_for_prompt(&skills);
+    assert_eq!(out.matches("<skill>").count(), 40);
+    assert!(!out.contains("more skills"));
+    assert!(!out.contains("<name>disabled</name>"));
+    assert!(!out.contains("<name>empty</name>"));
+    assert_eq!(rank_skills_for_prompt(&skills).len(), 40);
+    assert!(format_skills_for_prompt(&[]).is_empty());
+}

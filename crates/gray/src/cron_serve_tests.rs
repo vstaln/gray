@@ -9,7 +9,7 @@ struct StubRunner {
 
 #[async_trait::async_trait(?Send)]
 impl AsyncRunner for StubRunner {
-    async fn run(&self, prompt: String) -> anyhow::Result<String> {
+    async fn run(&self, prompt: String, _cwd: PathBuf) -> anyhow::Result<String> {
         self.seen.lock().unwrap().push(prompt);
         if self.fail {
             anyhow::bail!("boom")
@@ -49,7 +49,7 @@ async fn tick_fires_due_job_and_marks_ok() {
     let rep = tick_once(
         &store,
         &runner,
-        &LocalDeliver {
+        &SaveLocalDeliver {
             home: home.path().to_path_buf(),
         },
         "test",
@@ -86,7 +86,7 @@ async fn tick_agent_failure_records_error_and_continues() {
     let rep = tick_once(
         &store,
         &runner,
-        &LocalDeliver {
+        &SaveLocalDeliver {
             home: home.path().to_path_buf(),
         },
         "test",
@@ -114,7 +114,7 @@ async fn tick_silent_response_skips_write_but_ok() {
     let rep = tick_once(
         &store,
         &runner,
-        &LocalDeliver {
+        &SaveLocalDeliver {
             home: home.path().to_path_buf(),
         },
         "test",
@@ -125,4 +125,42 @@ async fn tick_silent_response_skips_write_but_ok() {
     let job = store.get("s1").unwrap().unwrap();
     assert_eq!(job.last_status, Some(crate::cron::RunStatus::Ok));
     assert!(!home.path().join("cron").join("output").join("s1").exists());
+}
+
+#[test]
+fn claim_outlives_max_fire_time() {
+    let max_fire =
+        (crate::cron_serve::FIRE_TIMEOUT_SECS + crate::cron_fire::SCRIPT_TIMEOUT_SECS) as i64;
+    assert!(
+        crate::cron::store::FIRE_CLAIM_TTL_SECS > max_fire,
+        "a claim must outlive the longest supported fire (script + agent)"
+    );
+}
+
+#[tokio::test]
+async fn cron_runner_receives_job_workdir() {
+    struct CwdRunner(PathBuf);
+    #[async_trait::async_trait(?Send)]
+    impl AsyncRunner for CwdRunner {
+        async fn run(&self, _prompt: String, cwd: PathBuf) -> anyhow::Result<String> {
+            assert_eq!(cwd, self.0);
+            Ok("ok".into())
+        }
+    }
+    let home = tempfile::tempdir().unwrap();
+    let workdir = tempfile::tempdir().unwrap();
+    let mut record = one_due("wd1", serde_json::json!("local"));
+    record[0]["workdir"] = serde_json::json!(workdir.path());
+    let store = due_store(&home, record);
+    let report = tick_once(
+        &store,
+        &CwdRunner(workdir.path().to_path_buf()),
+        &SaveLocalDeliver {
+            home: home.path().to_path_buf(),
+        },
+        "test",
+    )
+    .await
+    .unwrap();
+    assert_eq!(report.errors, 0);
 }

@@ -215,7 +215,7 @@ pub(crate) async fn handle_sys(
                     t.last_width,
                     std::time::Instant::now() + std::time::Duration::from_secs(3600),
                 ));
-                t.modal_open = true;
+                t.set_modal_open(true);
                 true
             } else {
                 false
@@ -224,7 +224,7 @@ pub(crate) async fn handle_sys(
             if editor_paused && let Some(shared) = &tui_snap {
                 let mut t = shared.lock().expect("tui lock");
                 t.pending_resize = None;
-                t.modal_open = false;
+                t.set_modal_open(false);
                 if let Ok((cols, _)) = crossterm::terminal::size() {
                     t.reflow_on_resize(cols);
                 } else {

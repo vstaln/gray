@@ -149,21 +149,25 @@ pub(crate) const MAX_LIVE_TOOLS: usize = 3;
 
 /// Live tool headers for the viewport, oldest-first, capped. Free fn so
 /// tests cover the cap/marker policy without `Tui::new` (needs a TTY).
-pub(crate) fn live_tool_rows(tools: &[LiveTool]) -> Vec<Line<'static>> {
+pub(crate) fn live_tool_rows(tools: &[LiveTool], elapsed: Duration) -> Vec<Line<'static>> {
     tools
         .iter()
         .take(MAX_LIVE_TOOLS)
         .map(|t| {
+            let mut line = t.header.clone();
             if t.running {
-                let mut line = t.header.clone();
-                line.spans.push(Span::styled(
-                    " · running…",
-                    Style::default().fg(crate::theme::theme().tool_dim),
-                ));
-                line
-            } else {
-                t.header.clone()
+                // ponytail: reuse the status shimmer; only the live bash verb changes.
+                let prefix =
+                    usize::from(line.spans.first().is_some_and(|s| s.content == "\u{2b22} "));
+                if prefix == 1 {
+                    line.spans[0].content = "\u{2b21} ".into();
+                }
+                let end = prefix
+                    + usize::from(line.spans.get(prefix).is_some_and(|s| s.content == "Ran "));
+                line.spans
+                    .splice(prefix..end, draw::shimmer_spans("Running ", elapsed));
             }
+            line
         })
         .collect()
 }
@@ -178,6 +182,8 @@ pub(crate) use text_area::TextArea;
 
 pub struct Tui {
     pub(crate) terminal: Term,
+    background: Option<background::Background>,
+    background_closed: bool,
     pub(crate) textarea: TextArea,
     pub(crate) matches: Vec<(String, String)>,
     pub(crate) sel: usize,
@@ -246,8 +252,8 @@ pub struct Tui {
 /// model streams its args (`streaming`) or the executor runs it
 /// (`running`). `header` is always the full
 /// [`crate::tool_fmt::format_tool_call_header`]-family line so the live
-/// card and the final scrollback card agree; `running` only flips the
-/// trailing `· running…` marker. Never enters `history_entries`.
+/// card keeps its command styling; execution adds a shimmering leading label
+/// instead of the completed bash verb. Never enters `history_entries`.
 #[derive(Clone, Debug)]
 pub(crate) struct LiveTool {
     pub(crate) id: String,
@@ -368,6 +374,8 @@ impl Tui {
             .unwrap_or_default();
         Ok(Self {
             terminal,
+            background: None,
+            background_closed: false,
             textarea: TextArea::new(),
             matches: Vec::new(),
             sel: 0,
@@ -506,6 +514,7 @@ impl Tui {
     /// Clears scrollback and visible screen, re-anchors the inline viewport at the new dimensions,
     /// and re-emits the stored transcript history so lines wrap cleanly without distortion.
     pub(crate) fn reflow_on_resize(&mut self, new_cols: u16) {
+        let _ = self.hide_background();
         self.last_width = new_cols;
         if let Ok((_, rows)) = crossterm::terminal::size() {
             self.last_height = rows;
@@ -689,7 +698,12 @@ impl Tui {
     /// Live tool headers for the viewport, oldest-first, capped so the
     /// input box always stays visible.
     pub(crate) fn live_tool_rows(&self) -> Vec<Line<'static>> {
-        live_tool_rows(&self.live_tools)
+        let elapsed = self
+            .turn_started
+            .or_else(|| self.status.as_ref().map(|(started, _)| *started))
+            .map(|started| started.elapsed())
+            .unwrap_or_default();
+        live_tool_rows(&self.live_tools, elapsed)
     }
 
     /// Overflow count past the live-tool cap (`+N more`, like the queued
@@ -709,6 +723,50 @@ impl Tui {
 
     pub(crate) fn width(&self) -> usize {
         self.last_width.max(20) as usize
+    }
+
+    pub(crate) fn set_background(&mut self, path: Option<&std::path::Path>) -> anyhow::Result<()> {
+        anyhow::ensure!(!self.background_closed, "Gray TUI has closed");
+        anyhow::ensure!(
+            !self.modal_open,
+            "close the modal before changing background"
+        );
+        let next = if let Some(path) = path {
+            anyhow::ensure!(
+                std::env::var_os("TMUX").is_none() && std::env::var_os("STY").is_none(),
+                "background through tmux/screen is not supported"
+            );
+            anyhow::ensure!(
+                matches!(
+                    std::env::var("TERM_PROGRAM")
+                        .unwrap_or_default()
+                        .to_lowercase()
+                        .as_str(),
+                    "ghostty" | "kitty"
+                ),
+                "background requires Ghostty or Kitty"
+            );
+            Some(background::Background::load(path)?)
+        } else {
+            None
+        };
+        self.hide_background()?;
+        self.background = next;
+        self.draw()
+    }
+
+    pub(crate) fn hide_background(&mut self) -> std::io::Result<()> {
+        if let Some(bg) = &mut self.background {
+            bg.hide(&mut std::io::stdout().lock())?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn set_modal_open(&mut self, open: bool) {
+        if open {
+            let _ = self.hide_background();
+        }
+        self.modal_open = open;
     }
 
     pub(crate) fn draw(&mut self) -> anyhow::Result<()> {
@@ -949,6 +1007,9 @@ impl Tui {
         let _ = self.draw();
     }
     pub fn shutdown(&mut self) {
+        self.background_closed = true;
+        let _ = self.hide_background();
+        self.background = None;
         let _ = self.terminal.clear();
         let _ = crossterm::terminal::disable_raw_mode();
         let _ = crossterm::execute!(std::io::stdout(), crossterm::event::DisableBracketedPaste);
@@ -964,6 +1025,7 @@ impl Tui {
 
 impl Drop for Tui {
     fn drop(&mut self) {
+        let _ = self.hide_background();
         let _ = crossterm::terminal::disable_raw_mode();
         let _ = crossterm::execute!(std::io::stdout(), crossterm::event::DisableBracketedPaste);
         let _ = crossterm::execute!(std::io::stdout(), crossterm::cursor::Show);
@@ -985,3 +1047,5 @@ mod thought_line_tests;
 #[path = "mod_compaction_tests.rs"]
 #[cfg(test)]
 mod compaction_tests;
+
+mod background;

@@ -52,3 +52,35 @@ fn corrupt_record_is_replaced_on_claim() {
 fn proc_start_time_matches_our_own_process() {
     assert!(proc_start_time(std::process::id()).is_some());
 }
+
+#[test]
+fn other_process_is_live_and_blocks_claim() {
+    #[cfg(unix)]
+    let mut child = std::process::Command::new("sleep")
+        .arg("20")
+        .spawn()
+        .unwrap();
+    #[cfg(windows)]
+    let mut child = std::process::Command::new("cmd")
+        .args(["/C", "ping -n 20 127.0.0.1 >NUL"])
+        .spawn()
+        .unwrap();
+    let pid = child.id();
+    let home = tempfile::tempdir().unwrap();
+    let result = std::panic::catch_unwind(|| {
+        assert!(pid_alive(pid));
+        let mut record = claim(home.path()).unwrap();
+        record.pid = pid;
+        record.start_time = proc_start_time(pid);
+        std::fs::write(
+            record_path(home.path()),
+            serde_json::to_vec(&record).unwrap(),
+        )
+        .unwrap();
+        assert!(running(home.path()).is_some());
+        assert!(claim(home.path()).is_err());
+    });
+    let _ = child.kill();
+    let _ = child.wait();
+    result.unwrap();
+}

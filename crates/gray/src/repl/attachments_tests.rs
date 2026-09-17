@@ -48,3 +48,24 @@ fn pdf_missing_file_errors() {
         Err(MediaError::Extract(_))
     ));
 }
+
+#[test]
+fn jpeg_exif_orientation_is_applied_before_encoding() {
+    let image =
+        image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(8, 4, image::Rgb([90, 50, 20])));
+    let mut encoded = Cursor::new(Vec::new());
+    image
+        .write_to(&mut encoded, image::ImageFormat::Jpeg)
+        .unwrap();
+    let jpeg = encoded.into_inner();
+    // EXIF little-endian IFD with Orientation=6 (90 degrees clockwise).
+    let exif = b"Exif\0\0II\x2a\0\x08\0\0\0\x01\0\x12\x01\x03\0\x01\0\0\0\x06\0\0\0\0\0\0\0";
+    let mut oriented = jpeg[..2].to_vec();
+    oriented.extend_from_slice(b"\xff\xe1");
+    oriented.extend_from_slice(&((exif.len() + 2) as u16).to_be_bytes());
+    oriented.extend_from_slice(exif);
+    oriented.extend_from_slice(&jpeg[2..]);
+    let (_, bytes) = normalize_image_bytes(&oriented).unwrap();
+    let decoded = image::load_from_memory(&bytes).unwrap();
+    assert_eq!((decoded.width(), decoded.height()), (4, 8));
+}

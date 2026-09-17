@@ -293,6 +293,20 @@ pub(crate) async fn dispatch_command(
         ReplCommand::Unknown(cmd) => {
             // Protocol v1 `command/run`: a claimed `/cmd` runs on its
             // owning plugin; anything else keeps the unknown message.
+            // Plugins are local commands too: initialize before the first model turn.
+            if agent.is_none() && config.model.is_some() {
+                super::session::ensure_session_state(session_state, config, cwd).await;
+                let sid = session_state.as_ref().map(|s| s.session_id.as_str());
+                match build_agent(config, cwd, sid).await {
+                    Ok(built) => {
+                        *agent = Some(built.with_messages(std::mem::take(pending_history)));
+                    }
+                    Err(e) => {
+                        say(tui.as_ref().map(|(s, _)| s), &format!("{e:#}"));
+                        return Ok(Flow::Continue);
+                    }
+                }
+            }
             let hooks: Vec<Arc<dyn PluginHooks>> = agent
                 .as_ref()
                 .map(|a| a.hooks().to_vec())

@@ -151,13 +151,106 @@ pub async fn run_print_mode_with_session(
     session: Option<&str>,
     continue_last: bool,
 ) -> anyhow::Result<()> {
+    run_print_inner(config, prompt, session, continue_last, None).await
+}
+
+/// Machine-readable print mode. Never forwards reasoning, tool arguments/results,
+/// provider error bodies, or plugin host/say output to the transport.
+pub async fn run_print_mode_json(
+    config: &Config,
+    prompt: &str,
+    session: Option<&str>,
+    continue_last: bool,
+    max_requests: Option<u32>,
+    input_price: Option<f64>,
+    output_price: Option<f64>,
+) -> anyhow::Result<()> {
+    let mut output = JsonOutput {
+        turn_id: uuid::Uuid::new_v4().to_string(),
+        session_id: None,
+        text: String::new(),
+        usage: gray_core::event::Usage::default(),
+        meter: None,
+    };
+    let result = match crate::print_meter::Meter::new(
+        max_requests.unwrap_or(32),
+        input_price,
+        output_price,
+        config.max_cost_micros,
+    ) {
+        Ok(meter) => {
+            output.meter = Some(meter);
+            run_print_inner(config, prompt, session, continue_last, Some(&mut output)).await
+        }
+        Err(error) => Err(error),
+    };
+    let mut row = match &result {
+        Ok(()) => serde_json::json!({"type": "result", "text": output.text, "usage": output.usage}),
+        Err(_) => serde_json::json!({"type": "error", "code": "turn_failed",
+            "message": "Agent turn failed; actions may already have occurred. Do not automatically retry."}),
+    };
+    if let Some(meter) = &output.meter {
+        row["accounting"] = serde_json::to_value(meter.snapshot())?;
+    }
+    output.write(row)?;
+    // The detailed human-mode error may contain provider context. Keep the JSON
+    // error and process exit consistent without copying that context to stderr.
+    result.map_err(|_| anyhow::anyhow!("agent turn failed (see JSON error record)"))
+}
+
+struct JsonOutput {
+    turn_id: String,
+    session_id: Option<String>,
+    text: String,
+    usage: gray_core::event::Usage,
+    meter: Option<crate::print_meter::Meter>,
+}
+
+impl JsonOutput {
+    fn write(&self, mut row: serde_json::Value) -> std::io::Result<()> {
+        row["protocol"] = 1.into();
+        row["turn_id"] = self.turn_id.clone().into();
+        row["session_id"] = self.session_id.clone().into();
+        let mut out = std::io::stdout().lock();
+        writeln!(out, "{row}")?;
+        out.flush()
+    }
+
+    fn event(&mut self, event: &AgentEvent) -> std::io::Result<()> {
+        let phase = match event {
+            AgentEvent::Start => "generating",
+            AgentEvent::ToolCallStart { .. } => "tool_started",
+            AgentEvent::ToolResult { .. } => "tool_finished",
+            AgentEvent::StreamError { .. } => "provider_retry",
+            AgentEvent::TurnEnd { usage, .. } => {
+                self.usage = *usage;
+                "persisting"
+            }
+            _ => return Ok(()),
+        };
+        self.write(serde_json::json!({"type": "progress", "phase": phase}))
+    }
+}
+
+async fn run_print_inner(
+    config: &Config,
+    prompt: &str,
+    session: Option<&str>,
+    continue_last: bool,
+    mut json: Option<&mut JsonOutput>,
+) -> anyhow::Result<()> {
     crate::setup::set_user_context_window(config.context_window);
     crate::setup::set_user_reserve_tokens(config.context_reserve);
     crate::setup::set_user_keep_recent_tokens(config.context_keep);
     let cwd = std::env::current_dir()?;
     let store = JsonlSessionStore::default();
     // Explicit `--session` wins over `-c` (same precedence as the REPL).
-    let resume_target: Option<SessionId> = match session {
+    let mut resume_target: Option<SessionId> = match session {
+        Some(raw) if json.is_some() && uuid::Uuid::parse_str(raw).is_ok() => {
+            let id = SessionId::new(raw);
+            store.maintain(&id).await?;
+            Some(id)
+        }
         Some(raw) => Some(crate::resume::resolve_session_strict(&store, raw, false).await?),
         None if continue_last => crate::resume::latest_session_anywhere(&store).await,
         None => None,
@@ -172,12 +265,26 @@ pub async fn run_print_mode_with_session(
         }
         None => Vec::new(),
     };
+    if let Some(output) = json.as_deref_mut() {
+        if resume_target.is_none() {
+            resume_target = Some(
+                save_session(
+                    &store,
+                    config.model.as_deref().unwrap_or("unset"),
+                    &cwd,
+                    &[],
+                )
+                .await?,
+            );
+        }
+        output.session_id = resume_target.as_ref().map(|id| id.as_str().to_owned());
+    }
     let initial_count = history.len();
     let cancel = tokio_util::sync::CancellationToken::new();
     let ctx = ToolContext {
         cwd: cwd.clone(),
         cancel: cancel.clone(),
-        session_id: None, // one-shot print mode has no session
+        session_id: resume_target.as_ref().map(|id| id.as_str().to_owned()),
     };
 
     // One-shot run = one turn: only max_turns=0 (nonsensical but
@@ -189,6 +296,9 @@ pub async fn run_print_mode_with_session(
         anyhow::bail!("max wall time {max}s reached — stopping (--max-wall-secs SECS)");
     }
     let mut agent = build_agent(config, &cwd, resume_target.as_ref().map(|s| s.as_str())).await?;
+    if let Some(meter) = json.as_ref().and_then(|output| output.meter.as_ref()) {
+        agent = agent.map_provider(|provider| meter.wrap(provider));
+    }
     if !history.is_empty() {
         agent = agent.with_messages(history);
     }
@@ -196,6 +306,7 @@ pub async fn run_print_mode_with_session(
         eprintln!("warning: {w}");
     }
 
+    let history_revision = agent.history_revision();
     let user_msg = Message::user(prompt);
     // SIGINT only signals the shared token — never wrap the run in a
     // select! that would drop it. Aborted once the run returns.
@@ -217,9 +328,13 @@ pub async fn run_print_mode_with_session(
             if render_err.is_some() {
                 return;
             }
-            if let Err(e) =
-                render_event_with_context(&mut stdout.lock(), ev, Some(&cwd), &mut in_flight)
-            {
+            let rendered = match json.as_deref_mut() {
+                Some(output) => output.event(ev),
+                None => {
+                    render_event_with_context(&mut stdout.lock(), ev, Some(&cwd), &mut in_flight)
+                }
+            };
+            if let Err(e) = rendered {
                 render_cancel.cancel();
                 render_err = Some(e);
             }
@@ -233,12 +348,32 @@ pub async fn run_print_mode_with_session(
             })
     };
     sigint_task.abort();
+    if run_result.is_ok()
+        && let Some(output) = json.as_deref_mut()
+    {
+        // Read the live final assistant message, not redacted JSONL and not
+        // an exact-text search that could select a previous identical turn.
+        if let Some(message) = agent
+            .messages()
+            .last()
+            .filter(|m| m.role == gray_core::message::Role::Assistant)
+        {
+            output.text = redact_message(message).text_content();
+        }
+    }
 
     // F14: no `?` between run completion and finalization — always attempt
     // session persistence AND shell teardown, then propagate the original
     // error combined with any persistence error.
     let persist_result: anyhow::Result<()> = if let Some(sid) = &resume_target {
-        append_new_messages(&store, sid, initial_count, agent.messages()).await
+        append_new_messages(
+            &store,
+            sid,
+            initial_count,
+            agent.messages(),
+            agent.history_revision() != history_revision,
+        )
+        .await
     } else {
         save_session(
             &store,
@@ -255,7 +390,7 @@ pub async fn run_print_mode_with_session(
         .is_some_and(|e| e.kind() == ErrorKind::BrokenPipe);
     // Cron (or other plugin-initiated) `host/say` lines queued mid-turn.
     // Fallible writeln on a locked handle: stdout may already be closed.
-    if render_broken {
+    if render_broken || json.is_some() {
         let _ = crate::host::take_host_say();
     } else {
         let lines = crate::host::take_host_say();
@@ -313,15 +448,16 @@ pub(crate) fn scrub_error_text(s: &str) -> String {
 
 /// Appends only messages at index `prior_count..` to an existing session
 /// (print-mode `--session`/`-c` continuation in place — never a new file).
-/// When in-loop compaction shrank history below the cursor, persists the
-/// whole active transcript behind a boundary marker instead of skipping it.
+/// When in-loop compaction rewrote history (even if it grew past the cursor),
+/// persists the whole active transcript behind a replacement boundary.
 pub async fn append_new_messages(
     store: &JsonlSessionStore,
     sid: &SessionId,
     prior_count: usize,
     messages: &[Message],
+    history_rewritten: bool,
 ) -> anyhow::Result<()> {
-    if messages.len() < prior_count {
+    if history_rewritten || messages.len() < prior_count {
         // Same redaction as the normal path: secrets never land in the file.
         let redacted: Vec<Message> = messages.iter().map(redact_message).collect();
         return store

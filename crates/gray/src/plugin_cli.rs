@@ -1,9 +1,16 @@
 //! Native plugin command registration, help metadata and bounded UI requests. No model calls.
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::Context;
 use gray_plugin::lock::{LockEntry, LockFile};
+
+const CATALOG: &[(&str, &str, &str)] = &[(
+    "discord",
+    "git+https://github.com/vstaln/gray-discord-plugin.git@b149022a1ca7c9e099007ffd8411c14489d8db93",
+    "gray_discord",
+)];
 
 pub fn home() -> anyhow::Result<PathBuf> {
     Ok(crate::sys_prompt_path()?
@@ -60,12 +67,112 @@ fn metadata(home: &Path, name: &str) -> anyhow::Result<serde_json::Value> {
     )?)?)
 }
 
+fn run(program: impl AsRef<OsStr>, args: &[&OsStr]) -> anyhow::Result<()> {
+    let status = Command::new(program)
+        .args(args)
+        .env("PIP_NO_INPUT", "1")
+        .status()
+        .context("could not start plugin installer; check Python and python3-venv")?;
+    anyhow::ensure!(
+        status.success(),
+        "plugin installation step failed ({status}); see output above"
+    );
+    Ok(())
+}
+
+/// Private per-plugin venv, published only after installation and import succeed.
+/// TempDir rolls back failed installs; a file lock serializes registry updates.
+async fn install_catalog(home: &Path, name: &str) -> anyhow::Result<()> {
+    validate_name(name)?;
+    if name == "background" {
+        return native::install(home).await;
+    }
+    let (_, source, module) = CATALOG
+        .iter()
+        .find(|(n, _, _)| *n == name)
+        .with_context(|| format!("Unknown plugin '{name}'. Available: background, discord"))?;
+    let root = home.join("plugins/cli");
+    std::fs::create_dir_all(&root)?;
+    let lock = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(home.join("plugins/.commands.lock"))?;
+    lock.try_lock()
+        .context("another plugin installation is running")?;
+    let mut registry = load(home)?;
+    if registry.plugins.contains_key(name) {
+        println!("Plugin '{name}' is already registered. Run: gray {name} --help");
+        return Ok(());
+    }
+    let env = tempfile::Builder::new()
+        .prefix(&format!("{name}-"))
+        .tempdir_in(root)?;
+    let python = match std::env::var_os("GRAY_PLUGIN_PYTHON") {
+        Some(python) => python,
+        None => ["python3", "/usr/bin/python3"].into_iter().find(|python| {
+            Command::new(python).args(["-c", "import sys, venv, ensurepip, ctypes; assert sys.version_info >= (3, 11)"])
+                .stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null())
+                .status().is_ok_and(|status| status.success())
+        }).context("Python 3.11+ with venv/pip support is required; install python3-venv or set GRAY_PLUGIN_PYTHON")?.into(),
+    };
+    println!("Installing '{name}' from {source} (plugin code runs with your user permissions).");
+    run(
+        python,
+        &[OsStr::new("-m"), OsStr::new("venv"), env.path().as_os_str()],
+    )?;
+    let executable = env.path().join(if cfg!(windows) {
+        "Scripts/python.exe"
+    } else {
+        "bin/python"
+    });
+    run(
+        &executable,
+        &[
+            OsStr::new("-m"),
+            OsStr::new("pip"),
+            OsStr::new("install"),
+            OsStr::new(source),
+        ],
+    )?;
+    run(
+        &executable,
+        &[OsStr::new("-m"), OsStr::new(module), OsStr::new("--help")],
+    )?;
+    registry.plugins.insert(
+        name.into(),
+        LockEntry {
+            ecosystem: "gray-cli".into(),
+            version: "catalog".into(),
+            hash: String::new(),
+            source: source.to_string(),
+            argv: vec![
+                executable.to_string_lossy().into_owned(),
+                "-m".into(),
+                module.to_string(),
+            ],
+            adapter_version: "1".into(),
+            installed_at: chrono::Utc::now().to_rfc3339(),
+            scope: "user".into(),
+            enabled: true,
+        },
+    );
+    registry.save(&registry_path(home))?;
+    // Keep the original venv path: moving it would invalidate Python entry-point shebangs.
+    let _ = env.keep();
+    println!("Installed '{name}'. Next: gray {name} setup");
+    Ok(())
+}
+
 /// Register a separately built native plugin. No hardcoded plugin catalog.
 /// Download/version resolution remains the existing `gray plugin install` API.
 pub async fn install(home: &Path, name: &str) -> anyhow::Result<()> {
     validate_name(name)?;
     if let Some(path) = std::env::var_os("GRAY_PLUGIN_PATH") {
         return register_native(home, name, Path::new(&path)).await;
+    }
+    if matches!(name, "background" | "discord") {
+        return install_catalog(home, name).await;
     }
     if let Some(paths) = std::env::var_os("PATH") {
         for dir in std::env::split_paths(&paths) {
@@ -76,7 +183,7 @@ pub async fn install(home: &Path, name: &str) -> anyhow::Result<()> {
         }
     }
     anyhow::bail!(
-        "plugin '{name}' is not available locally; put gray-{name} on PATH or set GRAY_PLUGIN_PATH to its executable"
+        "Unknown plugin '{name}'. Catalog: background, discord. For a local native plugin, put gray-{name} on PATH or set GRAY_PLUGIN_PATH to its executable"
     )
 }
 
@@ -328,3 +435,6 @@ mod tests {
         assert!(start.elapsed() < std::time::Duration::from_secs(3));
     }
 }
+
+#[path = "plugin_native.rs"]
+mod native;

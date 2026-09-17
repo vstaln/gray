@@ -270,8 +270,7 @@ struct ReplRunner {
 
 #[async_trait::async_trait(?Send)]
 impl crate::cron_serve::AsyncRunner for ReplRunner {
-    async fn run(&self, prompt: String) -> anyhow::Result<String> {
-        let cwd = std::env::current_dir()?;
+    async fn run(&self, prompt: String, cwd: std::path::PathBuf) -> anyhow::Result<String> {
         let mut agent = crate::build_agent(&self.config, &cwd, None).await?;
         let ctx = gray_core::agent::ToolContext {
             cwd,
@@ -333,11 +332,11 @@ async fn with_modal<T>(
     fut: impl std::future::Future<Output = T>,
 ) -> T {
     if let Some(shared) = tui {
-        shared.lock().expect("tui lock").modal_open = true;
+        shared.lock().expect("tui lock").set_modal_open(true);
     }
     let r = fut.await;
     if let Some(shared) = tui {
-        shared.lock().expect("tui lock").modal_open = false;
+        shared.lock().expect("tui lock").set_modal_open(false);
     }
     restore_viewport(tui);
     r
@@ -348,11 +347,11 @@ pub(crate) fn with_modal_sync<T>(
     f: impl FnOnce() -> T,
 ) -> T {
     if let Some(shared) = tui {
-        shared.lock().expect("tui lock").modal_open = true;
+        shared.lock().expect("tui lock").set_modal_open(true);
     }
     let r = f();
     if let Some(shared) = tui {
-        shared.lock().expect("tui lock").modal_open = false;
+        shared.lock().expect("tui lock").set_modal_open(false);
     }
     restore_viewport(tui);
     r
@@ -586,6 +585,7 @@ pub async fn run_repl_mode(
             }
             t
         }));
+        crate::host::register_tui(&shared);
         let stop = std::sync::Arc::new(AtomicBool::new(false));
         let ticker_stop = stop.clone();
         let ticker_tui = shared.clone();

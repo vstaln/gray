@@ -52,7 +52,15 @@ pub fn estimate_tokens(msg: &Message) -> usize {
     // Must measure billable context, not displayable prose: a message whose
     // only block is a 50 KiB tool result is ~12.8k tokens, not 0. See
     // `Message::context_text`.
-    (msg.context_text().len() as f64 / 4.0).ceil() as usize
+    if msg
+        .content
+        .iter()
+        .any(|block| matches!(block, gray_core::message::ContentBlock::Image { .. }))
+    {
+        gray_core::agent::estimate_message_tokens(msg)
+    } else {
+        msg.context_text().len().div_ceil(4)
+    }
 }
 
 pub fn estimate_context_tokens(messages: &[Message], last: Option<Usage>) -> usize {

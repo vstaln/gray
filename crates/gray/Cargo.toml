@@ -3,6 +3,7 @@ name = "gray"
 default-run = "gray"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 description = "gray — a minimal, modular agent harness in Rust."
 license.workspace = true
 
@@ -46,3 +47,6 @@ libc = { workspace = true }
 unicode-width = { workspace = true }
 ignore = { workspace = true }
 
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading"] }
