@@ -1539,3 +1539,47 @@ fn archive_rollback_preserves_backup_when_cleanup_fails() {
     assert_eq!(std::fs::read(&backups[0]).unwrap(), b"working install");
     assert!(error.to_string().contains("saved at"), "{error}");
 }
+
+#[test]
+fn git_names_windows_file_urls_keep_drive_and_last_segment() {
+    // Reproduced without a Windows host: these are the exact URL shapes
+    // Windows CI produced (init_git_fixture builds `file://{display()}`).
+    // The drive colon must stay part of the path, and the name is the last
+    // segment after either separator.
+    assert_eq!(
+        name_from_git_url(r"file://C:\Users\runner\AppData\Local\Temp\.tmpABC123"),
+        ".tmpABC123"
+    );
+    assert_eq!(
+        name_from_git_url("file://C:/Users/runner/AppData/Local/Temp/.tmpABC123/"),
+        ".tmpABC123"
+    );
+}
+
+#[test]
+fn git_spec_keeps_windows_drive_in_the_url_and_strips_the_ref() {
+    // `git:{file://C:\tmp\repo}@feature` — the @ref split must not eat the
+    // path (CI round 2: install_git_pinned_ref_records_version saw
+    // `file://feature`, i.e. the whole path was swallowed as authority).
+    match parse_spec(r"git:file://C:\tmp\repo@feature") {
+        NameOrUrl::Git { url, git_ref } => {
+            assert_eq!(url, r"file://C:\tmp\repo");
+            assert_eq!(git_ref.as_deref(), Some("feature"));
+        }
+        other => panic!("unexpected spec: {other:?}"),
+    }
+    assert_eq!(
+        name_from_git_url(r"file://C:\tmp\repo"),
+        "repo",
+        "drive colon must not read as an scp-style host split"
+    );
+}
+
+#[test]
+fn sanitize_npm_key_keeps_backslashes_illegal() {
+    // A whole Windows path is not a valid key: it must be rejected, not
+    // mangled. The valid name comes from the fixture's last segment
+    // (name_from_git_url), which never contains a separator.
+    assert!(install_key(r"C:\tmp\repo").is_err());
+    assert!(validate_install_key("C--tmp-repo").is_ok());
+}

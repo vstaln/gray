@@ -119,8 +119,13 @@ async fn run_pre_script_with_timeout(
     #[cfg(windows)]
     let mut command = match gray_tools::shell::shell_path() {
         Ok(shell) => {
+            // The script path is data, not shell code: `sh -c <path>` eats
+            // backslashes as escapes (CI: `C:UsersRUNNER~1...sh: command
+            // not found`). A quoted positional keeps the path verbatim, and
+            // Git Bash accepts forward slashes.
+            let script_fs = script.to_string_lossy().replace('\\', "/");
             let mut cmd = tokio::process::Command::new(shell);
-            cmd.arg("-c").arg(script);
+            cmd.arg("-c").arg("exec \"$1\"").arg("sh").arg(script_fs);
             cmd
         }
         Err(e) => {

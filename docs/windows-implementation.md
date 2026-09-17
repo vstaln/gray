@@ -204,3 +204,28 @@ Also: `runit_log_script` forces POSIX separators (CI showed
 Verified locally: full Linux workspace tests (41 test binaries, all green),
 Linux and Windows-GNU workspace clippy, Windows all-target check, fmt, and
 diff whitespace checks. Native runtime evidence remains CI's to produce.
+
+## Windows CI failure round 3 preparation: remaining roots from run 35223251606
+
+1. Git URL parsing completed (Linux-runnable reproducers now pass):
+   `split_authority` scans `\` after a drive letter, `name_from_git_url`
+   keeps the drive in the path and splits on both separators, and the
+   no-scheme branch mirrors the same drive-letter rule. The round-1
+   `file://C:\tmp\repo@feature` and empty-name shapes are pinned by tests.
+2. Key-derivation security invariant preserved: backslash-carrying names
+   stay illegal (`install_key("a\b").is_err()` untouched); the mangle
+   attempt was reverted.
+3. Cron pre-scripts: the script path is data, not shell code —
+   `sh -c <path>` ate backslashes (`C:UsersRUNNER~1...sh: command not
+   found`). Now `exec "$1"` with a forward-slashed positional.
+4. Sidecar `.sh` plugins (os error 193): Windows cannot exec shebang
+   scripts, so documented Git Bash shell plugins route through the same
+   POSIX shell resolver as the bash tool; native executables unchanged.
+5. shell_contract log-path regression from round 2 (self-inflicted):
+   home_relative emitted `~\...`; the header now always emits the
+   documented `~/...` shape, and the test helper resolves the
+   abbreviation against GRAY_HOME (logs live there), HOME fallback.
+
+Verified locally: full Linux workspace suite (41 binaries green), both
+Linux and Windows-GNU clippy at `-D warnings`, Windows all-target check,
+fmt. Windows runtime evidence remains CI's job (next run).

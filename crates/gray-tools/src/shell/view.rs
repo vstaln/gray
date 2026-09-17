@@ -74,12 +74,18 @@ pub fn home_relative(p: &Path) -> String {
         && !gray.trim().is_empty()
         && under(gray.trim())
     {
-        return format!("~{}", &s[gray.trim().len()..]);
+        // Keep the documented "~/..." shape: normalize the remainder's
+        // first separator so consumers expanding "~/", including the
+        // shell_contract log-path parser, keep working on native paths.
+        return format!(
+            "~/{}",
+            s[gray.trim().len()..].trim_start_matches(['/', '\\'])
+        );
     }
     if let Ok(home) = std::env::var("HOME")
         && under(&home)
     {
-        return format!("~{}", &s[home.len()..]);
+        return format!("~/{}", s[home.len()..].trim_start_matches(['/', '\\']));
     }
     s.into_owned()
 }
