@@ -14,7 +14,7 @@ pub(crate) const REGISTRY: &[CmdDef] = &[
     CmdDef {
         name: "model",
         desc: "switch model",
-        aliases: &[],
+        aliases: &["models"],
     },
     CmdDef {
         name: "thinking",
@@ -227,7 +227,7 @@ pub(crate) fn complete_command_args(
         "resume" => complete_resume_args(cmd, arg_text),
         "skill" | "skills" => complete_skill_args(cmd, arg_text, cwd),
         "agentsmd" | "sys" => complete_agentsmd_args(cmd, arg_text),
-        "model" => complete_model_args(cmd, arg_text),
+        "model" | "models" => complete_model_args(cmd, arg_text),
         _ => Vec::new(),
     };
     if arg_text.trim().is_empty()
@@ -473,14 +473,11 @@ pub fn parse_command(line: &str) -> ReplCommand {
         None => (t, ""),
     };
     let opt = |s: &str| (!s.is_empty()).then(|| s.to_string());
-    let lower_t = t.to_lowercase();
     let lower_cmd = cmd.to_lowercase();
     let canon: Option<&str> = if lower_cmd == "/skills" || lower_cmd == "/skill" {
         Some("skills")
     } else if let Some(d) = resolve(cmd) {
         Some(d.name)
-    } else if lower_t.starts_with("/model") {
-        Some("model")
     } else {
         None
     };
@@ -513,7 +510,7 @@ pub fn parse_command(line: &str) -> ReplCommand {
         // Every connect alias accepts optional args like `/key openrouter`
         // (args are advisory; the provider menu always opens).
         Some("connect") => ReplCommand::Provider,
-        Some("model") => ReplCommand::Model(opt(t[6..].trim())),
+        Some("model") => ReplCommand::Model(opt(rest)),
         Some("plugin") => ReplCommand::Plugin(t.to_string()),
         Some("skills") => {
             if rest.is_empty() {

@@ -8,7 +8,8 @@ pub use providers::{
     fetch_openrouter_rates, format_cost, friendly_model_name, get_cached_model_context,
     get_model_rate, load_models_cache_to_memory, model_supports_reasoning,
     parse_litellm_context_json, parse_models_dev_json, parse_openrouter_models_json,
-    save_models_cache_to_disk, supported_efforts, supported_thinking_levels, turn_cost,
+    save_models_cache_to_disk, set_active_model_provider, supported_efforts,
+    supported_thinking_levels, turn_cost,
 };
 
 static USER_CONTEXT_WINDOW: std::sync::OnceLock<std::sync::RwLock<Option<usize>>> =

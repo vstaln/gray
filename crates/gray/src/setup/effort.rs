@@ -42,7 +42,7 @@ pub fn run_effort_modal(
     // current model's family accepts; non-reasoning models get just `off`.
     // `supported_thinking_levels` never returns an empty list.
     let levels: Vec<(&str, &str)> =
-        super::context::supported_thinking_levels(&bg_snapshot.model_name);
+        super::context::supported_thinking_levels(config.model.as_deref().unwrap_or_default());
 
     let current_level = config
         .thinking_effort
