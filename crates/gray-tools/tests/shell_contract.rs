@@ -279,14 +279,8 @@ async fn progress_is_line_safe_but_log_retains_carriage_returns() {
     let head = first_line(&out);
     assert!(head.contains("4 lines"), "{head}");
     assert!(head.contains("CR folded for display"), "{head}");
-    let log_path = head
-        .rsplit(" · log ")
-        .next()
-        .unwrap()
-        .trim_end()
-        .replace('~', &std::env::var("HOME").unwrap());
     assert_eq!(
-        std::fs::read(log_path).unwrap(),
+        std::fs::read(log_path(head)).unwrap(),
         b"heading\r\n10%\r20%\r100%\n"
     );
 }

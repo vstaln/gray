@@ -87,8 +87,18 @@ fn update_lock_path() -> PathBuf {
         .unwrap_or_else(|_| std::env::temp_dir().join("gray-update.lock"))
 }
 
-/// Acquires the exclusive update lock; held until the returned `File` drops.
-pub(crate) fn acquire_update_lock_at(path: &Path) -> std::io::Result<std::fs::File> {
+pub(crate) struct UpdateLock(std::fs::File);
+
+impl Drop for UpdateLock {
+    fn drop(&mut self) {
+        // Closing alone leaves flock held if a concurrent fork inherited the
+        // descriptor. Explicit unlock ends ownership when this guard ends.
+        let _ = self.0.unlock();
+    }
+}
+
+/// Acquires the exclusive update lock; explicitly released when the guard drops.
+pub(crate) fn acquire_update_lock_at(path: &Path) -> std::io::Result<UpdateLock> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -98,10 +108,10 @@ pub(crate) fn acquire_update_lock_at(path: &Path) -> std::io::Result<std::fs::Fi
         .write(true)
         .open(path)?;
     f.lock()?;
-    Ok(f)
+    Ok(UpdateLock(f))
 }
 
-fn acquire_update_lock() -> std::io::Result<std::fs::File> {
+fn acquire_update_lock() -> std::io::Result<UpdateLock> {
     acquire_update_lock_at(&update_lock_path())
 }
 
