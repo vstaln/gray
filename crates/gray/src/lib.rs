@@ -11,6 +11,7 @@ pub mod feedback;
 pub mod gateway;
 pub mod host;
 pub mod logging;
+pub mod memory;
 pub mod plugin_check;
 pub mod plugin_cli;
 pub mod print;
@@ -175,6 +176,19 @@ pub async fn build_agent(
     // Same directory as the tool context; never persist it in the user's file.
     let prompt_cwd = cwd.to_path_buf();
 
+    let snapshot = if memory::disabled() {
+        None
+    } else {
+        match setup::gray_home()
+            .and_then(|home| memory::MemoryStore::new(&home, cwd)?.snapshot(session_id))
+        {
+            Ok(snapshot) => Some(snapshot),
+            Err(_) => {
+                profile::queue_profile_warning("Memory unavailable; continuing without memory. Inspect `gray memory list` and `gray memory --scope user list`.".to_string());
+                None
+            }
+        }
+    };
     let agent = gray_plugin::builder::build_agent(gray_plugin::builder::BuilderOptions {
         model: model.clone(),
         api_key: api_key.to_string(),
@@ -189,7 +203,10 @@ pub async fn build_agent(
         // Keep stored instructions intact; append runtime cwd before any turn.
         system_prompt: gray_plugin::builder::SystemPrompt::Build(Box::new(
             move |_registry: &gray_tools::Registry| {
-                system_prompt::build_runtime_prompt(Some(body), &prompt_cwd)
+                system_prompt::with_memory(
+                    system_prompt::build_runtime_prompt(Some(body), &prompt_cwd),
+                    snapshot.as_deref(),
+                )
             },
         )),
         // Sidecars get the host runner so plugin-initiated `host/run`
@@ -302,6 +319,8 @@ fn parse_context_window_cli(s: &str) -> Result<usize, String> {
 /// Subcommands mirroring `codex resume` / `codex fork` ergonomics.
 #[derive(Parser, Debug, Clone)]
 pub enum Commands {
+    /// Curated cross-session memory (local files, no model required)
+    Memory(memory::MemoryArgs),
     /// Resume a previous conversation
     Resume {
         /// Session id (UUID or prefix). If omitted, shows picker unless --last.

@@ -245,7 +245,7 @@ async fn run_print_inner(
     let cwd = std::env::current_dir()?;
     let store = JsonlSessionStore::default();
     // Explicit `--session` wins over `-c` (same precedence as the REPL).
-    let mut resume_target: Option<SessionId> = match session {
+    let resume_target: Option<SessionId> = match session {
         Some(raw) if json.is_some() && uuid::Uuid::parse_str(raw).is_ok() => {
             let id = SessionId::new(raw);
             store.maintain(&id).await?;
@@ -265,26 +265,17 @@ async fn run_print_inner(
         }
         None => Vec::new(),
     };
+    // Pin memory to the same durable identity for plain and JSON print mode.
+    let session_id = resume_target.clone().unwrap_or_else(SessionId::generate);
     if let Some(output) = json.as_deref_mut() {
-        if resume_target.is_none() {
-            resume_target = Some(
-                save_session(
-                    &store,
-                    config.model.as_deref().unwrap_or("unset"),
-                    &cwd,
-                    &[],
-                )
-                .await?,
-            );
-        }
-        output.session_id = resume_target.as_ref().map(|id| id.as_str().to_owned());
+        output.session_id = Some(session_id.as_str().to_owned());
     }
     let initial_count = history.len();
     let cancel = tokio_util::sync::CancellationToken::new();
     let ctx = ToolContext {
         cwd: cwd.clone(),
         cancel: cancel.clone(),
-        session_id: resume_target.as_ref().map(|id| id.as_str().to_owned()),
+        session_id: Some(session_id.as_str().to_owned()),
     };
 
     // One-shot run = one turn: only max_turns=0 (nonsensical but
@@ -295,7 +286,17 @@ async fn run_print_inner(
     {
         anyhow::bail!("max wall time {max}s reached — stopping (--max-wall-secs SECS)");
     }
-    let mut agent = build_agent(config, &cwd, resume_target.as_ref().map(|s| s.as_str())).await?;
+    let mut agent = build_agent(config, &cwd, Some(session_id.as_str())).await?;
+    if resume_target.is_none() {
+        store
+            .create(SessionMeta::new(
+                session_id.clone(),
+                now_millis(),
+                cwd.clone(),
+                config.model.as_deref().unwrap_or("unset"),
+            ))
+            .await?;
+    }
     if let Some(meter) = json.as_ref().and_then(|output| output.meter.as_ref()) {
         agent = agent.map_provider(|provider| meter.wrap(provider));
     }
@@ -365,25 +366,14 @@ async fn run_print_inner(
     // F14: no `?` between run completion and finalization — always attempt
     // session persistence AND shell teardown, then propagate the original
     // error combined with any persistence error.
-    let persist_result: anyhow::Result<()> = if let Some(sid) = &resume_target {
-        append_new_messages(
-            &store,
-            sid,
-            initial_count,
-            agent.messages(),
-            agent.history_revision() != history_revision,
-        )
-        .await
-    } else {
-        save_session(
-            &store,
-            config.model.as_deref().unwrap_or("unset"),
-            &cwd,
-            agent.messages(),
-        )
-        .await
-        .map(|_| ())
-    };
+    let persist_result = append_new_messages(
+        &store,
+        &session_id,
+        initial_count,
+        agent.messages(),
+        agent.history_revision() != history_revision,
+    )
+    .await;
 
     let render_broken = render_err
         .as_ref()
