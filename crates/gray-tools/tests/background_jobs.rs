@@ -199,10 +199,29 @@ async fn fast_yield_finishes_inline_and_bad_args_never_spawn() {
         Value::Null,
         json!({"action":"list","job_id":"x"}),
         json!({"command":"touch BAD","timeout":-1}),
-        json!({"command":"touch BAD","job_id":"x"}),
     ] {
         assert!(tool.execute(&ctx, args.clone()).await.is_error, "{args}");
     }
+    // Models echo job_id (and null-valued args) onto plain runs; the run
+    // intent is complete without it, so it must be ignored, not failed —
+    // a loud rejection here looped real sessions (2026-09-17 transcript).
+    for args in [
+        json!({"command":"echo fine","job_id":"bash-bogus"}),
+        json!({"command":"echo fine","job_id":null}),
+    ] {
+        let out = tool.execute(&ctx, args.clone()).await;
+        assert!(!out.is_error, "{args}: {}", out.content);
+        assert!(out.content.contains("fine"), "{args}: {}", out.content);
+    }
+    // The removed-API family still fails loudly, removal as the instruction.
+    let out = tool
+        .execute(&ctx, json!({"command":"touch BAD","task_id":"t"}))
+        .await;
+    assert!(
+        out.is_error && out.content.contains("remove"),
+        "{}",
+        out.content
+    );
     assert!(!dir.path().join("BAD").exists());
     let missing = ToolContext {
         cwd: dir.path().join("absent"),

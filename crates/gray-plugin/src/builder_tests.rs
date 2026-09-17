@@ -100,7 +100,9 @@ fn search_tools_keep_plugin_order_across_builds() {
 }
 
 #[tokio::test]
+#[allow(clippy::await_holding_lock)] // serializes registry builds sharing CURRENT_LEDGER
 async fn minimal_profile_keeps_background_jobs_between_calls() {
+    let _guard = build_lock();
     let (reg, _) = from_plugins(&[Arc::new(ToolsMinimalPlugin)]);
     let ctx = ToolContext {
         session_id: Some("builder-background".into()),

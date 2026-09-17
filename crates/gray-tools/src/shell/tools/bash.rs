@@ -73,17 +73,21 @@ impl Tool for BashTool {
         if action != "run" {
             return self.jobs.action(ctx, action, &args);
         }
+        // job_id on a plain run carries no extra intent (nothing is dropped),
+        // and real models echo it back from the schema: ignore it. The
+        // removed-API family below would silently lose intent, so it still
+        // fails loudly — with removal as the first instruction, never a
+        // suggestion that re-triggers the same failure.
         for key in [
-            "job_id",
             "task_id",
             "from_offset",
             "wait",
             "notify_on",
             "run_in_background",
         ] {
-            if args.get(key).is_some() {
+            if args.get(key).is_some_and(|v| !v.is_null()) {
                 return fail(format!(
-                    "`{key}` is not a run argument; use background:true or yield_ms, or action:status/output/cancel with job_id"
+                    "`{key}` is not a run argument; remove it. For background work use background:true or yield_ms; job_id only pairs with action:status/output/cancel"
                 ));
             }
         }
