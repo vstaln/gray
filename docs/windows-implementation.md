@@ -245,3 +245,30 @@ fmt. Windows runtime evidence remains CI's job (next run).
 Remaining failures from previous rounds (sidecar .sh, cron quoting, URL
 parsing, guards) all passed natively in this run. Local verification: full
 Linux workspace suite green, both clippy lanes, fmt, cross-target check.
+
+## Full native Windows validation: GREEN (run 35230927707)
+
+Run 35230927707 (commit cf834a1) passed every gate of the expanded
+windows-runtime job: all-target compilation, workspace clippy, complete
+shell lifecycle/contract/home/cwd/limits regressions, the full workspace
+test suite with `--no-fail-fast`, the native release build, installer tests
+under PowerShell 7 and Windows PowerShell 5.1, and preview packaging.
+Linux and macOS matrix jobs and installer-smoke passed in the same run.
+
+Final diagnostic resolution: the last failing assertion was the
+`Read more:` recovery path. The captured bytes (610a... under Git Bash vs
+610d0a on Unix) proved Git Bash's sed pipes CRLF text to native readers
+through a text-mode MSYS pipe, folding EOLs. The disk log stays
+byte-verbatim (separately asserted natively); recovery output is
+byte-exact on Unix and EOL-folded on Windows. Both shapes are asserted
+with hex-dump failure output; the strict raw-bytes assertion remains on
+Unix. Nothing was skipped or weakened beyond this documented platform
+behavior. A windows-focused workflow_dispatch workflow exists for
+single-test iteration; it does not gate the ci workflow.
+
+Verification status after this run:
+- Native build, full native test suite, clippy, installer (pwsh 7 + 5.1):
+  passing on windows-2025.
+- Public installer default, README support matrix, and release publishing
+  remain WSL-only pending the spec's clean-machine, ACL, TUI, and release
+  integrity gates. PR #103 stays open and unmerged per user instruction.
