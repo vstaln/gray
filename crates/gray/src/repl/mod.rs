@@ -118,6 +118,8 @@ pub(crate) type TuiOpt = Option<(
 )>;
 
 pub(crate) struct SessionState {
+    /// A failed write requires a full replacement before any suffix append.
+    pub(crate) full_save_pending: bool,
     pub(crate) store: crate::session_store::JsonlSessionStore,
     pub(crate) session_id: crate::session_store::SessionId,
 }
@@ -531,6 +533,7 @@ pub async fn run_repl_mode(
             ledger.clear();
         }
         session_state = Some(SessionState {
+            full_save_pending: false,
             session_id: sid.clone(),
             store,
         });
