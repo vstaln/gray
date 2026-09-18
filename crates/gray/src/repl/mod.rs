@@ -649,10 +649,21 @@ pub async fn run_repl_mode(
                         interval.tick().await;
                         match crate::cron_serve::tick_once(&store, &runner, &deliver, "repl").await
                         {
-                            Ok(rep) if rep.fired > 0 => crate::host::queue_say(format!(
-                                "⏰ cron tick: fired={} errors={}",
-                                rep.fired, rep.errors
-                            )),
+                            Ok(rep) if rep.fired > 0 => {
+                                // One hermes-framed box per chat-bound
+                                // delivery (file-only jobs stay on the count
+                                // line); display-only — the model never sees
+                                // it, same as every other `host/say`.
+                                for saved in rep.delivered.iter().filter(|d| d.to_chat) {
+                                    crate::host::queue_say(crate::cron_serve::format_fire_chat(
+                                        saved,
+                                    ));
+                                }
+                                crate::host::queue_say(format!(
+                                    "⏰ cron tick: fired={} errors={}",
+                                    rep.fired, rep.errors
+                                ));
+                            }
                             Ok(_) => {}
                             Err(e) => log::warn!("repl cron tick failed: {e:#}"),
                         }

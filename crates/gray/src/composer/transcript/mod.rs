@@ -106,6 +106,10 @@ impl Tui {
 
     pub fn stream_thinking(&mut self, chunk: &str) {
         self.turn_had_thinking = true;
+        // Count before the hidden early-return: hidden reasoning still
+        // bills output, so the live pill must keep ticking either way.
+        let clean = strip_ansi(chunk);
+        self.streamed_bytes = self.streamed_bytes.saturating_add(clean.len() as u64);
         if self.hide_thinking {
             let _ = self.draw();
             return;
@@ -118,10 +122,13 @@ impl Tui {
             self.set_status(Some("Thinking"));
         }
         self.thinking = true;
+        // Reasoning rides inside output_tokens (confirmed at the call site),
+        // so it feeds the live pill estimate too — otherwise tokens freeze
+        // mid-thought and only jump once the answer streams.
         // Bare sentence boundaries from stripped providers
         // (`truncated.Identifying`): exactly one space when the join
         // needs it, never doubled, BPE splits untouched.
-        gray_core::event::append_thinking_chunk(&mut self.pending, &strip_ansi(chunk));
+        gray_core::event::append_thinking_chunk(&mut self.pending, &clean);
         let w = self.live_width();
         let max_w = w.saturating_sub(4).max(1);
         while let Some(idx) = self.pending.find('\n') {

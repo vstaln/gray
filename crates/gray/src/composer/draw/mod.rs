@@ -137,6 +137,10 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
         tui.latest_usage.or(tui.cumulative_usage),
         tui.streamed_bytes,
     );
+    // Live TPS numerator is turn-level (completed StepUsage outputs +
+    // streamed estimate) so it converges to the final Thought-line rate.
+    let pill_turn_output = tui.turn_output_accum;
+    let pill_streamed = tui.streamed_bytes;
 
     let res = tui.terminal.draw(|frame| {
         let area = frame.area();
@@ -180,17 +184,29 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
             let mut spans = shimmer_spans(&label_text, started.elapsed());
             // Turn-anchored clock (tool re-stamps never restart it) plus
             // the live token counter: latest StepUsage raised to the streamed
-            // per-chunk estimate, exact on every report. Exact turn bills
-            // stay on the Thought line and `/usage`.
+            // per-chunk estimate, exact on every report. Live TPS rides
+            // between them (turn-level numerator, same denominator), so the
+            // rate is always visible — not just on the end-of-turn line.
+            // Exact turn bills stay on the Thought line and `/usage`.
             // Codex parity: while compacting, the pill runs on the separate
             // compaction clock — the turn clock is preserved underneath and
             // restored after (`compaction_status_survives_follow_up`).
+            // Live TPS needs the turn clock too, so it hides while
+            // compacting (that clock isn't turn time).
             let elapsed = match compaction_elapsed {
                 Some(d) => d,
                 None => super::pill_elapsed(turn_started, *started, is_task_running),
             };
+            let tps_suffix = match compaction_elapsed {
+                Some(_) => String::new(),
+                None => super::live_tps_suffix(
+                    pill_turn_output,
+                    pill_streamed,
+                    elapsed.as_millis().min(u128::from(u64::MAX)) as u64,
+                ),
+            };
             let elapsed_str = format!("{:.1}s", elapsed.as_secs_f64());
-            let suffix = format!(" {elapsed_str}{pill_tok_suffix} (esc to interrupt)");
+            let suffix = format!(" {elapsed_str}{pill_tok_suffix}{tps_suffix} (esc to interrupt)");
             spans.push(Span::styled(
                 suffix,
                 Style::default().fg(crate::theme::theme().tool_dim),

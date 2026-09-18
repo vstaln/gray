@@ -222,12 +222,16 @@ async fn origin_delivery_appends_to_session_and_keeps_file_on_failure() {
     let deliver = SaveLocalDeliver {
         home: home.path().to_path_buf(),
     };
-    // Happy path: session append + file save.
-    deliver
+    // Happy path: session append + file save. The mirror is the clean
+    // excerpt (no wrapper, no file path) as a USER turn.
+    let saved = deliver
         .deliver(&mk_job("j-origin", chat), 1_700_000_001, "hello output")
         .await
         .unwrap();
-    let saved = std::fs::read_to_string(
+    assert!(saved.to_chat);
+    assert_eq!(saved.id, "j-origin");
+    assert_eq!(saved.excerpt, "hello output");
+    let file_text = std::fs::read_to_string(
         home.path()
             .join("cron")
             .join("output")
@@ -235,15 +239,27 @@ async fn origin_delivery_appends_to_session_and_keeps_file_on_failure() {
             .join("1700000001.md"),
     )
     .unwrap();
-    assert!(saved.contains("hello output"));
+    assert!(file_text.contains("hello output"));
     let session_text =
         std::fs::read_to_string(home.path().join("sessions").join(format!("{chat}.jsonl")))
             .unwrap();
     assert!(
-        session_text.contains("nightly"),
-        "origin session missing delivery note"
+        session_text.contains("[Cron delivery: nightly]"),
+        "origin session missing hermes mirror label"
     );
-    assert!(session_text.contains("1700000001.md"));
+    assert!(session_text.contains("hello output"));
+    assert!(
+        !session_text.contains("Cronjob Response:"),
+        "mirror must not carry the chat wrapper"
+    );
+    assert!(
+        !session_text.contains("1700000001.md"),
+        "mirror must not carry the file path"
+    );
+    assert!(
+        session_text.contains("\"role\":\"user\""),
+        "mirror must be a USER turn, never assistant"
+    );
     // Failure path: unknown session -> Err (caller records DeliveryFailed),
     // file still saved.
     let err = deliver
@@ -292,4 +308,52 @@ async fn cron_runner_receives_job_workdir() {
     .await
     .unwrap();
     assert_eq!(report.errors, 0);
+}
+
+#[tokio::test]
+async fn local_and_target_jobs_are_save_only() {
+    // Local, unknown target, and session-less origin all save only. One
+    // temp home per job: each `due_store` writes a fresh `jobs.json`, so a
+    // shared home would leave only the last record behind.
+    for (id, d) in [
+        ("l1", serde_json::json!("local")),
+        ("t1", serde_json::json!({"target": "somewhere"})),
+        ("o1", serde_json::json!("origin")),
+    ] {
+        let home = tempfile::tempdir().unwrap();
+        let deliver = SaveLocalDeliver {
+            home: home.path().to_path_buf(),
+        };
+        let mut v = one_due(id, d);
+        v[0]["name"] = serde_json::json!("n");
+        let store = due_store(&home, v);
+        let job = store.list().unwrap().into_iter().next().unwrap();
+        assert_eq!(job.id, id, "store lost {id}");
+        let saved = deliver.deliver(&job, 1_700_000_001, "body").await.unwrap();
+        assert!(!saved.to_chat, "{id} must be save-only");
+        assert!(
+            home.path()
+                .join("cron")
+                .join("output")
+                .join(id)
+                .join("1700000001.md")
+                .exists()
+        );
+    }
+}
+
+#[test]
+fn fire_chat_frame_shapes() {
+    // The live-chat box: hermes wrapper + output-file path.
+    let saved = DeliveredFire {
+        id: "abc123".to_string(),
+        name: "nightly".to_string(),
+        path: std::path::PathBuf::from("/home/u/.gray/cron/output/abc123/1.md"),
+        excerpt: "hello output".to_string(),
+        to_chat: true,
+    };
+    let out = format_fire_chat(&saved);
+    assert!(out.starts_with("Cronjob Response: nightly\n(job_id: abc123)\n"));
+    assert!(out.contains("hello output"));
+    assert!(out.contains("Full output: /home/u/.gray/cron/output/abc123/1.md"));
 }

@@ -516,6 +516,9 @@ async fn run_cron(cmd: gray::CronCmd, config: &gray::config::Config) -> anyhow::
             };
             let deliver = gray::cron_serve::SaveLocalDeliver { home };
             let rep = gray::cron_serve::tick_once(&store, &runner, &deliver, "cli").await?;
+            for saved in rep.delivered.iter().filter(|d| d.to_chat) {
+                println!("{}", gray::cron_serve::format_fire_chat(saved));
+            }
             println!("tick: fired={} errors={}", rep.fired, rep.errors);
             Ok(())
         }
@@ -563,7 +566,11 @@ async fn run_cron(cmd: gray::CronCmd, config: &gray::config::Config) -> anyhow::
                 follow_switches: false,
             };
             let deliver = gray::cron_serve::SaveLocalDeliver { home };
-            let status = gray::cron_serve::fire_one(&store, &runner, job, now, &deliver).await;
+            let (status, saved) =
+                gray::cron_serve::fire_one(&store, &runner, job, now, &deliver).await;
+            if let Some(saved) = saved.filter(|d| d.to_chat) {
+                println!("{}", gray::cron_serve::format_fire_chat(&saved));
+            }
             println!("ran {id} status={status:?}");
             Ok(())
         }
