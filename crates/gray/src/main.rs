@@ -512,6 +512,7 @@ async fn run_cron(cmd: gray::CronCmd, config: &gray::config::Config) -> anyhow::
             let home = gray::setup::gray_home()?;
             let runner = gray::cron_serve::HeadlessRunner {
                 config: config.clone(),
+                follow_switches: false,
             };
             let deliver = gray::cron_serve::SaveLocalDeliver { home };
             let rep = gray::cron_serve::tick_once(&store, &runner, &deliver, "cli").await?;
@@ -523,6 +524,7 @@ async fn run_cron(cmd: gray::CronCmd, config: &gray::config::Config) -> anyhow::
             let home = gray::setup::gray_home()?;
             let runner = gray::cron_serve::HeadlessRunner {
                 config: config.clone(),
+                follow_switches: true,
             };
             gray::cron_serve::serve_loop(store, gray::cron_serve::SaveLocalDeliver { home }, runner)
                 .await
@@ -558,6 +560,7 @@ async fn run_cron(cmd: gray::CronCmd, config: &gray::config::Config) -> anyhow::
             };
             let runner = gray::cron_serve::HeadlessRunner {
                 config: config.clone(),
+                follow_switches: false,
             };
             let deliver = gray::cron_serve::SaveLocalDeliver { home };
             let status = gray::cron_serve::fire_one(&store, &runner, job, now, &deliver).await;

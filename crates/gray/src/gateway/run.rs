@@ -63,6 +63,7 @@ pub async fn run_foreground(config: &Config) -> anyhow::Result<()> {
     let store = crate::cron::CronStore::open(home.join("cron"))?;
     let runner = crate::cron_serve::HeadlessRunner {
         config: config.clone(),
+        follow_switches: true,
     };
     let deliver = crate::cron_serve::SaveLocalDeliver { home: home.clone() };
     let mut interval = tokio::time::interval(Duration::from_secs(60));

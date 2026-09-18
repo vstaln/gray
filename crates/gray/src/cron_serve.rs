@@ -10,6 +10,30 @@ pub struct TickReport {
     pub errors: usize,
 }
 
+/// Re-resolve the fire-time model + provider from the saved config file.
+/// Every `/model` switch (picker and direct) persists base_url+model, but
+/// long-lived tickers snapshot Config once at startup — without this refresh
+/// a mid-session provider switch never reaches cron fires. Only non-empty
+/// saved values apply, so a missing file keeps the snapshot untouched.
+pub(crate) fn refresh_model_from_saved(config: &mut crate::config::Config) {
+    let Ok(path) = crate::setup::saved_config_path() else {
+        return;
+    };
+    refresh_model_from_saved_at(config, &path);
+}
+
+/// Testable seam: pure path, no env. Only non-empty saved values apply, so
+/// a missing file (all-None) keeps the snapshot untouched.
+fn refresh_model_from_saved_at(config: &mut crate::config::Config, path: &std::path::Path) {
+    let saved = crate::setup::load_saved_config_at(path);
+    if let Some(model) = saved.model.filter(|m| !m.trim().is_empty()) {
+        config.model = Some(model);
+    }
+    if let Some(base) = saved.base_url.filter(|u| !u.trim().is_empty()) {
+        config.base_url = base;
+    }
+}
+
 /// Agent seam: production runs the headless agent; tests stub it.
 /// `?Send`: the agent future is not `Send`; the ticker only ever awaits it
 /// directly (never `spawn`s), so no `Send` bound is needed.
@@ -24,12 +48,20 @@ pub trait AsyncRunner {
 /// sessions; the transcript goes to the delivery target (local file today).
 pub struct HeadlessRunner {
     pub config: crate::config::Config,
+    /// Long-lived drivers (serve, gateway) follow `/model` switches via the
+    /// saved config; one-shot tick/run keep their fresh snapshot so explicit
+    /// CLI flags and env vars always win.
+    pub follow_switches: bool,
 }
 
 #[async_trait::async_trait(?Send)]
 impl AsyncRunner for HeadlessRunner {
     async fn run(&self, prompt: String, cwd: PathBuf) -> anyhow::Result<String> {
-        let mut agent = crate::build_agent(&self.config, &cwd, None).await?;
+        let mut config = self.config.clone();
+        if self.follow_switches {
+            refresh_model_from_saved(&mut config);
+        }
+        let mut agent = crate::build_agent(&config, &cwd, None).await?;
         let ctx = gray_core::agent::ToolContext {
             cwd,
             cancel: tokio_util::sync::CancellationToken::new(),
@@ -38,9 +70,7 @@ impl AsyncRunner for HeadlessRunner {
         let events = agent
             .run(gray_core::message::Message::user(prompt), ctx)
             .await
-            .map_err(|e| {
-                anyhow::anyhow!(crate::repl::format_core_error(&e, &self.config.base_url))
-            })?;
+            .map_err(|e| anyhow::anyhow!(crate::repl::format_core_error(&e, &config.base_url)))?;
         Ok(crate::cron_fire::transcript_text(&events))
     }
 }
