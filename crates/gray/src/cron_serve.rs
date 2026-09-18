@@ -256,9 +256,14 @@ pub async fn fire_one(
     }
 }
 
-/// One pass: claim each due job immediately before firing it, once per pass.
-/// Per-job failure is recorded on the job and counted; only pass-level
-/// store failure propagates as `Err`.
+/// Max jobs fired concurrently in one tick pass. `const`, not `Config`:
+/// Config plumbing is a follow-up. `= 1` behaves exactly as the old serial loop.
+pub const MAX_CONCURRENT_FIRES: usize = 4;
+
+/// One bounded pass: claim up to [`MAX_CONCURRENT_FIRES`] due jobs, fire them
+/// concurrently on this task, aggregate in claim order. Per-job failure is
+/// recorded on the job and counted; only pass-level store failure propagates
+/// as `Err`.
 pub async fn tick_once(
     store: &crate::cron::CronStore,
     runner: &dyn AsyncRunner,
@@ -278,14 +283,26 @@ pub async fn tick_once(
         errors: 0,
         delivered: Vec::new(),
     };
-    loop {
-        let now = crate::cron::now_secs();
-        let Some(job) = store.claim_due_limited(now, &owner, 1, &fired_ids)?.pop() else {
-            break;
-        };
+    let now = crate::cron::now_secs();
+    let due = store.claim_due_limited(now, &owner, MAX_CONCURRENT_FIRES, &fired_ids)?;
+    // Same-task concurrency only: `AsyncRunner` is `?Send`, so never `spawn`.
+    // Results re-attached by index, so counts and `delivered` order match serial.
+    let mut pending = futures::stream::FuturesUnordered::new();
+    for (idx, job) in due.into_iter().enumerate() {
         fired_ids.push(job.id.clone());
+        pending.push(async move {
+            let out = fire_one(store, runner, job, now, deliver).await;
+            (idx, out)
+        });
+    }
+    let mut ordered: Vec<Option<(crate::cron::RunStatus, Option<DeliveredFire>)>> = Vec::new();
+    ordered.resize_with(pending.len(), || None);
+    while let Some((idx, (status, saved))) = futures::StreamExt::next(&mut pending).await {
+        ordered[idx] = Some((status, saved));
+    }
+    for slot in ordered.into_iter().flatten() {
+        let (status, saved) = slot;
         report.fired += 1;
-        let (status, saved) = fire_one(store, runner, job, now, deliver).await;
         if !matches!(status, crate::cron::RunStatus::Ok) {
             report.errors += 1;
         }

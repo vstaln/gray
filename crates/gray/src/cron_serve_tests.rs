@@ -146,6 +146,47 @@ async fn tick_agent_failure_records_error_and_continues() {
 }
 
 #[tokio::test]
+async fn tick_fires_two_due_jobs_and_keeps_claim_order() {
+    let home = tempfile::tempdir().unwrap();
+    let store = due_store(
+        &home,
+        serde_json::json!([
+            {"id": "a", "name": "a", "prompt": "x",
+             "schedule": {"Interval": {"secs": 3600}}, "enabled": true,
+             "created_at": 1, "next_run_at": 1},
+            {"id": "b", "name": "b", "prompt": "y",
+             "schedule": {"Interval": {"secs": 3600}}, "enabled": true,
+             "created_at": 1, "next_run_at": 1},
+        ]),
+    );
+    let runner = StubRunner {
+        text: "hi".to_string(),
+        fail: false,
+        seen: Default::default(),
+    };
+    let rep = tick_once(
+        &store,
+        &runner,
+        &SaveLocalDeliver {
+            home: home.path().to_path_buf(),
+        },
+        "test",
+    )
+    .await
+    .unwrap();
+    assert_eq!(rep.fired, 2);
+    assert_eq!(rep.errors, 0);
+    assert_eq!(rep.delivered.len(), 2);
+    assert_eq!(rep.delivered[0].id, "a");
+    assert_eq!(rep.delivered[1].id, "b");
+    for id in ["a", "b"] {
+        let job = store.get(id).unwrap().unwrap();
+        assert_eq!(job.last_status, Some(crate::cron::RunStatus::Ok));
+        assert!(job.fire_claim.is_none());
+    }
+}
+
+#[tokio::test]
 async fn tick_silent_response_skips_write_but_ok() {
     let home = tempfile::tempdir().unwrap();
     let store = due_store(&home, one_due("s1", serde_json::json!("local")));
