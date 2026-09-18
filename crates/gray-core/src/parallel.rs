@@ -153,8 +153,7 @@ fn sed_edits_in_place(toks: &[&str]) -> bool {
 /// `python --version` (no `-c`/`-e`) stays allowed.
 fn inline_code_executes(toks: &[&str]) -> bool {
     const INTERPS: &[&str] = &["python", "python3", "node", "ruby", "perl"];
-    toks.iter().any(|t| INTERPS.contains(t))
-        && toks.iter().any(|t| *t == "-c" || *t == "-e")
+    toks.iter().any(|t| INTERPS.contains(t)) && toks.iter().any(|t| *t == "-c" || *t == "-e")
 }
 
 /// `curl` alone just prints — demote only with an output flag (`-o` / `-O`

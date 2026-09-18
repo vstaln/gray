@@ -137,10 +137,7 @@ fn sha256_hex(bytes: &[u8]) -> String {
         } else {
             &[]
         };
-        if let Ok(out) = Command::new(prog)
-            .args(args)
-            .arg(&tmp)
-            .output()
+        if let Ok(out) = Command::new(prog).args(args).arg(&tmp).output()
             && out.status.success()
         {
             let hex: String = String::from_utf8_lossy(&out.stdout)

@@ -1,8 +1,8 @@
 //! Bounded-concurrency tests for `join_ordered` (ToolRush parity: 32).
 //! Env is process-global: `LOCK` serializes the tests in this file.
 
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use futures::future::BoxFuture;
