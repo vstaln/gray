@@ -36,3 +36,24 @@ fn formats_minutes() {
     assert_eq!(fmt_duration_ms(125_000), "2m 5s");
     assert_eq!(fmt_duration_ms(120_000), "2m");
 }
+
+#[test]
+fn typed_image_link_becomes_vision_block() {
+    // End-to-end: typed link -> extract -> build -> image block (no paste).
+    let img = image::RgbaImage::from_pixel(8, 8, image::Rgba([1, 2, 3, 255]));
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("typed.png");
+    img.save(&path).unwrap();
+    let found = super::super::attachments::extract_inline_image_paths(
+        &format!("look at {} pls", path.display()),
+        dir.path(),
+    );
+    assert_eq!(found, vec![path]);
+    let msg = build_user_message_with_attachments("look", &found);
+    assert!(
+        msg.content
+            .iter()
+            .any(|b| matches!(b, gray_core::message::ContentBlock::Image { .. })),
+        "typed link must produce a vision block: {msg:?}"
+    );
+}

@@ -144,7 +144,13 @@ pub(crate) async fn run_prompt_turn(
             .as_ref()
             .map(|s| s.session_id.as_str().to_string()),
     };
-    let images = std::mem::take(&mut *pending_images);
+    let mut images = std::mem::take(&mut *pending_images);
+    // Typed/pasted-text file links (never paste-attached) still carry vision.
+    for p in super::attachments::extract_inline_image_paths(&prompt_text, cwd) {
+        if !images.contains(&p) {
+            images.push(p);
+        }
+    }
     let user_msg = build_user_message_with_attachments(&prompt_text, &images);
     let user_msg_for_retry = user_msg.clone();
     let mut initial_count = agent.messages().len();

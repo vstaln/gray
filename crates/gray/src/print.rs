@@ -310,7 +310,9 @@ async fn run_print_inner(
     }
 
     let history_revision = agent.history_revision();
-    let user_msg = Message::user(prompt);
+    // Headless `-p` has no paste-attach: inline file links still carry vision.
+    let inline = crate::repl::attachments::extract_inline_image_paths(prompt, &cwd);
+    let user_msg = crate::repl::build_user_message_with_attachments(prompt, &inline);
     // SIGINT only signals the shared token — never wrap the run in a
     // select! that would drop it. Aborted once the run returns.
     let sigint_cancel = cancel.clone();
