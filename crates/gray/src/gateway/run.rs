@@ -24,6 +24,23 @@ pub async fn run_foreground(config: &Config) -> anyhow::Result<()> {
     let home = crate::setup::gray_home()?;
     let record = pid::claim(&home)?;
     let started_at = record.started_at;
+    // Post-mortem observability only: chain (never replace) the `main.rs`
+    // hook, and best-effort record the panic so `gateway status` stops
+    // reporting a stale `running` after a crash. Writes via the same atomic
+    // state path as the normal stop record.
+    let panic_home = home.clone();
+    let prev_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let _ = state::write(
+            &panic_home,
+            &state::record(
+                state::STATE_STOPPED,
+                Some(&format!("panic: {info}")),
+                started_at,
+            ),
+        );
+        prev_hook(info);
+    }));
     log::info!(
         "gateway: starting (pid {}, home {})",
         record.pid,
