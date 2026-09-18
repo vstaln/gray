@@ -114,3 +114,98 @@ fn disabled_plugin_is_unavailable_in_help_commands_and_widget() {
     let output = repl(temp.path(), "/help\n/quit\n");
     assert!(!output.contains("/sample"), "{output}");
 }
+
+#[test]
+fn plugin_list_shows_registered_command_alongside_sidecars() {
+    // Repro for "gray plugin list says none installed" with discord present:
+    // `install plugin` writes commands.json only, and list must merge it.
+    let temp = tempfile::tempdir().unwrap();
+    let bin = fixture(temp.path(), "sample", false);
+    assert!(install(temp.path(), &bin, "sample").status.success());
+    for alias in ["plugin", "plugins"] {
+        let out = cli(temp.path()).args([alias, "list"]).output().unwrap();
+        assert!(out.status.success(), "{out:?}");
+        let text = String::from_utf8(out.stdout).unwrap();
+        assert!(text.contains("sample"), "{alias}: {text}");
+        assert!(text.contains("[command]"), "{alias}: {text}");
+    }
+    // Enable/disable/remove route to the owning registry (was "not installed").
+    let out = cli(temp.path())
+        .args(["plugin", "disable", "sample"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    let out = cli(temp.path()).args(["plugin", "list"]).output().unwrap();
+    let text = String::from_utf8(out.stdout).unwrap();
+    assert!(text.contains("[disabled]"), "{text}");
+    // Disabled commands refuse to run (forward path honors the flag).
+    assert!(
+        !cli(temp.path())
+            .args(["sample", "run"])
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+    let out = cli(temp.path())
+        .args(["plugin", "enable", "sample"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    let out = cli(temp.path()).args(["plugin", "list"]).output().unwrap();
+    let text = String::from_utf8(out.stdout).unwrap();
+    assert!(!text.contains("[disabled]"), "{text}");
+    // A native/CLI command is not an updatable sidecar: warn + no-op.
+    let out = cli(temp.path())
+        .args(["plugin", "update", "sample"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    let err = String::from_utf8(out.stderr).unwrap();
+    assert!(err.contains("non-index source"), "{err}");
+    // Remove drops the registry row (and manifest), list is empty again.
+    let out = cli(temp.path())
+        .args(["plugin", "remove", "sample"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    let out = cli(temp.path()).args(["plugin", "list"]).output().unwrap();
+    let text = String::from_utf8(out.stdout).unwrap();
+    assert!(text.contains("no plugins installed"), "{text}");
+    assert!(!temp.path().join("plugins/sample-manifest.json").exists());
+    // Ghost names keep the old error in both spellings.
+    for alias in ["plugin", "plugins"] {
+        let out = cli(temp.path())
+            .args([alias, "remove", "ghost"])
+            .output()
+            .unwrap();
+        assert!(!out.status.success());
+        let err = String::from_utf8(out.stderr).unwrap();
+        assert!(err.contains("not installed: ghost"), "{alias}: {err}");
+    }
+}
+
+#[test]
+fn slash_plugin_list_alias_shows_registered_command() {
+    // `/plugin list` and `/plugins list` share the merged view (headless =
+    // text rows, no TTY picker).
+    let temp = tempfile::tempdir().unwrap();
+    let bin = fixture(temp.path(), "sample", false);
+    assert!(install(temp.path(), &bin, "sample").status.success());
+    let output = repl(
+        temp.path(),
+        "/plugin list
+/quit
+",
+    );
+    assert!(output.contains("sample"), "{output}");
+    assert!(output.contains("[command]"), "{output}");
+    let output = repl(
+        temp.path(),
+        "/plugins list
+/quit
+",
+    );
+    assert!(output.contains("sample"), "{output}");
+    assert!(output.contains("[command]"), "{output}");
+}

@@ -32,6 +32,22 @@ fn load(home: &Path) -> anyhow::Result<LockFile> {
     Ok(registry)
 }
 
+/// Best-effort exclusive guard for registry writes: held for the caller's
+/// whole read-modify-write via the returned handle. Advisory only (a crashed
+/// holder releases on close); when the lock file itself is unusable there is
+/// simply no guard — the op still runs (matches the pre-existing
+/// fire-and-forget use of `.commands.lock`).
+fn hold_commands_lock(home: &Path) -> Option<std::fs::File> {
+    let f = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(home.join("plugins/.commands.lock"))
+        .ok()?;
+    let _ = f.try_lock();
+    Some(f)
+}
+
 fn validate_name(name: &str) -> anyhow::Result<()> {
     anyhow::ensure!(
         !name.is_empty()
@@ -185,6 +201,188 @@ pub async fn install(home: &Path, name: &str) -> anyhow::Result<()> {
     anyhow::bail!(
         "Unknown plugin '{name}'. Catalog: background, discord. For a local native plugin, put gray-{name} on PATH or set GRAY_PLUGIN_PATH to its executable"
     )
+}
+
+/// One installed plugin in the merged manager view (`lock.json` sidecars +
+/// `commands.json` native/CLI commands). `cli` is true for `commands.json`
+/// entries; when both registries hold the same name the CLI entry wins at
+/// runtime (see [`forward`]) so it shadows the sidecar row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ManagedPlugin {
+    pub name: String,
+    pub entry: LockEntry,
+    pub cli: bool,
+}
+
+/// Merged manager view over both registries, sorted by name: every
+/// `commands.json` entry (native/CLI commands like `discord`) plus every
+/// `lock.json` sidecar not shadowed by the same name. Missing files read
+/// as empty; a corrupt file is an error (callers warn the same way boot
+/// does for the sidecar lock).
+pub fn list_managed(home: &Path) -> anyhow::Result<Vec<ManagedPlugin>> {
+    use std::collections::BTreeMap;
+    let mut merged: BTreeMap<String, ManagedPlugin> = BTreeMap::new();
+    for (name, entry) in load(home)?.plugins {
+        merged.insert(
+            name.clone(),
+            ManagedPlugin {
+                name,
+                entry,
+                cli: true,
+            },
+        );
+    }
+    for (name, entry) in
+        gray_plugin::lock::LockFile::load(&gray_plugin::lock::lock_path(home))?.plugins
+    {
+        merged.entry(name.clone()).or_insert(ManagedPlugin {
+            name,
+            entry,
+            cli: false,
+        });
+    }
+    Ok(merged.into_values().collect())
+}
+
+/// One display row of the merged manager view, pre-resolved: `on` already
+/// folds the sidecar enable overlay (see [`enabled`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ManagedRow {
+    pub name: String,
+    pub version: String,
+    pub scope: String,
+    pub ecosystem: String,
+    pub on: bool,
+    pub cli: bool,
+}
+
+/// Merged display rows (sidecars + CLI commands, sorted by name) for
+/// `plugin list`, `/plugin list`, and the manager picker. When the home dir
+/// is unresolvable, falls back to the sidecar-only listing instead of
+/// failing (the previous `plugin list` never failed here — `gray-pkg` falls
+/// back to a relative `.gray` dir).
+pub fn list_rows() -> anyhow::Result<Vec<ManagedRow>> {
+    let Ok(home) = home() else {
+        return Ok(gray_pkg::ops::list()?
+            .into_iter()
+            .map(|(name, e)| ManagedRow {
+                name,
+                version: e.version,
+                scope: e.scope,
+                ecosystem: e.ecosystem,
+                on: e.enabled,
+                cli: false,
+            })
+            .collect());
+    };
+    Ok(list_managed(&home)?
+        .into_iter()
+        .map(|p| ManagedRow {
+            on: enabled(&home, &p.name, &p.entry),
+            name: p.name.clone(),
+            version: p.entry.version.clone(),
+            scope: p.entry.scope.clone(),
+            ecosystem: p.entry.ecosystem.clone(),
+            cli: p.cli,
+        })
+        .collect())
+}
+
+/// Flip a `commands.json` entry's `enabled` flag (native/CLI commands only;
+/// sidecars stay on `gray-pkg::ops`). Miss message matches `ops::remove`.
+pub fn set_command_enabled(home: &Path, name: &str, on: bool) -> anyhow::Result<()> {
+    validate_name(name)?;
+    let _guard = hold_commands_lock(home);
+    let mut registry = load(home)?;
+    let Some(entry) = registry.plugins.get_mut(name) else {
+        anyhow::bail!("not installed: {name}");
+    };
+    entry.enabled = on;
+    registry.save(&registry_path(home))?;
+    Ok(())
+}
+
+/// Remove one `commands.json` entry (native/CLI commands only; sidecars stay
+/// on `gray-pkg::ops`). Also drops its `<name>-manifest.json` so completion
+/// and help stop advertising it, and clears a widget slot it owned.
+/// Miss message matches `ops::remove`.
+pub fn remove_command(home: &Path, name: &str) -> anyhow::Result<()> {
+    validate_name(name)?;
+    if name.is_empty() || name.contains('/') || name.contains("..") {
+        anyhow::bail!("not installed: {name}");
+    }
+    let _guard = hold_commands_lock(home);
+    let mut registry = load(home)?;
+    // `register_native` mirrors the entry into `lock.json` as a zero-tool
+    // sidecar: drop the mirror too, or its ghost row outlives the remove.
+    // Only a same-argv row is the mirror — an independent same-named
+    // sidecar (different argv) survives.
+    let Some(dropped) = registry.plugins.remove(name) else {
+        anyhow::bail!("not installed: {name}");
+    };
+    registry.save(&registry_path(home))?;
+    if let Ok(mut sidecars) = gray_plugin::lock::LockFile::load(&gray_plugin::lock::lock_path(home))
+        && sidecars
+            .plugins
+            .get(name)
+            .is_some_and(|s| s.argv == dropped.argv)
+    {
+        sidecars.plugins.remove(name);
+        let _ = sidecars.save(&gray_plugin::lock::lock_path(home));
+    }
+    let _ = std::fs::remove_file(home.join("plugins").join(format!("{name}-manifest.json")));
+    let widgets = home.join("plugins/widgets.json");
+    if let Ok(raw) = std::fs::read(&widgets)
+        && serde_json::from_slice::<serde_json::Value>(&raw)
+            .ok()
+            .and_then(|v| v["name"].as_str().map(str::to_string))
+            == Some(name.to_string())
+    {
+        let _ = std::fs::remove_file(&widgets);
+    }
+    Ok(())
+}
+
+/// Is `name` a `commands.json` native/CLI command (missing registry: no)?
+pub fn is_command(home: &Path, name: &str) -> bool {
+    load(home)
+        .map(|r| r.plugins.contains_key(name))
+        .unwrap_or(false)
+}
+
+/// Remove from whichever registry owns `name` (`commands.json` CLI entries
+/// shadow sidecars at runtime, so they win ties). Both misses read
+/// "not installed: {name}", matching `ops::remove`.
+pub fn remove_managed(name: &str) -> anyhow::Result<()> {
+    let home = home()?;
+    if is_command(&home, name) {
+        remove_command(&home, name)
+    } else {
+        gray_pkg::ops::remove(name)
+    }
+}
+
+/// Enable/disable in whichever registry owns `name`, same routing as
+/// [`remove_managed`].
+pub fn set_managed_enabled(name: &str, on: bool) -> anyhow::Result<()> {
+    let home = home()?;
+    if is_command(&home, name) {
+        set_command_enabled(&home, name, on)
+    } else {
+        gray_pkg::ops::set_enabled(name, on)
+    }
+}
+
+/// `update` only knows sidecar sources: a `commands.json` entry would fail
+/// as "not installed", so skip it with the same warning shape `ops` uses
+/// for non-index rows and report nothing changed.
+pub async fn update_managed(target: &str) -> anyhow::Result<Vec<gray_pkg::ops::Report>> {
+    let home = home()?;
+    if target != "all" && is_command(&home, target) {
+        eprintln!("warning: skipping update of {target} (non-index source)");
+        return Ok(Vec::new());
+    }
+    gray_pkg::ops::update(target).await
 }
 
 /// Resolve only explicitly registered commands (never arbitrary PATH executables).
@@ -414,6 +612,210 @@ pub(crate) async fn capture(
 mod tests {
     #[cfg(unix)]
     use super::*;
+
+    fn command_entry(enabled: bool) -> LockEntry {
+        LockEntry {
+            ecosystem: "gray-cli".into(),
+            version: "catalog".into(),
+            hash: String::new(),
+            source: "git+https://example.invalid/x.git".into(),
+            argv: vec!["/usr/bin/false".into()],
+            adapter_version: "1".into(),
+            installed_at: "2026-09-18T00:00:00Z".into(),
+            scope: "user".into(),
+            enabled,
+        }
+    }
+
+    fn write_commands(home: &Path, plugins: &serde_json::Value) {
+        std::fs::create_dir_all(home.join("plugins")).unwrap();
+        std::fs::write(
+            home.join("plugins/commands.json"),
+            serde_json::json!({"schema": 1, "plugins": plugins}).to_string(),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn list_managed_merges_both_registries_with_cli_shadowing() {
+        let home = tempfile::tempdir().unwrap();
+        let home = home.path();
+        write_commands(
+            home,
+            &serde_json::json!({"cli-only": command_entry(true), "both": command_entry(true)}),
+        );
+        let mut sidecars =
+            gray_plugin::lock::LockFile::load(&gray_plugin::lock::lock_path(home)).unwrap();
+        sidecars.plugins.insert(
+            "both".into(),
+            gray_plugin::lock::LockEntry {
+                ecosystem: "gray-native".into(),
+                version: "9.9.9".into(),
+                hash: String::new(),
+                source: "sidecar".into(),
+                argv: Vec::new(),
+                adapter_version: "1".into(),
+                installed_at: String::new(),
+                scope: "user".into(),
+                // Disabled here: `register_native` mirrors native entries
+                // into `lock.json`, and `enabled()` reads that overlay.
+                enabled: false,
+            },
+        );
+        sidecars.plugins.insert(
+            "sidecar-only".into(),
+            gray_plugin::lock::LockEntry {
+                ecosystem: "gray-native".into(),
+                version: "1.0.0".into(),
+                hash: String::new(),
+                source: "sidecar".into(),
+                argv: Vec::new(),
+                adapter_version: "1".into(),
+                installed_at: String::new(),
+                scope: "user".into(),
+                enabled: false,
+            },
+        );
+        sidecars.save(&gray_plugin::lock::lock_path(home)).unwrap();
+        let merged = list_managed(home).unwrap();
+        let names: Vec<_> = merged.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, vec!["both", "cli-only", "sidecar-only"]);
+        // Same name in both registries: the CLI entry (what `forward` runs)
+        // shadows the sidecar row instead of listing twice.
+        let both = merged.iter().find(|p| p.name == "both").unwrap();
+        assert!(both.cli);
+        assert_eq!(both.entry.ecosystem, "gray-cli");
+        // Effective enablement still honors the sidecar overlay (see
+        // `enabled`): the mirrored `lock.json` entry disables the row, and
+        // the CLI entry itself stays enabled.
+        assert!(!enabled(home, "both", &both.entry));
+        assert!(both.entry.enabled);
+        assert!(is_command(home, "cli-only"));
+        assert!(!is_command(home, "sidecar-only"));
+    }
+
+    #[test]
+    fn list_managed_is_empty_when_both_registries_missing() {
+        let home = tempfile::tempdir().unwrap();
+        assert!(list_managed(home.path()).unwrap().is_empty());
+    }
+
+    #[test]
+    fn set_command_enabled_flips_only_the_command_registry() {
+        let home = tempfile::tempdir().unwrap();
+        let home = home.path();
+        write_commands(home, &serde_json::json!({"demo": command_entry(true)}));
+        set_command_enabled(home, "demo", false).unwrap();
+        assert!(!load(home).unwrap().plugins["demo"].enabled);
+        set_command_enabled(home, "demo", true).unwrap();
+        assert!(load(home).unwrap().plugins["demo"].enabled);
+        let miss = set_command_enabled(home, "ghost", true).unwrap_err();
+        assert!(miss.to_string().contains("not installed: ghost"), "{miss}");
+        let bad = set_command_enabled(home, "BAD NAME", true).unwrap_err();
+        assert!(
+            bad.to_string().contains("invalid plugin command name"),
+            "{bad}"
+        );
+    }
+
+    #[test]
+    fn remove_command_drops_mirrored_sidecar_but_keeps_independent_row() {
+        // `register_native` mirrors into lock.json with the same argv: the
+        // mirror goes with the remove.
+        let home = tempfile::tempdir().unwrap();
+        let home = home.path();
+        let entry = command_entry(true);
+        write_commands(home, &serde_json::json!({"demo": entry}));
+        let mut sidecars =
+            gray_plugin::lock::LockFile::load(&gray_plugin::lock::lock_path(home)).unwrap();
+        sidecars.plugins.insert(
+            "demo".into(),
+            gray_plugin::lock::LockEntry {
+                ecosystem: "gray-native".into(),
+                version: "catalog".into(),
+                hash: String::new(),
+                source: "mirror".into(),
+                argv: entry.argv.clone(),
+                adapter_version: "1".into(),
+                installed_at: String::new(),
+                scope: "user".into(),
+                enabled: true,
+            },
+        );
+        sidecars.save(&gray_plugin::lock::lock_path(home)).unwrap();
+        remove_command(home, "demo").unwrap();
+        assert!(!load(home).unwrap().plugins.contains_key("demo"));
+        assert!(
+            !gray_plugin::lock::LockFile::load(&gray_plugin::lock::lock_path(home))
+                .unwrap()
+                .plugins
+                .contains_key("demo")
+        );
+        // Same name, different argv: an independent sidecar, not the mirror —
+        // it survives and keeps listing (without `[command]`).
+        write_commands(home, &serde_json::json!({"demo": command_entry(true)}));
+        let mut sidecars =
+            gray_plugin::lock::LockFile::load(&gray_plugin::lock::lock_path(home)).unwrap();
+        sidecars.plugins.insert(
+            "demo".into(),
+            gray_plugin::lock::LockEntry {
+                ecosystem: "gray-native".into(),
+                version: "2.0.0".into(),
+                hash: String::new(),
+                source: "other".into(),
+                argv: vec!["/other/binary".into()],
+                adapter_version: "1".into(),
+                installed_at: String::new(),
+                scope: "user".into(),
+                enabled: true,
+            },
+        );
+        sidecars.save(&gray_plugin::lock::lock_path(home)).unwrap();
+        remove_command(home, "demo").unwrap();
+        let ghost = gray_plugin::lock::LockFile::load(&gray_plugin::lock::lock_path(home))
+            .unwrap()
+            .plugins
+            .remove("demo")
+            .unwrap();
+        assert_eq!(ghost.argv, vec!["/other/binary".to_string()]);
+        let merged = list_managed(home).unwrap();
+        assert_eq!(merged.len(), 1);
+        assert!(!merged[0].cli);
+        assert_eq!(merged[0].entry.version, "2.0.0");
+    }
+
+    #[test]
+    fn remove_command_drops_registry_manifest_and_widget_slot() {
+        let home = tempfile::tempdir().unwrap();
+        let home = home.path();
+        write_commands(home, &serde_json::json!({"demo": command_entry(true)}));
+        std::fs::write(
+            home.join("plugins/demo-manifest.json"),
+            r#"{"name":"demo","commands":["/demo"]}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            home.join("plugins/widgets.json"),
+            r#"{"name":"demo","argv":["demo","widget"]}"#,
+        )
+        .unwrap();
+        remove_command(home, "demo").unwrap();
+        assert!(!load(home).unwrap().plugins.contains_key("demo"));
+        assert!(!home.join("plugins/demo-manifest.json").exists());
+        assert!(!home.join("plugins/widgets.json").exists());
+        // A widget slot owned by someone else survives.
+        std::fs::write(
+            home.join("plugins/widgets.json"),
+            r#"{"name":"other","argv":["other","widget"]}"#,
+        )
+        .unwrap();
+        write_commands(home, &serde_json::json!({"demo": command_entry(true)}));
+        remove_command(home, "demo").unwrap();
+        assert!(home.join("plugins/widgets.json").exists());
+        let miss = remove_command(home, "ghost").unwrap_err();
+        assert!(miss.to_string().contains("not installed: ghost"), "{miss}");
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn capture_bounds_output_and_reaps_timeout() {

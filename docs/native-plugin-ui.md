@@ -86,6 +86,8 @@ exit status is reported as an error; stderr is not painted into the TUI.
 - Shutdown stops polling; the current request remains bounded by its deadline.
   This is not a sandbox for malicious plugins or deliberately detached descendants.
 
+`plugin list` (CLI + `/plugin list`, alias `/plugins list`) merges both registries: every `commands.json` entry plus every `lock.json` sidecar not shadowed by the same name, sorted by name with CLI rows tagged `[command]`. `plugin enable|disable|remove <name>` route to whichever registry owns the name (CLI first — it shadows at runtime); `register_native` mirrors into `lock.json`, so removing a native command also drops its mirror row (an independent same-named sidecar with different argv survives). `plugin update <command>` warns (`non-index source`) and no-ops; `install <spec>` stays sidecar-only.
+
 Data lives under `$GRAY_HOME/plugins` (default `~/.gray/plugins`): `commands.json`,
 `lock.json`, `<name>-manifest.json`, and `widgets.json`. Registration checks widget
 ownership under a file lock. Files are individually atomically replaced; the

@@ -28,6 +28,7 @@
   printing a `next=` that will never arrive.
 
 ### Fixed
+- `plugin list` / `/plugin list` now show `install plugin` commands (e.g. discord): the list merges `commands.json` CLI entries with `lock.json` sidecars (CLI rows tagged `[command]`), and `enable`/`disable`/`remove` route to whichever registry owns the name (was `not installed`); `update <command>` warns and no-ops like other non-index sources. `gray plugins` (CLI) is pinned as the `gray plugin` alias by test
 - Cancelling a turn no longer discards the in-flight tool's own report: both
   cancel paths (single dispatch, parallel join) abandoned the future on the
   same token the tool watches, so partial output and the process-group kill
