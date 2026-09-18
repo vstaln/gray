@@ -129,8 +129,6 @@ struct OpenAiMessageRequest {
     tool_calls: Option<Vec<OpenAiToolCallRequest>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tool_call_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    cache_control: Option<Value>,
 }
 
 #[derive(Debug, Serialize)]
@@ -300,36 +298,68 @@ fn wire_tool_output(content: &str, is_error: bool) -> String {
     }
 }
 
-/// Anthropic prompt-caching: matching Pi's applyAnthropicCacheControl.
-/// Attaches cache_control breakpoints to:
-/// 1. System prompt
-/// 2. Last tool definition
-/// 3. Last conversation message
+/// Anthropic prompt caching, pi `applyAnthropicCacheControl`: breakpoints on
+/// 1. the system prompt,
+/// 2. the last tool definition,
+/// 3. the last conversation message that carries text.
+///
+/// OpenRouter/Anthropic read `cache_control` only on content blocks, so the
+/// marker goes on a text part (pi `addCacheControlToTextContent`); a
+/// message-level field is not a documented placement and caches nothing.
 fn apply_anthropic_cache_control(
     messages: &mut [OpenAiMessageRequest],
     tools: &mut [OpenAiToolDefRequest],
 ) {
     let cache_control = serde_json::json!({"type": "ephemeral"});
 
-    // 1. Add cache control to system prompt
-    for m in messages.iter_mut() {
-        if m.role == "system" || m.role == "developer" {
-            m.cache_control = Some(cache_control.clone());
-            break;
-        }
+    if let Some(system) = messages
+        .iter_mut()
+        .find(|m| m.role == "system" || m.role == "developer")
+    {
+        add_cache_control_to_text_content(system, &cache_control);
     }
 
-    // 2. Add cache control to last tool
     if let Some(last_tool) = tools.last_mut() {
         last_tool.cache_control = Some(cache_control.clone());
     }
 
-    // 3. Add cache control to last conversation message
+    // Walk back past messages without text (tool-call-only assistant turns,
+    // image-only parts) to the newest one that can hold the marker.
     for m in messages.iter_mut().rev() {
-        if m.role == "user" || m.role == "assistant" || m.role == "tool" {
-            m.cache_control = Some(cache_control.clone());
+        if matches!(m.role.as_str(), "user" | "assistant" | "tool")
+            && add_cache_control_to_text_content(m, &cache_control)
+        {
             break;
         }
+    }
+}
+
+/// Marks the last text part of `m`, promoting plain string content to a
+/// one-part text array first. `false` when there is no text to mark.
+fn add_cache_control_to_text_content(m: &mut OpenAiMessageRequest, cache_control: &Value) -> bool {
+    if let Some(Value::String(text)) = &mut m.content {
+        if text.is_empty() {
+            return false;
+        }
+        let text = std::mem::take(text);
+        m.content = Some(serde_json::json!([
+            {"type": "text", "text": text, "cache_control": cache_control}
+        ]));
+        return true;
+    }
+    let Some(Value::Array(parts)) = &mut m.content else {
+        return false;
+    };
+    let text_part = parts
+        .iter_mut()
+        .rev()
+        .find(|p| p.get("type").and_then(Value::as_str) == Some("text"));
+    match text_part.and_then(Value::as_object_mut) {
+        Some(part) => {
+            part.insert("cache_control".to_string(), cache_control.clone());
+            true
+        }
+        None => false,
     }
 }
 
@@ -375,7 +405,6 @@ fn map_chat_request(
             reasoning_content: None,
             tool_calls: None,
             tool_call_id: None,
-            cache_control: None,
         });
     }
 
@@ -455,7 +484,6 @@ fn map_chat_request(
                     reasoning_content,
                     tool_calls: tool_calls_opt,
                     tool_call_id: None,
-                    cache_control: None,
                 });
 
                 for (id, content, is_error) in tool_results {
@@ -465,7 +493,6 @@ fn map_chat_request(
                         reasoning_content: None,
                         tool_calls: None,
                         tool_call_id: Some(id),
-                        cache_control: None,
                     });
                 }
             }
@@ -521,7 +548,6 @@ fn map_chat_request(
                         reasoning_content: None,
                         tool_calls: None,
                         tool_call_id: Some(id),
-                        cache_control: None,
                     });
                 }
 
@@ -548,7 +574,6 @@ fn map_chat_request(
                         reasoning_content: None,
                         tool_calls: None,
                         tool_call_id: None,
-                        cache_control: None,
                     });
                 }
             }
@@ -581,7 +606,7 @@ fn map_chat_request(
         ordered.push(message);
     }
     ordered.append(&mut deferred_images);
-    let mut messages = ordered;
+    let messages = ordered;
 
     // 3. Map tools — drop empty names that would trigger 400 `name` must be non-empty
     let mut tools: Vec<OpenAiToolDefRequest> = filter_valid_tools(req.tools)
@@ -597,11 +622,6 @@ fn map_chat_request(
         })
         .collect();
 
-    // Anthropic prompt caching (Pi-matching): only applied for Anthropic/Claude models
-    if is_anthropic_model(model) {
-        apply_anthropic_cache_control(&mut messages, &mut tools);
-    }
-
     // Orphan guard (same class as the Responses mapper): an assistant
     // tool_call with no following tool result 400s on strict providers —
     // synthesize a stub result when a non-tool message (or end of history)
@@ -616,7 +636,6 @@ fn map_chat_request(
         reasoning_content: None,
         tool_calls: None,
         tool_call_id: Some(id.to_string()),
-        cache_control: None,
     };
     for m in messages {
         match m.role.as_str() {
@@ -649,7 +668,13 @@ fn map_chat_request(
         log::warn!(target: "gray_provider", "synthesizing missing tool output for orphaned call {id}");
         fixed.push(stub(&id));
     }
-    let messages = fixed;
+    let mut messages = fixed;
+
+    // Anthropic prompt caching (pi): marked after the orphan guard so the
+    // "last message" breakpoint lands on what is actually sent last.
+    if is_anthropic_model(model) {
+        apply_anthropic_cache_control(&mut messages, &mut tools);
+    }
 
     let (reasoning_effort_val, reasoning_val, thinking_val) = match reasoning_effort {
         Some("off") => (None, None, Some(serde_json::json!({ "type": "disabled" }))),
@@ -1353,6 +1378,30 @@ fn retry_floor(
     floor
 }
 
+/// Session-affinity headers for one POST (empty without a session id).
+/// `x-opencode-session`: Console Go (opencode.ai/zen) routes on it and 400s
+/// MissingSessionID without it; unknown `x-` headers are ignored elsewhere.
+/// `x-session-id`: OpenRouter's sticky-routing key (pi
+/// `sendSessionAffinityHeaders`), which pins every request of the session to
+/// the upstream that holds its prompt cache instead of a key OpenRouter
+/// derives by hashing the messages.
+fn session_affinity_headers<'a>(
+    url: &Url,
+    session_id: Option<&'a str>,
+) -> Vec<(&'static str, &'a str)> {
+    let Some(sid) = session_id.filter(|s| !s.is_empty()) else {
+        return Vec::new();
+    };
+    let mut headers = vec![("x-opencode-session", sid)];
+    if url
+        .host_str()
+        .is_some_and(|h| h == "openrouter.ai" || h.ends_with(".openrouter.ai"))
+    {
+        headers.push(("x-session-id", sid));
+    }
+    headers
+}
+
 /// Single POST attempt (no retry). Retry + `Reconnecting...` notices live in
 /// `stream_unfold_step` so each attempt surfaces to the UI like Codex's
 /// `notify_stream_error` instead of stalling silently in a sleep loop.
@@ -1371,12 +1420,9 @@ async fn send_json_once(
             .post(url.clone())
             .header("Authorization", format!("Bearer {api_key}"))
     };
-    // Console Go (opencode.ai/zen) routes on this; without it inference
-    // 400s MissingSessionID. Unknown `x-` headers are ignored elsewhere.
-    let base = match session_id.filter(|s| !s.is_empty()) {
-        Some(sid) => base.header("x-opencode-session", sid),
-        None => base,
-    };
+    let base = session_affinity_headers(url, session_id)
+        .into_iter()
+        .fold(base, |b, (name, value)| b.header(name, value));
     let req = base.header("Content-Type", "application/json").json(body);
     let res_result = req.send().await;
     log::debug!(target: "gray_provider", "request sent to {url} (attempt {attempt})");

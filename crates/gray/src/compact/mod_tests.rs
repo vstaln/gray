@@ -13,12 +13,11 @@ fn should_compact_threshold() {
 
 #[test]
 fn summary_envelope_matches_core_helper_byte_for_byte() {
-    let [u1, a1] = gray_core::agent::summary_pair("  shared summary  ");
-    assert!(u1.text_content().contains("shared summary"));
+    let m1 = gray_core::agent::summary_message("  shared summary  ");
+    assert!(m1.text_content().contains("shared summary"));
     // Both compact paths build via the same helper, so envelopes are identical.
-    let [u2, a2] = gray_core::agent::summary_pair("shared summary");
-    assert_eq!(u1.text_content().as_bytes(), u2.text_content().as_bytes());
-    assert_eq!(a1.text_content().as_bytes(), a2.text_content().as_bytes());
+    let m2 = gray_core::agent::summary_message("shared summary");
+    assert_eq!(m1.text_content().as_bytes(), m2.text_content().as_bytes());
 }
 
 #[test]
@@ -192,7 +191,7 @@ async fn auto_compact_triggers_on_threshold() {
     };
     let executor = NoopExecutor;
     crate::setup::set_user_keep_recent_tokens(Some(0));
-    // Large enough that the summary pair strictly shrinks history (the
+    // Large enough that the summary strictly shrinks history (the
     // enforced shrink invariant refuses toy histories).
     let mut agent = Agent::new(Box::new(provider), Arc::new(executor)).with_messages(vec![
         Message::user("hello ".repeat(500)),
@@ -204,11 +203,7 @@ async fn auto_compact_triggers_on_threshold() {
         .expect("compact should succeed");
     crate::setup::set_user_keep_recent_tokens(None);
     assert!(compacted, "should have compacted");
-    assert_eq!(
-        agent.messages().len(),
-        2,
-        "should be 2 messages after compact"
-    );
+    assert_eq!(agent.messages().len(), 1, "keep=0 leaves only the summary");
     assert!(
         agent.messages()[0]
             .text_content()
@@ -340,19 +335,26 @@ async fn compact_retains_newest_and_boundary_truncates_oldest() {
     let msgs = ag.messages();
     assert_eq!(
         msgs.len(),
-        5,
-        "truncated m2 + m3 + m4 + summary pair, got {}",
+        4,
+        "summary + truncated m2 + m3 + m4, got {}",
         msgs.len()
     );
     assert!(
-        msgs[0].text_content().starts_with("m2:"),
-        "boundary group kept truncated: {}",
-        msgs[0].text_content().chars().take(20).collect::<String>()
+        msgs[0]
+            .text_content()
+            .contains("compacted into the following summary"),
+        "summary leads (pi order)"
     );
-    assert!(msgs[1].text_content().contains("m3"), "retained oldest");
-    assert!(msgs[2].text_content().contains("m4"), "retained newest");
-    assert!(msgs[3].text_content().contains('S'), "summary_user last");
-    assert!(msgs[4].text_content().contains("Understood"), "ack closes");
+    assert!(
+        msgs[1].text_content().starts_with("m2:"),
+        "boundary group kept truncated: {}",
+        msgs[1].text_content().chars().take(20).collect::<String>()
+    );
+    assert!(msgs[2].text_content().contains("m3"), "retained oldest");
+    assert!(
+        msgs[3].text_content().contains("m4"),
+        "retained newest closes"
+    );
 }
 
 #[tokio::test]
@@ -396,11 +398,10 @@ async fn compact_drops_tool_pair_atomically() {
         )),
         "no orphaned call/result may survive: {msgs:?}"
     );
-    assert!(
-        msgs.last()
-            .expect("history")
-            .text_content()
-            .contains("Understood")
+    assert_eq!(
+        msgs.last().expect("history").text_content(),
+        "new",
+        "history still ends on the newest user turn"
     );
 }
 
@@ -571,7 +572,7 @@ mod switch_tests {
     }
 
     fn agent() -> Agent {
-        // Large enough that the summary pair strictly shrinks history
+        // Large enough that the summary strictly shrinks history
         // (the enforced shrink invariant refuses toy histories).
         Agent::new(Box::new(FakeProvider), Arc::new(NoopExecutor)).with_messages(vec![
             Message::user("hello ".repeat(500)),

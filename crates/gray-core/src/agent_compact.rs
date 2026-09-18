@@ -1,34 +1,32 @@
 //! Transcript compaction for context-overflow recovery (move-only split).
 //!
-//! [`summary_pair`] is the shared compaction envelope (`Agent` recovery and
-//! `gray::compact` can never drift); [`Agent::compact_v2`] runs the codex-v2
-//! pipeline ([`Agent::try_compact_budgeted`] is its bool-shaped delegate) via
-//! [`Agent::complete_with_history`].
+//! [`summary_message`] is the shared compaction envelope (`Agent` recovery and
+//! `gray::compact` can never drift); [`Agent::compact_v2`] summarizes via
+//! [`Agent::complete_with_history`] ([`Agent::try_compact_budgeted`] is its
+//! bool-shaped delegate) and installs pi's layout: summary first, then the
+//! retained tail.
 
 use crate::agent::Agent;
 use crate::compact::{RETAINED_MESSAGE_TOKEN_BUDGET, build_retained, run_compaction_call};
 use crate::error::CoreError;
 use crate::message::Message;
 
-/// Shared compaction envelope: `[summary_user, summary_ack]` so
-/// `Agent::try_compact_budgeted` and `gray::compact` can never drift.
-/// Trims `summary`; byte-stable (see `summary_pair_envelope_is_byte_stable`).
-pub fn summary_pair(summary: &str) -> [Message; 2] {
+/// Shared compaction envelope, pi `COMPACTION_SUMMARY_PREFIX`/`SUFFIX`: one
+/// user message, so `Agent::try_compact_budgeted` and `gray::compact` can
+/// never drift. No canned assistant reply follows it: the retained tail
+/// comes next, so the request still ends on the user/tool turn it ended on.
+/// Trims `summary`; byte-stable (see `summary_message_envelope_is_byte_stable`).
+pub fn summary_message(summary: &str) -> Message {
     let s = summary.trim();
-    [
-        Message::user(format!(
-            "Another language model started to solve this problem and produced a summary of its thinking process. Use this to build on the work already done and avoid duplicating work. Here is the summary, use the information in it to assist with your own analysis:\n\n<s>\n{s}\n</s>"
-        )),
-        Message::assistant(
-            "Understood. I have reviewed the conversation summary and context, and I am ready to continue.",
-        ),
-    ]
+    Message::user(format!(
+        "The conversation history before this point was compacted into the following summary:\n\n<summary>\n{s}\n</summary>"
+    ))
 }
 
 impl Agent {
     /// One-shot transcript compaction via the compaction-v2 pipeline: summarize
     /// the history with one in-band trigger call, retain the newest history
-    /// within budget, then `messages = retained + summary_pair` (summary LAST).
+    /// within budget, then `messages = [summary_message] + retained` (pi order).
     /// Returns `Ok(true)` iff the replacement history is strictly smaller in
     /// estimated tokens; otherwise `self.messages` is left untouched and
     /// `Ok(false)` is returned (empty, under budget, blank summary, or the
@@ -71,25 +69,24 @@ impl Agent {
         });
         // Cheap no-gain bail before the summary call: the retained walk can
         // cost at most `budget`, so a transcript already within budget cannot
-        // strictly shrink once the summary pair lands. Makes proactive
+        // strictly shrink once the summary lands. Makes proactive
         // rolling callers (and manual /compact on tiny transcripts) free
         // instead of burning an LLM call that the shrink check would reject.
         if est_tokens(&candidate) <= budget {
             return Ok(None);
         }
         // Stage 1 (v2): one trigger call over the history with the live
-        // system + tools; empty summary compacts nothing. (Proactive output
-        // elision upstream already slimmed old tool results, so no separate
-        // pre-trim stage: one trimmer, not two.)
+        // system + tools; empty summary compacts nothing.
         let summary = run_compaction_call(self, &candidate, instructions).await?;
         if summary.trim().is_empty() {
             return Ok(None);
         }
         // Stage 2: retained newest history within budget (computed above).
         let retained = build_retained(&candidate, budget);
-        // Stage 3 (v2): summary appended LAST (order change from prepend).
-        let mut next = retained;
-        next.extend(summary_pair(&summary));
+        // Stage 3 (pi `buildSessionContext`): summary first, retained tail
+        // after it, so the request still ends on the tail's user/tool turn.
+        let mut next = vec![summary_message(&summary)];
+        next.extend(retained);
         // Enforced shrink: a replacement that is not strictly smaller is not
         // a compaction — leave history untouched so both the pre-turn retry
         // and the overflow retry terminate on `None`.

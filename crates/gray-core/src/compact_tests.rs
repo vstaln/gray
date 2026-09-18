@@ -54,7 +54,7 @@ fn sized_msg(tag: &str) -> Message {
 
 #[tokio::test]
 async fn budgeted_compact_keeps_recent_tail() {
-    // v2 order: [retained..., summary_user, summary_ack] (summary LAST).
+    // pi order: [summary, retained...] (summary first, no ack).
     let mut agent = test_agent("FIXED-SUMMARY-123").with_context_window(Some(16_200));
     let bodies: Vec<String> = (1..=6).map(|i| format!("msg{i}")).collect();
     agent.set_messages(bodies.iter().map(|t| sized_msg(t)).collect());
@@ -62,56 +62,43 @@ async fn budgeted_compact_keeps_recent_tail() {
     let ok = agent.try_compact_budgeted().await.unwrap();
     assert!(ok);
     let msgs = agent.messages();
-    assert_eq!(
-        msgs.len(),
-        4,
-        "2 retained + summary_pair, got {}",
-        msgs.len()
+    assert_eq!(msgs.len(), 3, "summary + 2 retained, got {}", msgs.len());
+    assert!(
+        msgs[0].text_content().contains("FIXED-SUMMARY-123"),
+        "summary carries the provider summary, FIRST"
     );
     assert!(
-        msgs[0].text_content().contains("msg5"),
+        msgs[1].text_content().contains("msg5"),
         "retained order: {}",
-        msgs[0].text_content().chars().take(20).collect::<String>()
-    );
-    assert!(msgs[1].text_content().contains("msg6"), "retained order");
-    assert!(
-        msgs[2].text_content().contains("FIXED-SUMMARY-123"),
-        "summary_user carries the provider summary, LAST"
+        msgs[1].text_content().chars().take(20).collect::<String>()
     );
     assert!(
-        msgs[3].text_content().contains("Understood"),
-        "summary_ack closes history"
+        msgs[2].text_content().contains("msg6"),
+        "newest closes history"
     );
 }
 
 #[tokio::test]
-async fn v2_pipeline_retained_then_summary_last() {
+async fn pipeline_summary_first_then_retained() {
     // 4 messages over a small window, trigger call returns "S":
-    // assembly is [retained..., summary_user, summary_ack], trigger
-    // nowhere in history.
+    // assembly is [summary, retained...] (pi), trigger nowhere in history.
     let mut agent = test_agent("S").with_context_window(Some(16_200));
     let bodies: Vec<String> = (1..=4).map(|i| format!("msg{i}")).collect();
     agent.set_messages(bodies.iter().map(|t| sized_msg(t)).collect());
     let ok = agent.try_compact_budgeted().await.unwrap();
     assert!(ok);
     let msgs = agent.messages();
-    assert_eq!(
-        msgs.len(),
-        4,
-        "2 retained + summary_pair, got {}",
-        msgs.len()
-    );
-    assert!(msgs[0].text_content().contains("msg3"), "retained oldest");
-    assert!(msgs[1].text_content().contains("msg4"), "retained newest");
+    assert_eq!(msgs.len(), 3, "summary + 2 retained, got {}", msgs.len());
     assert!(
-        msgs[2]
+        msgs[0]
             .text_content()
-            .contains("Another language model started"),
-        "summary_user appended LAST"
+            .contains("compacted into the following summary"),
+        "summary leads"
     );
+    assert!(msgs[1].text_content().contains("msg3"), "retained oldest");
     assert!(
-        msgs[3].text_content().contains("Understood"),
-        "summary_ack last"
+        msgs[2].text_content().contains("msg4"),
+        "retained newest last"
     );
     assert!(
         msgs.iter().all(|m| !m
@@ -130,8 +117,8 @@ async fn compact_v2_returns_summary_and_honors_zero_budget() {
     assert_eq!(out.as_deref(), Some("FIXED-SUMMARY-123"));
     assert_eq!(
         agent.messages().len(),
-        2,
-        "keep=0 → summary_pair only, got {}",
+        1,
+        "keep=0 → summary only, got {}",
         agent.messages().len()
     );
     assert!(
@@ -154,13 +141,12 @@ async fn budgeted_compact_false_when_nothing_to_gain() {
 
 #[tokio::test]
 async fn budgeted_compact_false_when_summary_would_not_shrink() {
-    // Already-compact 2-message history: head is message 1, tail is
-    // message 2, and the provider returns a summary LONGER than the head
-    // it replaces (the 2→2 spin). The enforced shrink invariant must
+    // Already-compact history (a prior summary) and a provider summary
+    // LONGER than what it would replace. The enforced shrink invariant must
     // return Ok(false) with history byte-identical.
     let long = "z".repeat(2000);
     let mut agent = test_agent(&long);
-    agent.set_messages(summary_pair("prior summary").into());
+    agent.set_messages(vec![summary_message("prior summary")]);
     let before = agent.messages().to_vec();
     let ok = agent.try_compact_budgeted().await.unwrap();
     assert!(!ok);

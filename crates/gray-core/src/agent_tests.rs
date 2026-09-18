@@ -880,9 +880,9 @@ async fn context_overflow_compacts_once_then_continues() {
         Box::new(provider),
         Arc::new(FakeExecutor::new(ToolOutput::ok("unused"))),
     )
-    // v2 compaction retains the newest history within min(64k,
-    // window−reserve) and appends the summary LAST: seed more than the
-    // 64k retained budget (unknown window) so the oldest messages drop
+    // Compaction retains the newest history within min(64k,
+    // window−reserve) behind a leading summary (pi order): seed more than
+    // the 64k retained budget (unknown window) so the oldest messages drop
     // and the replacement strictly shrinks (a fully-retained history
     // correctly reports "nothing to gain" and surfaces the error).
     .with_messages(
@@ -902,31 +902,43 @@ async fn context_overflow_compacts_once_then_continues() {
             .any(|e| *e == AgentEvent::text_delta("continued"))
     );
     let msgs = agent.messages();
-    let summary_at = msgs
+    assert!(
+        msgs[0]
+            .text_content()
+            .contains("compacted into the following summary"),
+        "pi order: [summary, retained..., reply], got {:?}",
+        msgs[0].text_content().chars().take(60).collect::<String>()
+    );
+    let summaries = msgs
         .iter()
-        .position(|m| m.text_content().contains("Another language model started"))
-        .expect("history must contain the summary pair");
-    assert!(
-        summary_at > 0 && summary_at + 2 < msgs.len(),
-        "v2 order: [retained..., summary_user, summary_ack, ...], got summary at {summary_at} of {}",
-        msgs.len()
+        .filter(|m| {
+            m.text_content()
+                .contains("compacted into the following summary")
+        })
+        .count();
+    assert_eq!(summaries, 1, "exactly one summary");
+    let last = msgs.len() - 1;
+    assert_eq!(
+        msgs[last].text_content(),
+        "continued",
+        "reply follows the tail"
+    );
+    assert_eq!(
+        msgs[last - 1].text_content(),
+        "go",
+        "the retry request ended on the user's turn, not on a canned ack"
     );
     assert!(
-        msgs[summary_at + 1].text_content().contains("Understood"),
-        "summary_ack follows summary_user"
-    );
-    assert!(
-        msgs[..summary_at].iter().all(|m| {
-            let t = m.text_content();
-            t.starts_with("bulk") || t == "go"
-        }),
-        "everything before the summary is retained history (bulks + the turn's go)"
+        msgs[1..last - 1]
+            .iter()
+            .all(|m| m.text_content().starts_with("bulk")),
+        "everything between summary and prompt is retained history"
     );
 }
 
-/// Elision is a pressure valve, not a per-turn habit: with no window
-/// pressure the model keeps every tool result it observed (it must not go
-/// blind on earlier searches/reads mid-task).
+/// History is append-only (mini-swe-agent / pi): the model keeps every tool
+/// result it observed verbatim, so each request extends the previous one
+/// and the provider prefix cache stays hot.
 #[tokio::test]
 async fn tool_observations_survive_without_context_pressure() {
     let body = format!("payload-keepme {}", "x".repeat(200));
@@ -958,7 +970,7 @@ async fn tool_observations_survive_without_context_pressure() {
     assert_eq!(observed.len(), 7, "one result per round");
     assert!(
         observed.iter().all(|c| c.starts_with("payload-keepme")),
-        "no observation may be elided without window pressure: {observed:?}"
+        "tool results are never rewritten: {observed:?}"
     );
 }
 
@@ -1207,20 +1219,94 @@ async fn tool_timeout_becomes_error_result_and_continues() {
 }
 
 #[test]
-fn summary_pair_envelope_is_byte_stable() {
-    let [u, a] = super::summary_pair("  hello world  ");
+fn summary_message_envelope_is_byte_stable() {
+    let m = super::summary_message("  hello world  ");
+    assert_eq!(m.role, Role::User, "pi: the summary is a user turn, no ack");
     assert_eq!(
-        u.text_content(),
-        "Another language model started to solve this problem and produced a summary of its thinking process. Use this to build on the work already done and avoid duplicating work. Here is the summary, use the information in it to assist with your own analysis:\n\n<s>\nhello world\n</s>"
-    );
-    assert_eq!(
-        a.text_content(),
-        "Understood. I have reviewed the conversation summary and context, and I am ready to continue."
+        m.text_content(),
+        "The conversation history before this point was compacted into the following summary:\n\n<summary>\nhello world\n</summary>"
     );
     // Byte-equality: trimming + envelope must never drift.
-    let [u2, a2] = super::summary_pair("hello world");
-    assert_eq!(u.text_content().as_bytes(), u2.text_content().as_bytes());
-    assert_eq!(a.text_content().as_bytes(), a2.text_content().as_bytes());
+    let m2 = super::summary_message("hello world");
+    assert_eq!(m.text_content().as_bytes(), m2.text_content().as_bytes());
+}
+
+#[test]
+fn context_estimate_anchors_on_provider_usage() {
+    // pi `estimateContextTokens`: the provider's report already counts the
+    // system prompt and tools; only messages appended after it are guessed.
+    let mut agent = Agent::new(
+        Box::new(FakeProvider::new(vec![])),
+        Arc::new(FakeExecutor::new(ToolOutput::ok(""))),
+    );
+    agent.set_messages(vec![Message::user("q"), Message::assistant("a")]);
+    agent.record_context_usage(&Usage::new(50_000, 1_000));
+    assert_eq!(agent.estimate_tokens(), 51_000);
+    agent.messages.push(Message::user("x".repeat(4_000)));
+    assert_eq!(agent.estimate_tokens(), 52_000, "trailing bytes/4 on top");
+    agent.record_context_usage(&Usage::default());
+    assert_eq!(
+        agent.estimate_tokens(),
+        52_000,
+        "a round without usage keeps the anchor"
+    );
+    agent.set_messages(vec![Message::user("x".repeat(400))]);
+    assert_eq!(
+        agent.estimate_tokens(),
+        100,
+        "a rewrite drops the stale anchor"
+    );
+}
+
+#[tokio::test]
+async fn provider_usage_triggers_pre_turn_compaction() {
+    // 70 × ~1k-token messages: bytes/4 (~70k) + reserve stays under the
+    // 200k window, so the old message-only estimate never compacted even
+    // when the provider reported a nearly full context.
+    let provider = FakeProvider::new(vec![
+        vec![
+            StreamEvent::tool_call_delta(
+                0,
+                Some("c1".into()),
+                Some(TOOL_NAME.into()),
+                r#"{"q":"x"}"#,
+            ),
+            StreamEvent::message_complete(Some(StopReason::ToolUse), Some(Usage::new(190_000, 10))),
+        ],
+        vec![
+            StreamEvent::text_delta("S"),
+            StreamEvent::message_complete(Some(StopReason::EndTurn), None),
+        ],
+        end_script(),
+    ]);
+    let mut agent = Agent::new(
+        Box::new(provider),
+        Arc::new(FakeExecutor::new(ToolOutput::ok("result"))),
+    )
+    .with_tools(vec![tool_def()])
+    .with_context_window(Some(200_000))
+    .with_messages(
+        (0..70)
+            .map(|i| Message::user(format!("bulk{i}:{}", "x".repeat(3990))))
+            .collect(),
+    );
+
+    agent
+        .run(Message::user("go"), ToolContext::default())
+        .await
+        .expect("compaction then reply");
+
+    let msgs = agent.messages();
+    assert!(
+        msgs[0]
+            .text_content()
+            .contains("compacted into the following summary"),
+        "190k reported of 200k must compact before the next request"
+    );
+    assert_eq!(
+        msgs.last().map(Message::text_content).as_deref(),
+        Some("done")
+    );
 }
 
 /// Stub `prompt/context` hook: returns fixed text like a sidecar's

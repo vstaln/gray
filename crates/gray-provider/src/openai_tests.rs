@@ -1491,3 +1491,113 @@ fn zen_500_retry_budget_constants() {
     assert!(msg.contains("cf-ray: ray-1"), "{msg}");
     assert!(msg.contains("request-id: req-1"), "{msg}");
 }
+
+fn cached_turn_req() -> gray_core::message::ChatRequest {
+    use gray_core::message::{Message, ToolDef};
+    gray_core::message::ChatRequest {
+        system: Some("sys".to_string()),
+        messages: vec![
+            Message::user("first"),
+            Message {
+                role: Role::Assistant,
+                content: vec![ContentBlock::tool_use(
+                    "c1",
+                    "bash",
+                    serde_json::json!({"cmd": "ls"}),
+                )],
+            },
+            Message {
+                role: Role::User,
+                content: vec![ContentBlock::tool_result("c1", "out", false)],
+            },
+        ],
+        tools: vec![ToolDef::new(
+            "bash",
+            "run",
+            serde_json::json!({"type": "object"}),
+        )],
+    }
+}
+
+#[test]
+fn anthropic_cache_control_rides_content_parts() {
+    // pi `applyAnthropicCacheControl`: OpenRouter/Anthropic read
+    // `cache_control` on content blocks only, so a message-level marker
+    // cached nothing. Breakpoints: system, last tool, last message.
+    let model = "anthropic/claude-sonnet-4.5";
+    let body = map_chat_request(cached_turn_req(), model, None).expect("maps");
+    let v = serde_json::to_value(&body).expect("serializes");
+    let msgs = v["messages"].as_array().expect("messages");
+    assert!(
+        msgs.iter().all(|m| m.get("cache_control").is_none()),
+        "never on the message object: {v}"
+    );
+    assert_eq!(msgs[0]["role"], "system");
+    assert_eq!(msgs[0]["content"][0]["text"], "sys");
+    assert_eq!(msgs[0]["content"][0]["cache_control"]["type"], "ephemeral");
+    let last = msgs.last().expect("tool result is last");
+    assert_eq!(last["role"], "tool");
+    assert_eq!(last["content"][0]["text"], "out");
+    assert_eq!(last["content"][0]["cache_control"]["type"], "ephemeral");
+    let marked = msgs
+        .iter()
+        .filter(|m| m.to_string().contains("cache_control"))
+        .count();
+    assert_eq!(marked, 2, "system + last message only: {v}");
+    assert_eq!(v["tools"][0]["cache_control"]["type"], "ephemeral");
+}
+
+#[test]
+fn anthropic_cache_control_marks_text_part_of_image_turn() {
+    use gray_core::message::Message;
+    let req = gray_core::message::ChatRequest {
+        system: None,
+        messages: vec![Message {
+            role: Role::User,
+            content: vec![
+                ContentBlock::text("what is this"),
+                ContentBlock::image("image/png", "AAAA"),
+            ],
+        }],
+        tools: Vec::new(),
+    };
+    let body = map_chat_request(req, "claude-opus-5", None).expect("maps");
+    let v = serde_json::to_value(&body).expect("serializes");
+    let parts = v["messages"][0]["content"].as_array().expect("parts");
+    assert_eq!(parts[0]["type"], "text");
+    assert_eq!(parts[0]["cache_control"]["type"], "ephemeral");
+    assert!(
+        parts[1].get("cache_control").is_none(),
+        "image part untouched: {v}"
+    );
+}
+
+#[test]
+fn non_anthropic_models_carry_no_cache_control() {
+    let model = "openai/gpt-5";
+    let body = map_chat_request(cached_turn_req(), model, None).expect("maps");
+    let v = serde_json::to_value(&body).expect("serializes");
+    assert!(!v.to_string().contains("cache_control"), "{v}");
+    assert_eq!(
+        v["messages"][0]["content"], "sys",
+        "plain string content kept"
+    );
+}
+
+#[test]
+fn openrouter_gets_sticky_session_header() {
+    // pi `sendSessionAffinityHeaders`: OpenRouter pins a session to one
+    // upstream (and its prompt cache) only when told the session id.
+    let openrouter = Url::parse("https://openrouter.ai/api/v1").expect("url");
+    assert_eq!(
+        session_affinity_headers(&openrouter, Some("s1")),
+        vec![("x-opencode-session", "s1"), ("x-session-id", "s1")]
+    );
+    let other = Url::parse("https://api.deepseek.com/v1").expect("url");
+    assert_eq!(
+        session_affinity_headers(&other, Some("s1")),
+        vec![("x-opencode-session", "s1")]
+    );
+    assert!(session_affinity_headers(&openrouter, None).is_empty());
+    assert!(session_affinity_headers(&openrouter, Some("")).is_empty());
+}
