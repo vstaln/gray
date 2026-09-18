@@ -66,8 +66,13 @@ pub async fn run_foreground(config: &Config) -> anyhow::Result<()> {
         follow_switches: true,
     };
     let deliver = crate::cron_serve::SaveLocalDeliver { home: home.clone() };
-    let mut interval = tokio::time::interval(Duration::from_secs(60));
-    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    // Aligned to wall-clock :00 so recurring schedules fire on minute
+    // boundaries instead of drifting. `interval_at` (not `sleep`) keeps the
+    // existing `select!` shutdown path responsive during the wait.
+    let first = tokio::time::Instant::now()
+        + Duration::from_secs(60 - (crate::cron::now_secs() as u64 % 60));
+    let mut interval = tokio::time::interval_at(first, Duration::from_secs(60));
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut stop_signal = stop_signal();
     let mut exit_reason: &'static str = "stop";
 
