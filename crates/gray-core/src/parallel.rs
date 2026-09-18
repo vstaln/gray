@@ -21,10 +21,15 @@ pub(crate) static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 /// Default-deny batchable set: statically `Allow` in every approval mode
 /// (see test), never prompts. `read` / `ls` / `find` / `grep` are
 /// pure-read by construction; `bash` is admitted only per call through
-/// [`bash_is_batchable`] (applied in `plan_segments`). Everything else —
-/// `write`, `edit`, sidecar tools — is a barrier.
+/// [`bash_is_batchable`], and `write` / `edit` only per call through the
+/// `path` presence screen plus the pairwise disjoint-path check in
+/// [`plan_segments`] (both applied in `plan_segments`). Everything else —
+/// sidecar tools — is a barrier.
 pub fn is_batchable(name: &str) -> bool {
-    matches!(name, "read" | "ls" | "find" | "grep" | "bash")
+    matches!(
+        name,
+        "read" | "ls" | "find" | "grep" | "bash" | "write" | "edit"
+    )
 }
 
 /// Cheap static screen: is this `bash` `command` plausibly read-only?
@@ -39,21 +44,24 @@ pub fn is_batchable(name: &str) -> bool {
 ///
 /// Screened on the model-sent command (before any `tool_before` rewrite).
 /// NOT screened — residual risk, accepted: pipe-to-shell (`curl … | sh`),
-/// script execution (`./run.sh`, `python x.py`), `eval`, fetch-and-write
-/// (`curl -o f`), and anything smuggled past whole-string token matching.
-/// `>` demotes unconditionally — including the otherwise-harmless `2>&1`
-/// (the bash tool already merges stderr into the header, so the redirect
-/// buys nothing). `<` (input-only) stays allowed.
+/// file-backed script runs (`python x.py`), `eval`, and anything smuggled
+/// past whole-string token matching. Stderr-only redirects (`2>&1`,
+/// `2>/dev/null`) create no files, so they are ignored — every other `>`
+/// demotes. `<` (input-only) stays allowed.
 pub fn bash_is_batchable(command: &str) -> bool {
+    // Stderr-only redirects merge into the captured stream (`2>&1`) or
+    // discard (`2>/dev/null`): strip them first so harmless
+    // `git diff 2>&1` still batches (the bash tool merges stderr anyway).
+    let scrubbed = command.replace("2>&1", "").replace("2>/dev/null", "");
     // Output redirection in any form (`>`, `>>`, `2>`, `&>`, `| … >`).
-    if command.contains('>') {
+    if scrubbed.contains('>') {
         return false;
     }
     // Whole-string word tokens: `scp` as one token never equals `cp`, and
     // `skill` never equals `kill`. Quote and substitution chars are
     // delimiters, so `$(rm …)` still matches `rm`; conversely
     // `grep "rm -rf" f` merely demotes (fail-safe, not wrong).
-    let toks: Vec<&str> = command
+    let toks: Vec<&str> = scrubbed
         .split(|c: char| {
             matches!(
                 c,
@@ -81,6 +89,20 @@ pub fn bash_is_batchable(command: &str) -> bool {
         return false;
     }
     if toks.contains(&"sed") && sed_edits_in_place(&toks) {
+        return false;
+    }
+    // Fetch-and-run primitives: `wget` writes by default; inline interpreter
+    // code (`python -c`, `node -e`) and `curl` with an output flag can write
+    // arbitrary files; `./x` / `sh x.sh` execute script files. Bare
+    // `python --version`, bare `curl url`, and `bash -c '…'` (payload is
+    // screened above as part of the whole string) stay allowed.
+    if toks.iter().any(|t| *t == "wget") {
+        return false;
+    }
+    if matches!(toks.first(), Some(s) if *s == "." || *s == "..") {
+        return false;
+    }
+    if inline_code_executes(&toks) || curl_writes_file(&toks) || shell_runs_script(&toks) {
         return false;
     }
     for (i, t) in toks.iter().enumerate() {
@@ -125,6 +147,56 @@ fn sed_edits_in_place(toks: &[&str]) -> bool {
     })
 }
 
+/// Inline interpreter code (`python -c`, `node -e`, …) can write through the
+/// interpreter — demote. Scoped to interpreter + flag co-occurrence so
+/// `sed -e` / `grep -e` (no interpreter present) stay allowed; bare
+/// `python --version` (no `-c`/`-e`) stays allowed.
+fn inline_code_executes(toks: &[&str]) -> bool {
+    const INTERPS: &[&str] = &["python", "python3", "node", "ruby", "perl"];
+    toks.iter().any(|t| INTERPS.contains(t))
+        && toks.iter().any(|t| *t == "-c" || *t == "-e")
+}
+
+/// `curl` alone just prints — demote only with an output flag (`-o` / `-O`
+/// incl. clusters like `-sSO`, `--output` / `--remote-name`).
+fn curl_writes_file(toks: &[&str]) -> bool {
+    if !toks.contains(&"curl") {
+        return false;
+    }
+    toks.iter().any(|t| {
+        *t == "-o" || *t == "-O" || *t == "--output" || *t == "--remote-name" || {
+            t.len() > 2 && t.starts_with('-') && !t.starts_with("--") && t[1..].contains(['o', 'O'])
+        }
+    })
+}
+
+/// `sh script.sh` / `bash deploy.sh` runs a file (may mutate) — demote.
+/// `bash -c '…'` executes a string whose words are screened above as part
+/// of the whole command, so the `-c` payload itself is skipped here;
+/// flag-only invocations (`bash --version`) stay allowed.
+fn shell_runs_script(toks: &[&str]) -> bool {
+    const SHELLS: &[&str] = &["sh", "bash", "zsh", "dash"];
+    for (i, t) in toks.iter().enumerate() {
+        if !SHELLS.contains(t) {
+            continue;
+        }
+        let mut j = i + 1;
+        let mut skip_next = false;
+        while j < toks.len() {
+            let a = toks[j];
+            if skip_next {
+                skip_next = false;
+            } else if a == "-c" || a == "--command" {
+                skip_next = true;
+            } else if !a.starts_with('-') {
+                return true;
+            }
+            j += 1;
+        }
+    }
+    false
+}
+
 /// `git` subcommands that never touch the repo or the worktree.
 const GIT_READ_ONLY: &[&str] = &["status", "diff", "log", "show", "blame"];
 
@@ -162,10 +234,16 @@ fn first_verb_allowed(toks: &[&str], at: usize, allowed: &[&str], takes_value: &
 /// Per-call screen inside the batchable set. `bash` must additionally pass
 /// [`bash_is_batchable`] on its model-sent `command`; a missing/non-string
 /// command demotes (fail-safe — validation reports it later on the
-/// sequential path). Every other batchable name is pure-read by
+/// sequential path). `write` / `edit` must carry a non-empty string `path`
+/// (the key confirmed against gray-tools `WriteTool` / `EditTool`, which
+/// both read `get_str(&args, "path")`); missing/non-string/empty demotes —
+/// same fail-safe. Every other batchable name is pure-read by
 /// construction.
 fn call_screen_passes(name: &str, args: &Value) -> bool {
     if name != "bash" {
+        if is_write_call(name) {
+            return write_target_path(name, args).is_some();
+        }
         return true;
     }
     args.get("command")
@@ -194,12 +272,101 @@ pub enum Segment {
     Single(usize),
 }
 
+/// The write class: `write` / `edit` both target one filesystem path.
+fn is_write_call(name: &str) -> bool {
+    matches!(name, "write" | "edit")
+}
+
+/// Lexically normalize a `write`/`edit` target path (no I/O): collapse
+/// repeated `/`, resolve `.` / `..` segments lexically, drop the trailing
+/// `/`. Over-normalizing errs toward barrier (safe); under-normalizing
+/// would err toward false-disjoint (unsafe) — hence the `..` resolution.
+fn normalize_write_path(raw: &str) -> String {
+    let mut segs: Vec<&str> = Vec::new();
+    for part in raw.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => {
+                if segs.last().is_some_and(|s| *s != "..") {
+                    segs.pop();
+                } else if !raw.starts_with('/') {
+                    segs.push("..");
+                }
+            }
+            s => segs.push(s),
+        }
+    }
+    let mut out = segs.join("/");
+    if raw.starts_with('/') {
+        out.insert(0, '/');
+    }
+    if out.is_empty() {
+        out.push_str(if raw.starts_with('/') { "/" } else { "." });
+    }
+    out
+}
+
+/// Target path of a `write`/`edit` call (already normalized), or `None` for
+/// other tools or when `path` is missing/non-string/empty (fail-safe →
+/// barrier).
+fn write_target_path(name: &str, args: &Value) -> Option<String> {
+    if !is_write_call(name) {
+        return None;
+    }
+    match args.get("path").and_then(Value::as_str) {
+        Some(p) if !p.is_empty() => Some(normalize_write_path(p)),
+        _ => None,
+    }
+}
+
+/// True when two `write`/`edit` targets may alias: same file, or one is a
+/// directory-prefix of the other (`dir` vs `dir/file`). Absolute vs
+/// relative is unresolvable without I/O — fail safe (overlap → barrier).
+fn write_paths_overlap(a: &str, b: &str) -> bool {
+    let (na, nb) = (normalize_write_path(a), normalize_write_path(b));
+    if na == nb {
+        return true;
+    }
+    if na.starts_with('/') != nb.starts_with('/') {
+        return true;
+    }
+    let sa: Vec<&str> = na.split('/').filter(|p| !p.is_empty()).collect();
+    let sb: Vec<&str> = nb.split('/').filter(|p| !p.is_empty()).collect();
+    let n = sa.len().min(sb.len());
+    sa[..n] == sb[..n]
+}
+
+/// Can call `idx` join the current `run` in one `Parallel` segment?
+/// Read-class calls join only runs holding no writes; a write joins only an
+/// all-write run whose every member is path-disjoint from it. Anything else
+/// (overlap, missing path, read/write mix) stays a barrier — fail-safe.
+fn can_join_run(idx: usize, run: &[usize], tool_uses: &[(String, String, Value)]) -> bool {
+    let (_, name, args) = &tool_uses[idx];
+    if is_write_call(name) {
+        let Some(p) = write_target_path(name, args) else {
+            return false;
+        };
+        run.iter().all(|&ri| {
+            let (_, rname, rargs) = &tool_uses[ri];
+            is_write_call(rname)
+                && write_target_path(rname, rargs).is_some_and(|q| !write_paths_overlap(&p, &q))
+        })
+    } else {
+        run.iter().all(|&ri| !is_write_call(&tool_uses[ri].1))
+    }
+}
+
 /// Split `tool_uses` into ordered segments. A maximal contiguous run of
-/// batchable-known-object-args calls of length ≥ 2 becomes one `Parallel`
-/// segment (no size cap); everything else (barrier tool, unknown tool,
-/// non-object args, singleton, `bash` failing [`bash_is_batchable`]) is
-/// `Single`.
-/// Flattened indices always equal emission order.
+/// batchable-known-object-args calls that pairwise passes
+/// [`call_screen_passes`] and [`can_join_run`] of length ≥ 2 becomes one
+/// `Parallel` segment (no size cap); everything else (barrier tool, unknown
+/// tool, non-object args, singleton, `bash` failing [`bash_is_batchable`],
+/// `write`/`edit` with a missing path or a path overlapping a run sibling)
+/// is `Single`.
+/// Segments execute in order, so RAW/WAR *across* segments is preserved by
+/// construction — only calls inside one `Parallel` segment overlap, and two
+/// writes share one only when pairwise disjoint (different files, neither a
+/// dir-prefix of the other). Flattened indices always equal emission order.
 pub fn plan_segments(
     tool_uses: &[(String, String, Value)],
     known: &HashSet<String>,
@@ -218,6 +385,7 @@ pub fn plan_segments(
             && known.contains(name)
             && args.is_object()
             && call_screen_passes(name, args)
+            && can_join_run(idx, &run, tool_uses)
         {
             run.push(idx);
         } else {
@@ -238,9 +406,22 @@ pub fn plan_segments(
 /// so the inner report always lands inside the outer one.
 pub const CANCEL_REPORT_GRACE: std::time::Duration = std::time::Duration::from_secs(3);
 
+/// Max in-flight tasks for [`join_ordered`]: `GRAY_PARALLEL_MAX` env var
+/// parsed as `usize`; unset/invalid/0 → 32 (ToolRush parity). Read once
+/// per [`join_ordered`] call.
+pub fn parallel_max() -> usize {
+    std::env::var("GRAY_PARALLEL_MAX")
+        .ok()
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(32)
+}
+
 /// Run `futs` concurrently, returning `(input_index, output)` in
-/// input-index order — one entry per input. No cap: every call in the
-/// batch is in flight at once.
+/// input-index order — one entry per input. Bounded: at most
+/// [`parallel_max`] tasks execute at once. All wrappers still spawn
+/// immediately so ordering/cancel bookkeeping is unchanged; the semaphore
+/// only gates execution inside each task.
 /// `None` output means the call never completed (cancel fired first).
 /// Task panics become `is_error` outputs under the panicking call's real
 /// input index — tool failures are data, never crashes.
@@ -252,8 +433,16 @@ pub async fn join_ordered(
     use std::panic::AssertUnwindSafe;
     let inputs: Vec<usize> = futs.iter().map(|(idx, _)| *idx).collect();
     let mut set: JoinSet<(usize, ToolOutput)> = JoinSet::new();
+    let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(parallel_max()));
     for (idx, fut) in futs {
+        let sem = sem.clone();
         set.spawn(async move {
+            // Bound execution (ToolRush parity); the permit drops when the
+            // wrapper returns. Acquire failure is impossible (never closed),
+            // reported as data rather than a lost index if it ever happens.
+            let Ok(_permit) = sem.acquire_owned().await else {
+                return (idx, ToolOutput::error("parallel semaphore closed"));
+            };
             // Panics are data: catch inside the wrapper so the real input
             // index survives — no sentinel, Task 4 reconciles by index.
             match AssertUnwindSafe(fut).catch_unwind().await {
@@ -328,3 +517,15 @@ pub async fn join_ordered(
 #[path = "parallel_tests.rs"]
 #[cfg(test)]
 mod tests;
+
+#[path = "parallel_bound_tests.rs"]
+#[cfg(test)]
+mod bound_tests;
+
+#[path = "parallel_dag_tests.rs"]
+#[cfg(test)]
+mod dag_tests;
+
+#[path = "parallel_screen_tests.rs"]
+#[cfg(test)]
+mod screen_tests;
