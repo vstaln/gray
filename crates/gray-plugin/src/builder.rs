@@ -444,6 +444,16 @@ pub async fn active_plugins(
                 }
             }
             PluginEntry::Sidecar(spec) => {
+                // Auto-fetch installers (`npx -y`, `uvx`, `pip install`) pull
+                // mutable code at spawn: only install sidecars you trust.
+                if spec.0.iter().any(|a| a == "-y" || a == "--yes")
+                    || spec.0.first().is_some_and(|p| p.ends_with("npx") || p.ends_with("uvx"))
+                {
+                    push_builder_warning(format!(
+                        "sidecar[{i}] auto-downloads its package ({}) — only install sidecars you trust",
+                        spec.0.join(" ")
+                    ));
+                }
                 if profile_disabled(&spec.0) {
                     push_builder_warning(format!(
                         "sidecar[{i}] disabled in plugin lock — skipping"

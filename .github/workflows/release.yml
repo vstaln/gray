@@ -223,5 +223,7 @@ jobs:
       - name: sync sums + installers to CDN
         shell: bash
         run: |
-          scp -i ~/.config/gray-deploy/key -o StrictHostKeyChecking=yes -o BatchMode=yes dist-all/SHA256SUMS dist/install.sh dist/install.ps1 opc@168.110.210.65:/tmp/
-          ssh -i ~/.config/gray-deploy/key -o StrictHostKeyChecking=yes -o BatchMode=yes opc@168.110.210.65 "sudo install -m 644 /tmp/SHA256SUMS /var/www/gray/dl/SHA256SUMS && sudo install -m 644 /tmp/install.sh /var/www/gray/install.sh && sudo install -m 644 /tmp/install.ps1 /var/www/gray/install.ps1 && rm -f /tmp/SHA256SUMS /tmp/install.sh /tmp/install.ps1 && echo '✓ sums + installers live: https://gray.alignment.id/dl/SHA256SUMS'"
+          case "$GITHUB_REF_NAME" in *-*) CHANNEL=beta ;; *) CHANNEL=stable ;; esac
+          cp dist-all/SHA256SUMS "dist-all/SHA256SUMS-$CHANNEL"
+          scp -i ~/.config/gray-deploy/key -o StrictHostKeyChecking=yes -o BatchMode=yes dist-all/SHA256SUMS "dist-all/SHA256SUMS-$CHANNEL" dist/install.sh dist/install.ps1 opc@168.110.210.65:/tmp/
+          ssh -i ~/.config/gray-deploy/key -o StrictHostKeyChecking=yes -o BatchMode=yes opc@168.110.210.65 "sudo install -m 644 /tmp/SHA256SUMS /var/www/gray/dl/SHA256SUMS && sudo install -m 644 /tmp/SHA256SUMS-$CHANNEL /var/www/gray/dl/SHA256SUMS-$CHANNEL && sudo install -m 644 /tmp/install.sh /var/www/gray/install.sh && sudo install -m 644 /tmp/install.ps1 /var/www/gray/install.ps1 && rm -f /tmp/SHA256SUMS /tmp/SHA256SUMS-$CHANNEL /tmp/install.sh /tmp/install.ps1 && echo '✓ sums + installers live: https://gray.alignment.id/dl/SHA256SUMS-'"$CHANNEL

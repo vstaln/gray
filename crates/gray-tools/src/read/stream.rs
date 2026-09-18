@@ -180,8 +180,28 @@ impl LineStream {
         display: &str,
         cancel: CancellationToken,
     ) -> std::io::Result<Self> {
+        // ponytail: O_NONBLOCK open so a regular→FIFO swap between the guard
+        // and here fails fast instead of hanging the task; re-check type
+        // post-open (TOCTOU) and refuse non-regular files.
+        #[cfg(unix)]
+        let file = {
+            use std::os::unix::fs::OpenOptionsExt;
+            let std = std::fs::OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_NONBLOCK)
+                .open(path)?;
+            tokio::fs::File::from_std(std)
+        };
+        #[cfg(not(unix))]
         let file = File::open(path).await?;
-        let file_size = file.metadata().await?.len();
+        let meta = file.metadata().await?;
+        if !meta.file_type().is_file() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("read refused: {display} is not a regular file"),
+            ));
+        }
+        let file_size = meta.len();
         // Hash gate mirrors FileLedger::hash_bytes (whole file or None).
         let hash = (file_size <= crate::ledger::MAX_HASH_BYTES).then(DefaultHasher::new);
         let mut reader = BufReader::with_capacity(READ_CHUNK_BYTES, HashRead { inner: file, hash });
