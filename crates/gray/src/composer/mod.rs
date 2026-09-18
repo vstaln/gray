@@ -112,23 +112,36 @@ pub(crate) fn pill_context_tokens(u: &gray_core::event::Usage) -> usize {
         .saturating_add(u.cache_write_input_tokens)
 }
 
-/// `· N tokens` suffix for the working pill: the latest report with its
-/// output part raised to the streamed estimate (bytes/4, the repo's estimate
-/// heuristic), or the bare estimate before any report lands. Empty before the
-/// first streamed byte or when it totals zero (mirrors opencode2's
-/// `tokens <= 0` guard). Exact reports always win on arrival, so the counter
-/// ticks per chunk mid-stream and snaps exact at TurnEnd.
-pub(crate) fn live_pill_suffix(
+/// Live context total for the footer gauge (bottom): the latest report
+/// plus the streamed estimate since that report (bytes/4, the repo's
+/// estimate heuristic), or the bare estimate before any report lands.
+/// Pure for testability. Shares the streamed delta with the pill so `+1`
+/// on top is always `+1` on the bottom, but the bases differ (context vs
+/// output).
+pub(crate) fn live_context_total(
     usage: Option<gray_core::event::Usage>,
     streamed_bytes: u64,
-) -> String {
+) -> usize {
     let est = usize::try_from(streamed_bytes / 4).unwrap_or(usize::MAX);
-    let total = match usage {
+    match usage {
         None => est,
-        Some(u) => pill_context_tokens(&u)
-            .saturating_sub(u.output_tokens)
-            .saturating_add(u.output_tokens.max(est)),
-    };
+        // The streamed bytes always belong to a round no report covers yet
+        // (each report resets the estimate in `set_usage`), so they add on
+        // top. The old max-replace froze the pill whenever the estimate sat
+        // below the previous round's output (e.g. a no-CoT turn following a
+        // 14k-output turn never ticked).
+        Some(u) => pill_context_tokens(&u).saturating_add(est),
+    }
+}
+
+/// `· N tokens` suffix for the working pill (top): live output tokens
+/// ([`live_turn_output_tokens`] formatted), empty before the first streamed
+/// byte or when it totals zero (mirrors opencode2's `tokens <= 0` guard).
+/// Exact reports always win on arrival (the estimate resets with each
+/// report), so the counter ticks per chunk mid-stream and snaps exact at
+/// TurnEnd, converging to the `Thought for · N tokens` line.
+pub(crate) fn live_pill_suffix(turn_output_accum: usize, streamed_bytes: u64) -> String {
+    let total = live_turn_output_tokens(turn_output_accum, streamed_bytes);
     if total == 0 {
         String::new()
     } else {
@@ -282,13 +295,15 @@ pub struct Tui {
     /// (that stays `latest_usage`, latest-round size).
     pub(crate) turn_billed_output: Option<usize>,
     /// Assistant-text bytes streamed this turn/round (TextDelta +
-    /// ThinkingDelta — both ride inside output_tokens). Feeds the live pill
-    /// estimate; reset per turn and per usage report, exact bills win.
+    /// ThinkingDelta — both ride inside output_tokens). Feeds both live
+    /// estimates (top output pill + bottom context gauge, same delta);
+    /// reset per turn and per usage report, exact bills win.
     pub(crate) streamed_bytes: u64,
     /// Exact `StepUsage` output tokens finalized so far this turn
-    /// (Σ-per-round). Plus the streamed estimate gives the live TPS
-    /// numerator, which converges to the TurnEnd billed output. Reset per
-    /// turn; never feeds the context gauge (same rule as `streamed_bytes`).
+    /// (Σ-per-round). Plus the streamed estimate gives the live pill output
+    /// count and the TPS numerator, both converging to the TurnEnd billed
+    /// output. Reset per turn; never feeds the context gauge base (that
+    /// stays `latest_usage`, latest-round size).
     pub(crate) turn_output_accum: usize,
     /// Current inline viewport height. `draw` keeps it at the exact-fit
     /// content height (+1 spare cleared row, clamped to
@@ -302,6 +317,19 @@ pub struct Tui {
     /// single transcript render, so resume/reflow never see this.
     live_tools: Vec<LiveTool>,
     plugin_widget: plugin_widget::Widget,
+    pub(crate) ask_modal: Option<AskModal>,
+}
+
+/// Inline `host/ask` modal rows, rendered by `draw` above the input box
+/// while a sidecar plugin question is live. Owned by `crate::ask` (state +
+/// rows); the composer only stores the current snapshot. Never enters
+/// `history_entries` or the transcript — the resolved summary does that.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct AskModal {
+    /// (glyph, label, description) rows: header first, options, notes last.
+    pub rows: Vec<(String, String, String)>,
+    /// Highlighted row index (header counts, so option `i` is `i + 1`).
+    pub cursor: usize,
 }
 
 /// One in-flight tool call rendered live above the input box while the
@@ -474,6 +502,7 @@ impl Tui {
             viewport_h: MIN_VIEWPORT_H,
             live_tools: Vec::new(),
             plugin_widget: plugin_widget::Widget::new(std::env::current_dir().unwrap_or_default()),
+            ask_modal: None,
         })
     }
 
@@ -696,13 +725,15 @@ impl Tui {
         // New round segment: the report carries this round's exact output,
         // so the streamed estimate restarts rather than double-counting it.
         self.streamed_bytes = 0;
-        // NOTE: no per-turn accumulation here. `StepUsage` carries the
-        // latest context size (each round's input already contains the full
-        // history), so summing `usage.total()` across rounds grows
-        // superlinearly (e.g. 16 rounds x ~120k = ~1.9M). The context gauge
-        // and the `Working… · N tok` pill both read this last report only
-        // (opencode2 `usage()` parity); exact turn/session bills live in
-        // the TurnEnd totals.
+        // NOTE: no per-turn accumulation of the context size. `StepUsage`
+        // carries the latest context size (each round's input already
+        // contains the full history), so summing `usage.total()` across
+        // rounds grows superlinearly (e.g. 16 rounds x ~120k = ~1.9M). The
+        // context gauge reads this last report only (opencode2 `usage()`
+        // parity); the `Working… · N tok` pill instead reads the turn-level
+        // output accum above (exact per-round outputs + stream estimate,
+        // same delta as the gauge, output base). Exact turn/session bills
+        // live in the TurnEnd totals.
     }
     /// Seeds the context gauge from a char-estimate when no provider
     /// `StepUsage` is in force: resume replay (persisted usage is billed
@@ -875,6 +906,16 @@ impl Tui {
         self.status = Some((now, label.to_string()));
         let _ = self.draw();
     }
+    /// Takes the live status dock label (for `host/ask` modal parking).
+    pub(crate) fn take_status(&mut self) -> Option<(Instant, String)> {
+        self.status.take()
+    }
+
+    /// Restores a parked status dock label (for `host/ask` modal teardown).
+    pub(crate) fn restore_status(&mut self, status: Option<(Instant, String)>) {
+        self.status = status;
+    }
+
     pub fn set_status(&mut self, label: Option<&str>) {
         // Codex parity: while compacting, every other status request
         // (`Working`, `Preparing tool:`, …) is ignored so

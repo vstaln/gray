@@ -242,6 +242,8 @@ async fn run_print_inner(
     crate::setup::set_user_context_window(config.context_window);
     crate::setup::set_user_reserve_tokens(config.context_reserve);
     crate::setup::set_user_keep_recent_tokens(config.context_keep);
+    // Sidecar `host/ask` without a TUI: piped-stdin/empty surfaces.
+    crate::ask::install(None, false);
     let cwd = std::env::current_dir()?;
     let store = JsonlSessionStore::default();
     // Explicit `--session` wins over `-c` (same precedence as the REPL).
@@ -421,6 +423,7 @@ async fn run_print_inner(
             _ => Err(anyhow::anyhow!("stdout write failed: {e}")),
         };
     }
+    crate::ask::shutdown();
     match (run_result, persist_result) {
         (Err(r), Err(p)) => Err(anyhow::anyhow!(
             "{r:#}; also failed to persist session: {p:#}"

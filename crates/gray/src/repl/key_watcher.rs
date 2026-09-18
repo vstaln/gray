@@ -44,6 +44,22 @@ pub(crate) fn spawn_key_watcher_with_typing(
             let Ok(event) = read() else {
                 continue;
             };
+            // An ask modal owns the keys while live (digits/Tab/Enter/Esc
+            // belong to the question, not the turn): only resize + Ctrl-C
+            // pass through — Ctrl-C still cancels the turn (the ask
+            // resolves empty via the same token).
+            let passthrough = matches!(event, Event::Resize(..))
+                || matches!(
+                    event,
+                    Event::Key(KeyEvent {
+                        code: KeyCode::Char('c') | KeyCode::Char('C'),
+                        modifiers,
+                        ..
+                    }) if modifiers.contains(KeyModifiers::CONTROL)
+                );
+            if crate::ask::is_ask_live() && !passthrough {
+                continue;
+            }
             match event {
                 Event::Resize(cols, rows) => {
                     if let Some(shared) = watcher_tui.as_ref()

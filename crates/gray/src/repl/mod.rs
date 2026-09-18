@@ -397,6 +397,10 @@ pub async fn run_repl_mode(
     // boot: no forced wizard. A dim hint appears when unconfigured,
     // and the provider picker fires the moment credentials are needed.
     tokio::spawn(spawn_ctrl_c_policy());
+    // Sidecar `host/ask` (questions/permissions plugins): installed once per
+    // process; the TUI handle arrives with the composer below (interactive)
+    // or stays None (piped/headless → stdin/empty surfaces).
+    crate::ask::install(None, interactive);
     // Shell logs: 7-day + 10MiB startup sweep (blocking-only bash keeps
     // per-call logs on disk for the header's grep hint).
     crate::shell_drain::sweep_old_shell_logs();
@@ -590,6 +594,8 @@ pub async fn run_repl_mode(
             t
         }));
         crate::host::register_tui(&shared);
+        // Now that the composer exists, point the ask service at it.
+        crate::ask::install(Some(shared.clone()), interactive);
         let stop = std::sync::Arc::new(AtomicBool::new(false));
         let ticker_stop = stop.clone();
         let ticker_tui = shared.clone();
@@ -719,6 +725,7 @@ pub async fn run_repl_mode(
                         None => {
                             stop.store(true, std::sync::atomic::Ordering::Relaxed);
                             shared.lock().expect("tui lock").shutdown();
+                            crate::ask::shutdown();
                             shutdown_hooks(agent.as_ref()).await;
                             shutdown_shell_tasks(&session_state, &tui).await;
                             print_exit_hint(&session_state);
@@ -740,6 +747,7 @@ pub async fn run_repl_mode(
                 }
                 let mut buf = String::new();
                 if std::io::stdin().read_line(&mut buf)? == 0 {
+                    crate::ask::shutdown();
                     shutdown_hooks(agent.as_ref()).await;
                     shutdown_shell_tasks(&session_state, &tui).await;
                     break;

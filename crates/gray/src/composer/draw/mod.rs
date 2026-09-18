@@ -72,6 +72,12 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
         1 + n.min(3) as u16 + u16::from(n > 3)
     };
     let panel_est: u16 = tui.matches.len().min(PANEL_ROWS) as u16;
+    // Inline `host/ask` modal (sidecar plugin questions): measured rows.
+    let ask_est: u16 = tui
+        .ask_modal
+        .as_ref()
+        .map(|m| m.rows.len().min(12) as u16)
+        .unwrap_or(0);
     let box_rows_est: u16 = box_h;
     // Live tool cards above the input box (pi pending cards): measured,
     // not estimated — the rows are already wrapped for `w`.
@@ -96,7 +102,7 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
     let desired = desired_viewport_h(
         status_h,
         queued_est,
-        live_est + widget_h,
+        live_est + widget_h + ask_est,
         box_rows_est,
         panel_est,
         attach_h,
@@ -128,19 +134,19 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
     // borrow; wrapping happens inside at the frame width.
     let live_headers: Vec<Line<'static>> = tui.live_tool_rows();
     let live_overflow = tui.live_tool_overflow();
+    let ask_modal: Option<super::AskModal> = tui.ask_modal.clone();
     let compaction_elapsed = tui.compaction_elapsed();
     let turn_started = tui.turn_started;
     let is_task_running = tui.is_task_running;
-    // Latest report raised to the live streamed estimate (ticks per chunk,
-    // exact on every report) — empty only before the first streamed byte.
-    let pill_tok_suffix = super::live_pill_suffix(
-        tui.latest_usage.or(tui.cumulative_usage),
-        tui.streamed_bytes,
-    );
+    // Live output total for the top pill (turn-level completed outputs +
+    // streamed estimate, ticks per chunk, exact on every report) — empty
+    // only before the first streamed byte. Converges to the `Thought`
+    // line; the footer below ticks the context base with the same delta.
     // Live TPS numerator is turn-level (completed StepUsage outputs +
     // streamed estimate) so it converges to the final Thought-line rate.
     let pill_turn_output = tui.turn_output_accum;
     let pill_streamed = tui.streamed_bytes;
+    let pill_tok_suffix = super::live_pill_suffix(pill_turn_output, pill_streamed);
 
     let res = tui.terminal.draw(|frame| {
         let area = frame.area();
@@ -159,6 +165,43 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
             })
             .collect();
         let live_h = live_rows.len() as u16 + u16::from(live_overflow > 0);
+        // Ask modal rows (pre-wrapped at frame width, capped like live rows).
+        let ask_rows: Vec<Line<'static>> = ask_modal
+            .as_ref()
+            .map(|m| {
+                m.rows
+                    .iter()
+                    .take(12)
+                    .enumerate()
+                    .flat_map(|(ri, (glyph, label, desc))| {
+                        let raw = if ri == 0 {
+                            format!("❓ {label} — {desc}")
+                        } else {
+                            let marker = if ri == m.cursor { "❯" } else { " " };
+                            format!("  {marker} {glyph} {label} — {desc}")
+                        };
+                        crate::composer::transcript::wrap_styled_line(
+                            Line::from(vec![Span::styled(
+                                raw,
+                                if ri == m.cursor {
+                                    Style::default()
+                                        .fg(crate::theme::theme().accent)
+                                        .add_modifier(Modifier::BOLD)
+                                } else if ri == 0 {
+                                    Style::default()
+                                        .fg(Color::White)
+                                        .add_modifier(Modifier::BOLD)
+                                } else {
+                                    Style::default().fg(crate::theme::theme().text_muted)
+                                },
+                            )]),
+                            w.saturating_sub(4).max(1),
+                        )
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let ask_h = ask_rows.len() as u16;
         // Space left for the completion panel once the fixed rows
         // (status, queued, input, attachments, footer) are placed.
         let avail = area
@@ -173,7 +216,8 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
         };
         let panel_h = visible_count as u16;
         let box_rows = box_h;
-        let widget_y = status_y + status_h + queued_h + live_h;
+        let ask_y = status_y + status_h + queued_h + live_h;
+        let widget_y = ask_y + ask_h;
         let box_y = widget_y + widget_h;
         let panel_y = box_y + box_rows;
         let attach_y = panel_y + panel_h;
@@ -183,7 +227,7 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
             let label_text = format!(" ⬡ {label}\u{2026}");
             let mut spans = shimmer_spans(&label_text, started.elapsed());
             // Turn-anchored clock (tool re-stamps never restart it) plus
-            // the live token counter: latest StepUsage raised to the streamed
+            // the live output counter: turn-level outputs plus the streamed
             // per-chunk estimate, exact on every report. Live TPS rides
             // between them (turn-level numerator, same denominator), so the
             // rate is always visible — not just on the end-of-turn line.
@@ -252,6 +296,16 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
                     Rect::new(area.x, y, area.width, 1),
                 );
             }
+        }
+        for (i, line) in ask_rows.iter().enumerate() {
+            let y = ask_y + i as u16;
+            if y < area.y || y >= area.y + area.height {
+                continue;
+            }
+            frame.render_widget(
+                Paragraph::new(line.clone()),
+                Rect::new(area.x, y, area.width, 1),
+            );
         }
         for (i, line) in widget_rows.iter().enumerate() {
             let y = widget_y + i as u16;
@@ -403,8 +457,20 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
         }
 
         let (_, max_label) = crate::setup::model_context_info(&tui.model_name);
+        // Live gauge (bottom): latest report plus the shared streamed
+        // estimate, so the `223.8k/300k` footer ticks per chunk with the
+        // same delta as the top pill (different base: context vs output;
+        // exact on every report). Hit rate stays report-only: streamed
+        // output doesn't change the cache ratio until the next report lands.
         let (used_tokens, hit_rate) = if let Some(u) = tui.latest_usage.or(tui.cumulative_usage) {
-            (u.total(), u.cache_hit_rate() * 100.0)
+            (
+                super::live_context_total(Some(u), tui.streamed_bytes),
+                u.cache_hit_rate() * 100.0,
+            )
+        } else if tui.streamed_bytes > 0 {
+            // No report yet (or gauge cleared): the bare streamed estimate is
+            // the only signal — same rule as the pill's empty-before-first-byte.
+            (super::live_context_total(None, tui.streamed_bytes), 0.0)
         } else {
             (0, 0.0)
         };

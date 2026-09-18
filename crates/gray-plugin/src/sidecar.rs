@@ -16,6 +16,12 @@
 //!   `pre_tool` | `post_tool` | `turn_end` with only the fields
 //!   the sidecar needs (tool name/args, output content, usage totals).
 //!
+//! Sidecar→host requests (string `id`, `method: "host/..."`) are served by
+//! the host handler: `host/run` (sub-agent turn), `host/say` (chat line),
+//! `host/ask` (blocking user question; see `HOST_ASK`). `host/ask` has an
+//! extended outer deadline (see `ASK_TTL`): everything else keeps the 30s
+//! TTL since only a human answer can legitimately take minutes.
+//!
 //! Unknown methods/lines are ignored.
 //!
 //! The three v1 request methods are only sent to sidecars claiming them in
@@ -65,6 +71,26 @@ pub type HostHandler = Arc<
 /// namespaces never collide, so replies route unambiguously.
 pub const HOST_RUN: &str = "host/run";
 pub const HOST_SAY: &str = "host/say";
+/// Sidecar→host blocking user question (`params: {"questions","blocking"}`
+/// → `result: {"answers"}`). Claimed implicitly: any sidecar whose manifest
+/// has `protocol: "1.1"` may call it (the transport routes every `host/*`
+/// method already); the extended `ASK_TTL` below applies per requesting
+/// sidecar, keyed off its manifest.
+pub const HOST_ASK: &str = "host/ask";
+
+/// Default TTL for host→sidecar requests and plugin→host handler tasks.
+/// `host/ask` is the only exception: a human answer takes minutes, so both
+/// the handler task and the outer `tool/call`/`tool/before` wait use
+/// [`ASK_TTL`] when the requesting sidecar's manifest claims `host/ask`.
+pub const HOST_TTL: Duration = Duration::from_secs(30);
+/// Outer deadline for `tool/call`/`tool/before` on sidecars that claim
+/// `host/ask` (300s human answer + 30s transport slack). The sidecar must
+/// enforce a SHORTER inner TTL (the reference plugins use 300s) so it
+/// reports its own timeout instead of surfacing this generic one.
+pub const ASK_TTL: Duration = Duration::from_secs(330);
+/// TTL for one plugin→host `host/ask` handler task (same budget as ASK_TTL:
+/// the modal owns the wait, this only bounds a wedged host task).
+pub const ASK_HANDLER_TTL: Duration = Duration::from_secs(300);
 
 /// Build the v1.1 `session` object: `{"id":<session_id or "">,"cwd":<cwd>}`.
 /// `tool/call` uses `ctx` (cwd + session_id); every other wire point uses
@@ -105,6 +131,13 @@ pub struct SidecarPlugin {
     /// the `session.cwd` of every wire point without a `ToolContext`
     /// (`prompt/context` uses its `cwd` arg instead; `tool/call` uses `ctx.cwd`).
     cwd: String,
+    /// True when this sidecar may block on `host/ask` (manifest
+    /// `protocol: "1.1"`): `tool/call`/`tool/before` get [`ASK_TTL`]
+    /// instead of 30s. Protocol-gated (not hooks-gated): asking is a
+    /// sidecar→host request, not a host→sidecar hook, so `claims()` does
+    /// not apply. v1.1-only so a pre-v1 sidecar that never answers still
+    /// fails fast at 30s.
+    asks: bool,
 }
 
 fn spawn_child(argv: &[String]) -> anyhow::Result<(Child, ChildStdin, ChildStdout)> {
@@ -226,17 +259,22 @@ fn spawn_reader(
                         .await;
                     continue;
                 };
+                // `host/ask` waits on a human: extended handler budget.
+                // Everything else keeps the 30s TTL.
+                let handler_ttl = if method_owned == HOST_ASK {
+                    ASK_HANDLER_TTL
+                } else {
+                    HOST_TTL
+                };
                 tokio::spawn(async move {
                     let _permit = _permit;
                     let handler = host_handler.lock().await.clone();
                     let result = match handler {
-                        Some(h) => {
-                            timeout(Duration::from_secs(30), h(method_owned.clone(), params))
-                                .await
-                                .unwrap_or_else(
-                                    |_| json!({"error": format!("{method_owned} timed out")}),
-                                )
-                        }
+                        Some(h) => timeout(handler_ttl, h(method_owned.clone(), params))
+                            .await
+                            .unwrap_or_else(
+                                |_| json!({"error": format!("{method_owned} timed out")}),
+                            ),
                         None => json!({"error": format!("no host handler for {method_owned}")}),
                     };
                     let reply = json!({"id": id, "result": result});
@@ -404,9 +442,10 @@ impl SidecarPlugin {
             );
         }
         manifest.name = name;
+        let asks = manifest.protocol.as_deref() == Some("1.1");
         let mut tools: Vec<Arc<dyn Tool>> = Vec::new();
         for entry in manifest_tools(&result) {
-            tools.push(Arc::new(SidecarTool::new(entry, transport.clone())));
+            tools.push(Arc::new(SidecarTool::new(entry, transport.clone(), asks)));
         }
         let cwd = std::env::current_dir()
             .map(|p| p.to_string_lossy().into_owned())
@@ -416,6 +455,7 @@ impl SidecarPlugin {
             tools,
             transport,
             cwd,
+            asks,
         })
     }
 
@@ -478,9 +518,10 @@ impl Plugin for SidecarPlugin {
             return ToolBefore::Allow;
         }
         let params = json!({"name": name, "args": args, "session": session_json("", &self.cwd)});
+        let ttl = if self.asks { ASK_TTL } else { HOST_TTL };
         match self
             .transport
-            .request("tool/before", Some(params), Duration::from_secs(30))
+            .request("tool/before", Some(params), ttl)
             .await
         {
             Ok(v) => ToolBefore::from_result(&v),
@@ -549,11 +590,21 @@ impl Plugin for SidecarPlugin {
 struct SidecarTool {
     def: ToolDef,
     transport: Arc<Transport>,
+    /// Snapshot of the owning sidecar's `asks` flag (see [`SidecarPlugin`]).
+    asks: bool,
 }
 
 impl SidecarTool {
-    fn new(def: ToolDef, transport: Arc<Transport>) -> Self {
-        Self { def, transport }
+    fn new(def: ToolDef, transport: Arc<Transport>, asks: bool) -> Self {
+        Self {
+            def,
+            transport,
+            asks,
+        }
+    }
+
+    fn transport_asks(&self) -> bool {
+        self.asks
     }
 }
 
@@ -567,11 +618,12 @@ impl Tool for SidecarTool {
         let cwd = ctx.cwd.to_string_lossy();
         let sid = ctx.session_id.as_deref().unwrap_or("");
         let params = json!({"name": name, "args": args, "session": session_json(sid, &cwd)});
-        match self
-            .transport
-            .request("tool/call", Some(params), Duration::from_secs(30))
-            .await
-        {
+        let ttl = if self.transport_asks() {
+            ASK_TTL
+        } else {
+            HOST_TTL
+        };
+        match self.transport.request("tool/call", Some(params), ttl).await {
             Ok(v) => {
                 // Route through the shared truncation (50 KiB cap with
                 // annotation): raw sidecar content must not bypass it.

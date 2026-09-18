@@ -1,5 +1,6 @@
 //! Gray: a minimal, modular agent harness in Rust.
 
+pub mod ask;
 pub mod compact;
 pub mod composer;
 pub mod config;
@@ -334,6 +335,7 @@ pub enum Commands {
         all: bool,
     },
     /// Plugin tools (conformance check)
+    #[command(visible_alias = "plugins")]
     Plugin {
         #[command(subcommand)]
         cmd: PluginCmd,

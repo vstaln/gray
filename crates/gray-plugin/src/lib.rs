@@ -14,7 +14,9 @@ pub mod lock;
 pub mod profile;
 pub mod sidecar;
 
-pub use sidecar::{HOST_RUN, HOST_SAY, HostHandler, SidecarPlugin};
+pub use sidecar::{
+    ASK_HANDLER_TTL, ASK_TTL, HOST_ASK, HOST_RUN, HOST_SAY, HOST_TTL, HostHandler, SidecarPlugin,
+};
 
 #[derive(Debug, Clone)]
 pub enum CoreEvent {
