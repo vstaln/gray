@@ -38,17 +38,25 @@ pub(crate) mod transcript;
 
 pub type SharedTui = Arc<std::sync::Mutex<Tui>>;
 
-/// Single-line `✻ Thought for …`: `N tok` is this turn's billed output
+/// Single-line `✻ Thought for …`: `N tokens` is this turn's billed output
 /// token count (exact, from the TurnEnd usage report; reasoning is already
 /// included in output, never split out). Falls back to the streamed estimate
 /// when no usage report arrived (cancelled/errored turns). Other billed
 /// Σ-per-round totals stay out of the TUI line entirely (cost basis lives in
 /// `totals` / headless `turn_footer` only). Pure for testability
 /// (`Tui::new` needs a TTY).
-pub(crate) fn format_thought_line(verb: &str, elapsed: &str, out_tokens: Option<usize>) -> String {
+pub(crate) fn format_thought_line(
+    verb: &str,
+    elapsed: &str,
+    out_tokens: Option<usize>,
+    tps: Option<u64>,
+) -> String {
     let mut line = format!("✻ {verb} {elapsed}");
     if let Some(c) = out_tokens {
-        line.push_str(&format!(" · {} tok", crate::repl::fmt_usage(c)));
+        line.push_str(&format!(" · {} tokens", crate::repl::fmt_usage(c)));
+        if let Some(t) = tps {
+            line.push_str(&format!(" · {t} tokens/s"));
+        }
     }
     line
 }
@@ -74,7 +82,7 @@ pub(crate) fn pill_elapsed(
     }
 }
 
-/// Token count for the `Working… · N tok` pill — opencode2 parity
+/// Token count for the `Working… · N tokens` pill — opencode2 parity
 /// (`packages/tui/src/component/prompt/index.tsx` `usage()`): the LAST
 /// usage report only, summed over non-overlapping parts
 /// (`input + output + reasoning + cache.read + cache.write`).
@@ -104,12 +112,12 @@ pub(crate) fn pill_context_tokens(u: &gray_core::event::Usage) -> usize {
         .saturating_add(u.cache_write_input_tokens)
 }
 
-/// `· N tok` suffix for the working pill; empty before the first usage
+/// `· N tokens` suffix for the working pill; empty before the first usage
 /// report or when it totals zero (mirrors opencode2's `tokens <= 0` guard).
 pub(crate) fn pill_token_suffix(usage: Option<gray_core::event::Usage>) -> String {
     match usage.map(|u| pill_context_tokens(&u)).unwrap_or(0) {
         0 => String::new(),
-        n => format!(" · {} tok", crate::repl::fmt_usage(n)),
+        n => format!(" · {} tokens", crate::repl::fmt_usage(n)),
     }
 }
 
@@ -229,7 +237,7 @@ pub struct Tui {
     committed_markdown_lines: usize,
     pub(crate) pending_resize: Option<(u16, Instant)>,
     /// Billed output tokens from this turn's TurnEnd usage (Σ-per-round).
-    /// Display-only: the `Thought for · N tok` line. `None` (cancelled /
+    /// Display-only: the `Thought for · N tokens` line. `None` (cancelled /
     /// errored before any usage report) prints the bare elapsed, like an
     /// omp turn with no reported usage. Never feeds the context gauge
     /// (that stays `latest_usage`, latest-round size).
@@ -939,10 +947,16 @@ impl Tui {
             } else {
                 "Worked for"
             };
-            // `✻ Thought for … · N tok` is billed output (exact, reasoning
+            // `✻ Thought for … · N tokens` is billed output (exact, reasoning
             // included). Other billed Σ-per-round totals stay out of the TUI
             // entirely.
-            let line = format_thought_line(verb, &elapsed_str, turn_toks);
+            let tps = turn_toks.and_then(|toks| {
+                crate::repl::turn_tokens_per_second(
+                    toks,
+                    elapsed.as_millis().min(u128::from(u64::MAX)) as u64,
+                )
+            });
+            let line = format_thought_line(verb, &elapsed_str, turn_toks, tps);
             self.ensure_gap(1);
             self.push_dim(line);
             self.ensure_gap(1);

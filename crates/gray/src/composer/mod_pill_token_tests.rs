@@ -12,12 +12,12 @@ fn pill_suffix_counts_last_report_only() {
     // Plain totals shape: context = input + output.
     assert_eq!(
         pill_token_suffix(Some(Usage::new(12_000, 500))),
-        " · 12,500 tok"
+        " · 12,500 tokens"
     );
     // Resume/compaction seed: estimate with no breakdown.
     assert_eq!(
         pill_token_suffix(Some(Usage::estimated_context(39_000))),
-        " · 39,000 tok"
+        " · 39,000 tokens"
     );
 }
 
@@ -39,7 +39,7 @@ fn pill_sums_non_overlapping_parts_opencode_parity() {
     // must agree with total() (no double-counted reasoning/cache).
     assert_eq!(pill_context_tokens(&u), 102_000);
     assert_eq!(pill_context_tokens(&u), u.total());
-    assert_eq!(pill_token_suffix(Some(u)), " · 102,000 tok");
+    assert_eq!(pill_token_suffix(Some(u)), " · 102,000 tokens");
 }
 
 #[test]
@@ -49,5 +49,5 @@ fn pill_falls_back_to_input_without_breakdown() {
         output_tokens: 300,
         ..Usage::default()
     };
-    assert_eq!(pill_token_suffix(Some(u)), " · 5,300 tok");
+    assert_eq!(pill_token_suffix(Some(u)), " · 5,300 tokens");
 }

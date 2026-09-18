@@ -38,5 +38,5 @@ fn turn_footer_includes_duration_when_known() {
     let totals = super::SessionTotals::default();
     let line = super::turn_footer(&usage, "test-persist-model", &totals, Some(6500));
     assert!(line.contains("6.5s"), "footer should show time: {line}");
-    assert!(line.contains("tok"), "footer should keep tokens: {line}");
+    assert!(line.contains("tokens"), "footer should keep tokens: {line}");
 }

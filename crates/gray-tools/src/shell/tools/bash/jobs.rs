@@ -127,8 +127,13 @@ impl Jobs {
         if !matches!(action, "list" | "status" | "output" | "cancel") {
             return fail(format!("unknown bash action: {action}"));
         }
-        for key in ["command", "timeout", "background", "yield_ms"] {
-            if args.get(key).is_some() {
+        for (key, default) in [
+            ("command", json!("")),
+            ("timeout", json!(DEFAULT_TIMEOUT_SECS)),
+            ("background", json!(false)),
+            ("yield_ms", json!(1000)),
+        ] {
+            if args.get(key).is_some_and(|v| !v.is_null() && *v != default) {
                 return fail(format!("{key} is only valid for action:run"));
             }
         }
@@ -237,6 +242,60 @@ mod tests {
             },
             tx,
         )
+    }
+
+    #[tokio::test]
+    async fn management_actions_tolerate_run_defaults_without_discarding_intent() {
+        let tool = BashTool::default();
+        let ctx = ToolContext::default();
+        let id = "bash-fa27bb37f76c4e70ae88e927a29e4309";
+        let (job, _tx) = entry(true, false, true);
+        tool.jobs.0.lock().unwrap().insert(id.into(), job);
+        let args = json!({
+            "action": "output", "background": false, "command": "",
+            "job_id": id, "timeout": 30, "yield_ms": 1000
+        });
+        let out = tool.execute(&ctx, args.clone()).await;
+        assert!(!out.is_error, "{}", out.content);
+        assert_eq!(out.content, format!("job {id}\nexit 0"));
+
+        for action in ["list", "status", "output", "cancel"] {
+            let mut request = args.clone();
+            request["action"] = json!(action);
+            if action == "list" {
+                request.as_object_mut().unwrap().remove("job_id");
+            }
+            let out = tool.execute(&ctx, request.clone()).await;
+            assert!(!out.is_error, "{action}: {}", out.content);
+            for (key, value) in [
+                ("command", json!("echo intent")),
+                ("background", json!(true)),
+            ] {
+                let mut rejected = request.clone();
+                rejected[key] = value;
+                let out = tool.execute(&ctx, rejected).await;
+                assert!(out.is_error && out.content.contains(key), "{}", out.content);
+            }
+        }
+
+        let other = ToolContext {
+            session_id: Some("other-session".into()),
+            ..ToolContext::default()
+        };
+        let out = tool.execute(&other, args.clone()).await;
+        assert!(
+            out.is_error && out.content.contains("unknown job in this session"),
+            "{}",
+            out.content
+        );
+        let mut unknown = args;
+        unknown["action"] = json!("unknown");
+        let out = tool.execute(&ctx, unknown).await;
+        assert!(
+            out.is_error && out.content.contains("unknown bash action"),
+            "{}",
+            out.content
+        );
     }
 
     #[tokio::test]

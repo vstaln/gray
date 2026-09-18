@@ -2,24 +2,24 @@ use super::format_thought_line;
 
 #[test]
 fn format_thought_line_is_just_verb_elapsed_and_turn_toks() {
-    // `N tok` is billed output (exact, reasoning included — never split
+    // `N tokens` is billed output (exact, reasoning included — never split
     // out); backed by the TurnEnd report instead of chars/4.
-    let line = format_thought_line("Thought for", "1m 17s", Some(4_045));
-    assert_eq!(line, "✻ Thought for 1m 17s · 4,045 tok");
+    let line = format_thought_line("Thought for", "1m 17s", Some(4_045), Some(52));
+    assert_eq!(line, "✻ Thought for 1m 17s · 4,045 tokens · 52 tokens/s");
     assert_eq!(line.matches("1m 17s").count(), 1);
 }
 
 #[test]
 fn format_thought_line_no_ctx_is_bare() {
-    let line = format_thought_line("Worked for", "6s", None);
+    let line = format_thought_line("Worked for", "6s", None, None);
     assert_eq!(line, "✻ Worked for 6s");
 }
 
 #[test]
 fn format_thought_line_never_splits_reasoning() {
     // Reasoning is a subset of output — one united count, no suffix.
-    let line = format_thought_line("Thought for", "59s", Some(2_973));
-    assert_eq!(line, "✻ Thought for 59s · 2,973 tok");
+    let line = format_thought_line("Thought for", "59s", Some(2_973), None);
+    assert_eq!(line, "✻ Thought for 59s · 2,973 tokens");
     assert!(!line.contains("reasoning"));
 }
 
