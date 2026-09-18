@@ -48,11 +48,14 @@ impl AsyncRunner for HeadlessRunner {
 /// Whole-fire wall clock (script + agent), matches the bash tool bound.
 pub const FIRE_TIMEOUT_SECS: u64 = 600;
 
-/// Local delivery: transcript to `$HOME/cron/output/<id>/<ts>.md`.
-/// Unknown (`origin`/named) targets fail safe to save-only + warn
-/// (old-daemon rule — never misdeliver to a wrong chat). `Err(String)`
-/// records `delivery_failed` with the string as `last_delivery_error`;
-/// run columns stay untouched.
+/// Delivery: transcript to `$HOME/cron/output/<id>/<ts>.md`, plus — for
+/// `Deliver::Origin` with a recorded origin session — an append of a bounded
+/// delivery note to that session (hermes origin parity). Unknown (`Target`)
+/// or session-less `Origin` jobs fail safe to save-only + warn (old-daemon
+/// rule — never misdeliver to a wrong chat). `Err(String)` records
+/// `delivery_failed` with the string as `last_delivery_error`; run columns
+/// stay untouched. The file is always saved first so an append failure keeps
+/// the output on disk.
 pub struct SaveLocalDeliver {
     pub home: PathBuf,
 }
@@ -64,16 +67,46 @@ impl SaveLocalDeliver {
         now: i64,
         text: &str,
     ) -> Result<(), String> {
-        if !matches!(job.deliver, crate::cron::Deliver::Local) {
-            log::warn!(
-                "cron {}: unknown target {:?}, saved locally",
-                job.id,
-                job.deliver
-            );
+        let path = crate::cron_fire::write_local_output(&self.home, job, now, text)
+            .map_err(|e| format!("local write failed: {e:#}"))?;
+        match &job.deliver {
+            crate::cron::Deliver::Local => Ok(()),
+            crate::cron::Deliver::Target(_) => {
+                log::warn!(
+                    "cron {}: unknown target {:?}, saved locally",
+                    job.id,
+                    job.deliver
+                );
+                Ok(())
+            }
+            crate::cron::Deliver::Origin => {
+                let Some(origin) = &job.origin else {
+                    log::warn!(
+                        "cron {}: origin delivery without origin session, saved locally",
+                        job.id
+                    );
+                    return Ok(());
+                };
+                // Bounded excerpt: the full transcript is already on disk.
+                let excerpt: String = text.chars().take(4000).collect();
+                let note = format!(
+                    "[cron {}] output saved to {}\n\n{}",
+                    job.name,
+                    path.display(),
+                    excerpt
+                );
+                let sessions =
+                    crate::session_store::JsonlSessionStore::new(self.home.join("sessions"));
+                let sid = crate::session_store::SessionId::new(origin.chat.clone());
+                sessions
+                    .append(&sid, &gray_core::message::Message::system(note))
+                    .await
+                    .map(|_| ())
+                    .map_err(|e| {
+                        format!("origin append failed for session {:?}: {e:#}", origin.chat)
+                    })
+            }
         }
-        crate::cron_fire::write_local_output(&self.home, job, now, text)
-            .map(|_| ())
-            .map_err(|e| format!("local write failed: {e:#}"))
     }
 }
 

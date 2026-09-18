@@ -392,6 +392,7 @@ async fn run_cron(cmd: gray::CronCmd, config: &gray::config::Config) -> anyhow::
             schedule,
             prompt,
             deliver,
+            origin_session,
             name,
             workdir,
             skills,
@@ -415,12 +416,29 @@ async fn run_cron(cmd: gray::CronCmd, config: &gray::config::Config) -> anyhow::
                     anyhow::bail!("unknown skill {s:?}");
                 }
             }
+            let deliver_kind = parse_deliver_flag(deliver.as_deref());
+            let origin = if matches!(deliver_kind, gray::cron::Deliver::Origin) {
+                let chat = origin_session
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("--deliver origin requires --origin-session <session-id>")
+                    })?;
+                Some(gray::cron::store::Origin {
+                    platform: "local".to_string(),
+                    chat: chat.to_string(),
+                    thread: None,
+                })
+            } else {
+                None
+            };
             let id = store.add_full(
                 &name,
                 &schedule,
                 &prompt,
-                parse_deliver_flag(deliver.as_deref()),
-                None,
+                deliver_kind,
+                origin,
                 workdir,
                 skill_names,
                 script,
