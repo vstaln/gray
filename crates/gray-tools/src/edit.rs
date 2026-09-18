@@ -330,6 +330,9 @@ impl Tool for EditTool {
             &applied.new_content,
             3,
         );
+        // The diff echoes file bytes verbatim — redact, or it re-exposes
+        // secrets the read/shell outputs just scrubbed.
+        let patch = gray_core::redaction::redact_for_disclosure(&patch).into_text();
         let mut all_notes = applied.notes;
         if repaired {
             all_notes.push(EDIT_PREFIX_STRIP_NOTE.to_string());

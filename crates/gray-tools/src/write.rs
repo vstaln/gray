@@ -237,6 +237,9 @@ impl Tool for WriteTool {
                 self.ledger.mark_written(&full, content.as_bytes());
                 if existed && !old.is_empty() {
                     let patch = crate::edit_diff::generate_unified_patch(&path, &old, &content, 3);
+                    // Same verbatim-bytes concern as edit: redact the diff.
+                    let patch =
+                        gray_core::redaction::redact_for_disclosure(&patch).into_text();
                     if patch.is_empty() {
                         finish(format!(
                             "wrote {} bytes to {} (no change)",
