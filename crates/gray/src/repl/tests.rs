@@ -114,7 +114,7 @@ fn turn_footer_includes_duration_when_known() {
     let totals = super::SessionTotals::default();
     let line = super::turn_footer(&usage, "test-persist-model", &totals, Some(6500));
     assert!(line.contains("6.5s"), "footer should show time: {line}");
-    assert!(line.contains("tok"), "footer should keep tokens: {line}");
+    assert!(line.contains("tokens"), "footer should keep tokens: {line}");
 }
 
 #[test]
@@ -122,10 +122,14 @@ fn turn_footer_shows_tokens_per_second() {
     let usage = gray_core::event::Usage::new(1000, 500);
     let totals = super::SessionTotals::default();
     let line = super::turn_footer(&usage, "test-persist-model", &totals, Some(6500));
-    assert!(line.contains("77 tok/s"), "500 out / 6.5s: {line}");
+    assert!(line.contains("77 tokens/s"), "500 out / 6.5s: {line}");
+    assert!(
+        line.contains("tokens"),
+        "footer should use tokens label: {line}"
+    );
     let untimed = super::turn_footer(&usage, "test-persist-model", &totals, None);
     assert!(
-        !untimed.contains("tok/s"),
+        !untimed.contains("tokens/s"),
         "no duration, no rate: {untimed}"
     );
 }

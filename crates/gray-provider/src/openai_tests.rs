@@ -129,7 +129,7 @@ async fn session_header_sent_on_chat_post() {
     let received = server.received_requests().await.expect("requests recorded");
     assert_eq!(
         received.len(),
-        3,
+        MAX_ATTEMPTS,
         "default retry burst POSTs once per attempt"
     );
     for r in &received {
@@ -883,7 +883,7 @@ async fn chat_post_carries_prompt_cache_key_body() {
     let received = server.received_requests().await.expect("requests recorded");
     assert_eq!(
         received.len(),
-        3,
+        MAX_ATTEMPTS,
         "default retry burst POSTs once per attempt"
     );
     let body: serde_json::Value = received[0].body_json().expect("json body");
@@ -1412,4 +1412,82 @@ async fn chat_eof_never_executes_unconfirmed_tools() {
         e,
         Ok(StreamEvent::ToolCallDelta { .. } | StreamEvent::MessageComplete { .. })
     )));
+}
+
+#[tokio::test]
+async fn zen_500_retry_hardening_recovers_on_fifth_attempt() {
+    // Zen provider-side 500 blip: 500x4 then 200 must recover within the
+    // hardened budget (5 attempts) with one reconnect notice + MessageComplete.
+    use futures::StreamExt;
+    let server = wiremock::MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::any())
+        .respond_with(wiremock::ResponseTemplate::new(500).set_body_string("boom"))
+        .up_to_n_times(4)
+        .mount(&server)
+        .await;
+    let chunk = serde_json::json!({"choices":[{"delta":{"content":"hi"}}]});
+    let body = format!("data: {chunk}\n\ndata: [DONE]\n\n");
+    wiremock::Mock::given(wiremock::matchers::any())
+        .respond_with(
+            wiremock::ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_string(body),
+        )
+        .mount(&server)
+        .await;
+    let provider = OpenAiProvider::new("key", "test-model", server.uri(), None, None)
+        .expect("provider builds");
+    let events: Vec<_> = provider.stream(empty_chat_req()).collect().await;
+    let received = server.received_requests().await.expect("requests recorded");
+    assert_eq!(
+        received.len(),
+        5,
+        "500x4 then 200 must take 5 attempts: {events:?}"
+    );
+    let notices = events
+        .iter()
+        .filter(|r| matches!(r, Ok(StreamEvent::StreamError { .. })))
+        .count();
+    assert_eq!(notices, 1, "one reconnect notice per burst: {events:?}");
+    assert!(
+        events
+            .iter()
+            .any(|r| matches!(r, Ok(StreamEvent::MessageComplete { .. }))),
+        "recovered stream must complete: {events:?}"
+    );
+}
+
+#[test]
+fn zen_500_retry_budget_constants() {
+    // Opencode parity: 1s base x5 retries vs old ~150ms over 3 attempts.
+    assert_eq!(MAX_ATTEMPTS, 5, "retry budget is 5 attempts");
+    assert_eq!(
+        INITIAL_BACKOFF,
+        Duration::from_secs(1),
+        "initial backoff is 1s"
+    );
+    assert_eq!(MAX_BACKOFF, Duration::from_secs(30), "backoff caps at 30s");
+    // Exponential growth must cap at 30s (attempt 20 would be hours uncapped).
+    assert!(
+        backoff_delay(INITIAL_BACKOFF, 20, None) <= Duration::from_secs(30),
+        "backoff caps at 30s"
+    );
+    // Server-asked delay still wins over the cap.
+    assert!(
+        backoff_delay(INITIAL_BACKOFF, 1, Some(Duration::from_secs(60))) >= Duration::from_secs(60),
+        "Retry-After wins over the cap"
+    );
+    // 5xx is provider-side: request was valid, keep routing clues.
+    let err = classify_http_error(
+        reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+        "boom",
+        Some("ray-1"),
+        Some("req-1"),
+    );
+    let msg = err.to_string();
+    assert!(matches!(err, ProviderError::ServerError(_)), "{msg}");
+    assert!(msg.contains("provider-side"), "{msg}");
+    assert!(msg.contains("request was valid"), "{msg}");
+    assert!(msg.contains("cf-ray: ray-1"), "{msg}");
+    assert!(msg.contains("request-id: req-1"), "{msg}");
 }

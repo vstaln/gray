@@ -475,7 +475,7 @@ pub(crate) fn dispatch_agent_event(
                 // left intact too: `end_turn` captures it for the final
                 // `Thought for` line and does the single reset there. The
                 // billed output is the one exception: stashed for the Thought
-                // line (`· N tok`, reasoning included). The
+                // line (`· N tokens`, reasoning included). The
                 // streamed estimate misses tool results and input, so without
                 // this the final line reads absurdly low — display-only,
                 // never gauge input.

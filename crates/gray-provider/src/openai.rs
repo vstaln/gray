@@ -17,10 +17,13 @@ use serde_json::Value;
 pub const DEFAULT_BASE_URL: &str = "https://openrouter.ai/api/v1";
 
 /// Maximum retry attempts for transient errors.
-const MAX_ATTEMPTS: usize = 3;
+const MAX_ATTEMPTS: usize = 5;
 
 /// Initial retry backoff (exponential, jittered, `Retry-After`-floored).
-const INITIAL_BACKOFF: Duration = Duration::from_millis(50);
+const INITIAL_BACKOFF: Duration = Duration::from_secs(1);
+
+/// Exponential backoff cap: growth stops here, `Retry-After` still wins via max.
+const MAX_BACKOFF: Duration = Duration::from_secs(30);
 
 /// An OpenAI-compatible LLM provider implementing the `Provider` trait.
 ///
@@ -1206,7 +1209,7 @@ pub(crate) fn classify_http_error(
         )),
         400 | 404 => ProviderError::BadRequest(msg),
         500..=599 if is_unsupported => ProviderError::BadRequest(msg),
-        500..=599 => ProviderError::ServerError(msg),
+        500..=599 => ProviderError::ServerError(format!("provider-side {msg} (request was valid)")),
         _ => ProviderError::Stream(msg),
     }
 }
@@ -1309,9 +1312,10 @@ fn parse_http_date_delay(raw: &str) -> Option<Duration> {
     Some(Duration::from_secs((target - now).max(0) as u64))
 }
 
-/// Exponential backoff with jitter, floored by `Retry-After` when present.
+/// Exponential backoff with jitter, capped at `MAX_BACKOFF`, floored by
+/// `Retry-After` when present (server-asked delay still wins via max).
 fn backoff_delay(initial: Duration, attempt: usize, retry_after: Option<Duration>) -> Duration {
-    let exp_factor = 1u64 << (attempt.saturating_sub(1));
+    let exp_factor = 1u64 << (attempt.saturating_sub(1).min(10));
     let backoff_ms = (initial.as_millis() as u64).saturating_mul(exp_factor);
     let max_jitter = backoff_ms / 2;
     let jitter_ms = if max_jitter > 0 {
@@ -1323,7 +1327,7 @@ fn backoff_delay(initial: Duration, attempt: usize, retry_after: Option<Duration
     } else {
         0
     };
-    let base = Duration::from_millis(backoff_ms + jitter_ms);
+    let base = Duration::from_millis(backoff_ms + jitter_ms).min(MAX_BACKOFF);
     retry_after.map(|floor| base.max(floor)).unwrap_or(base)
 }
 
@@ -1337,7 +1341,7 @@ fn rate_limit_floor(failed_attempt: usize) -> Duration {
 
 /// 429-aware retry floor: keep the server's `Retry-After` when present, else
 /// synthesize the escalating 429 floor. Non-429 errors pass through untouched
-/// (their ~50ms+jitter backoff is correct for blips).
+/// (their ~1s+jitter backoff is correct for blips).
 fn retry_floor(
     err: &ProviderError,
     floor: Option<Duration>,

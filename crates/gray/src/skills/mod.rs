@@ -291,9 +291,11 @@ pub fn format_skills_for_prompt(skills: &[Skill]) -> String {
     }
     let mut lines = vec![
         "\n\nThe following skills provide specialized instructions for specific tasks.".to_string(),
-        "Read a skill's SKILL.md with bash (`cat <location>`) when the task matches its description."
+        "When a task matches a skill description, read and follow its SKILL.md at the listed location before acting even for simple tasks; do not wait for the user to request /skills."
             .to_string(),
-        "Only load a skill for multi-step or specialized work that genuinely requires its workflow — trivial single-step edits and direct answers never require a skill.".to_string(),
+        "Use the read tool to load SKILL.md, bash (`cat <location>`) fallback only."
+            .to_string(),
+        "Briefly name the skill used and why.".to_string(),
         "When a skill file references a relative path, resolve it against the skill directory (parent of SKILL.md / dirname of the path) and use that absolute path in tool commands.".to_string(),
         String::new(),
         "<available_skills>".to_string(),
