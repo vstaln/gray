@@ -37,6 +37,49 @@ fn one_due(id: &str, deliver: serde_json::Value) -> serde_json::Value {
     }])
 }
 
+fn test_config() -> crate::config::Config {
+    crate::config::Config {
+        model: Some("startup-model".to_string()),
+        base_url: "https://startup.example/v1".to_string(),
+        api_key: None,
+        thinking_effort: None,
+        show_reasoning: None,
+        context_window: None,
+        context_reserve: None,
+        context_keep: None,
+        max_turns: None,
+        max_cost_micros: None,
+        max_wall_secs: None,
+    }
+}
+
+#[test]
+fn fire_follows_saved_model_switches() {
+    // A /model switch persists base_url+model; a later fire must use the
+    // switch, not the runner's startup snapshot. Pure temp path, no env, so
+    // parallel tests cannot interfere.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.json");
+    std::fs::write(
+        &path,
+        r#"{"base_url": "https://api.commandcode.ai/provider/v1", "model": "switched-model"}"#,
+    )
+    .unwrap();
+    let mut cfg = test_config();
+    refresh_model_from_saved_at(&mut cfg, &path);
+    assert_eq!(cfg.model.as_deref(), Some("switched-model"));
+    assert_eq!(cfg.base_url, "https://api.commandcode.ai/provider/v1");
+}
+
+#[test]
+fn fire_keeps_snapshot_without_saved_config() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut cfg = test_config();
+    refresh_model_from_saved_at(&mut cfg, &dir.path().join("missing.json"));
+    assert_eq!(cfg.model.as_deref(), Some("startup-model"));
+    assert_eq!(cfg.base_url, "https://startup.example/v1");
+}
+
 #[tokio::test]
 async fn tick_fires_due_job_and_marks_ok() {
     let home = tempfile::tempdir().unwrap();

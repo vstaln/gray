@@ -273,7 +273,12 @@ struct ReplRunner {
 #[async_trait::async_trait(?Send)]
 impl crate::cron_serve::AsyncRunner for ReplRunner {
     async fn run(&self, prompt: String, cwd: std::path::PathBuf) -> anyhow::Result<String> {
-        let mut agent = crate::build_agent(&self.config, &cwd, None).await?;
+        // The ticker thread holds a startup snapshot; a /model switch since
+        // then lives in the saved config — follow it so cron fires ask the
+        // same provider the session uses.
+        let mut config = self.config.clone();
+        crate::cron_serve::refresh_model_from_saved(&mut config);
+        let mut agent = crate::build_agent(&config, &cwd, None).await?;
         let ctx = gray_core::agent::ToolContext {
             cwd,
             cancel: tokio_util::sync::CancellationToken::new(),
@@ -282,9 +287,7 @@ impl crate::cron_serve::AsyncRunner for ReplRunner {
         let events = agent
             .run(gray_core::message::Message::user(prompt), ctx)
             .await
-            .map_err(|e| {
-                anyhow::anyhow!(crate::repl::format_core_error(&e, &self.config.base_url))
-            })?;
+            .map_err(|e| anyhow::anyhow!(crate::repl::format_core_error(&e, &config.base_url)))?;
         Ok(crate::cron_fire::transcript_text(&events))
     }
 }
