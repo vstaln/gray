@@ -112,16 +112,12 @@ pub(crate) fn pill_context_tokens(u: &gray_core::event::Usage) -> usize {
         .saturating_add(u.cache_write_input_tokens)
 }
 
-/// `· N tokens` suffix for the working pill; empty before the first usage
-/// report or when it totals zero (mirrors opencode2's `tokens <= 0` guard).
-pub(crate) fn pill_token_suffix(usage: Option<gray_core::event::Usage>) -> String {
-    live_pill_suffix(usage, 0)
-}
-
-/// Live pill total: the latest report with its output part raised to the
-/// streamed estimate (bytes/4, the repo's estimate heuristic), or the bare
-/// estimate before any report lands. Exact reports always win on arrival, so
-/// the counter ticks per chunk mid-stream and snaps exact at TurnEnd.
+/// `· N tokens` suffix for the working pill: the latest report with its
+/// output part raised to the streamed estimate (bytes/4, the repo's estimate
+/// heuristic), or the bare estimate before any report lands. Empty before the
+/// first streamed byte or when it totals zero (mirrors opencode2's
+/// `tokens <= 0` guard). Exact reports always win on arrival, so the counter
+/// ticks per chunk mid-stream and snaps exact at TurnEnd.
 pub(crate) fn live_pill_suffix(
     usage: Option<gray_core::event::Usage>,
     streamed_bytes: u64,

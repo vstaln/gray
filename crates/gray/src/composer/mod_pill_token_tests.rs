@@ -1,4 +1,8 @@
-use super::{pill_context_tokens, pill_token_suffix};
+use super::{live_pill_suffix, pill_context_tokens};
+
+fn pill_token_suffix(usage: Option<Usage>) -> String {
+    live_pill_suffix(usage, 0)
+}
 use gray_core::event::Usage;
 
 #[test]
