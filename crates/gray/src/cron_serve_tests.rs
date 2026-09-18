@@ -138,6 +138,92 @@ fn claim_outlives_max_fire_time() {
 }
 
 #[tokio::test]
+async fn origin_delivery_appends_to_session_and_keeps_file_on_failure() {
+    use crate::session_store::{JsonlSessionStore, SessionId, SessionMeta};
+    let home = tempfile::tempdir().unwrap();
+    let sessions = JsonlSessionStore::new(home.path().join("sessions"));
+    let chat = "origin-chat-1";
+    sessions
+        .create(SessionMeta::new(
+            SessionId::new(chat),
+            1_700_000_000_000,
+            home.path(),
+            "test",
+        ))
+        .await
+        .unwrap();
+    let mk_job = |id: &str, chat: &str| crate::cron::CronJob {
+        id: id.to_string(),
+        name: "nightly".to_string(),
+        prompt: "p".to_string(),
+        schedule: crate::cron::Schedule::Interval { secs: 3600 },
+        enabled: true,
+        state: Default::default(),
+        created_at: 1,
+        next_run_at: Some(1),
+        last_run_at: None,
+        last_status: None,
+        last_error: None,
+        last_delivery_error: None,
+        deliver: crate::cron::Deliver::Origin,
+        origin: Some(crate::cron::store::Origin {
+            platform: "local".to_string(),
+            chat: chat.to_string(),
+            thread: None,
+        }),
+        workdir: None,
+        fire_claim: None,
+        skills: vec![],
+        script: None,
+    };
+    let deliver = SaveLocalDeliver {
+        home: home.path().to_path_buf(),
+    };
+    // Happy path: session append + file save.
+    deliver
+        .deliver(&mk_job("j-origin", chat), 1_700_000_001, "hello output")
+        .await
+        .unwrap();
+    let saved = std::fs::read_to_string(
+        home.path()
+            .join("cron")
+            .join("output")
+            .join("j-origin")
+            .join("1700000001.md"),
+    )
+    .unwrap();
+    assert!(saved.contains("hello output"));
+    let session_text =
+        std::fs::read_to_string(home.path().join("sessions").join(format!("{chat}.jsonl")))
+            .unwrap();
+    assert!(
+        session_text.contains("nightly"),
+        "origin session missing delivery note"
+    );
+    assert!(session_text.contains("1700000001.md"));
+    // Failure path: unknown session -> Err (caller records DeliveryFailed),
+    // file still saved.
+    let err = deliver
+        .deliver(
+            &mk_job("j-bad", "no-such-session"),
+            1_700_000_002,
+            "kept output",
+        )
+        .await
+        .unwrap_err();
+    assert!(err.contains("no-such-session"), "unexpected: {err}");
+    let kept = std::fs::read_to_string(
+        home.path()
+            .join("cron")
+            .join("output")
+            .join("j-bad")
+            .join("1700000002.md"),
+    )
+    .unwrap();
+    assert!(kept.contains("kept output"));
+}
+
+#[tokio::test]
 async fn cron_runner_receives_job_workdir() {
     struct CwdRunner(PathBuf);
     #[async_trait::async_trait(?Send)]

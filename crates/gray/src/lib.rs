@@ -402,9 +402,12 @@ pub enum CronCmd {
         schedule: String,
         /// Prompt the daemon runs at fire time
         prompt: String,
-        /// Delivery target, stored with the job (only local delivers; origin | <target> records delivery_failed)
+        /// Delivery target: local saves a file; origin appends to --origin-session then saves (anything else saves only)
         #[arg(long)]
         deliver: Option<String>,
+        /// Origin chat session id (required with --deliver origin)
+        #[arg(long = "origin-session")]
+        origin_session: Option<String>,
         /// Job name (default: prompt's first line, truncated)
         #[arg(long)]
         name: Option<String>,
