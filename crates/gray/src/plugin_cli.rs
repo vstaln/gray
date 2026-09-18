@@ -610,7 +610,6 @@ pub(crate) async fn capture(
 
 #[cfg(test)]
 mod tests {
-    #[cfg(unix)]
     use super::*;
 
     fn command_entry(enabled: bool) -> LockEntry {
