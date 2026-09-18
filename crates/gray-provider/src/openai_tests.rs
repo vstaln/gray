@@ -1585,12 +1585,17 @@ fn non_anthropic_models_carry_no_cache_control() {
 }
 
 #[test]
-fn openrouter_gets_sticky_session_header() {
-    // pi `sendSessionAffinityHeaders`: OpenRouter pins a session to one
+fn openrouter_and_commandcode_get_sticky_session_header() {
+    // pi `sendSessionAffinityHeaders`: OpenRouter/CommandCode pin a session to one
     // upstream (and its prompt cache) only when told the session id.
     let openrouter = Url::parse("https://openrouter.ai/api/v1").expect("url");
     assert_eq!(
         session_affinity_headers(&openrouter, Some("s1")),
+        vec![("x-opencode-session", "s1"), ("x-session-id", "s1")]
+    );
+    let commandcode = Url::parse("https://api.commandcode.ai/provider/v1").expect("url");
+    assert_eq!(
+        session_affinity_headers(&commandcode, Some("s1")),
         vec![("x-opencode-session", "s1"), ("x-session-id", "s1")]
     );
     let other = Url::parse("https://api.deepseek.com/v1").expect("url");
