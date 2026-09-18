@@ -1,7 +1,8 @@
 //! Gateway control socket: `$GRAY_HOME/gateway.sock`.
 //!
 //! Wire contract (hermes v1, ported): ONE request per connection — one JSON
-//! line in, one JSON line out, then the server closes. Answers are
+//! line in, one JSON line out, then the server closes. Read verbs are
+//! `identify`/`status` plus read-only `metrics`/`logs_tail`. Answers are
 //! `{"ok": true, "protocol": 1, "result": {...}}`; misses are
 //! `{"ok": false, "error": ..., "supported_verbs": [...]}`. A connectable
 //! socket with a well-formed `identify` answer IS liveness — the pid file is
@@ -14,7 +15,11 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 pub const PROTOCOL: u32 = 1;
-pub const SUPPORTED_VERBS: [&str; 2] = ["identify", "status"];
+pub const SUPPORTED_VERBS: [&str; 4] = ["identify", "status", "metrics", "logs_tail"];
+/// `logs_tail` shape: last lines of `logs/gray.log`, newest last.
+pub const LOGS_TAIL_LINES: usize = 200;
+/// Byte cap on the tail read; the tail is kept, the head is dropped.
+const LOGS_TAIL_MAX_BYTES: u64 = 64 * 1024;
 /// sun_path is 104..108 bytes; keep margin (same margin hermes uses).
 #[cfg(unix)]
 const MAX_SOCK_PATH: usize = 100;
@@ -84,6 +89,42 @@ fn cron_payload(home: &Path, now: i64) -> serde_json::Value {
     }
 }
 
+/// Read-only telemetry reusing the shapes `status` already reports.
+/// No new I/O beyond what `status_payload` reads today.
+pub fn metrics_payload(home: &Path, now: i64) -> serde_json::Value {
+    let mut out = identify_payload(home);
+    out["cron"] = cron_payload(home, now);
+    out["answered_at"] = serde_json::json!(now);
+    out["answering_pid"] = serde_json::json!(std::process::id());
+    out
+}
+
+/// Last `LOGS_TAIL_LINES` lines of `logs/gray.log` (newest last) plus the
+/// total line count. Best-effort: a missing/unreadable file reads as empty,
+/// never an error (same fail-soft rule as every socket path).
+pub fn tail_gray_log(home: &Path) -> (Vec<String>, usize) {
+    let body = std::fs::read(home.join("logs").join("gray.log")).unwrap_or_default();
+    let capped = body.len() as u64 > LOGS_TAIL_MAX_BYTES;
+    let tail: &[u8] = if capped {
+        &body[body.len() - LOGS_TAIL_MAX_BYTES as usize..]
+    } else {
+        &body
+    };
+    let text = String::from_utf8_lossy(tail);
+    // A mid-line cut from the byte cap must not fabricate a first line.
+    let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
+    if capped && !lines.is_empty() {
+        lines.remove(0);
+    }
+    let total = lines.len();
+    let kept = if total > LOGS_TAIL_LINES {
+        lines[total - LOGS_TAIL_LINES..].to_vec()
+    } else {
+        lines
+    };
+    (kept, total)
+}
+
 /// One request line -> one response line (trailing newline). Never panics;
 /// a malformed request is answered, not dropped (hermes shape).
 pub fn handle_request_line(home: &Path, raw: &[u8], now: i64) -> Vec<u8> {
@@ -97,6 +138,16 @@ pub fn handle_request_line(home: &Path, raw: &[u8], now: i64) -> Vec<u8> {
             Some("status") => serde_json::json!({
                 "ok": true, "protocol": PROTOCOL, "result": status_payload(home, now),
             }),
+            Some("metrics") => serde_json::json!({
+                "ok": true, "protocol": PROTOCOL, "result": metrics_payload(home, now),
+            }),
+            Some("logs_tail") => {
+                let (lines, total) = tail_gray_log(home);
+                serde_json::json!({
+                    "ok": true, "protocol": PROTOCOL,
+                    "result": { "lines": lines, "total_lines_available": total },
+                })
+            }
             other => serde_json::json!({
                 "ok": false, "protocol": PROTOCOL,
                 "error": format!("unknown verb: {other:?}"),

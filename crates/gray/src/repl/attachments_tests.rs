@@ -69,3 +69,39 @@ fn jpeg_exif_orientation_is_applied_before_encoding() {
     let decoded = image::load_from_memory(&bytes).unwrap();
     assert_eq!((decoded.width(), decoded.height()), (4, 8));
 }
+
+#[test]
+fn inline_links_mixed_with_words_attach() {
+    let tmp = tempfile::Builder::new().suffix(".png").tempfile().unwrap();
+    let path = tmp.path().to_path_buf();
+    let cwd = std::path::Path::new("/tmp");
+    let text = format!("look at {} please", path.display());
+    let got = extract_inline_image_paths(&text, cwd);
+    assert_eq!(got, vec![path]);
+}
+
+#[test]
+fn inline_file_url_and_punctuation_attach_once() {
+    let tmp = tempfile::Builder::new().suffix(".jpg").tempfile().unwrap();
+    let path = tmp.path().to_path_buf();
+    let url = format!("file://{}", path.display());
+    let text = format!("{url}, and again {url}.");
+    let got = extract_inline_image_paths(&text, std::path::Path::new("/tmp"));
+    assert_eq!(got, vec![path]);
+}
+
+#[test]
+fn inline_non_image_and_missing_ignored() {
+    let cwd = std::path::Path::new("/tmp");
+    let text = "see /tmp/gray-test-no-such-file-xyz.png and notes.txt";
+    assert!(extract_inline_image_paths(text, cwd).is_empty());
+}
+
+#[test]
+fn inline_relative_resolves_against_cwd() {
+    let dir = tempfile::tempdir().unwrap();
+    let rel = dir.path().join("shot.png");
+    std::fs::write(&rel, b"fake").unwrap();
+    let got = extract_inline_image_paths("check shot.png", dir.path());
+    assert_eq!(got, vec![rel]);
+}

@@ -17,7 +17,6 @@ use super::tabs::{Tab, tab_segments};
 use super::*;
 
 use gray_pkg::errors::ErrorEntry;
-use gray_pkg::ops::LockEntry;
 
 /// One installed row in the manager's own display terms.
 pub(crate) struct ManagerItem {
@@ -62,22 +61,24 @@ const PLUGINS_SPEC: ManagerSpec = ManagerSpec {
 fn source_label(ecosystem: &str) -> &str {
     match ecosystem {
         "gray-native" => "Gray Index",
+        "gray-cli" => "Plugin command",
         "pi-gallery" => "Pi Gallery (preview)",
         other => other,
     }
 }
 
 /// Pure row renderer: `✓ name version (scope) [source]` when enabled,
-/// dim `○ … [disabled]` when disabled.
-pub(crate) fn format_plugin_row(name: &str, entry: &LockEntry) -> String {
-    let base = format!(
-        "{} {} ({}) [{}]",
-        name,
-        entry.version,
-        entry.scope,
-        source_label(&entry.ecosystem)
-    );
-    if entry.enabled {
+/// dim `○ … [disabled]` when disabled. Fields (not the lock struct) so both
+/// lock types (`gray-pkg` sidecars, `gray-plugin` CLI commands) share it.
+pub(crate) fn format_plugin_row_parts(
+    name: &str,
+    version: &str,
+    scope: &str,
+    ecosystem: &str,
+    on: bool,
+) -> String {
+    let base = format!("{name} {version} ({scope}) [{}]", source_label(ecosystem));
+    if on {
         format!("✓ {base}")
     } else {
         format!("○ {base} [disabled]")
@@ -148,25 +149,28 @@ pub fn run_plugins_modal(bg: Option<&BackgroundSnapshot>) -> anyhow::Result<bool
         bg,
         &PLUGINS_SPEC,
         || {
-            gray_pkg::ops::list().ok().map(|entries| {
-                entries
-                    .keys()
-                    .map(|name| {
-                        let entry = entries.get(name);
-                        ManagerItem {
-                            row: entry
-                                .map(|entry| format_plugin_row(name, entry))
-                                .unwrap_or_else(|| name.clone()),
-                            lit: entry.map(|entry| entry.enabled).unwrap_or(true),
-                            enabled: entry.map(|entry| entry.enabled).unwrap_or(true),
-                            name: name.clone(),
-                        }
+            // Merged view: `lock.json` sidecars + `commands.json` native/CLI
+            // commands (a bare CLI install otherwise shows an empty picker).
+            // A corrupt registry reads as no rows.
+            crate::plugin_cli::list_rows().ok().map(|rows| {
+                rows.into_iter()
+                    .map(|r| ManagerItem {
+                        row: format_plugin_row_parts(
+                            &r.name,
+                            &r.version,
+                            &r.scope,
+                            &r.ecosystem,
+                            r.on,
+                        ),
+                        lit: r.on,
+                        enabled: r.on,
+                        name: r.name,
                     })
                     .collect()
             })
         },
-        gray_pkg::ops::remove,
-        gray_pkg::ops::set_enabled,
+        crate::plugin_cli::remove_managed,
+        crate::plugin_cli::set_managed_enabled,
     )
 }
 

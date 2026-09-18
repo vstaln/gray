@@ -24,6 +24,23 @@ pub async fn run_foreground(config: &Config) -> anyhow::Result<()> {
     let home = crate::setup::gray_home()?;
     let record = pid::claim(&home)?;
     let started_at = record.started_at;
+    // Post-mortem observability only: chain (never replace) the `main.rs`
+    // hook, and best-effort record the panic so `gateway status` stops
+    // reporting a stale `running` after a crash. Writes via the same atomic
+    // state path as the normal stop record.
+    let panic_home = home.clone();
+    let prev_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let _ = state::write(
+            &panic_home,
+            &state::record(
+                state::STATE_STOPPED,
+                Some(&format!("panic: {info}")),
+                started_at,
+            ),
+        );
+        prev_hook(info);
+    }));
     log::info!(
         "gateway: starting (pid {}, home {})",
         record.pid,
@@ -66,8 +83,13 @@ pub async fn run_foreground(config: &Config) -> anyhow::Result<()> {
         follow_switches: true,
     };
     let deliver = crate::cron_serve::SaveLocalDeliver { home: home.clone() };
-    let mut interval = tokio::time::interval(Duration::from_secs(60));
-    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    // Aligned to wall-clock :00 so recurring schedules fire on minute
+    // boundaries instead of drifting. `interval_at` (not `sleep`) keeps the
+    // existing `select!` shutdown path responsive during the wait.
+    let first = tokio::time::Instant::now()
+        + Duration::from_secs(60 - (crate::cron::now_secs() as u64 % 60));
+    let mut interval = tokio::time::interval_at(first, Duration::from_secs(60));
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut stop_signal = stop_signal();
     let mut exit_reason: &'static str = "stop";
 

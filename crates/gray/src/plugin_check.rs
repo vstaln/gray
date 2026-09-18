@@ -15,6 +15,13 @@ use gray_plugin::builder::resolve_argv;
 use gray_plugin::sidecar::SidecarPlugin;
 use gray_plugin::{CoreEvent, Plugin};
 
+fn outcome_text(o: &gray_core::agent::CommandOutcome) -> String {
+    match o {
+        gray_core::agent::CommandOutcome::Say(s) => format!("{} bytes", s.len()),
+        gray_core::agent::CommandOutcome::Prompt(s) => format!("prompt {} bytes", s.len()),
+    }
+}
+
 struct Report {
     name: &'static str,
     pass: bool,
@@ -98,6 +105,67 @@ pub async fn check_plugin_dir(dir: &str) -> anyhow::Result<()> {
                 "2 concurrent tool/calls both resolved".to_string()
             } else {
                 "concurrent tool/calls hung past 15s".to_string()
+            },
+        });
+    }
+
+    // tool/before gate (skipped when unclaimed): allow resolves fast;
+    // ask-shaped hooks without a host handler deny fast (fail closed, never
+    // hang to the ask TTL — the transport has no handler in check mode).
+    if m.hooks.iter().any(|h| h == "tool/before") {
+        let t = std::time::Instant::now();
+        let verdict = tokio::time::timeout(
+            Duration::from_secs(15),
+            plugin.tool_before("bash", &serde_json::json!({"command": "check-probe"})),
+        )
+        .await;
+        reports.push(match verdict {
+            Ok(gray_core::agent::ToolBefore::Allow) => Report {
+                name: "tool/before",
+                pass: true,
+                detail: format!("allow resolved in {:?}", t.elapsed()),
+            },
+            Ok(gray_core::agent::ToolBefore::Deny(_)) => Report {
+                name: "tool/before",
+                pass: true,
+                detail: format!("deny (fail-closed without host) in {:?}", t.elapsed()),
+            },
+            Ok(gray_core::agent::ToolBefore::Modify(_)) => Report {
+                name: "tool/before",
+                pass: true,
+                detail: format!("modify resolved in {:?}", t.elapsed()),
+            },
+            Err(_) => Report {
+                name: "tool/before",
+                pass: false,
+                detail: "tool/before hung past 15s (hang-fixture behavior)".to_string(),
+            },
+        });
+    }
+
+    // command/run on the first claimed command (skipped when there are none).
+    if let Some(cmd) = m.commands.first().cloned() {
+        let t = std::time::Instant::now();
+        let outcome = tokio::time::timeout(
+            Duration::from_secs(15),
+            plugin.run_command(&cmd, Vec::new()),
+        )
+        .await;
+        reports.push(match outcome {
+            Ok(Some(o)) => Report {
+                name: "command/run",
+                pass: true,
+                detail: format!("{cmd} → {} in {:?}", outcome_text(&o), t.elapsed()),
+            },
+            Ok(None) => Report {
+                name: "command/run",
+                pass: true,
+                detail: format!("{cmd} declined (empty) in {:?}", t.elapsed()),
+            },
+            Err(_) => Report {
+                name: "command/run",
+                pass: false,
+                detail: format!("{cmd} hung past 15s (hang-fixture behavior)"),
             },
         });
     }

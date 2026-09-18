@@ -1,4 +1,5 @@
-//! REPL/`-p` side of the plugin→host channel (`host/run`, `host/say`, `host/background`).
+//! REPL/`-p` side of the plugin→host channel (`host/run`, `host/say`,
+//! `host/background`, `host/ask`).
 //!
 //! Installed on every sidecar at spawn by [`crate::build_agent`] via the
 //! shared builder;
@@ -11,7 +12,7 @@
 use std::path::PathBuf;
 use std::sync::Mutex;
 
-use gray_plugin::{HOST_RUN, HOST_SAY, HostHandler};
+use gray_plugin::{HOST_ASK, HOST_RUN, HOST_SAY, HostHandler};
 
 // Weak: the host must not keep an exited composer alive.
 static TUI: Mutex<std::sync::Weak<std::sync::Mutex<crate::composer::Tui>>> =
@@ -82,6 +83,7 @@ pub fn default_handler(cwd: PathBuf) -> HostHandler {
                         }
                         serde_json::json!({"ok": true})
                     }
+                    HOST_ASK => crate::ask::handle_ask(params).await,
                     HOST_RUN => {
                         let prompt = params
                             .get("prompt")

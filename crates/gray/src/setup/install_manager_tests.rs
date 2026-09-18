@@ -1,7 +1,20 @@
-use super::{format_error_row, format_plugin_row};
+use super::{format_error_row, format_plugin_row_parts};
 use crate::skills::Skill;
 use gray_pkg::errors::ErrorEntry;
 use gray_pkg::ops::LockEntry;
+
+/// Test-local row renderer over the sidecar lock entry (mirrors the removed
+/// `format_plugin_row` wrapper): the modal itself renders either lock type
+/// through `format_plugin_row_parts`.
+fn format_plugin_row(name: &str, entry: &LockEntry) -> String {
+    format_plugin_row_parts(
+        name,
+        &entry.version,
+        &entry.scope,
+        &entry.ecosystem,
+        entry.enabled,
+    )
+}
 
 fn discovered(name: &str, description: &str) -> Skill {
     Skill {
@@ -155,5 +168,22 @@ fn disabled_row_exact_string() {
     assert_eq!(
         format_plugin_row("demo", &entry("pi-gallery", false)),
         "○ demo 1.2.3 (user) [Pi Gallery (preview)] [disabled]"
+    );
+}
+
+#[test]
+fn cli_ecosystem_labels_plugin_commands() {
+    assert_eq!(
+        format_plugin_row("demo", &entry("gray-cli", true)),
+        "✓ demo 1.2.3 (user) [Plugin command]"
+    );
+    // The modal renders `commands.json` rows through the same builder.
+    assert_eq!(
+        format_plugin_row_parts("demo", "1.2.3", "user", "gray-cli", true),
+        format_plugin_row("demo", &entry("gray-cli", true))
+    );
+    assert_eq!(
+        format_plugin_row_parts("demo", "1.2.3", "user", "gray-cli", false),
+        format_plugin_row("demo", &entry("gray-cli", false))
     );
 }

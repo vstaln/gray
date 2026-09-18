@@ -47,3 +47,9 @@ fn pid_parser_reads_runit_status_lines() {
     );
     assert_eq!(parse_pid("down: gray-gateway: 1s, normally up"), None);
 }
+#[test]
+fn linger_warning_fires_only_without_linger_yes() {
+    assert_eq!(linger_warning_for("Linger=yes\n"), None);
+    assert!(linger_warning_for("Linger=no\n").is_some());
+    assert!(linger_warning_for("").is_some());
+}

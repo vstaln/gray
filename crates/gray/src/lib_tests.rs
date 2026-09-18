@@ -2,6 +2,28 @@ use super::*;
 // UNRUN (cargo test banned under X): run in TTY/CI.
 
 #[test]
+fn plugin_cli_alias_plugins_resolves() {
+    // `gray plugins ...` is the visible alias of `gray plugin ...`: both
+    // spellings parse to the identical subcommand.
+    for (a, b) in [
+        (["gray", "plugin", "list"], ["gray", "plugins", "list"]),
+        (["gray", "plugin", "update"], ["gray", "plugins", "update"]),
+    ] {
+        let cli = Cli::try_parse_from(a).unwrap();
+        let aliased = Cli::try_parse_from(b).unwrap();
+        assert!(
+            matches!(cli.command, Some(Commands::Plugin { .. })),
+            "{a:?}"
+        );
+        assert_eq!(
+            format!("{:?}", cli.command),
+            format!("{:?}", aliased.command),
+            "{a:?} vs {b:?}"
+        );
+    }
+}
+
+#[test]
 fn cron_cli_parses_add_shapes() {
     // `add` takes schedule + prompt positionally (`--` separates a
     // dash-leading prompt); flags are optional.

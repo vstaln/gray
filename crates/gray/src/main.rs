@@ -208,13 +208,18 @@ async fn run_plugin_inner(cmd: gray::PluginCmd) -> anyhow::Result<()> {
             Ok(())
         }
         PluginCmd::List => {
-            let plugins = gray_pkg::ops::list()?;
-            if plugins.is_empty() {
+            // Merged view: `lock.json` sidecars + `commands.json` native/CLI
+            // commands (`install plugin` wrote there, `plugin list` never
+            // looked). CLI rows carry a `[command]` tag since `update` and
+            // `install <spec>` stay sidecar-only.
+            let rows = gray::plugin_cli::list_rows()?;
+            if rows.is_empty() {
                 println!("no plugins installed");
             }
-            for (name, e) in &plugins {
-                let state = if e.enabled { "" } else { " [disabled]" };
-                println!("{} {} ({}){state}", name, e.version, e.scope);
+            for r in &rows {
+                let state = if r.on { "" } else { " [disabled]" };
+                let kind = if r.cli { " [command]" } else { "" };
+                println!("{} {} ({}){state}{kind}", r.name, r.version, r.scope);
             }
             Ok(())
         }
@@ -224,12 +229,16 @@ async fn run_plugin_inner(cmd: gray::PluginCmd) -> anyhow::Result<()> {
             Ok(())
         }
         PluginCmd::Remove { name } => {
-            gray_pkg::ops::remove(&name)?;
+            // `install plugin` entries live in `commands.json`, not the
+            // sidecar lock: route to whichever registry owns the name.
+            gray::plugin_cli::remove_managed(&name)?;
             println!("removed {name}");
             Ok(())
         }
         PluginCmd::Update { target } => {
-            let reports = gray_pkg::ops::update(&target).await?;
+            // `update` only knows sidecar sources: `commands.json` entries
+            // warn and no-op instead of failing as "not installed".
+            let reports = gray::plugin_cli::update_managed(&target).await?;
             if reports.is_empty() {
                 println!("up to date");
             }
@@ -239,12 +248,13 @@ async fn run_plugin_inner(cmd: gray::PluginCmd) -> anyhow::Result<()> {
             Ok(())
         }
         PluginCmd::Enable { name } => {
-            gray_pkg::ops::set_enabled(&name, true)?;
+            // Same routing as remove: the name may live in either registry.
+            gray::plugin_cli::set_managed_enabled(&name, true)?;
             println!("enabled {name}");
             Ok(())
         }
         PluginCmd::Disable { name } => {
-            gray_pkg::ops::set_enabled(&name, false)?;
+            gray::plugin_cli::set_managed_enabled(&name, false)?;
             println!("disabled {name}");
             Ok(())
         }

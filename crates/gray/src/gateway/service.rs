@@ -423,6 +423,9 @@ fn require_supervised(svc: &Path, dir: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Single-PID `SIGTERM` is deliberate: children this process spawned
+/// (pre-scripts, tool subshells) are not signalled. Process-group kill
+/// (`kill(-pid)`) risks signalling the supervisor's own group — rejected.
 fn stop_by_pid(home: &Path) -> anyhow::Result<String> {
     let Some(rec) = super::pid::running(home) else {
         return Ok("gateway is not running".to_string());
@@ -537,6 +540,18 @@ fn install_systemd(
     std::fs::write(&unit, &body)?;
     let _ = systemctl(&["daemon-reload"]);
     let mut msg = format!("installed systemd user unit: {}", unit.display());
+    // Warning text only: never changes the install/start flow. Best-effort;
+    // a missing loginctl (or empty USER) warns rather than errors.
+    let user = std::env::var("USER").unwrap_or_default();
+    let linger_out = std::process::Command::new("loginctl")
+        .args(["show-user", &user, "--property=Linger"])
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        .unwrap_or_default();
+    if let Some(warn) = linger_warning_for(&linger_out) {
+        msg.push('\n');
+        msg.push_str(warn);
+    }
     if no_start {
         msg.push_str(
             "\nnot enabled (--no-start); enable with `systemctl --user enable --now gray-gateway`",
@@ -633,6 +648,17 @@ fn run_sv(svc: &Path, args: &[&str]) -> std::io::Result<std::process::Output> {
         .args(args)
         .arg(svc)
         .output()
+}
+
+/// Pure check for the linger warning: `Some(text)` unless loginctl output
+/// confirms `Linger=yes`. Kept pure so tests cover it without loginctl.
+pub(crate) fn linger_warning_for(loginctl_stdout: &str) -> Option<&'static str> {
+    if loginctl_stdout.contains("Linger=yes") {
+        return None;
+    }
+    Some(
+        "⚠ systemd linger is off — user services stop at logout; run `sudo loginctl enable-linger $USER` to keep the gateway up",
+    )
 }
 
 fn systemctl(args: &[&str]) -> std::io::Result<std::process::Output> {

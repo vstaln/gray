@@ -105,12 +105,16 @@ pub(crate) async fn handle_plugin_command(raw: &str, tui: Option<&crate::compose
         }
     };
     match action {
-        PluginAction::List => match ops::list() {
-            Ok(plugins) if plugins.is_empty() => say(tui, "no plugins installed"),
-            Ok(plugins) => {
-                for (name, e) in &plugins {
-                    let state = if e.enabled { "" } else { " [disabled]" };
-                    say(tui, &format!("{name} {} ({}){state}", e.version, e.scope));
+        PluginAction::List => match crate::plugin_cli::list_rows() {
+            Ok(rows) if rows.is_empty() => say(tui, "no plugins installed"),
+            Ok(rows) => {
+                for r in &rows {
+                    let state = if r.on { "" } else { " [disabled]" };
+                    let kind = if r.cli { " [command]" } else { "" };
+                    say(
+                        tui,
+                        &format!("{} {} ({}){state}{kind}", r.name, r.version, r.scope),
+                    );
                 }
             }
             Err(e) => say(tui, &format!("plugin list failed: {e:#}")),
@@ -124,11 +128,11 @@ pub(crate) async fn handle_plugin_command(raw: &str, tui: Option<&crate::compose
                 Err(e) => say(tui, &format!("install failed: {e:#}")),
             }
         }
-        PluginAction::Remove(name) => match ops::remove(&name) {
+        PluginAction::Remove(name) => match crate::plugin_cli::remove_managed(&name) {
             Ok(()) => say(tui, &format!("removed {name}")),
             Err(e) => say(tui, &format!("remove failed: {e:#}")),
         },
-        PluginAction::Update(target) => match ops::update(&target).await {
+        PluginAction::Update(target) => match crate::plugin_cli::update_managed(&target).await {
             Ok(reports) if reports.is_empty() => say(tui, "up to date"),
             Ok(reports) => {
                 for r in reports {
@@ -137,11 +141,11 @@ pub(crate) async fn handle_plugin_command(raw: &str, tui: Option<&crate::compose
             }
             Err(e) => say(tui, &format!("update failed: {e:#}")),
         },
-        PluginAction::Enable(name) => match ops::set_enabled(&name, true) {
+        PluginAction::Enable(name) => match crate::plugin_cli::set_managed_enabled(&name, true) {
             Ok(()) => say(tui, &format!("enabled {name}")),
             Err(e) => say(tui, &format!("enable failed: {e:#}")),
         },
-        PluginAction::Disable(name) => match ops::set_enabled(&name, false) {
+        PluginAction::Disable(name) => match crate::plugin_cli::set_managed_enabled(&name, false) {
             Ok(()) => say(tui, &format!("disabled {name}")),
             Err(e) => say(tui, &format!("disable failed: {e:#}")),
         },

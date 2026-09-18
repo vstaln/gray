@@ -4,7 +4,7 @@
 //! stills for video. Audio has no model-agnostic wire path on our
 //! OpenAI-compatible providers — reported loudly, never silently dropped.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 // Image downscale lives in gray-tools (the `read` tool attaches vision
@@ -42,6 +42,62 @@ pub fn attachment_kind(path: &Path) -> AttachmentKind {
     }
 }
 
+/// Max inline file links auto-attached per turn (DoS cap on `fs::read` below).
+const MAX_INLINE_IMAGES: usize = 8;
+/// Inline attach skips files at/above this (mirrors composer paste cap).
+const MAX_INLINE_FILE_BYTES: u64 = 100 * 1024 * 1024;
+
+/// Scan prompt text for image file links (`/tmp/a.png`, `./a.jpg`,
+/// `file:///tmp/a%20b.png`) and return existing image files resolved against
+/// `cwd`. Typed/piped `-p` links never go through paste-attach, so without
+/// this they stay plain text and the model never sees them.
+pub fn extract_inline_image_paths(text: &str, cwd: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    for raw in text.split_whitespace() {
+        if out.len() >= MAX_INLINE_IMAGES {
+            break;
+        }
+        let mut tok = raw
+            .trim_matches(|c| matches!(c, '"' | '\'' | '`' | '<' | '(' | '['))
+            .trim_end_matches(|c| {
+                matches!(
+                    c,
+                    '"' | '\'' | '`' | '>' | ')' | ']' | '.' | ',' | ';' | ':' | '!' | '?'
+                )
+            });
+        if tok.is_empty() || tok.len() > 1024 {
+            continue;
+        }
+        // Strip file:// (+localhost) + percent-decode; raw paths pass through
+        // untouched so literal % in real filenames is never corrupted.
+        let decoded: std::borrow::Cow<'_, str> = if let Some(stripped) = tok.strip_prefix("file://")
+        {
+            let s = stripped.strip_prefix("localhost").unwrap_or(stripped);
+            percent_encoding::percent_decode_str(s).decode_utf8_lossy()
+        } else {
+            std::borrow::Cow::Borrowed(tok)
+        };
+        tok = decoded.as_ref();
+        let candidate = Path::new(tok);
+        if attachment_kind(candidate) != AttachmentKind::Image {
+            continue;
+        }
+        let full = if candidate.is_absolute() {
+            candidate.to_path_buf()
+        } else {
+            cwd.join(candidate)
+        };
+        if full.is_file()
+            && std::fs::metadata(&full)
+                .map(|m| m.len() < MAX_INLINE_FILE_BYTES)
+                .unwrap_or(false)
+            && !out.contains(&full)
+        {
+            out.push(full);
+        }
+    }
+    out
+}
 /// PDF → text via poppler (`pdftotext -layout file -`). Universal: works on
 /// every model with zero provider changes.
 pub fn pdf_text(path: &Path) -> Result<String, MediaError> {
