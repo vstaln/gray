@@ -1393,15 +1393,12 @@ fn session_affinity_headers<'a>(
         return Vec::new();
     };
     let mut headers = vec![("x-opencode-session", sid)];
-    if url
-        .host_str()
-        .is_some_and(|h| {
-            h == "openrouter.ai"
-                || h.ends_with(".openrouter.ai")
-                || h == "commandcode.ai"
-                || h.ends_with(".commandcode.ai")
-        })
-    {
+    if url.host_str().is_some_and(|h| {
+        h == "openrouter.ai"
+            || h.ends_with(".openrouter.ai")
+            || h == "commandcode.ai"
+            || h.ends_with(".commandcode.ai")
+    }) {
         headers.push(("x-session-id", sid));
     }
     headers

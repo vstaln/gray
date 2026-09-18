@@ -96,7 +96,7 @@ pub fn bash_is_batchable(command: &str) -> bool {
     // arbitrary files; `./x` / `sh x.sh` execute script files. Bare
     // `python --version`, bare `curl url`, and `bash -c '…'` (payload is
     // screened above as part of the whole string) stay allowed.
-    if toks.iter().any(|t| *t == "wget") {
+    if toks.contains(&"wget") {
         return false;
     }
     if matches!(toks.first(), Some(s) if *s == "." || *s == "..") {
