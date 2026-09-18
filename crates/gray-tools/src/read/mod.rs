@@ -419,7 +419,15 @@ impl ReadTool {
         // Phase 2 — window (clamp → prefix → caps) with absolute numbering.
         let w = window::window(first_n, &raws, max_lines, max_bytes, max_chars, has_more);
         let last = first_n.saturating_add(w.shown.len()).saturating_sub(1);
-        let mut output = w.shown.join("\n");
+        // Redaction parity with the shell pump: secret-shaped text is
+        // redacted on display. The ledger hash above stays raw — the
+        // write guard compares real bytes.
+        let mut output = w
+            .shown
+            .iter()
+            .map(|l| gray_core::redaction::redact_for_disclosure(l).into_text())
+            .collect::<Vec<_>>()
+            .join("\n");
         if let Some(cut) = w.cut {
             // The cut always names an observed line: after the window (line
             // cut) or the unshown line itself (byte cut).
@@ -659,3 +667,7 @@ mod capped_count_tests;
 #[path = "mod_bulk_wiring_tests.rs"]
 #[cfg(test)]
 mod bulk_wiring_tests;
+
+#[path = "mod_redact_tests.rs"]
+#[cfg(test)]
+mod redact_tests;

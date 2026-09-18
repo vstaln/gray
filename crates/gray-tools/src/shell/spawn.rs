@@ -4,6 +4,11 @@
 //! detached via setsid (pgid == pid). NO `kill_on_drop`: from now on a
 //! Unix children die by explicit kill or exit. Windows owns a Job Object
 //! instead: dropping the job closes any remaining descendants too.
+//!
+//! Intentional non-gate (GRY-01 triage): no command guard, no approval
+//! prompt, no container/VM isolation — model `bash` runs with user
+//! privileges (see SECURITY.md + README Safety). Containment here is only
+//! timeout + process-group kill + output redact/fence upstream.
 
 use std::io;
 use std::path::Path;
