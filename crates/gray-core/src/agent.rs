@@ -262,7 +262,7 @@ use futures::StreamExt as _;
 
 use crate::message::{ContentBlock, Message, Role, ToolDef};
 
-pub use super::agent_compact::{estimate_message_tokens, summary_pair};
+pub use super::agent_compact::{estimate_message_tokens, summary_message};
 
 /// The agent loop: drives a conversation against a [`Provider`], executing
 /// tool calls through a [`ToolExecutor`] until the model stops requesting
@@ -290,6 +290,10 @@ pub struct Agent {
     pub(crate) tool_timeout: Duration,
     pub(crate) hooks: Vec<Arc<dyn PluginHooks>>,
     pub(crate) context_window: Option<usize>,
+    /// Latest provider-reported context size and the history length it
+    /// covered (pi `getLastAssistantUsage`). Cleared on every history
+    /// rewrite: a pre-rewrite report describes a context that no longer exists.
+    context_usage: Option<(usize, usize)>,
     history_revision: u64,
     history_rewrite_hook: Option<Arc<dyn Fn() + Send + Sync>>,
 }
@@ -307,6 +311,7 @@ impl Agent {
             tool_timeout: Duration::from_secs(120),
             hooks: Vec::new(),
             context_window: None,
+            context_usage: None,
             history_revision: 0,
             history_rewrite_hook: None,
         }
@@ -331,6 +336,7 @@ impl Agent {
     }
 
     pub(crate) fn history_rewritten(&mut self) {
+        self.context_usage = None;
         self.history_revision = self.history_revision.wrapping_add(1);
         if let Some(hook) = &self.history_rewrite_hook {
             hook();
@@ -386,11 +392,29 @@ impl Agent {
         self
     }
 
-    /// Rough transcript size in tokens (bytes/4 — same approximation as
-    /// `gray_tools::stats::est_tokens`). Delegates to the shared
+    /// Context size in tokens, pi `estimateContextTokens`: the latest
+    /// provider-reported total (which already includes the system prompt and
+    /// tool definitions) plus a bytes/4 estimate of the messages appended
+    /// since. Without a report (fresh, resumed or just-rewritten history) it
+    /// falls back to bytes/4 over the whole transcript, via the shared
     /// `agent_compact::est_tokens` owner so the estimators can never drift.
     pub(crate) fn estimate_tokens(&self) -> usize {
-        crate::agent_compact::est_tokens(&self.messages)
+        match self.context_usage {
+            Some((tokens, covered)) if covered <= self.messages.len() => {
+                tokens + crate::agent_compact::est_tokens(&self.messages[covered..])
+            }
+            _ => crate::agent_compact::est_tokens(&self.messages),
+        }
+    }
+
+    /// Anchors [`estimate_tokens`](Self::estimate_tokens) on one provider
+    /// report covering the current history. Rounds without usage keep the
+    /// previous anchor; the trailing estimate covers what came after it.
+    pub(crate) fn record_context_usage(&mut self, usage: &crate::event::Usage) {
+        let tokens = usage.total();
+        if tokens > 0 {
+            self.context_usage = Some((tokens, self.messages.len()));
+        }
     }
 
     /// Read-only view of the accumulated conversation so far.

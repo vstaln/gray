@@ -2,7 +2,7 @@
 //!
 //! Thin wrappers over `gray_core`'s codex-v2 pipeline ([`Agent::compact_v2`]):
 //! manual `/compact` and the REPL auto paths share the same in-band
-//! trigger → retention walk → summary-last logic as the in-turn recovery path,
+//! trigger → retention walk → summary-first (pi) layout as the in-turn recovery path,
 //! plus the gray-specific lifecycle (file-ledger disarm, continuation
 //! checkpoint).
 

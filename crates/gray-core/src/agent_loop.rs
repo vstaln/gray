@@ -211,19 +211,12 @@ impl Agent {
 
             self.collect_background_notifications(&ctx);
 
-            // Pre-turn budget, gated on real pressure: history rewrites
-            // (elision, compaction) break provider prefix cache (99% hits
-            // → miss for a turn), so quiet turns leave history append-only
-            // and cache-hot. Cheapest relief first under pressure: batched
-            // elision, then the compaction loop as backstop.
+            // Pre-turn budget (pi `_compactBeforeNextAssistantResponse`):
+            // history is append-only (mini-swe-agent / pi), so each request
+            // extends the previous one and the provider prefix cache stays
+            // hot. Compaction is the only rewrite, and it runs only when the
+            // provider-anchored estimate reaches the window.
             if needs_pre_turn_compact(self.estimate_tokens(), self.context_window) {
-                if crate::compact::should_elide_observations(&self.messages) {
-                    crate::compact::prune_old_tool_observations(
-                        &mut self.messages,
-                        crate::compact::DEFAULT_KEEP_RECENT_TOOL_OBSERVATIONS,
-                    );
-                    self.history_rewritten();
-                }
                 // False = nothing to gain (all tail): fall through; the provider's
                 // own overflow path remains the backstop. Success strictly shrinks
                 // history, so re-check without looping forever. Errors finalize
@@ -547,6 +540,9 @@ impl Agent {
                 content,
             };
             self.messages.push(assistant.clone());
+            // This round's report covers system + tools + history through the
+            // assistant message just pushed (pi `estimateContextTokens`).
+            self.record_context_usage(&usage);
 
             let tool_uses: Vec<(String, String, serde_json::Value)> = assistant
                 .content
