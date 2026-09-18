@@ -88,3 +88,64 @@ fn query_without_a_socket_is_none() {
     let home = tempfile::tempdir().unwrap();
     assert!(query(home.path(), "identify").is_none());
 }
+#[test]
+fn metrics_reports_existing_state_shapes() {
+    let home = tempfile::tempdir().unwrap();
+    let line = handle_request_line(home.path(), br#"{"id":3,"verb":"metrics"}"#, 1000);
+    let answer: serde_json::Value = serde_json::from_slice(&line).unwrap();
+    assert_eq!(answer["ok"], serde_json::json!(true));
+    assert_eq!(answer["protocol"], serde_json::json!(1));
+    assert_eq!(answer["id"], serde_json::json!(3));
+    assert!(answer["result"]["uptime_secs"].is_number(), "{answer}");
+    assert!(answer["result"]["cron"].is_object(), "{answer}");
+    assert_eq!(answer["result"]["cron"]["jobs"], serde_json::json!(0));
+}
+
+#[test]
+fn logs_tail_is_empty_without_a_log_file() {
+    let home = tempfile::tempdir().unwrap();
+    let line = handle_request_line(home.path(), br#"{"verb":"logs_tail"}"#, 1000);
+    let answer: serde_json::Value = serde_json::from_slice(&line).unwrap();
+    assert_eq!(answer["ok"], serde_json::json!(true));
+    assert_eq!(answer["result"]["lines"], serde_json::json!([]));
+    assert_eq!(
+        answer["result"]["total_lines_available"],
+        serde_json::json!(0)
+    );
+}
+
+#[test]
+fn logs_tail_returns_last_lines_capped() {
+    let home = tempfile::tempdir().unwrap();
+    let dir = home.path().join("logs");
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut body = String::new();
+    for i in 0..250 {
+        body.push_str(&format!("line {i}\n"));
+    }
+    std::fs::write(dir.join("gray.log"), &body).unwrap();
+    let line = handle_request_line(home.path(), br#"{"verb":"logs_tail"}"#, 1000);
+    let answer: serde_json::Value = serde_json::from_slice(&line).unwrap();
+    let lines = answer["result"]["lines"].as_array().unwrap();
+    assert_eq!(lines.len(), 200);
+    assert_eq!(lines[0], serde_json::json!("line 50"));
+    assert_eq!(lines[199], serde_json::json!("line 249"));
+    assert_eq!(
+        answer["result"]["total_lines_available"],
+        serde_json::json!(250)
+    );
+}
+
+#[test]
+fn unknown_verbs_still_list_all_four() {
+    let home = tempfile::tempdir().unwrap();
+    let line = handle_request_line(home.path(), br#"{"verb":"nope"}"#, 1000);
+    let answer: serde_json::Value = serde_json::from_slice(&line).unwrap();
+    assert_eq!(answer["ok"], serde_json::json!(false));
+    for verb in ["identify", "status", "metrics", "logs_tail"] {
+        assert!(
+            answer["supported_verbs"].to_string().contains(verb),
+            "{answer}"
+        );
+    }
+}
