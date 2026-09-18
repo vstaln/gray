@@ -141,3 +141,40 @@ async fn script_timeout_covers_execution() {
     assert!(!out.ok);
     assert!(out.stderr_tail.contains("timed out"), "{}", out.stderr_tail);
 }
+
+#[test]
+fn delivery_wrap_shapes() {
+    // Hermes `_deliver_result` frame: header, 13-dash rule, body, footer.
+    let out = format_delivery("nightly", "abc123", "hello output");
+    assert!(out.starts_with("Cronjob Response: nightly\n(job_id: abc123)\n"));
+    assert!(out.contains("\n-------------\n\nhello output\n\n"));
+    assert!(out.ends_with(
+        "To stop or manage this job, send me a new message (e.g. \"stop reminder nightly\")."
+    ));
+}
+
+#[test]
+fn mirror_message_is_clean_user_label() {
+    // Hermes `_cron_mirror_message`: labelled, no wrapper, no file path.
+    let out = mirror_message("nightly", "hello output");
+    assert_eq!(out, "[Cron delivery: nightly]\nhello output");
+    assert!(!out.contains("Cronjob Response:"));
+    assert!(!out.contains("-------------"));
+}
+
+#[test]
+fn delivery_excerpt_caps_at_4000_chars() {
+    assert_eq!(DELIVERY_EXCERPT_CHARS, 4000);
+    let long = "x".repeat(5000);
+    assert_eq!(delivery_excerpt(&long).chars().count(), 4000);
+    assert_eq!(delivery_excerpt("short"), "short");
+}
+
+#[test]
+fn delivery_helpers_are_pure() {
+    // Same inputs, byte-identical outputs — every driver renders one box.
+    let a = format_delivery("n", "i", "b");
+    let b = format_delivery("n", "i", "b");
+    assert_eq!(a, b);
+    assert_eq!(mirror_message("n", "b"), mirror_message("n", "b"));
+}

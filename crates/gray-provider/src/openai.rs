@@ -1393,10 +1393,12 @@ fn session_affinity_headers<'a>(
         return Vec::new();
     };
     let mut headers = vec![("x-opencode-session", sid)];
-    if url
-        .host_str()
-        .is_some_and(|h| h == "openrouter.ai" || h.ends_with(".openrouter.ai"))
-    {
+    if url.host_str().is_some_and(|h| {
+        h == "openrouter.ai"
+            || h.ends_with(".openrouter.ai")
+            || h == "commandcode.ai"
+            || h.ends_with(".commandcode.ai")
+    }) {
         headers.push(("x-session-id", sid));
     }
     headers
@@ -2551,7 +2553,10 @@ impl Provider for OpenAiProvider {
     }
 
     fn stream(&self, req: ChatRequest) -> BoxStream<'static, Result<StreamEvent, ProviderError>> {
-        if is_muse_model(&self.model) && self.base_url.as_str().contains("opencode.ai/zen") {
+        if is_muse_model(&self.model)
+            && (self.base_url.as_str().contains("opencode.ai/zen")
+                || self.base_url.as_str().contains("commandcode.ai"))
+        {
             let url = match responses_url(&self.base_url) {
                 Ok(u) => u,
                 Err(e) => return stream::once(async move { Err(e) }).boxed(),

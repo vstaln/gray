@@ -6,6 +6,7 @@ use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
 use super::*;
+use crate::shell::contract::MAX_ACTION_WAIT_MS;
 
 const MAX_RUNNING: usize = 32;
 const MAX_RETAINED: usize = 128;
@@ -117,16 +118,19 @@ impl Jobs {
             .expect("unpublished job cannot be evicted");
         job.yielded = true;
         ToolOutput::ok(format!(
-            "still running · job {id} · yielded after {} · timeout {secs}s · log {}\nContinue other work. Use bash action:output/status/cancel with job_id:{id}; completion will be reported between model rounds or on the next user turn.",
+            "still running · job {id} · yielded after {} · timeout {secs}s · log {}\nContinue other work. Use bash action:output/status with job_id:{id} and wait_ms (e.g. 30000) to await it in one call instead of polling; completion will also be reported between model rounds or on the next user turn.",
             format_elapsed(job.started.elapsed()),
             job.log.display()
         ))
     }
 
-    pub(super) fn action(&self, ctx: &ToolContext, action: &str, args: &Value) -> ToolOutput {
+    pub(super) async fn action(&self, ctx: &ToolContext, action: &str, args: &Value) -> ToolOutput {
         if !matches!(action, "list" | "status" | "output" | "cancel") {
             return fail(format!("unknown bash action: {action}"));
         }
+        // Only run-surface keys belong here: `wait`/`wait_ms` ride the
+        // blocking-wait contract, not the run surface (rejected with their
+        // own loud errors below / in `BashTool::execute`, never this line).
         for (key, default) in [
             ("command", json!("")),
             ("timeout", json!(DEFAULT_TIMEOUT_SECS)),
@@ -137,8 +141,24 @@ impl Jobs {
                 return fail(format!("{key} is only valid for action:run"));
             }
         }
-        let mut jobs = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        // Bounded blocking wait: `wait` left the surface entirely (it only
+        // ever rides output/status as `wait_ms` now); `wait_ms` rides only
+        // output/status. Anything else fails loudly, never silently.
+        if args.get("wait").is_some_and(|v| !v.is_null()) {
+            return fail("`wait` is not a bash argument; to await a job use action:output/status with wait_ms".into());
+        }
+        let wait_ms = match get_opt_u64(args, "wait_ms") {
+            Ok(v) => v.unwrap_or(0),
+            Err(e) => return e,
+        };
+        if !matches!(action, "output" | "status")
+            && args.get("wait_ms").is_some_and(|v| !v.is_null())
+        {
+            return fail("wait_ms is only valid for action:output/status".into());
+        }
+        let wait = Duration::from_millis(wait_ms.clamp(0, MAX_ACTION_WAIT_MS));
         if action == "list" {
+            let jobs = self.0.lock().unwrap_or_else(|e| e.into_inner());
             if args.get("job_id").is_some() {
                 return fail("list does not accept job_id".into());
             }
@@ -157,6 +177,8 @@ impl Jobs {
             Ok(v) => v,
             Err(e) => return e,
         };
+        self.await_settled(ctx, &id, action, wait).await;
+        let mut jobs = self.0.lock().unwrap_or_else(|e| e.into_inner());
         let Some(job) = jobs.get_mut(&id).filter(|j| j.session == ctx.session_id) else {
             return fail(format!("unknown job in this session: {id}"));
         };
@@ -192,6 +214,31 @@ impl Jobs {
             text.push_str(&fence(&view.body));
         }
         ToolOutput::ok(text)
+    }
+
+    /// `wait_ms` on output/status stretches the snapshot path into a
+    /// bounded blocking wait (clamped 0..=MAX_ACTION_WAIT_MS). Returns the
+    /// final result when the job lands inside the window, else today's
+    /// snapshot. Finished jobs, cancel, and all errors answer immediately.
+    async fn await_settled(&self, ctx: &ToolContext, id: &str, action: &str, wait: Duration) {
+        if wait.is_zero() || !matches!(action, "output" | "status") {
+            return;
+        }
+        // Clone-then-drop: never hold the registry mutex across the await,
+        // or the worker's send_replace can never land.
+        let rx_opt = {
+            let jobs = self.0.lock().unwrap_or_else(|e| e.into_inner());
+            jobs.get(id)
+                .filter(|j| j.session == ctx.session_id)
+                .filter(|j| j.result.borrow().is_none())
+                .map(|j| j.result.clone())
+        };
+        if let Some(mut rx) = rx_opt {
+            tokio::select! {
+                _ = tokio::time::timeout(wait, rx.wait_for(|v| v.is_some())) => {}
+                _ = ctx.cancel.cancelled() => {}
+            }
+        }
     }
 
     pub(super) fn notifications(&self, ctx: &ToolContext) -> Vec<String> {
@@ -242,6 +289,114 @@ mod tests {
             },
             tx,
         )
+    }
+
+    #[tokio::test]
+    async fn action_wait_returns_final_when_job_lands_inside_window() {
+        // wait_ms stretches the snapshot path into the job's final result:
+        // one call replaces N polls. Sender fires mid-wait; the waiter must
+        // see the final output (and mark it notified) without polling.
+        let tool = BashTool::default();
+        let ctx = ToolContext::default();
+        let id = "bash-wait-lands-inside-window";
+        let (job, tx) = entry(false, false, true);
+        tool.jobs.0.lock().unwrap().insert(id.into(), job);
+        let waiter = tool.execute(
+            &ctx,
+            json!({"action": "output", "job_id": id, "wait_ms": 5000}),
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        tx.send_replace(Some(ToolOutput::ok("exit 0\nwaited-result")));
+        let out = waiter.await;
+        assert!(!out.is_error, "{}", out.content);
+        assert_eq!(out.content, format!("job {id}\nexit 0\nwaited-result"));
+        assert!(
+            tool.jobs
+                .0
+                .lock()
+                .unwrap()
+                .get(id)
+                .is_some_and(|j| j.notified),
+            "final delivery marks notified so no duplicate notice drains"
+        );
+    }
+
+    #[tokio::test]
+    async fn action_wait_timeout_keeps_snapshot_and_finished_job_ignores_wait() {
+        // Past the window with no result: today's snapshot, no error.
+        let tool = BashTool::default();
+        let ctx = ToolContext::default();
+        let id = "bash-wait-window-expires";
+        let (job, _tx) = entry(false, false, true);
+        tool.jobs.0.lock().unwrap().insert(id.into(), job);
+        let t0 = Instant::now();
+        let out = tool
+            .execute(
+                &ctx,
+                json!({"action": "output", "job_id": id, "wait_ms": 100}),
+            )
+            .await;
+        assert!(!out.is_error, "{}", out.content);
+        assert!(out.content.contains("running"), "{}", out.content);
+        assert!(t0.elapsed() < Duration::from_secs(10), "bounded wait");
+        // Finished jobs answer immediately: wait_ms changes nothing.
+        let done = "bash-wait-already-finished";
+        let (finished, _tx) = entry(true, false, true);
+        tool.jobs.0.lock().unwrap().insert(done.into(), finished);
+        let out = tool
+            .execute(
+                &ctx,
+                json!({"action": "output", "job_id": done, "wait_ms": 5000}),
+            )
+            .await;
+        assert_eq!(out.content, format!("job {done}\nexit 0"));
+        // status honors wait_ms too, without flipping notified.
+        let out = tool
+            .execute(
+                &ctx,
+                json!({"action": "status", "job_id": done, "wait_ms": 5000}),
+            )
+            .await;
+        assert!(!out.is_error, "{}", out.content);
+        assert!(out.content.contains(done), "{}", out.content);
+    }
+
+    #[tokio::test]
+    async fn action_wait_rejected_outside_output_status() {
+        // wait_ms on run/list/cancel fails loudly — never silently ignored.
+        // `wait` left the surface entirely: rejected on run AND management.
+        let tool = BashTool::default();
+        let ctx = ToolContext::default();
+        let id = "bash-wait-rejected-elsewhere";
+        let (job, _tx) = entry(false, false, true);
+        tool.jobs.0.lock().unwrap().insert(id.into(), job);
+        for args in [
+            json!({"command": "echo hi", "wait_ms": 1000}),
+            json!({"command": "echo hi", "wait": true}),
+            json!({"action": "list", "wait_ms": 1000}),
+            json!({"action": "cancel", "job_id": id, "wait_ms": 1000}),
+            json!({"action": "output", "job_id": id, "wait": true}),
+        ] {
+            let out = tool.execute(&ctx, args.clone()).await;
+            assert!(out.is_error, "{args}: {}", out.content);
+            assert!(
+                out.content.contains("wait_ms") || out.content.contains("`wait`"),
+                "{args}: {}",
+                out.content
+            );
+        }
+        // Malformed wait_ms fails through the shared u64 validator.
+        let out = tool
+            .execute(
+                &ctx,
+                json!({"action": "output", "job_id": id, "wait_ms": "soon"}),
+            )
+            .await;
+        assert!(
+            out.is_error && out.content.contains("wait_ms"),
+            "{}",
+            out.content
+        );
     }
 
     #[tokio::test]

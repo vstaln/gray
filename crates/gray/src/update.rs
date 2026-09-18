@@ -3,7 +3,12 @@ use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-const BASE: &str = "https://gray.alignment.id/dl";
+fn base_url() -> String {
+    std::env::var("GRAY_CDN_URL")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| "https://gray.alignment.id/dl".to_string())
+}
 pub const CHANNEL: &str = env!("GRAY_CHANNEL");
 
 fn parse_version(v: &str) -> Option<(u64, u64, u64)> {
@@ -32,9 +37,19 @@ fn update_available(channel: &str, latest: &str, current: &str, build: &str) -> 
 
 async fn latest_version() -> anyhow::Result<String> {
     let suffix = if CHANNEL == "beta" { "-build" } else { "" };
-    let url = format!("{BASE}/latest-{CHANNEL}{suffix}.txt");
+    let url = format!("{}/latest-{CHANNEL}{suffix}.txt", base_url());
     let txt = reqwest::get(&url).await?.error_for_status()?.text().await?;
     Ok(txt.trim().to_string())
+}
+
+/// Optional installer pin: when `GRAY_INSTALLER_SHA256` is set, the update
+/// path downloads install.sh first, verifies sha256, then executes the
+/// verified bytes instead of `curl|sh` on a mutable script.
+fn installer_pin() -> Option<String> {
+    std::env::var("GRAY_INSTALLER_SHA256")
+        .ok()
+        .map(|s| s.trim().to_lowercase())
+        .filter(|s| s.len() == 64 && s.chars().all(|c| c.is_ascii_hexdigit()))
 }
 
 /// curl -fsSL https://gray.alignment.id/install.sh | sh [- beta]
@@ -72,12 +87,72 @@ fn run_installer() -> anyhow::Result<()> {
         !cfg!(windows),
         "self-update is not supported on native Windows: close Gray and rerun install-native.ps1 with the verified preview ZIP and checksum"
     );
+    // Pinned path: download install.sh, check sha256 against
+    // GRAY_INSTALLER_SHA256, execute the verified bytes.
+    if let Some(pin) = installer_pin() {
+        let dir = std::env::temp_dir().join(format!("gray-installer-{}", std::process::id()));
+        std::fs::create_dir_all(&dir)?;
+        let file = dir.join("install.sh");
+        let dl = Command::new("sh")
+            .arg("-c")
+            .arg(format!(
+                "curl -fsSL {} > {}",
+                shell_escape(&format!("{}/../install.sh", base_url())),
+                shell_escape(&file.to_string_lossy())
+            ))
+            .status()?;
+        anyhow::ensure!(dl.success(), "installer download failed");
+        let bytes = std::fs::read(&file)?;
+        let actual = sha256_hex(&bytes);
+        anyhow::ensure!(
+            actual == pin,
+            "installer checksum mismatch (expected {pin}, got {actual}) — refusing to run"
+        );
+        let status = Command::new("sh").arg(&file).status()?;
+        let _ = std::fs::remove_dir_all(&dir);
+        anyhow::ensure!(status.success(), "installer failed");
+        return Ok(());
+    }
     let status = Command::new("sh")
         .arg("-c")
         .arg(install_command())
         .status()?;
     anyhow::ensure!(status.success(), "installer failed");
     Ok(())
+}
+
+fn shell_escape(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    // ponytail: shell out to sha256sum/shasum, no new dep for one check
+    let tmp = std::env::temp_dir().join(format!("gray-hash-{}", std::process::id()));
+    if std::fs::write(&tmp, bytes).is_err() {
+        return String::new();
+    }
+    for prog in ["sha256sum", "shasum"] {
+        let args: &[&str] = if prog == "shasum" {
+            &["-a", "256"]
+        } else {
+            &[]
+        };
+        if let Ok(out) = Command::new(prog).args(args).arg(&tmp).output()
+            && out.status.success()
+        {
+            let hex: String = String::from_utf8_lossy(&out.stdout)
+                .split_whitespace()
+                .next()
+                .unwrap_or_default()
+                .to_lowercase();
+            let _ = std::fs::remove_file(&tmp);
+            if hex.len() == 64 {
+                return hex;
+            }
+        }
+    }
+    let _ = std::fs::remove_file(&tmp);
+    String::new()
 }
 
 /// Exclusive-update lock path: `<gray-home>/logs/update.lock` (temp fallback).

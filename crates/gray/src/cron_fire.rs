@@ -35,6 +35,34 @@ pub fn is_silent_response(text: &str) -> bool {
         .is_some_and(|l| l.eq_ignore_ascii_case("[silent]"))
 }
 
+/// Bound for delivery excerpts (keeps the 4000-char cap the old origin note
+/// used; the full transcript is already on disk, the mirror and live box
+/// share this excerpt).
+pub const DELIVERY_EXCERPT_CHARS: usize = 4000;
+
+/// Hermes `_deliver_result` wrapper (header/footer frame): the live-chat
+/// delivery for an `Origin` job. Byte-exact shape — `Cronjob Response:`,
+/// `(job_id:)`, 13 dashes, body, then the stop/manage footer.
+pub fn format_delivery(name: &str, id: &str, body: &str) -> String {
+    format!(
+        "Cronjob Response: {name}\n(job_id: {id})\n-------------\n\n{body}\n\nTo stop or manage this job, send me a new message (e.g. \"stop reminder {name}\")."
+    )
+}
+
+/// Hermes `_cron_mirror_message`: the clean (unwrapped, no header/footer, no
+/// file path) output appended to the origin session transcript as a labelled
+/// `USER` turn so a reply continues in context. `USER`, never assistant —
+/// an assistant-role mirror lands assistant→assistant and breaks strict
+/// alternation; consecutive user turns merge safely.
+pub fn mirror_message(name: &str, body: &str) -> String {
+    format!("[Cron delivery: {name}]\n{body}")
+}
+
+/// Bounded excerpt of a fire transcript for delivery (mirror + live box).
+pub fn delivery_excerpt(text: &str) -> String {
+    text.chars().take(DELIVERY_EXCERPT_CHARS).collect()
+}
+
 /// Final prompt: optional `## skills` block (exact `<location>` paths, one
 /// per line) + optional fenced `## script-output` block + base prompt.
 /// Empty sections are omitted (byte-stable for the common prompt-only job).

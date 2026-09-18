@@ -5,9 +5,22 @@
 
 use std::path::PathBuf;
 
+/// One fired job's delivery for live-chat rendering. `to_chat` is true only
+/// for `Origin` jobs with a recorded origin session (hermes mirror parity);
+/// `Local`/`Target`/session-less `Origin` are save-only (`to_chat: false`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeliveredFire {
+    pub id: String,
+    pub name: String,
+    pub path: std::path::PathBuf,
+    pub excerpt: String,
+    pub to_chat: bool,
+}
+
 pub struct TickReport {
     pub fired: usize,
     pub errors: usize,
+    pub delivered: Vec<DeliveredFire>,
 }
 
 /// Re-resolve the fire-time model + provider from the saved config file.
@@ -78,14 +91,16 @@ impl AsyncRunner for HeadlessRunner {
 /// Whole-fire wall clock (script + agent), matches the bash tool bound.
 pub const FIRE_TIMEOUT_SECS: u64 = 600;
 
-/// Delivery: transcript to `$HOME/cron/output/<id>/<ts>.md`, plus — for
-/// `Deliver::Origin` with a recorded origin session — an append of a bounded
-/// delivery note to that session (hermes origin parity). Unknown (`Target`)
-/// or session-less `Origin` jobs fail safe to save-only + warn (old-daemon
-/// rule — never misdeliver to a wrong chat). `Err(String)` records
-/// `delivery_failed` with the string as `last_delivery_error`; run columns
-/// stay untouched. The file is always saved first so an append failure keeps
-/// the output on disk.
+/// Delivery (hermes `_deliver_result` + `_cron_mirror_message` parity):
+/// transcript to `$HOME/cron/output/<id>/<ts>.md` first, always — then, for
+/// `Deliver::Origin` with a recorded origin session, a mirror append of the
+/// clean (unwrapped, no header/footer, no file path) excerpt to that session
+/// as a labelled `USER` turn so a reply continues in context. Unknown
+/// (`Target`) or session-less `Origin` jobs fail safe to save-only + warn
+/// (old-daemon rule — never misdeliver to a wrong chat). `Err(String)`
+/// records `delivery_failed` with the string as `last_delivery_error`; run
+/// columns stay untouched. The file is always saved first so an append
+/// failure keeps the output on disk.
 pub struct SaveLocalDeliver {
     pub home: PathBuf,
 }
@@ -96,18 +111,28 @@ impl SaveLocalDeliver {
         job: &crate::cron::CronJob,
         now: i64,
         text: &str,
-    ) -> Result<(), String> {
+    ) -> Result<DeliveredFire, String> {
         let path = crate::cron_fire::write_local_output(&self.home, job, now, text)
             .map_err(|e| format!("local write failed: {e:#}"))?;
+        // Bounded excerpt: the full transcript is already on disk; the mirror
+        // and the live box share this cap.
+        let excerpt = crate::cron_fire::delivery_excerpt(text);
+        let saved = |to_chat: bool| DeliveredFire {
+            id: job.id.clone(),
+            name: job.name.clone(),
+            path: path.clone(),
+            excerpt: excerpt.clone(),
+            to_chat,
+        };
         match &job.deliver {
-            crate::cron::Deliver::Local => Ok(()),
+            crate::cron::Deliver::Local => Ok(saved(false)),
             crate::cron::Deliver::Target(_) => {
                 log::warn!(
                     "cron {}: unknown target {:?}, saved locally",
                     job.id,
                     job.deliver
                 );
-                Ok(())
+                Ok(saved(false))
             }
             crate::cron::Deliver::Origin => {
                 let Some(origin) = &job.origin else {
@@ -115,23 +140,20 @@ impl SaveLocalDeliver {
                         "cron {}: origin delivery without origin session, saved locally",
                         job.id
                     );
-                    return Ok(());
+                    return Ok(saved(false));
                 };
-                // Bounded excerpt: the full transcript is already on disk.
-                let excerpt: String = text.chars().take(4000).collect();
-                let note = format!(
-                    "[cron {}] output saved to {}\n\n{}",
-                    job.name,
-                    path.display(),
-                    excerpt
-                );
+                // Clean mirror (hermes parity): no wrapper, no file path.
+                // `USER`, never assistant — an assistant-role mirror lands
+                // assistant→assistant and breaks strict alternation;
+                // consecutive user turns merge safely.
+                let note = crate::cron_fire::mirror_message(&job.name, &excerpt);
                 let sessions =
                     crate::session_store::JsonlSessionStore::new(self.home.join("sessions"));
                 let sid = crate::session_store::SessionId::new(origin.chat.clone());
                 sessions
-                    .append(&sid, &gray_core::message::Message::system(note))
+                    .append(&sid, &gray_core::message::Message::user(note))
                     .await
-                    .map(|_| ())
+                    .map(|_| saved(true))
                     .map_err(|e| {
                         format!("origin append failed for session {:?}: {e:#}", origin.chat)
                     })
@@ -145,7 +167,8 @@ pub fn owner_stamp() -> String {
 }
 
 /// Fire one already-claimed job and record the outcome via `mark_done`.
-/// Returns the recorded status for the tick report. Never propagates
+/// Returns the recorded status plus the delivery record for live-chat
+/// rendering (`None` when the fire failed before delivery). Never propagates
 /// job-level failure: every path ends in `mark_done` (claim released).
 pub async fn fire_one(
     store: &crate::cron::CronStore,
@@ -153,7 +176,7 @@ pub async fn fire_one(
     job: crate::cron::CronJob,
     now: i64,
     deliver: &SaveLocalDeliver,
-) -> crate::cron::RunStatus {
+) -> (crate::cron::RunStatus, Option<DeliveredFire>) {
     use crate::cron::RunStatus;
     let fail = |msg: String| {
         let _ = store.mark_done(
@@ -168,30 +191,33 @@ pub async fn fire_one(
         Some(w) => w.clone(),
         None => match std::env::current_dir() {
             Ok(c) => c,
-            Err(e) => return fail(format!("cannot resolve workdir: {e:#}")),
+            Err(e) => return (fail(format!("cannot resolve workdir: {e:#}")), None),
         },
     };
     if let Some(s) = &job.script
         && (!s.is_absolute() || !s.is_file())
     {
-        return fail(format!("pre-script missing: {}", s.display()));
+        return (fail(format!("pre-script missing: {}", s.display())), None);
     }
     let mut skill_paths = Vec::new();
     for name in &job.skills {
         match crate::skills_tool::resolve_skill_name(&workdir, name) {
             Some(p) => skill_paths.push(p),
-            None => return fail(format!("skill not found: {name}")),
+            None => return (fail(format!("skill not found: {name}")), None),
         }
     }
     let mut script_stdout: Option<String> = None;
     if let Some(s) = &job.script {
         let outcome = crate::cron_fire::run_pre_script(s, &workdir).await;
         if !outcome.ok {
-            return fail(format!("pre-script failed: {}", outcome.stderr_tail));
+            return (
+                fail(format!("pre-script failed: {}", outcome.stderr_tail)),
+                None,
+            );
         }
         if !crate::cron_fire::parse_wake_gate(&outcome.stdout) {
             let _ = store.mark_done(&job.id, job.fire_claim.as_ref(), RunStatus::Ok, None);
-            return RunStatus::Ok;
+            return (RunStatus::Ok, None);
         }
         script_stdout = Some(outcome.stdout);
     }
@@ -204,19 +230,19 @@ pub async fn fire_one(
     )
     .await
     {
-        Err(_) => return fail("fire exceeded 600s".to_string()),
-        Ok(Err(_)) => return fail("agent run panicked".to_string()),
-        Ok(Ok(Err(e))) => return fail(format!("agent run failed: {e:#}")),
+        Err(_) => return (fail("fire exceeded 600s".to_string()), None),
+        Ok(Err(_)) => return (fail("agent run panicked".to_string()), None),
+        Ok(Ok(Err(e))) => return (fail(format!("agent run failed: {e:#}")), None),
         Ok(Ok(Ok(text))) => text,
     };
     if crate::cron_fire::is_silent_response(&text) {
         let _ = store.mark_done(&job.id, job.fire_claim.as_ref(), RunStatus::Ok, None);
-        return RunStatus::Ok;
+        return (RunStatus::Ok, None);
     }
     match deliver.deliver(&job, now, &text).await {
-        Ok(()) => {
+        Ok(saved) => {
             let _ = store.mark_done(&job.id, job.fire_claim.as_ref(), RunStatus::Ok, None);
-            RunStatus::Ok
+            (RunStatus::Ok, Some(saved))
         }
         Err(msg) => {
             let _ = store.mark_done(
@@ -225,7 +251,7 @@ pub async fn fire_one(
                 RunStatus::DeliveryFailed,
                 Some(&msg),
             );
-            RunStatus::DeliveryFailed
+            (RunStatus::DeliveryFailed, None)
         }
     }
 }
@@ -250,6 +276,7 @@ pub async fn tick_once(
     let mut report = TickReport {
         fired: 0,
         errors: 0,
+        delivered: Vec::new(),
     };
     loop {
         let now = crate::cron::now_secs();
@@ -258,14 +285,23 @@ pub async fn tick_once(
         };
         fired_ids.push(job.id.clone());
         report.fired += 1;
-        if !matches!(
-            fire_one(store, runner, job, now, deliver).await,
-            crate::cron::RunStatus::Ok
-        ) {
+        let (status, saved) = fire_one(store, runner, job, now, deliver).await;
+        if !matches!(status, crate::cron::RunStatus::Ok) {
             report.errors += 1;
+        }
+        if let Some(saved) = saved {
+            report.delivered.push(saved);
         }
     }
     Ok(report)
+}
+
+/// Live-chat delivery for one fired job (hermes `_deliver_result` frame):
+/// the wrapped `Cronjob Response:` box plus the output-file path. Pure, so
+/// every driver (REPL, `tick`, `run`) renders the same line.
+pub fn format_fire_chat(saved: &DeliveredFire) -> String {
+    let body = crate::cron_fire::format_delivery(&saved.name, &saved.id, &saved.excerpt);
+    format!("{body}\nFull output: {}", saved.path.display())
 }
 
 /// Tick every 60s until SIGINT. Supervision owns the process; there is no

@@ -12,6 +12,9 @@ pub const DEFAULT_TIMEOUT_SECS: u64 = 30;
 pub const MAX_TIMEOUT_SECS: u64 = 600;
 pub const MIN_YIELD_MS: u64 = 100;
 pub const MAX_YIELD_MS: u64 = 10_000;
+/// Ceiling for `action:output`/`action:status` `wait_ms`: one bounded
+/// blocking wait replaces N polls. Well under the 120s agent tool timeout.
+pub const MAX_ACTION_WAIT_MS: u64 = 30_000;
 pub const VIEW_BUDGET_LINES: usize = 2000;
 pub const VIEW_HEAD_FRACTION: f32 = 0.25; // head 25%, tail 75%
 pub const MEM_HEAD_BYTES: usize = 6 * 1024;

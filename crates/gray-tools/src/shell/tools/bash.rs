@@ -40,7 +40,8 @@ impl Tool for BashTool {
              running after that window. Multiple jobs can run concurrently; continue other work \
              instead of polling. Completion notices arrive between model rounds (or on the next \
              user turn when idle). Use action:list/status/output/cancel with job_id to manage jobs; \
-             output/status never wait. Jobs belong to this session and stop when Gray exits. \
+             output/status accept wait_ms (bounded blocking wait, clamped 0-30000ms) so one call \
+             can await a job instead of polling. Jobs belong to this session and stop when Gray exits. \
              timeout is the total runtime limit (default 30s, capped at 600s), NOT the yield window. \
              Non-zero exits are data, not tool errors. Full output is logged; inline output is bounded.",
             json!({
@@ -51,7 +52,8 @@ impl Tool for BashTool {
                     "job_id": {"type": "string", "description": "Job ID returned by bash; required for status/output/cancel"},
                     "background": {"type": "boolean", "description": "Return immediately; run independently in this session"},
                     "timeout": {"type": "integer", "description": "Total runtime limit in seconds (default 30, clamped 1-600)"},
-                    "yield_ms": {"type": "integer", "description": "Wait at most this many milliseconds before returning a running job (clamped 100-10000); omitted means wait for exit"}
+                    "yield_ms": {"type": "integer", "description": "Wait at most this many milliseconds before returning a running job (clamped 100-10000); omitted means wait for exit"},
+                    "wait_ms": {"type": "integer", "description": "Bounded blocking wait on action:output/status only: await the job's exit up to this many ms (clamped 0-30000) instead of polling; omitted means return immediately"}
                 }
             }),
         )
@@ -70,21 +72,28 @@ impl Tool for BashTool {
             Some(Value::String(s)) => s.as_str(),
             _ => return fail("action must be a string".into()),
         };
+        if args.get("wait_ms").is_some_and(|v| !v.is_null()) && action == "run" {
+            return fail("wait_ms is only valid for action:output/status".into());
+        }
         if action != "run" {
-            return self.jobs.action(ctx, action, &args);
+            // `wait` left the run surface (rejected loudly on the run path
+            // below); the async wait path takes `wait_ms` on output/status.
+            return self.jobs.action(ctx, action, &args).await;
         }
         // job_id on a plain run carries no extra intent (nothing is dropped),
         // and real models echo it back from the schema: ignore it. The
         // removed-API family below would silently lose intent, so it still
         // fails loudly — with removal as the first instruction, never a
         // suggestion that re-triggers the same failure.
-        for key in [
-            "task_id",
-            "from_offset",
-            "wait",
-            "notify_on",
-            "run_in_background",
-        ] {
+        // `wait` left the run surface with the async wait path: it only rides
+        // output/status as `wait_ms` now, so a run carrying it fails loudly
+        // instead of silently dropping the intent.
+        if args.get("wait").is_some_and(|v| !v.is_null()) {
+            return fail(
+                "`wait` is not a run argument; remove it. To await a job use action:output/status with wait_ms; for background work use background:true or yield_ms".into(),
+            );
+        }
+        for key in ["task_id", "from_offset", "notify_on", "run_in_background"] {
             if args.get(key).is_some_and(|v| !v.is_null()) {
                 return fail(format!(
                     "`{key}` is not a run argument; remove it. For background work use background:true or yield_ms; job_id only pairs with action:status/output/cancel"

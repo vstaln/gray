@@ -136,6 +136,30 @@ pub(crate) fn live_pill_suffix(
     }
 }
 
+/// Live output tokens for the working-pill TPS readout: completed rounds'
+/// exact `StepUsage` outputs plus the streamed estimate since the last
+/// report (bytes/4, same heuristic as the token pill). Turn-level, so the
+/// live rate converges to the final `Thought for · N tokens · T tps` line.
+/// Pure for testability.
+pub(crate) fn live_turn_output_tokens(turn_output_accum: usize, streamed_bytes: u64) -> usize {
+    let est = usize::try_from(streamed_bytes / 4).unwrap_or(usize::MAX);
+    turn_output_accum.saturating_add(est)
+}
+
+/// `· N tps` suffix for the working pill. Empty before the first output
+/// byte or when elapsed is zero (same contract as the end-of-turn rate).
+/// Pure for testability.
+pub(crate) fn live_tps_suffix(
+    turn_output_accum: usize,
+    streamed_bytes: u64,
+    elapsed_ms: u64,
+) -> String {
+    let out = live_turn_output_tokens(turn_output_accum, streamed_bytes);
+    crate::repl::turn_tokens_per_second(out, elapsed_ms)
+        .map(|t| format!(" · {t} tps"))
+        .unwrap_or_default()
+}
+
 /// Codex parity (`reference/openai/codex/codex-rs/tui/src/chatwidget/compaction.rs`):
 /// live compaction status. Its wall clock is separate from the turn's running
 /// time, and only a matching live completion contributes a duration to the
@@ -257,10 +281,15 @@ pub struct Tui {
     /// omp turn with no reported usage. Never feeds the context gauge
     /// (that stays `latest_usage`, latest-round size).
     pub(crate) turn_billed_output: Option<usize>,
-    /// Assistant-text bytes streamed this turn/round (TextDelta only —
-    /// reasoning rides inside output_tokens already). Feeds the live pill
+    /// Assistant-text bytes streamed this turn/round (TextDelta +
+    /// ThinkingDelta — both ride inside output_tokens). Feeds the live pill
     /// estimate; reset per turn and per usage report, exact bills win.
     pub(crate) streamed_bytes: u64,
+    /// Exact `StepUsage` output tokens finalized so far this turn
+    /// (Σ-per-round). Plus the streamed estimate gives the live TPS
+    /// numerator, which converges to the TurnEnd billed output. Reset per
+    /// turn; never feeds the context gauge (same rule as `streamed_bytes`).
+    pub(crate) turn_output_accum: usize,
     /// Current inline viewport height. `draw` keeps it at the exact-fit
     /// content height (+1 spare cleared row, clamped to
     /// `MIN_VIEWPORT_H..=VIEWPORT_H`) so there is never a 10-row idle gap;
@@ -441,6 +470,7 @@ impl Tui {
             pending_resize: None,
             turn_billed_output: None,
             streamed_bytes: 0,
+            turn_output_accum: 0,
             viewport_h: MIN_VIEWPORT_H,
             live_tools: Vec::new(),
             plugin_widget: plugin_widget::Widget::new(std::env::current_dir().unwrap_or_default()),
@@ -659,6 +689,10 @@ impl Tui {
     pub fn set_usage(&mut self, usage: gray_core::event::Usage) {
         self.latest_usage = Some(usage);
         self.cumulative_usage = Some(usage);
+        // Turn-level TPS numerator: every round bills its full output, so
+        // the live rate sums each report (converges to the TurnEnd total).
+        // Input stays last-report-only (see NOTE below) — only output sums.
+        self.turn_output_accum = self.turn_output_accum.saturating_add(usage.output_tokens);
         // New round segment: the report carries this round's exact output,
         // so the streamed estimate restarts rather than double-counting it.
         self.streamed_bytes = 0;
@@ -690,6 +724,7 @@ impl Tui {
         self.cumulative_usage = None;
         self.turn_billed_output = None;
         self.streamed_bytes = 0;
+        self.turn_output_accum = 0;
     }
 
     /// Stashes the TurnEnd billed output + reasoning counts for the `end_turn`
@@ -835,6 +870,7 @@ impl Tui {
         }
         self.turn_billed_output = None;
         self.streamed_bytes = 0;
+        self.turn_output_accum = 0;
         self.is_task_running = true;
         self.status = Some((now, label.to_string()));
         let _ = self.draw();
@@ -948,6 +984,7 @@ impl Tui {
         // inflation the pill just dropped (2.5M on a 14s turn).
         let turn_toks = self.turn_billed_output;
         self.turn_billed_output = None;
+        self.turn_output_accum = 0;
         if self.thinking {
             self.end_thinking_run(true);
         }

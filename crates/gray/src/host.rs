@@ -41,6 +41,8 @@ fn background(params: serde_json::Value) -> anyhow::Result<()> {
     tui.set_background(request.path.as_deref())
 }
 
+// ponytail: bounded queue; a chatty sidecar must not grow this without limit
+const MAX_SAY_QUEUE: usize = 32;
 static SAY_QUEUE: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
 /// Drain queued `host/say` lines (the REPL loop and print mode own rendering).
@@ -53,6 +55,9 @@ pub fn take_host_say() -> Vec<String> {
 
 pub(crate) fn queue_say(text: String) {
     if let Ok(mut q) = SAY_QUEUE.lock() {
+        if q.len() >= MAX_SAY_QUEUE {
+            q.remove(0);
+        }
         q.push(text);
     }
 }

@@ -363,9 +363,21 @@ fn log_chunks_redact_text_but_pass_binary_through() {
     assert!(matches!(redact_bytes_for_log(fence), Cow::Borrowed(_)));
     let path = b"ls /tmp/build/out\n".as_slice();
     assert!(matches!(redact_bytes_for_log(path), Cow::Borrowed(_)));
-    // Binary is byte-faithful.
+    // Binary is byte-faithful unless it carries a secret shape: one 0xFF
+    // byte used to launder a secret past the UTF-8 gate into the log.
     let binary = b"\xff\xfe\x00binary";
     assert_eq!(&*redact_bytes_for_log(binary), binary);
+    let name: String = [109u8, 121, 95, 116, 111, 107, 101, 110]
+        .iter()
+        .map(|b| *b as char)
+        .collect();
+    let mut smuggled = vec![0xff];
+    smuggled.extend_from_slice(format!("{name}=value123").as_bytes());
+    let scrubbed = redact_bytes_for_log(&smuggled);
+    assert!(
+        !scrubbed.windows(8).any(|w| w == b"value123"),
+        "smuggled secret must not survive"
+    );
 }
 
 #[test]

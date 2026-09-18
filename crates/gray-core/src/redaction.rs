@@ -604,7 +604,17 @@ pub fn contains_redactable(input: &str) -> bool {
 #[must_use]
 pub fn redact_bytes_for_log(chunk: &[u8]) -> std::borrow::Cow<'_, [u8]> {
     let Ok(text) = std::str::from_utf8(chunk) else {
-        return std::borrow::Cow::Borrowed(chunk);
+        // Non-UTF8 chunks used to bypass redaction entirely (one 0xFF byte
+        // laundered a secret into the durable log): lossy-scan instead.
+        // Clean binary still borrows the original below — only the lossy
+        // copy is scanned, never returned.
+        let lossy = String::from_utf8_lossy(chunk);
+        let redaction = redact_for_disclosure(&lossy);
+        if redaction.has_secret() {
+            return std::borrow::Cow::Owned(redaction.into_text().into_bytes());
+        } else {
+            return std::borrow::Cow::Borrowed(chunk);
+        }
     };
     let redaction = redact_for_disclosure(text);
     if redaction.has_secret() {

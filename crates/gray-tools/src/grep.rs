@@ -223,6 +223,9 @@ fn assemble_matches(
             .trim_end_matches('\n')
             .to_string();
         let (text, was_truncated) = truncate_line(&sanitized);
+        // Redaction parity with read/shell pump: matched secret lines must
+        // not flow raw into the transcript.
+        let text = gray_core::redaction::redact_for_disclosure(&text).into_text();
         if was_truncated {
             lines_truncated = true;
         }
