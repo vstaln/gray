@@ -55,7 +55,7 @@ pub(crate) fn format_thought_line(
     if let Some(c) = out_tokens {
         line.push_str(&format!(" · {} tokens", crate::repl::fmt_usage(c)));
         if let Some(t) = tps {
-            line.push_str(&format!(" · {t} tokens/s"));
+            line.push_str(&format!(" · {t} tps"));
         }
     }
     line
@@ -112,12 +112,27 @@ pub(crate) fn pill_context_tokens(u: &gray_core::event::Usage) -> usize {
         .saturating_add(u.cache_write_input_tokens)
 }
 
-/// `· N tokens` suffix for the working pill; empty before the first usage
-/// report or when it totals zero (mirrors opencode2's `tokens <= 0` guard).
-pub(crate) fn pill_token_suffix(usage: Option<gray_core::event::Usage>) -> String {
-    match usage.map(|u| pill_context_tokens(&u)).unwrap_or(0) {
-        0 => String::new(),
-        n => format!(" · {} tokens", crate::repl::fmt_usage(n)),
+/// `· N tokens` suffix for the working pill: the latest report with its
+/// output part raised to the streamed estimate (bytes/4, the repo's estimate
+/// heuristic), or the bare estimate before any report lands. Empty before the
+/// first streamed byte or when it totals zero (mirrors opencode2's
+/// `tokens <= 0` guard). Exact reports always win on arrival, so the counter
+/// ticks per chunk mid-stream and snaps exact at TurnEnd.
+pub(crate) fn live_pill_suffix(
+    usage: Option<gray_core::event::Usage>,
+    streamed_bytes: u64,
+) -> String {
+    let est = usize::try_from(streamed_bytes / 4).unwrap_or(usize::MAX);
+    let total = match usage {
+        None => est,
+        Some(u) => pill_context_tokens(&u)
+            .saturating_sub(u.output_tokens)
+            .saturating_add(u.output_tokens.max(est)),
+    };
+    if total == 0 {
+        String::new()
+    } else {
+        format!(" · {} tokens", crate::repl::fmt_usage(total))
     }
 }
 
@@ -242,6 +257,10 @@ pub struct Tui {
     /// omp turn with no reported usage. Never feeds the context gauge
     /// (that stays `latest_usage`, latest-round size).
     pub(crate) turn_billed_output: Option<usize>,
+    /// Assistant-text bytes streamed this turn/round (TextDelta only —
+    /// reasoning rides inside output_tokens already). Feeds the live pill
+    /// estimate; reset per turn and per usage report, exact bills win.
+    pub(crate) streamed_bytes: u64,
     /// Current inline viewport height. `draw` keeps it at the exact-fit
     /// content height (+1 spare cleared row, clamped to
     /// `MIN_VIEWPORT_H..=VIEWPORT_H`) so there is never a 10-row idle gap;
@@ -421,6 +440,7 @@ impl Tui {
             committed_markdown_lines: 0,
             pending_resize: None,
             turn_billed_output: None,
+            streamed_bytes: 0,
             viewport_h: MIN_VIEWPORT_H,
             live_tools: Vec::new(),
             plugin_widget: plugin_widget::Widget::new(std::env::current_dir().unwrap_or_default()),
@@ -639,6 +659,9 @@ impl Tui {
     pub fn set_usage(&mut self, usage: gray_core::event::Usage) {
         self.latest_usage = Some(usage);
         self.cumulative_usage = Some(usage);
+        // New round segment: the report carries this round's exact output,
+        // so the streamed estimate restarts rather than double-counting it.
+        self.streamed_bytes = 0;
         // NOTE: no per-turn accumulation here. `StepUsage` carries the
         // latest context size (each round's input already contains the full
         // history), so summing `usage.total()` across rounds grows
@@ -666,6 +689,7 @@ impl Tui {
         self.latest_usage = None;
         self.cumulative_usage = None;
         self.turn_billed_output = None;
+        self.streamed_bytes = 0;
     }
 
     /// Stashes the TurnEnd billed output + reasoning counts for the `end_turn`
@@ -810,6 +834,7 @@ impl Tui {
             self.turn_had_thinking = false;
         }
         self.turn_billed_output = None;
+        self.streamed_bytes = 0;
         self.is_task_running = true;
         self.status = Some((now, label.to_string()));
         let _ = self.draw();

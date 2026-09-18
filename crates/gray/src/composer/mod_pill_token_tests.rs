@@ -1,4 +1,8 @@
-use super::{pill_context_tokens, pill_token_suffix};
+use super::{live_pill_suffix, pill_context_tokens};
+
+fn pill_token_suffix(usage: Option<Usage>) -> String {
+    live_pill_suffix(usage, 0)
+}
 use gray_core::event::Usage;
 
 #[test]
@@ -40,6 +44,19 @@ fn pill_sums_non_overlapping_parts_opencode_parity() {
     assert_eq!(pill_context_tokens(&u), 102_000);
     assert_eq!(pill_context_tokens(&u), u.total());
     assert_eq!(pill_token_suffix(Some(u)), " · 102,000 tokens");
+}
+
+#[test]
+fn live_pill_tracks_streamed_output_between_reports() {
+    use super::live_pill_suffix;
+    // No report yet: silent until the first chunk, then the bare estimate.
+    assert_eq!(live_pill_suffix(None, 0), "");
+    assert_eq!(live_pill_suffix(None, 4000), " · 1,000 tokens");
+    // Report present: exact output wins until the stream passes it.
+    let u = Some(Usage::new(12_000, 500));
+    assert_eq!(live_pill_suffix(u.clone(), 0), " · 12,500 tokens");
+    assert_eq!(live_pill_suffix(u.clone(), 400), " · 12,500 tokens");
+    assert_eq!(live_pill_suffix(u, 4000), " · 13,000 tokens");
 }
 
 #[test]

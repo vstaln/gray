@@ -154,6 +154,9 @@ impl Tui {
             self.set_status(Some("Working"));
         }
         let clean = strip_ansi(chunk);
+        // Live pill estimate ticks per chunk; exact usage reports (set_usage)
+        // and TurnEnd bills overwrite it. Bytes/4, the repo estimate heuristic.
+        self.streamed_bytes = self.streamed_bytes.saturating_add(clean.len() as u64);
         // Feed the live viewport width so tables lay out to fit (or fall back
         // to records) instead of rendering wide and shredding downstream.
         // Reflows first when the size actually changed (same ~75ms trailing

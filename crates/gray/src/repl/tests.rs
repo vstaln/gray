@@ -122,16 +122,13 @@ fn turn_footer_shows_tokens_per_second() {
     let usage = gray_core::event::Usage::new(1000, 500);
     let totals = super::SessionTotals::default();
     let line = super::turn_footer(&usage, "test-persist-model", &totals, Some(6500));
-    assert!(line.contains("77 tokens/s"), "500 out / 6.5s: {line}");
+    assert!(line.contains("77 tps"), "500 out / 6.5s: {line}");
     assert!(
         line.contains("tokens"),
         "footer should use tokens label: {line}"
     );
     let untimed = super::turn_footer(&usage, "test-persist-model", &totals, None);
-    assert!(
-        !untimed.contains("tokens/s"),
-        "no duration, no rate: {untimed}"
-    );
+    assert!(!untimed.contains("tps"), "no duration, no rate: {untimed}");
 }
 
 /// Stub plugin claiming `/echo`, like a sidecar manifest with
