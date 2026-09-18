@@ -43,6 +43,19 @@ fn pill_sums_non_overlapping_parts_opencode_parity() {
 }
 
 #[test]
+fn live_pill_tracks_streamed_output_between_reports() {
+    use super::live_pill_suffix;
+    // No report yet: silent until the first chunk, then the bare estimate.
+    assert_eq!(live_pill_suffix(None, 0), "");
+    assert_eq!(live_pill_suffix(None, 4000), " · 1,000 tokens");
+    // Report present: exact output wins until the stream passes it.
+    let u = Some(Usage::new(12_000, 500));
+    assert_eq!(live_pill_suffix(u.clone(), 0), " · 12,500 tokens");
+    assert_eq!(live_pill_suffix(u.clone(), 400), " · 12,500 tokens");
+    assert_eq!(live_pill_suffix(u, 4000), " · 13,000 tokens");
+}
+
+#[test]
 fn pill_falls_back_to_input_without_breakdown() {
     let u = Usage {
         input_tokens: 5_000,

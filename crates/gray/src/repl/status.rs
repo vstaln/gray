@@ -56,7 +56,7 @@ pub(crate) fn turn_tokens_per_second(output_tokens: usize, duration_ms: u64) -> 
     Some((output_tokens as f64 * 1000.0 / duration_ms as f64).round() as u64)
 }
 
-/// `⬡ 12,400 tokens · 82 tokens/s · 6s · $0.004 ($0.41 session)` — rate/time/cost
+/// `⬡ 12,400 tokens · 82 tps · 6s · $0.004 ($0.41 session)` — rate/time/cost
 /// parts appear only when known; otherwise the footer stays tokens-only.
 pub(crate) fn turn_footer(
     usage: &gray_core::event::Usage,
@@ -67,7 +67,7 @@ pub(crate) fn turn_footer(
     let base = format!("\u{2b22} {} tokens", crate::repl::fmt_usage(usage.total()));
     let rate = duration_ms
         .and_then(|ms| turn_tokens_per_second(usage.output_tokens, ms))
-        .map(|t| format!(" · {t} tokens/s"))
+        .map(|t| format!(" · {t} tps"))
         .unwrap_or_default();
     let time = duration_ms
         .map(|ms| format!(" · {}", crate::repl::format::fmt_duration_ms(ms)))

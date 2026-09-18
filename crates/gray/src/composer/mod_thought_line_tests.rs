@@ -5,7 +5,7 @@ fn format_thought_line_is_just_verb_elapsed_and_turn_toks() {
     // `N tokens` is billed output (exact, reasoning included — never split
     // out); backed by the TurnEnd report instead of chars/4.
     let line = format_thought_line("Thought for", "1m 17s", Some(4_045), Some(52));
-    assert_eq!(line, "✻ Thought for 1m 17s · 4,045 tokens · 52 tokens/s");
+    assert_eq!(line, "✻ Thought for 1m 17s · 4,045 tokens · 52 tps");
     assert_eq!(line.matches("1m 17s").count(), 1);
 }
 
