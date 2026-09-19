@@ -206,6 +206,22 @@ fn malformed_history_does_not_lose_settings_and_bad_setting_keeps_history() {
 }
 
 #[test]
+fn disabled_skills_default_empty_and_roundtrip() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.json");
+    assert!(load_saved_config_at(&path).disabled_skills.is_empty());
+    let mut saved = load_saved_config_at(&path);
+    saved.disabled_skills.insert("foo".to_string());
+    save_saved_config_at(&path, &saved).unwrap();
+    assert!(load_saved_config_at(&path).disabled_skills.contains("foo"));
+    // Old files without the field load as enabled-everything.
+    std::fs::write(&path, r#"{"model":"m"}"#).unwrap();
+    let back = load_saved_config_at(&path);
+    assert_eq!(back.model.as_deref(), Some("m"));
+    assert!(back.disabled_skills.is_empty());
+}
+
+#[test]
 fn failed_save_reports_error() {
     let dir = tempfile::tempdir().unwrap();
     assert!(save_saved_config_at(dir.path(), &SavedConfig::default()).is_err());

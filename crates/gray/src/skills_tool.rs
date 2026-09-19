@@ -29,7 +29,14 @@ use std::path::{Path, PathBuf};
 /// is ephemeral per-turn context, never written anywhere.
 #[derive(Default)]
 pub struct SkillsPlugin {
-    cache: std::sync::Mutex<Option<(String, u64, Option<String>)>>,
+    cache: std::sync::Mutex<
+        Option<(
+            String,
+            u64,
+            std::collections::BTreeSet<String>,
+            Option<String>,
+        )>,
+    >,
 }
 
 #[async_trait::async_trait]
@@ -49,22 +56,26 @@ impl gray_plugin::Plugin for SkillsPlugin {
 
     async fn prompt_context(&self, cwd: &str) -> Option<String> {
         let fingerprint = crate::skills::discovery_fingerprint(Path::new(cwd));
+        // A toggle flips no file stat, so the disabled set rides the cache
+        // key — otherwise a disable would keep serving the stale block.
+        let disabled = crate::setup::disabled_skill_names();
         if let Ok(guard) = self.cache.lock()
-            && let Some((cached_cwd, cached_fp, cached_block)) = guard.as_ref()
+            && let Some((cached_cwd, cached_fp, cached_disabled, cached_block)) = guard.as_ref()
             && *cached_cwd == cwd
             && *cached_fp == fingerprint
+            && *cached_disabled == disabled
         {
             return cached_block.clone();
         }
         let found = crate::skills::discover_skills(Path::new(cwd));
-        let block = crate::skills::format_skills_for_prompt(&found.skills);
+        let block = crate::skills::format_skills_for_prompt(&found.skills, &disabled);
         let out = if block.trim().is_empty() {
             None
         } else {
             Some(block)
         };
         if let Ok(mut guard) = self.cache.lock() {
-            *guard = Some((cwd.to_string(), fingerprint, out.clone()));
+            *guard = Some((cwd.to_string(), fingerprint, disabled, out.clone()));
         }
         out
     }

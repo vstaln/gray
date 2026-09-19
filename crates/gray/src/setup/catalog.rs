@@ -4,7 +4,7 @@
 //! picker appears the moment credentials are actually needed.
 // 3 modals (connect/model/effort) share 80% render + nav logic (662+287+163 lines); extract generic list_picker when adding fourth modal.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -84,6 +84,11 @@ pub struct SavedConfig {
     /// Tail budget kept alongside the summary after compaction.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context_keep: Option<usize>,
+    /// Skills the user turned off (absent = enabled). `/skills disable <name>`
+    /// adds here, `/skills enable <name>` removes; the prompt list skips
+    /// these while manual `/skills <name>` still runs.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub disabled_skills: BTreeSet<String>,
 }
 
 /// Canonical `SavedConfig.auth_mode` values (kept as strings on disk).
@@ -100,6 +105,14 @@ pub fn gray_home() -> anyhow::Result<PathBuf> {
 /// Path to the persisted config file.
 pub fn saved_config_path() -> anyhow::Result<PathBuf> {
     Ok(gray_home()?.join("config.json"))
+}
+
+/// Names the user disabled via `/skills disable` (empty = all enabled).
+/// Missing/unresolvable/corrupt config reads as empty (all on).
+pub fn disabled_skill_names() -> BTreeSet<String> {
+    saved_config_path()
+        .map(|p| load_saved_config_at(&p).disabled_skills)
+        .unwrap_or_default()
 }
 
 /// Loads the saved config; a missing file yields an all-None struct.
@@ -156,6 +169,7 @@ fn partial_saved_config(obj: &serde_json::Map<String, serde_json::Value>) -> Sav
         context_window: opt_field(obj, "context_window"),
         context_reserve: opt_field(obj, "context_reserve"),
         context_keep: opt_field(obj, "context_keep"),
+        disabled_skills: opt_field(obj, "disabled_skills").unwrap_or_default(),
     }
 }
 

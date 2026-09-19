@@ -8,7 +8,7 @@
 //! - global: `~/.gray/skills`, `~/.config/opencode/skills`, `~/.config/opencode/*/skills`, `~/.agents/skills`, `~/.claude/skills`, `~/.pi/agent/skills`
 //! - project: `.gray/skills`, `.opencode/skills`, `.agents/skills`, `.claude/skills`, `.pi/skills`, walking up to git root
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -263,13 +263,21 @@ pub fn format_discovered_skill_row(skill: &Skill) -> String {
 /// no new tool): exact names always survive; weak entries — empty
 /// descriptions, oversized blobs (>700 chars, almost surely pasted content
 /// rather than a description) — are rejected before they cost tokens.
+/// User-disabled skills (`/skills disable`, empty = all on) are skipped so
+/// the model never auto-invokes them; explicit `/skills <name>` still runs.
 /// First name match wins (dedup), preserving discovery order.
-pub fn rank_skills_for_prompt(skills: &[Skill]) -> Vec<&Skill> {
+pub fn rank_skills_for_prompt<'a>(
+    skills: &'a [Skill],
+    disabled: &BTreeSet<String>,
+) -> Vec<&'a Skill> {
     const MAX_DESCRIPTION_LEN: usize = 700;
     let mut seen = std::collections::HashSet::new();
     let mut out = Vec::new();
     for s in skills {
         if s.disable_model_invocation || s.name.trim().is_empty() {
+            continue;
+        }
+        if disabled.contains(&s.name) {
             continue;
         }
         if s.description.trim().is_empty() || s.description.len() > MAX_DESCRIPTION_LEN {
@@ -283,9 +291,9 @@ pub fn rank_skills_for_prompt(skills: &[Skill]) -> Vec<&Skill> {
 }
 
 /// Bound automatic advertising; discovery and explicit invocation remain complete.
-pub fn format_skills_for_prompt(skills: &[Skill]) -> String {
+pub fn format_skills_for_prompt(skills: &[Skill], disabled: &BTreeSet<String>) -> String {
     const MAX_PROMPT_SKILLS: usize = 40;
-    let visible: Vec<&Skill> = rank_skills_for_prompt(skills);
+    let visible: Vec<&Skill> = rank_skills_for_prompt(skills, disabled);
     if visible.is_empty() {
         return String::new();
     }

@@ -39,6 +39,60 @@ fn paste_skill_into_chat(
     }
 }
 
+/// `/skills enable <name>` / `/skills disable <name>` management verbs.
+/// Returns `(on, name)`. Anything else (invocations, bare, extras) is `None`
+/// — a skill literally named `enable`/`disable` is unreachable by design.
+pub(crate) fn parse_skill_toggle(rest: &str) -> Option<(bool, String)> {
+    let mut parts = rest.split_whitespace();
+    let verb = parts.next()?;
+    let on = if verb.eq_ignore_ascii_case("enable") {
+        true
+    } else if verb.eq_ignore_ascii_case("disable") {
+        false
+    } else {
+        return None;
+    };
+    let name = parts.next()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    Some((on, name.to_string()))
+}
+
+/// Toggle core against an explicit config path (test seam): validates the
+/// name against discovery, flips the persisted set, and reports. Disabled
+/// hides the skill from the model's prompt list; manual use still runs.
+pub(crate) fn apply_skill_toggle(
+    config_path: &Path,
+    discovered: &[crate::skills::Skill],
+    on: bool,
+    name: &str,
+) -> Result<String, String> {
+    if !discovered.iter().any(|s| s.name == name) {
+        let names = discovered
+            .iter()
+            .map(|s| s.name.clone())
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(format!(
+            "no skill '{name}' (available: {})",
+            if names.is_empty() { "(none)" } else { &names }
+        ));
+    }
+    let mut saved = crate::setup::load_saved_config_at(config_path);
+    if on {
+        saved.disabled_skills.remove(name);
+    } else {
+        saved.disabled_skills.insert(name.to_string());
+    }
+    crate::setup::save_saved_config_at(config_path, &saved).map_err(|e| format!("{e:#}"))?;
+    Ok(if on {
+        format!("✓ skill '{name}' enabled")
+    } else {
+        format!("✓ skill '{name}' disabled — hidden from the model, /skills {name} still runs")
+    })
+}
+
 /// Expands `/skills <name> [args]` (or the `/skill <name>` alias —
 /// both parse to the identical payload) into a Prompt carrying the skill body
 /// (Grok-style: frontmatter stripped, args appended). The same text is pasted
@@ -97,12 +151,28 @@ pub(crate) fn expand_skill_command(
         } else if discovered.skills.is_empty() {
             say(tui, "no skills discovered");
         } else {
+            let disabled = crate::setup::disabled_skill_names();
             for s in &discovered.skills {
-                say(tui, &crate::skills::format_discovered_skill_row(s));
+                let mut row = crate::skills::format_discovered_skill_row(s);
+                if disabled.contains(&s.name) {
+                    row.push_str(" [disabled]");
+                }
+                say(tui, &row);
             }
         }
         return ReplCommand::Empty;
     };
+    if let Some((on, toggle_name)) = parse_skill_toggle(&rest) {
+        if !local {
+            match crate::setup::saved_config_path() {
+                Ok(path) => match apply_skill_toggle(&path, &discovered.skills, on, &toggle_name) {
+                    Ok(msg) | Err(msg) => say(tui, &msg),
+                },
+                Err(e) => say(tui, &format!("{e:#}")),
+            }
+        }
+        return ReplCommand::Empty;
+    }
     let (name, args) = match rest.split_once(char::is_whitespace) {
         Some((n, a)) => (n.trim(), Some(a.trim().to_string())),
         None => (rest.as_str(), None),
