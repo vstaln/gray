@@ -266,6 +266,7 @@ pub(crate) async fn handle_context_window(
             .unwrap_or(0);
         let skills = crate::setup::estimate_str_tokens(&crate::skills::format_skills_for_prompt(
             &crate::skills::discover_skills(cwd).skills,
+            &crate::setup::disabled_skill_names(),
         ));
         let tools_toks = serde_json::to_string(&crate::profile::builtin_registry().defs())
             .map(|s| crate::setup::estimate_str_tokens(&s))

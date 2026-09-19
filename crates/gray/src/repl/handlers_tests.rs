@@ -51,6 +51,65 @@ fn skill_paste_is_what_the_model_gets() {
     );
 }
 
+fn test_skill_entry(name: &str) -> crate::skills::Skill {
+    crate::skills::Skill {
+        name: name.to_string(),
+        description: "test skill".to_string(),
+        file_path: std::path::PathBuf::from("/tmp/SKILL.md"),
+        base_dir: std::path::PathBuf::from("/tmp"),
+        disable_model_invocation: false,
+        source: "path".to_string(),
+        args: vec![],
+    }
+}
+
+#[test]
+fn skill_toggle_verb_parses_enable_disable() {
+    assert_eq!(
+        parse_skill_toggle("disable foo"),
+        Some((false, "foo".to_string()))
+    );
+    assert_eq!(
+        parse_skill_toggle("enable foo"),
+        Some((true, "foo".to_string()))
+    );
+    assert_eq!(
+        parse_skill_toggle("DISABLE foo"),
+        Some((false, "foo".to_string()))
+    );
+    assert_eq!(parse_skill_toggle("foo"), None);
+    assert_eq!(parse_skill_toggle("foo bar"), None);
+    assert_eq!(parse_skill_toggle(""), None);
+    assert_eq!(parse_skill_toggle("enable"), None);
+}
+
+#[test]
+fn skill_toggle_persists_and_validates_against_discovery() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = dir.path().join("config.json");
+    let discovered = vec![test_skill_entry("demo")];
+    // Unknown name errors and stores nothing.
+    let err = apply_skill_toggle(&cfg, &discovered, false, "nope").unwrap_err();
+    assert!(err.contains("nope"), "{err}");
+    assert!(!cfg.exists());
+    // Disable persists.
+    let msg = apply_skill_toggle(&cfg, &discovered, false, "demo").unwrap();
+    assert!(msg.contains("disabled"), "{msg}");
+    assert!(
+        crate::setup::load_saved_config_at(&cfg)
+            .disabled_skills
+            .contains("demo")
+    );
+    // Enable removes.
+    let msg = apply_skill_toggle(&cfg, &discovered, true, "demo").unwrap();
+    assert!(msg.contains("enabled"), "{msg}");
+    assert!(
+        crate::setup::load_saved_config_at(&cfg)
+            .disabled_skills
+            .is_empty()
+    );
+}
+
 #[test]
 fn format_skill_paste_body_and_args() {
     let text = format_skill_paste("Do things.", Some("fast"));

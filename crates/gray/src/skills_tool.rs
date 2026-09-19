@@ -9,7 +9,13 @@
 //! frontmatter stripping, `$ARGUMENTS` / `${SKILL_DIR}` substitution, and
 //! name→path resolution via [`crate::skills::discover_skills`].
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
+
+/// Cache entry: owning cwd, discovery fingerprint, disabled-set snapshot,
+/// served block. The disabled set rides the key because a toggle flips no
+/// file stat — without it a disable would serve the stale block.
+type SkillsCache = Option<(String, u64, BTreeSet<String>, Option<String>)>;
 
 /// Context-only builtin plugin carrying the per-turn `<available_skills>`
 /// list, so the model finds skills without bash-hunting for `SKILL.md`.
@@ -29,7 +35,7 @@ use std::path::{Path, PathBuf};
 /// is ephemeral per-turn context, never written anywhere.
 #[derive(Default)]
 pub struct SkillsPlugin {
-    cache: std::sync::Mutex<Option<(String, u64, Option<String>)>>,
+    cache: std::sync::Mutex<SkillsCache>,
 }
 
 #[async_trait::async_trait]
@@ -49,22 +55,26 @@ impl gray_plugin::Plugin for SkillsPlugin {
 
     async fn prompt_context(&self, cwd: &str) -> Option<String> {
         let fingerprint = crate::skills::discovery_fingerprint(Path::new(cwd));
+        // A toggle flips no file stat, so the disabled set rides the cache
+        // key — otherwise a disable would keep serving the stale block.
+        let disabled = crate::setup::disabled_skill_names();
         if let Ok(guard) = self.cache.lock()
-            && let Some((cached_cwd, cached_fp, cached_block)) = guard.as_ref()
+            && let Some((cached_cwd, cached_fp, cached_disabled, cached_block)) = guard.as_ref()
             && *cached_cwd == cwd
             && *cached_fp == fingerprint
+            && *cached_disabled == disabled
         {
             return cached_block.clone();
         }
         let found = crate::skills::discover_skills(Path::new(cwd));
-        let block = crate::skills::format_skills_for_prompt(&found.skills);
+        let block = crate::skills::format_skills_for_prompt(&found.skills, &disabled);
         let out = if block.trim().is_empty() {
             None
         } else {
             Some(block)
         };
         if let Ok(mut guard) = self.cache.lock() {
-            *guard = Some((cwd.to_string(), fingerprint, out.clone()));
+            *guard = Some((cwd.to_string(), fingerprint, disabled, out.clone()));
         }
         out
     }
