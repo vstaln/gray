@@ -9,7 +9,13 @@
 //! frontmatter stripping, `$ARGUMENTS` / `${SKILL_DIR}` substitution, and
 //! name→path resolution via [`crate::skills::discover_skills`].
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
+
+/// Cache entry: owning cwd, discovery fingerprint, disabled-set snapshot,
+/// served block. The disabled set rides the key because a toggle flips no
+/// file stat — without it a disable would serve the stale block.
+type SkillsCache = Option<(String, u64, BTreeSet<String>, Option<String>)>;
 
 /// Context-only builtin plugin carrying the per-turn `<available_skills>`
 /// list, so the model finds skills without bash-hunting for `SKILL.md`.
@@ -29,14 +35,7 @@ use std::path::{Path, PathBuf};
 /// is ephemeral per-turn context, never written anywhere.
 #[derive(Default)]
 pub struct SkillsPlugin {
-    cache: std::sync::Mutex<
-        Option<(
-            String,
-            u64,
-            std::collections::BTreeSet<String>,
-            Option<String>,
-        )>,
-    >,
+    cache: std::sync::Mutex<SkillsCache>,
 }
 
 #[async_trait::async_trait]
