@@ -127,10 +127,25 @@ fn masked_note(command: &str) -> Option<String> {
         return None;
     }
     let last = base_head(&segs[segs.len() - 1]);
+    let first = base_head(&segs[0]);
+    if UNMASKABLE_TAILS.contains(&last) {
+        // A pure pass-through filter cannot fail on its own, and a `sh -c`
+        // pipeline reports only the last stage's status — so a real
+        // command's failure is swallowed whole:
+        //     pytest -q | head -40        # exit 0 even when tests fail
+        // Name the earlier stage when there is exactly one (a rerun
+        // recovers its status); otherwise stay generic. Never echo the
+        // command — a long pipeline must not ride every header twice.
+        let note = if segs.len() == 2 {
+            format!("`{last}` masks `{first}`'s exit; rerun `{first}` alone for its status")
+        } else {
+            format!("`{last}` masks earlier stages' exit; rerun without the pipe to check")
+        };
+        return Some(note);
+    }
     if !TAIL_CMDS.contains(&last) {
         return None;
     }
-    let first = base_head(&segs[0]);
     // POSIX-honest: the executor is `sh -c` (dash on some systems), so
     // `set -o pipefail` is not available. Name the two stages only — never
     // echo the pipeline (long commands would ride every header twice).
@@ -138,6 +153,14 @@ fn masked_note(command: &str) -> Option<String> {
         "`{last}` masks `{first}`'s exit; rerun `{first}` alone for its status"
     ))
 }
+
+/// Text filters that do not propagate the upstream status: a `0` from one
+/// of them says nothing about the stage feeding it. `head`/`tail`/`cat`/
+/// `less`/`cut`/`column`/`tr` cannot fail on their input at all; `awk` and
+/// `sed` can fail on a bad script but still exit 0 for a failing upstream.
+const UNMASKABLE_TAILS: [&str; 9] = [
+    "head", "tail", "cat", "less", "awk", "sed", "tr", "cut", "column",
+];
 
 #[path = "exit_tests.rs"]
 #[cfg(all(test, unix))] // ExitStatusExt::from_raw is unix-only (T3 windows gate)

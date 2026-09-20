@@ -9,6 +9,7 @@ pub mod edit;
 pub mod edit_diff;
 pub mod find;
 pub mod grep;
+pub mod grep_builtin;
 pub mod images;
 pub mod ledger;
 pub mod ls;

@@ -147,6 +147,21 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
     let pill_turn_output = tui.turn_output_accum;
     let pill_streamed = tui.streamed_bytes;
     let pill_tok_suffix = super::live_pill_suffix(pill_turn_output, pill_streamed);
+    // Warmth countdown for the prompt cache: how long the last request's
+    // cache stays warm before an idle gap re-bills the whole prompt —
+    // ◷ 4m, fading in the last minute. Hidden when the cache is cold or
+    // the provider never reports cache activity, so the footer never
+    // claims warmth it cannot see. One stamp per frame.
+    let cache_timer = tui.cache_remaining().map(|left| {
+        (
+            format!("\u{25f7} {}", crate::cache::format_remaining(left)),
+            if left < Duration::from_secs(60) {
+                crate::theme::theme().text_dim
+            } else {
+                crate::theme::theme().cache_hit
+            },
+        )
+    });
 
     let res = tui.terminal.draw(|frame| {
         let area = frame.area();
@@ -243,11 +258,7 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
             };
             let tps_suffix = match compaction_elapsed {
                 Some(_) => String::new(),
-                None => super::live_tps_suffix(
-                    pill_turn_output,
-                    pill_streamed,
-                    elapsed.as_millis().min(u128::from(u64::MAX)) as u64,
-                ),
+                None => super::live_tps_suffix(pill_turn_output, pill_streamed, tui.turn_stream_ms),
             };
             let elapsed_str = format!("{:.1}s", elapsed.as_secs_f64());
             let suffix = format!(" {elapsed_str}{pill_tok_suffix}{tps_suffix} (esc to interrupt)");
@@ -539,7 +550,12 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
         } else {
             display_width(&model_display) + 3 + display_width(&effort_display)
         };
-        let left_len = 1 + display_width(&ctx_display) + 3 + display_width(&cache_display);
+        let timer_len = cache_timer
+            .as_ref()
+            .map(|(text, _)| 3 + display_width(text))
+            .unwrap_or(0);
+        let left_len =
+            1 + display_width(&ctx_display) + 3 + display_width(&cache_display) + timer_len;
         let pad_len = w.saturating_sub(left_len + right_len);
 
         let cache_color = if hit_rate > 0.0 {
@@ -560,6 +576,13 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
             ),
             Span::styled(cache_display, Style::default().fg(cache_color)),
         ];
+        if let Some((timer_text, timer_color)) = cache_timer {
+            footer_spans.push(Span::styled(
+                " \u{b7} ",
+                Style::default().fg(crate::theme::theme().text_faint),
+            ));
+            footer_spans.push(Span::styled(timer_text, Style::default().fg(timer_color)));
+        }
         footer_spans.push(Span::raw(" ".repeat(pad_len)));
         footer_spans.extend(right_parts);
         if footer_y < area.y + area.height {

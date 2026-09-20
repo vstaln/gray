@@ -234,6 +234,26 @@ impl Tui {
         self.push_styled_lines_with_hyperlinks(vec![line], &[], 0);
     }
 
+    /// One warning row (⚠ …): the warning twin of
+    /// [`Tui::push_action`] — glyph in the soft error tone, body in soft
+    /// text. Used by the prompt-cache miss notice (pi `addCacheMissNotice`
+    /// parity), where a dim row would read as chrome instead of money.
+    pub fn push_warning(&mut self, text: &str) {
+        let line = Line::from(vec![
+            Span::styled(
+                "⚠ ",
+                Style::default()
+                    .fg(crate::theme::theme().error_soft)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                text.to_string(),
+                Style::default().fg(crate::theme::theme().text_soft),
+            ),
+        ]);
+        self.push_styled_lines_with_hyperlinks(vec![line], &[], 0);
+    }
+
     /// Replays a previous session's message history into the TUI scrollback.
     pub fn replay_session_history(
         &mut self,

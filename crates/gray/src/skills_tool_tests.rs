@@ -76,6 +76,7 @@ async fn skills_context_matches_fresh_discovery_and_rescans_on_change() {
         let found = crate::skills::discover_skills(work.path());
         let block = crate::skills::format_skills_for_prompt(
             &found.skills,
+            crate::setup::skills_auto_enabled(),
             &crate::setup::disabled_skill_names(),
         );
         if block.trim().is_empty() {

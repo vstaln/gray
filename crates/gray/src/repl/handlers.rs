@@ -43,6 +43,32 @@ fn paste_skill_into_chat(
 /// Returns `(on, name)`. Anything else (invocations, bare, extras) is `None`
 /// — a skill literally named `enable`/`disable` is unreachable by design.
 pub(crate) fn parse_skill_toggle(rest: &str) -> Option<(bool, String)> {
+    parse_skill_name_toggle(rest)
+}
+
+/// Global auto-load switch: `/skills on` | `/skills off` (plus `enable` /
+/// `disable` as aliases). `Some(on)` for a bare switch word, `None` for
+/// anything else (per-skill toggles, invocations, bare, extras).
+pub(crate) fn parse_skills_auto_toggle(rest: &str) -> Option<bool> {
+    let mut parts = rest.split_whitespace();
+    let word = parts.next()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    if word.eq_ignore_ascii_case("on") || word.eq_ignore_ascii_case("enable") {
+        Some(true)
+    } else if word.eq_ignore_ascii_case("off") || word.eq_ignore_ascii_case("disable") {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+/// Per-skill toggle core behind [`parse_skill_toggle`]: two words
+/// (`enable|disable <name>`). Bare switch words are global (see
+/// [`parse_skills_auto_toggle`]) — so `enable`/`disable` alone never reach
+/// here, while a skill literally named `on`/`off` stays invokable.
+fn parse_skill_name_toggle(rest: &str) -> Option<(bool, String)> {
     let mut parts = rest.split_whitespace();
     let verb = parts.next()?;
     let on = if verb.eq_ignore_ascii_case("enable") {
@@ -57,6 +83,24 @@ pub(crate) fn parse_skill_toggle(rest: &str) -> Option<(bool, String)> {
         return None;
     }
     Some((on, name.to_string()))
+}
+
+/// Global-switch core against an explicit config path (test seam): flips the
+/// persisted auto flag and reports. `off` hides the model's prompt list;
+/// manual `/skills <name>` still runs. `on` re-enables auto-loading and
+/// clears the per-skill disabled set so it truly turns all skills on.
+pub(crate) fn apply_skills_auto_toggle(config_path: &Path, on: bool) -> Result<String, String> {
+    let mut saved = crate::setup::load_saved_config_at(config_path);
+    saved.skills_auto = if on { None } else { Some(false) };
+    if on {
+        saved.disabled_skills.clear();
+    }
+    crate::setup::save_saved_config_at(config_path, &saved).map_err(|e| format!("{e:#}"))?;
+    Ok(if on {
+        "✓ skills on — all skills back in context".to_string()
+    } else {
+        "✓ skills off — hidden from the model, /skills <name> still runs".to_string()
+    })
 }
 
 /// Toggle core against an explicit config path (test seam): validates the
@@ -151,10 +195,16 @@ pub(crate) fn expand_skill_command(
         } else if discovered.skills.is_empty() {
             say(tui, "no skills discovered");
         } else {
+            let auto = crate::setup::skills_auto_enabled();
             let disabled = crate::setup::disabled_skill_names();
+            if !auto {
+                say(tui, "skills auto-load is off (/skills on to re-enable)");
+            }
             for s in &discovered.skills {
                 let mut row = crate::skills::format_discovered_skill_row(s);
-                if disabled.contains(&s.name) {
+                if !auto {
+                    row.push_str(" [auto-off]");
+                } else if disabled.contains(&s.name) {
                     row.push_str(" [disabled]");
                 }
                 say(tui, &row);
@@ -162,6 +212,23 @@ pub(crate) fn expand_skill_command(
         }
         return ReplCommand::Empty;
     };
+    if let Some(on) = parse_skills_auto_toggle(&rest) {
+        // Global switch — but a skill literally named `on`/`off` (or
+        // `enable`/`disable`) stays invokable: an exact discovery hit wins
+        // over the switch interpretation.
+        let shadowed = discovered.skills.iter().any(|s| s.name == rest.trim());
+        if !shadowed {
+            if !local {
+                match crate::setup::saved_config_path() {
+                    Ok(path) => match apply_skills_auto_toggle(&path, on) {
+                        Ok(msg) | Err(msg) => say(tui, &msg),
+                    },
+                    Err(e) => say(tui, &format!("{e:#}")),
+                }
+            }
+            return ReplCommand::Empty;
+        }
+    }
     if let Some((on, toggle_name)) = parse_skill_toggle(&rest) {
         if !local {
             match crate::setup::saved_config_path() {

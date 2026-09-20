@@ -112,8 +112,8 @@ fn truncated_log_has_executable_bounded_recovery() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("log ' $(false) file");
     for raw in [
-        b"a\r\n".repeat(4000),
-        b"z".repeat(30000),
+        b"a\r\n".repeat(20000),
+        b"z".repeat(INLINE_BUDGET_BYTES + 4096),
         b"z".repeat(INLINE_BUDGET_BYTES + 1),
     ] {
         std::fs::write(&path, &raw).unwrap();
@@ -141,11 +141,25 @@ fn truncated_log_has_executable_bounded_recovery() {
             .unwrap();
         assert!(out.status.success(), "{:?}", out.stderr);
         assert!(!out.stdout.is_empty());
-        assert!(out.stdout.len() <= 4096);
+        assert!(out.stdout.len() <= READ_CHUNK as usize);
+        // The hint must make paging arithmetic, not guesswork: name the
+        // omitted window and the next offset when more than one page remains.
+        let window = result
+            .content
+            .lines()
+            .find(|l| l.starts_with("Omitted window: "))
+            .unwrap_or_else(|| panic!("no window line in {}", result.content));
+        assert!(window.contains("bytes"), "{window}");
+        if raw.len() > INLINE_BUDGET_BYTES + READ_CHUNK as usize {
+            assert!(
+                window.contains("skip="),
+                "multi-page window must name the next offset: {window}"
+            );
+        }
         if raw[0] == b'z' {
             assert_eq!(
                 out.stdout,
-                vec![b'z'; (raw.len() - INLINE_BUDGET_BYTES).min(4096)]
+                vec![b'z'; (raw.len() - INLINE_BUDGET_BYTES).min(READ_CHUNK as usize)]
             );
         } else {
             // Run 35229845737 captured the recovered bytes: Git Bash's sed
@@ -169,4 +183,99 @@ fn truncated_log_has_executable_bounded_recovery() {
             );
         }
     }
+}
+
+#[tokio::test]
+async fn explicit_timeout_says_how_to_rerun() {
+    // A killed command must say how to let it finish: the benchmark retro
+    // showed agents reading a timeout kill as "the command failed".
+    let session = sess("timeout-msg");
+    let ctx = ctx_for(&session);
+    let r = BashTool::default()
+        .execute(&ctx, json!({"command": "sleep 5", "timeout": 1}))
+        .await;
+    // A kill is data, not a tool error (non-zero exits are data by design),
+    // but the note must be the first thing the model reads.
+    assert!(!r.is_error, "killed command stays a result: {}", r.content);
+    assert!(
+        r.content.starts_with("timed out after 1s"),
+        "the timeout note leads the output: {}",
+        r.content
+    );
+    assert!(
+        r.content.contains("rerun without `timeout`"),
+        "the kill must say how to let it finish: {}",
+        r.content
+    );
+}
+
+#[test]
+fn bash_schema_promises_no_default_timeout() {
+    // Regression guard for a real mismatch: the tool text promised a 120s
+    // default while the code killed at 30s. Agents lost long suites to it.
+    assert!(
+        DEFAULT_TIMEOUT_SECS.is_none(),
+        "commands run until they exit unless a timeout is passed"
+    );
+    let def = BashTool::default().def();
+    let desc = def.parameters["properties"]["timeout"]["description"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(desc.contains("omitted = no limit"), "{desc}");
+    assert!(
+        def.description.contains("no default"),
+        "tool description must not promise a default: {}",
+        def.description
+    );
+}
+
+#[tokio::test]
+async fn missing_command_gets_an_actionable_hint() {
+    let session = sess("not-found");
+    let ctx = ctx_for(&session);
+    let r = BashTool::default()
+        .execute(
+            &ctx,
+            json!({"command": "gray-definitely-not-a-tool --help"}),
+        )
+        .await;
+    assert!(
+        r.content
+            .contains("`gray-definitely-not-a-tool` is not installed here"),
+        "hint names the tool: {}",
+        r.content
+    );
+    assert!(
+        r.content.contains("command -v gray-definitely-not-a-tool"),
+        "hint says how to confirm: {}",
+        r.content
+    );
+}
+
+#[tokio::test]
+async fn ordinary_failures_get_no_not_found_hint() {
+    let session = sess("no-hint");
+    let ctx = ctx_for(&session);
+    let r = BashTool::default()
+        .execute(&ctx, json!({"command": "grep -q nomatch /etc/hostname"}))
+        .await;
+    assert!(
+        !r.content.contains("is not installed here"),
+        "ordinary non-zero exit stays clean: {}",
+        r.content
+    );
+}
+
+#[test]
+fn not_found_subject_reads_every_shell_wording() {
+    for (line, want) in [
+        ("bash: line 1: rg: command not found", "rg"),
+        ("sh: 1: xxd: not found", "xxd"),
+        ("zsh: command not found: goyacc", "goyacc"),
+        ("-bash: ruff: command not found", "ruff"),
+    ] {
+        assert_eq!(not_found_subject(line).as_deref(), Some(want), "{line}");
+    }
+    assert!(missing_command_hint("exit 0\nall good").is_none());
+    assert!(missing_command_hint("curl: (22) 404 not found").is_none());
 }

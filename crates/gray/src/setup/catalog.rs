@@ -74,10 +74,22 @@ pub struct SavedConfig {
     /// None (default) = shown.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub show_reasoning: Option<bool>,
+    /// Sampling temperature sent with every chat request (None = provider default).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub temperature: Option<f32>,
+    /// Nucleus sampling cutoff sent with every chat request (None = provider default).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub top_p: Option<f32>,
     /// User override for model context window in tokens (e.g. 128000). When set,
     /// it takes precedence over the auto-fetched provider value.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context_window: Option<usize>,
+    /// Master switch for automatic skill context (`/skills on` | `/skills off`,
+    /// default on). `Some(false)` hides the whole `<available_skills>` block
+    /// from the model; explicit `/skills <name>` still loads that one skill.
+    /// `None` (missing key, older configs) reads as enabled.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub skills_auto: Option<bool>,
     /// Reserve tokens before auto-compact fires (effective window = window - reserve).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context_reserve: Option<usize>,
@@ -113,6 +125,20 @@ pub fn disabled_skill_names() -> BTreeSet<String> {
     saved_config_path()
         .map(|p| load_saved_config_at(&p).disabled_skills)
         .unwrap_or_default()
+}
+
+/// Master switch for automatic skill context (`/skills on` | `/skills off`).
+/// Missing/unresolvable/corrupt config reads as enabled (default on); only an
+/// explicit `Some(false)` turns auto-loading off.
+pub fn skills_auto_enabled() -> bool {
+    saved_config_path()
+        .map(|p| load_saved_config_at(&p).skills_auto.unwrap_or(true))
+        .unwrap_or(true)
+}
+
+/// Explicit-config-path seam for [`skills_auto_enabled`] (tests).
+pub fn skills_auto_enabled_at(path: &Path) -> bool {
+    load_saved_config_at(path).skills_auto.unwrap_or(true)
 }
 
 /// Loads the saved config; a missing file yields an all-None struct.
@@ -166,7 +192,10 @@ fn partial_saved_config(obj: &serde_json::Map<String, serde_json::Value>) -> Sav
         auth_mode: opt_field(obj, "auth_mode"),
         thinking_effort: opt_field(obj, "thinking_effort"),
         show_reasoning: opt_field(obj, "show_reasoning"),
+        temperature: opt_field(obj, "temperature"),
+        top_p: opt_field(obj, "top_p"),
         context_window: opt_field(obj, "context_window"),
+        skills_auto: opt_field(obj, "skills_auto"),
         context_reserve: opt_field(obj, "context_reserve"),
         context_keep: opt_field(obj, "context_keep"),
         disabled_skills: opt_field(obj, "disabled_skills").unwrap_or_default(),
@@ -244,7 +273,7 @@ fn save_private_json(path: &Path, value: &serde_json::Value) -> anyhow::Result<(
 
 /// Per-provider API-key store (`~/.gray/auth.json`, mode 0600), mirroring
 /// opencode's credential file: `{ "<provider-id>": "<key>", ... }`.
-fn auth_store_path() -> anyhow::Result<PathBuf> {
+pub(crate) fn auth_store_path() -> anyhow::Result<PathBuf> {
     Ok(gray_home()?.join("auth.json"))
 }
 
@@ -341,6 +370,13 @@ pub(crate) fn save_auth_key(pid: &str, key: &str) -> anyhow::Result<()> {
     let mut store = load_mixed_store(&path);
     store.insert(pid.to_string(), AuthEntry::Key(key.to_string()));
     save_mixed_store(&path, &store)
+}
+
+/// Explicit-path seam for the provider-removal path (tests).
+pub(crate) fn remove_auth_entry_at(path: &Path, pid: &str) -> anyhow::Result<()> {
+    let mut store = load_mixed_store(path);
+    store.remove(pid);
+    save_mixed_store(path, &store)
 }
 
 /// Provider item displayed in the "Connect a provider" modal.

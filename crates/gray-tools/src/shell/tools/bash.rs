@@ -19,7 +19,11 @@ use crate::shell::fence::fence;
 use crate::shell::kill::term_then_kill;
 use crate::shell::pump::Pump;
 use crate::shell::spawn::spawn;
-use crate::shell::view::{format_elapsed, header, middle_out, resume_hint};
+use crate::shell::view::{fmt_num_u64, format_elapsed, header, middle_out, resume_hint};
+
+/// Bytes served by one `Read more` recovery command. The inline budget is
+/// 48 KiB, so 16 KiB pages need a third of the round trips a 4 KiB page did.
+const READ_CHUNK: u64 = 16 * 1024;
 use crate::{fail, get_opt_bool, get_opt_u64, get_str};
 
 mod jobs;
@@ -42,7 +46,8 @@ impl Tool for BashTool {
              user turn when idle). Use action:list/status/output/cancel with job_id to manage jobs; \
              output/status accept wait_ms (bounded blocking wait, clamped 0-30000ms) so one call \
              can await a job instead of polling. Jobs belong to this session and stop when Gray exits. \
-             timeout is the total runtime limit (default 30s, capped at 600s), NOT the yield window. \
+             timeout is an optional total runtime limit (no default: commands run until they exit; \
+             capped at 3600s), NOT the yield window. \
              Non-zero exits are data, not tool errors. Full output is logged; inline output is bounded.",
             json!({
                 "type": "object",
@@ -51,7 +56,7 @@ impl Tool for BashTool {
                     "action": {"type": "string", "enum": ["run", "list", "status", "output", "cancel"]},
                     "job_id": {"type": "string", "description": "Job ID returned by bash; required for status/output/cancel"},
                     "background": {"type": "boolean", "description": "Return immediately; run independently in this session"},
-                    "timeout": {"type": "integer", "description": "Total runtime limit in seconds (default 30, clamped 1-600)"},
+                    "timeout": {"type": "integer", "description": "Optional total runtime limit in seconds (omitted = no limit; clamped 1-3600)"},
                     "yield_ms": {"type": "integer", "description": "Wait at most this many milliseconds before returning a running job (clamped 100-10000); omitted means wait for exit"},
                     "wait_ms": {"type": "integer", "description": "Bounded blocking wait on action:output/status only: await the job's exit up to this many ms (clamped 0-30000) instead of polling; omitted means return immediately"}
                 }
@@ -106,7 +111,7 @@ impl Tool for BashTool {
             Err(e) => return e,
         };
         let secs = match get_opt_u64(&args, "timeout") {
-            Ok(v) => v.unwrap_or(DEFAULT_TIMEOUT_SECS).clamp(1, MAX_TIMEOUT_SECS),
+            Ok(v) => v.map(|s| s.clamp(1, MAX_TIMEOUT_SECS)),
             Err(e) => return e,
         };
         let background = match get_opt_bool(&args, "background") {
@@ -175,10 +180,24 @@ fn log_path(ctx: &ToolContext) -> PathBuf {
         .join(format!("bash-{}.log", uuid::Uuid::new_v4().as_simple()))
 }
 
+/// Sleep until the explicit timeout, or never when none was requested:
+/// `pending()` is the "no timeout" arm of the `select!` in `run_command`.
+async fn wait_or_pend(secs: Option<u64>, start: Instant) {
+    match secs {
+        Some(s) => {
+            tokio::time::sleep_until(tokio::time::Instant::from_std(
+                start + Duration::from_secs(s),
+            ))
+            .await
+        }
+        None => std::future::pending::<()>().await,
+    }
+}
+
 async fn run_command(
     command: String,
     log_path: PathBuf,
-    secs: u64,
+    secs: Option<u64>,
     start: Instant,
     ctx: ToolContext,
     spawned: crate::shell::contract::Spawned,
@@ -206,7 +225,7 @@ async fn run_command(
                 return fail(format!("failed to wait for command: {e}"));
             }
         },
-        _ = tokio::time::sleep_until(tokio::time::Instant::from_std(start + Duration::from_secs(secs))) => {
+        _ = wait_or_pend(secs, start) => {
             // Raced exit between the timer and now: report it, don't kill.
             match child.try_wait() {
                 Ok(Some(st)) => { exited = Some(st); Cause::Exit }
@@ -237,7 +256,10 @@ async fn run_command(
                     return fail(e);
                 }
             }
-            Some(format!("timed out after {secs}s (process group killed)"))
+            Some(format!(
+                "timed out after {}s (process group killed) · rerun without `timeout` to let it finish, or with a larger one (max {MAX_TIMEOUT_SECS}s)",
+                secs.unwrap_or_default()
+            ))
         }
         Cause::Cancel => {
             // Reap while Unix escalation polls: macOS can return EPERM
@@ -403,15 +425,74 @@ fn finish_inline(
             // including the last shown line in case it was cut mid-line.
             let first = view.shown_lines.0.max(1);
             let last = first.saturating_add(199);
-            format!("sed -n '{first},{last}p;{last}q' '{path}' | head -c 4096")
+            format!("sed -n '{first},{last}p;{last}q' '{path}' | head -c {READ_CHUNK}")
         } else {
             // Large-log sampling tracks raw offsets, not sanitized ones.
-            let count = end.saturating_sub(start).min(4096);
+            let count = end.saturating_sub(start).min(READ_CHUNK);
             format!("dd if='{path}' bs=1 skip={start} count={count} 2>/dev/null")
         };
-        out.push_str(&format!("\nRead more: {command}"));
+        // Name the window and how to keep paging. Elision without offsets made
+        // models re-read whole logs to find what was missing, and once hid a
+        // compiler error inside the omitted middle.
+        let next = start + READ_CHUNK;
+        let paging = if next < end {
+            format!(" Then skip={next} for the next {READ_CHUNK} bytes.")
+        } else {
+            String::new()
+        };
+        out.push_str(&format!(
+            "\nOmitted window: bytes {start}\u{2013}{end} ({} bytes).{paging}\nRead more: {command}",
+            fmt_num_u64(end.saturating_sub(start)),
+        ));
+    }
+    if let Some(hint) = missing_command_hint(&out) {
+        out.push('\n');
+        out.push_str(&hint);
     }
     ToolOutput::ok(out)
+}
+
+/// One-line nudge when a command was missing entirely. The benchmark retro
+/// showed agents burning turns re-trying tools the image does not ship
+/// (`rg`, `xxd`, `goyacc`, linters) or trying to install them offline; the
+/// shell's own "not found" line never says what to do instead.
+fn missing_command_hint(text: &str) -> Option<String> {
+    let line = text.lines().find(|l| {
+        let low = l.to_ascii_lowercase();
+        (low.contains("command not found") || low.contains(": not found"))
+            && (low.starts_with("sh:")
+                || low.starts_with("bash:")
+                || low.starts_with("dash:")
+                || low.starts_with("zsh:")
+                || low.contains(": command not found"))
+    })?;
+    let name = not_found_subject(line).unwrap_or_else(|| "that command".to_string());
+    Some(format!(
+        "`{name}` is not installed here · use an equivalent you already have (`grep`, `sed`, `awk`, `python3`) or confirm with `command -v {name}`"
+    ))
+}
+
+/// Pulls the tool name out of the shell's not-found wording:
+/// `bash: line 1: rg: command not found`, `sh: 1: rg: not found`,
+/// `zsh: command not found: rg`.
+fn not_found_subject(line: &str) -> Option<String> {
+    let low = line.to_ascii_lowercase();
+    let idx = low.find("not found")?;
+    // `zsh: command not found: rg` names the tool after the phrase.
+    if let Some(tok) = line[idx + "not found".len()..]
+        .trim_start_matches([':', ' '])
+        .split_whitespace()
+        .next()
+        .filter(|t| !t.is_empty())
+    {
+        return Some(tok.to_string());
+    }
+    // `bash: line 1: rg: command not found` names it before, behind the
+    // literal word "command".
+    line[..idx]
+        .rsplit(|c: char| c == ':' || c.is_whitespace())
+        .find(|t| !t.is_empty() && *t != "command")
+        .map(str::to_string)
 }
 
 fn small_log_on_disk(log_path: &std::path::Path, summary: &PumpSummary) -> bool {

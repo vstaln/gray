@@ -11,6 +11,52 @@ pub(crate) struct ConnectColors {
     pub text_dim: Color,
 }
 
+/// A row is removable when it holds a stored credential: the modal already
+/// counts it as connected (auth.json entry, or the active key in config), or
+/// a key is filed under its id — a custom endpoint keeps its key under
+/// `custom` even though that row never shows a check.
+pub(crate) fn is_removable(
+    item: &ConnectItem,
+    config: &Config,
+    auth: &std::collections::BTreeMap<String, catalog::AuthEntry>,
+) -> bool {
+    item.is_connected(config, auth) || auth.contains_key(&item.id)
+}
+
+/// Forgets `item`'s credential and returns its display name for the caller's
+/// feedback line. The auth-store entry goes away, and when the item is the
+/// active provider the saved config's *second* copy of the key goes too —
+/// without that the removal silently resurrects on the next start.
+fn forget_provider_at(
+    item: &ConnectItem,
+    config: &mut Config,
+    auth_path: &std::path::Path,
+    saved_path: &std::path::Path,
+) -> anyhow::Result<String> {
+    catalog::remove_auth_entry_at(auth_path, &item.id)?;
+    let name = item.name.clone();
+    if normalize_custom_base_url(&config.base_url) == normalize_custom_base_url(&item.base_url) {
+        config.api_key = None;
+        let mut saved = load_saved_config_at(saved_path);
+        // Only rewrite when there was something to drop: an untouched
+        // config file must stay untouched (mtime, unrelated fields).
+        if saved.api_key.take().is_some() {
+            saved.auth_mode = None;
+            save_saved_config_at(saved_path, &saved)?;
+        }
+    }
+    Ok(name)
+}
+
+fn forget_provider(item: &ConnectItem, config: &mut Config) -> anyhow::Result<String> {
+    forget_provider_at(
+        item,
+        config,
+        &catalog::auth_store_path()?,
+        &saved_config_path()?,
+    )
+}
+
 /// Bracketed-paste insertion for the modal's single-line fields. Key and
 /// filter input is one line: strip line breaks (clipboards often trail
 /// `\n`) so a paste lands whole and never submits. Otherwise identical to
@@ -19,13 +65,25 @@ fn insert_paste(buf: &mut String, pasted: &str) {
     buf.push_str(&pasted.replace(['\r', '\n'], ""));
 }
 
+/// What the connect modal did to `config`, so callers can react correctly:
+/// a removal must never be reported as a connection.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConnectOutcome {
+    /// A provider was connected or switched to.
+    Connected,
+    /// A stored provider credential was removed (payload: display name).
+    Removed(String),
+    /// Dismissed with nothing changed.
+    Dismissed,
+}
+
 /// Interactive "Connect a provider" GUI modal with clean colored box styling.
 /// Floating container block matching the composer prompt text box, live search filter,
 /// peach selection highlight, and in-modal API key entry.
 pub fn run_connect_modal(
     config: &mut Config,
     bg: Option<&BackgroundSnapshot>,
-) -> anyhow::Result<bool> {
+) -> anyhow::Result<ConnectOutcome> {
     use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, poll, read};
     use crossterm::terminal::EnterAlternateScreen;
     use ratatui::Terminal;
@@ -56,6 +114,9 @@ pub fn run_connect_modal(
             sel: usize,
             scroll_top: usize,
         },
+        ConfirmingRemove {
+            item: ConnectItem,
+        },
     }
 
     let mut state = ModalState::Selecting;
@@ -74,6 +135,10 @@ pub fn run_connect_modal(
     // it every prompt turn, so a paste here arrives as `Event::Paste`.
     // Re-assert for entries that never ran a prompt turn (e.g. onboarding).
     let _ = crossterm::execute!(stdout_handle, crossterm::event::EnableBracketedPaste);
+    // Shift+Enter is the removal binding here: without the same
+    // disambiguation the prompt uses, a terminal that collapses it to a bare
+    // Enter would connect the provider instead of confirming a removal.
+    let _keyboard_enhancement = crate::composer::input::KeyboardEnhancementGuard::push();
 
     let backend = CrosstermBackend::new(stdout_handle);
     let mut terminal = Terminal::new(backend)?;
@@ -89,7 +154,7 @@ pub fn run_connect_modal(
         .cloned()
         .unwrap_or_else(BackgroundSnapshot::default_initial);
 
-    let result = (|| -> anyhow::Result<bool> {
+    let result = (|| -> anyhow::Result<ConnectOutcome> {
         loop {
             let auth = catalog::load_connect_auth();
             let mut all_items = build_connect_items(&catalog);
@@ -135,6 +200,9 @@ pub fn run_connect_modal(
                         status_msg,
                         &colors,
                     ),
+                    ModalState::ConfirmingRemove { item } => {
+                        super::connect_draw::render_confirm_remove(frame, area, item, &colors)
+                    }
                     ModalState::SelectingModel {
                         item,
                         models,
@@ -184,7 +252,9 @@ pub fn run_connect_modal(
                             modifiers,
                             kind: KeyEventKind::Press,
                             ..
-                        }) if modifiers.contains(KeyModifiers::CONTROL) => return Ok(false),
+                        }) if modifiers.contains(KeyModifiers::CONTROL) => {
+                            return Ok(ConnectOutcome::Dismissed);
+                        }
                         Event::Key(KeyEvent {
                             code,
                             modifiers,
@@ -197,6 +267,21 @@ pub fn run_connect_modal(
                             }
                             _ => {}
                         },
+                        // Shift+Enter removes the highlighted provider; plain
+                        // Enter connects it. Guarded ahead of the generic key
+                        // arm, which would otherwise swallow it as Enter.
+                        Event::Key(KeyEvent {
+                            code: KeyCode::Enter,
+                            modifiers,
+                            kind: KeyEventKind::Press,
+                            ..
+                        }) if modifiers.contains(KeyModifiers::SHIFT) => {
+                            if let Some(&item) = filtered.get(sel)
+                                && is_removable(item, config, &auth)
+                            {
+                                state = ModalState::ConfirmingRemove { item: item.clone() };
+                            }
+                        }
                         Event::Key(KeyEvent {
                             code,
                             kind: KeyEventKind::Press,
@@ -222,7 +307,7 @@ pub fn run_connect_modal(
                                 filter.pop();
                                 sel = 0;
                             }
-                            KeyCode::Esc => return Ok(false),
+                            KeyCode::Esc => return Ok(ConnectOutcome::Dismissed),
                             KeyCode::Enter => {
                                 if let Some(&item) = filtered.get(sel) {
                                     if item.id == "custom" {
@@ -430,7 +515,7 @@ pub fn run_connect_modal(
                                     config.model = saved.model.clone();
                                 }
                                 save_saved_config_at(&path, &saved)?;
-                                return Ok(true);
+                                return Ok(ConnectOutcome::Connected);
                             } else {
                                 save_auth_key(&item.id, &final_key)?;
                                 config.base_url = item.base_url.clone();
@@ -454,6 +539,32 @@ pub fn run_connect_modal(
                         insert_paste(key_buf, &pasted);
                         *status_msg = None;
                     }
+                    Event::Resize(_, _) => {}
+                    _ => {}
+                },
+                ModalState::ConfirmingRemove { item } => match read()? {
+                    Event::Key(KeyEvent {
+                        code: KeyCode::Char('c'),
+                        modifiers,
+                        kind: KeyEventKind::Press,
+                        ..
+                    }) if modifiers.contains(KeyModifiers::CONTROL) => {
+                        return Ok(ConnectOutcome::Dismissed);
+                    }
+                    Event::Key(KeyEvent {
+                        code,
+                        kind: KeyEventKind::Press,
+                        ..
+                    }) => match code {
+                        KeyCode::Esc => {
+                            state = ModalState::Selecting;
+                        }
+                        KeyCode::Enter => {
+                            let name = forget_provider(item, config)?;
+                            return Ok(ConnectOutcome::Removed(name));
+                        }
+                        _ => {}
+                    },
                     Event::Resize(_, _) => {}
                     _ => {}
                 },
@@ -486,7 +597,9 @@ pub fn run_connect_modal(
                             modifiers,
                             kind: KeyEventKind::Press,
                             ..
-                        }) if modifiers.contains(KeyModifiers::CONTROL) => return Ok(false),
+                        }) if modifiers.contains(KeyModifiers::CONTROL) => {
+                            return Ok(ConnectOutcome::Dismissed);
+                        }
                         Event::Key(KeyEvent {
                             code,
                             modifiers,
@@ -552,7 +665,7 @@ pub fn run_connect_modal(
                                 save_saved_config_at(&path, &saved)?;
 
                                 connected_name = Some((item.name.clone(), chosen_model));
-                                return Ok(true);
+                                return Ok(ConnectOutcome::Connected);
                             }
                             _ => {}
                         },
@@ -576,3 +689,7 @@ pub fn run_connect_modal(
 #[path = "paste_tests.rs"]
 #[cfg(test)]
 mod paste_tests;
+
+#[path = "remove_tests.rs"]
+#[cfg(test)]
+mod remove_tests;

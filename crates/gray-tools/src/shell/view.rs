@@ -40,7 +40,7 @@ pub fn fmt_num(mut n: usize) -> String {
     out
 }
 
-fn fmt_num_u64(n: u64) -> String {
+pub fn fmt_num_u64(n: u64) -> String {
     fmt_num(n as usize)
 }
 

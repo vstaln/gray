@@ -166,6 +166,145 @@ fn planner_demotes_bash_without_parsable_command() {
     );
 }
 #[test]
+fn planner_batches_disjoint_mutating_bash_calls() {
+    let known: HashSet<String> = ["bash"].iter().map(|s| s.to_string()).collect();
+    // Non-interference: two removals of different files batch.
+    let u = vec![
+        (
+            "a".into(),
+            "bash".into(),
+            json!({"command": "rm build/a.o"}),
+        ),
+        (
+            "b".into(),
+            "bash".into(),
+            json!({"command": "rm build/b.o"}),
+        ),
+    ];
+    assert_eq!(
+        plan_segments(&u, &known),
+        vec![Segment::Parallel(vec![0, 1])]
+    );
+    // Overlapping targets (rm + mv of the same file) split.
+    let u = vec![
+        (
+            "a".into(),
+            "bash".into(),
+            json!({"command": "rm build/a.o"}),
+        ),
+        (
+            "b".into(),
+            "bash".into(),
+            json!({"command": "mv build/a.o build/c.o"}),
+        ),
+    ];
+    assert_eq!(
+        plan_segments(&u, &known),
+        vec![Segment::Single(0), Segment::Single(1)]
+    );
+}
+
+#[test]
+fn planner_batches_disjoint_redirect_writes() {
+    let known: HashSet<String> = ["bash"].iter().map(|s| s.to_string()).collect();
+    let u = vec![
+        (
+            "a".into(),
+            "bash".into(),
+            json!({"command": "echo one > out/a.txt"}),
+        ),
+        (
+            "b".into(),
+            "bash".into(),
+            json!({"command": "echo two > out/b.txt"}),
+        ),
+    ];
+    assert_eq!(
+        plan_segments(&u, &known),
+        vec![Segment::Parallel(vec![0, 1])]
+    );
+    // A reader of the redirected file interferes with its writer.
+    let u = vec![
+        (
+            "a".into(),
+            "bash".into(),
+            json!({"command": "echo one > out/a.txt"}),
+        ),
+        (
+            "b".into(),
+            "bash".into(),
+            json!({"command": "cat out/a.txt"}),
+        ),
+    ];
+    assert_eq!(
+        plan_segments(&u, &known),
+        vec![Segment::Single(0), Segment::Single(1)]
+    );
+}
+
+#[test]
+fn unenumerable_writes_stay_barriers() {
+    let known: HashSet<String> = ["bash", "read"].iter().map(|s| s.to_string()).collect();
+    // Build tools write shared state that cannot be enumerated.
+    let u = vec![
+        ("a".into(), "bash".into(), json!({"command": "cargo test"})),
+        ("b".into(), "bash".into(), json!({"command": "cargo build"})),
+    ];
+    assert_eq!(
+        plan_segments(&u, &known),
+        vec![Segment::Single(0), Segment::Single(1)]
+    );
+    // Dynamic operands are unenumerable even for a plain mutator.
+    let u = vec![
+        ("a".into(), "bash".into(), json!({"command": "rm $(ls)"})),
+        ("b".into(), "read".into(), json!({"path": "a.txt"})),
+    ];
+    assert_eq!(
+        plan_segments(&u, &known),
+        vec![Segment::Single(0), Segment::Single(1)]
+    );
+}
+
+#[test]
+fn bash_touch_enumerates_operands_and_redirects() {
+    assert_eq!(
+        bash_touch("rm a b"),
+        Some(Touch::Writes {
+            reads: vec![],
+            writes: vec!["a".into(), "b".into()]
+        })
+    );
+    assert_eq!(
+        bash_touch("echo hi > a.txt"),
+        Some(Touch::Writes {
+            reads: vec![],
+            writes: vec!["a.txt".into()]
+        })
+    );
+    assert_eq!(
+        bash_touch("cat f > g"),
+        Some(Touch::Writes {
+            reads: vec!["f".into()],
+            writes: vec!["g".into()]
+        })
+    );
+    assert_eq!(
+        bash_touch("sed -i s/a/b/ f"),
+        Some(Touch::Writes {
+            reads: vec![],
+            writes: vec!["s/a/b".into(), "f".into()]
+        })
+    );
+    assert_eq!(bash_touch("ls"), Some(Touch::Reads(vec![])));
+    assert_eq!(
+        bash_touch("grep -rn foo ."),
+        Some(Touch::Reads(vec!["foo".into(), ".".into()]))
+    );
+    assert_eq!(bash_touch("git status"), Some(Touch::ReadsUnknown));
+    assert_eq!(bash_touch("cargo build"), None);
+}
+
+#[test]
 fn kill_switch_parses() {
     let _g = ENV_LOCK.lock().unwrap();
     let prev = std::env::var("GRAY_PARALLEL_READS").ok();

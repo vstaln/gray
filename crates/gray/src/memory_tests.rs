@@ -7,17 +7,43 @@ fn setup() -> (tempfile::TempDir, MemoryStore) {
 }
 
 #[test]
-fn byte_budget_is_exact_and_failed_update_preserves_bytes() {
+fn large_entries_round_trip_without_a_cap() {
     let (_dir, store) = setup();
-    // '- k: ' and final newline take 6 bytes.
-    let text = "é".repeat((Scope::User.limit() - 6) / 2);
-    store.set(Scope::User, "k", &text).unwrap();
-    let path = store.path(Scope::User);
-    let before = std::fs::read(&path).unwrap();
-    assert_eq!(before.len(), Scope::User.limit());
-    assert_eq!(before.last(), Some(&b'\n'));
-    assert!(store.set(Scope::User, "k", &(text + "x")).is_err());
-    assert_eq!(std::fs::read(path).unwrap(), before);
+    // Far past the old 2 KiB / 4 KiB budgets: no cap remains.
+    let big = "é".repeat(20_000);
+    assert!(store.set(Scope::User, "k", &big).unwrap());
+    assert!(store.list(Scope::User).unwrap().contains(&big));
+    let huge = "y".repeat(120_000);
+    std::fs::write(store.path(Scope::User), format!("- k: {huge}\n")).unwrap();
+    assert!(store.list(Scope::User).unwrap().contains(&huge));
+    assert!(store.set(Scope::User, "k2", "small").unwrap());
+    let after = std::fs::read(store.path(Scope::User)).unwrap();
+    assert!(after.len() > 120_000);
+    assert_eq!(after.last(), Some(&b'\n'));
+}
+
+#[test]
+fn show_edit_clear_manage_entries() {
+    let (_dir, store) = setup();
+    assert_eq!(store.get(Scope::Project, "k").unwrap(), None);
+    assert!(
+        store.edit(Scope::Project, "k", "text").is_err(),
+        "edit must never create an entry"
+    );
+    store.set(Scope::Project, "k", "first").unwrap();
+    assert_eq!(
+        store.get(Scope::Project, "k").unwrap().as_deref(),
+        Some("first")
+    );
+    store.edit(Scope::Project, "k", "second").unwrap();
+    assert_eq!(
+        store.get(Scope::Project, "k").unwrap().as_deref(),
+        Some("second")
+    );
+    store.set(Scope::Project, "other", "text").unwrap();
+    assert_eq!(store.clear(Scope::Project).unwrap(), 2);
+    assert_eq!(store.list(Scope::Project).unwrap(), "");
+    assert_eq!(store.clear(Scope::Project).unwrap(), 0);
 }
 
 #[test]

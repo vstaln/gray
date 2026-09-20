@@ -81,6 +81,62 @@ fn pipefail_mention_does_not_suppress_masked_note() {
 }
 
 #[test]
+fn failing_stage_behind_a_text_filter_is_flagged() {
+    // The real shape: a test/build command piped into a pager-ish filter.
+    // `sh -c` reports the filter's 0, so a failing suite would read as
+    // success — the note must say the earlier status is unknowable.
+    for cmd in [
+        "pytest -q | head -40",
+        "cargo test | tail -5",
+        "python3 -c 'raise SystemExit(3)' | head -5",
+        "make check | cat",
+        // Filters that swallow the upstream status without being head-ish
+        // commands: `sh -c` still reports their 0.
+        "pytest -q | awk '{print $1}'",
+        "cargo test 2>&1 | sed -n '1,20p'",
+        "make test | cut -d: -f1",
+        "npm test | tr a-z A-Z",
+        "go test ./... | column -t",
+    ] {
+        let r = exit_report(code(0), cmd);
+        let note = r.note.as_deref().unwrap_or("");
+        assert!(note.contains("masks"), "{cmd} -> {note}");
+        assert!(
+            note.contains("rerun"),
+            "the note must say how to recover the status: {cmd} -> {note}"
+        );
+        // Same wire-budget rule as the other arm: never echo the pipeline.
+        assert!(!note.contains('|'), "{cmd} -> {note}");
+    }
+}
+
+#[test]
+fn multi_stage_filter_names_stages_generically() {
+    let r = exit_report(code(0), "a | b | head -1");
+    let note = r.note.as_deref().unwrap_or("");
+    assert!(note.contains("earlier stages"), "{note}");
+}
+
+#[test]
+fn text_filter_last_with_no_masking_risk_stays_silent() {
+    // `grep` is in the head-ish table too, so it keeps the stage-naming
+    // note (naming `cargo` is more useful than the generic warning).
+    let r = exit_report(code(0), "cargo test | grep PASS");
+    assert!(
+        r.note.as_deref().unwrap_or("").contains("cargo"),
+        "{:?}",
+        r.note
+    );
+    // A single command has no pipeline to mask anything: `cat f` alone
+    // reports `cat`'s own status, which is honest.
+    let r = exit_report(code(0), "cat f");
+    assert!(r.note.is_none(), "{:?}", r.note);
+    // Nor does a lone text filter with nothing upstream to mask.
+    let r = exit_report(code(0), "head -5 f");
+    assert!(r.note.is_none(), "{:?}", r.note);
+}
+
+#[test]
 fn wrapped_heads_are_taken_literally_now() {
     // The destructive-command guard owned wrapper stripping (`sudo`/`env`/
     // `nice`/`timeout`). With the guard gone, exit reporting reads the

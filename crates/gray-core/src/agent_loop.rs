@@ -150,6 +150,9 @@ impl Agent {
         // Exploration-stall guard: consecutive rounds using only read-only
         // lookup tools — the "keeps re-reading instead of acting" loop.
         let mut stall_rounds: usize = 0;
+        // Poll streak: rounds whose only results were "job still running"
+        // progress notices (see `is_job_progress`).
+        let mut poll_rounds: usize = 0;
         // Forward each event to the optional streaming sink, then collect it.
         macro_rules! emit {
             ($ev:expr) => {{
@@ -277,8 +280,12 @@ impl Agent {
                         }
                     };
                     // Absolute event-count backstop: a hostile/broken server
-                    // must not grow the retained turn without bound.
-                    const MAX_EVENTS: usize = 100_000;
+                    // must not grow the retained turn without bound. Raised
+                    // from 100k after benchmark runs died here: deltas are
+                    // chunks, so ~100k events is only ~250-400k output tokens
+                    // — a long legitimate turn. 500k still bounds the Vec
+                    // (~40 MB) while leaving long runs headroom.
+                    const MAX_EVENTS: usize = 500_000;
                     if events.len() >= MAX_EVENTS {
                         self.emit_turn_end(&billed).await;
                         return Err(CoreError::Provider("turn event limit exceeded".into()));
@@ -614,7 +621,14 @@ impl Agent {
                 return Ok(events);
             }
 
-            // Stall guard: abort if the same tool+args repeats 3 times consecutively.
+            // Stall guard: nudge once, then abort only if the identical call
+            // keeps coming. A deliberate poll (a job whose output keeps
+            // changing) is not a loop; ignoring the nudge and repeating the
+            // same call is.
+            const SIGNATURE_NUDGE_REPEATS: usize = 3;
+            const SIGNATURE_ABORT_REPEATS: usize = 6;
+            const POLL_NUDGE_ROUNDS: usize = 20;
+            let mut nudge_repeat = 0usize;
             {
                 let sig = tool_uses
                     .iter()
@@ -627,12 +641,15 @@ impl Agent {
                     last_sig = Some(sig.clone());
                     repeat = 1;
                 }
-                if repeat >= 3 {
+                if repeat >= SIGNATURE_ABORT_REPEATS {
                     answer_pending_tools(self, &tool_uses, 0, "aborted: tool loop detected");
                     self.emit_turn_end(&billed).await;
                     return Err(CoreError::LoopDetected(format!(
-                        "same tool call 3× in a row: {sig}"
+                        "same tool call {repeat}× in a row: {sig}"
                     )));
+                }
+                if repeat == SIGNATURE_NUDGE_REPEATS {
+                    nudge_repeat = repeat;
                 }
             }
 
@@ -672,6 +689,9 @@ impl Agent {
             // any barrier) degrades to all-`Single` — today's loop exactly.
             let known: std::collections::HashSet<String> =
                 self.tools.iter().map(|t| t.name.clone()).collect();
+            // Everything pushed from here on is this round's tool results;
+            // the poll check below reads them back by index.
+            let round_start = self.messages.len();
             let segments = if crate::parallel::parallel_enabled() {
                 crate::parallel::plan_segments(&tool_uses, &known)
             } else {
@@ -914,6 +934,47 @@ impl Agent {
                 });
             }
 
+            // A round whose every result is a "job still running" notice is a
+            // deliberate poll, not a stall: gray answers a repeated command
+            // with the live status of the job it already started, so the
+            // elapsed time moves and the model is waiting on real work. Clear
+            // the signature streak for those rounds — a genuinely stuck call
+            // returns ordinary output and still trips the guard — but cap the
+            // streak so a hung job gets called out instead of polled forever.
+            let poll_round = !self.messages[round_start..].is_empty()
+                && self.messages[round_start..].iter().all(|m| {
+                    !m.content.is_empty()
+                        && m.content.iter().all(|b| match b {
+                            ContentBlock::ToolResult { content, .. } => is_job_progress(content),
+                            _ => false,
+                        })
+                });
+            if poll_round {
+                repeat = 0;
+                last_sig = None;
+                poll_rounds += 1;
+                if poll_rounds == POLL_NUDGE_ROUNDS {
+                    log::warn!(target: "gray_agent", "job polled {poll_rounds} times without finishing: nudging");
+                    self.messages.push(Message::user(format!(
+                        "[gray loop guard: this background job has been polled {poll_rounds} times and is still running. Read its log, wait on it with bash action: output / job_id: ... / wait_ms: 30000, or cancel it and take a different approach.]"
+                    )));
+                }
+            } else {
+                poll_rounds = 0;
+            }
+
+            // The signature nudge lands after the tool results: a user-role
+            // message between an assistant tool call and its results would
+            // break the provider's call/result pairing.
+            if nudge_repeat > 0 {
+                log::warn!(target: "gray_agent", "repeated tool call: injecting nudge after {nudge_repeat} identical rounds");
+                self.messages.push(Message::user(format!(
+                    "[gray loop guard: the same tool call with the same arguments ran {nudge_repeat} times in a row. \
+                     Are you in a loop? If you are, change approach now; if the repetition is deliberate \
+                     (for example polling something that keeps changing), say why, then continue.]"
+                )));
+            }
+
             if stall_rounds == STALL_NUDGE_ROUNDS {
                 log::warn!(target: "gray_agent", "exploration stall: injecting nudge after {stall_rounds} read-only rounds");
                 self.messages.push(Message::user(format!(
@@ -923,4 +984,12 @@ impl Agent {
             }
         }
     }
+}
+
+/// True when a tool result is gray's "the job is still going" progress
+/// notice — the yield notice or a status/output poll of a live job. Both
+/// carry a moving `elapsed`, so a repeated call answered with one of these
+/// is a deliberate wait, never a stall.
+fn is_job_progress(content: &str) -> bool {
+    content.contains("· running · elapsed ") || content.contains("still running · job ")
 }

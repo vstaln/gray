@@ -36,6 +36,9 @@ pub struct OpenAiProvider {
     model: String,
     http: reqwest::Client,
     reasoning_effort: Option<String>,
+    /// Optional sampling passthroughs (None = leave the server default).
+    temperature: Option<f32>,
+    top_p: Option<f32>,
     /// Stable per-process id sent as `prompt_cache_key` (Responses API and
     /// chat completions alike) so callers pin one cache shard per session for
     /// prompt caching. Also sent as the `x-opencode-session` header (Console Go
@@ -85,8 +88,19 @@ impl OpenAiProvider {
             model: model.into(),
             http,
             reasoning_effort,
+            temperature: None,
+            top_p: None,
             session_id,
         })
+    }
+
+    /// Sampling passthrough: providers that accept `temperature`/`top_p` get
+    /// them on every chat request; `None` keeps whatever the server defaults
+    /// to (the pre-existing behaviour).
+    pub fn with_sampling(mut self, temperature: Option<f32>, top_p: Option<f32>) -> Self {
+        self.temperature = temperature;
+        self.top_p = top_p;
+        self
     }
 }
 
@@ -94,6 +108,10 @@ impl OpenAiProvider {
 pub(crate) struct OpenAiChatRequest {
     model: String,
     stream: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    temperature: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    top_p: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     stream_options: Option<OpenAiStreamOptions>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -697,6 +715,10 @@ fn map_chat_request(
     Ok(OpenAiChatRequest {
         model: model.to_string(),
         stream: true,
+        // Sampling passthroughs are stamped by the provider after mapping
+        // (`with_sampling`); the mapper itself has no config to read.
+        temperature: None,
+        top_p: None,
         stream_options: Some(OpenAiStreamOptions {
             include_usage: true,
         }),
@@ -2056,14 +2078,56 @@ fn stream_unfold_step(
                         }
                         None => {
                             if last_finish_reason.is_none() {
-                                return Some((
-                                    Err(ProviderError::Stream(
-                                        "Chat stream ended without a finish reason".into(),
-                                    )),
-                                    StreamState::Done,
-                                ));
-                            }
-                            if !completed {
+                                // Providers (seen on opencode zen) can close the
+                                // stream right after the last delta with no finish
+                                // chunk. A complete tool call is still usable, so
+                                // keep it and warn; a truncated call must never
+                                // execute, so anything else stays retryable.
+                                let complete = accumulated_tools.values().all(|(_, _, args)| {
+                                    let trimmed = args.trim();
+                                    !trimmed.is_empty()
+                                        && serde_json::from_str::<Value>(trimmed).is_ok()
+                                });
+                                if completed || accumulated_tools.is_empty() || !complete {
+                                    return Some((
+                                        Err(ProviderError::Stream(
+                                            "Chat stream ended without a finish reason".into(),
+                                        )),
+                                        StreamState::Done,
+                                    ));
+                                }
+                                match emit_tool_calls_and_completion(
+                                    &mut accumulated_tools,
+                                    Some(StopReason::ToolUse),
+                                    last_usage,
+                                    &mut pending_events,
+                                ) {
+                                    Ok(()) => {
+                                        log::warn!(
+                                            target: "gray_provider",
+                                            "stream ended without a finish reason; keeping complete tool calls"
+                                        );
+                                        completed = true;
+                                        last_finish_reason = Some(StopReason::ToolUse);
+                                        state = StreamState::Streaming {
+                                            event_stream,
+                                            accumulated_tools,
+                                            last_finish_reason,
+                                            last_usage,
+                                            pending_events,
+                                            completed,
+                                        };
+                                    }
+                                    Err(_) => {
+                                        return Some((
+                                            Err(ProviderError::Stream(
+                                                "Chat stream ended without a finish reason".into(),
+                                            )),
+                                            StreamState::Done,
+                                        ));
+                                    }
+                                }
+                            } else if !completed {
                                 completed = true;
                                 if let Err(err) = emit_tool_calls_and_completion(
                                     &mut accumulated_tools,
@@ -2594,6 +2658,8 @@ impl Provider for OpenAiProvider {
         // header alone leaves chat turns rotating cache shards — stamp the
         // body key too so consecutive chat turns pin one shard.
         body.prompt_cache_key = self.session_id.clone().filter(|s| !s.is_empty());
+        body.temperature = self.temperature;
+        body.top_p = self.top_p;
         let init_state = StreamState::Init {
             client: self.http.clone(),
             url,

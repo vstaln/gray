@@ -56,7 +56,7 @@ fn rank_keeps_exact_names_rejects_weak_entries() {
         ranked_skill("blob", &"x".repeat(701)),
         ranked_skill("", "nameless loses"),
     ];
-    let ranked = rank_skills_for_prompt(&skills, &BTreeSet::new());
+    let ranked = rank_skills_for_prompt(&skills, true, &BTreeSet::new());
     assert_eq!(ranked.len(), 1);
     assert_eq!(ranked[0].name, "deploy");
     assert_eq!(ranked[0].description, "deploy the app");
@@ -69,21 +69,25 @@ fn rank_skips_user_disabled_skills() {
         ranked_skill("off", "turned off"),
     ];
     let disabled: BTreeSet<String> = ["off".to_string()].into_iter().collect();
-    let ranked = rank_skills_for_prompt(&skills, &disabled);
+    let ranked = rank_skills_for_prompt(&skills, true, &disabled);
     assert_eq!(ranked.len(), 1);
     assert_eq!(ranked[0].name, "keep");
-    let out = format_skills_for_prompt(&skills, &disabled);
+    let out = format_skills_for_prompt(&skills, true, &disabled);
     assert!(out.contains("<name>keep</name>"), "{out}");
     assert!(!out.contains("<name>off</name>"), "{out}");
     // Empty set = everything on (default).
     let none = BTreeSet::new();
-    assert_eq!(rank_skills_for_prompt(&skills, &none).len(), 2);
+    assert_eq!(rank_skills_for_prompt(&skills, true, &none).len(), 2);
+    // Global off hides everything regardless of the per-skill set.
+    assert!(rank_skills_for_prompt(&skills, false, &none).is_empty());
+    assert!(format_skills_for_prompt(&skills, false, &none).is_empty());
+    assert!(format_skills_for_prompt(&skills, false, &disabled).is_empty());
 }
 
 #[test]
 fn prompt_block_gives_proactive_skill_guidance() {
     let s = test_skill("anything", &[]);
-    let out = format_skills_for_prompt(&[s], &BTreeSet::new());
+    let out = format_skills_for_prompt(&[s], true, &BTreeSet::new());
     assert!(
         out.contains("before acting even for simple tasks"),
         "proactive read-first hint missing: {out}"
@@ -134,7 +138,7 @@ fn prompt_block_caps_skill_list_and_says_so() {
     let skills: Vec<Skill> = (0..60)
         .map(|i| test_skill(&format!("skill-{i:02}"), &[]))
         .collect();
-    let out = format_skills_for_prompt(&skills, &BTreeSet::new());
+    let out = format_skills_for_prompt(&skills, true, &BTreeSet::new());
     assert_eq!(
         out.matches("<skill>").count(),
         40,
@@ -151,7 +155,7 @@ fn prompt_block_under_cap_lists_all_without_notice() {
     let skills: Vec<Skill> = (0..3)
         .map(|i| test_skill(&format!("skill-{i}"), &[]))
         .collect();
-    let out = format_skills_for_prompt(&skills, &BTreeSet::new());
+    let out = format_skills_for_prompt(&skills, true, &BTreeSet::new());
     assert_eq!(out.matches("<skill>").count(), 3);
     assert!(
         !out.contains("more skills"),
@@ -167,11 +171,14 @@ fn prompt_cap_counts_only_eligible_unique_skills() {
     skills.push(disabled);
     skills.push(ranked_skill("empty", ""));
     skills.extend((0..39).map(|i| test_skill(&format!("skill-{i}"), &[])));
-    let out = format_skills_for_prompt(&skills, &BTreeSet::new());
+    let out = format_skills_for_prompt(&skills, true, &BTreeSet::new());
     assert_eq!(out.matches("<skill>").count(), 40);
     assert!(!out.contains("more skills"));
     assert!(!out.contains("<name>disabled</name>"));
     assert!(!out.contains("<name>empty</name>"));
-    assert_eq!(rank_skills_for_prompt(&skills, &BTreeSet::new()).len(), 40);
-    assert!(format_skills_for_prompt(&[], &BTreeSet::new()).is_empty());
+    assert_eq!(
+        rank_skills_for_prompt(&skills, true, &BTreeSet::new()).len(),
+        40
+    );
+    assert!(format_skills_for_prompt(&[], true, &BTreeSet::new()).is_empty());
 }

@@ -68,7 +68,7 @@ pub(crate) const REGISTRY: &[CmdDef] = &[
     },
     CmdDef {
         name: "skills",
-        desc: "list skills (/skills [name] [args] to run one, /skills enable|disable <name>)",
+        desc: "list skills (/skills [name] [args] to run one, /skills on|off for auto-context, /skills enable|disable <name>)",
         aliases: &["skill"],
     },
     CmdDef {

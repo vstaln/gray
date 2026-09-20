@@ -256,6 +256,71 @@ fn assemble_matches(
     finish(output)
 }
 
+/// Render matches the way both lanes must: `file:line: text` for matches,
+/// `file-line- text` for context lines, with limit/truncation notices.
+#[allow(clippy::too_many_arguments)]
+fn format_matches(
+    search_path: &Path,
+    is_dir: bool,
+    matches: &[(String, usize, Option<String>, bool)],
+    effective_limit: usize,
+    match_limit_reached: bool,
+) -> ToolOutput {
+    // Format matches: `file:line: text`, context lines `file-line- text`.
+    let mut output_lines: Vec<String> = Vec::new();
+    let mut lines_truncated = false;
+
+    for (file_path, line_number, line_text, is_match) in matches {
+        let rel = relativize(search_path, file_path, is_dir);
+        let Some(raw) = line_text else {
+            if *is_match {
+                output_lines.push(format!("{rel}:{line_number}: (unable to read line)"));
+            }
+            continue;
+        };
+        let sanitized = raw
+            .replace("\r\n", "\n")
+            .replace('\r', "")
+            .trim_end_matches('\n')
+            .to_string();
+        let (text, was_truncated) = truncate_line(&sanitized);
+        if was_truncated {
+            lines_truncated = true;
+        }
+        if *is_match {
+            output_lines.push(format!("{rel}:{line_number}: {text}"));
+        } else {
+            output_lines.push(format!("{rel}-{line_number}- {text}"));
+        }
+    }
+
+    let raw_output = output_lines.join("\n");
+    let trunc = truncate_head(&raw_output);
+    let mut output = trunc.content;
+
+    let mut notices: Vec<String> = Vec::new();
+    if match_limit_reached {
+        notices.push(format!(
+            "{effective_limit} matches limit reached. Use limit={} for more, or refine pattern",
+            effective_limit * 2
+        ));
+    }
+    if trunc.truncated {
+        notices.push(format!(
+            "{} limit reached",
+            crate::truncate::format_size(MAX_BYTES)
+        ));
+    }
+    if lines_truncated {
+        notices.push(format!(
+            "Some lines truncated to {GREP_MAX_LINE_LENGTH} chars. Use read tool to see full lines"
+        ));
+    }
+    append_notices(&mut output, &notices);
+
+    finish(output)
+}
+
 fn truncate_line(line: &str) -> (String, bool) {
     if line.chars().count() <= GREP_MAX_LINE_LENGTH {
         return (line.to_string(), false);
@@ -347,6 +412,32 @@ impl Tool for GrepTool {
             Ok(m) => m.is_dir(),
             Err(e) => return fail(format!("Path not found: {}: {e}", search_path.display())),
         };
+
+        // No ripgrep on PATH: use the built-in search rather than failing the
+        // tool. Same output contract, so callers cannot tell the difference
+        // beyond `.gitignore`-equivalent filtering.
+        if !crate::grep_builtin::rg_present() {
+            let found = match crate::grep_builtin::search(
+                &pattern,
+                &search_path,
+                is_dir,
+                &glob,
+                ignore_case,
+                literal,
+                effective_limit,
+                context,
+            ) {
+                Ok(f) => f,
+                Err(e) => return fail(e),
+            };
+            return format_matches(
+                &search_path,
+                is_dir,
+                &found.hits,
+                effective_limit,
+                found.limit_reached,
+            );
+        }
 
         // Fast path (match-only searches): plain `--vimgrep` output parses
         // with one split per line instead of one JSON document per match.
@@ -524,59 +615,13 @@ impl Tool for GrepTool {
             return finish("No matches found".to_string());
         }
 
-        // Format matches: `file:line: text`, context lines `file-line- text`.
-        let mut output_lines: Vec<String> = Vec::new();
-        let mut lines_truncated = false;
-
-        for (file_path, line_number, line_text, is_match) in &matches {
-            let rel = relativize(&search_path, file_path, is_dir);
-            let Some(raw) = line_text else {
-                if *is_match {
-                    output_lines.push(format!("{rel}:{line_number}: (unable to read line)"));
-                }
-                continue;
-            };
-            let sanitized = raw
-                .replace("\r\n", "\n")
-                .replace('\r', "")
-                .trim_end_matches('\n')
-                .to_string();
-            let (text, was_truncated) = truncate_line(&sanitized);
-            if was_truncated {
-                lines_truncated = true;
-            }
-            if *is_match {
-                output_lines.push(format!("{rel}:{line_number}: {text}"));
-            } else {
-                output_lines.push(format!("{rel}-{line_number}- {text}"));
-            }
-        }
-
-        let raw_output = output_lines.join("\n");
-        let trunc = truncate_head(&raw_output);
-        let mut output = trunc.content;
-
-        let mut notices: Vec<String> = Vec::new();
-        if match_limit_reached {
-            notices.push(format!(
-                "{effective_limit} matches limit reached. Use limit={} for more, or refine pattern",
-                effective_limit * 2
-            ));
-        }
-        if trunc.truncated {
-            notices.push(format!(
-                "{} limit reached",
-                crate::truncate::format_size(MAX_BYTES)
-            ));
-        }
-        if lines_truncated {
-            notices.push(format!(
-                "Some lines truncated to {GREP_MAX_LINE_LENGTH} chars. Use read tool to see full lines"
-            ));
-        }
-        append_notices(&mut output, &notices);
-
-        finish(output)
+        format_matches(
+            &search_path,
+            is_dir,
+            &matches,
+            effective_limit,
+            match_limit_reached,
+        )
     }
 }
 

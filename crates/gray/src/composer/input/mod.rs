@@ -249,9 +249,9 @@ pub(crate) fn handle_key_event_without_popup(
 /// Popped on drop, covering every `read_line` exit. Terminals without
 /// support ignore the sequence (same precedent as `EnableBracketedPaste`
 /// below, re-asserted every turn because full-screen children clear it).
-struct KeyboardEnhancementGuard;
+pub(crate) struct KeyboardEnhancementGuard;
 impl KeyboardEnhancementGuard {
-    fn push() -> Self {
+    pub(crate) fn push() -> Self {
         use crossterm::event::{KeyboardEnhancementFlags, PushKeyboardEnhancementFlags};
         let _ = crossterm::execute!(
             std::io::stdout(),

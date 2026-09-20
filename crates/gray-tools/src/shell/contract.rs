@@ -8,8 +8,13 @@ use tokio::process::Child;
 
 // budgets and limits
 
-pub const DEFAULT_TIMEOUT_SECS: u64 = 30;
-pub const MAX_TIMEOUT_SECS: u64 = 600;
+/// Default bash timeout: **none**. Commands run until they exit; a runaway
+/// command is stopped by the user (cancel) or by passing an explicit
+/// `timeout`. (Was 30s, then 120s — both killed real builds and test suites,
+/// and the agent read the kill as a failed command, not a short budget.)
+pub const DEFAULT_TIMEOUT_SECS: Option<u64> = None;
+/// Cap for an explicitly requested `timeout` (one hour).
+pub const MAX_TIMEOUT_SECS: u64 = 3600;
 pub const MIN_YIELD_MS: u64 = 100;
 pub const MAX_YIELD_MS: u64 = 10_000;
 /// Ceiling for `action:output`/`action:status` `wait_ms`: one bounded
@@ -17,10 +22,14 @@ pub const MAX_YIELD_MS: u64 = 10_000;
 pub const MAX_ACTION_WAIT_MS: u64 = 30_000;
 pub const VIEW_BUDGET_LINES: usize = 2000;
 pub const VIEW_HEAD_FRACTION: f32 = 0.25; // head 25%, tail 75%
-pub const MEM_HEAD_BYTES: usize = 6 * 1024;
-pub const MEM_TAIL_BYTES: usize = 6 * 1024;
-/// Inline budget for bash results: head + tail, ~12 KiB (~3k tokens).
+pub const MEM_HEAD_BYTES: usize = 24 * 1024;
+pub const MEM_TAIL_BYTES: usize = 24 * 1024;
+/// Inline budget for bash results: head + tail, 48 KiB (~12k tokens).
 /// The full log always persists on disk; `grep` it instead of rerunning.
+/// Raised from 12 KiB after benchmark runs showed the old budget cutting the
+/// middle out of ordinary file reads (~700-line sources): the agent had to
+/// grep for what it had already asked to see. 48 KiB covers a whole mid-size
+/// source file while still bounding a single tool result.
 pub const INLINE_BUDGET_BYTES: usize = MEM_HEAD_BYTES + MEM_TAIL_BYTES;
 /// How long the tool waits for the output pump after the child exits.
 /// A grandchild inheriting the pipes keeps the pump alive forever, so the

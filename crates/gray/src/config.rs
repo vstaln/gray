@@ -31,7 +31,8 @@ fn scrub_url(url: &str) -> String {
 /// Resolved application configuration.
 ///
 /// `Debug` is redacted by hand: the config carries the plaintext API key.
-#[derive(Clone, PartialEq, Eq)]
+// `Eq` is deliberately absent: the sampling passthroughs are `f32`.
+#[derive(Clone, PartialEq)]
 pub struct Config {
     /// Target model identifier (e.g. "anthropic/claude-sonnet-4"). None until set.
     pub model: Option<String>,
@@ -44,6 +45,12 @@ pub struct Config {
     /// Show reasoning text in the transcript. None (default) = shown.
     /// `GRAY_SHOW_REASONING=0/false/no/off` hides. Effort "off" always hides.
     pub show_reasoning: Option<bool>,
+    /// Sampling temperature sent with every chat request (`GRAY_TEMPERATURE`
+    /// or saved config). None = provider default; out-of-range ignored.
+    pub temperature: Option<f32>,
+    /// Nucleus sampling cutoff sent with every chat request (`GRAY_TOP_P` or
+    /// saved config). None = provider default; out-of-range ignored.
+    pub top_p: Option<f32>,
     /// User override for context window in tokens. Highest priority (over auto-fetched).
     pub context_window: Option<usize>,
     /// Reserve tokens before auto-compact fires.
@@ -112,6 +119,17 @@ impl Config {
             })
             .or(saved.show_reasoning);
 
+        // Sampling params pass through to providers that accept them.
+        // Out-of-range values are ignored, never clamped or sent.
+        let temperature = env("GRAY_TEMPERATURE")
+            .and_then(|s| s.trim().parse::<f32>().ok())
+            .filter(|t| (0.0..=2.0).contains(t))
+            .or(saved.temperature);
+        let top_p = env("GRAY_TOP_P")
+            .and_then(|s| s.trim().parse::<f32>().ok())
+            .filter(|p| *p > 0.0 && *p <= 1.0)
+            .or(saved.top_p);
+
         let context_window = cli
             .context_window
             .or_else(|| {
@@ -161,6 +179,8 @@ impl Config {
             api_key,
             thinking_effort,
             show_reasoning,
+            temperature,
+            top_p,
             context_window,
             context_reserve,
             context_keep,

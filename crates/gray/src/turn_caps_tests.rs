@@ -2,6 +2,8 @@ use super::*;
 
 fn cfg() -> Config {
     Config {
+        temperature: None,
+        top_p: None,
         model: None,
         base_url: String::new(),
         api_key: None,

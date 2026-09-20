@@ -12,10 +12,10 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-/// Cache entry: owning cwd, discovery fingerprint, disabled-set snapshot,
-/// served block. The disabled set rides the key because a toggle flips no
-/// file stat — without it a disable would serve the stale block.
-type SkillsCache = Option<(String, u64, BTreeSet<String>, Option<String>)>;
+/// Cache entry: owning cwd, discovery fingerprint, auto-switch snapshot,
+/// disabled-set snapshot, served block. The toggles flip no file stat —
+/// without them a toggle would serve the stale block.
+type SkillsCache = Option<(String, u64, bool, BTreeSet<String>, Option<String>)>;
 
 /// Context-only builtin plugin carrying the per-turn `<available_skills>`
 /// list, so the model finds skills without bash-hunting for `SKILL.md`.
@@ -55,26 +55,29 @@ impl gray_plugin::Plugin for SkillsPlugin {
 
     async fn prompt_context(&self, cwd: &str) -> Option<String> {
         let fingerprint = crate::skills::discovery_fingerprint(Path::new(cwd));
-        // A toggle flips no file stat, so the disabled set rides the cache
-        // key — otherwise a disable would keep serving the stale block.
+        // Toggles flip no file stat, so the auto switch + disabled set ride the
+        // cache key — otherwise a toggle would keep serving the stale block.
+        let auto = crate::setup::skills_auto_enabled();
         let disabled = crate::setup::disabled_skill_names();
         if let Ok(guard) = self.cache.lock()
-            && let Some((cached_cwd, cached_fp, cached_disabled, cached_block)) = guard.as_ref()
+            && let Some((cached_cwd, cached_fp, cached_auto, cached_disabled, cached_block)) =
+                guard.as_ref()
             && *cached_cwd == cwd
             && *cached_fp == fingerprint
+            && *cached_auto == auto
             && *cached_disabled == disabled
         {
             return cached_block.clone();
         }
         let found = crate::skills::discover_skills(Path::new(cwd));
-        let block = crate::skills::format_skills_for_prompt(&found.skills, &disabled);
+        let block = crate::skills::format_skills_for_prompt(&found.skills, auto, &disabled);
         let out = if block.trim().is_empty() {
             None
         } else {
             Some(block)
         };
         if let Ok(mut guard) = self.cache.lock() {
-            *guard = Some((cwd.to_string(), fingerprint, disabled, out.clone()));
+            *guard = Some((cwd.to_string(), fingerprint, auto, disabled, out.clone()));
         }
         out
     }

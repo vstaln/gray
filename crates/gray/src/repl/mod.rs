@@ -37,6 +37,46 @@ pub(crate) fn sigint_should_exit(last_ms: u64, now_ms: u64) -> bool {
 /// Mid-turn presses consume the turn token instead and never touch this.
 static LAST_PROMPT_SIGINT_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
+/// True from the moment a turn starts until its last message is persisted.
+/// The exit path waits on it: a second Ctrl-C can land while an interrupted
+/// turn is still inside its cancel cleanup, and `exit(0)` there would throw
+/// the whole turn away — the session would never see the user message.
+static TURN_IN_FLIGHT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Clears [`TURN_IN_FLIGHT`] on every exit path, panic unwind included.
+pub(crate) struct TurnInFlightGuard;
+
+impl Drop for TurnInFlightGuard {
+    fn drop(&mut self) {
+        TURN_IN_FLIGHT.store(false, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// Arms the in-flight flag for the rest of the scope.
+pub(crate) fn mark_turn_in_flight() -> TurnInFlightGuard {
+    TURN_IN_FLIGHT.store(true, std::sync::atomic::Ordering::Relaxed);
+    TurnInFlightGuard
+}
+
+/// Upper bound on how long the exit path waits for an in-flight turn to
+/// finish persisting before exiting anyway. A turn ends well inside this
+/// (cancel grace + tool report); the cap only exists so a wedged turn can
+/// never make Ctrl-C feel dead.
+const TURN_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// Waits (bounded) for an in-flight turn to finish persisting. Returns false
+/// on timeout — the caller exits regardless, since the user asked to leave.
+async fn drain_in_flight_turn(limit: std::time::Duration) -> bool {
+    let deadline = tokio::time::Instant::now() + limit;
+    while TURN_IN_FLIGHT.load(std::sync::atomic::Ordering::Relaxed) {
+        if tokio::time::Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    true
+}
+
 fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -62,7 +102,10 @@ async fn spawn_ctrl_c_policy() {
             let now = now_ms();
             let last = LAST_PROMPT_SIGINT_MS.load(std::sync::atomic::Ordering::Relaxed);
             if sigint_should_exit(last, now) && last != 0 {
-                // Second press within the window: exit cleanly.
+                // Second press within the window: exit cleanly. An
+                // interrupted turn may still be persisting — let it land
+                // first, or the turn is lost instead of saved.
+                drain_in_flight_turn(TURN_DRAIN_TIMEOUT).await;
                 // Say something — a bare exit(0) mid-turn looks like a crash.
                 let _ = crossterm::terminal::disable_raw_mode();
                 let _ = write!(

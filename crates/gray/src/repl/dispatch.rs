@@ -247,7 +247,7 @@ pub(crate) async fn dispatch_command(
                 crate::setup::run_connect_modal(config, bg.as_ref())
             });
             match result {
-                Ok(true) => {
+                Ok(crate::setup::ConnectOutcome::Connected) => {
                     *unconfigured = false;
                     push_provider_connected(config, tui, Some(&mut *hide_thinking));
                     reload_agent(
@@ -259,7 +259,20 @@ pub(crate) async fn dispatch_command(
                     )
                     .await;
                 }
-                Ok(false) => {
+                // A removal must rebuild the agent too: the old provider
+                // instance still holds the deleted key in memory.
+                Ok(crate::setup::ConnectOutcome::Removed(name)) => {
+                    reload_agent(
+                        &mut *agent,
+                        config,
+                        cwd,
+                        session_state.as_ref().map(|s| s.session_id.as_str()),
+                        tui.as_ref().map(|(s, _)| s),
+                    )
+                    .await;
+                    say(tui.as_ref().map(|(s, _)| s), &format!("removed {name}"));
+                }
+                Ok(crate::setup::ConnectOutcome::Dismissed) => {
                     if let Some((shared, _)) = tui {
                         let mut t = shared.lock().expect("tui lock");
                         t.clear_draft();

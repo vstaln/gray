@@ -58,14 +58,19 @@ pub(crate) fn turn_tokens_per_second(output_tokens: usize, duration_ms: u64) -> 
 
 /// `⬡ 12,400 tokens · 82 tps · 6s · $0.004 ($0.41 session)` — rate/time/cost
 /// parts appear only when known; otherwise the footer stays tokens-only.
+/// The rate divides by `streamed_ms` (streaming time only, from
+/// `TurnStreamClock`), never the whole-turn `duration_ms` the `· 6s` shows:
+/// tool waits and inter-round gaps must not dilute it, and a turn that
+/// streamed nothing (pure tool turn) shows no rate at all.
 pub(crate) fn turn_footer(
     usage: &gray_core::event::Usage,
     model: &str,
     totals: &SessionTotals,
     duration_ms: Option<u64>,
+    streamed_ms: Option<u64>,
 ) -> String {
     let base = format!("\u{2b22} {} tokens", crate::repl::fmt_usage(usage.total()));
-    let rate = duration_ms
+    let rate = streamed_ms
         .and_then(|ms| turn_tokens_per_second(usage.output_tokens, ms))
         .map(|t| format!(" · {t} tps"))
         .unwrap_or_default();
@@ -266,6 +271,7 @@ pub(crate) async fn handle_context_window(
             .unwrap_or(0);
         let skills = crate::setup::estimate_str_tokens(&crate::skills::format_skills_for_prompt(
             &crate::skills::discover_skills(cwd).skills,
+            crate::setup::skills_auto_enabled(),
             &crate::setup::disabled_skill_names(),
         ));
         let tools_toks = serde_json::to_string(&crate::profile::builtin_registry().defs())
@@ -625,8 +631,12 @@ pub(crate) async fn handle_compact(
             // History just shrank (see session.rs threshold path): reseed
             // the gauge to the compacted size instead of the stale StepUsage.
             if let Some(shared) = tui {
+                let mut t = shared.lock().expect("tui lock");
                 let est = crate::compact::estimate_context_tokens(ag.messages(), None);
-                shared.lock().expect("tui lock").seed_estimate_usage(est);
+                t.seed_estimate_usage(est);
+                // Fresh summary = new content, not re-billed content: drop
+                // the pre-compact request as the cache-miss baseline.
+                t.reset_cache();
             }
 
             if let Some(shared) = tui {

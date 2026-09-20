@@ -39,6 +39,8 @@ fn one_due(id: &str, deliver: serde_json::Value) -> serde_json::Value {
 
 fn test_config() -> crate::config::Config {
     crate::config::Config {
+        temperature: None,
+        top_p: None,
         model: Some("startup-model".to_string()),
         base_url: "https://startup.example/v1".to_string(),
         api_key: None,

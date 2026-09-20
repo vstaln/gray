@@ -3,6 +3,29 @@
 ## [Unreleased]
 
 ### Added
+- Prompt-cache warmth timer + cache-miss warning in the composer. The
+  footer carries a `◷ 4m` countdown next to the cache-hit percentage —
+  how long the last request's prompt cache stays warm before an idle gap
+  re-bills the whole prompt (Anthropic's `cache_control` and OpenAI's
+  automatic prefix caching both expire after ~5 idle minutes), fading in
+  the last minute and hidden entirely when the provider never reports
+  cache activity. When a request re-bills tokens the previous one should
+  have served from cache — an idle gap past the TTL, a model switch, or a
+  provider-side eviction — the transcript gets a warning row
+  (`⚠ Cache miss after 6m idle: 100k tokens re-billed (~$0.35)`) once the
+  miss crosses 20k tokens or $0.10 over a full hit, so routine breakpoint
+  noise stays silent. Detection is a port of pi's
+  `packages/coding-agent/src/core/cache-stats.ts` (reference checkout
+  under `reference/pi-mono`) onto gray's per-round `StepUsage` reports;
+  compaction and `/new` reset the baseline, since a fresh summary is new
+  content rather than re-billed content
+- Remove a provider from the connect modal: `shift+enter` on a highlighted
+  provider (the modal footer advertises it only for a row that holds a stored
+  credential) opens a confirmation naming the provider and its endpoint, and
+  `enter` deletes the credential — `auth.json` entry plus the active
+  provider's second copy in `config.json`, so a removal cannot resurrect on
+  the next start. `/provider` reloads the agent and reports the removal
+  instead of announcing a connection
 - Gateway daemon (`gray gateway ...`): the always-on host that fires cron with
   no REPL open. `run` is the foreground daemon (60s cron ticker with the same
   `HeadlessRunner`/`SaveLocalDeliver` as `tick`/`serve`, plus a control socket
@@ -28,12 +51,28 @@
   printing a `next=` that will never arrive.
 
 ### Fixed
+- tps is now measured over streaming time only. Every rate (working pill,
+  end-of-turn `Thought for … · N tps`, headless footer) divided by the
+  whole-turn duration, so a turn that spent 40s in tool calls and 4s
+  generating reported ~13 tps instead of ~125 — tool waits and inter-round
+  gaps now never enter the denominator (`TurnStreamClock`). The `· 40s`
+  duration next to it stays whole-turn on purpose
+- Interrupted turns now save a complete transcript. The REPL gave a cancelled
+  run 5s to clean up and then dropped it; a stall nothing can interrupt (a
+  plugin `tool/before`/`pre_tool` hook, an in-flight compaction, a tool that
+  ignores cancellation) skipped the loop's own cancel cleanup entirely, so the
+  session stored an assistant `tool_use` with no `tool_result` — strict
+  providers then 400 on resume and the session is bricked for good — and the
+  partial text the user had already watched stream by was lost. The turn is now
+  repaired on the way out (`Agent::repair_dropped_cancel`): unanswered calls
+  get a synthetic `cancelled by user` result and the streamed text is
+  salvaged, exactly once
 - `plugin list` / `/plugin list` now show `install plugin` commands (e.g. discord): the list merges `commands.json` CLI entries with `lock.json` sidecars (CLI rows tagged `[command]`), and `enable`/`disable`/`remove` route to whichever registry owns the name (was `not installed`); `update <command>` warns and no-ops like other non-index sources. `gray plugins` (CLI) is pinned as the `gray plugin` alias by test
 - Cancelling a turn no longer discards the in-flight tool's own report: both
   cancel paths (single dispatch, parallel join) abandoned the future on the
   same token the tool watches, so partial output and the process-group kill
   never ran and the turn answered with a bare synthetic `cancelled by user`.
-  A cancelled tool now gets a bounded 3s window (inside the turn's own 5s
+  A cancelled tool now gets a bounded 3s window (inside the turn's own
   cooperative window) to report, then the turn ends with that output in
   history.
 - Cron silence: `next=` rows look identical whether or not a driver (`serve`, a
