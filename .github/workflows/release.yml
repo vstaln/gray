@@ -203,8 +203,12 @@ jobs:
           Compress-Archive -Path pkg/* -DestinationPath $zip
           # Lowercase and two spaces: the Linux finalize leg runs `sha256sum -c`
           # over the concatenated file, which rejects uppercase hex.
+          # LF only: Set-Content writes CRLF, and the trailing \r ends up glued
+          # to the filename -- `sha256sum: 'gray-beta-x86_64-windows.zip\r': No
+          # such file or directory`. WriteAllText with an explicit \n matches
+          # what the Linux legs' `sha256sum >` produces.
           $hash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLowerInvariant()
-          "$hash  $zip" | Set-Content "SHA256SUMS-$plat" -Encoding ascii
+          [IO.File]::WriteAllText("SHA256SUMS-$plat", "$hash  $zip`n", [Text.Encoding]::ASCII)
           "TAR=$zip" >> $env:GITHUB_ENV
           Get-Content "SHA256SUMS-$plat"
 
