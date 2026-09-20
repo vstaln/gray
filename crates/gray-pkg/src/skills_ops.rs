@@ -440,13 +440,20 @@ fn parse_skill_frontmatter(text: &str) -> (String, String) {
     (name, desc)
 }
 
-/// Recursive bundle copy (symlinks followed, like `cp -r`).
+/// Recursive bundle copy (symlinks refused for safety).
 fn copy_dir_all(src: &Path, dst: &Path) -> anyhow::Result<()> {
     std::fs::create_dir_all(dst)?;
     for entry in std::fs::read_dir(src)? {
         let entry = entry?;
+        let ft = entry.file_type()?;
+        if ft.is_symlink() {
+            anyhow::bail!(
+                "refusing unsafe symlink in bundle: {}",
+                entry.file_name().to_string_lossy()
+            );
+        }
         let target = dst.join(entry.file_name());
-        if entry.file_type()?.is_dir() {
+        if ft.is_dir() {
             copy_dir_all(&entry.path(), &target)?;
         } else {
             // `target` is `dst` + one file name: confined by construction
