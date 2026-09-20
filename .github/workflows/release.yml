@@ -159,8 +159,77 @@ jobs:
             && rm -f /tmp/$TAR /tmp/SHA256SUMS-${{ matrix.plat }}"
 
 
+  # Windows ships a .zip (PowerShell packaging + Get-FileHash), so it cannot
+  # join the tar/sha256sum matrix above. Same channel, same staging prefix,
+  # same manifest-last promotion -- finalize and publish treat it as one more
+  # platform in the set.
+  windows-release:
+    needs: meta
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: x86_64-pc-windows-msvc
+
+      - name: build
+        env:
+          GRAY_CHANNEL: ${{ needs.meta.outputs.channel }}
+          GRAY_BUILD_ID: ${{ github.sha }}
+        shell: bash
+        run: cargo build --release -p gray --target x86_64-pc-windows-msvc
+
+      - name: smoke test
+        shell: bash
+        run: ./target/x86_64-pc-windows-msvc/release/gray.exe --version
+
+      - name: package zip + checksum
+        shell: pwsh
+        run: |
+          $plat = 'x86_64-windows'
+          $zip = "gray-${{ needs.meta.outputs.channel }}-$plat.zip"
+          $stage = New-Item -ItemType Directory -Path pkg -Force
+          Copy-Item target/x86_64-pc-windows-msvc/release/gray.exe, LICENSE, THIRD_PARTY_NOTICES.md $stage.FullName
+          if (Test-Path $zip) { Remove-Item $zip }
+          # install-native.ps1 rejects any entry that is not one of these three
+          # names at the archive root, so the staging dir must not be the source.
+          Compress-Archive -Path $stage.FullName/* -DestinationPath $zip
+          # Lowercase and two spaces: the Linux finalize leg runs `sha256sum -c`
+          # over the concatenated file, which rejects uppercase hex.
+          $hash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  $zip" | Set-Content "SHA256SUMS-$plat" -Encoding ascii
+          "TAR=$zip" >> $env:GITHUB_ENV
+          Get-Content "SHA256SUMS-$plat"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-x86_64-windows
+          path: |
+            gray-*.zip
+            SHA256SUMS-*
+
+      - uses: ./.github/actions/deploy-key
+        with:
+          key: ${{ secrets.DEPLOY_KEY }}
+
+      - name: stage zip on gray.alignment.id (manifest swaps last, in finalize)
+        shell: bash
+        run: |
+          CHANNEL="${{ needs.meta.outputs.channel }}"
+          SSH="ssh -i ~/.config/gray-deploy/key -o StrictHostKeyChecking=yes -o BatchMode=yes opc@168.110.210.65"
+          scp -i ~/.config/gray-deploy/key -o StrictHostKeyChecking=yes -o BatchMode=yes "$TAR" "SHA256SUMS-x86_64-windows" opc@168.110.210.65:/tmp/
+          $SSH "sudo mkdir -p /var/www/gray/dl/.staging/$CHANNEL/${{ github.run_id }} \
+            && sudo install -m 644 /tmp/$TAR /var/www/gray/dl/.staging/$CHANNEL/${{ github.run_id }}/$TAR \
+            && sudo install -m 644 /tmp/SHA256SUMS-x86_64-windows /var/www/gray/dl/.staging/$CHANNEL/${{ github.run_id }}/SHA256SUMS-x86_64-windows \
+            && rm -f /tmp/$TAR /tmp/SHA256SUMS-x86_64-windows"
+
+
   finalize:
-    needs: [meta, build-deploy]
+    needs: [meta, build-deploy, windows-release]
     # No tag gate: beta (every main push) needs the manifest swap too.
     runs-on: ubuntu-latest
     steps:
@@ -175,13 +244,13 @@ jobs:
           VER=$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)"/\1/')
           SSH="ssh -i ~/.config/gray-deploy/key -o StrictHostKeyChecking=yes -o BatchMode=yes opc@168.110.210.65"
           $SSH "cd /var/www/gray/dl/.staging/$CHANNEL/${{ github.run_id }} && cat SHA256SUMS-* > /tmp/SHA256SUMS-$CHANNEL && sha256sum -c /tmp/SHA256SUMS-$CHANNEL && sudo install -m 644 /tmp/SHA256SUMS-$CHANNEL /var/www/gray/dl/SHA256SUMS-$CHANNEL"
-          $SSH "sudo cp /var/www/gray/dl/.staging/$CHANNEL/${{ github.run_id }}/gray-$CHANNEL-*.tar.gz /var/www/gray/dl/"
+          $SSH "sudo cp /var/www/gray/dl/.staging/$CHANNEL/${{ github.run_id }}/gray-$CHANNEL-*.tar.gz /var/www/gray/dl/ && sudo cp /var/www/gray/dl/.staging/$CHANNEL/${{ github.run_id }}/gray-$CHANNEL-*.zip /var/www/gray/dl/"
           scp -i ~/.config/gray-deploy/key -o StrictHostKeyChecking=yes -o BatchMode=yes dist/install.sh dist/install.ps1 opc@168.110.210.65:/tmp/
           $SSH "sudo install -m 644 /tmp/install.sh /var/www/gray/install.sh && sudo install -m 644 /tmp/install.ps1 /var/www/gray/install.ps1"
           echo "${{ github.sha }}" | $SSH "sudo tee /var/www/gray/dl/latest-$CHANNEL-build.txt > /dev/null"
           echo "$VER" | $SSH "sudo tee /var/www/gray/dl/latest-$CHANNEL.txt > /dev/null"
           echo "✓ latest-$CHANNEL.txt = $VER"
-          for f in gray-$CHANNEL-x86_64-linux.tar.gz gray-$CHANNEL-aarch64-linux.tar.gz gray-$CHANNEL-aarch64-darwin.tar.gz gray-$CHANNEL-x86_64-darwin.tar.gz latest-$CHANNEL.txt SHA256SUMS-$CHANNEL latest-$CHANNEL-build.txt; do
+          for f in gray-$CHANNEL-x86_64-linux.tar.gz gray-$CHANNEL-aarch64-linux.tar.gz gray-$CHANNEL-aarch64-darwin.tar.gz gray-$CHANNEL-x86_64-darwin.tar.gz gray-$CHANNEL-x86_64-windows.zip latest-$CHANNEL.txt SHA256SUMS-$CHANNEL latest-$CHANNEL-build.txt; do
             if ! code=$(curl -sI -o /dev/null -w "%{http_code}" --retry 3 --retry-all-errors --max-time 30 "https://gray.alignment.id/dl/$f"); then
               echo "deploy published but verification failed: $f (curl transport error)"; exit 1
             fi
@@ -190,7 +259,7 @@ jobs:
           echo "✓ live: https://gray.alignment.id/dl/latest-$CHANNEL.txt"
 
   publish:
-    needs: [build-deploy, finalize]
+    needs: [build-deploy, windows-release, finalize]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
@@ -218,7 +287,7 @@ jobs:
         shell: bash
         run: |
           PRERELEASE=""; case "$GITHUB_REF_NAME" in *-*) PRERELEASE="--prerelease" ;; esac
-          gh release create "$GITHUB_REF_NAME" dist-all/gray-*.tar.gz dist-all/SHA256SUMS \
+          gh release create "$GITHUB_REF_NAME" dist-all/gray-*.tar.gz dist-all/gray-*.zip dist-all/SHA256SUMS \
             $PRERELEASE --title "$GITHUB_REF_NAME" --notes-file dist-all/NOTES.md
       - name: sync sums + installers to CDN
         shell: bash

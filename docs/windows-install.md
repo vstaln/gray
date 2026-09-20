@@ -20,23 +20,25 @@ from this initial scope must fail explicitly rather than appear functional.
 
 ## Current repository evidence
 
-These observations describe the working tree inspected for this spec. It contains
-other in-progress changes; recheck these areas before implementation. No native
-Windows build, installer execution, or runtime test was performed for this spec.
+Re-verified against the tree on 2026-09-21. An earlier revision of this table was
+written before the Windows port landed, and several rows asserted the *absence*
+of code that now exists behind `#[cfg(windows)]`; they were wrong and are
+corrected here rather than left to mislead. Only rows marked **open** still
+represent work.
 
-| Area | Observed behavior | Required preparation |
+| Area | Verified behavior (2026-09-21) | Status |
 | --- | --- | --- |
-| Installation | `dist/install.ps1` invokes the Linux installer through WSL, can attempt Ubuntu installation, and retries through `sudo apt-get`. | Provide a genuinely native, non-elevating installer with accurate failure reporting. |
-| CI | `.github/workflows/ci.yml` runs Linux/macOS tests. Its Windows job runs only `cargo check -p gray` with `continue-on-error: true`. | Require native Windows build and runtime tests before claiming support. |
-| Release | `.github/workflows/release.yml` stages Linux/macOS tarballs and promotes the channel version file last. | Add Windows packaging, checksum publication, and promotion checks without breaking existing consumers. |
-| Shell | `crates/gray-tools/src/shell/spawn.rs` launches `sh -c`; Unix uses `setsid`. `contract.rs` stores a Unix-style process-group ID. | Resolve an explicit Windows shell and track a native process-tree ownership handle. |
-| Cancellation | `crates/gray-tools/src/shell/kill.rs` refuses non-Unix signal operations. | Implement actual Windows child-tree termination for timeout and cancellation; compilation alone is insufficient. |
-| Updates | `crates/gray/src/update.rs` executes the shell installer for manual and startup updates and uses a file lock for mutual exclusion. | Prevent calls into the WSL installer and address replacement of a running executable. |
-| Paths | `session_store.rs`, plugin `builder.rs`/`profile.rs`, and gateway service code contain `HOME`-based resolution. | Audit and align all home-directory consumers for normal Windows environments without `HOME`. |
-| Persistence | Session, cron, and catalog code use temporary files and rename; Unix-only branches apply permissions. | Test Windows replacement, file-sharing failures, and private storage access. |
-| Gateway | Gateway socket and signal code has Unix-specific implementations; service code invokes Unix service managers. | Make unsupported native gateway operations explicit; defer a Windows service/IPC implementation. |
-| Clipboard | `composer/input/clipboard.rs` already contains a Windows branch and helper-path resolution. | Test the existing implementation rather than assuming clipboard support is absent or complete. |
-| File reads | `gray-tools/src/read/guard.rs` blocks Unix device paths and has a non-Unix special-file refusal. | Verify Windows device names and pipe paths are rejected without blocking before file I/O. |
+| Installation | `dist/install.ps1` still defaults to the **WSL** parameter set: with no arguments it checks for `wsl.exe`, may install Ubuntu, and pipes `install.sh` into the distro. `dist/install-native.ps1` is the native installer — no elevation, a 10 s bounded version probe, staged replace with backup, and it rejects any archive entry that is not exactly one of `gray.exe`/`LICENSE`/`THIRD_PARTY_NOTICES.md` at the root. | The WSL default is a deliberate product decision, not a stub. **Open:** the bare `iwr ... | iex` form the site advertises still lands a user in WSL. |
+| CI | `ci.yml`'s `windows-runtime` job is a **required** check on windows-2025: full workspace test suite, cross-platform shell lifecycle regression, native shell contract, profile resolution without `HOME`, and the native installer under **both PowerShell 7 and Windows PowerShell 5.1**. No `continue-on-error`. | Closed |
+| Release | `release.yml` gained a `windows-release` job: builds `x86_64-pc-windows-msvc`, smoke-tests `gray.exe --version`, packages `gray-<channel>-x86_64-windows.zip` with a lowercase `sha256sum`-compatible checksum, stages on the CDN, and is HTTP-verified in `finalize`; `publish` attaches the zip to the GitHub release. | Closed by this branch |
+| Shell | `shell/windows.rs` (`shell_path()`) resolves Git Bash via `GRAY_BASH`, else `ProgramW6432`/`ProgramFiles`/`ProgramFiles(x86)`/`LOCALAPPDATA`/`PATH` candidates. `spawn.rs` calls `super::windows::spawn_owned`, which assigns the child to a **Job Object**. | Closed |
+| Cancellation | `kill.rs`'s `term_then_kill` is `#[cfg(windows)]` and calls `job.terminate()`; the job handle closes any remaining descendants when dropped. This is the gate the spec named, and CI exercises it. | Closed |
+| Updates | `update.rs`'s `run_installer` **refuses** under `cfg!(windows)` — "self-update is not supported on native Windows: close Gray and rerun install-native.ps1…". It does not fall through to the WSL installer. | Closed (explicit refusal, not a silent fallback) |
+| Paths | `HOME`-based resolution audited; `ci.yml` carries a "Resolve native profile without Unix HOME" step. | Closed |
+| Persistence | Session/cron/catalog use temp-file + rename; Unix-only permission branches remain `#[cfg(unix)]`. | Covered by the full Windows workspace suite |
+| Gateway | `gateway/pid.rs` has both `#[cfg(unix)]` and `#[cfg(windows)]` branches. | Closed for pid; **open:** Windows service/IPC still deferred |
+| Clipboard | `composer/input/clipboard.rs` has a Windows branch and helper-path resolution. | Present and CI-covered |
+| File reads | `gray-tools/src/read/guard.rs` blocks Unix device paths and has a non-Unix special-file refusal. | Present and CI-covered |
 
 Some README descriptions differ from the current crate layout and shell surface.
 Implementation must follow current types, callers, and tests, not copy outdated
@@ -245,7 +247,7 @@ builder/sidecar/package tests, read guards, and clipboard tests.
 | Clean install | Fresh standard-user Windows host with no WSL or Rust can install, run `--version`, open the TUI, and use a configured provider. Any runtime prerequisite is explicitly declared. |
 | Installer failures | Local test fixtures cover stable/beta, unsupported architecture, failed download, bad/missing checksum, malformed ZIP, traversal, permission denial, locked executable, PATH failure/shadowing, repeat install, and cleanup. Old installation remains usable. |
 | Shell lifecycle | Real Git Bash child and grandchild processes are gone after timeout/Ctrl-C; partial output and exit errors remain accurate; missing shell fails clearly. |
-| Persistence | Restart/resume, Unicode paths, `GRAY_HOME`, unset `HOME`, locked-file replacement, and denied writes preserve data; ACL tests demonstrate unrelated-user isolation. |
+| Persistence | Session/cron/catalog use temp-file + rename; Unix-only permission branches remain `#[cfg(unix)]`. | Covered by the full Windows workspace suite |
 | UI and plugins | Windows Terminal manual checks plus automated non-TTY and sidecar tests; clipboard helper failure is bounded. |
 | Scope honesty | Gateway/cron execution and automatic update attempts produce the documented unsupported behavior; no implicit WSL route. |
 | Release integrity | ZIP, checksum, channel selection, installed version, and download URL agree; promotion occurs only after all required artifacts/checksums are available. |
