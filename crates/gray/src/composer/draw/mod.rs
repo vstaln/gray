@@ -5,7 +5,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph};
 
-use super::{MIN_VIEWPORT_H, PANEL_ROWS, Tui, VIEWPORT_H};
+use super::{MIN_VIEWPORT_H, PANEL_ROWS, Tui};
 use crate::text_width::display_width;
 
 mod widgets;

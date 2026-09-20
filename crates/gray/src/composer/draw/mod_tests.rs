@@ -22,20 +22,20 @@ fn transcript_ends_blank_matches_ensure_gap() {
 #[test]
 fn desired_viewport_exact_fit() {
     // Idle: input 3 + footer 1 = 4 rows (MIN_VIEWPORT_H).
-    assert_eq!(desired_viewport_h(0, 0, 0, 3, 0, 0, VIEWPORT_H), 4);
+    assert_eq!(desired_viewport_h(0, 0, 0, 3, 0, 0, viewport_cap(40)), 4);
     // Slash popup: input 3 + panel 6 + footer 1 = 10.
-    assert_eq!(desired_viewport_h(0, 0, 0, 3, 6, 0, VIEWPORT_H), 10);
+    assert_eq!(desired_viewport_h(0, 0, 0, 3, 6, 0, viewport_cap(40)), 10);
     // Running: status 2 + input 3 + footer 1 = 6.
-    assert_eq!(desired_viewport_h(2, 0, 0, 3, 0, 0, VIEWPORT_H), 6);
+    assert_eq!(desired_viewport_h(2, 0, 0, 3, 0, 0, viewport_cap(40)), 6);
     // Running + full panel: 3 + 3 + 6 + 1 = 13.
-    assert_eq!(desired_viewport_h(3, 0, 0, 3, 6, 0, VIEWPORT_H), 13);
+    assert_eq!(desired_viewport_h(3, 0, 0, 3, 6, 0, viewport_cap(40)), 13);
     // Question panel: expands up to available screen height to show all options.
     assert_eq!(desired_viewport_h(0, 0, 0, 0, 15, 0, 23), 16);
 }
 
 /// A multi-line input must not be clipped by the viewport cap.
 ///
-/// The cap used to be `VIEWPORT_H + widget_h`, so the whole inline viewport --
+/// The cap used to be `viewport_cap(40) + widget_h`, so the whole inline viewport --
 /// and therefore the input box -- was pinned near 14 rows. A pasted paragraph
 /// that wrapped to 12 content rows plus the two margin rows hit exactly 14 and
 /// lost its last row; anything longer was cut hard. The cap is the screen now.
@@ -86,7 +86,7 @@ fn streaming_tail_flicker_holds_viewport_still() {
             3,
             0,
             0,
-            VIEWPORT_H,
+            viewport_cap(40),
         ));
     }
     // One growth step when content first flows, then steady — never an
@@ -145,17 +145,17 @@ fn queued_preview_renders_header_and_entries() {
 fn live_tool_viewport_height_counts_live_rows() {
     // Live cards sit between queued preview and input: 1 live row grows
     // the exact-fit viewport by exactly 1 (status 2 + live 1 + input 3).
-    let without = desired_viewport_h(2, 0, 0, 3, 0, 0, VIEWPORT_H);
-    let with = desired_viewport_h(2, 0, 1, 3, 0, 0, VIEWPORT_H);
+    let without = desired_viewport_h(2, 0, 0, 3, 0, 0, viewport_cap(40));
+    let with = desired_viewport_h(2, 0, 1, 3, 0, 0, viewport_cap(40));
     assert_eq!(with, without + 1, "live rows must reserve viewport space");
     // Cap: 3 cards + `… +N more` overflow row, never unbounded.
-    let capped = desired_viewport_h(2, 0, 4, 3, 0, 0, VIEWPORT_H);
+    let capped = desired_viewport_h(2, 0, 4, 3, 0, 0, viewport_cap(40));
     assert_eq!(capped, without + 4, "3 live + overflow row: {capped}");
-    // Clamp holds at the top: live cards can never push past VIEWPORT_H.
-    assert_eq!(
-        desired_viewport_h(3, 4, 40, 3, 6, 1, VIEWPORT_H),
-        VIEWPORT_H
-    );
+    // Clamp holds at the top: the screen cap. `live_h = 40` is hypothetical --
+    // MAX_LIVE_TOOLS bounds it to 3 cards + 1 overflow row -- and exists only
+    // to prove the clamp still bites.
+    let cap = viewport_cap(40);
+    assert_eq!(desired_viewport_h(3, 4, 40, 3, 6, 1, cap), cap);
 }
 
 #[test]
