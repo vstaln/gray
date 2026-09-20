@@ -442,118 +442,40 @@ pub(crate) fn run_install_manager(
                         );
                     }
                 }
-                let footer_line = match tab {
-                    Tab::Installed if spec.supports_toggle => Line::from(vec![
+                fn kv<'a>(k: &'a str, v: &'a str, box_bg: Color, text_dim: Color) -> [Span<'a>; 2] {
+                    [
                         Span::styled(
-                            "↑↓ ",
+                            k,
                             Style::default()
                                 .fg(Color::White)
                                 .add_modifier(Modifier::BOLD)
                                 .bg(box_bg),
                         ),
-                        Span::styled("nav · ", Style::default().fg(text_dim).bg(box_bg)),
-                        Span::styled(
-                            "Enter ",
-                            Style::default()
-                                .fg(Color::White)
-                                .add_modifier(Modifier::BOLD)
-                                .bg(box_bg),
-                        ),
-                        Span::styled("toggle · ", Style::default().fg(text_dim).bg(box_bg)),
-                        Span::styled(
-                            "u ",
-                            Style::default()
-                                .fg(Color::White)
-                                .add_modifier(Modifier::BOLD)
-                                .bg(box_bg),
-                        ),
-                        Span::styled("remove · ", Style::default().fg(text_dim).bg(box_bg)),
-                        Span::styled(
-                            "Tab ",
-                            Style::default()
-                                .fg(Color::White)
-                                .add_modifier(Modifier::BOLD)
-                                .bg(box_bg),
-                        ),
-                        Span::styled("· ", Style::default().fg(text_dim).bg(box_bg)),
-                        Span::styled(
-                            "Esc ",
-                            Style::default()
-                                .fg(Color::White)
-                                .add_modifier(Modifier::BOLD)
-                                .bg(box_bg),
-                        ),
-                        Span::styled("close", Style::default().fg(text_dim).bg(box_bg)),
-                    ]),
-                    Tab::Installed => Line::from(vec![
-                        Span::styled(
-                            "↑↓ ",
-                            Style::default()
-                                .fg(Color::White)
-                                .add_modifier(Modifier::BOLD)
-                                .bg(box_bg),
-                        ),
-                        Span::styled("nav · ", Style::default().fg(text_dim).bg(box_bg)),
-                        Span::styled(
-                            "u ",
-                            Style::default()
-                                .fg(Color::White)
-                                .add_modifier(Modifier::BOLD)
-                                .bg(box_bg),
-                        ),
-                        Span::styled("remove · ", Style::default().fg(text_dim).bg(box_bg)),
-                        Span::styled(
-                            "Tab ",
-                            Style::default()
-                                .fg(Color::White)
-                                .add_modifier(Modifier::BOLD)
-                                .bg(box_bg),
-                        ),
-                        Span::styled("· ", Style::default().fg(text_dim).bg(box_bg)),
-                        Span::styled(
-                            "Esc ",
-                            Style::default()
-                                .fg(Color::White)
-                                .add_modifier(Modifier::BOLD)
-                                .bg(box_bg),
-                        ),
-                        Span::styled("close", Style::default().fg(text_dim).bg(box_bg)),
-                    ]),
-                    Tab::Errors => Line::from(vec![
-                        Span::styled(
-                            "↑↓ ",
-                            Style::default()
-                                .fg(Color::White)
-                                .add_modifier(Modifier::BOLD)
-                                .bg(box_bg),
-                        ),
-                        Span::styled("nav · ", Style::default().fg(text_dim).bg(box_bg)),
-                        Span::styled(
-                            "c ",
-                            Style::default()
-                                .fg(Color::White)
-                                .add_modifier(Modifier::BOLD)
-                                .bg(box_bg),
-                        ),
-                        Span::styled("clear · ", Style::default().fg(text_dim).bg(box_bg)),
-                        Span::styled(
-                            "Tab ",
-                            Style::default()
-                                .fg(Color::White)
-                                .add_modifier(Modifier::BOLD)
-                                .bg(box_bg),
-                        ),
-                        Span::styled("· ", Style::default().fg(text_dim).bg(box_bg)),
-                        Span::styled(
-                            "Esc ",
-                            Style::default()
-                                .fg(Color::White)
-                                .add_modifier(Modifier::BOLD)
-                                .bg(box_bg),
-                        ),
-                        Span::styled("close", Style::default().fg(text_dim).bg(box_bg)),
-                    ]),
+                        Span::styled(v, Style::default().fg(text_dim).bg(box_bg)),
+                    ]
+                }
+                // Tab-specific (key, description) pairs, then the shared tail.
+                let middle: &[(&str, &str)] = match tab {
+                    Tab::Installed if spec.supports_toggle => {
+                        &[("Enter ", "toggle · "), ("u ", "remove · ")]
+                    }
+                    Tab::Installed => &[("u ", "remove · ")],
+                    Tab::Errors => &[("c ", "clear · ")],
                 };
+                let mut footer_spans = vec![Span::styled(
+                    "↑↓ ",
+                    Style::default()
+                        .fg(Color::White)
+                        .add_modifier(Modifier::BOLD)
+                        .bg(box_bg),
+                )];
+                footer_spans.extend(kv("nav · ", "", box_bg, text_dim));
+                for (k, v) in middle {
+                    footer_spans.extend(kv(k, v, box_bg, text_dim));
+                }
+                footer_spans.extend(kv("Tab ", "· ", box_bg, text_dim));
+                footer_spans.extend(kv("Esc ", "close", box_bg, text_dim));
+                let footer_line = Line::from(footer_spans);
                 frame.render_widget(
                     Paragraph::new(footer_line),
                     Rect::new(inner.x, footer_y, inner.width, 1),
