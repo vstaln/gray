@@ -2,10 +2,23 @@
 
 use super::*;
 
+/// How long a cancelled run gets to observe the token and run its own
+/// cleanup before the drop preempts it. The loop's own grace is
+/// [`gray_core::parallel::CANCEL_REPORT_GRACE`] (3s, waiting out a tool's
+/// report); the extra second covers its synthetic backfill and `turn_end`.
+/// Past this the transcript is repaired here instead — see below.
+const TURN_CANCEL_GRACE: std::time::Duration = std::time::Duration::from_secs(4);
+
 /// One streaming attempt with cooperative cancel: on Ctrl-C, `ctx` shares
 /// the token so the run is already signalled — give it a bounded window to
 /// observe cancel and execute its own cleanup/transcript-repair paths
 /// (partial-text salvage, turn_end) before the drop preempts it.
+///
+/// A run can still outlast the window: nothing interrupts a plugin
+/// `tool_before`/`pre_tool` hook, an in-flight compaction, or a tool that
+/// ignores cancellation. Dropping it then skips that cleanup entirely, so
+/// the transcript is repaired on the way out — an interrupted turn must
+/// persist as a complete, answerable transcript, never half of one.
 async fn run_streaming_cancellable(
     agent: &mut Agent,
     msg: Message,
@@ -13,16 +26,32 @@ async fn run_streaming_cancellable(
     cancel: &tokio_util::sync::CancellationToken,
     on_event: &mut dyn FnMut(&AgentEvent),
 ) -> Result<Vec<AgentEvent>, CoreError> {
-    let mut run_future = Box::pin(agent.run_streaming(msg, ctx, on_event));
+    // The loop keeps its salvage buffer in locals a drop destroys; this copy
+    // is what the repair below hands back to the transcript.
+    let mut seen_thinking = String::new();
+    let mut seen_text = String::new();
+    let mut sink = |ev: &AgentEvent| {
+        match ev {
+            AgentEvent::ThinkingDelta { delta } => seen_thinking.push_str(delta),
+            AgentEvent::TextDelta { delta } => seen_text.push_str(delta),
+            _ => {}
+        }
+        on_event(ev);
+    };
+    let mut run_future = Box::pin(agent.run_streaming(msg, ctx, &mut sink));
     tokio::select! {
         res = &mut run_future => res,
         _ = cancel.cancelled() => {
             cancel.cancel();
-            let _ = tokio::time::timeout(std::time::Duration::from_secs(5), &mut run_future).await;
-            // Fallback: a run that ignored cancel is still pending; the drop
-            // preempts it. The entry guards blank input and owns no
-            // cross-turn state, so no external abort is needed.
+            let observed = tokio::time::timeout(TURN_CANCEL_GRACE, &mut run_future).await;
+            // A run that ignored cancel is still pending; the drop preempts
+            // it. The entry guards blank input and owns no cross-turn state,
+            // so no external abort is needed.
+            let preempted = observed.is_err();
             drop(run_future);
+            if preempted {
+                agent.repair_dropped_cancel(&seen_thinking, &seen_text);
+            }
             Err(CoreError::Cancelled)
         }
     }
@@ -59,11 +88,14 @@ pub(crate) async fn run_prompt_turn(
                 crate::setup::run_connect_modal(config, bg.as_ref())
             });
             match result {
-                Ok(true) => {
+                Ok(crate::setup::ConnectOutcome::Connected) => {
                     *unconfigured = false;
                     push_provider_connected(config, tui, None);
                 }
-                Ok(false) => {
+                // Nothing to build yet after a removal: the next prompt
+                // re-opens the picker with the provider gone.
+                Ok(crate::setup::ConnectOutcome::Removed(_))
+                | Ok(crate::setup::ConnectOutcome::Dismissed) => {
                     if let Some((shared, _)) = tui {
                         let mut t = shared.lock().expect("tui lock");
                         // Dismissed picker: gap so the card doesn't jam the input box.
@@ -137,6 +169,10 @@ pub(crate) async fn run_prompt_turn(
     let agent = agent.as_mut().expect("agent built above");
     let cancel = tokio_util::sync::CancellationToken::new();
     *TURN_STATE.lock().unwrap_or_else(|e| e.into_inner()) = Some(cancel.clone());
+    // From here to the last persist the turn owns the transcript: the
+    // double-press exit waits on this flag instead of killing the process
+    // mid-cleanup.
+    let _turn_in_flight = super::mark_turn_in_flight();
     let ctx = ToolContext {
         cwd: cwd.to_path_buf(),
         cancel: cancel.clone(),
@@ -195,6 +231,9 @@ pub(crate) async fn run_prompt_turn(
     let mut turn_usage: Option<gray_core::event::Usage> = None;
     let turn_start = std::time::Instant::now();
     let mut turn_duration_ms: Option<u64> = None;
+    // Streaming-only clock: every tps readout divides by this, never by the
+    // whole-turn duration (tool waits included).
+    let mut stream_clock = super::session::TurnStreamClock::default();
     let history_revision = agent.history_revision();
     let mut run_result = {
         let mut on_event = |ev: &AgentEvent| {
@@ -209,6 +248,7 @@ pub(crate) async fn run_prompt_turn(
                 &mut *session_totals,
                 turn_start,
                 &mut turn_duration_ms,
+                &mut stream_clock,
             );
         };
         run_streaming_cancellable(agent, user_msg, ctx, &cancel, &mut on_event).await
@@ -249,6 +289,7 @@ pub(crate) async fn run_prompt_turn(
                 &mut *session_totals,
                 turn_start,
                 &mut turn_duration_ms,
+                &mut stream_clock,
             );
         };
         run_result = run_streaming_cancellable(
@@ -340,7 +381,9 @@ pub(crate) async fn run_prompt_turn(
         }
     }
     if let Some(s) = &tui_stream {
-        s.lock().expect("tui lock").end_turn();
+        s.lock()
+            .expect("tui lock")
+            .end_turn(stream_clock.streamed_ms().unwrap_or(0));
     }
     // if we queued input while working, start it immediately
     if interactive && let Some((shared, _)) = tui {

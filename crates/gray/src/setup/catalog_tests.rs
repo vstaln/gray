@@ -222,7 +222,67 @@ fn disabled_skills_default_empty_and_roundtrip() {
 }
 
 #[test]
+fn skills_auto_defaults_on_and_roundtrips_explicit_off() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.json");
+    assert!(skills_auto_enabled_at(&path));
+    assert!(load_saved_config_at(&path).skills_auto.is_none());
+    let mut saved = load_saved_config_at(&path);
+    saved.skills_auto = Some(false);
+    save_saved_config_at(&path, &saved).unwrap();
+    assert!(!skills_auto_enabled_at(&path));
+    // Old files without the key load as enabled.
+    std::fs::write(&path, r#"{"model":"m"}"#).unwrap();
+    assert!(skills_auto_enabled_at(&path));
+}
+
+#[test]
 fn failed_save_reports_error() {
     let dir = tempfile::tempdir().unwrap();
     assert!(save_saved_config_at(dir.path(), &SavedConfig::default()).is_err());
+}
+
+#[test]
+fn removing_entry_keeps_every_other_credential() {
+    // A removed provider must not take its neighbours down with it: keys and
+    // OAuth objects share auth.json, so the delete is one map entry.
+    let dir = tempfile::tempdir().expect("tmp");
+    let path = dir.path().join("auth.json");
+    let oauth = StoredAuth {
+        provider: "xai".to_string(),
+        access_token: "tok".to_string(),
+        refresh_token: String::new(),
+        expires_at: 9_999_999_999,
+        email: None,
+    };
+    let mut store = load_mixed_store(&path);
+    store.insert(oauth.provider.clone(), AuthEntry::OAuth(oauth));
+    store.insert(
+        "openrouter".to_string(),
+        AuthEntry::Key("sk-or-1".to_string()),
+    );
+    store.insert(
+        "commandcode".to_string(),
+        AuthEntry::Key("sk-cc-1".to_string()),
+    );
+    save_mixed_store(&path, &store).expect("seed");
+
+    remove_auth_entry_at(&path, "openrouter").expect("remove");
+
+    let reloaded = load_mixed_store(&path);
+    assert!(!reloaded.contains_key("openrouter"), "{reloaded:?}");
+    assert_eq!(
+        reloaded
+            .get("commandcode")
+            .map(|e| matches!(e, AuthEntry::Key(k) if k == "sk-cc-1")),
+        Some(true),
+        "the other key must survive",
+    );
+    assert!(
+        matches!(reloaded.get("xai"), Some(AuthEntry::OAuth(_))),
+        "the OAuth entry must survive",
+    );
+    // Removing what is not there is a successful no-op, not an error.
+    remove_auth_entry_at(&path, "openrouter").expect("remove absent");
+    assert!(load_mixed_store(&path).contains_key("commandcode"));
 }

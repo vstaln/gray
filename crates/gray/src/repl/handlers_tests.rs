@@ -81,6 +81,67 @@ fn skill_toggle_verb_parses_enable_disable() {
     assert_eq!(parse_skill_toggle("foo bar"), None);
     assert_eq!(parse_skill_toggle(""), None);
     assert_eq!(parse_skill_toggle("enable"), None);
+    assert_eq!(parse_skill_toggle("disable"), None);
+    assert_eq!(parse_skill_toggle("on"), None);
+    assert_eq!(parse_skill_toggle("off"), None);
+}
+
+#[test]
+fn skills_auto_toggle_parses_bare_switch_words() {
+    assert_eq!(parse_skills_auto_toggle("on"), Some(true));
+    assert_eq!(parse_skills_auto_toggle("off"), Some(false));
+    assert_eq!(parse_skills_auto_toggle("ON"), Some(true));
+    assert_eq!(parse_skills_auto_toggle("OFF"), Some(false));
+    assert_eq!(parse_skills_auto_toggle("enable"), Some(true));
+    assert_eq!(parse_skills_auto_toggle("disable"), Some(false));
+    assert_eq!(parse_skills_auto_toggle(""), None);
+    assert_eq!(parse_skills_auto_toggle("foo"), None);
+    assert_eq!(parse_skills_auto_toggle("on extra"), None);
+    assert_eq!(parse_skills_auto_toggle("enable foo"), None);
+    assert_eq!(parse_skills_auto_toggle("disable foo"), None);
+}
+
+#[test]
+fn skills_auto_toggle_persists_and_on_clears_disabled_set() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = dir.path().join("config.json");
+    assert!(crate::setup::skills_auto_enabled_at(&cfg));
+    // Off persists as an explicit false; per-skill disables survive it.
+    let mut saved = crate::setup::load_saved_config_at(&cfg);
+    saved.disabled_skills.insert("demo".to_string());
+    crate::setup::save_saved_config_at(&cfg, &saved).unwrap();
+    let msg = apply_skills_auto_toggle(&cfg, false).unwrap();
+    assert!(msg.contains("off"), "{msg}");
+    assert!(!crate::setup::skills_auto_enabled_at(&cfg));
+    assert!(
+        crate::setup::load_saved_config_at(&cfg)
+            .disabled_skills
+            .contains("demo")
+    );
+    // On clears the flag (back to missing = default) and the disabled set.
+    let msg = apply_skills_auto_toggle(&cfg, true).unwrap();
+    assert!(msg.contains("on"), "{msg}");
+    assert!(crate::setup::skills_auto_enabled_at(&cfg));
+    assert!(
+        crate::setup::load_saved_config_at(&cfg)
+            .disabled_skills
+            .is_empty()
+    );
+    // Missing key reads as enabled.
+    std::fs::write(&cfg, r#"{"model":"m"}"#).unwrap();
+    assert!(crate::setup::skills_auto_enabled_at(&cfg));
+}
+
+#[test]
+fn skills_named_on_off_still_invoke_instead_of_toggling_global() {
+    // A skill literally named `on`/`enable` stays invokable: the global
+    // branch yields to an exact discovery hit.
+    let dir = temp_skill_cwd_for_handlers_test("on");
+    let out = expand_skill_command(parse_command("/skills on"), dir.path(), None, false);
+    assert!(
+        matches!(out, ReplCommand::Prompt(_)),
+        "skill named 'on' must invoke, got {out:?}"
+    );
 }
 
 #[test]
@@ -128,6 +189,8 @@ fn format_skill_paste_body_and_args() {
 #[tokio::test]
 async fn reload_agent_failure_preserves_agent() {
     let config = Config {
+        temperature: None,
+        top_p: None,
         model: None,
         base_url: String::new(),
         api_key: None,

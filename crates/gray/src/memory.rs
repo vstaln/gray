@@ -16,15 +16,6 @@ pub enum Scope {
     Project,
 }
 
-impl Scope {
-    fn limit(self) -> usize {
-        match self {
-            Self::User => 2048,
-            Self::Project => 4096,
-        }
-    }
-}
-
 #[derive(Args, Debug, Clone)]
 pub struct MemoryArgs {
     /// User preferences or current project's confirmed decisions
@@ -38,10 +29,16 @@ pub struct MemoryArgs {
 pub enum MemoryCommand {
     /// Show the current curated entries
     List,
+    /// Show one entry
+    Show { key: String },
     /// Add or replace a named entry (one line; never credentials)
     Set { key: String, text: String },
+    /// Rewrite an existing entry's text (fails when the key is unknown)
+    Edit { key: String, text: String },
     /// Forget a named entry for future sessions
     Remove { key: String },
+    /// Forget every entry in the scope
+    Clear,
 }
 
 pub fn disabled() -> bool {
@@ -64,6 +61,10 @@ pub fn run_cli(args: &MemoryArgs) -> anyhow::Result<()> {
                 print!("{text}");
             }
         }
+        MemoryCommand::Show { key } => match store.get(args.scope, key)? {
+            Some(text) => println!("- {key}: {text}"),
+            None => println!("No entry named '{key}'."),
+        },
         MemoryCommand::Set { key, text } => {
             ensure!(!disabled(), "memory saving disabled by GRAY_NO_MEMORY");
             let changed = store.set(args.scope, key, text)?;
@@ -76,10 +77,27 @@ pub fn run_cli(args: &MemoryArgs) -> anyhow::Result<()> {
                 }
             );
         }
+        MemoryCommand::Edit { key, text } => {
+            ensure!(!disabled(), "memory saving disabled by GRAY_NO_MEMORY");
+            store.edit(args.scope, key, text)?;
+            println!("Memory edited.");
+        }
         MemoryCommand::Remove { key } => {
             store.remove(args.scope, key)?;
             println!(
                 "Memory removed. Existing sessions and transcripts retain their earlier context."
+            );
+        }
+        MemoryCommand::Clear => {
+            ensure!(!disabled(), "memory saving disabled by GRAY_NO_MEMORY");
+            let dropped = store.clear(args.scope)?;
+            println!(
+                "{}",
+                match dropped {
+                    0 => "No memories to clear.".to_string(),
+                    1 => "Memory cleared (1 entry).".to_string(),
+                    n => format!("Memory cleared ({n} entries)."),
+                }
             );
         }
     }
@@ -135,21 +153,17 @@ impl MemoryStore {
         private_dir(&dir)?;
         let path = dir.join(format!("{id}.json"));
         let _lock = lock(&dir.join(format!("{id}.lock")))?;
-        if let Some(text) = read_bounded(&path, 16384)? {
+        if let Some(text) = read_text(&path)? {
             let value: serde_json::Value =
                 serde_json::from_str(&text).context("invalid memory snapshot")?;
             ensure!(
                 value["project"].as_str() == Some(&self.project),
                 "memory snapshot belongs to another project"
             );
-            for (field, scope) in [("user", Scope::User), ("decisions", Scope::Project)] {
+            for field in ["user", "decisions"] {
                 let content = value[field]
                     .as_str()
                     .context("invalid memory snapshot fields")?;
-                ensure!(
-                    content.len() <= scope.limit(),
-                    "memory snapshot exceeds capacity"
-                );
                 parse(content)?;
             }
             // Return canonical fields only, never arbitrary extra snapshot data.
@@ -160,13 +174,12 @@ impl MemoryStore {
             }))?);
         }
         let text = capture()?;
-        ensure!(text.len() <= 16384, "memory snapshot exceeds capacity");
         atomic_write(&path, &text)?;
         Ok(text)
     }
 
     pub fn list(&self, scope: Scope) -> anyhow::Result<String> {
-        let text = read_bounded(&self.path(scope), scope.limit())?.unwrap_or_default();
+        let text = read_text(&self.path(scope))?.unwrap_or_default();
         Ok(render(&parse(&text)?))
     }
 
@@ -182,6 +195,39 @@ impl MemoryStore {
             entries.insert(key.to_owned(), text.trim().to_owned());
             Ok(true)
         })
+    }
+
+    /// One entry's text, if the scope holds it.
+    pub fn get(&self, scope: Scope, key: &str) -> anyhow::Result<Option<String>> {
+        validate_key(key)?;
+        Ok(parse(&self.list(scope)?)?.remove(key))
+    }
+
+    /// Rewrite the text of an existing entry; never creates a new one.
+    pub fn edit(&self, scope: Scope, key: &str, text: &str) -> anyhow::Result<()> {
+        validate_key(key)?;
+        validate_text(text)?;
+        let trimmed = text.trim().to_owned();
+        self.change(scope, |entries| {
+            ensure!(entries.contains_key(key), "no memory entry named '{key}'");
+            if entries.get(key).is_some_and(|old| *old == trimmed) {
+                return Ok(false);
+            }
+            entries.insert(key.to_owned(), trimmed);
+            Ok(true)
+        })?;
+        Ok(())
+    }
+
+    /// Remove every entry in the scope; returns how many were dropped.
+    pub fn clear(&self, scope: Scope) -> anyhow::Result<usize> {
+        let mut dropped = 0;
+        self.change(scope, |entries| {
+            dropped = entries.len();
+            entries.clear();
+            Ok(dropped > 0)
+        })?;
+        Ok(dropped)
     }
 
     pub fn remove(&self, scope: Scope, key: &str) -> anyhow::Result<()> {
@@ -204,12 +250,7 @@ impl MemoryStore {
         let mut entries = parse(&self.list(scope)?)?;
         let changed = update(&mut entries)?;
         if changed {
-            let text = render(&entries);
-            ensure!(
-                text.len() <= scope.limit(),
-                "memory capacity exceeded; shorten or remove entries before retrying"
-            );
-            atomic_write(&path, &text)?;
+            atomic_write(&path, &render(&entries))?;
         }
         Ok(changed)
     }
@@ -299,9 +340,11 @@ fn private_dir(path: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn read_bounded(path: &Path, limit: usize) -> anyhow::Result<Option<String>> {
+/// Read a memory file whole. There is no size cap: the file belongs to the
+/// same OS user and every entry was validated on the way in.
+fn read_text(path: &Path) -> anyhow::Result<Option<String>> {
     reject_symlinks(path)?;
-    let file = match File::open(path) {
+    let mut file = match File::open(path) {
         Ok(f) => f,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(e).context("cannot read memory file"),
@@ -311,11 +354,7 @@ fn read_bounded(path: &Path, limit: usize) -> anyhow::Result<Option<String>> {
         "memory path is not a regular file"
     );
     let mut bytes = Vec::new();
-    file.take(limit as u64 + 1).read_to_end(&mut bytes)?;
-    ensure!(
-        bytes.len() <= limit,
-        "memory file exceeds capacity; shorten it before retrying"
-    );
+    file.read_to_end(&mut bytes)?;
     Ok(Some(
         String::from_utf8(bytes).context("memory file is not UTF-8")?,
     ))

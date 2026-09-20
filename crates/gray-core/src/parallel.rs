@@ -1,8 +1,11 @@
-//! Parallel batch lane (Toolrush port): run a turn's read-only tool calls
-//! concurrently, preserving input order. Validation, hooks, events, and
-//! history writes stay on the loop thread in order — only
-//! `executor.execute` runs concurrently. Anything outside the batchable set
-//! is a barrier and runs on the existing sequential path.
+//! Parallel batch lane (Toolrush port): run a turn's provably
+//! non-interfering tool calls concurrently, preserving input order.
+//! Validation, hooks, events, and history writes stay on the loop thread in
+//! order — only `executor.execute` runs concurrently. Interference is the
+//! one admission rule ([`classify_call`]): readers batch with readers,
+//! writers only with calls whose enumerated read/write sets are pairwise
+//! disjoint from theirs. Anything that cannot be shown disjoint is a
+//! barrier and runs on the existing sequential path.
 
 use std::collections::HashSet;
 
@@ -230,26 +233,6 @@ fn first_verb_allowed(toks: &[&str], at: usize, allowed: &[&str], takes_value: &
     true
 }
 
-/// Per-call screen inside the batchable set. `bash` must additionally pass
-/// [`bash_is_batchable`] on its model-sent `command`; a missing/non-string
-/// command demotes (fail-safe — validation reports it later on the
-/// sequential path). `write` / `edit` must carry a non-empty string `path`
-/// (the key confirmed against gray-tools `WriteTool` / `EditTool`, which
-/// both read `get_str(&args, "path")`); missing/non-string/empty demotes —
-/// same fail-safe. Every other batchable name is pure-read by
-/// construction.
-fn call_screen_passes(name: &str, args: &Value) -> bool {
-    if name != "bash" {
-        if is_write_call(name) {
-            return write_target_path(name, args).is_some();
-        }
-        return true;
-    }
-    args.get("command")
-        .and_then(Value::as_str)
-        .is_some_and(bash_is_batchable)
-}
-
 /// `GRAY_PARALLEL_READS=0|false|no|off` (any case) disables the lane;
 /// unset or anything else enables it. Read per turn (matches the
 /// `GRAY_PERMISSION` convention of reading env at decision time).
@@ -318,12 +301,260 @@ fn write_target_path(name: &str, args: &Value) -> Option<String> {
     }
 }
 
-/// True when two `write`/`edit` targets may alias: same file, or one is a
-/// directory-prefix of the other (`dir` vs `dir/file`). Absolute vs
-/// relative is unresolvable without I/O — fail safe (overlap → barrier).
-fn write_paths_overlap(a: &str, b: &str) -> bool {
+/// Verb allow-list: non-flag arguments name the files the command reads.
+/// Recursive members (`grep`, `find`, `rg`) are listed too — a `.` operand
+/// overlaps everything ([`touched_paths_overlap`]), which is the correct
+/// reading anyway.
+const READ_VERBS: &[&str] = &[
+    "cat",
+    "head",
+    "tail",
+    "wc",
+    "stat",
+    "file",
+    "diff",
+    "cmp",
+    "md5sum",
+    "sha1sum",
+    "sha256sum",
+    "shasum",
+    "xxd",
+    "od",
+    "strings",
+    "basename",
+    "dirname",
+    "realpath",
+    "readlink",
+    "sort",
+    "uniq",
+    "cut",
+    "tr",
+    "tac",
+    "nl",
+    "ls",
+    "grep",
+    "rg",
+    "find",
+    "sed",
+    "jq",
+    "du",
+    "df",
+    "test",
+];
+
+/// Verbs that name no files: their arguments are output text or settings,
+/// so a redirected `echo … > f` touches only `f`.
+const NOPATH_VERBS: &[&str] = &[
+    "echo", "printf", "true", "false", "pwd", "date", "whoami", "id", "uname", "hostname", "env",
+    "printenv", "sleep", "seq", "yes", "expr", "which", "type", "command", "umask", "cal", "clear",
+];
+
+/// Verbs interpreted as writing every non-flag argument (`mv a b` writes
+/// both; `cp a b` counts `a` as written too — over-approximation only ever
+/// costs a batch slot). Deliberately argument-enumerable only: `install`,
+/// `scp`, `rsync`, `dd`, `shred`, `sudo`, build tools and script runners
+/// stay barriers below.
+const WRITE_VERBS: &[&str] = &[
+    "rm", "rmdir", "mv", "cp", "mkdir", "touch", "ln", "truncate", "chmod", "chown", "chgrp",
+    "unlink", "tee",
+];
+
+/// What one call provably touches, for the non-interference lane.
+///
+/// * `Reads(paths)` — read-only with an enumerated read set.
+/// * `ReadsUnknown` — read-only by [`bash_is_batchable`], but the files it
+///   reads cannot be enumerated (`git status`, `cargo metadata`, pipes,
+///   quoted operands): batches with readers, never with a writer.
+/// * `Writes { reads, writes }` — may write; both sets are enumerated.
+///
+/// `None` from [`classify_call`] is a barrier and runs sequentially. The
+/// lane is a *concurrency* decision only: the loop's pre-pass still
+/// validates every member in order and runs `tool_before` verdicts and
+/// `pre_tool` hooks for all of them, so lane membership can never skip a
+/// denial or a rewrite.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Touch {
+    Reads(Vec<String>),
+    ReadsUnknown,
+    Writes {
+        reads: Vec<String>,
+        writes: Vec<String>,
+    },
+}
+
+/// Path operands of an argument list: non-flag tokens, normalized. Flags
+/// whose value is a path (`sed -e SCRIPT`, `truncate -s 5M`) contribute
+/// their value too — over-approximation only ever blocks a batch.
+fn path_operands(toks: &[&str]) -> Vec<String> {
+    toks.iter()
+        .filter(|t| !t.starts_with('-'))
+        .filter_map(|t| {
+            let t = t.trim();
+            if t.is_empty() {
+                None
+            } else {
+                Some(normalize_write_path(t))
+            }
+        })
+        .collect()
+}
+
+/// Shell syntax that makes a touched set unenumerable: dynamic words,
+/// quoting, chains, subshells, input redirection. Output redirection (`>`)
+/// is not screened here — [`bash_touch`] handles it structurally.
+fn unenumerable_syntax(c: char) -> bool {
+    matches!(
+        c,
+        '\n' | '\r'
+            | '\''
+            | '"'
+            | '`'
+            | '$'
+            | '*'
+            | '?'
+            | '~'
+            | '{'
+            | '}'
+            | '('
+            | ')'
+            | '|'
+            | '&'
+            | ';'
+            | '!'
+            | '#'
+            | '<'
+            | '='
+            | '\\'
+    )
+}
+
+/// Classify one batchable call; `None` = barrier (sequential path).
+fn classify_call(name: &str, args: &Value) -> Option<Touch> {
+    if is_write_call(name) {
+        // The key confirmed against gray-tools `WriteTool` / `EditTool`,
+        // which both read `get_str(&args, "path")`; missing/non-string/
+        // empty demotes — fail-safe.
+        return write_target_path(name, args).map(|p| Touch::Writes {
+            reads: Vec::new(),
+            writes: vec![p],
+        });
+    }
+    if name == "bash" {
+        return bash_touch(args.get("command").and_then(Value::as_str)?);
+    }
+    match name {
+        // The remaining batchable names are pure-read by construction; a
+        // literal `path` bounds the read set, anything else stays unknown.
+        "read" | "ls" | "find" | "grep" => match args.get("path").and_then(Value::as_str) {
+            Some(p) if !p.is_empty() && !p.chars().any(unenumerable_syntax) => {
+                Some(Touch::Reads(vec![normalize_write_path(p)]))
+            }
+            _ => Some(Touch::ReadsUnknown),
+        },
+        _ => None,
+    }
+}
+
+/// Touched set of one `bash` command, or `None` when it cannot be
+/// enumerated. Two sources combine: output-redirection targets (`> f`,
+/// `>> f`) and the operands of the read/write verb allow-lists.
+fn bash_touch(command: &str) -> Option<Touch> {
+    // Stderr-only redirects merge into the captured stream (`2>&1`) or
+    // discard (`2>/dev/null`), and the bash tool merges stderr anyway.
+    let scrubbed = command.replace("2>&1", "").replace("2>/dev/null", "");
+    if scrubbed.chars().any(unenumerable_syntax) {
+        // Unenumerable shape: read-only calls keep their old lane.
+        return bash_is_batchable(command).then_some(Touch::ReadsUnknown);
+    }
+    let mut parts = scrubbed.split('>');
+    let cmd_part = parts.next().unwrap_or("").trim();
+    let mut writes = Vec::new();
+    for part in parts {
+        let word = part
+            .trim_start_matches('>')
+            .split_whitespace()
+            .next()
+            .unwrap_or("");
+        // A missing or flag-like redirect target is unenumerable.
+        if word.is_empty() || word.starts_with('-') {
+            return bash_is_batchable(command).then_some(Touch::ReadsUnknown);
+        }
+        writes.push(normalize_write_path(word));
+    }
+    let toks: Vec<&str> = cmd_part
+        .split_whitespace()
+        .filter(|t| !t.is_empty())
+        .collect();
+    let Some(verb) = toks.first().copied() else {
+        return bash_is_batchable(command).then_some(Touch::ReadsUnknown);
+    };
+    // Read-only commands keep today's admission exactly (the screen already
+    // proved them non-writing), enriched with an enumerated read set.
+    if bash_is_batchable(command) {
+        return Some(match verb {
+            v if READ_VERBS.contains(&v) => Touch::Reads(path_operands(&toks[1..])),
+            v if NOPATH_VERBS.contains(&v) => Touch::Reads(Vec::new()),
+            _ => Touch::ReadsUnknown,
+        });
+    }
+    // Writing shapes: every write must be an enumerable operand or redirect.
+    let mut reads = Vec::new();
+    if (verb == "sed" && sed_edits_in_place(&toks)) || WRITE_VERBS.contains(&verb) {
+        writes.extend(path_operands(&toks[1..]));
+    } else if READ_VERBS.contains(&verb) {
+        // `cat f > g`: reads enumerated, target written.
+        reads = path_operands(&toks[1..]);
+    } else if !NOPATH_VERBS.contains(&verb) {
+        // Build tools, script runners, `git`/`cargo`/`npm` mutators, `sudo`,
+        // fetch-and-write … — the write set is not enumerable.
+        return None;
+    }
+    if writes.is_empty() && reads.is_empty() {
+        return None;
+    }
+    Some(Touch::Writes { reads, writes })
+}
+
+/// True when two calls could interfere: any write/write or read/write path
+/// overlap. Read/read never interferes — two readers of one file are what
+/// the read-class lane always ran concurrently.
+fn touches_interfere(a: &Touch, b: &Touch) -> bool {
+    fn any_overlap(xs: &[String], ys: &[String]) -> bool {
+        xs.iter()
+            .any(|x| ys.iter().any(|y| touched_paths_overlap(x, y)))
+    }
+    match (a, b) {
+        (Touch::Reads(_), Touch::Reads(_)) | (Touch::Reads(_), Touch::ReadsUnknown) => false,
+        (Touch::ReadsUnknown, Touch::Reads(_)) | (Touch::ReadsUnknown, Touch::ReadsUnknown) => {
+            false
+        }
+        (Touch::ReadsUnknown, Touch::Writes { .. })
+        | (Touch::Writes { .. }, Touch::ReadsUnknown) => true,
+        (Touch::Reads(rs), Touch::Writes { writes: ws, .. }) => any_overlap(rs, ws),
+        (Touch::Writes { writes: ws, .. }, Touch::Reads(rs)) => any_overlap(ws, rs),
+        (
+            Touch::Writes {
+                reads: ra,
+                writes: wa,
+            },
+            Touch::Writes {
+                reads: rb,
+                writes: wb,
+            },
+        ) => any_overlap(wa, wb) || any_overlap(ra, wb) || any_overlap(wa, rb),
+    }
+}
+
+/// True when two touched paths may alias: same file, one a directory-prefix
+/// of the other (`dir` vs `dir/file`), either the whole cwd/root (`.` or
+/// `/`), or absolute vs relative (unresolvable without I/O). Erring toward
+/// overlap only ever costs a batch slot.
+fn touched_paths_overlap(a: &str, b: &str) -> bool {
     let (na, nb) = (normalize_write_path(a), normalize_write_path(b));
     if na == nb {
+        return true;
+    }
+    if na == "." || nb == "." || na == "/" || nb == "/" {
         return true;
     }
     if na.starts_with('/') != nb.starts_with('/') {
@@ -335,43 +566,23 @@ fn write_paths_overlap(a: &str, b: &str) -> bool {
     sa[..n] == sb[..n]
 }
 
-/// Can call `idx` join the current `run` in one `Parallel` segment?
-/// Read-class calls join only runs holding no writes; a write joins only an
-/// all-write run whose every member is path-disjoint from it. Anything else
-/// (overlap, missing path, read/write mix) stays a barrier — fail-safe.
-fn can_join_run(idx: usize, run: &[usize], tool_uses: &[(String, String, Value)]) -> bool {
-    let (_, name, args) = &tool_uses[idx];
-    if is_write_call(name) {
-        let Some(p) = write_target_path(name, args) else {
-            return false;
-        };
-        run.iter().all(|&ri| {
-            let (_, rname, rargs) = &tool_uses[ri];
-            is_write_call(rname)
-                && write_target_path(rname, rargs).is_some_and(|q| !write_paths_overlap(&p, &q))
-        })
-    } else {
-        run.iter().all(|&ri| !is_write_call(&tool_uses[ri].1))
-    }
-}
-
 /// Split `tool_uses` into ordered segments. A maximal contiguous run of
-/// batchable-known-object-args calls that pairwise passes
-/// [`call_screen_passes`] and [`can_join_run`] of length ≥ 2 becomes one
+/// batchable calls whose touched sets are pairwise non-interfering
+/// ([`classify_call`] + [`touches_interfere`]) with length ≥ 2 becomes one
 /// `Parallel` segment (no size cap); everything else (barrier tool, unknown
-/// tool, non-object args, singleton, `bash` failing [`bash_is_batchable`],
-/// `write`/`edit` with a missing path or a path overlapping a run sibling)
-/// is `Single`.
+/// tool, non-object args, singleton, unenumerable `bash`, `write`/`edit`
+/// without a path, a call overlapping a run sibling) is `Single`.
 /// Segments execute in order, so RAW/WAR *across* segments is preserved by
-/// construction — only calls inside one `Parallel` segment overlap, and two
-/// writes share one only when pairwise disjoint (different files, neither a
-/// dir-prefix of the other). Flattened indices always equal emission order.
+/// construction — only calls inside one `Parallel` segment overlap, and
+/// those are proven non-interfering (disjoint files, no shared state).
+/// Flattened indices always equal emission order.
 pub fn plan_segments(
     tool_uses: &[(String, String, Value)],
     known: &HashSet<String>,
 ) -> Vec<Segment> {
     let mut out = Vec::new();
     let mut run: Vec<usize> = Vec::new();
+    let mut run_touches: Vec<Touch> = Vec::new();
     let flush = |run: &mut Vec<usize>, out: &mut Vec<Segment>| {
         if run.len() >= 2 {
             out.push(Segment::Parallel(std::mem::take(run)));
@@ -380,16 +591,21 @@ pub fn plan_segments(
         }
     };
     for (idx, (_, name, args)) in tool_uses.iter().enumerate() {
-        if is_batchable(name)
-            && known.contains(name)
-            && args.is_object()
-            && call_screen_passes(name, args)
-            && can_join_run(idx, &run, tool_uses)
-        {
-            run.push(idx);
+        let touch = if is_batchable(name) && known.contains(name) && args.is_object() {
+            classify_call(name, args)
         } else {
-            flush(&mut run, &mut out);
-            out.push(Segment::Single(idx));
+            None
+        };
+        match touch {
+            Some(t) if run_touches.iter().all(|u| !touches_interfere(u, &t)) => {
+                run.push(idx);
+                run_touches.push(t);
+            }
+            _ => {
+                flush(&mut run, &mut out);
+                run_touches.clear();
+                out.push(Segment::Single(idx));
+            }
         }
     }
     flush(&mut run, &mut out);
@@ -406,14 +622,16 @@ pub fn plan_segments(
 pub const CANCEL_REPORT_GRACE: std::time::Duration = std::time::Duration::from_secs(3);
 
 /// Max in-flight tasks for [`join_ordered`]: `GRAY_PARALLEL_MAX` env var
-/// parsed as `usize`; unset/invalid/0 → 32 (ToolRush parity). Read once
-/// per [`join_ordered`] call.
+/// parsed as `usize`; unset/invalid/0 → unlimited (every spawned call runs
+/// at once). Values are clamped to `Semaphore::MAX_PERMITS`, the largest
+/// permit count tokio accepts. Read once per [`join_ordered`] call.
 pub fn parallel_max() -> usize {
     std::env::var("GRAY_PARALLEL_MAX")
         .ok()
         .and_then(|v| v.trim().parse::<usize>().ok())
         .filter(|&n| n > 0)
-        .unwrap_or(32)
+        .unwrap_or(tokio::sync::Semaphore::MAX_PERMITS)
+        .min(tokio::sync::Semaphore::MAX_PERMITS)
 }
 
 /// Run `futs` concurrently, returning `(input_index, output)` in
@@ -436,7 +654,7 @@ pub async fn join_ordered(
     for (idx, fut) in futs {
         let sem = sem.clone();
         set.spawn(async move {
-            // Bound execution (ToolRush parity); the permit drops when the
+            // Bound execution when a cap is configured; the permit drops when the
             // wrapper returns. Acquire failure is impossible (never closed),
             // reported as data rather than a lost index if it ever happens.
             let Ok(_permit) = sem.acquire_owned().await else {

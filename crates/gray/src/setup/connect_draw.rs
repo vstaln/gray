@@ -229,7 +229,7 @@ pub(crate) fn render_selecting(
     }
 
     // 4. Footer Help Line (no brackets)
-    let footer_line = Line::from(vec![
+    let mut footer_spans = vec![
         Span::styled(
             "↑↓ ",
             Style::default()
@@ -252,9 +252,142 @@ pub(crate) fn render_selecting(
             "select",
             Style::default().fg(colors.text_dim).bg(colors.box_bg),
         ),
-    ]);
+    ];
+    // Removal is only offered for a row that actually holds a credential.
+    if filtered
+        .get(sel.min(filtered.len().saturating_sub(1)))
+        .is_some_and(|item| super::connect::is_removable(item, config, auth))
+    {
+        footer_spans.extend([
+            Span::styled(
+                "    ",
+                Style::default().fg(colors.text_dim).bg(colors.box_bg),
+            ),
+            Span::styled(
+                "shift+enter ",
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD)
+                    .bg(colors.box_bg),
+            ),
+            Span::styled(
+                "remove",
+                Style::default().fg(colors.text_dim).bg(colors.box_bg),
+            ),
+        ]);
+    }
+    let footer_line = Line::from(footer_spans);
     frame.render_widget(
         Paragraph::new(footer_line),
+        Rect::new(inner.x, inner.y + inner.height - 1, inner.width, 1),
+    );
+}
+
+/// Shift+Enter confirmation: names the provider (and its endpoint, which is
+/// what a custom entry is really keyed by) and states the one consequence.
+pub(crate) fn render_confirm_remove(
+    frame: &mut Frame,
+    area: Rect,
+    item: &ConnectItem,
+    colors: &ConnectColors,
+) {
+    let dialog_w = 64.min(area.width.saturating_sub(4)).max(40).min(area.width);
+    let dialog_h = 10
+        .min(area.height.saturating_sub(2))
+        .max(8)
+        .min(area.height);
+    let dialog_x = (area.width.saturating_sub(dialog_w)) / 2;
+    let dialog_y = (area.height.saturating_sub(dialog_h)) / 3;
+    let dialog_rect = Rect::new(dialog_x, dialog_y, dialog_w, dialog_h);
+
+    frame.render_widget(Clear, dialog_rect);
+    frame.render_widget(
+        Block::default().style(Style::default().bg(colors.box_bg)),
+        dialog_rect,
+    );
+
+    let pad_x = 3u16;
+    let inner_w = dialog_w.saturating_sub(pad_x * 2);
+    let inner = Rect::new(
+        dialog_x + pad_x,
+        dialog_y + 1,
+        inner_w,
+        dialog_h.saturating_sub(2),
+    );
+
+    let title_str = "Remove provider";
+    let esc_str = "esc";
+    let pad_len =
+        (inner.width as usize).saturating_sub(title_str.chars().count() + esc_str.chars().count());
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                title_str,
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD)
+                    .bg(colors.box_bg),
+            ),
+            Span::styled(" ".repeat(pad_len), Style::default().bg(colors.box_bg)),
+            Span::styled(
+                esc_str,
+                Style::default().fg(colors.text_dim).bg(colors.box_bg),
+            ),
+        ])),
+        Rect::new(inner.x, inner.y, inner.width, 1),
+    );
+
+    let rows = [
+        Line::from(vec![Span::styled(
+            format!("Remove {}?", item.name),
+            Style::default()
+                .fg(crate::theme::theme().accent)
+                .add_modifier(Modifier::BOLD)
+                .bg(colors.box_bg),
+        )]),
+        Line::from(vec![Span::styled(
+            format!(" {}", item.base_url),
+            Style::default()
+                .fg(crate::theme::theme().text_dim)
+                .bg(colors.box_bg),
+        )]),
+        Line::from(vec![Span::styled(
+            "The stored API key will be deleted.",
+            Style::default().fg(colors.text_dim).bg(colors.box_bg),
+        )]),
+    ];
+    for (i, row) in rows.iter().enumerate() {
+        frame.render_widget(
+            Paragraph::new(row.clone()),
+            Rect::new(inner.x, inner.y + 2 + i as u16, inner.width, 1),
+        );
+    }
+
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                "enter ",
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD)
+                    .bg(colors.box_bg),
+            ),
+            Span::styled(
+                "confirm    ",
+                Style::default().fg(colors.text_dim).bg(colors.box_bg),
+            ),
+            Span::styled(
+                "esc ",
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD)
+                    .bg(colors.box_bg),
+            ),
+            Span::styled(
+                "cancel",
+                Style::default().fg(colors.text_dim).bg(colors.box_bg),
+            ),
+        ])),
         Rect::new(inner.x, inner.y + inner.height - 1, inner.width, 1),
     );
 }

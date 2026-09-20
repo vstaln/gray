@@ -42,7 +42,7 @@ pub use catalog::{
     AUTH_MODE_API_KEY, AUTH_MODE_NONE, Catalog, CatalogProvider, ConnectItem, PROVIDERS_JSON,
     SavedConfig, build_connect_items, disabled_skill_names, gray_home, load_auth_keys,
     load_catalog, load_saved_config_at, mask_key_pretty, normalize_custom_base_url,
-    save_saved_config_at, saved_config_path,
+    save_saved_config_at, saved_config_path, skills_auto_enabled, skills_auto_enabled_at,
 };
 
 pub mod context;
@@ -78,7 +78,7 @@ mod connect;
 mod connect_draw;
 mod connect_models;
 
-pub use connect::run_connect_modal;
+pub use connect::{ConnectOutcome, run_connect_modal};
 pub use effort::run_effort_modal;
 pub use install_manager::{run_plugins_modal, run_skills_modal};
 pub(crate) use model_modal::{provider_models_for, run_model_modal, validate_direct_model_id};
@@ -138,5 +138,10 @@ pub async fn run_onboarding(config: &mut Config) -> anyhow::Result<bool> {
         print!("\r\n");
         return Ok(true);
     }
-    run_connect_modal(config, None)
+    // Onboarding only cares "is a provider ready": a removal leaves the
+    // user exactly as unconfigured as a dismissal.
+    match run_connect_modal(config, None)? {
+        ConnectOutcome::Connected => Ok(true),
+        ConnectOutcome::Removed(_) | ConnectOutcome::Dismissed => Ok(false),
+    }
 }

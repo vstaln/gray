@@ -595,6 +595,9 @@ pub struct BuilderOptions {
     pub api_key: String,
     pub base_url: String,
     pub reasoning_effort: Option<String>,
+    /// Sampling passthroughs for providers that accept them (None = server default).
+    pub temperature: Option<f32>,
+    pub top_p: Option<f32>,
     /// Known model context window in tokens (`None` = unknown: only
     /// overflow-recovery compaction runs).
     pub context_window: Option<usize>,
@@ -625,6 +628,8 @@ pub async fn build_agent(opts: BuilderOptions) -> anyhow::Result<Agent> {
         api_key,
         base_url,
         reasoning_effort,
+        temperature,
+        top_p,
         context_window,
         session_id,
         cwd,
@@ -674,7 +679,8 @@ pub async fn build_agent(opts: BuilderOptions) -> anyhow::Result<Agent> {
         reasoning_effort,
         Some(provider_cache_key(session_id.as_deref())),
     )
-    .map_err(|e| anyhow::anyhow!("failed to initialize OpenAI provider: {e}"))?;
+    .map_err(|e| anyhow::anyhow!("failed to initialize OpenAI provider: {e}"))?
+    .with_sampling(temperature, top_p);
 
     let tool_defs = registry.defs();
     let executor: Arc<dyn ToolExecutor> = match wrap_executor {

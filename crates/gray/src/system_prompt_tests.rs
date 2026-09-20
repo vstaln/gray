@@ -14,6 +14,20 @@ fn rebuild_is_byte_stable() {
 }
 
 #[test]
+fn shipped_default_prompt_strips_to_the_agent_line() {
+    // HTML comments end at the first `-->`, so a nested marker pair inside the
+    // note would leak the note text (and a stray marker) into every prompt.
+    let p = build_system_prompt(opts(crate::DEFAULT_SYS_PROMPT));
+    // Stripping the leading comment leaves its trailing newline in place.
+    assert!(
+        p.trim_start().starts_with("You are gray, a minimal agent"),
+        "{p:.60}"
+    );
+    assert!(!p.contains("-->"), "stray comment marker leaked");
+    assert!(!p.contains("stored system prompt"), "note text leaked");
+}
+
+#[test]
 fn prompt_is_verbatim_after_comment_strip() {
     let p = build_system_prompt(opts("You are gray.\n\nFollow the rules."));
     assert_eq!(p, "You are gray.\n\nFollow the rules.");

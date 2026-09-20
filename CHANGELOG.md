@@ -3,6 +3,29 @@
 ## [Unreleased]
 
 ### Added
+- Prompt-cache warmth timer + cache-miss warning in the composer. The
+  footer carries a `◷ 4m` countdown next to the cache-hit percentage —
+  how long the last request's prompt cache stays warm before an idle gap
+  re-bills the whole prompt (Anthropic's `cache_control` and OpenAI's
+  automatic prefix caching both expire after ~5 idle minutes), fading in
+  the last minute and hidden entirely when the provider never reports
+  cache activity. When a request re-bills tokens the previous one should
+  have served from cache — an idle gap past the TTL, a model switch, or a
+  provider-side eviction — the transcript gets a warning row
+  (`⚠ Cache miss after 6m idle: 100k tokens re-billed (~$0.35)`) once the
+  miss crosses 20k tokens or $0.10 over a full hit, so routine breakpoint
+  noise stays silent. Detection is a port of pi's
+  `packages/coding-agent/src/core/cache-stats.ts` (reference checkout
+  under `reference/pi-mono`) onto gray's per-round `StepUsage` reports;
+  compaction and `/new` reset the baseline, since a fresh summary is new
+  content rather than re-billed content
+- Remove a provider from the connect modal: `shift+enter` on a highlighted
+  provider (the modal footer advertises it only for a row that holds a stored
+  credential) opens a confirmation naming the provider and its endpoint, and
+  `enter` deletes the credential — `auth.json` entry plus the active
+  provider's second copy in `config.json`, so a removal cannot resurrect on
+  the next start. `/provider` reloads the agent and reports the removal
+  instead of announcing a connection
 - Gateway daemon (`gray gateway ...`): the always-on host that fires cron with
   no REPL open. `run` is the foreground daemon (60s cron ticker with the same
   `HeadlessRunner`/`SaveLocalDeliver` as `tick`/`serve`, plus a control socket
@@ -28,12 +51,58 @@
   printing a `next=` that will never arrive.
 
 ### Fixed
+- Tool headers no longer panic the REPL on multi-byte commands. The
+  one-line command/arg preview byte-sliced at a fixed offset 80, so a
+  command whose first line carried an emoji (or any wide char) straddling
+  that offset — a pasted PR review's 🟠 merge-risk marker did exactly this,
+  killing a live session mid-tool-call — crashed with `byte index 80 is
+  not a char boundary`. The cap is now counted in display cells and cut on
+  a char boundary (the repo's `text_width` helpers), so ASCII commands cut
+  at exactly 80 as before and wide text fills the same 80 cells instead of
+  a quarter of the way in. The same fixed-offset pattern was audited
+  across the crates; the only other byte-slice site is ASCII-guarded
+- Bash has no default timeout any more: commands run until they exit, and an
+  explicit `timeout` is opt-in (clamped 1–3600 s) with the agent-level
+  last-resort stop raised to 3660 s. The tool description used to promise
+  120 s while the code killed at 30 s.
+- A failing command piped into a pure text filter no longer reads as success.
+  `sh -c` reports only the last stage's status, so `pytest -q | head -40`
+  returned `exit 0`; the exit report now names the masked stage and covers
+  `head`/`tail`/`cat`/`less`/`awk`/`sed`/`tr`/`cut`/`column`.
+- Missing commands are explained instead of just failing: the result carries
+  "`rg` is not installed here · use an equivalent you already have …".
+- Truncated output names the omitted byte window and the offset of the next
+  page, and pages are 16 KiB instead of 4 KiB.
+- The shell inline budget is 48 KiB (was 12 KiB), the turn event cap is 500k
+  (was 100k — long runs died on "turn event limit exceeded"), the loop guard
+  nudges at 3 identical tool+args and only aborts at 6, and a dropped
+  provider stream keeps complete tool args with a warning instead of killing
+  the turn.
+- Sampling is reachable: `GRAY_TEMPERATURE`/`GRAY_TOP_P` (env or saved
+  config) are sent with every request and omitted when unset. Memory size
+  caps are gone and `gray memory list/show/set/edit/remove/clear` exists.
+- tps is now measured over streaming time only. Every rate (working pill,
+  end-of-turn `Thought for … · N tps`, headless footer) divided by the
+  whole-turn duration, so a turn that spent 40s in tool calls and 4s
+  generating reported ~13 tps instead of ~125 — tool waits and inter-round
+  gaps now never enter the denominator (`TurnStreamClock`). The `· 40s`
+  duration next to it stays whole-turn on purpose
+- Interrupted turns now save a complete transcript. The REPL gave a cancelled
+  run 5s to clean up and then dropped it; a stall nothing can interrupt (a
+  plugin `tool/before`/`pre_tool` hook, an in-flight compaction, a tool that
+  ignores cancellation) skipped the loop's own cancel cleanup entirely, so the
+  session stored an assistant `tool_use` with no `tool_result` — strict
+  providers then 400 on resume and the session is bricked for good — and the
+  partial text the user had already watched stream by was lost. The turn is now
+  repaired on the way out (`Agent::repair_dropped_cancel`): unanswered calls
+  get a synthetic `cancelled by user` result and the streamed text is
+  salvaged, exactly once
 - `plugin list` / `/plugin list` now show `install plugin` commands (e.g. discord): the list merges `commands.json` CLI entries with `lock.json` sidecars (CLI rows tagged `[command]`), and `enable`/`disable`/`remove` route to whichever registry owns the name (was `not installed`); `update <command>` warns and no-ops like other non-index sources. `gray plugins` (CLI) is pinned as the `gray plugin` alias by test
 - Cancelling a turn no longer discards the in-flight tool's own report: both
   cancel paths (single dispatch, parallel join) abandoned the future on the
   same token the tool watches, so partial output and the process-group kill
   never ran and the turn answered with a bare synthetic `cancelled by user`.
-  A cancelled tool now gets a bounded 3s window (inside the turn's own 5s
+  A cancelled tool now gets a bounded 3s window (inside the turn's own
   cooperative window) to report, then the turn ends with that output in
   history.
 - Cron silence: `next=` rows look identical whether or not a driver (`serve`, a
@@ -82,6 +151,13 @@
 - `gray sessions prune --older-than-days N` for session-store GC; `persist_redacted: true` gateway option to scrub secrets from persisted gateway transcripts
 
 ### Changed
+- `gray plugin install discord` compiles the plugin from its pinned commit
+  (`cargo build --release --locked`) instead of pip-installing a Python
+  package, so installing a first-party plugin needs no interpreter. The
+  catalog is Rust-only; user-written plugins stay language-agnostic
+  (`GRAY_PLUGIN_PATH`, `plugin.sh`). A source pin must be a full commit ID,
+  and the built binary has to answer `plugin/manifest` with the expected
+  name before it is registered
 - Clipboard/image paste is core again: `arboard` + `image` are always compiled in, no `--features clipboard` needed (kept as a no-op alias)
 - Removed the native messaging gateway: deleted `crates/gray-gateway` (adapters, daemon, pairing, delivery, systemd), the `plugins/gateway` sidecar, `gray gateway ...`/`gray send`, and the `telegram`/`discord`/`slack`/`all-platforms` features. Chat returns as a plugin; `gray cron --deliver` targets are stored opaquely until a delivery backend exists. Dropped the `--all-features` CI checks.
 

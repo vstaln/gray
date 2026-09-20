@@ -3,6 +3,8 @@ use std::collections::BTreeMap;
 
 fn config() -> Config {
     Config {
+        temperature: None,
+        top_p: None,
         model: None,
         base_url: "https://unconfigured".into(),
         api_key: None,

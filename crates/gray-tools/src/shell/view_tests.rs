@@ -207,10 +207,11 @@ fn crlf_sets_folded_flag_and_header_marker() {
 
 #[test]
 fn inline_budget_keeps_head_and_tail_with_elision() {
-    // SPEC-01: the foreground inline budget is 6 KiB head + 6 KiB tail.
-    assert_eq!(MEM_HEAD_BYTES, 6 * 1024);
-    assert_eq!(MEM_TAIL_BYTES, 6 * 1024);
-    assert_eq!(INLINE_BUDGET_BYTES, 12 * 1024);
+    // SPEC-01: the foreground inline budget is 24 KiB head + 24 KiB tail
+    // (raised from 6+6 KiB so whole file reads survive).
+    assert_eq!(MEM_HEAD_BYTES, 24 * 1024);
+    assert_eq!(MEM_TAIL_BYTES, 24 * 1024);
+    assert_eq!(INLINE_BUDGET_BYTES, 48 * 1024);
     // 3,000 ~22-byte lines ≈ 66 KiB: over budget, so head + tail survive
     // with an elided middle and exact line accounting.
     let log = numbered_lines(3000);
@@ -226,11 +227,12 @@ fn inline_budget_keeps_head_and_tail_with_elision() {
         v.total_lines
     );
     assert_eq!(v.total_lines, 3000);
-    // Just under the budget renders whole with no marker.
+    // Just under the byte budget renders whole with no marker (line budget
+    // set high here so the byte edge is what is under test).
     let small = middle_out(
         &log[..INLINE_BUDGET_BYTES - 100],
         INLINE_BUDGET_BYTES,
-        2000,
+        3000,
         0,
     );
     assert!(!small.body.contains("{{MARKER}}"));

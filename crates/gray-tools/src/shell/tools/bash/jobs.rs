@@ -37,7 +37,7 @@ impl Jobs {
         &self,
         ctx: &ToolContext,
         command: String,
-        secs: u64,
+        secs: Option<u64>,
         window: Duration,
     ) -> ToolOutput {
         let (id, mut result) = {
@@ -117,8 +117,12 @@ impl Jobs {
             .get_mut(&id)
             .expect("unpublished job cannot be evicted");
         job.yielded = true;
+        let timeout_note = match secs {
+            Some(s) => format!("timeout {s}s"),
+            None => "no timeout".to_string(),
+        };
         ToolOutput::ok(format!(
-            "still running · job {id} · yielded after {} · timeout {secs}s · log {}\nContinue other work. Use bash action:output/status with job_id:{id} and wait_ms (e.g. 30000) to await it in one call instead of polling; completion will also be reported between model rounds or on the next user turn.",
+            "still running · job {id} · yielded after {} · {timeout_note} · log {}\nContinue other work. Use bash action:output/status with job_id:{id} and wait_ms (e.g. 30000) to await it in one call instead of polling; completion will also be reported between model rounds or on the next user turn.",
             format_elapsed(job.started.elapsed()),
             job.log.display()
         ))
@@ -408,7 +412,7 @@ mod tests {
         tool.jobs.0.lock().unwrap().insert(id.into(), job);
         let args = json!({
             "action": "output", "background": false, "command": "",
-            "job_id": id, "timeout": 30, "yield_ms": 1000
+            "job_id": id, "timeout": DEFAULT_TIMEOUT_SECS, "yield_ms": 1000
         });
         let out = tool.execute(&ctx, args.clone()).await;
         assert!(!out.is_error, "{}", out.content);
@@ -464,7 +468,12 @@ mod tests {
         }
         let ctx = ToolContext::default();
         let out = jobs
-            .start(&ctx, "echo should-not-start".into(), 30, Duration::ZERO)
+            .start(
+                &ctx,
+                "echo should-not-start".into(),
+                Some(30),
+                Duration::ZERO,
+            )
             .await;
         assert!(
             out.is_error && out.content.contains("job limit"),
@@ -477,7 +486,12 @@ mod tests {
             jobs.0.lock().unwrap().insert(n.to_string(), job);
         }
         let out = jobs
-            .start(&ctx, "echo should-not-start".into(), 30, Duration::ZERO)
+            .start(
+                &ctx,
+                "echo should-not-start".into(),
+                Some(30),
+                Duration::ZERO,
+            )
             .await;
         assert!(
             out.is_error && out.content.contains("history full"),
@@ -493,13 +507,18 @@ mod tests {
             j.yielded = false;
         }
         assert!(
-            jobs.start(&ctx, "true".into(), 30, Duration::ZERO)
+            jobs.start(&ctx, "true".into(), Some(30), Duration::ZERO)
                 .await
                 .is_error
         );
         jobs.0.lock().unwrap().get_mut("0").unwrap().yielded = true;
         let out = jobs
-            .start(&ctx, "echo admitted".into(), 30, Duration::from_secs(10))
+            .start(
+                &ctx,
+                "echo admitted".into(),
+                Some(30),
+                Duration::from_secs(10),
+            )
             .await;
         assert!(
             !out.is_error && out.content.contains("admitted"),

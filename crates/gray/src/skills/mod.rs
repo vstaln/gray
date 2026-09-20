@@ -263,13 +263,18 @@ pub fn format_discovered_skill_row(skill: &Skill) -> String {
 /// no new tool): exact names always survive; weak entries — empty
 /// descriptions, oversized blobs (>700 chars, almost surely pasted content
 /// rather than a description) — are rejected before they cost tokens.
-/// User-disabled skills (`/skills disable`, empty = all on) are skipped so
-/// the model never auto-invokes them; explicit `/skills <name>` still runs.
+/// `auto=false` (`/skills off`) hides everything so the model never
+/// auto-invokes; user-disabled skills (`/skills disable`, empty = all on)
+/// are skipped too. Explicit `/skills <name>` still runs either way.
 /// First name match wins (dedup), preserving discovery order.
 pub fn rank_skills_for_prompt<'a>(
     skills: &'a [Skill],
+    auto_enabled: bool,
     disabled: &BTreeSet<String>,
 ) -> Vec<&'a Skill> {
+    if !auto_enabled {
+        return Vec::new();
+    }
     const MAX_DESCRIPTION_LEN: usize = 700;
     let mut seen = std::collections::HashSet::new();
     let mut out = Vec::new();
@@ -291,9 +296,13 @@ pub fn rank_skills_for_prompt<'a>(
 }
 
 /// Bound automatic advertising; discovery and explicit invocation remain complete.
-pub fn format_skills_for_prompt(skills: &[Skill], disabled: &BTreeSet<String>) -> String {
+pub fn format_skills_for_prompt(
+    skills: &[Skill],
+    auto_enabled: bool,
+    disabled: &BTreeSet<String>,
+) -> String {
     const MAX_PROMPT_SKILLS: usize = 40;
-    let visible: Vec<&Skill> = rank_skills_for_prompt(skills, disabled);
+    let visible: Vec<&Skill> = rank_skills_for_prompt(skills, auto_enabled, disabled);
     if visible.is_empty() {
         return String::new();
     }

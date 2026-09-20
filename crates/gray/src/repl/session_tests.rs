@@ -41,6 +41,8 @@ async fn failed_compaction_save_retries_full_history_before_appending() {
         session_id: sid,
     });
     let config = Config {
+        temperature: None,
+        top_p: None,
         model: None,
         base_url: String::new(),
         api_key: None,
@@ -96,4 +98,45 @@ async fn failed_compaction_save_retries_full_history_before_appending() {
     let (_, entries) = state.store.load(&state.session_id).await.unwrap();
     let messages: Vec<_> = entries.into_iter().map(|entry| entry.message).collect();
     assert_eq!(messages, agent.messages());
+}
+
+/// The tps denominator: only the time tokens were actually flowing counts,
+/// so a turn that sat in tools for a minute is not billed as slow generation.
+#[test]
+fn stream_clock_measures_only_the_time_tokens_flowed() {
+    use super::TurnStreamClock;
+    let mut clock = TurnStreamClock::default();
+    assert_eq!(clock.streamed_ms(), None, "nothing streamed yet");
+    clock.tick();
+    assert_eq!(
+        clock.streamed_ms(),
+        None,
+        "a lone delta opens the span but has no gap yet"
+    );
+    std::thread::sleep(std::time::Duration::from_millis(60));
+    clock.tick();
+    let first = clock.streamed_ms().expect("the gap is streaming time");
+    // Lower bound only: a loaded machine can overshoot the sleep, and the
+    // assertions that matter below are exact (spans, not wall clock).
+    assert!(first >= 40, "{first}");
+
+    // Tool wait between rounds: the span closes, so the gap until the next
+    // round's first delta never lands in the rate.
+    clock.close_span();
+    std::thread::sleep(std::time::Duration::from_millis(80));
+    clock.tick();
+    assert_eq!(
+        clock.streamed_ms(),
+        Some(first),
+        "the tool wait must not count as generation"
+    );
+    std::thread::sleep(std::time::Duration::from_millis(60));
+    clock.tick();
+    let second = clock.streamed_ms().expect("second burst counted");
+    assert!(second > first, "{second} > {first}");
+
+    // Turn end: the finalize gap after the last delta is dropped too.
+    clock.close_span();
+    std::thread::sleep(std::time::Duration::from_millis(80));
+    assert_eq!(clock.streamed_ms(), Some(second));
 }

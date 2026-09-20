@@ -112,22 +112,62 @@ fn totals_sum_durations_and_skip_untimed() {
 fn turn_footer_includes_duration_when_known() {
     let usage = gray_core::event::Usage::new(1000, 500);
     let totals = super::SessionTotals::default();
-    let line = super::turn_footer(&usage, "test-persist-model", &totals, Some(6500));
+    let line = super::turn_footer(
+        &usage,
+        "test-persist-model",
+        &totals,
+        Some(6500),
+        Some(6500),
+    );
     assert!(line.contains("6.5s"), "footer should show time: {line}");
     assert!(line.contains("tokens"), "footer should keep tokens: {line}");
+}
+
+#[test]
+fn turn_footer_rate_uses_streaming_time_not_whole_turn_time() {
+    let usage = gray_core::event::Usage::new(1000, 500);
+    let totals = super::SessionTotals::default();
+    // 40s turn, 4s of it actually streaming: the rate is 125 tps (500 out /
+    // 4s), never the whole-turn 13 tps the tool waits would imply.
+    let line = super::turn_footer(
+        &usage,
+        "test-persist-model",
+        &totals,
+        Some(40_000),
+        Some(4_000),
+    );
+    assert!(line.contains("125 tps"), "{line}");
+    assert!(
+        line.contains("40s"),
+        "the duration stays whole-turn: {line}"
+    );
+    assert!(
+        !line.contains("13 tps"),
+        "tool waits must not dilute it: {line}"
+    );
+    // Nothing streamed (pure tool turn): no rate at all, duration still shown.
+    let silent = super::turn_footer(&usage, "test-persist-model", &totals, Some(40_000), None);
+    assert!(!silent.contains("tps"), "{silent}");
+    assert!(silent.contains("40s"), "{silent}");
 }
 
 #[test]
 fn turn_footer_shows_tokens_per_second() {
     let usage = gray_core::event::Usage::new(1000, 500);
     let totals = super::SessionTotals::default();
-    let line = super::turn_footer(&usage, "test-persist-model", &totals, Some(6500));
+    let line = super::turn_footer(
+        &usage,
+        "test-persist-model",
+        &totals,
+        Some(6500),
+        Some(6500),
+    );
     assert!(line.contains("77 tps"), "500 out / 6.5s: {line}");
     assert!(
         line.contains("tokens"),
         "footer should use tokens label: {line}"
     );
-    let untimed = super::turn_footer(&usage, "test-persist-model", &totals, None);
+    let untimed = super::turn_footer(&usage, "test-persist-model", &totals, None, None);
     assert!(!untimed.contains("tps"), "no duration, no rate: {untimed}");
 }
 

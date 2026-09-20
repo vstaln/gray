@@ -92,8 +92,9 @@ fn normalization_spellings_still_conflict() {
 }
 
 #[test]
-fn reads_around_a_write_stay_split_but_batch_where_legal() {
-    // Single reads around a write: the write is a barrier, singletons demote.
+fn non_interfering_reads_and_writes_share_one_segment() {
+    // Disjoint paths never interfere: reads batch with a write of another
+    // file — the lane's rule is non-interference, not read-only-ness.
     let u = vec![
         ("a".into(), "read".into(), json!({"path": "a.txt"})),
         w("b", "b.txt"),
@@ -101,9 +102,8 @@ fn reads_around_a_write_stay_split_but_batch_where_legal() {
     ];
     assert_eq!(
         plan_segments(&u, &known_rw()),
-        vec![Segment::Single(0), Segment::Single(1), Segment::Single(2)]
+        vec![Segment::Parallel(vec![0, 1, 2])]
     );
-    // Runs of reads still batch on either side of the write.
     let u = vec![
         ("a".into(), "read".into(), json!({"path": "a.txt"})),
         ("b".into(), "read".into(), json!({"path": "b.txt"})),
@@ -113,11 +113,29 @@ fn reads_around_a_write_stay_split_but_batch_where_legal() {
     ];
     assert_eq!(
         plan_segments(&u, &known_rw()),
-        vec![
-            Segment::Parallel(vec![0, 1]),
-            Segment::Single(2),
-            Segment::Parallel(vec![3, 4]),
-        ]
+        vec![Segment::Parallel(vec![0, 1, 2, 3, 4])]
+    );
+}
+
+#[test]
+fn reading_a_written_path_stays_sequential() {
+    // Same file: read/write interference splits the run.
+    let u = vec![
+        ("a".into(), "read".into(), json!({"path": "a.txt"})),
+        w("b", "a.txt"),
+    ];
+    assert_eq!(
+        plan_segments(&u, &known_rw()),
+        vec![Segment::Single(0), Segment::Single(1)]
+    );
+    // A directory read overlaps writes inside it.
+    let u = vec![
+        ("a".into(), "read".into(), json!({"path": "dir"})),
+        w("b", "dir/file.txt"),
+    ];
+    assert_eq!(
+        plan_segments(&u, &known_rw()),
+        vec![Segment::Single(0), Segment::Single(1)]
     );
 }
 

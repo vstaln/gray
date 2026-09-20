@@ -445,6 +445,58 @@ fn empty_chat_req() -> gray_core::message::ChatRequest {
     }
 }
 
+#[tokio::test]
+async fn sampling_params_are_sent_when_configured() {
+    // GRAY_TEMPERATURE / GRAY_TOP_P passthrough: set -> present in the body.
+    use futures::StreamExt;
+    let server = wiremock::MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::any())
+        .respond_with(wiremock::ResponseTemplate::new(500).set_body_string("boom"))
+        .mount(&server)
+        .await;
+    let provider = OpenAiProvider::new("key", "test-model", server.uri(), None, None)
+        .expect("provider builds")
+        .with_sampling(Some(1.0), Some(0.95));
+    let _events: Vec<_> = provider.stream(empty_chat_req()).collect().await;
+    let received = server.received_requests().await.expect("requests recorded");
+    let body: serde_json::Value =
+        serde_json::from_slice(&received[0].body).expect("request body is json");
+    assert_eq!(
+        body.get("temperature").and_then(|v| v.as_f64()),
+        Some(1.0),
+        "temperature sent: {body}"
+    );
+    // f32 -> JSON f64 widens (0.95f32 != 0.95f64), so compare in f32 space.
+    assert_eq!(
+        body.get("top_p").and_then(|v| v.as_f64()),
+        Some(f64::from(0.95f32)),
+        "top_p sent: {body}"
+    );
+}
+
+#[tokio::test]
+async fn sampling_params_are_omitted_by_default() {
+    // Unset -> the keys stay out of the body entirely, so the server default
+    // applies exactly as before this option existed.
+    use futures::StreamExt;
+    let server = wiremock::MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::any())
+        .respond_with(wiremock::ResponseTemplate::new(500).set_body_string("boom"))
+        .mount(&server)
+        .await;
+    let provider = OpenAiProvider::new("key", "test-model", server.uri(), None, None)
+        .expect("provider builds");
+    let _events: Vec<_> = provider.stream(empty_chat_req()).collect().await;
+    let received = server.received_requests().await.expect("requests recorded");
+    let body: serde_json::Value =
+        serde_json::from_slice(&received[0].body).expect("request body is json");
+    assert!(
+        body.get("temperature").is_none(),
+        "no temperature by default: {body}"
+    );
+    assert!(body.get("top_p").is_none(), "no top_p by default: {body}");
+}
+
 #[test]
 fn chat_mapping_off_sends_thinking_disabled_only() {
     let body = map_chat_request(empty_chat_req(), "zai/glm-5.2", Some("off")).expect("maps");
@@ -1390,6 +1442,38 @@ async fn responses_incomplete_and_top_level_error_are_not_success() {
             );
         }
     }
+}
+
+#[tokio::test]
+async fn chat_eof_keeps_complete_tool_calls() {
+    // Zen closes the stream right after the last delta (no finish chunk): a
+    // COMPLETE tool call is still usable, so it survives with a warning.
+    use futures::StreamExt;
+    let server = wiremock::MockServer::start().await;
+    let chunk = serde_json::json!({"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"bash","arguments":"{\"command\":\"ls -la\"}"}}]}}]});
+    wiremock::Mock::given(wiremock::matchers::any())
+        .respond_with(
+            wiremock::ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_string(format!("data: {chunk}\n\n")),
+        )
+        .mount(&server)
+        .await;
+    let provider = OpenAiProvider::new("key", "test", server.uri(), None, None).unwrap();
+    let events: Vec<_> = provider.stream(empty_chat_req()).collect().await;
+    assert!(!events.iter().any(Result::is_err), "{events:?}");
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, Ok(StreamEvent::ToolCallDelta { .. })))
+    );
+    assert!(events.iter().any(|e| matches!(
+        e,
+        Ok(StreamEvent::MessageComplete {
+            stop_reason: Some(StopReason::ToolUse),
+            ..
+        })
+    )));
 }
 
 #[tokio::test]

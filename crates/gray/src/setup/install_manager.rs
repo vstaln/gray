@@ -105,11 +105,20 @@ pub fn run_skills_modal(
                 crate::skills::discover_skills(cwd)
                     .skills
                     .iter()
-                    .map(|skill| ManagerItem {
-                        name: skill.name.clone(),
-                        row: crate::skills::format_discovered_skill_row(skill),
-                        lit: true,
-                        enabled: true,
+                    .map(|skill| {
+                        let auto = crate::setup::skills_auto_enabled();
+                        let mut row = crate::skills::format_discovered_skill_row(skill);
+                        if !auto {
+                            row.push_str(" [auto-off]");
+                        } else if crate::setup::disabled_skill_names().contains(&skill.name) {
+                            row.push_str(" [disabled]");
+                        }
+                        ManagerItem {
+                            name: skill.name.clone(),
+                            row,
+                            lit: true,
+                            enabled: true,
+                        }
                     })
                     .collect(),
             )

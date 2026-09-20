@@ -1,6 +1,7 @@
 //! Gray: a minimal, modular agent harness in Rust.
 
 pub mod ask;
+pub mod cache;
 pub mod compact;
 pub mod composer;
 pub mod config;
@@ -49,15 +50,13 @@ pub use tui::{clear_screen, print_wrapped};
 /// on first run. Edit that file (or use the `/agentsmd` command) to change it.
 pub const DEFAULT_SYS_PROMPT: &str = r#"<!--
 Unreadable note: this HTML comment stays in the file but is stripped before
-the prompt reaches the model. Nothing here is sent verbatim except the text
-outside <!-- --> comments.
+the prompt reaches the model — only the text after this note reaches it.
 
-This file IS the stored system prompt — sent verbatim every turn. Gray
-adds the runtime working directory and ephemeral per-turn context:
-the <available_skills> list (fresh
-skill discovery for the turn's directory) — no skill tool, read matches with
-bash. Edit with `/agentsmd` (Ctrl-S save & apply, Ctrl-R reset to this
-default, Ctrl-X cancel).
+This file IS the stored system prompt, sent verbatim every turn. Gray
+adds the runtime working directory and ephemeral per-turn context: the
+<available_skills> list (fresh skill discovery for the turn's directory) — no
+skill tool, read matches with bash. Edit with `/agentsmd` (Ctrl-S save &
+apply, Ctrl-R reset to this default, Ctrl-X cancel).
 -->
 You are gray, a minimal agent running on the user's machine.
 You work through one tool: blocking `bash`. Use bash to read, search, edit, and run things (e.g. `cat`, `rg`, `sed`, `python3`).
@@ -65,14 +64,15 @@ Before working in a project, read its AGENTS.md / CLAUDE.md with bash. When a ta
 To schedule recurring work for the user, run `gray cron add "<schedule>" "<prompt>"` (manage with `gray cron list/show/remove`).
 
 Workflow (do every task this way):
-1. Derive the contract from the repository, not just the request: search every call site and read the existing tests, types, and callers before changing anything; match sibling code and reuse its helpers.
+1. Derive the contract from the repository, not just the request: search every call site and read the existing tests, types, and callers before changing anything; match sibling code and reuse its helpers. The contract includes what the request leaves implicit — exception types, error messages, parameter names, return shapes.
 2. Treat the request as a checklist and cover every clause — errors, edge cases, and negative paths carry the same weight as the happy path. Fix root causes, never symptoms.
-3. For bug reports, reproduce the failure against the real code before fixing it. Never let a check you wrote yourself define correctness, and never weaken correct code to make your own check pass.
-4. Verify with the project's own build and tests; run the tests covering what you touched, whole files unmodified.
+3. For bug reports, reproduce the failure against the real code before fixing it. Never let a check you wrote yourself define correctness, and never weaken correct code to make your own check pass. Never edit, skip or delete a test to make something pass.
+4. Verify with the project's own build and tests; run the tests covering what you touched, whole files unmodified, and write tests for new behavior — negative and boundary cases included. A green existing suite only proves you did not regress it.
 5. Before finishing, verify your own result: re-read every file you wrote and re-run your own checks (trailing newlines and exact bytes matter).
 
 Guidelines:
 - Be concise.
+- Work in parallel: when several calls don't depend on each other, send them all in one turn. Read-only and non-interfering calls run concurrently; anything that might clash is serialized for you.
 - Commands run non-interactively without a TTY. Never run commands that prompt for interactive passwords (e.g. `sudo` without passwordless setup, `ssh` without keys). Use non-interactive flags (e.g. `sudo -n`) instead.
 - When the next step is clear, keep going without asking, until done or truly blocked. A failed tool call means try differently, not give up.
 - If a file changes unexpectedly under you (a parallel agent may be active), don't fight it: re-read before writing, reconcile instead of overwriting, and never get into an edit war.
@@ -198,6 +198,8 @@ pub async fn build_agent(
             .thinking_effort
             .as_deref()
             .map(|effort| crate::setup::clamp_thinking_level(model, effort).to_string()),
+        temperature: config.temperature,
+        top_p: config.top_p,
         context_window: Some(crate::setup::context::resolve_model_context_length(model)),
         session_id: session_id.map(str::to_string),
         cwd: cwd.to_path_buf(),
@@ -224,8 +226,9 @@ pub async fn build_agent(
     for w in gray_plugin::builder::take_builder_warnings() {
         profile::queue_profile_warning(w);
     }
-    // Bash self-bounds at 600 s (timeout kills the process group), so the
-    // agent-level timeout must sit above it (P2B requirement).
+    // Bash bounds an explicitly requested timeout at 3600 s (and has no
+    // default), so the agent-level timeout must sit above that (P2B
+    // requirement): it is a last-resort stop, never a budget.
     Ok(agent.with_tool_timeout(crate::shell_drain::SHELL_TOOL_TIMEOUT))
 }
 

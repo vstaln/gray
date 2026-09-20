@@ -159,16 +159,17 @@ pub(crate) fn live_turn_output_tokens(turn_output_accum: usize, streamed_bytes: 
     turn_output_accum.saturating_add(est)
 }
 
-/// `· N tps` suffix for the working pill. Empty before the first output
-/// byte or when elapsed is zero (same contract as the end-of-turn rate).
-/// Pure for testability.
+/// `· N tps` suffix for the working pill. The denominator is
+/// streaming-only time (`stream_ms`), so a turn sitting in a tool call
+/// never drags the live rate down. Empty before the first output byte or
+/// when nothing has streamed yet. Pure for testability.
 pub(crate) fn live_tps_suffix(
     turn_output_accum: usize,
     streamed_bytes: u64,
-    elapsed_ms: u64,
+    stream_ms: u64,
 ) -> String {
     let out = live_turn_output_tokens(turn_output_accum, streamed_bytes);
-    crate::repl::turn_tokens_per_second(out, elapsed_ms)
+    crate::repl::turn_tokens_per_second(out, stream_ms)
         .map(|t| format!(" · {t} tps"))
         .unwrap_or_default()
 }
@@ -285,6 +286,10 @@ pub struct Tui {
     pub(crate) last_height: u16,
     pub latest_usage: Option<gray_core::event::Usage>,
     pub cumulative_usage: Option<gray_core::event::Usage>,
+    /// Last provider request seen this session: drives the footer's
+    /// prompt-cache warmth countdown and the cache-miss warning. Fed one
+    /// `StepUsage` report per round (see [`Tui::note_cache_request`]).
+    pub(crate) cache: crate::cache::CacheTracker,
     markdown_renderer: gray_markdown::StreamingMarkdownRenderer,
     committed_markdown_lines: usize,
     pub(crate) pending_resize: Option<(u16, Instant)>,
@@ -305,6 +310,11 @@ pub struct Tui {
     /// output. Reset per turn; never feeds the context gauge base (that
     /// stays `latest_usage`, latest-round size).
     pub(crate) turn_output_accum: usize,
+    /// Streaming-only ms for this turn, mirrored from the REPL's
+    /// [`crate::repl::TurnStreamClock`]: the denominator for every live tps
+    /// readout. Reset per turn; the end-of-turn `Thought for` line reads the
+    /// same value so the pill and the final line agree.
+    pub(crate) turn_stream_ms: u64,
     /// Current inline viewport height. `draw` keeps it at the exact-fit
     /// content height (+1 spare cleared row, clamped to
     /// `MIN_VIEWPORT_H..=VIEWPORT_H`) so there is never a 10-row idle gap;
@@ -490,6 +500,7 @@ impl Tui {
             last_height: rows,
             latest_usage: None,
             cumulative_usage: None,
+            cache: crate::cache::CacheTracker::default(),
             markdown_renderer: gray_markdown::StreamingMarkdownRenderer::new(
                 gray_markdown::gray_markdown_style(),
                 true,
@@ -499,6 +510,7 @@ impl Tui {
             turn_billed_output: None,
             streamed_bytes: 0,
             turn_output_accum: 0,
+            turn_stream_ms: 0,
             viewport_h: MIN_VIEWPORT_H,
             live_tools: Vec::new(),
             plugin_widget: plugin_widget::Widget::new(std::env::current_dir().unwrap_or_default()),
@@ -756,6 +768,41 @@ impl Tui {
         self.turn_billed_output = None;
         self.streamed_bytes = 0;
         self.turn_output_accum = 0;
+        self.turn_stream_ms = 0;
+        // New conversation: the cache state belongs to the old context.
+        self.cache.reset();
+    }
+
+    /// Records one per-round provider usage report (the `StepUsage` arm of
+    /// the REPL dispatch) and returns the cache miss it paid for, if any.
+    /// `model` is the active model id — a switch re-bills the whole prompt
+    /// and shows up as its own miss label. Pricing comes from the same
+    /// LiteLLM table `/usage` charges against; an unpriced model reports
+    /// tokens with no cost claim.
+    pub fn note_cache_request(
+        &mut self,
+        usage: &gray_core::event::Usage,
+        model: &str,
+    ) -> Option<crate::cache::CacheMiss> {
+        let rate = crate::setup::get_model_rate(model);
+        self.cache.note(usage, model, rate, Instant::now())
+    }
+
+    /// Time left before the prompt cache goes cold, or `None` when the
+    /// provider never reported cache activity (or it already expired).
+    pub fn cache_remaining(&self) -> Option<Duration> {
+        self.cache.remaining(Instant::now())
+    }
+
+    /// Drops the cache baseline: a compaction replaced the context, so the
+    /// next request's prompt is new content, not re-billed content.
+    pub fn reset_cache(&mut self) {
+        self.cache.reset();
+    }
+
+    /// Mirror of the turn's streaming-only elapsed ms (the tps denominator).
+    pub(crate) fn set_turn_stream_ms(&mut self, ms: u64) {
+        self.turn_stream_ms = ms;
     }
 
     /// Stashes the TurnEnd billed output + reasoning counts for the `end_turn`
@@ -902,6 +949,7 @@ impl Tui {
         self.turn_billed_output = None;
         self.streamed_bytes = 0;
         self.turn_output_accum = 0;
+        self.turn_stream_ms = 0;
         self.is_task_running = true;
         self.status = Some((now, label.to_string()));
         let _ = self.draw();
@@ -1006,7 +1054,7 @@ impl Tui {
         self.commit_markdown_tail();
     }
 
-    pub fn end_turn(&mut self) {
+    pub fn end_turn(&mut self, stream_ms: u64) {
         // Codex `turn_runtime.rs`: a turn ending without item completion
         // clears a live compaction silently (no `Context compacted` line).
         self.active_compaction = None;
@@ -1026,6 +1074,7 @@ impl Tui {
         let turn_toks = self.turn_billed_output;
         self.turn_billed_output = None;
         self.turn_output_accum = 0;
+        self.turn_stream_ms = 0;
         if self.thinking {
             self.end_thinking_run(true);
         }
@@ -1053,12 +1102,11 @@ impl Tui {
             // `✻ Thought for … · N tokens` is billed output (exact, reasoning
             // included). Other billed Σ-per-round totals stay out of the TUI
             // entirely.
-            let tps = turn_toks.and_then(|toks| {
-                crate::repl::turn_tokens_per_second(
-                    toks,
-                    elapsed.as_millis().min(u128::from(u64::MAX)) as u64,
-                )
-            });
+            // Rate over streaming time only; the `Thought for 6s` clock
+            // above stays whole-turn on purpose (it is a duration, not a
+            // rate denominator).
+            let tps =
+                turn_toks.and_then(|toks| crate::repl::turn_tokens_per_second(toks, stream_ms));
             let line = format_thought_line(verb, &elapsed_str, turn_toks, tps);
             self.ensure_gap(1);
             self.push_dim(line);
@@ -1114,10 +1162,15 @@ impl Tui {
             }
         }
         let widget_changed = self.plugin_widget.refresh();
+        // A warm prompt cache keeps the footer countdown (◷ 4m) live, so
+        // the 100ms ticker must keep painting while it runs — the same
+        // reason the status dock and its shimmer tick.
+        let cache_ticking = self.cache_remaining().is_some();
         if self.status.is_none()
             && self.live_tools.is_empty()
             && !self.plugin_widget.active()
             && !widget_changed
+            && !cache_ticking
         {
             return;
         }

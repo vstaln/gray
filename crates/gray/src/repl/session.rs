@@ -336,6 +336,45 @@ pub(crate) async fn ensure_session_state(
     }
 }
 
+/// Streaming-only clock for one turn — the denominator every tps readout
+/// should use, because a rate is only meaningful over the time tokens were
+/// actually flowing. Tool-call waits, provider round-trips between rounds,
+/// and compaction never open a span, so a turn that spent 40s in tools and
+/// 4s streaming reports the 4s rate instead of a whole-turn average that
+/// makes every model look slow.
+#[derive(Debug, Default)]
+pub(crate) struct TurnStreamClock {
+    /// Open since the first delta of the current burst.
+    anchor: Option<std::time::Instant>,
+    /// Sum of the inter-delta gaps across every burst this turn.
+    streamed_ms: u64,
+}
+
+impl TurnStreamClock {
+    /// Notes one streamed delta (text, reasoning, or tool arguments).
+    /// Consecutive deltas accumulate the gap between them; the first delta
+    /// of a burst only opens the span.
+    pub(crate) fn tick(&mut self) {
+        let now = std::time::Instant::now();
+        if let Some(prev) = self.anchor.replace(now) {
+            let gap = u64::try_from(now.duration_since(prev).as_millis()).unwrap_or(u64::MAX);
+            self.streamed_ms = self.streamed_ms.saturating_add(gap);
+        }
+    }
+
+    /// Closes the open burst at a round or turn boundary. The gap between
+    /// the last delta and the boundary is finalize/dispatch time, not
+    /// streaming, so it is deliberately dropped rather than counted.
+    pub(crate) fn close_span(&mut self) {
+        self.anchor = None;
+    }
+
+    /// Streaming-only elapsed ms, or `None` when nothing streamed.
+    pub(crate) fn streamed_ms(&self) -> Option<u64> {
+        (self.streamed_ms > 0).then_some(self.streamed_ms)
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn dispatch_agent_event(
     ev: &AgentEvent,
@@ -348,6 +387,7 @@ pub(crate) fn dispatch_agent_event(
     totals: &mut SessionTotals,
     turn_start: std::time::Instant,
     turn_duration_ms: &mut Option<u64>,
+    stream_clock: &mut TurnStreamClock,
 ) {
     // Single elapsed source — TurnEnd stamps duration once so footer,
     // totals, and persisted entry agree even when TUI + headless paths diverge.
@@ -356,8 +396,14 @@ pub(crate) fn dispatch_agent_event(
         && let Ok(mut t) = shared.lock()
     {
         match ev {
-            AgentEvent::ThinkingDelta { delta } => t.stream_thinking(delta),
-            AgentEvent::TextDelta { delta } => t.stream_text(delta),
+            AgentEvent::ThinkingDelta { delta } => {
+                stream_clock.tick();
+                t.stream_thinking(delta);
+            }
+            AgentEvent::TextDelta { delta } => {
+                stream_clock.tick();
+                t.stream_text(delta);
+            }
             AgentEvent::ToolCallStart { id, name } => {
                 t.flush_markdown();
                 t.end_thinking();
@@ -375,6 +421,9 @@ pub(crate) fn dispatch_agent_event(
                 name,
                 args_so_far,
             } => {
+                // Tool arguments stream as tokens too: they belong in the
+                // rate's denominator, not in a tool wait.
+                stream_clock.tick();
                 // pi `updateArgs`: stream the in-progress command into the
                 // live card head (same header family as the final card).
                 // (No token accounting: the pill carries no estimate — exact
@@ -447,7 +496,25 @@ pub(crate) fn dispatch_agent_event(
                 }
             }
             AgentEvent::StepUsage { usage } => {
+                // New round segment: close the streaming span so the gap
+                // until the next delta (tools, round-trip) is never billed
+                // as generation time.
+                stream_clock.close_span();
                 t.set_usage(*usage);
+                // Prompt-cache bookkeeping: every round's report is one
+                // provider request, so it re-arms the footer warmth timer
+                // and is checked against the previous request for a
+                // re-billed prompt (pi `maybeShowCacheMissNotice`).
+                if let Some(miss) = t.note_cache_request(usage, model)
+                    && let Some(notice) = miss.notice()
+                {
+                    // Close the open markdown/thinking runs first, or the
+                    // row glues onto the streamed tail above it.
+                    t.flush_markdown();
+                    t.end_thinking();
+                    t.ensure_gap(1);
+                    t.push_warning(&notice);
+                }
             }
             // Reconnecting rides the shimmer status dock (`⬡ Reconnecting…`)
             // like Thinking/Working instead of a static cell; the cause
@@ -465,6 +532,7 @@ pub(crate) fn dispatch_agent_event(
                 *turn_usage = Some(*usage);
                 let ms = elapsed_ms();
                 *turn_duration_ms = Some(ms);
+                stream_clock.close_span();
                 // pi `settle_pending_cards`: leftovers never stick (cancel/
                 // error paths emit no ToolResult for in-flight calls).
                 t.clear_live_tools();
@@ -489,13 +557,20 @@ pub(crate) fn dispatch_agent_event(
             }
             _ => {}
         }
+        t.set_turn_stream_ms(stream_clock.streamed_ms().unwrap_or(0));
         let _ = std::io::stdout().flush();
         return;
     }
     if !interactive {
         match ev {
-            AgentEvent::TextDelta { delta } => print!("{delta}"),
-            AgentEvent::ThinkingDelta { delta } => print!("{THINKING_STYLE}{delta}\x1b[0m"),
+            AgentEvent::TextDelta { delta } => {
+                stream_clock.tick();
+                print!("{delta}");
+            }
+            AgentEvent::ThinkingDelta { delta } => {
+                stream_clock.tick();
+                print!("{THINKING_STYLE}{delta}\x1b[0m");
+            }
             AgentEvent::ToolCallStart { id, name } => {
                 pending_tools.insert(id.clone(), (name.clone(), None));
             }
@@ -544,7 +619,9 @@ pub(crate) fn dispatch_agent_event(
                     eprintln!("\n\x1b[2m⚠ {message}\n└ {details}\x1b[0m");
                 }
             }
+            AgentEvent::StepUsage { .. } => stream_clock.close_span(),
             AgentEvent::TurnEnd { usage, .. } => {
+                stream_clock.close_span();
                 *turn_usage = Some(*usage);
                 let ms = elapsed_ms();
                 *turn_duration_ms = Some(ms);
@@ -552,7 +629,7 @@ pub(crate) fn dispatch_agent_event(
                     totals.add(usage, model, Some(ms));
                     println!(
                         "\n\x1b[2m{}\x1b[0m",
-                        turn_footer(usage, model, totals, Some(ms))
+                        turn_footer(usage, model, totals, Some(ms), stream_clock.streamed_ms())
                     );
                 }
             }
@@ -578,8 +655,14 @@ pub(crate) async fn persist_compaction_tail(
     tui: Option<&crate::composer::SharedTui>,
 ) {
     if let Some(shared) = tui {
+        let mut t = shared.lock().expect("tui lock");
         let est = crate::compact::estimate_context_tokens(agent.messages(), None);
-        shared.lock().expect("tui lock").seed_estimate_usage(est);
+        t.seed_estimate_usage(est);
+        // The context was just replaced: the next request's prompt is new
+        // content, so the pre-compact request is no longer its baseline
+        // (pi resets its miss scan on compaction entries for the same
+        // reason — a fresh summary is not a re-billed prompt).
+        t.reset_cache();
     }
     ensure_session_state(session_state, config, cwd).await;
     if let Some(state) = session_state {

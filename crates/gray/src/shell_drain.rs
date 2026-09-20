@@ -7,8 +7,11 @@
 
 use std::time::Duration;
 
-/// Bash self-bounds at 600 s, so agents need headroom above that.
-pub const SHELL_TOOL_TIMEOUT: Duration = Duration::from_secs(610);
+/// Last-resort agent-level ceiling, kept above bash's largest explicit
+/// timeout (`MAX_TIMEOUT_SECS` = 3600 s). Bash itself has no default timeout
+/// any more, so a hung command is stopped here — one hour in, not on a
+/// budget the agent has to guess.
+pub const SHELL_TOOL_TIMEOUT: Duration = Duration::from_secs(3660);
 /// Startup sweep: logs older than 7 days go.
 const LOG_SWEEP_AGE: Duration = Duration::from_secs(7 * 24 * 3600);
 /// Shell transcript cap per log file: matches pump + gray.log 10MiB. The

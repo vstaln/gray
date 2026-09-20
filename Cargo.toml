@@ -64,5 +64,6 @@ percent-encoding = "2.3"
 unicode-width = "0.2"
 ignore = "0.4"
 globset = "0.4"
+regex = "1"
 libc = "0.2"
 

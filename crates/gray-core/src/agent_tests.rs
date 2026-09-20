@@ -382,24 +382,122 @@ async fn tool_error_is_fed_back_and_model_recovers() {
 }
 
 #[tokio::test]
-async fn loop_guard_stops_identical_consecutive_tool_calls() {
-    // Same tool+args 3× in a row → LoopDetected (replaces arbitrary max_turns).
-    let provider = FakeProvider::new(vec![
-        tool_script("c1"),
-        tool_script("c2"),
-        tool_script("c3"),
-    ]);
+async fn loop_guard_nudges_once_then_aborts_at_six() {
+    // Same tool+args 3× → nudge, run continues; still identical at 6× → abort.
+    let scripts: Vec<Vec<StreamEvent>> = (0..6).map(|i| tool_script(&format!("c{i}"))).collect();
+    let provider = FakeProvider::new(scripts);
     let executor = FakeExecutor::new(ToolOutput::ok("ok"));
     let mut agent = Agent::new(Box::new(provider), Arc::new(executor)).with_tools(vec![tool_def()]);
 
     let err = agent
         .run(Message::user("loop forever"), ToolContext::default())
         .await
-        .expect_err("should detect loop");
+        .expect_err("six identical rounds must abort");
 
     assert!(matches!(err, CoreError::LoopDetected(_)), "got {err:?}");
-    // 3rd identical turn aborting before tool result + synthetic tool_result: 1 user + 2 full rounds + 3rd assistant + 1 synthetic = 7
-    assert_eq!(agent.messages().len(), 1 + 2 * 2 + 2);
+    let nudges = agent
+        .messages()
+        .iter()
+        .filter(|m| m.text_content().contains("gray loop guard"))
+        .count();
+    assert_eq!(nudges, 1, "exactly one nudge lands before the abort");
+}
+
+#[tokio::test]
+async fn loop_guard_nudge_lets_the_model_recover() {
+    // Three identical rounds (nudge) → one different call → clean end. A poll
+    // that changes approach after the nudge must not be killed.
+    let mut scripts: Vec<Vec<StreamEvent>> =
+        (0..3).map(|i| tool_script(&format!("c{i}"))).collect();
+    scripts.push(read_script("r1", "/tmp/other.rs"));
+    scripts.push(end_script());
+    let provider = FakeProvider::new(scripts);
+    let executor = FakeExecutor::new(ToolOutput::ok("ok"));
+    let mut agent = Agent::new(Box::new(provider), Arc::new(executor)).with_tools(vec![tool_def()]);
+
+    let events = agent
+        .run(Message::user("poll then finish"), ToolContext::default())
+        .await
+        .expect("nudge must not abort a run that changes approach");
+
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::TurnEnd { .. }))
+    );
+    assert!(
+        agent
+            .messages()
+            .iter()
+            .any(|m| m.text_content().contains("gray loop guard")),
+        "expected the loop-guard nudge in history"
+    );
+}
+
+#[tokio::test]
+async fn loop_guard_exempts_job_polls() {
+    // A repeated command that gray answers with the live status of the job it
+    // already started is a deliberate wait — the elapsed time moves — so the
+    // signature streak must not accumulate. Real transcript case: pebble's
+    // 58/59 run was aborted after three identical polls of a running test job.
+    let mut scripts: Vec<Vec<StreamEvent>> =
+        (0..10).map(|i| tool_script(&format!("c{i}"))).collect();
+    scripts.push(end_script());
+    let provider = FakeProvider::new(scripts);
+    let executor = FakeExecutor::new(ToolOutput::ok(
+        "job j1 · running · elapsed 50s · log /tmp/j1.log",
+    ));
+    let mut agent = Agent::new(Box::new(provider), Arc::new(executor)).with_tools(vec![tool_def()]);
+
+    let events = agent
+        .run(Message::user("poll the job"), ToolContext::default())
+        .await
+        .expect("polling a live job must not abort the run");
+
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::TurnEnd { .. }))
+    );
+    assert!(
+        !agent
+            .messages()
+            .iter()
+            .any(|m| m.text_content().contains("gray loop guard")),
+        "polls of a live job must neither nudge nor abort"
+    );
+}
+
+#[tokio::test]
+async fn loop_guard_nudges_hung_job_polls() {
+    // A job polled forever is still called out once — but the run ends
+    // cleanly instead of being killed mid-wait.
+    let mut scripts: Vec<Vec<StreamEvent>> =
+        (0..20).map(|i| tool_script(&format!("c{i}"))).collect();
+    scripts.push(end_script());
+    let provider = FakeProvider::new(scripts);
+    let executor = FakeExecutor::new(ToolOutput::ok(
+        "job j1 · running · elapsed 900s · log /tmp/j1.log",
+    ));
+    let mut agent = Agent::new(Box::new(provider), Arc::new(executor)).with_tools(vec![tool_def()]);
+
+    let events = agent
+        .run(Message::user("poll forever"), ToolContext::default())
+        .await
+        .expect("hung-job polls must not abort the run");
+
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::TurnEnd { .. }))
+    );
+    assert!(
+        agent
+            .messages()
+            .iter()
+            .any(|m| m.text_content().contains("has been polled 20 times")),
+        "expected the hung-job nudge in history"
+    );
 }
 
 #[tokio::test]
@@ -1584,12 +1682,9 @@ async fn turn_end_hook_called_once_on_end_and_on_error() {
     // Error path (identical-tool loop → LoopDetected): still exactly once.
     let ends_err = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let calls_err = std::sync::Arc::new(Mutex::new(Vec::<String>::new()));
+    let scripts: Vec<Vec<StreamEvent>> = (0..6).map(|i| tool_script(&format!("c{i}"))).collect();
     let mut agent = Agent::new(
-        Box::new(FakeProvider::new(vec![
-            tool_script("c1"),
-            tool_script("c2"),
-            tool_script("c3"),
-        ])),
+        Box::new(FakeProvider::new(scripts)),
         Arc::new(FakeExecutor::new(ToolOutput::ok("ok"))),
     )
     .with_tools(vec![tool_def()])

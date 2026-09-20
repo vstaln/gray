@@ -36,7 +36,41 @@ fn totals_sum_durations_and_skip_untimed() {
 fn turn_footer_includes_duration_when_known() {
     let usage = gray_core::event::Usage::new(1000, 500);
     let totals = super::SessionTotals::default();
-    let line = super::turn_footer(&usage, "test-persist-model", &totals, Some(6500));
+    let line = super::turn_footer(
+        &usage,
+        "test-persist-model",
+        &totals,
+        Some(6500),
+        Some(6500),
+    );
     assert!(line.contains("6.5s"), "footer should show time: {line}");
     assert!(line.contains("tokens"), "footer should keep tokens: {line}");
+}
+
+/// One test, both branches: `TURN_IN_FLIGHT` is a process-global, so two
+/// concurrent tests would clear each other's flag.
+#[tokio::test]
+async fn drain_waits_for_a_turn_but_never_blocks_the_exit_forever() {
+    // The turn clears its own flag on the way out, as run_prompt_turn does.
+    {
+        let _guard = super::mark_turn_in_flight();
+        tokio::spawn(async {
+            tokio::time::sleep(std::time::Duration::from_millis(60)).await;
+            drop(super::mark_turn_in_flight());
+        });
+        assert!(
+            super::drain_in_flight_turn(std::time::Duration::from_secs(5)).await,
+            "the exit path must wait for the turn to persist"
+        );
+    }
+    assert!(
+        !super::TURN_IN_FLIGHT.load(std::sync::atomic::Ordering::Relaxed),
+        "the guard clears the flag on drop"
+    );
+    // A wedged turn must not make Ctrl-C feel dead.
+    let _wedged = super::mark_turn_in_flight();
+    assert!(
+        !super::drain_in_flight_turn(std::time::Duration::from_millis(120)).await,
+        "a wedged turn must not block the exit forever"
+    );
 }

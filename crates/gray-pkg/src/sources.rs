@@ -680,7 +680,7 @@ fn git_output(args: &[&str], cwd: &Path) -> anyhow::Result<String> {
 
 /// Shallow-clone `url` into `<tmp>/repo` (`extra` holds `--branch` /
 /// `--filter` / `--sparse` flags) and return the keeper tempdir + path.
-pub(crate) fn clone_into_tmp(
+pub fn clone_into_tmp(
     url: &str,
     extra: &[&str],
     under_plugins_tmp: bool,
@@ -929,17 +929,17 @@ fn if_version(v: &str) -> String {
 /// already (fast path, no network); when upstream moved on, fetch just that
 /// commit so installs keep working instead of rotting. Fail-closed when the
 /// pin doesn't resolve upstream.
-fn checkout_pinned_commit(repo_dir: &Path, plugin: &str, want: &str) -> anyhow::Result<()> {
+pub fn checkout_pinned_commit(repo_dir: &Path, plugin: &str, want: &str) -> anyhow::Result<()> {
     // The pin must be a full commit object ID: refs, short prefixes, and
     // option-looking strings are rejected before touching git.
     if want.len() != 40 || !want.bytes().all(|b| b.is_ascii_hexdigit()) {
-        anyhow::bail!("claude plugin {plugin} has a malformed pinned commit");
+        anyhow::bail!("plugin {plugin} has a malformed pinned commit");
     }
     if git_output(&["rev-parse", "HEAD"], repo_dir)? == want {
         return Ok(());
     }
     git_output(&["fetch", "--depth", "1", "origin", want], repo_dir).map_err(|e| {
-        anyhow::anyhow!("claude plugin {plugin} pinned commit {want} unavailable upstream ({e:#})")
+        anyhow::anyhow!("plugin {plugin} pinned commit {want} unavailable upstream ({e:#})")
     })?;
     git_output(
         &[
@@ -952,12 +952,12 @@ fn checkout_pinned_commit(repo_dir: &Path, plugin: &str, want: &str) -> anyhow::
         repo_dir,
     )
     .map_err(|e| {
-        anyhow::anyhow!("claude plugin {plugin} cannot check out pinned commit {want} ({e:#})")
+        anyhow::anyhow!("plugin {plugin} cannot check out pinned commit {want} ({e:#})")
     })?;
     // Verify the result, not the command: checkout succeeding does not prove
     // HEAD is the pinned commit.
     if git_output(&["rev-parse", "HEAD"], repo_dir)? != want {
-        anyhow::bail!("claude plugin {plugin} checkout did not land on pinned commit {want}");
+        anyhow::bail!("plugin {plugin} checkout did not land on pinned commit {want}");
     }
     Ok(())
 }

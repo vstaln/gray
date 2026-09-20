@@ -1,16 +1,64 @@
 //! Native plugin command registration, help metadata and bounded UI requests. No model calls.
-use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::Context;
+use gray_plugin::Plugin;
 use gray_plugin::lock::{LockEntry, LockFile};
 
-const CATALOG: &[(&str, &str, &str)] = &[(
-    "discord",
-    "git+https://github.com/vstaln/gray-discord-plugin.git@b149022a1ca7c9e099007ffd8411c14489d8db93",
-    "gray_discord",
-)];
+/// One first-party plugin. `source` is a `git+<url>@<commit>` pin; the crate
+/// is built with `cargo build --release --locked` and the resulting binary is
+/// published under `<home>/plugins/<name>/` and spawned with `sidecar_args`.
+#[derive(Debug)]
+struct Catalog {
+    name: &'static str,
+    source: &'static str,
+    /// The crate's `[[bin]]` name, as produced under `target/release/`.
+    bin: &'static str,
+    /// Arguments that make the binary serve the sidecar wire.
+    sidecar_args: &'static [&'static str],
+}
+
+/// First-party plugins, pinned by commit. Every entry is a Rust crate built
+/// locally: gray itself ships no Python, and its own plugins must not
+/// reintroduce one. User-written plugins may still be any executable — see
+/// `GRAY_PLUGIN_PATH` in [`install`] and [`gray_plugin::builder::resolve_argv`].
+const CATALOG: &[Catalog] = &[Catalog {
+    name: "discord",
+    source: "git+https://github.com/vstaln/gray-discord-plugin.git@648952dc01a78a5eee031846f5f964877bfdac9b",
+    bin: "gray-discord",
+    sidecar_args: &["sidecar"],
+}];
+
+fn catalog(name: &str) -> anyhow::Result<&'static Catalog> {
+    CATALOG
+        .iter()
+        .find(|entry| entry.name == name)
+        .with_context(|| format!("Unknown plugin '{name}'. Available: background, discord"))
+}
+
+/// Split a catalog source into its clone URL and pinned commit. Sources are
+/// always `git+<url>@<commit>`; the pin must be a full commit ID so an
+/// install reproduces exactly the code that was reviewed.
+fn parse_git_source(source: &str) -> anyhow::Result<(&str, &str)> {
+    const SHAPE: &str = "plugin source must be git+<url>@<40-hex commit>";
+    let rest = source
+        .strip_prefix("git+")
+        .with_context(|| format!("{SHAPE}, got {source}"))?;
+    // rsplit: an ssh URL may itself contain '@' (user@host).
+    let (url, pin) = rest
+        .rsplit_once('@')
+        .with_context(|| format!("{SHAPE}, got {source}"))?;
+    anyhow::ensure!(
+        pin.len() == 40 && pin.bytes().all(|b| b.is_ascii_hexdigit()),
+        "{SHAPE}, got pin {pin}"
+    );
+    anyhow::ensure!(
+        url.starts_with("https://") || url.starts_with("ssh://") || url.starts_with("git@"),
+        "plugin source URL must be https or ssh, got {url}"
+    );
+    Ok((url, pin))
+}
 
 pub fn home() -> anyhow::Result<PathBuf> {
     Ok(crate::sys_prompt_path()?
@@ -83,101 +131,128 @@ fn metadata(home: &Path, name: &str) -> anyhow::Result<serde_json::Value> {
     )?)?)
 }
 
-fn run(program: impl AsRef<OsStr>, args: &[&OsStr]) -> anyhow::Result<()> {
-    let status = Command::new(program)
-        .args(args)
-        .env("PIP_NO_INPUT", "1")
-        .status()
-        .context("could not start plugin installer; check Python and python3-venv")?;
-    anyhow::ensure!(
-        status.success(),
-        "plugin installation step failed ({status}); see output above"
-    );
-    Ok(())
-}
-
-/// Private per-plugin venv, published only after installation and import succeed.
-/// TempDir rolls back failed installs; a file lock serializes registry updates.
+/// Install a first-party plugin from the pinned catalog. `background` keeps
+/// its own prebuilt-binary path; every other entry is a Rust crate built from
+/// source. A file lock serializes registry updates; temp dirs roll back
+/// failed installs.
 async fn install_catalog(home: &Path, name: &str) -> anyhow::Result<()> {
     validate_name(name)?;
     if name == "background" {
         return native::install(home).await;
     }
-    let (_, source, module) = CATALOG
-        .iter()
-        .find(|(n, _, _)| *n == name)
-        .with_context(|| format!("Unknown plugin '{name}'. Available: background, discord"))?;
-    let root = home.join("plugins/cli");
+    install_cargo(home, catalog(name)?).await
+}
+
+/// Build a Rust plugin from its pinned source and register it as a sidecar.
+/// No interpreter is involved at any step: `cargo build --release` produces
+/// the binary gray spawns, so a first-party plugin install needs neither
+/// Python nor a package index.
+async fn install_cargo(home: &Path, entry: &Catalog) -> anyhow::Result<()> {
+    let name = entry.name;
+    let (url, pin) = parse_git_source(entry.source)?;
+    let root = home.join("plugins");
     std::fs::create_dir_all(&root)?;
     let lock = std::fs::OpenOptions::new()
         .create(true)
         .truncate(false)
         .write(true)
-        .open(home.join("plugins/.commands.lock"))?;
+        .open(root.join(".commands.lock"))?;
     lock.try_lock()
         .context("another plugin installation is running")?;
-    let mut registry = load(home)?;
-    if registry.plugins.contains_key(name) {
+    // Sidecars live in lock.json (commands.json holds CLI commands), so the
+    // already-installed check must read the registry this kind publishes to.
+    let sidecars = LockFile::load(&gray_plugin::lock::lock_path(home))?;
+    anyhow::ensure!(sidecars.schema == 1, "unsupported plugin lock schema");
+    if sidecars.plugins.contains_key(name) {
         println!("Plugin '{name}' is already registered. Run: gray {name} --help");
         return Ok(());
     }
-    let env = tempfile::Builder::new()
-        .prefix(&format!("{name}-"))
-        .tempdir_in(root)?;
-    let python = match std::env::var_os("GRAY_PLUGIN_PYTHON") {
-        Some(python) => python,
-        None => ["python3", "/usr/bin/python3"].into_iter().find(|python| {
-            Command::new(python).args(["-c", "import sys, venv, ensurepip, ctypes; assert sys.version_info >= (3, 11)"])
-                .stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null())
-                .status().is_ok_and(|status| status.success())
-        }).context("Python 3.11+ with venv/pip support is required; install python3-venv or set GRAY_PLUGIN_PYTHON")?.into(),
-    };
-    println!("Installing '{name}' from {source} (plugin code runs with your user permissions).");
-    run(
-        python,
-        &[OsStr::new("-m"), OsStr::new("venv"), env.path().as_os_str()],
-    )?;
-    let executable = env.path().join(if cfg!(windows) {
-        "Scripts/python.exe"
-    } else {
-        "bin/python"
-    });
-    run(
-        &executable,
-        &[
-            OsStr::new("-m"),
-            OsStr::new("pip"),
-            OsStr::new("install"),
-            OsStr::new(source),
-        ],
-    )?;
-    run(
-        &executable,
-        &[OsStr::new("-m"), OsStr::new(module), OsStr::new("--help")],
-    )?;
-    registry.plugins.insert(
+    println!(
+        "Installing '{name}' from {} (compiling from source; plugin code runs with your user permissions).",
+        entry.source
+    );
+    let (_repo, repo_dir) = gray_pkg::sources::clone_into_tmp(url, &[], false)?;
+    gray_pkg::sources::checkout_pinned_commit(&repo_dir, name, pin)?;
+    let built = build_plugin(&repo_dir, entry.bin)?;
+    // Prove the artifact speaks the sidecar wire while it is still inside the
+    // build tempdir: a plugin that fails this check leaves nothing behind.
+    let probe = sidecar_argv(&built, entry.sidecar_args);
+    let plugin = gray_plugin::SidecarPlugin::spawn(probe).await?;
+    let manifest = plugin.manifest();
+    plugin.shutdown(std::time::Duration::from_secs(2)).await;
+    anyhow::ensure!(
+        manifest.name == name,
+        "built plugin reports name '{}', expected '{name}'",
+        manifest.name
+    );
+    // Publish under <home>/plugins/<name>/ so the recorded argv stays valid
+    // once the build tempdir is dropped.
+    let dest = root.join(name);
+    std::fs::create_dir_all(&dest)?;
+    let executable = dest.join(entry.bin);
+    std::fs::copy(&built, &executable)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755))?;
+    }
+    let argv = sidecar_argv(&executable, entry.sidecar_args);
+    let mut sidecars = LockFile::load(&gray_plugin::lock::lock_path(home))?;
+    sidecars.plugins.insert(
         name.into(),
         LockEntry {
-            ecosystem: "gray-cli".into(),
-            version: "catalog".into(),
+            ecosystem: "gray-native".into(),
+            version: manifest.version.clone(),
             hash: String::new(),
-            source: source.to_string(),
-            argv: vec![
-                executable.to_string_lossy().into_owned(),
-                "-m".into(),
-                module.to_string(),
-            ],
-            adapter_version: "1".into(),
+            source: entry.source.to_string(),
+            argv,
+            adapter_version: manifest.protocol.clone().unwrap_or_else(|| "1".into()),
             installed_at: chrono::Utc::now().to_rfc3339(),
             scope: "user".into(),
             enabled: true,
         },
     );
-    registry.save(&registry_path(home))?;
-    // Keep the original venv path: moving it would invalidate Python entry-point shebangs.
-    let _ = env.keep();
+    sidecars.save(&gray_plugin::lock::lock_path(home))?;
     println!("Installed '{name}'. Next: gray {name} setup");
     Ok(())
+}
+
+/// Spawn argv for a built plugin: the binary plus its sidecar arguments.
+fn sidecar_argv(executable: &Path, sidecar_args: &[&str]) -> Vec<String> {
+    let mut argv = vec![executable.to_string_lossy().into_owned()];
+    argv.extend(sidecar_args.iter().map(|arg| (*arg).to_string()));
+    argv
+}
+
+/// `cargo build --release --locked` inside the checked-out source. The
+/// lockfile must be committed: an unpinned dependency tree is not the build
+/// that was reviewed. Returns the built binary.
+fn build_plugin(repo_dir: &Path, bin: &str) -> anyhow::Result<PathBuf> {
+    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+    // Pin the target dir inside the checkout: an inherited CARGO_TARGET_DIR
+    // would otherwise build the artifact somewhere else and leave the check
+    // below looking in the wrong place.
+    let target = repo_dir.join("target");
+    let status = Command::new(&cargo)
+        .args(["build", "--release", "--locked"])
+        .arg("--target-dir")
+        .arg(&target)
+        .current_dir(repo_dir)
+        .status()
+        .context("could not start cargo; install Rust or point CARGO at it")?;
+    anyhow::ensure!(
+        status.success(),
+        "cargo build failed ({status}); see output above"
+    );
+    let built = target
+        .join("release")
+        .join(format!("{bin}{}", std::env::consts::EXE_SUFFIX));
+    anyhow::ensure!(
+        built.is_file(),
+        "cargo build did not produce {}",
+        built.display()
+    );
+    Ok(built)
 }
 
 /// Register a separately built native plugin. No hardcoded plugin catalog.
@@ -835,6 +910,49 @@ mod tests {
             .unwrap_err();
         assert!(error.to_string().contains("timed out"), "{error}");
         assert!(start.elapsed() < std::time::Duration::from_secs(3));
+    }
+
+    #[test]
+    fn git_source_splits_url_from_pinned_commit() {
+        let (url, pin) = parse_git_source(
+            "git+https://github.com/vstaln/gray-discord-plugin.git@648952dc01a78a5eee031846f5f964877bfdac9b",
+        )
+        .unwrap();
+        assert_eq!(url, "https://github.com/vstaln/gray-discord-plugin.git");
+        assert_eq!(pin, "648952dc01a78a5eee031846f5f964877bfdac9b");
+        // An ssh URL carries its own '@': the pin is the last segment.
+        let (url, pin) = parse_git_source(
+            "git+ssh://git@github.com/vstaln/gray-discord-plugin.git@648952dc01a78a5eee031846f5f964877bfdac9b",
+        )
+        .unwrap();
+        assert_eq!(url, "ssh://git@github.com/vstaln/gray-discord-plugin.git");
+        assert_eq!(pin, "648952dc01a78a5eee031846f5f964877bfdac9b");
+    }
+
+    #[test]
+    fn git_source_rejects_anything_but_a_full_commit_pin() {
+        for source in [
+            "https://github.com/vstaln/gray-discord-plugin.git",
+            "git+https://github.com/vstaln/gray-discord-plugin.git",
+            "git+https://github.com/vstaln/gray-discord-plugin.git@main",
+            "git+https://github.com/vstaln/gray-discord-plugin.git@648952d",
+            "git+https://github.com/vstaln/gray-discord-plugin.git@648952dc01a78a5eee031846f5f964877bfdac9b0",
+            "git+http://example.invalid/x.git@648952dc01a78a5eee031846f5f964877bfdac9b",
+            "git+file:///tmp/x.git@648952dc01a78a5eee031846f5f964877bfdac9b",
+            "git+https://github.com/vstaln/gray-discord-plugin.git@648952dc01a78a5eee031846f5f964877bfdac9g",
+        ] {
+            assert!(parse_git_source(source).is_err(), "{source}");
+        }
+    }
+
+    #[test]
+    fn catalog_discord_builds_from_rust_source() {
+        let entry = catalog("discord").unwrap();
+        assert_eq!(entry.name, "discord");
+        assert_eq!(entry.bin, "gray-discord");
+        assert_eq!(entry.sidecar_args, &["sidecar"][..]);
+        let miss = catalog("nope").err().expect("an unknown name must fail");
+        assert!(miss.to_string().contains("Unknown plugin"), "{miss}");
     }
 }
 

@@ -90,9 +90,30 @@ pub fn expand_tabs(s: &str) -> String {
     result
 }
 
+/// First line of a command or arg preview, capped at 80 display cells.
+///
+/// The cap is counted in cells and cut on a char boundary, never in raw
+/// bytes: `line.len()` is a byte count and `&line[..80]` panics the moment
+/// a multi-byte char straddles offset 80 — which is exactly what a pasted
+/// review's `\u{1f7e0}` marker did to a live REPL (byte index 80 inside the
+/// 4-byte emoji). ASCII text cuts at exactly 80, as before; wide text now
+/// fills the same 80 cells instead of being cut a quarter of the way in.
 fn truncate_cmd(cmd: &str) -> &str {
     let line = cmd.lines().next().unwrap_or(cmd);
-    if line.len() > 80 { &line[..80] } else { line }
+    if crate::text_width::display_width(line) <= 80 {
+        return line;
+    }
+    let mut width = 0;
+    let mut end = line.len();
+    for (idx, ch) in line.char_indices() {
+        let w = crate::text_width::char_width(ch);
+        if width + w > 80 {
+            end = idx;
+            break;
+        }
+        width += w;
+    }
+    &line[..end]
 }
 
 /// Live header for a still-streaming tool call (pi `renderCall` on partial
@@ -101,7 +122,8 @@ fn truncate_cmd(cmd: &str) -> &str {
 /// (`command` / `path` / `pattern` / …) raw. Char-safe throughout: partial
 /// tails decode `char`-wise (a multibyte split mid-chunk can never panic)
 /// and the 9000-char cap falls back to the name-only line, so `truncate_cmd`
-/// never byte-slices attacker-shaped partial text.
+/// never byte-slices attacker-shaped partial text (it cuts on a char
+/// boundary at 80 cells — see its doc comment).
 pub fn format_live_tool_header(name: &str, args_so_far: &str, cwd: Option<&Path>) -> Line<'static> {
     const RAW_CAP: usize = 9000;
     let trimmed = args_so_far.trim();

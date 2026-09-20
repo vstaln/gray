@@ -428,6 +428,61 @@ impl Agent {
         self.history_rewritten();
     }
 
+    /// Repairs a turn the caller had to drop mid-flight: its bounded cancel grace
+    /// expired (a plugin hook, compaction or tool that ignores cancellation), so
+    /// none of the loop's own cancel arms ran. This restores the two invariants
+    /// they guarantee, and only appends what is missing — a run that finished on
+    /// its own never needs it:
+    /// 1. every `tool_use` carries a `tool_result`. Strict providers 400 on an
+    ///    orphaned call, which bricks the saved session for good.
+    /// 2. text the user already saw on screen is not silently dropped from the
+    ///    transcript a resumed session replays.
+    pub fn repair_dropped_cancel(&mut self, thinking: &str, text: &str) {
+        let mut answered = std::collections::HashSet::new();
+        let mut orphaned: Vec<String> = Vec::new();
+        for message in &self.messages {
+            for block in &message.content {
+                match block {
+                    ContentBlock::ToolUse { id, .. } => orphaned.push(id.clone()),
+                    ContentBlock::ToolResult { id, .. } => {
+                        answered.insert(id.clone());
+                    }
+                    _ => {}
+                }
+            }
+        }
+        for id in orphaned.into_iter().filter(|id| !answered.contains(id)) {
+            crate::agent_tools::push_synthetic(self, &id, "cancelled by user");
+        }
+        // Same text the loop already finalized (identical delta stream) must not
+        // be appended twice.
+        let already_recorded = self.messages[current_turn_start(&self.messages)..]
+            .iter()
+            .any(|m| {
+                m.role == Role::Assistant
+                    && m.content
+                        .iter()
+                        .any(|b| matches!(b, ContentBlock::Text { text: seen } if seen == text))
+            });
+        if !text.is_empty() && !already_recorded {
+            let mut content = Vec::new();
+            if !thinking.is_empty() {
+                content.push(thinking_block(
+                    thinking.to_string(),
+                    &None,
+                    self.provider.model_id(),
+                ));
+            }
+            content.push(ContentBlock::Text {
+                text: text.to_string(),
+            });
+            self.messages.push(Message {
+                role: Role::Assistant,
+                content,
+            });
+        }
+    }
+
     /// Effective system prompt captured for the current/last turn, or the base
     /// prompt before any turn. `pub(crate)` because the
     /// compaction-v2 trigger call (sibling module `compact`) reuses it
@@ -505,6 +560,21 @@ pub(crate) fn thinking_block(
     }
 }
 
+/// Index just past the last genuine user message: the boundary of the turn
+/// currently being built. Synthetic `tool_result` messages are user-role but
+/// never start a turn, so they cannot hide earlier output.
+fn current_turn_start(messages: &[Message]) -> usize {
+    messages
+        .iter()
+        .rposition(|m| {
+            m.role == Role::User
+                && m.content
+                    .iter()
+                    .any(|b| !matches!(b, ContentBlock::ToolResult { .. }))
+        })
+        .map_or(0, |i| i + 1)
+}
+
 /// Push streamed-so-far thinking + text so the transcript matches what the
 /// user already saw on screen. Shared by the cancel and mid-stream-error arms
 /// (the end-of-turn finalize differs: it also appends tool calls).
@@ -529,3 +599,7 @@ pub(crate) fn salvage_partial_text(
 #[path = "agent_tests.rs"]
 #[cfg(test)]
 mod agent_tests;
+
+#[path = "agent_repair_tests.rs"]
+#[cfg(test)]
+mod repair_tests;
