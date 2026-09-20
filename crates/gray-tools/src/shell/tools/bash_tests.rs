@@ -277,3 +277,19 @@ fn not_found_subject_reads_every_shell_wording() {
     assert!(missing_command_hint("exit 0\nall good").is_none());
     assert!(missing_command_hint("curl: (22) 404 not found").is_none());
 }
+
+#[test]
+fn known_missing_binaries_get_their_real_substitute() {
+    // Telemetry-driven table: rg (84 misses) and xxd (30) dominated the
+    // campaign; unknown binaries keep the generic list.
+    let rg = missing_command_hint("bash: line 1: rg: command not found").unwrap();
+    assert!(rg.contains("`grep -r`"), "{rg}");
+    let xxd = missing_command_hint("sh: 1: xxd: not found").unwrap();
+    assert!(xxd.contains("`od -c`"), "{xxd}");
+    let unknown = missing_command_hint("bash: line 1: goyacc: command not found").unwrap();
+    assert!(
+        unknown.contains("`grep`, `sed`, `awk`, `python3`"),
+        "{unknown}"
+    );
+    assert!(unknown.contains("command -v goyacc"), "{unknown}");
+}
