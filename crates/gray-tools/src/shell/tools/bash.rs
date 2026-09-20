@@ -19,7 +19,7 @@ use crate::shell::fence::fence;
 use crate::shell::kill::term_then_kill;
 use crate::shell::pump::Pump;
 use crate::shell::spawn::spawn;
-use crate::shell::view::{fmt_num_u64, format_elapsed, header, middle_out, resume_hint};
+use crate::shell::view::{format_elapsed, header, middle_out, resume_hint};
 
 /// Bytes served by one `Read more` recovery command. The inline budget is
 /// 48 KiB, so 16 KiB pages need a third of the round trips a 4 KiB page did.
@@ -431,19 +431,17 @@ fn finish_inline(
             let count = end.saturating_sub(start).min(READ_CHUNK);
             format!("dd if='{path}' bs=1 skip={start} count={count} 2>/dev/null")
         };
-        // Name the window and how to keep paging. Elision without offsets made
-        // models re-read whole logs to find what was missing, and once hid a
-        // compiler error inside the omitted middle.
+        // The marker above already names the window (`resume_hint` prints the
+        // byte range), so say only what it does not: where the next page
+        // starts. Elision without that made models re-read whole logs to find
+        // what was missing, and once hid a compiler error in the middle.
         let next = start + READ_CHUNK;
-        let paging = if next < end {
-            format!(" Then skip={next} for the next {READ_CHUNK} bytes.")
-        } else {
-            String::new()
-        };
-        out.push_str(&format!(
-            "\nOmitted window: bytes {start}\u{2013}{end} ({} bytes).{paging}\nRead more: {command}",
-            fmt_num_u64(end.saturating_sub(start)),
-        ));
+        if next < end {
+            out.push_str(&format!(
+                "\nThen skip={next} for the next {READ_CHUNK} bytes."
+            ));
+        }
+        out.push_str(&format!("\nRead more: {command}"));
     }
     if let Some(hint) = missing_command_hint(&out) {
         out.push('\n');

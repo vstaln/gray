@@ -142,19 +142,17 @@ fn truncated_log_has_executable_bounded_recovery() {
         assert!(out.status.success(), "{:?}", out.stderr);
         assert!(!out.stdout.is_empty());
         assert!(out.stdout.len() <= READ_CHUNK as usize);
-        // The hint must make paging arithmetic, not guesswork: name the
-        // omitted window and the next offset when more than one page remains.
-        let window = result
+        // The marker in the body already names the byte window, so the extra
+        // hint only has to say where the next page starts — and only when
+        // there is more than one page left.
+        let next = result
             .content
             .lines()
-            .find(|l| l.starts_with("Omitted window: "))
-            .unwrap_or_else(|| panic!("no window line in {}", result.content));
-        assert!(window.contains("bytes"), "{window}");
+            .find_map(|l| l.strip_prefix("Then skip="));
         if raw.len() > INLINE_BUDGET_BYTES + READ_CHUNK as usize {
-            assert!(
-                window.contains("skip="),
-                "multi-page window must name the next offset: {window}"
-            );
+            assert!(next.is_some(), "multi-page window must name the next offset");
+        } else {
+            assert!(next.is_none(), "single page needs no next offset");
         }
         if raw[0] == b'z' {
             assert_eq!(
