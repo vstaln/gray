@@ -301,3 +301,67 @@ fn live_header_huge_raw_still_streams_prefix() {
         row_text(&format_tool_call_header("bash", &v, None)),
     );
 }
+
+/// The reported crash: a bash command whose first line carries multi-byte
+/// text (here the `🟠` from a pasted PR review) straddling byte offset 80.
+/// `truncate_cmd` used to byte-slice at a fixed 80 and panic the whole
+/// REPL mid-stream. It must cut on a char boundary at 80 cells instead.
+#[test]
+fn truncate_cmd_never_splits_a_multibyte_char() {
+    // 79 ASCII bytes, then the 4-byte emoji at bytes 79..83 — the exact
+    // geometry of the reported panic.
+    let head = "114.3k/300k · 0.0% cache ";
+    assert_eq!(head.len(), 26);
+    let pad = "x".repeat(53);
+    let cmd = format!("{head}{pad}\u{1f7e0} High · up to 553c7cd\nsecond line");
+    let cut = super::truncate_cmd(&cmd);
+    // The old code byte-sliced at 80 and died here; the cut must land on a
+    // char boundary, be a prefix, and fit 80 cells (bytes may exceed 80 —
+    // cells are what the terminal renders).
+    assert!(cmd.is_char_boundary(cut.len()), "cut mid-char");
+    assert!(cmd.starts_with(cut), "cut is not a prefix: {cut:?}");
+    assert!(
+        crate::text_width::display_width(cut) <= 80,
+        "cut not within 80 cells: {} cells",
+        crate::text_width::display_width(cut)
+    );
+    // Only the first line is ever shown.
+    assert!(!cut.contains("second line"));
+}
+
+#[test]
+fn truncate_cmd_ascii_still_cuts_at_exactly_80() {
+    let cmd = format!("{}\nrest", "a".repeat(200));
+    let cut = super::truncate_cmd(&cmd);
+    assert_eq!(cut.len(), 80, "ascii cut moved: {cut:?}");
+    assert_eq!(cut, "a".repeat(80));
+}
+
+#[test]
+fn truncate_cmd_short_and_wide_text_is_untouched() {
+    assert_eq!(super::truncate_cmd("echo hi"), "echo hi");
+    // Under the cap: no cut at all, multi-byte or not.
+    let wide = "café ☕ ok";
+    assert_eq!(super::truncate_cmd(wide), wide);
+    // Wide text now fills the same 80 cells (4x more chars than a byte cut).
+    let cjk = "日本語".repeat(40);
+    let cut = super::truncate_cmd(&cjk);
+    assert_eq!(
+        crate::text_width::display_width(cut),
+        80,
+        "wide cut: {cut:?}"
+    );
+}
+
+/// The live-header path is where the crash surfaced (streaming bash args),
+/// so drive the real entry point with the same shape.
+#[test]
+fn live_bash_header_survives_multibyte_command() {
+    let head = "Merge Risk: _";
+    let pad = "y".repeat(64);
+    let partial = format!("{{\"command\":\"{head}{pad}\u{1f7e0} High");
+    let line = format_live_tool_header("bash", &partial, None);
+    let text = row_text(&line);
+    assert!(text.contains("Merge Risk:"), "{text}");
+    assert!(crate::text_width::display_width(&text) > 0);
+}
