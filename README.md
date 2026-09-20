@@ -152,7 +152,9 @@ Slash commands autocomplete: Enter completes and fires, Tab inserts for editing 
 | `gray sessions prune` | session store maintenance |
 | `gray update` | update gray to the latest release |
 
-Global flags: `-p/--print` (one-shot), `-c/--continue` (reopen latest), `--session <ID>`, `--context-window <TOKENS>`, `--context-reserve`, `--context-keep`, `--dump-manifest`.
+Global flags: `-p/--print` (one-shot), `-c/--continue` (reopen latest), `--session <ID>`, `--context-window <TOKENS>`, `--context-reserve`, `--context-keep`, `--dump-manifest`, `--json` (machine-readable print mode).
+
+`--json` print mode writes one JSON record per event and exits with the failure class: `0` success, `1` the turn failed (do not retry), `3` provider/network death (retrying the turn usually succeeds). The error record carries `code` (`auth_failed`, `rate_limited`, `bad_request`, `context_overflow`, `server_error`, `stream_broken`, `connection_failed`, `timeout`, `loop_detected`, `cancelled`, `serialization`, `turn_failed`), `retryable`, `message`, and a `hint` naming the command that fixes it — so harnesses branch on the class instead of parsing prose.
 
 ## Extend
 
