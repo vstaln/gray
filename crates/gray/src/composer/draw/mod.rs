@@ -29,6 +29,18 @@ pub(crate) fn desired_viewport_h(
     (status_h + queued_h + live_h + box_rows + panel_h + attach_h + 1).clamp(MIN_VIEWPORT_H, max_h)
 }
 
+/// Upper bound for the inline viewport.
+///
+/// The input box is content-sized and has to be able to grow past the idle
+/// 14-row transcript: capping the viewport at `VIEWPORT_H` clipped a multi-line
+/// paste to a couple of visible rows, however tall the terminal was. Bound by
+/// the screen instead (leaving the shell prompt row), so the box grows until
+/// the terminal is full -- `set_viewport_height` already clamps to the screen
+/// and scrolls if a paste ever exceeds it.
+pub(crate) fn viewport_cap(rows: u16) -> u16 {
+    rows.saturating_sub(2).max(MIN_VIEWPORT_H)
+}
+
 pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
     if tui.modal_open {
         return Ok(());
@@ -96,9 +108,7 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
         .min(12);
     let widget_rows = tui.plugin_widget.rows(widget_budget as usize);
     let widget_h = widget_rows.len() as u16;
-    let max_viewport_h = VIEWPORT_H
-        .saturating_add(widget_h)
-        .min(rows.max(MIN_VIEWPORT_H));
+    let max_viewport_h = viewport_cap(rows);
     let desired = desired_viewport_h(
         status_h,
         queued_est,

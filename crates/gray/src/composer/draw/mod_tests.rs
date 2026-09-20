@@ -33,6 +33,42 @@ fn desired_viewport_exact_fit() {
     assert_eq!(desired_viewport_h(0, 0, 0, 0, 15, 0, 23), 16);
 }
 
+/// A multi-line input must not be clipped by the viewport cap.
+///
+/// The cap used to be `VIEWPORT_H + widget_h`, so the whole inline viewport --
+/// and therefore the input box -- was pinned near 14 rows. A pasted paragraph
+/// that wrapped to 12 content rows plus the two margin rows hit exactly 14 and
+/// lost its last row; anything longer was cut hard. The cap is the screen now.
+#[test]
+fn viewport_cap_is_screen_bounded_not_viewport_h() {
+    // A 40-row terminal must allow a far taller viewport than the 14-row idle
+    // transcript, otherwise a long input gets clipped.
+    assert_eq!(viewport_cap(40), 38);
+    // Leaves the shell prompt row below, never the whole screen.
+    assert!(viewport_cap(40) < 40);
+    // Small terminals still clamp to the idle floor.
+    assert_eq!(viewport_cap(3), MIN_VIEWPORT_H);
+    assert_eq!(viewport_cap(0), MIN_VIEWPORT_H);
+}
+
+/// The reported symptom: pasting a paragraph that wraps to 12 rows left only a
+/// couple of them visible, because the viewport could not grow to hold the box.
+/// Given a screen-bounded cap the box fits.
+#[test]
+fn multiline_input_is_not_clipped_by_the_viewport_cap() {
+    // 12 wrapped content rows + the two margin rows build_input_box adds.
+    let box_rows: u16 = 14;
+    let rows: u16 = 40;
+    let cap = viewport_cap(rows);
+    let desired = desired_viewport_h(0, 0, 0, box_rows, 0, 0, cap);
+    // The viewport must be tall enough for the whole box, not a couple of rows.
+    assert!(
+        desired >= box_rows + 1,
+        "viewport {desired} cannot hold a {box_rows}-row input box"
+    );
+    assert!(desired <= cap);
+}
+
 /// One streamed paragraph arriving chunk by chunk flips the transcript
 /// tail blank / non-blank between frames. Driven through the exact path
 /// `draw` uses: the viewport must hold still instead of bouncing 6<->7
