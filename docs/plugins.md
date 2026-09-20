@@ -34,7 +34,7 @@ the same shape.
 
 ## First-party catalog (`background`, `discord`)
 
-`gray plugin install background|discord` installs from gray's own catalog,
+`gray install plugin background|discord` installs from gray's own catalog,
 pinned by commit. Neither needs Python:
 
 - `background` downloads a prebuilt, checksum-verified release binary.
@@ -46,11 +46,16 @@ pinned by commit. Neither needs Python:
 Two guards make the build path trustworthy: the catalog pin must be a full
 40-character commit ID (refs and short prefixes are rejected before git
 runs), and the built binary must answer `plugin/manifest` with the expected
-name before anything is registered. A failed build leaves no partial
-install behind.
+name before anything is registered. A failed build, or a binary that fails
+that check, leaves nothing behind -- the artifact is still inside the build
+tempdir when it is verified, so nothing is published until it passes.
+
+Note the two spellings: `gray install plugin <name>` is this catalog path,
+while `gray plugin install <spec>` is the package manager, which resolves
+names through the gray-pkg index and its own tarball URLs.
 
 User-written plugins may still be Python, a shell script, or anything else
-that runs: `GRAY_PLUGIN_PATH=/path/to/my-plugin gray plugin install myname`
+that runs: `GRAY_PLUGIN_PATH=/path/to/my-plugin gray install plugin myname`
 registers any executable, and a plugin directory containing a `plugin.sh` is
 spawned as-is. What is Rust-only is gray's *own* catalog.
 
