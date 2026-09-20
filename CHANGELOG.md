@@ -2,6 +2,15 @@
 
 ## [0.1.1] - 2026-09-21
 
+
+- Windows builds ship with the release: `gray-<channel>-x86_64-windows.zip`
+  alongside the four tarballs, checksummed into the same `SHA256SUMS` file.
+  `install-native.ps1` installs it without elevation, probes the binary with a
+  bounded 10s timeout, and replaces a running `gray.exe` through a staged
+  copy-plus-backup rather than an in-place write. It is exercised in CI on
+  windows-2025 under both PowerShell 7 and Windows PowerShell 5.1. The public
+  `install.ps1` still defaults to installing inside WSL; native is opt-in via
+  `-Native`
 ### Added
 
 - Prompt-cache warmth timer + cache-miss warning in the composer. The
@@ -81,6 +90,12 @@
 - Gateway autostart defaults off; corrupt gateway.yaml warns instead of silently resetting (S2, S3)
 - Safety / Subcommands / Platform / gateway docs in README (D2, S4)
 
+
+- The connect modal's footer and the install manager's per-tab footers share
+  extracted same-file helpers instead of repeating the render scaffolding
+  three times each (-188 net lines across the two files). Behavior is
+  unchanged, including the connect modal's conditional `shift+enter` hint,
+  which only appears for a row that actually holds a stored credential
 ### Changed
 
 - `gray plugin install discord` compiles the plugin from its pinned commit
@@ -93,6 +108,12 @@
 - Clipboard/image paste is core again: `arboard` + `image` are always compiled in, no `--features clipboard` needed (kept as a no-op alias)
 - Removed the native messaging gateway: deleted `crates/gray-gateway` (adapters, daemon, pairing, delivery, systemd), the `plugins/gateway` sidecar, `gray gateway ...`/`gray send`, and the `telegram`/`discord`/`slack`/`all-platforms` features. Chat returns as a plugin; `gray cron --deliver` targets are stored opaquely until a delivery backend exists. Dropped the `--all-features` CI checks.
 
+
+- Multi-line input is no longer clipped by the inline viewport. The viewport
+  cap was pinned near 14 rows regardless of terminal height, so a pasted
+  paragraph that wrapped to 12 content rows lost its last row and anything
+  longer was cut hard. The cap is the terminal height now (minus the shell
+  prompt row); the idle 14-row transcript is unchanged
 ### Fixed
 
 - Tool headers no longer panic the REPL on multi-byte commands. The
@@ -213,3 +234,8 @@
 
 - macOS binaries are not notarized (curl-install unaffected) (D3)
 - Destructive-command guard is best-effort, not a sandbox — see README Safety (S4)
+
+
+- `install.ps1` still installs through WSL by default; a native install
+  needs `-Native`. Self-update refuses on native Windows rather than calling
+  the WSL installer — close Gray and rerun `install-native.ps1`
