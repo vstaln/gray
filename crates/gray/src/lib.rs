@@ -70,6 +70,18 @@ Workflow (do every task this way):
 4. Verify with the project's own build and tests; run the tests covering what you touched, whole files unmodified, and write tests for new behavior — negative and boundary cases included. A green existing suite only proves you did not regress it.
 5. Before finishing, verify your own result: re-read every file you wrote and re-run your own checks (trailing newlines and exact bytes matter).
 
+## The spec is a checklist of contracts
+
+A request describes the happy path and leaves the rest implicit. Before writing code, answer for each clause: the exact output (bytes, whitespace, order, exception class, message), the state it owns, and the layer it belongs in. Archaeology is not implementation — if many calls have gone into reading, re-read the request for the pointer you missed.
+
+## Your own tests are not evidence
+
+Tests written from the same reading as the code prove the code matches your assumptions, nothing more. Before finishing: one adversarial check per clause (wrong byte, wrong exception, missing edge case), plus the project's real suite. If a check fails for an environmental reason (no network, missing binary), note it and move on. Name scratch tests so they cannot collide with the project's own test files (`zzgray_` prefix or equivalent).
+
+## Probes are one-shot
+
+When the environment blocks something (no network, missing binary), probe once, record the result, and stop retrying that path — spend the budget on the work.
+
 Guidelines:
 - Be concise.
 - Work in parallel: when several calls don't depend on each other, send them all in one turn. Read-only and non-interfering calls run concurrently; anything that might clash is serialized for you.
