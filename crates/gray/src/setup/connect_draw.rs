@@ -9,6 +9,126 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, Paragraph};
 
+/// Centered dialog: clears the region, paints the bg block, returns the padded inner rect.
+fn centered_dialog(
+    frame: &mut Frame,
+    area: Rect,
+    w: u16,
+    h: u16,
+    min_w: u16,
+    min_h: u16,
+    colors: &ConnectColors,
+) -> Rect {
+    let w = w
+        .min(area.width.saturating_sub(4))
+        .max(min_w)
+        .min(area.width);
+    let h = h
+        .min(area.height.saturating_sub(2))
+        .max(min_h)
+        .min(area.height);
+    let x = (area.width.saturating_sub(w)) / 2;
+    let y = (area.height.saturating_sub(h)) / 3;
+    let rect = Rect::new(x, y, w, h);
+    frame.render_widget(Clear, rect);
+    frame.render_widget(
+        Block::default().style(Style::default().bg(colors.box_bg)),
+        rect,
+    );
+    Rect::new(x + 3, y + 1, w.saturating_sub(6), h.saturating_sub(2))
+}
+
+/// Title row with the padded "esc" hint at the right edge.
+fn render_header_esc(frame: &mut Frame, inner: Rect, title: &str, colors: &ConnectColors) {
+    let pad_len =
+        (inner.width as usize).saturating_sub(title.chars().count() + "esc".chars().count());
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                title,
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD)
+                    .bg(colors.box_bg),
+            ),
+            Span::styled(" ".repeat(pad_len), Style::default().bg(colors.box_bg)),
+            Span::styled(
+                "esc",
+                Style::default().fg(colors.text_dim).bg(colors.box_bg),
+            ),
+        ])),
+        Rect::new(inner.x, inner.y, inner.width, 1),
+    );
+}
+
+/// Footer of (key, description) pairs: bold keys, dim descriptions.
+/// Bold-key / dim-desc spans for a static footer table.
+fn footer_key_spans<'a>(keys: &[(&'a str, &'a str)], colors: &ConnectColors) -> Vec<Span<'a>> {
+    keys.iter()
+        .flat_map(|(k, v)| {
+            [
+                Span::styled(
+                    *k,
+                    Style::default()
+                        .fg(Color::White)
+                        .add_modifier(Modifier::BOLD)
+                        .bg(colors.box_bg),
+                ),
+                Span::styled(*v, Style::default().fg(colors.text_dim).bg(colors.box_bg)),
+            ]
+        })
+        .collect()
+}
+
+/// Render a footer line at the bottom of `inner`. Takes pre-built spans so a
+/// caller whose footer is conditional (the provider list appends a
+/// shift+enter hint only for rows that hold a credential) shares the
+/// positioning without the styling being frozen to a static table.
+fn render_footer(frame: &mut Frame, inner: Rect, spans: Vec<Span<'_>>) {
+    frame.render_widget(
+        Paragraph::new(Line::from(spans)),
+        Rect::new(inner.x, inner.y + inner.height - 1, inner.width, 1),
+    );
+}
+
+/// Status message (error-styled bullet) or a dim default note, one row at y+5.
+fn render_note_or_status(
+    frame: &mut Frame,
+    inner: Rect,
+    status_msg: &Option<String>,
+    note: &str,
+    colors: &ConnectColors,
+) {
+    let span = match status_msg {
+        Some(msg) => Span::styled(
+            format!(" \u{2022} {msg}"),
+            Style::default()
+                .fg(crate::theme::theme().error)
+                .bg(colors.box_bg),
+        ),
+        None => Span::styled(
+            note,
+            Style::default()
+                .fg(crate::theme::theme().text_dim)
+                .bg(colors.box_bg),
+        ),
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(span)),
+        Rect::new(inner.x, inner.y + 5, inner.width, 1),
+    );
+}
+
+/// Clears and renders one input row with the input background.
+fn render_input_row(frame: &mut Frame, inner: Rect, content: Line, colors: &ConnectColors) {
+    let rect = Rect::new(inner.x, inner.y + 3, inner.width, 1);
+    frame.render_widget(Clear, rect);
+    frame.render_widget(
+        Paragraph::new(content).style(Style::default().bg(colors.input_bg)),
+        rect,
+    );
+}
+
 #[allow(clippy::too_many_arguments)]
 // Mechanical split of `run_connect_modal`: params are the modal state the arm renders.
 pub(crate) fn render_selecting(
@@ -22,14 +142,6 @@ pub(crate) fn render_selecting(
     auth: &std::collections::BTreeMap<String, catalog::AuthEntry>,
     colors: &ConnectColors,
 ) {
-    let modal_w = 68.min(area.width.saturating_sub(4)).max(42).min(area.width);
-    let modal_h = 18
-        .min(area.height.saturating_sub(2))
-        .max(10)
-        .min(area.height);
-    let modal_x = (area.width.saturating_sub(modal_w)) / 2;
-    let modal_y = (area.height.saturating_sub(modal_h)) / 3;
-    let modal_rect = Rect::new(modal_x, modal_y, modal_w, modal_h);
     let filtered: Vec<&ConnectItem> = all_items
         .iter()
         .filter(|item| {
@@ -40,46 +152,10 @@ pub(crate) fn render_selecting(
                 || item.sublabel.to_lowercase().contains(&f)
         })
         .collect();
-
-    // Clear popup background
-    frame.render_widget(Clear, modal_rect);
-
-    // Container Box (pure colored block matching text box, no border characters)
-    let box_block = Block::default().style(Style::default().bg(colors.box_bg));
-    frame.render_widget(box_block, modal_rect);
-
-    let pad_x = 3u16;
-    let inner_w = modal_w.saturating_sub(pad_x * 2);
-    let inner = Rect::new(
-        modal_x + pad_x,
-        modal_y + 1,
-        inner_w,
-        modal_h.saturating_sub(2),
-    );
+    let inner = centered_dialog(frame, area, 68, 18, 42, 10, colors);
 
     // 1. Header Line (with esc at top right)
-    let title_str = "Connect a provider";
-    let esc_str = "esc";
-    let pad_len =
-        (inner.width as usize).saturating_sub(title_str.chars().count() + esc_str.chars().count());
-    let header_line = Line::from(vec![
-        Span::styled(
-            title_str,
-            Style::default()
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD)
-                .bg(colors.box_bg),
-        ),
-        Span::styled(" ".repeat(pad_len), Style::default().bg(colors.box_bg)),
-        Span::styled(
-            esc_str,
-            Style::default().fg(colors.text_dim).bg(colors.box_bg),
-        ),
-    ]);
-    frame.render_widget(
-        Paragraph::new(header_line),
-        Rect::new(inner.x, inner.y, inner.width, 1),
-    );
+    render_header_esc(frame, inner, "Connect a provider", colors);
 
     // 2. Search Bar
     let search_line = if filter.is_empty() {
@@ -229,30 +305,8 @@ pub(crate) fn render_selecting(
     }
 
     // 4. Footer Help Line (no brackets)
-    let mut footer_spans = vec![
-        Span::styled(
-            "↑↓ ",
-            Style::default()
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD)
-                .bg(colors.box_bg),
-        ),
-        Span::styled(
-            "navigate    ",
-            Style::default().fg(colors.text_dim).bg(colors.box_bg),
-        ),
-        Span::styled(
-            "enter ",
-            Style::default()
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD)
-                .bg(colors.box_bg),
-        ),
-        Span::styled(
-            "select",
-            Style::default().fg(colors.text_dim).bg(colors.box_bg),
-        ),
-    ];
+    let mut footer_spans =
+        footer_key_spans(&[("↑↓ ", "navigate    "), ("enter ", "select")], colors);
     // Removal is only offered for a row that actually holds a credential.
     if filtered
         .get(sel.min(filtered.len().saturating_sub(1)))
@@ -276,11 +330,7 @@ pub(crate) fn render_selecting(
             ),
         ]);
     }
-    let footer_line = Line::from(footer_spans);
-    frame.render_widget(
-        Paragraph::new(footer_line),
-        Rect::new(inner.x, inner.y + inner.height - 1, inner.width, 1),
-    );
+    render_footer(frame, inner, footer_spans);
 }
 
 /// Shift+Enter confirmation: names the provider (and its endpoint, which is
@@ -399,50 +449,9 @@ pub(crate) fn render_entering_url(
     status_msg: &Option<String>,
     colors: &ConnectColors,
 ) {
-    let dialog_w = 64.min(area.width.saturating_sub(4)).max(40).min(area.width);
-    let dialog_h = 10
-        .min(area.height.saturating_sub(2))
-        .max(8)
-        .min(area.height);
-    let dialog_x = (area.width.saturating_sub(dialog_w)) / 2;
-    let dialog_y = (area.height.saturating_sub(dialog_h)) / 3;
-    let dialog_rect = Rect::new(dialog_x, dialog_y, dialog_w, dialog_h);
+    let inner = centered_dialog(frame, area, 64, 10, 40, 8, colors);
 
-    frame.render_widget(Clear, dialog_rect);
-
-    let box_block = Block::default().style(Style::default().bg(colors.box_bg));
-    frame.render_widget(box_block, dialog_rect);
-
-    let pad_x = 3u16;
-    let inner_w = dialog_w.saturating_sub(pad_x * 2);
-    let inner = Rect::new(
-        dialog_x + pad_x,
-        dialog_y + 1,
-        inner_w,
-        dialog_h.saturating_sub(2),
-    );
-
-    let title_str = "Custom Provider";
-    let esc_str = "esc";
-    let pad_len =
-        (inner.width as usize).saturating_sub(title_str.chars().count() + esc_str.chars().count());
-    frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled(
-                title_str,
-                Style::default()
-                    .fg(Color::White)
-                    .add_modifier(Modifier::BOLD)
-                    .bg(colors.box_bg),
-            ),
-            Span::styled(" ".repeat(pad_len), Style::default().bg(colors.box_bg)),
-            Span::styled(
-                esc_str,
-                Style::default().fg(colors.text_dim).bg(colors.box_bg),
-            ),
-        ])),
-        Rect::new(inner.x, inner.y, inner.width, 1),
-    );
+    render_header_esc(frame, inner, "Custom Provider", colors);
     frame.render_widget(
         Paragraph::new(Line::from(vec![Span::styled(
             "Provider: Custom (OpenAI/Anthropic compatible)",
@@ -474,49 +483,18 @@ pub(crate) fn render_entering_url(
         ])
     };
 
-    let input_rect = Rect::new(inner.x, inner.y + 3, inner.width, 1);
-    frame.render_widget(Clear, input_rect);
-    frame.render_widget(
-        Paragraph::new(input_content).style(Style::default().bg(colors.input_bg)),
-        input_rect,
+    render_input_row(frame, inner, input_content, colors);
+    render_note_or_status(
+        frame,
+        inner,
+        status_msg,
+        " (Route suffixes like /chat/completions are trimmed)",
+        colors,
     );
-
-    let note_line = if let Some(msg) = status_msg {
-        Line::from(Span::styled(
-            format!(" \u{2022} {msg}"),
-            Style::default()
-                .fg(crate::theme::theme().error)
-                .bg(colors.box_bg),
-        ))
-    } else {
-        Line::from(Span::styled(
-            " (Route suffixes like /chat/completions are trimmed)",
-            Style::default()
-                .fg(crate::theme::theme().text_dim)
-                .bg(colors.box_bg),
-        ))
-    };
-    frame.render_widget(
-        Paragraph::new(note_line),
-        Rect::new(inner.x, inner.y + 5, inner.width, 1),
-    );
-
-    let footer = Line::from(vec![
-        Span::styled(
-            "enter ",
-            Style::default()
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD)
-                .bg(colors.box_bg),
-        ),
-        Span::styled(
-            "continue",
-            Style::default().fg(colors.text_dim).bg(colors.box_bg),
-        ),
-    ]);
-    frame.render_widget(
-        Paragraph::new(footer),
-        Rect::new(inner.x, inner.y + inner.height - 1, inner.width, 1),
+    render_footer(
+        frame,
+        inner,
+        footer_key_spans(&[("enter ", "continue")], colors),
     );
 }
 
@@ -529,58 +507,15 @@ pub(crate) fn render_entering_key(
     status_msg: &Option<String>,
     colors: &ConnectColors,
 ) {
-    let dialog_w = 64.min(area.width.saturating_sub(4)).max(40).min(area.width);
-    let dialog_h = 10
-        .min(area.height.saturating_sub(2))
-        .max(8)
-        .min(area.height);
-    let dialog_x = (area.width.saturating_sub(dialog_w)) / 2;
-    let dialog_y = (area.height.saturating_sub(dialog_h)) / 3;
-    let dialog_rect = Rect::new(dialog_x, dialog_y, dialog_w, dialog_h);
-
-    frame.render_widget(Clear, dialog_rect);
-
-    let box_block = Block::default().style(Style::default().bg(colors.box_bg));
-    frame.render_widget(box_block, dialog_rect);
-
-    let pad_x = 3u16;
-    let inner_w = dialog_w.saturating_sub(pad_x * 2);
-    let inner = Rect::new(
-        dialog_x + pad_x,
-        dialog_y + 1,
-        inner_w,
-        dialog_h.saturating_sub(2),
-    );
+    let inner = centered_dialog(frame, area, 64, 10, 40, 8, colors);
 
     // Header (with esc at top right)
-    let title_str = "API Key Configuration";
-    let esc_str = "esc";
-    let pad_len =
-        (inner.width as usize).saturating_sub(title_str.chars().count() + esc_str.chars().count());
-    let line0 = Line::from(vec![
-        Span::styled(
-            title_str,
-            Style::default()
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD)
-                .bg(colors.box_bg),
-        ),
-        Span::styled(" ".repeat(pad_len), Style::default().bg(colors.box_bg)),
-        Span::styled(
-            esc_str,
+    render_header_esc(frame, inner, "API Key Configuration", colors);
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![Span::styled(
+            format!("Provider: {}", item.name),
             Style::default().fg(colors.text_dim).bg(colors.box_bg),
-        ),
-    ]);
-    let line1 = Line::from(vec![Span::styled(
-        format!("Provider: {}", item.name),
-        Style::default().fg(colors.text_dim).bg(colors.box_bg),
-    )]);
-    frame.render_widget(
-        Paragraph::new(line0),
-        Rect::new(inner.x, inner.y, inner.width, 1),
-    );
-    frame.render_widget(
-        Paragraph::new(line1),
+        )])),
         Rect::new(inner.x, inner.y + 1, inner.width, 1),
     );
 
@@ -628,32 +563,15 @@ pub(crate) fn render_entering_key(
         )])
     };
 
-    let input_rect = Rect::new(inner.x, inner.y + 3, inner.width, 1);
-    frame.render_widget(Clear, input_rect);
-    frame.render_widget(
-        Paragraph::new(input_content).style(Style::default().bg(colors.input_bg)),
-        input_rect,
-    );
+    render_input_row(frame, inner, input_content, colors);
 
     // Status or note
-    let note_line = if let Some(msg) = status_msg {
-        Line::from(Span::styled(
-            format!(" \u{2022} {msg}"),
-            Style::default()
-                .fg(crate::theme::theme().error)
-                .bg(colors.box_bg),
-        ))
-    } else {
-        Line::from(Span::styled(
-            " (Key stored securely in ~/.gray/auth.json)",
-            Style::default()
-                .fg(crate::theme::theme().text_dim)
-                .bg(colors.box_bg),
-        ))
-    };
-    frame.render_widget(
-        Paragraph::new(note_line),
-        Rect::new(inner.x, inner.y + 5, inner.width, 1),
+    render_note_or_status(
+        frame,
+        inner,
+        status_msg,
+        " (Key stored securely in ~/.gray/auth.json)",
+        colors,
     );
 
     // Footer buttons (enter update / submit - no brackets)
@@ -662,22 +580,10 @@ pub(crate) fn render_entering_key(
     } else {
         "submit"
     };
-    let footer = Line::from(vec![
-        Span::styled(
-            "enter ",
-            Style::default()
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD)
-                .bg(colors.box_bg),
-        ),
-        Span::styled(
-            action_label,
-            Style::default().fg(colors.text_dim).bg(colors.box_bg),
-        ),
-    ]);
-    frame.render_widget(
-        Paragraph::new(footer),
-        Rect::new(inner.x, inner.y + inner.height - 1, inner.width, 1),
+    render_footer(
+        frame,
+        inner,
+        footer_key_spans(&[("enter ", action_label)], colors),
     );
 }
 
