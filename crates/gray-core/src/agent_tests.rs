@@ -2260,3 +2260,92 @@ async fn background_notices_land_at_safe_boundaries_without_waiting() {
         }
     }
 }
+
+/// Executor whose output changes on every call: models a poll that makes
+/// progress (or a growing log). Same command, different result.
+struct ChangingExecutor {
+    n: std::sync::Mutex<usize>,
+}
+
+impl ChangingExecutor {
+    fn new() -> Self {
+        Self {
+            n: std::sync::Mutex::new(0),
+        }
+    }
+}
+
+#[async_trait]
+impl ToolExecutor for ChangingExecutor {
+    fn execute(
+        &self,
+        _ctx: &ToolContext,
+        _name: &str,
+        _args: serde_json::Value,
+    ) -> BoxFuture<'static, ToolOutput> {
+        let mut n = self.n.lock().expect("n lock poisoned");
+        *n += 1;
+        let out = format!("output revision {}", *n);
+        Box::pin(async move { ToolOutput::ok(out) })
+    }
+}
+
+#[tokio::test]
+async fn repeat_guard_nudges_interleaved_identical_calls() {
+    // The DeepSWE campaign's worst case re-ran one test command 16x,
+    // interleaved with other calls, so no two consecutive rounds ever matched
+    // and the consecutive-signature guard never fired. Same call, same
+    // result, four times total (not in a row) must nudge.
+    let mut scripts = vec![tool_script("c0"), tool_script("c0")];
+    scripts.push(read_script("r1", "/tmp/a.rs"));
+    scripts.push(tool_script("c0"));
+    scripts.push(read_script("r2", "/tmp/b.rs"));
+    scripts.push(tool_script("c0"));
+    scripts.push(read_script("r3", "/tmp/c.rs"));
+    scripts.push(tool_script("c0"));
+    scripts.push(end_script());
+    let provider = FakeProvider::new(scripts);
+    let executor = FakeExecutor::new(ToolOutput::ok("same output every time"));
+    let mut agent = Agent::new(Box::new(provider), Arc::new(executor)).with_tools(vec![tool_def()]);
+
+    agent
+        .run(Message::user("flail"), ToolContext::default())
+        .await
+        .expect("the run must finish; the repeat guard nudges, it does not abort");
+
+    assert!(
+        agent
+            .messages()
+            .iter()
+            .any(|m| m.text_content().contains("gray repeat guard")),
+        "expected the interleaved-repeat nudge in history"
+    );
+}
+
+#[tokio::test]
+async fn repeat_guard_ignores_calls_whose_output_keeps_changing() {
+    // A poll that makes progress is deliberate: same command, different
+    // output each time must never nudge.
+    let mut scripts = vec![tool_script("c0"), tool_script("c0")];
+    for i in 0..6 {
+        scripts.push(read_script(&format!("r{i}"), &format!("/tmp/{i}.rs")));
+        scripts.push(tool_script("c0"));
+    }
+    scripts.push(end_script());
+    let provider = FakeProvider::new(scripts);
+    let executor = ChangingExecutor::new();
+    let mut agent = Agent::new(Box::new(provider), Arc::new(executor)).with_tools(vec![tool_def()]);
+
+    agent
+        .run(Message::user("poll and read"), ToolContext::default())
+        .await
+        .expect("changing output is progress");
+
+    assert!(
+        !agent
+            .messages()
+            .iter()
+            .any(|m| m.text_content().contains("gray repeat guard")),
+        "same command with changing output must not nudge"
+    );
+}
