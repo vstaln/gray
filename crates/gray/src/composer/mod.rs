@@ -21,7 +21,6 @@ use gray_markdown::HyperlinkTarget;
 use crate::text_width::display_width;
 
 pub(crate) const PANEL_ROWS: usize = 6;
-pub(crate) const VIEWPORT_H: u16 = 14;
 /// Smallest the viewport shrinks to while idle: box top pad + `❯` row +
 /// bottom pad + context footer. No cleared slack below the footer.
 pub(crate) const MIN_VIEWPORT_H: u16 = 4;
@@ -317,7 +316,7 @@ pub struct Tui {
     pub(crate) turn_stream_ms: u64,
     /// Current inline viewport height. `draw` keeps it at the exact-fit
     /// content height (+1 spare cleared row, clamped to
-    /// `MIN_VIEWPORT_H..=VIEWPORT_H`) so there is never a 10-row idle gap;
+    /// `MIN_VIEWPORT_H..=viewport_cap(rows)`) so there is never a 10-row idle
     /// popups can grow it back up.
     pub(crate) viewport_h: u16,
     /// Live tool cards (pi `ToolExecutionComponent`, viewport-anchored):

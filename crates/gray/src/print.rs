@@ -186,8 +186,15 @@ pub async fn run_print_mode_json(
     };
     let mut row = match &result {
         Ok(()) => serde_json::json!({"type": "result", "text": output.text, "usage": output.usage}),
-        Err(_) => serde_json::json!({"type": "error", "code": "turn_failed",
-            "message": "Agent turn failed; actions may already have occurred. Do not automatically retry."}),
+        Err(error) => {
+            let failure = PrintFailure::of(error);
+            let mut row = serde_json::json!({"type": "error", "code": failure.code,
+                "retryable": failure.retryable, "message": failure.message()});
+            if let Some(hint) = failure.hint {
+                row["hint"] = hint.into();
+            }
+            row
+        }
     };
     if let Some(meter) = &output.meter {
         row["accounting"] = serde_json::to_value(meter.snapshot())?;
@@ -195,8 +202,108 @@ pub async fn run_print_mode_json(
     output.write(row)?;
     // The detailed human-mode error may contain provider context. Keep the JSON
     // error and process exit consistent without copying that context to stderr.
-    result.map_err(|_| anyhow::anyhow!("agent turn failed (see JSON error record)"))
+    match result {
+        Ok(()) => Ok(()),
+        Err(error) => Err(PrintFailure::of(&error).into()),
+    }
 }
+
+/// Process exit codes for `--json` print mode. Harnesses branch on these (and
+/// the JSON `code`) instead of parsing prose: infra failures are the turn the
+/// provider dropped, safe to re-run; `turn_failed` means the agent itself
+/// stopped and retrying repeats the same outcome.
+pub const EXIT_TURN_FAILED: i32 = 1;
+pub const EXIT_INFRA: i32 = 3;
+
+/// Machine-readable failure class carried from `--json` print mode to the
+/// process exit, with the operator hint that names the next command to run.
+/// `retryable` marks provider/network deaths — the bench-class failure that
+/// decides whether a harness re-runs the turn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PrintFailure {
+    pub code: &'static str,
+    pub retryable: bool,
+    pub exit: i32,
+    pub hint: Option<&'static str>,
+}
+
+impl PrintFailure {
+    /// Classify an anyhow error by downcasting to [`gray_core::error::CoreError`];
+    /// anything unrecognized is a plain turn failure.
+    pub fn of(error: &anyhow::Error) -> Self {
+        let Some(core) = error.downcast_ref::<gray_core::error::CoreError>() else {
+            return Self {
+                code: "turn_failed",
+                retryable: false,
+                exit: EXIT_TURN_FAILED,
+                hint: None,
+            };
+        };
+        let retryable = core.retryable();
+        Self {
+            code: core.code(),
+            retryable,
+            exit: if retryable {
+                EXIT_INFRA
+            } else {
+                EXIT_TURN_FAILED
+            },
+            hint: Self::hint_for(core.code()),
+        }
+    }
+
+    /// One-line operator message; never carries provider response bodies.
+    pub fn message(&self) -> &'static str {
+        match self.code {
+            "auth_failed" => "The provider rejected the credentials.",
+            "rate_limited" => "The provider is rate limiting this account.",
+            "bad_request" => "The provider rejected the request as malformed.",
+            "context_overflow" => "The conversation outgrew the context window.",
+            "server_error" => "The provider failed on its side.",
+            "stream_broken" => "The provider dropped the response stream.",
+            "connection_failed" => "Could not reach the provider.",
+            "timeout" => "The provider did not answer in time.",
+            "loop_detected" => "Agent stopped on a repeated-tool loop.",
+            "cancelled" => "Cancelled.",
+            "serialization" => "Serialization failure.",
+            _ => {
+                "Agent turn failed; actions may already have occurred. Do not automatically retry."
+            }
+        }
+    }
+
+    /// The mmx lesson: every failure class names the command that fixes it.
+    fn hint_for(code: &str) -> Option<&'static str> {
+        Some(match code {
+            "auth_failed" => {
+                "Check the API key for this provider: `gray setup` (or `/connect` in the REPL)."
+            }
+            "rate_limited" => "Back off and retry, or switch provider/model with `/model`.",
+            "bad_request" => {
+                "Often a model id the endpoint does not serve; `/model` shows what is configured."
+            }
+            "context_overflow" => "Start `/new` or run `/compact`.",
+            "connection_failed" => {
+                "Check the base URL and network; `gray setup` re-points the provider."
+            }
+            "timeout" => "Retry, or raise the request timeout for slow providers.",
+            "server_error" | "stream_broken" => "Retrying the turn usually succeeds.",
+            _ => return None,
+        })
+    }
+}
+
+impl std::fmt::Display for PrintFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.message())?;
+        if let Some(hint) = self.hint {
+            write!(f, "\n  hint: {hint}")?;
+        }
+        write!(f, "\n  (exit code {})", self.exit)
+    }
+}
+
+impl std::error::Error for PrintFailure {}
 
 struct JsonOutput {
     turn_id: String,
