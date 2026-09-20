@@ -192,12 +192,15 @@ jobs:
         run: |
           $plat = 'x86_64-windows'
           $zip = "gray-${{ needs.meta.outputs.channel }}-$plat.zip"
-          $stage = New-Item -ItemType Directory -Path pkg -Force
-          Copy-Item target/x86_64-pc-windows-msvc/release/gray.exe, LICENSE, THIRD_PARTY_NOTICES.md $stage.FullName
+          New-Item -ItemType Directory -Path pkg -Force | Out-Null
+          Copy-Item target/x86_64-pc-windows-msvc/release/gray.exe, LICENSE, THIRD_PARTY_NOTICES.md pkg/
           if (Test-Path $zip) { Remove-Item $zip }
           # install-native.ps1 rejects any entry that is not one of these three
           # names at the archive root, so the staging dir must not be the source.
-          Compress-Archive -Path $stage.FullName/* -DestinationPath $zip
+          # The wildcard has to be relative -- `-Path <abs>/*` is not a valid
+          # PowerShell wildcard and fails with "a positional parameter cannot be
+          # found that accepts argument '/*'". Same form ci.yml already tests.
+          Compress-Archive -Path pkg/* -DestinationPath $zip
           # Lowercase and two spaces: the Linux finalize leg runs `sha256sum -c`
           # over the concatenated file, which rejects uppercase hex.
           $hash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLowerInvariant()
