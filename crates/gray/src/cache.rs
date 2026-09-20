@@ -19,6 +19,11 @@
 //! (reference checkout under `reference/pi-mono`): same detection rules,
 //! same thresholds, same notice wording, in gray's per-round `StepUsage`
 //! shape (each round's report already carries the full prompt).
+//!
+//! Known limitation: the agent loop's in-turn budgeted compaction
+//! (overflow recovery inside gray-core, no event) is invisible here, so
+//! at most one spurious notice can follow it — pi resets on its
+//! compaction session entries for the same reason.
 
 use std::time::{Duration, Instant};
 

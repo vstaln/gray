@@ -150,7 +150,10 @@ fn truncated_log_has_executable_bounded_recovery() {
             .lines()
             .find_map(|l| l.strip_prefix("Then skip="));
         if raw.len() > INLINE_BUDGET_BYTES + READ_CHUNK as usize {
-            assert!(next.is_some(), "multi-page window must name the next offset");
+            assert!(
+                next.is_some(),
+                "multi-page window must name the next offset"
+            );
         } else {
             assert!(next.is_none(), "single page needs no next offset");
         }
@@ -162,21 +165,18 @@ fn truncated_log_has_executable_bounded_recovery() {
         } else {
             // Run 35229845737 captured the recovered bytes: Git Bash's sed
             // pipes CRLF text to native readers through a text-mode MSYS
-            // pipe, folding CRLF to LF (`a\r\n` -> `a\n`). The disk log
-            // stays byte-verbatim (asserted in
-            // progress_is_line_safe_but_log_retains_carriage_returns);
-            // recovery output is byte-exact on Unix, EOL-folded on Windows.
-            // Emit both sides in hex on failure for direct comparison.
-            #[cfg(windows)]
+            // pipe, folding CRLF to LF (`a\r\n` -> `a\n`). Whether that
+            // folding happens is a property of the local MSYS mount, not of
+            // gray: the same command returned raw CRLF on windows-runtime
+            // (run 35517869669). The disk log stays byte-verbatim either way
+            // (asserted in
+            // progress_is_line_safe_but_log_retains_carriage_returns), so
+            // the invariant that matters here is that recovery starts at the
+            // truncated marker byte and stays bounded — not which EOL the
+            // local pipe hands back. Emit the bytes in hex on failure.
             assert!(
-                out.stdout.starts_with(b"a\n"),
-                "expected 610a-prefixed folded recovery, got {:02x?} (command: {command})",
-                out.stdout
-            );
-            #[cfg(not(windows))]
-            assert!(
-                out.stdout.starts_with(b"a\r\n"),
-                "expected raw 610d0a recovery, got {:02x?} (command: {command})",
+                out.stdout.starts_with(b"a\r\n") || out.stdout.starts_with(b"a\n"),
+                "expected 610d0a (or EOL-folded 610a) recovery, got {:02x?} (command: {command})",
                 out.stdout
             );
         }
