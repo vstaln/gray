@@ -131,9 +131,10 @@ fn metadata(home: &Path, name: &str) -> anyhow::Result<serde_json::Value> {
     )?)?)
 }
 
-/// Install a first-party plugin from the pinned catalog, dispatching on how
-/// its code ships. A file lock serializes registry updates; temp dirs roll
-/// back failed installs.
+/// Install a first-party plugin from the pinned catalog. `background` keeps
+/// its own prebuilt-binary path; every other entry is a Rust crate built from
+/// source. A file lock serializes registry updates; temp dirs roll back
+/// failed installs.
 async fn install_catalog(home: &Path, name: &str) -> anyhow::Result<()> {
     validate_name(name)?;
     if name == "background" {
