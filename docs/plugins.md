@@ -32,6 +32,28 @@ Index entries are `gray-native`/`tarball` with `sha256:<hex>`:
 Local verification points `GRAY_PLUGIN_INDEX` at a loopback index serving
 the same shape.
 
+## First-party catalog (`background`, `discord`)
+
+`gray plugin install background|discord` installs from gray's own catalog,
+pinned by commit. Neither needs Python:
+
+- `background` downloads a prebuilt, checksum-verified release binary.
+- `discord` clones its pinned commit and runs `cargo build --release
+  --locked`, so it needs a Rust toolchain and compiles exactly the code that
+  was reviewed. The binary is published to `<gray-home>/plugins/discord/` and
+  registered as a sidecar in `plugins/lock.json`.
+
+Two guards make the build path trustworthy: the catalog pin must be a full
+40-character commit ID (refs and short prefixes are rejected before git
+runs), and the built binary must answer `plugin/manifest` with the expected
+name before anything is registered. A failed build leaves no partial
+install behind.
+
+User-written plugins may still be Python, a shell script, or anything else
+that runs: `GRAY_PLUGIN_PATH=/path/to/my-plugin gray plugin install myname`
+registers any executable, and a plugin directory containing a `plugin.sh` is
+spawned as-is. What is Rust-only is gray's *own* catalog.
+
 ## Wire (v1)
 
 Host→sidecar is NDJSON over stdio: `plugin/manifest`, `tool/call`,

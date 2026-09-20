@@ -51,6 +51,16 @@
   printing a `next=` that will never arrive.
 
 ### Fixed
+- Tool headers no longer panic the REPL on multi-byte commands. The
+  one-line command/arg preview byte-sliced at a fixed offset 80, so a
+  command whose first line carried an emoji (or any wide char) straddling
+  that offset — a pasted PR review's 🟠 merge-risk marker did exactly this,
+  killing a live session mid-tool-call — crashed with `byte index 80 is
+  not a char boundary`. The cap is now counted in display cells and cut on
+  a char boundary (the repo's `text_width` helpers), so ASCII commands cut
+  at exactly 80 as before and wide text fills the same 80 cells instead of
+  a quarter of the way in. The same fixed-offset pattern was audited
+  across the crates; the only other byte-slice site is ASCII-guarded
 - Bash has no default timeout any more: commands run until they exit, and an
   explicit `timeout` is opt-in (clamped 1–3600 s) with the agent-level
   last-resort stop raised to 3660 s. The tool description used to promise
@@ -141,6 +151,13 @@
 - `gray sessions prune --older-than-days N` for session-store GC; `persist_redacted: true` gateway option to scrub secrets from persisted gateway transcripts
 
 ### Changed
+- `gray plugin install discord` compiles the plugin from its pinned commit
+  (`cargo build --release --locked`) instead of pip-installing a Python
+  package, so installing a first-party plugin needs no interpreter. The
+  catalog is Rust-only; user-written plugins stay language-agnostic
+  (`GRAY_PLUGIN_PATH`, `plugin.sh`). A source pin must be a full commit ID,
+  and the built binary has to answer `plugin/manifest` with the expected
+  name before it is registered
 - Clipboard/image paste is core again: `arboard` + `image` are always compiled in, no `--features clipboard` needed (kept as a no-op alias)
 - Removed the native messaging gateway: deleted `crates/gray-gateway` (adapters, daemon, pairing, delivery, systemd), the `plugins/gateway` sidecar, `gray gateway ...`/`gray send`, and the `telegram`/`discord`/`slack`/`all-platforms` features. Chat returns as a plugin; `gray cron --deliver` targets are stored opaquely until a delivery backend exists. Dropped the `--all-features` CI checks.
 
