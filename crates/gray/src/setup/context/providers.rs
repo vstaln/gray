@@ -349,7 +349,7 @@ pub fn fetch_live_provider_models(base_url: &str, api_key: Option<&str>) -> Vec<
                 handle.block_on(async move {
                     let client = match reqwest::Client::builder()
                         .timeout(std::time::Duration::from_millis(3000))
-                        .user_agent("gray/0.1.0")
+                        .user_agent(concat!("gray/", env!("CARGO_PKG_VERSION")))
                         .build()
                     {
                         Ok(c) => c,
@@ -778,7 +778,7 @@ pub async fn fetch_litellm_context_windows() {
     const URL: &str = "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json";
     let client = match reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
-        .user_agent("gray/0.1.0")
+        .user_agent(concat!("gray/", env!("CARGO_PKG_VERSION")))
         .build()
     {
         Ok(c) => c,
@@ -869,7 +869,7 @@ pub async fn fetch_models_dev_context() -> usize {
     const URL: &str = "https://models.dev/api.json";
     let client = match reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
-        .user_agent("gray/0.1.0")
+        .user_agent(concat!("gray/", env!("CARGO_PKG_VERSION")))
         .build()
     {
         Ok(c) => c,
@@ -954,7 +954,7 @@ pub async fn fetch_openrouter_rates() -> usize {
     const URL: &str = "https://openrouter.ai/api/v1/models";
     let client = match reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
-        .user_agent("gray/0.1.0")
+        .user_agent(concat!("gray/", env!("CARGO_PKG_VERSION")))
         .build()
     {
         Ok(c) => c,
