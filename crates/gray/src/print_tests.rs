@@ -190,3 +190,91 @@ async fn rewritten_history_replaces_session_even_after_growing_past_cursor() {
         assert_eq!(loaded, replacement, "final_count={final_count}");
     }
 }
+
+#[test]
+fn provider_failures_classify_as_retryable_infra() {
+    // The bench-class failure: a dropped stream must be distinguishable from
+    // an agent-side stop so a harness re-runs the turn instead of giving up.
+    // CoreError::Provider is the generic fallback (e.g. the turn-event cap),
+    // not an infra class - real provider deaths keep their variant.
+    for error in [
+        gray_core::error::CoreError::Connection("dns".into()),
+        gray_core::error::CoreError::Timeout("read".into()),
+        gray_core::error::CoreError::ServerError("502".into()),
+        gray_core::error::CoreError::Stream("eof".into()),
+        gray_core::error::CoreError::RateLimited("slow down".into()),
+    ] {
+        let failure = PrintFailure::of(&anyhow::Error::new(error));
+        assert!(failure.retryable, "{failure:?}");
+        assert_eq!(failure.exit, EXIT_INFRA);
+        assert!(failure.hint.is_some(), "{failure:?}");
+    }
+}
+
+#[test]
+fn config_failures_are_not_retryable_even_though_they_arrive_from_the_provider() {
+    // The campaign's model-404: the endpoint answers "model does not exist"
+    // as a 400-class bad request. Retrying that turn can never help, and the
+    // hint must point at the configuration, not the network.
+    let model_missing = PrintFailure::of(&anyhow::Error::new(
+        gray_core::error::CoreError::BadRequest(
+            "status 404 Not Found: model deepseek-v4.1-flash does not exist".into(),
+        ),
+    ));
+    assert_eq!(model_missing.code, "bad_request");
+    assert!(!model_missing.retryable);
+    assert_eq!(model_missing.exit, EXIT_TURN_FAILED);
+    assert!(
+        model_missing.hint.unwrap().contains("/model"),
+        "{model_missing:?}"
+    );
+
+    let auth = PrintFailure::of(&anyhow::Error::new(gray_core::error::CoreError::Auth(
+        "401".into(),
+    )));
+    assert_eq!(auth.code, "auth_failed");
+    assert!(!auth.retryable);
+    assert!(auth.hint.unwrap().contains("gray setup"), "{auth:?}");
+}
+
+#[test]
+fn agent_side_stops_are_not_retryable() {
+    let looped = PrintFailure::of(&anyhow::Error::new(
+        gray_core::error::CoreError::LoopDetected("same call 3x".into()),
+    ));
+    assert_eq!(looped.code, "loop_detected");
+    assert!(!looped.retryable);
+    assert_eq!(looped.exit, EXIT_TURN_FAILED);
+
+    let cancelled = PrintFailure::of(&anyhow::Error::new(gray_core::error::CoreError::Cancelled));
+    assert_eq!(cancelled.code, "cancelled");
+    assert!(!cancelled.retryable);
+
+    let unknown = PrintFailure::of(&anyhow::anyhow!("session store on fire"));
+    assert_eq!(unknown.code, "turn_failed");
+    assert!(!unknown.retryable);
+    assert_eq!(unknown.exit, EXIT_TURN_FAILED);
+    assert!(unknown.hint.is_none());
+}
+
+#[test]
+fn failure_message_never_carries_provider_detail() {
+    // The JSON record must stay scrubbed even when the underlying error text
+    // quotes the provider's response body.
+    let failure = PrintFailure::of(&anyhow::Error::new(gray_core::error::CoreError::Auth(
+        "401 sk-live-secret".into(),
+    )));
+    let message = failure.message();
+    assert!(!message.contains("sk-live-secret"), "{message}");
+    let rendered = failure.to_string();
+    assert!(!rendered.contains("sk-live-secret"), "{rendered}");
+    assert!(rendered.contains("hint:"), "{rendered}");
+    assert!(rendered.contains("(exit code"), "{rendered}");
+
+    // A generic provider error keeps the turn-failure message and no hint.
+    let generic = PrintFailure::of(&anyhow::Error::new(gray_core::error::CoreError::Provider(
+        "401 sk-live-secret".into(),
+    )));
+    assert_eq!(generic.code, "provider_error");
+    assert!(generic.hint.is_none());
+}

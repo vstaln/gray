@@ -250,10 +250,17 @@ pub trait PluginHooks: Send + Sync {
 
 impl From<ProviderError> for CoreError {
     fn from(e: ProviderError) -> Self {
+        // 1:1 with the provider taxonomy so the failure class survives the
+        // boundary (harnesses branch on `CoreError::code`, not message text).
         match e {
+            ProviderError::RateLimited(msg) => CoreError::RateLimited(msg),
+            ProviderError::Auth(msg) => CoreError::Auth(msg),
+            ProviderError::BadRequest(msg) => CoreError::BadRequest(msg),
+            ProviderError::ContextOverflow(msg) => CoreError::ContextOverflow(msg),
             ProviderError::Connection(msg) => CoreError::Connection(msg),
             ProviderError::Timeout(msg) => CoreError::Timeout(msg),
-            other => CoreError::Provider(other.to_string()),
+            ProviderError::ServerError(msg) => CoreError::ServerError(msg),
+            ProviderError::Stream(msg) => CoreError::Stream(msg),
         }
     }
 }
