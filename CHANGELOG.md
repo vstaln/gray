@@ -51,6 +51,26 @@
   printing a `next=` that will never arrive.
 
 ### Fixed
+- Bash has no default timeout any more: commands run until they exit, and an
+  explicit `timeout` is opt-in (clamped 1–3600 s) with the agent-level
+  last-resort stop raised to 3660 s. The tool description used to promise
+  120 s while the code killed at 30 s.
+- A failing command piped into a pure text filter no longer reads as success.
+  `sh -c` reports only the last stage's status, so `pytest -q | head -40`
+  returned `exit 0`; the exit report now names the masked stage and covers
+  `head`/`tail`/`cat`/`less`/`awk`/`sed`/`tr`/`cut`/`column`.
+- Missing commands are explained instead of just failing: the result carries
+  "`rg` is not installed here · use an equivalent you already have …".
+- Truncated output names the omitted byte window and the offset of the next
+  page, and pages are 16 KiB instead of 4 KiB.
+- The shell inline budget is 48 KiB (was 12 KiB), the turn event cap is 500k
+  (was 100k — long runs died on "turn event limit exceeded"), the loop guard
+  nudges at 3 identical tool+args and only aborts at 6, and a dropped
+  provider stream keeps complete tool args with a warning instead of killing
+  the turn.
+- Sampling is reachable: `GRAY_TEMPERATURE`/`GRAY_TOP_P` (env or saved
+  config) are sent with every request and omitted when unset. Memory size
+  caps are gone and `gray memory list/show/set/edit/remove/clear` exists.
 - tps is now measured over streaming time only. Every rate (working pill,
   end-of-turn `Thought for … · N tps`, headless footer) divided by the
   whole-turn duration, so a turn that spent 40s in tool calls and 4s
