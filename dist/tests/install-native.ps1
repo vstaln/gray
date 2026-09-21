@@ -37,9 +37,13 @@ try {
     $bareDir = Join-Path $root 'bare-default'
     [IO.Directory]::CreateDirectory($bareDir) | Out-Null
     $bareLog = Join-Path $root 'bare.log'
+    # No exit-code check: StrictMode (dot-sourced from the installer) makes
+    # $LASTEXITCODE undefined until a native command runs, and the assertions
+    # below already catch a route that failed or installed nothing.
     & $entry -ArchivePath $archive -Sha256 $digest -InstallDir $bareDir -NoPath *> $bareLog
-    if ($LASTEXITCODE -ne 0) { throw "Bare invocation failed: $(Get-Content -LiteralPath $bareLog -Raw)" }
-    if (-not [IO.File]::Exists((Join-Path $bareDir 'gray.exe'))) { throw 'Bare invocation did not install gray.exe' }
+    if (-not [IO.File]::Exists((Join-Path $bareDir 'gray.exe'))) {
+        throw "Bare invocation did not install gray.exe: $(Get-Content -LiteralPath $bareLog -Raw)"
+    }
     $bareText = Get-Content -LiteralPath $bareLog -Raw
     # Routing evidence only: the installer's own final line names WSL to say it
     # is not required, so match the compat route's wording instead of the word.
