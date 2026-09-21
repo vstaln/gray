@@ -17,12 +17,22 @@ use tokio::process::Command;
 
 use super::contract::Spawned;
 
-/// Spawn `command` via `sh -c` in `cwd`.
+/// Spawn `command` via `sh - c` in `cwd`.
 ///
 /// `session` is exported as `GRAY_SESSION_ID` so anything the command runs can
 /// name the session it belongs to: a `gray memory set` issued from inside a
 /// session stamps its entry with that session rather than the generic `cli`.
-pub fn spawn(command: &str, cwd: &Path, session: Option<&str>) -> io::Result<Spawned> {
+///
+/// `cwd_report`, when given, is exported as `GRAY_CWD_REPORT`; the command is
+/// expected to write its final directory there so the caller can keep a
+/// session's working directory across calls. It is a file rather than stdout
+/// so the command's output — and the durable log — stay byte-identical.
+pub fn spawn(
+    command: &str,
+    cwd: &Path,
+    session: Option<&str>,
+    cwd_report: Option<&Path>,
+) -> io::Result<Spawned> {
     #[cfg(not(windows))]
     let mut cmd = Command::new("sh");
     #[cfg(windows)]
@@ -64,6 +74,9 @@ pub fn spawn(command: &str, cwd: &Path, session: Option<&str>) -> io::Result<Spa
         .env("SYSTEMD_PAGER", "cat");
     if let Some(session) = session.filter(|s| !s.trim().is_empty()) {
         cmd.env("GRAY_SESSION_ID", session.trim());
+    }
+    if let Some(report) = cwd_report {
+        cmd.env("GRAY_CWD_REPORT", report);
     }
     #[cfg(unix)]
     {

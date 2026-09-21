@@ -112,10 +112,20 @@ fn elapsed_table() {
 fn resume_hint_marker_shape() {
     let log = numbered_lines(3000);
     let v = middle_out(&log, 50 * 1024, 2000, 0);
-    let m = resume_hint(&v);
+    let m = resume_hint(&v, std::path::Path::new("/tmp/log"));
     assert!(m.contains("lines / "), "{m}");
-    assert!(m.contains("grep the log path above"), "{m}");
-    assert_eq!(resume_hint(&middle_out(b"hi\n", 50 * 1024, 2000, 0)), "");
+    // An exact, copy-pasteable command rather than "go and work out how".
+    assert!(m.contains("sed -n '"), "{m}");
+    assert!(m.contains("/tmp/log"), "{m}");
+    // Line numbers, not bytes: they survive the CRLF folding sanitize does.
+    assert!(m.contains("lines "), "{m}");
+    assert_eq!(
+        resume_hint(
+            &middle_out(b"hi\n", 50 * 1024, 2000, 0),
+            std::path::Path::new("/tmp/log")
+        ),
+        ""
+    );
 }
 
 #[test]
@@ -250,4 +260,59 @@ fn carriage_return_progress_becomes_readable_lines() {
     assert_eq!(view.total_lines, 5);
     assert!(view.has_cr);
     assert!(!view.body.contains('\r'));
+}
+
+#[test]
+fn the_paging_command_extracts_exactly_the_omitted_lines() {
+    // Not a string-shape check: run the command the hint hands the model and
+    // confirm it lands on the lines that were dropped.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let log_path = dir.path().join("log");
+    let log = numbered_lines(3000);
+    std::fs::write(&log_path, &log).expect("write log");
+
+    let view = middle_out(&log, 50 * 1024, 2000, 0);
+    let hint = resume_hint(&view, &log_path);
+
+    // Pull the sed program back out of the hint the model would see, and run
+    // it verbatim: the hint already carries the full `A,Bp` form.
+    let marker = "sed -n '";
+    let start = hint.find(marker).expect("a sed command") + marker.len();
+    let end = hint[start..].find('\'').expect("closing quote") + start;
+    let program = &hint[start..end];
+    let out = std::process::Command::new("sed")
+        .arg("-n")
+        .arg(program)
+        .arg(&log_path)
+        .output()
+        .expect("sed runs");
+    assert!(out.status.success(), "{:?} for {program:?}", out.status);
+
+    let paged = String::from_utf8_lossy(&out.stdout);
+    let lines: Vec<&str> = paged.lines().collect();
+    let head_shown = view.shown_lines.0;
+    // `numbered_lines` writes "line NNNNN NNNNNNNNNN", so match the whole line.
+    let expected_first = format!("line {:05} {:010}", head_shown + 1, head_shown + 1);
+    let expected_last = format!(
+        "line {:05} {:010}",
+        head_shown + view.omitted_lines,
+        head_shown + view.omitted_lines
+    );
+
+    // Exactly the dropped block: nothing from the head, nothing from the tail.
+    assert_eq!(
+        lines.first().copied(),
+        Some(expected_first.as_str()),
+        "{hint}"
+    );
+    assert_eq!(
+        lines.last().copied(),
+        Some(expected_last.as_str()),
+        "{hint}"
+    );
+    assert_eq!(lines.len(), view.omitted_lines, "{hint}");
+    assert!(
+        !view.body.contains(&expected_first),
+        "paged text was already shown"
+    );
 }

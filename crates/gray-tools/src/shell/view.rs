@@ -219,20 +219,31 @@ pub fn middle_out(log: &[u8], budget_bytes: usize, budget_lines: usize, base_off
 }
 
 /// Marker line for the `{{MARKER}}` slot. Empty string when nothing omitted.
-/// Marker line for the `{{MARKER}}` slot. Empty string when nothing omitted.
-pub fn resume_hint(view: &View) -> String {
+///
+/// The paging command is line-based on purpose. `omitted_range` is a byte
+/// range, but sanitize folds `\r\n` for display, so byte offsets stop lining
+/// up with the on-disk log the moment a file has CRLF endings. Line numbers
+/// survive that folding unchanged, so `sed -n 'A,Bp'` lands on the right text
+/// either way. Telling the model *how* to page, rather than telling it to go
+/// grep, is what stops the re-read loop: the bench retro measured 380
+/// truncation re-reads per run.
+pub fn resume_hint(view: &View, log_path: &std::path::Path) -> String {
     let Some((a, b)) = view.omitted_range else {
         return String::new();
     };
     if view.omitted_lines == 0 && view.omitted_bytes == 0 {
         return String::new();
     }
+    // The omitted block is what sits between the head and the tail.
+    let first = view.shown_lines.0 + 1;
+    let last = view.shown_lines.0 + view.omitted_lines;
     format!(
-        "[\u{2026} {} lines / {} chars omitted (bytes {}\u{2013}{}). grep the log path above.]",
+        "[\u{2026} {} lines / {} chars omitted (bytes {}\u{2013}{}, lines {first}\u{2013}{last}). page: sed -n '{first},{last}p' {}]",
         fmt_num(view.omitted_lines),
         fmt_num(view.omitted_bytes),
         fmt_num_u64(a),
         fmt_num_u64(b),
+        log_path.display(),
     )
 }
 

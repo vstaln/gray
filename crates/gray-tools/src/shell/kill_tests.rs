@@ -46,7 +46,7 @@ async fn group_kill_kills_tree() {
     // sh parent + sleep child in one group: SIGTERM may or may not be
     // answered in time (load-dependent), so accept either escalation
     // path — the invariant is the whole tree dies by SIGTERM or SIGKILL.
-    let spawned = spawn("sleep 30", &std::env::temp_dir(), None).expect("spawn");
+    let spawned = spawn("sleep 30", &std::env::temp_dir(), None, None).expect("spawn");
     let pgid = spawned.pgid;
     let mut child = spawned.child;
     // Reap concurrently, like the real caller: a zombie left unreaped
@@ -75,6 +75,7 @@ async fn term_ignored_escalates_to_sigkill() {
     let spawned = spawn(
         "trap '' TERM; echo ready; exec sleep 30",
         &std::env::temp_dir(),
+        None,
         None,
     )
     .expect("spawn trap");

@@ -15,6 +15,6 @@ fn setsid_failure_is_an_error() {
 #[cfg(unix)]
 #[tokio::test]
 async fn spawn_records_real_process_group() {
-    let spawned = spawn("true", &PathBuf::from("/tmp"), None).expect("sh -c true must spawn");
+    let spawned = spawn("true", &PathBuf::from("/tmp"), None, None).expect("sh -c true must spawn");
     assert_eq!(spawned.pgid, spawned.pid as i32);
 }

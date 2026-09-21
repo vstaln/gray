@@ -1,7 +1,9 @@
 //! Shell execution: ordinary blocking calls and session-owned background jobs.
 //! Both modes share timeout, cancellation, redaction, bounded output and reaping.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
@@ -32,6 +34,49 @@ mod jobs;
 #[derive(Default)]
 pub struct BashTool {
     jobs: jobs::Jobs,
+    /// Per-session working directory. Every command is a fresh `sh -c`, so a
+    /// `cd` would otherwise be forgotten the moment it ran; the shell reports
+    /// its final directory and the next command in the same session starts
+    /// there. Keyed by session id (empty for an anonymous run) so a shared
+    /// registry cannot cross sessions.
+    ///
+    /// The base the entry was recorded against is stored with it: a caller that
+    /// hands over a different context cwd is being explicit, so the stale
+    /// record is dropped rather than silently overriding it.
+    cwd: Mutex<BTreeMap<String, (PathBuf, PathBuf)>>,
+}
+
+impl BashTool {
+    /// Where this session's commands run. Falls back to the context cwd when
+    /// the record belongs to a different base, or when the recorded directory
+    /// has since been deleted, so neither a moved session nor a vanished
+    /// directory can wedge it.
+    fn session_cwd(&self, ctx: &ToolContext) -> PathBuf {
+        let key = session_key(ctx);
+        let cell = self.cwd.lock().unwrap_or_else(|e| e.into_inner());
+        cell.get(&key)
+            .filter(|(base, _)| *base == ctx.cwd)
+            .map(|(_, current)| current)
+            .filter(|p| p.is_dir())
+            .cloned()
+            .unwrap_or_else(|| ctx.cwd.clone())
+    }
+
+    /// Adopt the directory the shell reported, if it is still there. A command
+    /// that was killed, or one whose trailing comment swallowed the report,
+    /// leaves the previous cwd standing rather than resetting it.
+    fn adopt_reported_cwd(&self, ctx: &ToolContext, report: &Path) {
+        let reported = std::fs::read_to_string(report)
+            .ok()
+            .map(|text| PathBuf::from(text.trim()));
+        if let Some(dir) = reported.filter(|p| p.is_dir()) {
+            self.cwd
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(session_key(ctx), (ctx.cwd.clone(), dir));
+        }
+        let _ = std::fs::remove_file(report);
+    }
 }
 
 #[async_trait]
@@ -127,7 +172,8 @@ impl Tool for BashTool {
         }
         // `cat <image>` shows the image instead of streaming binary garbage:
         // bash's one vision path, so no separate tool is needed for it.
-        if let Some(out) = cat_image(&command, &ctx.cwd) {
+        let cwd = self.session_cwd(ctx);
+        if let Some(out) = cat_image(&command, &cwd) {
             return out;
         }
         if background || window.is_some() {
@@ -137,6 +183,7 @@ impl Tool for BashTool {
                     ctx,
                     command,
                     secs,
+                    cwd,
                     if background {
                         Duration::ZERO
                     } else {
@@ -147,13 +194,22 @@ impl Tool for BashTool {
         }
         let log_path = log_path(ctx);
         let start = Instant::now();
-        let spawned = match spawn(&command, &ctx.cwd, ctx.session_id.as_deref()) {
+        // Report the final directory to a scratch file so the next command in
+        // this session starts where this one finished.
+        let cwd_report =
+            std::env::temp_dir().join(format!("gray-cwd-{}.txt", uuid::Uuid::new_v4()));
+        let spawned = match spawn(
+            &with_cwd_report(&command),
+            &cwd,
+            ctx.session_id.as_deref(),
+            Some(&cwd_report),
+        ) {
             Ok(s) => s,
             Err(e) => return fail(format!("failed to spawn `sh -c`: {e}")),
         };
         #[cfg(not(windows))]
         let guard = crate::shell::kill::GroupGuard::new(spawned.pgid);
-        run_command(
+        let out = run_command(
             command,
             log_path,
             secs,
@@ -163,8 +219,35 @@ impl Tool for BashTool {
             #[cfg(not(windows))]
             guard,
         )
-        .await
+        .await;
+        // Whether it succeeded, failed or was killed: a `cd` that ran is a `cd`
+        // that ran. A killed command never writes the report, so its cwd stands.
+        self.adopt_reported_cwd(ctx, &cwd_report);
+        out
     }
+}
+
+/// Ask the shell to report its final directory to `$GRAY_CWD_REPORT`.
+///
+/// Appended, never substituted: the command the model wrote is still what runs,
+/// and the report goes to a file so stdout (and the durable log) are untouched.
+///
+/// The original exit status is captured and re-raised, because a bare
+/// `; printf ...` would end the command with *the report's* status and turn
+/// every failing command into a success -- which is how the benign-exit table
+/// lost `grep`'s "no matches" the first time this was tried. A command ending
+/// in a `#` comment swallows the whole suffix, reports nothing, and leaves the
+/// cwd where it was.
+fn with_cwd_report(command: &str) -> String {
+    format!(
+        "{command}; __gray_rc=$?; printf '%s' \"$PWD\" > \"$GRAY_CWD_REPORT\" 2>/dev/null; exit $__gray_rc"
+    )
+}
+
+/// Session identity for the cwd cell: the session id when there is one, empty
+/// for an anonymous run (headless, print) where every call shares one cwd.
+fn session_key(ctx: &ToolContext) -> String {
+    ctx.session_id.clone().unwrap_or_default()
 }
 
 /// `cat <one image file>` returns the image as a vision block at full
@@ -578,7 +661,7 @@ fn build_view(log_path: &std::path::Path, summary: &PumpSummary) -> View {
     if use_disk && let Ok(bytes) = std::fs::read(log_path) {
         let mut view = middle_out(&bytes, INLINE_BUDGET_BYTES, VIEW_BUDGET_LINES, 0);
         if view.omitted_range.is_some() {
-            let hint = resume_hint(&view);
+            let hint = resume_hint(&view, log_path);
             view.body = view.body.replace("{{MARKER}}", &hint);
         }
         return view;
@@ -624,7 +707,7 @@ fn build_view(log_path: &std::path::Path, summary: &PumpSummary) -> View {
         total_bytes: summary.total_bytes,
         has_cr: summary.has_cr,
     };
-    let hint = resume_hint(&view);
+    let hint = resume_hint(&view, log_path);
     // trim_end on the head is count-preserving (a trailing newline never
     // starts a new line), so shown counts match the displayed lines exactly.
     view.body = format!(
