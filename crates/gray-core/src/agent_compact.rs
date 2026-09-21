@@ -7,7 +7,7 @@
 //! retained tail.
 
 use crate::agent::Agent;
-use crate::compact::{RETAINED_MESSAGE_TOKEN_BUDGET, build_retained, run_compaction_call};
+use crate::compact::{RETAINED_MESSAGE_TOKEN_BUDGET, run_compaction_call};
 use crate::error::CoreError;
 use crate::message::Message;
 
@@ -95,9 +95,15 @@ impl Agent {
         // retained message; skip pinning rather than starve the tail.
         let pin_anchor = anchor.is_some() && anchor_tokens < budget;
         // Stage 2: retained newest history within budget (computed above),
-        // minus whatever the pinned anchor spends.
+        // minus whatever the pinned anchor spends. At-threshold tool outputs
+        // elide to citation stubs naming this session's transcript
+        // (arXiv:2607.25066) instead of dropping without a trace.
         let retained_budget = budget.saturating_sub(if pin_anchor { anchor_tokens } else { 0 });
-        let mut retained = build_retained(&candidate, retained_budget);
+        let mut retained = crate::compact::build_retained_with_session(
+            &candidate,
+            retained_budget,
+            self.session_id.as_deref(),
+        );
         // Stage 3 (pi `buildSessionContext`): [anchor,] summary, retained
         // tail, so the request still ends on the tail's user/tool turn.
         let mut next = Vec::with_capacity(retained.len() + 2);

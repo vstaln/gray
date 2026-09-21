@@ -119,26 +119,99 @@ pub(crate) const MAX_RETAINED_AGENT_MESSAGE_TOKENS: i64 = 10_000;
 /// the token budget so truncated output still estimates within budget.
 const TRUNCATION_MARKER: &str = "[…truncated…]";
 
+/// A `ToolResult` body at or over this size elides to a citation stub during
+/// compaction (arXiv:2607.25066, ARC: addressable recall). Below it, keeping
+/// the output is cheaper than the recall round-trip.
+pub(crate) const ARC_STUB_MIN_BYTES: usize = 8_192;
+
+/// The citation left in place of an elided tool output. Self-describing on
+/// purpose: compaction rewrites the in-memory history but never the
+/// append-only session JSONL on disk, so the full output stays recoverable
+/// with one grep — the tool-call id is the address, no retrieval model
+/// involved. (The `~/.gray/sessions` default is a hint; the id alone is
+/// enough to `grep -rl` the sessions dir when GRAY_HOME differs.)
+fn tool_result_stub(id: &str, bytes: usize, session_id: Option<&str>) -> String {
+    let file = match session_id {
+        Some(sid) => format!("~/.gray/sessions/{sid}.jsonl"),
+        None => "this session's file under ~/.gray/sessions/".to_string(),
+    };
+    format!(
+        "[tool output elided by compaction ({bytes} bytes). The full output survives in the session transcript; recover it with: grep '{id}' {file}]"
+    )
+}
+
+/// True when the group holds at least one `ToolResult` body at/over the
+/// stub threshold.
+fn has_stubbable_result(group: &[Message]) -> bool {
+    group
+        .iter()
+        .flat_map(|m| &m.content)
+        .any(|b| matches!(b, ContentBlock::ToolResult { content, .. } if content.len() >= ARC_STUB_MIN_BYTES))
+}
+
+/// Replace every at-threshold `ToolResult` body with its citation stub. The
+/// block itself (id, `is_error`) and the paired `ToolUse` stay, so
+/// call/result pairing survives compaction.
+fn stub_large_tool_results(group: &mut [Message], session_id: Option<&str>) {
+    for m in group.iter_mut() {
+        for b in m.content.iter_mut() {
+            if let ContentBlock::ToolResult { id, content, .. } = b
+                && content.len() >= ARC_STUB_MIN_BYTES
+            {
+                *content = tool_result_stub(id, content.len(), session_id);
+            }
+        }
+    }
+}
+
 /// Build the retained history: group atomically → retention filter →
 /// newest-first budget walk → chronological order. Mirrors codex v2's
 /// `build_v2_compacted_history` minus the summary append (Task 5); images are
-/// charged atomically newest-first via [`image_block_tokens`].
+/// charged atomically newest-first via [`image_block_tokens`]. Deviation from
+/// v2: tool-only rounds holding an at-threshold `ToolResult` survive the
+/// retention filter as citation stubs (ARC, arXiv:2607.25066) instead of
+/// dropping without a trace.
+/// Two-arg delegate of [`build_retained_with_session`] without a session id;
+/// test-only — production goes through `compact_v2`, which has the session.
+#[cfg(test)]
 pub(crate) fn build_retained(messages: &[Message], budget: usize) -> Vec<Message> {
+    build_retained_with_session(messages, budget, None)
+}
+
+/// [`build_retained`] with the session id woven into citation stubs (see
+/// [`tool_result_stub`]); the plain two-arg delegate serves tests and
+/// callers without a session on disk.
+pub(crate) fn build_retained_with_session(
+    messages: &[Message],
+    budget: usize,
+    session_id: Option<&str>,
+) -> Vec<Message> {
     let mut kept_reversed: Vec<Vec<Message>> = Vec::new();
     let mut remaining = budget;
-    for group in atomic_groups(messages)
-        .into_iter()
-        .filter(|g| group_is_retained(g))
-        .rev()
-    {
+    for group in atomic_groups(messages).into_iter().rev() {
         if remaining == 0 {
             continue;
         }
+        // ARC citation retention (arXiv:2607.25066): a tool-only round the
+        // retention filter would drop whole instead survives as citations
+        // when its output is large enough to be worth a recall — the
+        // append-only session log is the addressable store, the tool-call
+        // id the address.
+        let mut stubbed_group: Vec<Message>;
+        let group: &[Message] = if group_is_retained(group) {
+            group
+        } else if group.iter().any(is_tool_use_only) && has_stubbable_result(group) {
+            stubbed_group = group.to_vec();
+            stub_large_tool_results(&mut stubbed_group, session_id);
+            &stubbed_group
+        } else {
+            continue;
+        };
         let cost = group_tokens(group).max(1);
         if cost <= remaining {
             remaining -= cost;
             kept_reversed.push(group.to_vec());
-        } else if let Some(truncated) = truncate_group_to_budget(group, remaining) {
+        } else if let Some(truncated) = truncate_group_to_budget(group, remaining, session_id) {
             kept_reversed.push(truncated);
             remaining = 0;
         }
@@ -229,6 +302,26 @@ fn group_is_retained(group: &[Message]) -> bool {
     i64::try_from(group_tokens(group)).unwrap_or(i64::MAX) <= MAX_RETAINED_AGENT_MESSAGE_TOKENS
 }
 
+/// Boundary truncation with the ARC fallback: a group that does not fit with
+/// its large tool outputs priced whole first retries with those outputs
+/// elided to citation stubs before dropping whole. Groups without a
+/// stubbable result behave exactly as before.
+fn truncate_group_to_budget(
+    group: &[Message],
+    budget: usize,
+    session_id: Option<&str>,
+) -> Option<Vec<Message>> {
+    if let Some(fitted) = fit_group_to_budget(group, budget) {
+        return Some(fitted);
+    }
+    if has_stubbable_result(group) {
+        let mut stubbed = group.to_vec();
+        stub_large_tool_results(&mut stubbed, session_id);
+        return fit_group_to_budget(&stubbed, budget);
+    }
+    None
+}
+
 /// Middle-truncate a group's `Text` blocks to `budget` tokens while charging
 /// `Image` blocks atomically, newest-first like codex v2's
 /// `truncate_message_to_token_budget` (fits → keep; first overflow → head+tail
@@ -244,7 +337,7 @@ fn group_is_retained(group: &[Message]) -> bool {
 /// kept — e.g. an image-only group priced out of budget); the caller then
 /// drops the whole group with `remaining` untouched. `None` also when the
 /// group holds no text or image at all.
-fn truncate_group_to_budget(group: &[Message], budget: usize) -> Option<Vec<Message>> {
+fn fit_group_to_budget(group: &[Message], budget: usize) -> Option<Vec<Message>> {
     let fixed: usize = group
         .iter()
         .flat_map(|m| m.content.iter())

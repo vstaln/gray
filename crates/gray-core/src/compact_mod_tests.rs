@@ -521,3 +521,150 @@ async fn compaction_preserves_last_live_hook_context() {
     }
     assert_eq!(hook.0.load(std::sync::atomic::Ordering::SeqCst), 2);
 }
+
+// --- ARC citation stubs (arXiv:2607.25066) ---------------------------------
+
+/// Tool-only round (assistant `ToolUse` + user `ToolResult`) whose result
+/// body is `bytes` long.
+fn big_tool_group(id: &str, bytes: usize) -> Vec<Message> {
+    vec![
+        assistant_tool_use(id),
+        Message {
+            role: Role::User,
+            content: vec![ContentBlock::tool_result(id, "x".repeat(bytes), false)],
+        },
+    ]
+}
+
+fn only_tool_result_content(msgs: &[Message]) -> Option<&str> {
+    msgs.iter()
+        .flat_map(|m| m.content.iter())
+        .find_map(|b| match b {
+            ContentBlock::ToolResult { content, .. } => Some(content.as_str()),
+            _ => None,
+        })
+}
+
+#[test]
+fn tool_only_round_with_large_output_survives_as_citation() {
+    let mut msgs = big_tool_group("call_abc", ARC_STUB_MIN_BYTES + 100);
+    msgs.push(Message::user("done?"));
+    let out = build_retained_with_session(&msgs, RETAINED_MESSAGE_TOKEN_BUDGET, Some("sess1"));
+    // Pairing intact: the call and its (stubbed) result both survive.
+    assert_eq!(
+        call_result_ids(&out),
+        (vec!["call_abc".to_string()], vec!["call_abc".to_string()]),
+        "the stubbed round must not orphan the call or the result"
+    );
+    let stub = only_tool_result_content(&out).expect("stubbed result survives");
+    assert!(stub.contains("elided by compaction"), "{stub}");
+    assert!(
+        stub.contains("call_abc"),
+        "citation names the address: {stub}"
+    );
+    assert!(
+        stub.contains("~/.gray/sessions/sess1.jsonl"),
+        "citation names the file: {stub}"
+    );
+    assert!(stub.contains("grep"), "citation is self-describing: {stub}");
+    assert!(
+        stub.contains("8292"),
+        "citation names the elided size: {stub}"
+    );
+    assert_eq!(out.last().unwrap(), &Message::user("done?"));
+}
+
+#[test]
+fn tool_only_round_with_small_output_still_drops_without_citation() {
+    let msgs = vec![
+        assistant_tool_use("c1"),
+        user_tool_result("c1"),
+        Message::user("done?"),
+    ];
+    let out = build_retained(&msgs, RETAINED_MESSAGE_TOKEN_BUDGET);
+    assert_eq!(call_result_ids(&out), (vec![], vec![]));
+    assert_eq!(out, vec![Message::user("done?")]);
+}
+
+#[test]
+fn citation_stub_falls_back_to_generic_path_without_session() {
+    let msgs = big_tool_group("call_xyz", ARC_STUB_MIN_BYTES + 1);
+    let out = build_retained(&msgs, RETAINED_MESSAGE_TOKEN_BUDGET);
+    let stub = only_tool_result_content(&out).expect("stubbed result survives");
+    assert!(stub.contains("grep 'call_xyz'"), "{stub}");
+    assert!(stub.contains("~/.gray/sessions/"), "{stub}");
+}
+
+#[test]
+fn stubbing_rescues_over_budget_text_group() {
+    // Assistant text worth keeping, fused with a tool call whose huge result
+    // prices the whole group out of budget: without the stub fallback the
+    // text drops with it.
+    let msgs = vec![
+        Message {
+            role: Role::Assistant,
+            content: vec![
+                ContentBlock::Text {
+                    text: "the plan is to frobnicate the config".to_string(),
+                },
+                ContentBlock::tool_use("c9", "sh", serde_json::json!({})),
+            ],
+        },
+        Message {
+            role: Role::User,
+            content: vec![ContentBlock::tool_result(
+                "c9",
+                "y".repeat(ARC_STUB_MIN_BYTES * 4),
+                false,
+            )],
+        },
+        Message::user("done?"),
+    ];
+    let out = build_retained(&msgs, 2_000);
+    let text: String = out
+        .iter()
+        .flat_map(|m| m.content.iter())
+        .filter_map(|b| match b {
+            ContentBlock::Text { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        text.contains("frobnicate"),
+        "the stub fallback keeps the text that fixed costs would have dropped: {text}"
+    );
+    let stub = only_tool_result_content(&out).expect("result elided to a citation");
+    assert!(stub.contains("grep 'c9'"), "{stub}");
+    assert_eq!(
+        call_result_ids(&out),
+        (vec!["c9".to_string()], vec!["c9".to_string()]),
+        "pairing survives the fallback"
+    );
+}
+
+#[test]
+fn fitting_groups_keep_large_output_verbatim() {
+    // Budget pressure is the trigger: a group that fits whole keeps its big
+    // result byte-identical (TRACE, arXiv:2608.06503 — eliding recent,
+    // still-referenced output destabilizes execution).
+    let big = "z".repeat(ARC_STUB_MIN_BYTES + 10);
+    let msgs = vec![
+        Message {
+            role: Role::Assistant,
+            content: vec![
+                ContentBlock::Text {
+                    text: "looking at the output".to_string(),
+                },
+                ContentBlock::tool_use("c1", "sh", serde_json::json!({})),
+            ],
+        },
+        Message {
+            role: Role::User,
+            content: vec![ContentBlock::tool_result("c1", big.clone(), false)],
+        },
+        Message::user("done?"),
+    ];
+    let out = build_retained(&msgs, RETAINED_MESSAGE_TOKEN_BUDGET);
+    let content = only_tool_result_content(&out).expect("fitting group keeps its result");
+    assert_eq!(content, big, "no stub when the group fits");
+}
