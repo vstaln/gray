@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-09-21
+
 ### Added
 
 - `gray login`, `gray whoami`, `gray logout` (and `/login`, `/whoami`,
