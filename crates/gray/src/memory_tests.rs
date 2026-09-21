@@ -82,6 +82,90 @@ fn audit_flags_missing_rationale_falsified_outcomes_and_duplicates() {
 }
 
 #[test]
+fn audit_does_not_flag_a_compliant_falsified_field() {
+    let (_dir, store) = setup();
+    // The convention's compliant value: nothing has been contradicted yet.
+    store
+        .set(
+            Scope::Project,
+            "gate",
+            "Run tests per crate. Why: \"a 3-crate run let a failure reach CI\" (recurs: 1); falsified: nothing yet",
+        )
+        .unwrap();
+    let report = store.audit(Scope::Project).unwrap();
+    assert!(
+        !report.contains("- gate: records a falsified outcome"),
+        "a compliant entry was flagged as recurring: {report}"
+    );
+    // A real failed attempt is still flagged.
+    store
+        .set(
+            Scope::Project,
+            "dead",
+            "Old. Why: \"x\"; falsified: bumping the timeout did not help",
+        )
+        .unwrap();
+    let report = store.audit(Scope::Project).unwrap();
+    assert!(
+        report.contains("dead: records a falsified outcome"),
+        "{report}"
+    );
+    // The audit lists findings only, so a clean entry appears nowhere in it.
+    assert!(!report.contains("gate"), "{report}");
+}
+
+#[test]
+fn audit_flags_duplicates_by_decision_not_by_rationale() {
+    let (_dir, store) = setup();
+    store
+        .set(
+            Scope::Project,
+            "a",
+            "Never push main. Why: \"main is protected\" (recurs: 0)",
+        )
+        .unwrap();
+    store
+        .set(
+            Scope::Project,
+            "b",
+            "never push MAIN. Why: \"the user said so on a different day\" (recurs: 2)",
+        )
+        .unwrap();
+    let report = store.audit(Scope::Project).unwrap();
+    assert!(
+        report.contains("a, b: duplicate target"),
+        "same aim, different rationale, must still be a duplicate: {report}"
+    );
+}
+
+#[test]
+fn concurrent_scope_saves_do_not_clobber_the_growth_record() {
+    let (_dir, store) = setup();
+    let store = std::sync::Arc::new(store);
+    let mut handles = Vec::new();
+    for i in 0..8 {
+        let store = std::sync::Arc::clone(&store);
+        handles.push(std::thread::spawn(move || {
+            let scope = if i % 2 == 0 {
+                Scope::User
+            } else {
+                Scope::Project
+            };
+            store
+                .set(scope, &format!("k{i}"), &format!("Decision {i}."))
+                .unwrap();
+        }));
+    }
+    for h in handles {
+        h.join().unwrap();
+    }
+    // Both scopes must still be recorded: a racy read-modify-write on the
+    // shared growth file would drop one of them.
+    assert!(store.growth(Scope::User).is_some(), "user scope lost");
+    assert!(store.growth(Scope::Project).is_some(), "project scope lost");
+}
+
+#[test]
 fn growth_streak_warns_after_repeated_adds_and_a_removal_resets_it() {
     let (_dir, store) = setup();
     assert_eq!(store.growth_warning(Scope::Project), None);

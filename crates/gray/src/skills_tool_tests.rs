@@ -241,6 +241,18 @@ fn strip_rationale_comments_is_identity_without_comments() {
 }
 
 #[test]
+fn project_context_block_none_when_only_blank_lines_survive_the_strip() {
+    let tmp = tempfile::tempdir().unwrap();
+    // Comments separated by blank lines: the strip leaves only the blanks.
+    std::fs::write(
+        tmp.path().join("AGENTS.md"),
+        "# r1: only a rationale\n\n# r2: and another\n\n",
+    )
+    .unwrap();
+    assert_eq!(project_context_block(tmp.path()), None);
+}
+
+#[test]
 fn project_context_block_none_when_only_rationale_comments() {
     let tmp = tempfile::tempdir().unwrap();
     std::fs::write(

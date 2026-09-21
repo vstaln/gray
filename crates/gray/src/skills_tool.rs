@@ -112,7 +112,8 @@ pub fn project_context_block(cwd: &Path) -> Option<String> {
     let path = find_project_rules(cwd, gray_home.as_deref())?;
     let body = std::fs::read_to_string(&path).ok()?;
     let body = strip_rationale_comments(body.trim());
-    if body.is_empty() {
+    // Stripping can leave only the blank lines that separated the comments.
+    if body.trim().is_empty() {
         return None;
     }
     let mut body = body;

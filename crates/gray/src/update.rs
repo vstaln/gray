@@ -217,11 +217,13 @@ fn installer_dest() -> Option<PathBuf> {
 
 #[cfg(unix)]
 fn unix_installer_dest() -> Option<PathBuf> {
-    let home = std::env::var_os("HOME").filter(|s| !s.is_empty())?;
+    // Root first: a root shell with no HOME still installs to /usr/local/bin,
+    // and the shadow guard must not lose the destination over it.
     // SAFETY: geteuid takes no arguments and cannot fail.
     if unsafe { libc::geteuid() } == 0 {
         return Some(PathBuf::from("/usr/local/bin"));
     }
+    let home = std::env::var_os("HOME").filter(|s| !s.is_empty())?;
     Some(PathBuf::from(home).join(".local").join("bin"))
 }
 
@@ -501,6 +503,12 @@ pub async fn startup_check() {
                 crate::profile::queue_profile_warning(format!(
                     "gray {latest} installed in the background — restart to apply"
                 ));
+                // Same hazard as a manual update, and this path is the one that
+                // never asked: a stale copy earlier on PATH keeps every new
+                // shell on the previous build.
+                if let Some(w) = post_update_shadow_warning() {
+                    crate::profile::queue_profile_warning(w);
+                }
             }
         });
         return;

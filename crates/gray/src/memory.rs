@@ -298,7 +298,7 @@ impl MemoryStore {
                     "- {key}: no Why recorded — what failure or correction prompted it?"
                 ));
             }
-            if text.contains("falsified") {
+            if records_falsified_outcome(text) {
                 findings.push(format!(
                     "- {key}: records a falsified outcome — its failure kept recurring anyway; delete it or fold it into its replacement"
                 ));
@@ -364,10 +364,20 @@ impl MemoryStore {
         self.root.join("growth.json")
     }
 
+    fn growth_lock_path(&self) -> PathBuf {
+        self.root.join("growth.lock")
+    }
+
     /// Fold one change into the growth record. A removal resets the streak;
     /// a shrink lowers the peak; only net growth extends it.
     fn record_growth(&self, scope: Scope, count: usize, removed: bool) {
         let path = self.growth_path();
+        // One lock for the whole file. The per-scope entry locks do not cover
+        // it, so a user-scope and a project-scope save racing each other would
+        // each read the file, update their own key, and clobber the other.
+        let Ok(_lock) = lock(&self.growth_lock_path()) else {
+            return;
+        };
         let mut all: BTreeMap<String, Growth> = std::fs::read_to_string(&path)
             .ok()
             .and_then(|t| serde_json::from_str(&t).ok())
@@ -413,10 +423,32 @@ fn scope_label(scope: Scope) -> &'static str {
     }
 }
 
+/// An entry whose `falsified` field records a real failed attempt. The
+/// convention's compliant value is "falsified: nothing yet" — an entry that
+/// has not been contradicted must not read as one that has.
+fn records_falsified_outcome(text: &str) -> bool {
+    let Some((_, value)) = text.split_once("falsified:") else {
+        return false;
+    };
+    let value = value
+        .trim_start()
+        .trim_end_matches(['.', ';'])
+        .trim()
+        .to_ascii_lowercase();
+    !matches!(
+        value.as_str(),
+        "" | "nothing" | "nothing yet" | "none" | "n/a"
+    )
+}
+
 /// Two entries aiming at the same thing, ignoring case and spacing: the
-/// mechanical stand-in for "duplicates another directive's target".
+/// mechanical stand-in for "duplicates another directive's target". Only the
+/// decision counts — two entries with the same aim and different rationales
+/// are still duplicates of each other.
 fn normalized_target(text: &str) -> String {
-    text.to_lowercase()
+    let decision = text.split_once("Why:").map_or(text, |(d, _)| d);
+    decision
+        .to_lowercase()
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")

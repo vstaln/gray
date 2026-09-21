@@ -45,7 +45,27 @@ pub fn endpoint_with(base: &str, path: &str) -> anyhow::Result<String> {
     // `normalize_base_url` strips that slash — put it back for the join only.
     let base = reqwest::Url::parse(&format!("{base}/"))
         .map_err(|e| anyhow::anyhow!("{REGISTRY_URL_ENV} is not a valid absolute URL: {e}"))?;
+    // Every call here carries a bearer token, so cleartext would put the
+    // credential on the wire. Loopback is the documented local-dev exception
+    // (`GRAY_REGISTRY_URL=http://127.0.0.1:4000/api`, `pnpm backend:dev`).
+    if base.scheme() != "https" && !is_loopback_host(base.host_str().unwrap_or_default()) {
+        anyhow::bail!(
+            "{REGISTRY_URL_ENV} must be https (http is allowed only for loopback): {base}"
+        );
+    }
     Ok(base.join(path.trim_start_matches('/'))?.to_string())
+}
+
+/// Loopback by name or by address, IPv6 brackets included.
+fn is_loopback_host(host: &str) -> bool {
+    let host = host
+        .strip_prefix('[')
+        .and_then(|h| h.strip_suffix(']'))
+        .unwrap_or(host);
+    host == "localhost"
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback())
 }
 
 /// Pure seam for [`base_url`]: empty/blank input falls back to production.
@@ -267,16 +287,40 @@ async fn revoke_token(token: &str) -> bool {
     }
 }
 
+/// What a logout accomplished. "No token" and "revocation failed" are
+/// different facts: the second leaves a credential the registry still honors,
+/// so the caller must be able to say so.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LogoutOutcome {
+    Revoked,
+    NoToken,
+    RevocationFailed,
+}
+
 /// Revokes the stored token server-side, then drops it locally. A token the
 /// registry already forgot is still cleared locally: the goal is "this machine
 /// holds no credential", not "the server agreed".
-pub async fn logout() -> anyhow::Result<bool> {
+pub async fn logout() -> anyhow::Result<LogoutOutcome> {
     let Some(token) = load_token() else {
-        return Ok(false);
+        return Ok(LogoutOutcome::NoToken);
     };
-    let revoked = revoke_token(&token).await;
+    let outcome = match revoke_token(&token).await {
+        true => LogoutOutcome::Revoked,
+        false => LogoutOutcome::RevocationFailed,
+    };
     clear_token_at(&token_path()?)?;
-    Ok(revoked)
+    Ok(outcome)
+}
+
+/// The line `gray logout` prints for each outcome.
+pub fn logout_message(outcome: LogoutOutcome) -> &'static str {
+    match outcome {
+        LogoutOutcome::Revoked => "logged out — registry token revoked",
+        LogoutOutcome::NoToken => "logged out — no registry token was stored",
+        LogoutOutcome::RevocationFailed => {
+            "logged out locally — the registry could not revoke the token, so it may still be valid"
+        }
+    }
 }
 
 // ---- Prompts --------------------------------------------------------------
@@ -320,15 +364,28 @@ pub async fn run_login(code: Option<&str>) -> anyhow::Result<()> {
         }
     };
     let (token, account) = login_with_code(&code).await?;
-    // A second login would otherwise orphan the previous token: it stays
-    // valid server-side while this machine forgets it ever existed. Exchange
-    // first, so a bad code never costs the user their current session.
-    if let Some(previous) = load_token()
-        && previous != token
-    {
-        revoke_token(&previous).await;
+    // Persist before revoking. The exchanged token is live server-side the
+    // moment it is minted, so the old order (revoke, then save) turned a failed
+    // local write into a logged-out machine holding nothing. Now a failed save
+    // revokes the new token and keeps the previous session working.
+    // Capture the previous token before the save: afterwards load_token()
+    // answers with the new one and the old token would never be revoked.
+    let previous = load_token().filter(|p| *p != token);
+    if let Err(e) = save_token(&token) {
+        if !revoke_token(&token).await {
+            log::debug!(target: "gray_account", "could not revoke the unsaved token");
+        }
+        return Err(e);
     }
-    save_token(&token)?;
+    // A second login would otherwise orphan the previous token: it stays valid
+    // server-side while this machine forgets it ever existed.
+    if let Some(previous) = previous
+        && !revoke_token(&previous).await
+    {
+        eprintln!(
+            "warning: the previous registry token could not be revoked and may still be valid"
+        );
+    }
     println!("logged in as {}", account.label());
     if account.plugins.is_empty() {
         println!("no plugins published yet");
@@ -368,11 +425,7 @@ pub async fn run_whoami() -> anyhow::Result<()> {
 
 /// `gray logout`: revokes and forgets the token.
 pub async fn run_logout() -> anyhow::Result<()> {
-    if logout().await? {
-        println!("logged out — registry token revoked");
-    } else {
-        println!("logged out — no registry token was stored");
-    }
+    println!("{}", logout_message(logout().await?));
     Ok(())
 }
 
@@ -385,6 +438,54 @@ mod tests {
             std::fs::create_dir_all(parent).expect("mkdir");
         }
         std::fs::write(path, body).expect("write fixture");
+    }
+
+    #[test]
+    fn loopback_hosts_are_recognized_with_and_without_brackets() {
+        assert!(is_loopback_host("localhost"));
+        assert!(is_loopback_host("127.0.0.1"));
+        assert!(is_loopback_host("127.0.0.2"));
+        assert!(is_loopback_host("[::1]"));
+        assert!(is_loopback_host("::1"));
+        assert!(!is_loopback_host("example.com"));
+        assert!(!is_loopback_host("0.0.0.0"));
+        assert!(!is_loopback_host(""));
+    }
+
+    #[test]
+    fn endpoint_with_refuses_cleartext_except_on_loopback() {
+        // The token rides on every call, so a cleartext remote is refused.
+        assert!(endpoint_with("http://example.test/api", "auth/token").is_err());
+        assert!(endpoint_with("http://169.254.1.1/api", "auth/token").is_err());
+        // Loopback stays allowed: that is the documented local registry.
+        assert_eq!(
+            endpoint_with("http://127.0.0.1:4000/api", "auth/token").unwrap(),
+            "http://127.0.0.1:4000/api/auth/token"
+        );
+        assert_eq!(
+            endpoint_with("http://localhost:4000/api", "auth/token").unwrap(),
+            "http://localhost:4000/api/auth/token"
+        );
+        // Production and any https host.
+        assert!(endpoint_with(DEFAULT_REGISTRY_URL, "auth/token").is_ok());
+        assert!(endpoint_with("https://example.test/api", "auth/token").is_ok());
+    }
+
+    #[test]
+    fn logout_message_names_each_outcome_distinctly() {
+        assert!(logout_message(LogoutOutcome::Revoked).contains("revoked"));
+        assert!(
+            logout_message(LogoutOutcome::NoToken).contains("no registry token"),
+            "no token must not read as a revocation"
+        );
+        let failed = logout_message(LogoutOutcome::RevocationFailed);
+        assert!(failed.contains("could not revoke"), "{failed}");
+        assert!(failed.contains("may still be valid"), "{failed}");
+        assert_ne!(
+            logout_message(LogoutOutcome::NoToken),
+            logout_message(LogoutOutcome::RevocationFailed),
+            "a failed revocation must never print as 'nothing was stored'"
+        );
     }
 
     #[test]

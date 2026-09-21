@@ -16,7 +16,8 @@
   leaves a working credential the machine has forgotten. All three run before
   provider configuration, so a fresh machine can enroll before it can run a
   turn. `GRAY_REGISTRY_URL` points at a local registry
-  (`pnpm backend:dev`). Nothing in gray is gated on an account — the token
+  (`pnpm backend:dev`); cleartext http is accepted only on loopback, since
+  every call carries the token. Nothing in gray is gated on an account — the token
   only names the caller on registry calls — and the onboarding banner now says
   so instead of implying a login exists
 
