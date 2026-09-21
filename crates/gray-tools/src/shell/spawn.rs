@@ -18,7 +18,11 @@ use tokio::process::Command;
 use super::contract::Spawned;
 
 /// Spawn `command` via `sh -c` in `cwd`.
-pub fn spawn(command: &str, cwd: &Path) -> io::Result<Spawned> {
+///
+/// `session` is exported as `GRAY_SESSION_ID` so anything the command runs can
+/// name the session it belongs to: a `gray memory set` issued from inside a
+/// session stamps its entry with that session rather than the generic `cli`.
+pub fn spawn(command: &str, cwd: &Path, session: Option<&str>) -> io::Result<Spawned> {
     #[cfg(not(windows))]
     let mut cmd = Command::new("sh");
     #[cfg(windows)]
@@ -58,6 +62,9 @@ pub fn spawn(command: &str, cwd: &Path) -> io::Result<Spawned> {
         .env("MANPAGER", "cat")
         .env("GIT_PAGER", "cat")
         .env("SYSTEMD_PAGER", "cat");
+    if let Some(session) = session.filter(|s| !s.trim().is_empty()) {
+        cmd.env("GRAY_SESSION_ID", session.trim());
+    }
     #[cfg(unix)]
     {
         unsafe {

@@ -147,7 +147,7 @@ impl Tool for BashTool {
         }
         let log_path = log_path(ctx);
         let start = Instant::now();
-        let spawned = match spawn(&command, &ctx.cwd) {
+        let spawned = match spawn(&command, &ctx.cwd, ctx.session_id.as_deref()) {
             Ok(s) => s,
             Err(e) => return fail(format!("failed to spawn `sh -c`: {e}")),
         };

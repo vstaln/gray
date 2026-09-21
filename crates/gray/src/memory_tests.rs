@@ -328,3 +328,119 @@ fn invalid_snapshot_and_wrong_project_fail_closed() {
     std::fs::write(path, "not json").unwrap();
     assert!(store.snapshot(Some(&sid)).is_err());
 }
+
+#[test]
+fn provenance_round_trips_and_never_reaches_the_served_text() {
+    let (dir, store) = setup();
+    assert!(store.set(Scope::Project, "gate", "run tests").unwrap());
+    let on_disk = std::fs::read_to_string(store.path(Scope::Project)).unwrap();
+    // The trailer rides on the line, so the store stays hand-editable.
+    assert!(on_disk.contains("<!-- gray:saved="), "{on_disk}");
+    assert!(on_disk.contains("source="), "{on_disk}");
+    // ...and never reaches what the model is served.
+    let served = store.list(Scope::Project).unwrap();
+    assert!(!served.contains("<!-- gray:"), "{served}");
+    assert!(served.contains("- gate: run tests\n"), "{served}");
+    // A second save keeps the trailer rather than accumulating a second one.
+    assert!(
+        store
+            .set(Scope::Project, "gate", "run tests again")
+            .unwrap()
+    );
+    let again = std::fs::read_to_string(store.path(Scope::Project)).unwrap();
+    assert_eq!(again.matches("<!-- gray:").count(), 1, "{again}");
+    let _ = dir;
+}
+
+#[test]
+fn entries_without_a_trailer_still_parse() {
+    let (_dir, store) = setup();
+    // A store written before provenance existed must load unchanged. The
+    // directory only exists once a write path has run, so establish it first.
+    assert!(store.set(Scope::User, "seed", "x").unwrap());
+    std::fs::write(store.path(Scope::User), "- old: kept\n").unwrap();
+    assert_eq!(store.list(Scope::User).unwrap(), "- old: kept\n");
+    assert_eq!(
+        store.get(Scope::User, "old").unwrap().as_deref(),
+        Some("kept")
+    );
+    // And an unrelated save must not invent a date for it.
+    assert!(store.set(Scope::User, "new", "added").unwrap());
+    let on_disk = std::fs::read_to_string(store.path(Scope::User)).unwrap();
+    assert!(on_disk.contains("- old: kept\n"), "{on_disk}");
+    assert!(
+        on_disk.contains("- new: added <!-- gray:saved="),
+        "{on_disk}"
+    );
+}
+
+#[test]
+fn a_hand_edited_line_loses_its_provenance() {
+    let (_dir, store) = setup();
+    assert!(store.set(Scope::User, "k", "written by gray").unwrap());
+    // A human rewrites the line and drops the trailer: the origin is honestly
+    // unknown, so it stays unstamped instead of being guessed at.
+    std::fs::write(store.path(Scope::User), "- k: rewritten by hand\n").unwrap();
+    assert!(store.set(Scope::User, "other", "added").unwrap());
+    let on_disk = std::fs::read_to_string(store.path(Scope::User)).unwrap();
+    assert!(on_disk.contains("- k: rewritten by hand\n"), "{on_disk}");
+    assert!(
+        on_disk.contains("- other: added <!-- gray:saved="),
+        "{on_disk}"
+    );
+}
+
+#[test]
+fn provenance_survives_an_unrelated_edit() {
+    let (_dir, store) = setup();
+    assert!(store.set(Scope::User, "a", "first").unwrap());
+    let before = std::fs::read_to_string(store.path(Scope::User)).unwrap();
+    assert!(store.set(Scope::User, "b", "second").unwrap());
+    let after = std::fs::read_to_string(store.path(Scope::User)).unwrap();
+    let line_a = |text: &str| {
+        text.lines()
+            .find(|l| l.starts_with("- a:"))
+            .unwrap_or_default()
+            .to_owned()
+    };
+    assert_eq!(
+        line_a(&before),
+        line_a(&after),
+        "an unrelated save restamped a"
+    );
+}
+
+#[test]
+fn source_from_names_the_session_or_says_cli() {
+    assert_eq!(source_from(Some("d6fd9c2b")), "d6fd9c2b");
+    assert_eq!(source_from(Some("  spaced  ")), "spaced");
+    assert_eq!(source_from(Some("")), "cli");
+    assert_eq!(source_from(Some("   ")), "cli");
+    assert_eq!(source_from(None), "cli");
+}
+
+#[test]
+fn list_detailed_shows_the_save_date_and_source() {
+    let (_dir, store) = setup();
+    assert!(store.set(Scope::User, "k", "text").unwrap());
+    let detailed = store.list_detailed(Scope::User).unwrap();
+    assert!(detailed.contains("- k: text"), "{detailed}");
+    assert!(detailed.contains("saved "), "{detailed}");
+    assert!(detailed.contains(" by "), "{detailed}");
+    // The plain list stays byte-identical to before: no second line.
+    assert_eq!(store.list(Scope::User).unwrap(), "- k: text\n");
+}
+
+#[test]
+fn the_snapshot_never_carries_trailers() {
+    let (dir, store) = setup();
+    assert!(store.set(Scope::User, "k", "text").unwrap());
+    let snapshot = store.snapshot(None).unwrap();
+    assert!(!snapshot.contains("<!-- gray:"), "{snapshot}");
+    assert!(snapshot.contains("- k: text"), "{snapshot}");
+    // A durable session snapshot is the same text, so it cannot leak either.
+    let id = uuid::Uuid::new_v4().to_string();
+    let durable = store.snapshot(Some(&id)).unwrap();
+    assert!(!durable.contains("<!-- gray:"), "{durable}");
+    let _ = dir;
+}

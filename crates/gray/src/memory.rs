@@ -21,6 +21,9 @@ pub struct MemoryArgs {
     /// User preferences or current project's confirmed decisions
     #[arg(long, value_enum, default_value = "project", global = true)]
     pub scope: Scope,
+    /// Show each entry's save date and originating session
+    #[arg(long, global = true)]
+    pub verbose: bool,
     #[command(subcommand)]
     pub command: MemoryCommand,
 }
@@ -56,8 +59,12 @@ pub fn run_cli(args: &MemoryArgs) -> anyhow::Result<()> {
     let store = MemoryStore::new(&crate::setup::gray_home()?, &std::env::current_dir()?)?;
     match &args.command {
         MemoryCommand::List => {
-            let text = store.list(args.scope)?;
-            if text.is_empty() {
+            let text = if args.verbose {
+                store.list_detailed(args.scope)?
+            } else {
+                store.list(args.scope)?
+            };
+            if text.trim().is_empty() {
                 println!("No memories.");
             } else {
                 print!("{text}");
@@ -146,14 +153,21 @@ impl MemoryStore {
         }
     }
 
+    /// Raw store from disk, provenance included. The write path needs the
+    /// trailers; the served path must never see them.
+    fn read_store(&self, scope: Scope) -> anyhow::Result<Store> {
+        let text = read_text(&self.path(scope))?.unwrap_or_default();
+        parse(&text)
+    }
+
     /// Total curated entries across both scopes; an unreadable or missing
     /// store reads as empty (a missing store *is* an empty store).
     pub fn entry_count(&self) -> usize {
         [Scope::User, Scope::Project]
             .into_iter()
             .map(|s| {
-                parse(&self.list(s).unwrap_or_default())
-                    .map(|e| e.len())
+                self.read_store(s)
+                    .map(|store| store.entries.len())
                     .unwrap_or(0)
             })
             .sum()
@@ -163,8 +177,7 @@ impl MemoryStore {
     /// unreadable store reads as empty (a missing store *is* an empty store).
     /// Text is returned whole: callers decide how much to show.
     pub fn entries(&self, scope: Scope) -> anyhow::Result<Vec<(String, String)>> {
-        let text = read_text(&self.path(scope))?.unwrap_or_default();
-        Ok(parse(&text)?.into_iter().collect())
+        Ok(self.read_store(scope)?.entries.into_iter().collect())
     }
 
     /// Freeze curated data, not instructions, once per durable session. A new
@@ -213,9 +226,31 @@ impl MemoryStore {
         Ok(text)
     }
 
+    /// Served text: entries only, never the provenance trailers. This is what
+    /// reaches the snapshot and the model.
     pub fn list(&self, scope: Scope) -> anyhow::Result<String> {
-        let text = read_text(&self.path(scope))?.unwrap_or_default();
-        Ok(render(&parse(&text)?))
+        Ok(render_served(&self.read_store(scope)?.entries))
+    }
+
+    /// CLI view with provenance, so a human can see how old each entry is and
+    /// which session wrote it. Separate from [`list`](Self::list) so the
+    /// served format stays byte-identical.
+    pub fn list_detailed(&self, scope: Scope) -> anyhow::Result<String> {
+        let store = self.read_store(scope)?;
+        Ok(store
+            .entries
+            .iter()
+            .map(|(key, text)| {
+                let provenance = store.provenance.get(key);
+                let saved = provenance
+                    .and_then(|p| p.saved.as_deref())
+                    .unwrap_or("unknown date");
+                let source = provenance
+                    .and_then(|p| p.source.as_deref())
+                    .unwrap_or("unknown source");
+                format!("- {key}: {text}\n    saved {saved} by {source}\n")
+            })
+            .collect())
     }
 
     pub fn set(&self, scope: Scope, key: &str, text: &str) -> anyhow::Result<bool> {
@@ -235,7 +270,7 @@ impl MemoryStore {
     /// One entry's text, if the scope holds it.
     pub fn get(&self, scope: Scope, key: &str) -> anyhow::Result<Option<String>> {
         validate_key(key)?;
-        Ok(parse(&self.list(scope)?)?.remove(key))
+        Ok(self.read_store(scope)?.entries.remove(key))
     }
 
     /// Rewrite the text of an existing entry; never creates a new one.
@@ -283,12 +318,31 @@ impl MemoryStore {
         private_dir(&self.root)?;
         let path = self.path(scope);
         let _lock = lock(&path.with_extension("lock"))?;
-        let mut entries = parse(&self.list(scope)?)?;
-        let before = entries.len();
-        let changed = update(&mut entries)?;
+        let mut store = self.read_store(scope)?;
+        let before = store.entries.clone();
+        let changed = update(&mut store.entries)?;
         if changed {
-            atomic_write(&path, &render(&entries))?;
-            self.record_growth(scope, entries.len(), entries.len() < before);
+            // Stamp every new or rewritten entry; drop provenance for entries
+            // that no longer exist. A hand-edited line that lost its trailer
+            // stays unstamped rather than being guessed at.
+            let saved = today();
+            let source = source_from(std::env::var("GRAY_SESSION_ID").ok().as_deref());
+            store
+                .provenance
+                .retain(|k, _| store.entries.contains_key(k));
+            for (key, text) in &store.entries {
+                if before.get(key) != Some(text) {
+                    let entry = store.provenance.entry(key.clone()).or_default();
+                    entry.saved = Some(saved.clone());
+                    entry.source = Some(source.clone());
+                }
+            }
+            atomic_write(&path, &render(&store))?;
+            self.record_growth(
+                scope,
+                store.entries.len(),
+                store.entries.len() < before.len(),
+            );
         }
         Ok(changed)
     }
@@ -297,10 +351,11 @@ impl MemoryStore {
     /// writing a rationale is safe, acting on one to delete is not, so the
     /// decision stays with a human.
     pub fn audit(&self, scope: Scope) -> anyhow::Result<String> {
-        let entries = parse(&self.list(scope)?)?;
+        let store = self.read_store(scope)?;
+        let entries = &store.entries;
         let mut findings: Vec<String> = Vec::new();
         let mut by_target: BTreeMap<String, Vec<String>> = BTreeMap::new();
-        for (key, text) in &entries {
+        for (key, text) in &store.entries {
             if !text.contains("Why:") {
                 findings.push(format!(
                     "- {key}: no Why recorded — what failure or correction prompted it?"
@@ -488,26 +543,128 @@ fn validate_text(text: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn parse(text: &str) -> anyhow::Result<BTreeMap<String, String>> {
-    let mut entries = BTreeMap::new();
+fn parse(text: &str) -> anyhow::Result<Store> {
+    let mut store = Store::default();
     for line in text.lines().filter(|l| !l.trim().is_empty()) {
         let (key, value) = line
             .strip_prefix("- ")
             .and_then(|l| l.split_once(": "))
             .context("invalid memory Markdown; expected '- key: text'")?;
         validate_key(key)?;
-        validate_text(value)?;
+        let (body, provenance) = split_trailer(value);
+        validate_text(body)?;
         ensure!(
-            entries
-                .insert(key.to_owned(), value.trim().to_owned())
+            store
+                .entries
+                .insert(key.to_owned(), body.to_owned())
                 .is_none(),
             "duplicate key in memory file"
         );
+        if provenance != Provenance::default() {
+            store.provenance.insert(key.to_owned(), provenance);
+        }
     }
-    Ok(entries)
+    Ok(store)
 }
 
-fn render(entries: &BTreeMap<String, String>) -> String {
+/// Parsed store: entry text plus where each entry came from. Provenance is
+/// kept out of `entries` so every caller that only wants text keeps working
+/// unchanged.
+#[derive(Default)]
+struct Store {
+    entries: BTreeMap<String, String>,
+    provenance: BTreeMap<String, Provenance>,
+}
+
+/// Where an entry came from and when. Rides on the Markdown line as an
+/// HTML-comment trailer so the store stays hand-editable, and is stripped
+/// before the snapshot reaches the model (arXiv 2607.14611: a planted payload
+/// in a memory file attacks future sessions, so the entries you can trace are
+/// the ones you can purge).
+#[derive(Clone, Default, Debug, PartialEq, Eq)]
+struct Provenance {
+    /// `YYYY-MM-DD`, the day the current text was written.
+    saved: Option<String>,
+    /// Session id, or `cli` for a direct command-line save.
+    source: Option<String>,
+}
+
+const TRAILER_OPEN: &str = "<!-- gray:";
+
+/// Split a trailing `<!-- gray:saved=...;source=... -->` off a line's value.
+/// Only the end of the line is considered, so entry text containing HTML
+/// comments is untouched.
+fn split_trailer(value: &str) -> (&str, Provenance) {
+    let none = Provenance::default();
+    let Some(body) = value.strip_suffix("-->") else {
+        return (value.trim_end(), none);
+    };
+    let Some(start) = body.rfind(TRAILER_OPEN) else {
+        return (value.trim_end(), none);
+    };
+    let mut provenance = Provenance::default();
+    for part in body[start + TRAILER_OPEN.len()..].split(';') {
+        if let Some((k, v)) = part.split_once('=') {
+            let v = v.trim();
+            if v.is_empty() {
+                continue;
+            }
+            match k.trim() {
+                "saved" => provenance.saved = Some(v.to_owned()),
+                "source" => provenance.source = Some(v.to_owned()),
+                _ => {}
+            }
+        }
+    }
+    (value[..start].trim_end(), provenance)
+}
+
+/// The trailer for one entry, or empty when nothing is known.
+fn trailer_for(provenance: &Provenance) -> String {
+    let mut parts = Vec::new();
+    if let Some(saved) = &provenance.saved {
+        parts.push(format!("saved={saved}"));
+    }
+    if let Some(source) = &provenance.source {
+        parts.push(format!("source={source}"));
+    }
+    if parts.is_empty() {
+        String::new()
+    } else {
+        format!(" {TRAILER_OPEN}{} -->", parts.join(";"))
+    }
+}
+
+/// Today, local date. Same `%Y-%m-%d` shape the rest of gray stamps with.
+fn today() -> String {
+    chrono::Local::now().format("%Y-%m-%d").to_string()
+}
+
+/// Which session is asking. The REPL exports the session id into the tool
+/// environment, so a `gray memory set` subprocess can name its parent; a
+/// direct command-line save has no session and says so. Pure so the parallel
+/// test suite never has to mutate the process environment.
+fn source_from(session: Option<&str>) -> String {
+    session
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map_or_else(|| "cli".to_owned(), str::to_owned)
+}
+
+fn render(store: &Store) -> String {
+    store
+        .entries
+        .iter()
+        .map(|(k, v)| {
+            let trailer = store.provenance.get(k).map(trailer_for).unwrap_or_default();
+            format!("- {k}: {v}{trailer}\n")
+        })
+        .collect()
+}
+
+/// What the model sees: text only, never the trailers. Rationale costs the
+/// editor tokens and not the executor's, and provenance is the same trade.
+fn render_served(entries: &BTreeMap<String, String>) -> String {
     entries
         .iter()
         .map(|(k, v)| format!("- {k}: {v}\n"))

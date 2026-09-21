@@ -67,7 +67,7 @@ impl Jobs {
             let log = log_path(ctx);
             let id = log.file_stem().unwrap().to_string_lossy().into_owned();
             let started = Instant::now();
-            let spawned = match spawn(&command, &ctx.cwd) {
+            let spawned = match spawn(&command, &ctx.cwd, ctx.session_id.as_deref()) {
                 Ok(s) => s,
                 Err(e) => return fail(format!("failed to spawn `sh -c`: {e}")),
             };
