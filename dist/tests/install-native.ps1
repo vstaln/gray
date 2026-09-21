@@ -14,6 +14,9 @@ Copy-Item -LiteralPath (Join-Path $PSScriptRoot '..\..\LICENSE') -Destination $p
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot '..\..\THIRD_PARTY_NOTICES.md') -Destination $payload
 Compress-Archive -Path (Join-Path $payload '*') -DestinationPath $archive
 $digest = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash
+# The payload binary's own digest: the archive checksum above covers the ZIP,
+# so an installed gray.exe must be compared against this, not against $digest.
+$binaryDigest = (Get-FileHash -LiteralPath $Binary -Algorithm SHA256).Hash
 function Expect-Failure([scriptblock]$Action, [string]$Message) {
     $failed = $false
     try { & $Action } catch {
@@ -51,7 +54,7 @@ try {
         throw "Bare invocation routed through WSL: $bareText"
     }
     # The installed binary is the payload we staged, not a distro passthrough.
-    if ((Get-FileHash -LiteralPath (Join-Path $bareDir 'gray.exe') -Algorithm SHA256).Hash -ne $digest) {
+    if ((Get-FileHash -LiteralPath (Join-Path $bareDir 'gray.exe') -Algorithm SHA256).Hash -ne $binaryDigest) {
         throw 'Bare invocation installed an unexpected binary'
     }
     $isolated = Join-Path $root 'entry-only'
