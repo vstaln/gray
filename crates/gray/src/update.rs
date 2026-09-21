@@ -196,18 +196,44 @@ fn run_installer_locked() -> anyhow::Result<()> {
     run_installer()
 }
 
-/// Where the installer writes: `$GRAY_INSTALL_DIR`, else `/usr/local/bin` when
-/// root, else `~/.local/bin` — the same choice `dist/install.sh` makes.
+/// Where the installer writes: `$GRAY_INSTALL_DIR`, else the per-OS default —
+/// `/usr/local/bin` as root and `~/.local/bin` otherwise on Unix (what
+/// `dist/install.sh` does), `%LOCALAPPDATA%\Programs\gray\bin` on Windows
+/// (what `dist/install-native.ps1` does).
 fn installer_dest() -> Option<PathBuf> {
     if let Some(dir) = std::env::var_os("GRAY_INSTALL_DIR").filter(|s| !s.is_empty()) {
         return Some(PathBuf::from(dir));
     }
+    #[cfg(unix)]
+    if let Some(dest) = unix_installer_dest() {
+        return Some(dest);
+    }
+    #[cfg(windows)]
+    if let Some(dest) = windows_installer_dest() {
+        return Some(dest);
+    }
+    None
+}
+
+#[cfg(unix)]
+fn unix_installer_dest() -> Option<PathBuf> {
     let home = std::env::var_os("HOME").filter(|s| !s.is_empty())?;
     // SAFETY: geteuid takes no arguments and cannot fail.
     if unsafe { libc::geteuid() } == 0 {
         return Some(PathBuf::from("/usr/local/bin"));
     }
     Some(PathBuf::from(home).join(".local").join("bin"))
+}
+
+#[cfg(windows)]
+fn windows_installer_dest() -> Option<PathBuf> {
+    let local = std::env::var_os("LOCALAPPDATA").filter(|s| !s.is_empty())?;
+    Some(
+        PathBuf::from(local)
+            .join("Programs")
+            .join("gray")
+            .join("bin"),
+    )
 }
 
 /// `gray --version` of the binary at `path` ("gray 0.1.1" -> "0.1.1").
@@ -222,9 +248,27 @@ fn binary_version(path: &Path) -> Option<String> {
         .map(str::to_string)
 }
 
+/// Launcher names a shell may resolve in a PATH entry: Windows runs
+/// `gray.exe`, Unix `gray`.
+fn gray_names() -> &'static [&'static str] {
+    #[cfg(windows)]
+    {
+        &["gray.exe", "gray"]
+    }
+    #[cfg(not(windows))]
+    {
+        &["gray"]
+    }
+}
+
 /// First `gray` among `entries`, in PATH order, the way a shell resolves it.
 fn first_gray_in(entries: &[PathBuf]) -> Option<PathBuf> {
-    entries.iter().map(|d| d.join("gray")).find(|c| c.is_file())
+    entries.iter().find_map(|d| {
+        gray_names()
+            .iter()
+            .map(|name| d.join(name))
+            .find(|c| c.is_file())
+    })
 }
 
 /// The `gray` the next shell will actually launch.

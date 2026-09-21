@@ -143,6 +143,20 @@ fn first_gray_in_prefers_the_earliest_path_entry() {
 }
 
 #[test]
+#[cfg(windows)] // the launcher is gray.exe there, not gray
+fn first_gray_in_finds_gray_exe() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("gray.exe"), b"stub").unwrap();
+
+    assert_eq!(
+        first_gray_in(&[dir.path().to_path_buf()]),
+        Some(dir.path().join("gray.exe")),
+    );
+    assert_eq!(first_gray_in(&[dir.path().join("nowhere")]), None);
+}
+
+#[test]
+#[cfg(unix)] // symlink farms are the Unix case; Windows needs privileges for this
 fn same_binary_sees_symlinked_install_dirs() {
     let dir = tempfile::tempdir().unwrap();
     let real = dir.path().join("real");
