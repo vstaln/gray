@@ -239,8 +239,17 @@ impl Tool for BashTool {
 /// in a `#` comment swallows the whole suffix, reports nothing, and leaves the
 /// cwd where it was.
 fn with_cwd_report(command: &str) -> String {
+    // Git Bash's plain `pwd` is an MSYS path (/c/Users/...), which Rust's
+    // `is_dir` rejects on Windows, so the report would be read and thrown away
+    // on exactly the platform that cannot be checked locally. `pwd -W` is
+    // MSYS's Windows-path form (C:/Users/...), which Rust resolves. A shell
+    // without `-W` writes nothing and the cwd simply stays put.
+    #[cfg(windows)]
+    let reported = "$(pwd -W)";
+    #[cfg(not(windows))]
+    let reported = "\"$PWD\"";
     format!(
-        "{command}; __gray_rc=$?; printf '%s' \"$PWD\" > \"$GRAY_CWD_REPORT\" 2>/dev/null; exit $__gray_rc"
+        "{command}; __gray_rc=$?; printf '%s' {reported} > \"$GRAY_CWD_REPORT\" 2>/dev/null; exit $__gray_rc"
     )
 }
 

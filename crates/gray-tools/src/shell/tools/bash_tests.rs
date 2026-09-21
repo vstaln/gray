@@ -515,6 +515,20 @@ fn the_cwd_report_suffix_is_appended_not_substituted() {
     assert!(commented.starts_with("echo hi # note"), "{commented}");
 }
 
+#[test]
+fn the_cwd_report_asks_for_a_path_rust_can_resolve() {
+    // The report is read back with PathBuf::is_dir, so it must arrive in a form
+    // Rust can resolve on the platform that produced it.
+    let wrapped = with_cwd_report("echo hi");
+    #[cfg(windows)]
+    assert!(
+        wrapped.contains("pwd -W"),
+        "Git Bash's plain pwd is an MSYS path Rust rejects: {wrapped}"
+    );
+    #[cfg(not(windows))]
+    assert!(wrapped.contains("$PWD"), "{wrapped}");
+}
+
 #[tokio::test]
 async fn the_cwd_report_does_not_mask_the_commands_exit_code() {
     // The suffix must re-raise the command's own status: ending on the
