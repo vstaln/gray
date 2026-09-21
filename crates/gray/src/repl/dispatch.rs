@@ -322,6 +322,24 @@ pub(crate) async fn dispatch_command(
             }
             Flow::Continue
         }
+        ReplCommand::Login(code) => {
+            if let Err(e) = account_cmd(tui, crate::account::run_login(code.as_deref())).await {
+                say(tui.as_ref().map(|(s, _)| s), &format!("login failed: {e}"));
+            }
+            Flow::Continue
+        }
+        ReplCommand::Whoami => {
+            if let Err(e) = account_cmd(tui, crate::account::run_whoami()).await {
+                say(tui.as_ref().map(|(s, _)| s), &format!("{e}"));
+            }
+            Flow::Continue
+        }
+        ReplCommand::Logout => {
+            if let Err(e) = account_cmd(tui, crate::account::run_logout()).await {
+                say(tui.as_ref().map(|(s, _)| s), &format!("logout failed: {e}"));
+            }
+            Flow::Continue
+        }
         ReplCommand::Skill(_) => {
             // fully expanded into Prompt/Empty by expand_skill_command; defensive no-op
             Flow::Continue
@@ -417,6 +435,28 @@ pub(crate) fn format_memory_state(on: bool, entries: usize) -> String {
         "memory {} — {entries} entries · /memory off hides them from the model (entries keep saving)",
         if on { "on" } else { "off" }
     )
+}
+
+/// Runs a gray.alignment.id account command from inside the REPL.
+///
+/// The flow prints a walkthrough and blocks on a stdin read, so raw mode has
+/// to go for the duration (otherwise the prompt never echoes) and come back
+/// after. `restore_viewport` re-anchors the inline composer, the same repair
+/// every alternate-screen modal needs. Callers run under the multi-thread
+/// runtime `main` installs, which `block_in_place` requires.
+async fn account_cmd<T>(
+    tui: &TuiOpt,
+    fut: impl std::future::Future<Output = anyhow::Result<T>>,
+) -> anyhow::Result<T> {
+    let shared = tui.as_ref().map(|(s, _)| s);
+    let was_raw = crossterm::terminal::is_raw_mode_enabled().unwrap_or(false);
+    let _ = crossterm::terminal::disable_raw_mode();
+    let out = tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(fut));
+    if was_raw {
+        let _ = crossterm::terminal::enable_raw_mode();
+    }
+    restore_viewport(shared);
+    out
 }
 
 #[cfg(test)]

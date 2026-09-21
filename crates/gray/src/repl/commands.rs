@@ -9,7 +9,22 @@ pub(crate) const REGISTRY: &[CmdDef] = &[
     CmdDef {
         name: "connect",
         desc: "setup provider & API key",
-        aliases: &["keys", "key", "providers", "provider", "login"],
+        aliases: &["keys", "key", "providers", "provider"],
+    },
+    CmdDef {
+        name: "login",
+        desc: "log in to gray.alignment.id from this machine",
+        aliases: &[],
+    },
+    CmdDef {
+        name: "whoami",
+        desc: "show the logged-in gray.alignment.id account",
+        aliases: &[],
+    },
+    CmdDef {
+        name: "logout",
+        desc: "revoke and forget the gray.alignment.id token",
+        aliases: &[],
     },
     CmdDef {
         name: "model",
@@ -390,6 +405,12 @@ pub enum ReplCommand {
     Sys(SysAction),
     /// Open the provider selection menu (`/connect` or `/provider`).
     Provider,
+    /// Log this machine in to gray.alignment.id (`/login [code]`).
+    Login(Option<String>),
+    /// Show the logged-in gray.alignment.id account (`/whoami`).
+    Whoami,
+    /// Revoke and forget the gray.alignment.id token (`/logout`).
+    Logout,
     /// Start a fresh conversation (`/new` or `/clear [prompt]`).
     New(Option<String>),
     /// Resume a previous session (`/resume [id|--last|--all]`).
@@ -518,6 +539,9 @@ pub fn parse_command(line: &str) -> ReplCommand {
         // Every connect alias accepts optional args like `/key openrouter`
         // (args are advisory; the provider menu always opens).
         Some("connect") => ReplCommand::Provider,
+        Some("login") => ReplCommand::Login(opt(rest)),
+        Some("whoami") => ReplCommand::Whoami,
+        Some("logout") => ReplCommand::Logout,
         Some("model") => ReplCommand::Model(opt(rest)),
         Some("plugin") => ReplCommand::Plugin(t.to_string()),
         Some("skills") => {

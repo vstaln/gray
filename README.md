@@ -74,9 +74,31 @@ First run drops you straight at the prompt. Configure whenever you feel like it:
 
 | command | what it does |
 |---|---|
-| `/provider` | pick a provider — API key, ChatGPT/Grok login, free tier, or local |
+| `/provider` | pick a provider — API key, free tier, or local |
 | `/key openrouter` | paste an API key right in the CLI (input hidden), stored per-provider in `~/.gray/auth.json` |
+| `/login` | log this machine in to gray.alignment.id — optional, and nothing is gated on it |
+| `/whoami` | show the account the stored registry token belongs to |
+| `/logout` | revoke the registry token and forget it |
 | `/model` | searchable picker over the bundled models.dev catalog |
+
+## Account (optional)
+
+gray.alignment.id holds the plugin registry. An account is not required to run
+gray, and nothing in the CLI is gated on one — the token only names you on
+registry calls.
+
+```bash
+gray login                 # walks you through it, then prompts for the code
+gray login <code>          # same, non-interactive
+gray whoami                # who the stored token belongs to
+gray logout                # revokes the token, then forgets it
+```
+
+Mint a code at [gray.alignment.id/account](https://gray.alignment.id/account)
+(sign in with GitHub, Google, or Discord, then "Generate CLI login code"). It
+is one-time and expires in 5 minutes. The token lands in
+`~/.gray/registry-token.json` (mode 0600). Point gray at a local registry with
+`GRAY_REGISTRY_URL=http://127.0.0.1:4000/api`.
 
 ## Watch it go
 

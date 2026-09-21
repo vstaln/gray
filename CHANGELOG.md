@@ -1,5 +1,25 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- `gray login`, `gray whoami`, `gray logout` (and `/login`, `/whoami`,
+  `/logout` in the REPL): enroll this machine with gray.alignment.id. The
+  site's account page mints a one-time 5-minute code from a Supabase session;
+  `gray login` exchanges it for a long-lived `gray_...` registry token stored
+  in `~/.gray/registry-token.json` (mode 0600, same atomic writer as
+  `auth.json`). Bare `gray login` prints the walkthrough and prompts for the
+  code; `gray login <code>` is the non-interactive form the site's copy
+  command emits. `gray logout` revokes the token server-side before dropping
+  it, and logging in again revokes the token it replaces so a re-login never
+  leaves a working credential the machine has forgotten. All three run before
+  provider configuration, so a fresh machine can enroll before it can run a
+  turn. `GRAY_REGISTRY_URL` points at a local registry
+  (`pnpm backend:dev`). Nothing in gray is gated on an account — the token
+  only names the caller on registry calls — and the onboarding banner now says
+  so instead of implying a login exists
+
 ## [0.1.1] - 2026-09-21
 
 
