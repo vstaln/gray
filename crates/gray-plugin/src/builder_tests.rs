@@ -139,27 +139,14 @@ async fn minimal_profile_keeps_background_jobs_between_calls() {
 }
 
 #[test]
-fn minimal_surface_is_bash_plus_view() {
-    // The default profile must carry vision: bash output is text only, so
-    // without `view` an agent checks its own renders with pixel dumps.
+fn minimal_surface_is_bash_only() {
+    // The default surface stays the single bash tool. Image vision rides
+    // inside bash (`cat img.png`), not as a second tool — if this test
+    // fails, someone re-split the surface.
     let names: Vec<String> = ToolsMinimalPlugin
         .tools()
         .iter()
         .map(|t| t.def().name)
         .collect();
-    assert!(
-        names.contains(&"bash".to_string()),
-        "missing bash: {names:?}"
-    );
-    assert!(
-        names.contains(&"view".to_string()),
-        "missing view: {names:?}"
-    );
-    // Text work still funnels through bash — no read/write/edit/search here.
-    for extra in ["read", "write", "edit", "grep", "find", "ls"] {
-        assert!(
-            !names.contains(&extra.to_string()),
-            "{extra} leaked into minimal"
-        );
-    }
+    assert_eq!(names, vec!["bash".to_string()], "minimal must be bash-only");
 }

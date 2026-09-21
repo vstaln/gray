@@ -17,7 +17,6 @@ pub mod read;
 pub mod shell;
 pub mod stats;
 pub mod truncate;
-pub mod view;
 pub mod write;
 
 use std::sync::Arc;
@@ -38,7 +37,6 @@ pub use ledger::{FileLedger, LedgerEntry};
 pub use ls::LsTool;
 pub use read::ReadTool;
 pub use shell::tools::bash::BashTool;
-pub use view::ViewTool;
 pub use write::WriteTool;
 
 /// Ordered collection of tools with name lookup, wired into the agent loop
