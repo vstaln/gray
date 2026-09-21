@@ -1,10 +1,13 @@
 # gray installer for Windows — https://gray.alignment.id
-# Native installation is opt-in until the Windows release gates pass.
-# Download and inspect scripts rather than piping native installation to iex.
-[CmdletBinding(DefaultParameterSetName='Wsl')]
+# Native is the default route: no WSL, no Linux distro, no elevation.
+# Pass -Wsl for the compatibility route that installs the Linux build inside WSL.
+# Download and inspect scripts rather than piping installation to iex.
+[CmdletBinding(DefaultParameterSetName='Native')]
 param(
-    [Parameter(Mandatory=$true, ParameterSetName='Native')][switch]$Native,
-    [Parameter(ParameterSetName='Wsl')][switch]$Wsl,
+    # Accepted for explicitness and back-compatibility; native is already the
+    # default, so this switch changes nothing on its own.
+    [Parameter(ParameterSetName='Native')][switch]$Native,
+    [Parameter(Mandatory=$true, ParameterSetName='Wsl')][switch]$Wsl,
     [Parameter(ParameterSetName='Native')][ValidateSet('stable', 'beta')][string]$Channel = 'beta',
     [Parameter(ParameterSetName='Native')][string]$InstallDir = $env:GRAY_INSTALL_DIR,
     [Parameter(ParameterSetName='Native')][switch]$NoPath,
@@ -14,18 +17,19 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-if ($Native) {
-    # Reuse the tested native implementation; never fall back to WSL on failure.
-    if (-not $PSScriptRoot) { throw 'Save install.ps1 and install-native.ps1 together before running -Native.' }
+if ($PSCmdlet.ParameterSetName -ne 'Wsl') {
+    # Native is the default route. Reuse the tested native implementation and
+    # never fall back to WSL on failure.
+    if (-not $PSScriptRoot) { throw 'Save install.ps1 and install-native.ps1 together before running the native install.' }
     $installer = Join-Path $PSScriptRoot 'install-native.ps1'
     if (-not (Test-Path -LiteralPath $installer -PathType Leaf)) {
-        throw 'Missing install-native.ps1. Extract both installer scripts from the native preview artifact.'
+        throw 'Missing install-native.ps1. Extract both installer scripts from the release artifact.'
     }
     & $installer -Channel $Channel -InstallDir $InstallDir -NoPath:$NoPath -ArchivePath $ArchivePath -Sha256 $Sha256 -BaseUri $BaseUri
     return
 }
 
-# Compatibility default remains WSL. Native release promotion is a separate gate.
+# Compatibility route, requested explicitly with -Wsl.
 
 Write-Host ""
 Write-Host "  gray installer" -ForegroundColor Cyan
@@ -35,9 +39,10 @@ Write-Host "  --------------"
 $wsl = Get-Command wsl.exe -ErrorAction SilentlyContinue
 if (-not $wsl) {
     Write-Host ""
-    Write-Host "  WSL is not installed. gray runs inside WSL on Windows." -ForegroundColor Yellow
+    Write-Host "  -Wsl was requested, and WSL is not installed." -ForegroundColor Yellow
     Write-Host "  Install it with:   wsl --install" -ForegroundColor Yellow
     Write-Host "  (reboot, then re-run this installer)"
+    Write-Host "  Or drop -Wsl: gray installs natively on Windows without it." -ForegroundColor Yellow
     exit 1
 }
 

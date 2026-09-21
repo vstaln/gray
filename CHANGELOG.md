@@ -47,6 +47,17 @@
   rules reach the model, so rationale never costs the executor tokens — and
   the served block says so, so an editor preserves them. Files without such
   comments render byte-identically to before
+- Windows installs natively by default. `dist/install.ps1` no longer routes a
+  bare invocation into WSL: with no arguments it installs `gray.exe` into
+  `%LOCALAPPDATA%\Programs\gray\bin`, verifies the archive checksum, extracts
+  only `gray.exe` / `LICENSE` / `THIRD_PARTY_NOTICES.md` from the ZIP, and
+  updates the user PATH. `-Wsl` remains an explicit compatibility route that
+  pipes `install.sh` into a distro, and a native failure never falls back to
+  it. The "experimental" and "acceptance pending" wording is gone from the
+  installers and docs, and the README platform table lists Windows as native
+  x86_64. Still documented as unsupported, unchanged by this: gateway and cron
+  execution, self-update, Unix-shebang plugins, and ACL hardening of
+  credential files
 
 ## [0.1.1] - 2026-09-21
 

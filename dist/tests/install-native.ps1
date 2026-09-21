@@ -30,6 +30,26 @@ try {
     & $entry -Native -ArchivePath $archive -Sha256 $digest -InstallDir $install -NoPath
     Expect-Failure { & $entry -Native -ArchivePath $archive -Sha256 ('0' * 64) -InstallDir $install -NoPath } 'checksum mismatch'
     Expect-Failure { & $entry -Native -Wsl } 'parameter set'
+    # Native is the default route: a bare invocation, with no -Native and no
+    # -Wsl, must install into a fresh directory without any WSL routing. If the
+    # default regressed to the WSL set, this runner has no distro, so the
+    # install would fail or exit without placing the binary.
+    $bareDir = Join-Path $root 'bare-default'
+    [IO.Directory]::CreateDirectory($bareDir) | Out-Null
+    $bareLog = Join-Path $root 'bare.log'
+    & $entry -ArchivePath $archive -Sha256 $digest -InstallDir $bareDir -NoPath *> $bareLog
+    if ($LASTEXITCODE -ne 0) { throw "Bare invocation failed: $(Get-Content -LiteralPath $bareLog -Raw)" }
+    if (-not [IO.File]::Exists((Join-Path $bareDir 'gray.exe'))) { throw 'Bare invocation did not install gray.exe' }
+    $bareText = Get-Content -LiteralPath $bareLog -Raw
+    # Routing evidence only: the installer's own final line names WSL to say it
+    # is not required, so match the compat route's wording instead of the word.
+    if ($bareText -match 'wsl\.exe|into WSL|No WSL distro|WSL is not installed') {
+        throw "Bare invocation routed through WSL: $bareText"
+    }
+    # The installed binary is the payload we staged, not a distro passthrough.
+    if ((Get-FileHash -LiteralPath (Join-Path $bareDir 'gray.exe') -Algorithm SHA256).Hash -ne $digest) {
+        throw 'Bare invocation installed an unexpected binary'
+    }
     $isolated = Join-Path $root 'entry-only'
     [IO.Directory]::CreateDirectory($isolated) | Out-Null
     Copy-Item -LiteralPath $entry -Destination (Join-Path $isolated 'install.ps1')
@@ -58,5 +78,5 @@ try {
     if (Test-Path (Join-Path $root 'escape')) { throw 'Archive escaped staging directory' }
     if ((Add-GrayPath 'C:\First;C:\GRAY\bin;C:\Last' 'c:\gray\bin\') -cne 'C:\First;C:\GRAY\bin;C:\Last') { throw 'Duplicate PATH entry' }
     if ((Add-GrayPath 'C:\First' 'C:\gray\bin') -cne 'C:\First;C:\gray\bin') { throw 'PATH append failed' }
-    Write-Host 'PASS: install, repeat, channels, checksums, locks, traversal, PATH, preserved binary'
+    Write-Host 'PASS: install, repeat, channels, checksums, locks, traversal, PATH, preserved binary, native default'
 } finally { Remove-Item -LiteralPath $root -Recurse -Force }
