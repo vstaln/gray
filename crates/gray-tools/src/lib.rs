@@ -286,6 +286,18 @@ fn coerce_args(def: &ToolDef, args: Value) -> Value {
     args
 }
 
+/// Meter label for one call: `path` when the tool takes one, else the
+/// truncated `command` (bash), else empty. 80 chars keeps a heredoc or a
+/// long pipeline from bloating every record.
+fn meter_label(args: &Value) -> String {
+    let raw = args
+        .get("path")
+        .or_else(|| args.get("command"))
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+    raw.chars().take(80).collect()
+}
+
 #[async_trait]
 impl ToolExecutor for Registry {
     fn drain_notifications(&self, ctx: &ToolContext) -> Vec<String> {
@@ -311,6 +323,18 @@ impl ToolExecutor for Registry {
         let name = name.to_string();
         Box::pin(async move {
             log::info!(target: "gray_tools", "tool start: {name}");
+            // Captured before `coerced` moves into execute (the Some arm
+            // consumes it): the meter's label. `path` for file tools, the
+            // (truncated) `command` for bash — gray's default surface, where
+            // an empty label would make the record useless for the waste
+            // analysis it feeds. Computed only when the gate is on, so the
+            // default configuration pays nothing.
+            let meter_on = crate::stats::enabled();
+            let stat_path = if meter_on {
+                meter_label(&coerced)
+            } else {
+                String::new()
+            };
             let out = match tool {
                 Some(tool) => tool.execute(&ctx, coerced).await,
                 None => ToolOutput::error(format!(
@@ -326,6 +350,21 @@ impl ToolExecutor for Registry {
                 log::warn!(target: "gray_tools", "tool {name} failed: {}", out.content);
             } else {
                 log::info!(target: "gray_tools", "tool {name} done");
+            }
+            // T0.2 meter with the retrieval/action class (arXiv:2608.13568):
+            // one no-op-unless-enabled record per call for every tool that
+            // does not self-report (see `stats::SELF_REPORTING`), so the
+            // tokens-to-success split covers the whole surface.
+            if meter_on && !crate::stats::SELF_REPORTING.contains(&name.as_str()) {
+                crate::stats::ToolStats {
+                    tool: &name,
+                    class: crate::stats::classify(&name),
+                    path: &stat_path,
+                    bytes: out.content.len() as u64,
+                    lines: out.content.lines().count() as u64,
+                    truncated_by: crate::stats::CUT_NONE,
+                }
+                .report();
             }
             out
         })
