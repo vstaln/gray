@@ -137,3 +137,29 @@ async fn minimal_profile_keeps_background_jobs_between_calls() {
     assert!(result.content.contains("ready"), "{}", result.content);
     assert!(result.content.contains("exit 0"), "{}", result.content);
 }
+
+#[test]
+fn minimal_surface_is_bash_plus_view() {
+    // The default profile must carry vision: bash output is text only, so
+    // without `view` an agent checks its own renders with pixel dumps.
+    let names: Vec<String> = ToolsMinimalPlugin
+        .tools()
+        .iter()
+        .map(|t| t.def().name)
+        .collect();
+    assert!(
+        names.contains(&"bash".to_string()),
+        "missing bash: {names:?}"
+    );
+    assert!(
+        names.contains(&"view".to_string()),
+        "missing view: {names:?}"
+    );
+    // Text work still funnels through bash — no read/write/edit/search here.
+    for extra in ["read", "write", "edit", "grep", "find", "ls"] {
+        assert!(
+            !names.contains(&extra.to_string()),
+            "{extra} leaked into minimal"
+        );
+    }
+}

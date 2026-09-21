@@ -54,8 +54,11 @@ impl Plugin for ToolsBasicPlugin {
     }
 }
 
-/// `tools-minimal`: the default surface — the single `bash` tool (including managed jobs).
-/// Everything — read, search, edit, run — goes through `bash`.
+/// `tools-minimal`: the default surface — `bash` (including managed jobs)
+/// plus `view`. Everything textual — read, search, edit, run — goes through
+/// `bash`; `view` is the one non-text addition, because bash output is text
+/// only and an agent that cannot see an image checks its own renders with
+/// pixel dumps.
 pub struct ToolsMinimalPlugin;
 
 impl Plugin for ToolsMinimalPlugin {
@@ -64,7 +67,10 @@ impl Plugin for ToolsMinimalPlugin {
     }
 
     fn tools(&self) -> Vec<Arc<dyn Tool>> {
-        vec![Arc::new(gray_tools::BashTool::default())]
+        vec![
+            Arc::new(gray_tools::BashTool::default()),
+            Arc::new(gray_tools::ViewTool),
+        ]
     }
 }
 
