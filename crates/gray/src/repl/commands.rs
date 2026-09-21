@@ -63,7 +63,7 @@ pub(crate) const REGISTRY: &[CmdDef] = &[
     },
     CmdDef {
         name: "cron",
-        desc: "list cron jobs (read-only)",
+        desc: "cron jobs (space pauses; add/remove via gray cron)",
         aliases: &[],
     },
     CmdDef {
@@ -88,8 +88,13 @@ pub(crate) const REGISTRY: &[CmdDef] = &[
     },
     CmdDef {
         name: "memory",
-        desc: "memory master switch (/memory on|off; bare reports state)",
+        desc: "memory master switch (/memory on|off; bare lists entries)",
         aliases: &[],
+    },
+    CmdDef {
+        name: "gateway",
+        desc: "connections: apps + daemon/cron/memory (space toggles)",
+        aliases: &["gw"],
     },
     CmdDef {
         name: "plugin",
@@ -429,8 +434,12 @@ pub enum ReplCommand {
     Usage,
     /// List cron jobs (read-only; manage via `gray cron` CLI).
     CronJobs(Option<String>),
-    /// Memory master switch (`/memory on|off`; bare reports state).
+    /// Memory master switch (`/memory on|off`; bare lists entries).
     Memory(Option<String>),
+    /// Connections panel (`/gateway` or `/gw`): installed apps plus pointers
+    /// at daemon/cron/memory. A switch word (`on`/`off`) flips the persisted
+    /// gateway master switch, same as `gray gateway on|off`.
+    Gateway(Option<String>),
     /// Copy the last assistant response to the clipboard (`/copy`).
     Copy,
     /// Send feedback (`/feedback <what happened>`): saves locally, opens a prefilled issue.
@@ -533,6 +542,7 @@ pub fn parse_command(line: &str) -> ReplCommand {
         Some("usage") => ReplCommand::Usage,
         Some("cron") => ReplCommand::CronJobs(opt(rest)),
         Some("memory") => ReplCommand::Memory(opt(rest)),
+        Some("gateway") => ReplCommand::Gateway(opt(rest)),
         Some("copy") => ReplCommand::Copy,
         Some("feedback") => ReplCommand::Feedback(opt(rest)),
         Some("help") => ReplCommand::Help,

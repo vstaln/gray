@@ -124,6 +124,19 @@ pub(crate) fn enabled(home: &Path, name: &str, entry: &LockEntry) -> bool {
         .is_none_or(|entry| entry.enabled)
 }
 
+/// Commands a registered plugin declares for itself: its manifest's
+/// `completion` array. Empty when the plugin registered no manifest (or the
+/// file is unreadable) — nothing is invented on its behalf.
+pub(crate) fn declared_commands(home: &Path, name: &str) -> Vec<String> {
+    metadata(home, name)
+        .ok()
+        .and_then(|m| m["completion"].as_array().cloned())
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|v| v.as_str().map(str::to_string))
+        .collect()
+}
+
 fn metadata(home: &Path, name: &str) -> anyhow::Result<serde_json::Value> {
     validate_name(name)?;
     Ok(serde_json::from_slice(&std::fs::read(

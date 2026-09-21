@@ -82,6 +82,9 @@ mod connect_models;
 
 pub use connect::{ConnectOutcome, run_connect_modal};
 pub use effort::run_effort_modal;
+pub(crate) use install_manager::{
+    ManagerItem, ManagerSpec, format_plugin_row_parts, run_install_manager,
+};
 pub use install_manager::{run_plugins_modal, run_skills_modal};
 pub(crate) use model_modal::{provider_models_for, run_model_modal, validate_direct_model_id};
 

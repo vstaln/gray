@@ -159,6 +159,14 @@ impl MemoryStore {
             .sum()
     }
 
+    /// Every entry in the scope as (key, text), sorted by key. A missing or
+    /// unreadable store reads as empty (a missing store *is* an empty store).
+    /// Text is returned whole: callers decide how much to show.
+    pub fn entries(&self, scope: Scope) -> anyhow::Result<Vec<(String, String)>> {
+        let text = read_text(&self.path(scope))?.unwrap_or_default();
+        Ok(parse(&text)?.into_iter().collect())
+    }
+
     /// Freeze curated data, not instructions, once per durable session. A new
     /// process rebuilding the same session gets identical bytes. Anonymous
     /// headless runs take a fresh snapshot and leave no snapshot file.

@@ -2,9 +2,23 @@
 
 ## [Unreleased]
 
-## [0.1.2] - 2026-09-21
+## [0.1.2] - 2026-09-22
 
 ### Added
+
+- `/gateway` (alias `/gw`) opens a connections panel: one toggleable row per
+  installed app (the merged plugin registry, so a transport appears the day it
+  is installed), a rule, then one-line pointers at daemon, cron and memory —
+  `gray gateway status`, `/cron` and `/memory` already print everything about
+  those, so the panel names the command instead of restating its output. An app
+  row carries what it still needs (`needs setup` when its default config file
+  is absent — existence only, never the file, which holds the token) and the
+  commands its own manifest declares; nothing is invented on its behalf.
+  `space` flips an app's enabled flag through the same registry path
+  `/plugin` uses, `/gateway on|off` still flips the persisted gateway master
+  switch, and piped stdin prints the rows as text. `/gateway` and `/gw` are
+  real commands again (they previously answered "the TUI gateway is gone")
+
 
 - `gray login`, `gray whoami`, `gray logout` (and `/login`, `/whoami`,
   `/logout` in the REPL): enroll this machine with gray.alignment.id. The
@@ -22,6 +36,19 @@
   every call carries the token. Nothing in gray is gated on an account — the token
   only names the caller on registry calls — and the onboarding banner now says
   so instead of implying a login exists
+
+
+- `/cron` and `/memory` are interactive on a TTY, riding the same picker loop
+  as `/plugin` and `/skills`: `/cron` lists every job (name, id, schedule, next
+  run, last status) plus the ticker's liveness row, and `space` pauses/resumes
+  in place through `CronStore::set_paused`; adding and removing stay on the
+  `gray cron` CLI. `/memory` lists every curated entry (key, scope, first
+  line) read-only — forgetting stays `gray memory remove <key>`, because a
+  picker must not make deletion a keystroke. Headless output is unchanged for
+  both. The shared manager loop gained the axes these panels needed:
+  per-row `read_only` (separators and pointers carry no switch), a
+  `supports_remove` flag (listing panels leave removal to their command), and
+  an `errors_tab` flag (package-install errors are noise on a cron listing)
 
 ### Changed
 

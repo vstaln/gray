@@ -5,13 +5,18 @@
 //! entries are removable — `u` on an externally-managed skill says where
 //! it lives instead.
 //!
-//! The two managers were ~85% identical (same chrome, tabs, keys, confirm
-//! flow), so they share one parameterized loop ([`run_install_manager`]).
-//! Only what differs lives in [`ManagerSpec`] plus the per-manager
+//! The managers were ~85% identical (same chrome, keys, confirm flow), so
+//! they share one parameterized loop ([`run_install_manager`]). Only what
+//! differs lives in [`ManagerSpec`] plus the per-manager
 //! list/remove/toggle closures: title, empty hint, error verb, whether
-//! Enter/Space toggles, and whether a failed re-list after an op keeps the
-//! stale list (plugins) or clears it (skills). Sync modal returning whether
-//! anything changed.
+//! Enter/Space toggles, whether `u` removes, whether an Errors tab exists,
+//! and whether a failed re-list after an op keeps the stale list (plugins)
+//! or clears it (skills). Sync modal returning whether anything changed.
+//!
+//! `/gateway` (connections), `/cron` (jobs) and `/memory` (entries) ride the
+//! same loop from their own modules: a listing-only panel sets
+//! `supports_toggle`/`supports_remove` false and marks every row
+//! `read_only`.
 
 use super::tabs::{Tab, tab_segments};
 use super::*;
@@ -26,15 +31,24 @@ pub(crate) struct ManagerItem {
     pub lit: bool,
     /// Current toggle state; only read when the spec supports toggling.
     pub enabled: bool,
+    /// Rows the toggle/remove branches skip: separators, pointers at another
+    /// command, and every row of a read-only listing.
+    pub read_only: bool,
 }
 
-/// The only axes the skills and plugins managers differ on.
+/// The only axes the managers differ on.
 pub(crate) struct ManagerSpec {
     pub title: &'static str,
     pub empty_hint: &'static str,
     /// Verb prefix for the op-error line: "remove failed" / "toggle failed".
     pub error_verb: &'static str,
     pub supports_toggle: bool,
+    /// Whether `u`/`Delete` arms the two-press remove. Listing-only panels
+    /// (cron jobs, memory entries) leave removal to their own command.
+    pub supports_remove: bool,
+    /// Whether the Errors tab exists at all. Package-install errors are
+    /// noise on a connections or cron listing.
+    pub errors_tab: bool,
     /// After a successful op, when re-listing fails: keep the stale list
     /// (plugins) or clear it (skills).
     pub keep_stale_on_relist_error: bool,
@@ -45,6 +59,8 @@ const SKILLS_SPEC: ManagerSpec = ManagerSpec {
     empty_hint: "no skills discovered",
     error_verb: "remove failed",
     supports_toggle: false,
+    supports_remove: true,
+    errors_tab: true,
     keep_stale_on_relist_error: false,
 };
 
@@ -53,6 +69,8 @@ const PLUGINS_SPEC: ManagerSpec = ManagerSpec {
     empty_hint: "no plugins installed — /plugin install <spec>",
     error_verb: "toggle failed",
     supports_toggle: true,
+    supports_remove: true,
+    errors_tab: true,
     keep_stale_on_relist_error: true,
 };
 
@@ -118,6 +136,7 @@ pub fn run_skills_modal(
                             row,
                             lit: true,
                             enabled: true,
+                            read_only: false,
                         }
                     })
                     .collect(),
@@ -173,6 +192,7 @@ pub fn run_plugins_modal(bg: Option<&BackgroundSnapshot>) -> anyhow::Result<bool
                         ),
                         lit: r.on,
                         enabled: r.on,
+                        read_only: false,
                         name: r.name,
                     })
                     .collect()
@@ -259,8 +279,9 @@ pub(crate) fn run_install_manager(
                 };
                 let rows = tab_count.max(1) as u16;
                 // header(1) + tabs(1) + rows + gap(1) + footer(1)
-                // + 2 for modal top/bottom padding.
-                let needed_h = rows + 6;
+                // + 2 for modal top/bottom padding; a manager without an
+                // Errors tab drops the tab line.
+                let needed_h = rows + if spec.errors_tab { 6 } else { 5 };
                 let modal_h = needed_h
                     .clamp(10, 24)
                     .min(area.height.saturating_sub(2).max(10))
@@ -296,7 +317,7 @@ pub(crate) fn run_install_manager(
                 );
                 // Tab bar on the line below the header (shared scaffolding;
                 // same code path renders both tabs).
-                {
+                if spec.errors_tab {
                     let tabs = [
                         ("Installed", None),
                         (
@@ -337,7 +358,7 @@ pub(crate) fn run_install_manager(
                         Rect::new(inner.x, inner.y + 1, inner.width, 1),
                     );
                 }
-                let mut cur_y = inner.y + 2;
+                let mut cur_y = inner.y + if spec.errors_tab { 2 } else { 1 };
                 let bottom = inner.y + inner_h;
                 let footer_y = (inner.y + inner_h).saturating_sub(1);
                 // Reserve the line above the footer for an op error or an
@@ -465,11 +486,13 @@ pub(crate) fn run_install_manager(
                 }
                 // Tab-specific (key, description) pairs, then the shared tail.
                 let middle: &[(&str, &str)] = match tab {
-                    Tab::Installed if spec.supports_toggle => {
+                    Tab::Errors => &[("c ", "clear · ")],
+                    Tab::Installed if spec.supports_toggle && spec.supports_remove => {
                         &[("Enter ", "toggle · "), ("u ", "remove · ")]
                     }
-                    Tab::Installed => &[("u ", "remove · ")],
-                    Tab::Errors => &[("c ", "clear · ")],
+                    Tab::Installed if spec.supports_toggle => &[("Enter ", "toggle · ")],
+                    Tab::Installed if spec.supports_remove => &[("u ", "remove · ")],
+                    Tab::Installed => &[],
                 };
                 let mut footer_spans = vec![Span::styled(
                     "↑↓ ",
@@ -482,7 +505,9 @@ pub(crate) fn run_install_manager(
                 for (k, v) in middle {
                     footer_spans.extend(kv(k, v, box_bg, text_dim));
                 }
-                footer_spans.extend(kv("Tab ", "· ", box_bg, text_dim));
+                if spec.errors_tab {
+                    footer_spans.extend(kv("Tab ", "· ", box_bg, text_dim));
+                }
                 footer_spans.extend(kv("Esc ", "close", box_bg, text_dim));
                 let footer_line = Line::from(footer_spans);
                 frame.render_widget(
@@ -506,20 +531,20 @@ pub(crate) fn run_install_manager(
                     kind: KeyEventKind::Press,
                     ..
                 }) => match code {
-                    KeyCode::Tab => {
+                    KeyCode::Tab if spec.errors_tab => {
                         tab = tab.next();
                         error_entries = gray_pkg::errors::list();
                         sel = 0;
                         pending_remove = None;
                     }
-                    KeyCode::BackTab => {
+                    KeyCode::BackTab if spec.errors_tab => {
                         tab = tab.prev();
                         error_entries = gray_pkg::errors::list();
                         sel = 0;
                         pending_remove = None;
                     }
                     KeyCode::Char('n') | KeyCode::Char('p')
-                        if modifiers.contains(KeyModifiers::CONTROL) =>
+                        if modifiers.contains(KeyModifiers::CONTROL) && spec.errors_tab =>
                     {
                         tab = if code == KeyCode::Char('n') {
                             tab.next()
@@ -557,6 +582,10 @@ pub(crate) fn run_install_manager(
                                 if items.is_empty() {
                                     return Ok(changed);
                                 }
+                                if items[sel].read_only {
+                                    // Separators and pointers carry no switch.
+                                    continue;
+                                }
                                 let name = items[sel].name.clone();
                                 let enabled =
                                     items.get(sel).map(|item| item.enabled).unwrap_or(true);
@@ -577,7 +606,11 @@ pub(crate) fn run_install_manager(
                         }
                     }
                     KeyCode::Char('u') | KeyCode::Delete => {
-                        if tab == Tab::Installed && !items.is_empty() {
+                        if tab == Tab::Installed
+                            && spec.supports_remove
+                            && !items.is_empty()
+                            && !items[sel].read_only
+                        {
                             let name = items[sel].name.clone();
                             if pending_remove.as_deref() == Some(name.as_str()) {
                                 match remove(&name) {
