@@ -173,12 +173,16 @@ fn skill_toggle_persists_and_validates_against_discovery() {
 
 #[test]
 fn format_skill_paste_body_and_args() {
-    let text = format_skill_paste("Do things.", Some("fast"));
+    let text = format_skill_paste("Do things.", "ts", Some("fast"));
     assert!(!text.contains("<skill"), "{text}");
     assert!(!text.contains("</skill>"), "{text}");
     assert!(text.contains("Do things."), "{text}");
     assert!(text.contains("**ARGUMENTS:** fast"), "{text}");
-    let bare = format_skill_paste("Do things.", None);
+    // Explicit invocation must read as binding, not background reading.
+    assert!(text.contains("\"ts\" skill"), "skill not named: {text}");
+    assert!(text.contains("binding"), "no binding directive: {text}");
+    assert!(text.contains("mid-task"), "no mid-task re-anchor: {text}");
+    let bare = format_skill_paste("Do things.", "ts", None);
     assert!(!bare.contains("ARGUMENTS"), "{bare}");
     assert!(!bare.contains("<skill"), "{bare}");
 }

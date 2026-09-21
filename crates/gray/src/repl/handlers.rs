@@ -3,11 +3,23 @@
 use super::*;
 
 /// Renders the exact text sent to the model for `/skills <name> [args]`:
-/// the skill body (frontmatter stripped), with the invocation args appended.
-/// Pure so both the visible paste and the model turn share one string — what
-/// you see in chat is what the model gets.
-pub(crate) fn format_skill_paste(body: &str, args: Option<&str>) -> String {
-    let mut out = body.to_string();
+/// a binding directive naming the skill, then the skill body (frontmatter
+/// stripped), with the invocation args appended. Pure so both the visible
+/// paste and the model turn share one string — what you see in chat is what
+/// the model gets.
+///
+/// The directive exists because a bare body pasted mid-task reads as
+/// background material: the model resumes whatever plan it was already on
+/// (observed: a `/skills` invocation ignored, the pre-interrupt `ls` re-run
+/// immediately after the paste). Naming the skill and stating the
+/// instructions are binding — with an explicit "even mid-task, drop
+/// conflicting plans" — re-anchors the turn on the skill.
+pub(crate) fn format_skill_paste(body: &str, name: &str, args: Option<&str>) -> String {
+    let mut out = format!(
+        "The user explicitly invoked the \"{name}\" skill. Its instructions are binding for the current task: follow them now, starting from the first step, even if you were mid-task — abandon any plan that conflicts with them."
+    );
+    out.push_str("\n\n");
+    out.push_str(body);
     if let Some(a) = args.filter(|a| !a.is_empty()) {
         out.push_str(&format!("\n\n**ARGUMENTS:** {a}"));
     }
@@ -367,7 +379,7 @@ pub(crate) fn expand_skill_command(
     let expanded = match std::fs::read_to_string(&skill.file_path) {
         Ok(content) => {
             let body = crate::skills_tool::strip_frontmatter(&content);
-            format_skill_paste(body, args.as_deref())
+            format_skill_paste(body, &skill.name, args.as_deref())
         }
         Err(e) => {
             say(

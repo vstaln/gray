@@ -310,6 +310,8 @@ pub fn format_skills_for_prompt(
         "\n\nThe following skills provide specialized instructions for specific tasks.".to_string(),
         "When a task matches a skill description, read and follow its SKILL.md at the listed location before acting even for simple tasks; do not wait for the user to request /skills."
             .to_string(),
+        "If you have already started acting on the task and a skill matches, stop and read it before continuing — the skill outranks the plan you were mid-way through."
+            .to_string(),
         "Use the read tool to load SKILL.md, bash (`cat <location>`) fallback only."
             .to_string(),
         "Briefly name the skill used and why.".to_string(),

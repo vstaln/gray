@@ -96,6 +96,10 @@ fn prompt_block_gives_proactive_skill_guidance() {
         out.contains("do not wait"),
         "no-wait-for-/skills hint missing: {out}"
     );
+    assert!(
+        out.contains("already started acting"),
+        "mid-task re-anchor hint missing: {out}"
+    );
     assert!(out.contains("read tool"), "read-tool hint missing: {out}");
     assert!(
         out.contains("fallback only"),
