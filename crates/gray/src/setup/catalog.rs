@@ -101,6 +101,22 @@ pub struct SavedConfig {
     /// these while manual `/skills <name>` still runs.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub disabled_skills: BTreeSet<String>,
+    /// Master switch for memory injection (`/memory on` | `/memory off`,
+    /// default on). `Some(false)` keeps the snapshot out of the model's
+    /// prompt; `gray memory` still saves and reads entries, so the record
+    /// keeps accumulating while the context stays lean.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub memory_auto: Option<bool>,
+    /// Master switch for scheduled cron fires (`/cron on` | `/cron off`,
+    /// default on). `Some(false)` stops the serve loop from firing jobs;
+    /// a manual `/cron` run still executes them.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cron_auto: Option<bool>,
+    /// Master switch for the gateway server (`gray gateway on` | `off`,
+    /// default on). `Some(false)` makes `run`/`start` refuse to start;
+    /// `status`/`stop` still work so a running one stays inspectable.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gw_auto: Option<bool>,
 }
 
 /// Canonical `SavedConfig.auth_mode` values (kept as strings on disk).
@@ -139,6 +155,52 @@ pub fn skills_auto_enabled() -> bool {
 /// Explicit-config-path seam for [`skills_auto_enabled`] (tests).
 pub fn skills_auto_enabled_at(path: &Path) -> bool {
     load_saved_config_at(path).skills_auto.unwrap_or(true)
+}
+
+/// Master switch for memory injection (`/memory on` | `/memory off`).
+/// Same shape and default as `skills_auto`: only an explicit `Some(false)`
+/// turns injection off; missing/unresolvable/corrupt reads as enabled.
+pub fn memory_auto_enabled() -> bool {
+    subsystem_enabled(|s| s.memory_auto)
+}
+
+/// Explicit-config-path seam for [`memory_auto_enabled`] (tests).
+pub fn memory_auto_enabled_at(path: &Path) -> bool {
+    subsystem_enabled_at(path, |s| s.memory_auto)
+}
+
+/// Master switch for scheduled cron fires (`/cron on` | `/cron off`).
+pub fn cron_auto_enabled() -> bool {
+    subsystem_enabled(|s| s.cron_auto)
+}
+
+/// Explicit-config-path seam for [`cron_auto_enabled`] (tests).
+pub fn cron_auto_enabled_at(path: &Path) -> bool {
+    subsystem_enabled_at(path, |s| s.cron_auto)
+}
+
+/// Master switch for the gateway server (`gray gateway on` | `off`).
+pub fn gw_auto_enabled() -> bool {
+    subsystem_enabled(|s| s.gw_auto)
+}
+
+/// Explicit-config-path seam for [`gw_auto_enabled`] (tests).
+pub fn gw_auto_enabled_at(path: &Path) -> bool {
+    subsystem_enabled_at(path, |s| s.gw_auto)
+}
+
+/// Shared reader body: resolve the live config path, read the field, default
+/// on when missing/unresolvable/corrupt.
+fn subsystem_enabled(get: impl Fn(&SavedConfig) -> Option<bool>) -> bool {
+    saved_config_path()
+        .map(|p| load_saved_config_at(&p))
+        .map(|s| get(&s).unwrap_or(true))
+        .unwrap_or(true)
+}
+
+/// Shared reader body against an explicit config path (test seam).
+fn subsystem_enabled_at(path: &Path, get: impl Fn(&SavedConfig) -> Option<bool>) -> bool {
+    get(&load_saved_config_at(path)).unwrap_or(true)
 }
 
 /// Loads the saved config; a missing file yields an all-None struct.
@@ -199,6 +261,9 @@ fn partial_saved_config(obj: &serde_json::Map<String, serde_json::Value>) -> Sav
         context_reserve: opt_field(obj, "context_reserve"),
         context_keep: opt_field(obj, "context_keep"),
         disabled_skills: opt_field(obj, "disabled_skills").unwrap_or_default(),
+        memory_auto: opt_field(obj, "memory_auto"),
+        cron_auto: opt_field(obj, "cron_auto"),
+        gw_auto: opt_field(obj, "gw_auto"),
     }
 }
 

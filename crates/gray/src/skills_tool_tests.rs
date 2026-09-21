@@ -166,3 +166,127 @@ async fn skills_plugin_is_context_only_and_serves_block() {
         "block must tell the model to read via bash: {ctx}"
     );
 }
+
+#[test]
+fn project_context_block_serves_nearest_ancestor() {
+    let tmp = tempfile::tempdir().unwrap();
+    let sub = tmp.path().join("crate");
+    std::fs::create_dir_all(&sub).unwrap();
+    std::fs::write(tmp.path().join("CLAUDE.md"), "root rules").unwrap();
+    std::fs::write(sub.join("AGENTS.md"), "nested rules").unwrap();
+    let block = project_context_block(&sub).expect("nearest AGENTS.md must serve");
+    assert!(
+        block.starts_with("<project_context source=\""),
+        "missing opening tag: {block}"
+    );
+    assert!(
+        block.contains("nested rules"),
+        "nearest file not served: {block}"
+    );
+    assert!(!block.contains("root rules"), "ancestor file must not win");
+    assert!(
+        block.trim_end().ends_with("</project_context>"),
+        "unclosed: {block}"
+    );
+    // Self-describing: a stored prompt that never mentions the block still
+    // learns what it is and how to weigh it.
+    assert!(
+        block.contains("outrank general defaults"),
+        "no semantics line: {block}"
+    );
+    assert!(
+        block.contains(&sub.join("AGENTS.md").display().to_string()),
+        "no source path"
+    );
+}
+
+#[test]
+fn project_context_block_prefers_agents_over_claude_on_same_level() {
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(tmp.path().join("CLAUDE.md"), "claude rules").unwrap();
+    std::fs::write(tmp.path().join("AGENTS.md"), "agents rules").unwrap();
+    let block = project_context_block(tmp.path()).unwrap();
+    assert!(
+        block.contains("agents rules"),
+        "AGENTS.md must win: {block}"
+    );
+    assert!(
+        !block.contains("claude rules"),
+        "CLAUDE.md must lose: {block}"
+    );
+}
+
+#[test]
+fn project_context_block_none_when_absent_or_empty() {
+    let tmp = tempfile::tempdir().unwrap();
+    assert_eq!(project_context_block(tmp.path()), None);
+    std::fs::write(tmp.path().join("AGENTS.md"), "  \n\n").unwrap();
+    assert_eq!(project_context_block(tmp.path()), None);
+}
+
+#[test]
+fn project_context_block_truncates_huge_file() {
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(tmp.path().join("AGENTS.md"), "x".repeat(40_000)).unwrap();
+    let block = project_context_block(tmp.path()).unwrap();
+    assert!(block.contains("truncated"), "no truncation marker: {block}");
+    assert!(
+        block.len() < 40_000,
+        "block must be bounded, got {} bytes",
+        block.len()
+    );
+}
+
+#[tokio::test]
+async fn project_context_plugin_is_context_only_and_serves_block() {
+    use gray_plugin::Plugin;
+    let plugin = ProjectContextPlugin;
+    assert!(plugin.tools().is_empty(), "must carry no tools");
+    assert!(
+        plugin.manifest().tools.is_empty(),
+        "manifest must advertise none"
+    );
+    let empty = tempfile::tempdir().unwrap();
+    assert_eq!(
+        plugin.prompt_context(empty.path().to_str().unwrap()).await,
+        None
+    );
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(tmp.path().join("AGENTS.md"), "build with make").unwrap();
+    let ctx = plugin
+        .prompt_context(tmp.path().to_str().unwrap())
+        .await
+        .expect("a project AGENTS.md must produce hook context");
+    assert!(ctx.contains("<project_context"), "missing block: {ctx}");
+    assert!(ctx.contains("build with make"), "missing body: {ctx}");
+}
+
+#[test]
+fn project_context_block_skips_gray_home_level() {
+    if isolated_home("project_context_block_skips_gray_home_level") {
+        return;
+    }
+    // isolated_home points GRAY_HOME at a scratch dir: its AGENTS.md is the
+    // stored system prompt, and serving it would duplicate the whole prompt
+    // every turn. The level is skipped, but a rule file ABOVE gray home
+    // still counts — the walk continues upward.
+    let gray_home = crate::setup::gray_home().unwrap();
+    std::fs::create_dir_all(&gray_home).unwrap();
+    std::fs::write(gray_home.join("AGENTS.md"), "the system prompt itself").unwrap();
+    assert_eq!(
+        project_context_block(&gray_home),
+        None,
+        "gray-home AGENTS.md must never serve as project context"
+    );
+    let above = gray_home.parent().unwrap().to_path_buf();
+    std::fs::write(above.join("AGENTS.md"), "ancestor project rules").unwrap();
+    let block = project_context_block(&gray_home).expect("ancestor above gray home must serve");
+    assert!(
+        block.contains("ancestor project rules"),
+        "walk must continue: {block}"
+    );
+    assert!(
+        !block.contains("system prompt itself"),
+        "gray home leaked: {block}"
+    );
+}

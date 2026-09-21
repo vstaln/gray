@@ -8,6 +8,11 @@
 //! This module also keeps the pure helpers the REPL slash command needs:
 //! frontmatter stripping, `$ARGUMENTS` / `${SKILL_DIR}` substitution, and
 //! name→path resolution via [`crate::skills::discover_skills`].
+//!
+//! [`ProjectContextPlugin`] rides the same hook to serve the per-turn
+//! `<project_context>` block: the nearest project AGENTS.md / CLAUDE.md
+//! above the turn cwd, so project rules stay in the permanent prompt
+//! instead of arriving as prunable tool observations.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -82,18 +87,108 @@ impl gray_plugin::Plugin for SkillsPlugin {
         out
     }
 }
+/// Rule file names probed at each directory level, nearest level first.
+const PROJECT_RULES_NAMES: [&str; 2] = ["AGENTS.md", "CLAUDE.md"];
+
+/// Cap on served rule bytes. An AGENTS.md is normally a few KB; a
+/// pathological one must not be able to eat the context window, so the tail
+/// is cut with a pointer back to the file.
+const PROJECT_RULES_MAX_CHARS: usize = 32_768;
+
 /// Read the exact `<project_context>` block the prompt hook serves for `cwd`:
-/// the project AGENTS.md / CLAUDE.md the model sees each turn. `None` when
-/// the hook serves nothing (keeps `/context` honest without duplicating
-/// discovery logic).
-pub fn project_context_block(cwd: &std::path::Path) -> Option<String> {
-    // No hook serves a `<project_context>` block: the system prompt tells
-    // the model to read AGENTS.md / CLAUDE.md with bash, so project context
-    // arrives as ordinary (prunable) tool observations, not a hook block.
-    // Kept as a named choke point so `/context` stays honest if a hook is
-    // ever added - and so the call in `repl::status` keeps compiling.
-    let _ = cwd;
+/// the nearest `AGENTS.md` / `CLAUDE.md` at or above `cwd`. `None` when no
+/// file is found or it is empty — the caller (`repl::status` for `/context`,
+/// [`ProjectContextPlugin`] for the prompt) shares this one implementation.
+///
+/// The gray-home `AGENTS.md` is the stored system prompt itself; serving it
+/// as project context would duplicate the whole prompt every turn, so that
+/// level is skipped while the walk continues above it. Nearest ancestor
+/// only: a monorepo's nested rule files wait for the model to read them,
+/// which keeps the per-turn budget bounded.
+pub fn project_context_block(cwd: &Path) -> Option<String> {
+    let gray_home = crate::setup::gray_home()
+        .ok()
+        .and_then(|p| p.canonicalize().ok());
+    let path = find_project_rules(cwd, gray_home.as_deref())?;
+    let body = std::fs::read_to_string(&path).ok()?;
+    let body = body.trim();
+    if body.is_empty() {
+        return None;
+    }
+    let mut body = body.to_string();
+    if body.chars().count() > PROJECT_RULES_MAX_CHARS {
+        let cut = body
+            .char_indices()
+            .nth(PROJECT_RULES_MAX_CHARS)
+            .map(|(i, _)| i)
+            .unwrap_or(body.len());
+        body.truncate(cut);
+        body.push_str(&format!(
+            "\n…[truncated — read {} for the full file]",
+            path.display()
+        ));
+    }
+    // The block carries its own semantics, like the skills block does: a
+    // stored prompt that never mentions <project_context> still learns what
+    // it is and how to weigh it.
+    Some(format!(
+        "<project_context source=\"{}\">\nProject rules for this working directory, served automatically each turn. Follow them; they outrank general defaults.\n\n{body}\n</project_context>",
+        path.display()
+    ))
+}
+
+/// Nearest-ancestor search for a rule file. Each level prefers `AGENTS.md`
+/// over `CLAUDE.md`. The gray-home level is skipped (it holds the stored
+/// system prompt, not project rules); levels above it still count.
+fn find_project_rules(cwd: &Path, gray_home: Option<&Path>) -> Option<PathBuf> {
+    let mut dir = Some(cwd);
+    while let Some(d) = dir {
+        let is_gray_home = gray_home
+            .map(|h| d.canonicalize().ok().as_deref() == Some(h))
+            .unwrap_or(false);
+        if !is_gray_home {
+            for name in PROJECT_RULES_NAMES {
+                let candidate = d.join(name);
+                if candidate.is_file() {
+                    return Some(candidate);
+                }
+            }
+        }
+        dir = d.parent();
+    }
     None
+}
+
+/// Context-only builtin plugin serving the per-turn `<project_context>`
+/// block (nearest project AGENTS.md / CLAUDE.md above the turn cwd).
+///
+/// - `tools()` is empty: the tool surface stays bash-only.
+/// - `prompt_context()` returns [`project_context_block`], `None` when no
+///   rule file exists (system prefix stays byte-stable for prefix caching).
+///
+/// The walk is a handful of stats, and the hook already runs once per turn
+/// (not per round), so there is deliberately no cache to go stale — every
+/// turn observes the file as it is on disk right now.
+pub struct ProjectContextPlugin;
+
+#[async_trait::async_trait]
+impl gray_plugin::Plugin for ProjectContextPlugin {
+    fn manifest(&self) -> gray_plugin::Manifest {
+        gray_plugin::Manifest {
+            name: "project-context".to_string(),
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            tools: vec![],
+            ..Default::default()
+        }
+    }
+
+    fn tools(&self) -> Vec<std::sync::Arc<dyn gray_core::agent::Tool>> {
+        vec![]
+    }
+
+    async fn prompt_context(&self, cwd: &str) -> Option<String> {
+        project_context_block(Path::new(cwd))
+    }
 }
 
 /// Resolve a skill name to its SKILL.md path via [`crate::skills::discover_skills`]

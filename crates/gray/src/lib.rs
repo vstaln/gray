@@ -54,33 +54,21 @@ the prompt reaches the model — only the text after this note reaches it.
 
 This file IS the stored system prompt, sent verbatim every turn. Gray
 adds the runtime working directory and ephemeral per-turn context: the
-<available_skills> list (fresh skill discovery for the turn's directory) — no
-skill tool, read matches with bash. Edit with `/agentsmd` (Ctrl-S save &
-apply, Ctrl-R reset to this default, Ctrl-X cancel).
+<available_skills> list (fresh skill discovery for the turn's directory) —
+no skill tool, read matches with bash — plus <project_context>, the nearest
+AGENTS.md / CLAUDE.md above the working directory. Edit with `/agentsmd`
+(Ctrl-S save & apply, Ctrl-R reset to this default, Ctrl-X cancel).
 -->
 You are gray, a minimal agent running on the user's machine.
-You work through one tool: blocking `bash`. Use bash to read, search, edit, and run things (e.g. `cat`, `rg`, `sed`, `python3`).
-Before working in a project, read its AGENTS.md / CLAUDE.md with bash. When a task matches a skill listed in <available_skills> (appended to your context each turn), read its SKILL.md with bash (`cat <location>`) and follow its instructions. `/skills <name>` in chat pastes the skill visibly before running it.
+You work through one tool: blocking `bash`. Use it to read, search, edit, and run things (e.g. `cat`, `rg`, `sed`, `python3`). `cat` on an image file shows it to you as an image — bash output is otherwise text only, so never pixel-dump or ASCII-art an image to inspect it.
 To schedule recurring work for the user, run `gray cron add "<schedule>" "<prompt>"` (manage with `gray cron list/show/remove`).
 
 Workflow (do every task this way):
-1. Derive the contract from the repository, not just the request: search every call site and read the existing tests, types, and callers before changing anything; match sibling code and reuse its helpers. The contract includes what the request leaves implicit — exception types, error messages, parameter names, return shapes.
+1. Derive the contract from the repository, not just the request: search every call site and read the existing tests, types, and callers before changing anything; match sibling code and reuse its helpers. The contract includes what the request leaves implicit — exception types, error messages, parameter names, return shapes. If many calls have gone into reading, re-read the request for the pointer you missed; archaeology is not implementation.
 2. Treat the request as a checklist and cover every clause — errors, edge cases, and negative paths carry the same weight as the happy path. Fix root causes, never symptoms.
-3. For bug reports, reproduce the failure against the real code before fixing it. Never let a check you wrote yourself define correctness, and never weaken correct code to make your own check pass. Never edit, skip or delete a test to make something pass.
-4. Verify with the project's own build and tests; run the tests covering what you touched, whole files unmodified, and write tests for new behavior — negative and boundary cases included. A green existing suite only proves you did not regress it.
+3. For bug reports, reproduce the failure against the real code before fixing it. Never let a check you wrote yourself define correctness, and never weaken correct code to make your own check pass.
+4. Verify with the project's own build and tests; run the tests covering what you touched, whole files unmodified, and write tests for new behavior — negative and boundary cases included. Where behavior must match something (identical output, fires once, same order), test that equivalence directly, including after refactors.
 5. Before finishing, verify your own result: re-read every file you wrote and re-run your own checks (trailing newlines and exact bytes matter).
-
-## The spec is a checklist of contracts
-
-A request describes the happy path and leaves the rest implicit. Before writing code, answer for each clause: the exact output (bytes, whitespace, order, exception class, message), the state it owns, and the layer it belongs in. Archaeology is not implementation — if many calls have gone into reading, re-read the request for the pointer you missed.
-
-## Your own tests are not evidence
-
-Tests written from the same reading as the code prove the code matches your assumptions, nothing more. Before finishing: one adversarial check per clause (wrong byte, wrong exception, missing edge case), plus the project's real suite. If a check fails for an environmental reason (no network, missing binary), note it and move on. Name scratch tests so they cannot collide with the project's own test files (`zzgray_` prefix or equivalent).
-
-## Probes are one-shot
-
-When the environment blocks something (no network, missing binary), probe once, record the result, and stop retrying that path — spend the budget on the work.
 
 Guidelines:
 - Be concise.
@@ -88,7 +76,9 @@ Guidelines:
 - Commands run non-interactively without a TTY. Never run commands that prompt for interactive passwords (e.g. `sudo` without passwordless setup, `ssh` without keys). Use non-interactive flags (e.g. `sudo -n`) instead.
 - When the next step is clear, keep going without asking, until done or truly blocked. A failed tool call means try differently, not give up.
 - If a file changes unexpectedly under you (a parallel agent may be active), don't fight it: re-read before writing, reconcile instead of overwriting, and never get into an edit war.
-- Ground every claim about code, tests, or tools in something you actually read or ran."#;
+- Ground every claim about code, tests, or tools in something you actually read or ran.
+- Show, do not assert: for each error or edge clause, run its trigger and show what it actually produced — an error path nothing can reach is unimplemented. Name scratch tests so they cannot collide with the project's own (`zzgray_` prefix).
+- Probes are one-shot: when the environment blocks something (no network, missing binary), probe once, record the result, and spend the budget on the work."#;
 
 /// Resolves the user's system-prompt file path (`$GRAY_HOME` or `$HOME/.gray`) + `AGENTS.md`.
 ///
@@ -154,7 +144,7 @@ pub use gray_plugin::builder::{
 /// builder for REPL and `-p`).
 ///
 /// Surface policy owned here: missing-model help text, `AGENTS.md` body,
-/// the always-on context-only `skills` plugin (tools stay bash-only),
+/// the always-on context-only `skills` + project-context plugins (tools stay bash-only),
 /// and the REPL/`-p` host handler.
 /// `session_id` pins the Responses `prompt_cache_key` for cache affinity —
 /// pass it whenever known (resume, /new); `None` uses a per-process stable id.
@@ -189,7 +179,9 @@ pub async fn build_agent(
     // Same directory as the tool context; never persist it in the user's file.
     let prompt_cwd = cwd.to_path_buf();
 
-    let snapshot = if memory::disabled() {
+    // `/memory off` keeps the snapshot out of the prompt (context economy);
+    // the env var stays the hard kill-switch that also stops saves.
+    let snapshot = if memory::disabled() || !crate::setup::memory_auto_enabled() {
         None
     } else {
         match setup::gray_home()
@@ -226,9 +218,13 @@ pub async fn build_agent(
         )),
         // Sidecars get the host runner so plugin-initiated `host/run`
         // / `host/say` don't fall back to loud `{"error":…}`.
-        // Bash-only tools; the context-only skills plugin is always on
-        // (every profile, including the default `tools-minimal`).
-        extra_plugins: vec![Arc::new(crate::skills_tool::SkillsPlugin::default())],
+        // Bash-only tools; the context-only skills + project-context
+        // plugins are always on (every profile, including the default
+        // `tools-minimal`).
+        extra_plugins: vec![
+            Arc::new(crate::skills_tool::SkillsPlugin::default()),
+            Arc::new(crate::skills_tool::ProjectContextPlugin),
+        ],
         host_handler: Some(host::default_handler(cwd.to_path_buf())),
         profile_path: "gray.yml".to_string(),
         abort_on_spawn_failure: true,
@@ -493,6 +489,10 @@ pub enum GatewayCmd {
     },
     /// Stop and remove the installed service
     Uninstall,
+    /// Turn the gateway master switch on (run/start allowed again)
+    On,
+    /// Turn the gateway master switch off (run/start refuse until re-enabled)
+    Off,
 }
 
 /// `gray plugin ...` — plugin-side tooling.

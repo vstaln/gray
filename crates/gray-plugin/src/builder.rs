@@ -54,8 +54,9 @@ impl Plugin for ToolsBasicPlugin {
     }
 }
 
-/// `tools-minimal`: the default surface — the single `bash` tool (including managed jobs).
-/// Everything — read, search, edit, run — goes through `bash`.
+/// `tools-minimal`: the default surface — the single `bash` tool (including
+/// managed jobs). Everything — read, search, edit, run, and seeing an image
+/// (`cat img.png` returns it as a vision block) — goes through `bash`.
 pub struct ToolsMinimalPlugin;
 
 impl Plugin for ToolsMinimalPlugin {

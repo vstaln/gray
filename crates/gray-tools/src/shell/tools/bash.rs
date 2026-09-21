@@ -1,7 +1,7 @@
 //! Shell execution: ordinary blocking calls and session-owned background jobs.
 //! Both modes share timeout, cancellation, redaction, bounded output and reaping.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
@@ -24,7 +24,7 @@ use crate::shell::view::{format_elapsed, header, middle_out, resume_hint};
 /// Bytes served by one `Read more` recovery command. The inline budget is
 /// 48 KiB, so 16 KiB pages need a third of the round trips a 4 KiB page did.
 const READ_CHUNK: u64 = 16 * 1024;
-use crate::{fail, get_opt_bool, get_opt_u64, get_str};
+use crate::{fail, get_opt_bool, get_opt_u64, get_str, resolve_path};
 
 mod jobs;
 
@@ -125,6 +125,11 @@ impl Tool for BashTool {
         if ctx.cancel.is_cancelled() {
             return fail("command not started: cancelled".into());
         }
+        // `cat <image>` shows the image instead of streaming binary garbage:
+        // bash's one vision path, so no separate tool is needed for it.
+        if let Some(out) = cat_image(&command, &ctx.cwd) {
+            return out;
+        }
         if background || window.is_some() {
             return self
                 .jobs
@@ -160,6 +165,46 @@ impl Tool for BashTool {
         )
         .await
     }
+}
+
+/// `cat <one image file>` returns the image as a vision block at full
+/// resolution — decode, EXIF orientation, re-encode, no downscale — instead
+/// of the binary garbage a shell would stream. Claims exactly
+/// `cat` plus a single bare path: flags, pipes, redirects, globs, quotes,
+/// and multi-file cats all fall through to a normal run. A missing or
+/// non-image file falls through too, so the shell's own error message or
+/// text output is what the model sees.
+fn cat_image(command: &str, cwd: &Path) -> Option<ToolOutput> {
+    use base64::Engine as _;
+    let mut parts = command.split_whitespace();
+    let (Some(cmd), Some(arg), None) = (parts.next(), parts.next(), parts.next()) else {
+        return None;
+    };
+    if cmd != "cat" {
+        return None;
+    }
+    // Anything the shell would interpret beyond a bare path is not ours.
+    if arg.chars().any(|c| {
+        matches!(
+            c,
+            '|' | '&' | ';' | '<' | '>' | '$' | '`' | '"' | '\'' | '*' | '?' | '(' | ')'
+        )
+    }) {
+        return None;
+    }
+    let full = resolve_path(cwd, arg);
+    if !crate::images::is_image_extension(&full) {
+        return None;
+    }
+    // Magic bytes decide inside the encoder, so a mislabeled file falls
+    // through to the shell rather than sending an undecodable part.
+    let bytes = std::fs::read(&full).ok()?;
+    let (mime, out) = crate::images::encode_image_full(&bytes).ok()?;
+    Some(ToolOutput::image(
+        format!("Image shown: {}", full.display()),
+        mime,
+        base64::engine::general_purpose::STANDARD.encode(&out),
+    ))
 }
 
 fn log_path(ctx: &ToolContext) -> PathBuf {

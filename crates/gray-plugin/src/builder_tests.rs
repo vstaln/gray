@@ -137,3 +137,16 @@ async fn minimal_profile_keeps_background_jobs_between_calls() {
     assert!(result.content.contains("ready"), "{}", result.content);
     assert!(result.content.contains("exit 0"), "{}", result.content);
 }
+
+#[test]
+fn minimal_surface_is_bash_only() {
+    // The default surface stays the single bash tool. Image vision rides
+    // inside bash (`cat img.png`), not as a second tool — if this test
+    // fails, someone re-split the surface.
+    let names: Vec<String> = ToolsMinimalPlugin
+        .tools()
+        .iter()
+        .map(|t| t.def().name)
+        .collect();
+    assert_eq!(names, vec!["bash".to_string()], "minimal must be bash-only");
+}

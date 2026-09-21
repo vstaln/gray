@@ -293,3 +293,96 @@ fn known_missing_binaries_get_their_real_substitute() {
     );
     assert!(unknown.contains("command -v goyacc"), "{unknown}");
 }
+
+fn png_bytes() -> Vec<u8> {
+    use image::ImageFormat;
+    use std::io::Cursor;
+    let img = image::RgbImage::from_pixel(2, 2, image::Rgb([9, 8, 7]));
+    let mut buf = Vec::new();
+    image::DynamicImage::ImageRgb8(img)
+        .write_to(&mut Cursor::new(&mut buf), ImageFormat::Png)
+        .unwrap();
+    buf
+}
+
+#[tokio::test]
+async fn cat_image_shows_png_as_vision_block() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("plot.png"), png_bytes()).unwrap();
+    let out = cat_image("cat plot.png", dir.path()).expect("cat on a png must show the image");
+    assert!(!out.is_error);
+    assert!(out.content.contains("Image shown"), "{}", out.content);
+    assert_eq!(out.images.len(), 1, "one vision block per call");
+    assert_eq!(out.images[0].media_type, "image/png");
+}
+
+#[tokio::test]
+async fn cat_image_only_claims_plain_single_file_cat() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.png"), png_bytes()).unwrap();
+    std::fs::write(dir.path().join("b.png"), png_bytes()).unwrap();
+    std::fs::write(dir.path().join("notes.txt"), "text").unwrap();
+    // The claimed shape: exactly cat + one bare path.
+    assert!(cat_image("cat a.png", dir.path()).is_some());
+    assert!(cat_image("  cat   a.png  ", dir.path()).is_some());
+    // Everything else falls through to a normal shell run.
+    for cmd in [
+        "cat a.png b.png",
+        "cat -A a.png",
+        "cat a.png | wc -c",
+        "cat a.png > copy.png",
+        "head a.png",
+        "cat notes.txt",
+        "cat missing.png",
+        "cat $HOME/a.png",
+        "cat *.png",
+    ] {
+        assert!(
+            cat_image(cmd, dir.path()).is_none(),
+            "must not claim: {cmd}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn cat_image_through_execute_shows_vision() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("shot.png"), png_bytes()).unwrap();
+    let ctx = ToolContext {
+        cwd: dir.path().to_path_buf(),
+        ..ToolContext::default()
+    };
+    let out = BashTool::default()
+        .execute(&ctx, json!({"command": "cat shot.png"}))
+        .await;
+    assert!(!out.is_error, "{}", out.content);
+    assert_eq!(out.images.len(), 1, "execute must surface the vision block");
+}
+
+#[tokio::test]
+async fn cat_image_keeps_full_resolution() {
+    use base64::Engine as _;
+    use image::ImageDecoder;
+    use std::io::Cursor;
+    let dir = tempfile::tempdir().unwrap();
+    // 2400px wide: past MAX_IMAGE_SIDE (2000), so the downscale path used by
+    // the `read` tool would shrink this. `cat` must not.
+    let img = image::RgbImage::from_pixel(2400, 100, image::Rgb([1, 2, 3]));
+    let mut buf = Vec::new();
+    image::DynamicImage::ImageRgb8(img)
+        .write_to(&mut Cursor::new(&mut buf), image::ImageFormat::Png)
+        .unwrap();
+    std::fs::write(dir.path().join("wide.png"), &buf).unwrap();
+    let out = cat_image("cat wide.png", dir.path()).unwrap();
+    let raw = base64::engine::general_purpose::STANDARD
+        .decode(&out.images[0].data)
+        .unwrap();
+    let decoded = image::ImageReader::with_format(Cursor::new(&raw), image::ImageFormat::Png)
+        .into_decoder()
+        .unwrap();
+    assert_eq!(
+        decoded.dimensions(),
+        (2400, 100),
+        "cat must send full resolution, not the 2000px downscale"
+    );
+}

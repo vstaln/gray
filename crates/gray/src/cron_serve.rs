@@ -270,11 +270,41 @@ pub async fn tick_once(
     deliver: &SaveLocalDeliver,
     kind: &str,
 ) -> anyhow::Result<TickReport> {
+    tick_once_with(
+        store,
+        runner,
+        deliver,
+        kind,
+        crate::setup::cron_auto_enabled(),
+    )
+    .await
+}
+
+/// Test seam for [`tick_once`]: the master switch arrives as a parameter so
+/// the gate is exercised without touching the live config.
+pub(crate) async fn tick_once_with(
+    store: &crate::cron::CronStore,
+    runner: &dyn AsyncRunner,
+    deliver: &SaveLocalDeliver,
+    kind: &str,
+    auto: bool,
+) -> anyhow::Result<TickReport> {
     // Liveness first, before any job runs: every pass stamps the store so a
     // later reader can tell "nothing was due" from "nothing was ticking".
     // Best-effort — a failed heartbeat must not stop jobs from firing.
     if let Err(e) = store.record_tick(kind) {
         log::warn!("cron: cannot record tick heartbeat: {e:#}");
+    }
+    // Master switch (`/cron off`): the ticker keeps ticking — the heartbeat
+    // above stays truthful about liveness — but due jobs are left unclaimed
+    // so they fire when the switch flips back. Claiming-then-skipping would
+    // strand them; a skipped job is never a fired one.
+    if !auto {
+        return Ok(TickReport {
+            fired: 0,
+            errors: 0,
+            delivered: Vec::new(),
+        });
     }
     let owner = owner_stamp();
     let mut fired_ids = Vec::new();

@@ -114,6 +114,33 @@
   paragraph that wrapped to 12 content rows lost its last row and anything
   longer was cut hard. The cap is the terminal height now (minus the shell
   prompt row); the idle 14-row transcript is unchanged
+- The default tool surface stays bash-only, and `bash` now carries image
+  vision: `cat <image>` returns the file as a vision block at full
+  resolution (decode, EXIF orientation, re-encode at native size — no
+  downscale, no halving) instead of the binary garbage a shell would
+  stream. The claim is deliberately narrow — exactly `cat` plus one bare
+  path — so flags, pipes, redirects, globs, and multi-file cats run
+  normally, and missing or mislabeled files fall through to the shell's
+  own error. A separate `view` tool was tried and removed the same day,
+  on one principle: a capability the existing surface can carry does not
+  need a new tool. `tools-minimal` is pinned bash-only by a test
+- Project rules arrive without being asked for: the nearest `AGENTS.md` /
+  `CLAUDE.md` above the working directory is served every turn as a
+  self-describing `<project_context>` block (nearest ancestor wins, the
+  gray-home file is skipped since it is the stored system prompt, 32K-char
+  cap), so repo rules stay in the permanent prompt instead of arriving as
+  prunable tool observations that can fall out of context mid-session
+- An explicit `/skills <name>` invocation now pastes a binding directive
+  ahead of the skill body — the instructions are binding for the current
+  task, drop any conflicting plan — because a bare body pasted mid-task
+  reads as background material and the model resumed its previous plan.
+  The per-turn `<available_skills>` block gained the matching mid-task
+  clause: stop and read a matching skill before continuing
+- The default system prompt is 31 lines, down from 39: the three prose
+  sections folded into workflow steps and two guideline bullets (both
+  verify-contract sentences preserved verbatim), and the project-rules /
+  skills narration deleted — both blocks explain themselves
+
 ### Fixed
 
 - Tool headers no longer panic the REPL on multi-byte commands. The

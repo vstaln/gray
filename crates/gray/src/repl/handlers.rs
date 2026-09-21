@@ -3,11 +3,23 @@
 use super::*;
 
 /// Renders the exact text sent to the model for `/skills <name> [args]`:
-/// the skill body (frontmatter stripped), with the invocation args appended.
-/// Pure so both the visible paste and the model turn share one string — what
-/// you see in chat is what the model gets.
-pub(crate) fn format_skill_paste(body: &str, args: Option<&str>) -> String {
-    let mut out = body.to_string();
+/// a binding directive naming the skill, then the skill body (frontmatter
+/// stripped), with the invocation args appended. Pure so both the visible
+/// paste and the model turn share one string — what you see in chat is what
+/// the model gets.
+///
+/// The directive exists because a bare body pasted mid-task reads as
+/// background material: the model resumes whatever plan it was already on
+/// (observed: a `/skills` invocation ignored, the pre-interrupt `ls` re-run
+/// immediately after the paste). Naming the skill and stating the
+/// instructions are binding — with an explicit "even mid-task, drop
+/// conflicting plans" — re-anchors the turn on the skill.
+pub(crate) fn format_skill_paste(body: &str, name: &str, args: Option<&str>) -> String {
+    let mut out = format!(
+        "The user explicitly invoked the \"{name}\" skill. Its instructions are binding for the current task: follow them now, starting from the first step, even if you were mid-task — abandon any plan that conflicts with them."
+    );
+    out.push_str("\n\n");
+    out.push_str(body);
     if let Some(a) = args.filter(|a| !a.is_empty()) {
         out.push_str(&format!("\n\n**ARGUMENTS:** {a}"));
     }
@@ -135,6 +147,106 @@ pub(crate) fn apply_skill_toggle(
     } else {
         format!("✓ skill '{name}' disabled — hidden from the model, /skills {name} still runs")
     })
+}
+
+/// Subsystems carrying a persisted on/off master switch, mirroring
+/// `skills_auto`. Each gates its autonomous path — memory injection, cron
+/// fires, the gateway server — while the manual path keeps working.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Subsystem {
+    Memory,
+    Cron,
+    Gateway,
+}
+
+impl Subsystem {
+    /// The name users type (`/memory`, `/cron`, `gray gateway`).
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Subsystem::Memory => "memory",
+            Subsystem::Cron => "cron",
+            Subsystem::Gateway => "gateway",
+        }
+    }
+
+    /// (on report, off effect, manual path that survives off).
+    fn copy(self) -> (&'static str, &'static str, &'static str) {
+        match self {
+            Subsystem::Memory => (
+                "memory on — back in context",
+                "hidden from the model",
+                "gray memory still saves",
+            ),
+            Subsystem::Cron => (
+                "cron on — scheduled jobs will fire",
+                "scheduled jobs won't fire",
+                "/cron still runs them",
+            ),
+            Subsystem::Gateway => (
+                "gateway on",
+                "run/start will refuse to start",
+                "status/stop still work",
+            ),
+        }
+    }
+
+    /// The persisted field this switch flips.
+    fn field(self, saved: &mut crate::setup::SavedConfig) -> &mut Option<bool> {
+        match self {
+            Subsystem::Memory => &mut saved.memory_auto,
+            Subsystem::Cron => &mut saved.cron_auto,
+            Subsystem::Gateway => &mut saved.gw_auto,
+        }
+    }
+}
+
+/// Bare switch-word parse shared by the subsystem toggles: exactly one word
+/// from `on|off|enable|disable` (case-insensitive). Anything else — extras,
+/// names, garbage — is `None`, so each command keeps its own parse shape for
+/// everything that is not a bare switch.
+pub(crate) fn parse_on_off(rest: &str) -> Option<bool> {
+    let mut parts = rest.split_whitespace();
+    let word = parts.next()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    match word.to_ascii_lowercase().as_str() {
+        "on" | "enable" => Some(true),
+        "off" | "disable" => Some(false),
+        _ => None,
+    }
+}
+
+/// Toggle core against an explicit config path (test seam): flips the
+/// persisted flag and reports. `off` gates the autonomous path only — the
+/// manual path named in the report keeps working. `on` clears the flag so
+/// the subsystem reads as enabled.
+pub(crate) fn apply_subsystem_toggle(
+    config_path: &Path,
+    subsystem: Subsystem,
+    on: bool,
+) -> Result<String, String> {
+    let mut saved = crate::setup::load_saved_config_at(config_path);
+    *subsystem.field(&mut saved) = if on { None } else { Some(false) };
+    crate::setup::save_saved_config_at(config_path, &saved).map_err(|e| format!("{e:#}"))?;
+    let (on_report, off_effect, manual) = subsystem.copy();
+    Ok(if on {
+        format!("✓ {on_report}")
+    } else {
+        format!("✓ {} off — {off_effect}, {manual}", subsystem.label())
+    })
+}
+
+/// Resolves the live config path and applies a subsystem toggle, returning
+/// the report (or the failure) as a string. Shared by the REPL arms and the
+/// `gray gateway on|off` CLI so the path/error dance is written once.
+pub(crate) fn toggle_subsystem(subsystem: Subsystem, on: bool) -> String {
+    match crate::setup::saved_config_path() {
+        Ok(path) => match apply_subsystem_toggle(&path, subsystem, on) {
+            Ok(msg) | Err(msg) => msg,
+        },
+        Err(e) => format!("{e:#}"),
+    }
 }
 
 /// Expands `/skills <name> [args]` (or the `/skill <name>` alias —
@@ -267,7 +379,7 @@ pub(crate) fn expand_skill_command(
     let expanded = match std::fs::read_to_string(&skill.file_path) {
         Ok(content) => {
             let body = crate::skills_tool::strip_frontmatter(&content);
-            format_skill_paste(body, args.as_deref())
+            format_skill_paste(body, &skill.name, args.as_deref())
         }
         Err(e) => {
             say(

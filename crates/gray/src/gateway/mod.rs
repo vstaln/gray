@@ -18,6 +18,35 @@ mod run;
 
 use std::path::Path;
 
+/// Master switch (`gray gateway off`): `run`/`start` refuse while off so a
+/// stale autostart cannot resurrect the server. `status`/`stop` stay open —
+/// a running gateway remains inspectable and stoppable.
+fn ensure_gateway_on() -> anyhow::Result<()> {
+    ensure_gateway_on_with(crate::setup::gw_auto_enabled())
+}
+
+/// Test seam for [`ensure_gateway_on`]: the master switch arrives as a
+/// parameter so the refusal is exercised without the live config.
+fn ensure_gateway_on_with(enabled: bool) -> anyhow::Result<()> {
+    if enabled {
+        return Ok(());
+    }
+    anyhow::bail!("gateway is off — `gray gateway on` to enable")
+}
+
+#[cfg(test)]
+mod toggle_tests {
+    use super::ensure_gateway_on_with;
+
+    #[test]
+    fn gateway_switch_off_refuses_run_and_start() {
+        assert!(ensure_gateway_on_with(true).is_ok());
+        let err = ensure_gateway_on_with(false).unwrap_err().to_string();
+        assert!(err.contains("gateway is off"), "{err}");
+        assert!(err.contains("gray gateway on"), "{err}");
+    }
+}
+
 /// Dispatch `gray gateway <cmd>`.
 pub async fn run_cli(cmd: crate::GatewayCmd, config: &crate::config::Config) -> anyhow::Result<()> {
     use crate::GatewayCmd;
@@ -28,7 +57,10 @@ pub async fn run_cli(cmd: crate::GatewayCmd, config: &crate::config::Config) -> 
         "gateway is not supported on native Windows; use WSL for background scheduling"
     );
     match cmd {
-        GatewayCmd::Run => run::run_foreground(config).await,
+        GatewayCmd::Run => {
+            ensure_gateway_on()?;
+            run::run_foreground(config).await
+        }
         GatewayCmd::Status => {
             let home = crate::setup::gray_home()?;
             let (running, lines) = report(&home);
@@ -41,7 +73,28 @@ pub async fn run_cli(cmd: crate::GatewayCmd, config: &crate::config::Config) -> 
             Ok(())
         }
         GatewayCmd::Start => {
+            ensure_gateway_on()?;
             println!("{}", service::start()?);
+            Ok(())
+        }
+        GatewayCmd::On => {
+            println!(
+                "{}",
+                crate::repl::handlers::toggle_subsystem(
+                    crate::repl::handlers::Subsystem::Gateway,
+                    true
+                )
+            );
+            Ok(())
+        }
+        GatewayCmd::Off => {
+            println!(
+                "{}",
+                crate::repl::handlers::toggle_subsystem(
+                    crate::repl::handlers::Subsystem::Gateway,
+                    false
+                )
+            );
             Ok(())
         }
         GatewayCmd::Stop => {

@@ -72,6 +72,11 @@ pub(crate) const REGISTRY: &[CmdDef] = &[
         aliases: &["skill"],
     },
     CmdDef {
+        name: "memory",
+        desc: "memory master switch (/memory on|off; bare reports state)",
+        aliases: &[],
+    },
+    CmdDef {
         name: "plugin",
         desc: "manage plugins",
         aliases: &["plugins"],
@@ -403,6 +408,8 @@ pub enum ReplCommand {
     Usage,
     /// List cron jobs (read-only; manage via `gray cron` CLI).
     CronJobs(Option<String>),
+    /// Memory master switch (`/memory on|off`; bare reports state).
+    Memory(Option<String>),
     /// Copy the last assistant response to the clipboard (`/copy`).
     Copy,
     /// Send feedback (`/feedback <what happened>`): saves locally, opens a prefilled issue.
@@ -504,6 +511,7 @@ pub fn parse_command(line: &str) -> ReplCommand {
         Some("context") => ReplCommand::ContextWindow(opt(rest)),
         Some("usage") => ReplCommand::Usage,
         Some("cron") => ReplCommand::CronJobs(opt(rest)),
+        Some("memory") => ReplCommand::Memory(opt(rest)),
         Some("copy") => ReplCommand::Copy,
         Some("feedback") => ReplCommand::Feedback(opt(rest)),
         Some("help") => ReplCommand::Help,
