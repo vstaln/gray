@@ -214,3 +214,55 @@ async fn reload_agent_failure_preserves_agent() {
     .await;
     assert!(agent.is_none());
 }
+
+#[test]
+fn subsystem_toggle_parses_bare_switch_words_only() {
+    use super::{Subsystem, parse_on_off};
+    assert_eq!(parse_on_off("on"), Some(true));
+    assert_eq!(parse_on_off("off"), Some(false));
+    assert_eq!(parse_on_off("ON"), Some(true));
+    assert_eq!(parse_on_off("Disable"), Some(false));
+    assert_eq!(parse_on_off(""), None);
+    assert_eq!(parse_on_off("  off  "), Some(false));
+    // Extras and names are not switches — each command keeps its own shape.
+    assert_eq!(parse_on_off("off now"), None);
+    assert_eq!(parse_on_off("memory"), None);
+    assert_eq!(parse_on_off("on/off"), None);
+    // All three subsystems share the parser.
+    for sub in [Subsystem::Memory, Subsystem::Cron, Subsystem::Gateway] {
+        assert!(parse_on_off("off").is_some());
+        assert_eq!(sub.label().is_empty(), false);
+    }
+}
+
+#[test]
+fn subsystem_toggle_persists_per_subsystem_and_reports_the_manual_path() {
+    use super::{Subsystem, apply_subsystem_toggle};
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = dir.path().join("config.json");
+    // Off persists as an explicit false and names the manual path.
+    let msg = apply_subsystem_toggle(&cfg, Subsystem::Memory, false).unwrap();
+    assert!(msg.contains("memory off"), "{msg}");
+    assert!(msg.contains("gray memory still saves"), "{msg}");
+    assert!(!crate::setup::memory_auto_enabled_at(&cfg));
+    // The other two switches are independent.
+    assert!(crate::setup::cron_auto_enabled_at(&cfg));
+    assert!(crate::setup::gw_auto_enabled_at(&cfg));
+    let msg = apply_subsystem_toggle(&cfg, Subsystem::Cron, false).unwrap();
+    assert!(msg.contains("/cron still runs them"), "{msg}");
+    let msg = apply_subsystem_toggle(&cfg, Subsystem::Gateway, false).unwrap();
+    assert!(msg.contains("status/stop still work"), "{msg}");
+    assert!(!crate::setup::cron_auto_enabled_at(&cfg));
+    assert!(!crate::setup::gw_auto_enabled_at(&cfg));
+    // Memory stays off — flipping cron did not touch it.
+    assert!(!crate::setup::memory_auto_enabled_at(&cfg));
+    // On clears the flag (back to missing = default on).
+    let msg = apply_subsystem_toggle(&cfg, Subsystem::Memory, true).unwrap();
+    assert!(msg.contains("memory on"), "{msg}");
+    assert!(crate::setup::memory_auto_enabled_at(&cfg));
+    // A missing config reads as enabled for all three.
+    let missing = dir.path().join("nope.json");
+    assert!(crate::setup::memory_auto_enabled_at(&missing));
+    assert!(crate::setup::cron_auto_enabled_at(&missing));
+    assert!(crate::setup::gw_auto_enabled_at(&missing));
+}

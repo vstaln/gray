@@ -400,3 +400,51 @@ fn fire_chat_frame_shapes() {
     assert!(out.contains("hello output"));
     assert!(out.contains("Full output: /home/u/.gray/cron/output/abc123/1.md"));
 }
+
+#[tokio::test]
+async fn tick_fires_nothing_while_the_switch_is_off_but_keeps_ticking() {
+    let home = tempfile::tempdir().unwrap();
+    let store = due_store(&home, one_due("j1", serde_json::json!("local")));
+    let runner = StubRunner {
+        text: "hello".to_string(),
+        fail: false,
+        seen: Default::default(),
+    };
+    let rep = tick_once_with(
+        &store,
+        &runner,
+        &SaveLocalDeliver {
+            home: home.path().to_path_buf(),
+        },
+        "test",
+        false,
+    )
+    .await
+    .unwrap();
+    assert_eq!(rep.fired, 0);
+    assert_eq!(rep.errors, 0);
+    assert!(rep.delivered.is_empty());
+    // The job was never claimed, so it stays due for the flip back on.
+    let job = store.get("j1").unwrap().unwrap();
+    assert!(job.fire_claim.is_none());
+    assert_eq!(job.last_status, None);
+    assert!(runner.seen.lock().unwrap().is_empty());
+    // The heartbeat stamped anyway — liveness stays truthful, the ticker is
+    // alive, it just fired nothing.
+    let now = crate::cron::now_secs();
+    let health = store.health(now).unwrap();
+    assert!(health.ticker_live(now));
+    // And with the switch on, the very same store fires normally.
+    let rep = tick_once_with(
+        &store,
+        &runner,
+        &SaveLocalDeliver {
+            home: home.path().to_path_buf(),
+        },
+        "test",
+        true,
+    )
+    .await
+    .unwrap();
+    assert_eq!(rep.fired, 1);
+}

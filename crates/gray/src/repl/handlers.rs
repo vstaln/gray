@@ -137,6 +137,106 @@ pub(crate) fn apply_skill_toggle(
     })
 }
 
+/// Subsystems carrying a persisted on/off master switch, mirroring
+/// `skills_auto`. Each gates its autonomous path — memory injection, cron
+/// fires, the gateway server — while the manual path keeps working.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Subsystem {
+    Memory,
+    Cron,
+    Gateway,
+}
+
+impl Subsystem {
+    /// The name users type (`/memory`, `/cron`, `gray gateway`).
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Subsystem::Memory => "memory",
+            Subsystem::Cron => "cron",
+            Subsystem::Gateway => "gateway",
+        }
+    }
+
+    /// (on report, off effect, manual path that survives off).
+    fn copy(self) -> (&'static str, &'static str, &'static str) {
+        match self {
+            Subsystem::Memory => (
+                "memory on — back in context",
+                "hidden from the model",
+                "gray memory still saves",
+            ),
+            Subsystem::Cron => (
+                "cron on — scheduled jobs will fire",
+                "scheduled jobs won't fire",
+                "/cron still runs them",
+            ),
+            Subsystem::Gateway => (
+                "gateway on",
+                "run/start will refuse to start",
+                "status/stop still work",
+            ),
+        }
+    }
+
+    /// The persisted field this switch flips.
+    fn field(self, saved: &mut crate::setup::SavedConfig) -> &mut Option<bool> {
+        match self {
+            Subsystem::Memory => &mut saved.memory_auto,
+            Subsystem::Cron => &mut saved.cron_auto,
+            Subsystem::Gateway => &mut saved.gw_auto,
+        }
+    }
+}
+
+/// Bare switch-word parse shared by the subsystem toggles: exactly one word
+/// from `on|off|enable|disable` (case-insensitive). Anything else — extras,
+/// names, garbage — is `None`, so each command keeps its own parse shape for
+/// everything that is not a bare switch.
+pub(crate) fn parse_on_off(rest: &str) -> Option<bool> {
+    let mut parts = rest.split_whitespace();
+    let word = parts.next()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    match word.to_ascii_lowercase().as_str() {
+        "on" | "enable" => Some(true),
+        "off" | "disable" => Some(false),
+        _ => None,
+    }
+}
+
+/// Toggle core against an explicit config path (test seam): flips the
+/// persisted flag and reports. `off` gates the autonomous path only — the
+/// manual path named in the report keeps working. `on` clears the flag so
+/// the subsystem reads as enabled.
+pub(crate) fn apply_subsystem_toggle(
+    config_path: &Path,
+    subsystem: Subsystem,
+    on: bool,
+) -> Result<String, String> {
+    let mut saved = crate::setup::load_saved_config_at(config_path);
+    *subsystem.field(&mut saved) = if on { None } else { Some(false) };
+    crate::setup::save_saved_config_at(config_path, &saved).map_err(|e| format!("{e:#}"))?;
+    let (on_report, off_effect, manual) = subsystem.copy();
+    Ok(if on {
+        format!("✓ {on_report}")
+    } else {
+        format!("✓ {} off — {off_effect}, {manual}", subsystem.label())
+    })
+}
+
+/// Resolves the live config path and applies a subsystem toggle, returning
+/// the report (or the failure) as a string. Shared by the REPL arms and the
+/// `gray gateway on|off` CLI so the path/error dance is written once.
+pub(crate) fn toggle_subsystem(subsystem: Subsystem, on: bool) -> String {
+    match crate::setup::saved_config_path() {
+        Ok(path) => match apply_subsystem_toggle(&path, subsystem, on) {
+            Ok(msg) | Err(msg) => msg,
+        },
+        Err(e) => format!("{e:#}"),
+    }
+}
+
 /// Expands `/skills <name> [args]` (or the `/skill <name>` alias —
 /// both parse to the identical payload) into a Prompt carrying the skill body
 /// (Grok-style: frontmatter stripped, args appended). The same text is pasted

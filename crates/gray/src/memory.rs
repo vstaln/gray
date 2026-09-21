@@ -132,6 +132,19 @@ impl MemoryStore {
         }
     }
 
+    /// Total curated entries across both scopes; an unreadable or missing
+    /// store reads as empty (a missing store *is* an empty store).
+    pub fn entry_count(&self) -> usize {
+        [Scope::User, Scope::Project]
+            .into_iter()
+            .map(|s| {
+                parse(&self.list(s).unwrap_or_default())
+                    .map(|e| e.len())
+                    .unwrap_or(0)
+            })
+            .sum()
+    }
+
     /// Freeze curated data, not instructions, once per durable session. A new
     /// process rebuilding the same session gets identical bytes. Anonymous
     /// headless runs take a fresh snapshot and leave no snapshot file.

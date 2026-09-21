@@ -189,7 +189,9 @@ pub async fn build_agent(
     // Same directory as the tool context; never persist it in the user's file.
     let prompt_cwd = cwd.to_path_buf();
 
-    let snapshot = if memory::disabled() {
+    // `/memory off` keeps the snapshot out of the prompt (context economy);
+    // the env var stays the hard kill-switch that also stops saves.
+    let snapshot = if memory::disabled() || !crate::setup::memory_auto_enabled() {
         None
     } else {
         match setup::gray_home()
@@ -493,6 +495,10 @@ pub enum GatewayCmd {
     },
     /// Stop and remove the installed service
     Uninstall,
+    /// Turn the gateway master switch on (run/start allowed again)
+    On,
+    /// Turn the gateway master switch off (run/start refuse until re-enabled)
+    Off,
 }
 
 /// `gray plugin ...` — plugin-side tooling.

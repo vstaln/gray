@@ -215,18 +215,45 @@ pub(crate) async fn dispatch_command(
             Flow::Continue
         }
         ReplCommand::CronJobs(arg) => {
-            let store = crate::cron::CronStore::open(crate::setup::gray_home()?.join("cron"))?;
-            let jobs = store.list()?;
-            let now = crate::cron::now_secs();
-            // Health is store-level (one ticker serves every job); a read
-            // failure only drops the liveness line, never the listing.
-            let health = store.health(now).ok();
-            let text = match arg {
-                None => super::cron::format_cron_dashboard(&jobs, health.as_ref(), now),
-                Some(id) => match jobs.into_iter().find(|j| j.id == id || j.name == id) {
-                    Some(j) => super::cron::format_cron_dashboard(&[j], health.as_ref(), now),
-                    None => format!("unknown cron job {id:?}"),
-                },
+            // A bare switch word flips the master switch (skills-shaped);
+            // the dashboard keeps the bare and `<id>` behavior. A command
+            // queued mid-turn still runs — a toggle is local, exactly like
+            // the dashboard itself.
+            if let Some(on) = arg.as_deref().and_then(handlers::parse_on_off) {
+                let text = handlers::toggle_subsystem(handlers::Subsystem::Cron, on);
+                say(tui.as_ref().map(|(s, _)| s), &text);
+                Flow::Continue
+            } else {
+                let store = crate::cron::CronStore::open(crate::setup::gray_home()?.join("cron"))?;
+                let jobs = store.list()?;
+                let now = crate::cron::now_secs();
+                // Health is store-level (one ticker serves every job); a read
+                // failure only drops the liveness line, never the listing.
+                let health = store.health(now).ok();
+                let text = match arg {
+                    None => super::cron::format_cron_dashboard(&jobs, health.as_ref(), now),
+                    Some(id) => match jobs.into_iter().find(|j| j.id == id || j.name == id) {
+                        Some(j) => super::cron::format_cron_dashboard(&[j], health.as_ref(), now),
+                        None => format!("unknown cron job {id:?}"),
+                    },
+                };
+                say(tui.as_ref().map(|(s, _)| s), &text);
+                Flow::Continue
+            }
+        }
+        ReplCommand::Memory(arg) => {
+            // Bare reports state + entry count (discoverability); a switch
+            // word flips the persisted master switch.
+            let text = match arg.as_deref().and_then(handlers::parse_on_off) {
+                Some(on) => handlers::toggle_subsystem(handlers::Subsystem::Memory, on),
+                None => {
+                    let entries = crate::setup::gray_home()
+                        .ok()
+                        .and_then(|home| crate::memory::MemoryStore::new(&home, cwd).ok())
+                        .map(|s| s.entry_count())
+                        .unwrap_or(0);
+                    format_memory_state(crate::setup::memory_auto_enabled(), entries)
+                }
             };
             say(tui.as_ref().map(|(s, _)| s), &text);
             Flow::Continue
@@ -381,4 +408,33 @@ pub(crate) async fn dispatch_command(
             Flow::Continue
         }
     })
+}
+
+/// The bare `/memory` line: switch state + entry count. Pure so the wording
+/// is testable without a store.
+pub(crate) fn format_memory_state(on: bool, entries: usize) -> String {
+    format!(
+        "memory {} — {entries} entries · /memory off hides them from the model (entries keep saving)",
+        if on { "on" } else { "off" }
+    )
+}
+
+#[cfg(test)]
+mod toggle_tests {
+    use super::format_memory_state;
+
+    #[test]
+    fn memory_state_line_names_the_manual_path() {
+        let on = format_memory_state(true, 12);
+        assert!(on.starts_with("memory on"), "{on}");
+        assert!(on.contains("12 entries"), "{on}");
+        let off = format_memory_state(false, 0);
+        assert!(off.starts_with("memory off"), "{off}");
+        assert!(off.contains("0 entries"), "{off}");
+        // Both states advertise the switch and that entries keep saving.
+        for line in [&on, &off] {
+            assert!(line.contains("/memory off"), "{line}");
+            assert!(line.contains("entries keep saving"), "{line}");
+        }
+    }
 }
