@@ -81,3 +81,25 @@ fn spec_is_a_read_only_listing() {
         assert!(!MEMORY_SPEC.errors_tab);
     }
 }
+
+#[test]
+fn an_unreadable_store_is_reported_not_shown_as_empty() {
+    // A missing store is an empty scope; a malformed one is a failure and gets
+    // a row of its own instead of a silent "no entries".
+    let (_home, _cwd, store) = store_with("this is not a memory line\n");
+    let items = items_for(&store);
+    // The project scope has no file at all, so it stays empty; the malformed
+    // user scope is the one that must not pass as "no entries".
+    assert_eq!(
+        items.len(),
+        1,
+        "rows: {:?}",
+        items.iter().map(|i| i.row.as_str()).collect::<Vec<_>>()
+    );
+    assert!(
+        items[0].row.starts_with("cannot read user memory"),
+        "{}",
+        items[0].row
+    );
+    assert!(items[0].read_only);
+}

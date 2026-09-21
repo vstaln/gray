@@ -124,10 +124,12 @@ pub(crate) fn enabled(home: &Path, name: &str, entry: &LockEntry) -> bool {
         .is_none_or(|entry| entry.enabled)
 }
 
-/// Commands a registered plugin declares for itself: its manifest's
-/// `completion` array. Empty when the plugin registered no manifest (or the
-/// file is unreadable) — nothing is invented on its behalf.
-pub(crate) fn declared_commands(home: &Path, name: &str) -> Vec<String> {
+/// Subcommands a registered plugin declares for itself: its manifest's
+/// `completion` array. That is the subcommand vocabulary (`settings`, `run`,
+/// …); the slash aliases live in `commands`, and a caller showing the app's
+/// own name has no use for them. Empty when the plugin registered no manifest
+/// (or the file is unreadable) — nothing is invented on its behalf.
+pub(crate) fn declared_subcommands(home: &Path, name: &str) -> Vec<String> {
     metadata(home, name)
         .ok()
         .and_then(|m| m["completion"].as_array().cloned())

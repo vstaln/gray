@@ -53,9 +53,13 @@ const CRON_SPEC: ManagerSpec = ManagerSpec {
 
 /// One picker row per job: the dashboard's fields in the manager's shape,
 /// plus the ticker's liveness line (the answer to "is anything driving this
-/// store?") as a trailing read-only row. A paused job renders dim with a
-/// `[paused]` tag; its switch state is `Active`, which is what `space` flips
-/// back to.
+/// store?") as a trailing read-only row.
+///
+/// A row carries a switch only when flipping it means something: `claim_due`
+/// fires a job only when it is `Active` *and* `enabled`, so a paused job
+/// toggles, while a disabled job (`enabled: false`) and a finished one-shot
+/// (`Done`) render read-only and tagged — resuming either would change state
+/// without changing whether the job runs.
 pub(crate) fn items(
     jobs: &[crate::cron::CronJob],
     health: Option<&crate::cron::CronHealth>,
@@ -64,7 +68,12 @@ pub(crate) fn items(
     let mut out: Vec<ManagerItem> = jobs
         .iter()
         .map(|j| {
-            let paused = j.state == crate::cron::store::JobState::Paused;
+            let (glyph, tag, lit, toggleable) = match j.state {
+                crate::cron::store::JobState::Active if j.enabled => ("\u{2713}", "", true, true),
+                crate::cron::store::JobState::Active => ("\u{25cb}", " [disabled]", false, false),
+                crate::cron::store::JobState::Paused => ("\u{25cb}", " [paused]", false, true),
+                crate::cron::store::JobState::Done => ("\u{b7}", " [done]", false, false),
+            };
             let next = j
                 .next_run_at
                 .map(|t| t.to_string())
@@ -73,28 +82,28 @@ pub(crate) fn items(
                 .last_status
                 .map(|s| format!("{s:?}"))
                 .unwrap_or_else(|| "-".to_string());
-            let mut row = format!(
-                "{} {} ({}) \u{2014} {:?} \u{2014} next {} \u{2014} last {}",
-                if paused { "\u{25cb}" } else { "\u{2713}" },
+            let row = format!(
+                "{glyph} {} ({}) \u{2014} {:?} \u{2014} next {} \u{2014} last {}{tag}",
                 j.name,
                 &j.id[..8.min(j.id.len())],
                 j.schedule,
                 next,
                 last,
             );
-            if paused {
-                row.push_str(" [paused]");
-            }
             ManagerItem {
                 name: j.id.clone(),
                 row,
-                lit: !paused,
-                enabled: !paused,
-                read_only: false,
+                lit,
+                enabled: toggleable && j.state == crate::cron::store::JobState::Active,
+                read_only: !toggleable,
             }
         })
         .collect();
-    if let Some(h) = health {
+    // The ticker row only rides along when there are jobs to tick: on an empty
+    // store it would crowd out the add-a-job hint.
+    if !jobs.is_empty()
+        && let Some(h) = health
+    {
         out.push(ManagerItem {
             name: String::new(),
             row: crate::cron_status::ticker_line(h, now),

@@ -126,3 +126,47 @@ fn cron_spec_toggles_without_removal_or_errors() {
         assert!(!CRON_SPEC.errors_tab);
     }
 }
+
+fn finished(name: &str) -> crate::cron::CronJob {
+    crate::cron::CronJob {
+        state: crate::cron::store::JobState::Done,
+        ..job(name, None)
+    }
+}
+
+fn disabled(name: &str) -> crate::cron::CronJob {
+    crate::cron::CronJob {
+        enabled: false,
+        ..job(name, None)
+    }
+}
+
+#[test]
+fn picker_offers_no_switch_on_states_a_toggle_cannot_change() {
+    // claim_due fires only Active *and* enabled: a finished one-shot and a
+    // disabled job would change state without changing whether they run, so
+    // both render read-only and tagged.
+    for (built, tag) in [
+        (finished as fn(&str) -> crate::cron::CronJob, "[done]"),
+        (disabled, "[disabled]"),
+    ] {
+        let rows = items(&[built("nightly")], None, 1_700_000_000);
+        assert!(rows[0].row.ends_with(tag), "{}", rows[0].row);
+        assert!(rows[0].read_only, "{}", rows[0].row);
+        assert!(!rows[0].lit, "{}", rows[0].row);
+    }
+}
+
+#[test]
+fn picker_hides_the_ticker_row_when_there_are_no_jobs() {
+    // Otherwise the ticker line crowds out the add-a-job hint on a new store.
+    let health = crate::cron::CronHealth {
+        last_tick: None,
+        overdue: vec![],
+    };
+    assert!(items(&[], Some(&health), 1_700_000_000).is_empty());
+    assert_eq!(
+        items(&[job("nightly", None)], Some(&health), 1_700_000_000).len(),
+        2
+    );
+}

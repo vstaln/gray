@@ -53,10 +53,10 @@ fn setup_missing(home: &Path, name: &str) -> bool {
     }
 }
 
-/// Commands an app declares for itself. Empty when it registered no manifest
-/// (or no home resolves) — nothing is invented on its behalf.
+/// Subcommands an app declares for itself. Empty when it registered no
+/// manifest (or no home resolves) — nothing is invented on its behalf.
 fn declared(home: Option<&Path>, name: &str) -> Vec<String> {
-    home.map(|h| crate::plugin_cli::declared_commands(h, name))
+    home.map(|h| crate::plugin_cli::declared_subcommands(h, name))
         .unwrap_or_default()
 }
 
