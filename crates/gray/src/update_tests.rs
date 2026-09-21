@@ -209,6 +209,7 @@ fn with_update_env(vars: &[(&str, Option<&Path>)], body: impl FnOnce()) {
 }
 
 #[test]
+#[cfg(unix)] // spawns `#!/bin/sh` fakes; Windows cannot execute them
 fn shadow_guard_catches_a_stale_copy_that_wins_path() {
     let dir = tempfile::tempdir().unwrap();
     let fresh = dir.path().join("fresh");
@@ -249,6 +250,7 @@ fn shadow_guard_catches_a_stale_copy_that_wins_path() {
 }
 
 #[test]
+#[cfg(unix)] // asserts dist/install.sh's default; spawns `#!/bin/sh` fakes
 fn shadow_guard_uses_the_default_local_bin_destination() {
     let dir = tempfile::tempdir().unwrap();
     let home = dir.path().join("home");
@@ -272,6 +274,26 @@ fn shadow_guard_uses_the_default_local_bin_destination() {
                 "the installer default must match dist/install.sh"
             );
             assert!(post_update_shadow_warning().is_some());
+        },
+    );
+}
+
+#[test]
+#[cfg(windows)] // asserts dist/install-native.ps1's default; spawn-free
+fn shadow_guard_uses_the_windows_default_destination() {
+    let dir = tempfile::tempdir().unwrap();
+    let local = dir.path().join("AppData").join("Local");
+    with_update_env(
+        &[
+            ("GRAY_INSTALL_DIR", None),
+            ("LOCALAPPDATA", Some(local.as_path())),
+        ],
+        || {
+            assert_eq!(
+                installer_dest(),
+                Some(local.join("Programs").join("gray").join("bin")),
+                "the installer default must match dist/install-native.ps1"
+            );
         },
     );
 }
@@ -306,6 +328,7 @@ fn divergence_warning_ignores_an_older_or_equal_path_build() {
 }
 
 #[test]
+#[cfg(unix)] // spawns `#!/bin/sh` fakes; Windows cannot execute them
 fn divergence_guard_fires_when_a_newer_gray_wins_path() {
     let dir = tempfile::tempdir().unwrap();
     let stale = dir.path().join("stale");
