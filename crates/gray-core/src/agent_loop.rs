@@ -153,6 +153,9 @@ impl Agent {
         // Poll streak: rounds whose only results were "job still running"
         // progress notices (see `is_job_progress`).
         let mut poll_rounds: usize = 0;
+        // Run-scoped repeat guard: (tool, args, result-hash) -> times seen.
+        let mut repeat_results: std::collections::HashMap<String, usize> =
+            std::collections::HashMap::new();
         // Forward each event to the optional streaming sink, then collect it.
         macro_rules! emit {
             ($ev:expr) => {{
@@ -934,6 +937,50 @@ impl Agent {
                 });
             }
 
+            // Repeat guard, run-scoped: the same call returning the same
+            // result again is a loop the consecutive-signature guard cannot
+            // see — the DeepSWE campaign's worst case re-ran one test command
+            // 16x, interleaved with other calls, so no two rounds ever
+            // matched. Result-sensitive (a poll whose output keeps changing is
+            // progress), skips job-status results (elapsed always moves), and
+            // leaves consecutive streaks to the signature guard above.
+            const REPEAT_SAME_RESULT_TOTAL: usize = 4;
+            let mut repeat_nudge: Option<String> = None;
+            for (id, name, args) in &tool_uses {
+                if repeat > 1 {
+                    continue;
+                }
+                let Some(content) = self.messages[round_start..]
+                    .iter()
+                    .flat_map(|m| m.content.iter())
+                    .find_map(|b| match b {
+                        ContentBlock::ToolResult {
+                            id: rid, content, ..
+                        } if rid == id => Some(content),
+                        _ => None,
+                    })
+                else {
+                    continue;
+                };
+                if is_job_progress(content) {
+                    continue;
+                }
+                use std::hash::{Hash, Hasher};
+                let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                content.hash(&mut hasher);
+                let key = format!("{name}:{args}:{}", hasher.finish());
+                let seen = repeat_results.entry(key).or_insert(0);
+                *seen += 1;
+                if *seen == REPEAT_SAME_RESULT_TOTAL {
+                    log::warn!(target: "gray_agent", "identical call+result seen {REPEAT_SAME_RESULT_TOTAL}x: nudging");
+                    repeat_nudge = Some(format!(
+                        "[gray repeat guard: `{name}` with identical arguments and identical output has now run {REPEAT_SAME_RESULT_TOTAL} times (not necessarily in a row). \
+                         If you keep re-running the same thing hoping for a different result, change approach; \
+                         if the repetition is deliberate, say why, then continue.]"
+                    ));
+                }
+            }
+
             // A round whose every result is a "job still running" notice is a
             // deliberate poll, not a stall: gray answers a repeated command
             // with the live status of the job it already started, so the
@@ -973,6 +1020,10 @@ impl Agent {
                      Are you in a loop? If you are, change approach now; if the repetition is deliberate \
                      (for example polling something that keeps changing), say why, then continue.]"
                 )));
+            }
+
+            if let Some(nudge) = repeat_nudge {
+                self.messages.push(Message::user(nudge));
             }
 
             if stall_rounds == STALL_NUDGE_ROUNDS {

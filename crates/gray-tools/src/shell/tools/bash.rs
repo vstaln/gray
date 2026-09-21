@@ -465,9 +465,30 @@ fn missing_command_hint(text: &str) -> Option<String> {
                 || low.contains(": command not found"))
     })?;
     let name = not_found_subject(line).unwrap_or_else(|| "that command".to_string());
+    let equivalent = equivalent_for(&name).unwrap_or("`grep`, `sed`, `awk`, `python3`");
     Some(format!(
-        "`{name}` is not installed here · use an equivalent you already have (`grep`, `sed`, `awk`, `python3`) or confirm with `command -v {name}`"
+        "`{name}` is not installed here · use {equivalent} or confirm with `command -v {name}`"
     ))
+}
+
+/// Honest per-binary substitutes, from the DeepSWE campaign's not-found
+/// telemetry (84 `rg`, 30 `xxd`, 9 `file`, 4 `time` misses). Only list a
+/// replacement that exists on a bare POSIX image; everything else keeps the
+/// generic list. New binaries are one line each.
+const EQUIVALENTS: &[(&str, &str)] = &[
+    ("rg", "`grep -r` / `grep -rn`"),
+    ("xxd", "`od -c` (bytes) or `od -An -tx1` (hex)"),
+    ("hexdump", "`od -c` / `od -An -tx1`"),
+    ("jq", "`python3 -m json.tool` or `python3 -c`"),
+    ("realpath", "`readlink -f`"),
+    ("time", "`date +%s.%N` before/after the command"),
+];
+
+fn equivalent_for(name: &str) -> Option<&'static str> {
+    EQUIVALENTS
+        .iter()
+        .find(|(bin, _)| *bin == name)
+        .map(|(_, equivalent)| *equivalent)
 }
 
 /// Pulls the tool name out of the shell's not-found wording:
