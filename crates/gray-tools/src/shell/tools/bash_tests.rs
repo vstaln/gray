@@ -40,14 +40,22 @@ fn shell_dir_respects_gray_home() {
     assert_eq!(d.file_name().and_then(|s| s.to_str()), Some("shell"));
 }
 
-/// A path quoted for a shell command. Windows paths carry backslashes, which
-/// are escapes in the Git Bash that spawns these commands — the same reason
-/// `bash.rs` rewrites the log path to forward slashes before printing a
-/// "Read more" command.
-fn shell_path(path: &std::path::Path) -> String {
-    path.to_string_lossy()
-        .replace('\\', "/")
-        .replace('\'', "'\\''")
+/// Run `pwd` and return the raw output, for the cwd tests.
+async fn tool_pwd(tool: &BashTool, ctx: &ToolContext) -> gray_core::agent::ToolOutput {
+    tool.execute(ctx, json!({"command": "pwd"})).await
+}
+
+/// The command's own output, out of the fenced block the tool wraps it in.
+fn body(content: &str) -> String {
+    content
+        .lines()
+        .skip_while(|l| !l.contains("<untrusted-output>"))
+        .skip(1)
+        .take_while(|l| !l.contains("</untrusted-output>"))
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim()
+        .to_owned()
 }
 
 #[tokio::test]
@@ -399,20 +407,29 @@ async fn cat_image_keeps_full_resolution() {
 
 #[tokio::test]
 async fn a_cd_carries_into_the_next_command_in_the_same_session() {
+    // A subdirectory of the session's own cwd, not an absolute path: Git Bash
+    // speaks MSYS paths, so handing it a Windows `C:/...` path is exactly the
+    // trap the windows-runtime job exists to catch. The behaviour under test
+    // is the same either way.
     let dir = tempfile::tempdir().expect("tempdir");
-    let target = shell_path(dir.path());
+    let mut ctx = ctx_for(&sess("cd"));
+    ctx.cwd = dir.path().to_path_buf();
+
+    let before = body(&tool_pwd(&BashTool::default(), &ctx).await.content);
     let tool = BashTool::default();
-    let ctx = ctx_for(&sess("cd"));
     let r = tool
-        .execute(&ctx, json!({"command": format!("cd '{target}'")}))
+        .execute(&ctx, json!({"command": "mkdir -p sub && cd sub"}))
         .await;
     assert!(!r.is_error, "{}", r.content);
-    let after = tool.execute(&ctx, json!({"command": "pwd"})).await;
-    assert!(!after.is_error, "{}", after.content);
+    let after = body(&tool_pwd(&tool, &ctx).await.content);
+
+    assert_ne!(
+        before, after,
+        "the cd did not carry into the next command: {before} -> {after}"
+    );
     assert!(
-        after.content.contains(&target),
-        "second command must start in the first one's directory: {}",
-        after.content
+        after.ends_with("/sub") || after.ends_with("\\sub"),
+        "expected the subdirectory, got {after}"
     );
 }
 
@@ -441,36 +458,49 @@ async fn the_cwd_report_never_leaks_into_the_output() {
 #[tokio::test]
 async fn a_deleted_directory_falls_back_to_the_context_cwd() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let target = shell_path(dir.path());
+    let mut ctx = ctx_for(&sess("gone"));
+    ctx.cwd = dir.path().to_path_buf();
     let tool = BashTool::default();
-    let ctx = ctx_for(&sess("gone"));
-    tool.execute(&ctx, json!({"command": format!("cd '{target}'")}))
+    let r = tool
+        .execute(&ctx, json!({"command": "mkdir -p sub && cd sub"}))
         .await;
+    assert!(!r.is_error, "{}", r.content);
     drop(dir); // the directory vanishes under the recorded cwd
-    let r = tool.execute(&ctx, json!({"command": "pwd"})).await;
+
+    // The session must still run, from whatever the caller now hands over.
+    let mut fresh = ctx.clone();
+    fresh.cwd = std::env::temp_dir();
+    let out = tool_pwd(&tool, &fresh).await;
     assert!(
-        !r.is_error,
+        !out.is_error,
         "a vanished cwd must not wedge the session: {}",
-        r.content
+        out.content
     );
 }
 
 #[tokio::test]
 async fn two_sessions_do_not_share_a_working_directory() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let target = shell_path(dir.path());
+    let mut a = ctx_for(&sess("iso-a"));
+    a.cwd = dir.path().to_path_buf();
+    let mut b = ctx_for(&sess("iso-b"));
+    b.cwd = dir.path().to_path_buf();
     let tool = BashTool::default();
-    let a = ctx_for(&sess("iso-a"));
-    let b = ctx_for(&sess("iso-b"));
-    tool.execute(&a, json!({"command": format!("cd '{target}'")}))
+
+    let r = tool
+        .execute(&a, json!({"command": "mkdir -p sub && cd sub"}))
         .await;
-    let ra = tool.execute(&a, json!({"command": "pwd"})).await;
-    let rb = tool.execute(&b, json!({"command": "pwd"})).await;
-    assert!(ra.content.contains(&target), "{}", ra.content);
+    assert!(!r.is_error, "{}", r.content);
+    let ra = body(&tool_pwd(&tool, &a).await.content);
+    let rb = body(&tool_pwd(&tool, &b).await.content);
+
     assert!(
-        !rb.content.contains(&target),
-        "session b must not inherit session a's directory: {}",
-        rb.content
+        ra.ends_with("/sub") || ra.ends_with("\\sub"),
+        "session a should have moved: {ra}"
+    );
+    assert_ne!(
+        ra, rb,
+        "session b must not inherit session a's directory: {rb}"
     );
 }
 
