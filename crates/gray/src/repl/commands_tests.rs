@@ -119,7 +119,9 @@ fn registry_resolve_canonical_and_aliases() {
         ("key", "connect"),
         ("providers", "connect"),
         ("provider", "connect"),
-        ("login", "connect"),
+        ("login", "login"),
+        ("whoami", "whoami"),
+        ("logout", "logout"),
         ("effort", "thinking"),
         ("reasoning", "thinking"),
         ("compress", "compact"),
@@ -148,7 +150,9 @@ fn registry_completion_covers_aliases() {
         ("key", "connect"),
         ("providers", "connect"),
         ("provider", "connect"),
-        ("login", "connect"),
+        ("login", "login"),
+        ("whoami", "whoami"),
+        ("logout", "logout"),
         ("effort", "thinking"),
         ("reasoning", "thinking"),
         ("compress", "compact"),
@@ -197,13 +201,16 @@ fn registry_parse_uses_canonical() {
         ReplCommand::Unknown(_)
     ));
     assert!(matches!(parse_command("/exit"), ReplCommand::Quit));
-    // gateway left the TUI: /gateway and /gw are unknown (the deleted
-    // native gateway no longer provides any chat surface).
-    assert!(matches!(parse_command("/gw"), ReplCommand::Unknown(_)));
+    // /gateway is the connections panel again; /gw is its alias and both take
+    // the master-switch word as an argument.
+    assert!(matches!(parse_command("/gw"), ReplCommand::Gateway(None)));
     assert!(matches!(
         parse_command("/gateway status"),
-        ReplCommand::Unknown(_)
+        ReplCommand::Gateway(Some(arg)) if arg == "status"
     ));
+    assert!(
+        matches!(parse_command("/GATEWAY off"), ReplCommand::Gateway(Some(arg)) if arg == "off")
+    );
     assert!(matches!(parse_command("/keys foo"), ReplCommand::Provider));
     assert!(matches!(
         parse_command("/connect foo"),
@@ -216,8 +223,11 @@ fn registry_parse_uses_canonical() {
     ));
     assert!(matches!(
         parse_command("/login openrouter"),
-        ReplCommand::Provider
+        ReplCommand::Login(Some(code)) if code == "openrouter"
     ));
+    assert!(matches!(parse_command("/login"), ReplCommand::Login(None)));
+    assert!(matches!(parse_command("/whoami"), ReplCommand::Whoami));
+    assert!(matches!(parse_command("/logout"), ReplCommand::Logout));
     assert!(matches!(
         parse_command("/skills foo"),
         ReplCommand::Skill(Some(_))

@@ -518,6 +518,7 @@ impl ReadTool {
         // T0.2 meter: no-op unless GRAY_TOOL_STATS=1, so zero behavior change.
         crate::stats::ToolStats {
             tool: "read",
+            class: crate::stats::CLASS_RETRIEVAL,
             path,
             bytes: output.len() as u64,
             lines: output.lines().count() as u64,

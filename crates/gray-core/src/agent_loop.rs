@@ -21,6 +21,13 @@ const MAX_EMPTY_RETRIES: u8 = 2;
 /// Truncated-turn (`MaxTokens`) continuations before keeping the partial.
 const MAX_CONTINUATIONS: u8 = 2;
 
+/// Replaces a contaminated salvaged partial in outbound requests (never in
+/// the persisted transcript — the transcript keeps the full text the user
+/// saw). Tells the model the failure happened without handing it the broken
+/// trajectory to anchor on (arXiv:2605.08563).
+pub(crate) const CONTAMINATED_SCRUB_MARKER: &str =
+    "(previous attempt was cut off by a stream error; partial output omitted — start fresh)";
+
 /// True when a message carries no billable input: empty content, or nothing
 /// but blank `Text` blocks. Any non-text block (image, tool use/result,
 /// thinking) counts as input — never silently dropped.
@@ -142,6 +149,9 @@ impl Agent {
         ctx: ToolContext,
         mut sink: Option<&mut dyn FnMut(&AgentEvent)>,
     ) -> Result<Vec<AgentEvent>, CoreError> {
+        // The session id rides the per-run context; compaction cites it in
+        // elided-output stubs.
+        self.session_id = ctx.session_id.clone();
         log::info!(target: "gray_agent", "agent run start ({} messages)", self.messages.len());
         let mut events = Vec::new();
         // Stall guard: 3 identical consecutive tool calls → LoopDetected.
@@ -228,8 +238,17 @@ impl Agent {
                 // history, so re-check without looping forever. Errors finalize
                 // the turn first: no silent exit without turn_end.
                 while needs_pre_turn_compact(self.estimate_tokens(), self.context_window) {
+                    let before = (self.estimate_tokens(), self.messages.len());
                     match self.try_compact_budgeted().await {
-                        Ok(true) => continue,
+                        Ok(true) => {
+                            emit!(AgentEvent::compacted(
+                                before.0,
+                                self.estimate_tokens(),
+                                before.1,
+                                self.messages.len()
+                            ));
+                            continue;
+                        }
                         Ok(false) => break,
                         Err(e) => {
                             self.emit_turn_end(&billed).await;
@@ -239,6 +258,17 @@ impl Agent {
                 }
             }
             let mut request_messages = self.messages.clone();
+            // CCRM scrub (arXiv:2605.08563): contaminated partials stay in
+            // `self.messages` (and so in the persisted transcript) but never
+            // ride an outbound request — the retry starts from a clean
+            // context with a one-line marker where the failure was. The
+            // marker keeps the assistant role so call/result pairing and
+            // role alternation are untouched.
+            for &idx in &self.contaminated {
+                if let Some(m) = request_messages.get_mut(idx) {
+                    *m = Message::assistant(CONTAMINATED_SCRUB_MARKER);
+                }
+            }
             if request_messages
                 .last()
                 .is_some_and(|message| message.role == Role::Assistant)
@@ -426,13 +456,26 @@ impl Agent {
                                     &pending_reasoning,
                                     self.provider.model_id(),
                                 );
+                                // CCRM (arXiv:2605.08563): the salvaged
+                                // partial is a failed attempt; flag it so the
+                                // next request scrubs it (see request build).
+                                // A successful compaction below clears the
+                                // flag via the history rewrite.
+                                self.contaminated.insert(self.messages.len() - 1);
                             }
                             // Context overflow: compact via the budgeted
                             // compaction pipeline, then retry the turn;
                             // otherwise surface the error.
                             if e.should_compress() {
+                                let before = (self.estimate_tokens(), self.messages.len());
                                 match self.try_compact_budgeted().await {
                                     Ok(true) => {
+                                        emit!(AgentEvent::compacted(
+                                            before.0,
+                                            self.estimate_tokens(),
+                                            before.1,
+                                            self.messages.len()
+                                        ));
                                         continue 'turn;
                                     }
                                     _ => {

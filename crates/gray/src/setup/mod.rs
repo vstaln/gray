@@ -82,6 +82,9 @@ mod connect_models;
 
 pub use connect::{ConnectOutcome, run_connect_modal};
 pub use effort::run_effort_modal;
+pub(crate) use install_manager::{
+    ManagerItem, ManagerSpec, format_plugin_row_parts, run_install_manager,
+};
 pub use install_manager::{run_plugins_modal, run_skills_modal};
 pub(crate) use model_modal::{provider_models_for, run_model_modal, validate_direct_model_id};
 
@@ -121,6 +124,12 @@ pub async fn run_onboarding(config: &mut Config) -> anyhow::Result<bool> {
     print_wrapped("\x1b[2mWelcome to gray by alignment\x1b[0m", 2);
     print_wrapped(
         "\x1b[2mgray is a minimal agent that runs tools, edits code, and works with any model provider.\x1b[0m",
+        2,
+    );
+    // Honest by default: an account exists (`/login`), but nothing in gray
+    // is gated on it, so say that instead of implying one is required.
+    print_wrapped(
+        "\x1b[2mNo account needed. `/login` connects this machine to gray.alignment.id if you want one — optional, and it unlocks nothing yet.\x1b[0m",
         2,
     );
     print!("\r\n");

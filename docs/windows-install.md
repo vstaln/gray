@@ -1,6 +1,9 @@
 # Native Windows installation preparation
 
-Status: proposed specification, not an announcement of Windows support.
+Status: delivered. The port, its CI gates, and the native installer all landed;
+the PowerShell default was flipped from WSL to native on 2026-09-21, which closes
+the open item this spec recorded. Remaining scope limits are documented in
+`windows-preview.md` rather than here.
 
 ## Goal and scope
 
@@ -28,7 +31,7 @@ represent work.
 
 | Area | Verified behavior (2026-09-21) | Status |
 | --- | --- | --- |
-| Installation | `dist/install.ps1` still defaults to the **WSL** parameter set: with no arguments it checks for `wsl.exe`, may install Ubuntu, and pipes `install.sh` into the distro. `dist/install-native.ps1` is the native installer — no elevation, a 10 s bounded version probe, staged replace with backup, and it rejects any archive entry that is not exactly one of `gray.exe`/`LICENSE`/`THIRD_PARTY_NOTICES.md` at the root. | The WSL default is a deliberate product decision, not a stub. **Open:** the bare `iwr ... | iex` form the site advertises still lands a user in WSL. |
+| Installation | `dist/install.ps1` defaults to the **native** parameter set: with no arguments it installs `gray.exe` locally and never touches `wsl.exe`. `-Wsl` is the explicit compatibility route that pipes `install.sh` into a distro. `dist/install-native.ps1` is the native installer — no elevation, a 10 s bounded version probe, staged replace with backup, and it rejects any archive entry that is not exactly one of `gray.exe`/`LICENSE`/`THIRD_PARTY_NOTICES.md` at the root. | The old WSL default was a deliberate holding decision while the gates were unproven; with the native route now default, that item is closed. |
 | CI | `ci.yml`'s `windows-runtime` job is a **required** check on windows-2025: full workspace test suite, cross-platform shell lifecycle regression, native shell contract, profile resolution without `HOME`, and the native installer under **both PowerShell 7 and Windows PowerShell 5.1**. No `continue-on-error`. | Closed |
 | Release | `release.yml` gained a `windows-release` job: builds `x86_64-pc-windows-msvc`, smoke-tests `gray.exe --version`, packages `gray-<channel>-x86_64-windows.zip` with a lowercase `sha256sum`-compatible checksum, stages on the CDN, and is HTTP-verified in `finalize`; `publish` attaches the zip to the GitHub release. | Closed by this branch |
 | Shell | `shell/windows.rs` (`shell_path()`) resolves Git Bash via `GRAY_BASH`, else `ProgramW6432`/`ProgramFiles`/`ProgramFiles(x86)`/`LOCALAPPDATA`/`PATH` candidates. `spawn.rs` calls `super::windows::spawn_owned`, which assigns the child to a **Job Object**. | Closed |

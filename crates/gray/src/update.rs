@@ -11,19 +11,71 @@ fn base_url() -> String {
 }
 pub const CHANNEL: &str = env!("GRAY_CHANNEL");
 
-fn parse_version(v: &str) -> Option<(u64, u64, u64)> {
-    let mut it = v.trim().split(['-', '+']).next()?.split('.');
+/// Numeric triple plus prerelease identifiers, build metadata dropped.
+fn parse_version(v: &str) -> Option<(u64, u64, u64, Option<String>)> {
+    let v = v.trim();
+    let (core, pre) = match v.split_once('-') {
+        Some((core, pre)) => (core, Some(pre.split('+').next()?.to_string())),
+        None => (v.split('+').next()?, None),
+    };
+    let mut it = core.split('.');
     Some((
         it.next()?.parse().ok()?,
         it.next()?.parse().ok()?,
         it.next()?.parse().ok()?,
+        pre.filter(|p| !p.is_empty()),
     ))
 }
 
 fn is_newer(latest: &str, current: &str) -> bool {
     match (parse_version(latest), parse_version(current)) {
-        (Some(l), Some(c)) => l > c || (l == c && current.contains('-') && !latest.contains('-')),
+        (Some(l), Some(c)) => version_cmp(&l, &c) == std::cmp::Ordering::Greater,
         _ => false,
+    }
+}
+
+/// Full SemVer precedence (§ 11): a prerelease sorts below its release;
+/// identifiers compare numerically when both numeric, else lexically, with
+/// numeric below alphanumeric and fewer fields below more.
+fn version_cmp(
+    a: &(u64, u64, u64, Option<String>),
+    b: &(u64, u64, u64, Option<String>),
+) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    let core = (a.0, a.1, a.2).cmp(&(b.0, b.1, b.2));
+    if core != Ordering::Equal {
+        return core;
+    }
+    match (&a.3, &b.3) {
+        (None, None) => Ordering::Equal,
+        (None, Some(_)) => Ordering::Greater,
+        (Some(_), None) => Ordering::Less,
+        (Some(x), Some(y)) => cmp_prerelease(x, y),
+    }
+}
+
+fn cmp_prerelease(a: &str, b: &str) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    let mut ai = a.split('.');
+    let mut bi = b.split('.');
+    loop {
+        match (ai.next(), bi.next()) {
+            (None, None) => return Ordering::Equal,
+            (None, Some(_)) => return Ordering::Less,
+            (Some(_), None) => return Ordering::Greater,
+            (Some(x), Some(y)) => match (x.parse::<u64>(), y.parse::<u64>()) {
+                (Ok(nx), Ok(ny)) => match nx.cmp(&ny) {
+                    Ordering::Equal => continue,
+                    other => return other,
+                },
+                (Ok(_), Err(_)) => return Ordering::Less,
+                (Err(_), Ok(_)) => return Ordering::Greater,
+                (Err(_), Err(_)) => match x.cmp(y) {
+                    Ordering::Equal => continue,
+                    other => return other,
+                },
+            },
+        }
     }
 }
 
@@ -196,6 +248,187 @@ fn run_installer_locked() -> anyhow::Result<()> {
     run_installer()
 }
 
+/// Where the installer writes: `$GRAY_INSTALL_DIR`, else the per-OS default —
+/// `/usr/local/bin` as root and `~/.local/bin` otherwise on Unix (what
+/// `dist/install.sh` does), `%LOCALAPPDATA%\Programs\gray\bin` on Windows
+/// (what `dist/install-native.ps1` does).
+fn installer_dest() -> Option<PathBuf> {
+    if let Some(dir) = std::env::var_os("GRAY_INSTALL_DIR").filter(|s| !s.is_empty()) {
+        return Some(PathBuf::from(dir));
+    }
+    #[cfg(unix)]
+    if let Some(dest) = unix_installer_dest() {
+        return Some(dest);
+    }
+    #[cfg(windows)]
+    if let Some(dest) = windows_installer_dest() {
+        return Some(dest);
+    }
+    None
+}
+
+#[cfg(unix)]
+fn unix_installer_dest() -> Option<PathBuf> {
+    // Root first: a root shell with no HOME still installs to /usr/local/bin,
+    // and the shadow guard must not lose the destination over it.
+    // SAFETY: geteuid takes no arguments and cannot fail.
+    if unsafe { libc::geteuid() } == 0 {
+        return Some(PathBuf::from("/usr/local/bin"));
+    }
+    let home = std::env::var_os("HOME").filter(|s| !s.is_empty())?;
+    Some(PathBuf::from(home).join(".local").join("bin"))
+}
+
+#[cfg(windows)]
+fn windows_installer_dest() -> Option<PathBuf> {
+    let local = std::env::var_os("LOCALAPPDATA").filter(|s| !s.is_empty())?;
+    Some(
+        PathBuf::from(local)
+            .join("Programs")
+            .join("gray")
+            .join("bin"),
+    )
+}
+
+/// `gray --version` of the binary at `path` ("gray 0.1.1" -> "0.1.1"). Only
+/// ever called on the installer's own destination: a PATH-resolved candidate
+/// is untrusted search-path output and is never executed (CWE-426).
+fn binary_version(path: &Path) -> Option<String> {
+    let out = Command::new(path).arg("--version").output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&out.stdout)
+        .split_whitespace()
+        .nth(1)
+        .map(str::to_string)
+}
+
+/// Launcher names a shell may resolve in a PATH entry: Windows runs
+/// `gray.exe`, Unix `gray`.
+fn gray_names() -> &'static [&'static str] {
+    #[cfg(windows)]
+    {
+        &["gray.exe", "gray"]
+    }
+    #[cfg(not(windows))]
+    {
+        &["gray"]
+    }
+}
+
+/// First `gray` among `entries`, in PATH order, the way a shell resolves it.
+fn first_gray_in(entries: &[PathBuf]) -> Option<PathBuf> {
+    entries.iter().find_map(|d| {
+        gray_names()
+            .iter()
+            .map(|name| d.join(name))
+            .find(|c| is_launcher(c))
+    })
+}
+
+/// A launcher the shell would actually run. On Unix that means the executable
+/// bit: a plain data file named `gray` cannot shadow anything, so it must not
+/// raise a warning either. On Windows the name list carries the check
+/// (`gray.exe`, then `gray`).
+fn is_launcher(path: &Path) -> bool {
+    if !path.is_file() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::metadata(path).is_ok_and(|m| m.permissions().mode() & 0o111 != 0)
+    }
+    #[cfg(not(unix))]
+    {
+        true
+    }
+}
+
+/// The `gray` the next shell will actually launch.
+fn first_gray_on_path() -> Option<PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    let entries: Vec<PathBuf> = std::env::split_paths(&path).collect();
+    first_gray_in(&entries)
+}
+
+/// Same binary under two paths (`~/.local/bin` is often a symlink farm).
+fn same_binary(a: &Path, b: &Path) -> bool {
+    if a == b {
+        return true;
+    }
+    match (a.canonicalize(), b.canonicalize()) {
+        (Ok(x), Ok(y)) => x == y,
+        _ => false,
+    }
+}
+
+/// Decision half of the post-update guard: `installed` is the build the
+/// installer just wrote, `resolved` the one a new shell launches instead.
+fn shadow_warning(installed: &Path, installed_version: &str, resolved: &Path) -> Option<String> {
+    if same_binary(resolved, installed) {
+        return None;
+    }
+    Some(format!(
+        "⚠ {} comes first on PATH and shadows the updated {} (gray {installed_version}) — new shells keep launching the old build\n  fix:  rm {}   (then open a new shell)",
+        resolved.display(),
+        installed.display(),
+        resolved.display(),
+    ))
+}
+
+/// Post-update guard. The installer writes one path; the shell may resolve
+/// another. A stale copy earlier on PATH (an old `cargo install --path`, say)
+/// keeps launching the previous build, so "updated" would be a lie and the
+/// banner would never move.
+fn post_update_shadow_warning() -> Option<String> {
+    let installed = installer_dest()?.join("gray");
+    // The installed build is the one the installer just wrote, so asking it
+    // for its version is the same trust the update itself already carries.
+    let installed_version = binary_version(&installed)?;
+    let resolved = first_gray_on_path()?;
+    shadow_warning(&installed, &installed_version, &resolved)
+}
+
+/// Report a shadowed install: the update landed, but the next launch would not
+/// pick it up.
+fn warn_on_shadow() {
+    if let Some(w) = post_update_shadow_warning() {
+        eprintln!("{w}");
+    }
+}
+
+/// Decision half of the startup guard: `current` is this process's binary,
+/// `resolved` the one a new shell launches instead.
+fn divergence_warning(current: &Path, running: &str, resolved: &Path) -> Option<String> {
+    if same_binary(resolved, current) {
+        return None;
+    }
+    Some(format!(
+        "⚠ {} comes first on PATH and is not this build (gray {running}, {}) — a new shell may launch a different gray\n  relaunch `gray` to run it",
+        resolved.display(),
+        current.display(),
+    ))
+}
+
+/// Startup guard for the same hazard without an update in the picture: this
+/// process runs one build while PATH resolves a newer one, so every new shell
+/// silently lands on a different gray than the one already open.
+fn path_divergence_warning() -> Option<String> {
+    let current = std::env::current_exe().ok()?;
+    let resolved = first_gray_on_path()?;
+    divergence_warning(&current, env!("CARGO_PKG_VERSION"), &resolved)
+}
+
+/// Report a PATH/build divergence. Cadence-free: callers gate it behind the
+/// daily update check.
+fn warn_on_divergence() {
+    if let Some(w) = path_divergence_warning() {
+        eprintln!("{w}");
+    }
+}
+
 /// Manual `gray update`: run the installer unconditionally, then exit hint.
 pub async fn update_now() -> anyhow::Result<()> {
     // Windows locks its running executable. Never launch the Unix installer
@@ -207,6 +440,7 @@ pub async fn update_now() -> anyhow::Result<()> {
     println!("→ updating gray ({CHANNEL})...");
     run_installer_locked()?;
     println!("✓ updated. restart gray to use the new version.");
+    warn_on_shadow();
     Ok(())
 }
 
@@ -275,6 +509,9 @@ pub async fn startup_check() {
         return;
     }
     write_last_check(now);
+    // No update needed for this to matter: a stale copy first on PATH keeps
+    // every new shell on the previous build, and nothing else would say so.
+    warn_on_divergence();
     let Ok(Ok(latest)) =
         tokio::time::timeout(std::time::Duration::from_millis(1500), latest_version()).await
     else {
@@ -305,6 +542,12 @@ pub async fn startup_check() {
                 crate::profile::queue_profile_warning(format!(
                     "gray {latest} installed in the background — restart to apply"
                 ));
+                // Same hazard as a manual update, and this path is the one that
+                // never asked: a stale copy earlier on PATH keeps every new
+                // shell on the previous build.
+                if let Some(w) = post_update_shadow_warning() {
+                    crate::profile::queue_profile_warning(w);
+                }
             }
         });
         return;
@@ -316,6 +559,7 @@ pub async fn startup_check() {
         match run_installer_locked() {
             Ok(()) => {
                 println!("✓ updated. restart gray to use {latest}.");
+                warn_on_shadow();
                 std::process::exit(0);
             }
             Err(e) => eprintln!("update failed: {e}"),

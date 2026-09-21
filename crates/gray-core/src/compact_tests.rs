@@ -62,40 +62,111 @@ async fn budgeted_compact_keeps_recent_tail() {
     let ok = agent.try_compact_budgeted().await.unwrap();
     assert!(ok);
     let msgs = agent.messages();
-    assert_eq!(msgs.len(), 3, "summary + 2 retained, got {}", msgs.len());
-    assert!(
-        msgs[0].text_content().contains("FIXED-SUMMARY-123"),
-        "summary carries the provider summary, FIRST"
+    // arXiv:2512.22087 stable anchor: [anchor, summary, retained...].
+    // The anchor is charged against the retained budget (200 ≈ 2 messages
+    // here), so it displaces the oldest retained message rather than
+    // inflating the request: anchor + summary + newest message.
+    assert_eq!(
+        msgs.len(),
+        3,
+        "anchor + summary + 1 retained, got {}",
+        msgs.len()
     );
     assert!(
-        msgs[1].text_content().contains("msg5"),
-        "retained order: {}",
-        msgs[1].text_content().chars().take(20).collect::<String>()
+        msgs[0].text_content().contains("msg1"),
+        "original user intent is pinned FIRST: {}",
+        msgs[0].text_content().chars().take(20).collect::<String>()
+    );
+    assert!(
+        msgs[1].text_content().contains("FIXED-SUMMARY-123"),
+        "summary carries the provider summary, second"
     );
     assert!(
         msgs[2].text_content().contains("msg6"),
-        "newest closes history"
+        "newest closes history: {}",
+        msgs[2].text_content().chars().take(20).collect::<String>()
     );
+}
+
+#[tokio::test]
+async fn recompaction_repins_the_same_anchor() {
+    // The anchor is recovered from the transcript (summary envelope at
+    // index 1), so a second compaction re-pins the SAME original intent
+    // instead of pinning the previous summary.
+    let mut agent = test_agent("SUM").with_context_window(Some(16_200));
+    let bodies: Vec<String> = (1..=8).map(|i| format!("msg{i}")).collect();
+    agent.set_messages(bodies.iter().map(|t| sized_msg(t)).collect());
+    assert!(agent.try_compact_budgeted().await.unwrap());
+    let first_anchor = agent.messages()[0].text_content();
+    assert!(
+        first_anchor.contains("msg1"),
+        "anchor is the intent, not the summary"
+    );
+    // Grow past the budget again and compact a second time.
+    let mut grown = agent.messages().to_vec();
+    for i in 0..8 {
+        grown.push(sized_msg(&format!("later{i}")));
+    }
+    agent.set_messages(grown);
+    assert!(agent.try_compact_budgeted().await.unwrap());
+    let msgs = agent.messages();
+    assert_eq!(
+        msgs[0].text_content(),
+        first_anchor,
+        "re-compaction must re-pin the same original intent"
+    );
+    assert!(
+        msgs[1].text_content().contains("SUM"),
+        "summary still follows the anchor"
+    );
+}
+
+#[tokio::test]
+async fn tiny_history_keeps_the_anchor_unduplicated() {
+    // When the retained tail already holds the first message (small
+    // histories the budget fully covers never reach here, but the guard is
+    // real), the anchor is not duplicated.
+    let mut agent = test_agent("SUM").with_context_window(Some(16_200));
+    let bodies: Vec<String> = (1..=6).map(|i| format!("msg{i}")).collect();
+    agent.set_messages(bodies.iter().map(|t| sized_msg(t)).collect());
+    assert!(agent.try_compact_budgeted().await.unwrap());
+    let anchors = agent
+        .messages()
+        .iter()
+        .filter(|m| m.text_content().starts_with("msg1:"))
+        .count();
+    assert_eq!(anchors, 1, "the intent appears exactly once");
 }
 
 #[tokio::test]
 async fn pipeline_summary_first_then_retained() {
     // 4 messages over a small window, trigger call returns "S":
-    // assembly is [summary, retained...] (pi), trigger nowhere in history.
+    // assembly is [anchor, summary, retained...] (pi + the stable anchor),
+    // trigger nowhere in history.
     let mut agent = test_agent("S").with_context_window(Some(16_200));
     let bodies: Vec<String> = (1..=4).map(|i| format!("msg{i}")).collect();
     agent.set_messages(bodies.iter().map(|t| sized_msg(t)).collect());
     let ok = agent.try_compact_budgeted().await.unwrap();
     assert!(ok);
     let msgs = agent.messages();
-    assert_eq!(msgs.len(), 3, "summary + 2 retained, got {}", msgs.len());
+    // Anchor is charged against the 200-token budget, so the retained tail
+    // shrinks to the newest message.
+    assert_eq!(
+        msgs.len(),
+        3,
+        "anchor + summary + 1 retained, got {}",
+        msgs.len()
+    );
     assert!(
-        msgs[0]
+        msgs[0].text_content().contains("msg1"),
+        "the pinned intent leads"
+    );
+    assert!(
+        msgs[1]
             .text_content()
             .contains("compacted into the following summary"),
-        "summary leads"
+        "summary follows the anchor"
     );
-    assert!(msgs[1].text_content().contains("msg3"), "retained oldest");
     assert!(
         msgs[2].text_content().contains("msg4"),
         "retained newest last"
@@ -224,5 +295,58 @@ async fn compact_blank_summary_leaves_history_byte_identical() {
         transcript_bytes(agent.messages()),
         before,
         "blank-summary compact must leave history byte-identical"
+    );
+}
+
+#[tokio::test]
+async fn anchor_leads_even_when_the_walk_circles_back() {
+    // Regression: the newest-first retained walk can circle all the way
+    // back to the oldest messages when the middle groups do not fit the
+    // budget, keeping the intent inside the tail. It must still be pinned
+    // exactly once, at the front (arXiv:2512.22087 fixed segment).
+    let mut agent = test_agent("LIVE-SUM").with_context_window(Some(24_000));
+    let big = "y".repeat(40_000); // ~10k tokens of tool output per round
+    let mut msgs = vec![Message::user("ANCHOR-TOKEN-7742: cat these files")];
+    for _ in 0..3 {
+        msgs.push(Message::new(
+            Role::Assistant,
+            vec![ContentBlock::tool_use(
+                "t1",
+                "bash",
+                serde_json::json!({"command": "cat x"}),
+            )],
+        ));
+        msgs.push(Message::new(
+            Role::User,
+            vec![ContentBlock::tool_result("t1", big.clone(), false)],
+        ));
+    }
+    msgs.push(Message::assistant("Summaries — one line each"));
+    agent.set_messages(msgs);
+    assert!(agent.try_compact_budgeted().await.unwrap());
+    let out = agent.messages();
+    assert!(
+        out[0].text_content().starts_with("ANCHOR-TOKEN-7742"),
+        "the pinned intent leads: {:?}",
+        out.iter()
+            .map(|m| m.text_content().chars().take(20).collect::<String>())
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        out[1]
+            .text_content()
+            .contains("compacted into the following summary"),
+        "summary follows the anchor"
+    );
+    assert!(
+        out.last().unwrap().text_content().contains("Summaries"),
+        "retained tail closes history"
+    );
+    assert_eq!(
+        out.iter()
+            .filter(|m| m.text_content().starts_with("ANCHOR-TOKEN-7742"))
+            .count(),
+        1,
+        "the intent is pinned exactly once"
     );
 }

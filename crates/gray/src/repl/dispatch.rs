@@ -219,9 +219,23 @@ pub(crate) async fn dispatch_command(
             // the dashboard keeps the bare and `<id>` behavior. A command
             // queued mid-turn still runs — a toggle is local, exactly like
             // the dashboard itself.
+            let tui_shared = tui.as_ref().map(|(s, _)| s);
             if let Some(on) = arg.as_deref().and_then(handlers::parse_on_off) {
                 let text = handlers::toggle_subsystem(handlers::Subsystem::Cron, on);
-                say(tui.as_ref().map(|(s, _)| s), &text);
+                say(tui_shared, &text);
+                Flow::Continue
+            } else if arg.is_none() && tui_shared.is_some() {
+                // Interactive picker: `space` pauses/resumes in place.
+                let home = crate::setup::gray_home()?;
+                let bg = tui_shared.map(|s| s.lock().expect("tui lock").snapshot());
+                let changed = with_modal_sync(tui_shared, || {
+                    super::cron::run_cron_modal(bg.as_ref(), &home)
+                });
+                match changed {
+                    Ok(true) => say(tui_shared, "cron jobs updated"),
+                    Ok(false) => {}
+                    Err(e) => say(tui_shared, &format!("cron picker failed: {e}")),
+                }
                 Flow::Continue
             } else {
                 let store = crate::cron::CronStore::open(crate::setup::gray_home()?.join("cron"))?;
@@ -237,27 +251,65 @@ pub(crate) async fn dispatch_command(
                         None => format!("unknown cron job {id:?}"),
                     },
                 };
-                say(tui.as_ref().map(|(s, _)| s), &text);
+                say(tui_shared, &text);
                 Flow::Continue
             }
         }
         ReplCommand::Memory(arg) => {
-            // Bare reports state + entry count (discoverability); a switch
-            // word flips the persisted master switch.
-            let text = match arg.as_deref().and_then(handlers::parse_on_off) {
-                Some(on) => handlers::toggle_subsystem(handlers::Subsystem::Memory, on),
-                None => {
-                    let entries = crate::setup::gray_home()
-                        .ok()
-                        .and_then(|home| crate::memory::MemoryStore::new(&home, cwd).ok())
-                        .map(|s| s.entry_count())
-                        .unwrap_or(0);
-                    format_memory_state(crate::setup::memory_auto_enabled(), entries)
+            // Bare opens the entries picker on a TTY; a switch word flips the
+            // persisted master switch; headless keeps the one-line state
+            // report (switch + entry count).
+            let tui_shared = tui.as_ref().map(|(s, _)| s);
+            if let Some(on) = arg.as_deref().and_then(handlers::parse_on_off) {
+                let text = handlers::toggle_subsystem(handlers::Subsystem::Memory, on);
+                say(tui_shared, &text);
+            } else if tui_shared.is_some() {
+                let bg = tui_shared.map(|s| s.lock().expect("tui lock").snapshot());
+                let opened = with_modal_sync(tui_shared, || {
+                    super::memory_panel::run_memory_modal(bg.as_ref(), cwd)
+                });
+                // Read-only listing: nothing to report beyond what it showed.
+                if let Err(e) = opened {
+                    say(tui_shared, &format!("memory picker failed: {e}"));
                 }
-            };
-            say(tui.as_ref().map(|(s, _)| s), &text);
+            } else {
+                let entries = crate::setup::gray_home()
+                    .ok()
+                    .and_then(|home| crate::memory::MemoryStore::new(&home, cwd).ok())
+                    .map(|s| s.entry_count())
+                    .unwrap_or(0);
+                say(
+                    tui_shared,
+                    &format_memory_state(crate::setup::memory_auto_enabled(), entries),
+                );
+            }
             Flow::Continue
         }
+
+        ReplCommand::Gateway(arg) => {
+            // A switch word flips the persisted master switch (same as
+            // `gray gateway on|off`); bare opens the connections picker.
+            let tui_shared = tui.as_ref().map(|(s, _)| s);
+            if let Some(on) = arg.as_deref().and_then(handlers::parse_on_off) {
+                let text = handlers::toggle_subsystem(handlers::Subsystem::Gateway, on);
+                say(tui_shared, &text);
+            } else if tui_shared.is_none() {
+                say(tui_shared, &super::gateway_panel::format_text());
+            } else {
+                let bg = tui_shared.map(|s| s.lock().expect("tui lock").snapshot());
+                let changed = with_modal_sync(tui_shared, || {
+                    super::gateway_panel::run_gateway_modal(bg.as_ref())
+                });
+                match changed {
+                    Ok(true) => say(tui_shared, "connections updated"),
+                    // Nothing flipped: echo the state the picker showed.
+                    Ok(false) => say(tui_shared, &super::gateway_panel::format_text()),
+                    Err(e) => say(tui_shared, &format!("connections picker failed: {e}")),
+                }
+            }
+            Flow::Continue
+        }
+
         ReplCommand::Copy => {
             handle_copy(agent, tui.as_ref().map(|(s, _)| s));
             Flow::Continue
@@ -319,6 +371,24 @@ pub(crate) async fn dispatch_command(
                         println!("provider error: {e}");
                     }
                 }
+            }
+            Flow::Continue
+        }
+        ReplCommand::Login(code) => {
+            if let Err(e) = account_cmd(tui, crate::account::run_login(code.as_deref())).await {
+                say(tui.as_ref().map(|(s, _)| s), &format!("login failed: {e}"));
+            }
+            Flow::Continue
+        }
+        ReplCommand::Whoami => {
+            if let Err(e) = account_cmd(tui, crate::account::run_whoami()).await {
+                say(tui.as_ref().map(|(s, _)| s), &format!("{e}"));
+            }
+            Flow::Continue
+        }
+        ReplCommand::Logout => {
+            if let Err(e) = account_cmd(tui, crate::account::run_logout()).await {
+                say(tui.as_ref().map(|(s, _)| s), &format!("logout failed: {e}"));
             }
             Flow::Continue
         }
@@ -390,20 +460,10 @@ pub(crate) async fn dispatch_command(
                 }
             }
             if !handled {
-                // The gateway left the TUI (native gateway deleted; chat returns as a plugin):
-                // point muscle memory at it instead of the generic unknown.
-                let first = cmd[1..].split_whitespace().next().unwrap_or("");
-                if first == "gateway" || first == "gw" {
-                    say(
-                        tui.as_ref().map(|(s, _)| s),
-                        "the TUI gateway is gone — native chat support was removed",
-                    );
-                } else {
-                    say(
-                        tui.as_ref().map(|(s, _)| s),
-                        &format!("unknown command '{cmd}' — type /help for available commands"),
-                    );
-                }
+                say(
+                    tui.as_ref().map(|(s, _)| s),
+                    &format!("unknown command '{cmd}' — type /help for available commands"),
+                );
             }
             Flow::Continue
         }
@@ -417,6 +477,28 @@ pub(crate) fn format_memory_state(on: bool, entries: usize) -> String {
         "memory {} — {entries} entries · /memory off hides them from the model (entries keep saving)",
         if on { "on" } else { "off" }
     )
+}
+
+/// Runs a gray.alignment.id account command from inside the REPL.
+///
+/// The flow prints a walkthrough and blocks on a stdin read, so raw mode has
+/// to go for the duration (otherwise the prompt never echoes) and come back
+/// after. `restore_viewport` re-anchors the inline composer, the same repair
+/// every alternate-screen modal needs. Callers run under the multi-thread
+/// runtime `main` installs, which `block_in_place` requires.
+async fn account_cmd<T>(
+    tui: &TuiOpt,
+    fut: impl std::future::Future<Output = anyhow::Result<T>>,
+) -> anyhow::Result<T> {
+    let shared = tui.as_ref().map(|(s, _)| s);
+    let was_raw = crossterm::terminal::is_raw_mode_enabled().unwrap_or(false);
+    let _ = crossterm::terminal::disable_raw_mode();
+    let out = tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(fut));
+    if was_raw {
+        let _ = crossterm::terminal::enable_raw_mode();
+    }
+    restore_viewport(shared);
+    out
 }
 
 #[cfg(test)]

@@ -333,24 +333,31 @@ async fn compact_retains_newest_and_boundary_truncates_oldest() {
         .expect("compact must succeed");
     assert!(out.is_some());
     let msgs = ag.messages();
+    // arXiv:2512.22087 stable anchor: the pinned intent leads, and its
+    // ~100 tokens come out of the keep budget (250 → ~150 retained), so
+    // the boundary group moves one message older: m3 is the truncated
+    // boundary now, not m2.
     assert_eq!(
         msgs.len(),
         4,
-        "summary + truncated m2 + m3 + m4, got {}",
+        "anchor + summary + truncated m3 + m4, got {}",
         msgs.len()
     );
     assert!(
-        msgs[0]
-            .text_content()
-            .contains("compacted into the following summary"),
-        "summary leads (pi order)"
+        msgs[0].text_content().starts_with("m1:"),
+        "pinned user intent leads"
     );
     assert!(
-        msgs[1].text_content().starts_with("m2:"),
-        "boundary group kept truncated: {}",
-        msgs[1].text_content().chars().take(20).collect::<String>()
+        msgs[1]
+            .text_content()
+            .contains("compacted into the following summary"),
+        "summary follows the anchor"
     );
-    assert!(msgs[2].text_content().contains("m3"), "retained oldest");
+    assert!(
+        msgs[2].text_content().starts_with("m3:"),
+        "boundary group kept truncated: {}",
+        msgs[2].text_content().chars().take(20).collect::<String>()
+    );
     assert!(
         msgs[3].text_content().contains("m4"),
         "retained newest closes"

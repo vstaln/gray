@@ -305,7 +305,10 @@ pub fn save_saved_config_at(path: &Path, cfg: &SavedConfig) -> anyhow::Result<()
 /// and rename. A crash can never leave a truncated live file, and a
 /// corrupt existing file is never read as empty-then-overwritten here —
 /// callers load (and refuse to clobber) before calling save.
-fn save_private_json(path: &Path, value: &serde_json::Value) -> anyhow::Result<()> {
+///
+/// `pub(crate)` so `crate::account` writes the registry token with the same
+/// guarantees instead of growing a second credential writer.
+pub(crate) fn save_private_json(path: &Path, value: &serde_json::Value) -> anyhow::Result<()> {
     use std::io::Write as _;
     let body = serde_json::to_vec_pretty(value)?;
     let parent = path

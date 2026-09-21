@@ -111,11 +111,12 @@ pub fn project_context_block(cwd: &Path) -> Option<String> {
         .and_then(|p| p.canonicalize().ok());
     let path = find_project_rules(cwd, gray_home.as_deref())?;
     let body = std::fs::read_to_string(&path).ok()?;
-    let body = body.trim();
-    if body.is_empty() {
+    let body = strip_rationale_comments(body.trim());
+    // Stripping can leave only the blank lines that separated the comments.
+    if body.trim().is_empty() {
         return None;
     }
-    let mut body = body.to_string();
+    let mut body = body;
     if body.chars().count() > PROJECT_RULES_MAX_CHARS {
         let cut = body
             .char_indices()
@@ -132,7 +133,7 @@ pub fn project_context_block(cwd: &Path) -> Option<String> {
     // stored prompt that never mentions <project_context> still learns what
     // it is and how to weigh it.
     Some(format!(
-        "<project_context source=\"{}\">\nProject rules for this working directory, served automatically each turn. Follow them; they outrank general defaults.\n\n{body}\n</project_context>",
+        "<project_context source=\"{}\">\nProject rules for this working directory, served automatically each turn. Follow them; they outrank general defaults. Lines like `# r1: ...` are maintainer rationale for a rule and are stripped before you see them; preserve them when editing this file.\n\n{body}\n</project_context>",
         path.display()
     ))
 }
@@ -157,6 +158,36 @@ fn find_project_rules(cwd: &Path, gray_home: Option<&Path>) -> Option<PathBuf> {
         dir = d.parent();
     }
     None
+}
+
+/// A maintainer's rationale line: `# r<n>: ...` — the prompt-comment syntax
+/// from arXiv 2608.11095, where a comment records *why* a rule exists (the
+/// failure that prompted it, whether it recurred, what was falsified). The
+/// executor that only has to follow the rules never sees them; the
+/// maintainer editing the file does. A markdown heading is not a comment:
+/// the marker demands `r` + digits + `:`, so `# Requirements:` survives.
+fn is_rationale_comment(line: &str) -> bool {
+    let Some(rest) = line.trim_start().strip_prefix('#') else {
+        return false;
+    };
+    let Some(rest) = rest.trim_start().strip_prefix('r') else {
+        return false;
+    };
+    let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+    !digits.is_empty() && rest[digits.len()..].trim_start().starts_with(':')
+}
+
+/// Drop rationale comments before serving. Byte-identical when the file has
+/// none, so comment-free rule files render exactly as before, and the cap
+/// then applies to rules alone — rationale never eats the budget.
+fn strip_rationale_comments(body: &str) -> String {
+    if !body.lines().any(is_rationale_comment) {
+        return body.to_string();
+    }
+    body.lines()
+        .filter(|line| !is_rationale_comment(line))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Context-only builtin plugin serving the per-turn `<project_context>`

@@ -1,6 +1,7 @@
-# Experimental native Windows installer. The public install.ps1 still uses WSL
-# until clean-machine, credential ACL, and full release acceptance checks pass.
-# Download and inspect this script; no elevation or execution-policy changes.
+# Native Windows installer, and the default route of install.ps1. No WSL, no
+# Linux distro, no elevation, no execution-policy change. Pass -Wsl to
+# install.ps1 for the compatibility route that installs the Linux build in WSL.
+# Download and inspect this script before running it.
 [CmdletBinding()]
 param(
     [ValidateSet('stable', 'beta')][string]$Channel = 'beta',
@@ -54,8 +55,8 @@ function Install-NativeGray {
     if ($env:OS -ne 'Windows_NT') { throw 'Native installer requires Windows' }
     $arch = $env:PROCESSOR_ARCHITEW6432
     if (-not $arch) { $arch = $env:PROCESSOR_ARCHITECTURE }
-    if ($arch -ne 'AMD64') { throw "Unsupported native architecture: $arch (x64 required; use WSL)" }
-    if ([Environment]::OSVersion.Version.Build -lt 22000) { throw 'Native preview requires Windows 11 or newer' }
+    if ($arch -ne 'AMD64') { throw "Unsupported native architecture: $arch (x64 required)" }
+    if ([Environment]::OSVersion.Version.Build -lt 22000) { throw 'Native install requires Windows 11 or newer' }
     if (-not $InstallDir) {
         if (-not $env:LOCALAPPDATA) { throw 'LOCALAPPDATA is missing; specify -InstallDir' }
         $InstallDir = Join-Path $env:LOCALAPPDATA 'Programs\gray\bin'
@@ -147,8 +148,8 @@ function Install-NativeGray {
                 Write-Host 'Open a new terminal for the user PATH change.'
             } catch { Write-Warning "Binary installed, but user PATH was not updated. Run: $binary" }
         }
-        Write-Host "Installed $version (experimental native $Channel): $binary"
-        Write-Host 'Shell commands require Git for Windows. Native release acceptance is still pending.'
+        Write-Host "Installed $version (native $Channel): $binary"
+        Write-Host 'Shell commands require Git for Windows (Git Bash). Gray does not install it or WSL.'
         Write-Host 'Uninstall: close Gray, remove this install folder and its user PATH entry; keep your .gray data.'
     } finally {
         if ($stage -and [IO.File]::Exists($stage)) { [IO.File]::Delete($stage) }

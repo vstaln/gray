@@ -49,6 +49,8 @@ fn manager_specs_differ_only_where_expected() {
     assert_eq!(skills.empty_hint, "no skills discovered");
     assert_eq!(skills.error_verb, "remove failed");
     assert!(!skills.supports_toggle);
+    assert!(skills.supports_remove);
+    assert!(skills.errors_tab);
     assert!(!skills.keep_stale_on_relist_error);
 
     let plugins = &super::PLUGINS_SPEC;
@@ -59,6 +61,8 @@ fn manager_specs_differ_only_where_expected() {
     );
     assert_eq!(plugins.error_verb, "toggle failed");
     assert!(plugins.supports_toggle);
+    assert!(plugins.supports_remove);
+    assert!(plugins.errors_tab);
     assert!(plugins.keep_stale_on_relist_error);
 }
 

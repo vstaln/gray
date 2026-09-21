@@ -1,5 +1,93 @@
 # Changelog
 
+## [Unreleased]
+
+## [0.1.2] - 2026-09-22
+
+### Added
+
+- `/gateway` (alias `/gw`) opens a connections panel: one toggleable row per
+  installed app (the merged plugin registry, so a transport appears the day it
+  is installed), a rule, then one-line pointers at daemon, cron and memory —
+  `gray gateway status`, `/cron` and `/memory` already print everything about
+  those, so the panel names the command instead of restating its output. An app
+  row carries what it still needs (`needs setup` when its default config file
+  is absent — existence only, never the file, which holds the token) and the
+  commands its own manifest declares; nothing is invented on its behalf.
+  `space` flips an app's enabled flag through the same registry path
+  `/plugin` uses, `/gateway on|off` still flips the persisted gateway master
+  switch, and piped stdin prints the rows as text. `/gateway` and `/gw` are
+  real commands again (they previously answered "the TUI gateway is gone")
+
+
+- `gray login`, `gray whoami`, `gray logout` (and `/login`, `/whoami`,
+  `/logout` in the REPL): enroll this machine with gray.alignment.id. The
+  site's account page mints a one-time 5-minute code from a Supabase session;
+  `gray login` exchanges it for a long-lived `gray_...` registry token stored
+  in `~/.gray/registry-token.json` (mode 0600, same atomic writer as
+  `auth.json`). Bare `gray login` prints the walkthrough and prompts for the
+  code; `gray login <code>` is the non-interactive form the site's copy
+  command emits. `gray logout` revokes the token server-side before dropping
+  it, and logging in again revokes the token it replaces so a re-login never
+  leaves a working credential the machine has forgotten. All three run before
+  provider configuration, so a fresh machine can enroll before it can run a
+  turn. `GRAY_REGISTRY_URL` points at a local registry
+  (`pnpm backend:dev`); cleartext http is accepted only on loopback, since
+  every call carries the token. Nothing in gray is gated on an account — the token
+  only names the caller on registry calls — and the onboarding banner now says
+  so instead of implying a login exists
+
+
+- `/cron` and `/memory` are interactive on a TTY, riding the same picker loop
+  as `/plugin` and `/skills`: `/cron` lists every job (name, id, schedule, next
+  run, last status) plus the ticker's liveness row, and `space` pauses/resumes
+  in place through `CronStore::set_paused`; adding and removing stay on the
+  `gray cron` CLI. `/memory` lists every curated entry (key, scope, first
+  line) read-only — forgetting stays `gray memory remove <key>`, because a
+  picker must not make deletion a keystroke. Headless output is unchanged for
+  both. The shared manager loop gained the axes these panels needed:
+  per-row `read_only` (separators and pointers carry no switch), a
+  `supports_remove` flag (listing panels leave removal to their command), and
+  an `errors_tab` flag (package-install errors are noise on a cron listing)
+
+### Changed
+
+- Memory entries carry their latent reasoning. The policy now asks every saved
+  entry to record the failure or correction that prompted it (quoted), whether
+  it has recurred since, what was already tried and falsified, and the verbatim
+  text of any entry it replaces — the keep/delete rule from arXiv 2608.11095,
+  whose finding is that an instruction nobody can justify is an instruction
+  nobody can safely delete, which is why prompt files only ever grow. A why
+  without its outcome is worse than none. The rule itself: if an entry's failure
+  has not recurred since the entry was added it is probably preventing that
+  failure, so keep it; delete only when the failure kept recurring anyway or the
+  entry duplicates another's target, and carry the removed entry's falsified
+  attempts into its replacement
+- `gray memory audit` reports which entries lack a why, which duplicate
+  another's target, and which record a falsified outcome, with the rule above
+  printed beside them. It deletes nothing — the paper's own warning is that
+  automating the deletion emptied one prompt in eight and lost satisfaction on
+  exactly those — so the decision stays with a human
+- Repeated net growth with no removal (three consecutive saves) now prints a
+  one-line warning pointing at the audit: unbounded growth is the disease, and
+  it is visible in the entry count long before it is visible in behavior
+- `AGENTS.md` / `CLAUDE.md` may carry `# r<n>: ...` rationale comments for a
+  rule. They stay in the file for whoever edits it and are stripped before the
+  rules reach the model, so rationale never costs the executor tokens — and
+  the served block says so, so an editor preserves them. Files without such
+  comments render byte-identically to before
+- Windows installs natively by default. `dist/install.ps1` no longer routes a
+  bare invocation into WSL: with no arguments it installs `gray.exe` into
+  `%LOCALAPPDATA%\Programs\gray\bin`, verifies the archive checksum, extracts
+  only `gray.exe` / `LICENSE` / `THIRD_PARTY_NOTICES.md` from the ZIP, and
+  updates the user PATH. `-Wsl` remains an explicit compatibility route that
+  pipes `install.sh` into a distro, and a native failure never falls back to
+  it. The "experimental" and "acceptance pending" wording is gone from the
+  installers and docs, and the README platform table lists Windows as native
+  x86_64. Still documented as unsupported, unchanged by this: gateway and cron
+  execution, self-update, Unix-shebang plugins, and ACL hardening of
+  credential files
+
 ## [0.1.1] - 2026-09-21
 
 

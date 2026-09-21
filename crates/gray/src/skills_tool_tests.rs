@@ -201,6 +201,69 @@ fn project_context_block_serves_nearest_ancestor() {
 }
 
 #[test]
+fn project_context_block_strips_rationale_comments_for_the_executor() {
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        tmp.path().join("AGENTS.md"),
+        "# gray rules\n\n- Run the tests.\n# r1: a 3-crate run once let a clippy failure reach CI\n- Never push main.\n# r12: the user said so on 2026-09-21\n",
+    )
+    .unwrap();
+    let block = project_context_block(tmp.path()).expect("rules must still serve");
+    assert!(block.contains("- Run the tests."), "{block}");
+    assert!(block.contains("- Never push main."), "{block}");
+    assert!(
+        !block.contains("clippy failure"),
+        "rationale leaked to the executor: {block}"
+    );
+    assert!(
+        !block.lines().any(is_rationale_comment),
+        "a rationale line leaked into the served block: {block}"
+    );
+    assert!(
+        block.contains("stripped before you see them"),
+        "block must explain the channel so an editor preserves it: {block}"
+    );
+}
+
+#[test]
+fn strip_rationale_comments_is_identity_without_comments() {
+    let body = "# Title\n\n- Rule one.\n- Rule two.\n";
+    assert_eq!(strip_rationale_comments(body), body);
+    // A heading is not a comment, and neither is prose.
+    assert_eq!(
+        strip_rationale_comments("# Requirements:\n- Rule."),
+        "# Requirements:\n- Rule."
+    );
+    assert_eq!(
+        strip_rationale_comments("# round two notes"),
+        "# round two notes"
+    );
+}
+
+#[test]
+fn project_context_block_none_when_only_blank_lines_survive_the_strip() {
+    let tmp = tempfile::tempdir().unwrap();
+    // Comments separated by blank lines: the strip leaves only the blanks.
+    std::fs::write(
+        tmp.path().join("AGENTS.md"),
+        "# r1: only a rationale\n\n# r2: and another\n\n",
+    )
+    .unwrap();
+    assert_eq!(project_context_block(tmp.path()), None);
+}
+
+#[test]
+fn project_context_block_none_when_only_rationale_comments() {
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        tmp.path().join("AGENTS.md"),
+        "# r1: only a rationale, no rules left to follow\n",
+    )
+    .unwrap();
+    assert_eq!(project_context_block(tmp.path()), None);
+}
+
+#[test]
 fn project_context_block_prefers_agents_over_claude_on_same_level() {
     let tmp = tempfile::tempdir().unwrap();
     std::fs::write(tmp.path().join("CLAUDE.md"), "claude rules").unwrap();

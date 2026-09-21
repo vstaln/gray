@@ -516,6 +516,24 @@ pub(crate) fn dispatch_agent_event(
                     t.push_warning(&notice);
                 }
             }
+            // Compaction accounting (arXiv:2512.22087 / 2601.16746): the
+            // rewrite is visible in the transcript instead of silent.
+            AgentEvent::Compacted {
+                tokens_before,
+                tokens_after,
+                messages_before,
+                messages_after,
+            } => {
+                t.flush_markdown();
+                t.end_thinking();
+                t.push_dim(format!(
+                    "↻ compacted {} → {} tok ({} → {} messages)",
+                    crate::repl::fmt_usage(*tokens_before),
+                    crate::repl::fmt_usage(*tokens_after),
+                    messages_before,
+                    messages_after
+                ));
+            }
             // Reconnecting rides the shimmer status dock (`⬡ Reconnecting…`)
             // like Thinking/Working instead of a static cell; the cause
             // lands as one dim detail row (single notice per burst).
@@ -618,6 +636,20 @@ pub(crate) fn dispatch_agent_event(
                 } else {
                     eprintln!("\n\x1b[2m⚠ {message}\n└ {details}\x1b[0m");
                 }
+            }
+            AgentEvent::Compacted {
+                tokens_before,
+                tokens_after,
+                messages_before,
+                messages_after,
+            } => {
+                eprintln!(
+                    "\n\x1b[2m↻ compacted {} → {} tok ({} → {} messages)\x1b[0m",
+                    crate::repl::fmt_usage(*tokens_before),
+                    crate::repl::fmt_usage(*tokens_after),
+                    messages_before,
+                    messages_after
+                );
             }
             AgentEvent::StepUsage { .. } => stream_clock.close_span(),
             AgentEvent::TurnEnd { usage, .. } => {

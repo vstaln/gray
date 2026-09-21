@@ -9,7 +9,22 @@ pub(crate) const REGISTRY: &[CmdDef] = &[
     CmdDef {
         name: "connect",
         desc: "setup provider & API key",
-        aliases: &["keys", "key", "providers", "provider", "login"],
+        aliases: &["keys", "key", "providers", "provider"],
+    },
+    CmdDef {
+        name: "login",
+        desc: "log in to gray.alignment.id from this machine",
+        aliases: &[],
+    },
+    CmdDef {
+        name: "whoami",
+        desc: "show the logged-in gray.alignment.id account",
+        aliases: &[],
+    },
+    CmdDef {
+        name: "logout",
+        desc: "revoke and forget the gray.alignment.id token",
+        aliases: &[],
     },
     CmdDef {
         name: "model",
@@ -48,7 +63,7 @@ pub(crate) const REGISTRY: &[CmdDef] = &[
     },
     CmdDef {
         name: "cron",
-        desc: "list cron jobs (read-only)",
+        desc: "cron jobs (space pauses; add/remove via gray cron)",
         aliases: &[],
     },
     CmdDef {
@@ -73,8 +88,13 @@ pub(crate) const REGISTRY: &[CmdDef] = &[
     },
     CmdDef {
         name: "memory",
-        desc: "memory master switch (/memory on|off; bare reports state)",
+        desc: "memory master switch (/memory on|off; bare lists entries)",
         aliases: &[],
+    },
+    CmdDef {
+        name: "gateway",
+        desc: "connections: apps + daemon/cron/memory (space toggles)",
+        aliases: &["gw"],
     },
     CmdDef {
         name: "plugin",
@@ -390,6 +410,12 @@ pub enum ReplCommand {
     Sys(SysAction),
     /// Open the provider selection menu (`/connect` or `/provider`).
     Provider,
+    /// Log this machine in to gray.alignment.id (`/login [code]`).
+    Login(Option<String>),
+    /// Show the logged-in gray.alignment.id account (`/whoami`).
+    Whoami,
+    /// Revoke and forget the gray.alignment.id token (`/logout`).
+    Logout,
     /// Start a fresh conversation (`/new` or `/clear [prompt]`).
     New(Option<String>),
     /// Resume a previous session (`/resume [id|--last|--all]`).
@@ -408,8 +434,12 @@ pub enum ReplCommand {
     Usage,
     /// List cron jobs (read-only; manage via `gray cron` CLI).
     CronJobs(Option<String>),
-    /// Memory master switch (`/memory on|off`; bare reports state).
+    /// Memory master switch (`/memory on|off`; bare lists entries).
     Memory(Option<String>),
+    /// Connections panel (`/gateway` or `/gw`): installed apps plus pointers
+    /// at daemon/cron/memory. A switch word (`on`/`off`) flips the persisted
+    /// gateway master switch, same as `gray gateway on|off`.
+    Gateway(Option<String>),
     /// Copy the last assistant response to the clipboard (`/copy`).
     Copy,
     /// Send feedback (`/feedback <what happened>`): saves locally, opens a prefilled issue.
@@ -512,12 +542,16 @@ pub fn parse_command(line: &str) -> ReplCommand {
         Some("usage") => ReplCommand::Usage,
         Some("cron") => ReplCommand::CronJobs(opt(rest)),
         Some("memory") => ReplCommand::Memory(opt(rest)),
+        Some("gateway") => ReplCommand::Gateway(opt(rest)),
         Some("copy") => ReplCommand::Copy,
         Some("feedback") => ReplCommand::Feedback(opt(rest)),
         Some("help") => ReplCommand::Help,
         // Every connect alias accepts optional args like `/key openrouter`
         // (args are advisory; the provider menu always opens).
         Some("connect") => ReplCommand::Provider,
+        Some("login") => ReplCommand::Login(opt(rest)),
+        Some("whoami") => ReplCommand::Whoami,
+        Some("logout") => ReplCommand::Logout,
         Some("model") => ReplCommand::Model(opt(rest)),
         Some("plugin") => ReplCommand::Plugin(t.to_string()),
         Some("skills") => {

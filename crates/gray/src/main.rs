@@ -15,6 +15,20 @@ async fn main() -> anyhow::Result<()> {
     if let Some(gray::Commands::Memory(args)) = &cli.command {
         return gray::memory::run_cli(args);
     }
+    // Account commands run before provider configuration: enrolling a fresh
+    // machine must not require a model and a key first.
+    match &cli.command {
+        Some(gray::Commands::Login { code }) => {
+            return gray::account::run_login(code.as_deref()).await;
+        }
+        Some(gray::Commands::Whoami) => {
+            return gray::account::run_whoami().await;
+        }
+        Some(gray::Commands::Logout) => {
+            return gray::account::run_logout().await;
+        }
+        _ => {}
+    }
     if cli.dump_manifest {
         match gray::build_registry().await {
             Ok((_registry, manifests, fallback)) => {
@@ -84,6 +98,10 @@ async fn main() -> anyhow::Result<()> {
             // provider configured (fresh machine, venv-only install).
             gray::Commands::Install { .. } | gray::Commands::External(_) => {
                 unreachable!("plugin CLI dispatch happens before configuration")
+            }
+            // Same reason, one step earlier still: no provider needed to log in.
+            gray::Commands::Login { .. } | gray::Commands::Whoami | gray::Commands::Logout => {
+                unreachable!("account CLI dispatch happens before configuration")
             }
         }
     }

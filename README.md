@@ -45,22 +45,24 @@ harness core: CLI, TUI (with image paste), provider, sessions, tools, cron.
 
 ### Windows
 
-**Supported route: WSL.** Run the Linux installation command above inside WSL.
-
-**Native Windows 11 x64 preview:** no WSL required; Git for Windows supplies the
-shell. Download the `windows-native-preview` artifact from a successful
-[CI run](https://github.com/vstaln/gray/actions/workflows/ci.yml), extract it, and
-follow the [native installation guide](docs/windows-preview.md). From the artifact
-root, with both scripts in its `dist` folder:
+**Native Windows 11 x64** — no WSL, no Linux distro, no elevation. Git for
+Windows supplies the shell for tool calls; Gray does not install it or WSL.
+Download the Windows release artifact, keep both scripts from its `dist` folder
+together, inspect them, then run:
 
 ```powershell
 $hash = ((Get-Content .\gray-beta-x86_64-windows.zip.sha256).Trim() -split '\s+')[0]
-.\dist\install.ps1 -Native -ArchivePath .\gray-beta-x86_64-windows.zip -Sha256 $hash
+.\dist\install.ps1 -ArchivePath .\gray-beta-x86_64-windows.zip -Sha256 $hash
 ```
 
-The preview is unsigned and not release-ready. Avoid sensitive credentials and
-transcripts until Windows storage permissions have been validated. Native installs
-do not silently fall back to WSL. Close Gray and rerun the installer to update.
+`-Native` is accepted and is already the default. Pass `-Wsl` for the
+compatibility route that installs the Linux build inside WSL. Native installs
+never fall back to WSL. Artifacts are unsigned — the digest catches corruption,
+not publisher identity — so follow your execution policy rather than disabling it.
+Close Gray and rerun the installer to update; self-update is refused on native
+Windows. Gateway and cron execution are unsupported and refused explicitly; cron
+jobs can still be managed as files. See the
+[native installation guide](docs/windows-preview.md).
 
 macOS binaries are Rust-static but **not notarized** — curl-installed binaries run fine, browser downloads may hit Gatekeeper quarantine.
 
@@ -74,9 +76,31 @@ First run drops you straight at the prompt. Configure whenever you feel like it:
 
 | command | what it does |
 |---|---|
-| `/provider` | pick a provider — API key, ChatGPT/Grok login, free tier, or local |
+| `/provider` | pick a provider — API key, free tier, or local |
 | `/key openrouter` | paste an API key right in the CLI (input hidden), stored per-provider in `~/.gray/auth.json` |
+| `/login` | log this machine in to gray.alignment.id — optional, and nothing is gated on it |
+| `/whoami` | show the account the stored registry token belongs to |
+| `/logout` | revoke the registry token and forget it |
 | `/model` | searchable picker over the bundled models.dev catalog |
+
+## Account (optional)
+
+gray.alignment.id holds the plugin registry. An account is not required to run
+gray, and nothing in the CLI is gated on one — the token only names you on
+registry calls.
+
+```bash
+gray login                 # walks you through it, then prompts for the code
+gray login <code>          # same, non-interactive
+gray whoami                # who the stored token belongs to
+gray logout                # revokes the token, then forgets it
+```
+
+Mint a code at [gray.alignment.id/account](https://gray.alignment.id/account)
+(sign in with GitHub, Google, or Discord, then "Generate CLI login code"). It
+is one-time and expires in 5 minutes. The token lands in
+`~/.gray/registry-token.json` (mode 0600). Point gray at a local registry with
+`GRAY_REGISTRY_URL=http://127.0.0.1:4000/api`.
 
 ## Watch it go
 
@@ -222,7 +246,7 @@ The essentials — everything else is one `--help` or doc page away.
 |---|---|---|
 | Linux x86_64 / aarch64 | musl-static | fully supported — systemd user service (Linux-only) |
 | macOS arm64 / x86_64 | Rust-static, **not notarized** | curl-installed binaries run fine; browser downloads may hit Gatekeeper quarantine |
-| Windows | via WSL only | native Windows unsupported |
+| Windows x86_64 | native, Windows 11+ | Git Bash supplies the shell; gateway/cron execution unsupported |
 
 "Zero runtime deps" means no sidecar services — you still need `sh`, `curl` / `wget`, `tar`, and `sha256sum` / `shasum` for the installer.
 

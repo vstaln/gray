@@ -44,3 +44,6 @@ __pycache__/
 # local website build + strays (never commit)
 /site/
 /fishing.html
+
+# arxiv research corpus (never commit)
+/papers/

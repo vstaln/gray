@@ -262,3 +262,104 @@ fn coerce_multiple_stringified_edits_preserves_array() {
         assert_eq!(coerce_args(&def, json!({"edits":input}))["edits"], edits);
     }
 }
+
+#[test]
+fn meter_label_prefers_path_then_truncates_command() {
+    assert_eq!(meter_label(&json!({"path": "src/lib.rs"})), "src/lib.rs");
+    // bash (the default surface) carries no path: its command is the label.
+    assert_eq!(meter_label(&json!({"command": "echo hi"})), "echo hi");
+    assert_eq!(meter_label(&json!({})), "");
+    // A heredoc or long pipeline must not bloat every record.
+    let long = "x".repeat(200);
+    assert_eq!(meter_label(&json!({"command": long})).chars().count(), 80);
+}
+
+/// Serial guard: the meter reads process-global env, so these tests cannot
+/// race each other (or the rest of the suite) for `GRAY_TOOL_STATS`/`GRAY_HOME`.
+static METER_SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// The Registry meters every non-self-reporting call with its class
+/// (arXiv:2608.13568 tokens-to-success accounting): one JSON record per
+/// call, gated on `GRAY_TOOL_STATS=1` so the gate stays a no-op when off.
+#[tokio::test]
+#[allow(clippy::await_holding_lock)] // serial guard must cover the whole test (env + gray home)
+async fn registry_meter_records_class_per_call() {
+    let _serial = METER_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = tempfile::tempdir().expect("tempdir");
+    let home = dir.path().to_string_lossy().into_owned();
+    let prev_home = std::env::var("GRAY_HOME").ok();
+    let prev_stats = std::env::var("GRAY_TOOL_STATS").ok();
+    unsafe {
+        std::env::set_var("GRAY_HOME", &home);
+        std::env::set_var("GRAY_TOOL_STATS", "1");
+    }
+    // "grep" classifies retrieval and is not self-reporting, so the
+    // Registry — not the tool — writes the record.
+    let reg = Registry::new(vec![std::sync::Arc::new(StubTool {
+        name: "grep",
+        marker: "src/lib.rs:12:match\nsrc/lib.rs:30:match\n",
+    })]);
+    let out = reg
+        .execute(
+            &ToolContext::default(),
+            "grep",
+            json!({"path": "src/lib.rs"}),
+        )
+        .await;
+    assert!(!out.is_error, "stub always succeeds");
+    let log = std::path::Path::new(&home).join("logs/tool-stats.jsonl");
+    let body = std::fs::read_to_string(&log).expect("meter writes when enabled");
+    let rec: Value =
+        serde_json::from_str(body.lines().last().expect("one record")).expect("record is json");
+    assert_eq!(rec["tool"], "grep");
+    assert_eq!(rec["class"], "retrieval");
+    assert_eq!(rec["path"], "src/lib.rs");
+    assert!(rec["bytes"].as_u64().expect("bytes") > 0, "{rec}");
+    assert_eq!(rec["truncated_by"], "none");
+    // Restore before asserting so a failure cannot leak env into the suite.
+    match prev_home {
+        Some(v) => unsafe { std::env::set_var("GRAY_HOME", v) },
+        None => unsafe { std::env::remove_var("GRAY_HOME") },
+    }
+    match prev_stats {
+        Some(v) => unsafe { std::env::set_var("GRAY_TOOL_STATS", v) },
+        None => unsafe { std::env::remove_var("GRAY_TOOL_STATS") },
+    }
+}
+
+/// With the gate off the Registry meters nothing — the meter must never be
+/// a behavior change for the default configuration.
+#[tokio::test]
+#[allow(clippy::await_holding_lock)] // serial guard must cover the whole test (env + gray home)
+async fn registry_meter_is_silent_when_gate_off() {
+    let _serial = METER_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = tempfile::tempdir().expect("tempdir");
+    let home = dir.path().to_string_lossy().into_owned();
+    let prev_home = std::env::var("GRAY_HOME").ok();
+    let prev_stats = std::env::var("GRAY_TOOL_STATS").ok();
+    unsafe {
+        std::env::set_var("GRAY_HOME", &home);
+        std::env::set_var("GRAY_TOOL_STATS", "0");
+    }
+    let reg = Registry::new(vec![std::sync::Arc::new(StubTool {
+        name: "bash",
+        marker: "ok",
+    })]);
+    let _ = reg
+        .execute(&ToolContext::default(), "bash", json!({"command": "true"}))
+        .await;
+    assert!(
+        !std::path::Path::new(&home)
+            .join("logs/tool-stats.jsonl")
+            .exists(),
+        "gate off must write nothing"
+    );
+    match prev_home {
+        Some(v) => unsafe { std::env::set_var("GRAY_HOME", v) },
+        None => unsafe { std::env::remove_var("GRAY_HOME") },
+    }
+    match prev_stats {
+        Some(v) => unsafe { std::env::set_var("GRAY_TOOL_STATS", v) },
+        None => unsafe { std::env::remove_var("GRAY_TOOL_STATS") },
+    }
+}

@@ -1,9 +1,14 @@
-# Native Windows preview — not a supported release yet
+# Native Windows installation
 
-The Windows branch builds a native x64 executable and opt-in installer.
-The default installer and supported platform matrix remain WSL-only until the complete
-release acceptance list in the preparation spec passes. Do not use this preview
-with sensitive credentials/transcripts until Windows ACL validation is complete.
+Windows 11 x64 installs natively: no WSL, no Linux distro, no elevation. Git for
+Windows supplies the shell for tool calls; Gray does not install it or WSL. The
+installer's default route is native — `-Wsl` is the explicit compatibility
+route that installs the Linux build inside WSL.
+
+Known limitation, unchanged by this release: credential and transcript files are
+created with standard user-profile permissions and are **not** ACL-hardened
+(`std` has no portable way to do it). Keep that in mind before storing sensitive
+material in `%USERPROFILE%\.gray`.
 
 ## Get and install the preview
 
@@ -20,11 +25,11 @@ $hash = ((Get-Content .\gray-beta-x86_64-windows.zip.sha256).Trim() -split '\s+'
 .\dist\install.ps1 -Native -ArchivePath .\gray-beta-x86_64-windows.zip -Sha256 $hash
 ```
 
-`-Native` selects native installation; `-Wsl` explicitly selects the compatibility
-route. Omitting both still selects WSL. The switches cannot be combined. Native
-failures never invoke WSL or install system dependencies. Older preview artifacts
-may contain only `dist/install-native.ps1`; invoke that script directly with the
-same archive and checksum arguments (without `-Native`).
+Native is the default route; `-Native` is accepted and changes nothing. `-Wsl`
+selects the compatibility route. The two cannot be combined. Native failures never
+invoke WSL or install system dependencies. Older artifacts may contain only
+`dist/install-native.ps1`; invoke that script directly with the same archive and
+checksum arguments.
 
 The default destination is `%LOCALAPPDATA%\Programs\gray\bin`. `-InstallDir`
 overrides `GRAY_INSTALL_DIR`. `-NoPath` skips user PATH updates. Open a new terminal

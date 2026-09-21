@@ -9,7 +9,11 @@ use std::sync::Mutex;
 struct FakeProvider {
     scripted: Mutex<VecDeque<Vec<StreamEvent>>>,
     failures: Mutex<VecDeque<ProviderError>>,
+    /// Scripts that stream their events and then fail mid-turn.
+    partial_failures: Mutex<VecDeque<(Vec<StreamEvent>, ProviderError)>>,
     seen_systems: std::sync::Arc<Mutex<Vec<Option<String>>>>,
+    /// (system, messages) of every request served so far, in order.
+    seen_requests: std::sync::Arc<Mutex<Vec<(Option<String>, Vec<Message>)>>>,
 }
 
 impl FakeProvider {
@@ -17,7 +21,9 @@ impl FakeProvider {
         Self {
             scripted: Mutex::new(VecDeque::from(scripts)),
             failures: Mutex::new(VecDeque::new()),
+            partial_failures: Mutex::new(VecDeque::new()),
             seen_systems: std::sync::Arc::new(Mutex::new(Vec::new())),
+            seen_requests: std::sync::Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -26,9 +32,19 @@ impl FakeProvider {
         self
     }
 
+    fn with_partial_failures(mut self, errs: Vec<(Vec<StreamEvent>, ProviderError)>) -> Self {
+        self.partial_failures = Mutex::new(VecDeque::from(errs));
+        self
+    }
+
     /// System prompts of every request served so far, in order.
     fn seen_systems(&self) -> std::sync::Arc<Mutex<Vec<Option<String>>>> {
         self.seen_systems.clone()
+    }
+
+    /// Full (system, messages) shape of every request served so far.
+    fn seen_requests(&self) -> std::sync::Arc<Mutex<Vec<(Option<String>, Vec<Message>)>>> {
+        self.seen_requests.clone()
     }
 }
 
@@ -39,6 +55,10 @@ impl Provider for FakeProvider {
             .lock()
             .expect("seen lock poisoned")
             .push(req.system.clone());
+        self.seen_requests
+            .lock()
+            .expect("seen lock poisoned")
+            .push((req.system.clone(), req.messages.clone()));
         if let Some(err) = self
             .failures
             .lock()
@@ -46,6 +66,19 @@ impl Provider for FakeProvider {
             .pop_front()
         {
             return Box::pin(futures::stream::iter(vec![Err(err)]));
+        }
+        if let Some((events, err)) = self
+            .partial_failures
+            .lock()
+            .expect("partial failures lock poisoned")
+            .pop_front()
+        {
+            let stream: Vec<Result<StreamEvent, ProviderError>> = events
+                .into_iter()
+                .map(Ok)
+                .chain(std::iter::once(Err(err)))
+                .collect();
+            return Box::pin(futures::stream::iter(stream));
         }
         let script = self
             .scripted
@@ -999,13 +1032,45 @@ async fn context_overflow_compacts_once_then_continues() {
             .iter()
             .any(|e| *e == AgentEvent::text_delta("continued"))
     );
+    // Compaction is observable, not silent: one Compacted record whose
+    // after-counts are strictly smaller (arXiv:2512.22087 / 2601.16746
+    // accounting: token spend per task, not just the final score).
+    let compacted: Vec<_> = events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::Compacted {
+                tokens_before,
+                tokens_after,
+                messages_before,
+                messages_after,
+            } => Some((
+                *tokens_before,
+                *tokens_after,
+                *messages_before,
+                *messages_after,
+            )),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        compacted.len(),
+        1,
+        "exactly one compaction record: {compacted:?}"
+    );
+    let (tb, ta, mb, ma) = compacted[0];
+    assert!(ta < tb, "tokens shrink: {tb} -> {ta}");
+    assert!(ma < mb, "messages shrink: {mb} -> {ma}");
     let msgs = agent.messages();
     assert!(
-        msgs[0]
+        msgs[0].text_content().starts_with("bulk0:"),
+        "stable anchor leads: [anchor, summary, retained..., reply], got {:?}",
+        msgs[0].text_content().chars().take(60).collect::<String>()
+    );
+    assert!(
+        msgs[1]
             .text_content()
             .contains("compacted into the following summary"),
-        "pi order: [summary, retained..., reply], got {:?}",
-        msgs[0].text_content().chars().take(60).collect::<String>()
+        "summary follows the pinned anchor"
     );
     let summaries = msgs
         .iter()
@@ -1027,10 +1092,11 @@ async fn context_overflow_compacts_once_then_continues() {
         "the retry request ended on the user's turn, not on a canned ack"
     );
     assert!(
-        msgs[1..last - 1]
+        msgs[2..last - 1]
             .iter()
             .all(|m| m.text_content().starts_with("bulk")),
-        "everything between summary and prompt is retained history"
+        "everything between summary and prompt is retained history \
+         (index 0 is the pinned intent anchor, index 1 the summary)"
     );
 }
 
@@ -1396,10 +1462,15 @@ async fn provider_usage_triggers_pre_turn_compaction() {
 
     let msgs = agent.messages();
     assert!(
-        msgs[0]
+        msgs[0].text_content().starts_with("bulk0:"),
+        "190k reported of 200k must compact before the next request; \
+         the pinned intent leads the compacted transcript"
+    );
+    assert!(
+        msgs[1]
             .text_content()
             .contains("compacted into the following summary"),
-        "190k reported of 200k must compact before the next request"
+        "summary follows the pinned anchor"
     );
     assert_eq!(
         msgs.last().map(Message::text_content).as_deref(),
@@ -2347,5 +2418,110 @@ async fn repeat_guard_ignores_calls_whose_output_keeps_changing() {
             .iter()
             .any(|m| m.text_content().contains("gray repeat guard")),
         "same command with changing output must not nudge"
+    );
+}
+
+// --- arXiv-driven harness hardening (2026-09 sweep) -------------------------
+
+/// Hook serving a constant per-turn context block.
+struct StaticHook;
+
+#[async_trait]
+impl PluginHooks for StaticHook {
+    async fn prompt_context(&self) -> Option<String> {
+        Some("HOOK-CTX".to_string())
+    }
+}
+
+/// arXiv:2601.06007 ("Don't Break the Cache"): provider prefix caching pays
+/// only when the request prefix is byte-stable — every round of a turn must
+/// send the identical system prompt (base + hook context appended at the
+/// very end, where volatile content belongs) and a strictly prefix-extending
+/// message list (append-only history between compactions).
+#[tokio::test]
+async fn request_prefix_is_byte_stable_across_tool_rounds() {
+    let provider = FakeProvider::new(vec![tool_script("c1"), tool_script("c2"), end_script()]);
+    let seen = provider.seen_requests();
+    let mut agent = Agent::new(
+        Box::new(provider),
+        Arc::new(FakeExecutor::new(ToolOutput::ok("done"))),
+    )
+    .with_system("base system prompt")
+    .with_tools(vec![tool_def()])
+    .with_hooks(vec![Arc::new(StaticHook)]);
+
+    agent
+        .run(Message::user("go"), ToolContext::default())
+        .await
+        .expect("two tool rounds then end");
+
+    let seen = seen.lock().expect("seen lock").clone();
+    assert_eq!(seen.len(), 3, "one request per round");
+    for (i, w) in seen.windows(2).enumerate() {
+        assert_eq!(
+            w[0].0.as_deref(),
+            Some("base system prompt\n\nHOOK-CTX"),
+            "request {i}: hook context rides at the very end of the system prompt"
+        );
+        assert_eq!(
+            w[0].0, w[1].0,
+            "request {i}: system prompt must be byte-stable across rounds"
+        );
+        assert!(
+            w[1].1.len() > w[0].1.len() && w[1].1.starts_with(&w[0].1),
+            "request {}: each round's messages must strictly prefix-extend the previous",
+            i + 1
+        );
+    }
+}
+
+/// arXiv:2605.08563 (CCRM): a mid-stream failure salvages the partial into
+/// history (the transcript must match what the user saw), but the next
+/// turn's request must not carry it — a failed attempt left in context
+/// contaminates the retry.
+#[tokio::test]
+async fn mid_stream_error_partial_is_scrubbed_from_the_next_request() {
+    let provider = FakeProvider::new(vec![end_script()]).with_partial_failures(vec![(
+        vec![StreamEvent::text_delta("half-finished answer")],
+        ProviderError::Stream("connection reset".into()),
+    )]);
+    let seen = provider.seen_requests();
+    let mut agent = Agent::new(
+        Box::new(provider),
+        Arc::new(FakeExecutor::new(ToolOutput::ok("unused"))),
+    );
+
+    agent
+        .run(Message::user("go"), ToolContext::default())
+        .await
+        .expect_err("mid-stream error surfaces");
+    // In-memory history (and so the persisted transcript) keeps the partial:
+    // it matches what the user saw on screen.
+    assert!(
+        agent
+            .messages()
+            .iter()
+            .any(|m| m.text_content().contains("half-finished answer")),
+        "the salvaged partial stays in history"
+    );
+
+    agent
+        .run(Message::user("try again"), ToolContext::default())
+        .await
+        .expect("retry succeeds");
+
+    let seen = seen.lock().expect("seen lock");
+    let retry = &seen[1].1;
+    assert!(
+        !retry
+            .iter()
+            .any(|m| m.text_content().contains("half-finished answer")),
+        "the failed attempt must not ride the retry's context: {retry:?}"
+    );
+    assert!(
+        retry
+            .iter()
+            .any(|m| m.text_content().contains("start fresh")),
+        "a one-line marker takes its place: {retry:?}"
     );
 }
