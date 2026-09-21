@@ -303,6 +303,18 @@ pub struct Agent {
     context_usage: Option<(usize, usize)>,
     history_revision: u64,
     history_rewrite_hook: Option<Arc<dyn Fn() + Send + Sync>>,
+    /// Session this transcript persists to, when known — woven into
+    /// compaction citation stubs (arXiv:2607.25066). Captured from each
+    /// run's [`ToolContext`].
+    pub(crate) session_id: Option<String>,
+    /// Indices of salvaged partial-assistant messages left by a mid-stream
+    /// error. They stay in `messages` (the persisted transcript must match
+    /// what the user saw on screen) but are replaced with a one-line marker
+    /// in outbound requests: a failed attempt left in context measurably
+    /// contaminates the retry (arXiv:2605.08563 CCRM — cascade ratio
+    /// ε1/ε0 ≈ 7.1 on SWE-bench Verified; clean restart dominates).
+    /// Cleared by every history rewrite — compaction subsumes the failure.
+    pub(crate) contaminated: std::collections::BTreeSet<usize>,
 }
 
 impl Agent {
@@ -321,6 +333,8 @@ impl Agent {
             context_usage: None,
             history_revision: 0,
             history_rewrite_hook: None,
+            session_id: None,
+            contaminated: std::collections::BTreeSet::new(),
         }
     }
 
@@ -344,6 +358,9 @@ impl Agent {
 
     pub(crate) fn history_rewritten(&mut self) {
         self.context_usage = None;
+        // A rewrite subsumes whatever the contaminated partials were part
+        // of; the indices would point at the wrong messages anyway.
+        self.contaminated.clear();
         self.history_revision = self.history_revision.wrapping_add(1);
         if let Some(hook) = &self.history_rewrite_hook {
             hook();
