@@ -23,6 +23,89 @@ fn large_entries_round_trip_without_a_cap() {
 }
 
 #[test]
+fn rationale_convention_round_trips_through_the_parser() {
+    let (_dir, store) = setup();
+    // The paper's entry shape lives inside the one-line text, so quotes,
+    // semicolons and parens must survive validate_text + parse + render.
+    let text = "Run tests per crate. Why: \"a 3-crate run let a clippy failure reach CI\" (recurs: 1); falsified: nothing yet; replaces: \"old rule\"";
+    assert!(store.set(Scope::Project, "gate", text).unwrap());
+    assert_eq!(
+        store.get(Scope::Project, "gate").unwrap().as_deref(),
+        Some(text)
+    );
+    assert!(store.list(Scope::Project).unwrap().contains(text));
+}
+
+#[test]
+fn audit_flags_missing_rationale_falsified_outcomes_and_duplicates() {
+    let (_dir, store) = setup();
+    store
+        .set(
+            Scope::Project,
+            "solid",
+            "Decision. Why: \"the build broke\" (recurs: 0)",
+        )
+        .unwrap();
+    store
+        .set(Scope::Project, "bare", "A bare decision.")
+        .unwrap();
+    store
+        .set(
+            Scope::Project,
+            "dead",
+            "Old. Why: \"x\"; falsified: it did not help",
+        )
+        .unwrap();
+    store
+        .set(Scope::Project, "twin-a", "Same. Why: \"y\"")
+        .unwrap();
+    store
+        .set(Scope::Project, "twin-b", "same.  Why: \"y\"")
+        .unwrap();
+    let report = store.audit(Scope::Project).unwrap();
+    assert!(report.contains("bare: no Why recorded"), "{report}");
+    assert!(
+        report.contains("dead: records a falsified outcome"),
+        "{report}"
+    );
+    assert!(
+        report.contains("twin-a, twin-b: duplicate target"),
+        "{report}"
+    );
+    assert!(
+        !report.contains("solid:"),
+        "a clean entry must not be flagged: {report}"
+    );
+    assert!(report.contains("This audit deletes nothing"), "{report}");
+    // Auditing never mutates.
+    assert_eq!(store.audit(Scope::Project).unwrap(), report);
+}
+
+#[test]
+fn growth_streak_warns_after_repeated_adds_and_a_removal_resets_it() {
+    let (_dir, store) = setup();
+    assert_eq!(store.growth_warning(Scope::Project), None);
+    store.set(Scope::Project, "a", "One.").unwrap();
+    store.set(Scope::Project, "b", "Two.").unwrap();
+    assert_eq!(
+        store.growth_warning(Scope::Project),
+        None,
+        "two net adds must not trip it"
+    );
+    store.set(Scope::Project, "c", "Three.").unwrap();
+    let warning = store
+        .growth_warning(Scope::Project)
+        .expect("three net adds must warn");
+    assert!(warning.contains("3 entries"), "{warning}");
+    assert!(warning.contains("gray memory audit"), "{warning}");
+    // A no-op edit changes nothing and must not extend the streak.
+    assert!(!store.edit(Scope::Project, "c", "Three.").unwrap());
+    // A removal resets it.
+    store.remove(Scope::Project, "a").unwrap();
+    assert_eq!(store.growth_warning(Scope::Project), None);
+}
+
+#[test]
 fn show_edit_clear_manage_entries() {
     let (_dir, store) = setup();
     assert_eq!(store.get(Scope::Project, "k").unwrap(), None);

@@ -39,6 +39,8 @@ pub enum MemoryCommand {
     Remove { key: String },
     /// Forget every entry in the scope
     Clear,
+    /// Review entries against the keep/delete rule (advisory; deletes nothing)
+    Audit,
 }
 
 pub fn disabled() -> bool {
@@ -76,11 +78,13 @@ pub fn run_cli(args: &MemoryArgs) -> anyhow::Result<()> {
                     "Memory unchanged."
                 }
             );
+            warn_on_growth(&store, args.scope, changed);
         }
         MemoryCommand::Edit { key, text } => {
             ensure!(!disabled(), "memory saving disabled by GRAY_NO_MEMORY");
-            store.edit(args.scope, key, text)?;
+            let changed = store.edit(args.scope, key, text)?;
             println!("Memory edited.");
+            warn_on_growth(&store, args.scope, changed);
         }
         MemoryCommand::Remove { key } => {
             store.remove(args.scope, key)?;
@@ -100,8 +104,18 @@ pub fn run_cli(args: &MemoryArgs) -> anyhow::Result<()> {
                 }
             );
         }
+        MemoryCommand::Audit => {
+            print!("{}", store.audit(args.scope)?);
+        }
     }
     Ok(())
+}
+
+/// The ratchet warning, printed after a save that extends a growth streak.
+fn warn_on_growth(store: &MemoryStore, scope: Scope, changed: bool) {
+    if changed && let Some(warning) = store.growth_warning(scope) {
+        println!("{warning}");
+    }
 }
 
 pub struct MemoryStore {
@@ -217,11 +231,12 @@ impl MemoryStore {
     }
 
     /// Rewrite the text of an existing entry; never creates a new one.
-    pub fn edit(&self, scope: Scope, key: &str, text: &str) -> anyhow::Result<()> {
+    /// Reports whether the text actually changed.
+    pub fn edit(&self, scope: Scope, key: &str, text: &str) -> anyhow::Result<bool> {
         validate_key(key)?;
         validate_text(text)?;
         let trimmed = text.trim().to_owned();
-        self.change(scope, |entries| {
+        let changed = self.change(scope, |entries| {
             ensure!(entries.contains_key(key), "no memory entry named '{key}'");
             if entries.get(key).is_some_and(|old| *old == trimmed) {
                 return Ok(false);
@@ -229,7 +244,7 @@ impl MemoryStore {
             entries.insert(key.to_owned(), trimmed);
             Ok(true)
         })?;
-        Ok(())
+        Ok(changed)
     }
 
     /// Remove every entry in the scope; returns how many were dropped.
@@ -261,12 +276,150 @@ impl MemoryStore {
         let path = self.path(scope);
         let _lock = lock(&path.with_extension("lock"))?;
         let mut entries = parse(&self.list(scope)?)?;
+        let before = entries.len();
         let changed = update(&mut entries)?;
         if changed {
             atomic_write(&path, &render(&entries))?;
+            self.record_growth(scope, entries.len(), entries.len() < before);
         }
         Ok(changed)
     }
+
+    /// Advisory review against the keep/delete rule. Never mutates anything:
+    /// writing a rationale is safe, acting on one to delete is not, so the
+    /// decision stays with a human.
+    pub fn audit(&self, scope: Scope) -> anyhow::Result<String> {
+        let entries = parse(&self.list(scope)?)?;
+        let mut findings: Vec<String> = Vec::new();
+        let mut by_target: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for (key, text) in &entries {
+            if !text.contains("Why:") {
+                findings.push(format!(
+                    "- {key}: no Why recorded — what failure or correction prompted it?"
+                ));
+            }
+            if text.contains("falsified") {
+                findings.push(format!(
+                    "- {key}: records a falsified outcome — its failure kept recurring anyway; delete it or fold it into its replacement"
+                ));
+            }
+            by_target
+                .entry(normalized_target(text))
+                .or_default()
+                .push(key.clone());
+        }
+        for keys in by_target.values() {
+            if keys.len() > 1 {
+                findings.push(format!(
+                    "- {}: duplicate target — fold into one entry",
+                    keys.join(", ")
+                ));
+            }
+        }
+        let growth = self.growth(scope);
+        let mut out = format!(
+            "Audit ({} scope): {} entries.\n\n",
+            scope_label(scope),
+            entries.len()
+        );
+        if findings.is_empty() {
+            out.push_str(
+                "Every entry carries a why, no duplicate targets, no falsified outcomes.\n",
+            );
+        } else {
+            findings.sort();
+            out.push_str(&findings.join("\n"));
+            out.push('\n');
+        }
+        out.push_str(&format!(
+            "\nRule: if an entry's failure has not recurred since the entry was added, it is probably preventing that failure — keep it. Delete only when the failure kept recurring anyway or the entry duplicates another's target, and carry the removed entry's falsified attempts into its replacement.\nGrowth: {} entries, peak {}, {} net-add saves, {} removals.\nThis audit deletes nothing; a human decides.\n",
+            entries.len(),
+            growth.as_ref().map(|g| g.peak).unwrap_or(entries.len()),
+            growth.as_ref().map(|g| g.streak).unwrap_or(0),
+            growth.as_ref().map(|g| g.removals).unwrap_or(0),
+        ));
+        Ok(out)
+    }
+
+    /// The ratchet warning: repeated net growth with no removal is what
+    /// unbounded prompt growth looks like before anyone notices (the
+    /// paper's Gate-0 signal). Returns `None` until the streak trips.
+    pub fn growth_warning(&self, scope: Scope) -> Option<String> {
+        let g = self.growth(scope)?;
+        (g.streak >= GROWTH_STREAK_WARN).then(|| {
+            format!(
+                "memory has grown to {} entries over {} saves with {} removals — consider `gray memory audit`",
+                g.peak, g.streak, g.removals
+            )
+        })
+    }
+
+    fn growth(&self, scope: Scope) -> Option<Growth> {
+        let text = std::fs::read_to_string(self.growth_path()).ok()?;
+        let all: BTreeMap<String, Growth> = serde_json::from_str(&text).ok()?;
+        all.get(scope_label(scope)).cloned()
+    }
+
+    fn growth_path(&self) -> PathBuf {
+        self.root.join("growth.json")
+    }
+
+    /// Fold one change into the growth record. A removal resets the streak;
+    /// a shrink lowers the peak; only net growth extends it.
+    fn record_growth(&self, scope: Scope, count: usize, removed: bool) {
+        let path = self.growth_path();
+        let mut all: BTreeMap<String, Growth> = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|t| serde_json::from_str(&t).ok())
+            .unwrap_or_default();
+        let g = all.entry(scope_label(scope).to_string()).or_default();
+        if removed {
+            g.removals += 1;
+            g.streak = 0;
+        }
+        match count.cmp(&g.peak) {
+            std::cmp::Ordering::Greater => {
+                g.peak = count;
+                g.streak += 1;
+            }
+            std::cmp::Ordering::Less => {
+                g.peak = count;
+                g.streak = 0;
+            }
+            std::cmp::Ordering::Equal => {}
+        }
+        if let Ok(text) = serde_json::to_string(&all) {
+            let _ = atomic_write(&path, &text);
+        }
+    }
+}
+
+/// How many consecutive net-growth saves with no removal trip the warning.
+const GROWTH_STREAK_WARN: usize = 3;
+
+/// Per-scope growth record: the peak entry count, how many consecutive
+/// net-growth saves produced it, and how many removals have happened.
+#[derive(Default, Clone, serde::Deserialize, serde::Serialize)]
+struct Growth {
+    peak: usize,
+    streak: usize,
+    removals: usize,
+}
+
+fn scope_label(scope: Scope) -> &'static str {
+    match scope {
+        Scope::User => "user",
+        Scope::Project => "project",
+    }
+}
+
+/// Two entries aiming at the same thing, ignoring case and spacing: the
+/// mechanical stand-in for "duplicates another directive's target".
+fn normalized_target(text: &str) -> String {
+    text.to_lowercase()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn validate_key(key: &str) -> anyhow::Result<()> {

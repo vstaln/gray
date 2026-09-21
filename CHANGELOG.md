@@ -20,6 +20,33 @@
   only names the caller on registry calls — and the onboarding banner now says
   so instead of implying a login exists
 
+### Changed
+
+- Memory entries carry their latent reasoning. The policy now asks every saved
+  entry to record the failure or correction that prompted it (quoted), whether
+  it has recurred since, what was already tried and falsified, and the verbatim
+  text of any entry it replaces — the keep/delete rule from arXiv 2608.11095,
+  whose finding is that an instruction nobody can justify is an instruction
+  nobody can safely delete, which is why prompt files only ever grow. A why
+  without its outcome is worse than none. The rule itself: if an entry's failure
+  has not recurred since the entry was added it is probably preventing that
+  failure, so keep it; delete only when the failure kept recurring anyway or the
+  entry duplicates another's target, and carry the removed entry's falsified
+  attempts into its replacement
+- `gray memory audit` reports which entries lack a why, which duplicate
+  another's target, and which record a falsified outcome, with the rule above
+  printed beside them. It deletes nothing — the paper's own warning is that
+  automating the deletion emptied one prompt in eight and lost satisfaction on
+  exactly those — so the decision stays with a human
+- Repeated net growth with no removal (three consecutive saves) now prints a
+  one-line warning pointing at the audit: unbounded growth is the disease, and
+  it is visible in the entry count long before it is visible in behavior
+- `AGENTS.md` / `CLAUDE.md` may carry `# r<n>: ...` rationale comments for a
+  rule. They stay in the file for whoever edits it and are stripped before the
+  rules reach the model, so rationale never costs the executor tokens — and
+  the served block says so, so an editor preserves them. Files without such
+  comments render byte-identically to before
+
 ## [0.1.1] - 2026-09-21
 
 

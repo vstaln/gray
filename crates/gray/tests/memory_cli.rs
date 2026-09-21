@@ -74,6 +74,39 @@ fn memory_commands_work_without_provider_and_keep_scopes_separate() {
 }
 
 #[test]
+fn audit_advises_without_deleting_and_growth_warns_on_the_third_net_add() {
+    let tmp = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
+    let home = tmp.path().join("home");
+    let run = |args: &[&str]| {
+        let out = command(&home, tmp.path(), args);
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8(out.stdout).unwrap()
+    };
+    run(&["memory", "set", "bare", "A bare decision."]);
+    let audit = run(&["memory", "audit"]);
+    assert!(audit.contains("bare: no Why recorded"), "{audit}");
+    assert!(audit.contains("This audit deletes nothing"), "{audit}");
+    // Advisory only: the entry survives the audit untouched.
+    assert_eq!(run(&["memory", "list"]), "- bare: A bare decision.\n");
+    // The second net add stays quiet; the third trips the ratchet warning,
+    // and every net add after it keeps warning until something is removed.
+    assert_eq!(run(&["memory", "set", "b", "Two."]), "Memory updated.\n");
+    let third = run(&["memory", "set", "c", "Three."]);
+    assert!(third.starts_with("Memory updated.\n"), "{third}");
+    assert!(third.contains("grown to 3 entries over 3 saves"), "{third}");
+    let fourth = run(&["memory", "set", "d", "Four."]);
+    assert!(fourth.contains("grown to 4 entries"), "{fourth}");
+    assert!(fourth.contains("gray memory audit"), "{fourth}");
+    // Removing one entry resets the streak, so the next save is quiet again.
+    run(&["memory", "remove", "bare"]);
+    assert_eq!(run(&["memory", "set", "e", "Five."]), "Memory updated.\n");
+}
+
+#[test]
 fn rejects_bad_input_without_echoing_secret() {
     let tmp = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
     for (key, value) in [
