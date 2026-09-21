@@ -196,6 +196,154 @@ fn run_installer_locked() -> anyhow::Result<()> {
     run_installer()
 }
 
+/// Where the installer writes: `$GRAY_INSTALL_DIR`, else `/usr/local/bin` when
+/// root, else `~/.local/bin` — the same choice `dist/install.sh` makes.
+fn installer_dest() -> Option<PathBuf> {
+    if let Some(dir) = std::env::var_os("GRAY_INSTALL_DIR").filter(|s| !s.is_empty()) {
+        return Some(PathBuf::from(dir));
+    }
+    let home = std::env::var_os("HOME").filter(|s| !s.is_empty())?;
+    // SAFETY: geteuid takes no arguments and cannot fail.
+    if unsafe { libc::geteuid() } == 0 {
+        return Some(PathBuf::from("/usr/local/bin"));
+    }
+    Some(PathBuf::from(home).join(".local").join("bin"))
+}
+
+/// `gray --version` of the binary at `path` ("gray 0.1.1" -> "0.1.1").
+fn binary_version(path: &Path) -> Option<String> {
+    let out = Command::new(path).arg("--version").output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&out.stdout)
+        .split_whitespace()
+        .nth(1)
+        .map(str::to_string)
+}
+
+/// First `gray` among `entries`, in PATH order, the way a shell resolves it.
+fn first_gray_in(entries: &[PathBuf]) -> Option<PathBuf> {
+    entries.iter().map(|d| d.join("gray")).find(|c| c.is_file())
+}
+
+/// The `gray` the next shell will actually launch.
+fn first_gray_on_path() -> Option<PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    let entries: Vec<PathBuf> = std::env::split_paths(&path).collect();
+    first_gray_in(&entries)
+}
+
+/// Same binary under two paths (`~/.local/bin` is often a symlink farm).
+fn same_binary(a: &Path, b: &Path) -> bool {
+    if a == b {
+        return true;
+    }
+    match (a.canonicalize(), b.canonicalize()) {
+        (Ok(x), Ok(y)) => x == y,
+        _ => false,
+    }
+}
+
+/// Decision half of the post-update guard: `installed` is the build the
+/// installer just wrote, `resolved` the one a new shell launches instead.
+fn shadow_warning(
+    installed: &Path,
+    installed_version: &str,
+    resolved: &Path,
+    resolved_version: Option<&str>,
+) -> Option<String> {
+    if same_binary(resolved, installed) {
+        return None;
+    }
+    // A different build that is already at least as new is not a shadow.
+    if let Some(v) = resolved_version
+        && !is_newer(installed_version, v)
+    {
+        return None;
+    }
+    let found = resolved_version
+        .map(|v| format!(" (gray {v})"))
+        .unwrap_or_default();
+    Some(format!(
+        "⚠ {}{found} comes first on PATH and shadows the updated {} (gray {installed_version}) — new shells keep launching the old build\n  fix:  rm {}   (then open a new shell)",
+        resolved.display(),
+        installed.display(),
+        resolved.display(),
+    ))
+}
+
+/// Post-update guard. The installer writes one path; the shell may resolve
+/// another. A stale copy earlier on PATH (an old `cargo install --path`, say)
+/// keeps launching the previous build, so "updated" would be a lie and the
+/// banner would never move.
+fn post_update_shadow_warning() -> Option<String> {
+    let installed = installer_dest()?.join("gray");
+    let installed_version = binary_version(&installed)?;
+    let resolved = first_gray_on_path()?;
+    let resolved_version = binary_version(&resolved);
+    shadow_warning(
+        &installed,
+        &installed_version,
+        &resolved,
+        resolved_version.as_deref(),
+    )
+}
+
+/// Report a shadowed install: the update landed, but the next launch would not
+/// pick it up.
+fn warn_on_shadow() {
+    if let Some(w) = post_update_shadow_warning() {
+        eprintln!("{w}");
+    }
+}
+
+/// Decision half of the startup guard: `current` is this process's binary,
+/// `resolved` the one a new shell launches instead.
+fn divergence_warning(
+    current: &Path,
+    running: &str,
+    resolved: &Path,
+    resolved_version: &str,
+) -> Option<String> {
+    if same_binary(resolved, current) {
+        return None;
+    }
+    // Only worth a line when the shell is about to launch something newer:
+    // running an older build on purpose is the user's call.
+    if !is_newer(resolved_version, running) {
+        return None;
+    }
+    Some(format!(
+        "⚠ {} is gray {resolved_version} and comes first on PATH — newer than this build (gray {running}, {})\n  relaunch `gray` to run it",
+        resolved.display(),
+        current.display(),
+    ))
+}
+
+/// Startup guard for the same hazard without an update in the picture: this
+/// process runs one build while PATH resolves a newer one, so every new shell
+/// silently lands on a different gray than the one already open.
+fn path_divergence_warning() -> Option<String> {
+    let current = std::env::current_exe().ok()?;
+    let resolved = first_gray_on_path()?;
+    let resolved_version = binary_version(&resolved)?;
+    divergence_warning(
+        &current,
+        env!("CARGO_PKG_VERSION"),
+        &resolved,
+        &resolved_version,
+    )
+}
+
+/// Report a PATH/build divergence. Cadence-free: callers gate it behind the
+/// daily update check.
+fn warn_on_divergence() {
+    if let Some(w) = path_divergence_warning() {
+        eprintln!("{w}");
+    }
+}
+
 /// Manual `gray update`: run the installer unconditionally, then exit hint.
 pub async fn update_now() -> anyhow::Result<()> {
     // Windows locks its running executable. Never launch the Unix installer
@@ -207,6 +355,7 @@ pub async fn update_now() -> anyhow::Result<()> {
     println!("→ updating gray ({CHANNEL})...");
     run_installer_locked()?;
     println!("✓ updated. restart gray to use the new version.");
+    warn_on_shadow();
     Ok(())
 }
 
@@ -275,6 +424,9 @@ pub async fn startup_check() {
         return;
     }
     write_last_check(now);
+    // No update needed for this to matter: a stale copy first on PATH keeps
+    // every new shell on the previous build, and nothing else would say so.
+    warn_on_divergence();
     let Ok(Ok(latest)) =
         tokio::time::timeout(std::time::Duration::from_millis(1500), latest_version()).await
     else {
@@ -316,6 +468,7 @@ pub async fn startup_check() {
         match run_installer_locked() {
             Ok(()) => {
                 println!("✓ updated. restart gray to use {latest}.");
+                warn_on_shadow();
                 std::process::exit(0);
             }
             Err(e) => eprintln!("update failed: {e}"),
