@@ -40,6 +40,16 @@ fn shell_dir_respects_gray_home() {
     assert_eq!(d.file_name().and_then(|s| s.to_str()), Some("shell"));
 }
 
+/// A path quoted for a shell command. Windows paths carry backslashes, which
+/// are escapes in the Git Bash that spawns these commands — the same reason
+/// `bash.rs` rewrites the log path to forward slashes before printing a
+/// "Read more" command.
+fn shell_path(path: &std::path::Path) -> String {
+    path.to_string_lossy()
+        .replace('\\', "/")
+        .replace('\'', "'\\''")
+}
+
 #[tokio::test]
 async fn echo_returns_exit_zero_with_output() {
     let session = sess("echo");
@@ -390,7 +400,7 @@ async fn cat_image_keeps_full_resolution() {
 #[tokio::test]
 async fn a_cd_carries_into_the_next_command_in_the_same_session() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let target = dir.path().display().to_string();
+    let target = shell_path(dir.path());
     let tool = BashTool::default();
     let ctx = ctx_for(&sess("cd"));
     let r = tool
@@ -431,7 +441,7 @@ async fn the_cwd_report_never_leaks_into_the_output() {
 #[tokio::test]
 async fn a_deleted_directory_falls_back_to_the_context_cwd() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let target = dir.path().display().to_string();
+    let target = shell_path(dir.path());
     let tool = BashTool::default();
     let ctx = ctx_for(&sess("gone"));
     tool.execute(&ctx, json!({"command": format!("cd '{target}'")}))
@@ -448,7 +458,7 @@ async fn a_deleted_directory_falls_back_to_the_context_cwd() {
 #[tokio::test]
 async fn two_sessions_do_not_share_a_working_directory() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let target = dir.path().display().to_string();
+    let target = shell_path(dir.path());
     let tool = BashTool::default();
     let a = ctx_for(&sess("iso-a"));
     let b = ctx_for(&sess("iso-b"));
