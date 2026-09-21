@@ -9,6 +9,24 @@ fn semver_compare() {
 }
 
 #[test]
+fn semver_prereleases_order_by_full_precedence() {
+    // Same triple: identifiers order numerically, not lexically.
+    assert!(is_newer("1.0.0-alpha.2", "1.0.0-alpha.1"));
+    assert!(!is_newer("1.0.0-alpha.1", "1.0.0-alpha.2"));
+    assert!(is_newer("1.0.0-alpha.10", "1.0.0-alpha.9"));
+    // Numeric identifiers sort below alphanumeric ones.
+    assert!(is_newer("1.0.0-alpha.beta", "1.0.0-alpha.1"));
+    // Fewer fields sort lower.
+    assert!(is_newer("1.0.0-alpha.1.1", "1.0.0-alpha.1"));
+    // A release outranks every one of its prereleases.
+    assert!(is_newer("1.0.0", "1.0.0-beta.1"));
+    assert!(!is_newer("1.0.0-beta.1", "1.0.0"));
+    // Build metadata is ignored entirely.
+    assert!(!is_newer("1.2.3+build.1", "1.2.3"));
+    assert!(is_newer("1.2.4+build.1", "1.2.3+build.9"));
+}
+
+#[test]
 fn bad_versions_never_newer() {
     assert!(!is_newer("garbage", "0.1.0"));
     assert!(!is_newer("0.1.0-beta.1", "0.1.0"));
@@ -89,16 +107,14 @@ fn update_lock_release_is_not_delayed_by_an_inherited_descriptor() {
 }
 
 #[test]
-fn shadow_warning_names_the_stale_binary_and_its_fix() {
+fn shadow_warning_names_the_shadowing_path_and_the_fix() {
     let w = shadow_warning(
         Path::new("/home/u/.local/bin/gray"),
         "0.1.1",
         Path::new("/home/u/.cargo/bin/gray"),
-        Some("0.1.0"),
     )
-    .expect("an older gray first on PATH must be reported");
+    .expect("a differing gray first on PATH must be reported");
     assert!(w.contains("/home/u/.cargo/bin/gray"), "{w}");
-    assert!(w.contains("gray 0.1.0"), "{w}");
     assert!(w.contains("0.1.1"), "{w}");
     assert!(w.contains("rm /home/u/.cargo/bin/gray"), "{w}");
 }
@@ -106,17 +122,20 @@ fn shadow_warning_names_the_stale_binary_and_its_fix() {
 #[test]
 fn shadow_warning_stays_quiet_when_path_resolves_the_updated_build() {
     let installed = Path::new("/home/u/.local/bin/gray");
-    assert!(shadow_warning(installed, "0.1.1", installed, Some("0.1.1")).is_none());
+    assert!(shadow_warning(installed, "0.1.1", installed).is_none());
 }
 
 #[test]
-fn shadow_warning_ignores_a_path_binary_that_is_not_older() {
+fn shadow_warning_reports_any_differing_path_without_running_it() {
     let installed = Path::new("/home/u/.local/bin/gray");
-    // Equal or newer build elsewhere is a legitimate choice, not a shadow.
-    assert!(shadow_warning(installed, "0.1.1", Path::new("/opt/gray"), Some("0.1.1")).is_none());
-    assert!(shadow_warning(installed, "0.1.1", Path::new("/opt/gray"), Some("0.2.0")).is_none());
-    // Unreadable version: cannot prove it is current, so say so.
-    assert!(shadow_warning(installed, "0.1.1", Path::new("/opt/gray"), None).is_some());
+    // The candidate is never executed, so its version is unknown and every
+    // differing path is reported rather than silently cleared.
+    for other in ["/opt/gray", "/home/u/.cargo/bin/gray"] {
+        let w = shadow_warning(installed, "0.1.1", Path::new(other))
+            .expect("a differing path must be reported");
+        assert!(w.contains(other), "{w}");
+        assert!(w.contains("rm "), "{w}");
+    }
 }
 
 #[test]
@@ -126,20 +145,50 @@ fn first_gray_in_prefers_the_earliest_path_entry() {
     let late = dir.path().join("late");
     std::fs::create_dir_all(&early).unwrap();
     std::fs::create_dir_all(&late).unwrap();
-    std::fs::write(late.join("gray"), b"stub").unwrap();
+    write_launcher(&late.join("gray"));
 
     assert_eq!(
         first_gray_in(&[early.clone(), late.clone()]),
         Some(late.join("gray"))
     );
 
-    std::fs::write(early.join("gray"), b"stub").unwrap();
+    write_launcher(&early.join("gray"));
     assert_eq!(
         first_gray_in(&[early.clone(), late.clone()]),
         Some(early.join("gray")),
         "the first PATH entry wins, like a shell"
     );
     assert_eq!(first_gray_in(&[dir.path().join("nowhere")]), None);
+}
+
+/// A runnable stub, which on Unix means the executable bit.
+fn write_launcher(path: &Path) {
+    std::fs::write(path, b"stub").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+}
+
+#[test]
+#[cfg(unix)]
+fn first_gray_in_skips_a_gray_the_shell_could_not_run() {
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().join("data");
+    let real = dir.path().join("real");
+    std::fs::create_dir_all(&data).unwrap();
+    std::fs::create_dir_all(&real).unwrap();
+    // A plain data file named `gray` cannot shadow anything.
+    std::fs::write(data.join("gray"), b"not a program").unwrap();
+    write_launcher(&real.join("gray"));
+
+    assert_eq!(
+        first_gray_in(&[data.clone(), real.clone()]),
+        Some(real.join("gray")),
+        "only a runnable launcher counts"
+    );
+    assert_eq!(first_gray_in(&[data.clone()]), None);
 }
 
 #[test]
@@ -229,8 +278,10 @@ fn shadow_guard_catches_a_stale_copy_that_wins_path() {
         ],
         || {
             let w = post_update_shadow_warning().expect("stale gray first on PATH must warn");
-            assert!(w.contains("0.1.0"), "{w}");
+            // The installed build's version is read from the installer's own
+            // file; the candidate's never is, because it is never executed.
             assert!(w.contains("0.1.1"), "{w}");
+            assert!(!w.contains("0.1.0"), "{w}");
             assert!(w.contains(&*stale.join("gray").to_string_lossy()), "{w}");
         },
     );
@@ -252,6 +303,12 @@ fn shadow_guard_catches_a_stale_copy_that_wins_path() {
 #[test]
 #[cfg(unix)] // asserts dist/install.sh's default; spawns `#!/bin/sh` fakes
 fn shadow_guard_uses_the_default_local_bin_destination() {
+    // A root process installs to /usr/local/bin and never consults HOME, so
+    // the default this test pins exists only on a non-root runner.
+    #[cfg(unix)]
+    if unsafe { libc::geteuid() } == 0 {
+        return;
+    }
     let dir = tempfile::tempdir().unwrap();
     let home = dir.path().join("home");
     let stale = dir.path().join("stale");
@@ -299,16 +356,14 @@ fn shadow_guard_uses_the_windows_default_destination() {
 }
 
 #[test]
-fn divergence_warning_names_the_newer_build_path_resolves() {
+fn divergence_warning_names_the_other_path_and_the_relaunch() {
     let w = divergence_warning(
         Path::new("/home/u/.cargo/bin/gray"),
         "0.1.0",
         Path::new("/home/u/.local/bin/gray"),
-        "0.1.1",
     )
-    .expect("a newer gray first on PATH must be reported");
+    .expect("a differing gray first on PATH must be reported");
     assert!(w.contains("/home/u/.local/bin/gray"), "{w}");
-    assert!(w.contains("gray 0.1.1"), "{w}");
     assert!(w.contains("gray 0.1.0"), "{w}");
     assert!(w.contains("relaunch `gray`"), "{w}");
 }
@@ -316,37 +371,78 @@ fn divergence_warning_names_the_newer_build_path_resolves() {
 #[test]
 fn divergence_warning_ignores_the_binary_already_running() {
     let current = Path::new("/home/u/.local/bin/gray");
-    assert!(divergence_warning(current, "0.1.1", current, "0.1.1").is_none());
+    assert!(divergence_warning(current, "0.1.1", current).is_none());
 }
 
 #[test]
-fn divergence_warning_ignores_an_older_or_equal_path_build() {
+fn divergence_warning_reports_an_older_candidate_too() {
     let current = Path::new("/home/u/.cargo/bin/gray");
-    // Deliberately running an older build is the user's call, not a hazard.
-    assert!(divergence_warning(current, "0.1.1", Path::new("/opt/gray"), "0.1.0").is_none());
-    assert!(divergence_warning(current, "0.1.1", Path::new("/opt/gray"), "0.1.1").is_none());
+    // The candidate is never executed, so "older" cannot be established and
+    // the differing path is reported either way.
+    let w = divergence_warning(current, "0.1.1", Path::new("/opt/gray"))
+        .expect("a differing path must be reported");
+    assert!(w.contains("/opt/gray"), "{w}");
 }
 
 #[test]
 #[cfg(unix)] // spawns `#!/bin/sh` fakes; Windows cannot execute them
-fn divergence_guard_fires_when_a_newer_gray_wins_path() {
+fn divergence_guard_fires_when_a_different_gray_wins_path() {
     let dir = tempfile::tempdir().unwrap();
-    let stale = dir.path().join("stale");
-    let fresh = dir.path().join("fresh");
-    std::fs::create_dir_all(&stale).unwrap();
-    std::fs::create_dir_all(&fresh).unwrap();
-    write_fake_gray(&fresh.join("gray"), "9.9.9");
-    let path = std::env::join_paths([&fresh]).unwrap();
+    let first = dir.path().join("first");
+    std::fs::create_dir_all(&first).unwrap();
+    write_fake_gray(&first.join("gray"), "9.9.9");
+    let path = std::env::join_paths([&first]).unwrap();
 
     with_update_env(&[("PATH", Some(path.as_os_str().as_ref()))], || {
-        let w = path_divergence_warning().expect("newer gray first on PATH must warn");
-        assert!(w.contains("9.9.9"), "{w}");
-        assert!(w.contains(&*fresh.join("gray").to_string_lossy()), "{w}");
+        let w = path_divergence_warning().expect("a different gray first on PATH must warn");
+        assert!(w.contains(&*first.join("gray").to_string_lossy()), "{w}");
+        // Path-only: the candidate's version is never read, so it cannot appear.
+        assert!(!w.contains("9.9.9"), "{w}");
+        assert!(w.contains("relaunch `gray`"), "{w}");
     });
+}
 
-    // Same layout, nothing newer on PATH: silent.
-    write_fake_gray(&fresh.join("gray"), "0.0.1");
-    with_update_env(&[("PATH", Some(path.as_os_str().as_ref()))], || {
-        assert!(path_divergence_warning().is_none());
-    });
+/// The security contract: a PATH-resolved candidate is untrusted search-path
+/// output. Both guards must report it by path and never run it (CWE-426).
+#[test]
+#[cfg(unix)]
+fn path_guards_never_execute_the_path_candidate() {
+    let dir = tempfile::tempdir().unwrap();
+    let first = dir.path().join("first");
+    let installed = dir.path().join("installed");
+    std::fs::create_dir_all(&first).unwrap();
+    std::fs::create_dir_all(&installed).unwrap();
+    let sentinel = dir.path().join("ran");
+    std::fs::write(
+        first.join("gray"),
+        format!(
+            "#!/bin/sh\ntouch {}\necho 'gray 9.9.9'\n",
+            sentinel.display()
+        ),
+    )
+    .unwrap();
+    write_launcher(&first.join("gray"));
+    write_fake_gray(&installed.join("gray"), "0.1.1");
+    let path = std::env::join_paths([&first]).unwrap();
+
+    with_update_env(
+        &[
+            ("PATH", Some(path.as_os_str().as_ref())),
+            ("GRAY_INSTALL_DIR", Some(installed.as_path())),
+        ],
+        || {
+            assert!(
+                path_divergence_warning().is_some(),
+                "a differing candidate must still be reported"
+            );
+            assert!(
+                post_update_shadow_warning().is_some(),
+                "a shadowing candidate must still be reported"
+            );
+            assert!(
+                !sentinel.exists(),
+                "the PATH candidate was executed; it must only ever be named"
+            );
+        },
+    );
 }

@@ -11,19 +11,71 @@ fn base_url() -> String {
 }
 pub const CHANNEL: &str = env!("GRAY_CHANNEL");
 
-fn parse_version(v: &str) -> Option<(u64, u64, u64)> {
-    let mut it = v.trim().split(['-', '+']).next()?.split('.');
+/// Numeric triple plus prerelease identifiers, build metadata dropped.
+fn parse_version(v: &str) -> Option<(u64, u64, u64, Option<String>)> {
+    let v = v.trim();
+    let (core, pre) = match v.split_once('-') {
+        Some((core, pre)) => (core, Some(pre.split('+').next()?.to_string())),
+        None => (v.split('+').next()?, None),
+    };
+    let mut it = core.split('.');
     Some((
         it.next()?.parse().ok()?,
         it.next()?.parse().ok()?,
         it.next()?.parse().ok()?,
+        pre.filter(|p| !p.is_empty()),
     ))
 }
 
 fn is_newer(latest: &str, current: &str) -> bool {
     match (parse_version(latest), parse_version(current)) {
-        (Some(l), Some(c)) => l > c || (l == c && current.contains('-') && !latest.contains('-')),
+        (Some(l), Some(c)) => version_cmp(&l, &c) == std::cmp::Ordering::Greater,
         _ => false,
+    }
+}
+
+/// Full SemVer precedence (§ 11): a prerelease sorts below its release;
+/// identifiers compare numerically when both numeric, else lexically, with
+/// numeric below alphanumeric and fewer fields below more.
+fn version_cmp(
+    a: &(u64, u64, u64, Option<String>),
+    b: &(u64, u64, u64, Option<String>),
+) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    let core = (a.0, a.1, a.2).cmp(&(b.0, b.1, b.2));
+    if core != Ordering::Equal {
+        return core;
+    }
+    match (&a.3, &b.3) {
+        (None, None) => Ordering::Equal,
+        (None, Some(_)) => Ordering::Greater,
+        (Some(_), None) => Ordering::Less,
+        (Some(x), Some(y)) => cmp_prerelease(x, y),
+    }
+}
+
+fn cmp_prerelease(a: &str, b: &str) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    let mut ai = a.split('.');
+    let mut bi = b.split('.');
+    loop {
+        match (ai.next(), bi.next()) {
+            (None, None) => return Ordering::Equal,
+            (None, Some(_)) => return Ordering::Less,
+            (Some(_), None) => return Ordering::Greater,
+            (Some(x), Some(y)) => match (x.parse::<u64>(), y.parse::<u64>()) {
+                (Ok(nx), Ok(ny)) => match nx.cmp(&ny) {
+                    Ordering::Equal => continue,
+                    other => return other,
+                },
+                (Ok(_), Err(_)) => return Ordering::Less,
+                (Err(_), Ok(_)) => return Ordering::Greater,
+                (Err(_), Err(_)) => match x.cmp(y) {
+                    Ordering::Equal => continue,
+                    other => return other,
+                },
+            },
+        }
     }
 }
 
@@ -238,7 +290,9 @@ fn windows_installer_dest() -> Option<PathBuf> {
     )
 }
 
-/// `gray --version` of the binary at `path` ("gray 0.1.1" -> "0.1.1").
+/// `gray --version` of the binary at `path` ("gray 0.1.1" -> "0.1.1"). Only
+/// ever called on the installer's own destination: a PATH-resolved candidate
+/// is untrusted search-path output and is never executed (CWE-426).
 fn binary_version(path: &Path) -> Option<String> {
     let out = Command::new(path).arg("--version").output().ok()?;
     if !out.status.success() {
@@ -269,8 +323,27 @@ fn first_gray_in(entries: &[PathBuf]) -> Option<PathBuf> {
         gray_names()
             .iter()
             .map(|name| d.join(name))
-            .find(|c| c.is_file())
+            .find(|c| is_launcher(c))
     })
+}
+
+/// A launcher the shell would actually run. On Unix that means the executable
+/// bit: a plain data file named `gray` cannot shadow anything, so it must not
+/// raise a warning either. On Windows the name list carries the check
+/// (`gray.exe`, then `gray`).
+fn is_launcher(path: &Path) -> bool {
+    if !path.is_file() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::metadata(path).is_ok_and(|m| m.permissions().mode() & 0o111 != 0)
+    }
+    #[cfg(not(unix))]
+    {
+        true
+    }
 }
 
 /// The `gray` the next shell will actually launch.
@@ -293,26 +366,12 @@ fn same_binary(a: &Path, b: &Path) -> bool {
 
 /// Decision half of the post-update guard: `installed` is the build the
 /// installer just wrote, `resolved` the one a new shell launches instead.
-fn shadow_warning(
-    installed: &Path,
-    installed_version: &str,
-    resolved: &Path,
-    resolved_version: Option<&str>,
-) -> Option<String> {
+fn shadow_warning(installed: &Path, installed_version: &str, resolved: &Path) -> Option<String> {
     if same_binary(resolved, installed) {
         return None;
     }
-    // A different build that is already at least as new is not a shadow.
-    if let Some(v) = resolved_version
-        && !is_newer(installed_version, v)
-    {
-        return None;
-    }
-    let found = resolved_version
-        .map(|v| format!(" (gray {v})"))
-        .unwrap_or_default();
     Some(format!(
-        "⚠ {}{found} comes first on PATH and shadows the updated {} (gray {installed_version}) — new shells keep launching the old build\n  fix:  rm {}   (then open a new shell)",
+        "⚠ {} comes first on PATH and shadows the updated {} (gray {installed_version}) — new shells keep launching the old build\n  fix:  rm {}   (then open a new shell)",
         resolved.display(),
         installed.display(),
         resolved.display(),
@@ -325,15 +384,11 @@ fn shadow_warning(
 /// banner would never move.
 fn post_update_shadow_warning() -> Option<String> {
     let installed = installer_dest()?.join("gray");
+    // The installed build is the one the installer just wrote, so asking it
+    // for its version is the same trust the update itself already carries.
     let installed_version = binary_version(&installed)?;
     let resolved = first_gray_on_path()?;
-    let resolved_version = binary_version(&resolved);
-    shadow_warning(
-        &installed,
-        &installed_version,
-        &resolved,
-        resolved_version.as_deref(),
-    )
+    shadow_warning(&installed, &installed_version, &resolved)
 }
 
 /// Report a shadowed install: the update landed, but the next launch would not
@@ -346,22 +401,12 @@ fn warn_on_shadow() {
 
 /// Decision half of the startup guard: `current` is this process's binary,
 /// `resolved` the one a new shell launches instead.
-fn divergence_warning(
-    current: &Path,
-    running: &str,
-    resolved: &Path,
-    resolved_version: &str,
-) -> Option<String> {
+fn divergence_warning(current: &Path, running: &str, resolved: &Path) -> Option<String> {
     if same_binary(resolved, current) {
         return None;
     }
-    // Only worth a line when the shell is about to launch something newer:
-    // running an older build on purpose is the user's call.
-    if !is_newer(resolved_version, running) {
-        return None;
-    }
     Some(format!(
-        "⚠ {} is gray {resolved_version} and comes first on PATH — newer than this build (gray {running}, {})\n  relaunch `gray` to run it",
+        "⚠ {} comes first on PATH and is not this build (gray {running}, {}) — a new shell may launch a different gray\n  relaunch `gray` to run it",
         resolved.display(),
         current.display(),
     ))
@@ -373,13 +418,7 @@ fn divergence_warning(
 fn path_divergence_warning() -> Option<String> {
     let current = std::env::current_exe().ok()?;
     let resolved = first_gray_on_path()?;
-    let resolved_version = binary_version(&resolved)?;
-    divergence_warning(
-        &current,
-        env!("CARGO_PKG_VERSION"),
-        &resolved,
-        &resolved_version,
-    )
+    divergence_warning(&current, env!("CARGO_PKG_VERSION"), &resolved)
 }
 
 /// Report a PATH/build divergence. Cadence-free: callers gate it behind the
