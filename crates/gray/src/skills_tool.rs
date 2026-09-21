@@ -171,12 +171,6 @@ fn find_project_rules(cwd: &Path, gray_home: Option<&Path>) -> Option<PathBuf> {
 /// turn observes the file as it is on disk right now.
 pub struct ProjectContextPlugin;
 
-impl Default for ProjectContextPlugin {
-    fn default() -> Self {
-        ProjectContextPlugin
-    }
-}
-
 #[async_trait::async_trait]
 impl gray_plugin::Plugin for ProjectContextPlugin {
     fn manifest(&self) -> gray_plugin::Manifest {

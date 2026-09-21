@@ -223,7 +223,7 @@ pub async fn build_agent(
         // `tools-minimal`).
         extra_plugins: vec![
             Arc::new(crate::skills_tool::SkillsPlugin::default()),
-            Arc::new(crate::skills_tool::ProjectContextPlugin::default()),
+            Arc::new(crate::skills_tool::ProjectContextPlugin),
         ],
         host_handler: Some(host::default_handler(cwd.to_path_buf())),
         profile_path: "gray.yml".to_string(),
