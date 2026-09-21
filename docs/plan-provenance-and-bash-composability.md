@@ -1,7 +1,18 @@
 # Plan: memory provenance + bash composability
 
-Status: approved by the user (auto-approved, overnight run). Source: the
-`arxiv-mega/` compilation (2026-09-22), action items 3, 2a and 2b.
+Status: DONE. Track 1 landed as `fc45d57`, Track 2 as `38e502e`, both on PR
+#128 (released after v0.1.2 went out on main). Source: the `arxiv-mega/`
+compilation (2026-09-22), action items 3, 2a and 2b.
+
+Two things the plan got wrong, recorded so they are not repeated:
+
+1. The original suffix was `; printf ...`, which ended the command with *the
+   report's* exit status and turned every failure into a success. The
+   benign-exit table lost `grep`'s "no matches" note. Fixed by capturing
+   `$?` and re-raising it; regression test added.
+2. The cwd cell was keyed by session only, so a caller handing over a
+   different context cwd was silently overridden by a stale record. Fixed by
+   storing the base cwd the entry was captured against.
 
 ## Track 1 — memory provenance
 
