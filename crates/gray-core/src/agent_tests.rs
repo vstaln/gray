@@ -999,13 +999,45 @@ async fn context_overflow_compacts_once_then_continues() {
             .iter()
             .any(|e| *e == AgentEvent::text_delta("continued"))
     );
+    // Compaction is observable, not silent: one Compacted record whose
+    // after-counts are strictly smaller (arXiv:2512.22087 / 2601.16746
+    // accounting: token spend per task, not just the final score).
+    let compacted: Vec<_> = events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::Compacted {
+                tokens_before,
+                tokens_after,
+                messages_before,
+                messages_after,
+            } => Some((
+                *tokens_before,
+                *tokens_after,
+                *messages_before,
+                *messages_after,
+            )),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        compacted.len(),
+        1,
+        "exactly one compaction record: {compacted:?}"
+    );
+    let (tb, ta, mb, ma) = compacted[0];
+    assert!(ta < tb, "tokens shrink: {tb} -> {ta}");
+    assert!(ma < mb, "messages shrink: {mb} -> {ma}");
     let msgs = agent.messages();
     assert!(
-        msgs[0]
+        msgs[0].text_content().starts_with("bulk0:"),
+        "stable anchor leads: [anchor, summary, retained..., reply], got {:?}",
+        msgs[0].text_content().chars().take(60).collect::<String>()
+    );
+    assert!(
+        msgs[1]
             .text_content()
             .contains("compacted into the following summary"),
-        "pi order: [summary, retained..., reply], got {:?}",
-        msgs[0].text_content().chars().take(60).collect::<String>()
+        "summary follows the pinned anchor"
     );
     let summaries = msgs
         .iter()
@@ -1027,10 +1059,11 @@ async fn context_overflow_compacts_once_then_continues() {
         "the retry request ended on the user's turn, not on a canned ack"
     );
     assert!(
-        msgs[1..last - 1]
+        msgs[2..last - 1]
             .iter()
             .all(|m| m.text_content().starts_with("bulk")),
-        "everything between summary and prompt is retained history"
+        "everything between summary and prompt is retained history \
+         (index 0 is the pinned intent anchor, index 1 the summary)"
     );
 }
 
@@ -1396,10 +1429,15 @@ async fn provider_usage_triggers_pre_turn_compaction() {
 
     let msgs = agent.messages();
     assert!(
-        msgs[0]
+        msgs[0].text_content().starts_with("bulk0:"),
+        "190k reported of 200k must compact before the next request; \
+         the pinned intent leads the compacted transcript"
+    );
+    assert!(
+        msgs[1]
             .text_content()
             .contains("compacted into the following summary"),
-        "190k reported of 200k must compact before the next request"
+        "summary follows the pinned anchor"
     );
     assert_eq!(
         msgs.last().map(Message::text_content).as_deref(),

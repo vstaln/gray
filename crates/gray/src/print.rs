@@ -111,6 +111,24 @@ pub fn render_event_with_context<W: Write>(
             w.flush()
         }
         AgentEvent::StepUsage { .. } => Ok(()),
+        // Compaction is observable, not silent: one dim accounting line per
+        // history rewrite (arXiv:2512.22087 / 2601.16746).
+        AgentEvent::Compacted {
+            tokens_before,
+            tokens_after,
+            messages_before,
+            messages_after,
+        } => {
+            writeln!(
+                w,
+                "\n\x1b[2m\u{21bb} compacted {} \u{2192} {} tok ({} \u{2192} {} messages)\x1b[0m",
+                crate::repl::fmt_usage(*tokens_before),
+                crate::repl::fmt_usage(*tokens_after),
+                messages_before,
+                messages_after,
+            )?;
+            w.flush()
+        }
         // Codex steal: retry notices go to the same stream, dim, never fatal.
         AgentEvent::StreamError { message, details } => {
             // Provider retry notices can echo request details: scrub first.
@@ -329,6 +347,7 @@ impl JsonOutput {
             AgentEvent::ToolCallStart { .. } => "tool_started",
             AgentEvent::ToolResult { .. } => "tool_finished",
             AgentEvent::StreamError { .. } => "provider_retry",
+            AgentEvent::Compacted { .. } => "compacted",
             AgentEvent::TurnEnd { usage, .. } => {
                 self.usage = *usage;
                 "persisting"

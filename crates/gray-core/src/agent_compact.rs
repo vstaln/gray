@@ -81,11 +81,36 @@ impl Agent {
         if summary.trim().is_empty() {
             return Ok(None);
         }
-        // Stage 2: retained newest history within budget (computed above).
-        let retained = build_retained(&candidate, budget);
-        // Stage 3 (pi `buildSessionContext`): summary first, retained tail
-        // after it, so the request still ends on the tail's user/tool turn.
-        let mut next = vec![summary_message(&summary)];
+        // Stage 1.5 (arXiv:2512.22087 stable anchor): the original user
+        // intent is a fixed segment that survives every compaction, pinned
+        // ahead of the summary. Its tokens come out of the retained budget;
+        // a copy the retained walk kept anyway is pulled out, so the intent
+        // is pinned exactly once.
+        let anchor = crate::compact::anchor_message(&candidate);
+        let anchor_tokens = anchor
+            .as_ref()
+            .map(crate::agent_compact::estimate_message_tokens)
+            .unwrap_or(0);
+        // An anchor at or over the whole budget would crowd out every
+        // retained message; skip pinning rather than starve the tail.
+        let pin_anchor = anchor.is_some() && anchor_tokens < budget;
+        // Stage 2: retained newest history within budget (computed above),
+        // minus whatever the pinned anchor spends.
+        let retained_budget = budget.saturating_sub(if pin_anchor { anchor_tokens } else { 0 });
+        let mut retained = build_retained(&candidate, retained_budget);
+        // Stage 3 (pi `buildSessionContext`): [anchor,] summary, retained
+        // tail, so the request still ends on the tail's user/tool turn.
+        let mut next = Vec::with_capacity(retained.len() + 2);
+        if pin_anchor {
+            let anchor = anchor.expect("pin_anchor implies Some");
+            // The newest-first walk can circle all the way back to the
+            // oldest messages when the middle groups do not fit the budget,
+            // keeping the intent inside the tail. Pull it out so it is
+            // pinned exactly once — at the front, as the fixed segment.
+            retained.retain(|m| m != &anchor);
+            next.push(anchor);
+        }
+        next.push(summary_message(&summary));
         next.extend(retained);
         // Enforced shrink: a replacement that is not strictly smaller is not
         // a compaction — leave history untouched so both the pre-turn retry

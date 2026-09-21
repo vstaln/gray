@@ -228,8 +228,17 @@ impl Agent {
                 // history, so re-check without looping forever. Errors finalize
                 // the turn first: no silent exit without turn_end.
                 while needs_pre_turn_compact(self.estimate_tokens(), self.context_window) {
+                    let before = (self.estimate_tokens(), self.messages.len());
                     match self.try_compact_budgeted().await {
-                        Ok(true) => continue,
+                        Ok(true) => {
+                            emit!(AgentEvent::compacted(
+                                before.0,
+                                self.estimate_tokens(),
+                                before.1,
+                                self.messages.len()
+                            ));
+                            continue;
+                        }
                         Ok(false) => break,
                         Err(e) => {
                             self.emit_turn_end(&billed).await;
@@ -431,8 +440,15 @@ impl Agent {
                             // compaction pipeline, then retry the turn;
                             // otherwise surface the error.
                             if e.should_compress() {
+                                let before = (self.estimate_tokens(), self.messages.len());
                                 match self.try_compact_budgeted().await {
                                     Ok(true) => {
+                                        emit!(AgentEvent::compacted(
+                                            before.0,
+                                            self.estimate_tokens(),
+                                            before.1,
+                                            self.messages.len()
+                                        ));
                                         continue 'turn;
                                     }
                                     _ => {

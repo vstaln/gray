@@ -229,6 +229,17 @@ pub enum AgentEvent {
         stop_reason: StopReason,
         usage: Usage,
     },
+    /// In-loop compaction rewrote history (pre-turn budget or overflow
+    /// recovery). Estimates before/after the rewrite — the accounting a
+    /// trajectory needs to reason about context management
+    /// (arXiv:2512.22087, arXiv:2601.16746: token spend per task, not just
+    /// the final score).
+    Compacted {
+        tokens_before: usize,
+        tokens_after: usize,
+        messages_before: usize,
+        messages_after: usize,
+    },
 }
 
 impl AgentEvent {
@@ -287,6 +298,21 @@ impl AgentEvent {
     /// Creates a turn end event.
     pub fn turn_end(stop_reason: StopReason, usage: Usage) -> Self {
         Self::TurnEnd { stop_reason, usage }
+    }
+
+    /// Creates a compaction record for one history rewrite.
+    pub fn compacted(
+        tokens_before: usize,
+        tokens_after: usize,
+        messages_before: usize,
+        messages_after: usize,
+    ) -> Self {
+        Self::Compacted {
+            tokens_before,
+            tokens_after,
+            messages_before,
+            messages_after,
+        }
     }
 
     /// Creates a stream-error / retry notice (Codex `StreamErrorEvent`).

@@ -56,6 +56,12 @@ pub(crate) fn image_block_tokens(_media_type: &str, base64_len: usize) -> usize 
 // Task-neutral wording, no domain (coding or otherwise) assumed: keep
 // outcomes/decisions/open questions, omit superseded detail, and by default
 // the summary adds no domain instructions.
+/// Opening words of the [`summary_message`] envelope. A transcript whose
+/// second message carries this prefix was compacted before and its first
+/// message is the pinned intent anchor (see [`anchor_message`]).
+pub(crate) const SUMMARY_ENVELOPE_PREFIX: &str =
+    "The conversation history before this point was compacted into the following summary:";
+
 // guidance shape from @howaboua/pi-auto-trees (MIT)
 pub(crate) const COMPACTION_TRIGGER: &str = "Compact this conversation for context compaction: reply with ONLY a concise summary keeping the outcomes, decisions and open questions that matter for continuing this conversation; omit superseded detail. Default adds no domain instructions. No tool calls.";
 
@@ -317,3 +323,34 @@ fn split_head_tail(s: &str, usable: usize) -> (&str, &str) {
 #[path = "compact_mod_tests.rs"]
 #[cfg(test)]
 mod tests;
+
+/// The stable anchor for compaction: the session's original user intent.
+///
+/// arXiv:2512.22087 ("Context as a Tool") splits a long-horizon agent's
+/// context into a fixed segment — system prompt plus key user intent — and
+/// evolving memory. Gray's compaction-v2 pipeline kept only the summary and
+/// a newest-first tail, so the original request could fall out of context
+/// entirely and the agent drifted from what it was asked to do. This
+/// recovers the intent from the transcript: the first message when it is a
+/// plain user turn, or the already-pinned first message when the transcript
+/// was compacted before (recognized by the summary envelope at index 1).
+/// Returns `None` for transcripts that do not start on a user turn.
+pub(crate) fn anchor_message(messages: &[Message]) -> Option<Message> {
+    let first = messages.first()?;
+    if first.role != Role::User {
+        return None;
+    }
+    // Index 0 is the intent in both transcript shapes. In a compacted
+    // transcript it is the anchor pinned by the previous compaction (the
+    // envelope at index 1 is the tell), so re-pinning reuses the ORIGINAL
+    // intent rather than promoting the old summary to the fixed segment.
+    match messages.get(1) {
+        Some(second) if is_summary_message(second) => Some(first.clone()),
+        _ => Some(first.clone()),
+    }
+}
+
+/// True when `m` is a compaction summary envelope (see [`summary_message`]).
+pub(crate) fn is_summary_message(m: &Message) -> bool {
+    m.role == Role::User && m.text_content().starts_with(SUMMARY_ENVELOPE_PREFIX)
+}
