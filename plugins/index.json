@@ -1,0 +1,43 @@
+{
+  "plugins": {
+    "background": {
+      "ecosystem": "gray-native",
+      "version": "0.1.0",
+      "source": {
+        "type": "tarball",
+        "url": "https://github.com/vstaln/gray/releases/download/plugins-v0.1.0/gray-background-0.1.0.tar.gz"
+      },
+      "hash": "sha256:FILL_SHA256",
+      "scope": "user",
+      "description": "Standalone background runner and process monitor for Gray sidecars and workers.",
+      "homepage": "https://github.com/vstaln/gray/tree/main/plugins/background",
+      "commands": ["/bg"]
+    },
+    "discord": {
+      "ecosystem": "gray-native",
+      "version": "0.1.0",
+      "source": {
+        "type": "tarball",
+        "url": "https://github.com/vstaln/gray/releases/download/plugins-v0.1.0/graydiscord-0.1.0.tar.gz"
+      },
+      "hash": "sha256:FILL_SHA256",
+      "scope": "user",
+      "description": "Discord bridge integration for Gray agents, streaming replies and command execution.",
+      "homepage": "https://github.com/vstaln/gray/tree/main/plugins/discord",
+      "commands": ["/discord"]
+    },
+    "permissions": {
+      "ecosystem": "gray-native",
+      "version": "0.1.0",
+      "source": {
+        "type": "tarball",
+        "url": "https://github.com/vstaln/gray/releases/download/plugins-v0.1.0/gray-permissions-0.1.0.tar.gz"
+      },
+      "hash": "sha256:FILL_SHA256",
+      "scope": "user",
+      "description": "Fine-grained security, capability gating, and permission controls for Gray commands.",
+      "homepage": "https://github.com/vstaln/gray/tree/main/plugins/permissions",
+      "commands": ["/perms"]
+    }
+  }
+}

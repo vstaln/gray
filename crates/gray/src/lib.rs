@@ -171,7 +171,7 @@ pub async fn build_agent(
 ) -> anyhow::Result<gray_core::agent::Agent> {
     let Some(model) = &config.model else {
         anyhow::bail!(
-            "no model configured yet — run /provider (or set --model <provider/model>), then try again"
+            "no model configured yet — run /connect to set up your provider & key (or /model provider/id; /help for all commands)"
         );
     };
     // Keyless upstreams (free tiers, local servers) run with an empty key.
