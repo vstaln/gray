@@ -47,3 +47,25 @@ __pycache__/
 
 # arxiv research corpus (never commit)
 /papers/
+
+# local scan / bench scratch (never commit)
+# Why: 862b952 committed the Jev simplification scan into history — the
+# API-key-gated scripts, ~1.17M tokens of raw judgments and the vendored
+# TypeSafe skill. Nothing under crates/ reads them; they are working notes,
+# not repo assets, so the paths are purged from history and blocked here.
+/SIMPLIFY_*.md
+/typesafe_*
+/skills-lock.json
+/. agents/
+
+# sibling scratch (never stage, per
+# docs/superpowers/plans/2026-09-18-questions-permissions-plugins.md)
+/calculator.html
+/graydemos/
+/text_*.json
+/readthisagent.md
+/OVERNIGHT-PLAN.md
+/HANDOFF-*.md
+
+# arxiv research corpora stay local, like /papers/ above
+/arxiv-mega/
