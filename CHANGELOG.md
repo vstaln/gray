@@ -2,6 +2,27 @@
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-09-22
+
+### Added
+
+- Onboarding points at one place: a run with no model configured, and `/model`
+  with nothing set, both say `run /connect to set up your provider & key` (with
+  `/model provider/id` and `/help` as the alternates) instead of naming
+  `/provider`, which `/help` never listed.
+
+- Official plugins now ship in this monorepo under `plugins/` rather than a
+  separate `grayplugins` repo, so `gray plugin install <name>` can never point
+  at a repo that does not exist. Each directory is one sidecar — a single
+  `plugin.sh` speaking protocol v1 NDJSON over stdio, with `echo/` as the
+  reference implementation — and `plugins/index.json` is the catalog
+  `gray plugin install` reads. Push tag `plugins-v<version>` (which must equal
+  every manifest's `version`) to run `plugins-release.yml`: it syntax-checks
+  each sidecar, tarballs the directories, and publishes a `plugins-v<version>`
+  release with `SHA256SUMS-plugins`. `discord/`, `background/` and
+  `permissions/` are scaffolds until the real bridge/runner/gate logic is
+  ported in — each file's TODO says where.
+
 ### Fixed
 
 - Compaction pinned the stable anchor by *value*: the retained tail was
