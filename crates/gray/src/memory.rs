@@ -173,8 +173,10 @@ impl MemoryStore {
             .sum()
     }
 
-    /// Every entry in the scope as (key, text), sorted by key. A missing or
-    /// unreadable store reads as empty (a missing store *is* an empty store).
+    /// Every entry in the scope as (key, text), sorted by key. A missing
+    /// store reads as empty (a missing store *is* an empty store); a store
+    /// that exists but cannot be read or parsed returns the error, leaving
+    /// the caller to say so rather than reporting an empty scope.
     /// Text is returned whole: callers decide how much to show.
     pub fn entries(&self, scope: Scope) -> anyhow::Result<Vec<(String, String)>> {
         Ok(self.read_store(scope)?.entries.into_iter().collect())

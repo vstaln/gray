@@ -59,7 +59,15 @@ impl Agent {
         // call (provider error, blank summary, non-shrinking result) leaves
         // the live history byte-identical — the single swap below is the
         // only write to `self.messages`.
-        let candidate = self.messages.clone();
+        //
+        // The candidate is the *scrubbed* view (arXiv:2605.08563): a
+        // contaminated salvaged partial rides the compaction trigger as the
+        // one-line marker, never as its own text, so the summary the provider
+        // writes cannot carry the failed trajectory forward into every later
+        // request. `self.messages` itself is untouched — the transcript keeps
+        // what the user saw, and the shrink check below still measures the
+        // real history this call replaces.
+        let candidate = self.scrubbed_messages();
         // Retained budget first (v2 + adaptation #2): min(64k, window−16k
         // reserve); unknown window keeps the 64k ceiling. Callers (the user
         // keep-recent setting) may override it.
@@ -99,8 +107,21 @@ impl Agent {
         // elide to citation stubs naming this session's transcript
         // (arXiv:2607.25066) instead of dropping without a trace.
         let retained_budget = budget.saturating_sub(if pin_anchor { anchor_tokens } else { 0 });
-        let mut retained = crate::compact::build_retained_with_session(
-            &candidate,
+        // The anchor IS `candidate[0]`, so the walk starts past it rather than
+        // pulling it back out afterwards. Excluding it by position, not by
+        // value, is the whole point: a `retain(|m| m != &anchor)` deleted
+        // *every* message equal to the intent, so a user turn that
+        // legitimately repeated the prompt later in the conversation vanished
+        // from the tail (and the request stopped ending on a user turn).
+        // Starting past index 0 also stops the anchor's tokens being charged
+        // to both the pinned segment and the tail.
+        let walk = if pin_anchor {
+            &candidate[1..]
+        } else {
+            &candidate[..]
+        };
+        let retained = crate::compact::build_retained_with_session(
+            walk,
             retained_budget,
             self.session_id.as_deref(),
         );
@@ -108,13 +129,7 @@ impl Agent {
         // tail, so the request still ends on the tail's user/tool turn.
         let mut next = Vec::with_capacity(retained.len() + 2);
         if pin_anchor {
-            let anchor = anchor.expect("pin_anchor implies Some");
-            // The newest-first walk can circle all the way back to the
-            // oldest messages when the middle groups do not fit the budget,
-            // keeping the intent inside the tail. Pull it out so it is
-            // pinned exactly once — at the front, as the fixed segment.
-            retained.retain(|m| m != &anchor);
-            next.push(anchor);
+            next.push(anchor.expect("pin_anchor implies Some"));
         }
         next.push(summary_message(&summary));
         next.extend(retained);
