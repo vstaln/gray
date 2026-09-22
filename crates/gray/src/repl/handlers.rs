@@ -595,7 +595,7 @@ pub(crate) async fn handle_model(
         match config.model.as_deref() {
             Some(m) => println!("model {m} — /model provider/id to switch"),
             None => {
-                println!("no model configured — /model provider/id to set (or /provider to browse)")
+                println!("no model configured — run /connect to set up provider & key (or /model provider/id; /help)")
             }
         }
         return;

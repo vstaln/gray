@@ -1,0 +1,49 @@
+name: plugins-release
+
+# Official sidecar tarballs, built from ./plugins (no grayplugins repo needed).
+# Push a tag plugins-v<version> (must match the "version" in each manifest
+# below) to create GitHub Release plugins-v<version> with:
+#   graydiscord-0.1.0.tar.gz, gray-background-0.1.0.tar.gz,
+#   gray-permissions-0.1.0.tar.gz (+ .sha256 each).
+# Then copy plugins/index.json to the site, replacing FILL_SHA256 with the
+# real digests from the release.
+on:
+  push:
+    tags:
+      - "plugins-v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: check tag matches manifests
+        shell: bash
+        run: |
+          set -eu
+          want="${GITHUB_REF_NAME#plugins-v}"
+          for p in discord background permissions; do
+            ver=$(sed -n 's/.*"version":"\([^"]*\)".*/\1/p' "plugins/$p/plugin.sh" | head -1)
+            [ "$ver" = "$want" ] || { echo "plugins/$p version $ver != tag $want"; exit 1; }
+            sh -n "plugins/$p/plugin.sh"
+          done
+      - name: build tarballs
+        shell: bash
+        run: |
+          set -eu
+          want="${GITHUB_REF_NAME#plugins-v}"
+          mkdir -p dist
+          (cd plugins/discord && tar czf "../../dist/graydiscord-${want}.tar.gz" plugin.sh)
+          (cd plugins/background && tar czf "../../dist/gray-background-${want}.tar.gz" plugin.sh)
+          (cd plugins/permissions && tar czf "../../dist/gray-permissions-${want}.tar.gz" plugin.sh)
+          (cd dist && shasum -a 256 -- *.tar.gz > SHA256SUMS-plugins)
+          cat dist/SHA256SUMS-plugins
+      - name: create release
+        shell: bash
+        run: |
+          gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" \
+            dist/graydiscord-*.tar.gz dist/gray-background-*.tar.gz \
+            dist/gray-permissions-*.tar.gz dist/SHA256SUMS-plugins
