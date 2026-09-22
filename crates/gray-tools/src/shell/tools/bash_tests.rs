@@ -40,6 +40,24 @@ fn shell_dir_respects_gray_home() {
     assert_eq!(d.file_name().and_then(|s| s.to_str()), Some("shell"));
 }
 
+/// Run `pwd` and return the raw output, for the cwd tests.
+async fn tool_pwd(tool: &BashTool, ctx: &ToolContext) -> gray_core::agent::ToolOutput {
+    tool.execute(ctx, json!({"command": "pwd"})).await
+}
+
+/// The command's own output, out of the fenced block the tool wraps it in.
+fn body(content: &str) -> String {
+    content
+        .lines()
+        .skip_while(|l| !l.contains("<untrusted-output>"))
+        .skip(1)
+        .take_while(|l| !l.contains("</untrusted-output>"))
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim()
+        .to_owned()
+}
+
 #[tokio::test]
 async fn echo_returns_exit_zero_with_output() {
     let session = sess("echo");
@@ -384,5 +402,166 @@ async fn cat_image_keeps_full_resolution() {
         decoded.dimensions(),
         (2400, 100),
         "cat must send full resolution, not the 2000px downscale"
+    );
+}
+
+#[tokio::test]
+async fn a_cd_carries_into_the_next_command_in_the_same_session() {
+    // A subdirectory of the session's own cwd, not an absolute path: Git Bash
+    // speaks MSYS paths, so handing it a Windows `C:/...` path is exactly the
+    // trap the windows-runtime job exists to catch. The behaviour under test
+    // is the same either way.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut ctx = ctx_for(&sess("cd"));
+    ctx.cwd = dir.path().to_path_buf();
+
+    let before = body(&tool_pwd(&BashTool::default(), &ctx).await.content);
+    let tool = BashTool::default();
+    let r = tool
+        .execute(&ctx, json!({"command": "mkdir -p sub && cd sub"}))
+        .await;
+    assert!(!r.is_error, "{}", r.content);
+    let after = body(&tool_pwd(&tool, &ctx).await.content);
+
+    assert_ne!(
+        before, after,
+        "the cd did not carry into the next command: {before} -> {after}"
+    );
+    assert!(
+        after.ends_with("/sub") || after.ends_with("\\sub"),
+        "expected the subdirectory, got {after}"
+    );
+}
+
+#[tokio::test]
+async fn the_cwd_report_never_leaks_into_the_output() {
+    // The report goes to a file, so stdout — and the durable log — are exactly
+    // what the command produced.
+    let tool = BashTool::default();
+    let ctx = ctx_for(&sess("leak"));
+    let r = tool.execute(&ctx, json!({"command": "echo hello"})).await;
+    assert!(!r.is_error, "{}", r.content);
+    // The only output is what the command produced: no sentinel, no path.
+    assert!(!r.content.contains("GRAY_CWD_REPORT"), "{}", r.content);
+    assert!(!r.content.contains("$PWD"), "{}", r.content);
+    assert!(!r.content.contains("gray-cwd-"), "{}", r.content);
+    let body = r
+        .content
+        .lines()
+        .skip_while(|l| !l.contains("<untrusted-output>"))
+        .skip(1)
+        .take_while(|l| !l.contains("</untrusted-output>"))
+        .collect::<Vec<_>>();
+    assert_eq!(body, ["hello"], "{}", r.content);
+}
+
+#[tokio::test]
+async fn a_deleted_directory_falls_back_to_the_context_cwd() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut ctx = ctx_for(&sess("gone"));
+    ctx.cwd = dir.path().to_path_buf();
+    let tool = BashTool::default();
+    let r = tool
+        .execute(&ctx, json!({"command": "mkdir -p sub && cd sub"}))
+        .await;
+    assert!(!r.is_error, "{}", r.content);
+    drop(dir); // the directory vanishes under the recorded cwd
+
+    // The session must still run, from whatever the caller now hands over.
+    let mut fresh = ctx.clone();
+    fresh.cwd = std::env::temp_dir();
+    let out = tool_pwd(&tool, &fresh).await;
+    assert!(
+        !out.is_error,
+        "a vanished cwd must not wedge the session: {}",
+        out.content
+    );
+}
+
+#[tokio::test]
+async fn two_sessions_do_not_share_a_working_directory() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut a = ctx_for(&sess("iso-a"));
+    a.cwd = dir.path().to_path_buf();
+    let mut b = ctx_for(&sess("iso-b"));
+    b.cwd = dir.path().to_path_buf();
+    let tool = BashTool::default();
+
+    let r = tool
+        .execute(&a, json!({"command": "mkdir -p sub && cd sub"}))
+        .await;
+    assert!(!r.is_error, "{}", r.content);
+    let ra = body(&tool_pwd(&tool, &a).await.content);
+    let rb = body(&tool_pwd(&tool, &b).await.content);
+
+    assert!(
+        ra.ends_with("/sub") || ra.ends_with("\\sub"),
+        "session a should have moved: {ra}"
+    );
+    assert_ne!(
+        ra, rb,
+        "session b must not inherit session a's directory: {rb}"
+    );
+}
+
+#[test]
+fn the_cwd_report_suffix_is_appended_not_substituted() {
+    let wrapped = with_cwd_report("echo hi");
+    assert!(wrapped.starts_with("echo hi"), "{wrapped}");
+    assert!(wrapped.contains("$GRAY_CWD_REPORT"), "{wrapped}");
+    // A command ending in a comment swallows the suffix, so nothing is
+    // reported and the cwd simply stays put.
+    let commented = with_cwd_report("echo hi # note");
+    assert!(commented.starts_with("echo hi # note"), "{commented}");
+}
+
+#[test]
+fn the_cwd_report_asks_for_a_path_rust_can_resolve() {
+    // The report is read back with PathBuf::is_dir, so it must arrive in a form
+    // Rust can resolve on the platform that produced it.
+    let wrapped = with_cwd_report("echo hi");
+    #[cfg(windows)]
+    assert!(
+        wrapped.contains("pwd -W"),
+        "Git Bash's plain pwd is an MSYS path Rust rejects: {wrapped}"
+    );
+    #[cfg(not(windows))]
+    assert!(wrapped.contains("$PWD"), "{wrapped}");
+}
+
+#[tokio::test]
+async fn the_cwd_report_does_not_mask_the_commands_exit_code() {
+    // The suffix must re-raise the command's own status: ending on the
+    // report's `printf` would turn every failure into a success and cost the
+    // benign-exit table its "no matches" note.
+    let tool = BashTool::default();
+    let ctx = ctx_for(&sess("exit"));
+    let r = tool
+        .execute(
+            &ctx,
+            json!({"command": "grep zzz_no_such_match_xyz /dev/null"}),
+        )
+        .await;
+    assert!(!r.is_error, "{}", r.content);
+    assert!(
+        r.content.lines().next().unwrap_or("").contains("exit 1"),
+        "{}",
+        r.content
+    );
+    assert!(r.content.contains("no matches"), "{}", r.content);
+
+    let r = tool.execute(&ctx, json!({"command": "exit 3"})).await;
+    assert!(
+        r.content.lines().next().unwrap_or("").contains("exit 3"),
+        "{}",
+        r.content
+    );
+
+    // And a success still reports success.
+    let r = tool.execute(&ctx, json!({"command": "true"})).await;
+    assert!(
+        r.content.lines().next().unwrap_or("").contains("exit 0"),
+        "{}",
+        r.content
     );
 }

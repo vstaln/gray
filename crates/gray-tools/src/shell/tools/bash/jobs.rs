@@ -38,6 +38,7 @@ impl Jobs {
         ctx: &ToolContext,
         command: String,
         secs: Option<u64>,
+        cwd: std::path::PathBuf,
         window: Duration,
     ) -> ToolOutput {
         let (id, mut result) = {
@@ -67,7 +68,7 @@ impl Jobs {
             let log = log_path(ctx);
             let id = log.file_stem().unwrap().to_string_lossy().into_owned();
             let started = Instant::now();
-            let spawned = match spawn(&command, &ctx.cwd) {
+            let spawned = match spawn(&command, &cwd, ctx.session_id.as_deref(), None) {
                 Ok(s) => s,
                 Err(e) => return fail(format!("failed to spawn `sh -c`: {e}")),
             };
@@ -472,6 +473,7 @@ mod tests {
                 &ctx,
                 "echo should-not-start".into(),
                 Some(30),
+                std::path::PathBuf::from("."),
                 Duration::ZERO,
             )
             .await;
@@ -490,6 +492,7 @@ mod tests {
                 &ctx,
                 "echo should-not-start".into(),
                 Some(30),
+                std::path::PathBuf::from("."),
                 Duration::ZERO,
             )
             .await;
@@ -507,9 +510,15 @@ mod tests {
             j.yielded = false;
         }
         assert!(
-            jobs.start(&ctx, "true".into(), Some(30), Duration::ZERO)
-                .await
-                .is_error
+            jobs.start(
+                &ctx,
+                "true".into(),
+                Some(30),
+                std::path::PathBuf::from("."),
+                Duration::ZERO
+            )
+            .await
+            .is_error
         );
         jobs.0.lock().unwrap().get_mut("0").unwrap().yielded = true;
         let out = jobs
@@ -517,6 +526,7 @@ mod tests {
                 &ctx,
                 "echo admitted".into(),
                 Some(30),
+                std::path::PathBuf::from("."),
                 Duration::from_secs(10),
             )
             .await;
