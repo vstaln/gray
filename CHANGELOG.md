@@ -2,6 +2,46 @@
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-09-22
+
+### Added
+
+- Onboarding points at one place: a run with no model configured, and `/model`
+  with nothing set, both say `run /connect to set up your provider & key` (with
+  `/model provider/id` and `/help` as the alternates) instead of naming
+  `/provider`, which `/help` never listed.
+
+- Official plugins now ship in this monorepo under `plugins/` rather than a
+  separate `grayplugins` repo, so `gray plugin install <name>` can never point
+  at a repo that does not exist. Each directory is one sidecar — a single
+  `plugin.sh` speaking protocol v1 NDJSON over stdio, with `echo/` as the
+  reference implementation — and `plugins/index.json` is the catalog
+  `gray plugin install` reads. Push tag `plugins-v<version>` (which must equal
+  every manifest's `version`) to run `plugins-release.yml`: it syntax-checks
+  each sidecar, tarballs the directories, and publishes a `plugins-v<version>`
+  release with `SHA256SUMS-plugins`. `discord/`, `background/` and
+  `permissions/` are scaffolds until the real bridge/runner/gate logic is
+  ported in — each file's TODO says where.
+
+### Fixed
+
+- Compaction pinned the stable anchor by *value*: the retained tail was
+  filtered with `retain(|m| m != &anchor)`, which deleted **every** message
+  equal to the original intent — including a later turn that legitimately
+  repeated the prompt — and left the request ending on an assistant message
+  instead of a user turn. The walk now starts past `candidate[0]`, the
+  anchor's own position, so only that one copy is excluded. As a side effect
+  the anchor's tokens are no longer charged to both the pinned segment and
+  the tail (arXiv:2512.22087).
+
+- The context-overflow path compacted the *unscrubbed* history: a salvaged
+  partial that the CCRM scrub (arXiv:2605.08563) had flagged rode the
+  compaction trigger in full, so the failed trajectory was baked into the
+  summary and reached every later request — exactly what the scrub exists to
+  prevent. The scrub is now one view (`Agent::scrubbed_messages`) shared by
+  the outbound request and the compaction input, so both carry the one-line
+  marker. The persisted transcript still keeps the full text the user saw.
+
 ## [0.1.2] - 2026-09-22
 
 ### Added

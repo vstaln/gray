@@ -28,6 +28,29 @@ const MAX_CONTINUATIONS: u8 = 2;
 pub(crate) const CONTAMINATED_SCRUB_MARKER: &str =
     "(previous attempt was cut off by a stream error; partial output omitted — start fresh)";
 
+impl Agent {
+    /// History as the model is allowed to see it: contaminated salvaged
+    /// partials (arXiv:2605.08563) replaced by the one-line scrub marker.
+    ///
+    /// `self.messages` — and so the persisted transcript — keeps the full
+    /// text the user saw; only outbound requests and the compaction input
+    /// use this view. Compaction has to run on the same view: summarizing the
+    /// *unscrubbed* history baked the failed partial into the summary that
+    /// every later request then reads, which is exactly the broken trajectory
+    /// the scrub exists to keep out of the model's hands. The marker keeps
+    /// the assistant role so call/result pairing and role alternation are
+    /// untouched.
+    pub(crate) fn scrubbed_messages(&self) -> Vec<Message> {
+        let mut msgs = self.messages.clone();
+        for &idx in &self.contaminated {
+            if let Some(m) = msgs.get_mut(idx) {
+                *m = Message::assistant(CONTAMINATED_SCRUB_MARKER);
+            }
+        }
+        msgs
+    }
+}
+
 /// True when a message carries no billable input: empty content, or nothing
 /// but blank `Text` blocks. Any non-text block (image, tool use/result,
 /// thinking) counts as input — never silently dropped.
@@ -257,18 +280,11 @@ impl Agent {
                     }
                 }
             }
-            let mut request_messages = self.messages.clone();
             // CCRM scrub (arXiv:2605.08563): contaminated partials stay in
             // `self.messages` (and so in the persisted transcript) but never
             // ride an outbound request — the retry starts from a clean
-            // context with a one-line marker where the failure was. The
-            // marker keeps the assistant role so call/result pairing and
-            // role alternation are untouched.
-            for &idx in &self.contaminated {
-                if let Some(m) = request_messages.get_mut(idx) {
-                    *m = Message::assistant(CONTAMINATED_SCRUB_MARKER);
-                }
-            }
+            // context with a one-line marker where the failure was.
+            let mut request_messages = self.scrubbed_messages();
             if request_messages
                 .last()
                 .is_some_and(|message| message.role == Role::Assistant)

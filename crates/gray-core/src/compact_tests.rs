@@ -1,5 +1,6 @@
 use super::*;
 use crate::agent::{Agent, Provider, ProviderStream, ToolContext, ToolExecutor, ToolOutput};
+use crate::agent_loop::CONTAMINATED_SCRUB_MARKER;
 use crate::event::StreamEvent;
 use crate::message::{ChatRequest, ContentBlock, Role};
 use async_trait::async_trait;
@@ -22,6 +23,43 @@ impl Provider for SummaryProvider {
             Ok(StreamEvent::message_complete(None, None)),
         ]))
     }
+}
+
+/// Provider that records every request it is handed. The compaction trigger
+/// is one such request, so a test can assert on what the summarizer saw.
+struct RecordingProvider {
+    text: String,
+    seen: std::sync::Arc<std::sync::Mutex<Vec<Vec<Message>>>>,
+}
+
+#[async_trait]
+impl Provider for RecordingProvider {
+    fn stream(&self, req: ChatRequest) -> ProviderStream {
+        self.seen
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(req.messages.clone());
+        let text = self.text.clone();
+        Box::pin(futures::stream::iter(vec![
+            Ok(StreamEvent::text_delta(text)),
+            Ok(StreamEvent::message_complete(None, None)),
+        ]))
+    }
+}
+
+/// An agent whose compaction trigger is recorded, plus the recorder.
+fn recording_agent(
+    summary_text: &str,
+) -> (Agent, std::sync::Arc<std::sync::Mutex<Vec<Vec<Message>>>>) {
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let agent = Agent::new(
+        Box::new(RecordingProvider {
+            text: summary_text.to_string(),
+            seen: std::sync::Arc::clone(&seen),
+        }),
+        Arc::new(NoopExecutor),
+    );
+    (agent, seen)
 }
 
 struct NoopExecutor;
@@ -348,5 +386,108 @@ async fn anchor_leads_even_when_the_walk_circles_back() {
             .count(),
         1,
         "the intent is pinned exactly once"
+    );
+}
+
+#[tokio::test]
+async fn a_repeated_prompt_survives_in_the_tail() {
+    // Regression: the pinned anchor was pulled out of the tail by *value*
+    // (`retain(|m| m != &anchor)`), so a later turn that legitimately
+    // repeated the prompt was deleted along with the copy the retained walk
+    // circled back to — and the request stopped ending on a user turn.
+    // Excluding `candidate[0]` by position keeps that later turn.
+    let mut agent = test_agent("LIVE-SUM").with_context_window(Some(16_200));
+    let intent = "ANCHOR-TOKEN-7742: cat these files";
+    // Budget = 200 ≈ the intent + the last two groups. The assistant turn is
+    // deliberately oversized so the walk must truncate it, and the transcript
+    // as a whole must overrun the budget or the cheap no-gain bail fires.
+    agent.set_messages(vec![
+        Message::user(intent),
+        Message::assistant("m".repeat(3_000)),
+        Message::user(intent), // the repeat, newest
+    ]);
+    assert!(agent.try_compact_budgeted().await.unwrap());
+    let out = agent.messages();
+    assert!(
+        out[0].text_content().starts_with("ANCHOR-TOKEN-7742"),
+        "the pinned intent leads: {:?}",
+        out.iter()
+            .map(|m| m.text_content().chars().take(20).collect::<String>())
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        out[1]
+            .text_content()
+            .contains("compacted into the following summary"),
+        "summary follows the anchor"
+    );
+    // The pinned copy plus the later turn that said the same thing.
+    assert_eq!(
+        out.iter()
+            .filter(|m| m.text_content().starts_with("ANCHOR-TOKEN-7742"))
+            .count(),
+        2,
+        "the repeat is a real turn and stays in the tail: {:?}",
+        out.iter()
+            .map(|m| m.text_content().chars().take(20).collect::<String>())
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        out.last()
+            .unwrap()
+            .text_content()
+            .starts_with("ANCHOR-TOKEN-7742"),
+        "the request still ends on the tail's user turn"
+    );
+}
+
+#[tokio::test]
+async fn compaction_never_summarizes_a_contaminated_partial() {
+    // Regression: the overflow path compacted `self.messages` as-is, so a
+    // salvaged partial the scrub had flagged rode the compaction trigger in
+    // full and its text was baked into the summary — the failed trajectory
+    // reaching every later request, which arXiv:2605.08563 exists to prevent.
+    // The trigger must carry the marker, not the partial.
+    let (mut agent, seen) = recording_agent("LIVE-SUM");
+    agent = agent.with_context_window(Some(16_200));
+    let partial = "BROKEN-TRAJECTORY-TOKEN: half a tool call that died mid-stream";
+    // Overrun the 200-token budget so compaction actually runs, and keep the
+    // contaminated partial outside the retained tail's budget so only the
+    // summary call could carry it.
+    let mut msgs = vec![Message::user("ANCHOR: fix the flaky test")];
+    msgs.push(Message::assistant(partial.to_string()));
+    msgs.push(Message::assistant("m".repeat(6_000)));
+    msgs.push(Message::user("and also check the lockfile"));
+    agent.set_messages(msgs);
+    // Mark the salvaged partial (index 1) exactly as the overflow path does.
+    agent.contaminated.insert(1);
+
+    assert!(agent.try_compact_budgeted().await.unwrap());
+
+    let calls = seen.lock().unwrap_or_else(|e| e.into_inner());
+    assert_eq!(calls.len(), 1, "one compaction trigger call");
+    let sent = calls[0]
+        .iter()
+        .map(|m| m.text_content())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        !sent.contains("BROKEN-TRAJECTORY-TOKEN"),
+        "the failed partial must not reach the summarizer:\n{sent}"
+    );
+    assert!(
+        sent.contains(CONTAMINATED_SCRUB_MARKER),
+        "the marker stands where the failure was:\n{sent}"
+    );
+    // And the installed history is clean too: the marker, never the partial.
+    let after = agent
+        .messages()
+        .iter()
+        .map(|m| m.text_content())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        !after.contains("BROKEN-TRAJECTORY-TOKEN"),
+        "the summary must not carry the partial forward:\n{after}"
     );
 }
