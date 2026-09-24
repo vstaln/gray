@@ -2734,16 +2734,42 @@ fn stream_unfold_step(
                                 state = next;
                                 continue;
                             }
-                            let terminal = if emitted {
-                                // Name the point of failure: the partial text
-                                // was salvaged into history by the caller.
-                                ProviderError::Stream(format!(
-                                    "{err} (the connection dropped mid-response after the response started;                                      the partial text was kept — retry the turn)"
-                                ))
-                            } else {
-                                ProviderError::Stream(err.to_string())
-                            };
-                            return Some((Err(terminal), StreamState::Done));
+                            if emitted && accumulated_tools.is_empty() {
+                                // The caller has already committed the visible
+                                // delta to history. Replaying here would duplicate
+                                // text the user read, so finish this turn with a
+                                // clear, nonfatal interruption notice instead of
+                                // turning a usable partial answer into CoreError.
+                                let details = err.to_string().chars().take(200).collect::<String>();
+                                pending_events.push_back(StreamEvent::stream_error(
+                                    "Connection interrupted; partial answer kept",
+                                    format!("{details}; send another message to retry"),
+                                ));
+                                pending_events.push_back(StreamEvent::MessageComplete {
+                                    stop_reason: Some(StopReason::EndTurn),
+                                    usage: last_usage,
+                                });
+                                completed = true;
+                                state = StreamState::Streaming {
+                                    event_stream,
+                                    accumulated_tools,
+                                    last_finish_reason,
+                                    last_usage,
+                                    pending_events,
+                                    completed,
+                                    client,
+                                    url,
+                                    api_key,
+                                    body,
+                                    attempt,
+                                    emitted,
+                                };
+                                continue;
+                            }
+                            return Some((
+                                Err(ProviderError::Stream(err.to_string())),
+                                StreamState::Done,
+                            ));
                         }
                         None => {
                             if last_finish_reason.is_none() {

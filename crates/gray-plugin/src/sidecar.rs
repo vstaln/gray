@@ -137,20 +137,39 @@ enum RequestSensitivity {
     Sensitive,
 }
 
+#[cfg(windows)]
+async fn try_write_frame(stdin: &std::sync::Arc<Mutex<ChildStdin>>, frame: &str) -> FrameWrite {
+    // Tokio's Windows ChildStdin write is backed by a blocking pipe write.
+    // A timeout cannot interrupt that operation while it is being polled, so
+    // put the write in its own task and bound only the oneshot wait. The
+    // caller can then terminate the child and let the detached task unwind.
+    let stdin = Arc::clone(stdin);
+    let frame = frame.to_owned();
+    let (tx, rx) = oneshot::channel();
+    debug_log(&format!(
+        "gray sidecar debug: spawning write worker ({} bytes)",
+        frame.len()
+    ));
+    tokio::spawn(async move {
+        let mut guard = stdin.lock().await;
+        let result = guard.write_all(frame.as_bytes()).await;
+        let _ = tx.send(result);
+    });
+    match timeout(WRITE_TIMEOUT, rx).await {
+        Ok(Ok(Ok(()))) => FrameWrite::Ok,
+        Ok(Ok(Err(e))) => FrameWrite::Failed(format!("{e}")),
+        Ok(Err(_)) => FrameWrite::Failed("sidecar stdin writer ended".into()),
+        Err(_) => {
+            debug_log("gray sidecar debug: write worker timed out");
+            FrameWrite::TimedOut
+        }
+    }
+}
+
+#[cfg(not(windows))]
 async fn try_write_frame(stdin: &std::sync::Arc<Mutex<ChildStdin>>, frame: &str) -> FrameWrite {
     let mut guard = stdin.lock().await;
-    #[cfg(windows)]
-    eprintln!(
-        "gray sidecar debug: locked stdin before write ({} bytes)",
-        frame.len()
-    );
-    let result = timeout(WRITE_TIMEOUT, guard.write_all(frame.as_bytes())).await;
-    #[cfg(windows)]
-    eprintln!(
-        "gray sidecar debug: write future returned: {}",
-        result.is_ok()
-    );
-    match result {
+    match timeout(WRITE_TIMEOUT, guard.write_all(frame.as_bytes())).await {
         Ok(Ok(())) => FrameWrite::Ok,
         Ok(Err(e)) => FrameWrite::Failed(format!("{e}")),
         Err(_) => FrameWrite::TimedOut,

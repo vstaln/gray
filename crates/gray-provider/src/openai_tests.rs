@@ -1837,6 +1837,71 @@ async fn a_truncated_body_retries_when_nothing_was_emitted() {
     server.abort();
 }
 
+async fn serve_truncated_after_delta() -> (String, tokio::task::JoinHandle<()>) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = tokio::spawn(async move {
+        let Ok((mut sock, _)) = listener.accept().await else {
+            return;
+        };
+        let mut buf = [0u8; 4096];
+        let _ =
+            tokio::time::timeout(std::time::Duration::from_millis(500), sock.read(&mut buf)).await;
+        let event = "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"partial\"}}]}\n\n";
+        let body = format!("{:x}\r\n{event}\r\n", event.len());
+        let head = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n";
+        let _ = sock.write_all(format!("{head}{body}").as_bytes()).await;
+        let _ = sock.flush().await;
+        drop(sock);
+    });
+    (format!("http://{addr}"), handle)
+}
+
+#[tokio::test]
+async fn a_truncated_body_after_delta_completes_with_a_notice() {
+    use futures::StreamExt;
+    use gray_core::message::ChatRequest;
+    let (base, server) = serve_truncated_after_delta().await;
+    let provider =
+        OpenAiProvider::new("key", "test-model", base, None, None).expect("provider builds");
+    let req = ChatRequest {
+        system: None,
+        messages: Vec::new(),
+        tools: Vec::new(),
+    };
+    let events: Vec<_> = provider.stream(req).collect().await;
+    let text: String = events
+        .iter()
+        .filter_map(|r| r.as_ref().ok())
+        .filter_map(|e| match e {
+            StreamEvent::TextDelta { delta } => Some(delta.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(text, "partial", "{events:?}");
+    assert!(events.iter().all(Result::is_ok), "{events:?}");
+    assert!(
+        events.iter().any(|event| matches!(
+            event.as_ref().ok(),
+            Some(StreamEvent::StreamError { message, .. })
+                if message == "Connection interrupted; partial answer kept"
+        )),
+        "{events:?}"
+    );
+    assert!(
+        events.iter().any(|event| matches!(
+            event.as_ref().ok(),
+            Some(StreamEvent::MessageComplete {
+                stop_reason: Some(StopReason::EndTurn),
+                ..
+            })
+        )),
+        "{events:?}"
+    );
+    server.abort();
+}
+
 struct StaticProviderSource {
     secrets: gray_core::credential::SecretMap,
     metadata: std::collections::BTreeMap<String, String>,
