@@ -353,6 +353,9 @@ fn image_command(command: &str, cwd: &Path) -> Option<ToolOutput> {
     let mut shown = Vec::with_capacity(files.len());
     let mut images = Vec::with_capacity(files.len());
     let mut videos: Vec<AttachedVideo> = Vec::new();
+    // Why a requested native part did not happen. Kept out of `failed` so it
+    // reads as an explanation, not a failure: the turn still succeeds.
+    let mut refused: Vec<String> = Vec::new();
     let mut bytes: usize = 0;
     for full in files {
         // `cat <one image>` is the full-resolution exception and stays that
@@ -366,11 +369,29 @@ fn image_command(command: &str, cwd: &Path) -> Option<ToolOutput> {
         if native && !full_res && crate::images::is_video_extension(&full) {
             let len = std::fs::metadata(&full).map(|m| m.len()).unwrap_or(0);
             if len > MAX_NATIVE_VIDEO_CLAIM_BYTES {
-                failed.push(format!(
-                    "{}: {len} bytes exceeds the {MAX_NATIVE_VIDEO_CLAIM_BYTES}-byte \
-                     native cap; drop --native for a contact sheet",
-                    full.display()
+                // Fall back to the sheet *and say so*. Dropping the claim here
+                // would hand the command to whatever `gray` is on PATH, which
+                // reports a usage error the model cannot act on; attaching a
+                // contact sheet with the reason attached answers the question
+                // that is actually answerable.
+                refused.push(format!(
+                    "{p}: {len} bytes is over the {MAX_NATIVE_VIDEO_CLAIM_BYTES}-byte native \
+                     cap, so a contact sheet was attached instead",
+                    p = full.display()
                 ));
+                match crate::view::load(&full) {
+                    Ok(part) => {
+                        bytes += part.data.len();
+                        shown.push(format!("{} (contact sheet)", full.display()));
+                        images.push(AttachedImage {
+                            media_type: part.media_type,
+                            data: part.data,
+                        });
+                    }
+                    Err(e) => {
+                        refused.push(e.to_string());
+                    }
+                }
                 continue;
             }
             match crate::view::load_native_video(&full) {
@@ -447,6 +468,9 @@ fn image_command(command: &str, cwd: &Path) -> Option<ToolOutput> {
     }
     for f in &failed {
         content.push_str(&format!("; skipped: {f}"));
+    }
+    for r in &refused {
+        content.push_str(&format!("; {r}"));
     }
     Some(ToolOutput {
         content,

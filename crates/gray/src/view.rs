@@ -112,17 +112,15 @@ fn display_png(shown: &gray_tools::view::Shown) -> Option<String> {
 /// `gray view PATH...`: draw each image inline where the terminal allows it,
 /// name what was shown, non-zero exit if any path failed. A failed draw
 /// reads as a failure, never as a view.
-pub fn run_cli(
-    paths: &[String],
-    frames: Option<usize>,
-    native: bool,
-) -> anyhow::Result<()> {
+pub fn run_cli(paths: &[String], frames: Option<usize>, native: bool) -> anyhow::Result<()> {
     // `--native` is an agent-side affordance: the bash tool claims the command
     // and attaches a video part to the next turn. A human at a terminal has
     // no model to attach to, so this path reports the file rather than
     // pretending a video was shown.
     let (native_paths, display_paths): (Vec<&String>, Vec<&String>) = if native {
-        paths.iter().partition(|p| gray_tools::images::is_video_extension(std::path::Path::new(p.as_str())))
+        paths
+            .iter()
+            .partition(|p| gray_tools::images::is_video_extension(std::path::Path::new(p.as_str())))
     } else {
         (Vec::new(), paths.iter().collect())
     };
