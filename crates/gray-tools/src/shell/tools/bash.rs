@@ -7,7 +7,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
-use gray_core::agent::{AttachedImage, Tool, ToolContext, ToolOutput};
+use gray_core::agent::{AttachedImage, AttachedVideo, Tool, ToolContext, ToolOutput};
 use gray_core::message::ToolDef;
 use serde_json::{Value, json};
 use tokio::task::JoinHandle;
@@ -100,8 +100,11 @@ impl Tool for BashTool {
              (png/jpg/jpeg/gif/webp/bmp/heic/heif) come back as themselves; a video\
              (mp4/mov/webm/mkv/avi) comes back as a tiled contact sheet of sampled\
              frames, with `--frames N` (before the paths) to set the tile count.\
-             `cat` is for text/source files, not media. Either way the file comes back\
-             as an image; bash output is otherwise text only, so never pixel-dump or\
+             Add `--native` to send the video itself instead of the sheet — only a\
+             model with a native video part (Gemini) can use that, others reject it,\
+             so use it only when you know the model takes video. `cat` is for\
+             text/source files, not media. Either way the file comes back as an\
+             image; bash output is otherwise text only, so never pixel-dump or\
              ASCII-art an image to inspect it.",
             json!({
                 "type": "object",
@@ -298,20 +301,33 @@ fn session_key(ctx: &ToolContext) -> String {
 const MAX_IMAGE_CLAIM_PATHS: usize = 8;
 const MAX_IMAGE_CLAIM_BYTES: usize = 20 * 1024 * 1024;
 
+/// Raw bytes a `--native` video may carry. Matches the provider's own cap:
+/// agreeing here means the turn fails at the claim with an actionable
+/// message instead of at the endpoint with an opaque 400.
+const MAX_NATIVE_VIDEO_CLAIM_BYTES: u64 = 8 * 1024 * 1024;
+
 fn image_command(command: &str, cwd: &Path) -> Option<ToolOutput> {
     use base64::Engine as _;
     let mut parts = command.split_whitespace();
     let (cmd, sub) = (parts.next()?, parts.next()?);
-    let rest: Vec<&str> = parts.collect();
-    let (paths, full_res) = match (cmd, rest.is_empty()) {
-        ("cat", true) => (vec![sub], true),
+    let mut rest: Vec<&str> = parts.collect();
+    let (paths, full_res, native) = match (cmd, rest.is_empty()) {
+        ("cat", true) => (vec![sub], true, false),
         ("gray", false) if sub == "view" => {
-            // `--frames N` is a flag, not a path: let the shell run the CLI so
-            // clap parses it, rather than claiming it as a missing file.
+            // `--native` asks for the clip itself rather than a contact
+            // sheet, so the claim attaches a video part instead of an image.
+            // `--frames N` takes an argument, which is a path we cannot
+            // distinguish from a file, so that form falls through to the
+            // shell and the CLI handles it.
+            let mut native = false;
+            if rest.first() == Some(&"--native") {
+                native = true;
+                rest.remove(0);
+            }
             if rest.iter().any(|a| a.starts_with('-')) {
                 return None;
             }
-            (rest, false)
+            (rest, false, native)
         }
         _ => return None,
     };
@@ -336,12 +352,40 @@ fn image_command(command: &str, cwd: &Path) -> Option<ToolOutput> {
     files.truncate(MAX_IMAGE_CLAIM_PATHS);
     let mut shown = Vec::with_capacity(files.len());
     let mut images = Vec::with_capacity(files.len());
+    let mut videos: Vec<AttachedVideo> = Vec::new();
     let mut bytes: usize = 0;
     for full in files {
         // `cat <one image>` is the full-resolution exception and stays that
         // way; `cat <one video>` is not a vision part, so it is refused here
         // and the claim drops, which leaves the shell to report the path.
         // The agent-facing way to see a video is `gray view`.
+        // `--native` on a video hands over the clip itself. Refused up front
+        // over the cap rather than after base64-ing hundreds of MB: the
+        // provider would reject it anyway, and a silent sheet here would
+        // answer a different question than the one that was asked.
+        if native && !full_res && crate::images::is_video_extension(&full) {
+            let len = std::fs::metadata(&full).map(|m| m.len()).unwrap_or(0);
+            if len > MAX_NATIVE_VIDEO_CLAIM_BYTES {
+                failed.push(format!(
+                    "{}: {len} bytes exceeds the {MAX_NATIVE_VIDEO_CLAIM_BYTES}-byte \
+                     native cap; drop --native for a contact sheet",
+                    full.display()
+                ));
+                continue;
+            }
+            match crate::view::load_native_video(&full) {
+                Ok((media_type, data)) => {
+                    bytes += data.len();
+                    shown.push(format!("{} (native video)", full.display()));
+                    videos.push(AttachedVideo { media_type, data });
+                }
+                Err(e) => {
+                    failed.push(e.to_string());
+                    continue;
+                }
+            }
+            continue;
+        }
         let (mime, data, sheet) = if full_res {
             match std::fs::read(&full)
                 .ok()
@@ -384,12 +428,18 @@ fn image_command(command: &str, cwd: &Path) -> Option<ToolOutput> {
             data,
         });
     }
-    if images.is_empty() {
+    if images.is_empty() && videos.is_empty() {
         // Every path failed: drop the claim so the shell (or the CLI it runs)
-        // reports the errors directly, which beats a note attached to no image.
+        // reports the errors directly, which beats a note attached to no media.
         return None;
     }
-    let mut content = format!("Image shown: {}", shown.join(", "));
+    let mut content = if videos.is_empty() {
+        format!("Image shown: {}", shown.join(", "))
+    } else if images.is_empty() {
+        format!("Video shown: {}", shown.join(", "))
+    } else {
+        format!("Media shown: {}", shown.join(", "))
+    };
     if capped {
         content.push_str(&format!(
             " (showing first {MAX_IMAGE_CLAIM_PATHS} of {total} paths)"
@@ -402,6 +452,7 @@ fn image_command(command: &str, cwd: &Path) -> Option<ToolOutput> {
         content,
         is_error: false,
         images,
+        videos,
     })
 }
 

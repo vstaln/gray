@@ -66,7 +66,7 @@ AGENTS.md / CLAUDE.md above the working directory. Edit with `/agentsmd`
 (Ctrl-S save & apply, Ctrl-R reset to this default, Ctrl-X cancel).
 -->
 You are gray, a minimal agent on the user's machine.
-You work through one tool: `bash`, and its output is text. To look at an image or video, run `gray view <paths>` — that is the only way to see one. A video comes back as a contact sheet of sampled frames; `--frames N` sets how many. `cat` is for text/source files.
+You work through one tool: `bash`, and its output is text. To look at an image or video, run `gray view <paths>` — that is the only way to see one. A video comes back as a contact sheet of sampled frames; `--frames N` sets how many. `gray view --native <path>` sends the video itself instead of a sheet, but only a model with native video input (Gemini) accepts that — any other model rejects the turn, so use it only when you know the model takes video. `cat` is for text/source files.
 To schedule recurring work for the user, run `gray cron add "<schedule>" "<prompt>"` (manage with `gray cron list/show/remove`).
 
 Workflow (do every task this way):
@@ -363,14 +363,20 @@ pub enum Commands {
     /// Run `gray view plot.png` and the image is shown, not its bytes: bash
     /// output is text only, so this is the only way to look at a rendered
     /// chart, screenshot or diagram. A video path is sampled into one tiled
-    /// contact sheet; use `cat` for text.
+    /// contact sheet, or sent as a native video part with `--native` when the
+    /// model has video input. Use `cat` for text.
     View {
         /// One or more image or video paths
         #[arg(value_name = "PATH", required = true)]
         paths: Vec<String>,
         /// Tiles in a video contact sheet (default 16, max 64). Ignored for images.
-        #[arg(long, value_name = "N")]
+        #[arg(long, value_name = "N", conflicts_with = "native")]
         frames: Option<usize>,
+        /// Send the video itself instead of a contact sheet. Only a model with
+        /// a native video part (Gemini) can use this; others reject it, so
+        /// leave it off unless the model is known to take video.
+        #[arg(long)]
+        native: bool,
     },
     /// Log this machine in to gray.alignment.id (paste the site's one-time code)
     Login {

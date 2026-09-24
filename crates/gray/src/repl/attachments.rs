@@ -50,6 +50,9 @@ const MAX_INLINE_FILE_BYTES: u64 = 100 * 1024 * 1024;
 /// `file:///tmp/a%20b.png`) and return existing image files resolved against
 /// `cwd`. Typed/piped `-p` links never go through paste-attach, so without
 /// this they stay plain text and the model never sees them.
+/// Typed file links in `text` that carry media: images and video. The name
+/// predates video support; renaming it would churn every caller for no
+/// behavior change, so it stays.
 pub fn extract_inline_image_paths(text: &str, cwd: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
     for raw in text.split_whitespace() {
@@ -78,7 +81,14 @@ pub fn extract_inline_image_paths(text: &str, cwd: &Path) -> Vec<PathBuf> {
         };
         tok = decoded.as_ref();
         let candidate = Path::new(tok);
-        if attachment_kind(candidate) != AttachmentKind::Image {
+        // A typed link to a video is as valid as one to a screenshot: the
+        // builder routes it to a native part or a contact sheet. Filtering
+        // this arm to images made a pasted video path silently arrive as
+        // nothing at all.
+        if !matches!(
+            attachment_kind(candidate),
+            AttachmentKind::Image | AttachmentKind::Video
+        ) {
             continue;
         }
         let full = if candidate.is_absolute() {
@@ -159,24 +169,11 @@ pub fn pdf_text(path: &Path) -> Result<String, MediaError> {
     }
 }
 
-/// Wire MIME type for a video attachment, by extension. A native video part
-/// has to name its type, and the model's endpoint is the one that will
-/// reject a wrong guess; the extension is the only signal we have.
+/// Wire MIME type for a video attachment, by extension. The table lives in
+/// gray-tools next to the extension gate that admits the file, so the two
+/// can never disagree about what counts as a video.
 pub fn video_media_type(path: &Path) -> &'static str {
-    match path
-        .extension()
-        .and_then(|e| e.to_str())
-        .map(|e| e.to_ascii_lowercase())
-        .as_deref()
-    {
-        Some("webm") => "video/webm",
-        Some("mov") => "video/quicktime",
-        Some("mkv") => "video/x-matroska",
-        Some("avi") => "video/x-msvideo",
-        Some("m4v") => "video/x-m4v",
-        Some("mpg") | Some("mpeg") => "video/mpeg",
-        _ => "video/mp4",
-    }
+    gray_tools::images::video_media_type(path)
 }
 
 /// Video → first-frame JPEG via ffmpeg (capped 1600px wide), fed back

@@ -112,9 +112,37 @@ fn display_png(shown: &gray_tools::view::Shown) -> Option<String> {
 /// `gray view PATH...`: draw each image inline where the terminal allows it,
 /// name what was shown, non-zero exit if any path failed. A failed draw
 /// reads as a failure, never as a view.
-pub fn run_cli(paths: &[String], frames: Option<usize>) -> anyhow::Result<()> {
+pub fn run_cli(
+    paths: &[String],
+    frames: Option<usize>,
+    native: bool,
+) -> anyhow::Result<()> {
+    // `--native` is an agent-side affordance: the bash tool claims the command
+    // and attaches a video part to the next turn. A human at a terminal has
+    // no model to attach to, so this path reports the file rather than
+    // pretending a video was shown.
+    let (native_paths, display_paths): (Vec<&String>, Vec<&String>) = if native {
+        paths.iter().partition(|p| gray_tools::images::is_video_extension(std::path::Path::new(p.as_str())))
+    } else {
+        (Vec::new(), paths.iter().collect())
+    };
+    if !native_paths.is_empty() {
+        let owned: Vec<String> = native_paths.iter().map(|s| (*s).clone()).collect();
+        for p in owned {
+            let len = std::fs::metadata(&p).map(|m| m.len()).unwrap_or(0);
+            println!("native video: {p} ({len} bytes, not drawn in a terminal)");
+        }
+        eprintln!(
+            "gray view: --native only attaches video when an agent runs it through the \
+             bash tool; a terminal cannot hand a video to a model"
+        );
+    }
+    if display_paths.is_empty() {
+        return Ok(());
+    }
+    let display_owned: Vec<String> = display_paths.into_iter().cloned().collect();
     let draw = terminal_supports_images() && std::io::stdout().is_terminal();
-    let (shown, mut failed) = load_all(paths, frames);
+    let (shown, mut failed) = load_all(&display_owned, frames);
     let mut names = Vec::with_capacity(shown.len());
     if draw {
         let mut out = std::io::stdout().lock();

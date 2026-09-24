@@ -657,6 +657,7 @@ impl ReadTool {
             content: out,
             is_error: any_error,
             images,
+            videos: Vec::new(),
         })
     }
 }
