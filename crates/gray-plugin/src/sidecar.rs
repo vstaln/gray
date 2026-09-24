@@ -118,12 +118,6 @@ fn session_json(id: &str, cwd: &str) -> Value {
 /// path, a concurrency permit) forever.
 const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 
-#[cfg(windows)]
-fn debug_log(message: &str) {
-    use std::io::Write;
-    let _ = writeln!(std::io::stderr().lock(), "{message}");
-}
-
 /// Outcome of one attempt to hand a whole frame to the child.
 enum FrameWrite {
     Ok,
@@ -141,15 +135,11 @@ enum RequestSensitivity {
 async fn try_write_frame(stdin: &std::sync::Arc<Mutex<ChildStdin>>, frame: &str) -> FrameWrite {
     // Tokio's Windows ChildStdin write is backed by a blocking pipe write.
     // A timeout cannot interrupt that operation while it is being polled, so
-    // put the write in its own task and bound only the oneshot wait. The
-    // caller can then terminate the child and let the detached task unwind.
+    // run it on the blocking pool and bound the JoinHandle wait. The caller
+    // can then terminate the child and let the detached write unwind.
     let stdin = Arc::clone(stdin);
     let frame = frame.to_owned();
     let mut guard = stdin.lock_owned().await;
-    debug_log(&format!(
-        "gray sidecar debug: spawning blocking write ({} bytes)",
-        frame.len()
-    ));
     let write = tokio::task::spawn_blocking(move || {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -161,10 +151,7 @@ async fn try_write_frame(stdin: &std::sync::Arc<Mutex<ChildStdin>>, frame: &str)
         Ok(Ok(Ok(()))) => FrameWrite::Ok,
         Ok(Ok(Err(e))) => FrameWrite::Failed(format!("{e}")),
         Ok(Err(e)) => FrameWrite::Failed(format!("sidecar stdin writer failed: {e}")),
-        Err(_) => {
-            debug_log("gray sidecar debug: blocking write timed out");
-            FrameWrite::TimedOut
-        }
+        Err(_) => FrameWrite::TimedOut,
     }
 }
 
@@ -537,18 +524,12 @@ impl Transport {
         let mut child = self.child.lock().await;
         #[cfg(windows)]
         if let Some(pid) = child.id() {
-            #[cfg(windows)]
-            debug_log(&format!("gray sidecar debug: taskkill pid={pid}"));
             let pid = pid.to_string();
             let mut taskkill = Command::new("taskkill");
             taskkill.kill_on_drop(true).args(["/PID", &pid, "/T", "/F"]);
             let _ = timeout(Duration::from_secs(2), taskkill.status()).await;
-            #[cfg(windows)]
-            debug_log("gray sidecar debug: taskkill returned");
         }
         let _ = child.start_kill();
-        #[cfg(windows)]
-        debug_log("gray sidecar debug: direct start_kill returned");
     }
 
     /// Fire-and-forget notification: write one `{"method","params"}` line
@@ -627,8 +608,6 @@ impl Transport {
             match try_write_frame(&self.stdin, &frame).await {
                 FrameWrite::Ok => {}
                 FrameWrite::Failed(e) => {
-                    #[cfg(windows)]
-                    debug_log("gray sidecar debug: request failed-write branch");
                     self.pending.lock().await.map.remove(&id);
                     // Do not await child exit here: on Windows a shell-wrapped
                     // child may leave a grandchild alive, so `kill().await`
@@ -637,8 +616,6 @@ impl Transport {
                     anyhow::bail!("sidecar write failed ({e}); killed this child generation");
                 }
                 FrameWrite::TimedOut => {
-                    #[cfg(windows)]
-                    debug_log("gray sidecar debug: request timeout-write branch");
                     self.pending.lock().await.map.remove(&id);
                     // Kill the complete Windows process tree without
                     // waiting for the direct child to exit.
@@ -666,19 +643,11 @@ impl Transport {
 
 impl SidecarPlugin {
     pub async fn spawn(argv: Vec<String>) -> anyhow::Result<Self> {
-        #[cfg(windows)]
-        debug_log("gray sidecar debug: spawn start");
         let (child, stdin, stdout) = spawn_child(&argv)?;
-        #[cfg(windows)]
-        debug_log("gray sidecar debug: spawn child created");
         let transport = Transport::new(child, stdin, stdout, argv.clone());
-        #[cfg(windows)]
-        debug_log("gray sidecar debug: transport created; manifest request start");
         let result = transport
             .request("plugin/manifest", None, Duration::from_secs(30))
             .await?;
-        #[cfg(windows)]
-        debug_log("gray sidecar debug: manifest request returned");
         let mut manifest = Manifest::from_result(&result);
         let name = manifest.name.trim().to_string();
         if name.is_empty() {
