@@ -61,11 +61,17 @@ async fn a_child_that_stopped_reading_fails_the_request_not_the_protocol() {
     // The request frame is far larger than the pipe buffer, so its write
     // cannot complete: the call must fail within WRITE_TIMEOUT instead of
     // tearing the frame and desyncing every later request.
+    #[cfg(windows)]
+    super::debug_log("gray sidecar debug: test before spawn");
     let p = SidecarPlugin::spawn(vec!["testdata/wedged_stdin_plugin.sh".into()])
         .await
         .unwrap();
+    #[cfg(windows)]
+    super::debug_log("gray sidecar debug: test after spawn");
     let blob = "x".repeat(200 * 1024);
     let t = std::time::Instant::now();
+    #[cfg(windows)]
+    super::debug_log("gray sidecar debug: test before request");
     let err = p
         .transport
         .request(
@@ -76,6 +82,8 @@ async fn a_child_that_stopped_reading_fails_the_request_not_the_protocol() {
         .await
         .err()
         .expect("a wedged child must fail the request");
+    #[cfg(windows)]
+    super::debug_log("gray sidecar debug: test after request");
     assert!(t.elapsed() < std::time::Duration::from_secs(15), "{err:#}");
     let text = err.to_string();
     assert!(
