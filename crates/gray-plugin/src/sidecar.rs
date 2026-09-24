@@ -145,22 +145,24 @@ async fn try_write_frame(stdin: &std::sync::Arc<Mutex<ChildStdin>>, frame: &str)
     // caller can then terminate the child and let the detached task unwind.
     let stdin = Arc::clone(stdin);
     let frame = frame.to_owned();
-    let (tx, rx) = oneshot::channel();
+    let guard = stdin.lock_owned().await;
     debug_log(&format!(
-        "gray sidecar debug: spawning write worker ({} bytes)",
+        "gray sidecar debug: spawning blocking write ({} bytes)",
         frame.len()
     ));
-    tokio::spawn(async move {
-        let mut guard = stdin.lock().await;
-        let result = guard.write_all(frame.as_bytes()).await;
-        let _ = tx.send(result);
+    let write = tokio::task::spawn_blocking(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("sidecar write runtime builds");
+        runtime.block_on(async move { guard.write_all(frame.as_bytes()).await })
     });
-    match timeout(WRITE_TIMEOUT, rx).await {
+    match timeout(WRITE_TIMEOUT, write).await {
         Ok(Ok(Ok(()))) => FrameWrite::Ok,
         Ok(Ok(Err(e))) => FrameWrite::Failed(format!("{e}")),
-        Ok(Err(_)) => FrameWrite::Failed("sidecar stdin writer ended".into()),
+        Ok(Err(e)) => FrameWrite::Failed(format!("sidecar stdin writer failed: {e}")),
         Err(_) => {
-            debug_log("gray sidecar debug: write worker timed out");
+            debug_log("gray sidecar debug: blocking write timed out");
             FrameWrite::TimedOut
         }
     }
