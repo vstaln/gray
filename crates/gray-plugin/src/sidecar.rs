@@ -133,7 +133,18 @@ enum RequestSensitivity {
 
 async fn try_write_frame(stdin: &std::sync::Arc<Mutex<ChildStdin>>, frame: &str) -> FrameWrite {
     let mut guard = stdin.lock().await;
-    match timeout(WRITE_TIMEOUT, guard.write_all(frame.as_bytes())).await {
+    #[cfg(windows)]
+    eprintln!(
+        "gray sidecar debug: locked stdin before write ({} bytes)",
+        frame.len()
+    );
+    let result = timeout(WRITE_TIMEOUT, guard.write_all(frame.as_bytes())).await;
+    #[cfg(windows)]
+    eprintln!(
+        "gray sidecar debug: write future returned: {}",
+        result.is_ok()
+    );
+    match result {
         Ok(Ok(())) => FrameWrite::Ok,
         Ok(Err(e)) => FrameWrite::Failed(format!("{e}")),
         Err(_) => FrameWrite::TimedOut,
@@ -499,12 +510,18 @@ impl Transport {
         let mut child = self.child.lock().await;
         #[cfg(windows)]
         if let Some(pid) = child.id() {
+            #[cfg(windows)]
+            eprintln!("gray sidecar debug: taskkill pid={pid}");
             let pid = pid.to_string();
             let mut taskkill = Command::new("taskkill");
             taskkill.kill_on_drop(true).args(["/PID", &pid, "/T", "/F"]);
             let _ = timeout(Duration::from_secs(2), taskkill.status()).await;
+            #[cfg(windows)]
+            eprintln!("gray sidecar debug: taskkill returned");
         }
         let _ = child.start_kill();
+        #[cfg(windows)]
+        eprintln!("gray sidecar debug: direct start_kill returned");
     }
 
     /// Fire-and-forget notification: write one `{"method","params"}` line
@@ -583,6 +600,8 @@ impl Transport {
             match try_write_frame(&self.stdin, &frame).await {
                 FrameWrite::Ok => {}
                 FrameWrite::Failed(e) => {
+                    #[cfg(windows)]
+                    eprintln!("gray sidecar debug: request failed-write branch");
                     self.pending.lock().await.map.remove(&id);
                     // Do not await child exit here: on Windows a shell-wrapped
                     // child may leave a grandchild alive, so `kill().await`
@@ -591,6 +610,8 @@ impl Transport {
                     anyhow::bail!("sidecar write failed ({e}); killed this child generation");
                 }
                 FrameWrite::TimedOut => {
+                    #[cfg(windows)]
+                    eprintln!("gray sidecar debug: request timeout-write branch");
                     self.pending.lock().await.map.remove(&id);
                     // Kill the complete Windows process tree without
                     // waiting for the direct child to exit.
