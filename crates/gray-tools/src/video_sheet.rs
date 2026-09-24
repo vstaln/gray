@@ -1,12 +1,12 @@
 //! Video → a single contact-sheet JPEG, so `gray view clip.mp4` works on
 //! every model regardless of whether it takes a native video part.
 //!
-//! ffmpeg does the work in one pass: `fps` picks `frames` stills spread
-//! evenly over the duration, `scale` shrinks each to fit, `tile` lays them
-//! out in a grid, and the result is capped by the caller's normalizer like
-//! any other image. No ffprobe: `fps=frames/duration` needs the duration,
-//! so it is probed with ffprobe, and a clip ffmpeg can decode but ffprobe
-//! cannot describe falls back to a fixed rate.
+//! ffprobe supplies the duration (it sets how fast `fps` samples), and ffmpeg
+//! does the rest in one pass: `fps` picks `frames` stills spread evenly over
+//! that duration, `scale` shrinks each to fit, `tile` lays them out in a
+//! grid. The result is capped by the caller's normalizer like any other
+//! image. A clip ffmpeg can decode but ffprobe cannot describe still gets a
+//! sheet, sampled at an assumed 30s instead.
 
 use std::path::Path;
 use std::time::Duration;
@@ -100,17 +100,15 @@ pub fn video_sheet(path: &Path, frames: usize) -> Result<Vec<u8>, MediaError> {
         Some(d) if d > 0.0 => format!("{:.6}", frames as f64 / d),
         _ => format!("{:.6}", frames as f64 / 30.0),
     };
-    // 4 columns reads best in a square-ish grid for the usual counts;
-    // `tile=Wx-1` lets the row count follow from the frame count.
+    // 4 columns reads best in a near-square grid for the usual counts.
     let cols = if frames <= 4 { frames } else { 4 };
-
-    // One pass: sample, shrink to fit, tile, encode. `tile` emits a single
-    // frame once it has `frames` inputs; -frames:v 1 stops it there even if
-    // a longer clip yields extra tiles.
     // ffmpeg's tile takes a literal WxH and only accepts -1 for the *height*
-    // (padding to the stream end), so the row count has to be computed here.
-    // A partial last row is fine: tile pads the missing cells itself.
+    // (pad to the stream end), so the row count is computed here. A partial
+    // last row is fine: tile pads the missing cells itself.
     let rows = frames.div_ceil(cols);
+    // One pass: sample, shrink to fit, tile, encode. tile emits a single
+    // frame once it has its full WxH grid; -frames:v 1 stops it there even if
+    // a longer clip would yield another grid.
     let vf = format!("fps={fps},scale='min(640,iw)':-2,tile={cols}x{rows}");
     let out = run(
         "ffmpeg",
