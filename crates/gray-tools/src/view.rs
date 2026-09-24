@@ -48,6 +48,23 @@ impl std::fmt::Display for ViewError {
     }
 }
 
+/// Raw video for a native video part. Deliberately not decoded or re-encoded:
+/// a transcode would change the clip, and the point of `--native` is that the
+/// model sees the actual video rather than stills. `media_type` comes from the
+/// extension because that is the only signal available; the provider is the
+/// component that knows whether its model accepts one.
+pub fn load_native_video(path: &Path) -> Result<(String, String), ViewError> {
+    if !crate::images::is_video_extension(path) {
+        return Err(ViewError::NotAnImage(path.to_path_buf()));
+    }
+    let bytes = std::fs::read(path).map_err(|e| ViewError::Read(path.to_path_buf(), e))?;
+    use base64::Engine as _;
+    Ok((
+        crate::images::video_media_type(path).to_string(),
+        base64::engine::general_purpose::STANDARD.encode(&bytes),
+    ))
+}
+
 /// Downscale-before-send one image file: longest side capped at 2000px and
 /// base64 under 5MB — [`crate::images::normalize_image_bytes`], the same
 /// normalization pasted attachments and the `read` tool take. `cat` is the

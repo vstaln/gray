@@ -54,11 +54,27 @@ pub struct ToolOutput {
     /// `#[serde(default)]` keeps old transcripts parsing.
     #[serde(default)]
     pub images: Vec<AttachedImage>,
+    /// Native video parts riding with a tool result (`gray view --native`).
+    /// Empty for every other tool, and for every model without a video
+    /// input — the provider refuses those, naming the contact sheet.
+    ///
+    /// `#[serde(default)]` for the same reason as `images`.
+    #[serde(default)]
+    pub videos: Vec<AttachedVideo>,
 }
 
 /// One downscaled image riding with a tool result.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AttachedImage {
+    pub media_type: String,
+    pub data: String,
+}
+
+/// One base64 video riding with a tool result. Not downscaled — a re-encode
+/// would change the clip — so the cap that matters is the provider's, and
+/// the producer (`gray view --native`) refuses an oversized file up front.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AttachedVideo {
     pub media_type: String,
     pub data: String,
 }
@@ -69,6 +85,7 @@ impl ToolOutput {
             content: content.into(),
             is_error: false,
             images: Vec::new(),
+            videos: Vec::new(),
         }
     }
     pub fn error(content: impl Into<String>) -> Self {
@@ -76,6 +93,7 @@ impl ToolOutput {
             content: content.into(),
             is_error: true,
             images: Vec::new(),
+            videos: Vec::new(),
         }
     }
     /// Image read success: text note + one vision block (opencode parity).
@@ -84,6 +102,7 @@ impl ToolOutput {
             content: content.into(),
             is_error: false,
             images: vec![AttachedImage { media_type, data }],
+            videos: Vec::new(),
         }
     }
     /// Message blocks for this result: the text result first, then one
@@ -98,6 +117,10 @@ impl ToolOutput {
         blocks.extend(self.images.iter().map(|img| ContentBlock::Image {
             media_type: img.media_type.clone(),
             data: img.data.clone(),
+        }));
+        blocks.extend(self.videos.iter().map(|vid| ContentBlock::Video {
+            media_type: vid.media_type.clone(),
+            data: vid.data.clone(),
         }));
         blocks
     }
