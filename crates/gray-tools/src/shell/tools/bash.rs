@@ -307,6 +307,16 @@ const MAX_IMAGE_CLAIM_BYTES: usize = 20 * 1024 * 1024;
 const MAX_NATIVE_VIDEO_CLAIM_BYTES: u64 = 8 * 1024 * 1024;
 
 fn image_command(command: &str, cwd: &Path) -> Option<ToolOutput> {
+    image_command_with_native_cap(command, cwd, MAX_NATIVE_VIDEO_CLAIM_BYTES)
+}
+
+/// [`image_command`] with the native-video cap as a parameter, so the
+/// over-cap fallback is testable without a multi-megabyte fixture.
+fn image_command_with_native_cap(
+    command: &str,
+    cwd: &Path,
+    max_native_video_bytes: u64,
+) -> Option<ToolOutput> {
     use base64::Engine as _;
     let mut parts = command.split_whitespace();
     let (cmd, sub) = (parts.next()?, parts.next()?);
@@ -368,14 +378,14 @@ fn image_command(command: &str, cwd: &Path) -> Option<ToolOutput> {
         // answer a different question than the one that was asked.
         if native && !full_res && crate::images::is_video_extension(&full) {
             let len = std::fs::metadata(&full).map(|m| m.len()).unwrap_or(0);
-            if len > MAX_NATIVE_VIDEO_CLAIM_BYTES {
+            if len > max_native_video_bytes {
                 // Fall back to the sheet *and say so*. Dropping the claim here
                 // would hand the command to whatever `gray` is on PATH, which
                 // reports a usage error the model cannot act on; attaching a
                 // contact sheet with the reason attached answers the question
                 // that is actually answerable.
                 refused.push(format!(
-                    "{p}: {len} bytes is over the {MAX_NATIVE_VIDEO_CLAIM_BYTES}-byte native \
+                    "{p}: {len} bytes is over the {max_native_video_bytes}-byte native \
                      cap, so a contact sheet was attached instead",
                     p = full.display()
                 ));
