@@ -2010,3 +2010,57 @@ fn dynamic_profile_debug_is_redacted() {
     assert!(!format!("{provider:?}").contains("test-access"));
     assert!(!format!("{provider:?}").contains("acct_test"));
 }
+
+#[test]
+fn model_accepts_video_is_gemini_only() {
+    use crate::openai::model_accepts_video;
+    assert!(model_accepts_video("gemini-3-pro"));
+    assert!(model_accepts_video("google/gemini-2.5-flash"));
+    assert!(model_accepts_video("gemma-3-27b"));
+    // Everything else gets the contact sheet instead of a 400.
+    for m in [
+        "gpt-5.1",
+        "claude-opus-5",
+        "deepseek-v4",
+        "step-5-preview",
+        "gpt-oss-120b",
+    ] {
+        assert!(!model_accepts_video(m), "{m} must not claim video");
+    }
+}
+
+#[test]
+fn a_video_block_reaches_the_wire_only_for_a_video_model() {
+    use crate::openai::model_accepts_video;
+    let req = || ChatRequest {
+        system: None,
+        messages: vec![Message::new(
+            gray_core::Role::User,
+            vec![ContentBlock::video("video/mp4", "QUJD")],
+        )],
+        tools: Vec::new(),
+    };
+
+    // Gemini: a real video_url part carrying the data URL.
+    let chat = map_chat_request(req(), "gemini-3-pro", None).expect("maps");
+    let body = serde_json::to_value(&chat).unwrap();
+    let parts = body["messages"][0]["content"].as_array().unwrap();
+    let video = parts
+        .iter()
+        .find(|p| p["type"] == "video_url")
+        .expect("video part must be present");
+    let url = video["video_url"]["url"].as_str().unwrap();
+    assert!(url.starts_with("data:video/mp4;base64,"), "{url}");
+
+    // A model without native video refuses loudly, and names the fallback.
+    let err = map_chat_request(req(), "step-5-preview", None).expect_err("must refuse");
+    let text = err.to_string();
+    assert!(text.contains("gray view"), "{text}");
+
+    // Same rule on the Responses path: a note, not a stray part.
+    let responses = map_chat_to_responses(req(), "gpt-5.1", None, None);
+    let body = serde_json::to_value(&responses).unwrap();
+    let text = body["input"][0]["content"].as_str().unwrap_or_default();
+    assert!(text.contains("no native video input"), "{text}");
+    let _ = model_accepts_video("gemini-3-pro");
+}

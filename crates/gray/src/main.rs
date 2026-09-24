@@ -42,8 +42,8 @@ async fn main() -> anyhow::Result<()> {
     // bash tool also claims `gray view <path>` before the shell runs, so in
     // an agent session the image is attached as a vision block and this only
     // prints when a human runs it.
-    if let Some(gray::Commands::View { paths }) = &cli.command {
-        return gray::view::run_cli(paths);
+    if let Some(gray::Commands::View { paths, frames }) = &cli.command {
+        return gray::view::run_cli(paths, *frames);
     }
     // Account commands run before provider configuration: enrolling a fresh
     // machine must not require a model and a key first.

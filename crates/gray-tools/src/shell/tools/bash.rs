@@ -94,13 +94,15 @@ impl Tool for BashTool {
              timeout is an optional total runtime limit (no default: commands run until they exit; \
              capped at 3600s), NOT the yield window. \
              Non-zero exits are data, not tool errors. Full output is logged; inline output is bounded. \
-             Imaging: to look at an image run `gray view <path>...` (several at once,\
-             downscaled) as the whole command — bare paths only, so pipes, globs, `$`,\
-             quotes and flags fall through to a normal run. It takes images only\
-             (png/jpg/jpeg/gif/webp/bmp/heic/heif); for a video, extract frames with\
-             ffmpeg and view those. `cat` is for text/source files, not images.\
-             That returns the image as an image; bash output is otherwise text only,\
-             so never pixel-dump or ASCII-art an image to inspect it.",
+             Imaging: to look at an image or video run `gray view <path>...`\
+             (several at once, downscaled) as the whole command — bare paths only, so pipes,\
+             globs, `$`, quotes and flags fall through to a normal run. Images\
+             (png/jpg/jpeg/gif/webp/bmp/heic/heif) come back as themselves; a video\
+             (mp4/mov/webm/mkv/avi) comes back as a tiled contact sheet of sampled\
+             frames, with `--frames N` (before the paths) to set the tile count.\
+             `cat` is for text/source files, not media. Either way the file comes back\
+             as an image; bash output is otherwise text only, so never pixel-dump or\
+             ASCII-art an image to inspect it.",
             json!({
                 "type": "object",
                 "properties": {
@@ -303,7 +305,14 @@ fn image_command(command: &str, cwd: &Path) -> Option<ToolOutput> {
     let rest: Vec<&str> = parts.collect();
     let (paths, full_res) = match (cmd, rest.is_empty()) {
         ("cat", true) => (vec![sub], true),
-        ("gray", false) if sub == "view" => (rest, false),
+        ("gray", false) if sub == "view" => {
+            // `--frames N` is a flag, not a path: let the shell run the CLI so
+            // clap parses it, rather than claiming it as a missing file.
+            if rest.iter().any(|a| a.starts_with('-')) {
+                return None;
+            }
+            (rest, false)
+        }
         _ => return None,
     };
     if paths.iter().any(|p| shell_meta(p)) {
@@ -329,7 +338,11 @@ fn image_command(command: &str, cwd: &Path) -> Option<ToolOutput> {
     let mut images = Vec::with_capacity(files.len());
     let mut bytes: usize = 0;
     for full in files {
-        let (mime, data) = if full_res {
+        // `cat <one image>` is the full-resolution exception and stays that
+        // way; `cat <one video>` is not a vision part, so it is refused here
+        // and the claim drops, which leaves the shell to report the path.
+        // The agent-facing way to see a video is `gray view`.
+        let (mime, data, sheet) = if full_res {
             match std::fs::read(&full)
                 .ok()
                 .and_then(|raw| crate::images::encode_image_full(&raw).ok())
@@ -337,6 +350,7 @@ fn image_command(command: &str, cwd: &Path) -> Option<ToolOutput> {
                 Some(pair) => (
                     pair.0,
                     base64::engine::general_purpose::STANDARD.encode(&pair.1),
+                    false,
                 ),
                 None => {
                     failed.push(format!("{}: unreadable or undecodable", full.display()));
@@ -345,7 +359,7 @@ fn image_command(command: &str, cwd: &Path) -> Option<ToolOutput> {
             }
         } else {
             match crate::view::load(&full) {
-                Ok(part) => (part.media_type, part.data),
+                Ok(part) => (part.media_type, part.data, part.derived_from_video),
                 Err(e) => {
                     failed.push(e.to_string());
                     continue;
@@ -360,7 +374,11 @@ fn image_command(command: &str, cwd: &Path) -> Option<ToolOutput> {
             break;
         }
         bytes += data.len();
-        shown.push(full.display().to_string());
+        shown.push(if sheet {
+            format!("{} (contact sheet)", full.display())
+        } else {
+            full.display().to_string()
+        });
         images.push(AttachedImage {
             media_type: mime,
             data,

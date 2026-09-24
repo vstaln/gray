@@ -159,8 +159,29 @@ pub fn pdf_text(path: &Path) -> Result<String, MediaError> {
     }
 }
 
+/// Wire MIME type for a video attachment, by extension. A native video part
+/// has to name its type, and the model's endpoint is the one that will
+/// reject a wrong guess; the extension is the only signal we have.
+pub fn video_media_type(path: &Path) -> &'static str {
+    match path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("webm") => "video/webm",
+        Some("mov") => "video/quicktime",
+        Some("mkv") => "video/x-matroska",
+        Some("avi") => "video/x-msvideo",
+        Some("m4v") => "video/x-m4v",
+        Some("mpg") | Some("mpeg") => "video/mpeg",
+        _ => "video/mp4",
+    }
+}
+
 /// Video → first-frame JPEG via ffmpeg (capped 1600px wide), fed back
-/// through the image normalizer by the caller.
+/// through the image normalizer by the caller. Still used by the preview
+/// strip; the pasted attachment prefers a native part or a contact sheet.
 pub fn video_frame(path: &Path) -> Result<Vec<u8>, MediaError> {
     let out = output_with_timeout(
         "ffmpeg",

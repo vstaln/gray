@@ -31,7 +31,7 @@ fn load_refuses_a_text_file_before_decoding() {
 
     let err = load(&path).expect_err("a text file is not an image");
     let text = err.to_string();
-    assert!(text.contains("not an image file"), "{text}");
+    assert!(text.contains("not an image or video file"), "{text}");
     // Names bash's role rather than blaming a decoder.
     assert!(text.contains("use cat for text files"), "{text}");
 }
@@ -71,4 +71,39 @@ fn load_downscales_past_the_2000px_cap() {
         .unwrap();
     let (w, _h) = decoded.dimensions();
     assert!(w <= 2000, "longest side must be capped, got {w}");
+}
+
+#[test]
+fn video_extension_passes_the_gate_and_becomes_a_sheet() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("clip.mp4");
+    // ffmpeg is the decoder; a box that is not a real clip must still reach
+    // it and come back as its refusal, not as a "not an image" gate error.
+    std::fs::write(&path, b"not really a video").unwrap();
+
+    let err = load(&path).expect_err("garbage bytes must fail");
+    let text = err.to_string();
+    assert!(
+        !text.contains("not an image"),
+        "extension gate let it through: {text}"
+    );
+}
+
+#[test]
+fn video_extension_gate_covers_the_common_containers() {
+    for ext in ["mp4", "MP4", "mov", "webm", "mkv", "avi"] {
+        let path = std::path::Path::new("clip").with_extension(ext);
+        assert!(
+            crate::images::is_viewable_extension(&path),
+            "{ext} must be viewable"
+        );
+        assert!(
+            crate::images::is_video_extension(&path),
+            "{ext} must be video"
+        );
+    }
+    // A text file stays text.
+    assert!(!crate::images::is_viewable_extension(std::path::Path::new(
+        "a.md"
+    )));
 }
