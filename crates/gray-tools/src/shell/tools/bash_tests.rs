@@ -465,8 +465,17 @@ fn tiny_mp4(dir: &std::path::Path) -> Option<std::path::PathBuf> {
     let path = dir.join("real.mp4");
     let ok = std::process::Command::new("ffmpeg")
         .args([
-            "-y", "-v", "error", "-f", "lavfi", "-i", "testsrc=s=64x64:d=0.2", "-c:v",
-            "libx264", "-pix_fmt", "yuv420p",
+            "-y",
+            "-v",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc=s=64x64:d=0.2",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
         ])
         .arg(&path)
         .status()
@@ -516,7 +525,10 @@ async fn gray_view_native_falls_back_to_a_sheet_over_the_cap() {
         return;
     };
     let out = super::image_command_with_native_cap(
-        &format!("gray view --native {}", path.file_name().unwrap().to_string_lossy()),
+        &format!(
+            "gray view --native {}",
+            path.file_name().unwrap().to_string_lossy()
+        ),
         dir.path(),
         1,
     )
@@ -524,7 +536,10 @@ async fn gray_view_native_falls_back_to_a_sheet_over_the_cap() {
     assert!(out.videos.is_empty(), "nothing native went out");
     assert_eq!(out.images.len(), 1, "a sheet was attached instead");
     assert!(out.content.contains("native cap"), "{}", out.content);
-    assert!(!out.is_error, "a refusal explained in text is not a failure");
+    assert!(
+        !out.is_error,
+        "a refusal explained in text is not a failure"
+    );
 }
 
 #[tokio::test]
@@ -539,7 +554,10 @@ async fn gray_view_native_on_an_image_is_just_the_image() {
 
     let out = image_command("gray view --native shot.png", dir.path()).unwrap();
     assert_eq!(out.images.len(), 1);
-    assert!(out.videos.is_empty(), "--native must not invent a video part");
+    assert!(
+        out.videos.is_empty(),
+        "--native must not invent a video part"
+    );
 }
 
 #[tokio::test]

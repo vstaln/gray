@@ -131,7 +131,10 @@ fn native_refuses_an_image() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("shot.png");
     std::fs::write(&path, png_bytes(8, 8)).unwrap();
-    assert!(load_native_video(&path).is_err(), "an image is not a video part");
+    assert!(
+        load_native_video(&path).is_err(),
+        "an image is not a video part"
+    );
 }
 
 #[test]

@@ -145,7 +145,7 @@ async fn try_write_frame(stdin: &std::sync::Arc<Mutex<ChildStdin>>, frame: &str)
     // caller can then terminate the child and let the detached task unwind.
     let stdin = Arc::clone(stdin);
     let frame = frame.to_owned();
-    let guard = stdin.lock_owned().await;
+    let mut guard = stdin.lock_owned().await;
     debug_log(&format!(
         "gray sidecar debug: spawning blocking write ({} bytes)",
         frame.len()
