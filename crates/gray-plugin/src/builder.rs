@@ -79,8 +79,8 @@ impl Plugin for ToolsSearchPlugin {
 
     fn tools(&self) -> Vec<Arc<dyn Tool>> {
         vec![
-            Arc::new(gray_tools::GrepTool::default()),
-            Arc::new(gray_tools::FindTool::default()),
+            Arc::new(gray_tools::GrepTool),
+            Arc::new(gray_tools::FindTool),
             Arc::new(gray_tools::LsTool),
         ]
     }

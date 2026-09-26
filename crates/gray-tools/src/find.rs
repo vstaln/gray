@@ -38,18 +38,11 @@ fn relativize(result_path: &str, search_path: &Path) -> String {
 /// Filename glob search. Respects .gitignore via `fd` when available,
 /// otherwise falls back to a manual walk.
 ///
-/// `pool` selects the resident index source: `None` uses the process-global
-/// pool (lazy, rooted at `gray_home()/fff-frecency`); tests inject their own.
-#[derive(Default)]
-pub struct FindTool {
-    pub(crate) pool: Option<std::sync::Arc<crate::search_index::SearchPool>>,
-}
-
-impl FindTool {
-    pub fn with_pool(pool: std::sync::Arc<crate::search_index::SearchPool>) -> Self {
-        Self { pool: Some(pool) }
-    }
-}
+/// The resident index is *not* wired in here on purpose: this tool's answer
+/// is `fd`'s answer, always. `gray find` (see `crate::search_cmd`) is where
+/// the index lives, so a model that reaches for this tool gets the tool's
+/// documented behavior and never a lane that depends on the directory.
+pub struct FindTool;
 
 #[async_trait]
 impl Tool for FindTool {
@@ -73,6 +66,14 @@ impl Tool for FindTool {
     }
 
     async fn execute(&self, ctx: &ToolContext, args: Value) -> ToolOutput {
+        // A token that is already cancelled answers before anything is
+        // spawned. Without this the cancel branch races the child's first
+        // line in the drain `select!`, so a pre-cancelled call could come
+        // back *finished* instead of cancelled — the same query, two
+        // answers, decided by scheduling.
+        if ctx.cancel.is_cancelled() {
+            return finish("cancelled by user".to_string());
+        }
         let pattern = match get_str(&args, "pattern") {
             Ok(p) => p,
             Err(e) => return e,
@@ -95,28 +96,6 @@ impl Tool for FindTool {
             Err(e) => return fail(format!("Path not found: {}: {e}", search_path.display())),
         }
 
-        // Resident index first; sync work + scan wait stay off the async
-        // runtime. The wait is bounded by the pool's scan budget, so it has to
-        // race ctx.cancel like the fd lane does — a queued cancel must not sit
-        // through a cold scan (the spawned task keeps indexing in the
-        // background, which is exactly what the next call wants).
-        {
-            let pool = self
-                .pool
-                .clone()
-                .unwrap_or_else(|| crate::search_index::global_pool().clone());
-            let (dir, pat) = (search_path.clone(), pattern.clone());
-            let indexed = tokio::select! {
-                joined = tokio::task::spawn_blocking(move || {
-                    pool.indexed_glob(&dir, &pat, effective_limit)
-                }) => joined.ok().flatten(),
-                _ = ctx.cancel.cancelled() => return finish("cancelled by user".to_string()),
-            };
-            if let Some(hits) = indexed {
-                return finish_indexed(hits, effective_limit);
-            }
-        }
-
         // Try fd first (preferred, respects .gitignore correctly).
         if let Some(output) = try_fd(&pattern, &search_path, effective_limit, &ctx.cancel).await {
             return output;
@@ -125,35 +104,6 @@ impl Tool for FindTool {
         // Fallback: manual recursive walk with simple glob matching.
         fallback_walk(&pattern, &search_path, effective_limit).await
     }
-}
-
-/// Render index-lane results: relative paths (already relativized by
-/// `indexed_glob`), newline-joined, same truncation + limit notices as the
-/// fd lane. Order is frecency ranking, not sorted — that is the feature.
-fn finish_indexed(hits: Vec<String>, effective_limit: usize) -> ToolOutput {
-    if hits.is_empty() {
-        return finish("No files found matching pattern".to_string());
-    }
-    let result_limit_reached = hits.len() >= effective_limit;
-    let trunc = truncate_head(&hits.join("\n"));
-    let mut output = trunc.content;
-    let mut notices: Vec<String> = Vec::new();
-    if result_limit_reached {
-        notices.push(format!(
-            "{effective_limit} results limit reached. Use limit={} for more, or refine pattern",
-            effective_limit * 2
-        ));
-    }
-    if trunc.truncated {
-        notices.push(format!(
-            "{} limit reached",
-            crate::truncate::format_size(MAX_BYTES)
-        ));
-    }
-    if !notices.is_empty() {
-        append_notices(&mut output, &notices);
-    }
-    finish(output)
 }
 
 async fn try_fd(

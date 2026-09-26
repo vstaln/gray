@@ -18,16 +18,27 @@ const GREP_MAX_LINE_LENGTH: usize = 500;
 
 /// Search file contents with ripgrep. Respects .gitignore.
 ///
-/// `pool` selects the resident index source (same contract as `FindTool`).
-#[derive(Default)]
-pub struct GrepTool {
-    pub(crate) pool: Option<std::sync::Arc<crate::search_index::SearchPool>>,
-}
+/// The resident index is *not* wired in here on purpose — same reasoning as
+/// `FindTool`: this tool answers exactly what `rg` answers, and `gray grep`
+/// (`crate::search_cmd`) is the command that puts the index in front of it.
+pub struct GrepTool;
 
-impl GrepTool {
-    pub fn with_pool(pool: std::sync::Arc<crate::search_index::SearchPool>) -> Self {
-        Self { pool: Some(pool) }
-    }
+/// `format_matches` as text, for the `gray grep` command's index lane: the
+/// same rendering the tool does, so both lanes are byte-identical.
+pub fn render_matches(
+    search_path: &Path,
+    matches: &[(String, usize, Option<String>, bool)],
+    effective_limit: usize,
+    match_limit_reached: bool,
+) -> String {
+    format_matches(
+        search_path,
+        search_path.is_dir(),
+        matches,
+        effective_limit,
+        match_limit_reached,
+    )
+    .content
 }
 
 /// `path:line:col:text` — split off the first three fields; the text keeps
@@ -385,6 +396,14 @@ impl Tool for GrepTool {
     }
 
     async fn execute(&self, ctx: &ToolContext, args: Value) -> ToolOutput {
+        // A token that is already cancelled answers before anything is
+        // spawned. Without this the cancel branch races the child's first
+        // line in the drain `select!`, so a pre-cancelled call could come
+        // back *finished* instead of cancelled — the same query, two
+        // answers, decided by scheduling.
+        if ctx.cancel.is_cancelled() {
+            return finish("cancelled by user".to_string());
+        }
         let pattern = match get_str(&args, "pattern") {
             Ok(p) => p,
             Err(e) => return e,
@@ -423,47 +442,6 @@ impl Tool for GrepTool {
             Ok(m) => m.is_dir(),
             Err(e) => return fail(format!("Path not found: {}: {e}", search_path.display())),
         };
-
-        // Resident index first; `None` = a case the lane declines. Sync work
-        // + scan wait stay off the async runtime, and the wait races
-        // ctx.cancel like the rg lane below: a cancel must not sit through a
-        // cold scan (the spawned task keeps indexing in the background).
-        if is_dir {
-            let pool = self
-                .pool
-                .clone()
-                .unwrap_or_else(|| crate::search_index::global_pool().clone());
-            let (dir, pat, g, lane_cancel) = (
-                search_path.clone(),
-                pattern.clone(),
-                glob.clone(),
-                ctx.cancel.clone(),
-            );
-            let found = tokio::select! {
-                joined = tokio::task::spawn_blocking(move || {
-                    pool.indexed_grep(
-                        &dir,
-                        &pat,
-                        g.as_deref(),
-                        ignore_case,
-                        literal,
-                        effective_limit,
-                        context,
-                        &lane_cancel,
-                    )
-                }) => joined.ok().flatten(),
-                _ = ctx.cancel.cancelled() => return finish("cancelled by user".to_string()),
-            };
-            if let Some(found) = found {
-                return format_matches(
-                    &search_path,
-                    is_dir,
-                    &found.hits,
-                    effective_limit,
-                    found.limit_reached,
-                );
-            }
-        }
 
         // No ripgrep on PATH: use the built-in search rather than failing the
         // tool. Same output contract, so callers cannot tell the difference
