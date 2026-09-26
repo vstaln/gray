@@ -37,7 +37,19 @@ fn relativize(result_path: &str, search_path: &Path) -> String {
 
 /// Filename glob search. Respects .gitignore via `fd` when available,
 /// otherwise falls back to a manual walk.
-pub struct FindTool;
+///
+/// `pool` selects the resident index source: `None` uses the process-global
+/// pool (lazy, rooted at `gray_home()/fff-frecency`); tests inject their own.
+#[derive(Default)]
+pub struct FindTool {
+    pub(crate) pool: Option<std::sync::Arc<crate::search_index::SearchPool>>,
+}
+
+impl FindTool {
+    pub fn with_pool(pool: std::sync::Arc<crate::search_index::SearchPool>) -> Self {
+        Self { pool: Some(pool) }
+    }
+}
 
 #[async_trait]
 impl Tool for FindTool {
@@ -83,6 +95,21 @@ impl Tool for FindTool {
             Err(e) => return fail(format!("Path not found: {}: {e}", search_path.display())),
         }
 
+        // Resident index first; sync work + scan wait stay off the async runtime.
+        {
+            let pool = self
+                .pool
+                .clone()
+                .unwrap_or_else(|| crate::search_index::global_pool().clone());
+            let (dir, pat) = (search_path.clone(), pattern.clone());
+            if let Ok(Some(hits)) =
+                tokio::task::spawn_blocking(move || pool.indexed_glob(&dir, &pat, effective_limit))
+                    .await
+            {
+                return finish_indexed(hits, effective_limit);
+            }
+        }
+
         // Try fd first (preferred, respects .gitignore correctly).
         if let Some(output) = try_fd(&pattern, &search_path, effective_limit, &ctx.cancel).await {
             return output;
@@ -91,6 +118,35 @@ impl Tool for FindTool {
         // Fallback: manual recursive walk with simple glob matching.
         fallback_walk(&pattern, &search_path, effective_limit).await
     }
+}
+
+/// Render index-lane results: relative paths (already relativized by
+/// `indexed_glob`), newline-joined, same truncation + limit notices as the
+/// fd lane. Order is frecency ranking, not sorted — that is the feature.
+fn finish_indexed(hits: Vec<String>, effective_limit: usize) -> ToolOutput {
+    if hits.is_empty() {
+        return finish("No files found matching pattern".to_string());
+    }
+    let result_limit_reached = hits.len() >= effective_limit;
+    let trunc = truncate_head(&hits.join("\n"));
+    let mut output = trunc.content;
+    let mut notices: Vec<String> = Vec::new();
+    if result_limit_reached {
+        notices.push(format!(
+            "{effective_limit} results limit reached. Use limit={} for more, or refine pattern",
+            effective_limit * 2
+        ));
+    }
+    if trunc.truncated {
+        notices.push(format!(
+            "{} limit reached",
+            crate::truncate::format_size(MAX_BYTES)
+        ));
+    }
+    if !notices.is_empty() {
+        append_notices(&mut output, &notices);
+    }
+    finish(output)
 }
 
 async fn try_fd(

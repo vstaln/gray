@@ -17,7 +17,18 @@ const DEFAULT_LIMIT: usize = 100;
 const GREP_MAX_LINE_LENGTH: usize = 500;
 
 /// Search file contents with ripgrep. Respects .gitignore.
-pub struct GrepTool;
+///
+/// `pool` selects the resident index source (same contract as `FindTool`).
+#[derive(Default)]
+pub struct GrepTool {
+    pub(crate) pool: Option<std::sync::Arc<crate::search_index::SearchPool>>,
+}
+
+impl GrepTool {
+    pub fn with_pool(pool: std::sync::Arc<crate::search_index::SearchPool>) -> Self {
+        Self { pool: Some(pool) }
+    }
+}
 
 /// `path:line:col:text` — split off the first three fields; the text keeps
 /// any further colons. A leading Windows drive letter ("C:") belongs to the
@@ -412,6 +423,43 @@ impl Tool for GrepTool {
             Ok(m) => m.is_dir(),
             Err(e) => return fail(format!("Path not found: {}: {e}", search_path.display())),
         };
+
+        // Resident index first; `None` = a case the lane declines. Sync work
+        // + scan wait stay off the async runtime.
+        if is_dir {
+            let pool = self
+                .pool
+                .clone()
+                .unwrap_or_else(|| crate::search_index::global_pool().clone());
+            let (dir, pat, g, cancel) = (
+                search_path.clone(),
+                pattern.clone(),
+                glob.clone(),
+                ctx.cancel.clone(),
+            );
+            let found = tokio::task::spawn_blocking(move || {
+                pool.indexed_grep(
+                    &dir,
+                    &pat,
+                    g.as_deref(),
+                    ignore_case,
+                    literal,
+                    effective_limit,
+                    context,
+                    &cancel,
+                )
+            })
+            .await;
+            if let Ok(Some(found)) = found {
+                return format_matches(
+                    &search_path,
+                    is_dir,
+                    &found.hits,
+                    effective_limit,
+                    found.limit_reached,
+                );
+            }
+        }
 
         // No ripgrep on PATH: use the built-in search rather than failing the
         // tool. Same output contract, so callers cannot tell the difference
