@@ -122,16 +122,6 @@ fn indexed_glob_finds_nested_and_root_files() {
 }
 
 #[test]
-fn indexed_glob_slash_pattern_matches_relative_path() {
-    let dir = tree();
-    let pool = pool_for(&dir);
-    let hits = pool
-        .indexed_glob(dir.path(), "sub/*.txt", 1000)
-        .expect("index must serve glob");
-    assert_eq!(hits, vec!["sub/c.txt".to_string()]);
-}
-
-#[test]
 fn indexed_glob_honors_limit() {
     let dir = tree();
     let pool = pool_for(&dir);
@@ -629,4 +619,110 @@ async fn new_file_visible_without_rescan() {
         );
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
+}
+
+// ---------------------------------------------------------------------------
+// Exactness: anything the index cannot answer like fd/rg must decline
+// ---------------------------------------------------------------------------
+
+/// fff compiles globs with `literal_separator = false`, so `a/*.rs` also
+/// matches everything below `a/`. Pagination happens inside fff, before the
+/// lane could filter, so a slash pattern has to decline — `fd --full-path`
+/// answers it exactly. (Measured on gray itself: 69 index hits vs 23 from fd.)
+#[test]
+fn indexed_glob_declines_slash_pattern() {
+    let dir = tree();
+    let pool = pool_for(&dir);
+    assert!(pool.indexed_glob(dir.path(), "sub/*.txt", 1000).is_none());
+    assert!(pool.indexed_glob(dir.path(), "/abs/*.txt", 1000).is_none());
+}
+
+/// An uncompilable glob must reach `fd`, which reports the parse error.
+/// Serving fff's "matched nothing" would answer "No files found" instead.
+#[test]
+fn indexed_glob_declines_invalid_glob() {
+    let dir = tree();
+    let pool = pool_for(&dir);
+    assert!(pool.indexed_glob(dir.path(), "*.{rs", 1000).is_none());
+    assert_eq!(pool.lane_hits(), 0, "a declined pattern must not be served");
+}
+
+/// A slash-free pattern is a basename glob, so a directory component that
+/// matches the pattern must not drag its files in with it: `*_test*` on
+/// `dir_test_only/fixture.txt` is an fd miss, not a hit.
+#[test]
+fn indexed_glob_matches_basename_only() {
+    let dir = tree();
+    write(dir.path(), "dir_test_only/fixture.txt", "needle basename\n");
+    let pool = pool_for(&dir);
+    let hits = pool
+        .indexed_glob(dir.path(), "*_test_only*", 1000)
+        .expect("index must serve a basename glob");
+    assert!(
+        !hits.iter().any(|h| h == "dir_test_only/fixture.txt"),
+        "index matched through a directory component: {hits:?}"
+    );
+    // The file itself is still findable by basename.
+    let hits = pool
+        .indexed_glob(dir.path(), "fixture.txt", 1000)
+        .expect("index must serve a basename glob");
+    assert_eq!(hits, vec!["dir_test_only/fixture.txt".to_string()]);
+}
+
+/// Same depth-anchoring rule as `indexed_glob_declines_slash_pattern`, for
+/// `grep`'s `glob` argument.
+#[test]
+fn indexed_grep_declines_slash_glob() {
+    let dir = tree();
+    let pool = pool_for(&dir);
+    assert!(
+        pool.indexed_grep(
+            dir.path(),
+            "needle",
+            Some("src/*.rs"),
+            false,
+            false,
+            10,
+            0,
+            &Default::default()
+        )
+        .is_none()
+    );
+    // A slash-free glob stays on the index (basename semantics either way).
+    assert!(
+        pool.indexed_grep(
+            dir.path(),
+            "needle",
+            Some("*.txt"),
+            false,
+            false,
+            10,
+            0,
+            &Default::default()
+        )
+        .is_some()
+    );
+}
+
+/// A queued cancel must short-circuit the index lane, exactly as it does the
+/// fd/rg lanes — otherwise the first search in a cold tree ignores Esc for up
+/// to the pool's scan budget.
+#[tokio::test]
+async fn cancelled_search_skips_the_index_lane() {
+    let dir = tree();
+    let pool = Arc::new(pool_for(&dir));
+    let cancel = tokio_util::sync::CancellationToken::new();
+    cancel.cancel();
+    let ctx = ToolContext {
+        cwd: dir.path().to_path_buf(),
+        cancel: cancel.clone(),
+        ..Default::default()
+    };
+    let find = FindTool::with_pool(pool.clone());
+    let out = find.execute(&ctx, json!({"pattern": "*.txt"})).await;
+    assert_eq!(out.content, "cancelled by user");
+    let grep = GrepTool::with_pool(pool.clone());
+    let out = grep.execute(&ctx, json!({"pattern": "needle"})).await;
+    assert_eq!(out.content, "cancelled by user");
+    assert_eq!(pool.lane_hits(), 0, "a cancelled call must not be served");
 }

@@ -11,9 +11,12 @@
 //!
 //! Every `indexed_*` entry point returns `Option`: `None` means "index
 //! unavailable, fall back to the spawn/walk lanes" — the tool contract never
-//! depends on the index being present.
+//! depends on the index being present. Keeping those lanes authoritative is
+//! why the decline rules are conservative: fff paginates *before* a caller
+//! can filter, so a pattern the index cannot answer exactly is declined
+//! rather than answered approximately.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -24,7 +27,8 @@ use fff_search::file_picker::{FilePicker, FilePickerOptions, FuzzySearchOptions}
 use fff_search::frecency::FrecencyTracker;
 use fff_search::grep::{GrepMode, GrepSearchOptions};
 use fff_search::{
-    Constraint, FFFMode, FFFQuery, FuzzyQuery, PaginationArgs, SharedFilePicker, SharedFrecency,
+    Constraint, ContentCacheBudget, FFFMode, FFFQuery, FuzzyQuery, PaginationArgs,
+    SharedFilePicker, SharedFrecency,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -34,26 +38,40 @@ use crate::grep_builtin::{Found, Hit};
 /// window defers to the fd/rg fallback rather than blocking the tool call.
 const SCAN_WAIT: Duration = Duration::from_secs(10);
 
-/// Process-global lane counter (observability). Tests assert on per-pool
-/// `SearchPool::lane_hits` — a shared counter races under parallel tests.
-pub fn lane_hits() -> usize {
-    global_pool().lane_hits()
-}
+/// Resident roots kept warm at once. Each one is a full index, a content
+/// cache, and a watcher thread, so a session hopping across trees evicts the
+/// oldest instead of growing without bound; a tree beyond the cap simply uses
+/// the fd/rg lanes, which is what it cost before the index existed.
+const MAX_RESIDENT_ROOTS: usize = 4;
+
+/// Content cache cap per index. fff auto-sizes this to 512 MB for a repo
+/// under 10k files — a fine default for a single-purpose picker, far too much
+/// for an agent that can hold `MAX_RESIDENT_ROOTS` of them at once.
+const CACHE_FILES: usize = 4096;
+const CACHE_BYTES: u64 = 64 * 1024 * 1024;
 
 /// Per-root picker pool. Cheap to construct; indexes are built on demand.
 pub struct SearchPool {
     frecency_root: PathBuf,
-    pickers: Mutex<HashMap<PathBuf, SharedFilePicker>>,
+    resident: Mutex<Resident>,
     /// Calls served by this pool's indexes — the only way to tell the
-    /// identical-output lanes apart in tests and `stats` reporting.
+    /// identical-output lanes apart, since both lanes return the same bytes.
     hits: AtomicUsize,
+}
+
+/// Live indexes plus their insertion order: `HashMap` has no order and
+/// eviction needs one.
+#[derive(Default)]
+struct Resident {
+    pickers: HashMap<PathBuf, SharedFilePicker>,
+    order: VecDeque<PathBuf>,
 }
 
 impl SearchPool {
     pub fn new(frecency_root: PathBuf) -> Self {
         Self {
             frecency_root,
-            pickers: Mutex::new(HashMap::new()),
+            resident: Mutex::new(Resident::default()),
             hits: AtomicUsize::new(0),
         }
     }
@@ -65,7 +83,7 @@ impl SearchPool {
 
     /// Number of live indexes (one per canonical dir requested so far).
     pub fn len(&self) -> usize {
-        self.pickers.lock().map(|p| p.len()).unwrap_or(0)
+        self.resident.lock().map(|r| r.pickers.len()).unwrap_or(0)
     }
 
     pub fn is_empty(&self) -> bool {
@@ -86,9 +104,16 @@ impl SearchPool {
         if !dir.ancestors().any(|p| p.join(".git").exists()) {
             return None;
         }
-        let mut map = self.pickers.lock().ok()?;
-        if let Some(p) = map.get(&dir) {
+        let mut res = self.resident.lock().ok()?;
+        if let Some(p) = res.pickers.get(&dir) {
             return Some(p.clone());
+        }
+        while res.order.len() >= MAX_RESIDENT_ROOTS {
+            if let Some(evicted) = res.order.pop_front() {
+                // Dropping the shared picker drops the FilePicker with it,
+                // and fff's `BackgroundWatcher::drop` stops the watch.
+                res.pickers.remove(&evicted);
+            }
         }
 
         let shared = SharedFilePicker::default();
@@ -111,11 +136,13 @@ impl SearchPool {
                 base_path: dir.to_string_lossy().to_string(),
                 mode: FFFMode::Ai,
                 enable_content_indexing: true,
+                cache_budget: ContentCacheBudget::from_overrides(CACHE_FILES, CACHE_BYTES, 0),
                 ..Default::default()
             },
         )
         .ok()?;
-        map.insert(dir, shared.clone());
+        res.pickers.insert(dir.clone(), shared.clone());
+        res.order.push_back(dir);
         Some(shared)
     }
 
@@ -126,6 +153,16 @@ impl SearchPool {
         // Absolute globs are matched against full paths by fd --full-path;
         // the index only knows relative paths — defer to the fallback.
         if pattern.starts_with('/') {
+            return None;
+        }
+        // A slash pattern is anchored at a depth fff's glob cannot express:
+        // its `Constraint::Glob` compiles with `literal_separator = false`, so
+        // `crates/gray-tools/src/*.rs` also matches every file below `src/`
+        // (69 hits where fd reports 23 in this very repo). Pagination happens
+        // inside fff, before any post-filter, so serving it would either
+        // over-report or silently drop matches — decline, let fd --full-path
+        // answer exactly.
+        if pattern.contains('/') {
             return None;
         }
         let shared = self.picker(dir)?;
@@ -142,15 +179,32 @@ impl SearchPool {
         }
 
         // fd --glob semantics: a bare pattern is a basename match at any
-        // depth, a slash pattern matches the relative path. `**/` covers both
-        // (globset treats leading `**/` as zero-or-more directories).
-        let pat = if pattern == "**" || pattern.starts_with("**/") {
+        // depth. `**/` gets us there (globset treats a leading `**/` as
+        // zero-or-more directories) and leaves the pattern itself slash-free.
+        let pat = if pattern == "**" {
             pattern.to_string()
         } else {
             format!("**/{pattern}")
         };
+        // Two globset details decide whether this lane is exact or a guess:
+        //  - `literal_separator` defaults to FALSE, so `*` also eats `/` and
+        //    `*_test*` would match `a_test_dir/file.rs`. fd compares the
+        //    pattern against the basename only. We re-filter every hit.
+        //  - an uncompilable pattern (`*.{rs`) makes fff match nothing, while
+        //    fd reports the parse error — decline so fd produces that error.
+        let matcher = globset::GlobBuilder::new(&pat)
+            .literal_separator(true)
+            .build()
+            .ok()?
+            .compile_matcher();
+        // fff paginates before we filter, so ask for headroom: an over-matched
+        // page must not leave us short of the caller's limit.
+        let fetch = limit.saturating_mul(2).min(4096);
         let options = FuzzySearchOptions {
-            pagination: PaginationArgs { offset: 0, limit },
+            pagination: PaginationArgs {
+                offset: 0,
+                limit: fetch,
+            },
             ..Default::default()
         };
         let mut out: Vec<String> = picker
@@ -158,22 +212,21 @@ impl SearchPool {
             .items
             .iter()
             .map(|f| f.relative_path(picker))
+            .filter(|rel| matcher.is_match(rel))
             .collect();
         // fd returns matching directories with a trailing slash too. fff's
         // directory search is fuzzy-text only (glob constraints don't apply),
-        // so match indexed dirs against the globset ourselves.
-        if let Ok(dir_glob) = globset::Glob::new(&pat).map(|g| g.compile_matcher()) {
-            out.extend(
-                picker
-                    .get_dirs()
-                    .iter()
-                    .map(|d| d.relative_path(picker))
-                    // Indexed dir paths carry a trailing slash ("sub/"); the
-                    // glob sees bare names.
-                    .filter(|rel| dir_glob.is_match(rel.trim_end_matches('/')))
-                    .map(|rel| format!("{}/", rel.trim_end_matches('/'))),
-            );
-        }
+        // so match indexed dirs against the same glob ourselves.
+        out.extend(
+            picker
+                .get_dirs()
+                .iter()
+                .map(|d| d.relative_path(picker))
+                // Indexed dir paths carry a trailing slash ("sub/"); the
+                // glob sees bare names.
+                .filter(|rel| matcher.is_match(rel.trim_end_matches('/')))
+                .map(|rel| format!("{}/", rel.trim_end_matches('/'))),
+        );
         out.truncate(limit);
         self.hits.fetch_add(1, Ordering::Relaxed);
         Some(out)
@@ -220,6 +273,14 @@ impl SearchPool {
         // literal filename char (Not(Glob) is a separate variant). Decline
         // rather than translate — the contract stays rg-verified.
         if glob.is_some_and(|g| g.starts_with('!')) {
+            return None;
+        }
+        // A glob with a slash is depth-anchored, and fff compiles globs with
+        // `literal_separator = false` (`a/*.rs` would also match `a/b/c.rs`).
+        // 0.10.6 happens to decline those queries already; declining here
+        // keeps it that way across a version bump. A slash-free glob needs no
+        // filter: globset matches it against the basename, exactly like rg.
+        if glob.is_some_and(|g| g.contains('/')) {
             return None;
         }
         let (mode, text) = if literal {

@@ -30,8 +30,12 @@ grep:  indexed_grep  → declines → rg (vimgrep / --json) → grep_builtin
 - Every `indexed_*` entry point returns `Option`: `None` means "index
   unavailable — fall back". The tool contract never depends on the index.
 - Index calls are synchronous and may wait for the first scan; tools run
-  them inside `tokio::task::spawn_blocking`, with an `AtomicBool` bridge to
-  `ctx.cancel` and a 10s scan budget before deferring to the fallback lanes.
+  them inside `tokio::task::spawn_blocking`, raced against `ctx.cancel` the
+  same way the fd/rg lanes are, with a 10s scan budget before deferring to
+  the fallback lanes.
+- The pool keeps at most `MAX_RESIDENT_ROOTS` indexes warm (oldest root
+  evicted, which drops its watcher) and caps each content cache at
+  `CACHE_FILES`/`CACHE_BYTES` rather than fff's auto-sized 512 MB.
 
 ## Where the index declines (deliberate)
 
@@ -53,22 +57,37 @@ grep:  indexed_grep  → declines → rg (vimgrep / --json) → grep_builtin
 - **Empty constrained searches.** When a glob-scoped query finds nothing,
   fff retries the raw pattern with the glob dropped (`literal_fallback`).
   rg returns zero hits there, so `literal_fallback` is declined too.
+- **Depth-anchored globs.** fff compiles globs with globset's default
+  `literal_separator = false`, so `*` also eats `/`: `a/*.rs` matches every
+  file below `a/` (69 index hits where `fd` reports 23 in this repo), and
+  `*_tools*` matches through a directory component. fff paginates *before* a
+  caller could filter, so a pattern it cannot answer exactly is declined
+  rather than answered approximately. `find` therefore serves only
+  slash-free patterns — `fd --full-path` owns the rest — and `grep` declines
+  a `glob` argument containing a `/` (a slash-free glob needs no filter:
+  globset matches it against the basename, exactly like `rg -g`).
+- **Invalid globs** (`find "*.{rs"`). fff matches nothing; `fd` reports
+  `unclosed alternate group`. The index declines so the error text is fd's.
 - **File targets** (grep `dir` pointing at a file), init failures, and
   scan-timeouts all return `None`.
 
 `find` also appends matching directories (`sub/`) the way `fd` does — fff's
-directory search is fuzzy-text only and ignores glob constraints, so the
-lane matches `picker.get_dirs()` against the globset directly.
+directory search is fuzzy-text only and ignores glob constraints, so the lane
+matches `picker.get_dirs()` against the same globset itself. That matcher,
+like the file-side filter, is built with `literal_separator(true)` so a
+slash-free pattern is a basename glob, which is what `fd` compares.
 
 ## Behavior changes
 
 - Result order is frecency-ranked, not sorted. Same set, better ordering for
   an agent; tests assert membership, not position.
-- Memory: fff holds the index + content cache resident (~360 B/file plus
-  mmap'd content). That is the price of the speedup; on very large trees the
-  cost is hundreds of MB.
-- First search in a directory pays the initial scan (bounded at 10s);
-  subsequent searches are in-process.
+- Memory: fff holds the index + content cache resident (~360 B/file), capped
+  at 4 resident roots x (4096 files / 64 MB). Measured on this repo: a full
+  index costs ~11 MB of RSS.
+- First search in a directory pays the initial scan (bounded at 10s, and
+  interruptible by `ctx.cancel`); subsequent searches are in-process.
+- `find "a/b/*.rs"`-style patterns and `grep` with a `glob` containing `/`
+  now always run the `fd`/`rg` lanes — see the decline rules.
 
 ## Dependency
 
@@ -107,5 +126,7 @@ cargo test -p gray-tools search_index
   `search_index.rs` and reverting the two `execute` blocks restores the old
   behavior exactly.
 - `SearchPool` is not yet lifecycle-tracked like `FileLedger` (no `Weak` in
-  builder.rs); pools are per-tool `Arc`s today. If session-directory churn
-  ever leaks watchers, add a `CURRENT_INDEX` mirror of `CURRENT_LEDGER`.
+  builder.rs); pools are per-tool `Arc`s today, bounded by
+  `MAX_RESIDENT_ROOTS` rather than by session teardown. If session-directory
+  churn ever leaks watchers, add a `CURRENT_INDEX` mirror of
+  `CURRENT_LEDGER`.

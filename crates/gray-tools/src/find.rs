@@ -95,17 +95,24 @@ impl Tool for FindTool {
             Err(e) => return fail(format!("Path not found: {}: {e}", search_path.display())),
         }
 
-        // Resident index first; sync work + scan wait stay off the async runtime.
+        // Resident index first; sync work + scan wait stay off the async
+        // runtime. The wait is bounded by the pool's scan budget, so it has to
+        // race ctx.cancel like the fd lane does — a queued cancel must not sit
+        // through a cold scan (the spawned task keeps indexing in the
+        // background, which is exactly what the next call wants).
         {
             let pool = self
                 .pool
                 .clone()
                 .unwrap_or_else(|| crate::search_index::global_pool().clone());
             let (dir, pat) = (search_path.clone(), pattern.clone());
-            if let Ok(Some(hits)) =
-                tokio::task::spawn_blocking(move || pool.indexed_glob(&dir, &pat, effective_limit))
-                    .await
-            {
+            let indexed = tokio::select! {
+                joined = tokio::task::spawn_blocking(move || {
+                    pool.indexed_glob(&dir, &pat, effective_limit)
+                }) => joined.ok().flatten(),
+                _ = ctx.cancel.cancelled() => return finish("cancelled by user".to_string()),
+            };
+            if let Some(hits) = indexed {
                 return finish_indexed(hits, effective_limit);
             }
         }

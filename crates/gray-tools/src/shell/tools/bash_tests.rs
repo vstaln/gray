@@ -313,7 +313,6 @@ fn known_missing_binaries_get_their_real_substitute() {
 }
 
 fn png_bytes() -> Vec<u8> {
-    use image::ImageFormat;
     use std::io::Cursor;
     let img = image::RgbImage::from_pixel(2, 2, image::Rgb([9, 8, 7]));
     let mut buf = Vec::new();

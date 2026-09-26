@@ -425,32 +425,36 @@ impl Tool for GrepTool {
         };
 
         // Resident index first; `None` = a case the lane declines. Sync work
-        // + scan wait stay off the async runtime.
+        // + scan wait stay off the async runtime, and the wait races
+        // ctx.cancel like the rg lane below: a cancel must not sit through a
+        // cold scan (the spawned task keeps indexing in the background).
         if is_dir {
             let pool = self
                 .pool
                 .clone()
                 .unwrap_or_else(|| crate::search_index::global_pool().clone());
-            let (dir, pat, g, cancel) = (
+            let (dir, pat, g, lane_cancel) = (
                 search_path.clone(),
                 pattern.clone(),
                 glob.clone(),
                 ctx.cancel.clone(),
             );
-            let found = tokio::task::spawn_blocking(move || {
-                pool.indexed_grep(
-                    &dir,
-                    &pat,
-                    g.as_deref(),
-                    ignore_case,
-                    literal,
-                    effective_limit,
-                    context,
-                    &cancel,
-                )
-            })
-            .await;
-            if let Ok(Some(found)) = found {
+            let found = tokio::select! {
+                joined = tokio::task::spawn_blocking(move || {
+                    pool.indexed_grep(
+                        &dir,
+                        &pat,
+                        g.as_deref(),
+                        ignore_case,
+                        literal,
+                        effective_limit,
+                        context,
+                        &lane_cancel,
+                    )
+                }) => joined.ok().flatten(),
+                _ = ctx.cancel.cancelled() => return finish("cancelled by user".to_string()),
+            };
+            if let Some(found) = found {
                 return format_matches(
                     &search_path,
                     is_dir,
