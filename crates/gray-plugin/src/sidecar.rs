@@ -131,6 +131,31 @@ enum RequestSensitivity {
     Sensitive,
 }
 
+#[cfg(windows)]
+async fn try_write_frame(stdin: &std::sync::Arc<Mutex<ChildStdin>>, frame: &str) -> FrameWrite {
+    // Tokio's Windows ChildStdin write is backed by a blocking pipe write.
+    // A timeout cannot interrupt that operation while it is being polled, so
+    // run it on the blocking pool and bound the JoinHandle wait. The caller
+    // can then terminate the child and let the detached write unwind.
+    let stdin = Arc::clone(stdin);
+    let frame = frame.to_owned();
+    let mut guard = stdin.lock_owned().await;
+    let write = tokio::task::spawn_blocking(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("sidecar write runtime builds");
+        runtime.block_on(async move { guard.write_all(frame.as_bytes()).await })
+    });
+    match timeout(WRITE_TIMEOUT, write).await {
+        Ok(Ok(Ok(()))) => FrameWrite::Ok,
+        Ok(Ok(Err(e))) => FrameWrite::Failed(format!("{e}")),
+        Ok(Err(e)) => FrameWrite::Failed(format!("sidecar stdin writer failed: {e}")),
+        Err(_) => FrameWrite::TimedOut,
+    }
+}
+
+#[cfg(not(windows))]
 async fn try_write_frame(stdin: &std::sync::Arc<Mutex<ChildStdin>>, frame: &str) -> FrameWrite {
     let mut guard = stdin.lock().await;
     match timeout(WRITE_TIMEOUT, guard.write_all(frame.as_bytes())).await {

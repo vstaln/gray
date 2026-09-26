@@ -190,7 +190,11 @@ pub(crate) async fn run_prompt_turn(
             images.push(p);
         }
     }
-    let user_msg = build_user_message_with_attachments(&prompt_text, &images);
+    let user_msg = build_user_message_with_attachments(
+        &prompt_text,
+        &images,
+        config.model.as_deref().unwrap_or(""),
+    );
     let user_msg_for_retry = user_msg.clone();
     let mut initial_count = agent.messages().len();
     {

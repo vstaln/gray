@@ -178,12 +178,13 @@ pub(crate) fn base64_encode(input: &[u8]) -> String {
 }
 
 /// Builds the user message with MIME-driven attachments (opencode parity):
-/// images normalized (downscaled, capped), PDFs as extracted text, videos
-/// as first-frame stills. Audio/anything else is reported loudly, never
-/// silently dropped.
+/// images normalized (downscaled, capped), PDFs as extracted text, videos as
+/// a native part on a model that takes one and a contact sheet otherwise.
+/// Audio/anything else is reported loudly, never silently dropped.
 pub(crate) fn build_user_message_with_attachments(
     text: &str,
     paths: &[std::path::PathBuf],
+    model: &str,
 ) -> Message {
     use super::attachments::{AttachmentKind, attachment_kind};
     if paths.is_empty() {
@@ -218,25 +219,57 @@ pub(crate) fn build_user_message_with_attachments(
                     "(attached PDF {name} skipped: {e})"
                 ))),
             },
-            AttachmentKind::Video => match super::attachments::video_frame(path) {
-                Ok(frame) => match super::attachments::normalize_image_bytes(&frame) {
-                    Ok((mime, out)) => {
+            // Native video only where the wire actually has a video part and
+            // the clip fits the cap; every other model gets the same contact
+            // sheet `gray view` would produce, so one pasted file works
+            // everywhere.
+            AttachmentKind::Video => {
+                let raw = match std::fs::read(path) {
+                    Ok(bytes) => bytes,
+                    Err(e) => {
                         blocks.push(gray_core::message::ContentBlock::text(format!(
-                            "(first frame of {name})"
+                            "(attached video {name} unreadable: {e})"
                         )));
-                        blocks.push(gray_core::message::ContentBlock::image(
-                            mime,
-                            base64_encode(&out),
-                        ));
+                        continue;
                     }
-                    Err(e) => blocks.push(gray_core::message::ContentBlock::text(format!(
-                        "(attached video {name} skipped: {e})"
-                    ))),
-                },
-                Err(e) => blocks.push(gray_core::message::ContentBlock::text(format!(
-                    "(attached video {name} skipped: {e})"
-                ))),
-            },
+                };
+                if gray_provider::openai::model_accepts_video(model)
+                    && raw.len() <= gray_provider::openai::MAX_NATIVE_VIDEO_BYTES
+                {
+                    blocks.push(gray_core::message::ContentBlock::video(
+                        super::attachments::video_media_type(path),
+                        base64_encode(&raw),
+                    ));
+                } else {
+                    let reason = if gray_provider::openai::model_accepts_video(model) {
+                        "over the native size cap"
+                    } else {
+                        "model has no native video input"
+                    };
+                    match gray_tools::video_sheet::video_sheet(
+                        path,
+                        gray_tools::video_sheet::DEFAULT_FRAMES,
+                    ) {
+                        Ok(sheet) => match super::attachments::normalize_image_bytes(&sheet) {
+                            Ok((mime, out)) => {
+                                blocks.push(gray_core::message::ContentBlock::text(format!(
+                                    "({name}: contact sheet, {reason})"
+                                )));
+                                blocks.push(gray_core::message::ContentBlock::image(
+                                    mime,
+                                    base64_encode(&out),
+                                ));
+                            }
+                            Err(e) => blocks.push(gray_core::message::ContentBlock::text(format!(
+                                "(attached video {name} skipped: {e})"
+                            ))),
+                        },
+                        Err(e) => blocks.push(gray_core::message::ContentBlock::text(format!(
+                            "(attached video {name} skipped: {e})"
+                        ))),
+                    }
+                }
+            }
             // No model-agnostic wire path for audio on our providers — loud skip.
             AttachmentKind::Audio | AttachmentKind::Unsupported => {
                 blocks.push(gray_core::message::ContentBlock::text(format!(

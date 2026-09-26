@@ -1,10 +1,10 @@
-//! Tool-call tax baseline: paired wall-time benchmarks over gray's real tool
-//! dispatch paths (toolrush method: same workload, alternating samples,
+//! Tool-call latency baseline: paired wall-time benchmarks over gray's real tool
+//! dispatch paths (toolbench method: same workload, alternating samples,
 //! medians + p95s, no mocks).
 //!
 //! Purpose: lock in today's numbers. Any future fast path (grep envelope,
 //! parallel dispatch) must beat these or it doesn't ship. Run with:
-//! `cargo test -p gray-tools --test tool_tax -- --nocapture`
+//! `cargo test -p gray-tools --test tool_bench -- --nocapture`
 //!
 //! These are tool-operation wall times, NOT model-inclusive turn speed:
 //! tool-heavy turns move with these numbers, chat-heavy turns barely do.
@@ -51,13 +51,13 @@ fn fixture() -> TempDir {
 }
 
 #[tokio::test]
-async fn baseline_tool_tax() {
+async fn baseline_tool_bench() {
     let dir = fixture();
     let ctx = ctx_for(dir.path());
     let ledger = Arc::new(FileLedger::new());
     let read = ReadTool::new(ledger);
-    let grep = GrepTool;
-    let find = FindTool;
+    let grep = GrepTool::default();
+    let find = FindTool::default();
     let bash = BashTool::default();
 
     // Warm up (page cache, tokio runtime, rg binary).
@@ -192,7 +192,7 @@ async fn fast_path_parity() {
         std::fs::write(p, content).unwrap();
     }
     let ctx = ctx_for(dir.path());
-    let grep = GrepTool;
+    let grep = GrepTool::default();
 
     fn is_match_line(l: &str, rels: &[&str]) -> bool {
         rels.iter().any(|r| {

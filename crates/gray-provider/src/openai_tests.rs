@@ -1837,6 +1837,71 @@ async fn a_truncated_body_retries_when_nothing_was_emitted() {
     server.abort();
 }
 
+async fn serve_truncated_after_delta() -> (String, tokio::task::JoinHandle<()>) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = tokio::spawn(async move {
+        let Ok((mut sock, _)) = listener.accept().await else {
+            return;
+        };
+        let mut buf = [0u8; 4096];
+        let _ =
+            tokio::time::timeout(std::time::Duration::from_millis(500), sock.read(&mut buf)).await;
+        let event = "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"partial\"}}]}\n\n";
+        let body = format!("{:x}\r\n{event}\r\n", event.len());
+        let head = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n";
+        let _ = sock.write_all(format!("{head}{body}").as_bytes()).await;
+        let _ = sock.flush().await;
+        drop(sock);
+    });
+    (format!("http://{addr}"), handle)
+}
+
+#[tokio::test]
+async fn a_truncated_body_after_delta_completes_with_a_notice() {
+    use futures::StreamExt;
+    use gray_core::message::ChatRequest;
+    let (base, server) = serve_truncated_after_delta().await;
+    let provider =
+        OpenAiProvider::new("key", "test-model", base, None, None).expect("provider builds");
+    let req = ChatRequest {
+        system: None,
+        messages: Vec::new(),
+        tools: Vec::new(),
+    };
+    let events: Vec<_> = provider.stream(req).collect().await;
+    let text: String = events
+        .iter()
+        .filter_map(|r| r.as_ref().ok())
+        .filter_map(|e| match e {
+            StreamEvent::TextDelta { delta } => Some(delta.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(text, "partial", "{events:?}");
+    assert!(events.iter().all(Result::is_ok), "{events:?}");
+    assert!(
+        events.iter().any(|event| matches!(
+            event.as_ref().ok(),
+            Some(StreamEvent::StreamError { message, .. })
+                if message == "Connection interrupted; partial answer kept"
+        )),
+        "{events:?}"
+    );
+    assert!(
+        events.iter().any(|event| matches!(
+            event.as_ref().ok(),
+            Some(StreamEvent::MessageComplete {
+                stop_reason: Some(StopReason::EndTurn),
+                ..
+            })
+        )),
+        "{events:?}"
+    );
+    server.abort();
+}
+
 struct StaticProviderSource {
     secrets: gray_core::credential::SecretMap,
     metadata: std::collections::BTreeMap<String, String>,
@@ -2009,4 +2074,58 @@ fn dynamic_profile_debug_is_redacted() {
     .unwrap();
     assert!(!format!("{provider:?}").contains("test-access"));
     assert!(!format!("{provider:?}").contains("acct_test"));
+}
+
+#[test]
+fn model_accepts_video_is_gemini_only() {
+    use crate::openai::model_accepts_video;
+    assert!(model_accepts_video("gemini-3-pro"));
+    assert!(model_accepts_video("google/gemini-2.5-flash"));
+    assert!(model_accepts_video("gemma-3-27b"));
+    // Everything else gets the contact sheet instead of a 400.
+    for m in [
+        "gpt-5.1",
+        "claude-opus-5",
+        "deepseek-v4",
+        "step-5-preview",
+        "gpt-oss-120b",
+    ] {
+        assert!(!model_accepts_video(m), "{m} must not claim video");
+    }
+}
+
+#[test]
+fn a_video_block_reaches_the_wire_only_for_a_video_model() {
+    use crate::openai::model_accepts_video;
+    let req = || ChatRequest {
+        system: None,
+        messages: vec![Message::new(
+            gray_core::Role::User,
+            vec![ContentBlock::video("video/mp4", "QUJD")],
+        )],
+        tools: Vec::new(),
+    };
+
+    // Gemini: a real video_url part carrying the data URL.
+    let chat = map_chat_request(req(), "gemini-3-pro", None).expect("maps");
+    let body = serde_json::to_value(&chat).unwrap();
+    let parts = body["messages"][0]["content"].as_array().unwrap();
+    let video = parts
+        .iter()
+        .find(|p| p["type"] == "video_url")
+        .expect("video part must be present");
+    let url = video["video_url"]["url"].as_str().unwrap();
+    assert!(url.starts_with("data:video/mp4;base64,"), "{url}");
+
+    // A model without native video refuses loudly, and names the fallback.
+    let err = map_chat_request(req(), "step-5-preview", None).expect_err("must refuse");
+    let text = err.to_string();
+    assert!(text.contains("gray view"), "{text}");
+
+    // Same rule on the Responses path: a note, not a stray part.
+    let responses = map_chat_to_responses(req(), "gpt-5.1", None, None);
+    let body = serde_json::to_value(&responses).unwrap();
+    let text = body["input"][0]["content"].as_str().unwrap_or_default();
+    assert!(text.contains("no native video input"), "{text}");
+    let _ = model_accepts_video("gemini-3-pro");
 }

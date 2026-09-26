@@ -27,6 +27,10 @@ pub enum ContentBlock {
     Text { text: String },
     /// Image content (base64-encoded).
     Image { media_type: String, data: String },
+    /// Video content (base64-encoded). Only models with a native video part
+    /// can use this; every other path turns the file into a contact sheet
+    /// (`gray view` / pasted attachments) before it ever reaches here.
+    Video { media_type: String, data: String },
     /// A tool invocation requested by the model.
     ToolUse {
         id: String,
@@ -97,6 +101,14 @@ impl ContentBlock {
     /// Creates a new image block (base64 data).
     pub fn image(media_type: impl Into<String>, data: impl Into<String>) -> Self {
         Self::Image {
+            media_type: media_type.into(),
+            data: data.into(),
+        }
+    }
+
+    /// Creates a new video block (base64 `data`, e.g. "video/mp4").
+    pub fn video(media_type: impl Into<String>, data: impl Into<String>) -> Self {
+        Self::Video {
             media_type: media_type.into(),
             data: data.into(),
         }
@@ -263,7 +275,7 @@ impl Message {
                 // Base64 payload length is the only size signal available
                 // here; providers re-encode, so this is an approximation in
                 // the same spirit as the chars/4 heuristic downstream.
-                ContentBlock::Image { data, .. } => data.clone(),
+                ContentBlock::Image { data, .. } | ContentBlock::Video { data, .. } => data.clone(),
             };
             if !piece.is_empty() {
                 if !out.is_empty() {

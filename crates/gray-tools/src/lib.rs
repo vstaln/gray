@@ -14,9 +14,11 @@ pub mod images;
 pub mod ledger;
 pub mod ls;
 pub mod read;
+pub mod search_index;
 pub mod shell;
 pub mod stats;
 pub mod truncate;
+pub mod video_sheet;
 pub mod view;
 pub mod write;
 

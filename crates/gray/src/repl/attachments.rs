@@ -50,6 +50,9 @@ const MAX_INLINE_FILE_BYTES: u64 = 100 * 1024 * 1024;
 /// `file:///tmp/a%20b.png`) and return existing image files resolved against
 /// `cwd`. Typed/piped `-p` links never go through paste-attach, so without
 /// this they stay plain text and the model never sees them.
+/// Typed file links in `text` that carry media: images and video. The name
+/// predates video support; renaming it would churn every caller for no
+/// behavior change, so it stays.
 pub fn extract_inline_image_paths(text: &str, cwd: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
     for raw in text.split_whitespace() {
@@ -78,7 +81,14 @@ pub fn extract_inline_image_paths(text: &str, cwd: &Path) -> Vec<PathBuf> {
         };
         tok = decoded.as_ref();
         let candidate = Path::new(tok);
-        if attachment_kind(candidate) != AttachmentKind::Image {
+        // A typed link to a video is as valid as one to a screenshot: the
+        // builder routes it to a native part or a contact sheet. Filtering
+        // this arm to images made a pasted video path silently arrive as
+        // nothing at all.
+        if !matches!(
+            attachment_kind(candidate),
+            AttachmentKind::Image | AttachmentKind::Video
+        ) {
             continue;
         }
         let full = if candidate.is_absolute() {
@@ -159,8 +169,16 @@ pub fn pdf_text(path: &Path) -> Result<String, MediaError> {
     }
 }
 
+/// Wire MIME type for a video attachment, by extension. The table lives in
+/// gray-tools next to the extension gate that admits the file, so the two
+/// can never disagree about what counts as a video.
+pub fn video_media_type(path: &Path) -> &'static str {
+    gray_tools::images::video_media_type(path)
+}
+
 /// Video → first-frame JPEG via ffmpeg (capped 1600px wide), fed back
-/// through the image normalizer by the caller.
+/// through the image normalizer by the caller. Still used by the preview
+/// strip; the pasted attachment prefers a native part or a contact sheet.
 pub fn video_frame(path: &Path) -> Result<Vec<u8>, MediaError> {
     let out = output_with_timeout(
         "ffmpeg",

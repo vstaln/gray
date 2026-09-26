@@ -14,11 +14,14 @@ use std::path::Path;
 
 /// Load every path, keeping successes and per-path errors side by side so
 /// one bad file never sinks the good ones.
-fn load_all(paths: &[String]) -> (Vec<gray_tools::view::Shown>, Vec<String>) {
+fn load_all(
+    paths: &[String],
+    frames: Option<usize>,
+) -> (Vec<gray_tools::view::Shown>, Vec<String>) {
     let mut shown = Vec::new();
     let mut failed = Vec::new();
     for raw in paths {
-        match gray_tools::view::load(Path::new(raw)) {
+        match gray_tools::view::load_with_frames(Path::new(raw), frames) {
             Ok(part) => shown.push(part),
             Err(e) => failed.push(e.to_string()),
         }
@@ -26,18 +29,23 @@ fn load_all(paths: &[String]) -> (Vec<gray_tools::view::Shown>, Vec<String>) {
     (shown, failed)
 }
 
+/// One report line per shown path. A contact sheet is derived from a video,
+/// not the file itself, so it says so — "viewed clip.mp4" alone would read
+/// as if the video had been handed over.
+fn shown_line(part: &gray_tools::view::Shown) -> String {
+    if part.derived_from_video {
+        format!("viewed {} (contact sheet)", part.path.display())
+    } else {
+        format!("viewed {}", part.path.display())
+    }
+}
+
 /// What `gray view PATH...` reports: the lines to print for the images it
 /// showed and the errors for the ones it could not. Kept as data, so the
 /// exit code and the wording are testable without capturing stdout.
 pub fn view_lines(paths: &[String]) -> (Vec<String>, Vec<String>) {
-    let (shown, failed) = load_all(paths);
-    (
-        shown
-            .iter()
-            .map(|s| format!("viewed {}", s.path.display()))
-            .collect(),
-        failed,
-    )
+    let (shown, failed) = load_all(paths, None);
+    (shown.iter().map(shown_line).collect(), failed)
 }
 
 /// Kitty transmit-and-display sequence for one base64 PNG, in 4096-byte
@@ -104,16 +112,42 @@ fn display_png(shown: &gray_tools::view::Shown) -> Option<String> {
 /// `gray view PATH...`: draw each image inline where the terminal allows it,
 /// name what was shown, non-zero exit if any path failed. A failed draw
 /// reads as a failure, never as a view.
-pub fn run_cli(paths: &[String]) -> anyhow::Result<()> {
+pub fn run_cli(paths: &[String], frames: Option<usize>, native: bool) -> anyhow::Result<()> {
+    // `--native` is an agent-side affordance: the bash tool claims the command
+    // and attaches a video part to the next turn. A human at a terminal has
+    // no model to attach to, so this path reports the file rather than
+    // pretending a video was shown.
+    let (native_paths, display_paths): (Vec<&String>, Vec<&String>) = if native {
+        paths
+            .iter()
+            .partition(|p| gray_tools::images::is_video_extension(std::path::Path::new(p.as_str())))
+    } else {
+        (Vec::new(), paths.iter().collect())
+    };
+    if !native_paths.is_empty() {
+        let owned: Vec<String> = native_paths.iter().map(|s| (*s).clone()).collect();
+        for p in owned {
+            let len = std::fs::metadata(&p).map(|m| m.len()).unwrap_or(0);
+            println!("native video: {p} ({len} bytes, not drawn in a terminal)");
+        }
+        eprintln!(
+            "gray view: --native only attaches video when an agent runs it through the \
+             bash tool; a terminal cannot hand a video to a model"
+        );
+    }
+    if display_paths.is_empty() {
+        return Ok(());
+    }
+    let display_owned: Vec<String> = display_paths.into_iter().cloned().collect();
     let draw = terminal_supports_images() && std::io::stdout().is_terminal();
-    let (shown, mut failed) = load_all(paths);
+    let (shown, mut failed) = load_all(&display_owned, frames);
     let mut names = Vec::with_capacity(shown.len());
     if draw {
         let mut out = std::io::stdout().lock();
         for part in &shown {
             match display_png(part).map(|png| kitty_sequence(&png)) {
                 Some(seq) if !seq.is_empty() && out.write_all(seq.as_bytes()).is_ok() => {
-                    names.push(format!("viewed {}", part.path.display()));
+                    names.push(shown_line(part));
                 }
                 _ => failed.push(format!(
                     "{}: terminal could not display the image",
@@ -123,7 +157,7 @@ pub fn run_cli(paths: &[String]) -> anyhow::Result<()> {
         }
         let _ = out.flush();
     } else {
-        names.extend(shown.iter().map(|s| format!("viewed {}", s.path.display())));
+        names.extend(shown.iter().map(shown_line));
     }
     for line in names {
         println!("{line}");

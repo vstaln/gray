@@ -694,7 +694,7 @@ pub fn redact_message(msg: &crate::message::Message) -> crate::message::Message 
             ContentBlock::StructuredInput { payload, .. } => {
                 redact_json_value(payload);
             }
-            ContentBlock::Image { .. } => {}
+            ContentBlock::Image { .. } | ContentBlock::Video { .. } => {}
         }
     }
     out

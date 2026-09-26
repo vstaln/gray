@@ -313,7 +313,6 @@ fn known_missing_binaries_get_their_real_substitute() {
 }
 
 fn png_bytes() -> Vec<u8> {
-    use image::ImageFormat;
     use std::io::Cursor;
     let img = image::RgbImage::from_pixel(2, 2, image::Rgb([9, 8, 7]));
     let mut buf = Vec::new();
@@ -457,6 +456,107 @@ async fn gray_view_downscales_where_cat_keeps_full_resolution() {
     let (vw, vh) = dims(&view.images[0].data);
     assert_eq!((cw, ch), (2400, 100), "cat stays full resolution");
     assert!(vw <= 2000 && vh < ch, "view caps at 2000px, got {vw}x{vh}");
+}
+
+/// A real 2-frame clip, so the sheet fallback has something to decode.
+/// `None` when ffmpeg is unavailable.
+fn tiny_mp4(dir: &std::path::Path) -> Option<std::path::PathBuf> {
+    let path = dir.join("real.mp4");
+    let ok = std::process::Command::new("ffmpeg")
+        .args([
+            "-y",
+            "-v",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc=s=64x64:d=0.2",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+        ])
+        .arg(&path)
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    ok.then_some(path)
+}
+
+/// A file with an mp4 extension and an mp4 header; the claim never decodes
+/// it, so the bytes only have to be plausible enough to identify.
+fn fake_mp4(dir: &std::path::Path, name: &str, size: usize) -> std::path::PathBuf {
+    let path = dir.join(name);
+    let mut bytes = b"\x00\x00\x00\x18ftypmp42".to_vec();
+    bytes.resize(size.max(32), 0);
+    std::fs::write(&path, &bytes).unwrap();
+    path
+}
+
+#[tokio::test]
+async fn gray_view_native_attaches_a_video_part() {
+    use base64::Engine as _;
+    let dir = tempfile::tempdir().unwrap();
+    fake_mp4(dir.path(), "clip.mp4", 512);
+
+    let out = image_command("gray view --native clip.mp4", dir.path())
+        .expect("--native on a small video must claim");
+    assert_eq!(out.videos.len(), 1, "one video part: {out:?}");
+    assert!(out.images.is_empty(), "native must not also send a sheet");
+    let raw = base64::engine::general_purpose::STANDARD
+        .decode(&out.videos[0].data)
+        .unwrap();
+    assert_eq!(&raw[4..8], b"ftyp", "the clip itself, not a re-encode");
+    assert!(out.content.contains("native video"), "{}", out.content);
+}
+
+#[tokio::test]
+async fn gray_view_native_falls_back_to_a_sheet_over_the_cap() {
+    // Over MAX_NATIVE_VIDEO_CLAIM_BYTES: the turn must still deliver an
+    // image and say why, rather than dropping the claim and letting the
+    // shell report a usage error.
+    let dir = tempfile::tempdir().unwrap();
+    // A real, decodable clip, and a cap of 1 byte. The rule under test is the
+    // fallback, not the constant, so this avoids a 9MB fixture.
+    let path = tiny_mp4(dir.path());
+    let Some(path) = path else {
+        eprintln!("skipping: ffmpeg could not build the fixture");
+        return;
+    };
+    let out = super::image_command_with_native_cap(
+        &format!(
+            "gray view --native {}",
+            path.file_name().unwrap().to_string_lossy()
+        ),
+        dir.path(),
+        1,
+    )
+    .expect("an over-cap video must still claim, with a sheet");
+    assert!(out.videos.is_empty(), "nothing native went out");
+    assert_eq!(out.images.len(), 1, "a sheet was attached instead");
+    assert!(out.content.contains("native cap"), "{}", out.content);
+    assert!(
+        !out.is_error,
+        "a refusal explained in text is not a failure"
+    );
+}
+
+#[tokio::test]
+async fn gray_view_native_on_an_image_is_just_the_image() {
+    let dir = tempfile::tempdir().unwrap();
+    let img = image::RgbImage::from_pixel(8, 8, image::Rgb([4, 5, 6]));
+    let mut buf = Vec::new();
+    image::DynamicImage::ImageRgb8(img)
+        .write_to(&mut std::io::Cursor::new(&mut buf), image::ImageFormat::Png)
+        .unwrap();
+    std::fs::write(dir.path().join("shot.png"), &buf).unwrap();
+
+    let out = image_command("gray view --native shot.png", dir.path()).unwrap();
+    assert_eq!(out.images.len(), 1);
+    assert!(
+        out.videos.is_empty(),
+        "--native must not invent a video part"
+    );
 }
 
 #[tokio::test]

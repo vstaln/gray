@@ -52,6 +52,52 @@ pub fn is_image_extension(path: &Path) -> bool {
     )
 }
 
+/// Extension allowlist for video `gray view` will turn into a contact sheet.
+/// Widened only where a real clip lives; the sheet path shells out to ffmpeg,
+/// which is the thing that actually decodes these, so the list is a cheap
+/// first gate rather than a promise.
+pub fn is_video_extension(path: &Path) -> bool {
+    matches!(
+        path.extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_ascii_lowercase())
+            .as_deref(),
+        Some("mp4")
+            | Some("m4v")
+            | Some("mov")
+            | Some("webm")
+            | Some("mkv")
+            | Some("avi")
+            | Some("mpg")
+            | Some("mpeg")
+    )
+}
+
+/// What `gray view` can show: an image as itself, a video as a sheet.
+pub fn is_viewable_extension(path: &Path) -> bool {
+    is_image_extension(path) || is_video_extension(path)
+}
+
+/// Wire MIME type for a video, by extension. A native video part has to name
+/// its type; the extension is the only signal we have, and the provider is
+/// what ultimately decides whether the model accepts it.
+pub fn video_media_type(path: &Path) -> &'static str {
+    match path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("webm") => "video/webm",
+        Some("mov") => "video/quicktime",
+        Some("mkv") => "video/x-matroska",
+        Some("avi") => "video/x-msvideo",
+        Some("m4v") => "video/x-m4v",
+        Some("mpg") | Some("mpeg") => "video/mpeg",
+        _ => "video/mp4",
+    }
+}
+
 /// Downscale-before-send (opencode `Image.normalize`): longest side capped
 /// at 2000px, JPEG stays JPEG, everything else becomes PNG, base64 under
 /// 5MB (halve and retry up to 3 times, then fail loudly like SizeError).

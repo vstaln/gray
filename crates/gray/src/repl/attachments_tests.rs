@@ -107,6 +107,18 @@ fn inline_relative_resolves_against_cwd() {
 }
 
 #[test]
+fn a_typed_video_path_is_media_too() {
+    // Regression: this arm used to accept only AttachmentKind::Image, so a
+    // video path in a headless prompt was dropped and arrived as nothing at
+    // all — no attachment, no note, just silence.
+    let dir = tempfile::tempdir().unwrap();
+    let clip = dir.path().join("clip.mp4");
+    std::fs::write(&clip, b"fake mp4").unwrap();
+    let got = extract_inline_image_paths(&format!("look at {}", clip.display()), dir.path());
+    assert_eq!(got, vec![clip], "a typed video path must be carried");
+}
+
+#[test]
 fn a_hanging_media_helper_times_out() {
     // `sh -c 'sleep 30'` stands in for a wedged pdftotext/ffmpeg: the call
     // must fail at the bound, not hold the attach flow forever.

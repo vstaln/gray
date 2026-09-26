@@ -673,7 +673,11 @@ async fn run_print_inner(
     // text for attachment paths.
     let user_msg = if let Some(prompt) = prompt {
         let inline = crate::repl::attachments::extract_inline_image_paths(prompt, &cwd);
-        crate::repl::build_user_message_with_attachments(prompt, &inline)
+        crate::repl::build_user_message_with_attachments(
+            prompt,
+            &inline,
+            config.model.as_deref().unwrap_or(""),
+        )
     } else {
         user_message
     };
