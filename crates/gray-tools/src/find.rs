@@ -66,6 +66,14 @@ impl Tool for FindTool {
     }
 
     async fn execute(&self, ctx: &ToolContext, args: Value) -> ToolOutput {
+        // A token that is already cancelled answers before anything is
+        // spawned. Without this the cancel branch races the child's first
+        // line in the drain `select!`, so a pre-cancelled call could come
+        // back *finished* instead of cancelled — the same query, two
+        // answers, decided by scheduling.
+        if ctx.cancel.is_cancelled() {
+            return finish("cancelled by user".to_string());
+        }
         let pattern = match get_str(&args, "pattern") {
             Ok(p) => p,
             Err(e) => return e,
