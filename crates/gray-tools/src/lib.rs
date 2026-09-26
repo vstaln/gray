@@ -14,6 +14,7 @@ pub mod images;
 pub mod ledger;
 pub mod ls;
 pub mod read;
+pub mod search_cmd;
 pub mod search_index;
 pub mod shell;
 pub mod stats;

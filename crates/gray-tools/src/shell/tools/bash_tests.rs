@@ -2,6 +2,7 @@ use super::*;
 use gray_core::agent::Tool;
 use serde_json::json;
 use std::sync::atomic::{AtomicU64, Ordering};
+use tokio_util::sync::CancellationToken;
 
 static SESS_N: AtomicU64 = AtomicU64::new(0);
 
@@ -323,26 +324,34 @@ fn png_bytes() -> Vec<u8> {
 }
 
 #[tokio::test]
-async fn cat_shows_png_as_vision_block() {
+async fn cat_points_at_gray_view_instead_of_streaming_media() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("plot.png"), png_bytes()).unwrap();
-    let out = image_command("cat plot.png", dir.path()).expect("cat on a png must show the image");
+    let out = image_command("cat plot.png", dir.path())
+        .expect("cat on a png must not stream binary into the context");
     assert!(!out.is_error);
-    assert!(out.content.contains("Image shown"), "{}", out.content);
-    assert_eq!(out.images.len(), 1, "one vision block per call");
-    assert_eq!(out.images[0].media_type, "image/png");
+    assert_eq!(
+        out.images.len(),
+        0,
+        "no vision block: gray view is the one way"
+    );
+    assert!(
+        out.content.contains("gray view plot.png"),
+        "must name the command that works: {}",
+        out.content
+    );
 }
 
 #[tokio::test]
-async fn cat_image_only_claims_plain_single_file_cat() {
+async fn cat_only_claims_plain_single_file() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("a.png"), png_bytes()).unwrap();
     std::fs::write(dir.path().join("b.png"), png_bytes()).unwrap();
     std::fs::write(dir.path().join("notes.txt"), "text").unwrap();
-    // The claimed shape: exactly cat + one bare path.
+    // The claimed shape: exactly cat + one bare path, and only for media.
     assert!(image_command("cat a.png", dir.path()).is_some());
     assert!(image_command("  cat   a.png  ", dir.path()).is_some());
-    // Everything else falls through to a normal shell run.
+    // Everything else is `cat`'s actual job and falls through to the shell.
     for cmd in [
         "cat a.png b.png",
         "cat -A a.png",
@@ -362,46 +371,18 @@ async fn cat_image_only_claims_plain_single_file_cat() {
 }
 
 #[tokio::test]
-async fn cat_image_through_execute_shows_vision() {
+async fn cat_text_still_runs_in_the_shell() {
     let dir = tempfile::tempdir().unwrap();
-    std::fs::write(dir.path().join("shot.png"), png_bytes()).unwrap();
+    std::fs::write(dir.path().join("notes.txt"), "plain text").unwrap();
     let ctx = ToolContext {
         cwd: dir.path().to_path_buf(),
         ..ToolContext::default()
     };
     let out = BashTool::default()
-        .execute(&ctx, json!({"command": "cat shot.png"}))
+        .execute(&ctx, json!({"command": "cat notes.txt"}))
         .await;
     assert!(!out.is_error, "{}", out.content);
-    assert_eq!(out.images.len(), 1, "execute must surface the vision block");
-}
-
-#[tokio::test]
-async fn cat_image_keeps_full_resolution() {
-    use base64::Engine as _;
-    use image::ImageDecoder;
-    use std::io::Cursor;
-    let dir = tempfile::tempdir().unwrap();
-    // 2400px wide: past MAX_IMAGE_SIDE (2000), so the downscale path used by
-    // the `read` tool would shrink this. `cat` must not.
-    let img = image::RgbImage::from_pixel(2400, 100, image::Rgb([1, 2, 3]));
-    let mut buf = Vec::new();
-    image::DynamicImage::ImageRgb8(img)
-        .write_to(&mut Cursor::new(&mut buf), image::ImageFormat::Png)
-        .unwrap();
-    std::fs::write(dir.path().join("wide.png"), &buf).unwrap();
-    let out = image_command("cat wide.png", dir.path()).unwrap();
-    let raw = base64::engine::general_purpose::STANDARD
-        .decode(&out.images[0].data)
-        .unwrap();
-    let decoded = image::ImageReader::with_format(Cursor::new(&raw), image::ImageFormat::Png)
-        .into_decoder()
-        .unwrap();
-    assert_eq!(
-        decoded.dimensions(),
-        (2400, 100),
-        "cat must send full resolution, not the 2000px downscale"
-    );
+    assert!(out.content.contains("plain text"), "{}", out.content);
 }
 
 #[tokio::test]
@@ -427,9 +408,9 @@ async fn gray_view_shows_every_image_it_names() {
 }
 
 #[tokio::test]
-async fn gray_view_downscales_where_cat_keeps_full_resolution() {
-    // Same source image both ways: 2400px is past MAX_IMAGE_SIDE (2000), so
-    // `view` — the everyday path — shrinks it and `cat` does not.
+async fn gray_view_caps_at_the_shared_2000px() {
+    // One way to see a picture means one resolution rule: the 2000px cap the
+    // `read` tool and pasted attachments already use.
     use base64::Engine as _;
     use image::ImageDecoder;
     use std::io::Cursor;
@@ -441,21 +422,15 @@ async fn gray_view_downscales_where_cat_keeps_full_resolution() {
         .unwrap();
     std::fs::write(dir.path().join("wide.png"), &buf).unwrap();
 
-    let view = image_command("gray view wide.png", dir.path()).unwrap();
-    let cat = image_command("cat wide.png", dir.path()).unwrap();
-    let dims = |data: &str| -> (u32, u32) {
-        let raw = base64::engine::general_purpose::STANDARD
-            .decode(data)
-            .unwrap();
-        image::ImageReader::with_format(Cursor::new(&raw), image::ImageFormat::Png)
-            .into_decoder()
-            .unwrap()
-            .dimensions()
-    };
-    let (cw, ch) = dims(&cat.images[0].data);
-    let (vw, vh) = dims(&view.images[0].data);
-    assert_eq!((cw, ch), (2400, 100), "cat stays full resolution");
-    assert!(vw <= 2000 && vh < ch, "view caps at 2000px, got {vw}x{vh}");
+    let out = image_command("gray view wide.png", dir.path()).unwrap();
+    let raw = base64::engine::general_purpose::STANDARD
+        .decode(&out.images[0].data)
+        .unwrap();
+    let (w, h) = image::ImageReader::with_format(Cursor::new(&raw), image::ImageFormat::Png)
+        .into_decoder()
+        .unwrap()
+        .dimensions();
+    assert!(w <= 2000 && h < 100, "view caps at 2000px, got {w}x{h}");
 }
 
 /// A real 2-frame clip, so the sheet fallback has something to decode.
@@ -704,6 +679,8 @@ async fn cat_expands_a_tilde_the_shell_would_have() {
 
 #[tokio::test]
 async fn cat_resolves_a_tilde_path_only_when_the_file_is_there() {
+    // The pointer still needs the real file: a `cat ~/typo.png` must fall
+    // through to the shell so its own "no such file" is what the model reads.
     let home = std::env::var("HOME").unwrap_or_default();
     if home.is_empty() || !std::path::Path::new(&home).is_dir() {
         return;
@@ -722,10 +699,17 @@ async fn cat_resolves_a_tilde_path_only_when_the_file_is_there() {
         .expect("probe has a file name")
         .to_string_lossy()
         .into_owned();
-    let out = image_command(&format!("cat ~/{name}"), Path::new("."));
-    let out = out.expect("cat ~/probe.png must show the image");
-    assert_eq!(out.images.len(), 1);
+    let out = image_command(&format!("cat ~/{name}"), Path::new("."))
+        .expect("cat ~/probe.png must answer, not stream bytes");
+    assert_eq!(out.images.len(), 0, "cat shows nothing now");
+    assert!(out.content.contains("gray view"), "{}", out.content);
     assert!(out.content.contains(&name), "{}", out.content);
+
+    // A `~` path that is not there falls through to the shell's own error.
+    assert!(
+        image_command("cat ~/definitely-not-here-9f2a.png", Path::new(".")).is_none(),
+        "a missing path must fall through so the shell reports it"
+    );
 }
 
 #[tokio::test]
@@ -887,4 +871,55 @@ async fn the_cwd_report_does_not_mask_the_commands_exit_code() {
         "{}",
         r.content
     );
+}
+
+// ---------------------------------------------------------------------------
+// `gray find` / `gray grep` are claimed like `gray view`: without gray on the
+// child's PATH, the model still gets the index
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn search_command_answers_the_find_and_grep_verbs() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.txt"), "needle one\n").unwrap();
+    std::fs::write(dir.path().join("b.rs"), "fn other() {}\n").unwrap();
+
+    let out = search_command("gray find *.txt", dir.path(), &CancellationToken::new())
+        .await
+        .expect("gray find must be claimed, not handed to a shell that cannot know it");
+    assert!(!out.is_error, "{}", out.content);
+    assert!(out.content.contains("a.txt"), "{}", out.content);
+    assert!(
+        !out.content.contains("b.rs"),
+        "glob must hold: {}",
+        out.content
+    );
+
+    let out = search_command("gray grep needle", dir.path(), &CancellationToken::new())
+        .await
+        .expect("gray grep must be claimed");
+    assert!(
+        out.content.contains("a.txt:1: needle one"),
+        "{}",
+        out.content
+    );
+}
+
+#[tokio::test]
+async fn search_command_leaves_the_shell_its_own() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.txt"), "needle one\n").unwrap();
+    for cmd in [
+        "gray find *.txt | wc -l",
+        "gray grep --help",
+        "find . -name '*.txt'",
+        "rg needle",
+    ] {
+        assert!(
+            search_command(cmd, dir.path(), &CancellationToken::new())
+                .await
+                .is_none(),
+            "must fall through to the shell: {cmd}"
+        );
+    }
 }

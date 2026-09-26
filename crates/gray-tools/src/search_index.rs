@@ -146,6 +146,36 @@ impl SearchPool {
         Some(shared)
     }
 
+    /// The index for `dir` if this process already built one. Never builds:
+    /// a caller deciding whether to *pay* for an index must be able to ask
+    /// "is it already warm?" without triggering the scan that answers the
+    /// question. `None` means the fd/rg lane is the cheaper answer right now.
+    pub fn warm_picker(&self, dir: &Path) -> Option<SharedFilePicker> {
+        let dir = dir.canonicalize().ok()?;
+        self.resident.lock().ok()?.pickers.get(&dir).cloned()
+    }
+
+    /// Start building the index for `dir` in the background, without waiting
+    /// for it: the *next* search in this process finds it warm.
+    ///
+    /// This is the whole reason the search command is not "index first": a
+    /// fresh process holding no index would otherwise pay a full scan
+    /// (measured: 1.4s on a 20k-file repo) to answer a question `fd` answers
+    /// in 20ms. So the first search goes to `fd`, and the index earns its keep
+    /// from the second one on. No-op once the root is resident.
+    pub fn warm_in_background(self: &Arc<Self>, dir: &Path) {
+        if self.warm_picker(dir).is_some() {
+            return;
+        }
+        let dir = dir.to_path_buf();
+        let pool = self.clone();
+        std::thread::spawn(move || {
+            // `picker` publishes the index and returns without waiting for the
+            // scan; the scan and the watcher are background threads from here.
+            let _ = pool.picker(&dir);
+        });
+    }
+
     /// `find` lane: glob `pattern` over the resident index → relative paths,
     /// frecency-ranked, capped at `limit`. `None` = caller falls back to
     /// fd/manual walk.
