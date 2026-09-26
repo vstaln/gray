@@ -2,7 +2,20 @@
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-09-26
+
 ### Added
+
+- `find` and `grep` answer from a resident file index instead of spawning
+  `fd`/`rg` per call. A watcher-backed `fff-search` index is built lazily per
+  search root, ranks hits by frecency, and serves the next search out of warm
+  memory: measured on this repo, `find` 9.7ms against `fd`'s 17.8ms and `grep`
+  17ms against `rg`'s 95ms, with identical result sets. The tool surface does
+  not change — anything the index cannot answer exactly (a non-git root,
+  `ignoreCase`, a negated or depth-anchored glob, an invalid pattern, a file
+  target) falls straight through to the old lanes, and a cancel still stops at
+  once instead of waiting out a cold scan. Design and decline rules:
+  `docs/fff-search-index.md`.
 
 - `gray view PATH...` shows an image file as an image (downscaled to the 2000px
   cap, the one shared with the `read` tool and pasted attachments). The `view`
@@ -12,6 +25,58 @@
   screenshot or diagram gets an image instead of pixel soup, with no new tool
   in its toolset. Multi-path by design; a leading `~` is expanded, since
   nothing else would do it before the shell runs.
+
+- `gray view movie.mp4` shows a contact sheet of sampled frames, so an agent
+  can *see* a recording without shipping the whole file into the context;
+  `--frames N` sets how many. Gemini and Gemma models get the native video
+  instead of the sheet, and an oversized file says so rather than silently
+  downscaling past the cap.
+
+- `/gateway` is the connections picker: every installed app, its own status,
+  and Enter on a needs-setup row runs *that app's* setup — the channel picker
+  covers DMs, setup is token-first, the configs an app writes land in the
+  user's home rather than gray's, and `gray gateway setup <app>` does the same
+  headlessly for scripts.
+
+- `gray --json progress` narrates a turn: `tool_started` / `tool_ran` /
+  `tool_finished` rows carrying disclosed, bounded, redacted output plus the
+  internal call id, and `thinking` phase rows. A front end can render live
+  tool activity and a separate persistent tool card without parsing prose.
+
+- Memory carries a turn: a one-sentence profile summary is injected with it,
+  the prompt asks the model to show a memory's KEY before leaning on it, and
+  the daily ingest is mechanical and bounded — append-only edits, daily caps,
+  and no verbatim duplicates under a new key.
+
+- Provider plugins join the plugin protocol at 1.2: host-owned credential
+  refs, sidecar RPCs, cache/runtime roles, `/connect` plugin login, and an
+  OpenAI dynamic provider profile. Codex/ChatGPT OAuth ships as a first-party
+  optional plugin (`plugins/codex-auth`), so `/connect` discovers auth
+  providers only when one is actually installed and enabled.
+
+### Fixed
+
+- An interrupted sidecar or provider stream no longer turns a usable partial
+  answer into an error. A provider stream that ends without its completion
+  marker is finished with a capped, nonfatal interruption notice rather than a
+  `CoreError`, because the visible delta is already committed to history and
+  replaying it would duplicate text the user read. On Windows a blocked pipe
+  write is bounded by a worker task instead of stalling the runtime thread, so
+  cleanup can actually terminate the child; child termination after a write
+  timeout is bounded, and an already-exited child id no longer wedges cleanup.
+
+- The default prompt points the agent at `gray view`, not `cat`, for images —
+  `cat` still returns bytes, but the agent is told which one to reach for.
+
+- Prompt caching drops two pieces of pi-parity over-engineering
+  (`cache_control` masking and `x-session-id`), and `/resume` previews the
+  latest message of a session rather than its opener.
+
+- A 23-finding source audit landed with its sweep: drive-named archive entries
+  refused on every platform, symlink-cycle and atomic-pid-claim guards,
+  serialized config read-modify-write, a log-rotation guard that acquires
+  before it opens, and the remaining secret-redaction gaps in tool output.
+  Dispositions: `docs/audit-fixes-2026-09-22.md`.
 
 ## [0.1.3] - 2026-09-22
 
