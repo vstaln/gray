@@ -312,6 +312,18 @@ pub(crate) async fn dispatch_command(
             Flow::Continue
         }
 
+        ReplCommand::Update => {
+            super::maintenance::handle_update(tui).await;
+            Flow::Continue
+        }
+
+        ReplCommand::Restart => {
+            // Exits the process on success (it re-execs), so the Flow is only
+            // reached when the re-exec could not start.
+            super::maintenance::handle_restart(tui).await;
+            Flow::Continue
+        }
+
         ReplCommand::Gateway(arg) => {
             // A switch word flips the persisted master switch (same as
             // `gray gateway on|off`); bare opens the connections picker.

@@ -541,3 +541,37 @@ fn hehe_parses_and_is_discoverable() {
     let help = super::format_help_line(hehe);
     assert!(help.contains("/hehe"), "help line: {help}");
 }
+
+/// `/update` and `/restart` are the two halves of landing a self-update: one
+/// installs, the other puts the running gray on it. Both have to be in the
+/// registry, or `/help` and completion would not know they exist.
+#[test]
+fn update_and_restart_parse_and_register() {
+    for (typed, name) in [
+        ("/update", "update"),
+        ("/UPDATE", "update"),
+        ("/restart", "restart"),
+        ("/reboot", "restart"),
+    ] {
+        let cmd = parse_command(typed);
+        let right = match name {
+            "update" => matches!(cmd, ReplCommand::Update),
+            _ => matches!(cmd, ReplCommand::Restart),
+        };
+        assert!(right, "{typed} must parse as /{name}");
+        let def = super::resolve(typed).unwrap_or_else(|| panic!("{typed} in the registry"));
+        let help = super::format_help_line(def);
+        assert!(help.contains(name), "help line: {help}");
+    }
+    // Completion sees them, since they are how a user discovers the flow.
+    assert!(
+        super::completion_matches("rest")
+            .iter()
+            .any(|(n, _)| *n == "restart")
+    );
+    assert!(
+        super::completion_matches("upd")
+            .iter()
+            .any(|(n, _)| *n == "update")
+    );
+}

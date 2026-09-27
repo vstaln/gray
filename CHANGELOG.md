@@ -2,11 +2,70 @@
 
 ## [Unreleased]
 
+### Added
+
+- `/update` and `/restart` in the REPL, the two halves of landing a
+  self-update. `/update` checks the channel, asks before installing, and says
+  what to do next; `/restart` puts the running gray on the binary that is on
+  disk — the gateway daemon first (it keeps running the build it started
+  with), then this session re-exec'd into the new one, resuming the
+  conversation with `resume --last`. Neither codex nor hermes has either: codex
+  shows an update popup at startup and hands you a `brew upgrade` line, and
+  hermes-rs's `restart` tears down LSP clients. A CLI that installs its own
+  updates owes you a way to land on them.
+
+  The gateway half distinguishes who owns the process. Installed under a
+  supervisor, the supervisor restarts it. Running with nobody supervising it
+  — a hand-launched `gray gateway run` — it is stopped *and* started again on
+  the new build, because stopping without the relaunch would take a working
+  gateway down and call it a restart.
+
 ### Changed
 
 - The startup banner is the gray ASCII logo again. The graychan art is
   `/hehe` only, and `/hehe` is a toggle: press it again to drop the art and
   get the logo back.
+
+### Fixed
+
+- `gray view` inside a compound shell command no longer reads as success with
+  nothing attached: the bash tool appends a note that the image was NOT
+  attached and how to re-run it bare, and the CLI fallback line says the
+  terminal has no image protocol instead of a bare `viewed …`
+  (`docs/bug-gray-view-compound-command.md`).
+
+## [0.1.5] - 2026-09-26
+
+### Changed
+
+- The search index is a command, not a lane inside the `find` and `grep`
+  tools. 0.1.4 left those two tools answering differently depending on the
+  directory, the pattern and a decade of glob semantics — and a missed rule
+  there is a wrong answer, not a slow one. `find` and `grep` are `fd`/`rg`
+  again, unconditionally, and `gray find PATTERN [PATH]` / `gray grep PATTERN
+  [PATH]` own the index: the same answer, served warm, with the fallback lane
+  being the very tool the command stands in for. Both are claimed by bash like
+  `gray view`, so a model reaches them without `gray` on its PATH.
+
+  The policy is cost-first, which the tool placement had hidden: the index
+  lives in process memory, so a fresh process holding none paid a full scan —
+  1.4s against `fd`'s 20ms on a 20k-file repo, a "speedup" 70x slower than the
+  shell it replaced. Now the first search in a process goes to `fd`/`rg` and
+  starts the index in the background; every search after that is index-served.
+  Cold `gray find` on that repo: 21ms. What the index is actually worth is
+  grep on repeat searches (2.9x the tool lane); `find` is a wash.
+
+- `cat` is no longer a second way to see a picture. It returned a
+  full-resolution vision block while `gray view` capped at the shared 2000px,
+  so the model had two paths with two answers and picked by habit. `gray view`
+  is now the only one: `cat <media>` says so in one line instead of streaming
+  binary into the context. Same text, same tool, one fewer thing to learn.
+
+### Fixed
+
+- A search cancelled before it starts now answers `cancelled by user`
+  instead of racing the spawned `fd`/`rg` child's first line, which could
+  return a finished result for a call the caller had already given up on.
 
 ## [0.1.4] - 2026-09-26
 

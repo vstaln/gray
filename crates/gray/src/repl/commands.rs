@@ -57,6 +57,16 @@ pub(crate) const REGISTRY: &[CmdDef] = &[
         aliases: &["compress"],
     },
     CmdDef {
+        name: "update",
+        desc: "install a new gray build",
+        aliases: &["upgrade"],
+    },
+    CmdDef {
+        name: "restart",
+        desc: "restart the gateway & this session on the new build",
+        aliases: &["reboot"],
+    },
+    CmdDef {
         name: "usage",
         desc: "session tokens & cost",
         aliases: &["cost"],
@@ -436,6 +446,11 @@ pub enum ReplCommand {
     /// Set context window (`/context [128k|auto|reserve 16k|keep 20k|status]`).
     ContextWindow(Option<String>),
     /// Session token + cost totals (`/usage` or `/cost`).
+    /// Check the channel and install a newer build when there is one.
+    Update,
+    /// Put the running gray on the binary that is on disk: restart the
+    /// gateway, then re-exec this session into the new build.
+    Restart,
     Usage,
     /// List cron jobs (read-only; manage via `gray cron` CLI).
     CronJobs(Option<String>),
@@ -548,6 +563,8 @@ pub fn parse_command(line: &str) -> ReplCommand {
         Some("compact") => ReplCommand::Compact(opt(rest)),
         Some("thinking") => ReplCommand::Thinking(opt(rest)),
         Some("context") => ReplCommand::ContextWindow(opt(rest)),
+        Some("update") => ReplCommand::Update,
+        Some("restart") => ReplCommand::Restart,
         Some("usage") => ReplCommand::Usage,
         Some("cron") => ReplCommand::CronJobs(opt(rest)),
         Some("memory") => ReplCommand::Memory(opt(rest)),

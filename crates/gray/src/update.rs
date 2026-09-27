@@ -79,7 +79,7 @@ fn cmp_prerelease(a: &str, b: &str) -> std::cmp::Ordering {
     }
 }
 
-fn update_available(channel: &str, latest: &str, current: &str, build: &str) -> bool {
+pub(crate) fn update_available(channel: &str, latest: &str, current: &str, build: &str) -> bool {
     if channel == "beta" {
         !latest.trim().is_empty() && latest.trim() != build.trim()
     } else {
@@ -87,7 +87,7 @@ fn update_available(channel: &str, latest: &str, current: &str, build: &str) -> 
     }
 }
 
-async fn latest_version() -> anyhow::Result<String> {
+pub(crate) async fn latest_version() -> anyhow::Result<String> {
     let suffix = if CHANNEL == "beta" { "-build" } else { "" };
     let url = format!("{}/latest-{CHANNEL}{suffix}.txt", base_url());
     let txt = reqwest::get(&url).await?.error_for_status()?.text().await?;
@@ -243,7 +243,7 @@ fn acquire_update_lock() -> std::io::Result<UpdateLock> {
 }
 
 /// Installer run under mutual exclusion.
-fn run_installer_locked() -> anyhow::Result<()> {
+pub(crate) fn run_installer_locked() -> anyhow::Result<()> {
     let _lock = acquire_update_lock()?;
     run_installer()
 }
@@ -393,7 +393,7 @@ fn post_update_shadow_warning() -> Option<String> {
 
 /// Report a shadowed install: the update landed, but the next launch would not
 /// pick it up.
-fn warn_on_shadow() {
+pub(crate) fn warn_on_shadow() {
     if let Some(w) = post_update_shadow_warning() {
         eprintln!("{w}");
     }
@@ -431,17 +431,24 @@ fn warn_on_divergence() {
 
 /// Manual `gray update`: run the installer unconditionally, then exit hint.
 pub async fn update_now() -> anyhow::Result<()> {
+    println!("→ updating gray ({CHANNEL})...");
+    install()?;
+    println!("✓ updated. restart gray to use the new version.");
+    warn_on_shadow();
+    Ok(())
+}
+
+/// Install the newest build, refusing only where it cannot work. Shared by
+/// `gray update` and the REPL's `/update` so both take the same lock and
+/// refuse the same platforms.
+pub(crate) fn install() -> anyhow::Result<()> {
     // Windows locks its running executable. Never launch the Unix installer
     // or advertise an update we could not install; external reinstall only.
     anyhow::ensure!(
         !cfg!(windows),
         "self-update is not supported on native Windows: close Gray and rerun install-native.ps1 with the verified preview ZIP and checksum"
     );
-    println!("→ updating gray ({CHANNEL})...");
-    run_installer_locked()?;
-    println!("✓ updated. restart gray to use the new version.");
-    warn_on_shadow();
-    Ok(())
+    run_installer_locked()
 }
 
 /// Seconds between update checks.
