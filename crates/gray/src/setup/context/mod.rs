@@ -1,6 +1,5 @@
 mod providers;
 
-pub(crate) use providers::ensure_disk_loaded;
 pub use providers::{
     ModelRate, cache_model_context, cache_model_context_if_absent, cache_model_reasoning,
     cache_models_dev_if_absent, cached_model_ids, clamp_thinking_level, context_source,
@@ -11,6 +10,7 @@ pub use providers::{
     save_models_cache_to_disk, set_active_model_provider, supported_efforts,
     supported_thinking_levels, turn_cost,
 };
+pub(crate) use providers::{ensure_disk_loaded, load_provider_model_list};
 
 static USER_CONTEXT_WINDOW: std::sync::OnceLock<std::sync::RwLock<Option<usize>>> =
     std::sync::OnceLock::new();

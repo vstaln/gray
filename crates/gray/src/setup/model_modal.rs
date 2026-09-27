@@ -21,17 +21,69 @@ pub(crate) fn provider_models_for(
     (item_id, item_name, models)
 }
 
-/// Models we already know without touching the network: the saved config's
-/// list for this provider. The picker paints from this immediately and
-/// refreshes in the background — opening a modal should never wait on an
-/// HTTP round-trip.
+/// Models we already know without touching the network: the last fetched
+/// list for this provider, persisted to disk after every successful fetch.
+/// The picker paints from this immediately and refreshes in the background —
+/// opening a modal should never wait on an HTTP round-trip.
 pub(super) fn saved_models_for(base_url: &str) -> Vec<(String, String)> {
-    let mut models: Vec<(String, String)> = Vec::new();
+    let mut models = super::context::load_provider_model_list(base_url);
     if let Ok(path) = saved_config_path() {
         let _cfg_lock = crate::setup::lock_saved_config_at(&path).ok();
         load_saved_config_at(&path).sort_models(base_url, &mut models);
     }
     models
+}
+
+/// The saved current model + recents for this provider: the same source
+/// `sort_models` parks first, so the count below is the divider position.
+fn recent_head_for(base_url: &str) -> (Option<String>, Vec<String>) {
+    let Ok(path) = saved_config_path() else {
+        return (None, Vec::new());
+    };
+    let _cfg_lock = crate::setup::lock_saved_config_at(&path).ok();
+    let saved = load_saved_config_at(&path);
+    let base = normalize_custom_base_url(base_url);
+    let current = saved
+        .base_url
+        .as_deref()
+        .filter(|url| normalize_custom_base_url(url) == base)
+        .and(saved.model.clone());
+    let recent = saved.recent_models.get(&base).cloned().unwrap_or_default();
+    (current, recent)
+}
+
+/// Leading run of the (already sorted) list that is the current model or a
+/// recent one. 0 or full-length means no divider.
+fn recent_prefix_len<'a>(
+    current: Option<&str>,
+    recent: &[String],
+    ids: impl Iterator<Item = &'a str>,
+) -> usize {
+    ids.take_while(|id| Some(*id) == current || recent.iter().any(|m| m.as_str() == *id))
+        .count()
+}
+
+/// A picker row: a model by index into the filtered list, or the
+/// recent/all divider.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Row {
+    Model(usize),
+    Divider,
+}
+
+/// Selection may never rest on the divider: after any move, step once more
+/// in the direction of travel. The divider always has models on both sides
+/// (it only renders when `0 < sep < len`), so one step suffices.
+fn skip_divider(rows: &[Row], sel: usize, down: bool) -> usize {
+    if rows.get(sel) == Some(&Row::Divider) {
+        if down {
+            sel.saturating_add(1).min(rows.len().saturating_sub(1))
+        } else {
+            sel.saturating_sub(1)
+        }
+    } else {
+        sel
+    }
 }
 
 /// Merge a live list into what the picker already shows, keeping the
@@ -79,6 +131,7 @@ pub fn run_model_modal(
             ("custom".to_string(), "Custom".to_string())
         };
     let mut models = saved_models_for(&config.base_url);
+    let (mut current_id, mut recent_ids) = recent_head_for(&config.base_url);
     let (refresh_tx, refresh_rx) = std::sync::mpsc::channel::<Vec<(String, String)>>();
     // Detached on purpose: a late reply lands in a channel nobody reads.
     let _refresh = {
@@ -134,6 +187,7 @@ pub fn run_model_modal(
                 refreshing = false;
                 if !live.is_empty() {
                     models = merge_models(&config.base_url, live);
+                    (current_id, recent_ids) = recent_head_for(&config.base_url);
                 }
             }
             let filtered_models: Vec<&(String, String)> = models
@@ -145,6 +199,20 @@ pub fn run_model_modal(
                         || m_name.to_lowercase().contains(&f)
                 })
                 .collect();
+            // One divider after the recent head; selection skips it.
+            let sep = recent_prefix_len(
+                current_id.as_deref(),
+                &recent_ids,
+                filtered_models.iter().map(|(id, _)| id.as_str()),
+            );
+            let div = (sep > 0 && sep < filtered_models.len()).then_some(sep);
+            let mut rows: Vec<Row> = Vec::with_capacity(filtered_models.len() + 1);
+            for i in 0..filtered_models.len() {
+                if div == Some(i) {
+                    rows.push(Row::Divider);
+                }
+                rows.push(Row::Model(i));
+            }
 
             terminal.draw(|frame| {
                 let area = frame.area();
@@ -275,7 +343,8 @@ pub fn run_model_modal(
                     };
                     frame.render_widget(empty_msg, Rect::new(inner.x, list_y + 1, inner.width, 1));
                 } else {
-                    let safe_sel = sel.min(filtered_models.len().saturating_sub(1));
+                    let safe_sel =
+                        skip_divider(&rows, sel.min(rows.len().saturating_sub(1)), false);
                     if safe_sel < scroll_top {
                         scroll_top = safe_sel;
                     } else if safe_sel >= scroll_top + list_h {
@@ -284,11 +353,27 @@ pub fn run_model_modal(
 
                     for r in 0..list_h {
                         let idx = scroll_top + r;
-                        if idx >= filtered_models.len() {
+                        let Some(row) = rows.get(idx) else {
                             break;
+                        };
+                        if *row == Row::Divider {
+                            let label = "─ recent ";
+                            let fill = (inner.width as usize).saturating_sub(label.chars().count());
+                            let div_line = Line::from(Span::styled(
+                                format!("{label}{}", "─".repeat(fill)),
+                                Style::default().fg(text_dim).bg(box_bg),
+                            ));
+                            frame.render_widget(
+                                Paragraph::new(div_line),
+                                Rect::new(inner.x, list_y + r as u16, inner.width, 1),
+                            );
+                            continue;
                         }
+                        let Row::Model(mi) = row else {
+                            continue;
+                        };
 
-                        let (m_id, m_name) = filtered_models[idx];
+                        let (m_id, m_name) = filtered_models[*mi];
                         let is_selected = idx == safe_sel;
                         let is_current = config.model.as_deref() == Some(m_id.as_str());
 
@@ -384,10 +469,10 @@ pub fn run_model_modal(
                 continue;
             }
 
-            if filtered_models.is_empty() {
+            if rows.is_empty() {
                 sel = 0;
-            } else if sel >= filtered_models.len() {
-                sel = filtered_models.len().saturating_sub(1);
+            } else {
+                sel = skip_divider(&rows, sel.min(rows.len() - 1), false);
             }
 
             match read()? {
@@ -403,9 +488,9 @@ pub fn run_model_modal(
                     kind: KeyEventKind::Press,
                     ..
                 }) if modifiers.contains(KeyModifiers::CONTROL) => match code {
-                    KeyCode::Char('p') => sel = sel.saturating_sub(1),
-                    KeyCode::Char('n') if !filtered_models.is_empty() => {
-                        sel = (sel + 1).min(filtered_models.len() - 1);
+                    KeyCode::Char('p') => sel = skip_divider(&rows, sel.saturating_sub(1), false),
+                    KeyCode::Char('n') if !rows.is_empty() => {
+                        sel = skip_divider(&rows, (sel + 1).min(rows.len() - 1), true);
                     }
                     _ => {}
                 },
@@ -414,16 +499,16 @@ pub fn run_model_modal(
                     kind: KeyEventKind::Press,
                     ..
                 }) => match code {
-                    KeyCode::Up => sel = sel.saturating_sub(1),
+                    KeyCode::Up => sel = skip_divider(&rows, sel.saturating_sub(1), false),
                     KeyCode::Down => {
-                        if !filtered_models.is_empty() {
-                            sel = (sel + 1).min(filtered_models.len() - 1);
+                        if !rows.is_empty() {
+                            sel = skip_divider(&rows, (sel + 1).min(rows.len() - 1), true);
                         }
                     }
-                    KeyCode::PageUp => sel = sel.saturating_sub(8),
+                    KeyCode::PageUp => sel = skip_divider(&rows, sel.saturating_sub(8), false),
                     KeyCode::PageDown => {
-                        if !filtered_models.is_empty() {
-                            sel = (sel + 8).min(filtered_models.len() - 1);
+                        if !rows.is_empty() {
+                            sel = skip_divider(&rows, (sel + 8).min(rows.len() - 1), true);
                         }
                     }
                     KeyCode::Char(ch) => {
@@ -436,8 +521,14 @@ pub fn run_model_modal(
                     }
                     KeyCode::Esc => return Ok(false),
                     KeyCode::Enter => {
-                        let chosen_model = if let Some(&(m_id, _)) = filtered_models.get(sel) {
-                            m_id.clone()
+                        let picked: Option<String> = match rows.get(sel) {
+                            Some(Row::Model(mi)) => {
+                                filtered_models.get(*mi).map(|(m_id, _)| m_id.clone())
+                            }
+                            _ => None,
+                        };
+                        let chosen_model = if let Some(id) = picked {
+                            id
                         } else if !filter.is_empty() {
                             // Canonicalize known ids (case/tail); unknown
                             // filters still fall through as custom models —
