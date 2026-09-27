@@ -5,12 +5,11 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use gray_core::agent::{Tool, ToolContext};
-use serde_json::json;
+use gray_core::agent::ToolContext;
 use tempfile::TempDir;
 
 use super::SearchPool;
-use crate::{FindTool, GrepTool};
+use crate::search_cmd::SearchArgs;
 
 fn write(root: &std::path::Path, name: &str, content: &str) {
     let p = root.join(name);
@@ -49,6 +48,12 @@ fn tree() -> TempDir {
     dir
 }
 
+fn sorted_lines(text: &str) -> Vec<&str> {
+    let mut lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
+    lines.sort_unstable();
+    lines
+}
+
 fn pool_for(dir: &TempDir) -> SearchPool {
     SearchPool::new(dir.path().join("fff-frecency"))
 }
@@ -58,10 +63,6 @@ fn ctx_for(dir: &std::path::Path) -> ToolContext {
         cwd: dir.to_path_buf(),
         ..Default::default()
     }
-}
-
-fn lines(out: &gray_core::agent::ToolOutput) -> Vec<&str> {
-    out.content.lines().collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -320,21 +321,44 @@ fn indexed_grep_declines_ignore_case() {
 }
 
 #[tokio::test]
-async fn grep_tool_ignore_case_falls_back_to_rg() {
+async fn grep_command_ignore_case_falls_back_to_rg() {
     let dir = tree();
     let pool = Arc::new(pool_for(&dir));
     let ctx = ctx_for(dir.path());
-    let before = pool.lane_hits();
 
-    let out = GrepTool::with_pool(pool.clone())
-        .execute(&ctx, json!({"pattern": "NEEDLE", "ignoreCase": true}))
-        .await;
-    assert!(!out.is_error, "{:?}", out.content);
-    assert!(out.content.contains("needle"), "{}", out.content);
+    // Warm the index first, so this is a *decline*, not a cold miss.
+    crate::search_cmd::grep_with_pool(
+        &SearchArgs {
+            pattern: "needle".to_string(),
+            limit: Some(100),
+            ..Default::default()
+        },
+        &ctx,
+        pool.clone(),
+    )
+    .await;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while pool.warm_picker(dir.path()).is_none() {
+        assert!(Instant::now() < deadline, "background index never appeared");
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    let before = pool.lane_hits();
+    let text = crate::search_cmd::grep_with_pool(
+        &SearchArgs {
+            pattern: "NEEDLE".to_string(),
+            ignore_case: true,
+            limit: Some(100),
+            ..Default::default()
+        },
+        &ctx,
+        pool.clone(),
+    )
+    .await;
+    assert!(text.contains("needle"), "{text}");
     assert_eq!(
         pool.lane_hits(),
         before,
-        "ignoreCase must be served by rg, not the index"
+        "ignoreCase must be served by rg, not the index, even when the index is warm"
     );
 }
 
@@ -517,50 +541,79 @@ fn indexed_grep_declines_literal_fallback() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn find_tool_served_by_index() {
+async fn find_command_serves_from_the_index_once_it_is_warm() {
     let dir = tree();
     let pool = Arc::new(pool_for(&dir));
-    let before = pool.lane_hits();
+    let ctx = ctx_for(dir.path());
+    let args = || SearchArgs {
+        pattern: "*.txt".to_string(),
+        limit: Some(100),
+        ..Default::default()
+    };
 
-    let out = FindTool::with_pool(pool.clone())
-        .execute(&ctx_for(dir.path()), json!({"pattern": "*.txt"}))
-        .await;
-    assert!(!out.is_error, "{:?}", out.content);
-    assert!(out.content.contains("sub/c.txt"), "{}", out.content);
+    // Cold: no index in this process, so the tool answers — a full scan would
+    // cost more than the question is worth (1.4s vs 20ms on 20k files).
+    let first = crate::search_cmd::find_with_pool(&args(), &ctx, pool.clone()).await;
+    assert!(first.contains("sub/c.txt"), "{first}");
+    assert_eq!(
+        pool.lane_hits(),
+        0,
+        "a cold command must not wait for a scan"
+    );
+
+    // Wait for the background build the cold call started, then the index
+    // serves the same question.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while pool.warm_picker(dir.path()).is_none() {
+        assert!(Instant::now() < deadline, "background index never appeared");
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    let before = pool.lane_hits();
+    let second = crate::search_cmd::find_with_pool(&args(), &ctx, pool.clone()).await;
+    assert_eq!(
+        sorted_lines(&second),
+        sorted_lines(&first),
+        "both lanes must answer the same question identically"
+    );
     assert!(
         pool.lane_hits() > before,
-        "find must be served by the index, not fd/walk"
+        "a warm command must be served by the index, not fd/walk"
     );
 }
 
 #[tokio::test]
-async fn grep_tool_served_by_index_match_and_context() {
+async fn grep_command_served_by_index_match_and_context() {
     let dir = tree();
     let pool = Arc::new(pool_for(&dir));
-    let grep = GrepTool::with_pool(pool.clone());
     let ctx = ctx_for(dir.path());
+    let args = |context| SearchArgs {
+        pattern: "beta needle".to_string(),
+        limit: Some(100),
+        context,
+        ..Default::default()
+    };
+
+    // Two cold calls start the build; the rest must be index-served.
+    crate::search_cmd::grep_with_pool(&args(None), &ctx, pool.clone()).await;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while pool.warm_picker(dir.path()).is_none() {
+        assert!(Instant::now() < deadline, "background index never appeared");
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
 
     let before = pool.lane_hits();
-    let out = grep.execute(&ctx, json!({"pattern": "beta needle"})).await;
-    assert!(!out.is_error, "{:?}", out.content);
-    assert!(
-        out.content.contains("a.txt:3: beta needle two"),
-        "{}",
-        out.content
-    );
+    let text = crate::search_cmd::grep_with_pool(&args(None), &ctx, pool.clone()).await;
+    assert!(text.contains("a.txt:3: beta needle two"), "{text}");
     assert!(
         pool.lane_hits() > before,
         "match-only grep must hit the index"
     );
 
     let before = pool.lane_hits();
-    let out = grep
-        .execute(&ctx, json!({"pattern": "beta needle", "context": 1}))
-        .await;
-    assert!(!out.is_error, "{:?}", out.content);
-    let ls = lines(&out);
-    assert!(ls.contains(&"a.txt:3: beta needle two"), "{}", out.content);
-    assert!(ls.contains(&"a.txt-2- nothing here"), "{}", out.content);
+    let text = crate::search_cmd::grep_with_pool(&args(Some(1)), &ctx, pool.clone()).await;
+    let ls: Vec<&str> = text.lines().collect();
+    assert!(ls.contains(&"a.txt:3: beta needle two"), "{text}");
+    assert!(ls.contains(&"a.txt-2- nothing here"), "{text}");
     assert!(
         pool.lane_hits() > before,
         "context grep must hit the index too"
@@ -568,7 +621,7 @@ async fn grep_tool_served_by_index_match_and_context() {
 }
 
 #[tokio::test]
-async fn tools_fall_back_outside_git() {
+async fn commands_fall_back_outside_git() {
     // No git init → index declines; fd/walk still serves correct output.
     let dir = TempDir::new().unwrap();
     write(dir.path(), "x.txt", "needle here\n");
@@ -576,19 +629,29 @@ async fn tools_fall_back_outside_git() {
     let ctx = ctx_for(dir.path());
     let before = pool.lane_hits();
 
-    let out = FindTool::with_pool(pool.clone())
-        .execute(&ctx, json!({"pattern": "*.txt"}))
-        .await;
-    assert!(out.content.contains("x.txt"), "{}", out.content);
+    let text = crate::search_cmd::find_with_pool(
+        &SearchArgs {
+            pattern: "*.txt".to_string(),
+            limit: Some(100),
+            ..Default::default()
+        },
+        &ctx,
+        pool.clone(),
+    )
+    .await;
+    assert!(text.contains("x.txt"), "{text}");
 
-    let out = GrepTool::with_pool(pool.clone())
-        .execute(&ctx, json!({"pattern": "needle"}))
-        .await;
-    assert!(
-        out.content.contains("x.txt:1: needle here"),
-        "{}",
-        out.content
-    );
+    let text = crate::search_cmd::grep_with_pool(
+        &SearchArgs {
+            pattern: "needle".to_string(),
+            limit: Some(100),
+            ..Default::default()
+        },
+        &ctx,
+        pool.clone(),
+    )
+    .await;
+    assert!(text.contains("x.txt:1: needle here"), "{text}");
     assert_eq!(
         pool.lane_hits(),
         before,
@@ -708,7 +771,7 @@ fn indexed_grep_declines_slash_glob() {
 /// fd/rg lanes — otherwise the first search in a cold tree ignores Esc for up
 /// to the pool's scan budget.
 #[tokio::test]
-async fn cancelled_search_skips_the_index_lane() {
+async fn cancelled_command_skips_the_index_lane() {
     let dir = tree();
     let pool = Arc::new(pool_for(&dir));
     let cancel = tokio_util::sync::CancellationToken::new();
@@ -718,11 +781,31 @@ async fn cancelled_search_skips_the_index_lane() {
         cancel: cancel.clone(),
         ..Default::default()
     };
-    let find = FindTool::with_pool(pool.clone());
-    let out = find.execute(&ctx, json!({"pattern": "*.txt"})).await;
-    assert_eq!(out.content, "cancelled by user");
-    let grep = GrepTool::with_pool(pool.clone());
-    let out = grep.execute(&ctx, json!({"pattern": "needle"})).await;
-    assert_eq!(out.content, "cancelled by user");
+    let out = crate::search_cmd::find_with_pool(
+        &SearchArgs {
+            pattern: "*.txt".to_string(),
+            limit: Some(100),
+            ..Default::default()
+        },
+        &ctx,
+        pool.clone(),
+    )
+    .await;
+    assert_eq!(out, "cancelled by user");
+    let out = crate::search_cmd::grep_with_pool(
+        &SearchArgs {
+            pattern: "needle".to_string(),
+            limit: Some(100),
+            ..Default::default()
+        },
+        &ctx,
+        pool.clone(),
+    )
+    .await;
+    assert_eq!(out, "cancelled by user");
     assert_eq!(pool.lane_hits(), 0, "a cancelled call must not be served");
+    assert!(
+        pool.warm_picker(dir.path()).is_none(),
+        "a cancelled call must not start a background index either"
+    );
 }

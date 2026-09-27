@@ -10,6 +10,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use gray_core::agent::{Tool, ToolContext};
+use gray_tools::search_cmd::{self, SearchArgs};
 use gray_tools::search_index::SearchPool;
 use gray_tools::{FindTool, GrepTool};
 use serde_json::json;
@@ -65,24 +66,41 @@ async fn index_vs_spawn_tax() {
     write_tree(legacy_dir.path());
     git_init(indexed_dir.path());
 
+    // The indexed lane is `gray find`/`gray grep`; the legacy lane is the
+    // tool the model would otherwise run, in a tree the index declines.
     let pool = Arc::new(SearchPool::new(indexed_dir.path().join("fff-frecency")));
     let ictx = ctx_for(indexed_dir.path());
     let lctx = ctx_for(legacy_dir.path());
-    let ifind = FindTool::with_pool(pool.clone());
-    let igrep = GrepTool::with_pool(pool);
-    let lfind = FindTool::default();
-    let lgrep = GrepTool::default();
+    let lfind = FindTool;
+    let lgrep = GrepTool;
 
     // Cold-start: first index call pays the scan. Report it separately.
+    let args = |pattern: String| SearchArgs {
+        pattern,
+        limit: Some(SAMPLES),
+        ..Default::default()
+    };
+    // First call in a process has no index, so it answers from the tool and
+    // starts the build in the background. That is the whole policy: a fresh
+    // process never pays a scan to answer a question fd answers in ~20ms.
     let t = Instant::now();
-    let out = ifind.execute(&ictx, json!({"pattern": "*.rs"})).await;
-    assert!(!out.is_error);
-    let cold_ms = t.elapsed().as_secs_f64() * 1000.0;
+    let out = search_cmd::find_with_pool(&args("*.rs".to_string()), &ictx, pool.clone()).await;
+    assert!(!out.is_empty());
+    let cold_call_ms = t.elapsed().as_secs_f64() * 1000.0;
+    assert_eq!(pool.lane_hits(), 0, "a cold call must not be index-served");
 
-    // Warm the rg path too (page cache) so the comparison is warm-vs-warm.
+    // Warm the legacy lane too (page cache) so the comparison is warm-vs-warm.
     lfind.execute(&lctx, json!({"pattern": "*.rs"})).await;
     lgrep.execute(&lctx, json!({"pattern": "needle_0"})).await;
-    igrep.execute(&ictx, json!({"pattern": "needle_0"})).await;
+    search_cmd::grep_with_pool(&args("needle_0".to_string()), &ictx, pool.clone()).await;
+    let deadline = Instant::now() + std::time::Duration::from_secs(60);
+    while pool.warm_picker(indexed_dir.path()).is_none() {
+        assert!(
+            Instant::now() < deadline,
+            "the background index never appeared"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
 
     let mut idx_find = Vec::with_capacity(SAMPLES);
     let mut old_find = Vec::with_capacity(SAMPLES);
@@ -93,8 +111,8 @@ async fn index_vs_spawn_tax() {
         // Alternate lanes so machine noise spreads evenly.
         let pat = format!("*file{:03}.rs", i % 10);
         let t = Instant::now();
-        let out = ifind.execute(&ictx, json!({"pattern": pat})).await;
-        assert!(!out.is_error);
+        let out = search_cmd::find_with_pool(&args(pat.clone()), &ictx, pool.clone()).await;
+        assert!(!out.is_empty());
         idx_find.push(t.elapsed().as_secs_f64() * 1000.0);
         let t = Instant::now();
         let out = lfind.execute(&lctx, json!({"pattern": pat})).await;
@@ -103,8 +121,8 @@ async fn index_vs_spawn_tax() {
 
         let needle = format!("needle_{i}", i = i % 50);
         let t = Instant::now();
-        let out = igrep.execute(&ictx, json!({"pattern": needle})).await;
-        assert!(!out.is_error);
+        let out = search_cmd::grep_with_pool(&args(needle.clone()), &ictx, pool.clone()).await;
+        assert!(!out.is_empty());
         idx_grep.push(t.elapsed().as_secs_f64() * 1000.0);
         let t = Instant::now();
         let out = lgrep.execute(&lctx, json!({"pattern": needle})).await;
@@ -118,7 +136,9 @@ async fn index_vs_spawn_tax() {
     let (og_med, og_p95) = stats(old_grep);
 
     println!("\n=== index vs spawn tax ({FILES} files x {LINES} lines, {SAMPLES} samples) ===");
-    println!("first index call (cold scan): {cold_ms:.1} ms");
+    println!(
+        "first call in a process (tool lane, index starts in background): {cold_call_ms:.1} ms"
+    );
     println!(
         "{:<14} {:>10} {:>10} {:>10} {:>10}",
         "op", "idx_med", "old_med", "idx_p95", "old_p95"

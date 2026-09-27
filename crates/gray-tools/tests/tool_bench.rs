@@ -56,8 +56,8 @@ async fn baseline_tool_bench() {
     let ctx = ctx_for(dir.path());
     let ledger = Arc::new(FileLedger::new());
     let read = ReadTool::new(ledger);
-    let grep = GrepTool::default();
-    let find = FindTool::default();
+    let grep = GrepTool;
+    let find = FindTool;
     let bash = BashTool::default();
 
     // Warm up (page cache, tokio runtime, rg binary).
@@ -192,7 +192,7 @@ async fn fast_path_parity() {
         std::fs::write(p, content).unwrap();
     }
     let ctx = ctx_for(dir.path());
-    let grep = GrepTool::default();
+    let grep = GrepTool;
 
     fn is_match_line(l: &str, rels: &[&str]) -> bool {
         rels.iter().any(|r| {

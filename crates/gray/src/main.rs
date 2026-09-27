@@ -50,6 +50,37 @@ async fn main() -> anyhow::Result<()> {
     {
         return gray::view::run_cli(paths, *frames, *native);
     }
+    // Same reason as view: a local search is nobody's provider concern, and
+    // the bash tool claims `gray find`/`gray grep` so a model does not have to
+    // know `gray` is on its PATH.
+    match &cli.command {
+        Some(gray::Commands::Find {
+            pattern,
+            path,
+            limit,
+        }) => return gray::search::run_find(pattern, path.as_deref(), *limit).await,
+        Some(gray::Commands::Grep {
+            pattern,
+            path,
+            limit,
+            glob,
+            ignore_case,
+            literal,
+            context,
+        }) => {
+            return gray::search::run_grep(
+                pattern,
+                path.as_deref(),
+                *limit,
+                glob.as_deref(),
+                *ignore_case,
+                *literal,
+                *context,
+            )
+            .await;
+        }
+        _ => {}
+    }
     // Account commands run before provider configuration: enrolling a fresh
     // machine must not require a model and a key first.
     match &cli.command {
@@ -157,8 +188,10 @@ async fn main() -> anyhow::Result<()> {
             gray::Commands::Login { .. } | gray::Commands::Whoami | gray::Commands::Logout => {
                 unreachable!("account CLI dispatch happens before configuration")
             }
-            gray::Commands::View { .. } => {
-                unreachable!("view CLI dispatch happens before configuration")
+            gray::Commands::View { .. }
+            | gray::Commands::Find { .. }
+            | gray::Commands::Grep { .. } => {
+                unreachable!("view/find/grep CLI dispatch happens before configuration")
             }
         }
     }

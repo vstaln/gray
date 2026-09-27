@@ -26,7 +26,7 @@ use crate::shell::view::{format_elapsed, header, middle_out, resume_hint};
 /// Bytes served by one `Read more` recovery command. The inline budget is
 /// 48 KiB, so 16 KiB pages need a third of the round trips a 4 KiB page did.
 const READ_CHUNK: u64 = 16 * 1024;
-use crate::{fail, get_opt_bool, get_opt_u64, get_str, resolve_path};
+use crate::{fail, finish, get_opt_bool, get_opt_u64, get_str, resolve_path};
 
 mod jobs;
 
@@ -186,6 +186,9 @@ impl Tool for BashTool {
         if let Some(out) = image_command(&command, &cwd) {
             return out;
         }
+        if let Some(out) = search_command(&command, &cwd, &ctx.cancel).await {
+            return out;
+        }
         if background || window.is_some() {
             return self
                 .jobs
@@ -269,29 +272,32 @@ fn session_key(ctx: &ToolContext) -> String {
     ctx.session_id.clone().unwrap_or_default()
 }
 
-/// `cat <one image file>` returns the image as a vision block at full
-/// resolution — decode, EXIF orientation, re-encode, no downscale — instead
-/// of the binary garbage a shell would stream. Claims exactly
-/// `cat` plus a single bare path: flags, pipes, redirects, globs, quotes,
-/// and multi-file cats all fall through to a normal run. A missing or
-/// non-image file falls through too, so the shell's own error message or
-/// text output is what the model sees.
-/// `cat <one image>` and `gray view <one or more images>` both hand images
-/// back instead of streaming binary garbage through the shell: bash's vision
-/// path, so no separate tool is needed for it. `cat` is the full-resolution
-/// exception a pasted attachment needs; `view` is the everyday path and
-/// downscales to the 2000px cap, the same cap pasted attachments and `read`
-/// use.
+/// `gray view PATH...` returns images (and video contact sheets) as vision
+/// parts instead of the binary garbage a shell would stream. Claims exactly
+/// `gray view` plus bare paths: flags, pipes, redirects, globs, quotes, and
+/// `cat` all fall through to a normal run. A missing or non-media file falls
+/// through too, so the shell's own error message or text output is what the
+/// model sees.
+///
+/// There is exactly one way to see a picture, and it is this command. `cat
+/// <image>` used to be a second, full-resolution one; it is gone, because a
+/// model that learns two ways to do the same thing uses the one it has seen
+/// most, and the two answered differently (full resolution vs the 2000px cap
+/// shared with `read` and pasted attachments). `cat` on a binary is now what
+/// it always was to a reader: bytes — except that a `cat` of a media file is
+/// answered with a one-line pointer to `gray view` rather than a screenful of
+/// binary, because streaming that into a context is the exact failure this
+/// claim exists to prevent.
 ///
 /// The command is claimed before the shell ever runs, so anything the shell
 /// would interpret (flags, pipes, redirects, globs, quotes, `$`) falls through
 /// to a normal run — as does a missing file, so the shell's own error is what
 /// the model sees. A leading `~` is the one thing expanded here: the shell
-/// would have done it and nothing else would, and without it `cat ~/shot.png`
-/// streams binary garbage while `cat /home/me/shot.png` shows the image. A
-/// missing, undecodable or non-image path is skipped with a note and the valid
-/// ones still ship; when nothing is usable the claim is dropped and the shell
-/// gives the error, which reads better than a note attached to nothing.
+/// would have done it and nothing else would, and without it `gray view
+/// ~/shot.png` fails while the absolute path works. A missing, undecodable or
+/// non-media path is skipped with a note and the valid ones still ship; when
+/// nothing is usable the claim is dropped and the shell gives the error, which
+/// reads better than a note attached to nothing.
 // Cap multi-image claims: 8 paths (the per-turn inline-attach cap) and 20 MiB
 // of aggregate base64 (4x the 5 MiB per-image cap in `crate::images`). Past
 // the path cap the claim is cut to the prefix with a note; past the byte
@@ -306,6 +312,98 @@ const MAX_IMAGE_CLAIM_BYTES: usize = 20 * 1024 * 1024;
 /// message instead of at the endpoint with an opaque 400.
 const MAX_NATIVE_VIDEO_CLAIM_BYTES: u64 = 8 * 1024 * 1024;
 
+/// `cat <one media file>` does not show it, and says so instead of streaming
+/// binary into the context. Only a file that really is media earns the
+/// pointer: anything else — missing, text, unknown extension — falls through
+/// to the shell, which is `cat`'s actual job.
+fn cat_media_pointer(path: &str, cwd: &Path) -> Option<ToolOutput> {
+    if path.starts_with('-') || shell_meta(path) {
+        return None;
+    }
+    let full = resolve_bare_path(cwd, path)?;
+    if !crate::images::is_viewable_extension(&full) {
+        return None;
+    }
+    Some(finish(format!(
+        "`cat` does not show media. Run `gray view {path}` to see it."
+    )))
+}
+
+/// `gray find` / `gray grep` claimed before the shell runs, for the same
+/// reason `gray view` is: the model should not have to know that `gray`
+/// happens to be on its PATH. Text in, text out, so this is one thin parse
+/// over [`crate::search_cmd`] — the index, or the tool's own lane, decided
+/// there.
+async fn search_command(
+    command: &str,
+    cwd: &Path,
+    cancel: &tokio_util::sync::CancellationToken,
+) -> Option<ToolOutput> {
+    let mut parts = command.split_whitespace();
+    if parts.next()? != "gray" {
+        return None;
+    }
+    let sub = parts.next()?;
+    if sub != "find" && sub != "grep" {
+        return None;
+    }
+    let rest: Vec<String> = parts.map(str::to_string).collect();
+    let mut positional: Vec<String> = Vec::new();
+    let (mut limit, mut glob, mut context) = (None, None, None);
+    let (mut ignore_case, mut literal) = (false, false);
+    let mut i = 0;
+    while i < rest.len() {
+        let arg = rest[i].as_str();
+        // A flag whose value is missing, or an unknown flag, falls through to
+        // the shell: it owns the usage error, and it names the real argv.
+        let take = |name: &str| -> Option<String> {
+            rest.get(i + 1)
+                .cloned()
+                .or_else(|| arg.strip_prefix(&format!("{name}=")).map(str::to_string))
+        };
+        match arg {
+            a if a == "--ignore-case" || a == "-i" => ignore_case = true,
+            a if a == "--literal" || a == "-F" => literal = true,
+            a if a == "--limit" || a.starts_with("--limit=") => {
+                limit = Some(take("--limit")?.parse().ok()?)
+            }
+            a if a == "--glob" || a.starts_with("--glob=") => glob = Some(take("--glob")?),
+            a if a == "--context" || a.starts_with("--context=") => {
+                context = Some(take("--context")?.parse().ok()?)
+            }
+            a if a.starts_with('-') => return None,
+            _ => positional.push(arg.to_string()),
+        }
+        i += 1;
+    }
+    let (Some(pattern), path) = (positional.first().cloned(), positional.get(1).cloned()) else {
+        return None;
+    };
+    if positional.len() > 2 {
+        return None;
+    }
+    let args = crate::search_cmd::SearchArgs {
+        pattern,
+        path: path.map(|p| cwd.join(p)),
+        limit,
+        glob,
+        ignore_case,
+        literal,
+        context,
+    };
+    let ctx = ToolContext {
+        cwd: cwd.to_path_buf(),
+        cancel: cancel.clone(),
+        session_id: None,
+    };
+    let text = if sub == "find" {
+        crate::search_cmd::find(&args, &ctx).await
+    } else {
+        crate::search_cmd::grep(&args, &ctx).await
+    };
+    Some(finish(text))
+}
+
 fn image_command(command: &str, cwd: &Path) -> Option<ToolOutput> {
     image_command_with_native_cap(command, cwd, MAX_NATIVE_VIDEO_CLAIM_BYTES)
 }
@@ -317,12 +415,13 @@ fn image_command_with_native_cap(
     cwd: &Path,
     max_native_video_bytes: u64,
 ) -> Option<ToolOutput> {
-    use base64::Engine as _;
     let mut parts = command.split_whitespace();
     let (cmd, sub) = (parts.next()?, parts.next()?);
     let mut rest: Vec<&str> = parts.collect();
-    let (paths, full_res, native) = match (cmd, rest.is_empty()) {
-        ("cat", true) => (vec![sub], true, false),
+    if cmd == "cat" && rest.is_empty() {
+        return cat_media_pointer(sub, cwd);
+    }
+    let (paths, native) = match (cmd, rest.is_empty()) {
         ("gray", false) if sub == "view" => {
             // `--native` asks for the clip itself rather than a contact
             // sheet, so the claim attaches a video part instead of an image.
@@ -337,7 +436,7 @@ fn image_command_with_native_cap(
             if rest.iter().any(|a| a.starts_with('-')) {
                 return None;
             }
-            (rest, false, native)
+            (rest, native)
         }
         _ => return None,
     };
@@ -368,15 +467,11 @@ fn image_command_with_native_cap(
     let mut refused: Vec<String> = Vec::new();
     let mut bytes: usize = 0;
     for full in files {
-        // `cat <one image>` is the full-resolution exception and stays that
-        // way; `cat <one video>` is not a vision part, so it is refused here
-        // and the claim drops, which leaves the shell to report the path.
-        // The agent-facing way to see a video is `gray view`.
         // `--native` on a video hands over the clip itself. Refused up front
         // over the cap rather than after base64-ing hundreds of MB: the
         // provider would reject it anyway, and a silent sheet here would
         // answer a different question than the one that was asked.
-        if native && !full_res && crate::images::is_video_extension(&full) {
+        if native && crate::images::is_video_extension(&full) {
             let len = std::fs::metadata(&full).map(|m| m.len()).unwrap_or(0);
             if len > max_native_video_bytes {
                 // Fall back to the sheet *and say so*. Dropping the claim here
@@ -417,28 +512,11 @@ fn image_command_with_native_cap(
             }
             continue;
         }
-        let (mime, data, sheet) = if full_res {
-            match std::fs::read(&full)
-                .ok()
-                .and_then(|raw| crate::images::encode_image_full(&raw).ok())
-            {
-                Some(pair) => (
-                    pair.0,
-                    base64::engine::general_purpose::STANDARD.encode(&pair.1),
-                    false,
-                ),
-                None => {
-                    failed.push(format!("{}: unreadable or undecodable", full.display()));
-                    continue;
-                }
-            }
-        } else {
-            match crate::view::load(&full) {
-                Ok(part) => (part.media_type, part.data, part.derived_from_video),
-                Err(e) => {
-                    failed.push(e.to_string());
-                    continue;
-                }
+        let (mime, data, sheet) = match crate::view::load(&full) {
+            Ok(part) => (part.media_type, part.data, part.derived_from_video),
+            Err(e) => {
+                failed.push(e.to_string());
+                continue;
             }
         };
         if !images.is_empty() && bytes + data.len() > MAX_IMAGE_CLAIM_BYTES {

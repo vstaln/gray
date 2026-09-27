@@ -26,6 +26,7 @@ pub mod providers;
 pub mod repl;
 pub mod resume;
 mod rotation;
+pub mod search;
 pub mod session_store;
 pub mod setup;
 pub mod shell_drain;
@@ -66,7 +67,9 @@ AGENTS.md / CLAUDE.md above the working directory. Edit with `/agentsmd`
 (Ctrl-S save & apply, Ctrl-R reset to this default, Ctrl-X cancel).
 -->
 You are gray, a minimal agent on the user's machine.
-You work through one tool: `bash`, and its output is text. To look at an image or video, run `gray view <paths>` — that is the only way to see one. A video comes back as a contact sheet of sampled frames; `--frames N` sets how many. `gray view --native <path>` sends the video itself instead of a sheet, but only a model with native video input (Gemini) accepts that — any other model rejects the turn, so use it only when you know the model takes video. `cat` is for text/source files.
+You work through one tool: `bash`, and its output is text. To look at an image or video, run `gray view <paths>` — that is the only way to see one. A video comes back as a contact sheet of sampled frames; `--frames N` sets how many. `gray view --native <path>` sends the video itself instead of a sheet, but only a model with native video input (Gemini) accepts that — any other model rejects the turn, so use it only when you know the model takes video. `cat` is for text and source files; it will not show you a picture.
+
+Searching: `fd`, `rg` and `grep` are always there and always correct. `gray find <glob> [path]` and `gray grep <pattern> [path]` answer the same two questions from a resident index, which is several times faster on a large tree and ranks what you touched recently first. Same answer either way — reach for them when you are searching a lot, not on every lookup.
 To schedule recurring work for the user, run `gray cron add "<schedule>" "<prompt>"` (manage with `gray cron list/show/remove`).
 
 Workflow (do every task this way):
@@ -358,13 +361,60 @@ pub enum Commands {
     /// Curated cross-session memory (local files, no model required)
     Memory(memory::MemoryArgs),
 
+    /// Find files by glob, off a resident index when one can answer exactly
+    ///
+    /// The command form of the `find` tool: the same answer `fd` would give,
+    /// served from the in-process index when the index can be exact about it
+    /// and from `fd` itself when it cannot. Exists as a command because
+    /// searching is a shell thing, and the model already has `fd`, `rg` and
+    /// `grep` — the index is a faster way to run the same question, not a
+    /// different answer.
+    Find {
+        /// Glob, e.g. `*.rs` or `crates/**/mod.rs`
+        #[arg(value_name = "PATTERN")]
+        pattern: String,
+        /// Directory to search (default: the current directory)
+        #[arg(value_name = "PATH")]
+        path: Option<String>,
+        /// Max results (default 100)
+        #[arg(long, value_name = "N")]
+        limit: Option<usize>,
+    },
+    /// Grep file contents, off a resident index when one can answer exactly
+    ///
+    /// The command form of the `grep` tool, with the same decline rules: a
+    /// non-git directory, `ignoreCase`, a negated or depth-anchored `glob`, an
+    /// invalid pattern, or a file target all fall through to `rg`.
+    Grep {
+        /// Pattern (regex unless --literal)
+        #[arg(value_name = "PATTERN")]
+        pattern: String,
+        /// File or directory to search (default: the current directory)
+        #[arg(value_name = "PATH")]
+        path: Option<String>,
+        /// Max matches (default 100)
+        #[arg(long, value_name = "N")]
+        limit: Option<usize>,
+        /// Basename glob filter, e.g. `*.rs`
+        #[arg(long, value_name = "GLOB")]
+        glob: Option<String>,
+        /// Case-insensitive (served by rg: the index declines it)
+        #[arg(long, short)]
+        ignore_case: bool,
+        /// Treat the pattern as literal text, not a regex
+        #[arg(long, short = 'F')]
+        literal: bool,
+        /// Lines of context around each match
+        #[arg(long, value_name = "N")]
+        context: Option<usize>,
+    },
     /// Show an image or video as an image (png/jpg/jpeg/gif/webp/bmp/heic/heif, mp4/mov/webm/mkv/avi)
     ///
     /// Run `gray view plot.png` and the image is shown, not its bytes: bash
     /// output is text only, so this is the only way to look at a rendered
     /// chart, screenshot or diagram. A video path is sampled into one tiled
     /// contact sheet, or sent as a native video part with `--native` when the
-    /// model has video input. Use `cat` for text.
+    /// model has video input.
     View {
         /// One or more image or video paths
         #[arg(value_name = "PATH", required = true)]
