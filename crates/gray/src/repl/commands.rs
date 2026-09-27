@@ -113,7 +113,7 @@ pub(crate) const REGISTRY: &[CmdDef] = &[
     },
     CmdDef {
         name: "hehe",
-        desc: "the graychan mascot, big",
+        desc: "something funny",
         aliases: &[],
     },
     CmdDef {
@@ -464,8 +464,9 @@ pub enum ReplCommand {
     Copy,
     /// Send feedback (`/feedback <what happened>`): saves locally, opens a prefilled issue.
     Feedback(Option<String>),
-    /// Print the graychan mascot (`/hehe`): the anime welcome art, painted
-    /// into the transcript at full terminal width. Easter egg, zero state.
+    /// Toggle the graychan mascot (`/hehe`): the anime art painted into the
+    /// transcript at full terminal width, and pressing it again drops it so
+    /// the default gray ASCII banner is back. Easter egg, no persisted state.
     Hehe,
     /// Unknown slash command (`/word`).
     Unknown(String),

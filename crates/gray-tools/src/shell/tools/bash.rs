@@ -207,6 +207,11 @@ impl Tool for BashTool {
         }
         let log_path = log_path(ctx);
         let start = Instant::now();
+        // A `gray view` the claim refused (compound, flags, glob) runs as a
+        // plain shell command and prints `viewed …` with nothing attached:
+        // decide the note here, before `command` moves, append it after the
+        // run. The predicate itself declines when nothing was ever at stake.
+        let unattached = unattached_media_note(&command);
         // Report the final directory to a scratch file so the next command in
         // this session starts where this one finished.
         let cwd_report =
@@ -222,7 +227,7 @@ impl Tool for BashTool {
         };
         #[cfg(not(windows))]
         let guard = crate::shell::kill::GroupGuard::new(spawned.pgid);
-        let out = run_command(
+        let mut out = run_command(
             command,
             log_path,
             secs,
@@ -236,6 +241,10 @@ impl Tool for BashTool {
         // Whether it succeeded, failed or was killed: a `cd` that ran is a `cd`
         // that ran. A killed command never writes the report, so its cwd stands.
         self.adopt_reported_cwd(ctx, &cwd_report);
+        if let Some(note) = unattached {
+            out.content.push('\n');
+            out.content.push_str(&note);
+        }
         out
     }
 }
@@ -406,6 +415,93 @@ async fn search_command(
 
 fn image_command(command: &str, cwd: &Path) -> Option<ToolOutput> {
     image_command_with_native_cap(command, cwd, MAX_NATIVE_VIDEO_CLAIM_BYTES)
+}
+
+/// What to say when a `gray view` / `cat <media>` ran as an ordinary shell
+/// command instead of being claimed: the CLI then prints `viewed …` (or the
+/// shell streams binary), while nothing is attached to the turn — a success
+/// that reads like a lie and costs the model a pile of re-runs. Only shape
+/// refusals get this: a bare claim that missed on a missing file is already
+/// reported by the shell, and a lecture on top of its own error helps nobody.
+fn unattached_media_note(command: &str) -> Option<String> {
+    let ws: Vec<&str> = command.split_whitespace().collect();
+    // First `view` whose word before it is (or glues onto) `gray`, and only
+    // where `gray` starts a command — bare, after a chain separator (`&&`,
+    // `; do`, `done;`), or glued into one word (`cd x&&gray view`). Without
+    // the gate, `echo gray view` would earn a note about an image it never
+    // meant to show.
+    let view_at = ws.iter().position(|t| *t == "view").filter(|&i| {
+        match ws.get(i.wrapping_sub(1)).copied() {
+            Some("gray") => i == 1 || starts_a_command(ws[i - 2]),
+            Some(p) => p.ends_with("gray"),
+            None => false,
+        }
+    });
+    if let Some(i) = view_at {
+        if i == 1 && ws[0] == "gray" {
+            let mut rest = &ws[2..];
+            if rest.first() == Some(&"--native") {
+                rest = &rest[1..];
+            }
+            // Bare paths (or nothing): the claim took it and only the files
+            // could have failed, which the shell has already reported.
+            if rest.is_empty() || !rest.iter().any(|a| shell_meta(a)) {
+                return None;
+            }
+        }
+        return Some(view_note(&ws[i + 1..]));
+    }
+    let cat_at = ws.iter().position(|t| *t == "cat")?;
+    let arg = *ws.get(cat_at + 1)?;
+    if !crate::images::is_viewable_extension(Path::new(arg)) {
+        return None;
+    }
+    let bare = cat_at == 0 && ws.len() == 2 && !shell_meta(arg);
+    (!bare).then(|| {
+        let rerun = if shell_meta(arg) {
+            "gray view /path/to.jpg".to_string()
+        } else {
+            format!("gray view {arg}")
+        };
+        format!(
+            "note: `cat` on a media file ran as a plain shell command here, so the \
+             media was NOT attached to this turn. Use the whole command instead: {rerun}"
+        )
+    })
+}
+
+/// True for the word that lets a `gray` begin a command: a chain separator,
+/// or a word ending in one (`done;`), or a control keyword that introduces a
+/// command position. Anything else before `gray` means it is an argument to
+/// someone else's command (`echo gray view`), not a view that fell through.
+fn starts_a_command(prev: &str) -> bool {
+    matches!(
+        prev,
+        "&&" | ";" | "|" | "|&" | "do" | "then" | "else" | "fi" | "done" | "esac"
+    ) || prev.ends_with('&')
+        || prev.ends_with(';')
+        || prev.ends_with('|')
+}
+
+/// The `gray view` half of [`unattached_media_note`], naming the paths the
+/// model typed so the re-run is one turn away. Paths the shell would
+/// interpret (globs, `$`) cannot be re-run bare, so those fall back to a
+/// placeholder rather than advice that fails the same way.
+fn view_note(rest: &[&str]) -> String {
+    let paths: Vec<&str> = rest
+        .iter()
+        .copied()
+        .take_while(|a| !shell_meta(a))
+        .collect();
+    let rerun = if paths.is_empty() {
+        "gray view /path/to.jpg".to_string()
+    } else {
+        format!("gray view {}", paths.join(" "))
+    };
+    format!(
+        "note: `gray view` ran as a plain shell command here, so the image was NOT \
+         attached to this turn. Re-run it as the whole command with bare paths: {rerun}"
+    )
 }
 
 /// [`image_command`] with the native-video cap as a parameter, so the

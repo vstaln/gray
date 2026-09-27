@@ -200,17 +200,28 @@ impl Tui {
     }
 
     /// `/hehe`: paints the graychan mascot into the transcript as big as the
-    /// terminal allows. One `StyledLines` entry, so reflow keeps the art
-    /// with the transcript. Returns false when the terminal can't show it
-    /// (no truecolor / too small) so the caller can say so.
+    /// terminal allows. A `Mascot` marker entry, not a `StyledLines`
+    /// snapshot, so `/hehe` again can drop exactly this block and a reflow
+    /// re-derives the art at the new width. Returns false when the terminal
+    /// can't show it (no truecolor / too small) so the caller can say so.
     pub(crate) fn push_mascot(&mut self) -> bool {
-        let cols = u16::try_from(self.width()).unwrap_or(u16::MAX);
+        let w = self.width().max(10);
+        let cols = u16::try_from(w).unwrap_or(u16::MAX);
         let rows = self.last_height.max(1);
-        let Some(lines) = crate::mascot::mascot_lines(cols, rows, None) else {
+        let Some(lines) = crate::mascot::mascot_lines(cols, rows, Some(w)) else {
             return false;
         };
-        self.push_styled_lines_with_hyperlinks(lines, &[], 0);
+        crate::mascot::set_mascot_shown(true);
+        let lines_only = self.render_and_insert_styled_lines(&lines, &[], w);
+        self.history_entries
+            .push(crate::composer::TranscriptEntry::Mascot);
+        cap_history_entries(&mut self.history_entries);
+        self.transcript.extend(lines_only);
         self.ensure_gap(1);
+        if self.transcript.len() > 1000 {
+            self.transcript.drain(0..100);
+        }
+        let _ = std::io::stdout().flush();
         true
     }
 

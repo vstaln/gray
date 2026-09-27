@@ -20,6 +20,20 @@
   the new build, because stopping without the relaunch would take a working
   gateway down and call it a restart.
 
+### Changed
+
+- The startup banner is the gray ASCII logo again. The graychan art is
+  `/hehe` only, and `/hehe` is a toggle: press it again to drop the art and
+  get the logo back.
+
+### Fixed
+
+- `gray view` inside a compound shell command no longer reads as success with
+  nothing attached: the bash tool appends a note that the image was NOT
+  attached and how to re-run it bare, and the CLI fallback line says the
+  terminal has no image protocol instead of a bare `viewed …`
+  (`docs/bug-gray-view-compound-command.md`).
+
 ## [0.1.5] - 2026-09-26
 
 ### Changed

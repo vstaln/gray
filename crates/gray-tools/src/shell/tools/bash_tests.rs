@@ -649,6 +649,69 @@ async fn gray_view_through_execute_shows_vision() {
     assert_eq!(out.images.len(), 1, "execute must surface the vision block");
 }
 
+#[test]
+fn unattached_media_note_covers_every_shape_the_claim_refuses() {
+    // Shape refusals: the shell runs the real CLI, which prints `viewed …`
+    // while nothing is attached — the note must say so and name the re-run.
+    for cmd in [
+        "cd /tmp && gray view a.png",
+        "gray view a.png && echo done",
+        "gray view a.png; ls",
+        "gray view a.png | wc -c",
+        "gray view $HOME/a.png",
+        "gray view *.png",
+        "gray view -A a.png",
+        "cd x&&gray view a.png",
+        "for f in /tmp/*.jpg; do gray view \"$f\"; done",
+        "cat a.png && wc -c",
+        "x && cat a.png",
+        "cat *.png",
+    ] {
+        let note = unattached_media_note(cmd).unwrap_or_else(|| panic!("note missing: {cmd}"));
+        assert!(note.contains("NOT attached"), "{cmd}: {note}");
+        assert!(note.contains("gray view"), "{cmd}: {note}");
+    }
+    // The bare claim shapes: a miss is a missing/undecodable file the shell
+    // already reports, a non-media `cat`, or no media command at all.
+    for cmd in [
+        "gray view a.png",
+        "gray view",
+        "gray view missing.png",
+        "gray view --native clip.mp4",
+        "cat a.png",
+        "cat missing.png",
+        "cat notes.txt",
+        "echo gray view",
+        "ls -la",
+    ] {
+        assert!(unattached_media_note(cmd).is_none(), "spurious: {cmd}");
+    }
+    // The advice names the paths it saw, so one turn is enough to recover.
+    let note = unattached_media_note("cd /tmp && gray view a.png b.png").unwrap();
+    assert!(note.contains("gray view a.png b.png"), "{note}");
+}
+
+#[tokio::test]
+async fn compound_gray_view_says_the_image_was_not_attached() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("shot.png"), png_bytes()).unwrap();
+    let ctx = ToolContext {
+        cwd: dir.path().to_path_buf(),
+        ..ToolContext::default()
+    };
+    // cd fails, so `gray` never runs: the note is the tool's own, and the
+    // output must not read as a successful view.
+    let out = BashTool::default()
+        .execute(
+            &ctx,
+            json!({"command": "cd /nonexistent-9f2a && gray view shot.png"}),
+        )
+        .await;
+    assert!(!out.is_error, "{}", out.content);
+    assert!(out.images.is_empty());
+    assert!(out.content.contains("NOT attached"), "{}", out.content);
+}
+
 #[tokio::test]
 async fn cat_expands_a_tilde_the_shell_would_have() {
     // The fast path runs before the shell, so `~` never gets expanded: without

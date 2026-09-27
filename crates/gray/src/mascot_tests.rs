@@ -79,34 +79,50 @@ fn lines_tile_the_grid_with_merged_runs() {
     }
 }
 
+/// Flattened text of a line block, one string per line.
+fn plain(lines: &[Line<'static>]) -> Vec<String> {
+    lines
+        .iter()
+        .map(|l| l.spans.iter().map(|s| s.content.to_string()).collect())
+        .collect()
+}
+
 #[test]
-fn welcome_shows_the_mascot_above_the_banner() {
-    // Same size probe build_welcome_lines uses (no TTY under cargo test, so
-    // crossterm fails and the fallback wins on both sides).
+fn welcome_is_the_ascii_logo_by_default() {
+    // graychan is `/hehe` only: the startup screen is the plain logo.
+    let welcome = plain(&build_welcome_lines(120));
+    assert!(
+        !welcome.iter().any(|l| l.contains('\u{2580}')),
+        "half-block art must not be in the default welcome: {welcome:?}"
+    );
+    let logo = crate::tui::logo_lines();
+    assert!(!logo.is_empty(), "logo asset is empty");
+    for row in &logo {
+        let want = row.trim();
+        assert!(
+            welcome.iter().any(|l| l.contains(want)),
+            "logo row missing from the welcome: {want:?}"
+        );
+    }
+    let banner = &welcome[welcome.len() - 2];
+    assert!(
+        banner.contains("gray") && banner.contains("/help"),
+        "version banner must survive under the logo: {banner:?}"
+    );
+}
+
+#[test]
+fn mascot_art_paints_as_half_block_cells() {
+    // Same size probe build_welcome_lines used to use (no TTY under cargo
+    // test, so crossterm fails and the fallback wins on both sides).
     let (cols, rows) = crossterm::terminal::size().unwrap_or((120, 24));
     let grid = decode_grid(cols, rows).expect("asset decodes");
-    let expected_blocks = grid.cols * grid.rows;
     let art = mascot_lines(cols, rows, Some(120)).expect("truecolor path");
-    let welcome = build_welcome_lines(120);
-    assert_eq!(
-        welcome.len(),
-        art.len() + 4,
-        "leading blank + mascot + blank + banner + trailing blank"
-    );
-    let last = welcome[welcome.len() - 2]
-        .spans
-        .iter()
-        .map(|s| s.content.to_string())
-        .collect::<String>();
-    assert!(
-        last.contains("gray") && last.contains("/help"),
-        "version banner must survive under the mascot: {last:?}"
-    );
     // Painted through a TestBackend the block is real cells, not escapes.
     let backend = TestBackend::new(120, 40);
     let mut terminal = ratatui::Terminal::new(backend).expect("test terminal");
     terminal
-        .draw(|f| Paragraph::new(welcome.clone()).render(f.area(), f.buffer_mut()))
+        .draw(|f| Paragraph::new(art.clone()).render(f.area(), f.buffer_mut()))
         .expect("draw");
     let buf = terminal.backend().buffer().clone();
     let blocks = buf
@@ -115,8 +131,34 @@ fn welcome_shows_the_mascot_above_the_banner() {
         .filter(|c| c.symbol() == "\u{2580}")
         .count();
     assert_eq!(
-        blocks, expected_blocks,
+        blocks,
+        grid.cols * grid.rows,
         "every grid cell must paint as one half-block"
+    );
+}
+
+#[test]
+fn hehe_toggle_drops_the_mascot_entry() {
+    use crate::composer::TranscriptEntry;
+    let mut entries = vec![
+        TranscriptEntry::Welcome,
+        TranscriptEntry::Mascot,
+        TranscriptEntry::Gap(1),
+    ];
+    assert!(crate::composer::transcript::drop_mascot_entry(&mut entries));
+    assert!(
+        !entries.iter().any(|e| matches!(e, TranscriptEntry::Mascot)),
+        "the art must be gone: {entries:?}"
+    );
+    assert!(
+        entries
+            .iter()
+            .any(|e| matches!(e, TranscriptEntry::Welcome)),
+        "the rest of the transcript must survive: {entries:?}"
+    );
+    assert!(
+        !crate::composer::transcript::drop_mascot_entry(&mut entries),
+        "a third /hehe has nothing left to drop"
     );
 }
 

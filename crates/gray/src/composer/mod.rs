@@ -404,6 +404,10 @@ pub enum TranscriptEntry {
         lines: Vec<Line<'static>>,
         hyperlinks: Vec<HyperlinkTarget>,
     },
+    /// The graychan art from `/hehe`, stored as a marker rather than a line
+    /// snapshot: `/hehe` again drops this entry (reverting to the default
+    /// ASCII banner) and a reflow re-derives the art at the new width.
+    Mascot,
     /// One live reasoning run as raw source text (`\n`-terminated logical
     /// lines plus word-cut continuations concatenated back-to-back). The
     /// live path paints incrementally without touching history; reflow
@@ -414,45 +418,37 @@ pub enum TranscriptEntry {
     Gap(usize),
 }
 
+/// The welcome banner: the gray ASCII logo, the version line, nothing else.
+/// Deliberately not the graychan art — that is `/hehe` only, so the startup
+/// screen is the logo and `/hehe` again puts the logo back.
 pub fn build_welcome_lines(w: usize) -> Vec<Line<'static>> {
-    // No TTY under test/CI: a sane fallback still sizes the mascot.
-    let (term_cols, term_rows) =
-        crossterm::terminal::size().unwrap_or((u16::try_from(w.max(40)).unwrap_or(u16::MAX), 24));
-
     let base = crate::theme::theme().text_dim;
     let hilite = crate::theme::theme().text_bright;
 
     let mut welcome_lines: Vec<Line<'static>> = Vec::new();
     welcome_lines.push(Line::from(""));
-    match crate::mascot::mascot_lines(term_cols, term_rows, Some(w)) {
-        // The graychan mascot replaces the ASCII logo on any terminal that
-        // can show it; the fallback below keeps plain terminals working.
-        Some(art) => welcome_lines.extend(art),
-        None => {
-            let logo_raw = crate::tui::logo_lines();
-            let l_rows = logo_raw.len().max(1) as f32;
-            let max_logo_w = logo_raw
-                .iter()
-                .map(|l| display_width(l.trim()))
-                .max()
-                .unwrap_or(0);
-            let l_cols = (max_logo_w as f32).max(1.0);
-            let logo_pad = w.saturating_sub(max_logo_w) / 2;
-            for (row, line) in logo_raw.iter().enumerate() {
-                let trimmed = line.trim();
-                let mut spans: Vec<Span<'static>> = Vec::new();
-                if logo_pad > 0 {
-                    spans.push(Span::raw(" ".repeat(logo_pad)));
-                }
-                for (col, ch) in trimmed.chars().enumerate() {
-                    let diag = (col as f32 + (l_rows - 1.0 - row as f32)) / (l_cols + l_rows);
-                    let t = (0.15 + 0.85 * diag).clamp(0.0, 1.0);
-                    let color = crate::tui::blend_color(base, hilite, t);
-                    spans.push(Span::styled(ch.to_string(), Style::default().fg(color)));
-                }
-                welcome_lines.push(Line::from(spans));
-            }
+    let logo_raw = crate::tui::logo_lines();
+    let l_rows = logo_raw.len().max(1) as f32;
+    let max_logo_w = logo_raw
+        .iter()
+        .map(|l| display_width(l.trim()))
+        .max()
+        .unwrap_or(0);
+    let l_cols = (max_logo_w as f32).max(1.0);
+    let logo_pad = w.saturating_sub(max_logo_w) / 2;
+    for (row, line) in logo_raw.iter().enumerate() {
+        let trimmed = line.trim();
+        let mut spans: Vec<Span<'static>> = Vec::new();
+        if logo_pad > 0 {
+            spans.push(Span::raw(" ".repeat(logo_pad)));
         }
+        for (col, ch) in trimmed.chars().enumerate() {
+            let diag = (col as f32 + (l_rows - 1.0 - row as f32)) / (l_cols + l_rows);
+            let t = (0.15 + 0.85 * diag).clamp(0.0, 1.0);
+            let color = crate::tui::blend_color(base, hilite, t);
+            spans.push(Span::styled(ch.to_string(), Style::default().fg(color)));
+        }
+        welcome_lines.push(Line::from(spans));
     }
     welcome_lines.push(Line::from(""));
     let banner_raw = format!(
@@ -730,6 +726,16 @@ impl Tui {
                         new_transcript.extend(rows);
                     }
                 }
+                TranscriptEntry::Mascot => {
+                    if let Some(lines) = crate::mascot::mascot_lines(
+                        u16::try_from(w).unwrap_or(u16::MAX),
+                        self.last_height.max(1),
+                        Some(w),
+                    ) {
+                        self.insert_paragraph(&lines, None);
+                        new_transcript.extend(lines);
+                    }
+                }
                 TranscriptEntry::Gap(need) => {
                     let trailing = new_transcript
                         .iter()
@@ -756,6 +762,19 @@ impl Tui {
         self.release_dock_seam_for_blank_tail();
 
         let _ = self.draw();
+    }
+
+    /// `/hehe` again: drops the graychan art so the transcript is back to
+    /// the default gray ASCII welcome. Scrollback has no per-line delete, so
+    /// the removal re-emits the history the way a resize does.
+    /// Returns false when no mascot entry was there to drop.
+    pub(crate) fn pop_mascot(&mut self) -> bool {
+        if !crate::composer::transcript::drop_mascot_entry(&mut self.history_entries) {
+            return false;
+        }
+        crate::mascot::set_mascot_shown(false);
+        self.reflow_on_resize(self.last_width);
+        true
     }
 
     pub fn set_model(&mut self, model: String) {
