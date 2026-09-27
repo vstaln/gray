@@ -94,19 +94,9 @@ fn model_list_round_trips_through_disk() {
     let dir = tempfile::TempDir::new().expect("temp home");
     save_provider_model_list_at(dir.path(), "https://api.x.ai/v1/", &cached_list());
     assert_eq!(
+        // No trailing slash on load: normalization must not split the cache.
         load_provider_model_list_at(dir.path(), "https://api.x.ai/v1"),
         cached_list()
-    );
-}
-
-#[test]
-fn model_list_base_url_normalizes() {
-    let dir = tempfile::TempDir::new().expect("temp home");
-    save_provider_model_list_at(dir.path(), "https://api.x.ai/v1/", &cached_list());
-    assert_eq!(
-        load_provider_model_list_at(dir.path(), "https://api.x.ai/v1").len(),
-        2,
-        "trailing slash must not split the cache"
     );
 }
 

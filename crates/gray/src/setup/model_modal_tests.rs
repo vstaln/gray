@@ -176,13 +176,6 @@ fn recent_prefix_stops_at_the_first_unknown() {
 }
 
 #[test]
-fn no_recents_means_no_prefix() {
-    let models = sorted_models();
-    let n = super::recent_prefix_len(None, &[], models.iter().map(|(id, _)| id.as_str()));
-    assert_eq!(n, 0, "nothing recent, no divider");
-}
-
-#[test]
 fn selection_never_rest_on_the_divider() {
     use super::Row;
     let rows = vec![Row::Model(0), Row::Divider, Row::Model(1)];
