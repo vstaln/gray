@@ -38,6 +38,22 @@ pub(crate) fn cap_history_entries(entries: &mut Vec<super::TranscriptEntry>) {
     }
 }
 
+/// `/hehe` again: drops the graychan marker entry so the transcript is
+/// back to the default gray ASCII welcome. Drops the LAST one (the art
+/// `/hehe` just added); returns false when none is there.
+pub(crate) fn drop_mascot_entry(entries: &mut Vec<super::TranscriptEntry>) -> bool {
+    match entries
+        .iter()
+        .rposition(|e| matches!(e, super::TranscriptEntry::Mascot))
+    {
+        Some(i) => {
+            entries.remove(i);
+            true
+        }
+        None => false,
+    }
+}
+
 /// How many of `n` requested blank rows are still missing above the
 /// transcript tail: idempotent, so checkpoint spacers (thinking close,
 /// tool-box edges, turn footer) never stack a second blank onto an existing

@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Changed
+
+- The startup banner is the gray ASCII logo again. The graychan art is
+  `/hehe` only, and `/hehe` is a toggle: press it again to drop the art and
+  get the logo back.
+
 ## [0.1.4] - 2026-09-26
 
 ### Added

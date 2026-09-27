@@ -71,6 +71,18 @@ impl BackgroundSnapshot {
                         tail_blank,
                     ));
                 }
+                // `/hehe` art, re-derived at this width like the TUI reflow.
+                crate::composer::TranscriptEntry::Mascot => {
+                    let rows = crossterm::terminal::size().map(|(_, r)| r).unwrap_or(24);
+                    lines.extend(
+                        crate::mascot::mascot_lines(
+                            u16::try_from(w).unwrap_or(u16::MAX),
+                            rows,
+                            Some(w),
+                        )
+                        .unwrap_or_default(),
+                    );
+                }
                 crate::composer::TranscriptEntry::Gap(n) => {
                     for _ in 0..*n {
                         lines.push(ratatui::text::Line::from(""));

@@ -57,6 +57,20 @@ fn run_cli_reports_a_missing_file() {
 }
 
 #[test]
+fn fallback_line_says_nothing_was_drawn() {
+    // `viewed …` alone reads as success to an agent whose turn got no image,
+    // so the non-drawing path must say what actually happened.
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path().join("a.png");
+    std::fs::write(&p, png()).unwrap();
+    let shown = gray_tools::view::load(&p).unwrap();
+    let line = fallback_line(&shown);
+    assert!(line.starts_with("viewed "), "{line}");
+    assert!(line.contains("not shown"), "{line}");
+    assert_eq!(shown_line(&shown), format!("viewed {}", p.display()));
+}
+
+#[test]
 fn kitty_sequence_frames_one_png() {
     let seq = kitty_sequence("QUJD");
     assert!(seq.starts_with("\x1b_Ga=T,f=100,m=0;"), "{seq:?}");

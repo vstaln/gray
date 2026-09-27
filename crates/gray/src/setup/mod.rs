@@ -136,10 +136,8 @@ pub async fn run_onboarding(config: &mut Config) -> anyhow::Result<bool> {
     let _ = crossterm::terminal::disable_raw_mode();
     crate::tui::clear_screen();
     print!("\r\n");
-    // Same art as the TUI welcome; NO_COLOR/tiny terminals keep the logo.
-    if !crate::mascot::print_mascot() {
-        crate::tui::print_logo();
-    }
+    // Same art as the TUI welcome (the gray ASCII logo; graychan is /hehe).
+    crate::tui::print_logo();
     print!("\r\n");
     print_wrapped("\x1b[2mWelcome to gray by alignment\x1b[0m", 2);
     print_wrapped(
