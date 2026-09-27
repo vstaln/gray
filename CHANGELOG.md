@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+### Added
+
+- `/update` and `/restart` in the REPL, the two halves of landing a
+  self-update. `/update` checks the channel, asks before installing, and says
+  what to do next; `/restart` puts the running gray on the binary that is on
+  disk — the gateway daemon first (it keeps running the build it started
+  with), then this session re-exec'd into the new one, resuming the
+  conversation with `resume --last`. Neither codex nor hermes has either: codex
+  shows an update popup at startup and hands you a `brew upgrade` line, and
+  hermes-rs's `restart` tears down LSP clients. A CLI that installs its own
+  updates owes you a way to land on them.
+
+  The gateway half distinguishes who owns the process. Installed under a
+  supervisor, the supervisor restarts it. Running with nobody supervising it
+  — a hand-launched `gray gateway run` — it is stopped *and* started again on
+  the new build, because stopping without the relaunch would take a working
+  gateway down and call it a restart.
+
 ## [0.1.5] - 2026-09-26
 
 ### Changed
