@@ -2,6 +2,39 @@
 
 ## [Unreleased]
 
+## [0.1.5] - 2026-09-26
+
+### Changed
+
+- The search index is a command, not a lane inside the `find` and `grep`
+  tools. 0.1.4 left those two tools answering differently depending on the
+  directory, the pattern and a decade of glob semantics — and a missed rule
+  there is a wrong answer, not a slow one. `find` and `grep` are `fd`/`rg`
+  again, unconditionally, and `gray find PATTERN [PATH]` / `gray grep PATTERN
+  [PATH]` own the index: the same answer, served warm, with the fallback lane
+  being the very tool the command stands in for. Both are claimed by bash like
+  `gray view`, so a model reaches them without `gray` on its PATH.
+
+  The policy is cost-first, which the tool placement had hidden: the index
+  lives in process memory, so a fresh process holding none paid a full scan —
+  1.4s against `fd`'s 20ms on a 20k-file repo, a "speedup" 70x slower than the
+  shell it replaced. Now the first search in a process goes to `fd`/`rg` and
+  starts the index in the background; every search after that is index-served.
+  Cold `gray find` on that repo: 21ms. What the index is actually worth is
+  grep on repeat searches (2.9x the tool lane); `find` is a wash.
+
+- `cat` is no longer a second way to see a picture. It returned a
+  full-resolution vision block while `gray view` capped at the shared 2000px,
+  so the model had two paths with two answers and picked by habit. `gray view`
+  is now the only one: `cat <media>` says so in one line instead of streaming
+  binary into the context. Same text, same tool, one fewer thing to learn.
+
+### Fixed
+
+- A search cancelled before it starts now answers `cancelled by user`
+  instead of racing the spawned `fd`/`rg` child's first line, which could
+  return a finished result for a call the caller had already given up on.
+
 ## [0.1.4] - 2026-09-26
 
 ### Added
