@@ -77,7 +77,7 @@ pub(crate) async fn handle_update(tui: &TuiOpt) {
 
     // The installer is a child process writing to the real terminal, so raw
     // mode has to go for the duration and the composer re-anchors after.
-    let result = with_terminal(shared, || crate::update::install());
+    let result = with_terminal(shared, crate::update::install);
     match result {
         Ok(()) => {
             crate::update::warn_on_shadow();
@@ -278,7 +278,7 @@ async fn confirm_yn() -> bool {
     use crossterm::event::{self, Event, KeyCode, KeyEvent};
     // Callers run under the multi-thread runtime `main` installs, which
     // `block_in_place` requires.
-    let got = tokio::task::block_in_place(|| event::read());
+    let got = tokio::task::block_in_place(event::read);
     matches!(
         got,
         Ok(Event::Key(KeyEvent {
