@@ -665,6 +665,101 @@ async fn exploration_stall_post_nudge_reset_continues() {
 }
 
 #[tokio::test]
+async fn retryable_failure_with_no_output_retries_whole_turn_and_recovers() {
+    // The provider's in-request budget (5 attempts) dies to a 503 burst; the
+    // agent retries the whole turn instead of killing the run the user waits on.
+    let provider = FakeProvider::new(vec![end_script()]).with_failures(vec![
+        ProviderError::ServerError("provider-side status 503".into()),
+        ProviderError::ServerError("provider-side status 503".into()),
+    ]);
+    let seen = provider.seen_requests();
+    let mut agent = Agent::new(
+        Box::new(provider),
+        Arc::new(FakeExecutor::new(ToolOutput::ok("unused"))),
+    );
+
+    let events = agent
+        .run(Message::user("go"), ToolContext::default())
+        .await
+        .expect("turn-level retry must recover");
+
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::TurnEnd { .. })),
+        "recovered turn must complete: {events:?}"
+    );
+    let seen = seen.lock().expect("seen lock");
+    assert_eq!(seen.len(), 3, "two failed requests + one successful replay");
+}
+
+#[tokio::test]
+async fn retryable_failure_budget_exhausts_and_surfaces() {
+    // Past MAX_TURN_RETRIES the error must surface (never loop forever).
+    let provider = FakeProvider::new(vec![]).with_failures(vec![
+        ProviderError::ServerError("503".into()),
+        ProviderError::ServerError("503".into()),
+        ProviderError::ServerError("503".into()),
+    ]);
+    let mut agent = Agent::new(
+        Box::new(provider),
+        Arc::new(FakeExecutor::new(ToolOutput::ok("unused"))),
+    );
+
+    let err = agent
+        .run(Message::user("go"), ToolContext::default())
+        .await
+        .expect_err("exhausted retry budget must surface");
+    assert!(
+        err.to_string().contains("503"),
+        "original error survives, got {err}"
+    );
+}
+
+#[tokio::test]
+async fn non_retryable_failure_never_retries_whole_turn() {
+    // Auth is terminal: exactly one request, error surfaced.
+    let provider = FakeProvider::new(vec![end_script()])
+        .with_failures(vec![ProviderError::Auth("401".into())]);
+    let seen = provider.seen_requests();
+    let mut agent = Agent::new(
+        Box::new(provider),
+        Arc::new(FakeExecutor::new(ToolOutput::ok("unused"))),
+    );
+
+    let err = agent
+        .run(Message::user("go"), ToolContext::default())
+        .await
+        .expect_err("auth failure must surface");
+    assert!(err.to_string().contains("auth"), "got {err}");
+    assert_eq!(seen.lock().expect("seen lock").len(), 1, "no replay");
+}
+
+#[tokio::test]
+async fn mid_stream_failure_after_visible_delta_does_not_replay() {
+    // Once a delta reached the user, a whole-turn replay would duplicate it.
+    let provider = FakeProvider::new(vec![end_script()]).with_partial_failures(vec![(
+        vec![StreamEvent::text_delta("visible half")],
+        ProviderError::ServerError("503".into()),
+    )]);
+    let seen = provider.seen_requests();
+    let mut agent = Agent::new(
+        Box::new(provider),
+        Arc::new(FakeExecutor::new(ToolOutput::ok("unused"))),
+    );
+
+    agent
+        .run(Message::user("go"), ToolContext::default())
+        .await
+        .expect_err("post-delta failure must surface");
+    assert_eq!(
+        seen.lock().expect("seen lock").len(),
+        1,
+        "no replay after a visible delta"
+    );
+}
+
+#[tokio::test]
 async fn stream_error_notices_forward_live_without_ending_turn() {
     // Codex steal: provider `Reconnecting...` notices ride as Ok events
     // so the turn continues; agent must forward them verbatim.

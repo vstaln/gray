@@ -28,6 +28,16 @@
 
 ### Fixed
 
+- A 503 burst outlasting the provider's own 5-attempt budget no longer kills
+  the turn the user is waiting on: the agent loop retries the whole request
+  (up to 2 more times, short ramp, nothing streamed yet — a visible delta
+  still ends the turn instead of replaying text you already read).
+- `401` responses whose body says the model isn't supported (OpenRouter's
+  `ModelError` shape) classify as a bad request, not an auth failure — no
+  more "check API key" advice for a model problem.
+- Empty tool-call padding deltas (gateways that append `{index}`-only
+  entries to the final chunk) no longer materialize ghost fragments, so the
+  `dropping tool call index N with empty name` warning spam is gone.
 - `gray view` inside a compound shell command no longer reads as success with
   nothing attached: the bash tool appends a note that the image was NOT
   attached and how to re-run it bare, and the CLI fallback line says the

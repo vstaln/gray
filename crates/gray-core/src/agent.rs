@@ -41,6 +41,21 @@ impl ProviderError {
     pub fn should_compress(&self) -> bool {
         matches!(self, Self::ContextOverflow(_))
     }
+
+    /// True when re-running the same request can plausibly succeed: the
+    /// provider or network failed, not the request. Mirrors
+    /// [`CoreError::retryable`](crate::error::CoreError::retryable) so the
+    /// agent loop can decide on the raw provider class before conversion.
+    pub fn retryable(&self) -> bool {
+        matches!(
+            self,
+            Self::RateLimited(_)
+                | Self::ServerError(_)
+                | Self::Stream(_)
+                | Self::Connection(_)
+                | Self::Timeout(_)
+        )
+    }
 }
 
 /// Output of a tool execution. Errors are data for the model, not crashes.
