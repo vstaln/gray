@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.1.6] - 2026-09-27
+
 ### Added
 
 - `/update` and `/restart` in the REPL, the two halves of landing a
