@@ -5,9 +5,9 @@ use super::*;
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Default, Clone)]
-struct SkillFrontmatter {
+pub(crate) struct SkillFrontmatter {
     name: Option<String>,
-    description: Option<String>,
+    pub(crate) description: Option<String>,
     disable_model_invocation: bool,
     args: Vec<String>,
 }
@@ -31,7 +31,7 @@ pub(crate) fn parse_declared_args(val: &str) -> Vec<String> {
         .collect()
 }
 
-fn parse_frontmatter(content: &str) -> Result<(SkillFrontmatter, String), String> {
+pub(crate) fn parse_frontmatter(content: &str) -> Result<(SkillFrontmatter, String), String> {
     let trimmed = content.trim_start();
     if !trimmed.starts_with("---") {
         // no frontmatter → empty, body is whole file

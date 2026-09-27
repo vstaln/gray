@@ -716,6 +716,46 @@ fn glob_base_is_safe(base: &str) -> bool {
     p.components().all(|c| matches!(c, Component::Normal(_)))
 }
 
+/// Command-prompt files foreign plugins ship: Claude `commands/*.md` and
+/// OpenCode `.opencode/command/*.md` (both: frontmatter description + body
+/// prompt). Normalized into `<dest>/commands/<stem>.md` regardless of which
+/// layout declared the stem (`commands/` first, so the Claude layout wins a
+/// stem both declare). `.md` only, like skills — package code is never
+/// executed; the foreign adapter serves them as slash commands.
+fn collect_command_matches(root: &Path) -> Vec<SkillMatch> {
+    let mut out = Vec::new();
+    let mut seen = HashSet::new();
+    for dir in ["commands", ".opencode/command"] {
+        let Ok(rd) = std::fs::read_dir(root.join(dir)) else {
+            continue;
+        };
+        let mut files: Vec<String> = rd
+            .flatten()
+            .filter(|e| e.file_type().map(|t| t.is_file()).unwrap_or(false))
+            .filter_map(|e| e.file_name().into_string().ok())
+            .filter(|n| Path::new(n).extension().is_some_and(|e| e == "md"))
+            .collect();
+        files.sort();
+        for file in files {
+            let stem = file.strip_suffix(".md").unwrap_or(&file);
+            if stem.is_empty() {
+                continue;
+            }
+            let Some(rel) = safe_rel(&["commands", &format!("{stem}.md")]) else {
+                continue;
+            };
+            if seen.insert(rel.clone()) {
+                out.push(SkillMatch {
+                    src: root.join(dir).join(&file),
+                    rel,
+                    label: stem.to_string(),
+                });
+            }
+        }
+    }
+    out
+}
+
 /// Sorted child directories of `dir` that contain a `SKILL.md`.
 fn skill_dirs(dir: &Path) -> Vec<PathBuf> {
     let Ok(rd) = std::fs::read_dir(dir) else {
@@ -925,19 +965,25 @@ pub(crate) fn extract_pi_skills(
     validate_install_key(key)?;
     let (skill_globs, manifest_ext, manifest_themes) = pi_manifest_lists(root);
     let matches = collect_skill_matches(root, &skill_globs);
-    if matches.is_empty() {
+    let cmd_matches = collect_command_matches(root);
+    if matches.is_empty() && cmd_matches.is_empty() {
         anyhow::bail!(
-            "package {key}@{version} ships no skills (nothing to install; extensions/themes need P3)"
+            "package {key}@{version} ships no skills or commands (nothing to install; extensions/themes need P3)"
         );
     }
     let dest = crate::plugins_dir().join("pi").join(key);
     if dest.exists() {
         std::fs::remove_dir_all(&dest)?;
     }
-    if let Err(e) = copy_skill_matches(&dest, &matches) {
-        let _ = std::fs::remove_dir_all(&dest);
-        return Err(e);
-    }
+    let copy = |ms: &[SkillMatch]| -> anyhow::Result<()> {
+        if let Err(e) = copy_skill_matches(&dest, ms) {
+            let _ = std::fs::remove_dir_all(&dest);
+            return Err(e);
+        }
+        Ok(())
+    };
+    copy(&matches)?;
+    copy(&cmd_matches)?;
     let (ext_n, theme_n) = count_skipped(root);
     // Single-component rels are dest-top-level `.md` (undiscoverable by
     // the loader, which recurses with `include_root_files=false`) → docs.
@@ -968,6 +1014,12 @@ pub(crate) fn extract_pi_skills(
     eprintln!("skills taken: {}", taken.join(", "));
     if !docs.is_empty() {
         eprintln!("docs copied for reference: {}", docs.join(", "));
+    }
+    let mut commands_taken: Vec<String> = cmd_matches.iter().map(|m| m.label.clone()).collect();
+    commands_taken.sort();
+    commands_taken.dedup();
+    if !commands_taken.is_empty() {
+        eprintln!("commands taken: {}", commands_taken.join(", "));
     }
     let scope = opts.scope.clone().unwrap_or_else(|| "user".to_string());
     if let Err(e) = record_install(

@@ -20,6 +20,15 @@
   the new build, because stopping without the relaunch would take a working
   gateway down and call it a restart.
 
+- Foreign plugin packages work with zero per-plugin code: `gray plugin
+  install <git-url>` now also takes a package's `commands/*.md` and
+  `.opencode/command/*.md` prompt files, any installed package's `AGENTS.md`
+  is served into every turn, and its command files become slash commands
+  that run as prompts (ponytail's ruleset + six commands included). An
+  optional package `gray.json` declares a state file so `/x mode`-style
+  switches persist. Package code is still never executed: hooks, MCP
+  servers, and lifecycle scripts stay out of scope.
+
 ### Changed
 
 - The startup banner is the gray ASCII logo again. The graychan art is

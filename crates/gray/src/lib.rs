@@ -12,6 +12,7 @@ pub mod cron_fire;
 pub mod cron_serve;
 pub mod cron_status;
 pub mod feedback;
+pub mod foreign;
 pub mod gateway;
 pub mod host;
 pub mod logging;
@@ -256,6 +257,13 @@ pub async fn build_agent(
     for w in gray_plugin::builder::take_builder_warnings() {
         profile::queue_profile_warning(w);
     }
+    // Foreign packages (pi-installed plugin dirs with AGENTS.md / commands /
+    // gray.json) ride as in-process hooks beside the builder's own: same
+    // per-turn inject and slash commands, no sidecar, no per-plugin code.
+    let mut agent = agent;
+    let mut hooks = agent.hooks().to_vec();
+    hooks.extend(crate::foreign::foreign_hooks());
+    agent = agent.with_hooks(hooks);
     // Bash bounds an explicitly requested timeout at 3600 s (and has no
     // default), so the agent-level timeout must sit above that (P2B
     // requirement): it is a last-resort stop, never a budget.
