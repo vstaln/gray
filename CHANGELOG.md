@@ -20,6 +20,12 @@
   the new build, because stopping without the relaunch would take a working
   gateway down and call it a restart.
 
+### Changed
+
+- The startup banner is the gray ASCII logo again. The graychan art is
+  `/hehe` only, and `/hehe` is a toggle: press it again to drop the art and
+  get the logo back.
+
 ## [0.1.5] - 2026-09-26
 
 ### Changed
@@ -52,6 +58,7 @@
 - A search cancelled before it starts now answers `cancelled by user`
   instead of racing the spawned `fd`/`rg` child's first line, which could
   return a finished result for a call the caller had already given up on.
+
 
 ## [0.1.4] - 2026-09-26
 
