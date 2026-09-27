@@ -26,6 +26,11 @@
   `/hehe` only, and `/hehe` is a toggle: press it again to drop the art and
   get the logo back.
 
+- The `/model` picker no longer waits on the network every open: the last
+  fetched provider list is cached on disk and paints instantly, the live
+  fetch refreshes it in the background, and a `─ recent ─` divider separates
+  your recent models from the full list.
+
 ### Fixed
 
 - `gray view` inside a compound shell command no longer reads as success with
