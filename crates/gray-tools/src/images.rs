@@ -103,25 +103,6 @@ pub fn video_media_type(path: &Path) -> &'static str {
 /// 5MB (halve and retry up to 3 times, then fail loudly like SizeError).
 /// Returns `(media_type, bytes)`.
 pub fn normalize_image_bytes(bytes: &[u8]) -> Result<(String, Vec<u8>), MediaError> {
-    normalize_inner(bytes, Some(MAX_IMAGE_SIDE), true)
-}
-
-/// Full-resolution variant: decode, apply EXIF orientation, re-encode at
-/// native size — no downscale and no halving retry. Same format mapping as
-/// [`normalize_image_bytes`] (jpeg stays jpeg, everything else becomes
-/// png) so every provider accepts the part. The base64 size cap stays a
-/// hard error rather than a silent shrink: the caller asked for the real
-/// pixels, and a shrunk image is a wrong answer to "what does this look
-/// like".
-pub fn encode_image_full(bytes: &[u8]) -> Result<(String, Vec<u8>), MediaError> {
-    normalize_inner(bytes, None, false)
-}
-
-fn normalize_inner(
-    bytes: &[u8],
-    max_side: Option<u32>,
-    halve_on_oversize: bool,
-) -> Result<(String, Vec<u8>), MediaError> {
     use image::{ImageDecoder, ImageFormat};
     let format = image::guess_format(bytes).map_err(|e| MediaError::Decode(e.to_string()))?;
     let out_format = match format {
@@ -143,11 +124,10 @@ fn normalize_inner(
     let mut img = image::DynamicImage::from_decoder(decoder)
         .map_err(|e| MediaError::Decode(e.to_string()))?;
     img.apply_orientation(orientation);
+    let side = MAX_IMAGE_SIDE;
     let mut last_size = 0;
     for attempt in 0..4 {
-        if let Some(side) = max_side
-            && img.width().max(img.height()) > side
-        {
+        if img.width().max(img.height()) > side {
             img = img.resize(side, side, image::imageops::FilterType::Triangle);
         }
         let mut buf = Vec::new();
@@ -162,7 +142,7 @@ fn normalize_inner(
             };
             return Ok((mime.to_string(), buf));
         }
-        if !halve_on_oversize || attempt == 3 {
+        if attempt == 3 {
             break;
         }
         // Still too big: halve and retry (animated GIFs arrive as frame 0).

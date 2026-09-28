@@ -12,9 +12,6 @@ pub fn run_context_modal(
     bg: Option<&BackgroundSnapshot>,
 ) -> anyhow::Result<Option<String>> {
     use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, poll, read};
-    use crossterm::terminal::EnterAlternateScreen;
-    use ratatui::Terminal;
-    use ratatui::backend::CrosstermBackend;
     use ratatui::layout::Rect;
     use ratatui::style::{Color, Modifier, Style};
     use ratatui::text::{Line, Span};
@@ -73,16 +70,7 @@ pub fn run_context_modal(
         }
     }
 
-    let _session = TuiSession::acquire()?;
-    let mut stdout_handle = std::io::stdout();
-    crossterm::execute!(
-        stdout_handle,
-        EnterAlternateScreen,
-        crossterm::terminal::Clear(crossterm::terminal::ClearType::All),
-        crossterm::cursor::Hide
-    )?;
-    let backend = CrosstermBackend::new(stdout_handle);
-    let mut terminal = Terminal::new(backend)?;
+    let (_session, mut terminal) = super::open_modal()?;
 
     let box_bg = crate::theme::theme().surface_bg;
     let accent_peach = crate::theme::theme().accent_soft; // soft pastel peach

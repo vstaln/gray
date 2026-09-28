@@ -21,6 +21,26 @@ const MAX_EMPTY_RETRIES: u8 = 2;
 /// Truncated-turn (`MaxTokens`) continuations before keeping the partial.
 const MAX_CONTINUATIONS: u8 = 2;
 
+/// Whole-turn retries after the provider's own in-request budget (5 attempts
+/// with backoff) is exhausted on a retryable failure — the log shows bursts of
+/// 503s outlasting exactly that budget, ending a turn the user is waiting on.
+/// Each whole-turn retry sleeps a short ramp (the provider already backed off
+/// ~1+2+4+8+9s across its attempts) and never fires after a visible delta:
+/// once the user has read text, a replay would duplicate it — the provider's
+/// partial-answer path owns that case.
+const MAX_TURN_RETRIES: u8 = 2;
+
+/// Base sleep before turn-retry 1 (attempt 2 doubles it). Zero in tests so
+/// scripted-failure suites stay instant.
+#[cfg(not(test))]
+fn turn_retry_delay() -> std::time::Duration {
+    std::time::Duration::from_secs(3)
+}
+#[cfg(test)]
+fn turn_retry_delay() -> std::time::Duration {
+    std::time::Duration::ZERO
+}
+
 /// Replaces a contaminated salvaged partial in outbound requests (never in
 /// the persisted transcript — the transcript keeps the full text the user
 /// saw). Tells the model the failure happened without handing it the broken
@@ -210,6 +230,10 @@ impl Agent {
         let mut billed = Usage::default();
         let mut empty_retries: u8 = 0;
         let mut continuations: u8 = 0;
+        // Whole-turn retries of a request the provider never answered (see
+        // MAX_TURN_RETRIES). Reset per run; shared by every round in the run
+        // so a pathological provider cannot loop forever across rounds.
+        let mut turn_retries: u8 = 0;
         // Post-tool empty nudge fires once per run; silent-retry budget unchanged.
         let mut empty_nudge_sent = false;
 
@@ -461,6 +485,38 @@ impl Agent {
                             emit!(AgentEvent::stream_error(message.clone(), details.clone()));
                         }
                         Some(Err(e)) => {
+                            // Whole-turn retry: the provider exhausted its own
+                            // 5-attempt budget on a retryable failure (bursts of
+                            // 503s do this in the wild) and nothing was streamed
+                            // yet, so replaying the request is invisible to the
+                            // user. A visible delta forbids the replay (the loop
+                            // has committed it to history; the provider's
+                            // partial-answer path owns that case) and so does a
+                            // cancelled token.
+                            if e.retryable()
+                                && text_parts.is_empty()
+                                && !ctx.cancel.is_cancelled()
+                                && turn_retries < MAX_TURN_RETRIES
+                            {
+                                turn_retries += 1;
+                                let delay = if turn_retries > 1 {
+                                    turn_retry_delay() * 2
+                                } else {
+                                    turn_retry_delay()
+                                };
+                                log::warn!(
+                                    target: "gray_agent",
+                                    "turn failed retryably with nothing streamed; whole-turn retry {turn_retries}/{MAX_TURN_RETRIES} in {delay:?}: {e}"
+                                );
+                                if !delay.is_zero() {
+                                    tokio::time::sleep(delay).await;
+                                }
+                                if ctx.cancel.is_cancelled() {
+                                    self.emit_turn_end(&billed).await;
+                                    return Err(CoreError::Cancelled);
+                                }
+                                continue 'turn;
+                            }
                             // Mid-stream failure after deltas already reached the
                             // user's screen: salvage the partial assistant text
                             // into history so the transcript matches what was seen.

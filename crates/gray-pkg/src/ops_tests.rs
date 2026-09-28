@@ -833,6 +833,67 @@ async fn install_git_clones_and_extracts_skills() {
 }
 
 #[tokio::test]
+async fn install_git_takes_command_prompts() {
+    let _guard = env_guard();
+    let (repo, url) = init_git_fixture(&[
+        ("skills/mulch/SKILL.md", MULCH_SKILL),
+        (
+            "commands/review.md",
+            "---\ndescription: Review the diff\n---\n\nReview $ARGUMENTS\n",
+        ),
+        (
+            ".opencode/command/plan.md",
+            "---\ndescription: Plan it\n---\n\nPlan $ARGUMENTS\n",
+        ),
+        (
+            ".opencode/command/review.md",
+            "---\ndescription: Other review\n---\n\nOther\n",
+        ),
+        ("hooks/run.js", "console.log(1);\n"),
+    ]);
+    let key = git_fixture_key(&repo);
+    let _home = use_git_env();
+
+    let report = install(parse_spec(&format!("git:{url}")), InstallOpts::default())
+        .await
+        .unwrap();
+    assert_eq!(report.name, key);
+    assert_eq!(
+        std::fs::read(report.path.join("commands/review.md")).unwrap(),
+        b"---\ndescription: Review the diff\n---\n\nReview $ARGUMENTS\n",
+        "`commands/` wins a stem both layouts declare"
+    );
+    assert!(report.path.join("commands/plan.md").is_file());
+    assert!(report.path.join("mulch/SKILL.md").is_file());
+    assert!(
+        !report.path.join("hooks").exists(),
+        "code is never installed"
+    );
+    assert!(
+        !report.path.join(".opencode").exists(),
+        "only the normalized commands/ copy lands"
+    );
+}
+
+#[tokio::test]
+async fn install_git_commands_only_still_installs() {
+    let _guard = env_guard();
+    let (repo, url) = init_git_fixture(&[(
+        "commands/review.md",
+        "---\ndescription: Review the diff\n---\n\nReview\n",
+    )]);
+    let key = git_fixture_key(&repo);
+    let _home = use_git_env();
+
+    let report = install(parse_spec(&format!("git:{url}")), InstallOpts::default())
+        .await
+        .unwrap();
+    assert_eq!(report.name, key);
+    assert!(report.path.join("commands/review.md").is_file());
+    assert!(list().unwrap().remove(&key).is_some());
+}
+
+#[tokio::test]
 async fn install_git_pinned_ref_records_version() {
     let _guard = env_guard();
     let (repo, url) = init_git_fixture(&[("skills/a/SKILL.md", MULCH_SKILL)]);

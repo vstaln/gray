@@ -5,7 +5,7 @@
 
 use std::sync::OnceLock;
 
-use anstyle::{Ansi256Color, AnsiColor, Color, Effects, RgbColor};
+use anstyle::{Color, Effects};
 
 /// The level of color support detected for the terminal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
@@ -132,12 +132,17 @@ pub fn adapt_color(color: Color) -> Option<Color> {
         ColorLevel::None => None,
         ColorLevel::TrueColor => Some(color),
         ColorLevel::Ansi256 => Some(match color {
-            Color::Rgb(rgb) => Color::Ansi256(rgb_to_ansi256(rgb)),
+            Color::Rgb(rgb) => Color::Ansi256(anstyle_lossy::rgb_to_xterm(rgb)),
             other => other,
         }),
         ColorLevel::Basic => Some(match color {
-            Color::Rgb(rgb) => Color::Ansi(rgb_to_ansi16(rgb)),
-            Color::Ansi256(idx) => Color::Ansi(ansi256_to_ansi16(idx)),
+            Color::Rgb(rgb) => {
+                Color::Ansi(anstyle_lossy::rgb_to_ansi(rgb, anstyle_lossy::palette::VGA))
+            }
+            Color::Ansi256(idx) => Color::Ansi(anstyle_lossy::xterm_to_ansi(
+                idx,
+                anstyle_lossy::palette::VGA,
+            )),
             Color::Ansi(ansi) => Color::Ansi(ansi),
         }),
     }
@@ -157,21 +162,6 @@ pub fn adapt_style(style: anstyle::Style) -> anstyle::Style {
         new_style = new_style.bg_color(Some(bg));
     }
     new_style | effects
-}
-
-/// Convert an RGB color to the closest ANSI 256-color palette entry.
-pub fn rgb_to_ansi256(rgb: RgbColor) -> Ansi256Color {
-    anstyle_lossy::rgb_to_xterm(rgb)
-}
-
-/// Convert an RGB color to the closest basic ANSI 16-color.
-pub fn rgb_to_ansi16(rgb: RgbColor) -> AnsiColor {
-    anstyle_lossy::rgb_to_ansi(rgb, anstyle_lossy::palette::VGA)
-}
-
-/// Convert an ANSI 256-color to the closest basic ANSI 16-color.
-pub fn ansi256_to_ansi16(idx: Ansi256Color) -> AnsiColor {
-    anstyle_lossy::xterm_to_ansi(idx, anstyle_lossy::palette::VGA)
 }
 
 /// Convert an anstyle style to a ratatui style.

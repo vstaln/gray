@@ -26,13 +26,6 @@ fn parse_all_kinds() {
 }
 
 #[test]
-fn catchup_window_math() {
-    assert_eq!(catchup_grace_secs(3600), 1800); // half period
-    assert_eq!(catchup_grace_secs(60), 120); // clamped floor
-    assert_eq!(catchup_grace_secs(86400 * 30), 7200); // clamped ceiling
-}
-
-#[test]
 fn interval_below_resolution_has_no_next_run() {
     assert_eq!(next_run(0, &Schedule::Interval { secs: 0 }), None);
     assert_eq!(next_run(1, &Schedule::Interval { secs: 59 }), None);

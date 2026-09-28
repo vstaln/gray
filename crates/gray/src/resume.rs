@@ -339,9 +339,6 @@ fn run_picker_sync(
     bg: Option<&crate::setup::BackgroundSnapshot>,
 ) -> anyhow::Result<Option<SessionId>> {
     use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, poll, read};
-    use crossterm::terminal::EnterAlternateScreen;
-    use ratatui::Terminal;
-    use ratatui::backend::CrosstermBackend;
     use ratatui::layout::Rect;
     use ratatui::style::{Color, Modifier, Style};
     use ratatui::text::{Line, Span};
@@ -353,17 +350,7 @@ fn run_picker_sync(
         .cloned()
         .unwrap_or_else(crate::setup::BackgroundSnapshot::default_initial);
 
-    let _session = crate::setup::TuiSession::acquire()?;
-    let mut stdout_handle = std::io::stdout();
-    crossterm::execute!(
-        stdout_handle,
-        EnterAlternateScreen,
-        crossterm::terminal::Clear(crossterm::terminal::ClearType::All),
-        crossterm::cursor::Hide
-    )?;
-    let _ = crossterm::terminal::size();
-    let backend = CrosstermBackend::new(stdout_handle);
-    let mut terminal = Terminal::new(backend)?;
+    let (_session, mut terminal) = crate::setup::open_modal()?;
 
     let box_bg = crate::theme::theme().surface_bg;
     let accent_peach = crate::theme::theme().accent;

@@ -29,6 +29,32 @@ Index entries are `gray-native`/`tarball` with `sha256:<hex>`:
  "hash": "sha256:<hex>", "scope": ""}
 ```
 
+## Foreign packages (any plugin, no per-plugin code)
+
+A `git:` install takes three things from any package, all markdown-only —
+package code (hooks, MCP servers, lifecycle scripts) is never executed:
+
+- `skills/*/SKILL.md` → the skill loader (unchanged).
+- `commands/*.md` and `.opencode/command/*.md` → slash commands. The file
+  body runs as a prompt (`command/run` → `Prompt`) with `$ARGUMENTS`
+  substituted; the frontmatter `description:` names it in `/help`.
+  `commands/` wins a stem both layouts declare.
+- `<pkg>/AGENTS.md` → appended to every turn's system prompt
+  (`prompt/context`), rationale-stripped and capped like project rules.
+
+An optional `<pkg>/gray.json` adds a generic mode switch without any
+plugin-specific code in gray:
+
+```json
+{"state_file": ".mode", "state_prefix": "Level: ",
+ "state_commands": ["ponytail"]}
+```
+
+A listed command writes its argv to the state file (empty argv clears it)
+and confirms briefly; the file's content is appended to the inject block.
+Corrupt manifests, traversal-y state paths, and missing files all read as
+"package stays static" — never an error, never a half-state.
+
 Local verification points `GRAY_PLUGIN_INDEX` at a loopback index serving
 the same shape.
 

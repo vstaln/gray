@@ -21,11 +21,6 @@ pub enum Schedule {
     Once { at: i64 },
 }
 
-/// Half the period clamped to [120s, 7200s] (hermes numbers).
-pub fn catchup_grace_secs(period_secs: u64) -> i64 {
-    (period_secs / 2).clamp(120, 7200) as i64
-}
-
 fn parse_duration_secs(raw: &str) -> anyhow::Result<u64> {
     let s = raw.trim();
     let (num_str, mult) = if let Some(n) = s.strip_suffix('m') {

@@ -612,28 +612,6 @@ pub fn parse_marketplace_json(raw: &str) -> anyhow::Result<MarketplaceCatalog> {
     Ok(MarketplaceCatalog { name, plugins })
 }
 
-/// Compact source qualifier for `version_detail` (preview+confirm pane).
-pub fn claude_qualifier(source: &PluginSource) -> String {
-    match source {
-        PluginSource::Path(s) => s.clone(),
-        PluginSource::Github { repo, ref_, .. } if !ref_.is_empty() => {
-            format!("github:{repo}@{ref_}")
-        }
-        PluginSource::Github { repo, .. } => format!("github:{repo}"),
-        PluginSource::Url { url, ref_, .. } if !ref_.is_empty() => format!("{url}@{ref_}"),
-        PluginSource::Url { url, .. } => url.clone(),
-        PluginSource::GitSubdir { url, path, .. } => format!("{url}#{path}"),
-        PluginSource::Npm {
-            package, version, ..
-        } if !version.is_empty() => {
-            format!("npm:{package}@{version}")
-        }
-        PluginSource::Npm { package, .. } => format!("npm:{package}"),
-        PluginSource::Archive { url, .. } => url.clone(),
-        PluginSource::Command { .. } => "command source (not installable)".to_string(),
-    }
-}
-
 /// Split an `owner/repo` spec (exactly two non-empty parts).
 pub fn marketplace_repo_parts(spec: &str) -> anyhow::Result<(String, String)> {
     match spec.trim().split_once('/') {

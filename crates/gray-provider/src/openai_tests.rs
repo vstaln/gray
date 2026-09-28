@@ -57,6 +57,23 @@ fn unsupported_model_500_maps_to_bad_request_and_preserves_cf_ray() {
 }
 
 #[test]
+fn unsupported_model_401_body_outranks_auth_status() {
+    // OpenRouter reported an unknown model as 401 + ModelError. An Auth
+    // verdict sends the user to re-auth for a model problem; the body wins.
+    let err = classify_http_error(
+        reqwest::StatusCode::UNAUTHORIZED,
+        r#"{"type":"error","error":{"type":"ModelError","message":"Model deepseek/deepseek-chat is not supported"}}"#,
+        None,
+        None,
+    );
+    assert!(
+        matches!(err, ProviderError::BadRequest(_)),
+        "must classify as bad request, got {err:?}"
+    );
+    assert!(!is_retryable_error(&err));
+}
+
+#[test]
 fn rate_limited_429_is_retryable() {
     let err = classify_http_error(
         reqwest::StatusCode::TOO_MANY_REQUESTS,
@@ -1539,6 +1556,44 @@ async fn responses_incomplete_and_top_level_error_are_not_success() {
             );
         }
     }
+}
+
+#[tokio::test]
+async fn empty_tool_call_padding_deltas_are_dropped() {
+    // Some gateways pad the final chunk with tool_call entries carrying no
+    // id, name, or args. They must not materialize ghost fragments (the
+    // agent loop used to WARN `dropping tool call index N with empty name`
+    // every turn) and must not disturb the real call on index 0.
+    use futures::StreamExt;
+    let server = wiremock::MockServer::start().await;
+    let real = serde_json::json!({"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"bash","arguments":"{\"command\":\"ls\"}"}}]}}]});
+    let ghost = serde_json::json!({"choices":[{"delta":{"tool_calls":[{"index":1},{"index":2,"function":{"name":"","arguments":""}}]}}]});
+    let finish = serde_json::json!({"choices":[{"delta":{},"finish_reason":"tool_calls"}]});
+    wiremock::Mock::given(wiremock::matchers::any())
+        .respond_with(
+            wiremock::ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_string(format!(
+                    "data: {real}\n\ndata: {ghost}\n\ndata: {finish}\n\ndata: [DONE]\n\n"
+                )),
+        )
+        .mount(&server)
+        .await;
+    let provider = OpenAiProvider::new("key", "test", server.uri(), None, None).unwrap();
+    let events: Vec<_> = provider.stream(empty_chat_req()).collect().await;
+    assert!(!events.iter().any(Result::is_err), "{events:?}");
+    let tool_deltas: Vec<_> = events
+        .iter()
+        .filter_map(|e| match e {
+            Ok(StreamEvent::ToolCallDelta { index, name, .. }) => Some((*index, name.clone())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        tool_deltas,
+        vec![(0, Some("bash".to_string()))],
+        "exactly the real call survives: {tool_deltas:?}"
+    );
 }
 
 #[tokio::test]

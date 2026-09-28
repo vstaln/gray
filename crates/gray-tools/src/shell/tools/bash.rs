@@ -89,7 +89,7 @@ impl Tool for BashTool {
              running after that window. Multiple jobs can run concurrently; continue other work \
              instead of polling. Completion notices arrive between model rounds (or on the next \
              user turn when idle). Use action:list/status/output/cancel with job_id to manage jobs; \
-             output/status accept wait_ms (bounded blocking wait, clamped 0-30000ms) so one call \
+             output/status accept wait_ms (bounded blocking wait, clamped 0-600000ms) so one call \
              can await a job instead of polling. Jobs belong to this session and stop when Gray exits. \
              timeout is an optional total runtime limit (no default: commands run until they exit; \
              capped at 3600s), NOT the yield window. \
@@ -115,7 +115,7 @@ impl Tool for BashTool {
                     "background": {"type": "boolean", "description": "Return immediately; run independently in this session"},
                     "timeout": {"type": "integer", "description": "Optional total runtime limit in seconds (omitted = no limit; clamped 1-3600)"},
                     "yield_ms": {"type": "integer", "description": "Wait at most this many milliseconds before returning a running job (clamped 100-10000); omitted means wait for exit"},
-                    "wait_ms": {"type": "integer", "description": "Bounded blocking wait on action:output/status only: await the job's exit up to this many ms (clamped 0-30000) instead of polling; omitted means return immediately"}
+                    "wait_ms": {"type": "integer", "description": "Bounded blocking wait on action:output/status only: await the job's exit up to this many ms (clamped 0-600000) instead of polling; omitted means return immediately"}
                 }
             }),
         )
