@@ -55,6 +55,16 @@
   instead, and a shrink repaints the rows it vacated with the composer's
   own background. A transcript shorter than the screen still hugs the
   conversation, as before.
+- The REPL footer's right segment stops walking across the bar mid-stream.
+  Whether the reasoning-effort badge paints depends on a reasoning flag that
+  background discovery keeps writing after startup (the provider's `/models`
+  at `repl/mod.rs`, then models.dev), so on models whose two answers disagree
+  — StepFun's own gateway reports `step-5-preview` as non-reasoning while
+  models.dev marks it reasoning — the badge appeared and vanished a frame or
+  two into a turn, shifting `Step 5 Preview · xhigh` eight columns. The
+  visibility is now snapshotted once at the beginning of each turn, so the
+  footer holds its shape while anything streams; the provider's converged
+  answer still lands between turns.
 - A 503 burst outlasting the provider's own 5-attempt budget no longer kills
   the turn the user is waiting on: the agent loop retries the whole request
   (up to 2 more times, short ramp, nothing streamed yet — a visible delta

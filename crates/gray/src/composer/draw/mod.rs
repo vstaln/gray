@@ -41,6 +41,21 @@ pub(crate) fn viewport_cap(rows: u16) -> u16 {
     rows.saturating_sub(2).max(MIN_VIEWPORT_H)
 }
 
+/// Whether the footer paints the reasoning-effort badge.
+///
+/// Provider-driven (opencode parity): no badge when the provider says this
+/// model doesn't reason; unknown → show, as before. `snapshot` is the turn's
+/// frozen answer (see `Tui::turn_show_effort`): while a turn streams, the
+/// flag underneath is an async cache shared with background discovery
+/// (`repl/mod.rs` spawns the provider `/models` and models.dev fetches), so
+/// resolving it per frame lets the badge appear or vanish at any moment.
+/// The badge is part of the right-anchored footer segment — a width change
+/// walks the whole right segment across the bar mid-stream.
+pub(crate) fn footer_badge_visible(model: &str, snapshot: Option<bool>) -> bool {
+    snapshot
+        .unwrap_or_else(|| crate::setup::context::model_supports_reasoning(model) != Some(false))
+}
+
 pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
     if tui.modal_open {
         return Ok(());
@@ -503,10 +518,9 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
         let cache_display = format!("{hit_rate:.1}% cache");
 
         let model_display = crate::setup::friendly_model_name(&tui.model_name);
-        // Provider-driven (opencode parity): no effort badge when the provider
-        // says this model doesn't reason. Unknown → show, as before.
-        let show_effort =
-            crate::setup::context::model_supports_reasoning(&tui.model_name) != Some(false);
+        // Unknown/`None` (between turns) resolves the flag live, so the
+        // provider's own answer still lands once discovery finishes.
+        let show_effort = footer_badge_visible(&tui.model_name, tui.turn_show_effort);
         // `off` already implies hidden — don't render "off · hidden".
         // Non-reasoning models (show_effort false) render no badge; the
         // separator is omitted with it so the footer never trails " · ".

@@ -19,6 +19,7 @@ use ratatui::widgets::{Block, Paragraph, Widget};
 use gray_markdown::HyperlinkTarget;
 
 use crate::text_width::display_width;
+use draw::footer_badge_visible;
 
 pub(crate) const PANEL_ROWS: usize = 6;
 /// Smallest the viewport shrinks to while idle: box top pad + `❯` row +
@@ -314,6 +315,15 @@ pub struct Tui {
     model_name: String,
     cwd: String,
     thinking_effort: String,
+    /// Effort-badge visibility snapshotted for the turn in flight.
+    /// `Some` freezes the footer right segment's shape until `end_turn`:
+    /// the reasoning flag it hides behind is filled asynchronously by
+    /// discovery (provider `/models` and models.dev, `repl/mod.rs`), and a
+    /// mid-turn flip would resize the right-anchored segment and walk the
+    /// model name across the bar while the answer streams.
+    /// `None` between turns resolves the flag live, so the converged
+    /// provider answer still lands.
+    turn_show_effort: Option<bool>,
     pub(crate) history_entries: Vec<TranscriptEntry>,
     pub transcript: Vec<Line<'static>>,
     pub(crate) last_width: u16,
@@ -539,6 +549,7 @@ impl Tui {
             model_name: String::new(),
             cwd,
             thinking_effort: String::new(),
+            turn_show_effort: None,
             history_entries: vec![TranscriptEntry::Welcome],
             transcript: welcome_lines,
             last_width: cols,
@@ -1015,6 +1026,10 @@ impl Tui {
 
     pub fn begin_turn(&mut self, label: &str) {
         let now = Instant::now();
+        // Freeze the footer's effort badge for this turn: its flag is a
+        // process-global cache that background discovery keeps writing,
+        // and a flip mid-turn would resize the right-anchored footer text.
+        self.turn_show_effort = Some(footer_badge_visible(&self.model_name, None));
         self.cache.pause(now);
         self.stream_round_boundary = false;
         self.stream_round_had_text = false;
@@ -1207,6 +1222,7 @@ impl Tui {
         self.stream_round_target = None;
         self.is_task_running = false;
         self.status = None;
+        self.turn_show_effort = None;
         // Billed output only (exact, reasoning included). `None` prints the
         // bare elapsed — a chars/4 fallback here would reintroduce the very
         // inflation the pill just dropped (2.5M on a 14s turn).
