@@ -42,7 +42,7 @@ impl Source {
     pub fn label(self) -> &'static str {
         match self {
             Source::GrayIndex => "Gray Index",
-            Source::PiGallery => "Pi Gallery (preview)",
+            Source::PiGallery => "Pi Index",
             Source::ClawHub => "ClawHub",
             Source::ClaudeRepo => "Claude",
         }
