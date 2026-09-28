@@ -9,6 +9,8 @@
 use std::collections::VecDeque;
 use std::io;
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt, BufWriter};
 use tokio::process::{ChildStderr, ChildStdout};
@@ -81,6 +83,16 @@ impl MemView {
 
 // async pump
 
+/// Wall-clock now in unix milliseconds. The pump stamps this on every chunk so
+/// the blocking shell lane can sense a silent command without polling the pipes
+/// itself (see `shell/tools/bash.rs`).
+pub(crate) fn now_grindmill() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
 pub struct Pump;
 
 impl Pump {
@@ -90,8 +102,9 @@ impl Pump {
         stdout: Option<ChildStdout>,
         stderr: Option<ChildStderr>,
         log_path: PathBuf,
+        last_output: Arc<AtomicU64>,
     ) -> JoinHandle<PumpSummary> {
-        tokio::spawn(pump_main(stdout, stderr, log_path))
+        tokio::spawn(pump_main(stdout, stderr, log_path, last_output))
     }
 }
 
@@ -99,6 +112,7 @@ async fn pump_main(
     stdout: Option<ChildStdout>,
     stderr: Option<ChildStderr>,
     log_path: PathBuf,
+    last_output: Arc<AtomicU64>,
 ) -> PumpSummary {
     let (tx, mut rx) = mpsc::channel::<Vec<u8>>(PUMP_CHANNEL_CHUNKS);
     if let Some(pipe) = stdout {
@@ -145,6 +159,9 @@ async fn pump_main(
         .unwrap_or(0);
     let mut log_truncated = false;
     while let Some(chunk) = rx.recv().await {
+        // Liveness: stamp arrival so the blocking lane's stall arm can
+        // see when a command last produced output.
+        last_output.store(now_grindmill(), Ordering::Relaxed);
         // Durable transcript: secret-shaped text is redacted before the
         // log write. One redaction serves both sides (memory + file) so
         // byte counts stay consistent; binary chunks pass through untouched.
