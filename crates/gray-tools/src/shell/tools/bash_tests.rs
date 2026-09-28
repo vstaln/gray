@@ -986,3 +986,51 @@ async fn search_command_leaves_the_shell_its_own() {
         );
     }
 }
+
+#[test]
+fn blocking_wait_ceiling_covers_long_suites() {
+    // Benchmark probe (10 DeepSWE tasks, Sep 2026): the agent's longest
+    // `sleep`-poll waits ran ~600s because the old 30s ceiling made a
+    // blocking `output` wait useless for real suites. The ceiling must
+    // cover those waits so one blocking call replaces N poll turns.
+    assert_eq!(
+        crate::shell::contract::MAX_ACTION_WAIT_MS,
+        600_000,
+        "wait_ms ceiling regressed below the longest observed suite wait"
+    );
+}
+
+#[tokio::test]
+async fn output_accepts_long_blocking_wait() {
+    // wait_ms=600000 must pass arg validation (only job lookup may fail).
+    let tool = BashTool::default();
+    let s = sess("longwait");
+    let ctx = ctx_for(&s);
+    let out = tool
+        .execute(
+            &ctx,
+            json!({"action": "output", "job_id": "nope", "wait_ms": 600000}),
+        )
+        .await;
+    assert!(
+        out.content.contains("unknown job"),
+        "600s wait must reach job lookup, got: {}",
+        out.content
+    );
+}
+
+#[tokio::test]
+async fn run_still_rejects_wait_ms() {
+    // The ceiling raise must not leak wait_ms onto the run surface.
+    let tool = BashTool::default();
+    let s = sess("runwait");
+    let ctx = ctx_for(&s);
+    let out = tool
+        .execute(&ctx, json!({"command": "echo hi", "wait_ms": 5000}))
+        .await;
+    assert!(
+        out.content.contains("wait_ms is only valid"),
+        "run+wait_ms must fail loudly, got: {}",
+        out.content
+    );
+}

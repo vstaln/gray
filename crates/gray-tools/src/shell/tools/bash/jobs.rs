@@ -182,7 +182,7 @@ impl Jobs {
             Ok(v) => v,
             Err(e) => return e,
         };
-        self.await_settled(ctx, &id, action, wait).await;
+        let liveness = self.await_settled(ctx, &id, action, wait).await;
         let mut jobs = self.0.lock().unwrap_or_else(|e| e.into_inner());
         let Some(job) = jobs.get_mut(&id).filter(|j| j.session == ctx.session_id) else {
             return fail(format!("unknown job in this session: {id}"));
@@ -211,6 +211,9 @@ impl Jobs {
             ));
         }
         let mut text = status(&id, job);
+        if let Some(note) = liveness {
+            text.push_str(&note);
+        }
         if action == "output" {
             // Live snapshot is bounded; the final result uses the pump's exact summary.
             let summary = truncated_summary_from_disk(&job.log);
@@ -224,26 +227,49 @@ impl Jobs {
     /// `wait_ms` on output/status stretches the snapshot path into a
     /// bounded blocking wait (clamped 0..=MAX_ACTION_WAIT_MS). Returns the
     /// final result when the job lands inside the window, else today's
-    /// snapshot. Finished jobs, cancel, and all errors answer immediately.
-    async fn await_settled(&self, ctx: &ToolContext, id: &str, action: &str, wait: Duration) {
+    /// snapshot plus a liveness verdict: whether the job's log grew while
+    /// we waited (still producing) or stayed silent (possibly stuck — the
+    /// agent's cue to inspect or kill, never an auto-kill). Finished jobs,
+    /// cancel, and all errors answer immediately with no verdict.
+    async fn await_settled(
+        &self,
+        ctx: &ToolContext,
+        id: &str,
+        action: &str,
+        wait: Duration,
+    ) -> Option<String> {
         if wait.is_zero() || !matches!(action, "output" | "status") {
-            return;
+            return None;
         }
         // Clone-then-drop: never hold the registry mutex across the await,
         // or the worker's send_replace can never land.
-        let rx_opt = {
+        let (rx_opt, log) = {
             let jobs = self.0.lock().unwrap_or_else(|e| e.into_inner());
-            jobs.get(id)
+            let job = jobs
+                .get(id)
                 .filter(|j| j.session == ctx.session_id)
-                .filter(|j| j.result.borrow().is_none())
-                .map(|j| j.result.clone())
+                .filter(|j| j.result.borrow().is_none());
+            (job.map(|j| j.result.clone()), job.map(|j| j.log.clone()))
         };
-        if let Some(mut rx) = rx_opt {
-            tokio::select! {
-                _ = tokio::time::timeout(wait, rx.wait_for(|v| v.is_some())) => {}
-                _ = ctx.cancel.cancelled() => {}
+        let mut rx = rx_opt?;
+        let before = log.as_deref().map(log_len);
+        let landed = tokio::select! {
+            r = tokio::time::timeout(wait, rx.wait_for(|v| v.is_some())) => {
+                matches!(r, Ok(Ok(_)))
             }
+            _ = ctx.cancel.cancelled() => false,
+        };
+        if landed {
+            return None;
         }
+        let (before, after) = (before?, log.as_deref().map(log_len)?);
+        let (b0, _) = before;
+        let (b1, wrote) = after;
+        Some(if b0 == 0 && b1 == 0 && !wrote {
+            liveness_note(0, wait, false)
+        } else {
+            liveness_note(b1.saturating_sub(b0), wait, true)
+        })
     }
 
     pub(super) fn notifications(&self, ctx: &ToolContext) -> Vec<String> {
@@ -255,6 +281,38 @@ impl Jobs {
             // Do not promote process output (or command-derived exit notes) to instructions.
             Some(format!("Background job {id} finished. Use bash action:output with job_id:{id} for its exit status and output."))
         }).collect()
+    }
+}
+
+/// (log bytes, had any output yet): the pump appends as the child
+/// produces, so growth across the wait window means the job is alive.
+fn log_len(path: &std::path::Path) -> (u64, bool) {
+    match std::fs::metadata(path) {
+        Ok(m) => (m.len(), m.len() > 0),
+        Err(_) => (0, false),
+    }
+}
+
+/// One-line liveness verdict for an unexpired wait window: `delta` bytes
+/// arrived in `waited`. Never an auto-kill — the agent decides whether a
+/// silent job deserves `status`, a log read, or `cancel`.
+fn liveness_note(delta: u64, waited: Duration, ever_wrote: bool) -> String {
+    if delta > 0 {
+        format!(
+            "\nLiveness: producing ({} new output in the last {}s) — still working, keep waiting or do other work.",
+            crate::truncate::format_size(delta.min(usize::MAX as u64) as usize),
+            waited.as_secs(),
+        )
+    } else if ever_wrote {
+        format!(
+            "\nLiveness: silent for the last {}s (wrote before, nothing since) — may be thinking, paging, or stuck; peek at the log before killing.",
+            waited.as_secs(),
+        )
+    } else {
+        format!(
+            "\nLiveness: no output yet after {}s — still starting up or silently stuck; peek at the log before killing.",
+            waited.as_secs(),
+        )
     }
 }
 
@@ -536,5 +594,63 @@ mod tests {
             out.content
         );
         assert!(!jobs.0.lock().unwrap().contains_key("0"));
+    }
+    #[tokio::test]
+    async fn expired_wait_reports_liveness_from_log_growth() {
+        // A job that writes mid-window is alive: the verdict says producing.
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("alive.log");
+        std::fs::write(&log, "early\n").unwrap();
+        let tool = BashTool::default();
+        let ctx = ToolContext::default();
+        let id = "bash-wait-alive";
+        let (job, _tx) = entry(false, false, true);
+        let mut job = job;
+        job.log = log.clone();
+        tool.jobs.0.lock().unwrap().insert(id.into(), job);
+        let writer = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            let mut f = std::fs::OpenOptions::new().append(true).open(&log).unwrap();
+            use std::io::Write as _;
+            f.write_all(&vec![b'x'; 2048]).unwrap();
+        });
+        let out = tool
+            .execute(
+                &ctx,
+                json!({"action": "output", "job_id": id, "wait_ms": 500}),
+            )
+            .await;
+        let _ = writer.await;
+        assert!(!out.is_error, "{}", out.content);
+        assert!(out.content.contains("running"), "{}", out.content);
+        assert!(
+            out.content.contains("Liveness: producing"),
+            "{}",
+            out.content
+        );
+    }
+
+    #[tokio::test]
+    async fn expired_wait_flags_a_silent_job() {
+        // Nothing written during the window: possibly stuck, never auto-killed.
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("stuck.log");
+        std::fs::write(&log, "old news\n").unwrap();
+        let tool = BashTool::default();
+        let ctx = ToolContext::default();
+        let id = "bash-wait-stuck";
+        let (job, _tx) = entry(false, false, true);
+        let mut job = job;
+        job.log = log;
+        tool.jobs.0.lock().unwrap().insert(id.into(), job);
+        let out = tool
+            .execute(
+                &ctx,
+                json!({"action": "output", "job_id": id, "wait_ms": 1100}),
+            )
+            .await;
+        assert!(!out.is_error, "{}", out.content);
+        assert!(out.content.contains("Liveness: silent"), "{}", out.content);
+        assert!(!out.content.contains("cancel"), "{}", out.content);
     }
 }
