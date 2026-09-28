@@ -12,6 +12,7 @@ use std::io;
 use ratatui::backend::{Backend, ClearType};
 use ratatui::buffer::{Buffer, Cell};
 use ratatui::layout::{Position, Rect, Size};
+use ratatui::style::Style;
 use ratatui::widgets::Widget;
 
 pub struct Frame<'a> {
@@ -44,6 +45,12 @@ where
     pub hidden_cursor: bool,
     pub viewport_area: Rect,
     pub last_known_screen_size: Size,
+    /// Latched once the composer's last row has reached the screen's last
+    /// row (the transcript overflowed the screen). While latched the
+    /// composer's fixed rows — input box, footer — stay glued to the
+    /// screen's bottom: a later resize slides the viewport instead of
+    /// parking the footer above dead terminal rows.
+    bottom_anchored: bool,
 }
 
 impl<B> Drop for CustomTerminal<B>
@@ -85,6 +92,7 @@ where
             hidden_cursor: false,
             viewport_area,
             last_known_screen_size: screen_size,
+            bottom_anchored: viewport_area.bottom() >= screen_size.height,
         };
         term.set_viewport_area(viewport_area);
         Ok(term)
@@ -114,6 +122,32 @@ where
             area.y = screen_size.height - area.height;
             scrolled = true;
         }
+        if area.bottom() >= screen_size.height {
+            // Reached (or overran) the screen's last row: the inline
+            // composer now lives on the screen's bottom rows.
+            self.bottom_anchored = true;
+        } else if area.bottom() > self.viewport_area.bottom() {
+            // Growing without reaching the last row: the transcript no
+            // longer fills the screen (a new session, a cleared one), so the
+            // composer hugs the conversation again. Without this a stale
+            // latch would later jump the composer to the screen's bottom.
+            self.bottom_anchored = false;
+        } else if self.bottom_anchored {
+            // Shrinking a bottom-anchored composer — the dock and live cards
+            // clearing at a tool result, turn end — must not slide the input
+            // box up the screen and park the footer above dead terminal
+            // rows. Slide the viewport down to the screen's last row
+            // instead, and repaint the rows it vacates (the cleared
+            // dock/card rows) as scrollback rows so no stale text and no
+            // stripe of the terminal's default background survives there.
+            // The transcript above keeps its rows: nothing scrolls.
+            let vacated = self.viewport_area.bottom() - area.bottom();
+            let vacated_top = self.viewport_area.y;
+            area.y = screen_size.height - area.height;
+            self.set_viewport_area(area);
+            self.paint_blank_rows(vacated_top, vacated, screen_size.width)?;
+            return Ok(());
+        }
 
         if area != self.viewport_area {
             if !scrolled {
@@ -128,6 +162,34 @@ where
         }
 
         Ok(())
+    }
+
+    /// Paints `height` blank rows at `y`, sized to the viewport width, with
+    /// the composer's surface background — the scrollback look, so rows a
+    /// shrunken viewport vacated read as transcript space rather than a
+    /// stripe of the terminal's default background.
+    fn paint_blank_rows(&mut self, y: u16, height: u16, width: u16) -> io::Result<()> {
+        if height == 0 || width == 0 {
+            return Ok(());
+        }
+        let count = (width as usize) * (height as usize);
+        let mut cell = Cell::default();
+        cell.set_style(Style::default().bg(crate::theme::theme().surface_bg));
+        let rows: Vec<Cell> = vec![cell; count];
+        self.backend.draw(rows.iter().enumerate().map(|(i, c)| {
+            (
+                (i % width as usize) as u16,
+                y + (i / width as usize) as u16,
+                c,
+            )
+        }))?;
+        Backend::flush(&mut self.backend)?;
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn backend(&self) -> &B {
+        &self.backend
     }
 
     pub fn clear_after_position(&mut self, position: Position) -> io::Result<()> {
@@ -298,5 +360,51 @@ where
             Backend::flush(&mut self.backend)?;
         }
         Ok(remainder)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::backend::TestBackend;
+
+    /// A tool call grows the composer (status dock + live cards) until the
+    /// viewport's last row is the screen's last row; the tool result then
+    /// clears those rows. The composer's fixed rows — input box, footer —
+    /// have to stay on the screen's last rows: sliding them up parked the
+    /// footer above dead terminal rows (an empty stripe at the bottom of
+    /// the screen) and made the text area jump on every tool call.
+    #[test]
+    fn shrinking_a_bottom_anchored_viewport_keeps_the_composer_on_the_last_row() {
+        let mut terminal = CustomTerminal::with_options(TestBackend::new(40, 20), 6).unwrap();
+        let screen = Size::new(40, 20);
+
+        // Turn in flight: the dock + live cards fill the screen, so the
+        // composer's last row is the screen's last row.
+        terminal.set_viewport_height(20, screen).unwrap();
+        assert_eq!(terminal.viewport_area.bottom(), 20);
+
+        // Tool result: the dock and live cards clear (20 rows -> 6).
+        terminal.set_viewport_height(6, screen).unwrap();
+        assert_eq!(terminal.viewport_area, Rect::new(0, 14, 40, 6));
+
+        // The vacated 14 rows carry the composer's band background rather
+        // than the terminal's default (which showed as a stripe).
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer[(0, 0)].bg, crate::theme::theme().surface_bg);
+        assert_eq!(buffer[(39, 13)].bg, crate::theme::theme().surface_bg);
+    }
+
+    /// A composer that never reached the screen's last row (a transcript
+    /// shorter than the screen) keeps hugging the conversation instead of
+    /// jumping to the screen's bottom.
+    #[test]
+    fn an_unanchored_viewport_never_slides_to_the_bottom() {
+        let mut terminal = CustomTerminal::with_options(TestBackend::new(40, 20), 4).unwrap();
+        let screen = Size::new(40, 20);
+        terminal.set_viewport_height(9, screen).unwrap();
+        assert_eq!(terminal.viewport_area, Rect::new(0, 0, 40, 9));
+        terminal.set_viewport_height(4, screen).unwrap();
+        assert_eq!(terminal.viewport_area, Rect::new(0, 0, 40, 4));
     }
 }

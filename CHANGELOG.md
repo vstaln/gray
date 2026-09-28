@@ -42,6 +42,34 @@
 
 ### Fixed
 
+- The band between the last transcript row and the input box stops showing
+  a stripe of the terminal's default background. Plugin-widget rows, the
+  queued-follow-up preview and the ask modal were rendered as bare
+  `Paragraph`s — transparent — so on a terminal whose default background
+  differs from the theme they painted as a foreign block through the middle
+  of the composer whenever a turn streamed (worst with a widget installed:
+  its rows appear only while it has something to say). Those rows now carry
+  the composer's own background like the live tool cards and the input box.
+- The REPL composer holds its place. The inline viewport only re-anchored
+  when its rows overran the bottom of the screen, so every viewport resize
+  walked the input box and footer with it: a tool call grew them (status
+  dock + live tool card) and the tool result shrank them again, leaving the
+  footer parked above dead terminal rows while the turn kept streaming.
+  Once the transcript has filled the screen the composer's fixed rows now
+  stay on the screen's last rows, the dock/card rows above them scroll
+  instead, and a shrink repaints the rows it vacated with the composer's
+  own background. A transcript shorter than the screen still hugs the
+  conversation, as before.
+- The REPL footer's right segment stops walking across the bar mid-stream.
+  Whether the reasoning-effort badge paints depends on a reasoning flag that
+  background discovery keeps writing after startup (the provider's `/models`
+  at `repl/mod.rs`, then models.dev), so on models whose two answers disagree
+  — StepFun's own gateway reports `step-5-preview` as non-reasoning while
+  models.dev marks it reasoning — the badge appeared and vanished a frame or
+  two into a turn, shifting `Step 5 Preview · xhigh` eight columns. The
+  visibility is now snapshotted once at the beginning of each turn, so the
+  footer holds its shape while anything streams; the provider's converged
+  answer still lands between turns.
 - A 503 burst outlasting the provider's own 5-attempt budget no longer kills
   the turn the user is waiting on: the agent loop retries the whole request
   (up to 2 more times, short ramp, nothing streamed yet — a visible delta

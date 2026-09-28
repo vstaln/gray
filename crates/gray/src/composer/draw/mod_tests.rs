@@ -168,3 +168,49 @@ fn live_card_has_one_left_padding_cell() {
     assert_eq!(buffer[(1, 0)].symbol(), "⬡");
     assert_eq!(buffer[(0, 0)].bg, crate::theme::theme().surface_bg);
 }
+
+#[test]
+fn footer_badge_snapshot_freezes_the_right_segment_mid_turn() {
+    use crate::setup::context::{cache_model_reasoning, model_supports_reasoning};
+
+    let live_model = "footer-badge-tests/live-flag-model";
+    // The flag under the badge is a process-global cache that background
+    // discovery (provider /models, then models.dev) keeps writing while a
+    // turn streams: unresolved → some(true), provider arrives → some(false),
+    // models.dev lands → some(true). Each flip used to resize the
+    // right-anchored footer text and walk the model name across the bar.
+    crate::setup::cache_model_reasoning(live_model, true);
+    assert_eq!(model_supports_reasoning(live_model), Some(true));
+
+    // No snapshot (idle frames): resolution stays live, so the provider's
+    // converged answer still lands between turns.
+    assert!(footer_badge_visible(live_model, None));
+    crate::setup::cache_model_reasoning(live_model, false);
+    assert!(!footer_badge_visible(live_model, None));
+
+    // Turn in flight: the snapshot wins, whatever the async caches wrote.
+    let streaming = "footer-badge-tests/streaming-flag-model";
+    assert!(footer_badge_visible(streaming, Some(true)));
+    assert!(!footer_badge_visible(streaming, Some(false)));
+    crate::setup::cache_model_reasoning(streaming, true);
+    assert!(!footer_badge_visible(streaming, Some(false)));
+    assert!(footer_badge_visible(live_model, Some(true)));
+}
+
+#[test]
+fn chrome_row_paints_the_whole_composer_band() {
+    use ratatui::widgets::Widget;
+    // Plugin-widget / queued / ask-modal rows live between the live cards
+    // and the input box; painted transparent they showed as a stripe of the
+    // terminal's default background through the middle of the composer.
+    let area = Rect::new(0, 0, 40, 1);
+    let mut buffer = ratatui::buffer::Buffer::empty(area);
+    chrome_row(Line::from("Build phase one")).render(area, &mut buffer);
+    assert_eq!(buffer[(0, 0)].symbol(), "B");
+    assert_eq!(buffer[(0, 0)].bg, crate::theme::theme().surface_bg);
+    assert_eq!(
+        buffer[(39, 0)].bg,
+        crate::theme::theme().surface_bg,
+        "the band covers the full row, not just the text cells"
+    );
+}
