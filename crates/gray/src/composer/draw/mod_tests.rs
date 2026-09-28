@@ -168,3 +168,21 @@ fn live_card_has_one_left_padding_cell() {
     assert_eq!(buffer[(1, 0)].symbol(), "⬡");
     assert_eq!(buffer[(0, 0)].bg, crate::theme::theme().surface_bg);
 }
+
+#[test]
+fn chrome_row_paints_the_whole_composer_band() {
+    use ratatui::widgets::Widget;
+    // Plugin-widget / queued / ask-modal rows live between the live cards
+    // and the input box; painted transparent they showed as a stripe of the
+    // terminal's default background through the middle of the composer.
+    let area = Rect::new(0, 0, 40, 1);
+    let mut buffer = ratatui::buffer::Buffer::empty(area);
+    chrome_row(Line::from("Build phase one")).render(area, &mut buffer);
+    assert_eq!(buffer[(0, 0)].symbol(), "B");
+    assert_eq!(buffer[(0, 0)].bg, crate::theme::theme().surface_bg);
+    assert_eq!(
+        buffer[(39, 0)].bg,
+        crate::theme::theme().surface_bg,
+        "the band covers the full row, not just the text cells"
+    );
+}
