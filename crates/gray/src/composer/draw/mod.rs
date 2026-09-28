@@ -41,6 +41,21 @@ pub(crate) fn viewport_cap(rows: u16) -> u16 {
     rows.saturating_sub(2).max(MIN_VIEWPORT_H)
 }
 
+/// Whether the footer paints the reasoning-effort badge.
+///
+/// Provider-driven (opencode parity): no badge when the provider says this
+/// model doesn't reason; unknown → show, as before. `snapshot` is the turn's
+/// frozen answer (see `Tui::turn_show_effort`): while a turn streams, the
+/// flag underneath is an async cache shared with background discovery
+/// (`repl/mod.rs` spawns the provider `/models` and models.dev fetches), so
+/// resolving it per frame lets the badge appear or vanish at any moment.
+/// The badge is part of the right-anchored footer segment — a width change
+/// walks the whole right segment across the bar mid-stream.
+pub(crate) fn footer_badge_visible(model: &str, snapshot: Option<bool>) -> bool {
+    snapshot
+        .unwrap_or_else(|| crate::setup::context::model_supports_reasoning(model) != Some(false))
+}
+
 pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
     if tui.modal_open {
         return Ok(());
@@ -288,7 +303,7 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
                 continue;
             }
             frame.render_widget(
-                Paragraph::new(line.clone()),
+                chrome_row(line.clone()),
                 Rect::new(area.x, y, area.width, 1),
             );
         }
@@ -324,7 +339,7 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
                 continue;
             }
             frame.render_widget(
-                Paragraph::new(line.clone()),
+                chrome_row(line.clone()),
                 Rect::new(area.x, y, area.width, 1),
             );
         }
@@ -332,7 +347,7 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
             let y = widget_y + i as u16;
             if y < area.bottom() {
                 frame.render_widget(
-                    Paragraph::new(line.clone()),
+                    chrome_row(line.clone()),
                     Rect::new(area.x, y, area.width, 1),
                 );
             }
@@ -503,10 +518,9 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
         let cache_display = format!("{hit_rate:.1}% cache");
 
         let model_display = crate::setup::friendly_model_name(&tui.model_name);
-        // Provider-driven (opencode parity): no effort badge when the provider
-        // says this model doesn't reason. Unknown → show, as before.
-        let show_effort =
-            crate::setup::context::model_supports_reasoning(&tui.model_name) != Some(false);
+        // Unknown/`None` (between turns) resolves the flag live, so the
+        // provider's own answer still lands once discovery finishes.
+        let show_effort = footer_badge_visible(&tui.model_name, tui.turn_show_effort);
         // `off` already implies hidden — don't render "off · hidden".
         // Non-reasoning models (show_effort false) render no badge; the
         // separator is omitted with it so the footer never trails " · ".
@@ -655,4 +669,15 @@ fn live_tool_row(line: Line<'static>) -> Paragraph<'static> {
             .padding(ratatui::widgets::Padding::left(1))
             .style(Style::default().bg(crate::theme::theme().surface_bg)),
     )
+}
+
+/// A composer-band row: plugin widget, queued follow-up and ask-modal rows
+/// sit between the live cards and the input box but were painted
+/// transparent, so on a terminal whose default background differs from the
+/// theme they showed as a foreign stripe straight through the middle of the
+/// composer (a streaming turn's tool call then walked the whole band).
+/// Paint them like the rest of the band.
+fn chrome_row(line: Line<'static>) -> Paragraph<'static> {
+    Paragraph::new(line)
+        .block(Block::default().style(Style::default().bg(crate::theme::theme().surface_bg)))
 }

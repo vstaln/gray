@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.1.6] - 2026-09-28
+
 ### Added
 
 - `/update` and `/restart` in the REPL, the two halves of landing a
@@ -31,6 +33,19 @@
 
 ### Changed
 
+- The gray mark animates. `assets/logo-animated.svg` grows out of its own
+  centre: the gem blooms first, then each of the 25 facet lines draws
+  outward from the vertex nearest the centre, staggered by distance so the
+  core lands before the outline. The source path — one path, nonzero fill
+  rule, facet lines as windings that cancel — is reused verbatim as the mask
+  the lines grow inside, so a line can only ever paint pixels the finished
+  logo already has as line: the last frame is the logo, verified pixel for
+  pixel. Pure CSS with no JS, it runs inside `<img>`, and it degrades to the
+  finished mark when animation is unsupported or `prefers-reduced-motion` is
+  set. `scripts/animate_logo.py` regenerates it (`--lines` for the
+  transparent variant on dark surfaces, `--frames N dir` for previews);
+  `assets/logo-grow.mp4` is the 1.9s preview.
+
 - The startup banner is the gray ASCII logo again. The graychan art is
   `/hehe` only, and `/hehe` is a toggle: press it again to drop the art and
   get the logo back.
@@ -40,8 +55,56 @@
   fetch refreshes it in the background, and a `─ recent ─` divider separates
   your recent models from the full list.
 
+- `bash` takes `wait_ms` on `action:output` and `action:status`, so a single
+  call can await a job instead of polling it once per turn. Capped at 600s,
+  and every wait comes back with a liveness verdict: the log either grew
+  while we waited (still producing) or stayed silent (possibly stuck — the
+  agent's cue to inspect or cancel it).
+
 ### Fixed
 
+- A command that goes silent no longer blocks its tool call forever. The
+  blocking `bash` lane waited on `child.wait()` with no bound and reported
+  nothing while it waited, so an external process that wedged at shutdown —
+  a Playwright `browser.close()` race, reproduced in
+  `docs/shell-hang-postmortem-2026-09-28.md` — held one call for 9m44s until
+  the user cancelled, and the evidence that would have explained it (the
+  job's log, finished at spawn time) was invisible until the call returned.
+  A command that sets no `timeout` and emits no new output for 600s is now
+  handed to a background job and the call returns immediately: `still
+  running · job <id> · silent: no new output for 600s · log <path>`, not
+  killed, with the agent's cue to inspect, await or cancel it. A chatty
+  command is never touched — every output chunk resets the bound — and the
+  reverted 30s/120s defaults stay reverted: this reports, it does not kill,
+  because a long build and a wedged process have to stay distinguishable.
+- The band between the last transcript row and the input box stops showing
+  a stripe of the terminal's default background. Plugin-widget rows, the
+  queued-follow-up preview and the ask modal were rendered as bare
+  `Paragraph`s — transparent — so on a terminal whose default background
+  differs from the theme they painted as a foreign block through the middle
+  of the composer whenever a turn streamed (worst with a widget installed:
+  its rows appear only while it has something to say). Those rows now carry
+  the composer's own background like the live tool cards and the input box.
+- The REPL composer holds its place. The inline viewport only re-anchored
+  when its rows overran the bottom of the screen, so every viewport resize
+  walked the input box and footer with it: a tool call grew them (status
+  dock + live tool card) and the tool result shrank them again, leaving the
+  footer parked above dead terminal rows while the turn kept streaming.
+  Once the transcript has filled the screen the composer's fixed rows now
+  stay on the screen's last rows, the dock/card rows above them scroll
+  instead, and a shrink repaints the rows it vacated with the composer's
+  own background. A transcript shorter than the screen still hugs the
+  conversation, as before.
+- The REPL footer's right segment stops walking across the bar mid-stream.
+  Whether the reasoning-effort badge paints depends on a reasoning flag that
+  background discovery keeps writing after startup (the provider's `/models`
+  at `repl/mod.rs`, then models.dev), so on models whose two answers disagree
+  — StepFun's own gateway reports `step-5-preview` as non-reasoning while
+  models.dev marks it reasoning — the badge appeared and vanished a frame or
+  two into a turn, shifting `Step 5 Preview · xhigh` eight columns. The
+  visibility is now snapshotted once at the beginning of each turn, so the
+  footer holds its shape while anything streams; the provider's converged
+  answer still lands between turns.
 - A 503 burst outlasting the provider's own 5-attempt budget no longer kills
   the turn the user is waiting on: the agent loop retries the whole request
   (up to 2 more times, short ramp, nothing streamed yet — a visible delta

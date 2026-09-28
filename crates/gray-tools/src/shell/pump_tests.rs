@@ -1,4 +1,5 @@
 use super::*;
+use std::sync::Arc;
 use tokio::process::Command;
 
 /// Inline POSIX script with both pipes captured; the caller takes what it needs.
@@ -84,7 +85,7 @@ async fn pump_logs_both_streams_verbatim() {
     let (mut child, out, err) =
         spawn_sh("printf 'out-1\\n'; printf 'err-1\\n' >&2; printf 'out-2\\n'");
     let log = tmp_log("both");
-    let h = Pump::start(out, err, log.clone());
+    let h = Pump::start(out, err, log.clone(), Arc::new(AtomicU64::new(0)));
     assert!(child.wait().await.unwrap().success());
     let s = h.await.unwrap();
     assert_eq!(s.total_bytes, 18);
@@ -117,7 +118,7 @@ async fn pump_redacts_secret_shaped_assignment() {
     let (mut child, out, err) = spawn_sh(&script);
     drop(err);
     let log = tmp_log("redact");
-    let h = Pump::start(out, None, log.clone());
+    let h = Pump::start(out, None, log.clone(), Arc::new(AtomicU64::new(0)));
     assert!(child.wait().await.unwrap().success());
     let s = h.await.unwrap();
     let file = std::fs::read(&log).unwrap();
@@ -138,7 +139,7 @@ async fn pump_unwritable_log_sets_flag_without_panic() {
     std::fs::write(&blocker, b"x").unwrap();
     let bad = blocker.join("bash-test.log"); // parent is a file: mkdir + open both fail
     let (mut child, out, _err) = spawn_sh("printf 'still counted\\n'");
-    let h = Pump::start(out, None, bad);
+    let h = Pump::start(out, None, bad, Arc::new(AtomicU64::new(0)));
     assert!(child.wait().await.unwrap().success());
     assert!(h.await.unwrap().log_write_failed);
     let _ = std::fs::remove_file(&blocker);

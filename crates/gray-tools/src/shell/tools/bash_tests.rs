@@ -1034,3 +1034,105 @@ async fn run_still_rejects_wait_ms() {
         out.content
     );
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn silent_past_bound_is_handed_to_a_job_not_killed() {
+    // The exact incident shape: a command that prints once, then wedges in a
+    // library call (Playwright's browser.close()). With no explicit timeout and
+    // an injected `bound` of silence, the blocking lane must not wait forever:
+    // it stops blocking, hands the STILL-RUNNING child to the background lane
+    // (never killed), and the agent's decision to cancel is what reaps it.
+    let dir = tempfile::tempdir().unwrap();
+    let log = dir.path().join("bash-stall.log");
+    // `echo ok` produces output, then the child goes silent — the gap the stall
+    // arm measures from there, so `sleep 60` comfortably outlives the 1s bound.
+    let command = "echo ok; sleep 60";
+    let spawned = spawn(command, Path::new("/"), None, None).expect("spawn");
+    let pgid = spawned.pgid;
+
+    let tool = BashTool::default();
+    let ctx = ToolContext::default();
+    let start = Instant::now();
+    let t0 = Instant::now();
+    let out = run_command(
+        command.to_string(),
+        log.clone(),
+        None, // no explicit timeout: the stall arm is what bounds this call
+        start,
+        ctx.clone(),
+        spawned,
+        crate::shell::kill::GroupGuard::new(pgid),
+        Some(&tool.jobs),
+        Duration::from_secs(1),
+        None,
+    )
+    .await;
+
+    // Stopped blocking well before the 60s child could finish on its own.
+    assert!(
+        t0.elapsed() < Duration::from_secs(20),
+        "a silent command must stop blocking: {:?}",
+        t0.elapsed()
+    );
+    assert!(!out.is_error, "{}", out.content);
+    assert!(
+        out.content.starts_with("still running"),
+        "handoff note leads the result: {}",
+        out.content
+    );
+    assert!(
+        out.content.contains("no new output for 1s"),
+        "liveness note names the silence: {}",
+        out.content
+    );
+
+    // Landed in the job registry as a running background job.
+    let (cancel, mut rx) = {
+        let jobs = tool.jobs.0.lock().unwrap();
+        let job = jobs.values().next().expect("handed-off job is registered");
+        assert!(
+            job.yielded,
+            "handed-off job participates in completion notices"
+        );
+        assert!(
+            job.result.borrow().is_none(),
+            "the job is still running, not finished"
+        );
+        (job.cancel.clone(), job.result.clone())
+    };
+
+    // Its process group is ALIVE: the handoff never killed the child.
+    assert_eq!(
+        unsafe { libc::kill(pgid, 0) },
+        0,
+        "handed-off process group must stay alive"
+    );
+
+    // The AGENT's decision to cancel is what reaps it (never an auto-kill).
+    cancel.cancel();
+    let _ = tokio::time::timeout(Duration::from_secs(15), rx.wait_for(|v| v.is_some())).await;
+    let mut gone = false;
+    for _ in 0..80 {
+        if unsafe { libc::kill(pgid, 0) } != 0 {
+            gone = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(
+        gone,
+        "cancel must reap the process group (no leak, no zombie)"
+    );
+    let final_out = tool
+        .jobs
+        .0
+        .lock()
+        .unwrap()
+        .values()
+        .next()
+        .and_then(|j| j.result.borrow().clone());
+    if let Some(out) = final_out {
+        assert!(out.content.contains("cancelled"), "{}", out.content);
+    }
+}

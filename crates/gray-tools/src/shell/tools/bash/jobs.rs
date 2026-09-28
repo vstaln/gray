@@ -12,16 +12,16 @@ const MAX_RUNNING: usize = 32;
 const MAX_RETAINED: usize = 128;
 
 #[derive(Default)]
-pub(super) struct Jobs(Mutex<BTreeMap<String, Job>>);
+pub(super) struct Jobs(pub(super) Mutex<BTreeMap<String, Job>>);
 
-struct Job {
+pub(super) struct Job {
     session: Option<String>,
     log: PathBuf,
     started: Instant,
-    cancel: CancellationToken,
-    result: watch::Receiver<Option<ToolOutput>>,
+    pub(super) cancel: CancellationToken,
+    pub(super) result: watch::Receiver<Option<ToolOutput>>,
     notified: bool,
-    yielded: bool,
+    pub(super) yielded: bool,
 }
 
 impl Drop for Jobs {
@@ -100,6 +100,9 @@ impl Jobs {
                     spawned,
                     #[cfg(not(windows))]
                     guard,
+                    None,
+                    Duration::ZERO,
+                    None,
                 )
                 .await;
                 tx.send_replace(Some(output));
@@ -127,6 +130,52 @@ impl Jobs {
             format_elapsed(job.started.elapsed()),
             job.log.display()
         ))
+    }
+
+    /// Register an already-running command (handed off by the blocking lane
+    /// after `bound` of silence). The child is already alive, so \u2014 unlike
+    /// [`Jobs::start`] \u2014 there is nothing to refuse before spawn: this only
+    /// books the job entry and returns the id, a result sender for the
+    /// continuation worker, and a worker context whose cancel token is driven
+    /// by both the session cancel and `action:cancel`. Never kills the child:
+    /// the returned worker keeps driving it.
+    pub(super) fn register(
+        &self,
+        parent: &ToolContext,
+        log: std::path::PathBuf,
+        started: Instant,
+    ) -> (String, watch::Sender<Option<ToolOutput>>, ToolContext) {
+        let id = log.file_stem().unwrap().to_string_lossy().into_owned();
+        let cancel = parent.cancel.child_token();
+        let mut worker_ctx = parent.clone();
+        worker_ctx.cancel = cancel.clone();
+        let (tx, rx) = watch::channel(None);
+        let mut jobs = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        // Retention only: evict the oldest delivered job when history is full,
+        // else just insert \u2014 losing track of a live child is far worse than a
+        // one-entry overrun of MAX_RETAINED.
+        if jobs.len() >= MAX_RETAINED
+            && let Some(oldest) = jobs
+                .iter()
+                .filter(|(_, j)| j.yielded && j.notified && j.result.borrow().is_some())
+                .min_by_key(|(_, j)| j.started)
+                .map(|(id, _)| id.clone())
+        {
+            jobs.remove(&oldest);
+        }
+        jobs.insert(
+            id.clone(),
+            Job {
+                session: parent.session_id.clone(),
+                log: log.clone(),
+                started,
+                cancel,
+                result: rx,
+                notified: false,
+                yielded: true,
+            },
+        );
+        (id, tx, worker_ctx)
     }
 
     pub(super) async fn action(&self, ctx: &ToolContext, action: &str, args: &Value) -> ToolOutput {

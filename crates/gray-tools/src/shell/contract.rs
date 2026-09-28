@@ -11,8 +11,18 @@ use tokio::process::Child;
 /// Default bash timeout: **none**. Commands run until they exit; a runaway
 /// command is stopped by the user (cancel) or by passing an explicit
 /// `timeout`. (Was 30s, then 120s — both killed real builds and test suites,
-/// and the agent read the kill as a failed command, not a short budget.)
+/// and the agent read the kill as a failed command, not a short budget.) So the
+/// blocking lane stays unbounded; its safety valve is the silent-handoff bound
+/// in [`MAX_BLOCKING_SILENCE_SECS`], never a timeout.
 pub const DEFAULT_TIMEOUT_SECS: Option<u64> = None;
+/// Silent threshold for the *blocking* bash lane: a command that produces no
+/// new output for this long (having set no explicit `timeout`) is handed to
+/// the background lane and the call returns immediately, instead of blocking
+/// forever. NOT a kill and NOT the reverted 30s/120s default — a chatty build
+/// never trips it (every output chunk resets the clock), and the command keeps
+/// running so the agent can inspect, await, or cancel it. Overridable in tests
+/// via `GRAY_SHELL_STALL_SECS`.
+pub const MAX_BLOCKING_SILENCE_SECS: u64 = 600;
 /// Cap for an explicitly requested `timeout` (one hour).
 pub const MAX_TIMEOUT_SECS: u64 = 3600;
 pub const MIN_YIELD_MS: u64 = 100;
