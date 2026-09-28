@@ -12,16 +12,16 @@ const MAX_RUNNING: usize = 32;
 const MAX_RETAINED: usize = 128;
 
 #[derive(Default)]
-pub(super) struct Jobs(Mutex<BTreeMap<String, Job>>);
+pub(super) struct Jobs(pub(super) Mutex<BTreeMap<String, Job>>);
 
-struct Job {
+pub(super) struct Job {
     session: Option<String>,
     log: PathBuf,
     started: Instant,
-    cancel: CancellationToken,
-    result: watch::Receiver<Option<ToolOutput>>,
+    pub(super) cancel: CancellationToken,
+    pub(super) result: watch::Receiver<Option<ToolOutput>>,
     notified: bool,
-    yielded: bool,
+    pub(super) yielded: bool,
 }
 
 impl Drop for Jobs {

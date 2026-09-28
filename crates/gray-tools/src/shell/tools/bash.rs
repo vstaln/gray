@@ -754,7 +754,7 @@ enum Settled {
 /// or cancel). When `handoff` is set and no explicit `timeout` was requested, a
 /// command silent longer than `bound` stops the wait early and returns the
 /// running child, its armed group guard and its already-draining pump as
-/// [`Settled::Stalled`] \u2014 it is never killed here.
+/// [`Settled::Stalled`] — it is never killed here.
 ///
 /// A distinct function from [`run_command`] on purpose: the background
 /// continuation calls it with `handoff=false`, so it is not a recursive
@@ -919,7 +919,7 @@ async fn run_command(
     #[cfg(not(windows))] guard: crate::shell::kill::GroupGuard,
     // Blocking lane only. When `Some`, a command silent longer than `bound`
     // (with no explicit `timeout`) is registered here as a background job and
-    // the wait continues in a detached worker \u2014 never killed. `None` for the
+    // the wait continues in a detached worker — never killed. `None` for the
     // managed background/job lane, whose own call never blocks.
     adopt: Option<&jobs::Jobs>,
     // Silent threshold before a stuck blocking command is handed to the
