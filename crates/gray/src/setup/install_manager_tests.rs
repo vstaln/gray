@@ -139,10 +139,7 @@ fn disabled_row_shows_circle_and_disabled_marker() {
     let row = format_plugin_row("demo", &entry("pi-gallery", false));
     assert!(row.starts_with("○ "), "disabled marker: {row:?}");
     assert!(row.contains("[disabled]"), "dim marker text: {row:?}");
-    assert!(
-        row.contains("[Pi Gallery (preview)]"),
-        "source label: {row:?}"
-    );
+    assert!(row.contains("[Pi Index]"), "source label: {row:?}");
 }
 
 #[test]
@@ -174,7 +171,7 @@ fn enabled_row_exact_string() {
 fn disabled_row_exact_string() {
     assert_eq!(
         format_plugin_row("demo", &entry("pi-gallery", false)),
-        "○ demo 1.2.3 (user) [Pi Gallery (preview)] [disabled]"
+        "○ demo 1.2.3 (user) [Pi Index] [disabled]"
     );
 }
 

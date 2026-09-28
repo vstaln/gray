@@ -11,7 +11,9 @@
       "scope": "user",
       "description": "Standalone background runner and process monitor for Gray sidecars and workers.",
       "homepage": "https://github.com/vstaln/gray/tree/main/plugins/background",
-      "commands": ["/bg"]
+      "commands": [
+        "/bg"
+      ]
     },
     "discord": {
       "ecosystem": "gray-native",
@@ -24,7 +26,9 @@
       "scope": "user",
       "description": "Discord bridge integration for Gray agents, streaming replies and command execution.",
       "homepage": "https://github.com/vstaln/gray/tree/main/plugins/discord",
-      "commands": ["/discord"]
+      "commands": [
+        "/discord"
+      ]
     },
     "permissions": {
       "ecosystem": "gray-native",
@@ -37,7 +41,26 @@
       "scope": "user",
       "description": "Fine-grained security, capability gating, and permission controls for Gray commands.",
       "homepage": "https://github.com/vstaln/gray/tree/main/plugins/permissions",
-      "commands": ["/perms"]
+      "commands": [
+        "/perms"
+      ]
+    },
+    "ponytail": {
+      "ecosystem": "pi-gallery",
+      "version": "4.10.0",
+      "source": {
+        "type": "git",
+        "url": "https://github.com/DietrichGebert/ponytail.git",
+        "git_ref": "v4.10.0"
+      },
+      "hash": "1d95ff7d39de12d87014ea40d4e22201bddc501b",
+      "scope": "user",
+      "description": "Lazy senior dev mode for AI agents. The best code is the code you never wrote.",
+      "homepage": "https://github.com/DietrichGebert/ponytail",
+      "commands": [],
+      "author": "Dietrich Gebert",
+      "repo": "https://github.com/DietrichGebert/ponytail",
+      "image": "/space/ponytail-logo.png"
     }
   }
 }

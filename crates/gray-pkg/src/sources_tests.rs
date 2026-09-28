@@ -4,7 +4,7 @@ use super::*;
 #[test]
 fn source_labels_are_exact() {
     assert_eq!(Source::GrayIndex.label(), "Gray Index");
-    assert_eq!(Source::PiGallery.label(), "Pi Gallery (preview)");
+    assert_eq!(Source::PiGallery.label(), "Pi Index");
     assert_eq!(Source::ClawHub.label(), "ClawHub");
     assert_eq!(Source::ClaudeRepo.label(), "Claude");
 }

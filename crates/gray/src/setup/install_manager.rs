@@ -133,7 +133,7 @@ fn source_label(ecosystem: &str) -> &str {
     match ecosystem {
         "gray-native" => "Gray Index",
         "gray-cli" => "Plugin command",
-        "pi-gallery" => "Pi Gallery (preview)",
+        "pi-gallery" => "Pi Index",
         other => other,
     }
 }
