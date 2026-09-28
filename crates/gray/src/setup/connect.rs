@@ -119,9 +119,6 @@ pub fn run_connect_modal(
     bg: Option<&BackgroundSnapshot>,
 ) -> anyhow::Result<ConnectOutcome> {
     use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, poll, read};
-    use crossterm::terminal::EnterAlternateScreen;
-    use ratatui::Terminal;
-    use ratatui::backend::CrosstermBackend;
     use std::time::Duration;
 
     let catalog = load_catalog()?;
@@ -163,26 +160,15 @@ pub fn run_connect_modal(
     let mut state = ModalState::Selecting;
     let mut connected_name: Option<(String, String)> = None;
 
-    let _session = TuiSession::acquire()?;
-    let mut stdout_handle = std::io::stdout();
-    crossterm::execute!(
-        stdout_handle,
-        EnterAlternateScreen,
-        crossterm::terminal::Clear(crossterm::terminal::ClearType::All),
-        crossterm::cursor::Hide
-    )?;
-    let _ = crossterm::terminal::size();
+    let (_session, mut terminal) = super::open_modal()?;
     // Bracketed paste is terminal-global (mode 2004): the composer asserts
     // it every prompt turn, so a paste here arrives as `Event::Paste`.
     // Re-assert for entries that never ran a prompt turn (e.g. onboarding).
-    let _ = crossterm::execute!(stdout_handle, crossterm::event::EnableBracketedPaste);
+    let _ = crossterm::execute!(std::io::stdout(), crossterm::event::EnableBracketedPaste);
     // Shift+Enter is the removal binding here: without the same
     // disambiguation the prompt uses, a terminal that collapses it to a bare
     // Enter would connect the provider instead of confirming a removal.
     let _keyboard_enhancement = crate::composer::input::KeyboardEnhancementGuard::push();
-
-    let backend = CrosstermBackend::new(stdout_handle);
-    let mut terminal = Terminal::new(backend)?;
 
     let colors = ConnectColors {
         box_bg: crate::theme::theme().surface_bg,

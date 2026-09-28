@@ -176,40 +176,6 @@ pub fn video_media_type(path: &Path) -> &'static str {
     gray_tools::images::video_media_type(path)
 }
 
-/// Video → first-frame JPEG via ffmpeg (capped 1600px wide), fed back
-/// through the image normalizer by the caller. Still used by the preview
-/// strip; the pasted attachment prefers a native part or a contact sheet.
-pub fn video_frame(path: &Path) -> Result<Vec<u8>, MediaError> {
-    let out = output_with_timeout(
-        "ffmpeg",
-        &[
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-i",
-            &path.display().to_string(),
-            "-frames:v",
-            "1",
-            "-vf",
-            "scale='min(iw,1600)':-2",
-            "-f",
-            "image2pipe",
-            "-vcodec",
-            "mjpeg",
-            "-",
-        ],
-    )?;
-    if !out.status.success() || out.stdout.is_empty() {
-        let detail = String::from_utf8_lossy(&out.stderr).trim().to_string();
-        return Err(MediaError::Extract(if detail.is_empty() {
-            "no video frame decoded".to_string()
-        } else {
-            detail.chars().take(200).collect()
-        }));
-    }
-    Ok(out.stdout)
-}
-
 #[path = "attachments_tests.rs"]
 #[cfg(test)]
 mod tests;

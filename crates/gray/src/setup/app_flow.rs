@@ -169,9 +169,6 @@ pub fn run_headless(app: &str, fields: &[String], start: bool) -> Result<()> {
 /// same core behind a modal.
 pub fn run_app_setup_modal(app: &str) -> anyhow::Result<()> {
     use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, poll, read};
-    use crossterm::terminal::EnterAlternateScreen;
-    use ratatui::Terminal;
-    use ratatui::backend::CrosstermBackend;
     use ratatui::style::{Modifier, Style};
     use ratatui::text::{Line, Span};
     use ratatui::widgets::{Block, Clear, Paragraph};
@@ -212,11 +209,7 @@ pub fn run_app_setup_modal(app: &str) -> anyhow::Result<()> {
     let mut phase = Phase::Filling;
     let mut report: Option<String> = None;
 
-    let _session = super::TuiSession::acquire()?;
-    let mut stdout = std::io::stdout();
-    crossterm::execute!(stdout, EnterAlternateScreen, crossterm::cursor::Hide)?;
-    let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend)?;
+    let (_session, mut terminal) = super::open_modal()?;
 
     let outcome = (|| -> anyhow::Result<()> {
         loop {

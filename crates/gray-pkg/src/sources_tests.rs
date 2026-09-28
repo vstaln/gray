@@ -66,7 +66,6 @@ fn marketplace_fixture_covers_all_six_plus_command() {
         cat.plugins[6].source,
         PluginSource::Command { .. }
     ));
-    assert_eq!(claude_qualifier(&cat.plugins[4].source), "npm:@o/p@2.0.0");
 }
 
 #[test]

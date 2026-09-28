@@ -19,6 +19,30 @@ impl TuiSession {
     }
 }
 
+/// Opens the alternate screen every modal shares: raw mode, alternate
+/// buffer, hidden cursor, and a terminal ready to `draw` on. Each modal
+/// keeps its own layout and event loop; only the 10-line terminal setup
+/// they all repeated lives here.
+///
+/// The guard is returned FIRST on purpose: drop order is reverse of
+/// declaration, so the terminal is torn down before `TuiSession` restores
+/// the main screen and the cursor.
+pub(crate) fn open_modal() -> std::io::Result<(
+    TuiSession,
+    ratatui::Terminal<ratatui::backend::CrosstermBackend<std::io::Stdout>>,
+)> {
+    let session = TuiSession::acquire()?;
+    let mut stdout = std::io::stdout();
+    crossterm::execute!(
+        stdout,
+        crossterm::terminal::EnterAlternateScreen,
+        crossterm::terminal::Clear(crossterm::terminal::ClearType::All),
+        crossterm::cursor::Hide
+    )?;
+    let terminal = ratatui::Terminal::new(ratatui::backend::CrosstermBackend::new(stdout))?;
+    Ok((session, terminal))
+}
+
 impl Drop for TuiSession {
     fn drop(&mut self) {
         use std::io::Write as _;
