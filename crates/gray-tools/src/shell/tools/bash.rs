@@ -759,6 +759,10 @@ enum Settled {
 /// A distinct function from [`run_command`] on purpose: the background
 /// continuation calls it with `handoff=false`, so it is not a recursive
 /// `async fn` and its future stays `Send` for `tokio::spawn`.
+// ponytail: one lane carries a live child + its group guard + pump + liveness clock
+// + silence bound + registry handle; bundling them into structs is speculative
+// and would thrash this Send-sensitive call path, so the count stands.
+#[allow(clippy::too_many_arguments)]
 async fn settle_command(
     command: &str,
     log_path: &std::path::Path,
@@ -909,6 +913,10 @@ async fn settle_command(
 /// continuation (a fresh [`settle_command`] with `handoff=false`, so it never
 /// re-hands-off), returning a "still running" notice. The child keeps running
 /// and is never killed.
+// ponytail: one lane carries a live child + its group guard + pump + liveness clock
+// + silence bound + registry handle; bundling them into structs is speculative
+// and would thrash this Send-sensitive call path, so the count stands.
+#[allow(clippy::too_many_arguments)]
 async fn run_command(
     command: String,
     log_path: PathBuf,
