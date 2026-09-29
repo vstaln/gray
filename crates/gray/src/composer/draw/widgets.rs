@@ -51,12 +51,18 @@ pub(crate) struct InputBox {
 /// Builds the prompt box lines from textarea state. Hoisted out of the draw
 /// closure so the dock height (and thus the viewport) can be sized before
 /// `terminal.draw` runs.
-pub(crate) fn build_input_box(text: &str, cursor: usize, w: usize) -> InputBox {
+pub(crate) fn build_input_box(
+    text: &str,
+    cursor: usize,
+    w: usize,
+    ghost: Option<&str>,
+) -> InputBox {
     let content_w = w.saturating_sub(4).max(1);
 
     // Neutral Gray palette (no blue, transparent bg — text only)
     let prompt_color = crate::theme::theme().text_soft;
     let text_primary = crate::theme::theme().text_body;
+    let text_dim = crate::theme::theme().text_dim;
 
     let mut box_lines: Vec<Line<'static>> = Vec::new();
 
@@ -76,7 +82,16 @@ pub(crate) fn build_input_box(text: &str, cursor: usize, w: usize) -> InputBox {
     let mut cur_col = 0usize;
 
     if text.is_empty() {
-        box_lines.push(Line::from(vec![arrow_span.clone()]));
+        // Ghost hint (display-only, never submitted): e.g. "Please continue…"
+        // while a resume is pending. Same single row either way.
+        let mut spans = vec![arrow_span.clone()];
+        if let Some(hint) = ghost {
+            spans.push(Span::styled(
+                hint.to_string(),
+                Style::default().fg(text_dim),
+            ));
+        }
+        box_lines.push(Line::from(spans));
     } else {
         let lines_raw: Vec<&str> = text.split('\n').collect();
         let mut cursor_found = false;

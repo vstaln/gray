@@ -1,5 +1,0 @@
-# Catastrophic Remembering Paper
-
-Relocated verbatim from gray memory entry `catastrophic-remembering-paper` on 2026-09-23 (provenance trailer stripped).
-
-arXiv 2608.11095v1 (Chakrabarti 2026) 'Why Does CLAUDE.md Keep Growing?' - studied 2026-09-21, full record ~/bench/catastrophic-remembering/STUDY.md. Core law: for AUTHORED instructions (AGENTS.md/CLAUDE.md, gray memory entries) the latent reasoning (WHY, with the failure that prompted it quoted + recurrence count + what was falsified) is the retention signal - not age or recency, which is what MemGPT/Mem0/Zep/FSFM eviction proxies use. Evidence: 247,694 lifetimes, median file 39 instructions growing +4.9/commit, deletion hazard falls -0.032/commit, 77.3% of deaths are wholesale rewrites. Fix (COMMIT schema): rationale-with-outcomes in per-instruction comments, stripped before the executor sees the prompt (lifting the strip inverts the gain: +28.5% excess). Rationale WITHOUT outcomes is worse than no comment. Caveat: auto-deleting on recoverable rationale emptied 1-in-8 prompts and lost satisfaction on exactly those worlds - writing a comment is safe, acting on one is not; keep a human in the deletion path.

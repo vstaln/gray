@@ -33,7 +33,7 @@ fn frontmatter_without_args_means_no_args() {
 
 #[test]
 fn folded_description_joins_continuation_lines() {
-    // ponytail-style `description: >` frontmatter: the indented lines
+    // `description: >` frontmatter: the indented lines
     // fold into one description (previously parsed as the bare `">"`).
     let mut f = tempfile::NamedTempFile::new().unwrap();
     writeln!(

@@ -2652,7 +2652,7 @@ fn stream_unfold_step(
 
                                             if let Some(tool_calls) = choice.delta.tool_calls {
                                                 for tc in tool_calls {
-                                                    // ponytail: no index cap here — the agent
+                                                    // no index cap here — the agent
                                                     // owns the guard (hard error). A silent
                                                     // drop loses model intent with a clean
                                                     // EndTurn; forwarding keeps one policy.

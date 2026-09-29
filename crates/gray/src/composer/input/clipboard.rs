@@ -136,7 +136,7 @@ pub(crate) fn read_system_clipboard_text_with_paths(paths: &str) -> Option<Strin
         let Some(full) = resolve_in(&cmd, paths) else {
             continue;
         };
-        // ponytail: one spawn path; None on spawn failure/timeout/non-zero/blank.
+        // one spawn path; None on spawn failure/timeout/non-zero/blank.
         let out = output_with_timeout(&full, &args)?;
         if !out.status.success() {
             continue;

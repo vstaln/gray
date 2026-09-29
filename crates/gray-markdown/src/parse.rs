@@ -465,7 +465,7 @@ impl<'a, 'b, 'syn> MarkdownParser<'a, 'b, 'syn> {
 
                 if let Some(parent_code_block) = parent_code_block {
                     let highlighted = match parent_code_block {
-                        // ponytail: incremental open-block cache removed;
+                        // incremental open-block cache removed;
                         // the tail re-highlights from scratch (unnoticeable).
                         Some(lang) => syntax_highlight_raw(self.syntect, &lang, &text),
                         None => None,
@@ -505,7 +505,7 @@ impl<'a, 'b, 'syn> MarkdownParser<'a, 'b, 'syn> {
             }
             Event::InlineMath(math) => {
                 // `$...$` inline math: passthrough as inline code.
-                // ponytail: latex-to-unicode stack removed; raw TeX shows.
+                // latex-to-unicode stack removed; raw TeX shows.
                 if let Some(ref mut state) = self.table_state {
                     let prev_code = state.cell_code;
                     state.cell_code = true;
@@ -578,7 +578,7 @@ impl<'a, 'b, 'syn> MarkdownParser<'a, 'b, 'syn> {
             }
             Event::DisplayMath(math) => {
                 // `$$...$$` display math: passthrough, TeX source as code.
-                // ponytail: latex-to-unicode stack removed; raw TeX shows.
+                // latex-to-unicode stack removed; raw TeX shows.
                 if let Some(ref mut state) = self.table_state {
                     let prev_code = state.cell_code;
                     state.cell_code = true;

@@ -24,11 +24,11 @@
 //! 2. Done (wave gate): `notices.rs` owns [`super::notices::repaired_note`] verbatim.
 //! 3. `write.rs`/`edit.rs`: call the same helper (spec's follow-up).
 //! 4. `Cargo.toml`: plan suggests `unicode-normalization`; deliberately NOT
-//!    added here (outside ownership). See the `ponytail:` note on [`to_nfc`].
+//!    added here (outside ownership). See the note on [`to_nfc`].
 //!
-//! // ponytail: minimal Latin accent table (~50 entries) instead of the
-//! // `unicode-normalization` crate — covers the spec's café/NFD cases with
-//! // zero new deps. Upgrade to the crate if non-Latin scripts need repairs.
+//! Minimal Latin accent table (~50 entries) instead of the
+//! `unicode-normalization` crate — covers the spec's café/NFD cases with
+//! zero new deps. Upgrade to the crate if non-Latin scripts need repairs.
 
 use std::path::{Path, PathBuf};
 

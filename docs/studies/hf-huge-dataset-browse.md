@@ -1,5 +1,0 @@
-# Hf Huge Dataset Browse
-
-Relocated verbatim from gray memory entry `hf-huge-dataset-browse` on 2026-09-23 (provenance trailer stripped).
-
-Browsing a multi-TB HuggingFace dataset without downloading it: datasets-server /search 502s on huge datasets and /filter is unusable; the python datasets lib cannot import on this box (libffi.so.8 missing, only libffi.so.7 present, no passwordless sudo). Workaround that works: get the parquet URL from huggingface.co/api/datasets/<id>/parquet (dict of config -> {split: [url]}), then pyarrow.parquet.ParquetFile over fsspec.filesystem('https').open(url, block_size=8MB) - range requests mean only the footer + requested column chunks download. Prune with row-group statistics: secemp9/arxiv-complete metadata is sorted by paper_id (which encodes YYMM), so read row_group(rg).column(idx).statistics min/max and skip old ranges entirely (rg32-53 = 2022-02..2026-07). Read with columns=[...] to prune. No API keys needed for public datasets; papers themselves come from arxiv.org/pdf/<id>.

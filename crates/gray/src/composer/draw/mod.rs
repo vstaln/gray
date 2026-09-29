@@ -29,6 +29,33 @@ pub(crate) fn desired_viewport_h(
     (status_h + queued_h + live_h + box_rows + panel_h + attach_h + 1).clamp(MIN_VIEWPORT_H, max_h)
 }
 
+/// Latched viewport floor for the frame: the estimate above short-cuts
+/// dock segments (`status_h` recomputed inside the frame after the seam
+/// latch re-arms, live rows re-wrapped at the frame width), and any
+/// measured overrun pushed the footer gauge past the viewport bottom —
+/// where it was skipped entirely, so the gauge (and the `+1` pad band
+/// below it) flickered while tokens streamed. Grow the viewport by the
+/// same amount the estimate short-cuts, so the measured frame always
+/// fits without moving the viewport's top edge (no input-box bounce).
+pub(crate) fn latched_viewport_floor(
+    status_h: u16,
+    queued_h: u16,
+    live_h: u16,
+    box_rows: u16,
+    attach_h: u16,
+    max_h: u16,
+) -> u16 {
+    // The three frames the seam latch can produce mid-turn, given the
+    // estimate short-cut `status_h` to 0: full dock (seam + status +
+    // breath), the dock without seam, and no dock at all (box + footer).
+    let with_dock = status_h + queued_h + live_h + box_rows + attach_h + 1;
+    let no_status = queued_h + live_h + box_rows + attach_h + 1;
+    // A short-cut live reserve: measured live rows push the frame past
+    // the estimate's box + footer floor.
+    let live_overrun = live_h + box_rows + attach_h + 1;
+    with_dock.max(no_status).max(live_overrun).min(max_h)
+}
+
 /// Upper bound for the inline viewport.
 ///
 /// The input box is content-sized and has to be able to grow past the idle
@@ -39,6 +66,19 @@ pub(crate) fn desired_viewport_h(
 /// and scrolls if a paste ever exceeds it.
 pub(crate) fn viewport_cap(rows: u16) -> u16 {
     rows.saturating_sub(2).max(MIN_VIEWPORT_H)
+}
+
+/// The row the footer gauge paints on, clamped into the frame.
+///
+/// The gauge is the viewport's last row, so a one-row shortfall in the
+/// pre-computed viewport estimate (`status_h` re-read inside the frame,
+/// live rows re-wrapped at the frame width) used to push `footer_y` past
+/// the bottom and skip the paint entirely — the footer flickered while
+/// tokens streamed. Clamping paints it on the frame's last row instead:
+/// one frame riding the screen bottom beats a vanished gauge. Pure for
+/// testability (`Tui::new` needs a TTY).
+pub(crate) fn footer_paint_row(footer_y: u16, area: Rect) -> Option<u16> {
+    (area.height > 0).then(|| footer_y.min(area.y + area.height - 1))
 }
 
 /// Whether the footer paints the reasoning-effort badge.
@@ -66,7 +106,10 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
 
     let text = tui.textarea.text().to_string();
     let cursor = tui.textarea.cursor().min(text.len());
-    let ibox = build_input_box(&text, cursor, w);
+    // Ghost resume hint in the empty box while bare Enter would continue.
+    let ghost =
+        (tui.allow_empty_submit && text.trim().is_empty()).then_some(crate::repl::CONTINUE_GHOST);
+    let ibox = build_input_box(&text, cursor, w, ghost);
     let box_h = ibox.lines.len().max(1) as u16;
     // Attachments row.
     let attach_h: u16 = u16::from(!tui.attachments.is_empty());
@@ -133,6 +176,21 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
         attach_h,
         max_viewport_h,
     );
+    // Footer paint row (the viewport's last row). A mid-stream text wrap can
+    // measure one row taller than this estimate (`status_h` re-read inside
+    // the frame, live rows re-wrapped at the frame width); the shortfall
+    // would push `footer_y` past the bottom and silently drop the gauge for
+    // that frame — the footer flickered while tokens streamed. Grow the
+    // viewport by the same amount the estimate short-cuts the dock, so the
+    // measured frame fits without moving the top edge (no bounce).
+    let desired = desired.max(latched_viewport_floor(
+        status_h,
+        queued_est,
+        live_est + widget_h + ask_est,
+        box_rows_est,
+        attach_h,
+        max_viewport_h,
+    ));
 
     // frankentui lesson: synchronized-output bracketing (DEC2026) — one atomic
     // present per frame so the compositor never shows a torn frame.
@@ -609,8 +667,9 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
         }
         footer_spans.push(Span::raw(" ".repeat(pad_len)));
         footer_spans.extend(right_parts);
-        if footer_y < area.y + area.height {
-            // Transparent footer: text only, no full-bleed band.
+        // Transparent footer: text only, no full-bleed band. Painted on the
+        // row `footer_paint_row` clamps into the frame — never skipped.
+        if let Some(footer_y) = footer_paint_row(footer_y, area) {
             frame.render_widget(
                 Paragraph::new(Line::from(footer_spans)),
                 Rect::new(area.x, footer_y, area.width, 1),

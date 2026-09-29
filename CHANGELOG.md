@@ -2,6 +2,64 @@
 
 ## [Unreleased]
 
+## [0.1.7] - 2026-09-29
+
+### Added
+
+- The composer keeps its place, and its footer stops flickering. A latched
+  viewport floor (`latched_viewport_floor`) grows the frame by exactly what
+  the pre-computed dock estimate short-cuts mid-stream, and the footer gauge
+  paints on the frame's last row (`footer_paint_row`) instead of being pushed
+  past the bottom and skipped for that frame — `Ω 223.8k/300k` and the pad band
+  under it now ride out a mid-turn text wrap. Shrinking the viewport keeps its
+  top edge fixed, so no blank scrollback is painted behind the box.
+
+- Bare Enter continues. While the last turn is resumable, the empty input box
+  shows a dim `Please continue…` ghost hint and submitting empty text continues
+  the conversation; a box with text (or an attachment) still submits it.
+
+- Streaming rows hold orphan punctuation. A lone `.`/`,`/`?` arriving as its own
+  delta is held until the next chunk says whether it belongs to it, then
+  released glued to what follows — no more a frozen lone-`.` transcript row at
+  an interrupt.
+
+### Fixed
+
+- `~/.gray/provider_models.json` no longer accepts loopback base URLs. A local
+  server's port changes on every start (and a unit test's is random) and
+  nothing evicted old keys, so every one was a permanent dead entry — 43 had
+  piled up. Remote providers still persist, so `/model` still paints its cached
+  list instantly.
+
+- The provider model-list fetch no longer rides the ambient Tokio runtime: a
+  background refresh that outlives REPL shutdown used to kill its thread with
+  `Tokio 1.x context ... being shutdown`. It runs in its own short-lived
+  current-thread runtime.
+
+- Binary detection in the read guard no longer magic-sniffs the first bytes —
+  the NUL check decides — and a regular-file-to-FIFO swap between the guard and
+  the open is now caught by an `O_NONBLOCK` open instead of hanging the turn.
+
+### Changed
+
+- Self-update hashing uses the `sha2` crate that is already a dependency
+  instead of shelling out to `sha256sum`/`shasum` and writing the tarball to a
+  temp file.
+
+- gray-markdown drops the incremental open-block cache (its measured cost was
+  maintenance, not reads) and the LaTeX-to-unicode stack — raw TeX shows as
+  typed. Unicode repair uses a minimal Latin accent table instead of the
+  `unicode-normalization` crate, so the dep count holds.
+
+- The shell lane is one type carrying the live child, its process-group guard,
+  the output pump and the liveness clock, instead of four parallel ones.
+
+### Chore
+
+- The internal working journal (superpowers plans, study notes, session
+  records) is untracked from the public repo; reference and product docs stay
+  tracked.
+
 ## [0.1.6] - 2026-09-28
 
 ### Added

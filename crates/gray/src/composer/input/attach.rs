@@ -122,7 +122,7 @@ pub(crate) fn try_attach_image_paste(tui: &mut Tui, pasted: &str) -> bool {
 
 /// Paste an image from the OS clipboard via native helpers
 /// (wl-paste/xclip). Image first, then clipboard text via the caller.
-// ponytail: arboard removed, native helpers only. If Wayland session
+// arboard removed, native helpers only. If Wayland session
 // quirks ever bite, the text-path fallback below still catches pasted paths.
 pub(crate) fn try_attach_clipboard_image(tui: &mut Tui) -> bool {
     for (cmd, args) in [

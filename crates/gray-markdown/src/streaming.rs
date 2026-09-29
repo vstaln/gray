@@ -220,7 +220,7 @@ impl StreamingMarkdownRenderer {
             tail_start += 1;
         }
         let tail = &self.source[tail_start..];
-        // ponytail: incremental open-block cache removed; the tail
+        // incremental open-block cache removed; the tail
         // re-highlights from scratch each pass.
         let (tail_output, checkpoint, tail_next_link_id) = render_markdown_ratatui_with_link_id(
             tail,

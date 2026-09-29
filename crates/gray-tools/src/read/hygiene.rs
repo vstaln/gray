@@ -17,7 +17,7 @@ pub fn strip_bom(bytes: &[u8]) -> &[u8] {
 /// NUL-byte sniff over the first 8 KiB. `Ok(())` = text, proceed;
 /// `Err(note)` = binary one-liner, return as-is with `is_error=false`.
 /// Extension is never consulted — NUL bytes only.
-// ponytail: magic-sniff dropped, NUL check decides binary. If a NUL-free
+// magic-sniff dropped, NUL check decides binary. If a NUL-free
 // binary format ever slips through as text, restore magic detection.
 pub fn sniff(data: &[u8], display: &str) -> Result<(), String> {
     let sample_len = data.len().min(SNIFF_SAMPLE_BYTES);

@@ -57,7 +57,7 @@ pub fn endpoint_with(base: &str, path: &str) -> anyhow::Result<String> {
 }
 
 /// Loopback by name or by address, IPv6 brackets included.
-fn is_loopback_host(host: &str) -> bool {
+pub(crate) fn is_loopback_host(host: &str) -> bool {
     let host = host
         .strip_prefix('[')
         .and_then(|h| h.strip_suffix(']'))

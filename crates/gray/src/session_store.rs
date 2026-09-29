@@ -402,7 +402,7 @@ impl JsonlSessionStore {
     /// `(next_id, parent_id)` for append paths: reads the file and runs the
     /// same [`Self::scan_entries`] validation the load path uses, so a torn
     /// tail / corrupt entry is refused with its real line number.
-    // ponytail: full rescan per append (O(n²) per session); restore a tail
+    // full rescan per append (O(n²) per session); restore a tail
     // probe + length cursor if append latency ever shows up.
     async fn next_ids_for_append(id: &SessionId, path: &Path) -> Result<(u64, Option<u64>)> {
         let content = match tokio::fs::read_to_string(path).await {

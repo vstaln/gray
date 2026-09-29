@@ -208,7 +208,7 @@ pub fn render_dimmed_background(frame: &mut ratatui::Frame, bg: &BackgroundSnaps
     // cards dim through the same path (no preservation branch).
     let box_bg = crate::theme::theme().surface_bg;
     let input_bg = dim_color(box_bg);
-    // ponytail: dim through the color map, not just SGR faint — terminals
+    // dim through the color map, not just SGR faint — terminals
     // that ignore Modifier::DIM showed these at full brightness behind modals.
     let faint_dimmed = dim_color(crate::theme::theme().text_faint);
     let prompt_arrow_color = faint_dimmed;

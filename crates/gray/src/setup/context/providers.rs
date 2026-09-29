@@ -493,21 +493,22 @@ async fn fetch_models_async(base: String, key: Option<String>) -> Vec<(String, S
 pub fn fetch_live_provider_models(base_url: &str, api_key: Option<&str>) -> Vec<(String, String)> {
     let base = base_url.to_string();
     let key = api_key.map(|k| k.to_string());
-    if let Ok(handle) = tokio::runtime::Handle::try_current() {
-        std::thread::scope(|s| {
-            s.spawn(move || handle.block_on(fetch_models_async(base, key)))
-                .join()
-                .unwrap_or_default()
+    // ponytail: isolated short-lived runtime, never the ambient Handle — block_on
+    // on a borrowed handle panics with "Tokio 1.x context ... being shutdown"
+    // when a background fetch outlives REPL shutdown. Own runtime = no coupling.
+    std::thread::scope(|s| {
+        s.spawn(move || {
+            match tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(rt) => rt.block_on(fetch_models_async(base, key)),
+                Err(_) => Vec::new(),
+            }
         })
-    } else {
-        match tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-        {
-            Ok(rt) => rt.block_on(fetch_models_async(base, key)),
-            Err(_) => Vec::new(),
-        }
-    }
+        .join()
+        .unwrap_or_default()
+    })
 }
 
 static MODEL_CONTEXT_CACHE: std::sync::OnceLock<
@@ -586,6 +587,15 @@ pub fn cached_model_ids() -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// Loopback endpoint (`localhost`, `127.0.0.0/8`, `::1`) by host, unparseable
+/// input treated as not loopback (the caller is a normalized base URL).
+fn is_loopback_base(base: &str) -> bool {
+    reqwest::Url::parse(base)
+        .ok()
+        .and_then(|u| u.host_str().map(str::to_string))
+        .is_some_and(|host| crate::account::is_loopback_host(&host))
+}
+
 /// A previous session's provider model list, so the picker paints instantly
 /// and only the background refresh touches the network. On-disk list cache
 /// (`~/.gray/provider_models.json`, `{ "<base>": [["id", "name"], ...] }`),
@@ -600,7 +610,12 @@ pub(crate) fn save_provider_model_list_at(
         return;
     }
     let base = crate::setup::catalog::normalize_custom_base_url(base_url);
-    if base.is_empty() {
+    if base.is_empty() || is_loopback_base(&base) {
+        // Loopback gets no disk entry: the fetch is already sub-millisecond
+        // local (nothing to paint ahead of), and the port changes on every
+        // restart — each one a dead key this cache would keep forever (a unit
+        // test's random port added one per `cargo test`). There is no
+        // eviction, so refusing the write is the only bound that holds.
         return;
     }
     let path = home.join("provider_models.json");
