@@ -75,7 +75,7 @@ pub fn render_markdown_ratatui_with_buffers_width(
     syntect: Option<&Syntect>,
     max_table_width: Option<usize>,
 ) -> (MarkdownRenderOutput, Option<Checkpoint>) {
-    // ponytail: latex delimiter normalization removed with the
+    // latex delimiter normalization removed with the
     // latex-to-unicode stack; `$`/`$$` pass through as raw TeX.
     let mut parsed = MarkdownParser::new(text, ms, buffers, syntect)
         .max_table_width(max_table_width)

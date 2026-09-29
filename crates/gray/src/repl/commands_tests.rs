@@ -1,5 +1,16 @@
 use super::{ReplCommand, parse_command};
 #[test]
+fn continue_payload_routes_to_the_model() {
+    // Bare-Enter resume sends CONTINUE_PROMPT as a normal turn: it must
+    // never parse as Empty (would no-op) or a slash command (would dispatch).
+    assert!(matches!(super::parse_command(""), ReplCommand::Empty));
+    assert!(matches!(
+        super::parse_command(super::super::CONTINUE_PROMPT),
+        ReplCommand::Prompt(_)
+    ));
+}
+
+#[test]
 fn slash_name_with_slash_is_plain_prompt_like_codex() {
     // Reported bug: pasting Rust `///` doc comments said "unknown command".
     let pasted = "/// Default system prompt, shipped as markdown and materialized to `~/.gray/sys.md`\n/// on first run.";

@@ -180,7 +180,7 @@ impl LineStream {
         display: &str,
         cancel: CancellationToken,
     ) -> std::io::Result<Self> {
-        // ponytail: O_NONBLOCK open so a regular→FIFO swap between the guard
+        // O_NONBLOCK open so a regular→FIFO swap between the guard
         // and here fails fast instead of hanging the task; re-check type
         // post-open (TOCTOU) and refuse non-regular files.
         #[cfg(unix)]

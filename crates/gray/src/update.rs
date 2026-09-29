@@ -178,33 +178,8 @@ fn shell_escape(s: &str) -> String {
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
-    // ponytail: shell out to sha256sum/shasum, no new dep for one check
-    let tmp = std::env::temp_dir().join(format!("gray-hash-{}", std::process::id()));
-    if std::fs::write(&tmp, bytes).is_err() {
-        return String::new();
-    }
-    for prog in ["sha256sum", "shasum"] {
-        let args: &[&str] = if prog == "shasum" {
-            &["-a", "256"]
-        } else {
-            &[]
-        };
-        if let Ok(out) = Command::new(prog).args(args).arg(&tmp).output()
-            && out.status.success()
-        {
-            let hex: String = String::from_utf8_lossy(&out.stdout)
-                .split_whitespace()
-                .next()
-                .unwrap_or_default()
-                .to_lowercase();
-            let _ = std::fs::remove_file(&tmp);
-            if hex.len() == 64 {
-                return hex;
-            }
-        }
-    }
-    let _ = std::fs::remove_file(&tmp);
-    String::new()
+    use sha2::Digest as _;
+    format!("{:x}", sha2::Sha256::digest(bytes))
 }
 
 /// Exclusive-update lock path: `<gray-home>/logs/update.lock` (temp fallback).

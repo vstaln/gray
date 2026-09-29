@@ -220,7 +220,7 @@ pub struct TableReplace {
 /// Calculate the display width of a string (accounting for Unicode).
 pub fn unicode_display_width(s: &str) -> usize {
     use unicode_width::UnicodeWidthStr;
-    // ponytail: dropped LRU; re-add if profiling shows width() hot
+    // dropped LRU; re-add if profiling shows width() hot
     s.width()
 }
 

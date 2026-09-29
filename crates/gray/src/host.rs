@@ -42,7 +42,7 @@ fn background(params: serde_json::Value) -> anyhow::Result<()> {
     tui.set_background(request.path.as_deref())
 }
 
-// ponytail: bounded queue; a chatty sidecar must not grow this without limit
+// bounded queue; a chatty sidecar must not grow this without limit
 const MAX_SAY_QUEUE: usize = 32;
 static SAY_QUEUE: Mutex<Vec<String>> = Mutex::new(Vec::new());
 

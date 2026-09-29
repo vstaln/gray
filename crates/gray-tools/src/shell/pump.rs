@@ -61,7 +61,7 @@ impl MemView {
         self.tail.extend(chunk.iter().copied());
         let excess = self.tail.len().saturating_sub(MEM_TAIL_BYTES);
         if excess > 0 {
-            // ponytail: VecDeque drain is O(excess); never Vec::remove(0).
+            // VecDeque drain is O(excess); never Vec::remove(0).
             self.tail.drain(..excess);
         }
         self.total_bytes += chunk.len() as u64;

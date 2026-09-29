@@ -88,7 +88,7 @@ fn parse_yaml_like(s: &str) -> SkillFrontmatter {
         // `+`/`-`): gather the indented continuation lines YAML folds into
         // the value. Without this a folded description parses as the bare
         // marker (`">"`), silently breaking skill discovery text.
-        // ponytail: chomping nuances ignored, descriptions are trimmed downstream.
+        // chomping nuances ignored, descriptions are trimmed downstream.
         let folded = val == ">" || val == ">-" || val == ">+";
         let literal = val == "|" || val == "|-" || val == "|+";
         if folded || literal {

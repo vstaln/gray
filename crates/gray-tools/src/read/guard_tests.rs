@@ -92,7 +92,7 @@ fn metadata_char_device_fifo_socket_refused() {
         assert!(err.contains("is a device;"), "{err}");
     }
     let dir = tempfile::tempdir().unwrap();
-    // ponytail: libc is already a dependency; no new crate for one mkfifo.
+    // libc is already a dependency; no new crate for one mkfifo.
     let fifo = dir.path().join("f.fifo");
     let cstr = std::ffi::CString::new(fifo.to_str().unwrap()).unwrap();
     assert_eq!(unsafe { libc::mkfifo(cstr.as_ptr(), 0o600) }, 0);

@@ -197,6 +197,47 @@ fn footer_badge_snapshot_freezes_the_right_segment_mid_turn() {
     assert!(footer_badge_visible(live_model, Some(true)));
 }
 
+/// The footer gauge is the viewport's last row: a one-row shortfall in the
+/// pre-computed viewport estimate (mid-stream text wraps taller than the
+/// estimate) used to push `footer_y` past the frame bottom and skip the
+/// paint — the gauge vanished for that frame while tokens streamed. The
+/// clamp paints it on the frame's last row instead.
+#[test]
+fn footer_paint_row_clamps_into_the_frame_instead_of_vanishing() {
+    let area = Rect::new(0, 10, 40, 6);
+    // In budget: unchanged.
+    assert_eq!(footer_paint_row(15, area), Some(15));
+    // One row over: painted on the last frame row, never skipped.
+    assert_eq!(footer_paint_row(16, area), Some(15));
+    assert_eq!(footer_paint_row(20, area), Some(15));
+    // Zero-height frame paints nothing.
+    assert_eq!(footer_paint_row(5, Rect::new(0, 0, 40, 0)), None);
+}
+
+/// The latched viewport: whenever the estimate short-cuts a dock segment
+/// (`status_h` re-read inside the frame after the ratchet latch re-arms),
+/// the floor must already cover the tallest possible frame so the measured
+/// rows fit without a second grow (the footer/padding flicker).
+#[test]
+fn latched_viewport_floor_covers_the_measured_frame_when_the_estimate_shortcuts_a_segment() {
+    // Estimate short-cut the dock entirely (status_h computed as 0 at
+    // sizing time): the frame can still measure up to 3 dock rows
+    // (seam + status + breath) plus the footer.
+    for status_h in 0..=3u16 {
+        let floor = latched_viewport_floor(status_h, 0, 0, 3, 0, viewport_cap(40));
+        assert!(
+            floor >= status_h + 3 + 1,
+            "status_h={status_h}: floor {floor} cannot hold dock {status_h} + box 3 + footer"
+        );
+    }
+    // A short-cut live-row reserve (estimate 0, frame measures 2) keeps
+    // the input box and footer inside the viewport too.
+    let floor = latched_viewport_floor(0, 0, 2, 3, 0, viewport_cap(40));
+    assert!(floor >= 0 + 2 + 3 + 1);
+    // The floor never exceeds the screen cap.
+    assert_eq!(latched_viewport_floor(3, 0, 0, 30, 0, 10), 10);
+}
+
 #[test]
 fn chrome_row_paints_the_whole_composer_band() {
     use ratatui::widgets::Widget;

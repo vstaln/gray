@@ -293,10 +293,21 @@ pub struct Tui {
     stream_round_had_text: bool,
     /// Index of the prose history block that owns a pending continuation.
     stream_round_target: Option<usize>,
+    /// Punctuation-only delta held back one chunk (`stream_text`): the
+    /// markdown renderer freezes complete blocks, so a trailing punctuation
+    /// chunk (mid-round split or post-interrupt tail) would freeze as its
+    /// own lone-`.` paragraph row. Released into the renderer when the next
+    /// meaningful delta, thinking, a tool event, or the turn end proves it
+    /// wasn't an orphan continuation.
+    stream_punct_hold: String,
     active_compaction: Option<ActiveCompaction>,
     turn_started: Option<Instant>,
     turn_had_thinking: bool,
     pub is_task_running: bool,
+    /// Bare Enter resumes the last turn when it was interrupted or errored
+    /// (opencode "press Enter to continue"). Set by the REPL loop; the input
+    /// layer only gates the empty-submit swallow on it.
+    pub allow_empty_submit: bool,
     /// An alternate-screen modal owns the terminal: the 100ms ticker must not
     /// draw (its frames land on the modal's screen as duplicated chrome).
     /// Set by with_modal/with_modal_sync around every modal call.
@@ -531,10 +542,12 @@ impl Tui {
             stream_round_boundary: false,
             stream_round_had_text: false,
             stream_round_target: None,
+            stream_punct_hold: String::new(),
             active_compaction: None,
             turn_started: None,
             turn_had_thinking: false,
             is_task_running: false,
+            allow_empty_submit: false,
             modal_open: false,
             queued_inputs: std::collections::VecDeque::new(),
             local_command: None,
@@ -602,6 +615,15 @@ impl Tui {
     /// Finishes the live markdown renderer and commits every row past the
     /// last committed offset. Shared by the reflow drain and `flush_markdown`.
     fn commit_markdown_tail(&mut self) {
+        // A held punctuation burst is a continuation of the paragraph the
+        // renderer is about to finish: fold it into the source before the
+        // full re-render, or `finish()` would freeze it as its own lone
+        // `.` row — the very thing the hold exists to prevent.
+        if !self.stream_punct_hold.is_empty() {
+            let held = std::mem::take(&mut self.stream_punct_hold);
+            self.markdown_renderer
+                .push_and_render(&held, Some(gray_markdown::get_syntect()));
+        }
         let output = std::mem::replace(
             &mut self.markdown_renderer,
             gray_markdown::StreamingMarkdownRenderer::new(
@@ -1034,6 +1056,9 @@ impl Tui {
         self.stream_round_boundary = false;
         self.stream_round_had_text = false;
         self.stream_round_target = None;
+        // Fresh turn: a hold left by an interrupted turn is its orphan tail,
+        // not a continuation of what this turn is about to stream.
+        self.discard_held_punctuation();
         // Codex `status_controls.rs`: follow-up input and background activity
         // must not obscure an active compaction — keep its header/clock.
         if let Some(active) = self.active_compaction.clone() {
@@ -1220,6 +1245,10 @@ impl Tui {
         self.stream_round_boundary = false;
         self.stream_round_had_text = false;
         self.stream_round_target = None;
+        // The turn is over: a still-held punctuation burst was the final
+        // delta (interrupt/stream end) — an orphan continuation that must
+        // not freeze as a lone `.` transcript row.
+        self.discard_held_punctuation();
         self.is_task_running = false;
         self.status = None;
         self.turn_show_effort = None;
