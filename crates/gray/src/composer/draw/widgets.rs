@@ -40,8 +40,9 @@ pub(crate) fn shimmer_spans(text: &str, elapsed: Duration) -> Vec<Span<'static>>
         .collect()
 }
 
-/// Input box render state: styled lines (own internal top/bottom margin rows,
-/// `❯` prompt) plus the cursor position within them.
+/// Input box render state: styled lines (own internal top/bottom margin
+/// rows, `❯` prompt) plus the cursor position within them. `cur_row` is an
+/// index into `lines`, so it carries the top pad's offset.
 pub(crate) struct InputBox {
     pub(crate) lines: Vec<Line<'static>>,
     pub(crate) cur_row: usize,
@@ -66,7 +67,8 @@ pub(crate) fn build_input_box(
 
     let mut box_lines: Vec<Line<'static>> = Vec::new();
 
-    // Top padding inside the box
+    // Top padding inside the box: the blank row the box owns above its
+    // `❯` row, so the prompt never sits flush against the row above it.
     box_lines.push(Line::from(""));
 
     // Prompt input rows
@@ -195,7 +197,9 @@ pub(crate) fn build_input_box(
 
     InputBox {
         lines: box_lines,
-        cur_row,
+        // Content rows were counted from the `❯` row; the top pad shifts
+        // every one of them down a row.
+        cur_row: cur_row + 1,
         cur_col,
     }
 }
@@ -228,14 +232,21 @@ pub(crate) fn status_dock_h(has_status: bool, needs_seam: bool) -> u16 {
     2 + u16::from(needs_seam)
 }
 
-/// Grow-only latch for the dock seam: the streaming tail flickers
-/// blank/non-blank between chunks, so the dock may grow mid-turn but never
-/// shrinks mid-stream until the status clears. Checkpoint trailing gaps
-/// (`Thought for` spacer, tool-box trailing) release it explicitly (see
-/// `release_dock_seam`) so the seam never stacks a second blank above the
-/// live status. Pure for testability (`Tui::new` needs a TTY).
-pub(crate) fn ratchet_seam(cached: bool, has_status: bool, live_needs: bool) -> bool {
-    has_status && (cached || live_needs)
+/// Whether the dock reserves a seam row this frame.
+///
+/// Purely structural: a seam exists only while there is a live status AND
+/// the scrollback tail is non-blank. The previous grow-only latch kept the
+/// seam on after a blank row was committed, stacking the viewport seam on
+/// the scrollback gap — the intermittent doubled margin — unless every
+/// writer of a blank row remembered to call `release_dock_seam`. A blank
+/// tail and a seam are mutually exclusive by construction now, so no
+/// writer can forget. `_cached` is kept for call-site compatibility.
+/// Geometry stays smooth: committing the blank moves the seam row into
+/// scrollback and drops it from the viewport in the same synchronized
+/// frame, so the input box does not move. Pure for testability
+/// (`Tui::new` needs a TTY).
+pub(crate) fn ratchet_seam(_cached: bool, has_status: bool, live_needs: bool) -> bool {
+    has_status && live_needs
 }
 
 /// Queued follow-up inputs held while a turn is in flight (codex

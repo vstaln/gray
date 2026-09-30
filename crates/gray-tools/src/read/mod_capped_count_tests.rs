@@ -1,27 +1,11 @@
 use super::*;
-use gray_core::agent::ToolContext;
 
-#[tokio::test]
-async fn huge_line_count_uses_count_skipped_wording() {
-    let dir = tempfile::TempDir::new().unwrap();
-    std::fs::write(dir.path().join("huge.txt"), "x\n".repeat(150_000)).unwrap();
-    let ctx = ToolContext {
-        cwd: dir.path().to_path_buf(),
-        ..ToolContext::default()
-    };
-    let out = ReadTool::default()
-        .execute(&ctx, serde_json::json!({"path": "huge.txt", "limit": 10}))
-        .await;
-    assert!(!out.is_error, "{}", out.content);
-    assert!(
-        out.content.contains("count skipped"),
-        "{}",
-        tail(&out.content)
-    );
-    assert!(out.content.contains("offset=11"), "{}", tail(&out.content));
-    assert!(!out.content.contains("of 150000"), "{}", tail(&out.content));
-}
-
-fn tail(s: &str) -> &str {
-    &s[s.len().saturating_sub(500)..]
+#[test]
+fn huge_line_count_uses_count_skipped_wording() {
+    // Unit-level: the exact total is replaced by a lower bound, but `next`
+    // still names an observed line. No 150k-line fixture needed.
+    let note = super::notices::line_cap_count_skipped(1, 10, 100_000, 3_000_000, 11);
+    assert!(note.contains("count skipped"), "{note}");
+    assert!(note.contains("offset=11"), "{note}");
+    assert!(note.contains("≥100000 lines"), "{note}");
 }

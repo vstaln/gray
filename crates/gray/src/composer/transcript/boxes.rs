@@ -4,8 +4,11 @@ use super::*;
 
 impl Tui {
     pub fn push_tool_box(&mut self, header: Line<'static>, body: Vec<Line<'static>>) {
-        self.insert_tool_box(header, body);
-        self.ensure_gap(1);
+        // Leading gap + card + trailing gap land as one synchronized frame.
+        self.atomic(|t| {
+            t.insert_tool_box(header, body);
+            t.ensure_gap(1);
+        });
         self.release_dock_seam();
         if self.transcript.len() > 1000 {
             self.transcript.drain(0..100);
@@ -122,37 +125,39 @@ impl Tui {
         }
         let total_h = all_wrapped.len() as u16;
         let lines_only: Vec<Line<'static>> = all_wrapped.iter().map(|(l, _)| l.clone()).collect();
-        let _ = self.terminal.insert_before(total_h, |buf| {
-            let area = buf.area;
-            for (i, (line, hls)) in all_wrapped.iter().enumerate() {
-                let row_area = ratatui::layout::Rect {
-                    x: area.x,
-                    y: area.y + i as u16,
-                    width: area.width,
-                    height: 1,
-                };
-                Paragraph::new(line.clone()).render(row_area, buf);
-                for h in hls {
-                    for col in h.column_range.clone() {
-                        let padded_col = col + 1;
-                        if padded_col >= area.width as usize {
-                            continue;
+        let _ = self.atomic(|t| {
+            t.terminal.insert_before(total_h, |buf| {
+                let area = buf.area;
+                for (i, (line, hls)) in all_wrapped.iter().enumerate() {
+                    let row_area = ratatui::layout::Rect {
+                        x: area.x,
+                        y: area.y + i as u16,
+                        width: area.width,
+                        height: 1,
+                    };
+                    Paragraph::new(line.clone()).render(row_area, buf);
+                    for h in hls {
+                        for col in h.column_range.clone() {
+                            let padded_col = col + 1;
+                            if padded_col >= area.width as usize {
+                                continue;
+                            }
+                            let x = area.x + padded_col as u16;
+                            let y = area.y + i as u16;
+                            if x >= area.x + area.width || y >= area.y + area.height {
+                                continue;
+                            }
+                            let cell = &mut buf[(x, y)];
+                            if cell.symbol().trim().is_empty() {
+                                continue;
+                            }
+                            let sym = cell.symbol().to_string();
+                            let new_sym = format!("\x1b]8;;{}\x07{}\x1b]8;;\x07", h.url, sym);
+                            cell.set_symbol(&new_sym);
                         }
-                        let x = area.x + padded_col as u16;
-                        let y = area.y + i as u16;
-                        if x >= area.x + area.width || y >= area.y + area.height {
-                            continue;
-                        }
-                        let cell = &mut buf[(x, y)];
-                        if cell.symbol().trim().is_empty() {
-                            continue;
-                        }
-                        let sym = cell.symbol().to_string();
-                        let new_sym = format!("\x1b]8;;{}\x07{}\x1b]8;;\x07", h.url, sym);
-                        cell.set_symbol(&new_sym);
                     }
                 }
-            }
+            })
         });
         lines_only
     }

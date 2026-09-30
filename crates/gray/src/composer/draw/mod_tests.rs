@@ -21,14 +21,29 @@ fn transcript_ends_blank_matches_ensure_gap() {
 
 #[test]
 fn desired_viewport_exact_fit() {
-    // Idle: input 3 + footer 1 = 4 rows (MIN_VIEWPORT_H).
-    assert_eq!(desired_viewport_h(0, 0, 0, 3, 0, 0, viewport_cap(40)), 4);
-    // Slash popup: input 3 + panel 6 + footer 1 = 10.
-    assert_eq!(desired_viewport_h(0, 0, 0, 3, 6, 0, viewport_cap(40)), 10);
-    // Running: status 2 + input 3 + footer 1 = 6.
-    assert_eq!(desired_viewport_h(2, 0, 0, 3, 0, 0, viewport_cap(40)), 6);
+    // The idle box is measured, not hard-coded: 3 rows (top pad, `❯`, pad).
+    let box_rows = build_input_box("", 0, 80, None).lines.len() as u16;
+    assert_eq!(box_rows, 3, "top pad + prompt + bottom pad");
+    // Idle: box 3 + footer 1 = 4 rows (MIN_VIEWPORT_H).
+    assert_eq!(
+        desired_viewport_h(0, 0, 0, box_rows, 0, 0, viewport_cap(40)),
+        MIN_VIEWPORT_H
+    );
+    // Slash popup: box 3 + panel 6 + footer 1 = 10.
+    assert_eq!(
+        desired_viewport_h(0, 0, 0, box_rows, 6, 0, viewport_cap(40)),
+        10
+    );
+    // Running: status 2 + box 3 + footer 1 = 6.
+    assert_eq!(
+        desired_viewport_h(2, 0, 0, box_rows, 0, 0, viewport_cap(40)),
+        6
+    );
     // Running + full panel: 3 + 3 + 6 + 1 = 13.
-    assert_eq!(desired_viewport_h(3, 0, 0, 3, 6, 0, viewport_cap(40)), 13);
+    assert_eq!(
+        desired_viewport_h(3, 0, 0, box_rows, 6, 0, viewport_cap(40)),
+        13
+    );
     // Question panel: expands up to available screen height to show all options.
     assert_eq!(desired_viewport_h(0, 0, 0, 0, 15, 0, 23), 16);
 }
@@ -37,7 +52,7 @@ fn desired_viewport_exact_fit() {
 ///
 /// The cap used to be `viewport_cap(40) + widget_h`, so the whole inline viewport --
 /// and therefore the input box -- was pinned near 14 rows. A pasted paragraph
-/// that wrapped to 12 content rows plus the two margin rows hit exactly 14 and
+/// that wrapped to 12 content rows plus the margin row hit exactly 13 and
 /// lost its last row; anything longer was cut hard. The cap is the screen now.
 #[test]
 fn viewport_cap_is_screen_bounded_not_viewport_h() {
@@ -56,8 +71,8 @@ fn viewport_cap_is_screen_bounded_not_viewport_h() {
 /// Given a screen-bounded cap the box fits.
 #[test]
 fn multiline_input_is_not_clipped_by_the_viewport_cap() {
-    // 12 wrapped content rows + the two margin rows build_input_box adds.
-    let box_rows: u16 = 14;
+    // 12 wrapped content rows + the bottom margin build_input_box adds.
+    let box_rows: u16 = 13;
     let rows: u16 = 40;
     let cap = viewport_cap(rows);
     let desired = desired_viewport_h(0, 0, 0, box_rows, 0, 0, cap);
@@ -69,52 +84,43 @@ fn multiline_input_is_not_clipped_by_the_viewport_cap() {
     assert!(desired <= cap);
 }
 
-/// One streamed paragraph arriving chunk by chunk flips the transcript
-/// tail blank / non-blank between frames. Driven through the exact path
-/// `draw` uses: the viewport must hold still instead of bouncing 6<->7
-/// rows per chunk (the reported input-box bounce).
+/// The dock seam and a blank scrollback tail are mutually exclusive by
+/// construction: a blank tail already separates scrollback from the status,
+/// so a seam on top of it is the doubled margin. Driven through the exact
+/// predicate `draw` uses, including a tail that flips blank / non-blank
+/// between chunks and a stale `cached` flag from an earlier frame.
 #[test]
-fn streaming_tail_flicker_holds_viewport_still() {
-    let mut cached = false;
-    let mut heights = Vec::new();
-    for blank in [true, false, true, false, true] {
-        cached = ratchet_seam(cached, true, !blank);
-        heights.push(desired_viewport_h(
-            status_dock_h(true, cached),
-            0,
-            0,
-            3,
-            0,
-            0,
-            viewport_cap(40),
-        ));
+fn seam_never_stacks_on_a_blank_tail() {
+    for cached in [false, true] {
+        for blank_tail in [false, true] {
+            let seam = ratchet_seam(cached, true, !blank_tail);
+            let blank_rows_above_status = usize::from(blank_tail) + usize::from(seam);
+            assert!(
+                blank_rows_above_status <= 1,
+                "cached={cached} blank_tail={blank_tail}: {blank_rows_above_status} blank rows"
+            );
+            // Exactly one separator row in every state.
+            assert_eq!(blank_rows_above_status, 1);
+        }
     }
-    // One growth step when content first flows, then steady — never an
-    // oscillation. Latch releases when the status clears.
-    assert_eq!(heights, vec![6, 7, 7, 7, 7], "heights: {heights:?}");
-    assert!(!ratchet_seam(true, false, true));
+    assert!(!ratchet_seam(true, false, true), "no status, no dock");
 }
 
-/// Checkpoint trailing gaps (`Thought for` spacer, tool-box trailing)
-/// release the seam latch, so the gap never stacks with a latched seam
-/// into a double blank above the live status. Streaming re-latches on
-/// the next non-blank frame, so per-chunk flicker still holds steady.
+/// Checkpoint gaps (`Thought for` spacer, tool-box trailing) need no
+/// explicit release any more: the frame after the gap derives no seam.
 #[test]
-fn checkpoint_gap_releases_seam_to_single_spaced_status() {
-    // thinking streams: tail non-blank latches the seam on.
+fn checkpoint_gap_yields_single_spaced_status() {
+    // thinking streams: non-blank tail needs the seam.
     let mut seam = ratchet_seam(false, true, true);
     assert!(seam);
-    // Thought summary commits + trailing spacer gap; the checkpoint
-    // releases the latch (see `release_dock_seam` callers).
-    seam = false;
-    // status-only frames with a blank tail: no seam, status + breath.
+    assert_eq!(status_dock_h(true, seam), 3, "seam + status + breath");
+    // The gap commits: blank tail, even if nothing released the old flag.
     seam = ratchet_seam(seam, true, false);
     assert!(!seam, "seam must not stack on the checkpoint gap");
     assert_eq!(status_dock_h(true, seam), 2, "status + breath only");
-    // answer streams: first non-blank row re-latches, height steady.
+    // answer streams: first non-blank row brings the seam back.
     seam = ratchet_seam(seam, true, true);
     assert!(seam);
-    assert_eq!(status_dock_h(true, seam), 3, "seam + status + breath");
 }
 
 #[test]
@@ -254,4 +260,57 @@ fn chrome_row_paints_the_whole_composer_band() {
         crate::theme::theme().surface_bg,
         "the band covers the full row, not just the text cells"
     );
+}
+
+/// The text area and the context footer always keep their rows: whatever
+/// the live cards, widget, ask modal and queued preview want, they are
+/// capped by what the screen has left after the rows that must survive.
+#[test]
+fn the_text_area_and_footer_are_never_trimmed_away() {
+    // 30-row screen, 3-row dock, 2-row box, 1-row footer: 24 rows of band.
+    assert_eq!(band_budget(30, 3 + 2 + 0 + 1), 24);
+    // A 4-row box (a two-line draft) eats the band above it, never the reverse.
+    assert_eq!(band_budget(30, 3 + 4 + 1), 22);
+    // Short screen: the budget floors at zero instead of going negative.
+    assert_eq!(band_budget(6, 3 + 3 + 1), 0);
+}
+
+/// A busy turn is trimmed most-transient-first and the total never exceeds
+/// the allowance, so the box and the footer keep their rows.
+#[test]
+fn a_busy_band_is_trimmed_most_transient_first() {
+    // Counts in trim order: ask modal, queued follow-up, plugin widget,
+    // live tool cards. 6 rows of allowance on a busy turn: the blocking
+    // ask modal and the user's own text keep their rows, the widget
+    // decoration is cut, the elastic live cards take what is left.
+    let mut counts = [2, 2, 4, 10];
+    trim_to_allowance(&mut counts, 6);
+    assert_eq!(counts, [2, 2, 2, 0]);
+    // An allowance with no room trims everything and never goes negative.
+    let mut counts = [2, 2, 4, 10];
+    trim_to_allowance(&mut counts, 0);
+    assert_eq!(counts, [0, 0, 0, 0]);
+    // Room to spare leaves the counts alone.
+    let mut counts = [10, 2];
+    trim_to_allowance(&mut counts, 40);
+    assert_eq!(counts, [10, 2]);
+}
+
+/// The reported bug: the box kept painting "Please continue…" while the
+/// resumed turn was already streaming. The flag is armed when the REPL loop
+/// blocks on input — before that turn is submitted — so mid-turn it is stale.
+#[test]
+fn continue_ghost_hides_while_a_turn_runs() {
+    // Idle with a resume pending: the hint is the point of the feature.
+    assert_eq!(
+        continue_ghost(true, false, ""),
+        Some(crate::repl::CONTINUE_GHOST)
+    );
+    // Streaming: never, whatever the stale flag says.
+    assert_eq!(continue_ghost(true, true, ""), None, "no ghost mid-turn");
+    // Typing, or no pending resume: no hint either.
+    assert_eq!(continue_ghost(true, false, "hi"), None);
+    assert_eq!(continue_ghost(false, false, ""), None);
+    // The flag is dropped at turn start, so the input gate is honest too.
+    // (`begin_turn` needs a TTY; the predicate above is the testable seam.)
 }

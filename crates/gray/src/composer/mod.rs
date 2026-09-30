@@ -284,6 +284,12 @@ pub struct Tui {
     /// release it (see `release_dock_seam`) so it never stacks a second
     /// blank above the live status.
     dock_seam: bool,
+    /// Nesting depth of the DEC 2026 synchronized-update bracket (see
+    /// `Tui::begin_sync`): only the outermost begin/end reach the terminal.
+    sync_depth: u32,
+    /// Nesting depth of `Tui::atomic`; while > 0 `draw` is deferred to the
+    /// outermost batch end so a multi-step scrollback commit paints once.
+    batch_depth: u32,
     /// A provider round ended before the next text delta.  A punctuation-only
     /// continuation in that first delta is a live-only orphan, not a new row.
     stream_round_boundary: bool,
@@ -539,6 +545,8 @@ impl Tui {
             sel: 0,
             status: None,
             dock_seam: false,
+            sync_depth: 0,
+            batch_depth: 0,
             stream_round_boundary: false,
             stream_round_had_text: false,
             stream_round_target: None,
@@ -647,6 +655,50 @@ impl Tui {
         self.committed_markdown_lines = 0;
     }
 
+    /// Opens (or nests inside) a DEC 2026 synchronized-update bracket.
+    /// Terminals do not nest the mode, so only the outermost call writes
+    /// the escape; `end_sync` mirrors it.
+    pub(crate) fn begin_sync(&mut self) {
+        if self.sync_depth == 0 {
+            let _ = crossterm::execute!(
+                std::io::stdout(),
+                crossterm::terminal::BeginSynchronizedUpdate
+            );
+        }
+        self.sync_depth += 1;
+    }
+
+    pub(crate) fn end_sync(&mut self) {
+        self.sync_depth = self.sync_depth.saturating_sub(1);
+        if self.sync_depth == 0 {
+            let _ = crossterm::execute!(
+                std::io::stdout(),
+                crossterm::terminal::EndSynchronizedUpdate
+            );
+        }
+    }
+
+    /// Runs `f` as ONE atomic terminal frame: every scrollback insert inside
+    /// it, plus the viewport repaint, sits in a single synchronized update.
+    ///
+    /// `insert_before` ends by clearing the viewport and used to run outside
+    /// any bracket, so the dock/input box/footer vanished until some later
+    /// `draw` (tool results, gaps and reflows all inserted without one) —
+    /// the flicker on every tool call. Nested calls coalesce: `draw` is
+    /// deferred while a batch is open and runs once when the outermost
+    /// batch closes, still inside the bracket.
+    pub(crate) fn atomic<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
+        self.begin_sync();
+        self.batch_depth += 1;
+        let out = f(self);
+        self.batch_depth -= 1;
+        if self.batch_depth == 0 {
+            let _ = self.draw();
+        }
+        self.end_sync();
+        out
+    }
+
     /// `insert_before` + `Paragraph` render for one block of rows; `bg`
     /// paints the card background (user/tool cards), `None` leaves rows
     /// unstyled. One home for the scrollback insert ceremony.
@@ -656,12 +708,14 @@ impl Tui {
         bg: Option<ratatui::style::Color>,
     ) {
         let height = lines.len() as u16;
-        let _ = self.terminal.insert_before(height, |buf| {
-            let mut p = Paragraph::new(lines.to_vec());
-            if let Some(bg) = bg {
-                p = p.block(Block::default().style(Style::default().bg(bg)));
-            }
-            p.render(buf.area, buf);
+        self.atomic(|t| {
+            let _ = t.terminal.insert_before(height, |buf| {
+                let mut p = Paragraph::new(lines.to_vec());
+                if let Some(bg) = bg {
+                    p = p.block(Block::default().style(Style::default().bg(bg)));
+                }
+                p.render(buf.area, buf);
+            });
         });
     }
 
@@ -692,6 +746,12 @@ impl Tui {
     /// Clears scrollback and visible screen, re-anchors the inline viewport at the new dimensions,
     /// and re-emits the stored transcript history so lines wrap cleanly without distortion.
     pub(crate) fn reflow_on_resize(&mut self, new_cols: u16) {
+        // One atomic frame: the clear + re-emit of the whole scrollback must
+        // never be presented half-done.
+        self.atomic(|t| t.reflow_on_resize_inner(new_cols));
+    }
+
+    fn reflow_on_resize_inner(&mut self, new_cols: u16) {
         let _ = self.hide_background();
         self.last_width = new_cols;
         if let Ok((_, rows)) = crossterm::terminal::size() {
@@ -1054,6 +1114,9 @@ impl Tui {
 
     pub fn begin_turn(&mut self, label: &str) {
         let now = Instant::now();
+        // The pending resume is now in flight: drop the flag so neither the
+        // ghost nor a bare (empty) Enter mid-turn re-submits it.
+        self.allow_empty_submit = false;
         // Freeze the footer's effort badge for this turn: its flag is a
         // process-global cache that background discovery keeps writing,
         // and a flip mid-turn would resize the right-anchored footer text.
@@ -1176,6 +1239,8 @@ impl Tui {
         self.flush_markdown();
         self.end_thinking_run(true);
         self.is_task_running = true;
+        // A compaction is a turn too: same stale-resume rule as `begin_turn`.
+        self.allow_empty_submit = false;
         let started_at = Instant::now();
         self.active_compaction = Some(ActiveCompaction { id, started_at });
         self.status = Some((started_at, COMPACTION_HEADER.to_string()));

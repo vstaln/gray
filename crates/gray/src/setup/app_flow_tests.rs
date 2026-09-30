@@ -147,7 +147,9 @@ fn an_existing_config_answers_the_required_fields() {
 fn run_step_reports_success_and_real_output() {
     assert!(run_step(&["true".to_string()]).ok);
     assert!(!run_step(&["false".to_string()]).ok);
-    let echo = run_step(&["/bin/echo".to_string(), "hi".to_string()]);
+    // PATH lookup, not /bin: the true/false asserts above already prove the
+    // Windows runners carry Git Bash coreutils, and /bin is not a path there.
+    let echo = run_step(&["echo".to_string(), "hi".to_string()]);
     assert!(echo.ok);
     assert_eq!(echo.output.trim(), "hi");
     let missing_bin = run_step(&["/nonexistent/gray-test-bin".to_string()]);

@@ -1,3 +1,24 @@
+## [0.1.9]
+
+### Fixed
+- **The REPL composer rides the last rows of the screen from the first frame.** A fresh (or
+  cleared) session used to park the input box and the footer right under the welcome banner, with a
+  dead band of cleared rows down to the bottom of the screen: the pin only latched once the
+  transcript had overflowed the viewport, and an explicit branch unpinned it again on every growth.
+  The band is now positioned at `screen height - band height` unconditionally, so a shrink (status
+  dock, live cards clearing at a tool result, end of turn), a growth and a resize all keep the
+  footer's row the screen's last row and repaint what they vacate. Band budgeting makes the text
+  area and the footer un-trimmable and sheds the most transient band first, so a busy screen loses
+  the status dock before the transcript.
+- **The input box keeps its top margin row.** 0.1.9 dropped the blank row the box owns above its
+  `❯` row and leaned on the transcript's own trailing gap, so the prompt sat flush against whatever
+  was above it. The pad row is back (and the caret follows the prompt row, not the pad), with
+  `MIN_VIEWPORT_H` back at 4.
+- **"Please continue…" no longer shows while the model is streaming.** The bare-Enter resume flag
+  is armed when the REPL loop blocks on input, i.e. before the turn a bare Enter would continue is
+  submitted, so mid-turn it was stale and the box kept painting the ghost over a live turn. It is
+  dropped when a turn starts, and the hint is gated on the composer being idle.
+
 # Changelog
 
 ## [Unreleased]
@@ -37,6 +58,37 @@
   first, with a line saying how many older ones were left out. ~700 policy
   tokens became ~500, and a memory that grew without bound can no longer grow
   the system prompt with it.
+
+## [0.1.8] - 2026-09-30
+
+### Fixed
+
+- Heredocs survive the cwd-report suffix. `bash` appended
+  `; __gray_rc=$?; printf ... ` to the command text, so a command whose last
+  line was a heredoc terminator read `EOF; __gray_rc=$?` and the terminator
+  never matched: the whole suffix landed inside the heredoc body — a shell file
+  written with a garbage trailer, or a `SyntaxError` for an interpreter
+  heredoc, silently (`rc=0`). Each piece of the suffix now sits on its own
+  line, which also stops a trailing `#` comment from eating it and makes
+  `cmd &` legal. 33 of 47 DeepSWE runs in the 2026-09-29 retro reported this;
+  it cost each a wasted turn at best.
+
+- - The `windows-runtime` CI gate stops hanging on the search-index bench.
+  Every `ci` run since the search-as-command merge (#145) died at
+  `index_vs_spawn_tax` — "running for over 60 seconds", then silence until
+  the job's 60-minute budget was spent. The hang had no reachable timeout:
+  the bench's deadline assert lived inside its own poll loop, but the call it
+  polled (`SearchPool::warm_picker`) never returned — it took the pool's
+  `resident` mutex with a blocking `lock()`, and index construction held that
+  same mutex across everything fff does, which on Windows stalled inside
+  unbounded dependency waits (LMDB writer lock, git status, watcher init).
+  The probe is now non-blocking (`try_lock` with a ~50ms budget, then "not
+  warm" → fd/rg answers), construction runs with no pool lock held and is
+  deduped by root, and every bench phase carries a hard timeout that fails
+  naming the phase. A wedged build now costs one search its fallback lane —
+  and costs CI a two-minute failure with a name on it — instead of a 60-minute
+  silent hang. `windows-focused` takes a `test-path` input, so a native
+  single-test iteration no longer means editing the workflow.
 
 ## [0.1.7] - 2026-09-29
 
@@ -716,3 +768,30 @@
 - `install.ps1` still installs through WSL by default; a native install
   needs `-Native`. Self-update refuses on native Windows rather than calling
   the WSL installer — close Gray and rerun `install-native.ps1`
+
+### Added
+
+- `GRAY_NO_JOBS=1` drops the managed-job surface: no `action`, `job_id`,
+  `background`, `yield_ms` or `wait_ms` in the bash schema, those actions are
+  refused with a message that says why, and the 600s-silence stall notice
+  stops advertising an await it cannot perform. `timeout` stays — it is the
+  anti-hang knob, not a jobs feature.
+
+### Changed
+
+- The default system prompt is 1,645 chars, down from 3,564 (~891 to ~411
+  tokens on every turn). Cut: everything a capable model already does
+  unprompted (`cat` is text, `rg`/`grep` exist, read the project's AGENTS.md)
+  and everything the bash tool's own schema already states every request (the
+  job API, "output is text"). Kept: every gray-specific fact (`gray view`,
+  `gray find`/`gray grep`) and every discipline clause the benchmark retro
+  measured (`your own passing check defines nothing`, `every public entry
+  point`, `an error path nothing can reach is unimplemented`, one-shot probes,
+  checklist-not-happy-path).
+
+- The per-turn `<available_skills>` block: preamble cut from six sentences
+  (~1,000 chars) to one (~400), and the list capped at 12 instead of 40. The
+  descriptions and locations are untouched — those are the feature. A 40-skill
+  install drops from ~24 KB to ~7 KB per turn.
+
+## [0.1.7] - 2026-09-29

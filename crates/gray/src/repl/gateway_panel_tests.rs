@@ -69,10 +69,13 @@ fn setup_probe_reads_the_user_home_not_the_gray_home() {
     // Probing the gray home would report "needs setup" forever even after
     // a successful `gray gateway setup discord`.
     let user = crate::setup::user_home().unwrap();
-    assert_eq!(
-        user,
-        std::path::PathBuf::from(std::env::var_os("HOME").unwrap())
-    );
+    // Windows has no HOME; the native profile (USERPROFILE) is what
+    // `user_home()` resolves there. Prefer it first so a Git Bash HOME
+    // never shadows the native profile in the comparison.
+    let home = std::env::var_os("USERPROFILE")
+        .or_else(|| std::env::var_os("HOME"))
+        .unwrap();
+    assert_eq!(user, std::path::PathBuf::from(home));
     assert_ne!(user, crate::plugin_cli::home().unwrap());
 }
 

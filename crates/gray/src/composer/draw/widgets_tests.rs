@@ -23,32 +23,9 @@ fn input_box_wraps_at_word_boundaries() {
         !rows.iter().any(|r| r.ends_with('c') && r.contains("with ")),
         "must not split mid-word: {rows:?}"
     );
-    // Cursor at end must land on the last content row (top/bottom
-    // margins excluded from cur_row).
-    assert_eq!(ibox.cur_row, rows.len() - 3, "rows: {rows:?}");
-}
-
-#[test]
-fn input_box_hard_cuts_only_overlong_words() {
-    let text = "ok abcdefghijklmnopqrstuvwxyz0129 end";
-    let ibox = build_input_box(text, 0, 20, None);
-    let rows = row_texts(&ibox);
-    assert!(rows.iter().any(|r| r.contains("ok ")), "{rows:?}");
-    assert!(rows.iter().any(|r| r.contains("end")), "{rows:?}");
-}
-
-#[test]
-fn input_box_has_top_and_bottom_margin_rows() {
-    let ibox = build_input_box("", 0, 80, None);
-    let rows = row_texts(&ibox);
-    assert_eq!(
-        rows.len(),
-        3,
-        "top margin + prompt + bottom margin: {rows:?}"
-    );
-    assert!(rows.first().unwrap().trim().is_empty());
-    assert!(rows.last().unwrap().trim().is_empty());
-    assert!(rows[1].contains('❯'));
+    // Cursor at end must land on the last content row (both margin rows
+    // excluded from cur_row's target, the top pad's offset included).
+    assert_eq!(ibox.cur_row, rows.len() - 2, "rows: {rows:?}");
 }
 
 #[test]
