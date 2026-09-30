@@ -411,6 +411,35 @@ fn progress_detail_redacts_secrets_from_commands() {
 }
 
 #[test]
+fn progress_detail_preserves_secret_free_paths() {
+    // The --json wire feeds owner-local surfaces (Discord narration); a path
+    // with no secret in it is the whole point, not a leak.
+    let detail = tool_detail(
+        "bash",
+        &serde_json::json!({"command": "gray view /tmp/shot.png"}),
+    )
+    .unwrap();
+    assert!(detail.contains("/tmp/shot.png"), "{detail}");
+    assert!(!detail.contains("<path>"), "{detail}");
+    let read = tool_detail("read", &serde_json::json!({"path": "/home/u/notes.md"})).unwrap();
+    assert!(read.contains("/home/u/notes.md"), "{read}");
+}
+
+#[test]
+fn progress_output_preserves_secret_free_paths() {
+    let mut out = json_out(true);
+    out.tools.insert("c1".into(), "bash".into());
+    let rows = out.rows(&AgentEvent::ToolResult {
+        id: "c1".into(),
+        output: "Image shown: /tmp/shot.png".into(),
+        is_error: false,
+    });
+    let output = rows[0]["output"].as_str().unwrap();
+    assert!(output.contains("/tmp/shot.png"), "{output}");
+    assert!(!output.contains("<path>"), "{output}");
+}
+
+#[test]
 fn progress_detail_for_an_unknown_tool_drops_the_args() {
     // A value we do not understand is exactly where a token hides.
     assert!(

@@ -1048,6 +1048,9 @@ impl Tui {
 
     pub fn begin_turn(&mut self, label: &str) {
         let now = Instant::now();
+        // The pending resume is now in flight: drop the flag so neither the
+        // ghost nor a bare (empty) Enter mid-turn re-submits it.
+        self.allow_empty_submit = false;
         // Freeze the footer's effort badge for this turn: its flag is a
         // process-global cache that background discovery keeps writing,
         // and a flip mid-turn would resize the right-anchored footer text.
@@ -1170,6 +1173,8 @@ impl Tui {
         self.flush_markdown();
         self.end_thinking_run(true);
         self.is_task_running = true;
+        // A compaction is a turn too: same stale-resume rule as `begin_turn`.
+        self.allow_empty_submit = false;
         let started_at = Instant::now();
         self.active_compaction = Some(ActiveCompaction { id, started_at });
         self.status = Some((started_at, COMPACTION_HEADER.to_string()));

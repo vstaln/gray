@@ -81,6 +81,51 @@ pub(crate) fn footer_paint_row(footer_y: u16, area: Rect) -> Option<u16> {
     (area.height > 0).then(|| footer_y.min(area.y + area.height - 1))
 }
 
+/// Rows the band may spend on everything above the text area: the screen
+/// minus the rows that must always survive (the status dock, the input box,
+/// the attachment row, the context footer).
+///
+/// The text area and the context line are the two things that are always
+/// on screen, so they are never trimmed: a busy turn (a wall of live tool
+/// cards plus a widget and a queued follow-up) shrinks the rows above them
+/// instead of pushing the prompt and the gauge off the bottom.
+pub(crate) fn band_budget(screen_h: u16, reserved_rows: u16) -> u16 {
+    screen_h.saturating_sub(reserved_rows)
+}
+
+/// Trim `counts` to `allowance` rows in total, in the order they are
+/// given: the ask modal (it blocks the turn) first, then the user's queued
+/// follow-up, then the plugin widget (decoration), and the live tool cards
+/// last because they are the elastic block — their results land in the
+/// scrollback anyway, so they absorb whatever is left. The pre-frame
+/// estimate and the frame itself run the same order, so the band's height
+/// matches what renders and the footer keeps the viewport's last row.
+/// Pure for testability.
+pub(crate) fn trim_to_allowance(counts: &mut [u16], allowance: u16) {
+    let mut left = allowance;
+    for count in counts.iter_mut() {
+        let keep = left.min(*count);
+        *count = keep;
+        left = left.saturating_sub(keep);
+    }
+}
+
+/// The bare-Enter resume ghost, shown only while the composer is idle.
+///
+/// `allow_empty_submit` is armed by the REPL loop right before it blocks on
+/// input — i.e. *before* the turn that a bare Enter would continue is
+/// submitted — so mid-turn it is stale: the resume it advertises is already
+/// streaming, and the box kept painting "Please continue…" over the live
+/// turn. Pure for testability (`Tui::new` needs a TTY).
+pub(crate) fn continue_ghost(
+    allow_empty_submit: bool,
+    is_task_running: bool,
+    text: &str,
+) -> Option<&'static str> {
+    (allow_empty_submit && !is_task_running && text.trim().is_empty())
+        .then_some(crate::repl::CONTINUE_GHOST)
+}
+
 /// Whether the footer paints the reasoning-effort badge.
 ///
 /// Provider-driven (opencode parity): no badge when the provider says this
@@ -107,8 +152,7 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
     let text = tui.textarea.text().to_string();
     let cursor = tui.textarea.cursor().min(text.len());
     // Ghost resume hint in the empty box while bare Enter would continue.
-    let ghost =
-        (tui.allow_empty_submit && text.trim().is_empty()).then_some(crate::repl::CONTINUE_GHOST);
+    let ghost = continue_ghost(tui.allow_empty_submit, tui.is_task_running, &text);
     let ibox = build_input_box(&text, cursor, w, ghost);
     let box_h = ibox.lines.len().max(1) as u16;
     // Attachments row.
@@ -164,9 +208,25 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
     let widget_budget = rows
         .saturating_sub(box_h + status_h + queued_est + live_est + panel_est + attach_h + 2)
         .min(12);
-    let widget_rows = tui.plugin_widget.rows(widget_budget as usize);
-    let widget_h = widget_rows.len() as u16;
+    let mut widget_rows = tui.plugin_widget.rows(widget_budget as usize);
     let max_viewport_h = viewport_cap(rows);
+
+    // The text area and the context footer always keep their rows, so the
+    // band above them is capped before the height is reserved, and the
+    // frame trims the measured rows with the same allowance: what the band
+    // reserved is what it renders, so the footer keeps the last row. The
+    // cap is measured against the band cap (not the screen) because that is
+    // all the viewport can ever be.
+    let mut band_allowance = band_budget(max_viewport_h, status_h + box_h + attach_h + 1);
+    // A cut card set still needs its "… +N more" row.
+    let reserve_overflow_row = tui.live_tool_overflow() > 0 && band_allowance > 0;
+    if reserve_overflow_row {
+        band_allowance -= 1;
+    }
+    let mut reserved = [ask_est, queued_est, widget_rows.len() as u16, live_est];
+    trim_to_allowance(&mut reserved, band_allowance);
+    let (ask_est, queued_est, widget_h, live_est) =
+        (reserved[0], reserved[1], reserved[2], reserved[3]);
     let desired = desired_viewport_h(
         status_h,
         queued_est,
@@ -252,19 +312,17 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
 
         let status_y = area.y;
         // Queued preview sits between status and input.
-        let queued_preview: Vec<Line<'static>> = queued_preview_lines(&tui.queued_inputs, w);
-        let queued_h = queued_preview.len() as u16;
+        let mut queued_preview: Vec<Line<'static>> = queued_preview_lines(&tui.queued_inputs, w);
         // Live tool cards (pi pending cards): wrapped at the frame width
         // like every other viewport row; `live_h` reserves their space.
-        let live_rows: Vec<Line<'static>> = live_headers
+        let mut live_rows: Vec<Line<'static>> = live_headers
             .into_iter()
             .flat_map(|l| {
                 crate::composer::transcript::wrap_styled_line(l, w.saturating_sub(4).max(1))
             })
             .collect();
-        let live_h = live_rows.len() as u16 + u16::from(live_overflow > 0);
         // Ask modal rows (pre-wrapped at frame width, capped like live rows).
-        let ask_rows: Vec<Line<'static>> = ask_modal
+        let mut ask_rows: Vec<Line<'static>> = ask_modal
             .as_ref()
             .map(|m| {
                 m.rows
@@ -299,7 +357,23 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
                     .collect()
             })
             .unwrap_or_default();
-        let ask_h = ask_rows.len() as u16;
+        // Same trim as the height estimate, same order, same allowance.
+        let mut rows_h = [
+            ask_rows.len() as u16,
+            queued_preview.len() as u16,
+            widget_rows.len() as u16,
+            live_rows.len() as u16,
+        ];
+        trim_to_allowance(&mut rows_h, band_allowance);
+        ask_rows.truncate(rows_h[0] as usize);
+        queued_preview.truncate(rows_h[1] as usize);
+        widget_rows.truncate(rows_h[2] as usize);
+        live_rows.truncate(rows_h[3] as usize);
+        let show_live_overflow = reserve_overflow_row;
+        let live_h = rows_h[3] + u16::from(show_live_overflow);
+        let queued_h = rows_h[1];
+        let ask_h = rows_h[0];
+        let widget_h = rows_h[2];
         // Space left for the completion panel once the fixed rows
         // (status, queued, input, attachments, footer) are placed.
         let avail = area
@@ -376,7 +450,7 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
                 Rect::new(area.x, y, area.width, 1),
             );
         }
-        if live_overflow > 0 {
+        if show_live_overflow {
             let y = live_y + live_rows.len() as u16;
             if y >= area.y && y < area.y + area.height {
                 frame.render_widget(
@@ -695,7 +769,7 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
         // own the screen and return before this point, so no other consumer
         // competes for the cursor.
         let cur_x = (area.x + 3 + ibox.cur_col as u16).min(area.x + area.width.saturating_sub(1));
-        let cur_y = (box_y + 1 + ibox.cur_row as u16).min(area.y + area.height.saturating_sub(1));
+        let cur_y = (box_y + ibox.cur_row as u16).min(area.y + area.height.saturating_sub(1));
         frame.set_cursor_position(Position::new(cur_x, cur_y));
     });
     let background_result = if res.is_ok() {

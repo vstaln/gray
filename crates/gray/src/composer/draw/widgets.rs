@@ -40,8 +40,9 @@ pub(crate) fn shimmer_spans(text: &str, elapsed: Duration) -> Vec<Span<'static>>
         .collect()
 }
 
-/// Input box render state: styled lines (own internal top/bottom margin rows,
-/// `❯` prompt) plus the cursor position within them.
+/// Input box render state: styled lines (own internal top/bottom margin
+/// rows, `❯` prompt) plus the cursor position within them. `cur_row` is an
+/// index into `lines`, so it carries the top pad's offset.
 pub(crate) struct InputBox {
     pub(crate) lines: Vec<Line<'static>>,
     pub(crate) cur_row: usize,
@@ -66,7 +67,8 @@ pub(crate) fn build_input_box(
 
     let mut box_lines: Vec<Line<'static>> = Vec::new();
 
-    // Top padding inside the box
+    // Top padding inside the box: the blank row the box owns above its
+    // `❯` row, so the prompt never sits flush against the row above it.
     box_lines.push(Line::from(""));
 
     // Prompt input rows
@@ -195,7 +197,9 @@ pub(crate) fn build_input_box(
 
     InputBox {
         lines: box_lines,
-        cur_row,
+        // Content rows were counted from the `❯` row; the top pad shifts
+        // every one of them down a row.
+        cur_row: cur_row + 1,
         cur_col,
     }
 }

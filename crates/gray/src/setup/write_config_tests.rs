@@ -121,20 +121,23 @@ fn a_secret_never_renders_in_debug_or_errors() {
     assert!(!shown.contains("DEADBEEF"), "{shown}");
 
     // A failed write reports the path problem, never the value.
-    let tmp = tempfile::tempdir().unwrap();
-    let gray_home = tmp.path().join(".gray");
-    let blocked = tmp.path().join("blocked");
-    fs::create_dir_all(&blocked).unwrap();
+    // Unix-only half: chmod read-only has no Windows equivalent (ACLs), so
+    // without the gate the write succeeds and the expect below panics.
     #[cfg(unix)]
-    fs::set_permissions(&blocked, fs::Permissions::from_mode(0o500)).unwrap();
-    let path = blocked.join(".config/test-app/config.json");
-    let err = write_config(&path, &DECL, &supplied, &gray_home, tmp.path())
-        .err()
-        .expect("a read-only directory must fail");
-    let text = format!("{err:#}");
-    assert!(!text.contains("DEADBEEF"), "{text}");
-    #[cfg(unix)]
-    fs::set_permissions(&blocked, fs::Permissions::from_mode(0o700)).unwrap();
+    {
+        let tmp = tempfile::tempdir().unwrap();
+        let gray_home = tmp.path().join(".gray");
+        let blocked = tmp.path().join("blocked");
+        fs::create_dir_all(&blocked).unwrap();
+        fs::set_permissions(&blocked, fs::Permissions::from_mode(0o500)).unwrap();
+        let path = blocked.join(".config/test-app/config.json");
+        let err = write_config(&path, &DECL, &supplied, &gray_home, tmp.path())
+            .err()
+            .expect("a read-only directory must fail");
+        let text = format!("{err:#}");
+        assert!(!text.contains("DEADBEEF"), "{text}");
+        fs::set_permissions(&blocked, fs::Permissions::from_mode(0o700)).unwrap();
+    }
 }
 
 #[test]

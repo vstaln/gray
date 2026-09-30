@@ -86,18 +86,15 @@ fn rank_skips_user_disabled_skills() {
 
 #[test]
 fn prompt_block_gives_proactive_skill_guidance() {
+    // Lean block (0.1.8): one paragraph, not the old six-line preamble.
     let s = test_skill("anything", &[]);
     let out = format_skills_for_prompt(&[s], true, &BTreeSet::new());
     assert!(
-        out.contains("before acting even for simple tasks"),
+        out.contains("read its SKILL.md"),
         "proactive read-first hint missing: {out}"
     );
     assert!(
-        out.contains("do not wait"),
-        "no-wait-for-/skills hint missing: {out}"
-    );
-    assert!(
-        out.contains("already started acting"),
+        out.contains("already started"),
         "mid-task re-anchor hint missing: {out}"
     );
     assert!(out.contains("read tool"), "read-tool hint missing: {out}");
@@ -139,13 +136,15 @@ fn pi_plugin_dir_is_a_discovery_root() {
 
 #[test]
 fn prompt_block_caps_skill_list_and_says_so() {
+    // Lean cap (0.1.8): 12, not 40 — every listed skill costs its
+    // description in every turn.
     let skills: Vec<Skill> = (0..60)
         .map(|i| test_skill(&format!("skill-{i:02}"), &[]))
         .collect();
     let out = format_skills_for_prompt(&skills, true, &BTreeSet::new());
     assert_eq!(
         out.matches("<skill>").count(),
-        40,
+        12,
         "prompt list must be capped"
     );
     assert!(
@@ -169,6 +168,9 @@ fn prompt_block_under_cap_lists_all_without_notice() {
 
 #[test]
 fn prompt_cap_counts_only_eligible_unique_skills() {
+    // 40 eligible (1 deduplicated + 39) against the lean cap of 12: the
+    // list shows 12 with the omission notice, while ranking itself still
+    // returns all 40 eligible.
     let mut skills = vec![test_skill("duplicate", &[]); 50];
     let mut disabled = test_skill("disabled", &[]);
     disabled.disable_model_invocation = true;
@@ -176,8 +178,8 @@ fn prompt_cap_counts_only_eligible_unique_skills() {
     skills.push(ranked_skill("empty", ""));
     skills.extend((0..39).map(|i| test_skill(&format!("skill-{i}"), &[])));
     let out = format_skills_for_prompt(&skills, true, &BTreeSet::new());
-    assert_eq!(out.matches("<skill>").count(), 40);
-    assert!(!out.contains("more skills"));
+    assert_eq!(out.matches("<skill>").count(), 12);
+    assert!(out.contains("more skills"));
     assert!(!out.contains("<name>disabled</name>"));
     assert!(!out.contains("<name>empty</name>"));
     assert_eq!(

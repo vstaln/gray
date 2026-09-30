@@ -23,9 +23,9 @@ fn input_box_wraps_at_word_boundaries() {
         !rows.iter().any(|r| r.ends_with('c') && r.contains("with ")),
         "must not split mid-word: {rows:?}"
     );
-    // Cursor at end must land on the last content row (top/bottom
-    // margins excluded from cur_row).
-    assert_eq!(ibox.cur_row, rows.len() - 3, "rows: {rows:?}");
+    // Cursor at end must land on the last content row (both margin rows
+    // excluded from cur_row's target, the top pad's offset included).
+    assert_eq!(ibox.cur_row, rows.len() - 2, "rows: {rows:?}");
 }
 
 #[test]
@@ -37,6 +37,8 @@ fn input_box_hard_cuts_only_overlong_words() {
     assert!(rows.iter().any(|r| r.contains("end")), "{rows:?}");
 }
 
+/// The box owns a blank row above and below the `❯` row, so the prompt
+/// never sits flush against the row above it.
 #[test]
 fn input_box_has_top_and_bottom_margin_rows() {
     let ibox = build_input_box("", 0, 80, None);
@@ -49,6 +51,8 @@ fn input_box_has_top_and_bottom_margin_rows() {
     assert!(rows.first().unwrap().trim().is_empty());
     assert!(rows.last().unwrap().trim().is_empty());
     assert!(rows[1].contains('❯'));
+    // The caret follows the prompt row, not the top pad.
+    assert_eq!(ibox.cur_row, 1, "caret row: {rows:?}");
 }
 
 #[test]

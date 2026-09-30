@@ -116,12 +116,27 @@ fn a_junk_host_origin_is_not_a_declaration() {
 fn tick_json_reports_the_tick_even_with_nothing_due() {
     let tmp = home();
     let h = tmp.path();
-    let out = ok(h, None, &["cron", "tick", "--json"]);
-    let last: serde_json::Value = out
-        .lines()
-        .filter_map(|l| serde_json::from_str(l).ok())
-        .next_back()
-        .expect("a tick summary line");
-    assert_eq!(last["type"], "cron_tick");
-    assert_eq!(last["fired"], 0);
+    // Native Windows has no cron execution host by design (WSL instead):
+    // assert the refusal, not the tick.
+    #[cfg(windows)]
+    {
+        let out = run(h, None, &["cron", "tick", "--json"]);
+        assert!(!out.status.success());
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains("WSL"),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    #[cfg(not(windows))]
+    {
+        let out = ok(h, None, &["cron", "tick", "--json"]);
+        let last: serde_json::Value = out
+            .lines()
+            .filter_map(|l| serde_json::from_str(l).ok())
+            .next_back()
+            .expect("a tick summary line");
+        assert_eq!(last["type"], "cron_tick");
+        assert_eq!(last["fired"], 0);
+    }
 }

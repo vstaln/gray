@@ -2,6 +2,11 @@ name: windows-focused
 
 on:
   workflow_dispatch:
+    inputs:
+      test-path:
+        description: 'cargo test filter (crate --test target + optional test name)'
+        required: false
+        default: '-p gray-tools --lib'
 
 permissions:
   contents: read
@@ -27,4 +32,4 @@ jobs:
           "GRAY_BASH=$(Join-Path $shellDir 'sh.exe')" >> $env:GITHUB_ENV
           "GRAY_HOME=$(Join-Path $env:RUNNER_TEMP 'gray-test-home')" >> $env:GITHUB_ENV
       - name: Focused test
-        run: cargo test --locked -p gray-tools --lib -- truncated_log_has_executable_bounded_recovery --nocapture
+        run: cargo test --locked ${{ inputs.test-path || '-p gray-tools --lib' }} -- --nocapture
