@@ -353,6 +353,11 @@ pub struct Agent {
     /// ε1/ε0 ≈ 7.1 on SWE-bench Verified; clean restart dominates).
     /// Cleared by every history rewrite — compaction subsumes the failure.
     pub(crate) contaminated: std::collections::BTreeSet<usize>,
+    /// Stale-output mask watermark: every at-threshold `ToolResult` in
+    /// `messages[..masked_prefix]` rides outbound requests as a citation
+    /// stub. Advanced in batches (see `agent_loop::advance_tool_mask`) and
+    /// reset by every history rewrite, which invalidates the index.
+    pub(crate) masked_prefix: usize,
 }
 
 impl Agent {
@@ -373,6 +378,7 @@ impl Agent {
             history_rewrite_hook: None,
             session_id: None,
             contaminated: std::collections::BTreeSet::new(),
+            masked_prefix: 0,
         }
     }
 
@@ -399,6 +405,8 @@ impl Agent {
         // A rewrite subsumes whatever the contaminated partials were part
         // of; the indices would point at the wrong messages anyway.
         self.contaminated.clear();
+        // Indices into the old history are meaningless after a rewrite.
+        self.masked_prefix = 0;
         self.history_revision = self.history_revision.wrapping_add(1);
         if let Some(hook) = &self.history_rewrite_hook {
             hook();

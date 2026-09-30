@@ -135,18 +135,19 @@ const TRUNCATION_MARKER: &str = "[…truncated…]";
 pub(crate) const ARC_STUB_MIN_BYTES: usize = 8_192;
 
 /// The citation left in place of an elided tool output. Self-describing on
-/// purpose: compaction rewrites the in-memory history but never the
-/// append-only session JSONL on disk, so the full output stays recoverable
-/// with one grep — the tool-call id is the address, no retrieval model
-/// involved. (The `~/.gray/sessions` default is a hint; the id alone is
-/// enough to `grep -rl` the sessions dir when GRAY_HOME differs.)
-fn tool_result_stub(id: &str, bytes: usize, session_id: Option<&str>) -> String {
+/// purpose: neither compaction nor the age mask touches the append-only
+/// session JSONL on disk, so the full output stays recoverable with one grep —
+/// the tool-call id is the address, no retrieval model involved. (The
+/// `~/.gray/sessions` default is a hint; the id alone is enough to `grep -rl`
+/// the sessions dir when GRAY_HOME differs.) Shared by compaction and the
+/// stale-output mask so both cite the same way.
+pub(crate) fn tool_result_stub(id: &str, bytes: usize, session_id: Option<&str>) -> String {
     let file = match session_id {
         Some(sid) => format!("~/.gray/sessions/{sid}.jsonl"),
         None => "this session's file under ~/.gray/sessions/".to_string(),
     };
     format!(
-        "[tool output elided by compaction ({bytes} bytes). The full output survives in the session transcript; recover it with: grep '{id}' {file}]"
+        "[tool output elided from context ({bytes} bytes). The full output survives in the session transcript; recover it with: grep '{id}' {file}]"
     )
 }
 
@@ -237,7 +238,7 @@ pub(crate) fn build_retained_with_session(
 /// user message per call, so a 3-call batch is 1 assistant + 3 user
 /// messages); unmatched strays are singleton groups. Batches therefore
 /// retain/drop atomically — never an orphaned call or result.
-fn atomic_groups(messages: &[Message]) -> Vec<&[Message]> {
+pub(crate) fn atomic_groups(messages: &[Message]) -> Vec<&[Message]> {
     let mut groups = Vec::new();
     let mut i = 0;
     while i < messages.len() {
