@@ -23,6 +23,47 @@
 
 ## [Unreleased]
 
+### Added
+- **`gray doctor` answers "is my setup OK?" in one command.** One pass/fail
+  line each for the gray home (exists, writable), the provider credential
+  (never its value), the selected model, the context window *and where that
+  number came from*, the shell (Git Bash on Windows), the exec prefix, the
+  gateway, and the installed plugins. `gray doctor --online` also does a
+  `GET /models` against the configured provider — no tokens, but it leaves the
+  machine, so it is opt-in. Exits non-zero when a check fails, so a setup
+  script or CI can gate on it. Diagnose only: it never writes a config, starts
+  the gateway, or installs anything.
+- **Typing during a turn steers it.** Text typed while a turn is running used
+  to wait for that turn to finish; it now joins the turn at the boundary before
+  the model's next request, so a correction lands while the work is still in
+  flight ("actually, skip the last step"). Steering only appends -- the turn
+  keeps everything it has already done, and cancelling is still Ctrl-C/Esc. An
+  input with attachments keeps them and still runs as its own turn afterwards,
+  and whatever is left in the queue is sent once, after the turn, as before.
+- **`/undo` and `/retry` step back inside a session.** `/undo` drops the last
+  exchange — the last thing you said and everything the model said after it —
+  from both the live context and the saved session; `/retry` is the same
+  rewind with your message sent again. The rewind rewinds the *conversation*
+  only: files the model wrote are untouched, and the pre-undo transcript is
+  kept in `~/.gray/sessions/archive/`, so it is recoverable by hand. The cut
+  always lands on a user turn, so no tool call is ever separated from its
+  result.
+
+- **`exec_prefix` runs the model's shell commands somewhere else.** One saved
+  setting (`~/.gray/config.json`, or `GRAY_EXEC_PREFIX`) names a program that
+  ends in a shell reading its script from stdin, so `docker exec -i dev sh -s`
+  and `ssh box sh -s` cover both a local container and a remote box:
+  ```json
+  { "exec_prefix": "docker exec -i dev sh -s" }
+  ```
+  The command crosses as **text**, not as an argv the far side re-splits, so
+  `$VAR`, globs, pipes, heredocs and quoting arrive exactly as written — the
+  `ssh box sh -c 'ls'` trap cannot happen. Gray's non-interactive environment
+  (`GIT_TERMINAL_PROMPT=0`, `GRAY_SESSION_ID`, `GRAY_CWD_REPORT`) is exported
+  across the boundary too, because neither `ssh` nor `docker exec` forwards the
+  client's environment. `current_dir` still applies to the local client, so a
+  remote command starts in that account's login directory.
+
 ## [0.1.8] - 2026-09-30
 
 ### Fixed

@@ -54,6 +54,7 @@ async fn failed_compaction_save_retries_full_history_before_appending() {
         context_window: None,
         context_reserve: None,
         context_keep: None,
+        exec_prefix: None,
         max_turns: None,
         max_cost_micros: None,
         max_wall_secs: None,

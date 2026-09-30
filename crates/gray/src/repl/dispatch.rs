@@ -207,6 +207,21 @@ pub(crate) async fn dispatch_command(
             }
             Flow::Continue
         }
+        ReplCommand::Undo | ReplCommand::Retry => {
+            if let Some(text) = handle_undo(
+                matches!(cmd, ReplCommand::Retry),
+                &mut *agent,
+                session_state,
+                pending_history,
+                tui.as_ref().map(|(s, _)| s),
+            )
+            .await
+            {
+                // `/retry` is `/undo` plus the same question again.
+                *pending_command = Some(ReplCommand::Prompt(text));
+            }
+            Flow::Continue
+        }
         ReplCommand::Compact(instructions) => {
             handle_compact(
                 config,

@@ -171,6 +171,11 @@ pub trait Provider: Send + Sync {
     }
 }
 
+/// Host callback polled before each model request of a turn. Returns text the
+/// user typed while the turn was running; the agent appends it as a user
+/// message, so it joins the turn rather than replacing it.
+pub type SteerHook = std::sync::Arc<dyn Fn() -> Option<String> + Send + Sync>;
+
 /// A single agent-callable tool.
 #[async_trait]
 pub trait Tool: Send + Sync {
@@ -341,6 +346,10 @@ pub struct Agent {
     context_usage: Option<(usize, usize)>,
     history_revision: u64,
     history_rewrite_hook: Option<Arc<dyn Fn() + Send + Sync>>,
+    /// Polled before every model request of a turn: `Some(text)` steers the
+    /// turn in flight by appending a user message the model reads on its next
+    /// request. `None` (no hook, or nothing typed) leaves the turn alone.
+    pub(crate) steer: Option<SteerHook>,
     /// Session this transcript persists to, when known — woven into
     /// compaction citation stubs (arXiv:2607.25066). Captured from each
     /// run's [`ToolContext`].
@@ -371,6 +380,7 @@ impl Agent {
             context_usage: None,
             history_revision: 0,
             history_rewrite_hook: None,
+            steer: None,
             session_id: None,
             contaminated: std::collections::BTreeSet::new(),
         }
@@ -387,6 +397,13 @@ impl Agent {
 
     pub fn history_revision(&self) -> u64 {
         self.history_revision
+    }
+
+    /// Install the mid-turn steer hook (see [`Agent::steer`]). Set per turn by
+    /// the host, which is where the queue lives. The hook runs on the turn's
+    /// own task and must not block: the model's next request waits on it.
+    pub fn set_steer(&mut self, hook: SteerHook) {
+        self.steer = Some(hook);
     }
 
     pub fn with_history_rewrite_hook(mut self, hook: Arc<dyn Fn() + Send + Sync>) -> Self {

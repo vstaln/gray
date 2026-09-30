@@ -150,6 +150,12 @@ async fn main() -> anyhow::Result<()> {
     };
 
     let mut config = Config::resolve(&cli)?;
+    if let Some(gray::Commands::Doctor { online }) = &cli.command {
+        // Exit code is the report: non-zero on a failed check, so a setup
+        // script or CI can gate on it. `Config::resolve` already ran, so the
+        // key/model/exec_prefix checks see the same values a session would.
+        std::process::exit(gray::doctor::run(&config, *online));
+    }
     gray::turn_caps::init_process_start();
     gray::setup::set_user_context_window(config.context_window);
     gray::setup::set_user_reserve_tokens(config.context_reserve);
@@ -157,6 +163,9 @@ async fn main() -> anyhow::Result<()> {
     if let Some(cmd) = cli.command {
         match cmd {
             gray::Commands::Memory(_) => unreachable!("handled before provider configuration"),
+            gray::Commands::Doctor { .. } => {
+                unreachable!("handled right after config resolution")
+            }
             gray::Commands::Resume {
                 session_id,
                 last,

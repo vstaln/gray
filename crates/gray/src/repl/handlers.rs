@@ -499,6 +499,72 @@ pub(crate) async fn handle_sys(
     }
 }
 
+/// Where `/undo` cuts: the index of the last message the *user* sent, so the
+/// exchange it opened (and everything the model said in reply) goes, while
+/// earlier turns stay. `None` when the conversation holds no user turn.
+///
+/// The cut is on a user boundary by construction, which is what keeps the
+/// remaining history valid for the provider: an assistant message with tool
+/// calls whose results were dropped would be a protocol error, and a tool
+/// result whose call was dropped is an orphan.
+pub(crate) fn undo_cut(messages: &[Message]) -> Option<usize> {
+    messages
+        .iter()
+        .rposition(|message| message.role == gray_core::message::Role::User)
+}
+
+/// `/undo` drops the last exchange (the last user turn and everything the
+/// model said after it); `/retry` is the same rewind plus sending that text
+/// again, which the dispatcher does with the returned string.
+///
+/// Conversation only. Files the model wrote are untouched, and the pre-undo
+/// transcript is archived under `~/.gray/sessions/archive/`, so this is
+/// recoverable by hand. Images attached to the dropped turn are not restored
+/// by `/retry`: the resent message is its text.
+///
+/// Returns the text to re-send (`/retry` only), or `None` when nothing was
+/// dropped or the rewind failed — in which case memory and disk are both left
+/// as they were, because a half-undone session is worse than none.
+pub(crate) async fn handle_undo(
+    retry: bool,
+    agent: &mut Option<Agent>,
+    session_state: &mut Option<SessionState>,
+    pending_history: &mut Vec<Message>,
+    tui: Option<&crate::composer::SharedTui>,
+) -> Option<String> {
+    let Some(ag) = agent.as_mut() else {
+        say(tui, "nothing to undo (no conversation yet)");
+        return None;
+    };
+    let messages = ag.messages().to_vec();
+    let Some(cut) = undo_cut(&messages) else {
+        say(tui, "nothing to undo (no turn of your own to drop)");
+        return None;
+    };
+    let resent = if retry {
+        messages[cut].text_content()
+    } else {
+        String::new()
+    };
+    let kept: Vec<Message> = messages[..cut].to_vec();
+    // Disk first: a session that survived the rewind on disk but not in
+    // memory would replay the dropped turn on the next resume.
+    if let Some(state) = session_state {
+        if let Err(e) = state.store.rewind(&state.session_id, kept.len()).await {
+            say(tui, &format!("undo failed: {e}"));
+            return None;
+        }
+    }
+    ag.set_messages(kept.clone());
+    pending_history.truncate(kept.len());
+    let dropped = messages.len() - kept.len();
+    say(
+        tui,
+        &format!("undid the last turn · {dropped} messages out of context"),
+    );
+    (!resent.is_empty()).then_some(resent)
+}
+
 /// Rebuilds the agent after a system-prompt change, preserving conversation history.
 /// `session_id` pins the Responses `prompt_cache_key` shard: rebuilding with
 /// `None` would rotate the shard mid-session and bust prefix-cache hits.

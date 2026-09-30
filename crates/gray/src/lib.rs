@@ -11,6 +11,7 @@ pub mod cron;
 pub mod cron_fire;
 pub mod cron_serve;
 pub mod cron_status;
+pub mod doctor;
 pub mod feedback;
 pub mod foreign;
 pub mod gateway;
@@ -473,6 +474,12 @@ pub enum Commands {
     Cron {
         #[command(subcommand)]
         cmd: CronCmd,
+    },
+    /// Diagnose this setup (pass --online to also reach the provider)
+    Doctor {
+        /// Also make one request to the provider (no tokens, just /models)
+        #[arg(long)]
+        online: bool,
     },
     /// Session store maintenance
     Sessions {
