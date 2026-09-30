@@ -1,12 +1,15 @@
 ## [0.1.9]
 
 ### Fixed
-- **The REPL composer stays on the last rows of the screen.** Once the transcript overflows the
-  viewport, a latched `bottom_anchored` keeps the input box and the footer pinned to the screen's
-  last rows instead of parking them above cleared rows; a shrink (status dock, live cards clearing at
-  a tool result, end of turn) slides the viewport down and repaints what it vacated with the surface
-  colour. Band budgeting makes the text area and the footer un-trimmable and sheds the most transient
-  band first, so a busy screen loses the status dock before the transcript.
+- **The REPL composer rides the last rows of the screen from the first frame.** A fresh (or
+  cleared) session used to park the input box and the footer right under the welcome banner, with a
+  dead band of cleared rows down to the bottom of the screen: the pin only latched once the
+  transcript had overflowed the viewport, and an explicit branch unpinned it again on every growth.
+  The band is now positioned at `screen height - band height` unconditionally, so a shrink (status
+  dock, live cards clearing at a tool result, end of turn), a growth and a resize all keep the
+  footer's row the screen's last row and repaint what they vacate. Band budgeting makes the text
+  area and the footer un-trimmable and sheds the most transient band first, so a busy screen loses
+  the status dock before the transcript.
 - **The input box keeps its top margin row.** 0.1.9 dropped the blank row the box owns above its
   `❯` row and leaned on the transcript's own trailing gap, so the prompt sat flush against whatever
   was above it. The pad row is back (and the caret follows the prompt row, not the pad), with

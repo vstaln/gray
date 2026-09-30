@@ -44,13 +44,6 @@ where
     pub hidden_cursor: bool,
     pub viewport_area: Rect,
     pub last_known_screen_size: Size,
-    /// Latched once the composer's last row has reached the screen's last
-    /// row (the transcript filled the screen). While latched, a later shrink
-    /// (the dock and live cards clearing at a tool result, the turn footer
-    /// landing) slides the viewport back down to the screen's last row
-    /// instead of parking the input box and the footer above a dead band of
-    /// cleared rows at the bottom of the screen.
-    bottom_anchored: bool,
 }
 
 impl<B> Drop for CustomTerminal<B>
@@ -92,7 +85,6 @@ where
             hidden_cursor: false,
             viewport_area,
             last_known_screen_size: screen_size,
-            bottom_anchored: viewport_area.bottom() >= screen_size.height,
         };
         term.set_viewport_area(viewport_area);
         Ok(term)
@@ -119,29 +111,19 @@ where
                 .set_cursor_position(Position::new(0, screen_size.height.saturating_sub(1)))?;
             self.backend.append_lines(scroll_by)?;
             Backend::flush(&mut self.backend)?;
-            area.y = screen_size.height - area.height;
+            area.y = anchored_viewport_y(area.height, screen_size.height);
             scrolled = true;
         }
-        if area.bottom() >= screen_size.height {
-            // Reached (or overran) the screen's last row: the composer now
-            // lives on the screen's bottom rows.
-            self.bottom_anchored = true;
-        } else if area.bottom() > self.viewport_area.bottom() {
-            // Growing without reaching the last row (a fresh session, a
-            // cleared one): the transcript no longer fills the screen, so the
-            // composer hugs the conversation again. Without this a stale
-            // latch would later yank the composer to the screen's bottom.
-            self.bottom_anchored = false;
-        } else if self.bottom_anchored {
-            // Shrinking a bottom-anchored composer: the dock/live-card rows
-            // the height gives up are the ones the screen's bottom rows are
-            // sitting on, so the viewport slides back down to the screen's
-            // last row and the rows it vacates are cleared back to plain
-            // terminal rows. They are the rows the next inserted transcript
-            // row lands in, so no gap accumulates and nothing stale is left
-            // painted in the transcript.
+        // The composer band always rides the screen's last rows, from the
+        // first frame (a fresh or cleared session included): a viewport that
+        // is not flush with the bottom slides down to it. The rows it
+        // vacates are cleared back to plain terminal rows (the next inserted
+        // transcript row lands there), so nothing stale stays painted and no
+        // dead band is left below the footer.
+        let pinned_y = anchored_viewport_y(area.height, screen_size.height);
+        if pinned_y != area.y {
             let vacated_top = self.viewport_area.y;
-            area.y = screen_size.height.saturating_sub(area.height);
+            area.y = pinned_y;
             self.set_viewport_area(area);
             // Clear from the vacated top (also resets the previous buffer,
             // so the next frame repaints the whole band at its new row).
@@ -335,6 +317,13 @@ where
     }
 }
 
+/// Top row of a `height`-row composer band pinned to the bottom of a
+/// `screen_h`-row screen: its last row is the screen's last row. A band
+/// taller than the screen sits at row 0. Pure for testability.
+fn anchored_viewport_y(height: u16, screen_h: u16) -> u16 {
+    screen_h.saturating_sub(height)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -363,16 +352,49 @@ mod tests {
         assert!((0..14).all(|y| (0..40).all(|x| buffer[(x, y)].symbol() == " ")));
     }
 
-    /// A composer that never reached the screen's last row (a transcript
-    /// shorter than the screen) keeps hugging the conversation instead of
-    /// jumping to the screen's bottom.
+    /// Fresh session on a tall screen: the banner leaves the cursor high, and
+    /// the first frame must already put the band on the screen's last rows.
     #[test]
-    fn an_unanchored_viewport_never_slides_to_the_bottom() {
+    fn a_fresh_session_pins_to_the_last_rows_from_the_first_frame() {
+        let mut backend = TestBackend::new(40, 20);
+        backend.set_cursor_position(Position::new(0, 7)).unwrap();
+        let mut terminal = CustomTerminal::with_options(backend, 4).unwrap();
+        assert_eq!(terminal.viewport_area, Rect::new(0, 7, 40, 4));
+        let screen = Size::new(40, 20);
+        terminal.set_viewport_height(4, screen).unwrap();
+        assert_eq!(terminal.viewport_area, Rect::new(0, 16, 40, 4));
+        assert_eq!(terminal.viewport_area.bottom(), 20);
+    }
+
+    /// Growth and shrink both keep the band's last row on the screen's last
+    /// row, on a session that never filled the screen.
+    #[test]
+    fn growth_and_shrink_keep_the_band_on_the_bottom() {
         let mut terminal = CustomTerminal::with_options(TestBackend::new(40, 20), 4).unwrap();
         let screen = Size::new(40, 20);
         terminal.set_viewport_height(9, screen).unwrap();
-        assert_eq!(terminal.viewport_area, Rect::new(0, 0, 40, 9));
+        assert_eq!(terminal.viewport_area, Rect::new(0, 11, 40, 9));
         terminal.set_viewport_height(4, screen).unwrap();
-        assert_eq!(terminal.viewport_area, Rect::new(0, 0, 40, 4));
+        assert_eq!(terminal.viewport_area, Rect::new(0, 16, 40, 4));
+    }
+
+    /// A taller screen after a resize re-pins the band to the new last row.
+    #[test]
+    fn a_taller_screen_repins_the_band() {
+        let mut terminal = CustomTerminal::with_options(TestBackend::new(40, 20), 4).unwrap();
+        terminal.set_viewport_height(4, Size::new(40, 20)).unwrap();
+        terminal.set_viewport_height(4, Size::new(40, 30)).unwrap();
+        assert_eq!(terminal.viewport_area, Rect::new(0, 26, 40, 4));
+    }
+
+    #[test]
+    fn anchored_y_covers_fresh_growth_shrink_cap_and_tiny_screens() {
+        assert_eq!(anchored_viewport_y(5, 50), 45); // fresh session
+        assert_eq!(anchored_viewport_y(7, 50), 43); // growth
+        assert_eq!(anchored_viewport_y(5, 50), 45); // shrink
+        assert_eq!(anchored_viewport_y(50, 50), 0); // full screen
+        assert_eq!(anchored_viewport_y(60, 50), 0); // taller than the screen
+        assert_eq!(anchored_viewport_y(4, 1), 0); // tiny screen
+        assert_eq!(anchored_viewport_y(4, 0), 0); // no screen
     }
 }
