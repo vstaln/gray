@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Changed
+
+- A bash result carries 12 KiB instead of 48 KiB (6 KiB head ++ 6 KiB tail),
+  and what rides the wire is squeezed: color escapes are gone and a run of
+  three or more identical lines collapses to one line plus a count. Every
+  later request of the turn re-sends the whole history, so one big dump used
+  to be re-billed for the rest of the session. Nothing is lost — the full log
+  is on disk and the `Read more` hint names the exact byte window, now with
+  4 KiB pages that fit the inline budget in one piece.
+
 ## [0.1.7] - 2026-09-29
 
 ### Added

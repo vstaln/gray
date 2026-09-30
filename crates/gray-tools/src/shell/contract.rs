@@ -34,14 +34,15 @@ pub const MAX_YIELD_MS: u64 = 10_000;
 pub const MAX_ACTION_WAIT_MS: u64 = 600_000;
 pub const VIEW_BUDGET_LINES: usize = 2000;
 pub const VIEW_HEAD_FRACTION: f32 = 0.25; // head 25%, tail 75%
-pub const MEM_HEAD_BYTES: usize = 24 * 1024;
-pub const MEM_TAIL_BYTES: usize = 24 * 1024;
-/// Inline budget for bash results: head + tail, 48 KiB (~12k tokens).
+pub const MEM_HEAD_BYTES: usize = 6 * 1024;
+pub const MEM_TAIL_BYTES: usize = 6 * 1024;
+/// Inline budget for bash results: head + tail, 12 KiB (~3k tokens).
 /// The full log always persists on disk; `grep` it instead of rerunning.
-/// Raised from 12 KiB after benchmark runs showed the old budget cutting the
-/// middle out of ordinary file reads (~700-line sources): the agent had to
-/// grep for what it had already asked to see. 48 KiB covers a whole mid-size
-/// source file while still bounding a single tool result.
+/// Cut back from 24+24 KiB: exploration spends most of its tokens on tool
+/// output, and a result re-sent in every later request is re-billed every
+/// later request (cost grows with the square of the turn count). The
+/// `dd`/`sed` resume hint below names the exact byte window, so an
+/// elided middle costs one paged read instead of a rerun.
 pub const INLINE_BUDGET_BYTES: usize = MEM_HEAD_BYTES + MEM_TAIL_BYTES;
 /// How long the tool waits for the output pump after the child exits.
 /// A grandchild inheriting the pipes keeps the pump alive forever, so the

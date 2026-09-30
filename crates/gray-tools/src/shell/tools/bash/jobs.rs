@@ -7,6 +7,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::*;
 use crate::shell::contract::MAX_ACTION_WAIT_MS;
+use crate::shell::view::squeeze;
 
 const MAX_RUNNING: usize = 32;
 const MAX_RETAINED: usize = 128;
@@ -268,7 +269,7 @@ impl Jobs {
             let summary = truncated_summary_from_disk(&job.log);
             let view = build_view(&job.log, &summary);
             text.push_str("\nPartial output (snapshot):\n");
-            text.push_str(&fence(&view.body));
+            text.push_str(&fence(&squeeze(&view.body)));
         }
         ToolOutput::ok(text)
     }

@@ -218,6 +218,114 @@ pub fn middle_out(log: &[u8], budget_bytes: usize, budget_lines: usize, base_off
     }
 }
 
+/// Model-facing shrink of an inline body, applied on the way into the fence
+/// (the log on disk and the terminal keep every byte):
+///
+/// 1. ANSI escapes are removed. `NO_COLOR=1`/`TERM=dumb` already ask tools
+///    not to colorize (see `spawn.rs`), but plenty of them colorize anyway,
+///    and the bytes ride the wire on every later request of the turn.
+/// 2. A run of [`REPEAT_RUN_MIN`]+ identical lines collapses to the line plus
+///    a count. Progress logs (`ok`, `PASS`, a repeated warning) are the bulk
+///    of a long test run and say nothing new after the first.
+///
+/// The count is kept, not just the line: a collapsed run of `FAILED` lines is
+/// the opposite of noise, and the model must still see how many there were.
+pub fn squeeze(body: &str) -> String {
+    collapse_repeats(&strip_ansi(body))
+}
+
+/// A run this long or longer is collapsed.
+const REPEAT_RUN_MIN: usize = 3;
+
+/// Drop ANSI escape sequences: CSI (`ESC [ … final`), OSC (`ESC ] … BEL` or
+/// `ESC ] … ESC \`), and the ESC designators (`ESC ( B` charset select,
+/// `ESC 7` save-cursor). A sequence cut in half by the head/tail sample drops
+/// its remainder too — half a sequence is not text.
+///
+/// Known edge: output that *is* about escape bytes (a hexdump) loses the
+/// `ESC` and up to two following characters, since a designator is
+/// indistinguishable from data once the colorizing source is gone. `NO_COLOR`
+/// keeps real color out of the log in the first place, so this only bites
+/// dumps of escapes.
+pub fn strip_ansi(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = String::with_capacity(s.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] != 0x1b {
+            // Copy one whole char: the input is valid UTF-8 and escapes are
+            // ASCII, so a byte-wise walk would split a multi-byte char.
+            let start = i;
+            i += 1;
+            while i < bytes.len() && !s.is_char_boundary(i) {
+                i += 1;
+            }
+            out.push_str(&s[start..i]);
+            continue;
+        }
+        // OSC: runs to BEL or ST.
+        if bytes.get(i + 1) == Some(&b']') {
+            i += 2;
+            while i < bytes.len() {
+                if bytes[i] == 0x07 {
+                    i += 1;
+                    break;
+                }
+                if bytes[i] == 0x1b && bytes.get(i + 1) == Some(&b'\\') {
+                    i += 2;
+                    break;
+                }
+                i += 1;
+            }
+            continue;
+        }
+        // CSI: parameter/intermediate bytes then one final byte in 0x40..=0x7e.
+        if bytes.get(i + 1) == Some(&b'[') {
+            i += 2;
+            while i < bytes.len() && !(0x40..=0x7e).contains(&bytes[i]) {
+                i += 1;
+            }
+            i += usize::from(i < bytes.len());
+            continue;
+        }
+        // ESC designator: optional intermediates (0x20..=0x2f, so `ESC ( B`
+        // consumes all three bytes) then one final byte (0x30..=0x7e, so
+        // `ESC 7` consumes two). A trailing lone ESC drops by the bounds check.
+        i += 1;
+        while i < bytes.len() && (0x20..=0x2f).contains(&bytes[i]) {
+            i += 1;
+        }
+        i += usize::from(i < bytes.len());
+    }
+    out
+}
+
+/// Collapse runs of [`REPEAT_RUN_MIN`]+ identical lines to one line plus
+/// `[… ×N more]`; shorter runs pass through line for line. The count in the
+/// marker is the only lossy part, and the count is the part that matters.
+fn collapse_repeats(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut lines = s.lines().peekable();
+    while let Some(line) = lines.next() {
+        let mut run = 1;
+        while lines.peek() == Some(&line) {
+            lines.next();
+            run += 1;
+        }
+        if run < REPEAT_RUN_MIN {
+            for _ in 0..run {
+                out.push_str(line);
+                out.push('\n');
+            }
+            continue;
+        }
+        out.push_str(line);
+        out.push_str(&format!(" [… \u{d7} {} more]", run - 1));
+        out.push('\n');
+    }
+    out
+}
+
 /// Marker line for the `{{MARKER}}` slot. Empty string when nothing omitted.
 ///
 /// The paging command is line-based on purpose. `omitted_range` is a byte

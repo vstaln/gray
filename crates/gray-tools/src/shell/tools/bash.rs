@@ -21,11 +21,13 @@ use crate::shell::fence::fence;
 use crate::shell::kill::term_then_kill;
 use crate::shell::pump::{Pump, now_grindmill};
 use crate::shell::spawn::spawn;
-use crate::shell::view::{format_elapsed, header, middle_out, resume_hint};
+use crate::shell::view::{format_elapsed, header, middle_out, resume_hint, squeeze};
 
-/// Bytes served by one `Read more` recovery command. The inline budget is
-/// 48 KiB, so 16 KiB pages need a third of the round trips a 4 KiB page did.
-const READ_CHUNK: u64 = 16 * 1024;
+/// Bytes served by one `Read more` recovery command. A page has to fit the
+/// head sample verbatim, or paging buys nothing: the page is truncated again
+/// on its way back in and its middle is elided with a fresh hint. A round trip
+/// is the expensive part here, not the bytes.
+const READ_CHUNK: u64 = 4 * 1024;
 use crate::{fail, finish, get_opt_bool, get_opt_u64, get_str, resolve_path};
 
 mod jobs;
@@ -1153,7 +1155,10 @@ fn finish_inline(
     };
     if !view.body.is_empty() {
         out.push('\n');
-        out.push_str(&fence(&view.body));
+        // Squeezed for the model only: the log on disk keeps every byte, so
+        // `dd`/`sed` paging (whose offsets are raw) still lands on the exact
+        // text this body was cut from.
+        out.push_str(&fence(&squeeze(&view.body)));
     }
     if let Some((start, end)) = view.omitted_range {
         // Absolute, shell-quoted path: never expand the display-only ~/
