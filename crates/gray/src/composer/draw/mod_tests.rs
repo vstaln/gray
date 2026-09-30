@@ -21,14 +21,14 @@ fn transcript_ends_blank_matches_ensure_gap() {
 
 #[test]
 fn desired_viewport_exact_fit() {
-    // Idle: input 3 + footer 1 = 4 rows (MIN_VIEWPORT_H).
-    assert_eq!(desired_viewport_h(0, 0, 0, 3, 0, 0, viewport_cap(40)), 4);
-    // Slash popup: input 3 + panel 6 + footer 1 = 10.
-    assert_eq!(desired_viewport_h(0, 0, 0, 3, 6, 0, viewport_cap(40)), 10);
-    // Running: status 2 + input 3 + footer 1 = 6.
-    assert_eq!(desired_viewport_h(2, 0, 0, 3, 0, 0, viewport_cap(40)), 6);
-    // Running + full panel: 3 + 3 + 6 + 1 = 13.
-    assert_eq!(desired_viewport_h(3, 0, 0, 3, 6, 0, viewport_cap(40)), 13);
+    // Idle: input 2 (prompt + bottom margin) + footer 1 = 3 rows (MIN_VIEWPORT_H).
+    assert_eq!(desired_viewport_h(0, 0, 0, 2, 0, 0, viewport_cap(40)), 3);
+    // Slash popup: input 2 + panel 6 + footer 1 = 9.
+    assert_eq!(desired_viewport_h(0, 0, 0, 2, 6, 0, viewport_cap(40)), 9);
+    // Running: status 2 + input 2 + footer 1 = 5.
+    assert_eq!(desired_viewport_h(2, 0, 0, 2, 0, 0, viewport_cap(40)), 5);
+    // Running + full panel: 3 + 2 + 6 + 1 = 12.
+    assert_eq!(desired_viewport_h(3, 0, 0, 2, 6, 0, viewport_cap(40)), 12);
     // Question panel: expands up to available screen height to show all options.
     assert_eq!(desired_viewport_h(0, 0, 0, 0, 15, 0, 23), 16);
 }
@@ -37,7 +37,7 @@ fn desired_viewport_exact_fit() {
 ///
 /// The cap used to be `viewport_cap(40) + widget_h`, so the whole inline viewport --
 /// and therefore the input box -- was pinned near 14 rows. A pasted paragraph
-/// that wrapped to 12 content rows plus the two margin rows hit exactly 14 and
+/// that wrapped to 12 content rows plus the margin row hit exactly 13 and
 /// lost its last row; anything longer was cut hard. The cap is the screen now.
 #[test]
 fn viewport_cap_is_screen_bounded_not_viewport_h() {
@@ -56,8 +56,8 @@ fn viewport_cap_is_screen_bounded_not_viewport_h() {
 /// Given a screen-bounded cap the box fits.
 #[test]
 fn multiline_input_is_not_clipped_by_the_viewport_cap() {
-    // 12 wrapped content rows + the two margin rows build_input_box adds.
-    let box_rows: u16 = 14;
+    // 12 wrapped content rows + the bottom margin build_input_box adds.
+    let box_rows: u16 = 13;
     let rows: u16 = 40;
     let cap = viewport_cap(rows);
     let desired = desired_viewport_h(0, 0, 0, box_rows, 0, 0, cap);
@@ -254,4 +254,38 @@ fn chrome_row_paints_the_whole_composer_band() {
         crate::theme::theme().surface_bg,
         "the band covers the full row, not just the text cells"
     );
+}
+
+/// The text area and the context footer always keep their rows: whatever
+/// the live cards, widget, ask modal and queued preview want, they are
+/// capped by what the screen has left after the rows that must survive.
+#[test]
+fn the_text_area_and_footer_are_never_trimmed_away() {
+    // 30-row screen, 3-row dock, 2-row box, 1-row footer: 24 rows of band.
+    assert_eq!(band_budget(30, 3 + 2 + 0 + 1), 24);
+    // A 4-row box (a two-line draft) eats the band above it, never the reverse.
+    assert_eq!(band_budget(30, 3 + 4 + 1), 22);
+    // Short screen: the budget floors at zero instead of going negative.
+    assert_eq!(band_budget(6, 3 + 3 + 1), 0);
+}
+
+/// A busy turn is trimmed most-transient-first and the total never exceeds
+/// the allowance, so the box and the footer keep their rows.
+#[test]
+fn a_busy_band_is_trimmed_most_transient_first() {
+    // Counts in trim order: ask modal, queued follow-up, plugin widget,
+    // live tool cards. 6 rows of allowance on a busy turn: the blocking
+    // ask modal and the user's own text keep their rows, the widget
+    // decoration is cut, the elastic live cards take what is left.
+    let mut counts = [2, 2, 4, 10];
+    trim_to_allowance(&mut counts, 6);
+    assert_eq!(counts, [2, 2, 2, 0]);
+    // An allowance with no room trims everything and never goes negative.
+    let mut counts = [2, 2, 4, 10];
+    trim_to_allowance(&mut counts, 0);
+    assert_eq!(counts, [0, 0, 0, 0]);
+    // Room to spare leaves the counts alone.
+    let mut counts = [10, 2];
+    trim_to_allowance(&mut counts, 40);
+    assert_eq!(counts, [10, 2]);
 }

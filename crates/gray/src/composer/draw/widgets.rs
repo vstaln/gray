@@ -40,8 +40,12 @@ pub(crate) fn shimmer_spans(text: &str, elapsed: Duration) -> Vec<Span<'static>>
         .collect()
 }
 
-/// Input box render state: styled lines (own internal top/bottom margin rows,
-/// `❯` prompt) plus the cursor position within them.
+/// Input box render state: styled lines (its own bottom margin row, `❯`
+/// prompt) plus the cursor position within them. No TOP margin row: the
+/// blank above the box belongs to the transcript (its trailing
+/// `ensure_gap`) or to the latched dock seam, exactly one of them — a pad
+/// row here stacked a second blank on top of it, so a finished turn showed
+/// two empty rows between the `✻ Thought for` line and the prompt.
 pub(crate) struct InputBox {
     pub(crate) lines: Vec<Line<'static>>,
     pub(crate) cur_row: usize,
@@ -65,9 +69,6 @@ pub(crate) fn build_input_box(
     let text_dim = crate::theme::theme().text_dim;
 
     let mut box_lines: Vec<Line<'static>> = Vec::new();
-
-    // Top padding inside the box
-    box_lines.push(Line::from(""));
 
     // Prompt input rows
     let prompt_arrow = " ❯ ";

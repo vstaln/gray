@@ -44,6 +44,13 @@ where
     pub hidden_cursor: bool,
     pub viewport_area: Rect,
     pub last_known_screen_size: Size,
+    /// Latched once the composer's last row has reached the screen's last
+    /// row (the transcript filled the screen). While latched, a later shrink
+    /// (the dock and live cards clearing at a tool result, the turn footer
+    /// landing) slides the viewport back down to the screen's last row
+    /// instead of parking the input box and the footer above a dead band of
+    /// cleared rows at the bottom of the screen.
+    bottom_anchored: bool,
 }
 
 impl<B> Drop for CustomTerminal<B>
@@ -85,6 +92,7 @@ where
             hidden_cursor: false,
             viewport_area,
             last_known_screen_size: screen_size,
+            bottom_anchored: viewport_area.bottom() >= screen_size.height,
         };
         term.set_viewport_area(viewport_area);
         Ok(term)
@@ -114,10 +122,32 @@ where
             area.y = screen_size.height - area.height;
             scrolled = true;
         }
-        // ponytail: shrink keeps the top fixed so the input box collapses
-        // upward when the dock/cards clear. Sliding the viewport down used
-        // to paint the vacated dock rows as permanent scrollback blanks —
-        // the forehead gaps between Thought line and next prompt.
+        if area.bottom() >= screen_size.height {
+            // Reached (or overran) the screen's last row: the composer now
+            // lives on the screen's bottom rows.
+            self.bottom_anchored = true;
+        } else if area.bottom() > self.viewport_area.bottom() {
+            // Growing without reaching the last row (a fresh session, a
+            // cleared one): the transcript no longer fills the screen, so the
+            // composer hugs the conversation again. Without this a stale
+            // latch would later yank the composer to the screen's bottom.
+            self.bottom_anchored = false;
+        } else if self.bottom_anchored {
+            // Shrinking a bottom-anchored composer: the dock/live-card rows
+            // the height gives up are the ones the screen's bottom rows are
+            // sitting on, so the viewport slides back down to the screen's
+            // last row and the rows it vacates are cleared back to plain
+            // terminal rows. They are the rows the next inserted transcript
+            // row lands in, so no gap accumulates and nothing stale is left
+            // painted in the transcript.
+            let vacated_top = self.viewport_area.y;
+            area.y = screen_size.height.saturating_sub(area.height);
+            self.set_viewport_area(area);
+            // Clear from the vacated top (also resets the previous buffer,
+            // so the next frame repaints the whole band at its new row).
+            self.clear_after_position(Position::new(0, vacated_top))?;
+            return Ok(());
+        }
 
         if area != self.viewport_area {
             if !scrolled {
@@ -310,11 +340,11 @@ mod tests {
     use super::*;
     use ratatui::backend::TestBackend;
 
-    /// Clearing the dock/cards shrinks the viewport in place (top fixed):
-    /// sliding it down painted the vacated rows as permanent scrollback
-    /// blanks — forehead gaps between Thought line and next prompt.
+    /// A turn's dock and live cards fill the screen; when they clear, the
+    /// input box and the footer must come back down to the screen's last row
+    /// instead of parking above a dead band of cleared rows.
     #[test]
-    fn shrinking_keeps_the_top_fixed_so_no_scrollback_gap_is_painted() {
+    fn shrinking_a_bottom_anchored_viewport_returns_to_the_last_row() {
         let mut terminal = CustomTerminal::with_options(TestBackend::new(40, 20), 6).unwrap();
         let screen = Size::new(40, 20);
 
@@ -324,10 +354,13 @@ mod tests {
         assert_eq!(terminal.viewport_area.bottom(), 20);
 
         // Tool result: the dock and live cards clear (20 rows -> 6).
-        // Top stays fixed; rows below are transient screen space, never
-        // scrollback blanks.
         terminal.set_viewport_height(6, screen).unwrap();
-        assert_eq!(terminal.viewport_area, Rect::new(0, 0, 40, 6));
+        assert_eq!(terminal.viewport_area, Rect::new(0, 14, 40, 6));
+        // The rows it gave up are blank rows again, not stale composer text.
+        // The test module is a child of this one, so the backend field
+        // is directly readable.
+        let buffer = terminal.backend.buffer();
+        assert!((0..14).all(|y| (0..40).all(|x| buffer[(x, y)].symbol() == " ")));
     }
 
     /// A composer that never reached the screen's last row (a transcript

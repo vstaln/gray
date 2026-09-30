@@ -23,9 +23,9 @@ fn input_box_wraps_at_word_boundaries() {
         !rows.iter().any(|r| r.ends_with('c') && r.contains("with ")),
         "must not split mid-word: {rows:?}"
     );
-    // Cursor at end must land on the last content row (top/bottom
-    // margins excluded from cur_row).
-    assert_eq!(ibox.cur_row, rows.len() - 3, "rows: {rows:?}");
+    // Cursor at end must land on the last content row (the bottom margin is
+    // excluded from cur_row).
+    assert_eq!(ibox.cur_row, rows.len() - 2, "rows: {rows:?}");
 }
 
 #[test]
@@ -37,30 +37,28 @@ fn input_box_hard_cuts_only_overlong_words() {
     assert!(rows.iter().any(|r| r.contains("end")), "{rows:?}");
 }
 
+/// One blank row above the input box, never two: the transcript's own
+/// trailing gap (or the latched dock seam) already owns the separation, so
+/// a pad row inside the box stacked a second empty row on top of it.
 #[test]
-fn input_box_has_top_and_bottom_margin_rows() {
+fn input_box_has_a_bottom_margin_and_no_top_pad() {
     let ibox = build_input_box("", 0, 80, None);
     let rows = row_texts(&ibox);
-    assert_eq!(
-        rows.len(),
-        3,
-        "top margin + prompt + bottom margin: {rows:?}"
-    );
-    assert!(rows.first().unwrap().trim().is_empty());
+    assert_eq!(rows.len(), 2, "prompt + bottom margin: {rows:?}");
+    assert!(rows.first().unwrap().contains('❯'));
     assert!(rows.last().unwrap().trim().is_empty());
-    assert!(rows[1].contains('❯'));
 }
 
 #[test]
 fn input_box_ghost_hint_shows_only_when_empty() {
-    // Resume pending: empty box paints the dim ghost hint, same 3 rows.
+    // Resume pending: empty box paints the dim ghost hint, same 2 rows.
     let ibox = build_input_box("", 0, 80, Some("Please continue…"));
     let rows = row_texts(&ibox);
-    assert_eq!(rows.len(), 3, "{rows:?}");
-    assert!(rows[1].contains("Please continue"), "{rows:?}");
+    assert_eq!(rows.len(), 2, "{rows:?}");
+    assert!(rows[0].contains("Please continue"), "{rows:?}");
     // No resume: unchanged bare prompt.
     let ibox = build_input_box("", 0, 80, None);
-    assert_eq!(row_texts(&ibox)[1].trim(), "❯");
+    assert_eq!(row_texts(&ibox)[0].trim(), "❯");
     // Typed text never shows the ghost.
     let ibox = build_input_box("hi", 2, 80, Some("Please continue…"));
     assert!(

@@ -22,9 +22,10 @@ use crate::text_width::display_width;
 use draw::footer_badge_visible;
 
 pub(crate) const PANEL_ROWS: usize = 6;
-/// Smallest the viewport shrinks to while idle: box top pad + `❯` row +
-/// bottom pad + context footer. No cleared slack below the footer.
-pub(crate) const MIN_VIEWPORT_H: u16 = 4;
+/// Smallest the viewport shrinks to while idle: `❯` row + box bottom pad +
+/// context footer. No cleared slack below the footer, and no pad row above
+/// the box (the transcript's own gap is the single blank).
+pub(crate) const MIN_VIEWPORT_H: u16 = 3;
 
 mod plugin_widget;
 mod terminal;

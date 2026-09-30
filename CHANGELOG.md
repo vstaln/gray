@@ -1,3 +1,13 @@
+## [0.1.9]
+
+### Fixed
+- **The REPL composer stays on the last rows of the screen.** Once the transcript overflows the
+  viewport, a latched `bottom_anchored` keeps the input box and the footer pinned to the screen's
+  last rows instead of parking them above cleared rows; a shrink (status dock, live cards clearing at
+  a tool result, end of turn) slides the viewport down and repaints what it vacated with the surface
+  colour. Band budgeting makes the text area and the footer un-trimmable and sheds the most transient
+  band first, so a busy screen loses the status dock before the transcript.
+
 # Changelog
 
 ## [Unreleased]
