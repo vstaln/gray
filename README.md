@@ -165,7 +165,7 @@ Slash commands autocomplete: Enter completes and fires, Tab inserts for editing 
 
 ### CLI surface
 
-`gray` itself plus five subcommands — everything else is a slash command away:
+`gray` itself plus six subcommands — everything else is a slash command away:
 
 | subcommand | what it does |
 |---|---|
@@ -214,14 +214,12 @@ When usage nears the limit (`tokens > window − 16k` reserve), gray summarizes 
 
 | crate | role |
 |---|---|
-| `gray` | REPL · onboarding · config · TUI |
+| `gray` | REPL · onboarding · config · TUI · JSONL session store (`src/session_store.rs`, parent-id branching) · cron (`src/cron/`) |
 | `gray-core` | agent loop · events · messages |
 | `gray-provider` | OpenAI-compatible SSE streaming, retries, prompt caching |
-| `gray-session` | JSONL session store with parent-id branching |
 | `gray-tools` | bash · read · write · edit · grep · find · ls · shell control (profile-selectable) |
 | `gray-plugin` | plugin trait · manifest · `gray.yml` profile loader |
 | `gray-pkg` | plugin package management |
-| `gray-cron` | cron scheduling · job store · ticker |
 | `gray-markdown` | streaming markdown renderer for the TUI |
 
 Design notes: streaming first — text deltas, tool calls, and usage arrive as typed events over SSE. Logs go to `~/.gray/logs/gray.log` (`GRAY_LOG=debug` for the firehose).

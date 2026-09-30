@@ -32,4 +32,9 @@ jobs:
           "GRAY_BASH=$(Join-Path $shellDir 'sh.exe')" >> $env:GITHUB_ENV
           "GRAY_HOME=$(Join-Path $env:RUNNER_TEMP 'gray-test-home')" >> $env:GITHUB_ENV
       - name: Focused test
-        run: cargo test --locked ${{ inputs.test-path || '-p gray-tools --lib' }} -- --nocapture
+        env:
+          # Through the environment, not into the script text: an input
+          # containing shell metacharacters must not become commands.
+          TEST_PATH: ${{ inputs.test-path }}
+        run: |
+          cargo test --locked $env:TEST_PATH -- --nocapture
