@@ -897,6 +897,12 @@ impl Tui {
         self.cache.remaining(Instant::now())
     }
 
+    /// True when the prompt cache has expired since the last request, so the
+    /// next one re-bills the whole prefix whatever it holds.
+    pub fn cache_is_cold(&self) -> bool {
+        self.cache.is_cold(Instant::now())
+    }
+
     /// Drops the cache baseline: a compaction replaced the context, so the
     /// next request's prompt is new content, not re-billed content.
     pub fn reset_cache(&mut self) {
