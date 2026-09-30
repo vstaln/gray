@@ -409,16 +409,18 @@ impl Tui {
             .push_and_render(&clean, Some(gray_markdown::get_syntect()));
         let frozen_len = self.markdown_renderer.frozen_lines_len();
         if frozen_len > self.committed_markdown_lines {
-            if self.committed_markdown_lines == 0 {
-                self.ensure_gap(1);
-            }
-            let view = self.markdown_renderer.view();
-            let new_lines: Vec<Line<'static>> =
-                view.lines[self.committed_markdown_lines..frozen_len].to_vec();
-            let hyperlinks = view.hyperlinks.to_vec();
-            let offset = self.committed_markdown_lines;
-            self.committed_markdown_lines = frozen_len;
-            self.push_styled_lines_with_hyperlinks(new_lines, &hyperlinks, offset);
+            self.atomic(|t| {
+                if t.committed_markdown_lines == 0 {
+                    t.ensure_gap(1);
+                }
+                let view = t.markdown_renderer.view();
+                let new_lines: Vec<Line<'static>> =
+                    view.lines[t.committed_markdown_lines..frozen_len].to_vec();
+                let hyperlinks = view.hyperlinks.to_vec();
+                let offset = t.committed_markdown_lines;
+                t.committed_markdown_lines = frozen_len;
+                t.push_styled_lines_with_hyperlinks(new_lines, &hyperlinks, offset);
+            });
         }
         let _ = self.draw();
     }
@@ -507,24 +509,25 @@ impl Tui {
         attached: &[std::path::PathBuf],
         trailing_gap: bool,
     ) {
-        self.ensure_gap(1);
-        let lines = format_user_prompt_lines(text, attached, self.width().max(10));
-        self.insert_paragraph(&lines, Some(crate::theme::theme().surface_bg));
-        self.history_entries
-            .push(super::TranscriptEntry::UserPrompt(
+        self.atomic(|t| {
+            t.ensure_gap(1);
+            let lines = format_user_prompt_lines(text, attached, t.width().max(10));
+            t.insert_paragraph(&lines, Some(crate::theme::theme().surface_bg));
+            t.history_entries.push(super::TranscriptEntry::UserPrompt(
                 text.to_string(),
                 attached.to_vec(),
             ));
-        self.transcript.extend(lines);
-        // Trailing gap after every chat card — command and prompt alike.
-        // Handlers that print feedback (say()) treat the gap as idempotent;
-        // handlers that print nothing (dismissed modal) still leave breathing
-        // room before the next prompt instead of jamming against the card.
-        // Slash-command cards skip it (trailing_gap=false): their feedback
-        // hugs the card, and each dismissed-modal arm adds the gap itself.
-        if trailing_gap {
-            self.ensure_gap(1);
-        }
+            t.transcript.extend(lines);
+            // Trailing gap after every chat card — command and prompt alike.
+            // Handlers that print feedback (say()) treat the gap as idempotent;
+            // handlers that print nothing (dismissed modal) still leave breathing
+            // room before the next prompt instead of jamming against the card.
+            // Slash-command cards skip it (trailing_gap=false): their feedback
+            // hugs the card, and each dismissed-modal arm adds the gap itself.
+            if trailing_gap {
+                t.ensure_gap(1);
+            }
+        });
         if self.transcript.len() > 1000 {
             self.transcript.drain(0..100);
         }
