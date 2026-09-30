@@ -88,7 +88,9 @@ Guidelines:
 - If a file changes unexpectedly under you (a parallel agent may be active), don't fight it: re-read before writing, reconcile instead of overwriting, and never get into an edit war.
 - Ground every claim about code, tests, or tools in something you actually read or ran.
 - Show, do not assert: for each error or edge clause, run its trigger and show what it actually produced — an error path nothing can reach is unimplemented.
-- Probes are one-shot: when the environment blocks something (no network, missing binary), probe once, record the result, and spend the budget on the work."#;
+- Probes are one-shot: when the environment blocks something (no network, missing binary), probe once, record the result, and spend the budget on the work.
+
+Cron: to schedule recurring work, run `gray cron add "<schedule>" "<prompt>"` (manage with `gray cron list/show/remove`). For "remind me ..." run exactly ONE command and do not explore first: `gray cron add "in 2m" "the user's exact words" --reminder`. The text is stored and delivered verbatim with no model turn, so never reword it, never fix typos, never pass --name, never run `gray cron --help` first."#;
 
 /// Resolves the user's system-prompt file path (`$GRAY_HOME` or `$HOME/.gray`) + `AGENTS.md`.
 ///
@@ -527,6 +529,9 @@ pub enum CronCmd {
     /// List jobs (id, name, schedule, next run, last status)
     List,
     /// Add a job: schedule ("every 1h" / "30m" / "in 10m" / RFC3339 / "0 9 * * *") + prompt
+    #[command(
+        after_help = "Reminder (one command, no model turn):\n  gray cron add \"in 2m\" \"clean my roo\" --reminder\nThe text is stored and delivered verbatim: never reword it, never fix typos, never pass --name."
+    )]
     Add {
         /// Schedule expression
         schedule: String,
@@ -550,6 +555,10 @@ pub enum CronCmd {
         /// Absolute path to a pre-run script (stdout injected into prompt)
         #[arg(long)]
         script: Option<PathBuf>,
+        /// Reminder: store the prompt verbatim and deliver it as-is at fire
+        /// time. No model turn, no tools. Use for "remind me ...".
+        #[arg(long)]
+        reminder: bool,
     },
     /// One claim→fire→record pass (also the OS-cron/runit entry point)
     Tick {

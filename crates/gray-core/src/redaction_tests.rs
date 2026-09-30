@@ -55,7 +55,7 @@ fn a_multi_token_authorization_header_loses_its_credential() {
         let text = redaction.text();
         assert!(redaction.redacted(), "{header} must be redacted");
         assert!(
-            text.contains(SECRET_PLACEHOLDER),
+            text.contains(REDACTED),
             "{header} must carry a placeholder: {text}"
         );
         for leaked in &credentials {
@@ -186,7 +186,7 @@ fn adversarial_credentials_lose_the_whole_value() {
             "{leaked:?} leaked through {text:?}: {redacted_text}"
         );
         assert!(
-            redacted_text.contains(SECRET_PLACEHOLDER),
+            redacted_text.contains(REDACTED),
             "{text:?} must carry a placeholder: {redacted_text}"
         );
         assert!(

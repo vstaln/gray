@@ -167,3 +167,27 @@ fn cache_key_clamped_to_64_chars() {
     let long = "s".repeat(100);
     assert_eq!(provider_cache_key(Some(&long)).len(), 64);
 }
+
+#[test]
+fn cron_cli_parses_a_reminder() {
+    let cli = Cli::try_parse_from(["gray", "cron", "add", "in 2m", "--reminder", "clean my roo"])
+        .unwrap();
+    match cli.command {
+        Some(Commands::Cron {
+            cmd:
+                CronCmd::Add {
+                    schedule,
+                    prompt,
+                    reminder,
+                    name,
+                    ..
+                },
+        }) => {
+            assert_eq!(schedule, "in 2m");
+            assert_eq!(prompt, "clean my roo");
+            assert!(reminder);
+            assert!(name.is_none(), "a reminder needs no name");
+        }
+        other => panic!("unexpected {other:?}"),
+    }
+}

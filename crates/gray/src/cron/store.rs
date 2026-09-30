@@ -158,6 +158,10 @@ pub struct CronJob {
     pub script: Option<PathBuf>,
     #[serde(default)]
     pub fire_claim: Option<Claim>,
+    /// A reminder: `prompt` is literal text delivered as-is at fire time.
+    /// No script, no skills, no model turn, no tools.
+    #[serde(default)]
+    pub reminder: bool,
 }
 
 fn default_enabled() -> bool {
@@ -444,6 +448,7 @@ impl CronStore {
         workdir: Option<PathBuf>,
         skills: Vec<String>,
         script: Option<PathBuf>,
+        reminder: bool,
     ) -> anyhow::Result<String> {
         validate_new_job(name, prompt, workdir.as_deref(), &skills, script.as_deref())?;
         let sched = parse_schedule(schedule)?;
@@ -472,6 +477,7 @@ impl CronStore {
             skills: skills.into_iter().map(|s| s.trim().to_string()).collect(),
             script,
             fire_claim: None,
+            reminder,
         };
         let id = job.id.clone();
         with_jobs_lock(&self.lock_path(), || {
