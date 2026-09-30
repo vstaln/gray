@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- The `windows-runtime` CI gate stops hanging on the search-index bench.
+  Every `ci` run since the search-as-command merge (#145) died at
+  `index_vs_spawn_tax` — "running for over 60 seconds", then silence until
+  the job's 60-minute budget was spent. The hang had no reachable timeout:
+  the bench's deadline assert lived inside its own poll loop, but the call it
+  polled (`SearchPool::warm_picker`) never returned — it took the pool's
+  `resident` mutex with a blocking `lock()`, and index construction held that
+  same mutex across everything fff does, which on Windows stalled inside
+  unbounded dependency waits (LMDB writer lock, git status, watcher init).
+  The probe is now non-blocking (`try_lock` with a ~50ms budget, then "not
+  warm" → fd/rg answers), construction runs with no pool lock held and is
+  deduped by root, and every bench phase carries a hard timeout that fails
+  naming the phase. A wedged build now costs one search its fallback lane —
+  and costs CI a two-minute failure with a name on it — instead of a 60-minute
+  silent hang. `windows-focused` takes a `test-path` input, so a native
+  single-test iteration no longer means editing the workflow.
+
 ## [0.1.7] - 2026-09-29
 
 ### Added
