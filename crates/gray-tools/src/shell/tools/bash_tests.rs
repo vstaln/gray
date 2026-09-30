@@ -875,6 +875,27 @@ async fn two_sessions_do_not_share_a_working_directory() {
 }
 
 #[test]
+fn gray_no_jobs_hides_the_managed_job_surface() {
+    // GRAY_NO_JOBS=1 must shrink the schema AND refuse the actions it hides,
+    // so a model that remembered them from elsewhere gets told, not a job.
+    let tool = BashTool::default();
+    let full = tool.def();
+    let props = |d: &ToolDef| -> serde_json::Value { serde_json::to_value(&d.parameters).unwrap() };
+    unsafe { std::env::set_var("GRAY_NO_JOBS", "1") };
+    let lean = tool.def();
+    unsafe { std::env::remove_var("GRAY_NO_JOBS") };
+    let lean_props = props(&lean);
+    for gone in ["action", "job_id", "background", "yield_ms", "wait_ms"] {
+        assert!(lean_props["properties"].get(gone).is_none(), "{gone} still exposed: {lean_props}");
+        assert!(props(&full)["properties"].get(gone).is_some(), "{gone} missing with jobs on");
+    }
+    assert!(lean_props["properties"].get("command").is_some(), "command must stay");
+    assert!(lean_props["properties"].get("timeout").is_some(), "timeout is the anti-hang knob");
+    assert!(lean_props["required"].is_null() || lean_props["required"].as_array().is_some());
+    assert!(!lean.description.contains("action:list"), "{}", lean.description);
+}
+
+#[test]
 fn the_cwd_report_suffix_is_appended_not_substituted() {
     let wrapped = with_cwd_report("echo hi");
     assert!(wrapped.starts_with("echo hi"), "{wrapped}");
@@ -883,6 +904,16 @@ fn the_cwd_report_suffix_is_appended_not_substituted() {
     // reported and the cwd simply stays put.
     let commented = with_cwd_report("echo hi # note");
     assert!(commented.starts_with("echo hi # note"), "{commented}");
+}
+
+#[test]
+fn the_cwd_report_keeps_a_trailing_heredoc_terminator_alone() {
+    // `cat > f <<EOF` must stay intact: joined with `; `, the terminator line
+    // read `EOF; __gray_rc=$?` and the whole suffix was written INTO the file
+    // (silent corruption; 33 of 47 DeepSWE runs in the 2026-09-29 retro).
+    let wrapped = with_cwd_report("cat > f <<'EOF'\nbody\nEOF");
+    assert!(wrapped.starts_with("cat > f <<'EOF'\nbody\nEOF\n"), "{wrapped}");
+    assert!(!wrapped.contains("EOF;"), "{wrapped}");
 }
 
 #[test]
