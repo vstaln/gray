@@ -23,6 +23,31 @@
 
 ## [Unreleased]
 
+### Fixed
+- **A newline could smuggle a secret past the redactor.** The tokenizer splits on `' '` only, so
+  `'\n'` glued neighbouring lines into one token: a secret below the first line of a shell chunk was
+  written to the durable log and sent to the provider in the clear, and a secret that *did* fire armed
+  the next glued token and deleted every line after it. Redaction is per line now, for every sink at
+  once (bash output, `edit`, `write`, `grep`).
+- **A secret split across a pipe read no longer leaks its tail.** The shell pump forwarded whatever
+  each `read()` returned, so a token straddling an 8 KiB boundary was redacted in pieces. Readers
+  now hold an unterminated line until its terminator arrives (4 KiB cap, flushed at EOF), per pipe,
+  with the liveness stamp still taken on the raw read.
+- **Concurrent credential writes can no longer erase each other.** The `auth.json` flock covered only
+  the final write, so two gray processes updating the store (REPL plus cron fire, or two terminals)
+  overwrote each other and the loser's credential was gone — a lost OAuth refresh meant a re-login.
+  `/key` and provider removal took no lock at all on the same file; both now take it.
+- **The plugin setup config is written through the repo's one private atomic writer.** The copy in
+  `write_config` created the file at umask mode and chmod'ed it afterwards, and its fixed `config.tmp`
+  name could be written through by a planted file or symlink.
+- **The pinned self-update keeps no scratch directory behind.** `gray-installer-<pid>` under the
+  shared temp dir (pre-creatable by another local user, removed only on success) is a private
+  `TempDir` now, dropped on every exit including a checksum mismatch.
+
+### Changed
+- CI and the release builds pass `--locked` on every platform, so a dependency edit without a lock
+  update cannot ship from `main`.
+
 ## [0.1.8] - 2026-09-30
 
 ### Fixed

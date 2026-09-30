@@ -472,5 +472,8 @@ fn a_pin_mismatch_leaves_no_scratch_dir() {
         .map(|entry| entry.unwrap().file_name())
         .filter(|name| name.to_string_lossy().starts_with("gray-installer"))
         .collect();
-    assert!(leftovers.is_empty(), "installer scratch left behind: {leftovers:?}");
+    assert!(
+        leftovers.is_empty(),
+        "installer scratch left behind: {leftovers:?}"
+    );
 }

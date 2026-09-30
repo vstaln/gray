@@ -188,8 +188,14 @@ async fn pump_holds_a_partial_line_until_its_terminator() {
         messages.push(m);
     }
     assert_eq!(messages.len(), 1, "the split line is forwarded whole");
-    assert!(last.load(Ordering::Relaxed) > 0, "liveness stamped on raw arrival");
+    assert!(
+        last.load(Ordering::Relaxed) > 0,
+        "liveness stamped on raw arrival"
+    );
     let text = String::from_utf8_lossy(&redact_bytes_for_log(&messages[0])).into_owned();
     assert!(!text.contains(tail), "secret tail leaked: {text}");
-    assert!(text.contains(&name), "name is the useful half, kept: {text}");
+    assert!(
+        text.contains(&name),
+        "name is the useful half, kept: {text}"
+    );
 }

@@ -442,9 +442,13 @@ fn multi_line_text_is_redacted_line_by_line() {
     let key = format!("sk-proj-{}", "Zx9".repeat(14));
     let out = redact_for_disclosure(&format!("ok\n{key}\nnext\n")).into_text();
     assert!(!out.contains(&key), "line 2 secret leaked: {out}");
-    assert!(out.starts_with("ok\n") && out.ends_with("\nnext\n"), "{out:?}");
+    assert!(
+        out.starts_with("ok\n") && out.ends_with("\nnext\n"),
+        "{out:?}"
+    );
 
-    let out = redact_for_disclosure(&format!("OPENAI_API_KEY={key}\nDEBUG=1\nPORT=3000\n")).into_text();
+    let out =
+        redact_for_disclosure(&format!("OPENAI_API_KEY={key}\nDEBUG=1\nPORT=3000\n")).into_text();
     assert!(!out.contains(&key), "assignment secret leaked: {out}");
     assert!(
         out.ends_with("\nDEBUG=1\nPORT=3000\n"),

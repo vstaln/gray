@@ -106,10 +106,11 @@ fn installer_pin() -> Option<String> {
 
 /// curl -fsSL https://gray.alignment.id/install.sh | sh [- beta]
 ///
-/// Trust contract: self-update executes the installer's mutable HTTPS script.
-/// Independent verification or pinning of that script is not a goal here;
-/// payload checksums do not authenticate the installer that serves them.
-/// This path is not an independently verified update.
+/// Trust contract: with no pin set, self-update executes the installer's
+/// mutable HTTPS script — payload checksums do not authenticate the
+/// installer that serves them, so this path is not an independently
+/// verified update. Setting `GRAY_INSTALLER_SHA256` opts into the pinned
+/// path above, which verifies that one script before running it.
 fn install_command() -> String {
     match CHANNEL {
         "stable" => "sh -c 'curl -fsSL https://gray.alignment.id/install.sh | sh'".into(),
