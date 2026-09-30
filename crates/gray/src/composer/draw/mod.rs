@@ -110,6 +110,22 @@ pub(crate) fn trim_to_allowance(counts: &mut [u16], allowance: u16) {
     }
 }
 
+/// The bare-Enter resume ghost, shown only while the composer is idle.
+///
+/// `allow_empty_submit` is armed by the REPL loop right before it blocks on
+/// input — i.e. *before* the turn that a bare Enter would continue is
+/// submitted — so mid-turn it is stale: the resume it advertises is already
+/// streaming, and the box kept painting "Please continue…" over the live
+/// turn. Pure for testability (`Tui::new` needs a TTY).
+pub(crate) fn continue_ghost(
+    allow_empty_submit: bool,
+    is_task_running: bool,
+    text: &str,
+) -> Option<&'static str> {
+    (allow_empty_submit && !is_task_running && text.trim().is_empty())
+        .then_some(crate::repl::CONTINUE_GHOST)
+}
+
 /// Whether the footer paints the reasoning-effort badge.
 ///
 /// Provider-driven (opencode parity): no badge when the provider says this
@@ -136,8 +152,7 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
     let text = tui.textarea.text().to_string();
     let cursor = tui.textarea.cursor().min(text.len());
     // Ghost resume hint in the empty box while bare Enter would continue.
-    let ghost =
-        (tui.allow_empty_submit && text.trim().is_empty()).then_some(crate::repl::CONTINUE_GHOST);
+    let ghost = continue_ghost(tui.allow_empty_submit, tui.is_task_running, &text);
     let ibox = build_input_box(&text, cursor, w, ghost);
     let box_h = ibox.lines.len().max(1) as u16;
     // Attachments row.

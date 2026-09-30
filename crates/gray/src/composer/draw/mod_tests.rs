@@ -21,14 +21,29 @@ fn transcript_ends_blank_matches_ensure_gap() {
 
 #[test]
 fn desired_viewport_exact_fit() {
-    // Idle: input 2 (prompt + bottom margin) + footer 1 = 3 rows (MIN_VIEWPORT_H).
-    assert_eq!(desired_viewport_h(0, 0, 0, 2, 0, 0, viewport_cap(40)), 3);
-    // Slash popup: input 2 + panel 6 + footer 1 = 9.
-    assert_eq!(desired_viewport_h(0, 0, 0, 2, 6, 0, viewport_cap(40)), 9);
-    // Running: status 2 + input 2 + footer 1 = 5.
-    assert_eq!(desired_viewport_h(2, 0, 0, 2, 0, 0, viewport_cap(40)), 5);
-    // Running + full panel: 3 + 2 + 6 + 1 = 12.
-    assert_eq!(desired_viewport_h(3, 0, 0, 2, 6, 0, viewport_cap(40)), 12);
+    // The idle box is measured, not hard-coded: 3 rows (top pad, `❯`, pad).
+    let box_rows = build_input_box("", 0, 80, None).lines.len() as u16;
+    assert_eq!(box_rows, 3, "top pad + prompt + bottom pad");
+    // Idle: box 3 + footer 1 = 4 rows (MIN_VIEWPORT_H).
+    assert_eq!(
+        desired_viewport_h(0, 0, 0, box_rows, 0, 0, viewport_cap(40)),
+        MIN_VIEWPORT_H
+    );
+    // Slash popup: box 3 + panel 6 + footer 1 = 10.
+    assert_eq!(
+        desired_viewport_h(0, 0, 0, box_rows, 6, 0, viewport_cap(40)),
+        10
+    );
+    // Running: status 2 + box 3 + footer 1 = 6.
+    assert_eq!(
+        desired_viewport_h(2, 0, 0, box_rows, 0, 0, viewport_cap(40)),
+        6
+    );
+    // Running + full panel: 3 + 3 + 6 + 1 = 13.
+    assert_eq!(
+        desired_viewport_h(3, 0, 0, box_rows, 6, 0, viewport_cap(40)),
+        13
+    );
     // Question panel: expands up to available screen height to show all options.
     assert_eq!(desired_viewport_h(0, 0, 0, 0, 15, 0, 23), 16);
 }
@@ -288,4 +303,23 @@ fn a_busy_band_is_trimmed_most_transient_first() {
     let mut counts = [10, 2];
     trim_to_allowance(&mut counts, 40);
     assert_eq!(counts, [10, 2]);
+}
+
+/// The reported bug: the box kept painting "Please continue…" while the
+/// resumed turn was already streaming. The flag is armed when the REPL loop
+/// blocks on input — before that turn is submitted — so mid-turn it is stale.
+#[test]
+fn continue_ghost_hides_while_a_turn_runs() {
+    // Idle with a resume pending: the hint is the point of the feature.
+    assert_eq!(
+        continue_ghost(true, false, ""),
+        Some(crate::repl::CONTINUE_GHOST)
+    );
+    // Streaming: never, whatever the stale flag says.
+    assert_eq!(continue_ghost(true, true, ""), None, "no ghost mid-turn");
+    // Typing, or no pending resume: no hint either.
+    assert_eq!(continue_ghost(true, false, "hi"), None);
+    assert_eq!(continue_ghost(false, false, ""), None);
+    // The flag is dropped at turn start, so the input gate is honest too.
+    // (`begin_turn` needs a TTY; the predicate above is the testable seam.)
 }

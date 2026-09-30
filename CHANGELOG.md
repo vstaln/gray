@@ -7,6 +7,14 @@
   a tool result, end of turn) slides the viewport down and repaints what it vacated with the surface
   colour. Band budgeting makes the text area and the footer un-trimmable and sheds the most transient
   band first, so a busy screen loses the status dock before the transcript.
+- **The input box keeps its top margin row.** 0.1.9 dropped the blank row the box owns above its
+  `❯` row and leaned on the transcript's own trailing gap, so the prompt sat flush against whatever
+  was above it. The pad row is back (and the caret follows the prompt row, not the pad), with
+  `MIN_VIEWPORT_H` back at 4.
+- **"Please continue…" no longer shows while the model is streaming.** The bare-Enter resume flag
+  is armed when the REPL loop blocks on input, i.e. before the turn a bare Enter would continue is
+  submitted, so mid-turn it was stale and the box kept painting the ghost over a live turn. It is
+  dropped when a turn starts, and the hint is gated on the composer being idle.
 
 # Changelog
 
