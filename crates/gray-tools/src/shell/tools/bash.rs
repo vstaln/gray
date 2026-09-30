@@ -792,8 +792,10 @@ struct Handoff {
 enum Settled {
     /// The command exited, timed out, was cancelled, or failed to wait.
     Done(ToolOutput),
-    /// A silent blocking command was handed off; it keeps running.
-    Stalled(Handoff),
+    /// A silent blocking command was handed off; it keeps running. Boxed:
+    /// the handoff carries the live child, guard, pump and clock (~300 B)
+    /// and would otherwise blow up every `Settled` on the stack.
+    Stalled(Box<Handoff>),
 }
 
 /// The shared wait-and-render for one spawned command (exit, explicit timeout,
@@ -857,12 +859,12 @@ async fn settle_command(
     };
     if matches!(cause, Cause::Stall) {
         // Hand the running child back to run_command, which registers it.
-        return Settled::Stalled(Handoff {
+        return Settled::Stalled(Box::new(Handoff {
             spawned,
             #[cfg(not(windows))]
             guard,
             pump,
-        });
+        }));
     }
     // Unix escalates SIGTERM -> SIGKILL; Windows terminates the owned job.
     // Failed termination is a harness error, never a successful timeout.
@@ -1022,7 +1024,7 @@ async fn run_command(
                 #[cfg(not(windows))]
                 guard,
                 pump,
-            } = hoff;
+            } = *hoff;
             let jobs = adopt.expect("a stall is only armed for the blocking lane");
             let (id, tx, worker_ctx) = jobs.register(&ctx, log_path.clone(), start);
             // With GRAY_NO_JOBS=1 the follow-up actions are not in the schema
