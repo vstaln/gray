@@ -145,6 +145,11 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
     if tui.modal_open {
         return Ok(());
     }
+    // Inside `Tui::atomic` the repaint is coalesced: the outermost batch
+    // draws once, in the same synchronized update as its scrollback inserts.
+    if tui.batch_depth > 0 {
+        return Ok(());
+    }
     let (cols, rows) = crossterm::terminal::size().unwrap_or((80, 24));
     let screen_size = ratatui::layout::Size::new(cols, rows);
     let w = cols as usize;
@@ -255,18 +260,12 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
     // frankentui lesson: synchronized-output bracketing (DEC2026) — one atomic
     // present per frame so the compositor never shows a torn frame.
     // Terminals without support ignore the sequence.
-    crossterm::execute!(
-        std::io::stdout(),
-        crossterm::terminal::BeginSynchronizedUpdate
-    )?;
+    tui.begin_sync();
     // Viewport geometry is a precondition for the frame: a swallowed failure
     // would commit a frame against stale geometry (audit 24.01). Close the
     // synchronized-update bracket before bailing out.
     if let Err(e) = tui.terminal.set_viewport_height(desired, screen_size) {
-        let _ = crossterm::execute!(
-            std::io::stdout(),
-            crossterm::terminal::EndSynchronizedUpdate
-        );
+        tui.end_sync();
         return Err(e.into());
     }
     tui.viewport_h = desired;
@@ -397,7 +396,16 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
 
         if let Some((started, label)) = &tui.status {
             let label_text = format!(" ⬡ {label}\u{2026}");
-            let mut spans = shimmer_spans(&label_text, started.elapsed());
+            // Sweep phase rides the turn clock (or the compaction clock),
+            // never the status stamp: `set_status` re-stamps it on every
+            // label change, and `Preparing tool: …` changes per streamed
+            // argument token — the highlight band snapped back to the
+            // start each time (flicker on every tool call).
+            let elapsed = match compaction_elapsed {
+                Some(d) => d,
+                None => super::pill_elapsed(turn_started, *started, is_task_running),
+            };
+            let mut spans = shimmer_spans(&label_text, elapsed);
             // Turn-anchored clock (tool re-stamps never restart it) plus
             // the live output counter: turn-level outputs plus the streamed
             // per-chunk estimate, exact on every report. Live TPS rides
@@ -409,10 +417,6 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
             // restored after (`compaction_status_survives_follow_up`).
             // Live TPS needs the turn clock too, so it hides while
             // compacting (that clock isn't turn time).
-            let elapsed = match compaction_elapsed {
-                Some(d) => d,
-                None => super::pill_elapsed(turn_started, *started, is_task_running),
-            };
             let tps_suffix = match compaction_elapsed {
                 Some(_) => String::new(),
                 None => super::live_tps_suffix(pill_turn_output, pill_streamed, tui.turn_stream_ms),
@@ -781,12 +785,8 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
     } else {
         Ok(())
     };
-    let ended = crossterm::execute!(
-        std::io::stdout(),
-        crossterm::terminal::EndSynchronizedUpdate
-    );
+    tui.end_sync();
     res?;
-    ended?;
     background_result?;
     Ok(())
 }
