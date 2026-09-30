@@ -134,6 +134,40 @@ fn confirm() -> bool {
     yes
 }
 
+/// The pinned self-update path: fetch, verify, run.
+///
+/// Digest and base URL are parameters rather than env reads so a test can
+/// drive the whole thing without mutating the process environment — env
+/// mutation here races every other test that reads it.
+///
+/// The scratch directory is a private 0700 `TempDir` with an unguessable
+/// name, dropped on every exit including the mismatch return below. It was
+/// `gray-installer-<pid>` under the shared temp dir, removed only on
+/// success: another local user could pre-create that name and swap
+/// `install.sh` between the hash check and `sh`.
+fn run_pinned_installer(pin: &str, base: &str) -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let file = dir.path().join("install.sh");
+    let dl = Command::new("sh")
+        .arg("-c")
+        .arg(format!(
+            "curl -fsSL {} > {}",
+            shell_escape(&format!("{base}/../install.sh")),
+            shell_escape(&file.to_string_lossy())
+        ))
+        .status()?;
+    anyhow::ensure!(dl.success(), "installer download failed");
+    let bytes = std::fs::read(&file)?;
+    let actual = sha256_hex(&bytes);
+    anyhow::ensure!(
+        actual == pin,
+        "installer checksum mismatch (expected {pin}, got {actual}) — refusing to run"
+    );
+    let status = Command::new("sh").arg(&file).status()?;
+    anyhow::ensure!(status.success(), "installer failed");
+    Ok(())
+}
+
 fn run_installer() -> anyhow::Result<()> {
     anyhow::ensure!(
         !cfg!(windows),
@@ -142,28 +176,7 @@ fn run_installer() -> anyhow::Result<()> {
     // Pinned path: download install.sh, check sha256 against
     // GRAY_INSTALLER_SHA256, execute the verified bytes.
     if let Some(pin) = installer_pin() {
-        let dir = std::env::temp_dir().join(format!("gray-installer-{}", std::process::id()));
-        std::fs::create_dir_all(&dir)?;
-        let file = dir.join("install.sh");
-        let dl = Command::new("sh")
-            .arg("-c")
-            .arg(format!(
-                "curl -fsSL {} > {}",
-                shell_escape(&format!("{}/../install.sh", base_url())),
-                shell_escape(&file.to_string_lossy())
-            ))
-            .status()?;
-        anyhow::ensure!(dl.success(), "installer download failed");
-        let bytes = std::fs::read(&file)?;
-        let actual = sha256_hex(&bytes);
-        anyhow::ensure!(
-            actual == pin,
-            "installer checksum mismatch (expected {pin}, got {actual}) — refusing to run"
-        );
-        let status = Command::new("sh").arg(&file).status()?;
-        let _ = std::fs::remove_dir_all(&dir);
-        anyhow::ensure!(status.success(), "installer failed");
-        return Ok(());
+        return run_pinned_installer(&pin, &base_url());
     }
     let status = Command::new("sh")
         .arg("-c")
