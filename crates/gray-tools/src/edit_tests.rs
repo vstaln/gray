@@ -18,6 +18,18 @@ fn stale_only_when_mtime_or_size_drift() {
         read_at: std::time::Instant::now(),
     };
     assert!(!EditTool::is_stale(&entry, &meta));
+    // Same size, bumped mtime: stale by mtime alone (the name's other
+    // half). Explicit timestamp, no filesystem-granularity gamble.
+    let later = meta.modified().unwrap() + std::time::Duration::from_secs(2);
+    std::fs::File::options()
+        .write(true)
+        .open(&p)
+        .unwrap()
+        .set_modified(later)
+        .unwrap();
+    let touched = std::fs::metadata(&p).unwrap();
+    assert_eq!(touched.len(), meta.len());
+    assert!(EditTool::is_stale(&entry, &touched));
     std::fs::write(&p, b"one\ntwo\nthree\n").unwrap();
     let grown = std::fs::metadata(&p).unwrap();
     assert!(EditTool::is_stale(&entry, &grown));

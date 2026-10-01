@@ -1,28 +1,98 @@
+## [0.1.9]
+
+### Fixed
+- **The REPL composer rides the last rows of the screen from the first frame.** A fresh (or
+  cleared) session used to park the input box and the footer right under the welcome banner, with a
+  dead band of cleared rows down to the bottom of the screen: the pin only latched once the
+  transcript had overflowed the viewport, and an explicit branch unpinned it again on every growth.
+  The band is now positioned at `screen height - band height` unconditionally, so a shrink (status
+  dock, live cards clearing at a tool result, end of turn), a growth and a resize all keep the
+  footer's row the screen's last row and repaint what they vacate. Band budgeting makes the text
+  area and the footer un-trimmable and sheds the most transient band first, so a busy screen loses
+  the status dock before the transcript.
+- **The input box keeps its top margin row.** 0.1.9 dropped the blank row the box owns above its
+  `❯` row and leaned on the transcript's own trailing gap, so the prompt sat flush against whatever
+  was above it. The pad row is back (and the caret follows the prompt row, not the pad), with
+  `MIN_VIEWPORT_H` back at 4.
+- **"Please continue…" no longer shows while the model is streaming.** The bare-Enter resume flag
+  is armed when the REPL loop blocks on input, i.e. before the turn a bare Enter would continue is
+  submitted, so mid-turn it was stale and the box kept painting the ghost over a live turn. It is
+  dropped when a turn starts, and the hint is gated on the composer being idle.
+
 # Changelog
 
 ## [Unreleased]
 
-### Added
+### Fixed
+- **A newline could smuggle a secret past the redactor.** The tokenizer splits on `' '` only, so
+  `'\n'` glued neighbouring lines into one token: a secret below the first line of a shell chunk was
+  written to the durable log and sent to the provider in the clear, and a secret that *did* fire armed
+  the next glued token and deleted every line after it. Redaction is per line now, for every sink at
+  once (bash output, `edit`, `write`, `grep`).
+- **A secret split across a pipe read no longer leaks its tail.** The shell pump forwarded whatever
+  each `read()` returned, so a token straddling an 8 KiB boundary was redacted in pieces. Readers
+  now hold an unterminated line until its terminator arrives (4 KiB cap, flushed at EOF), per pipe,
+  with the liveness stamp still taken on the raw read.
+- **Concurrent credential writes can no longer erase each other.** The `auth.json` flock covered only
+  the final write, so two gray processes updating the store (REPL plus cron fire, or two terminals)
+  overwrote each other and the loser's credential was gone — a lost OAuth refresh meant a re-login.
+  `/key` and provider removal took no lock at all on the same file; both now take it.
+- **The plugin setup config is written through the repo's one private atomic writer.** The copy in
+  `write_config` created the file at umask mode and chmod'ed it afterwards, and its fixed `config.tmp`
+  name could be written through by a planted file or symlink.
+- **The pinned self-update keeps no scratch directory behind.** `gray-installer-<pid>` under the
+  shared temp dir (pre-creatable by another local user, removed only on success) is a private
+  `TempDir` now, dropped on every exit including a checksum mismatch.
 
+### Changed
+- CI and the release builds pass `--locked` on every platform, so a dependency edit without a lock
+  update cannot ship from `main`.
+
+## [0.1.8] - 2026-09-30
+
+### Fixed
+
+- Heredocs survive the cwd-report suffix. `bash` appended
+  `; __gray_rc=$?; printf ... ` to the command text, so a command whose last
+  line was a heredoc terminator read `EOF; __gray_rc=$?` and the terminator
+  never matched: the whole suffix landed inside the heredoc body — a shell file
+  written with a garbage trailer, or a `SyntaxError` for an interpreter
+  heredoc, silently (`rc=0`). Each piece of the suffix now sits on its own
+  line, which also stops a trailing `#` comment from eating it and makes
+  `cmd &` legal. 33 of 47 DeepSWE runs in the 2026-09-29 retro reported this;
+  it cost each a wasted turn at best.
+
+- - The `windows-runtime` CI gate stops hanging on the search-index bench.
+  Every `ci` run since the search-as-command merge (#145) died at
+  `index_vs_spawn_tax` — "running for over 60 seconds", then silence until
+  the job's 60-minute budget was spent. The hang had no reachable timeout:
+  the bench's deadline assert lived inside its own poll loop, but the call it
+  polled (`SearchPool::warm_picker`) never returned — it took the pool's
+  `resident` mutex with a blocking `lock()`, and index construction held that
+  same mutex across everything fff does, which on Windows stalled inside
+  unbounded dependency waits (LMDB writer lock, git status, watcher init).
+  The probe is now non-blocking (`try_lock` with a ~50ms budget, then "not
+  warm" → fd/rg answers), construction runs with no pool lock held and is
+  deduped by root, and every bench phase carries a hard timeout that fails
+  naming the phase. A wedged build now costs one search its fallback lane —
+  and costs CI a two-minute failure with a name on it — instead of a 60-minute
+  silent hang. `windows-focused` takes a `test-path` input, so a native
+  single-test iteration no longer means editing the workflow.
+### Added
 - `gray cron add "<schedule>" "<text>" --reminder` stores the text and delivers
   it verbatim at fire time. A reminder runs no agent turn, no pre-script, no
   skills and no tools, and its name (when `--name` is omitted) is a slug of the
   exact text — typos included, never rewritten. `--reminder` with `--script` or
   `--skills` is rejected. `cron_delivery` JSON lines now carry `kind`, `status`,
   `elapsed_ms` and `final_text`; `job_id` and `path` remain routing/log fields.
-
-### Fixed
-
 - A cron delivery is the final assistant message, not a transcript. The
   `[tool:…]` / `[result:…]` stream, the `Cronjob Response:` frame, the
   `(job_id:)` line, the dashes, the stop/manage footer and the output-file path
   are gone from the chat text, and the origin-session mirror no longer carries a
   tool log into the conversation. The full transcript still lands in
   `cron/output/<id>/<ts>.md` at mode 0600.
-
 - A fire that failed before producing output now reaches the chat as a red
   `failed` delivery instead of silence.
-
 - Cron transcripts are redacted before they are written to disk or shown:
   exact values from `<home>/auth.json` plus `gray_core::redaction`'s token
   shapes. Paths stay verbatim in a secret-free transcript. A length cap that cut
@@ -130,7 +200,6 @@
   set. `scripts/animate_logo.py` regenerates it (`--lines` for the
   transparent variant on dark surfaces, `--frames N dir` for previews);
   `assets/logo-grow.mp4` is the 1.9s preview.
-
 - The startup banner is the gray ASCII logo again. The graychan art is
   `/hehe` only, and `/hehe` is a toggle: press it again to drop the art and
   get the logo back.
@@ -205,7 +274,6 @@
   attached and how to re-run it bare, and the CLI fallback line says the
   terminal has no image protocol instead of a bare `viewed …`
   (`docs/bug-gray-view-compound-command.md`).
-
 ## [0.1.5] - 2026-09-26
 
 ### Changed
@@ -372,7 +440,6 @@
   switch, and piped stdin prints the rows as text. `/gateway` and `/gw` are
   real commands again (they previously answered "the TUI gateway is gone")
 
-
 - `gray login`, `gray whoami`, `gray logout` (and `/login`, `/whoami`,
   `/logout` in the REPL): enroll this machine with gray.alignment.id. The
   site's account page mints a one-time 5-minute code from a Supabase session;
@@ -389,7 +456,6 @@
   every call carries the token. Nothing in gray is gated on an account — the token
   only names the caller on registry calls — and the onboarding banner now says
   so instead of implying a login exists
-
 
 - `/cron` and `/memory` are interactive on a TTY, riding the same picker loop
   as `/plugin` and `/skills`: `/cron` lists every job (name, id, schedule, next
@@ -442,7 +508,6 @@
   credential files
 
 ## [0.1.1] - 2026-09-21
-
 
 - Windows builds ship with the release: `gray-<channel>-x86_64-windows.zip`
   alongside the four tarballs, checksummed into the same `SHA256SUMS` file.
@@ -531,7 +596,6 @@
 - Gateway autostart defaults off; corrupt gateway.yaml warns instead of silently resetting (S2, S3)
 - Safety / Subcommands / Platform / gateway docs in README (D2, S4)
 
-
 - The connect modal's footer and the install manager's per-tab footers share
   extracted same-file helpers instead of repeating the render scaffolding
   three times each (-188 net lines across the two files). Behavior is
@@ -548,7 +612,6 @@
   name before it is registered
 - Clipboard/image paste is core again: `arboard` + `image` are always compiled in, no `--features clipboard` needed (kept as a no-op alias)
 - Removed the native messaging gateway: deleted `crates/gray-gateway` (adapters, daemon, pairing, delivery, systemd), the `plugins/gateway` sidecar, `gray gateway ...`/`gray send`, and the `telegram`/`discord`/`slack`/`all-platforms` features. Chat returns as a plugin; `gray cron --deliver` targets are stored opaquely until a delivery backend exists. Dropped the `--all-features` CI checks.
-
 
 - Multi-line input is no longer clipped by the inline viewport. The viewport
   cap was pinned near 14 rows regardless of terminal height, so a pasted
@@ -703,7 +766,33 @@
 - macOS binaries are not notarized (curl-install unaffected) (D3)
 - Destructive-command guard is best-effort, not a sandbox — see README Safety (S4)
 
-
 - `install.ps1` still installs through WSL by default; a native install
   needs `-Native`. Self-update refuses on native Windows rather than calling
   the WSL installer — close Gray and rerun `install-native.ps1`
+
+### Added
+
+- `GRAY_NO_JOBS=1` drops the managed-job surface: no `action`, `job_id`,
+  `background`, `yield_ms` or `wait_ms` in the bash schema, those actions are
+  refused with a message that says why, and the 600s-silence stall notice
+  stops advertising an await it cannot perform. `timeout` stays — it is the
+  anti-hang knob, not a jobs feature.
+
+### Changed
+
+- The default system prompt is 1,645 chars, down from 3,564 (~891 to ~411
+  tokens on every turn). Cut: everything a capable model already does
+  unprompted (`cat` is text, `rg`/`grep` exist, read the project's AGENTS.md)
+  and everything the bash tool's own schema already states every request (the
+  job API, "output is text"). Kept: every gray-specific fact (`gray view`,
+  `gray find`/`gray grep`) and every discipline clause the benchmark retro
+  measured (`your own passing check defines nothing`, `every public entry
+  point`, `an error path nothing can reach is unimplemented`, one-shot probes,
+  checklist-not-happy-path).
+
+- The per-turn `<available_skills>` block: preamble cut from six sentences
+  (~1,000 chars) to one (~400), and the list capped at 12 instead of 40. The
+  descriptions and locations are untouched — those are the feature. A 40-skill
+  install drops from ~24 KB to ~7 KB per turn.
+
+## [0.1.7] - 2026-09-29

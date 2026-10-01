@@ -99,11 +99,12 @@ jobs:
           GRAY_BUILD_ID: ${{ github.sha }}
         shell: bash
         run: |
-          # Single binary. No gateway features exist anymore.
+          # Single binary. The gateway lives in-tree (crates/gray/src/gateway),
+          # not as a separate crate, and there are no messaging adapters.
           if [ "${{ matrix.plat }}" = "aarch64-linux" ]; then
-            cross build --release -p gray --target ${{ matrix.target }}
+            cross build --locked --release -p gray --target ${{ matrix.target }}
           else
-            cargo build --release -p gray --target ${{ matrix.target }}
+            cargo build --locked --release -p gray --target ${{ matrix.target }}
           fi
 
       - name: smoke test (native platforms)
@@ -181,7 +182,7 @@ jobs:
           GRAY_CHANNEL: ${{ needs.meta.outputs.channel }}
           GRAY_BUILD_ID: ${{ github.sha }}
         shell: bash
-        run: cargo build --release -p gray --target x86_64-pc-windows-msvc
+        run: cargo build --locked --release -p gray --target x86_64-pc-windows-msvc
 
       - name: smoke test
         shell: bash

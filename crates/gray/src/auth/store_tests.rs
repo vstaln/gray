@@ -108,3 +108,24 @@ fn malformed_store_fails_closed() {
     std::fs::write(&path, "{\"unknown\": 12}").unwrap();
     assert!(CredentialStore::new(path).load().is_err());
 }
+
+/// Two gray processes (two terminals, or a REPL plus a cron fire) updating
+/// `auth.json` at once. The lock used to cover only the final write, so the
+/// second writer's stale map erased the first one's credential.
+#[test]
+fn concurrent_plugin_writes_keep_every_entry() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("auth.json");
+    std::thread::scope(|scope| {
+        for i in 0..8 {
+            let path = path.clone();
+            scope.spawn(move || {
+                CredentialStore::new(path)
+                    .put_plugin(envelope(&format!("plugin{i}"), "binding"))
+                    .unwrap();
+            });
+        }
+    });
+    let store = CredentialStore::new(path).load().unwrap();
+    assert_eq!(store.len(), 8, "a concurrent write dropped credentials");
+}

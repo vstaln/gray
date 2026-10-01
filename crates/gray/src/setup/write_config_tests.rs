@@ -121,20 +121,23 @@ fn a_secret_never_renders_in_debug_or_errors() {
     assert!(!shown.contains("DEADBEEF"), "{shown}");
 
     // A failed write reports the path problem, never the value.
-    let tmp = tempfile::tempdir().unwrap();
-    let gray_home = tmp.path().join(".gray");
-    let blocked = tmp.path().join("blocked");
-    fs::create_dir_all(&blocked).unwrap();
+    // Unix-only half: chmod read-only has no Windows equivalent (ACLs), so
+    // without the gate the write succeeds and the expect below panics.
     #[cfg(unix)]
-    fs::set_permissions(&blocked, fs::Permissions::from_mode(0o500)).unwrap();
-    let path = blocked.join(".config/test-app/config.json");
-    let err = write_config(&path, &DECL, &supplied, &gray_home, tmp.path())
-        .err()
-        .expect("a read-only directory must fail");
-    let text = format!("{err:#}");
-    assert!(!text.contains("DEADBEEF"), "{text}");
-    #[cfg(unix)]
-    fs::set_permissions(&blocked, fs::Permissions::from_mode(0o700)).unwrap();
+    {
+        let tmp = tempfile::tempdir().unwrap();
+        let gray_home = tmp.path().join(".gray");
+        let blocked = tmp.path().join("blocked");
+        fs::create_dir_all(&blocked).unwrap();
+        fs::set_permissions(&blocked, fs::Permissions::from_mode(0o500)).unwrap();
+        let path = blocked.join(".config/test-app/config.json");
+        let err = write_config(&path, &DECL, &supplied, &gray_home, tmp.path())
+            .err()
+            .expect("a read-only directory must fail");
+        let text = format!("{err:#}");
+        assert!(!text.contains("DEADBEEF"), "{text}");
+        fs::set_permissions(&blocked, fs::Permissions::from_mode(0o700)).unwrap();
+    }
 }
 
 #[test]
@@ -147,4 +150,39 @@ fn empty_supplied_still_writes_derived_fields() {
     assert!(data.get("gray_bin").is_some());
     assert!(data.get("workdir").is_some());
     assert!(data.get("token").is_none());
+}
+
+/// The old writer used a fixed `config.tmp` name opened with
+/// `std::fs::write`: a file planted there (or a symlink) was written
+/// through, keeping the attacker's mode, and the token was briefly on disk
+/// at umask mode. The shared writer never opens a name it did not create.
+#[test]
+fn a_planted_tmp_next_to_the_config_is_never_opened() {
+    let tmp = tempfile::tempdir().unwrap();
+    let gray_home = tmp.path().join(".gray");
+    let path = tmp.path().join(DECL.config_path);
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let planted = path.with_extension("tmp");
+    fs::write(&planted, "planted").unwrap();
+    #[cfg(unix)]
+    fs::set_permissions(&planted, fs::Permissions::from_mode(0o644)).unwrap();
+
+    write_config(
+        &path,
+        &DECL,
+        &supplied_token("sk-planted"),
+        &gray_home,
+        tmp.path(),
+    )
+    .unwrap();
+
+    assert_eq!(fs::read_to_string(&planted).unwrap(), "planted");
+    #[cfg(unix)]
+    assert_eq!(
+        fs::metadata(&planted).unwrap().permissions().mode() & 0o777,
+        0o644,
+        "the planted file keeps the mode its owner chose"
+    );
+    let data: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    assert_eq!(data["token"], "sk-planted");
 }

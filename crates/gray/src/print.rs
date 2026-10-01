@@ -522,8 +522,14 @@ impl JsonOutput {
     }
 }
 
-/// Collapse to one line, cap, and redact. Every `detail` on the wire goes
-/// through here: tool args and model output are untrusted for secrets.
+/// Collapse to one line, cap, and redact secrets. Every `detail` on the wire
+/// goes through here: tool args and model output are untrusted for secrets.
+///
+/// Paths stay verbatim when no secret is present — the same gate as
+/// [`gray_core::redaction::redact_message`]: this wire feeds owner-local
+/// surfaces (Discord narration), where `gray view /tmp/shot.png` redacted to
+/// `gray view <path>` is noise, not safety. A secret in the same string
+/// still scrubs the whole unit (paths included).
 fn disclose(text: &str, cap: usize) -> String {
     let flat: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
     let capped: String = flat.chars().take(cap).collect();
@@ -532,7 +538,12 @@ fn disclose(text: &str, cap: usize) -> String {
     } else {
         capped
     };
-    redact_for_disclosure(&capped).into_text()
+    let redaction = redact_for_disclosure(&capped);
+    if redaction.has_secret() {
+        redaction.into_text()
+    } else {
+        capped
+    }
 }
 
 /// Preserve line breaks for a bounded terminal transcript while applying the
@@ -546,11 +557,18 @@ fn disclose_output(text: &str, cap: usize) -> String {
     let mut chars = text.chars();
     let prefix = chars.by_ref().take(look_ahead).collect::<String>();
     let source_truncated = chars.next().is_some();
-    let redacted = redact_for_disclosure(&prefix).into_text();
-    if !source_truncated && redacted.chars().count() <= cap {
-        return redacted;
+    let redaction = redact_for_disclosure(&prefix);
+    // ponytail: secret-free output stays byte-faithful (paths included);
+    // scrub only when a secret fired.
+    let base = if redaction.has_secret() {
+        redaction.into_text()
+    } else {
+        prefix
+    };
+    if !source_truncated && base.chars().count() <= cap {
+        return base;
     }
-    format!("{}…", redacted.chars().take(cap).collect::<String>())
+    format!("{}…", base.chars().take(cap).collect::<String>())
 }
 
 /// The one-line "what did it just do" for known tools. Returns `None` for

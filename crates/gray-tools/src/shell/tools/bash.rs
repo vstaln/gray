@@ -82,6 +82,30 @@ impl BashTool {
 #[async_trait]
 impl Tool for BashTool {
     fn def(&self) -> ToolDef {
+        if !jobs_enabled() {
+            return ToolDef::new(
+                "bash",
+                "Run a shell command via sh -c and wait for it to exit. timeout is an optional \
+                 total runtime limit in seconds (omitted = no limit; capped at 3600s). \
+                 Non-zero exits are data, not tool errors. Full output is logged; inline output \
+                 is bounded. Imaging: to look at an image or video run `gray view <path>...`\
+                 (several at once, downscaled) as the whole command — bare paths only, so pipes,\
+                 globs, `$`, quotes and flags fall through to a normal run. Images\
+                 (png/jpg/jpeg/gif/webp/bmp/heic/heif) come back as themselves; a video\
+                 (mp4/mov/webm/mkv/avi) comes back as a tiled contact sheet of sampled\
+                 frames, with `--frames N` (before the paths) to set the tile count.\
+                 `cat` is for text/source files, not media. Either way the file comes back as\
+                 an image; bash output is otherwise text only, so never pixel-dump or\
+                 ASCII-art an image to inspect it.",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "command": {"type": "string", "description": "Shell command"},
+                        "timeout": {"type": "integer", "description": "Optional total runtime limit in seconds (omitted = no limit; clamped 1-3600)"}
+                    }
+                }),
+            );
+        }
         ToolDef::new(
             "bash",
             "Run a shell command via sh -c. Default: wait for exit. For independent long work, \
@@ -138,6 +162,13 @@ impl Tool for BashTool {
             return fail("wait_ms is only valid for action:output/status".into());
         }
         if action != "run" {
+            if !jobs_enabled() {
+                return fail(
+                    "managed jobs are disabled here (GRAY_NO_JOBS=1): drop `action`, `job_id` and \
+                     `background` and just run the command."
+                        .into(),
+                );
+            }
             // `wait` left the run surface (rejected loudly on the run path
             // below); the async wait path takes `wait_ms` on output/status.
             return self.jobs.action(ctx, action, &args).await;
@@ -260,9 +291,15 @@ impl Tool for BashTool {
 /// The original exit status is captured and re-raised, because a bare
 /// `; printf ...` would end the command with *the report's* status and turn
 /// every failing command into a success -- which is how the benign-exit table
-/// lost `grep`'s "no matches" the first time this was tried. A command ending
-/// in a `#` comment swallows the whole suffix, reports nothing, and leaves the
-/// cwd where it was.
+/// lost `grep`'s "no matches" the first time this was tried.
+///
+/// Each piece of the suffix sits on its OWN line. Joining with `; ` broke any
+/// command whose last line is a heredoc terminator: `EOF` became
+/// `EOF; __gray_rc=$?`, so the terminator never matched and the suffix landed
+/// inside the heredoc body -- a shell file written with a garbage trailer, or a
+/// SyntaxError for an interpreter heredoc. 33 of 47 DeepSWE runs in the
+/// 2026-09-29 retro reported exactly this; it cost each one a wasted turn at
+/// best.
 fn with_cwd_report(command: &str) -> String {
     // Git Bash's plain `pwd` is an MSYS path (/c/Users/...), which Rust's
     // `is_dir` rejects on Windows, so the report would be read and thrown away
@@ -274,8 +311,17 @@ fn with_cwd_report(command: &str) -> String {
     #[cfg(not(windows))]
     let reported = "\"$PWD\"";
     format!(
-        "{command}; __gray_rc=$?; printf '%s' {reported} > \"$GRAY_CWD_REPORT\" 2>/dev/null; exit $__gray_rc"
+        "{command}\n__gray_rc=$?\nprintf '%s' {reported} > \"$GRAY_CWD_REPORT\" 2>/dev/null\nexit $__gray_rc"
     )
+}
+
+/// `GRAY_NO_JOBS=1` drops the managed-job surface: no `action`, `job_id`,
+/// `background`, `yield_ms` or `wait_ms` in the schema, and those actions are
+/// refused. The DeepSWE runs touched jobs in 153 of 6,915 bash calls while
+/// paying for five extra schema properties (and the prose about them) on
+/// every one. `timeout` stays: it is the anti-hang knob, not a jobs feature.
+fn jobs_enabled() -> bool {
+    std::env::var_os("GRAY_NO_JOBS").is_none()
 }
 
 /// Session identity for the cwd cell: the session id when there is one, empty
@@ -746,8 +792,10 @@ struct Handoff {
 enum Settled {
     /// The command exited, timed out, was cancelled, or failed to wait.
     Done(ToolOutput),
-    /// A silent blocking command was handed off; it keeps running.
-    Stalled(Handoff),
+    /// A silent blocking command was handed off; it keeps running. Boxed:
+    /// the handoff carries the live child, guard, pump and clock (~300 B)
+    /// and would otherwise blow up every `Settled` on the stack.
+    Stalled(Box<Handoff>),
 }
 
 /// The shared wait-and-render for one spawned command (exit, explicit timeout,
@@ -811,12 +859,12 @@ async fn settle_command(
     };
     if matches!(cause, Cause::Stall) {
         // Hand the running child back to run_command, which registers it.
-        return Settled::Stalled(Handoff {
+        return Settled::Stalled(Box::new(Handoff {
             spawned,
             #[cfg(not(windows))]
             guard,
             pump,
-        });
+        }));
     }
     // Unix escalates SIGTERM -> SIGKILL; Windows terminates the owned job.
     // Failed termination is a harness error, never a successful timeout.
@@ -976,11 +1024,21 @@ async fn run_command(
                 #[cfg(not(windows))]
                 guard,
                 pump,
-            } = hoff;
+            } = *hoff;
             let jobs = adopt.expect("a stall is only armed for the blocking lane");
             let (id, tx, worker_ctx) = jobs.register(&ctx, log_path.clone(), start);
+            // With GRAY_NO_JOBS=1 the follow-up actions are not in the schema
+            // and are refused, so the notice must not advertise them.
+            let await_hint = if jobs_enabled() {
+                format!(
+                    ", or await it here with bash action: output/status job_id:{id} and wait_ms \
+                     (e.g. 30000), or cancel it"
+                )
+            } else {
+                String::new()
+            };
             let notice = ToolOutput::ok(format!(
-                "still running \u{b7} job {id} \u{b7} silent: no new output for {}s \u{b7} log {}\nNot killed \u{2014} moved to a background job so it keeps running. Continue other work (its finish is reported between model rounds or the next turn), or await it here with bash action: output/status job_id:{id} and wait_ms (e.g. 30000), or cancel it. Inspect the log to see why it went silent.",
+                "still running \u{b7} job {id} \u{b7} silent: no new output for {}s \u{b7} log {}\nNot killed \u{2014} moved to a background job so it keeps running. Continue other work (its finish is reported between model rounds or the next turn){await_hint}. Inspect the log to see why it went silent.",
                 bound.as_secs(),
                 log_path.display()
             ));

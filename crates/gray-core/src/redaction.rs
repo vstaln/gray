@@ -241,6 +241,23 @@ impl TokenOutcome {
 /// certainly*, see `CredentialArm` — is what lets this do neither.
 #[must_use]
 pub fn redact_for_disclosure(input: &str) -> Redaction {
+    // The tokenizer below splits on `' '` only, so `'\n'` glues neighbouring
+    // lines into one token: a secret on a later line escaped, and one that
+    // fired armed the *next* glued token, deleting every line after it. Tool
+    // output is multi-line by default, so redact line by line.
+    if input.contains('\n') {
+        let mut kinds = BTreeSet::new();
+        let text = input
+            .split('\n')
+            .map(|line| {
+                let redaction = redact_for_disclosure(line);
+                kinds.extend(redaction.kinds.iter().cloned());
+                redaction.into_text()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        return Redaction { text, kinds };
+    }
     let mut kinds = BTreeSet::new();
     let tokens: Vec<&str> = input.split(' ').collect();
     let mut out: Vec<String> = Vec::with_capacity(tokens.len());
