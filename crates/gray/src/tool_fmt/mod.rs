@@ -380,16 +380,22 @@ pub fn format_tool_call_header(
 
     match name {
         "bash" => {
-            let cmd = truncate_cmd(
-                args.get("command")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .trim(),
-            );
+            let full = args
+                .get("command")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim();
+            let cut = truncate_cmd(full);
+            // A cut command says so: `… | sort |` alone reads as a broken pipe.
+            let cmd = if cut.len() < full.len() {
+                format!("{}\u{2026}", cut.trim_end())
+            } else {
+                cut.to_string()
+            };
             Line::from(vec![
                 bullet,
                 Span::styled("Ran ", action_style),
-                Span::styled(cmd.to_string(), cmd_style),
+                Span::styled(cmd, cmd_style),
             ])
         }
         "write" => {

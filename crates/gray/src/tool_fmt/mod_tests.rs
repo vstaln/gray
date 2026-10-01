@@ -394,3 +394,14 @@ fn a_cancelled_runs_second_line_header_drops_the_log_path_too() {
     assert!(!rendered.contains(".gray/shell"), "{rendered:?}");
     assert!(rendered.contains("cancelled by user"), "{rendered:?}");
 }
+
+#[test]
+fn a_cut_bash_header_ends_in_an_ellipsis() {
+    let long = serde_json::json!({"command": format!("seq 20 | xargs sh -c '{}' | sort | uniq -c", "x".repeat(80))});
+    let text = row_text(&format_tool_call_header("bash", &long, None));
+    assert!(text.ends_with('\u{2026}'), "{text:?}");
+    let multi = serde_json::json!({"command": "cd x\nmake"});
+    assert!(row_text(&format_tool_call_header("bash", &multi, None)).ends_with("cd x\u{2026}"));
+    let short = serde_json::json!({"command": "ls"});
+    assert!(row_text(&format_tool_call_header("bash", &short, None)).ends_with("Ran ls"));
+}
