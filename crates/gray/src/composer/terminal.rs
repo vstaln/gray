@@ -392,9 +392,10 @@ where
         self.refilling = false;
         drawn?;
 
-        // The rows printed fill that much of the hole; the rest is still
-        // blank, and a later insert (or another shrink) takes it next.
-        self.blank_above = (hole - fill) as u16;
+        // `insert_before` left the count at zero. That is right even when the
+        // tail was too short to fill the hole: the band then sits that far
+        // above the bottom, and the next frame's re-pin counts the rest. The
+        // pin adds to the count, so seeding it here would double-count.
         Ok(())
     }
 
@@ -639,6 +640,44 @@ mod tests {
             .map(|y| buffer[(0, y)].symbol().to_string())
             .collect();
         assert_eq!(restored, "efghijkl");
+    }
+
+    /// A hole taller than the tail is filled as far as the rows reach; the
+    /// band rides back to the bottom, and the next row still lands flush
+    /// against the last restored one — the leftover count must not drift.
+    #[test]
+    fn a_hole_taller_than_the_tail_fills_what_it_can_and_stays_flush() {
+        let screen = Size::new(10, 12);
+        let mut terminal = CustomTerminal::with_options(TestBackend::new(10, 12), 4).unwrap();
+        terminal.set_viewport_height(4, screen).unwrap();
+
+        for glyph in ["a", "b", "c", "d", "e", "f"] {
+            terminal
+                .insert_before(1, |buf| {
+                    buf[(0, 0)].set_symbol(glyph);
+                })
+                .unwrap();
+        }
+        terminal.set_viewport_height(12, screen).unwrap();
+        terminal.set_viewport_height(4, screen).unwrap();
+        // 6 rows restored, 2 rows of the hole still blank.
+        let buffer = terminal.backend.buffer();
+        assert_eq!(buffer[(0, 0)].symbol(), "a");
+        assert_eq!(buffer[(0, 5)].symbol(), "f");
+        assert_eq!(buffer[(0, 6)].symbol(), " ");
+
+        // The next frame re-pins the band and counts the rest of the hole.
+        terminal.set_viewport_height(4, screen).unwrap();
+        assert_eq!(terminal.viewport_area, Rect::new(0, 8, 10, 4));
+        terminal
+            .insert_before(1, |buf| {
+                buf[(0, 0)].set_symbol("g");
+            })
+            .unwrap();
+        // Flush under "f", not floating above it or overwriting it.
+        let buffer = terminal.backend.buffer();
+        assert_eq!(buffer[(0, 6)].symbol(), "g");
+        assert_eq!(buffer[(0, 5)].symbol(), "f");
     }
 
     /// A shrink while pinned leaves blank rows above the band. The next
