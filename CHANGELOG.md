@@ -1,27 +1,8 @@
-## [0.1.9]
-
-### Fixed
-- **The REPL composer rides the last rows of the screen from the first frame.** A fresh (or
-  cleared) session used to park the input box and the footer right under the welcome banner, with a
-  dead band of cleared rows down to the bottom of the screen: the pin only latched once the
-  transcript had overflowed the viewport, and an explicit branch unpinned it again on every growth.
-  The band is now positioned at `screen height - band height` unconditionally, so a shrink (status
-  dock, live cards clearing at a tool result, end of turn), a growth and a resize all keep the
-  footer's row the screen's last row and repaint what they vacate. Band budgeting makes the text
-  area and the footer un-trimmable and sheds the most transient band first, so a busy screen loses
-  the status dock before the transcript.
-- **The input box keeps its top margin row.** 0.1.9 dropped the blank row the box owns above its
-  `❯` row and leaned on the transcript's own trailing gap, so the prompt sat flush against whatever
-  was above it. The pad row is back (and the caret follows the prompt row, not the pad), with
-  `MIN_VIEWPORT_H` back at 4.
-- **"Please continue…" no longer shows while the model is streaming.** The bare-Enter resume flag
-  is armed when the REPL loop blocks on input, i.e. before the turn a bare Enter would continue is
-  submitted, so mid-turn it was stale and the box kept painting the ghost over a live turn. It is
-  dropped when a turn starts, and the hint is gated on the composer being idle.
-
 # Changelog
 
 ## [Unreleased]
+
+## [0.1.10] - 2026-10-01
 
 ### Added
 - Command output is compressed by what the command was, and truncation is no
@@ -91,6 +72,23 @@
   remote command starts in that account's login directory.
 
 ### Fixed
+- **The REPL composer rides the last rows of the screen from the first frame.** A fresh (or
+  cleared) session used to park the input box and the footer right under the welcome banner, with a
+  dead band of cleared rows down to the bottom of the screen: the pin only latched once the
+  transcript had overflowed the viewport, and an explicit branch unpinned it again on every growth.
+  The band is now positioned at `screen height - band height` unconditionally, so a shrink (status
+  dock, live cards clearing at a tool result, end of turn), a growth and a resize all keep the
+  footer's row the screen's last row and repaint what they vacate. Band budgeting makes the text
+  area and the footer un-trimmable and sheds the most transient band first, so a busy screen loses
+  the status dock before the transcript.
+- **The input box keeps its top margin row.** 0.1.9 dropped the blank row the box owns above its
+  `❯` row and leaned on the transcript's own trailing gap, so the prompt sat flush against whatever
+  was above it. The pad row is back (and the caret follows the prompt row, not the pad), with
+  `MIN_VIEWPORT_H` back at 4.
+- **"Please continue…" no longer shows while the model is streaming.** The bare-Enter resume flag
+  is armed when the REPL loop blocks on input, i.e. before the turn a bare Enter would continue is
+  submitted, so mid-turn it was stale and the box kept painting the ghost over a live turn. It is
+  dropped when a turn starts, and the hint is gated on the composer being idle.
 - **A cron job added from the REPL comes back into that chat.** "Message me in a minute" fired,
   wrote its output under `cron/output/` and showed nothing in the conversation; the model polled
   with `sleep` to find out. A job added from inside a session (the bash tool's `GRAY_SESSION_ID`)
@@ -99,6 +97,12 @@
   starts a turn with the result as a `[Cron delivery: <name>]` message. A background bash job that
   finishes while the REPL is idle starts a turn the same way, and queued `host/say` lines paint
   without waiting for the next keypress.
+- **A parallel tool batch stops sitting in "Preparing tool" while it runs.** `tool_call_end` (the
+  "args complete, executing" signal) fired for each member only after the slowest one finished; it
+  now fires for every member before the batch starts.
+- **A full-width numbered or diff row in a tool card stays on one row.** The card re-wrapped body
+  rows two columns narrower than `tool_fmt` had already wrapped them, orphaning each full row's last
+  word onto a continuation row.
 - **A newline could smuggle a secret past the redactor.** The tokenizer splits on `' '` only, so
   `'\n'` glued neighbouring lines into one token: a secret below the first line of a shell chunk was
   written to the durable log and sent to the provider in the clear, and a secret that *did* fire armed
@@ -153,6 +157,16 @@
   tokens became ~500, and a memory that grew without bound can no longer grow
   the system prompt with it.
 
+## [0.1.9] - 2026-09-30
+
+### Fixed
+- **The REPL composer stays on the last rows of the screen.** Once the transcript overflows the
+  viewport, a latched `bottom_anchored` keeps the input box and the footer pinned to the screen's
+  last rows instead of parking them above cleared rows; a shrink (status dock, live cards clearing at
+  a tool result, end of turn) slides the viewport down and repaints what it vacated with the surface
+  colour. Band budgeting makes the text area and the footer un-trimmable and sheds the most transient
+  band first, so a busy screen loses the status dock before the transcript.
+
 ## [0.1.8] - 2026-09-30
 
 ### Fixed
@@ -167,7 +181,7 @@
   `cmd &` legal. 33 of 47 DeepSWE runs in the 2026-09-29 retro reported this;
   it cost each a wasted turn at best.
 
-- - The `windows-runtime` CI gate stops hanging on the search-index bench.
+- The `windows-runtime` CI gate stops hanging on the search-index bench.
   Every `ci` run since the search-as-command merge (#145) died at
   `index_vs_spawn_tax` — "running for over 60 seconds", then silence until
   the job's 60-minute budget was spent. The hang had no reachable timeout:
@@ -183,6 +197,7 @@
   and costs CI a two-minute failure with a name on it — instead of a 60-minute
   silent hang. `windows-focused` takes a `test-path` input, so a native
   single-test iteration no longer means editing the workflow.
+
 ### Added
 - `gray cron add "<schedule>" "<text>" --reminder` stores the text and delivers
   it verbatim at fire time. A reminder runs no agent turn, no pre-script, no
