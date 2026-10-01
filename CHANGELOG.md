@@ -91,6 +91,14 @@
   remote command starts in that account's login directory.
 
 ### Fixed
+- **A cron job added from the REPL comes back into that chat.** "Message me in a minute" fired,
+  wrote its output under `cron/output/` and showed nothing in the conversation; the model polled
+  with `sleep` to find out. A job added from inside a session (the bash tool's `GRAY_SESSION_ID`)
+  now records that session as its origin, and whichever ticker fires it drops the result into
+  `cron/inbox/<session>`. The REPL showing the session paints a `⏰ cron` card and, once idle,
+  starts a turn with the result as a `[Cron delivery: <name>]` message. A background bash job that
+  finishes while the REPL is idle starts a turn the same way, and queued `host/say` lines paint
+  without waiting for the next keypress.
 - **A newline could smuggle a secret past the redactor.** The tokenizer splits on `' '` only, so
   `'\n'` glued neighbouring lines into one token: a secret below the first line of a shell chunk was
   written to the durable log and sent to the provider in the clear, and a secret that *did* fire armed

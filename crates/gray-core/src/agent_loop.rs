@@ -935,10 +935,11 @@ impl Agent {
                 // thread, in order): cancel check, validation, `tool_before`
                 // verdicts, `pre_tool` hooks. Only `executor.execute` runs
                 // concurrently — never `ApprovalGate::check`: batchable names
-                // are statically `Allow` in every mode. Post-pass (loop
-                // thread, input order): `tool_call_end` emission (`start`
-                // already emitted live/at-finalize with the final ID),
-                // `post_tool` hooks, `tool_result` events, history writes.
+                // are statically `Allow` in every mode. `tool_call_end` for
+                // every ready member fires before the run starts (`start`
+                // already emitted live/at-finalize with the final ID).
+                // Post-pass (loop thread, input order): `post_tool` hooks,
+                // `tool_result` events, history writes.
                 if let crate::parallel::Segment::Parallel(idxs) = segment {
                     let (Some(run_start), Some(run_end)) =
                         (idxs.first().copied(), idxs.last().map(|i| *i + 1))
@@ -979,6 +980,14 @@ impl Agent {
                         answer_pending_tools(self, &tool_uses, run_end, "cancelled by user");
                         self.emit_turn_end(&billed).await;
                         return Err(CoreError::Cancelled);
+                    }
+                    // `tool_call_end` is the "args complete, executing" signal
+                    // (the REPL flips the card to running and the status off
+                    // "Preparing tool"): emit it for every member now, before
+                    // the run starts — not after the slowest one finishes.
+                    for (idx, _, _) in &ready {
+                        let (id, _, args) = &tool_uses[*idx];
+                        emit!(AgentEvent::tool_call_end(id.clone(), args.clone()));
                     }
                     // Spawn: one future per ready item. Everything the future
                     // touches is owned (`'static`): no borrow of `self`
@@ -1041,7 +1050,6 @@ impl Agent {
                                 for hook in &self.hooks {
                                     hook.post_tool(name, output).await;
                                 }
-                                emit!(AgentEvent::tool_call_end(id.clone(), args.clone()));
                                 emit!(AgentEvent::tool_result(
                                     id.clone(),
                                     output.content.clone(),

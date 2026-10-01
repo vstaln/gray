@@ -188,6 +188,15 @@ impl SaveLocalDeliver {
                     );
                     return Ok(saved(false));
                 };
+                // A job added from an interactive gray session goes back to
+                // that session's inbox: the REPL showing it renders the card
+                // and runs a turn, which persists the note — so no mirror
+                // (it would land twice) and no chat route (`to_chat: false`).
+                if origin.platform == SESSION_PLATFORM {
+                    post_to_session_inbox(&self.home, &origin.chat, &saved(true))
+                        .map_err(|e| format!("session inbox write failed: {e:#}"))?;
+                    return Ok(saved(false));
+                }
                 // Clean mirror (hermes parity): no wrapper, no file path.
                 // `USER`, never assistant — an assistant-role mirror lands
                 // assistant→assistant and breaks strict alternation;
@@ -368,7 +377,7 @@ fn failure_delivery(
     }
     let msg = crate::cron_fire::redact_secrets(msg, &deliver.home);
     let path = crate::cron_fire::write_local_output(&deliver.home, job, now, &msg).ok()?;
-    Some(DeliveredFire {
+    let fired = DeliveredFire {
         id: job.id.clone(),
         name: job.name.clone(),
         path,
@@ -377,7 +386,119 @@ fn failure_delivery(
         reminder: job.reminder,
         failed: true,
         elapsed_ms: 0,
-    })
+    };
+    // Same split as `deliver_full`: a session origin hears about the failure
+    // through its inbox, never through a chat route.
+    if let Some(origin) = job
+        .origin
+        .as_ref()
+        .filter(|o| o.platform == SESSION_PLATFORM)
+    {
+        if let Err(e) = post_to_session_inbox(&deliver.home, &origin.chat, &fired) {
+            log::warn!("cron {}: session inbox write failed: {e:#}", job.id);
+        }
+        return None;
+    }
+    Some(fired)
+}
+
+/// `Origin.platform` for a job added from inside a gray session (the bash
+/// tool exports `GRAY_SESSION_ID`): its result comes back into that chat.
+pub const SESSION_PLATFORM: &str = "repl";
+
+/// `<home>/cron/inbox/<session>`, or `None` when the id could escape the
+/// directory (it comes from an env var and a hand-editable jobs file).
+fn session_inbox(home: &std::path::Path, session: &str) -> Option<PathBuf> {
+    let safe = !session.is_empty()
+        && session
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+    safe.then(|| home.join("cron").join("inbox").join(session))
+}
+
+/// One delivery for a session, waiting for the REPL that shows it: the card
+/// it renders and the user-role note its turn starts from. Written tmp+rename
+/// so a polling reader never sees half a file.
+fn post_to_session_inbox(
+    home: &std::path::Path,
+    session: &str,
+    fired: &DeliveredFire,
+) -> anyhow::Result<()> {
+    let dir = session_inbox(home, session)
+        .ok_or_else(|| anyhow::anyhow!("unsafe session id {session:?}"))?;
+    std::fs::create_dir_all(&dir)?;
+    let body = if fired.failed {
+        format!("(failed) {}", fired.excerpt)
+    } else {
+        fired.excerpt.clone()
+    };
+    let entry = serde_json::json!({
+        "card": format!("\u{23f0} cron: {}", format_fire_chat(fired)),
+        "prompt": crate::cron_fire::mirror_message(&fired.name, &body),
+    });
+    // Name sorts by delivery time; the uuid keeps two fires in one ms apart.
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let name = format!("{stamp:020}-{}.json", uuid::Uuid::new_v4());
+    let tmp = dir.join(format!(".{name}.tmp"));
+    // 0600 like the transcript in cron/output: the entry carries the result.
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    std::io::Write::write_all(&mut options.open(&tmp)?, entry.to_string().as_bytes())?;
+    std::fs::rename(&tmp, dir.join(name))?;
+    Ok(())
+}
+
+/// True when the session's inbox holds a delivery (the REPL's cheap poll).
+pub fn session_inbox_pending(home: &std::path::Path, session: &str) -> bool {
+    session_inbox(home, session)
+        .and_then(|d| std::fs::read_dir(d).ok())
+        .is_some_and(|mut it| {
+            it.any(|e| e.is_ok_and(|e| !e.file_name().to_string_lossy().starts_with('.')))
+        })
+}
+
+/// Take every delivery waiting for `session`, oldest first, as
+/// `(card, prompt)`. Each file is removed before it is returned, so one
+/// delivery starts at most one turn even if two readers race; an entry that
+/// cannot be removed or parsed is skipped (and logged), never redelivered.
+pub fn drain_session_inbox(home: &std::path::Path, session: &str) -> Vec<(String, String)> {
+    let Some(dir) = session_inbox(home, session) else {
+        return Vec::new();
+    };
+    let Ok(rd) = std::fs::read_dir(&dir) else {
+        return Vec::new();
+    };
+    let mut paths: Vec<PathBuf> = rd
+        .filter_map(Result::ok)
+        .filter(|e| !e.file_name().to_string_lossy().starts_with('.'))
+        .map(|e| e.path())
+        .collect();
+    paths.sort();
+    let mut out = Vec::new();
+    for path in paths {
+        let text = std::fs::read_to_string(&path);
+        if let Err(e) = std::fs::remove_file(&path) {
+            log::warn!("cron inbox: cannot remove {}: {e}", path.display());
+            continue;
+        }
+        let parsed = text
+            .ok()
+            .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+            .and_then(|v| {
+                let field = |k: &str| v.get(k)?.as_str().map(str::to_string);
+                Some((field("card")?, field("prompt")?))
+            });
+        match parsed {
+            Some(entry) => out.push(entry),
+            None => log::warn!("cron inbox: dropped unreadable {}", path.display()),
+        }
+    }
+    out
 }
 
 /// Max jobs fired concurrently in one tick pass. `const`, not `Config`:

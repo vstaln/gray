@@ -7,7 +7,13 @@ use std::process::{Command, Output};
 
 fn run(home: &Path, env_origin: Option<&str>, args: &[&str]) -> Output {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_gray"));
-    cmd.env("GRAY_HOME", home).current_dir(home).args(args);
+    // Run from inside a gray session, the bash tool's `GRAY_SESSION_ID`
+    // would make every job a session-origin one; these cases are about the
+    // host declaration alone.
+    cmd.env("GRAY_HOME", home)
+        .env_remove("GRAY_SESSION_ID")
+        .current_dir(home)
+        .args(args);
     match env_origin {
         Some(v) => {
             cmd.env("GRAY_CRON_ORIGIN", v);

@@ -529,6 +529,25 @@ impl Agent {
         }
     }
 
+    /// Idle-host view of background jobs (the REPL between turns): `Some`
+    /// wake future while this session still has unfinished jobs — it resolves
+    /// `Some(())` once one settles — so the host can start a turn on its own.
+    pub fn background_wake(
+        &self,
+        ctx: &ToolContext,
+        timeout: Duration,
+    ) -> Option<BoxFuture<'static, Option<()>>> {
+        self.executor
+            .has_pending_background(ctx)
+            .then(|| self.executor.wait_for_notification(ctx, timeout))
+    }
+
+    /// Takes finished background-job notices for an idle host, which turns
+    /// them into the next turn's input (the loop drains them only mid-run).
+    pub fn drain_background_notifications(&self, ctx: &ToolContext) -> Vec<String> {
+        self.executor.drain_notifications(ctx)
+    }
+
     /// Read-only view of the accumulated conversation so far.
     pub fn messages(&self) -> &[Message] {
         &self.messages

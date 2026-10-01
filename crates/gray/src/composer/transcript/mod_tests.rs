@@ -297,6 +297,34 @@ fn diff_rows_pad_edge_to_edge() {
     assert!(row_w(&lines[5]) < 80);
 }
 
+/// tool_fmt pre-wraps numbered rows to `width - 2` cells (2-col lead +
+/// gutter + content). The card must not re-wrap them narrower: a 2-col
+/// mismatch orphaned each full row's last word onto its own row.
+#[test]
+fn full_width_numbered_row_is_not_rewrapped() {
+    let width = 80;
+    let content = "word ".repeat(14); // 70 cells
+    let row = format!("    1 | {content}"); // 2 lead + "  1 | " + 70 = 78
+    assert_eq!(row.len(), width - 2);
+    let lines = format_tool_box_lines(Line::from("Ran x"), &[Line::from(row)], width);
+    // margin, header, breathing row, ONE body row, margin
+    assert_eq!(lines.len(), 5, "{lines:?}");
+}
+
+/// Trailing blank lines of streamed thinking collapse to one separator
+/// row; with the structural dock seam off on a blank tail, that one row is
+/// the only gap above the live status.
+#[test]
+fn thinking_trailing_blanks_collapse_to_one_row() {
+    let rows = thinking_run_rows("foo\n\n\n\n", 40, false);
+    let texts: Vec<String> = rows
+        .iter()
+        .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+        .collect();
+    assert_eq!(texts, vec![" foo".to_string(), " ".to_string()]);
+    assert!(transcript_row_is_blank(rows.last().unwrap()));
+}
+
 #[test]
 fn wrap_ranges_round_trip_and_identity() {
     // identity: short line maps to the whole source

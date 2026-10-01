@@ -1941,6 +1941,18 @@ async fn parallel_batch_overlaps_reads_with_ordered_results() {
         ],
         "results stay in input order, {events:?}"
     );
+    // Every member is marked executing (`ToolCallEnd`) before any result:
+    // a batch never sits in "Preparing tool" while it actually runs.
+    let last_end = events
+        .iter()
+        .rposition(|e| matches!(e, AgentEvent::ToolCallEnd { .. }));
+    let first_result = events
+        .iter()
+        .position(|e| matches!(e, AgentEvent::ToolResult { .. }));
+    assert!(
+        last_end.is_some() && last_end < first_result,
+        "both ends precede the first result, {events:?}"
+    );
 }
 
 #[tokio::test]
@@ -1970,10 +1982,27 @@ async fn lane_off_matches_sequential_events() {
         None => unsafe { std::env::remove_var("GRAY_PARALLEL_READS") },
     }
     assert_eq!(runs.len(), 2);
-    assert_eq!(
-        runs[0], runs[1],
-        "lane off must match lane on event-for-event"
-    );
+    // The lane emits every `ToolCallEnd` before the run starts, so the two
+    // runs interleave differently; per-call event streams must still match.
+    let call_events = |evs: &[AgentEvent], want: &str| -> Vec<AgentEvent> {
+        evs.iter()
+            .filter(|e| match e {
+                AgentEvent::ToolCallStart { id, .. }
+                | AgentEvent::ToolCallProgress { id, .. }
+                | AgentEvent::ToolCallEnd { id, .. }
+                | AgentEvent::ToolResult { id, .. } => id == want,
+                _ => true,
+            })
+            .cloned()
+            .collect()
+    };
+    for id in ["c1", "c2"] {
+        assert_eq!(
+            call_events(&runs[0], id),
+            call_events(&runs[1], id),
+            "lane off must match lane on for call {id}"
+        );
+    }
 }
 
 /// Cancels the run's token inside the first `tool_before` verdict, so the

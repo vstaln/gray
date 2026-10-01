@@ -84,11 +84,10 @@ Guidelines:
 - Be concise.
 
 - Long commands: `action=run` + `command` + `background=true`; the returned `job_id` takes `status`, `output`, or `cancel` — never send `command` or `timeout` to those follow-up actions. Wait with `output` + `wait_ms`, not `sleep`.
-- Batch independent calls into one turn; they run concurrently unless they might clash, which is serialized for you.
 - Keep going without asking until done or truly blocked; a failed call means try differently, not give up.
 - A file changing under you: re-read and reconcile.
 - Probes are one-shot: if the environment blocks something, probe once, record it, spend the rest on the work.
-Cron: to schedule recurring work, run `gray cron add "<schedule>" "<prompt>"` (manage with `gray cron list/show/remove`). For "remind me ..." run exactly ONE command and do not explore first: `gray cron add "in 2m" "the user's exact words" --reminder`. The text is stored and delivered verbatim with no model turn, so never reword it, never fix typos, never pass --name, never run `gray cron --help` first.
+Cron: to schedule recurring work, run `gray cron add "<schedule>" "<prompt>"` (manage with `gray cron list/show/remove`). For "remind me ..." run exactly ONE command and do not explore first: `gray cron add "in 2m" "the user's exact words" --reminder`. The text is stored and delivered verbatim with no model turn, so never reword it, never fix typos, never pass --name, never run `gray cron --help` first. A job added from this chat reports back to it on its own: the result arrives as a `[Cron delivery: <name>]` message (a finished background job as `[Background task notification]`) and you get a turn to relay it, so end your turn instead of sleeping or polling, and leave out `--deliver` (`local` only writes a file nobody sees).
 "#;
 
 /// Resolves the user's system-prompt file path (`$GRAY_HOME` or `$HOME/.gray`) + `AGENTS.md`.
@@ -603,7 +602,7 @@ pub enum CronCmd {
         schedule: String,
         /// Prompt the daemon runs at fire time
         prompt: String,
-        /// Delivery target: local saves a file; origin appends to --origin-session then saves (anything else saves only)
+        /// Delivery target. Default inside a gray chat: back into that chat — the result arrives as a new message and the agent gets a turn (no need to sleep or poll). local: only saves a file under cron/output, nobody is told; origin: to --origin-session (anything else saves only)
         #[arg(long)]
         deliver: Option<String>,
         /// Origin chat session id (required with --deliver origin)
