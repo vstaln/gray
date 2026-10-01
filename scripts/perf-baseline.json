@@ -1,6 +1,6 @@
 {
   "_comment": "Down-only ceilings. Raise one on purpose, in a commit that says why. binary_bytes_slack_pct is the only soft edge: a stripped size moves with the toolchain and the target, everything else is exact. See scripts/perf-floor.sh.",
-  "unique_crates": 324,
+  "unique_crates": 411,
   "build_script_crates": 77,
   "workspace_members": 8,
   "binary_bytes": 32090992,

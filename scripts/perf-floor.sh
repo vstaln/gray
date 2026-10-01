@@ -28,14 +28,11 @@ binary="target/release/gray"
 metric() { printf '%s' "$2"; }
 
 unique_crates() {
-  # `cargo tree` marks an already-expanded subtree with `(*)`; counting those
-  # inflates the total, so strip and dedupe before counting or the number is
-  # wrong from day one.
-  cargo tree --prefix none --workspace --edges normal,build,dev 2>/dev/null \
-    | sed 's/ (\*)//' \
-    | grep -v '^$' \
-    | sort -u \
-    | wc -l | tr -d ' '
+  # Every package the lockfile resolves, all targets. `cargo tree` was the
+  # first try, but its output moves with the host and toolchain (324 here,
+  # 413 on the runner, same lockfile); the lockfile is the same bytes
+  # everywhere.
+  grep -c '^\[\[package\]\]' Cargo.lock
 }
 
 build_script_crates() {
