@@ -186,10 +186,10 @@ fn shell() -> Check {
     let name = "shell";
     #[cfg(windows)]
     {
-        return match gray_tools::shell::shell_path() {
+        match gray_tools::shell::shell_path() {
             Ok(path) => Check::new(name, Status::Pass, path.display().to_string()),
             Err(e) => Check::new(name, Status::Fail, format!("{e}")),
-        };
+        }
     }
     #[cfg(not(windows))]
     {
