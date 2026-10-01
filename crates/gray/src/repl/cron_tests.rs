@@ -19,6 +19,7 @@ fn job(name: &str, status: Option<crate::cron::RunStatus>) -> crate::cron::CronJ
         origin: None,
         workdir: None,
         fire_claim: None,
+        reminder: false,
         skills: vec![],
         script: None,
     }

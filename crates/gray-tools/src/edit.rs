@@ -190,6 +190,10 @@ fn parse_edits_array(v: &Value) -> Result<Vec<Edit>, String> {
 
 #[async_trait]
 impl Tool for EditTool {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
     fn def(&self) -> ToolDef {
         ToolDef::new(
             "edit",

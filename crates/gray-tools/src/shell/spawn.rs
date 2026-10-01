@@ -107,6 +107,11 @@ fn shell_env(session: Option<&str>, cwd_report: Option<&Path>) -> Vec<(String, S
         ("GIT_TERMINAL_PROMPT", "0"),
         ("SUDO_ASKPASS", "/bin/false"),
         ("TERM", "dumb"),
+        // Color is noise the model pays for: no ANSI handling exists
+        // downstream, and the inline body is stripped anyway. Both spellings
+        // because tools disagree about which one they honor.
+        ("NO_COLOR", "1"),
+        ("CLICOLOR", "0"),
         ("PAGER", "cat"),
         ("MANPAGER", "cat"),
         ("GIT_PAGER", "cat"),

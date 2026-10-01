@@ -182,6 +182,11 @@ pub trait Tool: Send + Sync {
     /// Static definition surfaced to the model (name, description, schema).
     fn def(&self) -> crate::message::ToolDef;
 
+    /// Downcast hook for executor-level introspection (the completion-wake
+    /// path finds the bash tool's job registry without a registry-wide
+    /// redesign). Every tool returns `self`.
+    fn as_any(&self) -> &dyn std::any::Any;
+
     /// Drain completed background notices without waiting. Called only at safe
     /// transcript boundaries, never in the middle of tool-result placement.
     fn drain_notifications(&self, _ctx: &ToolContext) -> Vec<String> {
@@ -198,6 +203,26 @@ pub trait Tool: Send + Sync {
 pub trait ToolExecutor: Send + Sync {
     fn drain_notifications(&self, _ctx: &ToolContext) -> Vec<String> {
         Vec::new()
+    }
+
+    /// Bounded wait until at least one background notification is ready (or
+    /// `None` when the timeout elapsed with nothing to deliver). The loop
+    /// calls this at turn end with unfinished background jobs instead of
+    /// ending the run: headless invocations would otherwise exit and kill
+    /// every job. Default `None` — executors without background work answer
+    /// instantly, so callers cannot hang on it.
+    fn wait_for_notification(
+        &self,
+        _ctx: &ToolContext,
+        _timeout: std::time::Duration,
+    ) -> BoxFuture<'static, Option<()>> {
+        Box::pin(std::future::ready(None))
+    }
+
+    /// Whether any background job is still running for this session — the
+    /// gate that decides whether turn-end waits ([`wait_for_notification`]).
+    fn has_pending_background(&self, _ctx: &ToolContext) -> bool {
+        false
     }
 
     fn execute(
@@ -362,6 +387,11 @@ pub struct Agent {
     /// ε1/ε0 ≈ 7.1 on SWE-bench Verified; clean restart dominates).
     /// Cleared by every history rewrite — compaction subsumes the failure.
     pub(crate) contaminated: std::collections::BTreeSet<usize>,
+    /// Stale-output mask watermark: every at-threshold `ToolResult` in
+    /// `messages[..masked_prefix]` rides outbound requests as a citation
+    /// stub. Advanced in batches (see `agent_loop::advance_tool_mask`) and
+    /// reset by every history rewrite, which invalidates the index.
+    pub(crate) masked_prefix: usize,
 }
 
 impl Agent {
@@ -383,6 +413,7 @@ impl Agent {
             steer: None,
             session_id: None,
             contaminated: std::collections::BTreeSet::new(),
+            masked_prefix: 0,
         }
     }
 
@@ -416,6 +447,8 @@ impl Agent {
         // A rewrite subsumes whatever the contaminated partials were part
         // of; the indices would point at the wrong messages anyway.
         self.contaminated.clear();
+        // Indices into the old history are meaningless after a rewrite.
+        self.masked_prefix = 0;
         self.history_revision = self.history_revision.wrapping_add(1);
         if let Some(hook) = &self.history_rewrite_hook {
             hook();

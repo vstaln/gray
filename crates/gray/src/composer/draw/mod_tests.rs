@@ -84,52 +84,43 @@ fn multiline_input_is_not_clipped_by_the_viewport_cap() {
     assert!(desired <= cap);
 }
 
-/// One streamed paragraph arriving chunk by chunk flips the transcript
-/// tail blank / non-blank between frames. Driven through the exact path
-/// `draw` uses: the viewport must hold still instead of bouncing 6<->7
-/// rows per chunk (the reported input-box bounce).
+/// The dock seam and a blank scrollback tail are mutually exclusive by
+/// construction: a blank tail already separates scrollback from the status,
+/// so a seam on top of it is the doubled margin. Driven through the exact
+/// predicate `draw` uses, including a tail that flips blank / non-blank
+/// between chunks and a stale `cached` flag from an earlier frame.
 #[test]
-fn streaming_tail_flicker_holds_viewport_still() {
-    let mut cached = false;
-    let mut heights = Vec::new();
-    for blank in [true, false, true, false, true] {
-        cached = ratchet_seam(cached, true, !blank);
-        heights.push(desired_viewport_h(
-            status_dock_h(true, cached),
-            0,
-            0,
-            3,
-            0,
-            0,
-            viewport_cap(40),
-        ));
+fn seam_never_stacks_on_a_blank_tail() {
+    for cached in [false, true] {
+        for blank_tail in [false, true] {
+            let seam = ratchet_seam(cached, true, !blank_tail);
+            let blank_rows_above_status = usize::from(blank_tail) + usize::from(seam);
+            assert!(
+                blank_rows_above_status <= 1,
+                "cached={cached} blank_tail={blank_tail}: {blank_rows_above_status} blank rows"
+            );
+            // Exactly one separator row in every state.
+            assert_eq!(blank_rows_above_status, 1);
+        }
     }
-    // One growth step when content first flows, then steady — never an
-    // oscillation. Latch releases when the status clears.
-    assert_eq!(heights, vec![6, 7, 7, 7, 7], "heights: {heights:?}");
-    assert!(!ratchet_seam(true, false, true));
+    assert!(!ratchet_seam(true, false, true), "no status, no dock");
 }
 
-/// Checkpoint trailing gaps (`Thought for` spacer, tool-box trailing)
-/// release the seam latch, so the gap never stacks with a latched seam
-/// into a double blank above the live status. Streaming re-latches on
-/// the next non-blank frame, so per-chunk flicker still holds steady.
+/// Checkpoint gaps (`Thought for` spacer, tool-box trailing) need no
+/// explicit release any more: the frame after the gap derives no seam.
 #[test]
-fn checkpoint_gap_releases_seam_to_single_spaced_status() {
-    // thinking streams: tail non-blank latches the seam on.
+fn checkpoint_gap_yields_single_spaced_status() {
+    // thinking streams: non-blank tail needs the seam.
     let mut seam = ratchet_seam(false, true, true);
     assert!(seam);
-    // Thought summary commits + trailing spacer gap; the checkpoint
-    // releases the latch (see `release_dock_seam` callers).
-    seam = false;
-    // status-only frames with a blank tail: no seam, status + breath.
+    assert_eq!(status_dock_h(true, seam), 3, "seam + status + breath");
+    // The gap commits: blank tail, even if nothing released the old flag.
     seam = ratchet_seam(seam, true, false);
     assert!(!seam, "seam must not stack on the checkpoint gap");
     assert_eq!(status_dock_h(true, seam), 2, "status + breath only");
-    // answer streams: first non-blank row re-latches, height steady.
+    // answer streams: first non-blank row brings the seam back.
     seam = ratchet_seam(seam, true, true);
     assert!(seam);
-    assert_eq!(status_dock_h(true, seam), 3, "seam + status + breath");
 }
 
 #[test]

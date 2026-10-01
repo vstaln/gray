@@ -202,6 +202,28 @@ impl CacheTracker {
         (age < CACHE_TTL).then(|| CACHE_TTL - age)
     }
 
+    /// True when the warm cache this process last saw has since expired, so
+    /// the next request re-bills the whole prefix whatever it contains —
+    /// which makes a context rewrite (the stale-output mask) free.
+    ///
+    /// Distinct from [`remaining`](Self::remaining) returning `None`: that
+    /// also covers a provider which never reported caching, where nothing is
+    /// known to be lost. `paused_at` is the right clock here: it freezes at
+    /// the turn boundary, so the answer is the idle gap the turn is starting
+    /// after.
+    pub fn is_cold(&self, now: Instant) -> bool {
+        let Some(last) = self.last.as_ref() else {
+            return false;
+        };
+        if !last.reported_cache {
+            return false;
+        }
+        self.paused_at
+            .unwrap_or(now)
+            .saturating_duration_since(last.at)
+            >= CACHE_TTL
+    }
+
     /// Freezes the countdown for an active turn. Idempotent because setup
     /// and the normal request path can both reassert the Working status.
     pub(crate) fn pause(&mut self, now: Instant) {

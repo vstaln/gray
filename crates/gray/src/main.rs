@@ -568,9 +568,21 @@ async fn run_cron(cmd: gray::CronCmd, config: &gray::config::Config) -> anyhow::
             workdir,
             skills,
             script,
+            reminder,
         } => {
             let store = cron_store()?;
-            let name = name.unwrap_or_else(|| default_job_name(&prompt));
+            if reminder && (script.is_some() || skills.is_some()) {
+                anyhow::bail!("--reminder cannot be combined with --script or --skills");
+            }
+            let name = name.unwrap_or_else(|| {
+                if reminder {
+                    // A slug of the exact text: the reminder must not be
+                    // paraphrased into a tidier name than the user gave.
+                    gray::cron_fire::reminder_name(&prompt)
+                } else {
+                    default_job_name(&prompt)
+                }
+            });
             let base: std::path::PathBuf = workdir
                 .clone()
                 .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
@@ -626,6 +638,7 @@ async fn run_cron(cmd: gray::CronCmd, config: &gray::config::Config) -> anyhow::
                 workdir,
                 skill_names,
                 script,
+                reminder,
             )?;
             let next = store
                 .get(&id)?

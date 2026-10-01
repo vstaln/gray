@@ -9,50 +9,33 @@ use std::time::Duration;
 use futures::future::BoxFuture;
 
 use crate::agent::ToolOutput;
-use crate::parallel::{join_ordered, parallel_max};
+use crate::parallel::join_ordered;
 
 static LOCK: Mutex<()> = Mutex::new(());
 
 #[test]
-fn cap_defaults_when_unset() {
-    let _g = LOCK.lock().unwrap();
-    unsafe { std::env::remove_var("GRAY_PARALLEL_MAX") };
-    assert_eq!(parallel_max(), tokio::sync::Semaphore::MAX_PERMITS);
-}
-
-#[test]
-fn cap_clamps_to_semaphore_max() {
-    let _g = LOCK.lock().unwrap();
-    unsafe { std::env::set_var("GRAY_PARALLEL_MAX", "18446744073709551615") };
-    assert_eq!(parallel_max(), tokio::sync::Semaphore::MAX_PERMITS);
-    // Out-of-range values fall back to unlimited rather than panicking.
-    unsafe { std::env::set_var("GRAY_PARALLEL_MAX", "99999999999999999999999") };
-    assert_eq!(parallel_max(), tokio::sync::Semaphore::MAX_PERMITS);
-    unsafe { std::env::remove_var("GRAY_PARALLEL_MAX") };
-}
-
-#[test]
-fn cap_parses_valid_values() {
-    let _g = LOCK.lock().unwrap();
-    unsafe { std::env::set_var("GRAY_PARALLEL_MAX", "4") };
-    assert_eq!(parallel_max(), 4);
-    unsafe { std::env::set_var("GRAY_PARALLEL_MAX", " 8 ") };
-    assert_eq!(parallel_max(), 8);
-    unsafe { std::env::remove_var("GRAY_PARALLEL_MAX") };
-}
-
-#[test]
-fn cap_falls_back_on_invalid_or_zero() {
-    let _g = LOCK.lock().unwrap();
-    for bad in ["0", "abc", "", "  "] {
-        unsafe { std::env::set_var("GRAY_PARALLEL_MAX", bad) };
+fn cap_parsing_is_a_pure_table() {
+    // No env access, no unsafe, no lock: the parser takes the raw value.
+    let max = tokio::sync::Semaphore::MAX_PERMITS;
+    for (raw, want) in [
+        (None, max),
+        (Some("4"), 4),
+        (Some(" 8 "), 8),
+        (Some("0"), max),
+        (Some("abc"), max),
+        (Some(""), max),
+        (Some("  "), max),
+        // Parses but clamps to what tokio accepts.
+        (Some("18446744073709551615"), max),
+        // Overflow falls back to unlimited rather than panicking.
+        (Some("99999999999999999999999"), max),
+    ] {
         assert_eq!(
-            parallel_max(),
-            tokio::sync::Semaphore::MAX_PERMITS,
-            "input {bad:?} must fall back to unlimited"
+            crate::parallel::parse_parallel_max(raw),
+            want,
+            "input {raw:?}"
         );
     }
-    unsafe { std::env::remove_var("GRAY_PARALLEL_MAX") };
 }
 
 #[tokio::test]

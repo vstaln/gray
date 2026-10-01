@@ -81,11 +81,14 @@ Workflow (every task):
 
 Guidelines:
 - Be concise.
+
 - Long commands: `action=run` + `command` + `background=true`; the returned `job_id` takes `status`, `output`, or `cancel` — never send `command` or `timeout` to those follow-up actions. Wait with `output` + `wait_ms`, not `sleep`.
 - Batch independent calls into one turn; they run concurrently unless they might clash, which is serialized for you.
 - Keep going without asking until done or truly blocked; a failed call means try differently, not give up.
 - A file changing under you: re-read and reconcile.
-- Probes are one-shot: if the environment blocks something, probe once, record it, spend the rest on the work."#;
+- Probes are one-shot: if the environment blocks something, probe once, record it, spend the rest on the work.
+Cron: to schedule recurring work, run `gray cron add "<schedule>" "<prompt>"` (manage with `gray cron list/show/remove`). For "remind me ..." run exactly ONE command and do not explore first: `gray cron add "in 2m" "the user's exact words" --reminder`. The text is stored and delivered verbatim with no model turn, so never reword it, never fix typos, never pass --name, never run `gray cron --help` first.
+"#;
 
 /// Resolves the user's system-prompt file path (`$GRAY_HOME` or `$HOME/.gray`) + `AGENTS.md`.
 ///
@@ -530,6 +533,9 @@ pub enum CronCmd {
     /// List jobs (id, name, schedule, next run, last status)
     List,
     /// Add a job: schedule ("every 1h" / "30m" / "in 10m" / RFC3339 / "0 9 * * *") + prompt
+    #[command(
+        after_help = "Reminder (one command, no model turn):\n  gray cron add \"in 2m\" \"clean my roo\" --reminder\nThe text is stored and delivered verbatim: never reword it, never fix typos, never pass --name."
+    )]
     Add {
         /// Schedule expression
         schedule: String,
@@ -553,6 +559,10 @@ pub enum CronCmd {
         /// Absolute path to a pre-run script (stdout injected into prompt)
         #[arg(long)]
         script: Option<PathBuf>,
+        /// Reminder: store the prompt verbatim and deliver it as-is at fire
+        /// time. No model turn, no tools. Use for "remind me ...".
+        #[arg(long)]
+        reminder: bool,
     },
     /// One claim→fire→record pass (also the OS-cron/runit entry point)
     Tick {

@@ -339,7 +339,9 @@ fn runtime_teardown_kills_a_running_background_group() {
     });
     // Keep the tool alive: cleanup must not depend on Jobs::drop being polled.
     drop(runtime);
-    std::thread::sleep(Duration::from_millis(2200));
+    // The child sleeps 2s; give the group kill a wide margin before
+    // asserting it never got to write (a loaded runner needs the slack).
+    std::thread::sleep(Duration::from_millis(4000));
     assert!(!dir.path().join("escaped").exists());
     drop(tool);
 }

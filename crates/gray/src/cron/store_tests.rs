@@ -9,7 +9,17 @@ impl CronStore {
         prompt: &str,
         deliver: Deliver,
     ) -> anyhow::Result<String> {
-        self.add_full(name, schedule, prompt, deliver, None, None, vec![], None)
+        self.add_full(
+            name,
+            schedule,
+            prompt,
+            deliver,
+            None,
+            None,
+            vec![],
+            None,
+            false,
+        )
     }
 }
 
@@ -119,6 +129,7 @@ fn add_rejects_bad_specs() {
                 Some(PathBuf::from("relative/path")),
                 vec![],
                 None,
+                false,
             )
             .is_err()
     );
@@ -133,6 +144,7 @@ fn add_rejects_bad_specs() {
                 Some(PathBuf::from("/no/such/dir/gray-cron-test")),
                 vec![],
                 None,
+                false,
             )
             .is_err()
     );
@@ -242,6 +254,7 @@ fn add_accepts_skills_and_script() {
             None,
             vec!["briefing".to_string()],
             Some(script.clone()),
+            false,
         )
         .unwrap();
     let job = store.get(&id).unwrap().unwrap();
@@ -263,6 +276,7 @@ fn add_rejects_bad_skills_and_script() {
                 None,
                 vec!["  ".to_string()],
                 None,
+                false,
             )
             .is_err()
     );
@@ -277,6 +291,7 @@ fn add_rejects_bad_skills_and_script() {
                 None,
                 vec!["n".repeat(MAX_NAME_LEN + 1)],
                 None,
+                false,
             )
             .is_err()
     );
@@ -291,6 +306,7 @@ fn add_rejects_bad_skills_and_script() {
                 None,
                 vec![],
                 Some(PathBuf::from("relative/pre.sh")),
+                false,
             )
             .is_err()
     );
@@ -305,6 +321,7 @@ fn add_rejects_bad_skills_and_script() {
                 None,
                 vec![],
                 Some(PathBuf::from("/no/such/file.sh")),
+                false,
             )
             .is_err()
     );
@@ -461,4 +478,36 @@ fn old_worker_cannot_clear_reclaimed_job() {
             .is_err()
     );
     assert_eq!(store.get(&id).unwrap().unwrap().fire_claim, new.fire_claim);
+}
+
+#[test]
+fn a_reminder_round_trips_and_old_stores_default_to_a_task() {
+    let (_tmp, store) = test_store();
+    let id = store
+        .add_full(
+            "rem",
+            "in 2m",
+            "clean my roo",
+            Deliver::Local,
+            None,
+            None,
+            vec![],
+            None,
+            true,
+        )
+        .unwrap();
+    assert!(store.get(&id).unwrap().unwrap().reminder);
+    assert_eq!(store.get(&id).unwrap().unwrap().prompt, "clean my roo");
+    // A store written before --reminder existed still loads: the field is
+    // `#[serde(default)]`, so an absent key means an ordinary agent job.
+    let mut v = serde_json::to_value(store.list().unwrap()).unwrap();
+    for job in v.as_array_mut().unwrap() {
+        job.as_object_mut().unwrap().remove("reminder");
+    }
+    std::fs::write(
+        store.cron_dir.join("jobs.json"),
+        serde_json::to_string_pretty(&v).unwrap(),
+    )
+    .unwrap();
+    assert!(!store.list().unwrap()[0].reminder);
 }

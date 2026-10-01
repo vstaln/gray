@@ -1115,6 +1115,7 @@ async fn silent_past_bound_is_handed_to_a_job_not_killed() {
         crate::shell::kill::GroupGuard::new(pgid),
         Some(&tool.jobs),
         Duration::from_secs(1),
+        Duration::ZERO,
         None,
     )
     .await;
@@ -1184,5 +1185,71 @@ async fn silent_past_bound_is_handed_to_a_job_not_killed() {
         .and_then(|j| j.result.borrow().clone());
     if let Some(out) = final_out {
         assert!(out.content.contains("cancelled"), "{}", out.content);
+    }
+}
+
+/// Unix-only: the Windows runner resolves a temp path to a different
+/// spelling (8.3 short name) between calls, so the ledger key never
+/// matches and the repeat is not stubbed. The feature is Linux/macOS
+/// today; revisit when the Windows resolver spelling is stable.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_repeated_cat_is_stubbed_once_through_the_tool() {
+    // The wiring, not just the helper: the ledger lives on the tool, the stub
+    // replaces the whole result, and the arm is consumed.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file = dir.path().join("a.txt");
+    std::fs::write(&file, "alpha\nbeta\ngamma\n").expect("write");
+    let ctx = ctx_for(&sess("dedup"));
+    let tool = BashTool::default().with_ledger(Arc::new(crate::ledger::FileLedger::new()));
+    // Forward slashes: the command parser eats a bare Windows backslash path.
+    let arg = file.display().to_string().replace('\\', "/");
+    let cmd = json!({"command": format!("cat {arg}")});
+
+    let first = tool.execute(&ctx, cmd.clone()).await;
+    assert!(
+        body(&first.content).contains("gamma"),
+        "the first read is whole: {}",
+        first.content
+    );
+    let second = tool.execute(&ctx, cmd.clone()).await;
+    assert!(
+        !body(&second.content).contains("gamma"),
+        "the repeat is stubbed: {}",
+        second.content
+    );
+    assert!(
+        second
+            .content
+            .contains("unchanged since your previous read"),
+        "{}",
+        second.content
+    );
+    let third = tool.execute(&ctx, cmd).await;
+    assert!(
+        body(&third.content).contains("gamma"),
+        "consume-on-hit: the third read runs: {}",
+        third.content
+    );
+}
+
+/// Unix-only: the Windows runner resolves a temp path to a different
+/// spelling (8.3 short name) between calls, so the ledger key never
+/// matches and the repeat is not stubbed. The feature is Linux/macOS
+/// today; revisit when the Windows resolver spelling is stable.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_tool_without_a_ledger_never_stubs() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file = dir.path().join("a.txt");
+    std::fs::write(&file, "alpha\n").expect("write");
+    let ctx = ctx_for(&sess("noledger"));
+    let tool = BashTool::default();
+    // Forward slashes: the command parser eats a bare Windows backslash path.
+    let arg = file.display().to_string().replace('\\', "/");
+    let cmd = json!({"command": format!("cat {arg}")});
+    for _ in 0..2 {
+        let out = tool.execute(&ctx, cmd.clone()).await;
+        assert!(body(&out.content).contains("alpha"), "{}", out.content);
     }
 }

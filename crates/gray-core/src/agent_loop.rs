@@ -48,9 +48,22 @@ fn turn_retry_delay() -> std::time::Duration {
 pub(crate) const CONTAMINATED_SCRUB_MARKER: &str =
     "(previous attempt was cut off by a stream error; partial output omitted — start fresh)";
 
+/// Rounds a tool result must age out before the stale-output mask may claim
+/// it. Ten rounds is past the point where the model is still reasoning from
+/// the raw bytes, and well before a long session's history is anywhere near
+/// the compaction trigger.
+const MASK_STALE_ROUNDS: usize = 10;
+
+/// Newly stale results are masked this many at a time. One rewrite is one
+/// prompt-cache miss, and a miss re-bills the whole prefix — so the mask
+/// moves in batches and holds still in between, instead of costing a
+/// full-prefix miss every round.
+const MASK_BATCH: usize = 4;
+
 impl Agent {
     /// History as the model is allowed to see it: contaminated salvaged
-    /// partials (arXiv:2605.08563) replaced by the one-line scrub marker.
+    /// partials (arXiv:2605.08563) replaced by the one-line scrub marker, and
+    /// stale at-threshold tool outputs replaced by their ARC citation stub.
     ///
     /// `self.messages` — and so the persisted transcript — keeps the full
     /// text the user saw; only outbound requests and the compaction input
@@ -67,7 +80,68 @@ impl Agent {
                 *m = Message::assistant(CONTAMINATED_SCRUB_MARKER);
             }
         }
+        if self.masked_prefix > 0 {
+            for m in msgs[..self.masked_prefix].iter_mut() {
+                for b in m.content.iter_mut() {
+                    if let ContentBlock::ToolResult { id, content, .. } = b
+                        && content.len() >= crate::compact::ARC_STUB_MIN_BYTES
+                    {
+                        *content = crate::compact::tool_result_stub(
+                            id,
+                            content.len(),
+                            self.session_id.as_deref(),
+                        );
+                    }
+                }
+            }
+        }
         msgs
+    }
+
+    /// Index of the first message that has aged past [`MASK_STALE_ROUNDS`]
+    /// rounds, or 0 when the transcript is younger than that.
+    fn stale_boundary(&self) -> usize {
+        let groups = crate::compact::atomic_groups(&self.messages);
+        if groups.len() <= MASK_STALE_ROUNDS {
+            return 0;
+        }
+        groups[..groups.len() - MASK_STALE_ROUNDS]
+            .iter()
+            .map(|g| g.len())
+            .sum()
+    }
+
+    /// Results at/over the stub threshold in `messages[from..to]`.
+    fn stubbable_between(&self, from: usize, to: usize) -> usize {
+        self.messages[from.min(to)..to]
+            .iter()
+            .flat_map(|m| &m.content)
+            .filter(|b| {
+                matches!(b, ContentBlock::ToolResult { content, .. }
+                    if content.len() >= crate::compact::ARC_STUB_MIN_BYTES)
+            })
+            .count()
+    }
+
+    /// Extends the mask once a full [`MASK_BATCH`] of results has gone stale
+    /// (arXiv:2607.25066: masking an old tool output costs ~½ an LLM summary
+    /// and keeps it addressable through the session transcript). Called once
+    /// per round, before the request is built.
+    pub(crate) fn advance_tool_mask(&mut self) {
+        let boundary = self.stale_boundary();
+        if boundary > self.masked_prefix
+            && self.stubbable_between(self.masked_prefix, boundary) >= MASK_BATCH
+        {
+            self.masked_prefix = boundary;
+        }
+    }
+
+    /// Masks every stale result now, ignoring the batch floor. For a caller
+    /// that knows the prompt cache is already cold: the next request re-bills
+    /// the whole prefix whatever it contains, so rewriting it is free and the
+    /// shorter prompt is what gets cached from here on.
+    pub fn mask_stale_tool_output(&mut self) {
+        self.masked_prefix = self.masked_prefix.max(self.stale_boundary());
     }
 }
 
@@ -236,6 +310,8 @@ impl Agent {
         let mut turn_retries: u8 = 0;
         // Post-tool empty nudge fires once per run; silent-retry budget unchanged.
         let mut empty_nudge_sent = false;
+        // Opt-in pre-finish check (`GRAY_FINISH_GATE=1`): see `finish_gate`.
+        let mut gate = finish_gate::Tracker::new();
 
         // Protocol v1 `prompt/context`: fetched once per turn, not per round,
         // so the system prefix stays byte-stable across a turn's requests
@@ -315,6 +391,11 @@ impl Agent {
                     }
                 }
             }
+            // Stale-output mask (arXiv:2607.25066): results older than
+            // MASK_STALE_ROUNDS ride as citation stubs, so a long session
+            // stops re-sending every old dump. Batched, so the prefix is
+            // rewritten once per batch and stays cacheable in between.
+            self.advance_tool_mask();
             // CCRM scrub (arXiv:2605.08563): contaminated partials stay in
             // `self.messages` (and so in the persisted transcript) but never
             // ride an outbound request — the retry starts from a clean
@@ -739,6 +820,13 @@ impl Agent {
                 if self.collect_background_notifications(&ctx) {
                     continue 'turn;
                 }
+                // One-shot: the newest file change is newer than the newest
+                // test run, so ask for a re-run before the turn ends.
+                if let Some(nudge) = gate.nudge() {
+                    log::warn!(target: "gray_agent", "finish gate: last edit is newer than last test run; nudging before end of turn");
+                    self.messages.push(Message::user(nudge));
+                    continue 'turn;
+                }
                 let hit = if total_usage.input_tokens > 0 {
                     total_usage.cached_tokens as f64 / total_usage.input_tokens as f64 * 100.0
                 } else {
@@ -749,6 +837,18 @@ impl Agent {
                 self.emit_turn_end(&billed).await;
                 return Ok(events);
             }
+
+            // Feed the finish gate this round's plain `bash` runs (job
+            // management calls carry no `command`).
+            gate.observe(tool_uses.iter().filter_map(|(_, name, args)| {
+                let plain_run = matches!(
+                    args.get("action").and_then(|a| a.as_str()),
+                    None | Some("run")
+                );
+                (name.as_str() == "bash" && plain_run)
+                    .then(|| args.get("command").and_then(|c| c.as_str()))
+                    .flatten()
+            }));
 
             // Stall guard: nudge once, then abort only if the identical call
             // keeps coming. A deliberate poll (a job whose output keeps
@@ -1169,4 +1269,331 @@ impl Agent {
 /// is a deliberate wait, never a stall.
 fn is_job_progress(content: &str) -> bool {
     content.contains("· running · elapsed ") || content.contains("still running · job ")
+}
+
+/// Advisory pre-finish check (opt-in via `GRAY_FINISH_GATE=1`).
+///
+/// The DeepSWE campaign had runs that ended with a long edit streak and no
+/// test run after it (bandit-structured-nosec-directives: one `pytest -x`
+/// early, ~100 edit/commit commands after, one existing p2p test regressed).
+/// A prompt clause asks for "the full suite before finishing"; this enforces
+/// it once, mechanically: when the model tries to end the turn and its newest
+/// file change is newer than its newest test run, the loop pushes a single
+/// user message and lets the model continue. Advisory only: it never blocks a
+/// second finish attempt, so a model that has a reason can still stop.
+///
+/// Classification is command-text heuristics over `bash` calls. A wrong guess
+/// is cheap by construction: a missed edit means no nudge; a missed test run
+/// means one extra nudge.
+mod finish_gate {
+    /// Test-runner needles, matched on word boundaries (see `has_word`).
+    const TEST_NEEDLES: &[&str] = &[
+        "pytest",
+        "py.test",
+        "unittest",
+        "tox",
+        "nox",
+        "cargo test",
+        "cargo nextest",
+        "go test",
+        "npm test",
+        "npm run test",
+        "pnpm test",
+        "pnpm run test",
+        "pnpm -r test",
+        "yarn test",
+        "yarn run test",
+        "jest",
+        "vitest",
+        "mocha",
+        "make test",
+        "make check",
+        "ctest",
+        "rspec",
+        "rake test",
+        "mvn test",
+        "mvn verify",
+        "gradle test",
+        "gradlew test",
+        "dotnet test",
+        "phpunit",
+        "deno test",
+        "bun test",
+    ];
+
+    /// File-changing needles that are unambiguous in command text.
+    const EDIT_NEEDLES: &[&str] = &[
+        "sed -i",
+        "perl -pi",
+        "perl -i",
+        "git apply",
+        "git am",
+        "patch -p",
+        "apply_patch",
+        "write_text(",
+        "write_bytes(",
+        "git restore",
+        "git mv",
+    ];
+
+    pub(super) fn enabled() -> bool {
+        matches!(
+            std::env::var("GRAY_FINISH_GATE").as_deref(),
+            Ok("1") | Ok("true") | Ok("on")
+        )
+    }
+
+    /// True when `needle` occurs in `hay` as a whole word: not glued to an
+    /// identifier/flag/extension on either side (so `pytest.ini`,
+    /// `jest.config.js` and `attest` do not count, while `python -m pytest`,
+    /// `.venv/bin/pytest` and `pytest;` do).
+    fn has_word(hay: &str, needle: &str) -> bool {
+        let is_glue_before = |c: char| c.is_alphanumeric() || matches!(c, '_' | '-' | '.');
+        let is_glue_after = |c: char| c.is_alphanumeric() || matches!(c, '_' | '-' | '.');
+        let mut from = 0;
+        while let Some(pos) = hay[from..].find(needle) {
+            let start = from + pos;
+            let end = start + needle.len();
+            let before_ok = !hay[..start].chars().next_back().is_some_and(is_glue_before);
+            let after_ok = !hay[end..].chars().next().is_some_and(is_glue_after);
+            if before_ok && after_ok {
+                return true;
+            }
+            from = start + needle.chars().next().map_or(1, char::len_utf8);
+        }
+        false
+    }
+
+    pub(super) fn is_test_command(cmd: &str) -> bool {
+        let lower = cmd.to_ascii_lowercase();
+        TEST_NEEDLES.iter().any(|n| has_word(&lower, n))
+    }
+
+    /// Redirect targets that never change the worktree.
+    fn scratch_target(t: &str) -> bool {
+        let t = t.trim_matches(|c| c == '"' || c == '\'');
+        t.starts_with("/dev/")
+            || t.starts_with('&')
+            || t.starts_with("/tmp/")
+            || t.starts_with("$TMPDIR")
+            || t.is_empty()
+    }
+
+    /// A `>`/`>>` redirect (`>f`, `> f`, `1>f`, `&>f`, `>>f`, `x>f`) whose
+    /// target is not scratch. `2>&1`, `>/dev/null`, `> /tmp/x`, `->` and `=>`
+    /// are ignored.
+    fn writes_via_redirect(cmd: &str) -> bool {
+        let mut toks = cmd.split_whitespace().peekable();
+        while let Some(tok) = toks.next() {
+            let Some(gt) = tok.find('>') else { continue };
+            if tok[..gt].ends_with(['-', '=']) {
+                continue;
+            }
+            let attached = tok[gt..].trim_start_matches('>');
+            let target = if attached.is_empty() {
+                match toks.peek() {
+                    Some(t) => *t,
+                    None => continue,
+                }
+            } else {
+                attached
+            };
+            if !scratch_target(target) {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// `tee <file>` with a non-scratch first file operand.
+    fn writes_via_tee(cmd: &str) -> bool {
+        let toks: Vec<&str> = cmd.split_whitespace().collect();
+        toks.iter().enumerate().any(|(i, t)| {
+            *t == "tee"
+                && toks[i + 1..]
+                    .iter()
+                    .find(|a| !a.starts_with('-'))
+                    .is_some_and(|f| !scratch_target(f))
+        })
+    }
+
+    /// Python one-liners that open a file for writing/appending.
+    fn writes_via_python_open(cmd: &str) -> bool {
+        cmd.contains("open(")
+            && [", 'w", ", \"w", ", 'a", ", \"a"]
+                .iter()
+                .any(|m| cmd.contains(m))
+    }
+
+    pub(super) fn is_edit_command(cmd: &str) -> bool {
+        let lower = cmd.to_ascii_lowercase();
+        EDIT_NEEDLES.iter().any(|n| lower.contains(n))
+            || writes_via_redirect(cmd)
+            || writes_via_tee(cmd)
+            || writes_via_python_open(cmd)
+    }
+
+    /// Per-run state. Rounds are counted per dispatched tool round.
+    #[derive(Default)]
+    pub(super) struct Tracker {
+        enabled: bool,
+        round: usize,
+        last_edit: Option<usize>,
+        last_test: Option<usize>,
+        sent: bool,
+    }
+
+    impl Tracker {
+        pub(super) fn new() -> Self {
+            Self {
+                enabled: enabled(),
+                ..Self::default()
+            }
+        }
+
+        #[cfg(test)]
+        pub(super) fn enabled_for_test() -> Self {
+            Self {
+                enabled: true,
+                ..Self::default()
+            }
+        }
+
+        /// Record one dispatched round. `commands` are the `command` strings
+        /// of that round's plain `bash` runs (job-management calls carry none).
+        pub(super) fn observe<'a>(&mut self, commands: impl IntoIterator<Item = &'a str>) {
+            if !self.enabled {
+                return;
+            }
+            self.round += 1;
+            for cmd in commands {
+                if is_edit_command(cmd) {
+                    self.last_edit = Some(self.round);
+                }
+                if is_test_command(cmd) {
+                    self.last_test = Some(self.round);
+                }
+            }
+        }
+
+        /// The one-shot message to send when the model tries to finish, or
+        /// `None` (disabled, nothing edited, tests already newer, or already sent).
+        pub(super) fn nudge(&mut self) -> Option<String> {
+            if !self.enabled || self.sent {
+                return None;
+            }
+            let edit = self.last_edit?;
+            let stale = match self.last_test {
+                Some(t) if t >= edit => return None,
+                Some(t) => format!(
+                    "your last test run was in round {t}, your last file change in round {edit}"
+                ),
+                None => format!("you changed files in round {edit} and have not run any tests"),
+            };
+            self.sent = true;
+            Some(format!(
+                "[gray finish gate: {stale}. Before finishing, run the project's tests that cover what you touched, \
+                 then the full suite, and read the failures (a green run that predates your last edit proves nothing). \
+                 If a failure is environmental, say so. If you already verified after your last edit, name the command and finish.]"
+            ))
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn test_commands() {
+            for c in [
+                "python -m pytest tests/ -x -q",
+                ".venv/bin/pytest tests/unit",
+                "cd x && cargo test -p foo 2>&1 | tail -20",
+                "go test ./... -run TestX",
+                "npx jest --runInBand",
+                "pnpm -r test",
+                "make test",
+                "python3 -m unittest discover",
+            ] {
+                assert!(is_test_command(c), "{c}");
+            }
+            for c in [
+                "cat pytest.ini",
+                "sed -n 1,20p jest.config.js",
+                "ls tests/attest",
+                "cargo build",
+                "git diff",
+            ] {
+                assert!(!is_test_command(c), "{c}");
+            }
+        }
+
+        #[test]
+        fn edit_commands() {
+            for c in [
+                "sed -i 's/a/b/' src/x.py",
+                "cat > src/x.py <<'EOF'\nprint(1)\nEOF",
+                "echo hi >> notes.txt",
+                "git apply /tmp/p.diff",
+                "python3 -c \"open('f.py', 'w').write('x')\"",
+                "python3 - <<'EOF'\nfrom pathlib import Path\nPath('a').write_text('x')\nEOF",
+                "printf x | tee src/out.txt",
+                "echo x>src/a.txt",
+            ] {
+                assert!(is_edit_command(c), "{c}");
+            }
+            for c in [
+                "pytest -x 2>&1 | tail",
+                "make build >/dev/null 2>&1",
+                "cargo test 2> /dev/null",
+                "cargo test > /tmp/out.txt",
+                "pytest | tee /tmp/run.log",
+                "git status && git log --oneline",
+                "rg foo src",
+            ] {
+                assert!(!is_edit_command(c), "{c}");
+            }
+        }
+
+        #[test]
+        fn nudge_fires_once_when_edit_is_newer_than_test() {
+            let mut t = Tracker::enabled_for_test();
+            t.observe(["pytest -x -q"]);
+            t.observe(["sed -i 's/a/b/' x.py"]);
+            t.observe(["git commit -am wip"]);
+            let n = t.nudge().expect("should nudge");
+            assert!(n.contains("round 2") && n.contains("round 1"), "{n}");
+            assert!(t.nudge().is_none(), "one-shot");
+        }
+
+        #[test]
+        fn no_nudge_when_tested_after_last_edit_or_never_edited_or_disabled() {
+            let mut t = Tracker::enabled_for_test();
+            t.observe(["sed -i 's/a/b/' x.py"]);
+            t.observe(["pytest"]);
+            assert!(t.nudge().is_none());
+
+            let mut t = Tracker::enabled_for_test();
+            t.observe(["rg foo", "cat x.py"]);
+            assert!(t.nudge().is_none());
+
+            let mut t = Tracker::enabled_for_test();
+            t.observe(["sed -i 's/a/b/' x.py && pytest"]);
+            assert!(
+                t.nudge().is_none(),
+                "same-command edit+test counts as tested"
+            );
+
+            let mut t = Tracker::default();
+            t.observe(["sed -i 's/a/b/' x.py"]);
+            assert!(t.nudge().is_none(), "disabled by default");
+        }
+
+        #[test]
+        fn never_tested_message() {
+            let mut t = Tracker::enabled_for_test();
+            t.observe(["cat > a.py <<'EOF'\nx=1\nEOF"]);
+            assert!(t.nudge().unwrap().contains("have not run any tests"));
+        }
+    }
 }

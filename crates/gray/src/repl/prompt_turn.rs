@@ -225,6 +225,17 @@ pub(crate) async fn run_prompt_turn(
         .await;
     }
 
+    // Cold cache (arXiv:2607.25066): past the TTL the next request re-bills
+    // the whole prefix whatever it holds, so masking every stale tool output
+    // now is free — the rewrite costs no extra miss, and the shorter prompt
+    // is what gets cached from here on. Warm cache: leave it alone, the
+    // loop's batched mask waits for a full batch instead.
+    if let Some(s) = &tui_stream
+        && s.lock().expect("tui lock").cache_is_cold()
+    {
+        agent.mask_stale_tool_output();
+    }
+
     // status row on; events stream straight into the composer
     // (already begun above when the agent was built; re-assert here so the
     // normal path keeps its exact paint).
