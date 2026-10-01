@@ -1957,6 +1957,84 @@ async fn a_truncated_body_after_delta_completes_with_a_notice() {
     server.abort();
 }
 
+/// Clean EOF with no finish chunk (a gateway's empty 200): the same
+/// transient failure as a truncated body, so the retry rule from
+/// `a_truncated_body_retries_when_nothing_was_emitted` must cover it.
+async fn serve_empty_then_good() -> (String, tokio::task::JoinHandle<()>) {
+    use tokio::io::AsyncWriteExt;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = tokio::spawn(async move {
+        let mut served = 0usize;
+        loop {
+            let Ok((mut sock, _)) = listener.accept().await else {
+                return;
+            };
+            let mut buf = [0u8; 4096];
+            let _ = tokio::time::timeout(
+                std::time::Duration::from_millis(500),
+                tokio::io::AsyncReadExt::read(&mut sock, &mut buf),
+            )
+            .await;
+            served += 1;
+            let head = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n";
+            // First body is a well-formed, complete chunked response with no
+            // SSE chunks at all: EOF, no finish_reason, no delta.
+            let mut body = String::new();
+            if served > 1 {
+                for part in [
+                    "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"recovered\"}}]}\n\n",
+                    "data: [DONE]\n\n",
+                ] {
+                    body.push_str(&format!("{:x}\r\n{part}\r\n", part.len()));
+                }
+            }
+            body.push_str("0\r\n\r\n");
+            if sock
+                .write_all(format!("{head}{body}").as_bytes())
+                .await
+                .is_err()
+            {
+                return;
+            }
+            let _ = sock.flush().await;
+            drop(sock);
+        }
+    });
+    (format!("http://{addr}"), handle)
+}
+
+#[tokio::test]
+async fn eof_without_finish_reason_retries_when_nothing_was_emitted() {
+    use futures::StreamExt;
+    let (base, server) = serve_empty_then_good().await;
+    let provider =
+        OpenAiProvider::new("key", "test-model", base, None, None).expect("provider builds");
+    let events: Vec<_> = provider.stream(empty_chat_req()).collect().await;
+    let text: String = events
+        .iter()
+        .filter_map(|r| r.as_ref().ok())
+        .filter_map(|e| match e {
+            StreamEvent::TextDelta { delta } => Some(delta.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        text, "recovered",
+        "the retried stream delivered the text: {events:?}"
+    );
+    assert!(
+        events.iter().all(Result::is_ok),
+        "a finish-less EOF must not end the turn on the first attempt: {events:?}"
+    );
+    let notices = events
+        .iter()
+        .filter(|r| matches!(r, Ok(StreamEvent::StreamError { .. })))
+        .count();
+    assert_eq!(notices, 1, "one reconnect notice per burst: {events:?}");
+    server.abort();
+}
+
 struct StaticProviderSource {
     secrets: gray_core::credential::SecretMap,
     metadata: std::collections::BTreeMap<String, String>,

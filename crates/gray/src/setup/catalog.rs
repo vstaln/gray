@@ -535,6 +535,9 @@ pub(crate) fn save_auth_key(pid: &str, key: &str) -> anyhow::Result<()> {
 }
 
 pub(crate) fn save_auth_key_at(path: &Path, pid: &str, key: &str) -> anyhow::Result<()> {
+    // Same file as the plugin credentials: the lock covers the whole
+    // read-modify-write, or a concurrent `/key` or refresh drops entries.
+    let _lock = crate::auth::CredentialStore::new(path.to_path_buf()).lock()?;
     let mut store = load_mixed_store_strict(path)?;
     store.insert(pid.to_string(), AuthEntry::Key(key.to_string()));
     save_mixed_store(path, &store)
@@ -542,6 +545,7 @@ pub(crate) fn save_auth_key_at(path: &Path, pid: &str, key: &str) -> anyhow::Res
 
 /// Explicit-path seam for the provider-removal path (tests).
 pub(crate) fn remove_auth_entry_at(path: &Path, pid: &str) -> anyhow::Result<()> {
+    let _lock = crate::auth::CredentialStore::new(path.to_path_buf()).lock()?;
     let mut store = load_mixed_store_strict(path)?;
     store.remove(pid);
     save_mixed_store(path, &store)

@@ -1,7 +1,6 @@
 [build]
-# Repo-scoped parallelism: 6 jobs on this 8-core/10GB box.
-# Overrides machine-wide ~/.cargo/config.toml (jobs=3, set for the hermes
-# OOM/page-flip incidents) for gray builds only — hermes is untouched.
-# 6 keeps typical rustc RSS inside RAM with swap as backstop; drop to 4 if
-# you ever see swap thrash with a loaded desktop.
+# Repo-scoped parallelism, so a build here does not depend on the
+# contributor's machine-wide ~/.cargo/config.toml. 6 keeps typical rustc
+# RSS inside RAM on a loaded desktop; override per run with
+# CARGO_BUILD_JOBS (an env var wins over this file).
 jobs = 6

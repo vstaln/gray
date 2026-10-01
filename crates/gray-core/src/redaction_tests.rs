@@ -55,7 +55,7 @@ fn a_multi_token_authorization_header_loses_its_credential() {
         let text = redaction.text();
         assert!(redaction.redacted(), "{header} must be redacted");
         assert!(
-            text.contains(SECRET_PLACEHOLDER),
+            text.contains(REDACTED),
             "{header} must carry a placeholder: {text}"
         );
         for leaked in &credentials {
@@ -186,7 +186,7 @@ fn adversarial_credentials_lose_the_whole_value() {
             "{leaked:?} leaked through {text:?}: {redacted_text}"
         );
         assert!(
-            redacted_text.contains(SECRET_PLACEHOLDER),
+            redacted_text.contains(REDACTED),
             "{text:?} must carry a placeholder: {redacted_text}"
         );
         assert!(
@@ -430,4 +430,28 @@ fn secret_free_message_blocks_persist_verbatim() {
         ],
     );
     assert_eq!(redact_message(&msg), msg);
+}
+
+/// Multi-line text is the normal shape of tool output, and the tokenizer
+/// splits on `' '` only: `'\\n'` glues neighbouring lines into one token, so
+/// a secret below the first line escaped, and a secret that did fire armed
+/// the *next* glued token — deleting every line after it. Both directions are
+/// covered here.
+#[test]
+fn multi_line_text_is_redacted_line_by_line() {
+    let key = format!("sk-proj-{}", "Zx9".repeat(14));
+    let out = redact_for_disclosure(&format!("ok\n{key}\nnext\n")).into_text();
+    assert!(!out.contains(&key), "line 2 secret leaked: {out}");
+    assert!(
+        out.starts_with("ok\n") && out.ends_with("\nnext\n"),
+        "{out:?}"
+    );
+
+    let out =
+        redact_for_disclosure(&format!("OPENAI_API_KEY={key}\nDEBUG=1\nPORT=3000\n")).into_text();
+    assert!(!out.contains(&key), "assignment secret leaked: {out}");
+    assert!(
+        out.ends_with("\nDEBUG=1\nPORT=3000\n"),
+        "lines after a hit were deleted: {out:?}"
+    );
 }

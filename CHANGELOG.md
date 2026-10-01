@@ -23,8 +23,30 @@
 
 ## [Unreleased]
 
-### Changed
+### Fixed
+- **A newline could smuggle a secret past the redactor.** The tokenizer splits on `' '` only, so
+  `'\n'` glued neighbouring lines into one token: a secret below the first line of a shell chunk was
+  written to the durable log and sent to the provider in the clear, and a secret that *did* fire armed
+  the next glued token and deleted every line after it. Redaction is per line now, for every sink at
+  once (bash output, `edit`, `write`, `grep`).
+- **A secret split across a pipe read no longer leaks its tail.** The shell pump forwarded whatever
+  each `read()` returned, so a token straddling an 8 KiB boundary was redacted in pieces. Readers
+  now hold an unterminated line until its terminator arrives (4 KiB cap, flushed at EOF), per pipe,
+  with the liveness stamp still taken on the raw read.
+- **Concurrent credential writes can no longer erase each other.** The `auth.json` flock covered only
+  the final write, so two gray processes updating the store (REPL plus cron fire, or two terminals)
+  overwrote each other and the loser's credential was gone — a lost OAuth refresh meant a re-login.
+  `/key` and provider removal took no lock at all on the same file; both now take it.
+- **The plugin setup config is written through the repo's one private atomic writer.** The copy in
+  `write_config` created the file at umask mode and chmod'ed it afterwards, and its fixed `config.tmp`
+  name could be written through by a planted file or symlink.
+- **The pinned self-update keeps no scratch directory behind.** `gray-installer-<pid>` under the
+  shared temp dir (pre-creatable by another local user, removed only on success) is a private
+  `TempDir` now, dropped on every exit including a checksum mismatch.
 
+### Changed
+- CI and the release builds pass `--locked` on every platform, so a dependency edit without a lock
+  update cannot ship from `main`.
 - A bash result carries 12 KiB instead of 48 KiB (6 KiB head ++ 6 KiB tail),
   and what rides the wire is squeezed: color escapes are gone and a run of
   three or more identical lines collapses to one line plus a count. Every
@@ -32,7 +54,6 @@
   to be re-billed for the rest of the session. Nothing is lost — the full log
   is on disk and the `Read more` hint names the exact byte window, now with
   4 KiB pages that fit the inline budget in one piece.
-
 - Old tool output ages out of the context. A `ToolResult` of 8 KiB or more
   rides a request as a one-line citation stub once it is ten rounds old
   (arXiv:2607.25066 — masking costs about half an LLM summary and keeps the
@@ -42,7 +63,6 @@
   idle gap past the prompt-cache TTL the whole mask is applied at once instead
   — the next request re-bills the prefix either way, so the shorter prompt is
   free and is what gets cached from there on.
-
 - `cat`/`sed -n`/`head`/`tail` of a file dedup like the `read` tool. The
   default profile is bash-only, so the repeated read that costs the tokens was
   the one with no dedup: an exact repeat of one of those reads, on a file whose
@@ -51,7 +71,6 @@
   the one `read`/`write`/`edit` already share, so the same file read through
   either surface dedups against the other, and `/new` and compaction keep
   their existing lifecycle. `GRAY_READ_DEDUP=0` still turns it off.
-
 - The memory prompt and snapshot shrink. The keep/delete rubric moved out of
   the per-turn policy into `gray memory audit`, which already printed it, and
   the injected snapshot of each scope is capped at 4 KiB: newest entries
@@ -89,6 +108,26 @@
   and costs CI a two-minute failure with a name on it — instead of a 60-minute
   silent hang. `windows-focused` takes a `test-path` input, so a native
   single-test iteration no longer means editing the workflow.
+### Added
+- `gray cron add "<schedule>" "<text>" --reminder` stores the text and delivers
+  it verbatim at fire time. A reminder runs no agent turn, no pre-script, no
+  skills and no tools, and its name (when `--name` is omitted) is a slug of the
+  exact text — typos included, never rewritten. `--reminder` with `--script` or
+  `--skills` is rejected. `cron_delivery` JSON lines now carry `kind`, `status`,
+  `elapsed_ms` and `final_text`; `job_id` and `path` remain routing/log fields.
+- A cron delivery is the final assistant message, not a transcript. The
+  `[tool:…]` / `[result:…]` stream, the `Cronjob Response:` frame, the
+  `(job_id:)` line, the dashes, the stop/manage footer and the output-file path
+  are gone from the chat text, and the origin-session mirror no longer carries a
+  tool log into the conversation. The full transcript still lands in
+  `cron/output/<id>/<ts>.md` at mode 0600.
+- A fire that failed before producing output now reaches the chat as a red
+  `failed` delivery instead of silence.
+- Cron transcripts are redacted before they are written to disk or shown:
+  exact values from `<home>/auth.json` plus `gray_core::redaction`'s token
+  shapes. Paths stay verbatim in a secret-free transcript. A length cap that cut
+  an `<untrusted-output>` block open now closes it, so the transcript always
+  carries balanced tags.
 
 ## [0.1.7] - 2026-09-29
 
@@ -191,7 +230,6 @@
   set. `scripts/animate_logo.py` regenerates it (`--lines` for the
   transparent variant on dark surfaces, `--frames N dir` for previews);
   `assets/logo-grow.mp4` is the 1.9s preview.
-
 - The startup banner is the gray ASCII logo again. The graychan art is
   `/hehe` only, and `/hehe` is a toggle: press it again to drop the art and
   get the logo back.
@@ -266,7 +304,6 @@
   attached and how to re-run it bare, and the CLI fallback line says the
   terminal has no image protocol instead of a bare `viewed …`
   (`docs/bug-gray-view-compound-command.md`).
-
 ## [0.1.5] - 2026-09-26
 
 ### Changed
@@ -433,7 +470,6 @@
   switch, and piped stdin prints the rows as text. `/gateway` and `/gw` are
   real commands again (they previously answered "the TUI gateway is gone")
 
-
 - `gray login`, `gray whoami`, `gray logout` (and `/login`, `/whoami`,
   `/logout` in the REPL): enroll this machine with gray.alignment.id. The
   site's account page mints a one-time 5-minute code from a Supabase session;
@@ -450,7 +486,6 @@
   every call carries the token. Nothing in gray is gated on an account — the token
   only names the caller on registry calls — and the onboarding banner now says
   so instead of implying a login exists
-
 
 - `/cron` and `/memory` are interactive on a TTY, riding the same picker loop
   as `/plugin` and `/skills`: `/cron` lists every job (name, id, schedule, next
@@ -503,7 +538,6 @@
   credential files
 
 ## [0.1.1] - 2026-09-21
-
 
 - Windows builds ship with the release: `gray-<channel>-x86_64-windows.zip`
   alongside the four tarballs, checksummed into the same `SHA256SUMS` file.
@@ -592,7 +626,6 @@
 - Gateway autostart defaults off; corrupt gateway.yaml warns instead of silently resetting (S2, S3)
 - Safety / Subcommands / Platform / gateway docs in README (D2, S4)
 
-
 - The connect modal's footer and the install manager's per-tab footers share
   extracted same-file helpers instead of repeating the render scaffolding
   three times each (-188 net lines across the two files). Behavior is
@@ -609,7 +642,6 @@
   name before it is registered
 - Clipboard/image paste is core again: `arboard` + `image` are always compiled in, no `--features clipboard` needed (kept as a no-op alias)
 - Removed the native messaging gateway: deleted `crates/gray-gateway` (adapters, daemon, pairing, delivery, systemd), the `plugins/gateway` sidecar, `gray gateway ...`/`gray send`, and the `telegram`/`discord`/`slack`/`all-platforms` features. Chat returns as a plugin; `gray cron --deliver` targets are stored opaquely until a delivery backend exists. Dropped the `--all-features` CI checks.
-
 
 - Multi-line input is no longer clipped by the inline viewport. The viewport
   cap was pinned near 14 rows regardless of terminal height, so a pasted
@@ -763,7 +795,6 @@
 
 - macOS binaries are not notarized (curl-install unaffected) (D3)
 - Destructive-command guard is best-effort, not a sandbox — see README Safety (S4)
-
 
 - `install.ps1` still installs through WSL by default; a native install
   needs `-Native`. Self-update refuses on native Windows rather than calling
