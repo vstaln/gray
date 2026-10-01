@@ -60,27 +60,27 @@ fn backdrop_dims_card_box_and_inserts_gap_before_input() {
         .draw(|frame| render_dimmed_background(frame, &bg))
         .expect("draw");
     let rows = buffer_rows(terminal.backend(), 40, 15);
-    // Prompt card: 3 rows (margin, ' ❯ /thinking', margin)
+    // Prompt card: 1 row (' ❯ /thinking') — no outer margin rows
     assert!(
-        rows[1].contains("/thinking"),
+        rows[0].contains("/thinking"),
         "card contains command: {rows:?}"
     );
     // Card background dims with everything else (no preservation:
     // a full-gray card glowed through behind the modal).
-    let card_bg = terminal.backend().buffer()[(0, 1)].bg;
+    let card_bg = terminal.backend().buffer()[(0, 0)].bg;
     assert_eq!(
         card_bg,
         ratatui::style::Color::Rgb(8, 8, 8),
         "card dims to dim_color((22,22,22)) like the input box"
     );
-    // Row 3 is the gap row between card and input box
+    // Row 1 is the gap row between card and input box
     assert!(
-        rows[3].trim().is_empty(),
+        rows[1].trim().is_empty(),
         "gap row between sent text and input box: {rows:?}"
     );
-    // Row 4 is top margin of input box, row 5 is input prompt arrow
+    // Row 2 is top margin of input box, row 3 is input prompt arrow
     assert!(
-        rows[5].contains("❯"),
+        rows[3].contains("❯"),
         "input box arrow follows gap row: {rows:?}"
     );
 }
