@@ -500,12 +500,12 @@ async fn compaction_preserves_last_live_hook_context() {
     let mut agent = trigger_test_agent(script(), Arc::clone(&seen), Arc::default(), Vec::new())
         .with_hooks(vec![hook.clone()]);
     for i in 0..2 {
-        agent.provider = Box::new(CapturingProvider::new(script(), Arc::clone(&seen)));
+        agent.provider = Arc::new(CapturingProvider::new(script(), Arc::clone(&seen)));
         agent
             .run(Message::user("go"), ToolContext::default())
             .await
             .unwrap();
-        agent.provider = Box::new(CapturingProvider::new(script(), Arc::clone(&seen)));
+        agent.provider = Arc::new(CapturingProvider::new(script(), Arc::clone(&seen)));
         assert_eq!(
             run_compaction_call(&agent, agent.messages(), None)
                 .await

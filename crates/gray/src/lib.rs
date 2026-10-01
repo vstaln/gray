@@ -173,6 +173,36 @@ pub use gray_plugin::builder::{
 ///
 /// Errors here are user-configuration problems (missing model or API key), so the
 /// message is written for a human, not a log file.
+/// Prompt-cache warming (pi parity) for a build, or `None`. pi gives a cache
+/// lifetime only to the native Anthropic Messages API (5 min), and replays a
+/// request only when the one-token cap leaves its cache entry untouched,
+/// which a thinking budget does not. `GRAY_NO_CACHE_WARM=1` turns it off.
+fn cache_warm_policy(
+    config: &Config,
+    model: &str,
+    effort: Option<&str>,
+) -> Option<gray_core::cache_warm::CacheWarmPolicy> {
+    let native = !config.uses_plugin_credentials()
+        && gray_provider::anthropic::is_anthropic_base_url(&config.base_url);
+    let replayable = matches!(effort, None | Some("off"));
+    if !native || !replayable || std::env::var_os("GRAY_NO_CACHE_WARM").is_some() {
+        return None;
+    }
+    let model = model.to_string();
+    Some(gray_core::cache_warm::CacheWarmPolicy {
+        ttl: std::time::Duration::from_secs(5 * 60),
+        prices: std::sync::Arc::new(move || {
+            let r = crate::setup::get_model_rate(&model)?;
+            r.has_cache_prices.then_some(gray_core::cache_warm::Prices {
+                input: r.input,
+                output: r.output,
+                cache_read: r.cache_read,
+                cache_write: r.cache_write,
+            })
+        }),
+    })
+}
+
 pub async fn build_agent(
     config: &Config,
     cwd: &Path,
@@ -213,14 +243,16 @@ pub async fn build_agent(
     } else {
         None
     };
+    let reasoning_effort = config
+        .thinking_effort
+        .as_deref()
+        .map(|effort| crate::setup::clamp_thinking_level(model, effort).to_string());
+    let cache_warm = cache_warm_policy(config, model, reasoning_effort.as_deref());
     let agent = gray_plugin::builder::build_agent(gray_plugin::builder::BuilderOptions {
         model: model.clone(),
         api_key: api_key.to_string(),
         base_url: config.base_url.clone(),
-        reasoning_effort: config
-            .thinking_effort
-            .as_deref()
-            .map(|effort| crate::setup::clamp_thinking_level(model, effort).to_string()),
+        reasoning_effort,
         temperature: config.temperature,
         top_p: config.top_p,
         context_window: Some(crate::setup::context::resolve_model_context_length(model)),
@@ -267,7 +299,9 @@ pub async fn build_agent(
     // Bash bounds an explicitly requested timeout at 3600 s (and has no
     // default), so the agent-level timeout must sit above that (P2B
     // requirement): it is a last-resort stop, never a budget.
-    Ok(agent.with_tool_timeout(crate::shell_drain::SHELL_TOOL_TIMEOUT))
+    Ok(agent
+        .with_tool_timeout(crate::shell_drain::SHELL_TOOL_TIMEOUT)
+        .with_cache_warm(cache_warm))
 }
 
 /// Command-line arguments for the Gray harness.

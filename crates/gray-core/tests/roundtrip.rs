@@ -72,6 +72,7 @@ fn test_full_chat_request_with_all_content_blocks_and_tools_roundtrip() {
         system: Some("Global system prompt configuration".to_string()),
         messages,
         tools,
+        max_tokens: None,
     };
 
     // Serialize to JSON string
@@ -199,6 +200,7 @@ fn test_thinking_block_roundtrips_losslessly() {
         system: None,
         messages: vec![msg.clone()],
         tools: Vec::new(),
+        max_tokens: None,
     };
     let json = serde_json::to_string(&req).unwrap();
     let back: ChatRequest = serde_json::from_str(&json).unwrap();

@@ -355,7 +355,8 @@ pub use super::agent_compact::{estimate_message_tokens, summary_message};
 /// back-pressure concerns; a streaming façade can be layered on top later by
 /// draining these events (or by swapping the return type for a receiver).
 pub struct Agent {
-    pub(crate) provider: Box<dyn Provider>,
+    /// Shared so a cache-warming task can replay a request while tools run.
+    pub(crate) provider: Arc<dyn Provider>,
     pub(crate) executor: std::sync::Arc<dyn ToolExecutor>,
     pub(crate) system: String,
     /// Effective prefix captured once per turn, including plugin context.
@@ -392,13 +393,28 @@ pub struct Agent {
     /// stub. Advanced in batches (see `agent_loop::advance_tool_mask`) and
     /// reset by every history rewrite, which invalidates the index.
     pub(crate) masked_prefix: usize,
+    /// Prompt-cache warming during long tool runs; `None` = off.
+    pub(crate) cache_warm: Option<crate::cache_warm::CacheWarmPolicy>,
+}
+
+/// Lends a shared provider to a `Box` decorator ([`Agent::map_provider`]).
+struct SharedProvider(Arc<dyn Provider>);
+
+impl Provider for SharedProvider {
+    fn stream(&self, req: ChatRequest) -> BoxStream<'static, Result<StreamEvent, ProviderError>> {
+        self.0.stream(req)
+    }
+
+    fn model_id(&self) -> &str {
+        self.0.model_id()
+    }
 }
 
 impl Agent {
     /// Creates an agent over the given provider and tool executor.
     pub fn new(provider: Box<dyn Provider>, executor: std::sync::Arc<dyn ToolExecutor>) -> Self {
         Self {
-            provider,
+            provider: Arc::from(provider),
             executor,
             system: String::new(),
             turn_system: None,
@@ -414,7 +430,15 @@ impl Agent {
             session_id: None,
             contaminated: std::collections::BTreeSet::new(),
             masked_prefix: 0,
+            cache_warm: None,
         }
+    }
+
+    /// Keep the provider's prompt cache warm while long tools run (pi cache
+    /// warming, streaming mode). `None` turns it off.
+    pub fn with_cache_warm(mut self, policy: Option<crate::cache_warm::CacheWarmPolicy>) -> Self {
+        self.cache_warm = policy;
+        self
     }
 
     /// Decorate all provider requests, including compaction, with host policy.
@@ -422,7 +446,7 @@ impl Agent {
         mut self,
         wrap: impl FnOnce(Box<dyn Provider>) -> Box<dyn Provider>,
     ) -> Self {
-        self.provider = wrap(self.provider);
+        self.provider = Arc::from(wrap(Box::new(SharedProvider(self.provider.clone()))));
         self
     }
 
@@ -643,6 +667,7 @@ impl Agent {
             system: system.map(|s| s.to_string()),
             messages,
             tools,
+            max_tokens: None,
         };
         drain_reply_text(self.provider.stream(req)).await
     }

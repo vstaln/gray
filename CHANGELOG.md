@@ -5,6 +5,17 @@
 ## [0.1.10] - 2026-10-01
 
 ### Added
+- **A native Anthropic provider.** A key on `api.anthropic.com` now speaks the Messages API
+  instead of Anthropic's OpenAI-compatible endpoint, which has no prompt caching: every request
+  re-billed the whole prompt. Requests carry `cache_control` breakpoints on the system prompt, the
+  last tool and the last message; thinking blocks go back with their signatures; an overloaded 529
+  or a rate limit retries before the stream opens.
+- **Prompt-cache warming during long tool runs** (pi parity). On the native Anthropic provider,
+  a tool that runs past the 5-minute cache lifetime no longer costs a full prompt re-write on the
+  next request: at 90% of the lifetime the round's request is replayed with a one-token output
+  cap, while the expected saving is at least $0.05, for up to an hour. Refresh usage is billed with
+  the turn and never enters the conversation. Thinking budgets cannot be replayed safely, so it
+  applies with thinking off; `GRAY_NO_CACHE_WARM=1` turns it off.
 - Command output is compressed by what the command was, and truncation is no
   longer a dead end. `cargo`, `npm`/`pnpm`/`yarn`, `pip`/`uv` and `pytest`
   output loses its progress chatter (a 300-crate `cargo build` is 30 KiB of
@@ -72,6 +83,10 @@
   remote command starts in that account's login directory.
 
 ### Fixed
+- **Claude caches again behind OpenAI-compatible routers.** The `cache_control` breakpoints were
+  removed on 2026-09-23 on the theory that `prompt_cache_key` covers caching; Claude ignores that
+  field and caches only at breakpoints, so Claude through OpenRouter re-billed the full prompt on
+  every request. The breakpoints are back for Claude models.
 - **Old reasoning no longer reappears under the answer.** When the band shrank at turn end, a
   refill reprinted remembered scrollback rows into the gap it left, and once the transcript had
   scrolled past the screen it picked the wrong ones: the first round's thinking showed up again

@@ -744,27 +744,39 @@ pub async fn build_agent(opts: BuilderOptions) -> anyhow::Result<Agent> {
         SystemPrompt::Literal(s) => s,
         SystemPrompt::Build(f) => f(&registry),
     };
-    let provider = match (dynamic_provider_profile, dynamic_credential_source) {
-        (Some(profile), Some(source)) => OpenAiProvider::new_with_profile(
-            model,
-            reasoning_effort,
-            Some(provider_cache_key(session_id.as_deref())),
-            profile,
-            source,
-        )
-        .map_err(|e| anyhow::anyhow!("failed to initialize plugin provider: {e}"))?
-        .with_sampling(temperature, top_p),
-        (None, None) => OpenAiProvider::new(
-            api_key,
-            model,
-            base_url,
-            reasoning_effort,
-            Some(provider_cache_key(session_id.as_deref())),
-        )
-        .map_err(|e| anyhow::anyhow!("failed to initialize OpenAI provider: {e}"))?
-        .with_sampling(temperature, top_p),
-        _ => anyhow::bail!("a dynamic provider needs both a profile and a credential source"),
-    };
+    let provider: Box<dyn gray_core::agent::Provider> =
+        match (dynamic_provider_profile, dynamic_credential_source) {
+            (Some(profile), Some(source)) => Box::new(
+                OpenAiProvider::new_with_profile(
+                    model,
+                    reasoning_effort,
+                    Some(provider_cache_key(session_id.as_deref())),
+                    profile,
+                    source,
+                )
+                .map_err(|e| anyhow::anyhow!("failed to initialize plugin provider: {e}"))?
+                .with_sampling(temperature, top_p),
+            ),
+            // Anthropic's own host speaks the native Messages wire: its
+            // OpenAI-compatible endpoint has no prompt caching.
+            (None, None) if gray_provider::anthropic::is_anthropic_base_url(&base_url) => Box::new(
+                gray_provider::AnthropicProvider::new(api_key, model, base_url, reasoning_effort)
+                    .map_err(|e| anyhow::anyhow!("failed to initialize Anthropic provider: {e}"))?
+                    .with_sampling(temperature, top_p),
+            ),
+            (None, None) => Box::new(
+                OpenAiProvider::new(
+                    api_key,
+                    model,
+                    base_url,
+                    reasoning_effort,
+                    Some(provider_cache_key(session_id.as_deref())),
+                )
+                .map_err(|e| anyhow::anyhow!("failed to initialize OpenAI provider: {e}"))?
+                .with_sampling(temperature, top_p),
+            ),
+            _ => anyhow::bail!("a dynamic provider needs both a profile and a credential source"),
+        };
 
     let tool_defs = registry.defs();
     let executor: Arc<dyn ToolExecutor> = match wrap_executor {
@@ -772,7 +784,7 @@ pub async fn build_agent(opts: BuilderOptions) -> anyhow::Result<Agent> {
         None => Arc::new(registry),
     };
     let hooks = PluginHookAdapter::for_plugins(&plugins, &cwd.to_string_lossy());
-    Ok(Agent::new(Box::new(provider), executor)
+    Ok(Agent::new(provider, executor)
         .with_system(system)
         .with_tools(tool_defs)
         .with_context_window(context_window)

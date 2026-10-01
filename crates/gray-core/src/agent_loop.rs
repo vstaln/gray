@@ -413,7 +413,12 @@ impl Agent {
                 system: (!self.system_text().is_empty()).then(|| self.system_text().to_string()),
                 messages: request_messages,
                 tools: self.tools.clone(),
+                max_tokens: None,
             };
+            // The exact request, kept for a cache refresh while this round's
+            // tools run (pi cache warming). Only cloned when warming is on.
+            let warm_req = self.cache_warm.is_some().then(|| req.clone());
+            let request_sent = tokio::time::Instant::now();
 
             // Accumulate streamed deltas: text chunks in order, tool calls
             // keyed by their stream index (id/name arrive once, arguments
@@ -930,6 +935,20 @@ impl Agent {
                     .map(|(i, _)| crate::parallel::Segment::Single(i))
                     .collect()
             };
+            let warm_spent = std::sync::Arc::new(std::sync::Mutex::new(Usage::default()));
+            let warm_guard = match (&self.cache_warm, warm_req) {
+                (Some(policy), Some(req)) => Some(crate::cache_warm::WarmGuard(tokio::spawn(
+                    crate::cache_warm::keep_warm(
+                        self.provider.clone(),
+                        req,
+                        policy.clone(),
+                        total_usage.input_tokens,
+                        request_sent,
+                        warm_spent.clone(),
+                    ),
+                ))),
+                _ => None,
+            };
             for segment in segments {
                 // Parallel run over `tool_uses` indices. Pre-pass (loop
                 // thread, in order): cancel check, validation, `tool_before`
@@ -1169,6 +1188,12 @@ impl Agent {
                     role: Role::User,
                     content: output.message_blocks(id),
                 });
+            }
+
+            // Tools done: stop warming and bill what the refreshes cost.
+            drop(warm_guard);
+            if let Ok(spent) = warm_spent.lock() {
+                billed.accumulate(&spent);
             }
 
             // Repeat guard, run-scoped: the same call returning the same
