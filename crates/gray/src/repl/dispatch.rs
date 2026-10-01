@@ -195,14 +195,30 @@ pub(crate) async fn dispatch_command(
 
             if let Some(prompt_text) = initial_prompt {
                 if let Some((shared, _)) = tui {
-                    shared
-                        .lock()
-                        .expect("tui lock")
-                        .push_user_prompt(&prompt_text, &[]);
+                    shared.lock().expect("tui lock").push_user_prompt(
+                        &prompt_text,
+                        &[],
+                        !prompt_text.starts_with('/'),
+                    );
                 } else {
                     println!("❯ {prompt_text}");
                 }
                 *pending_command = Some(ReplCommand::Prompt(prompt_text));
+            }
+            Flow::Continue
+        }
+        ReplCommand::Undo | ReplCommand::Retry => {
+            if let Some(text) = handle_undo(
+                matches!(cmd, ReplCommand::Retry),
+                &mut *agent,
+                session_state,
+                pending_history,
+                tui.as_ref().map(|(s, _)| s),
+            )
+            .await
+            {
+                // `/retry` is `/undo` plus the same question again.
+                *pending_command = Some(ReplCommand::Prompt(text));
             }
             Flow::Continue
         }

@@ -217,11 +217,12 @@ fn crlf_sets_folded_flag_and_header_marker() {
 
 #[test]
 fn inline_budget_keeps_head_and_tail_with_elision() {
-    // SPEC-01: the foreground inline budget is 24 KiB head + 24 KiB tail
-    // (raised from 6+6 KiB so whole file reads survive).
-    assert_eq!(MEM_HEAD_BYTES, 24 * 1024);
-    assert_eq!(MEM_TAIL_BYTES, 24 * 1024);
-    assert_eq!(INLINE_BUDGET_BYTES, 48 * 1024);
+    // SPEC-01: the foreground inline budget is 6 KiB head + 6 KiB tail.
+    // A result re-sent in every later request of the turn is re-billed every
+    // later request, so a smaller window wins against a paged read.
+    assert_eq!(MEM_HEAD_BYTES, 6 * 1024);
+    assert_eq!(MEM_TAIL_BYTES, 6 * 1024);
+    assert_eq!(INLINE_BUDGET_BYTES, 12 * 1024);
     // 3,000 ~22-byte lines ≈ 66 KiB: over budget, so head + tail survive
     // with an elided middle and exact line accounting.
     let log = numbered_lines(3000);
@@ -314,5 +315,51 @@ fn the_paging_command_extracts_exactly_the_omitted_lines() {
     assert!(
         !view.body.contains(&expected_first),
         "paged text was already shown"
+    );
+}
+
+#[test]
+fn strip_ansi_drops_every_escape_form_and_keeps_text() {
+    // CSI (SGR and a cursor move), OSC to BEL, OSC to ST, and a two-byte
+    // charset select.
+    let colored = "\u{1b}[31mred\u{1b}[0m\n\u{1b}[2J\u{1b}[Hhome\n";
+    assert_eq!(strip_ansi(colored), "red\nhome\n");
+    assert_eq!(
+        strip_ansi("\u{1b}]0;title\u{7}body\n"),
+        "body\n",
+        "OSC to BEL"
+    );
+    assert_eq!(
+        strip_ansi("\u{1b}]8;;http://x\u{1b}\\link\u{1b}]8;;\u{1b}\\"),
+        "link",
+        "OSC to ST"
+    );
+    assert_eq!(strip_ansi("\u{1b}(Bplain\n"), "plain\n");
+    // A sequence the head/tail sample cut in half: the stray remainder goes
+    // too, since half an escape is not text.
+    assert_eq!(strip_ansi("tail\n\u{1b}[3"), "tail\n");
+    assert_eq!(strip_ansi("bare\u{1b}"), "bare");
+    // Multi-byte chars must survive the byte walk intact.
+    assert_eq!(strip_ansi("\u{1b}[32m✓ π \u{1b}[0mdone\n"), "✓ π done\n");
+}
+
+#[test]
+fn squeeze_collapses_repeated_lines_but_keeps_the_count() {
+    let body = "ok\nok\nok\nok\nFAILED\nFAILED\nbuild done\n";
+    let out = squeeze(body);
+    assert_eq!(
+        out, "ok [… \u{d7} 3 more]\nFAILED\nFAILED\nbuild done\n",
+        "a run of 3+ collapses; a run of 2 is left alone"
+    );
+    // The count is the point: a collapsed `FAILED` run is signal, not noise.
+    assert!(out.contains("\u{d7} 3 more"));
+    // Plain text is untouched apart from the normalized trailing newline.
+    assert_eq!(squeeze("only line\n"), "only line\n");
+    assert_eq!(squeeze(""), "");
+    // Composed: color goes first, so two differently-colored `ok` lines are
+    // one run, not two.
+    assert_eq!(
+        squeeze("\u{1b}[32mok\u{1b}[0m\nok\nok\n"),
+        "ok [… \u{d7} 2 more]\n"
     );
 }

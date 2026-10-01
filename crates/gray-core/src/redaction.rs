@@ -34,7 +34,10 @@ pub const REDACTION_SECRET: &str = "secret";
 /// Placeholder substituted for a removed absolute path.
 const PATH_PLACEHOLDER: &str = "<path>";
 /// Placeholder substituted for a removed secret-shaped token.
-const SECRET_PLACEHOLDER: &str = "<redacted>";
+/// Placeholder substituted for a removed secret. Public so callers that mask a
+/// known value verbatim (e.g. a credential read out of `auth.json`) produce the
+/// same marker instead of inventing a second spelling.
+pub const REDACTED: &str = "<redacted>";
 
 /// Case-insensitive substrings that mark an identifier as secret-bearing.
 const SECRET_NAME_MARKERS: &[&str] = &[
@@ -238,6 +241,23 @@ impl TokenOutcome {
 /// certainly*, see `CredentialArm` — is what lets this do neither.
 #[must_use]
 pub fn redact_for_disclosure(input: &str) -> Redaction {
+    // The tokenizer below splits on `' '` only, so `'\n'` glues neighbouring
+    // lines into one token: a secret on a later line escaped, and one that
+    // fired armed the *next* glued token, deleting every line after it. Tool
+    // output is multi-line by default, so redact line by line.
+    if input.contains('\n') {
+        let mut kinds = BTreeSet::new();
+        let text = input
+            .split('\n')
+            .map(|line| {
+                let redaction = redact_for_disclosure(line);
+                kinds.extend(redaction.kinds.iter().cloned());
+                redaction.into_text()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        return Redaction { text, kinds };
+    }
     let mut kinds = BTreeSet::new();
     let tokens: Vec<&str> = input.split(' ').collect();
     let mut out: Vec<String> = Vec::with_capacity(tokens.len());
@@ -267,7 +287,7 @@ pub fn redact_for_disclosure(input: &str) -> Redaction {
             // nothing.
             if arm == CredentialArm::Certain || looks_like_credential_value(token) {
                 kinds.insert(REDACTION_SECRET.to_string());
-                out.push(SECRET_PLACEHOLDER.to_string());
+                out.push(REDACTED.to_string());
                 arm = CredentialArm::None;
                 continue;
             }
@@ -332,7 +352,7 @@ fn redact_token(token: &str, next: Option<&str>, kinds: &mut BTreeSet<String>) -
                 };
             }
             kinds.insert(REDACTION_SECRET.to_string());
-            return TokenOutcome::replace(format!("{name}{separator}{SECRET_PLACEHOLDER}"));
+            return TokenOutcome::replace(format!("{name}{separator}{REDACTED}"));
         }
         // A path assigned to a variable is still a path.
         if let Some(kind) = classify_path(value) {
@@ -360,7 +380,7 @@ fn redact_token(token: &str, next: Option<&str>, kinds: &mut BTreeSet<String>) -
         || looks_like_aws_access_key(token)
     {
         kinds.insert(REDACTION_SECRET.to_string());
-        return TokenOutcome::replace(SECRET_PLACEHOLDER.to_string());
+        return TokenOutcome::replace(REDACTED.to_string());
     }
 
     if let Some(kind) = classify_path(token) {

@@ -4,7 +4,12 @@ use super::*;
 
 impl Tui {
     pub fn push_tool_box(&mut self, header: Line<'static>, body: Vec<Line<'static>>) {
-        self.insert_tool_box(header, body);
+        // Leading gap + card + trailing gap land as one synchronized frame.
+        self.atomic(|t| {
+            t.insert_tool_box(header, body);
+            t.ensure_gap(1);
+        });
+        self.release_dock_seam();
         if self.transcript.len() > 1000 {
             self.transcript.drain(0..100);
         }
@@ -58,12 +63,17 @@ impl Tui {
     pub(crate) fn paint_thinking_fragment(&mut self, fragment: String) {
         if fragment.trim().is_empty() && self.transcript.last().is_some_and(transcript_row_is_blank)
         {
+            self.release_dock_seam_for_blank_tail();
             return;
         }
         let line = Line::from(vec![Span::styled(fragment, thinking_style())]);
         let w = self.width().max(10);
         let painted = self.render_and_insert_styled_lines(&[line], &[], w);
+        let ends_blank = painted.last().is_some_and(transcript_row_is_blank);
         self.transcript.extend(painted);
+        if self.is_task_running && ends_blank {
+            self.release_dock_seam();
+        }
         if self.transcript.len() > 1000 {
             self.transcript.drain(0..100);
         }
@@ -115,37 +125,39 @@ impl Tui {
         }
         let total_h = all_wrapped.len() as u16;
         let lines_only: Vec<Line<'static>> = all_wrapped.iter().map(|(l, _)| l.clone()).collect();
-        let _ = self.terminal.insert_before(total_h, |buf| {
-            let area = buf.area;
-            for (i, (line, hls)) in all_wrapped.iter().enumerate() {
-                let row_area = ratatui::layout::Rect {
-                    x: area.x,
-                    y: area.y + i as u16,
-                    width: area.width,
-                    height: 1,
-                };
-                Paragraph::new(line.clone()).render(row_area, buf);
-                for h in hls {
-                    for col in h.column_range.clone() {
-                        let padded_col = col + 1;
-                        if padded_col >= area.width as usize {
-                            continue;
+        let _ = self.atomic(|t| {
+            t.terminal.insert_before(total_h, |buf| {
+                let area = buf.area;
+                for (i, (line, hls)) in all_wrapped.iter().enumerate() {
+                    let row_area = ratatui::layout::Rect {
+                        x: area.x,
+                        y: area.y + i as u16,
+                        width: area.width,
+                        height: 1,
+                    };
+                    Paragraph::new(line.clone()).render(row_area, buf);
+                    for h in hls {
+                        for col in h.column_range.clone() {
+                            let padded_col = col + 1;
+                            if padded_col >= area.width as usize {
+                                continue;
+                            }
+                            let x = area.x + padded_col as u16;
+                            let y = area.y + i as u16;
+                            if x >= area.x + area.width || y >= area.y + area.height {
+                                continue;
+                            }
+                            let cell = &mut buf[(x, y)];
+                            if cell.symbol().trim().is_empty() {
+                                continue;
+                            }
+                            let sym = cell.symbol().to_string();
+                            let new_sym = format!("\x1b]8;;{}\x07{}\x1b]8;;\x07", h.url, sym);
+                            cell.set_symbol(&new_sym);
                         }
-                        let x = area.x + padded_col as u16;
-                        let y = area.y + i as u16;
-                        if x >= area.x + area.width || y >= area.y + area.height {
-                            continue;
-                        }
-                        let cell = &mut buf[(x, y)];
-                        if cell.symbol().trim().is_empty() {
-                            continue;
-                        }
-                        let sym = cell.symbol().to_string();
-                        let new_sym = format!("\x1b]8;;{}\x07{}\x1b]8;;\x07", h.url, sym);
-                        cell.set_symbol(&new_sym);
                     }
                 }
-            }
+            })
         });
         lines_only
     }
@@ -157,6 +169,7 @@ impl Tui {
         line_offset: usize,
     ) {
         if lines.is_empty() {
+            self.release_dock_seam_for_blank_tail();
             return;
         }
         let w = self.width().max(10);
@@ -168,6 +181,9 @@ impl Tui {
             (lines, rebased)
         };
         if lines.is_empty() {
+            if tail_blank {
+                self.release_dock_seam_for_blank_tail();
+            }
             return;
         }
         let lines_only = self.render_and_insert_styled_lines(&lines, &rebased, w);
@@ -176,7 +192,11 @@ impl Tui {
                 lines,
                 hyperlinks: rebased,
             });
+        let ends_blank = lines_only.last().is_some_and(transcript_row_is_blank);
         self.transcript.extend(lines_only);
+        if self.is_task_running && ends_blank {
+            self.release_dock_seam();
+        }
         if self.transcript.len() > 1000 {
             self.transcript.drain(0..100);
         }
@@ -202,6 +222,7 @@ impl Tui {
             .push(crate::composer::TranscriptEntry::Mascot);
         cap_history_entries(&mut self.history_entries);
         self.transcript.extend(lines_only);
+        self.ensure_gap(1);
         if self.transcript.len() > 1000 {
             self.transcript.drain(0..100);
         }
@@ -233,15 +254,10 @@ impl Tui {
         if lines.is_empty() {
             return;
         }
-        self.ensure_gap(1);
         self.push_styled_lines_with_hyperlinks(lines, &hyperlinks, 0);
     }
 
-    /// A `✓` feedback block, e.g. "Model set to · gpt-5". Own margin above
-    /// (one gap, same rule as every transcript block); the band's pad rows
-    /// own the margin below, so none is added here.
     pub fn push_action(&mut self, text: &str, detail: Option<&str>) {
-        self.ensure_gap(1);
         let mut spans = vec![
             Span::styled(
                 "✓ ",
@@ -272,7 +288,6 @@ impl Tui {
     /// text. Used by the prompt-cache miss notice (pi `addCacheMissNotice`
     /// parity), where a dim row would read as chrome instead of money.
     pub fn push_warning(&mut self, text: &str) {
-        self.ensure_gap(1);
         let line = Line::from(vec![
             Span::styled(
                 "⚠ ",
@@ -331,7 +346,7 @@ impl Tui {
                         }
                     }
                     if !user_text.is_empty() {
-                        self.push_user_prompt(&user_text, &[]);
+                        self.push_user_prompt(&user_text, &[], true);
                         // Feed composer input history so Up/Down recall works
                         // for prompts from the resumed session.
                         self.history.push(user_text.clone());

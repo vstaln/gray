@@ -224,6 +224,12 @@ pub(crate) fn should_hold_stream_chunk(hold_len: usize, text: &str) -> bool {
 
 impl Tui {
     pub(crate) fn ensure_gap(&mut self, n: usize) {
+        // An explicit stream boundary owns the separation.  Do not let a
+        // previously latched dock seam sit on top of the blank row we are
+        // about to reuse; this is deliberately limited to live turns.
+        if self.is_task_running {
+            self.release_dock_seam();
+        }
         let need = gap_need(&self.transcript, n);
         if need == 0 {
             return;
@@ -403,16 +409,18 @@ impl Tui {
             .push_and_render(&clean, Some(gray_markdown::get_syntect()));
         let frozen_len = self.markdown_renderer.frozen_lines_len();
         if frozen_len > self.committed_markdown_lines {
-            if self.committed_markdown_lines == 0 {
-                self.ensure_gap(1);
-            }
-            let view = self.markdown_renderer.view();
-            let new_lines: Vec<Line<'static>> =
-                view.lines[self.committed_markdown_lines..frozen_len].to_vec();
-            let hyperlinks = view.hyperlinks.to_vec();
-            let offset = self.committed_markdown_lines;
-            self.committed_markdown_lines = frozen_len;
-            self.push_styled_lines_with_hyperlinks(new_lines, &hyperlinks, offset);
+            self.atomic(|t| {
+                if t.committed_markdown_lines == 0 {
+                    t.ensure_gap(1);
+                }
+                let view = t.markdown_renderer.view();
+                let new_lines: Vec<Line<'static>> =
+                    view.lines[t.committed_markdown_lines..frozen_len].to_vec();
+                let hyperlinks = view.hyperlinks.to_vec();
+                let offset = t.committed_markdown_lines;
+                t.committed_markdown_lines = frozen_len;
+                t.push_styled_lines_with_hyperlinks(new_lines, &hyperlinks, offset);
+            });
         }
         let _ = self.draw();
     }
@@ -486,22 +494,40 @@ impl Tui {
         }
         if spacer {
             self.ensure_gap(1);
+            self.release_dock_seam();
         }
     }
 
-    /// Echoes a submitted prompt as a card. One `ensure_gap` above; nothing
-    /// below — the composer band's own pad rows are the margin between the
-    /// card and the input box, so a trailing gap would double it.
-    pub fn push_user_prompt(&mut self, text: &str, attached: &[std::path::PathBuf]) {
-        self.ensure_gap(1);
-        let lines = format_user_prompt_lines(text, attached, self.width().max(10));
-        self.insert_paragraph(&lines, Some(crate::theme::theme().surface_bg));
-        self.history_entries
-            .push(super::TranscriptEntry::UserPrompt(
+    /// Echoes a submitted prompt as a card. `trailing_gap` leaves one blank
+    /// below the card for the breathing room before the next prompt; slash
+    /// commands pass false so their `say()` feedback hugs the card instead.
+    /// Cancelled pickers (dismissed modals) print no feedback, so each of
+    /// their `Ok(false)`/`Ok(None)` arms restores the gap via `ensure_gap`.
+    pub fn push_user_prompt(
+        &mut self,
+        text: &str,
+        attached: &[std::path::PathBuf],
+        trailing_gap: bool,
+    ) {
+        self.atomic(|t| {
+            t.ensure_gap(1);
+            let lines = format_user_prompt_lines(text, attached, t.width().max(10));
+            t.insert_paragraph(&lines, Some(crate::theme::theme().surface_bg));
+            t.history_entries.push(super::TranscriptEntry::UserPrompt(
                 text.to_string(),
                 attached.to_vec(),
             ));
-        self.transcript.extend(lines);
+            t.transcript.extend(lines);
+            // Trailing gap after every chat card — command and prompt alike.
+            // Handlers that print feedback (say()) treat the gap as idempotent;
+            // handlers that print nothing (dismissed modal) still leave breathing
+            // room before the next prompt instead of jamming against the card.
+            // Slash-command cards skip it (trailing_gap=false): their feedback
+            // hugs the card, and each dismissed-modal arm adds the gap itself.
+            if trailing_gap {
+                t.ensure_gap(1);
+            }
+        });
         if self.transcript.len() > 1000 {
             self.transcript.drain(0..100);
         }

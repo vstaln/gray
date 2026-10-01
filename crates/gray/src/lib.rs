@@ -11,6 +11,7 @@ pub mod cron;
 pub mod cron_fire;
 pub mod cron_serve;
 pub mod cron_status;
+pub mod doctor;
 pub mod feedback;
 pub mod foreign;
 pub mod gateway;
@@ -33,6 +34,7 @@ pub mod setup;
 pub mod shell_drain;
 pub mod skills;
 pub mod skills_tool;
+pub mod spill;
 pub mod sys_editor;
 pub mod system_prompt;
 pub mod term_keys;
@@ -80,11 +82,14 @@ Workflow (every task):
 
 Guidelines:
 - Be concise.
+
 - Long commands: `action=run` + `command` + `background=true`; the returned `job_id` takes `status`, `output`, or `cancel` — never send `command` or `timeout` to those follow-up actions. Wait with `output` + `wait_ms`, not `sleep`.
 - Batch independent calls into one turn; they run concurrently unless they might clash, which is serialized for you.
 - Keep going without asking until done or truly blocked; a failed call means try differently, not give up.
 - A file changing under you: re-read and reconcile.
-- Probes are one-shot: if the environment blocks something, probe once, record it, spend the rest on the work."#;
+- Probes are one-shot: if the environment blocks something, probe once, record it, spend the rest on the work.
+Cron: to schedule recurring work, run `gray cron add "<schedule>" "<prompt>"` (manage with `gray cron list/show/remove`). For "remind me ..." run exactly ONE command and do not explore first: `gray cron add "in 2m" "the user's exact words" --reminder`. The text is stored and delivered verbatim with no model turn, so never reword it, never fix typos, never pass --name, never run `gray cron --help` first.
+"#;
 
 /// Resolves the user's system-prompt file path (`$GRAY_HOME` or `$HOME/.gray`) + `AGENTS.md`.
 ///
@@ -334,6 +339,10 @@ pub struct Cli {
     #[arg(long = "dump-manifest")]
     pub dump_manifest: bool,
 
+    /// Print a self-describing SKILL.md for driving gray and exit
+    #[arg(long = "skill")]
+    pub skill: bool,
+
     /// Maximum agent turns per invocation (mini-swe-agent step_limit).
     /// Env: GRAY_MAX_TURNS. Applies to REPL turns this process runs.
     #[arg(long, value_name = "N")]
@@ -474,10 +483,27 @@ pub enum Commands {
         #[command(subcommand)]
         cmd: CronCmd,
     },
+    /// Diagnose this setup (pass --online to also reach the provider)
+    Doctor {
+        /// Also make one request to the provider (no tokens, just /models)
+        #[arg(long)]
+        online: bool,
+    },
     /// Session store maintenance
     Sessions {
         #[command(subcommand)]
         cmd: SessionsCmd,
+    },
+    /// Read back a tool result that was too large for context
+    ///
+    /// A tool result over the inline budget ends in `[spilled …]` with a
+    /// handle. This reads it back: `gray spill grep <handle> <pattern>` is
+    /// the one that matters, and the ends are one flag away. A subcommand and
+    /// not a tool — the model has a shell, and a tool entry is schema every
+    /// turn pays for.
+    Spill {
+        #[command(subcommand)]
+        cmd: SpillCmd,
     },
     /// Install a catalog plugin or register a native executable (gray install plugin NAME)
     Install {
@@ -503,6 +529,52 @@ pub enum InstallCmd {
     },
 }
 
+/// `gray spill ...` — read back a spilled tool result.
+#[derive(Parser, Debug, Clone)]
+pub enum SpillCmd {
+    /// First N lines (default 50)
+    Head {
+        /// Handle from the `[spilled …]` footer
+        #[arg(value_name = "HANDLE")]
+        handle: String,
+        /// How many lines
+        #[arg(long, short = 'n', default_value_t = 50)]
+        lines: usize,
+    },
+    /// Last N lines (default 50)
+    Tail {
+        /// Handle from the `[spilled …]` footer
+        #[arg(value_name = "HANDLE")]
+        handle: String,
+        /// How many lines
+        #[arg(long, short = 'n', default_value_t = 50)]
+        lines: usize,
+    },
+    /// Matching lines, numbered against the original
+    Grep {
+        /// Handle from the `[spilled …]` footer
+        #[arg(value_name = "HANDLE")]
+        handle: String,
+        /// Pattern (regex unless --literal)
+        #[arg(value_name = "PATTERN")]
+        pattern: String,
+        /// Lines of context around each match
+        #[arg(long, short = 'n', default_value_t = 0)]
+        context: usize,
+        /// Case-insensitive
+        #[arg(long, short)]
+        ignore_case: bool,
+        /// Treat the pattern as literal text, not a regex
+        #[arg(long, short = 'F')]
+        literal: bool,
+        /// Max matching lines to print (default 200)
+        #[arg(long, value_name = "N")]
+        limit: Option<usize>,
+    },
+    /// What compression saved on this machine, by rule
+    Stats,
+}
+
 /// `gray sessions ...` — session store maintenance.
 #[derive(Parser, Debug, Clone)]
 pub enum SessionsCmd {
@@ -523,6 +595,9 @@ pub enum CronCmd {
     /// List jobs (id, name, schedule, next run, last status)
     List,
     /// Add a job: schedule ("every 1h" / "30m" / "in 10m" / RFC3339 / "0 9 * * *") + prompt
+    #[command(
+        after_help = "Reminder (one command, no model turn):\n  gray cron add \"in 2m\" \"clean my roo\" --reminder\nThe text is stored and delivered verbatim: never reword it, never fix typos, never pass --name."
+    )]
     Add {
         /// Schedule expression
         schedule: String,
@@ -546,6 +621,10 @@ pub enum CronCmd {
         /// Absolute path to a pre-run script (stdout injected into prompt)
         #[arg(long)]
         script: Option<PathBuf>,
+        /// Reminder: store the prompt verbatim and deliver it as-is at fire
+        /// time. No model turn, no tools. Use for "remind me ...".
+        #[arg(long)]
+        reminder: bool,
     },
     /// One claim→fire→record pass (also the OS-cron/runit entry point)
     Tick {

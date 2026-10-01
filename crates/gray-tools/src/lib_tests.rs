@@ -13,7 +13,6 @@ impl Tool for StubTool {
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }
-
     fn def(&self) -> ToolDef {
         ToolDef::new(self.name, "stub", json!({"type": "object"}))
     }
@@ -189,7 +188,6 @@ async fn registry_execute_applies_aliases_and_coercion() {
         fn as_any(&self) -> &dyn std::any::Any {
             self
         }
-
         fn def(&self) -> ToolDef {
             ToolDef::new(
                 "probe",

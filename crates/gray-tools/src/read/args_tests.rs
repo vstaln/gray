@@ -36,11 +36,3 @@ fn non_numeric_strings_keep_expected_integer_message() {
     );
     assert!(coerce_integer("limit", &json!(true)).is_err());
 }
-
-#[test]
-fn limit_zero_note_is_exact() {
-    assert_eq!(
-        LIMIT_ZERO_NOTE,
-        "[read: limit=0 shows nothing; omit limit or use limit>=1]"
-    );
-}

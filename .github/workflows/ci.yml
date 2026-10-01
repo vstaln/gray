@@ -34,7 +34,7 @@ jobs:
           rg --version
       - if: matrix.os == 'ubuntu-latest'
         run: cargo fmt --check
-      - run: cargo clippy --workspace -- -D warnings
+      - run: cargo clippy --locked --workspace -- -D warnings
       # Keep platform process tests ahead of unrelated suites, so a failure
       # elsewhere cannot hide the macOS cancellation regression evidence.
       - if: matrix.os == 'macos-latest'
@@ -42,11 +42,30 @@ jobs:
         env:
           RUST_BACKTRACE: 1
         run: cargo test --locked -p gray-tools --lib -- --nocapture
-      - run: cargo test --workspace --quiet
+      - run: cargo test --locked --workspace --quiet
       - if: matrix.os == 'ubuntu-latest'
         uses: rustsec/audit-check@v2
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
+
+  perf-floor:
+    # The numbers gray sells itself on — one binary, a small dependency
+    # surface, a fast start — had no gate, so they drifted on nobody's watch.
+    # Every metric here is a ceiling that may only go down; a regression fails
+    # the job and raising one is a reviewable baseline commit.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # Dependency counts need no build at all, so they fail fast; the binary
+      # size is measured only after the release build this job does anyway.
+      - name: Dependency floor
+        run: ./scripts/perf-floor.sh
+      - name: Build the release binary the size floor measures
+        run: cargo build --locked --release -p gray
+      - name: Binary size floor
+        run: ./scripts/perf-floor.sh
 
   installer-smoke:
     runs-on: ubuntu-latest

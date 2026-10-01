@@ -147,6 +147,36 @@ Without `background` or `yield_ms`, bash retains its blocking behavior. Only
 start jobs concurrently when they are independent; don't run competing writes
 or builds against the same output directory.
 
+## Run the commands somewhere else
+
+One setting moves every shell command off this machine:
+
+```json
+// ~/.gray/config.json
+{ "exec_prefix": "docker exec -i dev sh -s" }
+```
+
+`exec_prefix` (or `GRAY_EXEC_PREFIX`) is a program that ends in a shell
+reading its script from stdin, so one value covers both a local container and
+a remote box:
+
+| | |
+|---|---|
+| `docker exec -i dev sh -s` | commands run inside the `dev` container |
+| `ssh box sh -s` · `ssh -p 2222 'my box' sh -s` | commands run on a remote host |
+| unset (default) | commands run in your own shell |
+
+The command crosses as **text**, so nothing re-quotes it: `$VAR`, globs,
+pipes, heredocs and quoting reach the far shell exactly as written. Gray's own
+non-interactive environment (`GIT_TERMINAL_PROMPT=0`, `GRAY_SESSION_ID`,
+`GRAY_CWD_REPORT`, …) is exported across the boundary too, because neither
+`ssh` nor `docker exec` forwards it.
+
+What does **not** cross: paths. `current_dir` is applied to the local client
+process, so a remote command starts in that account's login directory — `cd`
+first if it matters, and note that files the model edits on the far side are
+not the ones on your laptop.
+
 ## Commands
 
 Slash commands autocomplete: Enter completes and fires, Tab inserts for editing — suffixes too, so `/context r` suggests `reserve`.
@@ -156,6 +186,8 @@ Slash commands autocomplete: Enter completes and fires, Tab inserts for editing 
 | `/new` · `/resume [id\|--last\|--all]` | fresh conversation, or reopen a previous one |
 | `/model [id]` · `/provider` · `/key [provider]` | models, providers, keys — without leaving the chat |
 | `/compact [instructions]` | summarize context (auto-compacts near the limit) |
+| `/undo` · `/retry` | drop the last exchange · drop it and ask again |
+| type during a turn | steers the running turn at its next model step (never cancels) |
 | `/context [tokens\|auto]` | inspect or set the window — `128k`, `1m`, `auto` to clear |
 | `/thinking` · `/effort [level]` | toggle reasoning, pick the effort |
 | `/usage` | session tokens & cost |
@@ -165,9 +197,14 @@ Slash commands autocomplete: Enter completes and fires, Tab inserts for editing 
 | `/feedback <text>` | save feedback locally + open a prefilled GitHub issue |
 | `/help` · `/quit` | you know these |
 
+Outside the REPL, `gray doctor` reports whether this machine is set up right —
+home, credential, model, context window and its source, shell, exec prefix,
+gateway, plugins — and exits non-zero if a check fails. Add `--online` to also
+reach the provider (a `GET /models`, no tokens). It never changes anything.
+
 ### CLI surface
 
-`gray` itself plus five subcommands — everything else is a slash command away:
+`gray` itself plus six subcommands — everything else is a slash command away:
 
 | subcommand | what it does |
 |---|---|
@@ -190,6 +227,13 @@ Make gray yours via skills, plugins, providers, and config.
 
 **Plugins** — sidecar child processes speaking newline-delimited JSON over stdio, with timeout and crash degradation. `gray.yml` profiles order built-ins and sidecars; [`plugins/echo/`](plugins/echo) is a copy-paste reference implementation.
 
+/undo rewinds the **conversation** only: the last thing you said and everything
+the model said after it leave both the context and the saved session (the
+pre-undo transcript is kept in `~/.gray/sessions/archive/`). Files the model
+wrote are untouched — that is git's job, not the transcript's. `/retry` is the
+same rewind with your message sent again, so a wrong turn costs one command
+instead of a retyped paragraph.
+
 ## Scheduling
 
 The agent stores recurring work with `gray cron add "<schedule>" "<prompt>"` (manage with `gray cron list/show/remove`). Jobs fire when something ticks the store — the gateway daemon, `gray cron serve`, a `gray cron tick` host (cron/systemd timer), or an open REPL.
@@ -202,7 +246,7 @@ The agent stores recurring work with `gray cron add "<schedule>" "<prompt>"` (ma
 
 ## Safety
 
-`gray` executes shell commands from the model. There is **no command guard and no approval prompt**: the model's `bash` runs what it writes, with your user's privileges. There is no container or VM isolation — run gray in a container/VM for untrusted work. Security reports: [SECURITY.md](SECURITY.md).
+`gray` executes shell commands from the model. There is **no command guard and no approval prompt**: the model's `bash` runs what it writes, with your user's privileges. There is no container or VM isolation — run gray in a container/VM for untrusted work, or point [`exec_prefix`](#run-the-commands-somewhere-else) at a box that is already isolated: the model still has no approval prompt, but the blast radius is that box, not your workstation. Security reports: [SECURITY.md](SECURITY.md).
 
 Persistence note: REPL sessions keep raw transcripts at `0600` under `~/.gray/sessions` for exact resume — including any secret that crossed a tool call. `gray -p` print mode scrubs secrets before persisting. Plan backups, snapshots, and disk access accordingly.
 
@@ -216,14 +260,12 @@ When usage nears the limit (`tokens > window − 16k` reserve), gray summarizes 
 
 | crate | role |
 |---|---|
-| `gray` | REPL · onboarding · config · TUI |
+| `gray` | REPL · onboarding · config · TUI · JSONL session store (`src/session_store.rs`, parent-id branching) · cron (`src/cron/`) |
 | `gray-core` | agent loop · events · messages |
 | `gray-provider` | OpenAI-compatible SSE streaming, retries, prompt caching |
-| `gray-session` | JSONL session store with parent-id branching |
 | `gray-tools` | bash · read · write · edit · grep · find · ls · shell control (profile-selectable) |
 | `gray-plugin` | plugin trait · manifest · `gray.yml` profile loader |
 | `gray-pkg` | plugin package management |
-| `gray-cron` | cron scheduling · job store · ticker |
 | `gray-markdown` | streaming markdown renderer for the TUI |
 
 Design notes: streaming first — text deltas, tool calls, and usage arrive as typed events over SSE. Logs go to `~/.gray/logs/gray.log` (`GRAY_LOG=debug` for the firehose).
@@ -240,6 +282,7 @@ The essentials — everything else is one `--help` or doc page away.
 | `GRAY_CONTEXT_WINDOW` | override the window in tokens — `128000`, `128k`, `1m`, or `auto` |
 | `GRAY_NO_UPDATE_CHECK=1` · `GRAY_AUTO_UPDATE=1` | silence the startup update check, or background self-update |
 | `GRAY_LOG` | `error`…`trace` (default `info`) |
+| `GRAY_EXEC_PREFIX` | run every shell command through this program (`docker exec -i dev sh -s`, `ssh box sh -s`); the saved `exec_prefix` is the durable form |
 | `GRAY_PARALLEL_READS` | `0` runs every tool sequentially (default: read-only tools concurrent, input order preserved) |
 
 ## Platform support

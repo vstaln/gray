@@ -1,54 +1,88 @@
-## [0.1.9]
-
-### Fixed
-- **The REPL composer rides the last rows of the screen from the first frame.** A fresh (or
-  cleared) session used to park the input box and the footer right under the welcome banner, with a
-  dead band of cleared rows down to the bottom of the screen: the pin only latched once the
-  transcript had overflowed the viewport, and an explicit branch unpinned it again on every growth.
-  The band is now positioned at `screen height - band height` unconditionally, so a shrink (status
-  dock, live cards clearing at a tool result, end of turn), a growth and a resize all keep the
-  footer's row the screen's last row and repaint what they vacate. Band budgeting makes the text
-  area and the footer un-trimmable and sheds the most transient band first, so a busy screen loses
-  the status dock before the transcript.
-- **The input box keeps its top margin row.** 0.1.9 dropped the blank row the box owns above its
-  `❯` row and leaned on the transcript's own trailing gap, so the prompt sat flush against whatever
-  was above it. The pad row is back (and the caret follows the prompt row, not the pad), with
-  `MIN_VIEWPORT_H` back at 4.
-- **One blank row between blocks, and a band that never moves.** Three separate padders were
-  stacking blank rows between transcript blocks, and two separate resizers were moving the band
-  mid-turn. Both showed up as the same thing: gaps of two, three and four rows around tool cards,
-  and a flashing input box. Now one rule owns each.
-  - The tool card and the prompt card no longer carry outer margin rows of their own; `ensure_gap`
-    is the single owner of the blank row between blocks, so a paragraph, a card and the turn footer
-    are separated by exactly one row (they were separated by two, and two tool cards by three).
-    The turn footer's trailing gap went with it: the input box's own top pad is the separator.
-  - The status dock is a fixed three rows — separator, status, live-card slot. It used to be two,
-    and the live card used to sit below the dock as measured rows, so starting a tool grew the band
-    and finishing it shrank the band again. Since the band *is* the inline viewport's top edge,
-    every resize swallowed the transcript row it covered (a stray blank above the pill) and hopped
-    the input box and the footer. The live card now paints into the dock's own slot row and extra
-    live cards fold into a dim `+N more` on that row, so the band's height is one value for the
-    whole turn — and the slot doubles as the gap between the status line and the input box.
-- **The input box no longer flashes when a tool runs.** Inserting a transcript row scrolls the
-  whole screen, so the band's pixels move with it, and the insert used to erase the band on the spot
-  — outside the frame's synchronized-update bracket. A terminal could therefore present one frame
-  with no input box at all, on every streamed row and every tool event. The erase now belongs to the
-  frame that repaints the band, inside the same bracket as the rest of the frame.
-- **"Please continue…" belongs to the idle composer only.** The bare-Enter resume flag is armed when
-  the REPL loop blocks on input, i.e. before the turn a bare Enter would continue is submitted, so
-  mid-turn it was stale and the box kept painting the ghost over a live turn. It is dropped when a
-  turn starts, and the hint is now gated on both halves of "idle": no turn running *and* no status
-  pill, so it can never sit under a live `⬡ Working…` line. It shows after an interrupt or an
-  error, and nothing else.
-
 # Changelog
 
 ## [Unreleased]
 
-## [0.1.10] - 2026-10-02
+## [0.1.10] - 2026-10-01
+
+### Added
+- **A native Anthropic provider.** A key on `api.anthropic.com` now speaks the Messages API
+  instead of Anthropic's OpenAI-compatible endpoint, which has no prompt caching: every request
+  re-billed the whole prompt. Requests carry `cache_control` breakpoints on the system prompt, the
+  last tool and the last message; thinking blocks go back with their signatures; an overloaded 529
+  or a rate limit retries before the stream opens.
+- **Prompt-cache warming during long tool runs** (pi parity). On the native Anthropic provider,
+  a tool that runs past the 5-minute cache lifetime no longer costs a full prompt re-write on the
+  next request: at 90% of the lifetime the round's request is replayed with a one-token output
+  cap, while the expected saving is at least $0.05, for up to an hour. Refresh usage is billed with
+  the turn and never enters the conversation. Thinking budgets cannot be replayed safely, so it
+  applies with thinking off; `GRAY_NO_CACHE_WARM=1` turns it off.
+- Command output is compressed by what the command was, and truncation is no
+  longer a dead end. `cargo`, `npm`/`pnpm`/`yarn`, `pip`/`uv` and `pytest`
+  output loses its progress chatter (a 300-crate `cargo build` is 30 KiB of
+  `Compiling …` lines and one `error[E0308]`), a generic rule collapses runs
+  of identical lines for everything else, and the result says so before the
+  body. The raw log stays on disk exactly where it was, so the squeeze costs
+  the model nothing it cannot grep back. `GRAY_NO_SQUEEZE=1` turns it off.
+- `gray spill` reads a tool result back. A result over the inline budget now
+  keeps its preview *and* stores the full original under a content hash, with
+  a `[spilled …]` footer naming the handle — so the middle that truncation used
+  to amputate is recoverable: `gray spill grep <handle> <pattern>`,
+  `gray spill head|tail <handle>`. It is a subcommand rather than a tool on
+  purpose: the model has a shell, and a tool entry is schema every turn pays
+  for. Handles are checked character by character, so one can never name a
+  path outside the store; an evicted or unknown handle is an error that says
+  what to do, never an empty result. `GRAY_NO_SPILL=1` turns the store off.
+- Compression is metered, so the saving is a number instead of a claim.
+  `gray spill stats` reports what was produced against what reached the model,
+  broken down by rule and sorted by what each rule actually saved; `/usage`
+  grows the same counterfactual as one line.
+- A performance floor in CI (`scripts/perf-floor.sh`). Unique dependency
+  count, crates with a C/C++ build step, workspace members and stripped binary
+  size are down-only ceilings committed in `scripts/perf-baseline.json`. The
+  numbers the README sells had no gate; raising one is a reviewable commit.
+  Startup wall time is measured and printed but never enforced, because a time
+  budget on a shared runner fails on load rather than on regressions.
+- **`gray doctor` answers "is my setup OK?" in one command.** One pass/fail
+  line each for the gray home (exists, writable), the provider credential
+  (never its value), the selected model, the context window *and where that
+  number came from*, the shell (Git Bash on Windows), the exec prefix, the
+  gateway, and the installed plugins. `gray doctor --online` also does a
+  `GET /models` against the configured provider — no tokens, but it leaves the
+  machine, so it is opt-in. Exits non-zero when a check fails, so a setup
+  script or CI can gate on it. Diagnose only: it never writes a config, starts
+  the gateway, or installs anything.
+- **Typing during a turn steers it.** Text typed while a turn is running used
+  to wait for that turn to finish; it now joins the turn at the boundary before
+  the model's next request, so a correction lands while the work is still in
+  flight ("actually, skip the last step"). Steering only appends -- the turn
+  keeps everything it has already done, and cancelling is still Ctrl-C/Esc. An
+  input with attachments keeps them and still runs as its own turn afterwards,
+  and whatever is left in the queue is sent once, after the turn, as before.
+- **`/undo` and `/retry` step back inside a session.** `/undo` drops the last
+  exchange — the last thing you said and everything the model said after it —
+  from both the live context and the saved session; `/retry` is the same
+  rewind with your message sent again. The rewind rewinds the *conversation*
+  only: files the model wrote are untouched, and the pre-undo transcript is
+  kept in `~/.gray/sessions/archive/`, so it is recoverable by hand. The cut
+  always lands on a user turn, so no tool call is ever separated from its
+  result.
+
+- **`exec_prefix` runs the model's shell commands somewhere else.** One saved
+  setting (`~/.gray/config.json`, or `GRAY_EXEC_PREFIX`) names a program that
+  ends in a shell reading its script from stdin, so `docker exec -i dev sh -s`
+  and `ssh box sh -s` cover both a local container and a remote box:
+  ```json
+  { "exec_prefix": "docker exec -i dev sh -s" }
+  ```
+  The command crosses as **text**, not as an argv the far side re-splits, so
+  `$VAR`, globs, pipes, heredocs and quoting arrive exactly as written — the
+  `ssh box sh -c 'ls'` trap cannot happen. Gray's non-interactive environment
+  (`GIT_TERMINAL_PROMPT=0`, `GRAY_SESSION_ID`, `GRAY_CWD_REPORT`) is exported
+  across the boundary too, because neither `ssh` nor `docker exec` forwards the
+  client's environment. `current_dir` still applies to the local client, so a
+  remote command starts in that account's login directory.
 
 ### Fixed
-
 - **Windows installs work from one line.** `irm https://gray.alignment.id/install.ps1 | iex`
   failed three ways in 0.1.9: piped to `iex` there is no `$PSScriptRoot`, so `install.ps1`
   refused to run without a sibling `install-native.ps1`; that file was never published to the
@@ -64,6 +98,116 @@
   user's session under `iex`; they now throw or return.
 - The installers are ASCII-only: Windows PowerShell 5.1 decodes an uncharset `text/plain`
   response as Latin-1.
+- **A provider error reads as a sentence, once.** A 429 printed its raw JSON envelope
+  (`{"error": {"message": …, "type": …, "param": …}}`) on every retry row and again in the final
+  error. HTTP errors now show the provider's own `error.message` (the full body still drives the
+  classification), and a retry burst repeating the same cause is one row, not one per attempt.
+- **Tool cards drop the log path.** Every bash card showed `log ~/.gray/shell/<session>/bash-<hash>.log`;
+  the path stays in what the model reads (it pages the log back from it) but is gone from the
+  card. A signal exit no longer says it twice: `exit 143 (SIGTERM) (terminated)`.
+- **Claude caches again behind OpenAI-compatible routers.** The `cache_control` breakpoints were
+  removed on 2026-09-23 on the theory that `prompt_cache_key` covers caching; Claude ignores that
+  field and caches only at breakpoints, so Claude through OpenRouter re-billed the full prompt on
+  every request. The breakpoints are back for Claude models.
+- **Old reasoning no longer reappears under the answer.** When the band shrank at turn end, a
+  refill reprinted remembered scrollback rows into the gap it left, and once the transcript had
+  scrolled past the screen it picked the wrong ones: the first round's thinking showed up again
+  below the final answer, above `Thought for`. The refill is gone; a shrink leaves blank rows that
+  the next output fills.
+- **The REPL composer rides the last rows of the screen from the first frame.** A fresh (or
+  cleared) session used to park the input box and the footer right under the welcome banner, with a
+  dead band of cleared rows down to the bottom of the screen: the pin only latched once the
+  transcript had overflowed the viewport, and an explicit branch unpinned it again on every growth.
+  The band is now positioned at `screen height - band height` unconditionally, so a shrink (status
+  dock, live cards clearing at a tool result, end of turn), a growth and a resize all keep the
+  footer's row the screen's last row and repaint what they vacate. Band budgeting makes the text
+  area and the footer un-trimmable and sheds the most transient band first, so a busy screen loses
+  the status dock before the transcript.
+- **The input box keeps its top margin row.** 0.1.9 dropped the blank row the box owns above its
+  `❯` row and leaned on the transcript's own trailing gap, so the prompt sat flush against whatever
+  was above it. The pad row is back (and the caret follows the prompt row, not the pad), with
+  `MIN_VIEWPORT_H` back at 4.
+- **"Please continue…" no longer shows while the model is streaming.** The bare-Enter resume flag
+  is armed when the REPL loop blocks on input, i.e. before the turn a bare Enter would continue is
+  submitted, so mid-turn it was stale and the box kept painting the ghost over a live turn. It is
+  dropped when a turn starts, and the hint is gated on the composer being idle.
+- **A cron job added from the REPL comes back into that chat.** "Message me in a minute" fired,
+  wrote its output under `cron/output/` and showed nothing in the conversation; the model polled
+  with `sleep` to find out. A job added from inside a session (the bash tool's `GRAY_SESSION_ID`)
+  now records that session as its origin, and whichever ticker fires it drops the result into
+  `cron/inbox/<session>`. The REPL showing the session paints a `⏰ cron` card and, once idle,
+  starts a turn with the result as a `[Cron delivery: <name>]` message. A background bash job that
+  finishes while the REPL is idle starts a turn the same way, and queued `host/say` lines paint
+  without waiting for the next keypress.
+- **A parallel tool batch stops sitting in "Preparing tool" while it runs.** `tool_call_end` (the
+  "args complete, executing" signal) fired for each member only after the slowest one finished; it
+  now fires for every member before the batch starts.
+- **A full-width numbered or diff row in a tool card stays on one row.** The card re-wrapped body
+  rows two columns narrower than `tool_fmt` had already wrapped them, orphaning each full row's last
+  word onto a continuation row.
+- **A newline could smuggle a secret past the redactor.** The tokenizer splits on `' '` only, so
+  `'\n'` glued neighbouring lines into one token: a secret below the first line of a shell chunk was
+  written to the durable log and sent to the provider in the clear, and a secret that *did* fire armed
+  the next glued token and deleted every line after it. Redaction is per line now, for every sink at
+  once (bash output, `edit`, `write`, `grep`).
+- **A secret split across a pipe read no longer leaks its tail.** The shell pump forwarded whatever
+  each `read()` returned, so a token straddling an 8 KiB boundary was redacted in pieces. Readers
+  now hold an unterminated line until its terminator arrives (4 KiB cap, flushed at EOF), per pipe,
+  with the liveness stamp still taken on the raw read.
+- **Concurrent credential writes can no longer erase each other.** The `auth.json` flock covered only
+  the final write, so two gray processes updating the store (REPL plus cron fire, or two terminals)
+  overwrote each other and the loser's credential was gone — a lost OAuth refresh meant a re-login.
+  `/key` and provider removal took no lock at all on the same file; both now take it.
+- **The plugin setup config is written through the repo's one private atomic writer.** The copy in
+  `write_config` created the file at umask mode and chmod'ed it afterwards, and its fixed `config.tmp`
+  name could be written through by a planted file or symlink.
+- **The pinned self-update keeps no scratch directory behind.** `gray-installer-<pid>` under the
+  shared temp dir (pre-creatable by another local user, removed only on success) is a private
+  `TempDir` now, dropped on every exit including a checksum mismatch.
+
+### Changed
+- CI and the release builds pass `--locked` on every platform, so a dependency edit without a lock
+  update cannot ship from `main`.
+- A bash result carries 12 KiB instead of 48 KiB (6 KiB head ++ 6 KiB tail),
+  and what rides the wire is squeezed: color escapes are gone and a run of
+  three or more identical lines collapses to one line plus a count. Every
+  later request of the turn re-sends the whole history, so one big dump used
+  to be re-billed for the rest of the session. Nothing is lost — the full log
+  is on disk and the `Read more` hint names the exact byte window, now with
+  4 KiB pages that fit the inline budget in one piece.
+- Old tool output ages out of the context. A `ToolResult` of 8 KiB or more
+  rides a request as a one-line citation stub once it is ten rounds old
+  (arXiv:2607.25066 — masking costs about half an LLM summary and keeps the
+  output addressable), and the mask moves in batches so the provider prefix
+  cache stays warm between them. The stub names the tool-call id and this
+  session's transcript file; the transcript itself keeps every byte. After an
+  idle gap past the prompt-cache TTL the whole mask is applied at once instead
+  — the next request re-bills the prefix either way, so the shorter prompt is
+  free and is what gets cached from there on.
+- `cat`/`sed -n`/`head`/`tail` of a file dedup like the `read` tool. The
+  default profile is bash-only, so the repeated read that costs the tokens was
+  the one with no dedup: an exact repeat of one of those reads, on a file whose
+  mtime and size are unchanged, answers with a citation stub naming the
+  command and the file — once, then the next repeat reads again. The ledger is
+  the one `read`/`write`/`edit` already share, so the same file read through
+  either surface dedups against the other, and `/new` and compaction keep
+  their existing lifecycle. `GRAY_READ_DEDUP=0` still turns it off.
+- The memory prompt and snapshot shrink. The keep/delete rubric moved out of
+  the per-turn policy into `gray memory audit`, which already printed it, and
+  the injected snapshot of each scope is capped at 4 KiB: newest entries
+  first, with a line saying how many older ones were left out. ~700 policy
+  tokens became ~500, and a memory that grew without bound can no longer grow
+  the system prompt with it.
+
+## [0.1.9] - 2026-09-30
+
+### Fixed
+- **The REPL composer stays on the last rows of the screen.** Once the transcript overflows the
+  viewport, a latched `bottom_anchored` keeps the input box and the footer pinned to the screen's
+  last rows instead of parking them above cleared rows; a shrink (status dock, live cards clearing at
+  a tool result, end of turn) slides the viewport down and repaints what it vacated with the surface
+  colour. Band budgeting makes the text area and the footer un-trimmable and sheds the most transient
+  band first, so a busy screen loses the status dock before the transcript.
 
 ## [0.1.8] - 2026-09-30
 
@@ -79,7 +223,7 @@
   `cmd &` legal. 33 of 47 DeepSWE runs in the 2026-09-29 retro reported this;
   it cost each a wasted turn at best.
 
-- - The `windows-runtime` CI gate stops hanging on the search-index bench.
+- The `windows-runtime` CI gate stops hanging on the search-index bench.
   Every `ci` run since the search-as-command merge (#145) died at
   `index_vs_spawn_tax` — "running for over 60 seconds", then silence until
   the job's 60-minute budget was spent. The hang had no reachable timeout:
@@ -95,6 +239,27 @@
   and costs CI a two-minute failure with a name on it — instead of a 60-minute
   silent hang. `windows-focused` takes a `test-path` input, so a native
   single-test iteration no longer means editing the workflow.
+
+### Added
+- `gray cron add "<schedule>" "<text>" --reminder` stores the text and delivers
+  it verbatim at fire time. A reminder runs no agent turn, no pre-script, no
+  skills and no tools, and its name (when `--name` is omitted) is a slug of the
+  exact text — typos included, never rewritten. `--reminder` with `--script` or
+  `--skills` is rejected. `cron_delivery` JSON lines now carry `kind`, `status`,
+  `elapsed_ms` and `final_text`; `job_id` and `path` remain routing/log fields.
+- A cron delivery is the final assistant message, not a transcript. The
+  `[tool:…]` / `[result:…]` stream, the `Cronjob Response:` frame, the
+  `(job_id:)` line, the dashes, the stop/manage footer and the output-file path
+  are gone from the chat text, and the origin-session mirror no longer carries a
+  tool log into the conversation. The full transcript still lands in
+  `cron/output/<id>/<ts>.md` at mode 0600.
+- A fire that failed before producing output now reaches the chat as a red
+  `failed` delivery instead of silence.
+- Cron transcripts are redacted before they are written to disk or shown:
+  exact values from `<home>/auth.json` plus `gray_core::redaction`'s token
+  shapes. Paths stay verbatim in a secret-free transcript. A length cap that cut
+  an `<untrusted-output>` block open now closes it, so the transcript always
+  carries balanced tags.
 
 ## [0.1.7] - 2026-09-29
 
@@ -197,7 +362,6 @@
   set. `scripts/animate_logo.py` regenerates it (`--lines` for the
   transparent variant on dark surfaces, `--frames N dir` for previews);
   `assets/logo-grow.mp4` is the 1.9s preview.
-
 - The startup banner is the gray ASCII logo again. The graychan art is
   `/hehe` only, and `/hehe` is a toggle: press it again to drop the art and
   get the logo back.
@@ -272,7 +436,6 @@
   attached and how to re-run it bare, and the CLI fallback line says the
   terminal has no image protocol instead of a bare `viewed …`
   (`docs/bug-gray-view-compound-command.md`).
-
 ## [0.1.5] - 2026-09-26
 
 ### Changed
@@ -439,7 +602,6 @@
   switch, and piped stdin prints the rows as text. `/gateway` and `/gw` are
   real commands again (they previously answered "the TUI gateway is gone")
 
-
 - `gray login`, `gray whoami`, `gray logout` (and `/login`, `/whoami`,
   `/logout` in the REPL): enroll this machine with gray.alignment.id. The
   site's account page mints a one-time 5-minute code from a Supabase session;
@@ -456,7 +618,6 @@
   every call carries the token. Nothing in gray is gated on an account — the token
   only names the caller on registry calls — and the onboarding banner now says
   so instead of implying a login exists
-
 
 - `/cron` and `/memory` are interactive on a TTY, riding the same picker loop
   as `/plugin` and `/skills`: `/cron` lists every job (name, id, schedule, next
@@ -509,7 +670,6 @@
   credential files
 
 ## [0.1.1] - 2026-09-21
-
 
 - Windows builds ship with the release: `gray-<channel>-x86_64-windows.zip`
   alongside the four tarballs, checksummed into the same `SHA256SUMS` file.
@@ -598,7 +758,6 @@
 - Gateway autostart defaults off; corrupt gateway.yaml warns instead of silently resetting (S2, S3)
 - Safety / Subcommands / Platform / gateway docs in README (D2, S4)
 
-
 - The connect modal's footer and the install manager's per-tab footers share
   extracted same-file helpers instead of repeating the render scaffolding
   three times each (-188 net lines across the two files). Behavior is
@@ -615,7 +774,6 @@
   name before it is registered
 - Clipboard/image paste is core again: `arboard` + `image` are always compiled in, no `--features clipboard` needed (kept as a no-op alias)
 - Removed the native messaging gateway: deleted `crates/gray-gateway` (adapters, daemon, pairing, delivery, systemd), the `plugins/gateway` sidecar, `gray gateway ...`/`gray send`, and the `telegram`/`discord`/`slack`/`all-platforms` features. Chat returns as a plugin; `gray cron --deliver` targets are stored opaquely until a delivery backend exists. Dropped the `--all-features` CI checks.
-
 
 - Multi-line input is no longer clipped by the inline viewport. The viewport
   cap was pinned near 14 rows regardless of terminal height, so a pasted
@@ -769,7 +927,6 @@
 
 - macOS binaries are not notarized (curl-install unaffected) (D3)
 - Destructive-command guard is best-effort, not a sandbox — see README Safety (S4)
-
 
 - `install.ps1` still installs through WSL by default; a native install
   needs `-Native`. Self-update refuses on native Windows rather than calling

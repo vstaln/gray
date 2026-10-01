@@ -67,9 +67,8 @@ pub(crate) fn build_input_box(
 
     let mut box_lines: Vec<Line<'static>> = Vec::new();
 
-    // Top padding inside the box: the ONE margin between the prompt and
-    // whatever is above it (the status dock's live card rides this same row
-    // while a tool runs — see `draw`), so the prompt never sits flush.
+    // Top padding inside the box: the blank row the box owns above its
+    // `❯` row, so the prompt never sits flush against the row above it.
     box_lines.push(Line::from(""));
 
     // Prompt input rows
@@ -205,27 +204,49 @@ pub(crate) fn build_input_box(
     }
 }
 
-/// Rows the band reserves above the input box for the live status:
-///   seam   1 row — the separator between the scrollback tail and the status
-///   status 1 row — the plain shimmer text
-///   slot   1 row — the live tool card, blank when none is running
+/// True when the last scrollback row is a bare blank (no bg, no glyphs):
+/// the transcript already left breathing room above the viewport (a
+/// paragraph separator, `ensure_gap`, …). Same predicate `ensure_gap` uses.
+pub(crate) fn transcript_ends_blank(transcript: &[Line<'static>]) -> bool {
+    transcript.last().is_some_and(|l| {
+        l.style.bg.is_none()
+            && l.spans
+                .iter()
+                .all(|s| s.style.bg.is_none() && s.content.trim().is_empty())
+    })
+}
+
+/// Height reserved above the input box for the live status:///   seam    1 row — ONLY when the transcript's last row is not already blank
+///   status  1 row — the plain shimmer text
+///   breath  1 row — bare space below, so it never melts into the input box
 ///
-/// Both are unconditional while a status shows. The seam used to be a latch
-/// that only appeared when the transcript did not already end blank (and was
-/// released again by every trailing gap), so the band grew and shrank by a
-/// row on nearly every streamed chunk: the inline viewport is anchored to the
-/// band's top edge, so each resize swallowed the row the transcript had just
-/// painted (a phantom blank between paragraphs) and hopped the input box and
-/// footer up and down — the paragraph gap and the tool-call flicker, one bug.
-/// The live card is the second instance: it used to sit below the dock as
-/// measured rows, so starting and ending a tool call resized the band too.
-/// So the dock is a fixed three rows — separator, status, live-card slot —
-/// and the slot doubles as the blank between the status line and the box.
-pub(crate) fn status_dock_h(has_status: bool) -> u16 {
+/// The seam is dynamic on purpose. A fixed seam (b377846) stacked with the
+/// blank a paragraph checkpoint leaves behind (2-row gap, hence 8ec9af0);
+/// no seam jams streamed rows flush against `⬡ Working…`. The live need
+/// feeds a [`ratchet_seam`] latch: deciding per frame bounced the input
+/// box 2<->3 rows on every streamed chunk.
+pub(crate) fn status_dock_h(has_status: bool, needs_seam: bool) -> u16 {
     if !has_status {
         return 0;
     }
-    3
+    2 + u16::from(needs_seam)
+}
+
+/// Whether the dock reserves a seam row this frame.
+///
+/// Purely structural: a seam exists only while there is a live status AND
+/// the scrollback tail is non-blank. The previous grow-only latch kept the
+/// seam on after a blank row was committed, stacking the viewport seam on
+/// the scrollback gap — the intermittent doubled margin — unless every
+/// writer of a blank row remembered to call `release_dock_seam`. A blank
+/// tail and a seam are mutually exclusive by construction now, so no
+/// writer can forget. `_cached` is kept for call-site compatibility.
+/// Geometry stays smooth: committing the blank moves the seam row into
+/// scrollback and drops it from the viewport in the same synchronized
+/// frame, so the input box does not move. Pure for testability
+/// (`Tui::new` needs a TTY).
+pub(crate) fn ratchet_seam(_cached: bool, has_status: bool, live_needs: bool) -> bool {
+    has_status && live_needs
 }
 
 /// Queued follow-up inputs held while a turn is in flight (codex

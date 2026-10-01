@@ -35,6 +35,12 @@ async fn main() -> anyhow::Result<()> {
     install_panic_hook();
     let _ = crossterm::terminal::disable_raw_mode();
     let cli = Cli::parse();
+    // A pure text file: no config, no provider, no TTY. It has to work from a
+    // bare shell, because the reader is another agent.
+    if cli.skill {
+        print!("{}", include_str!("../gray-skill.md"));
+        return Ok(());
+    }
     if let Some(gray::Commands::Memory(args)) = &cli.command {
         return gray::memory::run_cli(args);
     }
@@ -52,7 +58,11 @@ async fn main() -> anyhow::Result<()> {
     }
     // Same reason as view: a local search is nobody's provider concern, and
     // the bash tool claims `gray find`/`gray grep` so a model does not have to
-    // know `gray` is on its PATH.
+    // know `gray` is on its PATH. `gray spill` reads a local file for the same
+    // reason — it is the way back into a result the context had to leave out.
+    if let Some(gray::Commands::Spill { cmd }) = &cli.command {
+        return gray::spill::run_cli(cmd);
+    }
     match &cli.command {
         Some(gray::Commands::Find {
             pattern,
@@ -150,6 +160,12 @@ async fn main() -> anyhow::Result<()> {
     };
 
     let mut config = Config::resolve(&cli)?;
+    if let Some(gray::Commands::Doctor { online }) = &cli.command {
+        // Exit code is the report: non-zero on a failed check, so a setup
+        // script or CI can gate on it. `Config::resolve` already ran, so the
+        // key/model/exec_prefix checks see the same values a session would.
+        std::process::exit(gray::doctor::run(&config, *online));
+    }
     gray::turn_caps::init_process_start();
     gray::setup::set_user_context_window(config.context_window);
     gray::setup::set_user_reserve_tokens(config.context_reserve);
@@ -157,6 +173,9 @@ async fn main() -> anyhow::Result<()> {
     if let Some(cmd) = cli.command {
         match cmd {
             gray::Commands::Memory(_) => unreachable!("handled before provider configuration"),
+            gray::Commands::Doctor { .. } => {
+                unreachable!("handled right after config resolution")
+            }
             gray::Commands::Resume {
                 session_id,
                 last,
@@ -190,8 +209,9 @@ async fn main() -> anyhow::Result<()> {
             }
             gray::Commands::View { .. }
             | gray::Commands::Find { .. }
-            | gray::Commands::Grep { .. } => {
-                unreachable!("view/find/grep CLI dispatch happens before configuration")
+            | gray::Commands::Grep { .. }
+            | gray::Commands::Spill { .. } => {
+                unreachable!("view/find/grep/spill CLI dispatch happens before configuration")
             }
         }
     }
@@ -559,9 +579,21 @@ async fn run_cron(cmd: gray::CronCmd, config: &gray::config::Config) -> anyhow::
             workdir,
             skills,
             script,
+            reminder,
         } => {
             let store = cron_store()?;
-            let name = name.unwrap_or_else(|| default_job_name(&prompt));
+            if reminder && (script.is_some() || skills.is_some()) {
+                anyhow::bail!("--reminder cannot be combined with --script or --skills");
+            }
+            let name = name.unwrap_or_else(|| {
+                if reminder {
+                    // A slug of the exact text: the reminder must not be
+                    // paraphrased into a tidier name than the user gave.
+                    gray::cron_fire::reminder_name(&prompt)
+                } else {
+                    default_job_name(&prompt)
+                }
+            });
             let base: std::path::PathBuf = workdir
                 .clone()
                 .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
@@ -617,6 +649,7 @@ async fn run_cron(cmd: gray::CronCmd, config: &gray::config::Config) -> anyhow::
                 workdir,
                 skill_names,
                 script,
+                reminder,
             )?;
             let next = store
                 .get(&id)?

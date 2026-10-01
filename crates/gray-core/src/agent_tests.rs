@@ -2620,3 +2620,256 @@ async fn mid_stream_error_partial_is_scrubbed_from_the_next_request() {
         "a one-line marker takes its place: {retry:?}"
     );
 }
+
+/// Mid-turn steer: text typed while the turn runs joins that turn, at the
+/// boundary before the next model request -- not after the turn, and never
+/// between a tool call and its result.
+#[tokio::test]
+async fn steer_hook_text_reaches_the_running_turn() {
+    let provider = FakeProvider::new(vec![
+        tool_script("call_1"),
+        vec![
+            StreamEvent::text_delta("adjusted"),
+            StreamEvent::message_complete(Some(StopReason::EndTurn), Some(Usage::new(5, 5))),
+        ],
+    ]);
+    let executor = FakeExecutor::new(ToolOutput::ok("result payload"));
+    let seen = provider.seen_requests();
+    // One injection, then silence: the hook is polled before every request.
+    let pending = std::sync::Arc::new(std::sync::Mutex::new(Some(
+        "actually, use the other flag".to_string(),
+    )));
+    let hook = {
+        let pending = pending.clone();
+        std::sync::Arc::new(move || pending.lock().unwrap().take())
+    };
+    let mut agent = Agent::new(Box::new(provider), Arc::new(executor)).with_tools(vec![tool_def()]);
+    agent.set_steer(hook);
+
+    agent
+        .run(Message::user("go"), ToolContext::default())
+        .await
+        .expect("run should succeed");
+
+    let requests = seen.lock().expect("seen lock").clone();
+    assert_eq!(requests.len(), 2, "the tool round makes a second request");
+    let second: Vec<String> = requests[1].1.iter().map(|m| m.text_content()).collect();
+    assert!(
+        second
+            .iter()
+            .any(|text| text.contains("actually, use the other flag")),
+        "steer text must ride the next request: {second:?}"
+    );
+    // It is a real user message, so the persisted transcript keeps it too.
+    assert!(
+        agent
+            .messages()
+            .iter()
+            .any(|m| m.role == Role::User && m.text_content().contains("use the other flag")),
+        "steer text must stay in the transcript"
+    );
+}
+
+/// No hook (or a hook that returns `None`) must leave a turn byte-identical:
+/// steering is additive, never a rewrite.
+#[tokio::test]
+async fn a_silent_steer_hook_changes_nothing() {
+    let provider = FakeProvider::new(vec![
+        tool_script("call_1"),
+        vec![
+            StreamEvent::text_delta("done"),
+            StreamEvent::message_complete(Some(StopReason::EndTurn), None),
+        ],
+    ]);
+    let executor = FakeExecutor::new(ToolOutput::ok("ok"));
+    let seen = provider.seen_requests();
+    let mut agent = Agent::new(Box::new(provider), Arc::new(executor)).with_tools(vec![tool_def()]);
+    agent.set_steer(std::sync::Arc::new(|| None));
+
+    agent
+        .run(Message::user("go"), ToolContext::default())
+        .await
+        .expect("run should succeed");
+
+    let requests = seen.lock().expect("seen lock").clone();
+    assert_eq!(requests.len(), 2);
+    // Exactly the unsteered shape: the prompt, the assistant tool call and its
+    // result. A silent hook must not add a message of its own.
+    let roles: Vec<Role> = requests[1].1.iter().map(|m| m.role).collect();
+    assert_eq!(
+        roles,
+        vec![Role::User, Role::Assistant, Role::User],
+        "nothing typed, nothing added"
+    );
+}
+
+/// One tool round: assistant `ToolUse` + the paired `ToolResult` carrying
+/// `bytes` of output. Tool results are what the stale mask claims.
+fn big_tool_round(id: &str, bytes: usize) -> Vec<Message> {
+    vec![
+        Message {
+            role: Role::Assistant,
+            content: vec![ContentBlock::tool_use(
+                id,
+                TOOL_NAME,
+                serde_json::json!({"q": "x"}),
+            )],
+        },
+        Message {
+            role: Role::User,
+            content: vec![ContentBlock::tool_result(id, "y".repeat(bytes), false)],
+        },
+    ]
+}
+
+/// The outbound view's tool-result bodies, in order.
+fn tool_result_bodies(msgs: &[Message]) -> Vec<&str> {
+    msgs.iter()
+        .flat_map(|m| m.content.iter())
+        .filter_map(|b| match b {
+            ContentBlock::ToolResult { content, .. } => Some(content.as_str()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn stale_tool_output_masks_in_batches_and_keeps_history_intact() {
+    let bytes = crate::compact::ARC_STUB_MIN_BYTES + 1;
+    let mut agent = Agent::new(
+        Box::new(FakeProvider::new(vec![])),
+        Arc::new(FakeExecutor::new(ToolOutput::ok("unused"))),
+    );
+    agent.session_id = Some("sess-mask".into());
+    // 12 tool rounds, one user turn on top: the last 10 rounds are fresh,
+    // the first 2 are stale.
+    let mut msgs = vec![Message::user("go")];
+    for i in 0..12 {
+        msgs.extend(big_tool_round(&format!("call_{i}"), bytes));
+    }
+    msgs.push(Message::user("status?"));
+    agent.set_messages(msgs);
+
+    // A partial batch holds the mask: rewriting the prefix costs a
+    // prompt-cache miss, so it waits for a full batch of newly stale results.
+    agent.advance_tool_mask();
+    let view = agent.scrubbed_messages();
+    assert!(
+        tool_result_bodies(&view)
+            .iter()
+            .all(|b| !b.contains("elided from context")),
+        "two stale results are below the batch floor: {view:?}"
+    );
+
+    // Five stale results cross it. 16 groups (opening user turn + 14 tool
+    // rounds + closing user turn) put the six oldest out of reach of the
+    // model, and one of those six is the opening turn.
+    let mut msgs = vec![Message::user("go")];
+    for i in 0..14 {
+        msgs.extend(big_tool_round(&format!("call_{i}"), bytes));
+    }
+    msgs.push(Message::user("status?"));
+    agent.set_messages(msgs);
+    agent.advance_tool_mask();
+    let view = agent.scrubbed_messages();
+    let bodies = tool_result_bodies(&view);
+    assert_eq!(bodies.len(), 14, "every result still rides the request");
+    for (i, body) in bodies.iter().enumerate() {
+        if i < 5 {
+            assert!(body.contains("elided from context"), "round {i}: {body}");
+            let id = format!("call_{i}");
+            assert!(body.contains(&id), "citation names the id: {body}");
+            assert!(
+                body.contains("~/.gray/sessions/sess-mask.jsonl"),
+                "citation names the file: {body}"
+            );
+        } else {
+            assert!(!body.contains("elided"), "fresh round {i} stays whole");
+        }
+    }
+    // The transcript is untouched: the user saw these bytes, and the stub
+    // says where to get them back.
+    assert!(
+        agent.messages().iter().flat_map(|m| m.content.iter()).all(
+            |b| !matches!(b, ContentBlock::ToolResult { content, .. } if content.contains("elided"))
+        ),
+        "history keeps every byte"
+    );
+}
+
+#[test]
+fn a_cold_cache_masks_every_stale_result_now() {
+    let bytes = crate::compact::ARC_STUB_MIN_BYTES + 1;
+    let mut agent = Agent::new(
+        Box::new(FakeProvider::new(vec![])),
+        Arc::new(FakeExecutor::new(ToolOutput::ok("unused"))),
+    );
+    let mut msgs = vec![Message::user("go")];
+    for i in 0..12 {
+        msgs.extend(big_tool_round(&format!("call_{i}"), bytes));
+    }
+    msgs.push(Message::user("status?"));
+    agent.set_messages(msgs);
+
+    // The batch floor is a cache-warmth rule; a caller that knows the cache
+    // is gone ignores it.
+    agent.mask_stale_tool_output();
+    let view = agent.scrubbed_messages();
+    let bodies = tool_result_bodies(&view);
+    // 14 groups (opening user turn + 12 tool rounds + closing user turn), so
+    // the four oldest hold the first three rounds: every one of them goes at
+    // once, not one batch at a time.
+    assert_eq!(
+        bodies
+            .iter()
+            .filter(|b| b.contains("elided from context"))
+            .count(),
+        3,
+        "all stale rounds go at once"
+    );
+    assert!(
+        bodies[3..].iter().all(|b| !b.contains("elided")),
+        "the fresh rounds stay whole"
+    );
+}
+
+#[test]
+fn small_results_and_recent_rounds_are_never_masked() {
+    let mut agent = Agent::new(
+        Box::new(FakeProvider::new(vec![])),
+        Arc::new(FakeExecutor::new(ToolOutput::ok("unused"))),
+    );
+    let mut msgs = vec![Message::user("go")];
+    // 12 stale rounds, but every result is small: below the threshold there
+    // is nothing worth citing and nothing worth losing.
+    for i in 0..14 {
+        msgs.extend(big_tool_round(&format!("call_{i}"), 10));
+    }
+    msgs.push(Message::user("status?"));
+    agent.set_messages(msgs);
+    agent.advance_tool_mask();
+    agent.mask_stale_tool_output();
+    assert!(
+        tool_result_bodies(&agent.scrubbed_messages())
+            .iter()
+            .all(|b| !b.contains("elided")),
+        "a small result is cheaper to keep than to cite"
+    );
+
+    // 10 rounds exactly: nothing has aged out yet.
+    let mut msgs = vec![Message::user("go")];
+    for i in 0..10 {
+        msgs.extend(big_tool_round(
+            &format!("call_{i}"),
+            crate::compact::ARC_STUB_MIN_BYTES + 1,
+        ));
+    }
+    agent.set_messages(msgs);
+    agent.mask_stale_tool_output();
+    assert!(
+        tool_result_bodies(&agent.scrubbed_messages())
+            .iter()
+            .all(|b| !b.contains("elided")),
+        "the tenth round back is still in play"
+    );
+}

@@ -40,15 +40,6 @@ pub fn is_silent_response(text: &str) -> bool {
 /// share this excerpt).
 pub const DELIVERY_EXCERPT_CHARS: usize = 4000;
 
-/// Hermes `_deliver_result` wrapper (header/footer frame): the live-chat
-/// delivery for an `Origin` job. Byte-exact shape — `Cronjob Response:`,
-/// `(job_id:)`, 13 dashes, body, then the stop/manage footer.
-pub fn format_delivery(name: &str, id: &str, body: &str) -> String {
-    format!(
-        "Cronjob Response: {name}\n(job_id: {id})\n-------------\n\n{body}\n\nTo stop or manage this job, send me a new message (e.g. \"stop reminder {name}\")."
-    )
-}
-
 /// Hermes `_cron_mirror_message`: the clean (unwrapped, no header/footer, no
 /// file path) output appended to the origin session transcript as a labelled
 /// `USER` turn so a reply continues in context. `USER`, never assistant —
@@ -61,6 +52,141 @@ pub fn mirror_message(name: &str, body: &str) -> String {
 /// Bounded excerpt of a fire transcript for delivery (mirror + live box).
 pub fn delivery_excerpt(text: &str) -> String {
     text.chars().take(DELIVERY_EXCERPT_CHARS).collect()
+}
+
+/// Plain-text live-chat rendering for hosts with no native cron renderer.
+/// No job id, no dashes, no stop/manage footer, no file path (the path
+/// travels in the JSON `path` field, for logs). A reminder is its stored
+/// text, byte for byte: it was never a model answer, so it gets no framing.
+pub fn format_delivery_plain(name: &str, body: &str, reminder: bool, failed: bool) -> String {
+    if reminder && !failed {
+        return body.to_string();
+    }
+    let title = if failed {
+        format!("{name} failed")
+    } else {
+        name.to_string()
+    };
+    format!("{title}\n\n{}", body.trim())
+}
+
+/// Job name for a reminder added without `--name`: a slug of the EXACT text
+/// ("clean my roo" -> "clean-my-roo"). Never corrected, never paraphrased —
+/// the model that schedules the reminder must not rewrite what the user said.
+pub fn reminder_name(text: &str) -> String {
+    let mut slug = String::new();
+    let mut dash = true; // swallow leading separators
+    for c in text.chars() {
+        if c.is_alphanumeric() {
+            slug.extend(c.to_lowercase());
+            dash = false;
+        } else if !dash {
+            slug.push('-');
+            dash = true;
+        }
+    }
+    let capped: String = slug.chars().take(40).collect();
+    let capped = capped.trim_end_matches('-').to_string();
+    if capped.is_empty() {
+        "reminder".to_string()
+    } else {
+        capped
+    }
+}
+
+/// Mask credentials before a transcript is written to disk or shown in chat.
+/// Exact string values from `<home>/auth.json` first (the operator's real
+/// keys, which no shape test can recognise), then `gray_core::redaction` for
+/// the token shapes it already owns. Paths survive: the transcript is a tool
+/// log, and the redactor only scrubs paths when a secret fired alongside
+/// them.
+pub fn redact_secrets(text: &str, home: &std::path::Path) -> String {
+    let mut out = text.to_string();
+    for secret in known_secrets(home) {
+        out = out.replace(&secret, gray_core::redaction::REDACTED);
+    }
+    let redacted = gray_core::redaction::redact_for_disclosure(&out);
+    if redacted.has_secret() {
+        redacted.into_text()
+    } else {
+        out
+    }
+}
+
+/// Every long, whitespace-free string in `<home>/auth.json`: credential
+/// values and the ids that reference them, longest first so a value that
+/// contains another is replaced whole.
+fn known_secrets(home: &std::path::Path) -> Vec<String> {
+    let Ok(raw) = std::fs::read_to_string(home.join("auth.json")) else {
+        return Vec::new();
+    };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw) else {
+        return Vec::new();
+    };
+    let mut found = Vec::new();
+    collect_strings(&v, &mut found);
+    found.retain(|s| s.chars().count() >= 16 && !s.chars().any(char::is_whitespace));
+    found.sort_by_key(|s| std::cmp::Reverse(s.len()));
+    found.dedup();
+    found
+}
+
+fn collect_strings(v: &serde_json::Value, out: &mut Vec<String>) {
+    match v {
+        serde_json::Value::String(s) => out.push(s.clone()),
+        serde_json::Value::Array(a) => a.iter().for_each(|x| collect_strings(x, out)),
+        serde_json::Value::Object(m) => m.values().for_each(|x| collect_strings(x, out)),
+        _ => {}
+    }
+}
+
+/// One step of the final-text fold: streamed text, or a tool call/result
+/// boundary. Split from `AgentEvent` so the rule is testable without
+/// constructing events.
+enum Piece<'a> {
+    Text(&'a str),
+    Boundary,
+}
+
+/// Everything streamed after the last tool boundary, trimmed. Narration
+/// before a tool call ("let me look around...") and all tool output are
+/// dropped: a cron delivery is the last assistant message, never a transcript.
+fn final_text_of<'a>(pieces: impl Iterator<Item = Piece<'a>>) -> String {
+    let mut text = String::new();
+    for p in pieces {
+        match p {
+            Piece::Text(t) => text.push_str(t),
+            Piece::Boundary => text.clear(),
+        }
+    }
+    text.trim().to_string()
+}
+
+/// The final assistant message of a fire (see [`final_text_of`]).
+pub fn final_assistant_text(events: &[gray_core::event::AgentEvent]) -> String {
+    use gray_core::event::AgentEvent;
+    final_text_of(events.iter().filter_map(|ev| match ev {
+        AgentEvent::TextDelta { delta } => Some(Piece::Text(delta)),
+        AgentEvent::ToolCallStart { .. } | AgentEvent::ToolResult { .. } => Some(Piece::Boundary),
+        _ => None,
+    }))
+}
+
+/// Close any `<untrusted-output>` block a length cap cut open, so the
+/// transcript always carries balanced tags.
+fn close_untrusted(mut s: String) -> String {
+    for (open, close) in [
+        ("<untrusted-output>", "</untrusted-output>"),
+        ("<untrusted_output>", "</untrusted_output>"),
+    ] {
+        let opens = s.matches(open).count();
+        let closes = s.matches(close).count();
+        for _ in closes..opens {
+            s.push('\n');
+            s.push_str(close);
+        }
+    }
+    s
 }
 
 /// Final prompt: optional `## skills` block (exact `<location>` paths, one
@@ -105,7 +231,7 @@ pub fn transcript_text(events: &[gray_core::event::AgentEvent]) -> String {
                 output, is_error, ..
             } => {
                 let tag = if *is_error { "result-err" } else { "result" };
-                let s = output.chars().take(2000).collect::<String>();
+                let s = close_untrusted(output.chars().take(2000).collect::<String>());
                 text.push_str(&format!("[{tag}:{s}]\n"));
             }
             _ => {}
@@ -273,3 +399,7 @@ pub fn write_local_output(
 #[path = "cron_fire_tests.rs"]
 #[cfg(test)]
 mod tests;
+
+#[path = "cron_fire_render_tests.rs"]
+#[cfg(test)]
+mod render_tests;

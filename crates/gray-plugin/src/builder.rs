@@ -45,12 +45,14 @@ impl Plugin for ToolsBasicPlugin {
     fn tools(&self) -> Vec<Arc<dyn Tool>> {
         // T3.2/T3.3 wiring: read/write/edit share one ledger per tools() call
         // (from_plugins calls once per build, so the session tools agree).
+        // `bash` shares it too: the same file read through either surface
+        // dedups against the other one.
         let ledger = Arc::new(gray_tools::FileLedger::new());
         vec![
             Arc::new(gray_tools::ReadTool::new(ledger.clone())),
             Arc::new(gray_tools::WriteTool::new(ledger.clone())),
             Arc::new(gray_tools::EditTool::new(ledger.clone())),
-            Arc::new(gray_tools::BashTool::default()),
+            Arc::new(gray_tools::BashTool::default().with_ledger(ledger.clone())),
         ]
     }
 }
@@ -66,7 +68,9 @@ impl Plugin for ToolsMinimalPlugin {
     }
 
     fn tools(&self) -> Vec<Arc<dyn Tool>> {
-        vec![Arc::new(gray_tools::BashTool::default())]
+        vec![Arc::new(
+            gray_tools::BashTool::default().with_ledger(Arc::new(gray_tools::FileLedger::new())),
+        )]
     }
 }
 
@@ -187,21 +191,28 @@ pub fn from_plugins(plugins: &[Arc<dyn Plugin>]) -> (Registry, Vec<Manifest>) {
     }
     // Lifecycle adoption: one ledger shared by the session tools; the
     // binary's /new + compaction lifecycle acts on the same state via
-    // `current_file_ledger`. ToolsBasicPlugin::tools() already shares one
-    // ledger per build, but that Arc dies with the plugin — rebuild the
-    // tools-basic read/write/edit on the tracked one instead (a
-    // sidecar-owned name is left alone). Fresh per build on purpose: a reused
-    // ledger would leak reads across sessions in multi-session hosts.
+    // `current_file_ledger`. The builtin plugins already share one ledger per
+    // build, but that Arc dies with the plugin — rebuild the builtin read/
+    // write/edit/bash on the tracked one instead (a sidecar-owned name is left
+    // alone; `bash` is the default surface, so its dedup state has to be the
+    // state /new clears and compaction disarms). Fresh per build on purpose: a
+    // reused ledger would leak reads across sessions in multi-session hosts.
     let ledger = Arc::new(gray_tools::FileLedger::new());
     for t in tools.iter_mut() {
         let name = t.def().name.clone();
-        if owners.get(&name).map(|o| o.as_str()) != Some("tools-basic") {
+        if !matches!(
+            owners.get(&name).map(|o| o.as_str()),
+            Some("tools-basic") | Some("tools-minimal")
+        ) {
             continue;
         }
         let fresh: Option<Arc<dyn Tool>> = match name.as_str() {
             "read" => Some(Arc::new(gray_tools::ReadTool::new(ledger.clone()))),
             "write" => Some(Arc::new(gray_tools::WriteTool::new(ledger.clone()))),
             "edit" => Some(Arc::new(gray_tools::EditTool::new(ledger.clone()))),
+            "bash" => Some(Arc::new(
+                gray_tools::BashTool::default().with_ledger(ledger.clone()),
+            )),
             _ => None,
         };
         if let Some(f) = fresh {

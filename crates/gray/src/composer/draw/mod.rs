@@ -10,42 +10,50 @@ use crate::text_width::display_width;
 
 mod widgets;
 
-pub(crate) use widgets::{build_input_box, queued_preview_lines, shimmer_spans, status_dock_h};
+pub(crate) use widgets::{
+    build_input_box, queued_preview_lines, ratchet_seam, shimmer_spans, status_dock_h,
+    transcript_ends_blank,
+};
 
 /// Exact-fit viewport height for the given content, clamped to
 /// `MIN_VIEWPORT_H..=max_h`.
 pub(crate) fn desired_viewport_h(
     status_h: u16,
     queued_h: u16,
-    band_h: u16,
+    live_h: u16,
     box_rows: u16,
     panel_h: u16,
     attach_h: u16,
     max_h: u16,
 ) -> u16 {
-    (status_h + queued_h + band_h + box_rows + panel_h + attach_h + 1).clamp(MIN_VIEWPORT_H, max_h)
+    (status_h + queued_h + live_h + box_rows + panel_h + attach_h + 1).clamp(MIN_VIEWPORT_H, max_h)
 }
 
-/// Latched viewport floor for the frame: the estimate above short-cuts the
-/// dock (`status_h` is re-read inside the frame, where a status can have
-/// arrived since) and any measured overrun pushed the footer gauge past the
-/// viewport bottom — where it was skipped entirely, so the gauge (and the
-/// `+1` pad band below it) flickered while tokens streamed. Grow the viewport
-/// by the same amount the estimate short-cuts, so the measured frame always
+/// Latched viewport floor for the frame: the estimate above short-cuts
+/// dock segments (`status_h` recomputed inside the frame after the seam
+/// latch re-arms, live rows re-wrapped at the frame width), and any
+/// measured overrun pushed the footer gauge past the viewport bottom —
+/// where it was skipped entirely, so the gauge (and the `+1` pad band
+/// below it) flickered while tokens streamed. Grow the viewport by the
+/// same amount the estimate short-cuts, so the measured frame always
 /// fits without moving the viewport's top edge (no input-box bounce).
 pub(crate) fn latched_viewport_floor(
     status_h: u16,
     queued_h: u16,
-    band_h: u16,
+    live_h: u16,
     box_rows: u16,
     attach_h: u16,
     max_h: u16,
 ) -> u16 {
-    // Two frames the estimate can short-cut: the full dock (separator +
-    // status + live slot) and no dock at all (box + footer).
-    let with_dock = status_h + queued_h + band_h + box_rows + attach_h + 1;
-    let no_status = queued_h + band_h + box_rows + attach_h + 1;
-    with_dock.max(no_status).min(max_h)
+    // The three frames the seam latch can produce mid-turn, given the
+    // estimate short-cut `status_h` to 0: full dock (seam + status +
+    // breath), the dock without seam, and no dock at all (box + footer).
+    let with_dock = status_h + queued_h + live_h + box_rows + attach_h + 1;
+    let no_status = queued_h + live_h + box_rows + attach_h + 1;
+    // A short-cut live reserve: measured live rows push the frame past
+    // the estimate's box + footer floor.
+    let live_overrun = live_h + box_rows + attach_h + 1;
+    with_dock.max(no_status).max(live_overrun).min(max_h)
 }
 
 /// Upper bound for the inline viewport.
@@ -108,18 +116,13 @@ pub(crate) fn trim_to_allowance(counts: &mut [u16], allowance: u16) {
 /// input — i.e. *before* the turn that a bare Enter would continue is
 /// submitted — so mid-turn it is stale: the resume it advertises is already
 /// streaming, and the box kept painting "Please continue…" over the live
-/// turn. The status pill is the other half of the same rule: a hint under a
-/// live "⬡ Working…" line reads as "working AND waiting for Enter", which is
-/// the one thing it must never say. The hint belongs to the idle composer
-/// after an interrupt or an error, and to nothing else. Pure for
-/// testability (`Tui::new` needs a TTY).
+/// turn. Pure for testability (`Tui::new` needs a TTY).
 pub(crate) fn continue_ghost(
     allow_empty_submit: bool,
     is_task_running: bool,
-    has_status: bool,
     text: &str,
 ) -> Option<&'static str> {
-    (allow_empty_submit && !is_task_running && !has_status && text.trim().is_empty())
+    (allow_empty_submit && !is_task_running && text.trim().is_empty())
         .then_some(crate::repl::CONTINUE_GHOST)
 }
 
@@ -142,6 +145,11 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
     if tui.modal_open {
         return Ok(());
     }
+    // Inside `Tui::atomic` the repaint is coalesced: the outermost batch
+    // draws once, in the same synchronized update as its scrollback inserts.
+    if tui.batch_depth > 0 {
+        return Ok(());
+    }
     let (cols, rows) = crossterm::terminal::size().unwrap_or((80, 24));
     let screen_size = ratatui::layout::Size::new(cols, rows);
     let w = cols as usize;
@@ -149,26 +157,28 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
     let text = tui.textarea.text().to_string();
     let cursor = tui.textarea.cursor().min(text.len());
     // Ghost resume hint in the empty box while bare Enter would continue.
-    let ghost = continue_ghost(
-        tui.allow_empty_submit,
-        tui.is_task_running,
-        tui.status.is_some(),
-        &text,
-    );
+    let ghost = continue_ghost(tui.allow_empty_submit, tui.is_task_running, &text);
     let ibox = build_input_box(&text, cursor, w, ghost);
     let box_h = ibox.lines.len().max(1) as u16;
     // Attachments row.
     let attach_h: u16 = u16::from(!tui.attachments.is_empty());
-    // Separator + status + live-card slot. Fixed height while a dock exists
-    // (see `status_dock_h`): the band is the inline viewport's top edge, so
-    // a height that follows the live cards moves the input box on every tool
-    // call and leaves the row it vacated blank in the transcript.
-    let live_headers: Vec<Line<'static>> = tui.live_tool_rows();
-    let status_h: u16 = status_dock_h(tui.status.is_some() || !live_headers.is_empty());
-    // Row offsets inside the dock: status below the separator, the live card
-    // in the slot below it.
-    let seam_h: u16 = u16::from(status_h > 0);
-    let live_slot_y: u16 = status_h.saturating_sub(1);
+    // Seam (only if scrollback didn't already end blank) + shimmer status
+    // text + one bare breathing row below it. Latched: a per-frame seam
+    // resized the viewport under the input box on every streamed chunk.
+    tui.dock_seam = ratchet_seam(
+        tui.dock_seam,
+        tui.status.is_some(),
+        !transcript_ends_blank(&tui.transcript),
+    );
+    let needs_seam = tui.dock_seam;
+    let status_h: u16 = status_dock_h(tui.status.is_some(), needs_seam);
+    // Row offset of the status text inside its dock: below the seam when
+    // one was reserved, else the very top of the viewport.
+    let seam_h: u16 = if status_h > 0 {
+        u16::from(needs_seam)
+    } else {
+        0
+    };
 
     // Exact-fit viewport with in-place resizing (codex parity):
     // Grow and shrink are applied directly to the terminal's viewport area without
@@ -188,8 +198,20 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
         .map(|m| m.rows.len().min(12) as u16)
         .unwrap_or(0);
     let box_rows_est: u16 = box_h;
+    // Live tool cards above the input box (pi pending cards): measured,
+    // not estimated — the rows are already wrapped for `w`.
+    let live_est: u16 = tui
+        .live_tool_rows()
+        .iter()
+        .map(|l| {
+            crate::composer::transcript::wrap_styled_line(l.clone(), w.saturating_sub(4).max(1))
+                .len()
+                .max(1) as u16
+        })
+        .sum::<u16>()
+        .saturating_add(u16::from(tui.live_tool_overflow() > 0));
     let widget_budget = rows
-        .saturating_sub(box_h + status_h + queued_est + panel_est + attach_h + 2)
+        .saturating_sub(box_h + status_h + queued_est + live_est + panel_est + attach_h + 2)
         .min(12);
     let mut widget_rows = tui.plugin_widget.rows(widget_budget as usize);
     let max_viewport_h = viewport_cap(rows);
@@ -201,13 +223,19 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
     // cap is measured against the band cap (not the screen) because that is
     // all the viewport can ever be.
     let mut band_allowance = band_budget(max_viewport_h, status_h + box_h + attach_h + 1);
-    let mut reserved = [ask_est, queued_est, widget_rows.len() as u16];
+    // A cut card set still needs its "… +N more" row.
+    let reserve_overflow_row = tui.live_tool_overflow() > 0 && band_allowance > 0;
+    if reserve_overflow_row {
+        band_allowance -= 1;
+    }
+    let mut reserved = [ask_est, queued_est, widget_rows.len() as u16, live_est];
     trim_to_allowance(&mut reserved, band_allowance);
-    let (ask_est, queued_est, widget_h) = (reserved[0], reserved[1], reserved[2]);
+    let (ask_est, queued_est, widget_h, live_est) =
+        (reserved[0], reserved[1], reserved[2], reserved[3]);
     let desired = desired_viewport_h(
         status_h,
         queued_est,
-        widget_h + ask_est,
+        live_est + widget_h + ask_est,
         box_rows_est,
         panel_est,
         attach_h,
@@ -223,7 +251,7 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
     let desired = desired.max(latched_viewport_floor(
         status_h,
         queued_est,
-        widget_h + ask_est,
+        live_est + widget_h + ask_est,
         box_rows_est,
         attach_h,
         max_viewport_h,
@@ -232,26 +260,22 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
     // frankentui lesson: synchronized-output bracketing (DEC2026) — one atomic
     // present per frame so the compositor never shows a torn frame.
     // Terminals without support ignore the sequence.
-    crossterm::execute!(
-        std::io::stdout(),
-        crossterm::terminal::BeginSynchronizedUpdate
-    )?;
+    tui.begin_sync();
     // Viewport geometry is a precondition for the frame: a swallowed failure
     // would commit a frame against stale geometry (audit 24.01). Close the
     // synchronized-update bracket before bailing out.
     if let Err(e) = tui.terminal.set_viewport_height(desired, screen_size) {
-        let _ = crossterm::execute!(
-            std::io::stdout(),
-            crossterm::terminal::EndSynchronizedUpdate
-        );
+        tui.end_sync();
         return Err(e.into());
     }
     tui.viewport_h = desired;
 
     // Hoisted for the draw closure (borrows `tui` immutably inside).
-    // Live tool header hoisted as an owned row — `live_tool_rows` borrows
+    // Live tool headers hoisted as owned rows — `live_tool_rows` borrows
     // all of `tui`, which would collide with `terminal.draw`'s mutable
     // borrow; wrapping happens inside at the frame width.
+    let live_headers: Vec<Line<'static>> = tui.live_tool_rows();
+    let live_overflow = tui.live_tool_overflow();
     let ask_modal: Option<super::AskModal> = tui.ask_modal.clone();
     let compaction_elapsed = tui.compaction_elapsed();
     let turn_started = tui.turn_started;
@@ -288,14 +312,13 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
         let status_y = area.y;
         // Queued preview sits between status and input.
         let mut queued_preview: Vec<Line<'static>> = queued_preview_lines(&tui.queued_inputs, w);
-        // The live card (pi pending card): wrapped at the frame width, then
-        // cut to the dock's single slot row so the band keeps its height.
+        // Live tool cards (pi pending cards): wrapped at the frame width
+        // like every other viewport row; `live_h` reserves their space.
         let mut live_rows: Vec<Line<'static>> = live_headers
             .into_iter()
             .flat_map(|l| {
                 crate::composer::transcript::wrap_styled_line(l, w.saturating_sub(4).max(1))
             })
-            .take(1)
             .collect();
         // Ask modal rows (pre-wrapped at frame width, capped like live rows).
         let mut ask_rows: Vec<Line<'static>> = ask_modal
@@ -338,11 +361,15 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
             ask_rows.len() as u16,
             queued_preview.len() as u16,
             widget_rows.len() as u16,
+            live_rows.len() as u16,
         ];
         trim_to_allowance(&mut rows_h, band_allowance);
         ask_rows.truncate(rows_h[0] as usize);
         queued_preview.truncate(rows_h[1] as usize);
         widget_rows.truncate(rows_h[2] as usize);
+        live_rows.truncate(rows_h[3] as usize);
+        let show_live_overflow = reserve_overflow_row;
+        let live_h = rows_h[3] + u16::from(show_live_overflow);
         let queued_h = rows_h[1];
         let ask_h = rows_h[0];
         let widget_h = rows_h[2];
@@ -350,7 +377,7 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
         // (status, queued, input, attachments, footer) are placed.
         let avail = area
             .height
-            .saturating_sub(status_h + queued_h + widget_h + box_h + attach_h + 1);
+            .saturating_sub(status_h + queued_h + live_h + widget_h + box_h + attach_h + 1);
         let need = PANEL_ROWS as u16;
         let panel_cap = need.min(avail).max((PANEL_ROWS as u16).min(avail));
         let visible_count = if tui.matches.is_empty() {
@@ -360,7 +387,7 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
         };
         let panel_h = visible_count as u16;
         let box_rows = box_h;
-        let ask_y = status_y + status_h + queued_h;
+        let ask_y = status_y + status_h + queued_h + live_h;
         let widget_y = ask_y + ask_h;
         let box_y = widget_y + widget_h;
         let panel_y = box_y + box_rows;
@@ -369,7 +396,16 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
 
         if let Some((started, label)) = &tui.status {
             let label_text = format!(" ⬡ {label}\u{2026}");
-            let mut spans = shimmer_spans(&label_text, started.elapsed());
+            // Sweep phase rides the turn clock (or the compaction clock),
+            // never the status stamp: `set_status` re-stamps it on every
+            // label change, and `Preparing tool: …` changes per streamed
+            // argument token — the highlight band snapped back to the
+            // start each time (flicker on every tool call).
+            let elapsed = match compaction_elapsed {
+                Some(d) => d,
+                None => super::pill_elapsed(turn_started, *started, is_task_running),
+            };
+            let mut spans = shimmer_spans(&label_text, elapsed);
             // Turn-anchored clock (tool re-stamps never restart it) plus
             // the live output counter: turn-level outputs plus the streamed
             // per-chunk estimate, exact on every report. Live TPS rides
@@ -381,10 +417,6 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
             // restored after (`compaction_status_survives_follow_up`).
             // Live TPS needs the turn clock too, so it hides while
             // compacting (that clock isn't turn time).
-            let elapsed = match compaction_elapsed {
-                Some(d) => d,
-                None => super::pill_elapsed(turn_started, *started, is_task_running),
-            };
             let tps_suffix = match compaction_elapsed {
                 Some(_) => String::new(),
                 None => super::live_tps_suffix(pill_turn_output, pill_streamed, tui.turn_stream_ms),
@@ -411,10 +443,7 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
                 Rect::new(area.x, y, area.width, 1),
             );
         }
-        // The live card paints into the dock's own slot row (below the
-        // status line, above the input box) — a fixed row, so showing or
-        // hiding a card never moves the band's top edge.
-        let live_y = status_y + live_slot_y;
+        let live_y = status_y + status_h + queued_h;
         for (i, line) in live_rows.iter().enumerate() {
             let y = live_y + i as u16;
             if y < area.y || y >= area.y + area.height {
@@ -424,6 +453,21 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
                 live_tool_row(line.clone()),
                 Rect::new(area.x, y, area.width, 1),
             );
+        }
+        if show_live_overflow {
+            let y = live_y + live_rows.len() as u16;
+            if y >= area.y && y < area.y + area.height {
+                frame.render_widget(
+                    Paragraph::new(Line::from(vec![Span::styled(
+                        format!("    … +{live_overflow} more"),
+                        Style::default()
+                            .fg(crate::theme::theme().text_muted)
+                            .add_modifier(Modifier::DIM)
+                            .add_modifier(Modifier::ITALIC),
+                    )])),
+                    Rect::new(area.x, y, area.width, 1),
+                );
+            }
         }
         for (i, line) in ask_rows.iter().enumerate() {
             let y = ask_y + i as u16;
@@ -741,12 +785,8 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
     } else {
         Ok(())
     };
-    let ended = crossterm::execute!(
-        std::io::stdout(),
-        crossterm::terminal::EndSynchronizedUpdate
-    );
+    tui.end_sync();
     res?;
-    ended?;
     background_result?;
     Ok(())
 }

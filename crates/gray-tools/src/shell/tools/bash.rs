@@ -3,7 +3,7 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
@@ -21,28 +21,41 @@ use crate::shell::fence::fence;
 use crate::shell::kill::term_then_kill;
 use crate::shell::pump::{Pump, now_grindmill};
 use crate::shell::spawn::spawn;
-use crate::shell::view::{format_elapsed, header, middle_out, resume_hint};
+use crate::shell::view::{
+    format_elapsed, header, middle_out, resume_hint, squeeze as squeeze_view,
+};
+use gray_core::spill::{self, MeterEvent};
+use gray_core::squeeze::squeeze;
 
-/// Bytes served by one `Read more` recovery command. The inline budget is
-/// 48 KiB, so 16 KiB pages need a third of the round trips a 4 KiB page did.
-const READ_CHUNK: u64 = 16 * 1024;
+/// Bytes served by one `Read more` recovery command. A page has to fit the
+/// head sample verbatim, or paging buys nothing: the page is truncated again
+/// on its way back in and its middle is elided with a fresh hint. A round trip
+/// is the expensive part here, not the bytes.
+const READ_CHUNK: u64 = 4 * 1024;
 use crate::{fail, finish, get_opt_bool, get_opt_u64, get_str, resolve_path};
 
 mod jobs;
+mod read_dedup;
 
 impl BashTool {
     /// Completion-wake for the agent loop's turn end: block until any
     /// unfinished background job settles (bounded), so a headless run that
     /// backgrounded work holds the turn instead of exiting and killing the
-    /// job. Resolves false when the timeout elapsed / cancel fired / no jobs.
-    /// Owned and `'static` (it holds the job receivers), so the executor
-    /// seam can return it as a `BoxFuture`.
-    pub fn any_job_waiter(
+    /// job. Returns false when the timeout elapsed / cancel fired / no jobs.
+    pub async fn wait_any_job(&self, ctx: &ToolContext, timeout: Duration) -> bool {
+        self.jobs.wait_any(ctx, timeout).await
+    }
+
+    /// The same wait as an owned future, for the executor's turn-end hook
+    /// (which cannot borrow the tool past the call).
+    pub fn wait_any_job_fut(
         &self,
         ctx: &ToolContext,
         timeout: Duration,
-    ) -> futures::future::BoxFuture<'static, bool> {
-        self.jobs.any_waiter(ctx, timeout)
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send>> {
+        let jobs = self.jobs.clone();
+        let ctx = ctx.clone();
+        Box::pin(async move { jobs.wait_any(&ctx, timeout).await })
     }
 
     /// Whether any unfinished background job belongs to this session.
@@ -54,7 +67,9 @@ impl BashTool {
 /// One registry-owned job collection. Dropping the tool cancels its jobs.
 #[derive(Default)]
 pub struct BashTool {
-    jobs: jobs::Jobs,
+    /// Shared so a completion-wake future can be `'static`: the executor
+    /// holds `Arc<dyn Tool>` and the turn-end wait outlives the borrow.
+    jobs: std::sync::Arc<jobs::Jobs>,
     /// Per-session working directory. Every command is a fresh `sh -c`, so a
     /// `cd` would otherwise be forgotten the moment it ran; the shell reports
     /// its final directory and the next command in the same session starts
@@ -65,9 +80,21 @@ pub struct BashTool {
     /// hands over a different context cwd is being explicit, so the stale
     /// record is dropped rather than silently overriding it.
     cwd: Mutex<BTreeMap<String, (PathBuf, PathBuf)>>,
+    /// Session read ledger, shared with `read`/`write`/`edit` when the host
+    /// builds them together (see [`BashTool::with_ledger`]). `None` on the
+    /// `Default` a lone tool gets: no ledger, no dedup.
+    ledger: Option<Arc<crate::ledger::FileLedger>>,
 }
 
 impl BashTool {
+    /// Shares the session's read ledger, so a file read through `read` and
+    /// one read through `cat` dedup against each other, and `/new` +
+    /// compaction's ledger lifecycle covers this tool's entries too.
+    pub fn with_ledger(mut self, ledger: Arc<crate::ledger::FileLedger>) -> Self {
+        self.ledger = Some(ledger);
+        self
+    }
+
     /// Where this session's commands run. Falls back to the context cwd when
     /// the record belongs to a different base, or when the recorded directory
     /// has since been deleted, so neither a moved session nor a vanished
@@ -261,7 +288,22 @@ impl Tool for BashTool {
                 )
                 .await;
         }
+        // Read dedup: a `cat`/`sed`/`head`/`tail` of a file already shown
+        // whole and unchanged since answers with a stub instead of the bytes
+        // (once — see `read_dedup`). Inline lane only: a backgrounded read
+        // neither stubs nor records, so job semantics stay as they were.
+        let dedup = self
+            .ledger
+            .as_deref()
+            .and_then(|ledger| read_dedup::plain_read(&command, &cwd).map(|r| (ledger, r)));
+        let dedup_on = read_dedup::enabled();
+        if let Some((ledger, read)) = &dedup
+            && let Some(hit) = read_dedup::check(ledger, read, dedup_on)
+        {
+            return hit;
+        }
         let log_path = log_path(ctx);
+        let logged = log_path.clone();
         let start = Instant::now();
         // A `gray view` the claim refused (compound, flags, glob) runs as a
         // plain shell command and prints `viewed …` with nothing attached:
@@ -308,6 +350,18 @@ impl Tool for BashTool {
         // Whether it succeeded, failed or was killed: a `cd` that ran is a `cd`
         // that ran. A killed command never writes the report, so its cwd stands.
         self.adopt_reported_cwd(ctx, &cwd_report);
+        // Arm the next dedup from what this run actually showed. A settled,
+        // complete result is the only thing worth citing: a timeout, a
+        // cancellation, a silent hand-off or a truncated pump drain all
+        // prefix the body with a note instead of a header, and their log is
+        // part of an unfinished read.
+        if let Some((ledger, read)) = &dedup
+            && !out.is_error
+            && out.content.starts_with("exit ")
+            && let Ok(meta) = std::fs::metadata(&logged)
+        {
+            read_dedup::record(ledger, read, meta.len());
+        }
         if let Some(note) = unattached {
             out.content.push('\n');
             out.content.push_str(&note);
@@ -430,7 +484,8 @@ async fn search_command(
     cwd: &Path,
     cancel: &tokio_util::sync::CancellationToken,
 ) -> Option<ToolOutput> {
-    let mut parts = command.split_whitespace();
+    let words = search_words(command)?;
+    let mut parts = words.into_iter();
     if parts.next()? != "gray" {
         return None;
     }
@@ -438,23 +493,27 @@ async fn search_command(
     if sub != "find" && sub != "grep" {
         return None;
     }
-    let rest: Vec<String> = parts.map(str::to_string).collect();
+    let rest: Vec<String> = parts.collect();
     let mut positional: Vec<String> = Vec::new();
     let (mut limit, mut glob, mut context) = (None, None, None);
     let (mut ignore_case, mut literal) = (false, false);
     let mut i = 0;
     while i < rest.len() {
         let arg = rest[i].as_str();
-        // A flag whose value is missing, or an unknown flag, falls through to
-        // the shell: it owns the usage error, and it names the real argv.
-        let take = |name: &str| -> Option<String> {
-            rest.get(i + 1)
-                .cloned()
-                .or_else(|| arg.strip_prefix(&format!("{name}=")).map(str::to_string))
+        // `--name=value` carries its own value; bare `--name` consumes the
+        // next word. A flag whose value is missing, or an unknown flag, falls
+        // through to the shell: it owns the usage error, and it names the
+        // real argv.
+        let mut take = |name: &str| -> Option<String> {
+            if let Some(v) = arg.strip_prefix(name).and_then(|r| r.strip_prefix('=')) {
+                return Some(v.to_string());
+            }
+            i += 1;
+            rest.get(i).cloned()
         };
         match arg {
-            a if a == "--ignore-case" || a == "-i" => ignore_case = true,
-            a if a == "--literal" || a == "-F" => literal = true,
+            "--ignore-case" | "-i" => ignore_case = true,
+            "--literal" | "-F" => literal = true,
             a if a == "--limit" || a.starts_with("--limit=") => {
                 limit = Some(take("--limit")?.parse().ok()?)
             }
@@ -493,6 +552,72 @@ async fn search_command(
         crate::search_cmd::grep(&args, &ctx).await
     };
     Some(finish(text))
+}
+
+/// Splits a `gray find` / `gray grep` command line into words the way the
+/// shell would for the simple cases: whitespace separates, `'…'` is literal,
+/// `"…"` and `\` escape. Bare `*` / `?` stay in the word, since the claimed
+/// search reads them as its own glob. None when the shell would do more than
+/// split — pipes, redirects, separators, substitution, an unclosed quote — so
+/// the command falls through to a real shell instead of being half-claimed.
+fn search_words(command: &str) -> Option<Vec<String>> {
+    let mut words = Vec::new();
+    let mut word = String::new();
+    let mut in_word = false;
+    let mut chars = command.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            c if c.is_whitespace() => {
+                if in_word {
+                    words.push(std::mem::take(&mut word));
+                    in_word = false;
+                }
+            }
+            '\'' => {
+                in_word = true;
+                loop {
+                    match chars.next()? {
+                        '\'' => break,
+                        c => word.push(c),
+                    }
+                }
+            }
+            '"' => {
+                in_word = true;
+                loop {
+                    match chars.next()? {
+                        '"' => break,
+                        '$' | '`' => return None,
+                        '\\' => match chars.next()? {
+                            c @ ('"' | '\\' | '$' | '`') => word.push(c),
+                            '\n' => {}
+                            c => {
+                                word.push('\\');
+                                word.push(c);
+                            }
+                        },
+                        c => word.push(c),
+                    }
+                }
+            }
+            '\\' => {
+                in_word = true;
+                match chars.next()? {
+                    '\n' => {}
+                    c => word.push(c),
+                }
+            }
+            '|' | '&' | ';' | '<' | '>' | '$' | '`' | '(' | ')' => return None,
+            c => {
+                in_word = true;
+                word.push(c);
+            }
+        }
+    }
+    if in_word {
+        words.push(word);
+    }
+    Some(words)
 }
 
 fn image_command(command: &str, cwd: &Path) -> Option<ToolOutput> {
@@ -1300,12 +1425,45 @@ fn finish_inline(
 ) -> ToolOutput {
     let elapsed = start.elapsed();
     let report = exit_report(status, command);
-    let view = build_view(log_path, summary);
+    let mut view = build_view(log_path, summary);
+    // Kind-aware compression, after the window is chosen: `view`'s line
+    // numbers (`shown_lines`, `omitted_lines`) describe the window in the
+    // on-disk log, and every paging hint below is derived from them, so they
+    // have to stay anchored to the log rather than to a squeezed copy of it.
+    // Squeezing the body only changes how much of that window is displayed.
+    // Color and repeat runs go first (the log on disk keeps every byte, so
+    // `dd`/`sed` paging still lands on the text this body was cut from), so
+    // the kind rules match plain lines.
+    view.body = squeeze_view(&view.body);
+    let squeezed = squeeze(&view.body, command);
+    let squeeze_note = squeezed.squeezed().then(|| {
+        spill::record(MeterEvent {
+            ts: spill::now_millis(),
+            rule: squeezed.rule.to_string(),
+            raw: squeezed.raw_bytes as u64,
+            sent: squeezed.sent_bytes as u64,
+        });
+        format!(
+            "squeezed by {} · {} → {}",
+            squeezed.rule,
+            spill::fmt_bytes(squeezed.raw_bytes),
+            spill::fmt_bytes(squeezed.sent_bytes)
+        )
+    });
+    if squeeze_note.is_some() {
+        view.body = squeezed.text.clone();
+    }
     let head = header(&report, Some(&view), elapsed, log_path);
     let mut out = match first_line {
         Some(first) => format!("{first}\n{head}"),
         None => head,
     };
+    // Disclosure before the fence: a body that is shorter than the log is a
+    // statement about the bytes, and the model has to be able to see it.
+    if let Some(note) = &squeeze_note {
+        out.push('\n');
+        out.push_str(note);
+    }
     if !view.body.is_empty() {
         out.push('\n');
         out.push_str(&fence(&view.body));

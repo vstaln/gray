@@ -13,29 +13,18 @@ fn row_text(l: &Line<'_>) -> String {
     l.spans.iter().map(|s| s.content.as_ref()).collect()
 }
 
-/// The dock's live slot is one fixed row: the band must not change height
-/// when a tool starts or ends (that resize is what hopped the input box and
-/// left a blank row in the transcript). Extra cards fold into a `+N` suffix.
 #[test]
-fn live_rows_are_one_row_and_fold_the_rest() {
+fn live_rows_preserve_order_and_cap_at_three() {
     let tools: Vec<LiveTool> = (0..5)
         .map(|i| live(&format!("t{i}"), &format!("tool {i}"), false))
         .collect();
     let rows = live_tool_rows(&tools, Duration::ZERO);
-    assert_eq!(rows.len(), 1, "one dock slot row, whatever runs");
-    assert_eq!(row_text(&rows[0]), "tool 0 +4 more");
-    assert_eq!(
-        row_text(&live_tool_rows(&tools[..1], Duration::ZERO)[0]),
-        "tool 0"
-    );
-    assert_eq!(
-        row_text(&live_tool_rows(&tools[..3], Duration::ZERO)[0]),
-        "tool 0 +2 more"
-    );
-    assert!(
-        live_tool_rows(&[], Duration::ZERO).is_empty(),
-        "no live card, no row"
-    );
+    assert_eq!(rows.len(), 3, "cap mirrors the queued preview");
+    assert_eq!(row_text(&rows[0]), "tool 0");
+    assert_eq!(row_text(&rows[2]), "tool 2");
+    assert_eq!(live_tool_overflow(tools.len()), 2);
+    assert_eq!(live_tool_overflow(3), 0);
+    assert_eq!(live_tool_overflow(0), 0);
 }
 
 fn bash_live(command: &str, running: bool) -> LiveTool {
@@ -81,8 +70,8 @@ fn live_rows_update_in_place_without_reorder() {
         slot.running = true;
     }
     let rows = live_tool_rows(&tools, Duration::ZERO);
-    assert_eq!(rows.len(), 1, "the dock slot is a single row");
-    assert_eq!(row_text(&rows[0]), "Running new +1 more");
+    assert_eq!(row_text(&rows[0]), "Running new");
+    assert_eq!(row_text(&rows[1]), "bee");
 }
 
 #[test]

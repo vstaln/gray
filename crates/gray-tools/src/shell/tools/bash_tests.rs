@@ -1027,6 +1027,11 @@ async fn search_command_leaves_the_shell_its_own() {
         "gray grep --help",
         "find . -name '*.txt'",
         "rg needle",
+        "gray grep needle;touch marker",
+        "gray grep needle && echo done",
+        "gray grep \"$(whoami)\"",
+        "gray grep 'unclosed",
+        "gray grep --limit",
     ] {
         assert!(
             search_command(cmd, dir.path(), &CancellationToken::new())
@@ -1035,6 +1040,61 @@ async fn search_command_leaves_the_shell_its_own() {
             "must fall through to the shell: {cmd}"
         );
     }
+}
+
+#[test]
+fn search_words_splits_like_the_shell() {
+    let w = |s: &str| search_words(s).map(|v| v.join("|"));
+    assert_eq!(
+        w("gray grep 'TODO' src").as_deref(),
+        Some("gray|grep|TODO|src")
+    );
+    assert_eq!(
+        w("gray grep \"fn main\"").as_deref(),
+        Some("gray|grep|fn main")
+    );
+    assert_eq!(
+        w("gray grep fn\\ main").as_deref(),
+        Some("gray|grep|fn main")
+    );
+    assert_eq!(w("gray find *.txt").as_deref(), Some("gray|find|*.txt"));
+    assert_eq!(w("gray grep 'a|b'").as_deref(), Some("gray|grep|a|b"));
+    assert_eq!(w("gray grep a|b"), None);
+}
+
+#[tokio::test]
+async fn search_command_reads_flag_values_once() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(dir.path().join("src")).unwrap();
+    std::fs::write(dir.path().join("src/a.rs"), "fn main() {}\n").unwrap();
+    std::fs::write(dir.path().join("src/b.txt"), "fn main() {}\n").unwrap();
+    let run = |cmd: &'static str| {
+        let d = dir.path().to_path_buf();
+        async move {
+            search_command(cmd, &d, &CancellationToken::new())
+                .await
+                .unwrap_or_else(|| panic!("must be claimed: {cmd}"))
+                .content
+        }
+    };
+
+    // A quoted pattern keeps its space and loses its quotes.
+    let out = run("gray grep 'fn main' src").await;
+    assert!(out.contains("a.rs:1: fn main"), "{out}");
+
+    // `--glob=VALUE` takes its own value, not the next word.
+    let out = run("gray grep --glob=*.rs main src").await;
+    assert!(out.contains("a.rs"), "{out}");
+    assert!(!out.contains("b.txt"), "glob must hold: {out}");
+
+    // `--glob VALUE` consumes the next word, so it is not also the pattern.
+    let out = run("gray grep --glob *.rs main src").await;
+    assert!(out.contains("a.rs"), "{out}");
+    assert!(!out.contains("b.txt"), "glob must hold: {out}");
+
+    // `--limit N` must not leave N behind as the pattern.
+    let out = run("gray grep --limit 5 main src").await;
+    assert!(out.contains("a.rs:1: fn main"), "{out}");
 }
 
 #[test]
@@ -1115,7 +1175,7 @@ async fn silent_past_bound_is_handed_to_a_job_not_killed() {
         crate::shell::kill::GroupGuard::new(pgid),
         Some(&tool.jobs),
         Duration::from_secs(1),
-        Duration::ZERO, // auto-yield off: the stall arm is what stops this call
+        Duration::ZERO,
         None,
     )
     .await;
@@ -1186,4 +1246,175 @@ async fn silent_past_bound_is_handed_to_a_job_not_killed() {
     if let Some(out) = final_out {
         assert!(out.content.contains("cancelled"), "{}", out.content);
     }
+}
+
+/// Unix-only: the Windows runner resolves a temp path to a different
+/// spelling (8.3 short name) between calls, so the ledger key never
+/// matches and the repeat is not stubbed. The feature is Linux/macOS
+/// today; revisit when the Windows resolver spelling is stable.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_repeated_cat_is_stubbed_once_through_the_tool() {
+    // The wiring, not just the helper: the ledger lives on the tool, the stub
+    // replaces the whole result, and the arm is consumed.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file = dir.path().join("a.txt");
+    std::fs::write(&file, "alpha\nbeta\ngamma\n").expect("write");
+    let ctx = ctx_for(&sess("dedup"));
+    let tool = BashTool::default().with_ledger(Arc::new(crate::ledger::FileLedger::new()));
+    // Forward slashes: the command parser eats a bare Windows backslash path.
+    let arg = file.display().to_string().replace('\\', "/");
+    let cmd = json!({"command": format!("cat {arg}")});
+
+    let first = tool.execute(&ctx, cmd.clone()).await;
+    assert!(
+        body(&first.content).contains("gamma"),
+        "the first read is whole: {}",
+        first.content
+    );
+    let second = tool.execute(&ctx, cmd.clone()).await;
+    assert!(
+        !body(&second.content).contains("gamma"),
+        "the repeat is stubbed: {}",
+        second.content
+    );
+    assert!(
+        second
+            .content
+            .contains("unchanged since your previous read"),
+        "{}",
+        second.content
+    );
+    let third = tool.execute(&ctx, cmd).await;
+    assert!(
+        body(&third.content).contains("gamma"),
+        "consume-on-hit: the third read runs: {}",
+        third.content
+    );
+}
+
+/// Unix-only: the Windows runner resolves a temp path to a different
+/// spelling (8.3 short name) between calls, so the ledger key never
+/// matches and the repeat is not stubbed. The feature is Linux/macOS
+/// today; revisit when the Windows resolver spelling is stable.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_tool_without_a_ledger_never_stubs() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file = dir.path().join("a.txt");
+    std::fs::write(&file, "alpha\n").expect("write");
+    let ctx = ctx_for(&sess("noledger"));
+    let tool = BashTool::default();
+    // Forward slashes: the command parser eats a bare Windows backslash path.
+    let arg = file.display().to_string().replace('\\', "/");
+    let cmd = json!({"command": format!("cat {arg}")});
+    for _ in 0..2 {
+        let out = tool.execute(&ctx, cmd.clone()).await;
+        assert!(body(&out.content).contains("alpha"), "{}", out.content);
+    }
+}
+
+/// PATH and `$GRAY_HOME` are process-global; these tests change both.
+#[cfg(unix)]
+static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// A `cargo` on PATH that prints a build log instead of building: 400
+/// progress lines, one error, one summary — the shape the cargo rule exists
+/// for, without the cost of a real 400-crate build.
+#[cfg(unix)]
+fn fake_cargo(bin: &std::path::Path) {
+    std::fs::create_dir_all(bin).expect("bin dir");
+    let script = bin.join("cargo");
+    std::fs::write(
+        &script,
+        concat!(
+            "#!/bin/sh\ni=0\n",
+            "while [ $i -lt 400 ]; do echo \"   Compiling crate-$i v0.1.0\"; i=$((i+1)); done\n",
+            "echo 'error[E0308]: mismatched types'\n",
+            "echo '    Finished dev in 42.19s'\n",
+        ),
+    )
+    .expect("write fake cargo");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    }
+}
+
+/// Unix-only: the fake `cargo` is a `#!/bin/sh` script joined onto PATH
+/// with `:`, neither of which the Windows runner honors.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_noisy_command_is_squeezed_and_its_log_keeps_everything() {
+    // The whole contract in one run: what enters the context shrinks and says
+    // so, and the raw log the shell already writes is untouched, so the
+    // squeeze costs the model nothing it cannot grep back.
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = tempfile::tempdir().expect("tempdir");
+    let home = dir.path().join("home");
+    let bin = dir.path().join("bin");
+    fake_cargo(&bin);
+    let prev_home = std::env::var("GRAY_HOME").ok();
+    let prev_path = std::env::var("PATH").ok();
+    unsafe {
+        std::env::set_var("GRAY_HOME", &home);
+        std::env::set_var(
+            "PATH",
+            format!(
+                "{}:{}",
+                bin.display(),
+                prev_path.clone().unwrap_or_default()
+            ),
+        );
+    }
+    let session = sess("squeeze");
+    let ctx = ctx_for(&session);
+    let r = BashTool::default()
+        .execute(&ctx, json!({"command": "cargo build"}))
+        .await;
+    unsafe {
+        match prev_home {
+            Some(v) => std::env::set_var("GRAY_HOME", v),
+            None => std::env::remove_var("GRAY_HOME"),
+        }
+        match prev_path {
+            Some(v) => std::env::set_var("PATH", v),
+            None => std::env::remove_var("PATH"),
+        }
+    }
+
+    assert!(!r.is_error, "{}", r.content);
+    assert!(
+        r.content.contains("squeezed by cargo"),
+        "the squeeze must be disclosed: {}",
+        r.content
+    );
+    assert!(
+        r.content.contains("progress ×400"),
+        "400 lines must count as one: {}",
+        r.content
+    );
+    // The payload survives compression untouched.
+    assert!(r.content.contains("error[E0308]"), "{}", r.content);
+    assert!(r.content.contains("Finished dev"), "{}", r.content);
+
+    // …and the log still holds every line, so `grep` on it recovers the rest.
+    let log_dir = home.join("shell").join(&session);
+    let log: Vec<_> = std::fs::read_dir(&log_dir)
+        .expect("session log dir")
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "log"))
+        .collect();
+    assert_eq!(log.len(), 1, "one log per command: {log_dir:?}");
+    let text = std::fs::read_to_string(&log[0]).expect("read log");
+    assert_eq!(
+        text.lines()
+            .filter(|l| l.contains("Compiling crate-"))
+            .count(),
+        400,
+        "the raw log must keep every line compression collapsed"
+    );
+    assert!(text.contains("crate-399"), "including the last one");
 }

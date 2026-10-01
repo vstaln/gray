@@ -7,6 +7,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::*;
 use crate::shell::contract::MAX_ACTION_WAIT_MS;
+use crate::shell::view::squeeze;
 
 const MAX_RUNNING: usize = 32;
 const MAX_RETAINED: usize = 128;
@@ -269,7 +270,7 @@ impl Jobs {
             let summary = truncated_summary_from_disk(&job.log);
             let view = build_view(&job.log, &summary);
             text.push_str("\nPartial output (snapshot):\n");
-            text.push_str(&fence(&view.body));
+            text.push_str(&fence(&squeeze(&view.body)));
         }
         ToolOutput::ok(text)
     }
@@ -342,17 +343,11 @@ impl Jobs {
     }
 
     /// Bounded wait until ANY unfinished session job settles (or the timeout
-    /// elapses / the session is cancelled); `true` = a job landed, so the
-    /// caller then drains notifications as usual. The receivers are cloned
-    /// here and the map lock dropped, so the waiter owns everything it needs:
-    /// the executor seam can hold it past the `&self` it came from, and a
-    /// worker's `send_replace` can never block on this mutex.
-    pub(super) fn any_waiter(
-        &self,
-        ctx: &ToolContext,
-        timeout: Duration,
-    ) -> futures::future::BoxFuture<'static, bool> {
-        let ctx = ctx.clone();
+    /// elapses / the session is cancelled). `Ok(())` = a job landed; the
+    /// caller then drains notifications as usual. Clone-then-drop on the
+    /// receivers so the registry mutex is never held across the await (the
+    /// workers' `send_replace` would otherwise block forever).
+    pub(super) async fn wait_any(&self, ctx: &ToolContext, timeout: Duration) -> bool {
         let rxs: Vec<_> = {
             let jobs = self.0.lock().unwrap_or_else(|e| e.into_inner());
             jobs.values()
@@ -360,22 +355,26 @@ impl Jobs {
                 .map(|j| j.result.clone())
                 .collect()
         };
-        Box::pin(async move {
-            if rxs.is_empty() {
-                return false;
-            }
-            // `changed()` yields an owned `Result<(), _>`, so each wait owns
-            // its receiver; boxing satisfies `select_all`'s `Unpin` bound.
-            let wait_all = futures::future::select_all(rxs.into_iter().map(|mut rx| {
-                Box::pin(async move { rx.changed().await.is_ok() })
-                    as std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send>>
-            }));
-            tokio::select! {
-                _ = wait_all => true,
-                _ = tokio::time::sleep(timeout) => false,
-                _ = ctx.cancel.cancelled() => false,
-            }
-        })
+        if rxs.is_empty() {
+            return false;
+        }
+        let wait_all = futures::future::select_all(rxs.into_iter().map(|mut rx| {
+            // The receiver moves into the async block and is polled by
+            // `changed()` — `wait_for` borrows the receiver for the whole
+            // future, which cannot escape the closure.
+            Box::pin(async move {
+                while rx.borrow().is_none() {
+                    if rx.changed().await.is_err() {
+                        return;
+                    }
+                }
+            })
+        }));
+        tokio::select! {
+            _ = wait_all => true,
+            _ = tokio::time::sleep(timeout) => false,
+            _ = ctx.cancel.cancelled() => false,
+        }
     }
 }
 
@@ -756,7 +755,7 @@ mod tests {
         let tool = BashTool::default();
         let ctx = ToolContext::default();
         assert!(
-            !tool.any_job_waiter(&ctx, Duration::from_millis(50)).await,
+            !tool.wait_any_job_fut(&ctx, Duration::from_millis(50)).await,
             "no unfinished job: the wake answers false instead of hanging"
         );
         let (job, tx) = entry(false, false, true);
@@ -765,7 +764,7 @@ mod tests {
             .lock()
             .unwrap()
             .insert("bash-any-wait".into(), job);
-        let waiter = tool.any_job_waiter(&ctx, Duration::from_secs(5));
+        let waiter = tool.wait_any_job_fut(&ctx, Duration::from_secs(5));
         tx.send_replace(Some(ToolOutput::ok("exit 0")));
         assert!(
             waiter.await,

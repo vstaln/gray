@@ -317,15 +317,19 @@ impl ToolExecutor for Registry {
         ctx: &ToolContext,
         timeout: std::time::Duration,
     ) -> BoxFuture<'static, Option<()>> {
-        // `as_any` borrows the tool only long enough to build the waiter,
-        // which owns the job receivers and therefore outlives the borrow.
-        if let Some(bash) = self
-            .tools
-            .iter()
-            .find_map(|tool| tool.as_any().downcast_ref::<BashTool>())
-        {
-            let waiter = bash.any_job_waiter(ctx, timeout);
-            return Box::pin(async move { waiter.await.then_some(()) });
+        for tool in &self.tools {
+            // `as_any` (no downcast-rs dep) hands back the bash tool when
+            // the registry owns one; its wait future is owned, so it is
+            // 'static without cloning the tool itself.
+            if tool.as_any().downcast_ref::<BashTool>().is_some() {
+                let ctx = ctx.clone();
+                let fut = tool
+                    .as_any()
+                    .downcast_ref::<BashTool>()
+                    .expect("checked above")
+                    .wait_any_job_fut(&ctx, timeout);
+                return Box::pin(async move { fut.await.then_some(()) });
+            }
         }
         Box::pin(std::future::ready(None))
     }

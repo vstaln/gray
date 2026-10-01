@@ -1099,6 +1099,7 @@ dependencies = [
  "log",
  "percent-encoding",
  "ratatui",
+ "regex",
  "reqwest",
  "serde",
  "serde_json",
@@ -1122,6 +1123,8 @@ dependencies = [
  "log",
  "serde",
  "serde_json",
+ "sha2",
+ "tempfile",
  "thiserror 2.0.20",
  "tokio",
  "tokio-util",
@@ -1183,11 +1186,9 @@ dependencies = [
  "serde_json",
  "sha2",
  "tempfile",
- "thiserror 2.0.20",
  "tokio",
  "url",
  "uuid",
- "zeroize",
 ]
 
 [[package]]

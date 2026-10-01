@@ -82,6 +82,7 @@ fn selecting_plugin_clears_api_key_and_writes_only_references() {
         context_window: None,
         context_reserve: None,
         context_keep: None,
+        exec_prefix: None,
         max_turns: None,
         max_cost_micros: None,
         max_wall_secs: None,

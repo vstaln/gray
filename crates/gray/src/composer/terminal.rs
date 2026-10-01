@@ -7,6 +7,7 @@
 //! and does NOT re-probe the cursor via CPR (`\x1b[6n`) on height changes. This eliminates
 //! prompt doubling and cursor drift down the terminal screen.
 
+use std::collections::VecDeque;
 use std::io;
 
 use ratatui::backend::{Backend, ClearType};
@@ -55,19 +56,15 @@ where
     /// next scrollback insert draws into them, so a shrink never leaves a
     /// permanent blank gap (the doubled margin).
     blank_above: u16,
-    /// Trailing blank rows of the last insert, not painted yet. The band
-    /// owns the margin above itself (the dock's seam, the box's top pad), so
-    /// a paragraph's trailing gap painted flush above it doubled that margin.
-    /// They are painted ahead of the next insert, where they separate blocks.
-    held_blank: u16,
-    /// Transcript rows the band grew over instead of scrolling them away:
-    /// the top `covered` rows of the band. A shrink repaints them from `tail`,
-    /// so recalling a tall history entry (or a turn's dock) and letting it
-    /// go again leaves the transcript where it was — scrolled-off rows could
-    /// never come back down, leaving a blank band above the shrunk box.
-    covered: u16,
-    /// The last screenful of rows `insert_before` painted, newest last.
-    tail: std::collections::VecDeque<Vec<Cell>>,
+    /// The transcript rows `insert_before` printed, oldest first, capped at
+    /// twice the screen height. Inline mode scrolls up (`append_lines`) and
+    /// never back, so a band grown to the screen pushes the transcript into
+    /// the terminal's scrollback, out of the band's reach: `refill_blank_above`
+    /// pours those rows back down into the hole a shrink leaves.
+    tail: VecDeque<Buffer>,
+    /// A refill reprints rows already in `tail`; recording them again would
+    /// duplicate the block in every later refill.
+    refilling: bool,
 }
 
 impl<B> Drop for CustomTerminal<B>
@@ -111,15 +108,19 @@ where
             last_known_screen_size: screen_size,
             band_dirty: false,
             blank_above: 0,
-            held_blank: 0,
-            covered: 0,
-            tail: std::collections::VecDeque::new(),
+            tail: VecDeque::new(),
+            refilling: false,
         };
         term.set_viewport_area(viewport_area);
         Ok(term)
     }
 
     pub fn set_viewport_area(&mut self, area: Rect) {
+        if area.width != self.viewport_area.width {
+            // Tail rows are the old width; the caller re-emits the history at
+            // the new one.
+            self.tail.clear();
+        }
         self.buffers[self.current].resize(area);
         self.buffers[1 - self.current].resize(area);
         self.viewport_area = area;
@@ -139,23 +140,11 @@ where
             area.y -= rise;
             self.blank_above -= rise;
         }
-        // Then over the transcript rows we can repaint on a shrink.
-        if area.bottom() > screen_size.height {
-            let paintable = (self.tail.len() as u16).saturating_sub(self.covered);
-            let rise = (area.bottom() - screen_size.height)
-                .min(area.y)
-                .min(paintable);
-            area.y -= rise;
-            self.covered += rise;
-        }
 
         let mut scrolled = false;
         // If the viewport has expanded beyond the screen height, scroll everything else up to make room.
         if area.bottom() > screen_size.height {
             let scroll_by = area.bottom() - screen_size.height;
-            // ponytail: a band taller than the screen still scrolls, and the
-            // rows it covered scroll off under it; only that case loses them.
-            self.covered = 0;
             // Clear the stale composer before scrolling
             self.clear_after_position(Position::new(0, area.top()))?;
             self.backend
@@ -174,35 +163,15 @@ where
         let pinned_y = anchored_viewport_y(area.height, screen_size.height);
         if pinned_y != area.y {
             let vacated_top = self.viewport_area.y;
-            let blank_before = self.blank_above;
+            self.blank_above = self
+                .blank_above
+                .saturating_add(pinned_y.saturating_sub(vacated_top));
             area.y = pinned_y;
             self.set_viewport_area(area);
             // Clear from the vacated top (also resets the previous buffer,
             // so the next frame repaints the whole band at its new row).
             self.clear_after_position(Position::new(0, vacated_top))?;
-            let vacated = pinned_y.saturating_sub(vacated_top);
-            // The covered rows are the band's top rows: repaint the ones it
-            // just gave back; any rows past them are plain blank rows.
-            let uncover = vacated.min(self.covered);
-            let first = self.tail.len() - usize::from(self.covered);
-            let width = area.width;
-            let rows: Vec<Vec<Cell>> = self
-                .tail
-                .range(first..first + usize::from(uncover))
-                .cloned()
-                .collect();
-            for (i, row) in rows.iter().enumerate() {
-                let y = vacated_top + i as u16;
-                let cells = row
-                    .iter()
-                    .enumerate()
-                    .take(usize::from(width))
-                    .map(|(x, c)| (x as u16, y, c));
-                self.backend.draw(cells)?;
-            }
-            Backend::flush(&mut self.backend)?;
-            self.covered -= uncover;
-            self.blank_above = blank_before.saturating_add(vacated - uncover);
+            self.refill_blank_above()?;
             return Ok(());
         }
 
@@ -340,46 +309,7 @@ where
         };
         let mut buffer = Buffer::empty(area);
         draw_fn(&mut buffer);
-
-        // Hold this block's trailing blank rows back; release the ones the
-        // previous block held, ahead of this one.
-        let w = usize::from(width);
-        let blank = Cell::default();
-        let trailing = buffer
-            .content
-            .rchunks(w)
-            .take_while(|row| row.iter().all(|c| *c == blank))
-            .count() as u16;
-        let held = std::mem::replace(&mut self.held_blank, 0);
-        if trailing == height {
-            self.held_blank = held + trailing;
-            return Ok(());
-        }
-        self.held_blank = trailing;
-        let new_rows = held + height - trailing;
-        let mut cells = vec![blank.clone(); w * usize::from(held)];
-        cells.extend_from_slice(&buffer.content[..w * usize::from(new_rows - held)]);
-        for row in cells.chunks(w) {
-            self.tail.push_back(row.to_vec());
-        }
-        // Rows hidden under the band are repainted ahead of the new ones, so
-        // they land in the scrollback in order instead of vanishing.
-        let covered = std::mem::replace(&mut self.covered, 0);
-        let first = self.tail.len() - usize::from(new_rows) - usize::from(covered);
-        let mut prefix: Vec<Cell> = Vec::with_capacity(w * usize::from(covered));
-        for row in self.tail.range(first..first + usize::from(covered)) {
-            let mut row = row.clone();
-            row.resize(w, blank.clone());
-            prefix.extend(row);
-        }
-        prefix.extend(cells);
-        let cells = prefix;
-        let height = covered + new_rows;
-        let cap = usize::from(self.last_known_screen_size.height);
-        while self.tail.len() > cap {
-            self.tail.pop_front();
-        }
-        let mut buffer_content = cells.as_slice();
+        let mut buffer_content = buffer.content.as_slice();
 
         // Start at the end of the transcript, not at the band's top: the
         // vacated rows above it are the first rows to fill.
@@ -423,6 +353,49 @@ where
         // vacated rows: none are left blank above it.
         self.blank_above = 0;
 
+        if !self.refilling {
+            let cap = (2 * self.last_known_screen_size.height).max(height) as usize;
+            self.tail.push_back(buffer.clone());
+            while self.tail.len() > cap {
+                self.tail.pop_front();
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Print the transcript rows that scrolled off back into the blank rows
+    /// above the band. The rows above the hole are the last `visible` ones
+    /// printed, so the ones that belong in it are the `fill` before them —
+    /// what a scrollback-capable terminal would already have on screen.
+    fn refill_blank_above(&mut self) -> io::Result<()> {
+        let hole = self.blank_above as usize;
+        // Rows above the band, minus the hole: the tail's last ones.
+        let visible = self.viewport_area.y.saturating_sub(self.blank_above) as usize;
+        let fill = hole.min(self.tail.len().saturating_sub(visible));
+        if fill == 0 {
+            return Ok(());
+        }
+        let start = self.tail.len() - visible - fill;
+        let rows: Vec<Buffer> = self.tail.iter().skip(start).take(fill).cloned().collect();
+
+        self.refilling = true;
+        let drawn = self.insert_before(fill as u16, |buf| {
+            let w = buf.area.width as usize;
+            for (i, row) in rows.iter().enumerate() {
+                let Some(cells) = row.content.get(..w) else {
+                    continue;
+                };
+                buf.content[i * w..(i + 1) * w].clone_from_slice(cells);
+            }
+        });
+        self.refilling = false;
+        drawn?;
+
+        // `insert_before` left the count at zero. That is right even when the
+        // tail was too short to fill the hole: the band then sits that far
+        // above the bottom, and the next frame's re-pin counts the rest. The
+        // pin adds to the count, so seeding it here would double-count.
         Ok(())
     }
 
@@ -518,68 +491,6 @@ mod tests {
         assert_eq!(terminal.viewport_area, Rect::new(0, 16, 40, 4));
     }
 
-    /// A block's trailing blank row is held back instead of painted flush
-    /// above the band (which owns that margin), then released ahead of the
-    /// next block so blocks stay one row apart.
-    #[test]
-    fn trailing_blank_rows_wait_for_the_next_insert() {
-        let mut terminal = CustomTerminal::with_options(TestBackend::new(10, 10), 3).unwrap();
-        terminal.set_viewport_height(3, Size::new(10, 10)).unwrap();
-        let row = |buf: &mut Buffer, y: u16, s: &str| {
-            buf.set_string(0, y, s, ratatui::style::Style::default());
-        };
-        terminal.insert_before(2, |b| row(b, 0, "a")).unwrap();
-        terminal.insert_before(1, |_| {}).unwrap();
-        // Only "a" is painted: the band sits right under it.
-        assert_eq!(terminal.blank_above, 0);
-        let a_row = terminal.viewport_area.y - 1;
-        assert_eq!(terminal.backend.buffer()[(0, a_row)].symbol(), "a");
-        terminal.insert_before(1, |b| row(b, 0, "b")).unwrap();
-        // The two held blanks land between "a" and "b".
-        let b_row = terminal.viewport_area.y - 1;
-        let buffer = terminal.backend.buffer();
-        assert_eq!(buffer[(0, b_row)].symbol(), "b");
-        assert_eq!(buffer[(0, b_row - 3)].symbol(), "a");
-        assert_eq!(buffer[(0, b_row - 1)].symbol(), " ");
-    }
-
-    /// Recalling a tall history entry grows the band over the transcript;
-    /// letting it go must put those rows back, not leave a blank gap.
-    #[test]
-    fn a_band_that_grows_and_shrinks_gives_the_transcript_back() {
-        let screen = Size::new(10, 10);
-        let mut terminal = CustomTerminal::with_options(TestBackend::new(10, 10), 3).unwrap();
-        terminal.set_viewport_height(3, screen).unwrap();
-        terminal
-            .insert_before(7, |b| {
-                for y in 0..7 {
-                    b[(0, y)].set_symbol(&y.to_string());
-                }
-            })
-            .unwrap();
-        assert_eq!(terminal.viewport_area, Rect::new(0, 7, 10, 3));
-        terminal.set_viewport_height(6, screen).unwrap();
-        assert_eq!(terminal.viewport_area, Rect::new(0, 4, 10, 6));
-        terminal.set_viewport_height(3, screen).unwrap();
-        assert_eq!(terminal.viewport_area, Rect::new(0, 7, 10, 3));
-        let buffer = terminal.backend.buffer();
-        for y in 0..7 {
-            assert_eq!(buffer[(0, y)].symbol(), y.to_string(), "row {y}");
-        }
-        // Grow again, then insert while covered: the covered rows land in
-        // order ahead of the new one.
-        terminal.set_viewport_height(5, screen).unwrap();
-        terminal
-            .insert_before(1, |b| {
-                b[(0, 0)].set_symbol("n");
-            })
-            .unwrap();
-        let buffer = terminal.backend.buffer();
-        assert_eq!(buffer[(0, 3)].symbol(), "6");
-        assert_eq!(buffer[(0, 4)].symbol(), "n");
-        assert_eq!(terminal.viewport_area, Rect::new(0, 5, 10, 5));
-    }
-
     /// A taller screen after a resize re-pins the band to the new last row.
     #[test]
     fn a_taller_screen_repins_the_band() {
@@ -672,16 +583,14 @@ mod tests {
         }
     }
 
-    /// Growth beyond the blank rows covers transcript rows instead of
-    /// scrolling them away, so nothing above the band moves.
+    /// Growth beyond the blank rows still scrolls, by only the shortfall.
     #[test]
-    fn growth_past_the_blank_rows_covers_instead_of_scrolling() {
+    fn growth_past_the_blank_rows_scrolls_only_the_rest() {
         let mut terminal = CustomTerminal::with_options(TestBackend::new(40, 20), 4).unwrap();
         let screen = Size::new(40, 20);
         terminal
             .insert_before(12, |buf| {
                 buf[(0, 3)].set_symbol("B");
-                buf[(0, 11)].set_symbol("x");
             })
             .unwrap();
         terminal.set_viewport_height(4, screen).unwrap();
@@ -689,9 +598,86 @@ mod tests {
         assert_eq!(terminal.viewport_area, Rect::new(0, 16, 40, 4));
         terminal.set_viewport_height(10, screen).unwrap();
         assert_eq!(terminal.viewport_area, Rect::new(0, 10, 40, 10));
-        // 4 blank rows spent, 2 covered: the banner did not move.
+        // 4 blank rows spent, 2 scrolled: the banner rose by 2, not 6.
         let buffer = terminal.backend.buffer();
-        assert_eq!(buffer[(0, 3)].symbol(), "B");
+        assert_eq!(buffer[(0, 1)].symbol(), "B");
+    }
+
+    /// A composer grown to the screen (a paste) scrolls the transcript into
+    /// the terminal's scrollback, which inline mode can never scroll back out
+    /// of. Deleting the paste shrinks the band again: the rows it gave up must
+    /// come back down, not stay a hole.
+    #[test]
+    fn a_shrink_after_a_full_screen_paste_restores_the_scrolled_off_rows() {
+        let screen = Size::new(10, 12);
+        let mut terminal = CustomTerminal::with_options(TestBackend::new(10, 12), 4).unwrap();
+        terminal.set_viewport_height(4, screen).unwrap();
+
+        for glyph in ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l"] {
+            terminal
+                .insert_before(1, |buf| {
+                    buf[(0, 0)].set_symbol(glyph);
+                })
+                .unwrap();
+        }
+
+        // The paste fills the screen: every transcript row scrolls off the top.
+        terminal.set_viewport_height(12, screen).unwrap();
+        assert_eq!(terminal.viewport_area, Rect::new(0, 0, 10, 12));
+        let buffer = terminal.backend.buffer();
+        assert!(
+            (0..12).all(|y| (0..10).all(|x| buffer[(x, y)].symbol() == " ")),
+            "a full-screen composer scrolls the transcript away"
+        );
+
+        // Deleting it shrinks the band to the last rows, and the transcript
+        // comes back down into the rows the tall band gave up: the 8 most
+        // recent of the 12 that scrolled off.
+        terminal.set_viewport_height(4, screen).unwrap();
+        assert_eq!(terminal.viewport_area, Rect::new(0, 8, 10, 4));
+        let buffer = terminal.backend.buffer();
+        let restored: String = (0..8)
+            .map(|y| buffer[(0, y)].symbol().to_string())
+            .collect();
+        assert_eq!(restored, "efghijkl");
+    }
+
+    /// A hole taller than the tail is filled as far as the rows reach; the
+    /// band rides back to the bottom, and the next row still lands flush
+    /// against the last restored one — the leftover count must not drift.
+    #[test]
+    fn a_hole_taller_than_the_tail_fills_what_it_can_and_stays_flush() {
+        let screen = Size::new(10, 12);
+        let mut terminal = CustomTerminal::with_options(TestBackend::new(10, 12), 4).unwrap();
+        terminal.set_viewport_height(4, screen).unwrap();
+
+        for glyph in ["a", "b", "c", "d", "e", "f"] {
+            terminal
+                .insert_before(1, |buf| {
+                    buf[(0, 0)].set_symbol(glyph);
+                })
+                .unwrap();
+        }
+        terminal.set_viewport_height(12, screen).unwrap();
+        terminal.set_viewport_height(4, screen).unwrap();
+        // 6 rows restored, 2 rows of the hole still blank.
+        let buffer = terminal.backend.buffer();
+        assert_eq!(buffer[(0, 0)].symbol(), "a");
+        assert_eq!(buffer[(0, 5)].symbol(), "f");
+        assert_eq!(buffer[(0, 6)].symbol(), " ");
+
+        // The next frame re-pins the band and counts the rest of the hole.
+        terminal.set_viewport_height(4, screen).unwrap();
+        assert_eq!(terminal.viewport_area, Rect::new(0, 8, 10, 4));
+        terminal
+            .insert_before(1, |buf| {
+                buf[(0, 0)].set_symbol("g");
+            })
+            .unwrap();
+        // Flush under "f", not floating above it or overwriting it.
+        let buffer = terminal.backend.buffer();
+        assert_eq!(buffer[(0, 6)].symbol(), "g");
+        assert_eq!(buffer[(0, 5)].symbol(), "f");
     }
 
     /// A shrink while pinned leaves blank rows above the band. The next

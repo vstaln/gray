@@ -311,7 +311,14 @@ impl MemoryStore {
                 let content = value[field]
                     .as_str()
                     .context("invalid memory snapshot fields")?;
-                parse(content)?;
+                // The cap notice is not an entry (no key can start with `(`);
+                // every other line must still parse.
+                let entries: String = content
+                    .lines()
+                    .filter(|l| !l.starts_with(CAP_NOTICE_PREFIX))
+                    .map(|l| format!("{l}\n"))
+                    .collect();
+                parse(&entries)?;
             }
             // Return canonical fields only, never arbitrary extra snapshot data.
             return Ok(serde_json::to_string(&serde_json::json!({
@@ -331,17 +338,51 @@ impl MemoryStore {
         Ok(render_served(&self.read_store(scope)?.entries))
     }
 
-    /// Served text reduced to each entry's first sentence. This is what the
-    /// system prompt injects by default; `list` remains the full text behind
+    /// Served text reduced to each entry's first sentence, newest first and
+    /// capped at [`SNAPSHOT_SCOPE_BYTES`]. This is what the system prompt
+    /// injects by default; `list` remains the full text behind
     /// `gray memory list` / `gray memory show KEY`.
+    ///
+    /// The cap is the point: this text rides in every turn's system prompt,
+    /// so a memory that grew without bound was an unbounded bill. Oldest
+    /// entries drop first and the block says how many it dropped — the entry
+    /// the model still needs is one `gray memory list` away, not a silent
+    /// loss.
     pub fn profile(&self, scope: Scope) -> anyhow::Result<String> {
-        let entries = self
-            .read_store(scope)?
+        let store = self.read_store(scope)?;
+        let mut entries: Vec<(String, String)> = store
             .entries
             .iter()
             .map(|(key, text)| (key.clone(), first_sentence(text).to_owned()))
             .collect();
-        Ok(render_served(&entries))
+        // The store is key-ordered, so order by write date instead: the
+        // freshest belief is the one most likely to still hold. An unrecorded
+        // date sorts oldest and keys break ties, so one store always renders
+        // the same bytes (the frozen snapshot depends on it).
+        entries.sort_by(|(ka, _), (kb, _)| {
+            saved_on(&store, kb)
+                .cmp(saved_on(&store, ka))
+                .then_with(|| ka.cmp(kb))
+        });
+        let mut out = String::new();
+        let mut used = 0;
+        let mut dropped = 0;
+        for (key, text) in entries {
+            // "- " + key + ": " + text + "\n"
+            let line = key.len() + text.len() + 5;
+            if used + line > SNAPSHOT_SCOPE_BYTES {
+                dropped += 1;
+                continue;
+            }
+            used += line;
+            out.push_str(&format!("- {key}: {text}\n"));
+        }
+        if dropped > 0 {
+            out.push_str(&format!(
+                "{CAP_NOTICE_PREFIX}{dropped} older entries not shown; `gray memory list` prints them all)\n"
+            ));
+        }
+        Ok(out)
     }
 
     /// CLI view with provenance, so a human can see how old each entry is and
@@ -769,6 +810,10 @@ fn validate_text(text: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// First bytes of the line [`MemoryStore::profile`] appends when the cap
+/// dropped entries.
+const CAP_NOTICE_PREFIX: &str = "- (+";
+
 fn parse(text: &str) -> anyhow::Result<Store> {
     let mut store = Store::default();
     for line in text.lines().filter(|l| !l.trim().is_empty()) {
@@ -890,6 +935,19 @@ fn render(store: &Store) -> String {
 
 /// What the model sees: text only, never the trailers. Rationale costs the
 /// editor tokens and not the executor's, and provenance is the same trade.
+/// Byte budget for one scope's injected memory block: a snapshot that rides
+/// in every turn's system prompt is billed every turn.
+const SNAPSHOT_SCOPE_BYTES: usize = 4 * 1024;
+
+/// The day an entry's current text was written, `""` when unrecorded.
+fn saved_on<'a>(store: &'a Store, key: &str) -> &'a str {
+    store
+        .provenance
+        .get(key)
+        .and_then(|p| p.saved.as_deref())
+        .unwrap_or("")
+}
+
 fn render_served(entries: &BTreeMap<String, String>) -> String {
     entries
         .iter()

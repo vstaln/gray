@@ -45,9 +45,9 @@ tempfile = { workspace = true }
 base64 = { workspace = true }
 async-trait = { workspace = true }
 libc = { workspace = true }
-# Gateway host only (lifecycle/socket/ticker): messaging adapters stay out of the binary.
 unicode-width = { workspace = true }
 ignore = { workspace = true }
+regex = { workspace = true }
 
 
 [target.'cfg(windows)'.dependencies]

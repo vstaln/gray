@@ -11,9 +11,8 @@ pub(crate) fn format_tool_box_lines(
     let bg_style = Style::default().bg(bg_color);
     let max_w = width.saturating_sub(4).max(1);
 
-    // No outer pad rows: `insert_tool_box`'s `ensure_gap(1)` is the single
-    // owner of the blank row between blocks, so a card never doubles it.
     let mut box_lines: Vec<Line<'static>> = Vec::new();
+    box_lines.push(Line::from("").style(bg_style));
 
     let wrapped_header = wrap_styled_line(header, max_w);
     for mut l in wrapped_header {
@@ -68,5 +67,6 @@ pub(crate) fn format_tool_box_lines(
             box_lines.push(l);
         }
     }
+    box_lines.push(Line::from("").style(bg_style));
     box_lines
 }

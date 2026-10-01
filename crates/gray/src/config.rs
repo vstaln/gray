@@ -63,6 +63,10 @@ pub struct Config {
     pub context_reserve: Option<usize>,
     /// Tail budget kept alongside the summary after compaction.
     pub context_keep: Option<usize>,
+    /// Program that runs the model's shell commands somewhere else, e.g.
+    /// `docker exec -i dev sh -s` or `ssh box sh -s`. `GRAY_EXEC_PREFIX` or
+    /// the saved `exec_prefix`; None = commands run in this process's shell.
+    pub exec_prefix: Option<String>,
     /// Turn cap for this process (CLI `--max-turns` / `GRAY_MAX_TURNS`).
     pub max_turns: Option<u32>,
     /// Spend cap in micro-dollars for this process (exact `u64`: Eq-safe,
@@ -85,7 +89,19 @@ impl std::fmt::Debug for Config {
 impl Config {
     /// Resolves configuration from CLI arguments and environment variables.
     pub fn resolve(cli: &Cli) -> anyhow::Result<Self> {
-        Self::resolve_with(cli, |k| std::env::var(k).ok())
+        let config = Self::resolve_with(cli, |k| std::env::var(k).ok())?;
+        if let Some(prefix) = config
+            .exec_prefix
+            .as_deref()
+            .filter(|p| !p.trim().is_empty())
+        {
+            // gray-tools reads the prefix from the environment, next to the
+            // other GRAY_* shell knobs. Set once here, before any tool can
+            // spawn; a bad prefix is reported by the command it breaks, not
+            // at boot, so an unused typo never blocks a session.
+            unsafe { std::env::set_var(gray_tools::shell::spawn::EXEC_PREFIX_ENV, prefix) };
+        }
+        Ok(config)
     }
 
     /// Resolves configuration with a custom environment lookup function (useful for testing).
@@ -157,6 +173,10 @@ impl Config {
             })
             .or(saved.context_keep);
 
+        // Where the model's shell commands run. The saved value is the
+        // durable one (it names a box); the env var is the override.
+        let exec_prefix = nonempty(env("GRAY_EXEC_PREFIX").as_deref()).or(saved.exec_prefix);
+
         // Caps are CLI/env-only (never persisted): they bound one run, not
         // the identity. Non-positive values are ignored, never clamped.
         let max_turns = cli.max_turns.filter(|&n| n > 0).or_else(|| {
@@ -193,6 +213,7 @@ impl Config {
             context_window,
             context_reserve,
             context_keep,
+            exec_prefix,
             max_turns,
             max_cost_micros,
             max_wall_secs,
@@ -214,3 +235,7 @@ impl Config {
             && !self.auth_ref.is_empty()
     }
 }
+
+#[path = "config_tests.rs"]
+#[cfg(test)]
+mod tests;

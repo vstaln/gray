@@ -271,3 +271,36 @@ async fn interrupt_keeps_streamed_text_visible_on_resume() {
         "streamed text must be salvaged into the transcript: {text:?}"
     );
 }
+
+/// The steer drain takes the oldest text-only entry and leaves everything else
+/// for the post-turn path: an entry with images must keep them, and whatever is
+/// left must still be there afterwards (sent once, never twice).
+#[test]
+fn steer_takes_the_oldest_text_entry_and_leaves_the_rest() {
+    let mut queued = std::collections::VecDeque::from([
+        ("first".to_string(), vec![]),
+        (
+            "with image".to_string(),
+            vec![std::path::PathBuf::from("/tmp/x.png")],
+        ),
+        ("third".to_string(), vec![]),
+    ]);
+    assert_eq!(super::take_steerable(&mut queued).as_deref(), Some("first"));
+    let left: Vec<&str> = queued.iter().map(|(text, _)| text.as_str()).collect();
+    assert_eq!(left, vec!["with image", "third"]);
+}
+
+/// An empty queue is the common case (nobody typed): the drain answers without
+/// inventing a turn.
+#[test]
+fn steer_on_an_empty_queue_takes_nothing() {
+    let mut queued = std::collections::VecDeque::new();
+    assert_eq!(super::take_steerable(&mut queued), None);
+    // An image-only queue has nothing steerable either; it waits for its turn.
+    let mut images = std::collections::VecDeque::from([(
+        "pic".to_string(),
+        vec![std::path::PathBuf::from("/tmp/x.png")],
+    )]);
+    assert_eq!(super::take_steerable(&mut images), None);
+    assert_eq!(images.len(), 1, "the image entry keeps its place");
+}

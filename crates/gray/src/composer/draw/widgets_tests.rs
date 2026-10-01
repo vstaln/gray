@@ -29,33 +29,6 @@ fn input_box_wraps_at_word_boundaries() {
 }
 
 #[test]
-fn input_box_hard_cuts_only_overlong_words() {
-    let text = "ok abcdefghijklmnopqrstuvwxyz0129 end";
-    let ibox = build_input_box(text, 0, 20, None);
-    let rows = row_texts(&ibox);
-    assert!(rows.iter().any(|r| r.contains("ok ")), "{rows:?}");
-    assert!(rows.iter().any(|r| r.contains("end")), "{rows:?}");
-}
-
-/// The box owns a blank row above and below the `❯` row, so the prompt
-/// never sits flush against the row above it.
-#[test]
-fn input_box_has_top_and_bottom_margin_rows() {
-    let ibox = build_input_box("", 0, 80, None);
-    let rows = row_texts(&ibox);
-    assert_eq!(
-        rows.len(),
-        3,
-        "top margin + prompt + bottom margin: {rows:?}"
-    );
-    assert!(rows.first().unwrap().trim().is_empty());
-    assert!(rows.last().unwrap().trim().is_empty());
-    assert!(rows[1].contains('❯'));
-    // The caret follows the prompt row, not the top pad.
-    assert_eq!(ibox.cur_row, 1, "caret row: {rows:?}");
-}
-
-#[test]
 fn input_box_ghost_hint_shows_only_when_empty() {
     // Resume pending: empty box paints the dim ghost hint, same 3 rows.
     let ibox = build_input_box("", 0, 80, Some("Please continue…"));

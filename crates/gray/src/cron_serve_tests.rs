@@ -19,6 +19,14 @@ impl AsyncRunner for StubRunner {
     }
 }
 
+/// A runner that produced the same text for the transcript and the answer.
+fn out(text: &str) -> FireOutput {
+    FireOutput {
+        transcript: text.to_string(),
+        final_text: text.to_string(),
+    }
+}
+
 fn due_store(home: &tempfile::TempDir, records: serde_json::Value) -> crate::cron::CronStore {
     let store = crate::cron::CronStore::open(home.path().join("cron")).unwrap();
     std::fs::write(
@@ -52,6 +60,7 @@ fn test_config() -> crate::config::Config {
         context_window: None,
         context_reserve: None,
         context_keep: None,
+        exec_prefix: None,
         max_turns: None,
         max_cost_micros: None,
         max_wall_secs: None,
@@ -263,6 +272,7 @@ async fn origin_delivery_appends_to_session_and_keeps_file_on_failure() {
         }),
         workdir: None,
         fire_claim: None,
+        reminder: false,
         skills: vec![],
         script: None,
     };
@@ -272,7 +282,12 @@ async fn origin_delivery_appends_to_session_and_keeps_file_on_failure() {
     // Happy path: session append + file save. The mirror is the clean
     // excerpt (no wrapper, no file path) as a USER turn.
     let saved = deliver
-        .deliver(&mk_job("j-origin", chat), 1_700_000_001, "hello output")
+        .deliver_full(
+            &mk_job("j-origin", chat),
+            1_700_000_001,
+            &out("hello output"),
+            0,
+        )
         .await
         .unwrap();
     assert!(saved.to_chat);
@@ -312,10 +327,11 @@ async fn origin_delivery_appends_to_session_and_keeps_file_on_failure() {
     // conversation's first turn) must still receive the message; only the
     // in-context mirror is lost.
     let saved = deliver
-        .deliver(
+        .deliver_full(
             &mk_job("j-bad", "no-such-session"),
             1_700_000_002,
-            "kept output",
+            &out("kept output"),
+            0,
         )
         .await
         .expect("a missing session must not swallow the delivery");
@@ -378,7 +394,10 @@ async fn local_and_target_jobs_are_save_only() {
         let store = due_store(&home, v);
         let job = store.list().unwrap().into_iter().next().unwrap();
         assert_eq!(job.id, id, "store lost {id}");
-        let saved = deliver.deliver(&job, 1_700_000_001, "body").await.unwrap();
+        let saved = deliver
+            .deliver_full(&job, 1_700_000_001, &out("body"), 0)
+            .await
+            .unwrap();
         assert!(!saved.to_chat, "{id} must be save-only");
         assert!(
             home.path()
@@ -392,19 +411,29 @@ async fn local_and_target_jobs_are_save_only() {
 }
 
 #[test]
-fn fire_chat_frame_shapes() {
-    // The live-chat box: hermes wrapper + output-file path.
+fn fire_chat_is_plain_text_with_no_frame_id_or_path() {
     let saved = DeliveredFire {
         id: "abc123".to_string(),
         name: "nightly".to_string(),
         path: std::path::PathBuf::from("/home/u/.gray/cron/output/abc123/1.md"),
         excerpt: "hello output".to_string(),
         to_chat: true,
+        reminder: false,
+        failed: false,
+        elapsed_ms: 0,
     };
     let out = format_fire_chat(&saved);
-    assert!(out.starts_with("Cronjob Response: nightly\n(job_id: abc123)\n"));
-    assert!(out.contains("hello output"));
-    assert!(out.contains("Full output: /home/u/.gray/cron/output/abc123/1.md"));
+    assert_eq!(out, "nightly\n\nhello output");
+    for bad in [
+        "abc123",
+        "job_id",
+        "-----",
+        "Cronjob Response",
+        "Full output",
+        "/home/u",
+    ] {
+        assert!(!out.contains(bad), "plain fallback leaked {bad}");
+    }
 }
 
 #[tokio::test]
@@ -464,6 +493,9 @@ fn delivered() -> DeliveredFire {
         path: std::path::PathBuf::from("/tmp/out.md"),
         excerpt: "all clear".into(),
         to_chat: true,
+        reminder: false,
+        failed: false,
+        elapsed_ms: 0,
     }
 }
 
@@ -485,12 +517,13 @@ fn delivery_json_carries_the_route_and_the_hermes_frame() {
     assert_eq!(v["platform"], "discord");
     assert_eq!(v["chat"], "chat:one");
     assert_eq!(v["route"], "1234567890");
-    // The frame is Hermes' byte-exact wrapper, rendered by core: the
-    // platform carries bytes, it does not re-render the job.
-    let text = v["text"].as_str().unwrap();
-    assert!(text.starts_with("Cronjob Response: daily check\n(job_id: job1)\n"));
-    assert!(text.contains("all clear"));
-    assert!(text.contains("Full output: /tmp/out.md"));
+    // Structured fields for a native renderer; `text` is only the plain
+    // fallback and carries no job id, dashes, footer or path.
+    assert_eq!(v["kind"], "task");
+    assert_eq!(v["status"], "ok");
+    assert_eq!(v["final_text"], "all clear");
+    assert_eq!(v["path"], "/tmp/out.md");
+    assert_eq!(v["text"].as_str().unwrap(), "daily check\n\nall clear");
 }
 
 #[test]
@@ -498,7 +531,7 @@ fn delivery_json_without_an_origin_still_renders() {
     let v: serde_json::Value =
         serde_json::from_str(&crate::cron_serve::delivery_json(&delivered(), None)).unwrap();
     assert_eq!(v["route"], serde_json::Value::Null);
-    assert!(v["text"].as_str().unwrap().contains("Cronjob Response:"));
+    assert!(v["text"].as_str().unwrap().contains("all clear"));
 }
 
 #[tokio::test]
@@ -546,11 +579,15 @@ async fn a_platform_chat_id_gets_its_own_transcript() {
         }),
         workdir: None,
         fire_claim: None,
+        reminder: false,
         skills: vec![],
         script: None,
     };
     let deliver = SaveLocalDeliver { home: home.clone() };
-    let saved = deliver.deliver(&job, 1, "hello").await.unwrap();
+    let saved = deliver
+        .deliver_full(&job, 1, &out("hello"), 0)
+        .await
+        .unwrap();
     assert!(saved.to_chat, "a routed delivery is still a chat delivery");
     let transcript =
         std::fs::read_to_string(store_dir.join("4f3c2b1a9d8e7f6a5b4c3d2e1f0a9b8c.jsonl")).unwrap();
@@ -589,12 +626,13 @@ async fn a_missing_origin_session_still_delivers_to_the_route() {
         }),
         workdir: None,
         fire_claim: None,
+        reminder: false,
         skills: vec![],
         script: None,
     };
     let deliver = SaveLocalDeliver { home: home.clone() };
     let saved = deliver
-        .deliver(&job, 1, "the deploy is green")
+        .deliver_full(&job, 1, &out("the deploy is green"), 0)
         .await
         .expect("a missing session is not a delivery failure");
     assert!(saved.to_chat);
@@ -606,4 +644,116 @@ async fn a_missing_origin_session_still_delivers_to_the_route() {
             .unwrap()
             .contains("the deploy is green")
     );
+}
+
+#[tokio::test]
+async fn a_reminder_fires_without_a_model_turn_and_delivers_verbatim() {
+    let home = tempfile::tempdir().unwrap();
+    let mut record = one_due("r1", serde_json::json!("origin"));
+    record[0]["reminder"] = serde_json::json!(true);
+    record[0]["prompt"] = serde_json::json!("clean my roo");
+    record[0]["origin"] = serde_json::json!({"platform": "discord", "chat": "4f3c2b1a9d8e7f6a5b4c3d2e1f0a9b8c", "route": "42"});
+    let store = due_store(&home, record);
+    let runner = StubRunner {
+        text: "MUST NOT RUN".to_string(),
+        fail: false,
+        seen: Default::default(),
+    };
+    let rep = tick_once(
+        &store,
+        &runner,
+        &SaveLocalDeliver {
+            home: home.path().to_path_buf(),
+        },
+        "test",
+    )
+    .await
+    .unwrap();
+    assert_eq!(rep.fired, 1);
+    assert_eq!(rep.errors, 0);
+    assert!(
+        runner.seen.lock().unwrap().is_empty(),
+        "a reminder must not reach the agent"
+    );
+    let d = &rep.delivered[0];
+    assert!(d.reminder && d.to_chat && !d.failed);
+    assert_eq!(d.excerpt, "clean my roo");
+    // No framing at all: the user's own words, byte for byte.
+    assert_eq!(format_fire_chat(d), "clean my roo");
+}
+
+#[tokio::test]
+async fn a_failed_origin_fire_delivers_a_short_failure_line() {
+    let home = tempfile::tempdir().unwrap();
+    let mut record = one_due("f1", serde_json::json!("origin"));
+    record[0]["origin"] = serde_json::json!({"platform": "discord", "chat": "4f3c2b1a9d8e7f6a5b4c3d2e1f0a9b8c", "route": "42"});
+    let store = due_store(&home, record);
+    let runner = StubRunner {
+        text: String::new(),
+        fail: true,
+        seen: Default::default(),
+    };
+    let rep = tick_once(
+        &store,
+        &runner,
+        &SaveLocalDeliver {
+            home: home.path().to_path_buf(),
+        },
+        "test",
+    )
+    .await
+    .unwrap();
+    assert_eq!(rep.errors, 1);
+    let d = &rep.delivered[0];
+    assert!(d.failed && d.to_chat && !d.reminder);
+    assert_eq!(d.excerpt, "agent run failed: boom");
+    let job = store.get("f1").unwrap().unwrap();
+    assert_eq!(job.last_status, Some(crate::cron::RunStatus::Error));
+}
+
+#[tokio::test]
+async fn chat_gets_only_the_final_text_while_the_transcript_stays_on_disk() {
+    struct SplitRunner;
+    #[async_trait::async_trait(?Send)]
+    impl AsyncRunner for SplitRunner {
+        async fn run(&self, _p: String, _c: PathBuf) -> anyhow::Result<String> {
+            unreachable!("fire_one calls run_full")
+        }
+        async fn run_full(&self, _p: String, _c: PathBuf) -> anyhow::Result<FireOutput> {
+            Ok(FireOutput {
+                transcript: "[tool:bash]\n[result:exit 0]\n<untrusted-output>\nls\n</untrusted-output>\nclean my roo".into(),
+                final_text: "clean my roo".into(),
+            })
+        }
+    }
+    let home = tempfile::tempdir().unwrap();
+    let mut record = one_due("s2", serde_json::json!("origin"));
+    record[0]["origin"] = serde_json::json!({"platform": "discord", "chat": "4f3c2b1a9d8e7f6a5b4c3d2e1f0a9b8c", "route": "42"});
+    let store = due_store(&home, record);
+    let rep = tick_once(
+        &store,
+        &SplitRunner,
+        &SaveLocalDeliver {
+            home: home.path().to_path_buf(),
+        },
+        "test",
+    )
+    .await
+    .unwrap();
+    let d = &rep.delivered[0];
+    assert_eq!(
+        d.excerpt, "clean my roo",
+        "the tool transcript leaked into chat"
+    );
+    let saved = std::fs::read_to_string(&d.path).unwrap();
+    assert!(
+        saved.contains("[tool:bash]"),
+        "full transcript stays on disk"
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&d.path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+    }
 }

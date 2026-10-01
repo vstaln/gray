@@ -586,3 +586,21 @@ fn update_and_restart_parse_and_register() {
             .any(|(n, _)| *n == "update")
     );
 }
+
+/// `/undo` and `/retry` are top-level commands: bare, with no argument that
+/// could be mistaken for a path or a plugin name.
+#[test]
+fn undo_and_retry_parse_bare() {
+    assert_eq!(parse_command("/undo"), ReplCommand::Undo);
+    assert_eq!(parse_command("/UNDO"), ReplCommand::Undo);
+    assert_eq!(parse_command("/retry"), ReplCommand::Retry);
+}
+
+/// The registry is what `/help` and completion read, so both commands have to
+/// be in it or they parse but never appear.
+#[test]
+fn undo_and_retry_are_in_the_registry() {
+    let names: Vec<&str> = super::REGISTRY.iter().map(|c| c.name).collect();
+    assert!(names.contains(&"undo"), "registry: {names:?}");
+    assert!(names.contains(&"retry"), "registry: {names:?}");
+}
