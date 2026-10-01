@@ -111,8 +111,12 @@ fn line_count(n: &str) -> Option<u64> {
     (n > 0).then_some(n)
 }
 
+/// The `sed` window a dedup-eligible command reads.
+type SedWindow<'a> = (&'a str, (i64, Option<u64>), bool);
+
 /// `A,Bp` → the window it prints; `1,$p` is the whole file.
-fn sed_window<'a>(program: &'a str, path: &'a str) -> Option<(&'a str, (i64, Option<u64>), bool)> {
+#[allow(clippy::type_complexity)] // (path, (first, last), unbounded) is clearer spelled out
+fn sed_window<'a>(program: &'a str, path: &'a str) -> Option<SedWindow<'a>> {
     let range = program.strip_suffix('p')?;
     let (from, to) = range.split_once(',')?;
     if from.is_empty() || to.is_empty() || !from.bytes().all(|b| b.is_ascii_digit()) {
