@@ -19,6 +19,7 @@ use ratatui::widgets::{Block, Paragraph, Widget};
 use gray_markdown::HyperlinkTarget;
 
 use crate::text_width::display_width;
+use draw::footer_badge_visible;
 
 pub(crate) const PANEL_ROWS: usize = 6;
 /// Smallest the viewport shrinks to while idle: box top pad + `❯` row +
@@ -283,6 +284,12 @@ pub struct Tui {
     /// release it (see `release_dock_seam`) so it never stacks a second
     /// blank above the live status.
     dock_seam: bool,
+    /// Nesting depth of the DEC 2026 synchronized-update bracket (see
+    /// `Tui::begin_sync`): only the outermost begin/end reach the terminal.
+    sync_depth: u32,
+    /// Nesting depth of `Tui::atomic`; while > 0 `draw` is deferred to the
+    /// outermost batch end so a multi-step scrollback commit paints once.
+    batch_depth: u32,
     /// A provider round ended before the next text delta.  A punctuation-only
     /// continuation in that first delta is a live-only orphan, not a new row.
     stream_round_boundary: bool,
@@ -292,10 +299,21 @@ pub struct Tui {
     stream_round_had_text: bool,
     /// Index of the prose history block that owns a pending continuation.
     stream_round_target: Option<usize>,
+    /// Punctuation-only delta held back one chunk (`stream_text`): the
+    /// markdown renderer freezes complete blocks, so a trailing punctuation
+    /// chunk (mid-round split or post-interrupt tail) would freeze as its
+    /// own lone-`.` paragraph row. Released into the renderer when the next
+    /// meaningful delta, thinking, a tool event, or the turn end proves it
+    /// wasn't an orphan continuation.
+    stream_punct_hold: String,
     active_compaction: Option<ActiveCompaction>,
     turn_started: Option<Instant>,
     turn_had_thinking: bool,
     pub is_task_running: bool,
+    /// Bare Enter resumes the last turn when it was interrupted or errored
+    /// (opencode "press Enter to continue"). Set by the REPL loop; the input
+    /// layer only gates the empty-submit swallow on it.
+    pub allow_empty_submit: bool,
     /// An alternate-screen modal owns the terminal: the 100ms ticker must not
     /// draw (its frames land on the modal's screen as duplicated chrome).
     /// Set by with_modal/with_modal_sync around every modal call.
@@ -314,6 +332,15 @@ pub struct Tui {
     model_name: String,
     cwd: String,
     thinking_effort: String,
+    /// Effort-badge visibility snapshotted for the turn in flight.
+    /// `Some` freezes the footer right segment's shape until `end_turn`:
+    /// the reasoning flag it hides behind is filled asynchronously by
+    /// discovery (provider `/models` and models.dev, `repl/mod.rs`), and a
+    /// mid-turn flip would resize the right-anchored segment and walk the
+    /// model name across the bar while the answer streams.
+    /// `None` between turns resolves the flag live, so the converged
+    /// provider answer still lands.
+    turn_show_effort: Option<bool>,
     pub(crate) history_entries: Vec<TranscriptEntry>,
     pub transcript: Vec<Line<'static>>,
     pub(crate) last_width: u16,
@@ -518,13 +545,17 @@ impl Tui {
             sel: 0,
             status: None,
             dock_seam: false,
+            sync_depth: 0,
+            batch_depth: 0,
             stream_round_boundary: false,
             stream_round_had_text: false,
             stream_round_target: None,
+            stream_punct_hold: String::new(),
             active_compaction: None,
             turn_started: None,
             turn_had_thinking: false,
             is_task_running: false,
+            allow_empty_submit: false,
             modal_open: false,
             queued_inputs: std::collections::VecDeque::new(),
             local_command: None,
@@ -539,6 +570,7 @@ impl Tui {
             model_name: String::new(),
             cwd,
             thinking_effort: String::new(),
+            turn_show_effort: None,
             history_entries: vec![TranscriptEntry::Welcome],
             transcript: welcome_lines,
             last_width: cols,
@@ -591,6 +623,15 @@ impl Tui {
     /// Finishes the live markdown renderer and commits every row past the
     /// last committed offset. Shared by the reflow drain and `flush_markdown`.
     fn commit_markdown_tail(&mut self) {
+        // A held punctuation burst is a continuation of the paragraph the
+        // renderer is about to finish: fold it into the source before the
+        // full re-render, or `finish()` would freeze it as its own lone
+        // `.` row — the very thing the hold exists to prevent.
+        if !self.stream_punct_hold.is_empty() {
+            let held = std::mem::take(&mut self.stream_punct_hold);
+            self.markdown_renderer
+                .push_and_render(&held, Some(gray_markdown::get_syntect()));
+        }
         let output = std::mem::replace(
             &mut self.markdown_renderer,
             gray_markdown::StreamingMarkdownRenderer::new(
@@ -614,6 +655,50 @@ impl Tui {
         self.committed_markdown_lines = 0;
     }
 
+    /// Opens (or nests inside) a DEC 2026 synchronized-update bracket.
+    /// Terminals do not nest the mode, so only the outermost call writes
+    /// the escape; `end_sync` mirrors it.
+    pub(crate) fn begin_sync(&mut self) {
+        if self.sync_depth == 0 {
+            let _ = crossterm::execute!(
+                std::io::stdout(),
+                crossterm::terminal::BeginSynchronizedUpdate
+            );
+        }
+        self.sync_depth += 1;
+    }
+
+    pub(crate) fn end_sync(&mut self) {
+        self.sync_depth = self.sync_depth.saturating_sub(1);
+        if self.sync_depth == 0 {
+            let _ = crossterm::execute!(
+                std::io::stdout(),
+                crossterm::terminal::EndSynchronizedUpdate
+            );
+        }
+    }
+
+    /// Runs `f` as ONE atomic terminal frame: every scrollback insert inside
+    /// it, plus the viewport repaint, sits in a single synchronized update.
+    ///
+    /// `insert_before` ends by clearing the viewport and used to run outside
+    /// any bracket, so the dock/input box/footer vanished until some later
+    /// `draw` (tool results, gaps and reflows all inserted without one) —
+    /// the flicker on every tool call. Nested calls coalesce: `draw` is
+    /// deferred while a batch is open and runs once when the outermost
+    /// batch closes, still inside the bracket.
+    pub(crate) fn atomic<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
+        self.begin_sync();
+        self.batch_depth += 1;
+        let out = f(self);
+        self.batch_depth -= 1;
+        if self.batch_depth == 0 {
+            let _ = self.draw();
+        }
+        self.end_sync();
+        out
+    }
+
     /// `insert_before` + `Paragraph` render for one block of rows; `bg`
     /// paints the card background (user/tool cards), `None` leaves rows
     /// unstyled. One home for the scrollback insert ceremony.
@@ -623,12 +708,14 @@ impl Tui {
         bg: Option<ratatui::style::Color>,
     ) {
         let height = lines.len() as u16;
-        let _ = self.terminal.insert_before(height, |buf| {
-            let mut p = Paragraph::new(lines.to_vec());
-            if let Some(bg) = bg {
-                p = p.block(Block::default().style(Style::default().bg(bg)));
-            }
-            p.render(buf.area, buf);
+        self.atomic(|t| {
+            let _ = t.terminal.insert_before(height, |buf| {
+                let mut p = Paragraph::new(lines.to_vec());
+                if let Some(bg) = bg {
+                    p = p.block(Block::default().style(Style::default().bg(bg)));
+                }
+                p.render(buf.area, buf);
+            });
         });
     }
 
@@ -659,6 +746,12 @@ impl Tui {
     /// Clears scrollback and visible screen, re-anchors the inline viewport at the new dimensions,
     /// and re-emits the stored transcript history so lines wrap cleanly without distortion.
     pub(crate) fn reflow_on_resize(&mut self, new_cols: u16) {
+        // One atomic frame: the clear + re-emit of the whole scrollback must
+        // never be presented half-done.
+        self.atomic(|t| t.reflow_on_resize_inner(new_cols));
+    }
+
+    fn reflow_on_resize_inner(&mut self, new_cols: u16) {
         let _ = self.hide_background();
         self.last_width = new_cols;
         if let Ok((_, rows)) = crossterm::terminal::size() {
@@ -1023,10 +1116,20 @@ impl Tui {
 
     pub fn begin_turn(&mut self, label: &str) {
         let now = Instant::now();
+        // The pending resume is now in flight: drop the flag so neither the
+        // ghost nor a bare (empty) Enter mid-turn re-submits it.
+        self.allow_empty_submit = false;
+        // Freeze the footer's effort badge for this turn: its flag is a
+        // process-global cache that background discovery keeps writing,
+        // and a flip mid-turn would resize the right-anchored footer text.
+        self.turn_show_effort = Some(footer_badge_visible(&self.model_name, None));
         self.cache.pause(now);
         self.stream_round_boundary = false;
         self.stream_round_had_text = false;
         self.stream_round_target = None;
+        // Fresh turn: a hold left by an interrupted turn is its orphan tail,
+        // not a continuation of what this turn is about to stream.
+        self.discard_held_punctuation();
         // Codex `status_controls.rs`: follow-up input and background activity
         // must not obscure an active compaction — keep its header/clock.
         if let Some(active) = self.active_compaction.clone() {
@@ -1138,6 +1241,8 @@ impl Tui {
         self.flush_markdown();
         self.end_thinking_run(true);
         self.is_task_running = true;
+        // A compaction is a turn too: same stale-resume rule as `begin_turn`.
+        self.allow_empty_submit = false;
         let started_at = Instant::now();
         self.active_compaction = Some(ActiveCompaction { id, started_at });
         self.status = Some((started_at, COMPACTION_HEADER.to_string()));
@@ -1213,8 +1318,13 @@ impl Tui {
         self.stream_round_boundary = false;
         self.stream_round_had_text = false;
         self.stream_round_target = None;
+        // The turn is over: a still-held punctuation burst was the final
+        // delta (interrupt/stream end) — an orphan continuation that must
+        // not freeze as a lone `.` transcript row.
+        self.discard_held_punctuation();
         self.is_task_running = false;
         self.status = None;
+        self.turn_show_effort = None;
         // Billed output only (exact, reasoning included). `None` prints the
         // bare elapsed — a chars/4 fallback here would reintroduce the very
         // inflation the pill just dropped (2.5M on a 14s turn).
