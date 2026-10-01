@@ -480,7 +480,8 @@ async fn search_command(
     cwd: &Path,
     cancel: &tokio_util::sync::CancellationToken,
 ) -> Option<ToolOutput> {
-    let mut parts = command.split_whitespace();
+    let words = search_words(command)?;
+    let mut parts = words.into_iter();
     if parts.next()? != "gray" {
         return None;
     }
@@ -488,23 +489,27 @@ async fn search_command(
     if sub != "find" && sub != "grep" {
         return None;
     }
-    let rest: Vec<String> = parts.map(str::to_string).collect();
+    let rest: Vec<String> = parts.collect();
     let mut positional: Vec<String> = Vec::new();
     let (mut limit, mut glob, mut context) = (None, None, None);
     let (mut ignore_case, mut literal) = (false, false);
     let mut i = 0;
     while i < rest.len() {
         let arg = rest[i].as_str();
-        // A flag whose value is missing, or an unknown flag, falls through to
-        // the shell: it owns the usage error, and it names the real argv.
-        let take = |name: &str| -> Option<String> {
-            rest.get(i + 1)
-                .cloned()
-                .or_else(|| arg.strip_prefix(&format!("{name}=")).map(str::to_string))
+        // `--name=value` carries its own value; bare `--name` consumes the
+        // next word. A flag whose value is missing, or an unknown flag, falls
+        // through to the shell: it owns the usage error, and it names the
+        // real argv.
+        let mut take = |name: &str| -> Option<String> {
+            if let Some(v) = arg.strip_prefix(name).and_then(|r| r.strip_prefix('=')) {
+                return Some(v.to_string());
+            }
+            i += 1;
+            rest.get(i).cloned()
         };
         match arg {
-            a if a == "--ignore-case" || a == "-i" => ignore_case = true,
-            a if a == "--literal" || a == "-F" => literal = true,
+            "--ignore-case" | "-i" => ignore_case = true,
+            "--literal" | "-F" => literal = true,
             a if a == "--limit" || a.starts_with("--limit=") => {
                 limit = Some(take("--limit")?.parse().ok()?)
             }
@@ -543,6 +548,72 @@ async fn search_command(
         crate::search_cmd::grep(&args, &ctx).await
     };
     Some(finish(text))
+}
+
+/// Splits a `gray find` / `gray grep` command line into words the way the
+/// shell would for the simple cases: whitespace separates, `'…'` is literal,
+/// `"…"` and `\` escape. Bare `*` / `?` stay in the word, since the claimed
+/// search reads them as its own glob. None when the shell would do more than
+/// split — pipes, redirects, separators, substitution, an unclosed quote — so
+/// the command falls through to a real shell instead of being half-claimed.
+fn search_words(command: &str) -> Option<Vec<String>> {
+    let mut words = Vec::new();
+    let mut word = String::new();
+    let mut in_word = false;
+    let mut chars = command.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            c if c.is_whitespace() => {
+                if in_word {
+                    words.push(std::mem::take(&mut word));
+                    in_word = false;
+                }
+            }
+            '\'' => {
+                in_word = true;
+                loop {
+                    match chars.next()? {
+                        '\'' => break,
+                        c => word.push(c),
+                    }
+                }
+            }
+            '"' => {
+                in_word = true;
+                loop {
+                    match chars.next()? {
+                        '"' => break,
+                        '$' | '`' => return None,
+                        '\\' => match chars.next()? {
+                            c @ ('"' | '\\' | '$' | '`') => word.push(c),
+                            '\n' => {}
+                            c => {
+                                word.push('\\');
+                                word.push(c);
+                            }
+                        },
+                        c => word.push(c),
+                    }
+                }
+            }
+            '\\' => {
+                in_word = true;
+                match chars.next()? {
+                    '\n' => {}
+                    c => word.push(c),
+                }
+            }
+            '|' | '&' | ';' | '<' | '>' | '$' | '`' | '(' | ')' => return None,
+            c => {
+                in_word = true;
+                word.push(c);
+            }
+        }
+    }
+    if in_word {
+        words.push(word);
+    }
+    Some(words)
 }
 
 fn image_command(command: &str, cwd: &Path) -> Option<ToolOutput> {
