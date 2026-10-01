@@ -549,11 +549,11 @@ pub(crate) async fn handle_undo(
     let kept: Vec<Message> = messages[..cut].to_vec();
     // Disk first: a session that survived the rewind on disk but not in
     // memory would replay the dropped turn on the next resume.
-    if let Some(state) = session_state {
-        if let Err(e) = state.store.rewind(&state.session_id, kept.len()).await {
-            say(tui, &format!("undo failed: {e}"));
-            return None;
-        }
+    if let Some(state) = session_state
+        && let Err(e) = state.store.rewind(&state.session_id, kept.len()).await
+    {
+        say(tui, &format!("undo failed: {e}"));
+        return None;
     }
     ag.set_messages(kept.clone());
     pending_history.truncate(kept.len());
