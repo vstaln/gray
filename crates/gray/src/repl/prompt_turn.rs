@@ -170,6 +170,17 @@ pub(crate) async fn run_prompt_turn(
             }
         }
     }
+    // Mid-turn steer: the composer already accepts typing while a turn runs and
+    // queues it on Enter. That queue now feeds the turn in flight instead of
+    // waiting for it to end, so a correction lands on the model's next request
+    // (see `steer_queued_input`). Installed per turn because the queue lives in
+    // this turn's Tui handle.
+    if let Some(ag) = agent.as_mut() {
+        let steer_tui = tui_stream.clone();
+        ag.set_steer(std::sync::Arc::new(move || {
+            steer_queued_input(steer_tui.as_ref())
+        }));
+    }
     let agent = agent.as_mut().expect("agent built above");
     let cancel = tokio_util::sync::CancellationToken::new();
     *TURN_STATE.lock().unwrap_or_else(|e| e.into_inner()) = Some(cancel.clone());
@@ -434,6 +445,31 @@ pub(crate) async fn run_prompt_turn(
         }
     }
     Ok(())
+}
+
+/// Remove and return the oldest text-only input waiting to steer the running
+/// turn.
+///
+/// Attachments are left alone: steering carries text, and an entry with images
+/// still runs as its own turn after this one, with its images. Whatever is left
+/// in the queue is picked up by the post-turn drain, so nothing is sent twice
+/// and nothing is dropped.
+fn take_steerable(
+    queued: &mut std::collections::VecDeque<(String, Vec<std::path::PathBuf>)>,
+) -> Option<String> {
+    let position = queued.iter().position(|(_, images)| images.is_empty())?;
+    queued.remove(position).map(|(text, _)| text)
+}
+
+/// [`take_steerable`] against the live composer.
+fn steer_queued_input(tui: Option<&crate::composer::SharedTui>) -> Option<String> {
+    let mut t = tui?.lock().expect("tui lock");
+    let text = take_steerable(&mut t.queued_inputs)?;
+    // Show it: the model is about to act on a line the transcript has not
+    // claimed yet, and an invisible instruction is worse than none.
+    t.push_user_prompt(&text, &[], true);
+    let _ = t.draw();
+    Some(text)
 }
 
 #[path = "prompt_turn_tests.rs"]

@@ -11,6 +11,7 @@ pub mod cron;
 pub mod cron_fire;
 pub mod cron_serve;
 pub mod cron_status;
+pub mod doctor;
 pub mod feedback;
 pub mod foreign;
 pub mod gateway;
@@ -33,6 +34,7 @@ pub mod setup;
 pub mod shell_drain;
 pub mod skills;
 pub mod skills_tool;
+pub mod spill;
 pub mod sys_editor;
 pub mod system_prompt;
 pub mod term_keys;
@@ -337,6 +339,10 @@ pub struct Cli {
     #[arg(long = "dump-manifest")]
     pub dump_manifest: bool,
 
+    /// Print a self-describing SKILL.md for driving gray and exit
+    #[arg(long = "skill")]
+    pub skill: bool,
+
     /// Maximum agent turns per invocation (mini-swe-agent step_limit).
     /// Env: GRAY_MAX_TURNS. Applies to REPL turns this process runs.
     #[arg(long, value_name = "N")]
@@ -477,10 +483,27 @@ pub enum Commands {
         #[command(subcommand)]
         cmd: CronCmd,
     },
+    /// Diagnose this setup (pass --online to also reach the provider)
+    Doctor {
+        /// Also make one request to the provider (no tokens, just /models)
+        #[arg(long)]
+        online: bool,
+    },
     /// Session store maintenance
     Sessions {
         #[command(subcommand)]
         cmd: SessionsCmd,
+    },
+    /// Read back a tool result that was too large for context
+    ///
+    /// A tool result over the inline budget ends in `[spilled …]` with a
+    /// handle. This reads it back: `gray spill grep <handle> <pattern>` is
+    /// the one that matters, and the ends are one flag away. A subcommand and
+    /// not a tool — the model has a shell, and a tool entry is schema every
+    /// turn pays for.
+    Spill {
+        #[command(subcommand)]
+        cmd: SpillCmd,
     },
     /// Install a catalog plugin or register a native executable (gray install plugin NAME)
     Install {
@@ -504,6 +527,52 @@ pub enum InstallCmd {
         #[arg(short, long)]
         force: bool,
     },
+}
+
+/// `gray spill ...` — read back a spilled tool result.
+#[derive(Parser, Debug, Clone)]
+pub enum SpillCmd {
+    /// First N lines (default 50)
+    Head {
+        /// Handle from the `[spilled …]` footer
+        #[arg(value_name = "HANDLE")]
+        handle: String,
+        /// How many lines
+        #[arg(long, short = 'n', default_value_t = 50)]
+        lines: usize,
+    },
+    /// Last N lines (default 50)
+    Tail {
+        /// Handle from the `[spilled …]` footer
+        #[arg(value_name = "HANDLE")]
+        handle: String,
+        /// How many lines
+        #[arg(long, short = 'n', default_value_t = 50)]
+        lines: usize,
+    },
+    /// Matching lines, numbered against the original
+    Grep {
+        /// Handle from the `[spilled …]` footer
+        #[arg(value_name = "HANDLE")]
+        handle: String,
+        /// Pattern (regex unless --literal)
+        #[arg(value_name = "PATTERN")]
+        pattern: String,
+        /// Lines of context around each match
+        #[arg(long, short = 'n', default_value_t = 0)]
+        context: usize,
+        /// Case-insensitive
+        #[arg(long, short)]
+        ignore_case: bool,
+        /// Treat the pattern as literal text, not a regex
+        #[arg(long, short = 'F')]
+        literal: bool,
+        /// Max matching lines to print (default 200)
+        #[arg(long, value_name = "N")]
+        limit: Option<usize>,
+    },
+    /// What compression saved on this machine, by rule
+    Stats,
 }
 
 /// `gray sessions ...` — session store maintenance.

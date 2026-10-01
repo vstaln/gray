@@ -60,6 +60,7 @@ fn test_config() -> crate::config::Config {
         context_window: None,
         context_reserve: None,
         context_keep: None,
+        exec_prefix: None,
         max_turns: None,
         max_cost_micros: None,
         max_wall_secs: None,

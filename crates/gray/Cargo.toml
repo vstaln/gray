@@ -47,6 +47,7 @@ async-trait = { workspace = true }
 libc = { workspace = true }
 unicode-width = { workspace = true }
 ignore = { workspace = true }
+regex = { workspace = true }
 
 
 [target.'cfg(windows)'.dependencies]

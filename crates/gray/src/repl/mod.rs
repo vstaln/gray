@@ -145,7 +145,7 @@ pub use commands::{ReplCommand, ResumeArgs, SysAction, parse_command};
 pub(crate) use format::build_user_message_with_attachments;
 pub use format::{THINKING_STYLE, fmt_usage, format_core_error};
 pub(crate) use handlers::{
-    expand_skill_command, handle_model, handle_sys, handle_thinking, reload_agent,
+    expand_skill_command, handle_model, handle_sys, handle_thinking, handle_undo, reload_agent,
 };
 pub(crate) use plugin_cmds::handle_plugin_command;
 pub(crate) use session::{

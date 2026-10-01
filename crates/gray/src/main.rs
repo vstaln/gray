@@ -35,6 +35,12 @@ async fn main() -> anyhow::Result<()> {
     install_panic_hook();
     let _ = crossterm::terminal::disable_raw_mode();
     let cli = Cli::parse();
+    // A pure text file: no config, no provider, no TTY. It has to work from a
+    // bare shell, because the reader is another agent.
+    if cli.skill {
+        print!("{}", include_str!("../gray-skill.md"));
+        return Ok(());
+    }
     if let Some(gray::Commands::Memory(args)) = &cli.command {
         return gray::memory::run_cli(args);
     }
@@ -52,7 +58,11 @@ async fn main() -> anyhow::Result<()> {
     }
     // Same reason as view: a local search is nobody's provider concern, and
     // the bash tool claims `gray find`/`gray grep` so a model does not have to
-    // know `gray` is on its PATH.
+    // know `gray` is on its PATH. `gray spill` reads a local file for the same
+    // reason — it is the way back into a result the context had to leave out.
+    if let Some(gray::Commands::Spill { cmd }) = &cli.command {
+        return gray::spill::run_cli(cmd);
+    }
     match &cli.command {
         Some(gray::Commands::Find {
             pattern,
@@ -150,6 +160,12 @@ async fn main() -> anyhow::Result<()> {
     };
 
     let mut config = Config::resolve(&cli)?;
+    if let Some(gray::Commands::Doctor { online }) = &cli.command {
+        // Exit code is the report: non-zero on a failed check, so a setup
+        // script or CI can gate on it. `Config::resolve` already ran, so the
+        // key/model/exec_prefix checks see the same values a session would.
+        std::process::exit(gray::doctor::run(&config, *online));
+    }
     gray::turn_caps::init_process_start();
     gray::setup::set_user_context_window(config.context_window);
     gray::setup::set_user_reserve_tokens(config.context_reserve);
@@ -157,6 +173,9 @@ async fn main() -> anyhow::Result<()> {
     if let Some(cmd) = cli.command {
         match cmd {
             gray::Commands::Memory(_) => unreachable!("handled before provider configuration"),
+            gray::Commands::Doctor { .. } => {
+                unreachable!("handled right after config resolution")
+            }
             gray::Commands::Resume {
                 session_id,
                 last,
@@ -190,8 +209,9 @@ async fn main() -> anyhow::Result<()> {
             }
             gray::Commands::View { .. }
             | gray::Commands::Find { .. }
-            | gray::Commands::Grep { .. } => {
-                unreachable!("view/find/grep CLI dispatch happens before configuration")
+            | gray::Commands::Grep { .. }
+            | gray::Commands::Spill { .. } => {
+                unreachable!("view/find/grep/spill CLI dispatch happens before configuration")
             }
         }
     }

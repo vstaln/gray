@@ -57,6 +57,16 @@ pub(crate) const REGISTRY: &[CmdDef] = &[
         aliases: &["compress"],
     },
     CmdDef {
+        name: "undo",
+        desc: "drop the last exchange",
+        aliases: &[],
+    },
+    CmdDef {
+        name: "retry",
+        desc: "drop the last exchange and ask again",
+        aliases: &[],
+    },
+    CmdDef {
         name: "update",
         desc: "install a new gray build",
         aliases: &["upgrade"],
@@ -437,6 +447,10 @@ pub enum ReplCommand {
     Resume(ResumeArgs),
     /// Compress conversation context window (`/compact` or `/compress [instructions]`).
     Compact(Option<String>),
+    /// Drop the last exchange from the conversation (`/undo`).
+    Undo,
+    /// Drop the last exchange and send it again (`/retry`).
+    Retry,
     /// Set reasoning effort (`/thinking [level]`, `/effort`, `/reasoning`; bare toggles hide/show).
     Thinking(Option<String>),
     /// Print the command list (`/help`).
@@ -561,6 +575,8 @@ pub fn parse_command(line: &str) -> ReplCommand {
         },
         Some("new") => ReplCommand::New(opt(rest)),
         Some("compact") => ReplCommand::Compact(opt(rest)),
+        Some("undo") => ReplCommand::Undo,
+        Some("retry") => ReplCommand::Retry,
         Some("thinking") => ReplCommand::Thinking(opt(rest)),
         Some("context") => ReplCommand::ContextWindow(opt(rest)),
         Some("update") => ReplCommand::Update,

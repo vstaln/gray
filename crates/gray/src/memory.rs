@@ -311,7 +311,14 @@ impl MemoryStore {
                 let content = value[field]
                     .as_str()
                     .context("invalid memory snapshot fields")?;
-                parse(content)?;
+                // The cap notice is not an entry (no key can start with `(`);
+                // every other line must still parse.
+                let entries: String = content
+                    .lines()
+                    .filter(|l| !l.starts_with(CAP_NOTICE_PREFIX))
+                    .map(|l| format!("{l}\n"))
+                    .collect();
+                parse(&entries)?;
             }
             // Return canonical fields only, never arbitrary extra snapshot data.
             return Ok(serde_json::to_string(&serde_json::json!({
@@ -362,7 +369,7 @@ impl MemoryStore {
         let mut dropped = 0;
         for (key, text) in entries {
             // "- " + key + ": " + text + "\n"
-            let line = key.len() + text.len() + 4;
+            let line = key.len() + text.len() + 5;
             if used + line > SNAPSHOT_SCOPE_BYTES {
                 dropped += 1;
                 continue;
@@ -372,7 +379,7 @@ impl MemoryStore {
         }
         if dropped > 0 {
             out.push_str(&format!(
-                "- (+{dropped} older entries not shown; `gray memory list` prints them all)\n"
+                "{CAP_NOTICE_PREFIX}{dropped} older entries not shown; `gray memory list` prints them all)\n"
             ));
         }
         Ok(out)
@@ -802,6 +809,10 @@ fn validate_text(text: &str) -> anyhow::Result<()> {
     );
     Ok(())
 }
+
+/// First bytes of the line [`MemoryStore::profile`] appends when the cap
+/// dropped entries.
+const CAP_NOTICE_PREFIX: &str = "- (+";
 
 fn parse(text: &str) -> anyhow::Result<Store> {
     let mut store = Store::default();

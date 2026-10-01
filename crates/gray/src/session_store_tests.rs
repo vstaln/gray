@@ -900,3 +900,147 @@ async fn a_session_being_written_is_not_quarantined_by_the_tail_read() {
         "a mid-write session must survive listing"
     );
 }
+
+/// `/undo` drops the tail of the conversation and hands it back, so the REPL
+/// can re-send it. The kept entries must still form a valid chain afterwards,
+/// which is what the renumbering buys.
+#[tokio::test]
+async fn rewind_drops_the_tail_and_renumbers_the_chain() {
+    let dir = tempdir().unwrap();
+    let store = JsonlSessionStore::new(dir.path());
+    let id = SessionId::new("s1");
+    store
+        .create(SessionMeta::new(id.clone(), 1, "/tmp", "t"))
+        .await
+        .unwrap();
+    store.append(&id, &Message::user("first")).await.unwrap();
+    store
+        .append(&id, &Message::assistant("answer"))
+        .await
+        .unwrap();
+    store.append(&id, &Message::user("second")).await.unwrap();
+    store
+        .append(&id, &Message::assistant("wrong"))
+        .await
+        .unwrap();
+
+    let dropped = store.rewind(&id, 2).await.unwrap();
+    assert_eq!(dropped.len(), 2);
+    assert_eq!(dropped[0].message.text_content(), "second");
+
+    let (_, entries) = store.load(&id).await.unwrap();
+    assert_eq!(entries.len(), 2);
+    assert_eq!(entries[1].message.text_content(), "answer");
+    // Ids stay verbatim: a tail truncation never invalidates the chain, which
+    // only ever points backwards.
+    assert_eq!(entries[0].entry_id, 0);
+    assert_eq!(entries[0].parent_id, None);
+    assert_eq!(entries[1].entry_id, 1);
+    assert_eq!(entries[1].parent_id, Some(0));
+}
+
+/// After a compaction the file holds the superseded prefix, a boundary marker
+/// and the active transcript. Rewinding the active tail must not delete the
+/// marker: that is what stops the pre-compaction history from coming back.
+#[tokio::test]
+async fn rewind_keeps_the_compaction_marker_and_its_superseded_prefix() {
+    let dir = tempdir().unwrap();
+    let store = JsonlSessionStore::new(dir.path());
+    let id = SessionId::new("s1");
+    store
+        .create(SessionMeta::new(id.clone(), 1, "/tmp", "t"))
+        .await
+        .unwrap();
+    store.append(&id, &Message::user("ancient")).await.unwrap();
+    store
+        .append(&id, &Message::assistant("old answer"))
+        .await
+        .unwrap();
+    store
+        .append_compaction_replacement(
+            &id,
+            &[
+                Message::user("summary of the ancient turn"),
+                Message::assistant("carrying on"),
+            ],
+        )
+        .await
+        .unwrap();
+    store.append(&id, &Message::user("fresh")).await.unwrap();
+
+    let before = store.load(&id).await.unwrap().1;
+    assert_eq!(before.len(), 3, "only the active transcript is visible");
+
+    let dropped = store.rewind(&id, 2).await.unwrap();
+    assert_eq!(dropped.len(), 1);
+    assert_eq!(dropped[0].message.text_content(), "fresh");
+
+    let (_, after) = store.load(&id).await.unwrap();
+    assert_eq!(after.len(), 2, "the active tail shrank by one");
+    assert_eq!(
+        after[0].message.text_content(),
+        "summary of the ancient turn",
+        "the marker still supersedes the old history"
+    );
+    assert!(!after.iter().any(|e| e.message.text_content() == "ancient"));
+}
+
+/// A rewind is destructive by design, so the complete original must survive in
+/// `archive/` — that file is the only way back.
+#[tokio::test]
+async fn rewind_archives_the_original_file() {
+    let dir = tempdir().unwrap();
+    let store = JsonlSessionStore::new(dir.path());
+    let id = SessionId::new("s1");
+    store
+        .create(SessionMeta::new(id.clone(), 1, "/tmp", "t"))
+        .await
+        .unwrap();
+    store.append(&id, &Message::user("first")).await.unwrap();
+    store
+        .append(&id, &Message::assistant("answer"))
+        .await
+        .unwrap();
+    store.append(&id, &Message::user("second")).await.unwrap();
+
+    store.rewind(&id, 1).await.unwrap();
+
+    let archive = std::fs::read_dir(dir.path().join("archive"))
+        .expect("archive dir")
+        .count();
+    assert_eq!(archive, 1, "the pre-undo file must be kept");
+    let archived = std::fs::read_to_string(
+        std::fs::read_dir(dir.path().join("archive"))
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path(),
+    )
+    .unwrap();
+    assert!(
+        archived.contains("second"),
+        "the archive holds the dropped turn, not the truncated file"
+    );
+}
+
+/// Nothing to drop is not an error: `/undo` twice in a row says so rather than
+/// failing, and `keep >= len` must leave the file untouched (no archive).
+#[tokio::test]
+async fn rewind_past_the_start_drops_nothing() {
+    let dir = tempdir().unwrap();
+    let store = JsonlSessionStore::new(dir.path());
+    let id = SessionId::new("s1");
+    store
+        .create(SessionMeta::new(id.clone(), 1, "/tmp", "t"))
+        .await
+        .unwrap();
+    store.append(&id, &Message::user("only")).await.unwrap();
+
+    assert!(store.rewind(&id, 5).await.unwrap().is_empty());
+    assert!(store.rewind(&id, 1).await.unwrap().is_empty());
+    assert!(
+        !dir.path().join("archive").exists(),
+        "no rewrite, no archive"
+    );
+}

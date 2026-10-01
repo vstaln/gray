@@ -23,6 +23,73 @@
 
 ## [Unreleased]
 
+### Added
+- Command output is compressed by what the command was, and truncation is no
+  longer a dead end. `cargo`, `npm`/`pnpm`/`yarn`, `pip`/`uv` and `pytest`
+  output loses its progress chatter (a 300-crate `cargo build` is 30 KiB of
+  `Compiling …` lines and one `error[E0308]`), a generic rule collapses runs
+  of identical lines for everything else, and the result says so before the
+  body. The raw log stays on disk exactly where it was, so the squeeze costs
+  the model nothing it cannot grep back. `GRAY_NO_SQUEEZE=1` turns it off.
+- `gray spill` reads a tool result back. A result over the inline budget now
+  keeps its preview *and* stores the full original under a content hash, with
+  a `[spilled …]` footer naming the handle — so the middle that truncation used
+  to amputate is recoverable: `gray spill grep <handle> <pattern>`,
+  `gray spill head|tail <handle>`. It is a subcommand rather than a tool on
+  purpose: the model has a shell, and a tool entry is schema every turn pays
+  for. Handles are checked character by character, so one can never name a
+  path outside the store; an evicted or unknown handle is an error that says
+  what to do, never an empty result. `GRAY_NO_SPILL=1` turns the store off.
+- Compression is metered, so the saving is a number instead of a claim.
+  `gray spill stats` reports what was produced against what reached the model,
+  broken down by rule and sorted by what each rule actually saved; `/usage`
+  grows the same counterfactual as one line.
+- A performance floor in CI (`scripts/perf-floor.sh`). Unique dependency
+  count, crates with a C/C++ build step, workspace members and stripped binary
+  size are down-only ceilings committed in `scripts/perf-baseline.json`. The
+  numbers the README sells had no gate; raising one is a reviewable commit.
+  Startup wall time is measured and printed but never enforced, because a time
+  budget on a shared runner fails on load rather than on regressions.
+- **`gray doctor` answers "is my setup OK?" in one command.** One pass/fail
+  line each for the gray home (exists, writable), the provider credential
+  (never its value), the selected model, the context window *and where that
+  number came from*, the shell (Git Bash on Windows), the exec prefix, the
+  gateway, and the installed plugins. `gray doctor --online` also does a
+  `GET /models` against the configured provider — no tokens, but it leaves the
+  machine, so it is opt-in. Exits non-zero when a check fails, so a setup
+  script or CI can gate on it. Diagnose only: it never writes a config, starts
+  the gateway, or installs anything.
+- **Typing during a turn steers it.** Text typed while a turn is running used
+  to wait for that turn to finish; it now joins the turn at the boundary before
+  the model's next request, so a correction lands while the work is still in
+  flight ("actually, skip the last step"). Steering only appends -- the turn
+  keeps everything it has already done, and cancelling is still Ctrl-C/Esc. An
+  input with attachments keeps them and still runs as its own turn afterwards,
+  and whatever is left in the queue is sent once, after the turn, as before.
+- **`/undo` and `/retry` step back inside a session.** `/undo` drops the last
+  exchange — the last thing you said and everything the model said after it —
+  from both the live context and the saved session; `/retry` is the same
+  rewind with your message sent again. The rewind rewinds the *conversation*
+  only: files the model wrote are untouched, and the pre-undo transcript is
+  kept in `~/.gray/sessions/archive/`, so it is recoverable by hand. The cut
+  always lands on a user turn, so no tool call is ever separated from its
+  result.
+
+- **`exec_prefix` runs the model's shell commands somewhere else.** One saved
+  setting (`~/.gray/config.json`, or `GRAY_EXEC_PREFIX`) names a program that
+  ends in a shell reading its script from stdin, so `docker exec -i dev sh -s`
+  and `ssh box sh -s` cover both a local container and a remote box:
+  ```json
+  { "exec_prefix": "docker exec -i dev sh -s" }
+  ```
+  The command crosses as **text**, not as an argv the far side re-splits, so
+  `$VAR`, globs, pipes, heredocs and quoting arrive exactly as written — the
+  `ssh box sh -c 'ls'` trap cannot happen. Gray's non-interactive environment
+  (`GIT_TERMINAL_PROMPT=0`, `GRAY_SESSION_ID`, `GRAY_CWD_REPORT`) is exported
+  across the boundary too, because neither `ssh` nor `docker exec` forwards the
+  client's environment. `current_dir` still applies to the local client, so a
+  remote command starts in that account's login directory.
+
 ### Fixed
 - **A newline could smuggle a secret past the redactor.** The tokenizer splits on `' '` only, so
   `'\n'` glued neighbouring lines into one token: a secret below the first line of a shell chunk was

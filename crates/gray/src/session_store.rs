@@ -979,19 +979,80 @@ impl JsonlSessionStore {
             return Ok(false);
         }
         replacement.as_file().sync_all()?;
+        self.archive_original(id, &path)?;
+        replacement
+            .persist(&path)
+            .map_err(|e| SessionError::Io(e.error))?;
+        Ok(true)
+    }
+
+    /// Keep the complete original beside the rewritten file. Both writers of a
+    /// shorter session -- compaction and `/undo` -- are destructive by design,
+    /// and this archive is what makes either recoverable by hand.
+    fn archive_original(&self, id: &SessionId, path: &Path) -> Result<()> {
         let archive_dir = self.root_dir.join("archive");
         ensure_private_dir(&archive_dir)?;
         let mut archive = tempfile::Builder::new()
             .prefix(&format!("{}-", id.as_str()))
             .suffix(".jsonl")
             .tempfile_in(&archive_dir)?;
-        std::io::copy(&mut std::fs::File::open(&path)?, &mut archive)?;
+        std::io::copy(&mut std::fs::File::open(path)?, &mut archive)?;
         archive.as_file().sync_all()?;
         let _ = archive.keep().map_err(|e| SessionError::Io(e.error))?;
+        Ok(())
+    }
+
+    /// Rewind the session to its first `keep` *active* entries and return the
+    /// entries that were dropped (empty when there is nothing to drop).
+    ///
+    /// The caller rewinds the *conversation*, never the disk: files the model
+    /// wrote are git's business, not this method's. The complete original
+    /// lands in `archive/`, so a rewind is recoverable by hand.
+    ///
+    /// Records are copied verbatim rather than re-serialized: truncating a tail
+    /// never invalidates the ids the surviving records already carry (the chain
+    /// only ever points backwards), and verbatim keeps fields this build does
+    /// not know about. Everything up to the last compaction marker stays, since
+    /// dropping that marker would resurrect the history its summary replaced.
+    pub async fn rewind(&self, id: &SessionId, keep: usize) -> Result<Vec<SessionEntry>> {
+        use std::io::Write;
+        // `load` replays from the last compaction marker, so `active` is
+        // exactly what a resume would see: the count the caller means.
+        let (_meta, active) = self.load(id).await?;
+        if keep >= active.len() {
+            return Ok(Vec::new());
+        }
+        let dropped = active[keep..].to_vec();
+        let _lock_file = self.lock_session_file(id).await?;
+        let _guard = self.lock.lock().await;
+        let path = self.session_path(id)?;
+        let content = std::fs::read_to_string(&path)?;
+        let mut lines = content.lines().filter(|line| !line.trim().is_empty());
+        let header_line = lines
+            .next()
+            .ok_or_else(|| SessionError::Io(std::io::Error::other("session file has no header")))?;
+        let records: Vec<&str> = lines.collect();
+        let superseded = records
+            .iter()
+            .rposition(|line| {
+                serde_json::from_str::<SessionEntry>(line)
+                    .map(|entry| entry.compaction_boundary)
+                    .unwrap_or(false)
+            })
+            .map(|index| index + 1)
+            .unwrap_or(0);
+        let keep_records = superseded + keep;
+        let mut replacement = tempfile::NamedTempFile::new_in(&self.root_dir)?;
+        writeln!(replacement, "{header_line}")?;
+        for record in &records[..keep_records] {
+            writeln!(replacement, "{record}")?;
+        }
+        replacement.as_file().sync_all()?;
+        self.archive_original(id, &path)?;
         replacement
             .persist(&path)
             .map_err(|e| SessionError::Io(e.error))?;
-        Ok(true)
+        Ok(dropped)
     }
 
     pub async fn load(&self, id: &SessionId) -> Result<(SessionMeta, Vec<SessionEntry>)> {

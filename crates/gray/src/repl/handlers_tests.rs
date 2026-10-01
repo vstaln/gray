@@ -206,6 +206,7 @@ async fn reload_agent_failure_preserves_agent() {
         context_window: None,
         context_reserve: None,
         context_keep: None,
+        exec_prefix: None,
         max_turns: None,
         max_cost_micros: None,
         max_wall_secs: None,
@@ -272,4 +273,27 @@ fn subsystem_toggle_persists_per_subsystem_and_reports_the_manual_path() {
     assert!(crate::setup::memory_auto_enabled_at(&missing));
     assert!(crate::setup::cron_auto_enabled_at(&missing));
     assert!(crate::setup::gw_auto_enabled_at(&missing));
+}
+
+/// `/undo` cuts on the last *user* turn: the model never decides where the
+/// conversation rewinds, and the cut must not land between a tool call and
+/// its result.
+#[test]
+fn undo_cut_lands_on_the_last_user_turn() {
+    let messages = vec![
+        Message::user("first"),
+        Message::assistant("one"),
+        Message::user("second"),
+        Message::assistant("two"),
+    ];
+    assert_eq!(undo_cut(&messages), Some(2));
+}
+
+/// A conversation with no user turn has nothing to undo, and a cut at 0 (the
+/// first message) is a real answer, not a miss.
+#[test]
+fn undo_cut_reports_a_conversation_it_cannot_rewind() {
+    assert_eq!(undo_cut(&[]), None);
+    assert_eq!(undo_cut(&[Message::assistant("unprompted")]), None);
+    assert_eq!(undo_cut(&[Message::user("only")]), Some(0));
 }

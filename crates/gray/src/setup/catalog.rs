@@ -100,6 +100,12 @@ pub struct SavedConfig {
     /// Tail budget kept alongside the summary after compaction.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context_keep: Option<usize>,
+    /// Program that runs the model's shell commands somewhere else, e.g.
+    /// `docker exec -i dev sh -s` or `ssh box sh -s`. The command crosses as
+    /// text on that program's stdin, so no host-side quoting rules apply.
+    /// Exported as `GRAY_EXEC_PREFIX`; absent = commands run locally.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exec_prefix: Option<String>,
     /// Skills the user turned off (absent = enabled). `/skills disable <name>`
     /// adds here, `/skills enable <name>` removes; the prompt list skips
     /// these while manual `/skills <name>` still runs.
@@ -273,6 +279,7 @@ fn partial_saved_config(obj: &serde_json::Map<String, serde_json::Value>) -> Sav
         skills_auto: opt_field(obj, "skills_auto"),
         context_reserve: opt_field(obj, "context_reserve"),
         context_keep: opt_field(obj, "context_keep"),
+        exec_prefix: opt_field(obj, "exec_prefix"),
         disabled_skills: opt_field(obj, "disabled_skills").unwrap_or_default(),
         memory_auto: opt_field(obj, "memory_auto"),
         cron_auto: opt_field(obj, "cron_auto"),

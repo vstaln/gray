@@ -2621,6 +2621,88 @@ async fn mid_stream_error_partial_is_scrubbed_from_the_next_request() {
     );
 }
 
+/// Mid-turn steer: text typed while the turn runs joins that turn, at the
+/// boundary before the next model request -- not after the turn, and never
+/// between a tool call and its result.
+#[tokio::test]
+async fn steer_hook_text_reaches_the_running_turn() {
+    let provider = FakeProvider::new(vec![
+        tool_script("call_1"),
+        vec![
+            StreamEvent::text_delta("adjusted"),
+            StreamEvent::message_complete(Some(StopReason::EndTurn), Some(Usage::new(5, 5))),
+        ],
+    ]);
+    let executor = FakeExecutor::new(ToolOutput::ok("result payload"));
+    let seen = provider.seen_requests();
+    // One injection, then silence: the hook is polled before every request.
+    let pending = std::sync::Arc::new(std::sync::Mutex::new(Some(
+        "actually, use the other flag".to_string(),
+    )));
+    let hook = {
+        let pending = pending.clone();
+        std::sync::Arc::new(move || pending.lock().unwrap().take())
+    };
+    let mut agent = Agent::new(Box::new(provider), Arc::new(executor)).with_tools(vec![tool_def()]);
+    agent.set_steer(hook);
+
+    agent
+        .run(Message::user("go"), ToolContext::default())
+        .await
+        .expect("run should succeed");
+
+    let requests = seen.lock().expect("seen lock").clone();
+    assert_eq!(requests.len(), 2, "the tool round makes a second request");
+    let second: Vec<String> = requests[1].1.iter().map(|m| m.text_content()).collect();
+    assert!(
+        second
+            .iter()
+            .any(|text| text.contains("actually, use the other flag")),
+        "steer text must ride the next request: {second:?}"
+    );
+    // It is a real user message, so the persisted transcript keeps it too.
+    assert!(
+        agent
+            .messages()
+            .iter()
+            .any(|m| m.role == Role::User && m.text_content().contains("use the other flag")),
+        "steer text must stay in the transcript"
+    );
+}
+
+/// No hook (or a hook that returns `None`) must leave a turn byte-identical:
+/// steering is additive, never a rewrite.
+#[tokio::test]
+async fn a_silent_steer_hook_changes_nothing() {
+    let provider = FakeProvider::new(vec![
+        tool_script("call_1"),
+        vec![
+            StreamEvent::text_delta("done"),
+            StreamEvent::message_complete(Some(StopReason::EndTurn), None),
+        ],
+    ]);
+    let executor = FakeExecutor::new(ToolOutput::ok("ok"));
+    let seen = provider.seen_requests();
+    let mut agent = Agent::new(Box::new(provider), Arc::new(executor)).with_tools(vec![tool_def()]);
+    agent.set_steer(std::sync::Arc::new(|| None));
+
+    agent
+        .run(Message::user("go"), ToolContext::default())
+        .await
+        .expect("run should succeed");
+
+    let requests = seen.lock().expect("seen lock").clone();
+    assert_eq!(requests.len(), 2);
+    // Exactly the unsteered shape: the prompt, the assistant tool call and its
+    // result. A silent hook must not add a message of its own.
+    let roles: Vec<Role> = requests[1].1.iter().map(|m| m.role).collect();
+    assert_eq!(
+        roles,
+        vec![Role::User, Role::Assistant, Role::User],
+        "nothing typed, nothing added"
+    );
+}
+
 /// One tool round: assistant `ToolUse` + the paired `ToolResult` carrying
 /// `bytes` of output. Tool results are what the stale mask claims.
 fn big_tool_round(id: &str, bytes: usize) -> Vec<Message> {

@@ -350,6 +350,17 @@ impl Agent {
 
             self.collect_background_notifications(&ctx);
 
+            // Mid-turn steer: text the user typed while this turn was running
+            // joins it here, at the boundary between two model requests, so it
+            // can never land inside a stream or between a tool call and its
+            // result. Steering only appends -- cancelling stays Ctrl-C/Esc, and
+            // the turn keeps everything it has already done.
+            if let Some(steer) = self.steer.clone()
+                && let Some(text) = steer()
+            {
+                self.messages.push(Message::user(text));
+            }
+
             // Pre-turn budget (pi `_compactBeforeNextAssistantResponse`):
             // history is append-only (mini-swe-agent / pi), so each request
             // extends the previous one and the provider prefix cache stays

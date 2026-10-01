@@ -5,10 +5,18 @@
 //! annotation; error outputs are additionally hard-capped at 2 KiB.
 //! (Moved from `gray-tools` so non-core tool crates share
 //! the policy without depending on the whole builtin toolset.)
+//!
+//! A cap is a lossy last resort, so an over-budget result is no longer just
+//! amputated: the full original goes to the [`crate::spill`] store and the
+//! preview grows a footer naming the handle that reads it back. Same preview,
+//! no longer a lie — and when the store cannot be written (no `$GRAY_HOME`,
+//! read-only disk) it degrades to the old annotation instead of failing the
+//! call.
 
 use serde_json::Value;
 
 use crate::agent::ToolOutput;
+use crate::spill::{self, MeterEvent};
 
 /// Maximum number of lines kept in a successful tool output.
 pub const MAX_LINES: usize = 2000;
@@ -82,14 +90,37 @@ pub fn truncate_error(text: &str) -> String {
     }
 }
 
-/// Wraps raw stdout-like text into a successful [`ToolOutput`].
+/// Wraps raw stdout-like text into a successful [`ToolOutput`]. Over budget,
+/// the preview carries a handle to the stored original.
 pub fn finish(raw: String) -> ToolOutput {
-    ToolOutput::ok(truncate_output(&raw))
+    ToolOutput::ok(recoverable(&raw, truncate_output(&raw)))
 }
 
-/// Wraps raw failure text into an error [`ToolOutput`] (capped at 2 KiB).
+/// Wraps raw failure text into an error [`ToolOutput`] (capped at 2 KiB, and
+/// recoverable when the cap actually cut something).
 pub fn fail(raw: String) -> ToolOutput {
-    ToolOutput::error(truncate_error(&raw))
+    ToolOutput::error(recoverable(&raw, truncate_error(&raw)))
+}
+
+/// Grow a truncated preview into a recoverable one: store the original, then
+/// name the handle. Returns the preview unchanged when nothing was cut, and
+/// also when the store is unavailable — the cap is the floor, never a
+/// regression into a hard error.
+fn recoverable(original: &str, shown: String) -> String {
+    if shown == original {
+        return shown;
+    }
+    let Some(handle) = spill::store(original) else {
+        return shown;
+    };
+    spill::record(MeterEvent {
+        ts: spill::now_millis(),
+        rule: String::new(),
+        raw: original.len() as u64,
+        sent: shown.len() as u64,
+    });
+    let lines = original.lines().count();
+    format!("{shown}{}", spill::footer(&handle, original.len(), lines))
 }
 
 fn annotation(notes: &[String]) -> String {
