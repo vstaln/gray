@@ -72,6 +72,11 @@
   remote command starts in that account's login directory.
 
 ### Fixed
+- **Old reasoning no longer reappears under the answer.** When the band shrank at turn end, a
+  refill reprinted remembered scrollback rows into the gap it left, and once the transcript had
+  scrolled past the screen it picked the wrong ones: the first round's thinking showed up again
+  below the final answer, above `Thought for`. The refill is gone; a shrink leaves blank rows that
+  the next output fills.
 - **The REPL composer rides the last rows of the screen from the first frame.** A fresh (or
   cleared) session used to park the input box and the footer right under the welcome banner, with a
   dead band of cleared rows down to the bottom of the screen: the pin only latched once the
