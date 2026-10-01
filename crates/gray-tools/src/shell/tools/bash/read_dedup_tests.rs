@@ -50,7 +50,9 @@ fn only_a_bare_single_file_read_is_a_plain_read() {
         assert_eq!(whole(c), None, "{c:?} must not be a plain read");
     }
     // An absolute path resolves like any other operand.
-    let abs = plain_read(&format!("cat {}", path.display()), cwd).expect("abs");
+    // Forward slashes: a bare Windows backslash path is mangled before it lands.
+    let arg = path.display().to_string().replace('\\', "/");
+    let abs = plain_read(&format!("cat {arg}"), cwd).expect("abs");
     // macOS /tmp is a symlink: compare resolved paths, not spellings.
     assert_eq!(
         std::fs::canonicalize(&abs.path).expect("abs resolves"),

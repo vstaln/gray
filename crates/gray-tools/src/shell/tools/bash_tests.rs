@@ -1196,7 +1196,9 @@ async fn a_repeated_cat_is_stubbed_once_through_the_tool() {
     std::fs::write(&file, "alpha\nbeta\ngamma\n").expect("write");
     let ctx = ctx_for(&sess("dedup"));
     let tool = BashTool::default().with_ledger(Arc::new(crate::ledger::FileLedger::new()));
-    let cmd = json!({"command": format!("cat {}", file.display())});
+    // Forward slashes: the command parser eats a bare Windows backslash path.
+    let arg = file.display().to_string().replace('\\', "/");
+    let cmd = json!({"command": format!("cat {arg}")});
 
     let first = tool.execute(&ctx, cmd.clone()).await;
     assert!(
@@ -1232,7 +1234,9 @@ async fn a_tool_without_a_ledger_never_stubs() {
     std::fs::write(&file, "alpha\n").expect("write");
     let ctx = ctx_for(&sess("noledger"));
     let tool = BashTool::default();
-    let cmd = json!({"command": format!("cat {}", file.display())});
+    // Forward slashes: the command parser eats a bare Windows backslash path.
+    let arg = file.display().to_string().replace('\\', "/");
+    let cmd = json!({"command": format!("cat {arg}")});
     for _ in 0..2 {
         let out = tool.execute(&ctx, cmd.clone()).await;
         assert!(body(&out.content).contains("alpha"), "{}", out.content);
