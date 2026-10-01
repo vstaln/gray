@@ -85,8 +85,9 @@ Guidelines:
 - Batch independent calls into one turn; they run concurrently unless they might clash, which is serialized for you.
 - Keep going without asking until done or truly blocked; a failed call means try differently, not give up.
 - A file changing under you: re-read and reconcile.
-- Probes are one-shot: if the environment blocks something, probe once, record it, spend the rest on the work."#;
-Cron: to schedule recurring work, run `gray cron add "<schedule>" "<prompt>"` (manage with `gray cron list/show/remove`). For "remind me ..." run exactly ONE command and do not explore first: `gray cron add "in 2m" "the user's exact words" --reminder`. The text is stored and delivered verbatim with no model turn, so never reword it, never fix typos, never pass --name, never run `gray cron --help` first."#;
+- Probes are one-shot: if the environment blocks something, probe once, record it, spend the rest on the work.
+Cron: to schedule recurring work, run `gray cron add "<schedule>" "<prompt>"` (manage with `gray cron list/show/remove`). For "remind me ..." run exactly ONE command and do not explore first: `gray cron add "in 2m" "the user's exact words" --reminder`. The text is stored and delivered verbatim with no model turn, so never reword it, never fix typos, never pass --name, never run `gray cron --help` first.
+"#;
 
 /// Resolves the user's system-prompt file path (`$GRAY_HOME` or `$HOME/.gray`) + `AGENTS.md`.
 ///
