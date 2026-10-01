@@ -195,6 +195,8 @@ fn the_store_is_bounded_and_keeps_the_newest() {
     });
 }
 
+/// Unix-only: owner-only is a mode bit there; Windows has no equivalent.
+#[cfg(unix)]
 #[test]
 fn the_store_is_written_owner_only() {
     with_home(|| {
@@ -202,15 +204,12 @@ fn the_store_is_written_owner_only() {
         let path = dir()
             .expect("home")
             .join(format!("{}.txt", handle_for("secret-ish content")));
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mode = std::fs::metadata(&path)
-                .expect("metadata")
-                .permissions()
-                .mode();
-            assert_eq!(mode & 0o777, 0o600, "spill files hold raw tool output");
-        }
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&path)
+            .expect("metadata")
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600, "spill files hold raw tool output");
     });
 }
 
