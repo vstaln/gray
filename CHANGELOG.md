@@ -1,29 +1,21 @@
-## [0.1.9]
-
-### Fixed
-- **The REPL composer rides the last rows of the screen from the first frame.** A fresh (or
-  cleared) session used to park the input box and the footer right under the welcome banner, with a
-  dead band of cleared rows down to the bottom of the screen: the pin only latched once the
-  transcript had overflowed the viewport, and an explicit branch unpinned it again on every growth.
-  The band is now positioned at `screen height - band height` unconditionally, so a shrink (status
-  dock, live cards clearing at a tool result, end of turn), a growth and a resize all keep the
-  footer's row the screen's last row and repaint what they vacate. Band budgeting makes the text
-  area and the footer un-trimmable and sheds the most transient band first, so a busy screen loses
-  the status dock before the transcript.
-- **The input box keeps its top margin row.** 0.1.9 dropped the blank row the box owns above its
-  `❯` row and leaned on the transcript's own trailing gap, so the prompt sat flush against whatever
-  was above it. The pad row is back (and the caret follows the prompt row, not the pad), with
-  `MIN_VIEWPORT_H` back at 4.
-- **"Please continue…" no longer shows while the model is streaming.** The bare-Enter resume flag
-  is armed when the REPL loop blocks on input, i.e. before the turn a bare Enter would continue is
-  submitted, so mid-turn it was stale and the box kept painting the ghost over a live turn. It is
-  dropped when a turn starts, and the hint is gated on the composer being idle.
-
 # Changelog
 
 ## [Unreleased]
 
+## [0.1.10] - 2026-10-01
+
 ### Added
+- **A native Anthropic provider.** A key on `api.anthropic.com` now speaks the Messages API
+  instead of Anthropic's OpenAI-compatible endpoint, which has no prompt caching: every request
+  re-billed the whole prompt. Requests carry `cache_control` breakpoints on the system prompt, the
+  last tool and the last message; thinking blocks go back with their signatures; an overloaded 529
+  or a rate limit retries before the stream opens.
+- **Prompt-cache warming during long tool runs** (pi parity). On the native Anthropic provider,
+  a tool that runs past the 5-minute cache lifetime no longer costs a full prompt re-write on the
+  next request: at 90% of the lifetime the round's request is replayed with a one-token output
+  cap, while the expected saving is at least $0.05, for up to an hour. Refresh usage is billed with
+  the turn and never enters the conversation. Thinking budgets cannot be replayed safely, so it
+  applies with thinking off; `GRAY_NO_CACHE_WARM=1` turns it off.
 - Command output is compressed by what the command was, and truncation is no
   longer a dead end. `cargo`, `npm`/`pnpm`/`yarn`, `pip`/`uv` and `pytest`
   output loses its progress chatter (a 300-crate `cargo build` is 30 KiB of
@@ -91,6 +83,68 @@
   remote command starts in that account's login directory.
 
 ### Fixed
+- **Windows installs work from one line.** `irm https://gray.alignment.id/install.ps1 | iex`
+  failed three ways in 0.1.9: piped to `iex` there is no `$PSScriptRoot`, so `install.ps1`
+  refused to run without a sibling `install-native.ps1`; that file was never published to the
+  site anyway; and the native installer fetched a per-archive `.sha256` file the release never
+  publishes, so every download-mode install died on a 404. `install.ps1` now fetches
+  `install-native.ps1` from the same site over HTTPS and runs it as a script block (no
+  execution-policy change), the release publishes it beside `install.ps1`, and the archive is
+  verified against the channel's `SHA256SUMS-<channel>` file -- exactly one well-formed line for
+  that zip, or nothing is trusted. The offline `-ArchivePath`/`-Sha256` route is unchanged.
+- **The Windows installer defaults to stable**, like `install.sh`. `-Channel beta` still
+  selects the per-commit build.
+- **`-Wsl` no longer closes your PowerShell window.** Its two `exit` calls ran inside the
+  user's session under `iex`; they now throw or return.
+- The installers are ASCII-only: Windows PowerShell 5.1 decodes an uncharset `text/plain`
+  response as Latin-1.
+- **A provider error reads as a sentence, once.** A 429 printed its raw JSON envelope
+  (`{"error": {"message": …, "type": …, "param": …}}`) on every retry row and again in the final
+  error. HTTP errors now show the provider's own `error.message` (the full body still drives the
+  classification), and a retry burst repeating the same cause is one row, not one per attempt.
+- **Tool cards drop the log path.** Every bash card showed `log ~/.gray/shell/<session>/bash-<hash>.log`;
+  the path stays in what the model reads (it pages the log back from it) but is gone from the
+  card. A signal exit no longer says it twice: `exit 143 (SIGTERM) (terminated)`.
+- **Claude caches again behind OpenAI-compatible routers.** The `cache_control` breakpoints were
+  removed on 2026-09-23 on the theory that `prompt_cache_key` covers caching; Claude ignores that
+  field and caches only at breakpoints, so Claude through OpenRouter re-billed the full prompt on
+  every request. The breakpoints are back for Claude models.
+- **Old reasoning no longer reappears under the answer.** When the band shrank at turn end, a
+  refill reprinted remembered scrollback rows into the gap it left, and once the transcript had
+  scrolled past the screen it picked the wrong ones: the first round's thinking showed up again
+  below the final answer, above `Thought for`. The refill is gone; a shrink leaves blank rows that
+  the next output fills.
+- **The REPL composer rides the last rows of the screen from the first frame.** A fresh (or
+  cleared) session used to park the input box and the footer right under the welcome banner, with a
+  dead band of cleared rows down to the bottom of the screen: the pin only latched once the
+  transcript had overflowed the viewport, and an explicit branch unpinned it again on every growth.
+  The band is now positioned at `screen height - band height` unconditionally, so a shrink (status
+  dock, live cards clearing at a tool result, end of turn), a growth and a resize all keep the
+  footer's row the screen's last row and repaint what they vacate. Band budgeting makes the text
+  area and the footer un-trimmable and sheds the most transient band first, so a busy screen loses
+  the status dock before the transcript.
+- **The input box keeps its top margin row.** 0.1.9 dropped the blank row the box owns above its
+  `❯` row and leaned on the transcript's own trailing gap, so the prompt sat flush against whatever
+  was above it. The pad row is back (and the caret follows the prompt row, not the pad), with
+  `MIN_VIEWPORT_H` back at 4.
+- **"Please continue…" no longer shows while the model is streaming.** The bare-Enter resume flag
+  is armed when the REPL loop blocks on input, i.e. before the turn a bare Enter would continue is
+  submitted, so mid-turn it was stale and the box kept painting the ghost over a live turn. It is
+  dropped when a turn starts, and the hint is gated on the composer being idle.
+- **A cron job added from the REPL comes back into that chat.** "Message me in a minute" fired,
+  wrote its output under `cron/output/` and showed nothing in the conversation; the model polled
+  with `sleep` to find out. A job added from inside a session (the bash tool's `GRAY_SESSION_ID`)
+  now records that session as its origin, and whichever ticker fires it drops the result into
+  `cron/inbox/<session>`. The REPL showing the session paints a `⏰ cron` card and, once idle,
+  starts a turn with the result as a `[Cron delivery: <name>]` message. A background bash job that
+  finishes while the REPL is idle starts a turn the same way, and queued `host/say` lines paint
+  without waiting for the next keypress.
+- **A parallel tool batch stops sitting in "Preparing tool" while it runs.** `tool_call_end` (the
+  "args complete, executing" signal) fired for each member only after the slowest one finished; it
+  now fires for every member before the batch starts.
+- **A full-width numbered or diff row in a tool card stays on one row.** The card re-wrapped body
+  rows two columns narrower than `tool_fmt` had already wrapped them, orphaning each full row's last
+  word onto a continuation row.
 - **A newline could smuggle a secret past the redactor.** The tokenizer splits on `' '` only, so
   `'\n'` glued neighbouring lines into one token: a secret below the first line of a shell chunk was
   written to the durable log and sent to the provider in the clear, and a secret that *did* fire armed
@@ -111,6 +165,14 @@
   shared temp dir (pre-creatable by another local user, removed only on success) is a private
   `TempDir` now, dropped on every exit including a checksum mismatch.
 
+- **One blank row between blocks, and the card that owns none of it.** A tool card and a
+  prompt card each shipped their own leading and trailing margin row *and* asked the
+  transcript for a separating gap, so a card sitting between two paragraphs was fenced by
+  two blank rows on each side (and a card after a card by four). Codex's rule is one blank
+  row between blocks, contributed by the transcript alone: a block carries no outer
+  margin of its own. The card formatters now emit their content only, and `ensure_gap` is
+  the single owner of the separation, so a paragraph, a card and the next paragraph are
+  always exactly one row apart.
 ### Changed
 - CI and the release builds pass `--locked` on every platform, so a dependency edit without a lock
   update cannot ship from `main`.
@@ -145,6 +207,16 @@
   tokens became ~500, and a memory that grew without bound can no longer grow
   the system prompt with it.
 
+## [0.1.9] - 2026-09-30
+
+### Fixed
+- **The REPL composer stays on the last rows of the screen.** Once the transcript overflows the
+  viewport, a latched `bottom_anchored` keeps the input box and the footer pinned to the screen's
+  last rows instead of parking them above cleared rows; a shrink (status dock, live cards clearing at
+  a tool result, end of turn) slides the viewport down and repaints what it vacated with the surface
+  colour. Band budgeting makes the text area and the footer un-trimmable and sheds the most transient
+  band first, so a busy screen loses the status dock before the transcript.
+
 ## [0.1.8] - 2026-09-30
 
 ### Fixed
@@ -159,7 +231,7 @@
   `cmd &` legal. 33 of 47 DeepSWE runs in the 2026-09-29 retro reported this;
   it cost each a wasted turn at best.
 
-- - The `windows-runtime` CI gate stops hanging on the search-index bench.
+- The `windows-runtime` CI gate stops hanging on the search-index bench.
   Every `ci` run since the search-as-command merge (#145) died at
   `index_vs_spawn_tax` — "running for over 60 seconds", then silence until
   the job's 60-minute budget was spent. The hang had no reachable timeout:
@@ -175,6 +247,7 @@
   and costs CI a two-minute failure with a name on it — instead of a 60-minute
   silent hang. `windows-focused` takes a `test-path` input, so a native
   single-test iteration no longer means editing the workflow.
+
 ### Added
 - `gray cron add "<schedule>" "<text>" --reminder` stores the text and delivers
   it verbatim at fire time. A reminder runs no agent turn, no pre-script, no

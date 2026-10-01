@@ -380,16 +380,22 @@ pub fn format_tool_call_header(
 
     match name {
         "bash" => {
-            let cmd = truncate_cmd(
-                args.get("command")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .trim(),
-            );
+            let full = args
+                .get("command")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim();
+            let cut = truncate_cmd(full);
+            // A cut command says so: `… | sort |` alone reads as a broken pipe.
+            let cmd = if cut.len() < full.len() {
+                format!("{}\u{2026}", cut.trim_end())
+            } else {
+                cut.to_string()
+            };
             Line::from(vec![
                 bullet,
                 Span::styled("Ran ", action_style),
-                Span::styled(cmd.to_string(), cmd_style),
+                Span::styled(cmd, cmd_style),
             ])
         }
         "write" => {
@@ -704,9 +710,29 @@ fn strip_shell_fence(trimmed: &str) -> String {
     {
         lines.remove(idx);
     }
-    lines
+    // The header's `· log <path>` names the raw log for the model (it can
+    // page it back); on a card it is a long path on every run. Drop that
+    // field from the display only, keeping any field after it.
+    // The header is line 1, or line 2 under a `cancelled by user` row.
+    let mut owned: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
+    for l in owned.iter_mut().take(2) {
+        *l = drop_log_field(l);
+    }
+    owned
         .join("\n")
         .replace("<\\/untrusted-output>", "</untrusted-output>")
+}
+
+fn drop_log_field(header: &str) -> String {
+    const SEP: &str = " \u{00b7} ";
+    let Some(start) = header.find(" \u{00b7} log ") else {
+        return header.to_string();
+    };
+    let rest = &header[start + SEP.len()..];
+    match rest.find(SEP) {
+        Some(end) => format!("{}{}", &header[..start], &rest[end..]),
+        None => header[..start].to_string(),
+    }
 }
 
 /// Formats tool output lines with Codex/Grok-style rendering.

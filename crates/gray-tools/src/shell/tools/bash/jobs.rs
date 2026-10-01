@@ -747,4 +747,36 @@ mod tests {
         assert!(out.content.contains("Liveness: silent"), "{}", out.content);
         assert!(!out.content.contains("cancel"), "{}", out.content);
     }
+
+    #[tokio::test]
+    async fn any_job_waiter_wakes_on_a_send_after_the_snapshot() {
+        // The turn-end wake: the waiter is handed out before the job settles,
+        // so it must still observe the send that lands after the snapshot.
+        let tool = std::sync::Arc::new(BashTool::default());
+        let ctx = ToolContext::default();
+        assert!(
+            !tool.wait_any_job_fut(&ctx, Duration::from_millis(50)).await,
+            "no unfinished job: the wake answers false instead of hanging"
+        );
+        let (job, tx) = entry(false, false, true);
+        tool.jobs
+            .0
+            .lock()
+            .unwrap()
+            .insert("bash-any-wait".into(), job);
+        // The waiter must take its snapshot of the job list BEFORE the send,
+        // or there is no race to observe: a job that settled before the
+        // snapshot is filtered out as finished and answers false by design.
+        let waiter = {
+            let tool = std::sync::Arc::clone(&tool);
+            let ctx = ctx.clone();
+            tokio::spawn(async move { tool.wait_any_job_fut(&ctx, Duration::from_secs(5)).await })
+        };
+        tokio::task::yield_now().await;
+        tx.send_replace(Some(ToolOutput::ok("exit 0")));
+        assert!(
+            waiter.await.expect("waiter task"),
+            "a job settling after the snapshot wakes the turn"
+        );
+    }
 }

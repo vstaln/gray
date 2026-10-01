@@ -10,7 +10,12 @@ gray itself is MIT (see `LICENSE`). Cargo dependencies are covered by
 | `gray-gateway/progress.rs` | https://github.com/NousResearch/hermes-agent | MIT |
 | `gray-core/parallel.rs` (parallel batch lane; design/constants parity with Toolrush `MAX_BATCH`/`MAX_WORKERS`, no verbatim code) | https://github.com/OnlyTerp/toolrush | MIT |
 | `repl/attachments.rs`, `repl/format.rs`, skills-dir interop (parity targets) | https://github.com/sst/opencode | see upstream |
+| `docs/openhuman-reference-study.md` (study only — no gray code informed by it yet) | https://github.com/tinyhumansai/openhuman | GPL-3.0 |
 
 Codex compaction port: `codex-rs/core/src/compact_remote.rs` +
 `compact_remote_v2.rs` + `compact_remote_v2_images.rs` @ upstream commit
 `1fb5158b` → `gray-core/compact_v2.rs` (+ pipeline in `agent_compact.rs`).
+
+OpenHuman and its 18 vendored `tinyhumansai/*` engine crates are GPL-3.0, so
+nothing from them may be ported into gray (MIT): the study is design parity
+only, per `docs/reference-study-protocol.md`.

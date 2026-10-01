@@ -7,7 +7,6 @@
 //! and does NOT re-probe the cursor via CPR (`\x1b[6n`) on height changes. This eliminates
 //! prompt doubling and cursor drift down the terminal screen.
 
-use std::collections::VecDeque;
 use std::io;
 
 use ratatui::backend::{Backend, ClearType};
@@ -56,15 +55,6 @@ where
     /// next scrollback insert draws into them, so a shrink never leaves a
     /// permanent blank gap (the doubled margin).
     blank_above: u16,
-    /// The transcript rows `insert_before` printed, oldest first, capped at
-    /// twice the screen height. Inline mode scrolls up (`append_lines`) and
-    /// never back, so a band grown to the screen pushes the transcript into
-    /// the terminal's scrollback, out of the band's reach: `refill_blank_above`
-    /// pours those rows back down into the hole a shrink leaves.
-    tail: VecDeque<Buffer>,
-    /// A refill reprints rows already in `tail`; recording them again would
-    /// duplicate the block in every later refill.
-    refilling: bool,
 }
 
 impl<B> Drop for CustomTerminal<B>
@@ -108,19 +98,12 @@ where
             last_known_screen_size: screen_size,
             band_dirty: false,
             blank_above: 0,
-            tail: VecDeque::new(),
-            refilling: false,
         };
         term.set_viewport_area(viewport_area);
         Ok(term)
     }
 
     pub fn set_viewport_area(&mut self, area: Rect) {
-        if area.width != self.viewport_area.width {
-            // Tail rows are the old width; the caller re-emits the history at
-            // the new one.
-            self.tail.clear();
-        }
         self.buffers[self.current].resize(area);
         self.buffers[1 - self.current].resize(area);
         self.viewport_area = area;
@@ -171,7 +154,6 @@ where
             // Clear from the vacated top (also resets the previous buffer,
             // so the next frame repaints the whole band at its new row).
             self.clear_after_position(Position::new(0, vacated_top))?;
-            self.refill_blank_above()?;
             return Ok(());
         }
 
@@ -353,49 +335,6 @@ where
         // vacated rows: none are left blank above it.
         self.blank_above = 0;
 
-        if !self.refilling {
-            let cap = (2 * self.last_known_screen_size.height).max(height) as usize;
-            self.tail.push_back(buffer.clone());
-            while self.tail.len() > cap {
-                self.tail.pop_front();
-            }
-        }
-
-        Ok(())
-    }
-
-    /// Print the transcript rows that scrolled off back into the blank rows
-    /// above the band. The rows above the hole are the last `visible` ones
-    /// printed, so the ones that belong in it are the `fill` before them —
-    /// what a scrollback-capable terminal would already have on screen.
-    fn refill_blank_above(&mut self) -> io::Result<()> {
-        let hole = self.blank_above as usize;
-        // Rows above the band, minus the hole: the tail's last ones.
-        let visible = self.viewport_area.y.saturating_sub(self.blank_above) as usize;
-        let fill = hole.min(self.tail.len().saturating_sub(visible));
-        if fill == 0 {
-            return Ok(());
-        }
-        let start = self.tail.len() - visible - fill;
-        let rows: Vec<Buffer> = self.tail.iter().skip(start).take(fill).cloned().collect();
-
-        self.refilling = true;
-        let drawn = self.insert_before(fill as u16, |buf| {
-            let w = buf.area.width as usize;
-            for (i, row) in rows.iter().enumerate() {
-                let Some(cells) = row.content.get(..w) else {
-                    continue;
-                };
-                buf.content[i * w..(i + 1) * w].clone_from_slice(cells);
-            }
-        });
-        self.refilling = false;
-        drawn?;
-
-        // `insert_before` left the count at zero. That is right even when the
-        // tail was too short to fill the hole: the band then sits that far
-        // above the bottom, and the next frame's re-pin counts the rest. The
-        // pin adds to the count, so seeding it here would double-count.
         Ok(())
     }
 
@@ -601,83 +540,6 @@ mod tests {
         // 4 blank rows spent, 2 scrolled: the banner rose by 2, not 6.
         let buffer = terminal.backend.buffer();
         assert_eq!(buffer[(0, 1)].symbol(), "B");
-    }
-
-    /// A composer grown to the screen (a paste) scrolls the transcript into
-    /// the terminal's scrollback, which inline mode can never scroll back out
-    /// of. Deleting the paste shrinks the band again: the rows it gave up must
-    /// come back down, not stay a hole.
-    #[test]
-    fn a_shrink_after_a_full_screen_paste_restores_the_scrolled_off_rows() {
-        let screen = Size::new(10, 12);
-        let mut terminal = CustomTerminal::with_options(TestBackend::new(10, 12), 4).unwrap();
-        terminal.set_viewport_height(4, screen).unwrap();
-
-        for glyph in ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l"] {
-            terminal
-                .insert_before(1, |buf| {
-                    buf[(0, 0)].set_symbol(glyph);
-                })
-                .unwrap();
-        }
-
-        // The paste fills the screen: every transcript row scrolls off the top.
-        terminal.set_viewport_height(12, screen).unwrap();
-        assert_eq!(terminal.viewport_area, Rect::new(0, 0, 10, 12));
-        let buffer = terminal.backend.buffer();
-        assert!(
-            (0..12).all(|y| (0..10).all(|x| buffer[(x, y)].symbol() == " ")),
-            "a full-screen composer scrolls the transcript away"
-        );
-
-        // Deleting it shrinks the band to the last rows, and the transcript
-        // comes back down into the rows the tall band gave up: the 8 most
-        // recent of the 12 that scrolled off.
-        terminal.set_viewport_height(4, screen).unwrap();
-        assert_eq!(terminal.viewport_area, Rect::new(0, 8, 10, 4));
-        let buffer = terminal.backend.buffer();
-        let restored: String = (0..8)
-            .map(|y| buffer[(0, y)].symbol().to_string())
-            .collect();
-        assert_eq!(restored, "efghijkl");
-    }
-
-    /// A hole taller than the tail is filled as far as the rows reach; the
-    /// band rides back to the bottom, and the next row still lands flush
-    /// against the last restored one — the leftover count must not drift.
-    #[test]
-    fn a_hole_taller_than_the_tail_fills_what_it_can_and_stays_flush() {
-        let screen = Size::new(10, 12);
-        let mut terminal = CustomTerminal::with_options(TestBackend::new(10, 12), 4).unwrap();
-        terminal.set_viewport_height(4, screen).unwrap();
-
-        for glyph in ["a", "b", "c", "d", "e", "f"] {
-            terminal
-                .insert_before(1, |buf| {
-                    buf[(0, 0)].set_symbol(glyph);
-                })
-                .unwrap();
-        }
-        terminal.set_viewport_height(12, screen).unwrap();
-        terminal.set_viewport_height(4, screen).unwrap();
-        // 6 rows restored, 2 rows of the hole still blank.
-        let buffer = terminal.backend.buffer();
-        assert_eq!(buffer[(0, 0)].symbol(), "a");
-        assert_eq!(buffer[(0, 5)].symbol(), "f");
-        assert_eq!(buffer[(0, 6)].symbol(), " ");
-
-        // The next frame re-pins the band and counts the rest of the hole.
-        terminal.set_viewport_height(4, screen).unwrap();
-        assert_eq!(terminal.viewport_area, Rect::new(0, 8, 10, 4));
-        terminal
-            .insert_before(1, |buf| {
-                buf[(0, 0)].set_symbol("g");
-            })
-            .unwrap();
-        // Flush under "f", not floating above it or overwriting it.
-        let buffer = terminal.backend.buffer();
-        assert_eq!(buffer[(0, 6)].symbol(), "g");
-        assert_eq!(buffer[(0, 5)].symbol(), "f");
     }
 
     /// A shrink while pinned leaves blank rows above the band. The next

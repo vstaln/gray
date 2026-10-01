@@ -309,6 +309,8 @@ pub struct Tui {
     active_compaction: Option<ActiveCompaction>,
     turn_started: Option<Instant>,
     turn_had_thinking: bool,
+    /// Last retry cause shown this turn: an identical one is not repeated.
+    pub(crate) last_retry_detail: Option<String>,
     pub is_task_running: bool,
     /// Bare Enter resumes the last turn when it was interrupted or errored
     /// (opencode "press Enter to continue"). Set by the REPL loop; the input
@@ -554,6 +556,7 @@ impl Tui {
             active_compaction: None,
             turn_started: None,
             turn_had_thinking: false,
+            last_retry_detail: None,
             is_task_running: false,
             allow_empty_submit: false,
             modal_open: false,
@@ -1313,6 +1316,7 @@ impl Tui {
         // capture elapsed before clearing
         let elapsed = self.turn_started.take().map(|s| s.elapsed());
         let had_thinking = self.turn_had_thinking;
+        self.last_retry_detail = None;
         self.turn_had_thinking = false;
         if self.thinking {
             self.end_thinking_run(true);

@@ -757,3 +757,45 @@ async fn chat_gets_only_the_final_text_while_the_transcript_stays_on_disk() {
         assert_eq!(mode, 0o600);
     }
 }
+
+#[tokio::test]
+async fn a_session_origin_fire_goes_to_that_sessions_inbox_once() {
+    // A job added from inside a gray session comes back as one inbox entry
+    // (card + user-role note) for the REPL to turn into a turn: never a chat
+    // route, never a transcript mirror (the REPL's turn persists the note).
+    let home = tempfile::tempdir().unwrap();
+    let mut record = one_due("s3", serde_json::json!("origin"));
+    record[0]["origin"] = serde_json::json!({"platform": SESSION_PLATFORM, "chat": "sess-1"});
+    let store = due_store(&home, record);
+    let runner = StubRunner {
+        text: "toilets: a history".into(),
+        fail: false,
+        seen: Default::default(),
+    };
+    let deliver = SaveLocalDeliver {
+        home: home.path().to_path_buf(),
+    };
+    let rep = tick_once_with(&store, &runner, &deliver, "test", true)
+        .await
+        .unwrap();
+    assert_eq!(rep.fired, 1);
+    assert!(rep.delivered.iter().all(|d| !d.to_chat), "no chat route");
+    assert!(!home.path().join("sessions").exists(), "no mirror");
+    assert!(session_inbox_pending(home.path(), "sess-1"));
+    assert!(!session_inbox_pending(home.path(), "other-session"));
+    let got = drain_session_inbox(home.path(), "sess-1");
+    assert_eq!(got.len(), 1, "{got:?}");
+    assert!(
+        got[0].0.contains("toilets: a history"),
+        "card: {}",
+        got[0].0
+    );
+    assert_eq!(got[0].1, "[Cron delivery: s3]\ntoilets: a history");
+    assert!(
+        drain_session_inbox(home.path(), "sess-1").is_empty(),
+        "delivered once"
+    );
+    assert!(!session_inbox_pending(home.path(), "sess-1"));
+    // A session id that could leave the inbox directory is never a path.
+    assert!(!session_inbox_pending(home.path(), "../sess-1"));
+}

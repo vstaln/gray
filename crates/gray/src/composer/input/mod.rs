@@ -355,7 +355,7 @@ pub(crate) fn read_line(
         // Phase 1 (locked): resize deadlines, completion recompute, draw.
         // The guard drops at the end of this block, freeing the lock while
         // we wait for input below so background painters can draw.
-        let timeout = {
+        let (timeout, empty_draft) = {
             let mut guard = shared.lock().expect("tui lock");
             let tui: &mut super::Tui = &mut guard;
             if let Some((cols, deadline)) = tui.pending_resize
@@ -381,7 +381,7 @@ pub(crate) fn read_line(
                 needs_draw = false;
             }
 
-            if let Some((_, deadline)) = tui.pending_resize {
+            let timeout = if let Some((_, deadline)) = tui.pending_resize {
                 let now = std::time::Instant::now();
                 if deadline > now {
                     deadline - now
@@ -390,11 +390,21 @@ pub(crate) fn read_line(
                 }
             } else {
                 Duration::from_millis(250)
-            }
+            };
+            let empty_draft = tui.textarea.is_empty()
+                && tui.attachments.is_empty()
+                && tui.pending_pastes.is_empty();
+            (timeout, empty_draft)
         };
         // Phase 2 (unlocked): wait. Keystrokes queue in the pty and nothing
         // else reads stdin, so no event is lost before the locked read below.
         if !poll(timeout)? {
+            // Idle wake (cron delivery, finished background job, say line):
+            // hand the empty prompt back so the REPL can act. Never while the
+            // user has a draft — their typing wins, the wake waits.
+            if empty_draft && crate::host::wake_requested() {
+                return Ok(Some((String::new(), Vec::new())));
+            }
             continue;
         }
         needs_draw = true;

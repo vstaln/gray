@@ -61,6 +61,40 @@ pub(crate) fn queue_say(text: String) {
         }
         q.push(text);
     }
+    // Paint it now, not when the user next presses Enter.
+    request_wake();
+}
+
+/// Set when something wants the idle REPL's attention (a queued say line, a
+/// cron delivery in this session's inbox, a finished background job). The
+/// prompt returns early on it with an empty draft; the loop top clears it and
+/// does the work (painting, or a turn).
+static WAKE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub(crate) fn request_wake() {
+    WAKE.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub(crate) fn wake_requested() -> bool {
+    WAKE.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+pub(crate) fn clear_wake() {
+    WAKE.store(false, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The session the interactive REPL is showing: the inbox poller (a separate
+/// task) reads it, and `/new` / `/resume` change it under the poller.
+static LIVE_SESSION: Mutex<Option<String>> = Mutex::new(None);
+
+pub(crate) fn set_live_session(sid: Option<&str>) {
+    if let Ok(mut s) = LIVE_SESSION.lock() {
+        *s = sid.map(str::to_string);
+    }
+}
+
+pub(crate) fn live_session() -> Option<String> {
+    LIVE_SESSION.lock().ok().and_then(|s| s.clone())
 }
 
 /// Handler for sidecars spawned by [`crate::build_agent`]. `cwd` pins the

@@ -10,9 +10,17 @@ pub(crate) fn format_tool_box_lines(
     let bg_color = crate::theme::theme().surface_bg;
     let bg_style = Style::default().bg(bg_color);
     let max_w = width.saturating_sub(4).max(1);
+    // Body rows carry their own 2-col lead (tool_fmt's `"  "`), so their
+    // budget is the header's painted total (`width - 2`), not `max_w`:
+    // tool_fmt pre-wraps numbered/diff rows to exactly `width - 2`, and
+    // re-wrapping them 2 cols narrower here orphaned each full row's last
+    // word ("lines", "5d") onto its own continuation row.
+    let body_w = width.saturating_sub(2).max(1);
 
+    // No outer margin rows: `ensure_gap` owns the single blank row between
+    // blocks (codex's rule). A card that also carried its own margins
+    // stacked two blank rows against every neighbour.
     let mut box_lines: Vec<Line<'static>> = Vec::new();
-    box_lines.push(Line::from("").style(bg_style));
 
     let wrapped_header = wrap_styled_line(header, max_w);
     for mut l in wrapped_header {
@@ -37,7 +45,7 @@ pub(crate) fn format_tool_box_lines(
                 *span = Span::styled(expanded, span.style);
             }
         }
-        let wrapped_body = wrap_styled_line(line, max_w);
+        let wrapped_body = wrap_styled_line(line, body_w);
         for mut l in wrapped_body {
             let line_bg = l
                 .style
@@ -67,6 +75,5 @@ pub(crate) fn format_tool_box_lines(
             box_lines.push(l);
         }
     }
-    box_lines.push(Line::from("").style(bg_style));
     box_lines
 }

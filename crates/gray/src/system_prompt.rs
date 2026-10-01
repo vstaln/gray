@@ -44,7 +44,12 @@ pub fn build_runtime_prompt(custom_prompt: Option<String>, cwd: &Path) -> String
          You do not need to run `pwd` just to discover it. \
          Each shell call starts here; `cd` inside a command does not change later calls. \
          Commands run until they exit \u{2014} there is no default timeout, so long builds and \
-         test suites are fine; page the output of a long run rather than skipping it."
+         test suites are fine; page the output of a long run rather than skipping it.\n\
+         When several reads, searches or commands do not depend on each other's output, \
+         make all of them as separate tool calls in the same response \u{2014} as many as the \
+         task needs, not one or two per round, and rather than chaining unrelated commands \
+         into one shell call. They run concurrently; calls that might clash are serialized \
+         for you."
     ));
     prompt
 }
