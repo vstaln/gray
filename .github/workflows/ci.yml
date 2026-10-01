@@ -56,7 +56,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       # Dependency counts need no build at all, so they fail fast; the binary
       # size is measured only after the release build this job does anyway.
