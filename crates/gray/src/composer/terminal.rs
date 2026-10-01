@@ -44,6 +44,16 @@ where
     pub hidden_cursor: bool,
     pub viewport_area: Rect,
     pub last_known_screen_size: Size,
+    /// The band was scrolled/erased by `insert_before` and the next frame has
+    /// to repaint it from scratch. See `insert_before`.
+    band_dirty: bool,
+    /// Rows directly above the band known to be blank: the ones it vacated
+    /// sliding down to the bottom, minus any it has since grown back into.
+    /// Growth spends these before scrolling, so opening the slash popup on a
+    /// short transcript doesn't push the banner up — and, since closing it
+    /// never scrolls back, off the screen one open/close at a time. Zeroed by
+    /// `insert_before`, which draws transcript rows flush against the band.
+    blank_above: u16,
 }
 
 impl<B> Drop for CustomTerminal<B>
@@ -85,6 +95,8 @@ where
             hidden_cursor: false,
             viewport_area,
             last_known_screen_size: screen_size,
+            band_dirty: false,
+            blank_above: 0,
         };
         term.set_viewport_area(viewport_area);
         Ok(term)
@@ -100,6 +112,16 @@ where
         let mut area = self.viewport_area;
         area.height = height.min(screen_size.height);
         area.width = screen_size.width;
+
+        // Grow up into known-blank rows first: they hold no transcript, so
+        // taking them moves nothing else on screen.
+        if area.bottom() > screen_size.height {
+            let rise = (area.bottom() - screen_size.height)
+                .min(self.blank_above)
+                .min(area.y);
+            area.y -= rise;
+            self.blank_above -= rise;
+        }
 
         let mut scrolled = false;
         // If the viewport has expanded beyond the screen height, scroll everything else up to make room.
@@ -123,6 +145,9 @@ where
         let pinned_y = anchored_viewport_y(area.height, screen_size.height);
         if pinned_y != area.y {
             let vacated_top = self.viewport_area.y;
+            self.blank_above = self
+                .blank_above
+                .saturating_add(pinned_y.saturating_sub(vacated_top));
             area.y = pinned_y;
             self.set_viewport_area(area);
             // Clear from the vacated top (also resets the previous buffer,
@@ -133,7 +158,9 @@ where
 
         if area != self.viewport_area {
             if !scrolled {
-                let clear_pos = if self.viewport_area.is_empty() {
+                // A band that grew into blank rows starts above its old top;
+                // clear from whichever top is higher.
+                let clear_pos = if self.viewport_area.is_empty() || area.y < self.viewport_area.y {
                     area.as_position()
                 } else {
                     self.viewport_area.as_position()
@@ -205,6 +232,17 @@ where
         let screen_size = self.size()?;
         if screen_size != self.last_known_screen_size {
             self.last_known_screen_size = screen_size;
+        }
+        // Erase + repaint the band inside the caller's synchronized-update
+        // bracket: a scroll in `insert_before` moves the band's pixels with
+        // the rest of the screen, so the rows it now covers are stale. Doing
+        // the erase here (not in `insert_before`, which runs outside the
+        // bracket) keeps "band gone" from ever reaching the screen on its own
+        // — that was the input box flashing on every streamed row and tool
+        // event.
+        if self.band_dirty {
+            self.band_dirty = false;
+            self.clear()?;
         }
         let mut frame = self.get_frame();
         render_callback(&mut frame);
@@ -281,7 +319,11 @@ where
             ..self.viewport_area
         });
 
-        self.clear()?;
+        // The scroll moved the band with everything else; the next frame
+        // erases and repaints it (see `band_dirty`).
+        self.band_dirty = true;
+        // The rows just drawn sit flush against the band.
+        self.blank_above = 0;
 
         Ok(())
     }
@@ -385,6 +427,102 @@ mod tests {
         terminal.set_viewport_height(4, Size::new(40, 20)).unwrap();
         terminal.set_viewport_height(4, Size::new(40, 30)).unwrap();
         assert_eq!(terminal.viewport_area, Rect::new(0, 26, 40, 4));
+    }
+
+    /// The reported flicker: `insert_before` scrolls the whole screen, so the
+    /// band's pixels move with it. It used to erase the band right there —
+    /// outside the frame's synchronized-update bracket — so a terminal could
+    /// present one frame with no input box at all, on every streamed row and
+    /// every tool event. The erase belongs to the next frame, which repaints
+    /// the band inside the same bracket as the rest of the frame.
+    #[test]
+    fn the_band_erase_waits_for_the_next_frame() {
+        let mut terminal = CustomTerminal::with_options(TestBackend::new(40, 20), 4).unwrap();
+        let screen = Size::new(40, 20);
+        terminal.set_viewport_height(4, screen).unwrap();
+        assert_eq!(terminal.viewport_area, Rect::new(0, 16, 40, 4));
+        // Stand in for a painted band: a real frame writes the whole band
+        // through the terminal, so the backend ends up holding its rows.
+        let paint = |terminal: &mut CustomTerminal<TestBackend>, mark: &str| {
+            terminal
+                .draw(|frame| {
+                    for y in 16..20 {
+                        for x in 0..40 {
+                            frame.buffer[(x, y)].set_symbol(mark);
+                        }
+                    }
+                })
+                .unwrap();
+        };
+        paint(&mut terminal, "b");
+        terminal
+            .insert_before(1, |buf| {
+                buf[(0, 0)].set_symbol("s");
+            })
+            .unwrap();
+        // The scroll carried the band up, but nothing erased it: the rows are
+        // still painted, and the next frame knows it owes a full repaint.
+        let buffer = terminal.backend.buffer();
+        assert!(
+            (16..20).any(|y| buffer[(0, y)].symbol() != " "),
+            "insert_before must not blank the band on its own"
+        );
+        assert!(terminal.band_dirty, "the frame must repaint the band");
+        // The frame erases and repaints it: the scrolled paint is gone, not
+        // left stale under the new one.
+        paint(&mut terminal, "x");
+        assert!(!terminal.band_dirty);
+        let buffer = terminal.backend.buffer();
+        assert!(
+            (16..20).all(|y| (0..40).all(|x| buffer[(x, y)].symbol() == "x")),
+            "the band must be repainted from scratch, not left stale"
+        );
+    }
+
+    /// The reported bug: on a short transcript the slash popup grew the band
+    /// by scrolling the whole screen, and closing it only slid the band back
+    /// down — each open/close carried the banner further up until it left
+    /// the screen. Growth now takes the blank rows above the band first.
+    #[test]
+    fn popup_open_close_leaves_the_banner_in_place() {
+        let mut terminal = CustomTerminal::with_options(TestBackend::new(40, 20), 4).unwrap();
+        let screen = Size::new(40, 20);
+        terminal
+            .insert_before(3, |buf| {
+                buf[(0, 1)].set_symbol("B");
+            })
+            .unwrap();
+        // First frame pins the band below the banner, leaving a blank gap.
+        terminal.set_viewport_height(4, screen).unwrap();
+        assert_eq!(terminal.viewport_area, Rect::new(0, 16, 40, 4));
+        for _ in 0..3 {
+            terminal.set_viewport_height(11, screen).unwrap();
+            assert_eq!(terminal.viewport_area, Rect::new(0, 9, 40, 11));
+            terminal.set_viewport_height(4, screen).unwrap();
+            assert_eq!(terminal.viewport_area, Rect::new(0, 16, 40, 4));
+            let buffer = terminal.backend.buffer();
+            assert_eq!(buffer[(0, 1)].symbol(), "B", "the banner must not move");
+        }
+    }
+
+    /// Growth beyond the blank rows still scrolls, by only the shortfall.
+    #[test]
+    fn growth_past_the_blank_rows_scrolls_only_the_rest() {
+        let mut terminal = CustomTerminal::with_options(TestBackend::new(40, 20), 4).unwrap();
+        let screen = Size::new(40, 20);
+        terminal
+            .insert_before(12, |buf| {
+                buf[(0, 3)].set_symbol("B");
+            })
+            .unwrap();
+        terminal.set_viewport_height(4, screen).unwrap();
+        // 12 transcript rows + 4 blank + a 4-row band.
+        assert_eq!(terminal.viewport_area, Rect::new(0, 16, 40, 4));
+        terminal.set_viewport_height(10, screen).unwrap();
+        assert_eq!(terminal.viewport_area, Rect::new(0, 10, 40, 10));
+        // 4 blank rows spent, 2 scrolled: the banner rose by 2, not 6.
+        let buffer = terminal.backend.buffer();
+        assert_eq!(buffer[(0, 1)].symbol(), "B");
     }
 
     #[test]
