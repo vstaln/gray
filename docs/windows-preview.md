@@ -10,26 +10,33 @@ created with standard user-profile permissions and are **not** ACL-hardened
 (`std` has no portable way to do it). Keep that in mind before storing sensitive
 material in `%USERPROFILE%\.gray`.
 
-## Get and install the preview
+## Install
 
-1. Open a **successful CI run for the Windows branch** on GitHub Actions and
-   download its `windows-native-preview` artifact (GitHub login may be required).
-2. Extract the artifact wrapper ZIP. It contains the payload
-   `gray-beta-x86_64-windows.zip`, its `.sha256` file, and both installer scripts
-   under `dist`. Keep the scripts together and inspect them before running.
-3. On Windows 11 x64, run in PowerShell from the directory containing the payload:
+On Windows 11 x64, in PowerShell (5.1 or 7):
 
 ```powershell
-$hash = ((Get-Content .\gray-beta-x86_64-windows.zip.sha256).Trim() -split '\s+')[0]
-# Run from the extracted artifact root.
-.\dist\install.ps1 -Native -ArchivePath .\gray-beta-x86_64-windows.zip -Sha256 $hash
+irm https://gray.alignment.id/install.ps1 | iex
 ```
+
+That installs the latest **stable** release. Pass arguments through a script
+block, for example the beta channel (rebuilt on every push to main):
+
+```powershell
+& ([scriptblock]::Create((irm https://gray.alignment.id/install.ps1))) -Channel beta
+```
+
+`install.ps1` fetches `install-native.ps1` from the same site over HTTPS and runs
+it as a script block, so no execution-policy change is needed. The native
+installer downloads `gray-<channel>-x86_64-windows.zip`, verifies it against the
+channel's `SHA256SUMS-<channel>` file (the same file `install.sh` uses), checks the
+archive holds only `gray.exe`, `LICENSE` and `THIRD_PARTY_NOTICES.md`, probes
+`gray.exe --version`, and only then replaces any existing binary. You can read both
+scripts first at `https://gray.alignment.id/install.ps1` and
+`https://gray.alignment.id/install-native.ps1`.
 
 Native is the default route; `-Native` is accepted and changes nothing. `-Wsl`
 selects the compatibility route. The two cannot be combined. Native failures never
-invoke WSL or install system dependencies. Older artifacts may contain only
-`dist/install-native.ps1`; invoke that script directly with the same archive and
-checksum arguments.
+invoke WSL or install system dependencies.
 
 The default destination is `%LOCALAPPDATA%\Programs\gray\bin`. `-InstallDir`
 overrides `GRAY_INSTALL_DIR`. `-NoPath` skips user PATH updates. Open a new terminal
@@ -38,11 +45,19 @@ with Git Bash for shell commands; Gray does not install it or WSL automatically.
 
 Artifacts are unsigned. The digest detects mismatched/corrupt downloads, not an
 independent publisher signature. Follow organizational execution policy; do not
-disable antivirus, SmartScreen, or machine policy to run the preview. A policy
-blocking scripts can use manual extraction of the payload instead.
+disable antivirus, SmartScreen, or machine policy to run Gray.
 
-The network download mode is implemented but **no production Windows payload URL
-is promised**. Use the offline artifact mode above, not a guessed CDN command.
+### Offline install
+
+Download the release zip and keep `install.ps1` and `install-native.ps1` together
+(both are attached to the source tree under `dist`). Pass the archive and its
+digest from the release `SHA256SUMS`:
+
+```powershell
+.\dist\install.ps1 -ArchivePath .\gray-stable-x86_64-windows.zip -Sha256 <digest>
+```
+
+To update, close every Gray session and run the installer again.
 
 ## Behavior and limitations
 
@@ -70,7 +85,6 @@ CI runs native shell contract and descendant-termination tests, profile tests
 without HOME, and real CLI tests against a local mock provider (no real keys).
 The installer tests both PowerShell versions against the actual native binary:
 install/reinstall, channel selection, bad/missing checksum, locked destination,
-concurrent installer lock, archive traversal, PATH merging, and old-binary
-preservation. Linux/macOS workspace checks remain separate regression gates.
+concurrent installer lock, archive traversal, PATH merging, old-binary
+preservation, and checksum lookup in the channel's `SHA256SUMS` file. Linux/macOS workspace checks remain separate regression gates.
 
-This is a testable preview checkpoint, not completion of the preparation spec.

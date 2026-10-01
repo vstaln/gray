@@ -111,7 +111,7 @@ pub(crate) fn spawn_key_watcher_with_typing(
                             }
                             let text = text.trim().to_string();
                             if text.starts_with('/') && !text.contains('\n') {
-                                t.push_user_prompt(&text, &[], false);
+                                t.push_user_prompt(&text, &[]);
                                 t.local_command = Some(text);
                                 t.textarea.set_text("");
                                 t.attachments.clear();

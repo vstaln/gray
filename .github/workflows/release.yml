@@ -252,12 +252,13 @@ jobs:
           SSH="ssh -i ~/.config/gray-deploy/key -o StrictHostKeyChecking=yes -o BatchMode=yes opc@168.110.210.65"
           $SSH "cd /var/www/gray/dl/.staging/$CHANNEL/${{ github.run_id }} && cat SHA256SUMS-* > /tmp/SHA256SUMS-$CHANNEL && sha256sum -c /tmp/SHA256SUMS-$CHANNEL && sudo install -m 644 /tmp/SHA256SUMS-$CHANNEL /var/www/gray/dl/SHA256SUMS-$CHANNEL"
           $SSH "sudo cp /var/www/gray/dl/.staging/$CHANNEL/${{ github.run_id }}/gray-$CHANNEL-*.tar.gz /var/www/gray/dl/ && sudo cp /var/www/gray/dl/.staging/$CHANNEL/${{ github.run_id }}/gray-$CHANNEL-*.zip /var/www/gray/dl/"
-          scp -i ~/.config/gray-deploy/key -o StrictHostKeyChecking=yes -o BatchMode=yes dist/install.sh dist/install.ps1 opc@168.110.210.65:/tmp/
-          $SSH "sudo install -m 644 /tmp/install.sh /var/www/gray/install.sh && sudo install -m 644 /tmp/install.ps1 /var/www/gray/install.ps1"
+          # install.ps1 fetches install-native.ps1 from beside itself on the site.
+          scp -i ~/.config/gray-deploy/key -o StrictHostKeyChecking=yes -o BatchMode=yes dist/install.sh dist/install.ps1 dist/install-native.ps1 opc@168.110.210.65:/tmp/
+          $SSH "sudo install -m 644 /tmp/install.sh /var/www/gray/install.sh && sudo install -m 644 /tmp/install.ps1 /var/www/gray/install.ps1 && sudo install -m 644 /tmp/install-native.ps1 /var/www/gray/install-native.ps1"
           echo "${{ github.sha }}" | $SSH "sudo tee /var/www/gray/dl/latest-$CHANNEL-build.txt > /dev/null"
           echo "$VER" | $SSH "sudo tee /var/www/gray/dl/latest-$CHANNEL.txt > /dev/null"
           echo "✓ latest-$CHANNEL.txt = $VER"
-          for f in gray-$CHANNEL-x86_64-linux.tar.gz gray-$CHANNEL-aarch64-linux.tar.gz gray-$CHANNEL-aarch64-darwin.tar.gz gray-$CHANNEL-x86_64-darwin.tar.gz gray-$CHANNEL-x86_64-windows.zip latest-$CHANNEL.txt SHA256SUMS-$CHANNEL latest-$CHANNEL-build.txt; do
+          for f in ../install.ps1 ../install-native.ps1 gray-$CHANNEL-x86_64-linux.tar.gz gray-$CHANNEL-aarch64-linux.tar.gz gray-$CHANNEL-aarch64-darwin.tar.gz gray-$CHANNEL-x86_64-darwin.tar.gz gray-$CHANNEL-x86_64-windows.zip latest-$CHANNEL.txt SHA256SUMS-$CHANNEL latest-$CHANNEL-build.txt; do
             if ! code=$(curl -sI -o /dev/null -w "%{http_code}" --retry 3 --retry-all-errors --max-time 30 "https://gray.alignment.id/dl/$f"); then
               echo "deploy published but verification failed: $f (curl transport error)"; exit 1
             fi
@@ -301,5 +302,5 @@ jobs:
         run: |
           case "$GITHUB_REF_NAME" in *-*) CHANNEL=beta ;; *) CHANNEL=stable ;; esac
           cp dist-all/SHA256SUMS "dist-all/SHA256SUMS-$CHANNEL"
-          scp -i ~/.config/gray-deploy/key -o StrictHostKeyChecking=yes -o BatchMode=yes dist-all/SHA256SUMS "dist-all/SHA256SUMS-$CHANNEL" dist/install.sh dist/install.ps1 opc@168.110.210.65:/tmp/
-          ssh -i ~/.config/gray-deploy/key -o StrictHostKeyChecking=yes -o BatchMode=yes opc@168.110.210.65 "sudo install -m 644 /tmp/SHA256SUMS /var/www/gray/dl/SHA256SUMS && sudo install -m 644 /tmp/SHA256SUMS-$CHANNEL /var/www/gray/dl/SHA256SUMS-$CHANNEL && sudo install -m 644 /tmp/install.sh /var/www/gray/install.sh && sudo install -m 644 /tmp/install.ps1 /var/www/gray/install.ps1 && rm -f /tmp/SHA256SUMS /tmp/SHA256SUMS-$CHANNEL /tmp/install.sh /tmp/install.ps1 && echo '✓ sums + installers live: https://gray.alignment.id/dl/SHA256SUMS-'"$CHANNEL
+          scp -i ~/.config/gray-deploy/key -o StrictHostKeyChecking=yes -o BatchMode=yes dist-all/SHA256SUMS "dist-all/SHA256SUMS-$CHANNEL" dist/install.sh dist/install.ps1 dist/install-native.ps1 opc@168.110.210.65:/tmp/
+          ssh -i ~/.config/gray-deploy/key -o StrictHostKeyChecking=yes -o BatchMode=yes opc@168.110.210.65 "sudo install -m 644 /tmp/SHA256SUMS /var/www/gray/dl/SHA256SUMS && sudo install -m 644 /tmp/SHA256SUMS-$CHANNEL /var/www/gray/dl/SHA256SUMS-$CHANNEL && sudo install -m 644 /tmp/install.sh /var/www/gray/install.sh && sudo install -m 644 /tmp/install.ps1 /var/www/gray/install.ps1 && sudo install -m 644 /tmp/install-native.ps1 /var/www/gray/install-native.ps1 && rm -f /tmp/SHA256SUMS /tmp/SHA256SUMS-$CHANNEL /tmp/install.sh /tmp/install.ps1 /tmp/install-native.ps1 && echo '✓ sums + installers live: https://gray.alignment.id/dl/SHA256SUMS-'"$CHANNEL

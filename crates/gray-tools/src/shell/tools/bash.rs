@@ -30,6 +30,27 @@ use crate::{fail, finish, get_opt_bool, get_opt_u64, get_str, resolve_path};
 
 mod jobs;
 
+impl BashTool {
+    /// Completion-wake for the agent loop's turn end: block until any
+    /// unfinished background job settles (bounded), so a headless run that
+    /// backgrounded work holds the turn instead of exiting and killing the
+    /// job. Resolves false when the timeout elapsed / cancel fired / no jobs.
+    /// Owned and `'static` (it holds the job receivers), so the executor
+    /// seam can return it as a `BoxFuture`.
+    pub fn any_job_waiter(
+        &self,
+        ctx: &ToolContext,
+        timeout: Duration,
+    ) -> futures::future::BoxFuture<'static, bool> {
+        self.jobs.any_waiter(ctx, timeout)
+    }
+
+    /// Whether any unfinished background job belongs to this session.
+    pub fn has_unfinished_jobs(&self, ctx: &ToolContext) -> bool {
+        self.jobs.has_unfinished(ctx)
+    }
+}
+
 /// One registry-owned job collection. Dropping the tool cancels its jobs.
 #[derive(Default)]
 pub struct BashTool {
@@ -81,6 +102,10 @@ impl BashTool {
 
 #[async_trait]
 impl Tool for BashTool {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
     fn def(&self) -> ToolDef {
         if !jobs_enabled() {
             return ToolDef::new(
@@ -269,6 +294,14 @@ impl Tool for BashTool {
             guard,
             Some(&self.jobs),
             stall_bound(),
+            // Auto-yield only when the jobs lane exists to receive the handoff
+            // and the caller set no explicit timeout: an explicit timeout is
+            // the caller saying "block me until this is done or N seconds".
+            if jobs_enabled() && secs.is_none() {
+                auto_yield_window()
+            } else {
+                Duration::ZERO
+            },
             None,
         )
         .await;
@@ -779,14 +812,42 @@ async fn wait_or_pend(secs: Option<u64>, start: Instant) {
     }
 }
 
+/// Auto-yield arm: resolves once the command has been running for `window`
+/// since `start`. Disabled (`enabled` false / zero window) is `pending()`
+/// forever, so the `select!` arm never fires. Wall-clock based, unlike the
+/// silence arm: output resets nothing on purpose — a build that streams
+/// progress for an hour still yields at the window so the model can do
+/// other work while it runs.
+async fn yield_arm(enabled: bool, start: Instant, window: Duration) {
+    if !enabled || window.is_zero() {
+        std::future::pending::<()>().await;
+    }
+    tokio::time::sleep_until(tokio::time::Instant::from_std(start + window)).await
+}
+
+/// Auto-yield window for the blocking lane (ms), overridable per-process via
+/// `GRAY_BASH_YIELD_MS`; `0` disables. Default [`DEFAULT_AUTO_YIELD_MS`].
+fn auto_yield_window() -> Duration {
+    std::env::var("GRAY_BASH_YIELD_MS")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .map(Duration::from_millis)
+        .unwrap_or(Duration::from_millis(
+            crate::shell::contract::DEFAULT_AUTO_YIELD_MS,
+        ))
+}
+
 /// A still-running command handed back by [`settle_command`] on a silent
-/// stall: the live child, its armed group guard, and its already-draining
-/// pump, so [`run_command`] can register it as a background job. Never a kill.
+/// stall or an auto-yield: the live child, its armed group guard, and its
+/// already-draining pump, so [`run_command`] can register it as a background
+/// job. Never a kill. `silenced` distinguishes the two (stuck vs merely slow)
+/// for the notice the agent reads.
 struct Handoff {
     spawned: crate::shell::contract::Spawned,
     #[cfg(not(windows))]
     guard: crate::shell::kill::GroupGuard,
     pump: tokio::task::JoinHandle<crate::shell::contract::PumpSummary>,
+    silenced: bool,
 }
 
 enum Settled {
@@ -822,6 +883,10 @@ async fn settle_command(
     pump: tokio::task::JoinHandle<crate::shell::contract::PumpSummary>,
     last: std::sync::Arc<std::sync::atomic::AtomicU64>,
     bound: Duration,
+    // Auto-yield window for the blocking lane (0 disables). Still-running
+    // past this (without an explicit `timeout`) hands off like the silence
+    // path — independent of output, so a chatty build yields too.
+    auto_yield: Duration,
     handoff: bool,
 ) -> Settled {
     #[cfg(not(windows))]
@@ -830,11 +895,19 @@ async fn settle_command(
     let target = &spawned.job;
     let child = &mut spawned.child;
     let stall_on = handoff && secs.is_none() && !bound.is_zero();
+    // Duration-based auto-yield: a command still running after `auto_yield`
+    // hands off to the background lane even while producing output. Silence
+    // (`bound`) covers the hung case; this covers the merely slow one. Both
+    // share the same `Settled::Stalled` handoff — the child keeps running and
+    // the agent keeps working. Armed only on the blocking lane (handoff),
+    // without an explicit `timeout`, when the window is non-zero.
+    let auto_yield_on = handoff && secs.is_none() && !auto_yield.is_zero();
     enum Cause {
         Exit,
         Timeout,
         Cancel,
         Stall,
+        Yield,
     }
     let mut exited: Option<std::process::ExitStatus> = None;
     let cause = tokio::select! {
@@ -856,22 +929,26 @@ async fn settle_command(
         }
         _ = ctx.cancel.cancelled() => Cause::Cancel,
         _ = stall_arm(stall_on, last.clone(), bound) => Cause::Stall,
+        _ = yield_arm(auto_yield_on, start, auto_yield) => Cause::Yield,
     };
-    if matches!(cause, Cause::Stall) {
+    if matches!(cause, Cause::Stall | Cause::Yield) {
         // Hand the running child back to run_command, which registers it.
         return Settled::Stalled(Box::new(Handoff {
             spawned,
             #[cfg(not(windows))]
             guard,
             pump,
+            silenced: matches!(cause, Cause::Stall),
         }));
     }
     // Unix escalates SIGTERM -> SIGKILL; Windows terminates the owned job.
     // Failed termination is a harness error, never a successful timeout.
     let first_line: Option<String> = match cause {
         Cause::Exit => None,
-        // A stall returns above; it never reaches this render path.
-        Cause::Stall => std::unreachable!("stall returns before the render path"),
+        // Stall and yield return above; they never reach this render path.
+        Cause::Stall | Cause::Yield => {
+            std::unreachable!("stall/yield return before the render path")
+        }
         Cause::Timeout => {
             // Reap while Unix escalation polls: macOS can return EPERM
             // when only an unreaped zombie remains in the process group.
@@ -981,6 +1058,10 @@ async fn run_command(
     // Silent threshold before a stuck blocking command is handed to the
     // background lane (0 disables). Only armed for `adopt` + no `timeout`.
     bound: Duration,
+    // Auto-yield window: a blocking command still running after this long is
+    // handed to the background lane even while producing output (0 disables).
+    // Only armed for `adopt` + no `timeout` + jobs enabled.
+    auto_yield: Duration,
     // Continuation of a handed-off command: reuse the running pump instead of
     // starting a new one (stdout/stderr are already taken).
     reuse_pump: Option<tokio::task::JoinHandle<crate::shell::contract::PumpSummary>>,
@@ -1013,6 +1094,7 @@ async fn run_command(
         pump,
         last,
         bound,
+        auto_yield,
         adopt.is_some(),
     )
     .await
@@ -1024,6 +1106,7 @@ async fn run_command(
                 #[cfg(not(windows))]
                 guard,
                 pump,
+                silenced: bound_elapsed,
             } = *hoff;
             let jobs = adopt.expect("a stall is only armed for the blocking lane");
             let (id, tx, worker_ctx) = jobs.register(&ctx, log_path.clone(), start);
@@ -1037,11 +1120,24 @@ async fn run_command(
             } else {
                 String::new()
             };
-            let notice = ToolOutput::ok(format!(
-                "still running \u{b7} job {id} \u{b7} silent: no new output for {}s \u{b7} log {}\nNot killed \u{2014} moved to a background job so it keeps running. Continue other work (its finish is reported between model rounds or the next turn){await_hint}. Inspect the log to see why it went silent.",
-                bound.as_secs(),
-                log_path.display()
-            ));
+            // Silence-handoff (bound elapsed, no output) and auto-yield
+            // (window elapsed, output irrelevant) read differently: the first
+            // hints the command may be stuck, the second is routine duration
+            // backgrounding — never imply stuckness for a command that may
+            // simply be a long build.
+            let notice = if !bound_elapsed {
+                ToolOutput::ok(format!(
+                    "still running \u{b7} job {id} \u{b7} yielded after {} (duration limit, not a stall) \u{b7} log {}\nMoved to a background job; it keeps running. Continue other work now (its finish is reported between model rounds or the next turn){await_hint}.",
+                    auto_yield.as_secs(),
+                    log_path.display()
+                ))
+            } else {
+                ToolOutput::ok(format!(
+                    "still running \u{b7} job {id} \u{b7} silent: no new output for {}s \u{b7} log {}\nNot killed \u{2014} moved to a background job so it keeps running. Continue other work (its finish is reported between model rounds or the next turn){await_hint}. Inspect the log to see why it went silent.",
+                    bound.as_secs(),
+                    log_path.display()
+                ))
+            };
             // A fresh liveness clock feeds the job's own (inert) stall arm.
             let last = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(now_grindmill()));
             tokio::spawn(async move {
@@ -1056,6 +1152,7 @@ async fn run_command(
                     guard,
                     pump,
                     last,
+                    Duration::ZERO,
                     Duration::ZERO,
                     false,
                 )

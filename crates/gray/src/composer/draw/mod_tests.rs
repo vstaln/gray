@@ -1,22 +1,23 @@
 use super::*;
 
+/// The reported bug: a streamed paragraph break grew and shrank the band by
+/// one row. The band is the inline viewport's top edge, so every resize
+/// swallowed the transcript row that had just been painted (the second,
+/// phantom blank row between paragraphs) and hopped the input box and the
+/// footer up and down. The dock's height is a constant while a status shows,
+/// so the transcript tail cannot move the band any more.
 #[test]
-fn status_dock_seam_is_dynamic() {
-    assert_eq!(status_dock_h(false, true), 0);
-    assert_eq!(status_dock_h(true, false), 2); // scrollback already blank: status + breath
-    assert_eq!(status_dock_h(true, true), 3); // seam + status + breath
-}
-
-#[test]
-fn transcript_ends_blank_matches_ensure_gap() {
-    use ratatui::style::Style;
-    assert!(!transcript_ends_blank(&[]));
-    assert!(transcript_ends_blank(&[Line::from("")]));
-    assert!(transcript_ends_blank(&[Line::from(" ")])); // left_pad-only row
-    assert!(!transcript_ends_blank(&[Line::from("text")]));
-    // card / code padding rows carry a bg: they are edges, not gaps
-    let bg = Style::default().bg(crate::theme::GRAY_UI_THEME.surface_bg);
-    assert!(!transcript_ends_blank(&[Line::from("").style(bg)]));
+fn the_band_does_not_resize_at_a_paragraph_break() {
+    // No status: the band is the input box and the footer.
+    assert_eq!(status_dock_h(false), 0);
+    // With a status: separator + status + the live-card slot, on every
+    // frame — the slot is also the gap between the status line and the box.
+    assert_eq!(status_dock_h(true), 3);
+    // Band while streaming: dock 3 + box 3 + footer 1. Never 6 or 8.
+    assert_eq!(
+        desired_viewport_h(status_dock_h(true), 0, 0, 3, 0, 0, viewport_cap(40)),
+        7
+    );
 }
 
 #[test]
@@ -84,54 +85,6 @@ fn multiline_input_is_not_clipped_by_the_viewport_cap() {
     assert!(desired <= cap);
 }
 
-/// One streamed paragraph arriving chunk by chunk flips the transcript
-/// tail blank / non-blank between frames. Driven through the exact path
-/// `draw` uses: the viewport must hold still instead of bouncing 6<->7
-/// rows per chunk (the reported input-box bounce).
-#[test]
-fn streaming_tail_flicker_holds_viewport_still() {
-    let mut cached = false;
-    let mut heights = Vec::new();
-    for blank in [true, false, true, false, true] {
-        cached = ratchet_seam(cached, true, !blank);
-        heights.push(desired_viewport_h(
-            status_dock_h(true, cached),
-            0,
-            0,
-            3,
-            0,
-            0,
-            viewport_cap(40),
-        ));
-    }
-    // One growth step when content first flows, then steady — never an
-    // oscillation. Latch releases when the status clears.
-    assert_eq!(heights, vec![6, 7, 7, 7, 7], "heights: {heights:?}");
-    assert!(!ratchet_seam(true, false, true));
-}
-
-/// Checkpoint trailing gaps (`Thought for` spacer, tool-box trailing)
-/// release the seam latch, so the gap never stacks with a latched seam
-/// into a double blank above the live status. Streaming re-latches on
-/// the next non-blank frame, so per-chunk flicker still holds steady.
-#[test]
-fn checkpoint_gap_releases_seam_to_single_spaced_status() {
-    // thinking streams: tail non-blank latches the seam on.
-    let mut seam = ratchet_seam(false, true, true);
-    assert!(seam);
-    // Thought summary commits + trailing spacer gap; the checkpoint
-    // releases the latch (see `release_dock_seam` callers).
-    seam = false;
-    // status-only frames with a blank tail: no seam, status + breath.
-    seam = ratchet_seam(seam, true, false);
-    assert!(!seam, "seam must not stack on the checkpoint gap");
-    assert_eq!(status_dock_h(true, seam), 2, "status + breath only");
-    // answer streams: first non-blank row re-latches, height steady.
-    seam = ratchet_seam(seam, true, true);
-    assert!(seam);
-    assert_eq!(status_dock_h(true, seam), 3, "seam + status + breath");
-}
-
 #[test]
 fn queued_preview_renders_header_and_entries() {
     let mut q: std::collections::VecDeque<(String, Vec<std::path::PathBuf>)> =
@@ -156,19 +109,17 @@ fn queued_preview_renders_header_and_entries() {
     assert!(text.contains("↳ second"), "got: {text}");
 }
 
+/// The live card lives in the dock's own slot row, so starting or ending a
+/// tool call cannot resize the band — that resize hopped the input box and
+/// left the row it vacated blank in the transcript (the reported flicker
+/// and the stray gap around every tool card).
 #[test]
-fn live_tool_viewport_height_counts_live_rows() {
-    // Live cards sit between queued preview and input: 1 live row grows
-    // the exact-fit viewport by exactly 1 (status 2 + live 1 + input 3).
-    let without = desired_viewport_h(2, 0, 0, 3, 0, 0, viewport_cap(40));
-    let with = desired_viewport_h(2, 0, 1, 3, 0, 0, viewport_cap(40));
-    assert_eq!(with, without + 1, "live rows must reserve viewport space");
-    // Cap: 3 cards + `… +N more` overflow row, never unbounded.
-    let capped = desired_viewport_h(2, 0, 4, 3, 0, 0, viewport_cap(40));
-    assert_eq!(capped, without + 4, "3 live + overflow row: {capped}");
-    // Clamp holds at the top: the screen cap. `live_h = 40` is hypothetical --
-    // MAX_LIVE_TOOLS bounds it to 3 cards + 1 overflow row -- and exists only
-    // to prove the clamp still bites.
+fn the_live_card_cannot_resize_the_band() {
+    let with = desired_viewport_h(status_dock_h(true), 0, 0, 3, 0, 0, viewport_cap(40));
+    // No live parameter exists any more: any number of live cards paints
+    // into the dock's single slot row, so the height is one value.
+    assert_eq!(with, 7, "dock 3 + box 3 + footer 1");
+    // Clamp holds at the top: the screen cap.
     let cap = viewport_cap(40);
     assert_eq!(desired_viewport_h(3, 4, 40, 3, 6, 1, cap), cap);
 }
@@ -305,21 +256,34 @@ fn a_busy_band_is_trimmed_most_transient_first() {
     assert_eq!(counts, [10, 2]);
 }
 
-/// The reported bug: the box kept painting "Please continue…" while the
-/// resumed turn was already streaming. The flag is armed when the REPL loop
-/// blocks on input — before that turn is submitted — so mid-turn it is stale.
+/// The reported bug: the box kept painting "Please continue…" while the turn
+/// was still working. The flag is armed when the REPL loop blocks on input —
+/// before that turn is submitted — so mid-turn it is stale, and a live status
+/// pill next to the hint reads as "working AND waiting for Enter". The hint
+/// belongs to the idle composer after an interrupt or an error, nothing else.
 #[test]
-fn continue_ghost_hides_while_a_turn_runs() {
-    // Idle with a resume pending: the hint is the point of the feature.
+fn continue_ghost_only_on_an_idle_composer_with_a_pending_resume() {
+    // Idle after an interrupt, nothing typed: the hint is the point.
     assert_eq!(
-        continue_ghost(true, false, ""),
+        continue_ghost(true, false, false, ""),
         Some(crate::repl::CONTINUE_GHOST)
     );
-    // Streaming: never, whatever the stale flag says.
-    assert_eq!(continue_ghost(true, true, ""), None, "no ghost mid-turn");
+    // Working: never, whatever the stale flag says.
+    assert_eq!(
+        continue_ghost(true, true, false, ""),
+        None,
+        "no ghost mid-turn"
+    );
+    // A live status pill (the turn's own line, `Reconnecting`, the ask
+    // modal's `Question`): the hint would contradict it.
+    assert_eq!(
+        continue_ghost(true, false, true, ""),
+        None,
+        "no ghost under a pill"
+    );
     // Typing, or no pending resume: no hint either.
-    assert_eq!(continue_ghost(true, false, "hi"), None);
-    assert_eq!(continue_ghost(false, false, ""), None);
+    assert_eq!(continue_ghost(true, false, false, "hi"), None);
+    assert_eq!(continue_ghost(false, false, false, ""), None);
     // The flag is dropped at turn start, so the input gate is honest too.
     // (`begin_turn` needs a TTY; the predicate above is the testable seam.)
 }

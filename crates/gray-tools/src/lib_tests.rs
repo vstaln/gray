@@ -10,6 +10,10 @@ struct StubTool {
 
 #[async_trait::async_trait]
 impl Tool for StubTool {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
     fn def(&self) -> ToolDef {
         ToolDef::new(self.name, "stub", json!({"type": "object"}))
     }
@@ -182,6 +186,10 @@ async fn registry_execute_applies_aliases_and_coercion() {
     }
     #[async_trait::async_trait]
     impl Tool for Probe {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+
         fn def(&self) -> ToolDef {
             ToolDef::new(
                 "probe",

@@ -1115,6 +1115,7 @@ async fn silent_past_bound_is_handed_to_a_job_not_killed() {
         crate::shell::kill::GroupGuard::new(pgid),
         Some(&tool.jobs),
         Duration::from_secs(1),
+        Duration::ZERO, // auto-yield off: the stall arm is what stops this call
         None,
     )
     .await;

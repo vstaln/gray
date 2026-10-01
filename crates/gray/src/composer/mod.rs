@@ -234,38 +234,32 @@ pub(crate) fn fmt_elapsed_compact(elapsed_secs: u64) -> String {
     format!("{hours}h {minutes:02}m {seconds:02}s")
 }
 
-/// Cap for viewport-anchored live tool cards: mirrors the queued-preview
-/// cap so the 14-row viewport never pushes the input box off.
-pub(crate) const MAX_LIVE_TOOLS: usize = 3;
-
-/// Live tool headers for the viewport, oldest-first, capped. Free fn so
-/// tests cover the cap/marker policy without `Tui::new` (needs a TTY).
+/// The live-card row for the status dock's slot. Exactly one row, so the
+/// band never changes height mid-turn: extra live cards fold into a dim
+/// `+N more` suffix. Free fn so tests cover the policy without `Tui::new`
+/// (needs a TTY).
 pub(crate) fn live_tool_rows(tools: &[LiveTool], elapsed: Duration) -> Vec<Line<'static>> {
-    tools
-        .iter()
-        .take(MAX_LIVE_TOOLS)
-        .map(|t| {
-            let mut line = t.header.clone();
-            if t.running {
-                // ponytail: reuse the status shimmer; only the live bash verb changes.
-                let prefix =
-                    usize::from(line.spans.first().is_some_and(|s| s.content == "\u{2b22} "));
-                if prefix == 1 {
-                    line.spans[0].content = "\u{2b21} ".into();
-                }
-                let end = prefix
-                    + usize::from(line.spans.get(prefix).is_some_and(|s| s.content == "Ran "));
-                line.spans
-                    .splice(prefix..end, draw::shimmer_spans("Running ", elapsed));
-            }
-            line
-        })
-        .collect()
-}
-
-/// Overflow count past [`MAX_LIVE_TOOLS`] (pure companion for tests).
-pub(crate) fn live_tool_overflow(len: usize) -> usize {
-    len.saturating_sub(MAX_LIVE_TOOLS)
+    let Some((first, rest)) = tools.split_first() else {
+        return Vec::new();
+    };
+    let mut line = first.header.clone();
+    if first.running {
+        // ponytail: reuse the status shimmer; only the live bash verb changes.
+        let prefix = usize::from(line.spans.first().is_some_and(|s| s.content == "\u{2b22} "));
+        if prefix == 1 {
+            line.spans[0].content = "\u{2b21} ".into();
+        }
+        let end = prefix + usize::from(line.spans.get(prefix).is_some_and(|s| s.content == "Ran "));
+        line.spans
+            .splice(prefix..end, draw::shimmer_spans("Running ", elapsed));
+    }
+    if !rest.is_empty() {
+        line.spans.push(Span::styled(
+            format!(" +{} more", rest.len()),
+            Style::default().fg(crate::theme::theme().text_muted),
+        ));
+    }
+    vec![line]
 }
 
 mod text_area;
@@ -279,11 +273,6 @@ pub struct Tui {
     pub(crate) matches: Vec<(String, String)>,
     pub(crate) sel: usize,
     status: Option<(Instant, String)>,
-    /// Latched status-dock seam (see `ratchet_seam`): keeps the viewport
-    /// still while the streaming tail flickers. Checkpoint trailing gaps
-    /// release it (see `release_dock_seam`) so it never stacks a second
-    /// blank above the live status.
-    dock_seam: bool,
     /// A provider round ended before the next text delta.  A punctuation-only
     /// continuation in that first delta is a live-only orphan, not a new row.
     stream_round_boundary: bool,
@@ -538,7 +527,6 @@ impl Tui {
             matches: Vec::new(),
             sel: 0,
             status: None,
-            dock_seam: false,
             stream_round_boundary: false,
             stream_round_had_text: false,
             stream_round_target: None,
@@ -608,7 +596,6 @@ impl Tui {
         ) {
             self.terminal = term;
         }
-        self.release_dock_seam_for_blank_tail();
         let _ = self.draw();
     }
 
@@ -792,7 +779,6 @@ impl Tui {
         }
         self.history_entries = entries;
         self.transcript = new_transcript;
-        self.release_dock_seam_for_blank_tail();
 
         let _ = self.draw();
     }
@@ -967,10 +953,6 @@ impl Tui {
 
     /// Overflow count past the live-tool cap (`+N more`, like the queued
     /// preview's `… +N more`).
-    pub(crate) fn live_tool_overflow(&self) -> usize {
-        live_tool_overflow(self.live_tools.len())
-    }
-
     /// Clears live tool cards without touching scrollback (cancel/error/
     /// turn end: pi `settle_pending_cards` — leftovers never stick).
     pub(crate) fn clear_live_tools(&mut self) {
@@ -1103,27 +1085,6 @@ impl Tui {
         }
         self.status = label.map(|l| (Instant::now(), l.to_string()));
         let _ = self.draw();
-    }
-
-    /// Releases the latched dock seam after a checkpoint trailing gap
-    /// (`Thought for` spacer, tool-box trailing, compaction summary): the
-    /// gap already separates scrollback from the dock, so a latched seam
-    /// would stack a second blank above the live status. Streaming
-    /// re-latches on the next non-blank frame, so per-chunk flicker still
-    /// holds the viewport steady (no input-box bounce).
-    pub(crate) fn release_dock_seam(&mut self) {
-        self.dock_seam = false;
-    }
-
-    fn release_dock_seam_for_blank_tail(&mut self) {
-        if self.is_task_running
-            && self
-                .transcript
-                .last()
-                .is_some_and(crate::composer::transcript::transcript_row_is_blank)
-        {
-            self.release_dock_seam();
-        }
     }
 
     /// Marks the end of a live provider round.  The next text delta may be a
@@ -1279,7 +1240,6 @@ impl Tui {
             let line = turn_footer_line(had_thinking, elapsed, turn_toks, stream_ms);
             self.ensure_gap(1);
             self.push_dim(line);
-            self.ensure_gap(1);
         }
         let _ = std::io::stdout().flush();
         let _ = self.draw();

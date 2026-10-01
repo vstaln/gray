@@ -195,11 +195,10 @@ pub(crate) async fn dispatch_command(
 
             if let Some(prompt_text) = initial_prompt {
                 if let Some((shared, _)) = tui {
-                    shared.lock().expect("tui lock").push_user_prompt(
-                        &prompt_text,
-                        &[],
-                        !prompt_text.starts_with('/'),
-                    );
+                    shared
+                        .lock()
+                        .expect("tui lock")
+                        .push_user_prompt(&prompt_text, &[]);
                 } else {
                     println!("❯ {prompt_text}");
                 }

@@ -1020,6 +1020,9 @@ impl SidecarTool {
 
 #[async_trait]
 impl Tool for SidecarTool {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
     fn def(&self) -> ToolDef {
         self.def.clone()
     }

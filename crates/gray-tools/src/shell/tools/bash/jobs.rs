@@ -102,6 +102,7 @@ impl Jobs {
                     guard,
                     None,
                     Duration::ZERO,
+                    Duration::ZERO,
                     None,
                 )
                 .await;
@@ -330,6 +331,51 @@ impl Jobs {
             // Do not promote process output (or command-derived exit notes) to instructions.
             Some(format!("Background job {id} finished. Use bash action:output with job_id:{id} for its exit status and output."))
         }).collect()
+    }
+
+    /// True while at least one unfinished job belongs to this session — the
+    /// loop's turn-end condition for completion-wake.
+    pub(super) fn has_unfinished(&self, ctx: &ToolContext) -> bool {
+        let jobs = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        jobs.values()
+            .any(|j| j.session == ctx.session_id && j.result.borrow().is_none())
+    }
+
+    /// Bounded wait until ANY unfinished session job settles (or the timeout
+    /// elapses / the session is cancelled); `true` = a job landed, so the
+    /// caller then drains notifications as usual. The receivers are cloned
+    /// here and the map lock dropped, so the waiter owns everything it needs:
+    /// the executor seam can hold it past the `&self` it came from, and a
+    /// worker's `send_replace` can never block on this mutex.
+    pub(super) fn any_waiter(
+        &self,
+        ctx: &ToolContext,
+        timeout: Duration,
+    ) -> futures::future::BoxFuture<'static, bool> {
+        let ctx = ctx.clone();
+        let rxs: Vec<_> = {
+            let jobs = self.0.lock().unwrap_or_else(|e| e.into_inner());
+            jobs.values()
+                .filter(|j| j.session == ctx.session_id && j.result.borrow().is_none())
+                .map(|j| j.result.clone())
+                .collect()
+        };
+        Box::pin(async move {
+            if rxs.is_empty() {
+                return false;
+            }
+            // `changed()` yields an owned `Result<(), _>`, so each wait owns
+            // its receiver; boxing satisfies `select_all`'s `Unpin` bound.
+            let wait_all = futures::future::select_all(rxs.into_iter().map(|mut rx| {
+                Box::pin(async move { rx.changed().await.is_ok() })
+                    as std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send>>
+            }));
+            tokio::select! {
+                _ = wait_all => true,
+                _ = tokio::time::sleep(timeout) => false,
+                _ = ctx.cancel.cancelled() => false,
+            }
+        })
     }
 }
 
@@ -701,5 +747,29 @@ mod tests {
         assert!(!out.is_error, "{}", out.content);
         assert!(out.content.contains("Liveness: silent"), "{}", out.content);
         assert!(!out.content.contains("cancel"), "{}", out.content);
+    }
+
+    #[tokio::test]
+    async fn any_job_waiter_wakes_on_a_send_after_the_snapshot() {
+        // The turn-end wake: the waiter is handed out before the job settles,
+        // so it must still observe the send that lands after the snapshot.
+        let tool = BashTool::default();
+        let ctx = ToolContext::default();
+        assert!(
+            !tool.any_job_waiter(&ctx, Duration::from_millis(50)).await,
+            "no unfinished job: the wake answers false instead of hanging"
+        );
+        let (job, tx) = entry(false, false, true);
+        tool.jobs
+            .0
+            .lock()
+            .unwrap()
+            .insert("bash-any-wait".into(), job);
+        let waiter = tool.any_job_waiter(&ctx, Duration::from_secs(5));
+        tx.send_replace(Some(ToolOutput::ok("exit 0")));
+        assert!(
+            waiter.await,
+            "a job settling after the snapshot wakes the turn"
+        );
     }
 }

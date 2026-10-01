@@ -288,13 +288,14 @@ fn diff_rows_pad_edge_to_edge() {
     ];
     let lines = format_tool_box_lines(header, &body, 80);
     let row_w = |l: &Line<'static>| l.spans.iter().map(|s| s.width()).sum::<usize>();
-    // margin, header, breathing row, then the three body rows
-    assert_eq!(lines.len(), 7);
+    // header, breathing row, then the three body rows — the card carries no
+    // outer margin rows: `ensure_gap` is the only owner of that blank row.
+    assert_eq!(lines.len(), 5);
     // tinted rows span the full width (no dark strip on the right)
+    assert_eq!(row_w(&lines[2]), 80);
     assert_eq!(row_w(&lines[3]), 80);
-    assert_eq!(row_w(&lines[4]), 80);
     // untinted rows are untouched (card block bg shows through, same color)
-    assert!(row_w(&lines[5]) < 80);
+    assert!(row_w(&lines[4]) < 80);
 }
 
 #[test]

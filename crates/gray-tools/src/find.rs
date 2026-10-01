@@ -46,6 +46,10 @@ pub struct FindTool;
 
 #[async_trait]
 impl Tool for FindTool {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
     fn def(&self) -> ToolDef {
         ToolDef::new(
             "find",

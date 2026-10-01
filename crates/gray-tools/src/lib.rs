@@ -26,6 +26,7 @@ pub mod write;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use futures::future::BoxFuture;
 pub use gray_core::agent::Tool;
 use gray_core::agent::{ToolContext, ToolExecutor, ToolOutput};
 use gray_core::message::ToolDef;
@@ -309,6 +310,32 @@ impl ToolExecutor for Registry {
             .iter()
             .flat_map(|tool| tool.drain_notifications(ctx))
             .collect()
+    }
+
+    fn wait_for_notification(
+        &self,
+        ctx: &ToolContext,
+        timeout: std::time::Duration,
+    ) -> BoxFuture<'static, Option<()>> {
+        // `as_any` borrows the tool only long enough to build the waiter,
+        // which owns the job receivers and therefore outlives the borrow.
+        if let Some(bash) = self
+            .tools
+            .iter()
+            .find_map(|tool| tool.as_any().downcast_ref::<BashTool>())
+        {
+            let waiter = bash.any_job_waiter(ctx, timeout);
+            return Box::pin(async move { waiter.await.then_some(()) });
+        }
+        Box::pin(std::future::ready(None))
+    }
+
+    fn has_pending_background(&self, ctx: &ToolContext) -> bool {
+        self.tools.iter().any(|tool| {
+            tool.as_any()
+                .downcast_ref::<BashTool>()
+                .is_some_and(|bash| bash.has_unfinished_jobs(ctx))
+        })
     }
 
     fn execute(

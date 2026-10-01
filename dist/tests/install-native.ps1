@@ -60,7 +60,14 @@ try {
     $isolated = Join-Path $root 'entry-only'
     [IO.Directory]::CreateDirectory($isolated) | Out-Null
     Copy-Item -LiteralPath $entry -Destination (Join-Path $isolated 'install.ps1')
-    Expect-Failure { & (Join-Path $isolated 'install.ps1') -Native } 'Missing install-native.ps1'
+    # Saved alone (or piped to iex) it fetches install-native.ps1 from the site,
+    # and only ever over HTTPS.
+    Expect-Failure { & (Join-Path $isolated 'install.ps1') -Native -BaseUri 'http://127.0.0.1/dl/' } 'require HTTPS'
+    # Checksums come from the channel's SHA256SUMS file: one exact line or nothing.
+    $sums = @("$('a' * 64)  gray-stable-x86_64-linux.tar.gz", "$('b' * 64)  gray-stable-x86_64-windows.zip")
+    if ((Get-GrayDigest $sums 'gray-stable-x86_64-windows.zip') -cne ('b' * 64)) { throw 'Wrong digest picked' }
+    Expect-Failure { Get-GrayDigest $sums 'gray-beta-x86_64-windows.zip' } 'invalid archive checksum'
+    Expect-Failure { Get-GrayDigest ($sums + $sums[1]) 'gray-stable-x86_64-windows.zip' } 'invalid archive checksum'
     $installed = Join-Path $install 'gray.exe'
     $before = (Get-FileHash -LiteralPath $installed).Hash
     # Reinstall uses the existing-file replacement path, stable and beta alike.

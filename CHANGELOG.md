@@ -14,14 +14,56 @@
   `❯` row and leaned on the transcript's own trailing gap, so the prompt sat flush against whatever
   was above it. The pad row is back (and the caret follows the prompt row, not the pad), with
   `MIN_VIEWPORT_H` back at 4.
-- **"Please continue…" no longer shows while the model is streaming.** The bare-Enter resume flag
-  is armed when the REPL loop blocks on input, i.e. before the turn a bare Enter would continue is
-  submitted, so mid-turn it was stale and the box kept painting the ghost over a live turn. It is
-  dropped when a turn starts, and the hint is gated on the composer being idle.
+- **One blank row between blocks, and a band that never moves.** Three separate padders were
+  stacking blank rows between transcript blocks, and two separate resizers were moving the band
+  mid-turn. Both showed up as the same thing: gaps of two, three and four rows around tool cards,
+  and a flashing input box. Now one rule owns each.
+  - The tool card and the prompt card no longer carry outer margin rows of their own; `ensure_gap`
+    is the single owner of the blank row between blocks, so a paragraph, a card and the turn footer
+    are separated by exactly one row (they were separated by two, and two tool cards by three).
+    The turn footer's trailing gap went with it: the input box's own top pad is the separator.
+  - The status dock is a fixed three rows — separator, status, live-card slot. It used to be two,
+    and the live card used to sit below the dock as measured rows, so starting a tool grew the band
+    and finishing it shrank the band again. Since the band *is* the inline viewport's top edge,
+    every resize swallowed the transcript row it covered (a stray blank above the pill) and hopped
+    the input box and the footer. The live card now paints into the dock's own slot row and extra
+    live cards fold into a dim `+N more` on that row, so the band's height is one value for the
+    whole turn — and the slot doubles as the gap between the status line and the input box.
+- **The input box no longer flashes when a tool runs.** Inserting a transcript row scrolls the
+  whole screen, so the band's pixels move with it, and the insert used to erase the band on the spot
+  — outside the frame's synchronized-update bracket. A terminal could therefore present one frame
+  with no input box at all, on every streamed row and every tool event. The erase now belongs to the
+  frame that repaints the band, inside the same bracket as the rest of the frame.
+- **"Please continue…" belongs to the idle composer only.** The bare-Enter resume flag is armed when
+  the REPL loop blocks on input, i.e. before the turn a bare Enter would continue is submitted, so
+  mid-turn it was stale and the box kept painting the ghost over a live turn. It is dropped when a
+  turn starts, and the hint is now gated on both halves of "idle": no turn running *and* no status
+  pill, so it can never sit under a live `⬡ Working…` line. It shows after an interrupt or an
+  error, and nothing else.
 
 # Changelog
 
 ## [Unreleased]
+
+## [0.1.10] - 2026-10-02
+
+### Fixed
+
+- **Windows installs work from one line.** `irm https://gray.alignment.id/install.ps1 | iex`
+  failed three ways in 0.1.9: piped to `iex` there is no `$PSScriptRoot`, so `install.ps1`
+  refused to run without a sibling `install-native.ps1`; that file was never published to the
+  site anyway; and the native installer fetched a per-archive `.sha256` file the release never
+  publishes, so every download-mode install died on a 404. `install.ps1` now fetches
+  `install-native.ps1` from the same site over HTTPS and runs it as a script block (no
+  execution-policy change), the release publishes it beside `install.ps1`, and the archive is
+  verified against the channel's `SHA256SUMS-<channel>` file -- exactly one well-formed line for
+  that zip, or nothing is trusted. The offline `-ArchivePath`/`-Sha256` route is unchanged.
+- **The Windows installer defaults to stable**, like `install.sh`. `-Channel beta` still
+  selects the per-commit build.
+- **`-Wsl` no longer closes your PowerShell window.** Its two `exit` calls ran inside the
+  user's session under `iex`; they now throw or return.
+- The installers are ASCII-only: Windows PowerShell 5.1 decodes an uncharset `text/plain`
+  response as Latin-1.
 
 ## [0.1.8] - 2026-09-30
 

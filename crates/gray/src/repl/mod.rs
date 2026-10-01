@@ -867,11 +867,10 @@ pub async fn run_repl_mode(
                         break;
                     }
                     if let Some((shared, _)) = tui.as_ref() {
-                        shared.lock().expect("tui lock").push_user_prompt(
-                            CONTINUE_PROMPT,
-                            &[],
-                            true,
-                        );
+                        shared
+                            .lock()
+                            .expect("tui lock")
+                            .push_user_prompt(CONTINUE_PROMPT, &[]);
                     } else {
                         println!("❯ {CONTINUE_PROMPT}");
                     }

@@ -23,6 +23,16 @@ pub const DEFAULT_TIMEOUT_SECS: Option<u64> = None;
 /// running so the agent can inspect, await, or cancel it. Overridable in tests
 /// via `GRAY_SHELL_STALL_SECS`.
 pub const MAX_BLOCKING_SILENCE_SECS: u64 = 600;
+/// Duration-based auto-yield for the *blocking* bash lane: a command still
+/// running after this long (with no explicit `timeout` and no explicit
+/// `yield_ms`) moves to the background lane and the call returns immediately,
+/// whether or not it is producing output. Output-based `yield_ms` is opt-in
+/// and nothing ever waits past 10s; this is the default-on mirror (OpenClaw's
+/// `yieldMs` default-on pattern): the agent keeps working while a build or
+/// test suite runs instead of idling on a blocking call. `GRAY_BASH_YIELD_MS`
+/// overrides the window; `0` disables. Only engages when the jobs lane is
+/// enabled (`GRAY_NO_JOBS` unset) — there is nowhere to hand the child off.
+pub const DEFAULT_AUTO_YIELD_MS: u64 = 30_000;
 /// Cap for an explicitly requested `timeout` (one hour).
 pub const MAX_TIMEOUT_SECS: u64 = 3600;
 pub const MIN_YIELD_MS: u64 = 100;

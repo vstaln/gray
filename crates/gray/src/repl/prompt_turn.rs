@@ -411,7 +411,7 @@ pub(crate) async fn run_prompt_turn(
                 true,
             ));
         } else if let Some((qtext, qimages)) = t.queued_inputs.pop_front() {
-            t.push_user_prompt(&qtext, &qimages, !qtext.starts_with('/'));
+            t.push_user_prompt(&qtext, &qimages);
             drop(t);
             *pending_command = Some(expand_skill_command(
                 parse_command(&qtext),

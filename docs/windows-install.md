@@ -116,12 +116,11 @@ substitute a different command language silently.
    execution policies. State signing status and expected warnings in release
    documentation.
 
-Future installer invocation, **not available as native installation today**:
+Installer invocation as shipped in 0.1.10 (current instructions live in
+`windows-preview.md`):
 
 ```powershell
-# Download and inspect the script before running it.
-Invoke-WebRequest https://gray.alignment.id/install.ps1 -OutFile install-gray.ps1
-.\install-gray.ps1 -Channel stable
+irm https://gray.alignment.id/install.ps1 | iex
 # Open a new terminal after a PATH change.
 gray --version
 gray

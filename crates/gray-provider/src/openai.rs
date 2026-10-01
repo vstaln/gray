@@ -2816,12 +2816,42 @@ fn stream_unfold_step(
                                         && serde_json::from_str::<Value>(trimmed).is_ok()
                                 });
                                 if completed || accumulated_tools.is_empty() || !complete {
-                                    return Some((
-                                        Err(ProviderError::Stream(
-                                            "Chat stream ended without a finish reason".into(),
-                                        )),
-                                        StreamState::Done,
-                                    ));
+                                    let err = ProviderError::Stream(
+                                        "Chat stream ended without a finish reason".into(),
+                                    );
+                                    // A clean EOF with no finish chunk is the same
+                                    // transient failure as a truncated body (empty
+                                    // 200 from a gateway, early close). While no
+                                    // delta has reached the caller the re-POST is
+                                    // invisible, and buffered partial tool calls
+                                    // were never executed, so retry like the
+                                    // mid-body transport path instead of failing
+                                    // the turn on the first attempt.
+                                    if !emitted && !completed && attempt < MAX_ATTEMPTS {
+                                        log::warn!(
+                                            target: "gray_provider",
+                                            "stream ended without a finish reason before any delta; retrying (attempt {attempt})"
+                                        );
+                                        let next = StreamState::Init {
+                                            client,
+                                            url,
+                                            api_key,
+                                            body,
+                                            session_id: None,
+                                            attempt: attempt + 1,
+                                            retry_after: None,
+                                        };
+                                        // One notice per burst; attempts 2+ stay
+                                        // silent (append-only transcript).
+                                        if attempt == 1 {
+                                            let notice =
+                                                retry_notice_event(attempt, MAX_ATTEMPTS, &err);
+                                            return Some((Ok(notice), next));
+                                        }
+                                        state = next;
+                                        continue;
+                                    }
+                                    return Some((Err(err), StreamState::Done));
                                 }
                                 match emit_tool_calls_and_completion(
                                     &mut accumulated_tools,

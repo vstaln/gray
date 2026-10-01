@@ -645,7 +645,7 @@ pub(crate) fn read_line(
                             return Ok(Some((trimmed, attached)));
                         }
                         // Slash commands hug their feedback: no trailing gap, say() output follows directly.
-                        tui.push_user_prompt(&trimmed, &attached, !trimmed.starts_with('/'));
+                        tui.push_user_prompt(&trimmed, &attached);
                         return Ok(Some((trimmed, attached)));
                     }
                     KeyCode::Tab => {

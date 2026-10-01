@@ -5,8 +5,6 @@ use super::*;
 impl Tui {
     pub fn push_tool_box(&mut self, header: Line<'static>, body: Vec<Line<'static>>) {
         self.insert_tool_box(header, body);
-        self.ensure_gap(1);
-        self.release_dock_seam();
         if self.transcript.len() > 1000 {
             self.transcript.drain(0..100);
         }
@@ -60,17 +58,12 @@ impl Tui {
     pub(crate) fn paint_thinking_fragment(&mut self, fragment: String) {
         if fragment.trim().is_empty() && self.transcript.last().is_some_and(transcript_row_is_blank)
         {
-            self.release_dock_seam_for_blank_tail();
             return;
         }
         let line = Line::from(vec![Span::styled(fragment, thinking_style())]);
         let w = self.width().max(10);
         let painted = self.render_and_insert_styled_lines(&[line], &[], w);
-        let ends_blank = painted.last().is_some_and(transcript_row_is_blank);
         self.transcript.extend(painted);
-        if self.is_task_running && ends_blank {
-            self.release_dock_seam();
-        }
         if self.transcript.len() > 1000 {
             self.transcript.drain(0..100);
         }
@@ -164,7 +157,6 @@ impl Tui {
         line_offset: usize,
     ) {
         if lines.is_empty() {
-            self.release_dock_seam_for_blank_tail();
             return;
         }
         let w = self.width().max(10);
@@ -176,9 +168,6 @@ impl Tui {
             (lines, rebased)
         };
         if lines.is_empty() {
-            if tail_blank {
-                self.release_dock_seam_for_blank_tail();
-            }
             return;
         }
         let lines_only = self.render_and_insert_styled_lines(&lines, &rebased, w);
@@ -187,11 +176,7 @@ impl Tui {
                 lines,
                 hyperlinks: rebased,
             });
-        let ends_blank = lines_only.last().is_some_and(transcript_row_is_blank);
         self.transcript.extend(lines_only);
-        if self.is_task_running && ends_blank {
-            self.release_dock_seam();
-        }
         if self.transcript.len() > 1000 {
             self.transcript.drain(0..100);
         }
@@ -217,7 +202,6 @@ impl Tui {
             .push(crate::composer::TranscriptEntry::Mascot);
         cap_history_entries(&mut self.history_entries);
         self.transcript.extend(lines_only);
-        self.ensure_gap(1);
         if self.transcript.len() > 1000 {
             self.transcript.drain(0..100);
         }
@@ -249,10 +233,15 @@ impl Tui {
         if lines.is_empty() {
             return;
         }
+        self.ensure_gap(1);
         self.push_styled_lines_with_hyperlinks(lines, &hyperlinks, 0);
     }
 
+    /// A `✓` feedback block, e.g. "Model set to · gpt-5". Own margin above
+    /// (one gap, same rule as every transcript block); the band's pad rows
+    /// own the margin below, so none is added here.
     pub fn push_action(&mut self, text: &str, detail: Option<&str>) {
+        self.ensure_gap(1);
         let mut spans = vec![
             Span::styled(
                 "✓ ",
@@ -283,6 +272,7 @@ impl Tui {
     /// text. Used by the prompt-cache miss notice (pi `addCacheMissNotice`
     /// parity), where a dim row would read as chrome instead of money.
     pub fn push_warning(&mut self, text: &str) {
+        self.ensure_gap(1);
         let line = Line::from(vec![
             Span::styled(
                 "⚠ ",
@@ -341,7 +331,7 @@ impl Tui {
                         }
                     }
                     if !user_text.is_empty() {
-                        self.push_user_prompt(&user_text, &[], true);
+                        self.push_user_prompt(&user_text, &[]);
                         // Feed composer input history so Up/Down recall works
                         // for prompts from the resumed session.
                         self.history.push(user_text.clone());
