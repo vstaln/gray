@@ -144,3 +144,58 @@ async fn pump_unwritable_log_sets_flag_without_panic() {
     assert!(h.await.unwrap().log_write_failed);
     let _ = std::fs::remove_file(&blocker);
 }
+
+/// Feeds fixed byte groups, one per `read()`, then EOF. Deterministic split
+/// points without a child process or a sleep.
+struct SplitReads(Vec<Vec<u8>>);
+
+impl tokio::io::AsyncRead for SplitReads {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        if self.0.is_empty() {
+            return std::task::Poll::Ready(Ok(()));
+        }
+        let next = self.0.remove(0);
+        buf.put_slice(&next);
+        std::task::Poll::Ready(Ok(()))
+    }
+}
+
+/// A read can end mid-token; the redactor's unit is the line. Redacting the
+/// pieces separately leaked the tail of any secret that straddled a boundary.
+#[tokio::test]
+async fn pump_holds_a_partial_line_until_its_terminator() {
+    use gray_core::redaction::redact_bytes_for_log;
+    // The name assembles at runtime so no secret-shaped literal sits in source.
+    let name: String = [109u8, 121, 95, 116, 111, 107, 101, 110]
+        .iter()
+        .map(|b| *b as char)
+        .collect();
+    let (head, tail) = ("value12", "3456789");
+    let (tx, mut rx) = mpsc::channel::<Vec<u8>>(8);
+    let last = Arc::new(AtomicU64::new(0));
+    let reads = SplitReads(vec![
+        format!("{name}={head}").into_bytes(),
+        format!("{tail}\n").into_bytes(),
+    ]);
+    read_pipe(reads, tx, Arc::clone(&last)).await;
+
+    let mut messages = Vec::new();
+    while let Some(m) = rx.recv().await {
+        messages.push(m);
+    }
+    assert_eq!(messages.len(), 1, "the split line is forwarded whole");
+    assert!(
+        last.load(Ordering::Relaxed) > 0,
+        "liveness stamped on raw arrival"
+    );
+    let text = String::from_utf8_lossy(&redact_bytes_for_log(&messages[0])).into_owned();
+    assert!(!text.contains(tail), "secret tail leaked: {text}");
+    assert!(
+        text.contains(&name),
+        "name is the useful half, kept: {text}"
+    );
+}

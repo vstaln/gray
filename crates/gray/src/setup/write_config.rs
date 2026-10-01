@@ -99,19 +99,10 @@ fn atomic_write(path: &Path, data: &Value) -> anyhow::Result<()> {
     std::fs::create_dir_all(parent)
         .map_err(|e| anyhow::anyhow!("cannot create the config directory: {e}"))?;
 
-    let mut text = serde_json::to_string_pretty(data)?;
-    text.push('\n');
-    let tmp = path.with_extension("tmp");
-    std::fs::write(&tmp, text.as_bytes())
-        .map_err(|e| anyhow::anyhow!("cannot write the config: {e}"))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))
-            .map_err(|e| anyhow::anyhow!("cannot protect the config: {e}"))?;
-    }
-    std::fs::rename(&tmp, path).map_err(|e| anyhow::anyhow!("cannot replace the config: {e}"))?;
-    Ok(())
+    // The file half is the repo's single private atomic writer: unique 0600
+    // tmp created with its mode already set, fsynced, renamed. A copy here
+    // created the token at umask mode and chmod'ed it afterwards.
+    super::catalog::save_private_json(path, data)
 }
 
 #[path = "write_config_tests.rs"]
