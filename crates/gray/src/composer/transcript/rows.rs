@@ -384,8 +384,10 @@ pub(crate) fn format_user_prompt_lines(
     let text_primary = crate::theme::theme().text_body;
     let dim_color = crate::theme::theme().text_muted;
     let bg_style = Style::default().bg(crate::theme::theme().surface_bg);
+    // No outer margin rows: `ensure_gap` owns the single blank row between
+    // blocks (codex's rule). A card that also carried its own margins
+    // stacked two blank rows against every neighbour.
     let mut lines = Vec::new();
-    lines.push(Line::from("").style(bg_style));
     let arrow_span = Span::styled(
         " ❯ ",
         Style::default()
@@ -447,6 +449,5 @@ pub(crate) fn format_user_prompt_lines(
             .style(bg_style),
         );
     }
-    lines.push(Line::from("").style(bg_style));
     lines
 }

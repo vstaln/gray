@@ -4,7 +4,7 @@
 # Download and inspect this script before running it.
 [CmdletBinding()]
 param(
-    [ValidateSet('stable', 'beta')][string]$Channel = 'beta',
+    [ValidateSet('stable', 'beta')][string]$Channel = 'stable',
     [string]$InstallDir = $env:GRAY_INSTALL_DIR,
     [switch]$NoPath,
     # Offline artifacts let CI test the real installer without a live release.
@@ -23,6 +23,15 @@ function Add-GrayPath([string]$Current, [string]$Directory) {
     }
     if ([string]::IsNullOrEmpty($Current)) { return $Directory }
     return $Current.TrimEnd(';') + ';' + $Directory
+}
+
+function Get-GrayDigest([string[]]$Lines, [string]$Name) {
+    # Exactly one well-formed line for this archive, or nothing is trusted.
+    $pattern = '^([0-9a-fA-F]{64})\s+\*?' + [regex]::Escape($Name) + '$'
+    $found = @($Lines | ForEach-Object { $_.Trim() } | Where-Object { $_ -match $pattern })
+    if ($found.Count -ne 1) { throw 'Missing or invalid archive checksum' }
+    $null = $found[0] -match $pattern
+    return $Matches[1]
 }
 
 function Assert-GrayVersion([string]$Executable) {
@@ -82,12 +91,11 @@ function Install-NativeGray {
             [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
             $base = $BaseUri.AbsoluteUri.TrimEnd('/') + '/'
             Invoke-WebRequest -UseBasicParsing -Uri ($base + $name) -OutFile $archive -TimeoutSec 60
+            # The release publishes one sums file per channel covering every
+            # platform (the same file install.sh verifies against).
             $sumFile = Join-Path $temp 'checksum'
-            Invoke-WebRequest -UseBasicParsing -Uri ($base + $name + '.sha256') -OutFile $sumFile -TimeoutSec 60
-            $lines = @(Get-Content -LiteralPath $sumFile | Where-Object { $_.Trim() })
-            $pattern = '^([0-9a-fA-F]{64})\s+\*?' + [regex]::Escape($name) + '$'
-            if ($lines.Count -ne 1 -or $lines[0] -notmatch $pattern) { throw 'Missing or invalid archive checksum' }
-            $Sha256 = $Matches[1]
+            Invoke-WebRequest -UseBasicParsing -Uri ($base + "SHA256SUMS-$Channel") -OutFile $sumFile -TimeoutSec 60
+            $Sha256 = Get-GrayDigest @(Get-Content -LiteralPath $sumFile) $name
         }
         if ((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash -ne $Sha256) {
             throw 'Archive checksum mismatch; installation unchanged'

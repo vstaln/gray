@@ -670,7 +670,6 @@ pub(crate) async fn handle_compact(
                 tui.ensure_gap(1);
                 tui.push_compaction_summary(&summary);
                 tui.ensure_gap(1);
-                tui.release_dock_seam();
             } else {
                 println!("Context compacted · {elapsed_str} ({msg_count} messages -> summary)\n");
                 println!("{summary}\n");

@@ -83,6 +83,21 @@
   remote command starts in that account's login directory.
 
 ### Fixed
+- **Windows installs work from one line.** `irm https://gray.alignment.id/install.ps1 | iex`
+  failed three ways in 0.1.9: piped to `iex` there is no `$PSScriptRoot`, so `install.ps1`
+  refused to run without a sibling `install-native.ps1`; that file was never published to the
+  site anyway; and the native installer fetched a per-archive `.sha256` file the release never
+  publishes, so every download-mode install died on a 404. `install.ps1` now fetches
+  `install-native.ps1` from the same site over HTTPS and runs it as a script block (no
+  execution-policy change), the release publishes it beside `install.ps1`, and the archive is
+  verified against the channel's `SHA256SUMS-<channel>` file -- exactly one well-formed line for
+  that zip, or nothing is trusted. The offline `-ArchivePath`/`-Sha256` route is unchanged.
+- **The Windows installer defaults to stable**, like `install.sh`. `-Channel beta` still
+  selects the per-commit build.
+- **`-Wsl` no longer closes your PowerShell window.** Its two `exit` calls ran inside the
+  user's session under `iex`; they now throw or return.
+- The installers are ASCII-only: Windows PowerShell 5.1 decodes an uncharset `text/plain`
+  response as Latin-1.
 - **A provider error reads as a sentence, once.** A 429 printed its raw JSON envelope
   (`{"error": {"message": …, "type": …, "param": …}}`) on every retry row and again in the final
   error. HTTP errors now show the provider's own `error.message` (the full body still drives the
@@ -150,6 +165,14 @@
   shared temp dir (pre-creatable by another local user, removed only on success) is a private
   `TempDir` now, dropped on every exit including a checksum mismatch.
 
+- **One blank row between blocks, and the card that owns none of it.** A tool card and a
+  prompt card each shipped their own leading and trailing margin row *and* asked the
+  transcript for a separating gap, so a card sitting between two paragraphs was fenced by
+  two blank rows on each side (and a card after a card by four). Codex's rule is one blank
+  row between blocks, contributed by the transcript alone: a block carries no outer
+  margin of its own. The card formatters now emit their content only, and `ensure_gap` is
+  the single owner of the separation, so a paragraph, a card and the next paragraph are
+  always exactly one row apart.
 ### Changed
 - CI and the release builds pass `--locked` on every platform, so a dependency edit without a lock
   update cannot ship from `main`.

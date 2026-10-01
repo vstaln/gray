@@ -47,21 +47,23 @@ harness core: CLI, TUI (with image paste), provider, sessions, tools, cron.
 
 **Native Windows 11 x64** — no WSL, no Linux distro, no elevation. Git for
 Windows supplies the shell for tool calls; Gray does not install it or WSL.
-Download the Windows release artifact, keep both scripts from its `dist` folder
-together, inspect them, then run:
+In PowerShell:
 
 ```powershell
-$hash = ((Get-Content .\gray-beta-x86_64-windows.zip.sha256).Trim() -split '\s+')[0]
-.\dist\install.ps1 -ArchivePath .\gray-beta-x86_64-windows.zip -Sha256 $hash
+irm https://gray.alignment.id/install.ps1 | iex                                            # stable
+& ([scriptblock]::Create((irm https://gray.alignment.id/install.ps1))) -Channel beta      # beta
 ```
 
+The installer verifies the zip against the release `SHA256SUMS` before touching
+anything. For an offline install keep `dist/install.ps1` and
+`dist/install-native.ps1` together and run
+`.\dist\install.ps1 -ArchivePath .\gray-stable-x86_64-windows.zip -Sha256 <digest>`.
 `-Native` is accepted and is already the default. Pass `-Wsl` for the
 compatibility route that installs the Linux build inside WSL. Native installs
 never fall back to WSL. Artifacts are unsigned — the digest catches corruption,
-not publisher identity — so follow your execution policy rather than disabling it.
-Close Gray and rerun the installer to update; self-update is refused on native
-Windows. Gateway and cron execution are unsupported and refused explicitly; cron
-jobs can still be managed as files. See the
+not publisher identity. Close Gray and rerun the installer to update; self-update
+is refused on native Windows. Gateway and cron execution are unsupported and
+refused explicitly; cron jobs can still be managed as files. See the
 [native installation guide](docs/windows-preview.md).
 
 macOS binaries are Rust-static but **not notarized** — curl-installed binaries run fine, browser downloads may hit Gatekeeper quarantine.
