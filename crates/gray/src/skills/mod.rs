@@ -217,7 +217,7 @@ fn add_ignore_rules(matcher: &mut IgnoreMatcher, dir: &Path, root_dir: &Path) {
 // Frontmatter
 mod load;
 
-pub(crate) use load::load_skills_from_dir_internal;
+pub(crate) use load::{load_skills_from_dir_internal, parse_frontmatter};
 
 pub fn load_skills_from_dir(dir: &Path, source: &str) -> LoadSkillsResult {
     let root = dir.to_path_buf();
@@ -302,21 +302,20 @@ pub fn format_skills_for_prompt(
     auto_enabled: bool,
     disabled: &BTreeSet<String>,
 ) -> String {
-    const MAX_PROMPT_SKILLS: usize = 40;
+    // 12, not 40: every listed skill costs its description in EVERY turn, and
+    // nobody installs 40. The overflow line below still reaches the rest.
+    const MAX_PROMPT_SKILLS: usize = 12;
     let visible: Vec<&Skill> = rank_skills_for_prompt(skills, auto_enabled, disabled);
     if visible.is_empty() {
         return String::new();
     }
+    // One sentence per rule that changes behavior. The old six-line preamble
+    // cost ~1 KB per turn to say the same thing (and named a `read` tool that
+    // tools-minimal does not have).
     let mut lines = vec![
-        "\n\nThe following skills provide specialized instructions for specific tasks.".to_string(),
-        "When a task matches a skill description, read and follow its SKILL.md at the listed location before acting even for simple tasks; do not wait for the user to request /skills."
+        "\n\nThe following skills provide specialized instructions.".to_string(),
+        "When a task matches one, read its SKILL.md at the listed location before acting — or immediately if you already started: the skill outranks the plan you are mid-way through. Load it with the read tool (`cat <location>` in bash, fallback only) and name the skill you used. Paths inside SKILL.md are relative to its directory."
             .to_string(),
-        "If you have already started acting on the task and a skill matches, stop and read it before continuing — the skill outranks the plan you were mid-way through."
-            .to_string(),
-        "Use the read tool to load SKILL.md, bash (`cat <location>`) fallback only."
-            .to_string(),
-        "Briefly name the skill used and why.".to_string(),
-        "When a skill file references a relative path, resolve it against the skill directory (parent of SKILL.md / dirname of the path) and use that absolute path in tool commands.".to_string(),
         String::new(),
         "<available_skills>".to_string(),
     ];

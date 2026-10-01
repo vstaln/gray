@@ -29,6 +29,33 @@ pub(crate) fn desired_viewport_h(
     (status_h + queued_h + live_h + box_rows + panel_h + attach_h + 1).clamp(MIN_VIEWPORT_H, max_h)
 }
 
+/// Latched viewport floor for the frame: the estimate above short-cuts
+/// dock segments (`status_h` recomputed inside the frame after the seam
+/// latch re-arms, live rows re-wrapped at the frame width), and any
+/// measured overrun pushed the footer gauge past the viewport bottom —
+/// where it was skipped entirely, so the gauge (and the `+1` pad band
+/// below it) flickered while tokens streamed. Grow the viewport by the
+/// same amount the estimate short-cuts, so the measured frame always
+/// fits without moving the viewport's top edge (no input-box bounce).
+pub(crate) fn latched_viewport_floor(
+    status_h: u16,
+    queued_h: u16,
+    live_h: u16,
+    box_rows: u16,
+    attach_h: u16,
+    max_h: u16,
+) -> u16 {
+    // The three frames the seam latch can produce mid-turn, given the
+    // estimate short-cut `status_h` to 0: full dock (seam + status +
+    // breath), the dock without seam, and no dock at all (box + footer).
+    let with_dock = status_h + queued_h + live_h + box_rows + attach_h + 1;
+    let no_status = queued_h + live_h + box_rows + attach_h + 1;
+    // A short-cut live reserve: measured live rows push the frame past
+    // the estimate's box + footer floor.
+    let live_overrun = live_h + box_rows + attach_h + 1;
+    with_dock.max(no_status).max(live_overrun).min(max_h)
+}
+
 /// Upper bound for the inline viewport.
 ///
 /// The input box is content-sized and has to be able to grow past the idle
@@ -41,8 +68,86 @@ pub(crate) fn viewport_cap(rows: u16) -> u16 {
     rows.saturating_sub(2).max(MIN_VIEWPORT_H)
 }
 
+/// The row the footer gauge paints on, clamped into the frame.
+///
+/// The gauge is the viewport's last row, so a one-row shortfall in the
+/// pre-computed viewport estimate (`status_h` re-read inside the frame,
+/// live rows re-wrapped at the frame width) used to push `footer_y` past
+/// the bottom and skip the paint entirely — the footer flickered while
+/// tokens streamed. Clamping paints it on the frame's last row instead:
+/// one frame riding the screen bottom beats a vanished gauge. Pure for
+/// testability (`Tui::new` needs a TTY).
+pub(crate) fn footer_paint_row(footer_y: u16, area: Rect) -> Option<u16> {
+    (area.height > 0).then(|| footer_y.min(area.y + area.height - 1))
+}
+
+/// Rows the band may spend on everything above the text area: the screen
+/// minus the rows that must always survive (the status dock, the input box,
+/// the attachment row, the context footer).
+///
+/// The text area and the context line are the two things that are always
+/// on screen, so they are never trimmed: a busy turn (a wall of live tool
+/// cards plus a widget and a queued follow-up) shrinks the rows above them
+/// instead of pushing the prompt and the gauge off the bottom.
+pub(crate) fn band_budget(screen_h: u16, reserved_rows: u16) -> u16 {
+    screen_h.saturating_sub(reserved_rows)
+}
+
+/// Trim `counts` to `allowance` rows in total, in the order they are
+/// given: the ask modal (it blocks the turn) first, then the user's queued
+/// follow-up, then the plugin widget (decoration), and the live tool cards
+/// last because they are the elastic block — their results land in the
+/// scrollback anyway, so they absorb whatever is left. The pre-frame
+/// estimate and the frame itself run the same order, so the band's height
+/// matches what renders and the footer keeps the viewport's last row.
+/// Pure for testability.
+pub(crate) fn trim_to_allowance(counts: &mut [u16], allowance: u16) {
+    let mut left = allowance;
+    for count in counts.iter_mut() {
+        let keep = left.min(*count);
+        *count = keep;
+        left = left.saturating_sub(keep);
+    }
+}
+
+/// The bare-Enter resume ghost, shown only while the composer is idle.
+///
+/// `allow_empty_submit` is armed by the REPL loop right before it blocks on
+/// input — i.e. *before* the turn that a bare Enter would continue is
+/// submitted — so mid-turn it is stale: the resume it advertises is already
+/// streaming, and the box kept painting "Please continue…" over the live
+/// turn. Pure for testability (`Tui::new` needs a TTY).
+pub(crate) fn continue_ghost(
+    allow_empty_submit: bool,
+    is_task_running: bool,
+    text: &str,
+) -> Option<&'static str> {
+    (allow_empty_submit && !is_task_running && text.trim().is_empty())
+        .then_some(crate::repl::CONTINUE_GHOST)
+}
+
+/// Whether the footer paints the reasoning-effort badge.
+///
+/// Provider-driven (opencode parity): no badge when the provider says this
+/// model doesn't reason; unknown → show, as before. `snapshot` is the turn's
+/// frozen answer (see `Tui::turn_show_effort`): while a turn streams, the
+/// flag underneath is an async cache shared with background discovery
+/// (`repl/mod.rs` spawns the provider `/models` and models.dev fetches), so
+/// resolving it per frame lets the badge appear or vanish at any moment.
+/// The badge is part of the right-anchored footer segment — a width change
+/// walks the whole right segment across the bar mid-stream.
+pub(crate) fn footer_badge_visible(model: &str, snapshot: Option<bool>) -> bool {
+    snapshot
+        .unwrap_or_else(|| crate::setup::context::model_supports_reasoning(model) != Some(false))
+}
+
 pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
     if tui.modal_open {
+        return Ok(());
+    }
+    // Inside `Tui::atomic` the repaint is coalesced: the outermost batch
+    // draws once, in the same synchronized update as its scrollback inserts.
+    if tui.batch_depth > 0 {
         return Ok(());
     }
     let (cols, rows) = crossterm::terminal::size().unwrap_or((80, 24));
@@ -51,7 +156,9 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
 
     let text = tui.textarea.text().to_string();
     let cursor = tui.textarea.cursor().min(text.len());
-    let ibox = build_input_box(&text, cursor, w);
+    // Ghost resume hint in the empty box while bare Enter would continue.
+    let ghost = continue_ghost(tui.allow_empty_submit, tui.is_task_running, &text);
+    let ibox = build_input_box(&text, cursor, w, ghost);
     let box_h = ibox.lines.len().max(1) as u16;
     // Attachments row.
     let attach_h: u16 = u16::from(!tui.attachments.is_empty());
@@ -106,9 +213,25 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
     let widget_budget = rows
         .saturating_sub(box_h + status_h + queued_est + live_est + panel_est + attach_h + 2)
         .min(12);
-    let widget_rows = tui.plugin_widget.rows(widget_budget as usize);
-    let widget_h = widget_rows.len() as u16;
+    let mut widget_rows = tui.plugin_widget.rows(widget_budget as usize);
     let max_viewport_h = viewport_cap(rows);
+
+    // The text area and the context footer always keep their rows, so the
+    // band above them is capped before the height is reserved, and the
+    // frame trims the measured rows with the same allowance: what the band
+    // reserved is what it renders, so the footer keeps the last row. The
+    // cap is measured against the band cap (not the screen) because that is
+    // all the viewport can ever be.
+    let mut band_allowance = band_budget(max_viewport_h, status_h + box_h + attach_h + 1);
+    // A cut card set still needs its "… +N more" row.
+    let reserve_overflow_row = tui.live_tool_overflow() > 0 && band_allowance > 0;
+    if reserve_overflow_row {
+        band_allowance -= 1;
+    }
+    let mut reserved = [ask_est, queued_est, widget_rows.len() as u16, live_est];
+    trim_to_allowance(&mut reserved, band_allowance);
+    let (ask_est, queued_est, widget_h, live_est) =
+        (reserved[0], reserved[1], reserved[2], reserved[3]);
     let desired = desired_viewport_h(
         status_h,
         queued_est,
@@ -118,22 +241,31 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
         attach_h,
         max_viewport_h,
     );
+    // Footer paint row (the viewport's last row). A mid-stream text wrap can
+    // measure one row taller than this estimate (`status_h` re-read inside
+    // the frame, live rows re-wrapped at the frame width); the shortfall
+    // would push `footer_y` past the bottom and silently drop the gauge for
+    // that frame — the footer flickered while tokens streamed. Grow the
+    // viewport by the same amount the estimate short-cuts the dock, so the
+    // measured frame fits without moving the top edge (no bounce).
+    let desired = desired.max(latched_viewport_floor(
+        status_h,
+        queued_est,
+        live_est + widget_h + ask_est,
+        box_rows_est,
+        attach_h,
+        max_viewport_h,
+    ));
 
     // frankentui lesson: synchronized-output bracketing (DEC2026) — one atomic
     // present per frame so the compositor never shows a torn frame.
     // Terminals without support ignore the sequence.
-    crossterm::execute!(
-        std::io::stdout(),
-        crossterm::terminal::BeginSynchronizedUpdate
-    )?;
+    tui.begin_sync();
     // Viewport geometry is a precondition for the frame: a swallowed failure
     // would commit a frame against stale geometry (audit 24.01). Close the
     // synchronized-update bracket before bailing out.
     if let Err(e) = tui.terminal.set_viewport_height(desired, screen_size) {
-        let _ = crossterm::execute!(
-            std::io::stdout(),
-            crossterm::terminal::EndSynchronizedUpdate
-        );
+        tui.end_sync();
         return Err(e.into());
     }
     tui.viewport_h = desired;
@@ -179,19 +311,17 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
 
         let status_y = area.y;
         // Queued preview sits between status and input.
-        let queued_preview: Vec<Line<'static>> = queued_preview_lines(&tui.queued_inputs, w);
-        let queued_h = queued_preview.len() as u16;
+        let mut queued_preview: Vec<Line<'static>> = queued_preview_lines(&tui.queued_inputs, w);
         // Live tool cards (pi pending cards): wrapped at the frame width
         // like every other viewport row; `live_h` reserves their space.
-        let live_rows: Vec<Line<'static>> = live_headers
+        let mut live_rows: Vec<Line<'static>> = live_headers
             .into_iter()
             .flat_map(|l| {
                 crate::composer::transcript::wrap_styled_line(l, w.saturating_sub(4).max(1))
             })
             .collect();
-        let live_h = live_rows.len() as u16 + u16::from(live_overflow > 0);
         // Ask modal rows (pre-wrapped at frame width, capped like live rows).
-        let ask_rows: Vec<Line<'static>> = ask_modal
+        let mut ask_rows: Vec<Line<'static>> = ask_modal
             .as_ref()
             .map(|m| {
                 m.rows
@@ -226,7 +356,23 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
                     .collect()
             })
             .unwrap_or_default();
-        let ask_h = ask_rows.len() as u16;
+        // Same trim as the height estimate, same order, same allowance.
+        let mut rows_h = [
+            ask_rows.len() as u16,
+            queued_preview.len() as u16,
+            widget_rows.len() as u16,
+            live_rows.len() as u16,
+        ];
+        trim_to_allowance(&mut rows_h, band_allowance);
+        ask_rows.truncate(rows_h[0] as usize);
+        queued_preview.truncate(rows_h[1] as usize);
+        widget_rows.truncate(rows_h[2] as usize);
+        live_rows.truncate(rows_h[3] as usize);
+        let show_live_overflow = reserve_overflow_row;
+        let live_h = rows_h[3] + u16::from(show_live_overflow);
+        let queued_h = rows_h[1];
+        let ask_h = rows_h[0];
+        let widget_h = rows_h[2];
         // Space left for the completion panel once the fixed rows
         // (status, queued, input, attachments, footer) are placed.
         let avail = area
@@ -250,7 +396,16 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
 
         if let Some((started, label)) = &tui.status {
             let label_text = format!(" ⬡ {label}\u{2026}");
-            let mut spans = shimmer_spans(&label_text, started.elapsed());
+            // Sweep phase rides the turn clock (or the compaction clock),
+            // never the status stamp: `set_status` re-stamps it on every
+            // label change, and `Preparing tool: …` changes per streamed
+            // argument token — the highlight band snapped back to the
+            // start each time (flicker on every tool call).
+            let elapsed = match compaction_elapsed {
+                Some(d) => d,
+                None => super::pill_elapsed(turn_started, *started, is_task_running),
+            };
+            let mut spans = shimmer_spans(&label_text, elapsed);
             // Turn-anchored clock (tool re-stamps never restart it) plus
             // the live output counter: turn-level outputs plus the streamed
             // per-chunk estimate, exact on every report. Live TPS rides
@@ -262,10 +417,6 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
             // restored after (`compaction_status_survives_follow_up`).
             // Live TPS needs the turn clock too, so it hides while
             // compacting (that clock isn't turn time).
-            let elapsed = match compaction_elapsed {
-                Some(d) => d,
-                None => super::pill_elapsed(turn_started, *started, is_task_running),
-            };
             let tps_suffix = match compaction_elapsed {
                 Some(_) => String::new(),
                 None => super::live_tps_suffix(pill_turn_output, pill_streamed, tui.turn_stream_ms),
@@ -288,7 +439,7 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
                 continue;
             }
             frame.render_widget(
-                Paragraph::new(line.clone()),
+                chrome_row(line.clone()),
                 Rect::new(area.x, y, area.width, 1),
             );
         }
@@ -303,7 +454,7 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
                 Rect::new(area.x, y, area.width, 1),
             );
         }
-        if live_overflow > 0 {
+        if show_live_overflow {
             let y = live_y + live_rows.len() as u16;
             if y >= area.y && y < area.y + area.height {
                 frame.render_widget(
@@ -324,7 +475,7 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
                 continue;
             }
             frame.render_widget(
-                Paragraph::new(line.clone()),
+                chrome_row(line.clone()),
                 Rect::new(area.x, y, area.width, 1),
             );
         }
@@ -332,7 +483,7 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
             let y = widget_y + i as u16;
             if y < area.bottom() {
                 frame.render_widget(
-                    Paragraph::new(line.clone()),
+                    chrome_row(line.clone()),
                     Rect::new(area.x, y, area.width, 1),
                 );
             }
@@ -503,10 +654,9 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
         let cache_display = format!("{hit_rate:.1}% cache");
 
         let model_display = crate::setup::friendly_model_name(&tui.model_name);
-        // Provider-driven (opencode parity): no effort badge when the provider
-        // says this model doesn't reason. Unknown → show, as before.
-        let show_effort =
-            crate::setup::context::model_supports_reasoning(&tui.model_name) != Some(false);
+        // Unknown/`None` (between turns) resolves the flag live, so the
+        // provider's own answer still lands once discovery finishes.
+        let show_effort = footer_badge_visible(&tui.model_name, tui.turn_show_effort);
         // `off` already implies hidden — don't render "off · hidden".
         // Non-reasoning models (show_effort false) render no badge; the
         // separator is omitted with it so the footer never trails " · ".
@@ -595,8 +745,9 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
         }
         footer_spans.push(Span::raw(" ".repeat(pad_len)));
         footer_spans.extend(right_parts);
-        if footer_y < area.y + area.height {
-            // Transparent footer: text only, no full-bleed band.
+        // Transparent footer: text only, no full-bleed band. Painted on the
+        // row `footer_paint_row` clamps into the frame — never skipped.
+        if let Some(footer_y) = footer_paint_row(footer_y, area) {
             frame.render_widget(
                 Paragraph::new(Line::from(footer_spans)),
                 Rect::new(area.x, footer_y, area.width, 1),
@@ -622,7 +773,7 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
         // own the screen and return before this point, so no other consumer
         // competes for the cursor.
         let cur_x = (area.x + 3 + ibox.cur_col as u16).min(area.x + area.width.saturating_sub(1));
-        let cur_y = (box_y + 1 + ibox.cur_row as u16).min(area.y + area.height.saturating_sub(1));
+        let cur_y = (box_y + ibox.cur_row as u16).min(area.y + area.height.saturating_sub(1));
         frame.set_cursor_position(Position::new(cur_x, cur_y));
     });
     let background_result = if res.is_ok() {
@@ -634,12 +785,8 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
     } else {
         Ok(())
     };
-    let ended = crossterm::execute!(
-        std::io::stdout(),
-        crossterm::terminal::EndSynchronizedUpdate
-    );
+    tui.end_sync();
     res?;
-    ended?;
     background_result?;
     Ok(())
 }
@@ -655,4 +802,15 @@ fn live_tool_row(line: Line<'static>) -> Paragraph<'static> {
             .padding(ratatui::widgets::Padding::left(1))
             .style(Style::default().bg(crate::theme::theme().surface_bg)),
     )
+}
+
+/// A composer-band row: plugin widget, queued follow-up and ask-modal rows
+/// sit between the live cards and the input box but were painted
+/// transparent, so on a terminal whose default background differs from the
+/// theme they showed as a foreign stripe straight through the middle of the
+/// composer (a streaming turn's tool call then walked the whole band).
+/// Paint them like the rest of the band.
+fn chrome_row(line: Line<'static>) -> Paragraph<'static> {
+    Paragraph::new(line)
+        .block(Block::default().style(Style::default().bg(crate::theme::theme().surface_bg)))
 }

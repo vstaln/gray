@@ -212,6 +212,16 @@ pub(crate) fn should_drop_stream_punctuation(round_boundary: bool, text: &str) -
     round_boundary && is_orphan_stream_punctuation(text)
 }
 
+/// Whether `stream_text` should hold this delta instead of rendering it:
+/// a punctuation-only chunk with no round boundary armed (a mid-round
+/// split or the post-interrupt tail), or any further chunk while a burst
+/// is already held (punctuation and the whitespace separators between
+/// bursts ride along until a meaningful delta releases them). Pure so the
+/// live gate is explicit and testable (`Tui::new` needs a TTY).
+pub(crate) fn should_hold_stream_chunk(hold_len: usize, text: &str) -> bool {
+    hold_len > 0 || is_orphan_stream_punctuation(text)
+}
+
 impl Tui {
     pub(crate) fn ensure_gap(&mut self, n: usize) {
         // An explicit stream boundary owns the separation.  Do not let a
@@ -285,6 +295,9 @@ impl Tui {
             let _ = self.draw();
             return;
         }
+        // Release a held punctuation burst before the Thought rows land:
+        // it continues the prose paragraph above, not the reasoning run.
+        self.release_held_punctuation("");
         if !self.thinking {
             self.ensure_gap(1);
         }
@@ -356,6 +369,19 @@ impl Tui {
             let _ = self.draw();
             return;
         }
+        if should_hold_stream_chunk(self.stream_punct_hold.len(), &clean) {
+            // No round boundary armed, but the delta is punctuation-only:
+            // a mid-round split or the post-interrupt tail. Feeding the
+            // streaming renderer would freeze it as its own lone `.`
+            // paragraph row (checkpoints only advance on complete
+            // blocks). Hold the burst; it is released into the renderer
+            // by the next meaningful delta, a tool/reconnect event, or
+            // the turn end — and dropped when nothing follows.
+            self.streamed_bytes = self.streamed_bytes.saturating_add(clean.len() as u64);
+            self.stream_punct_hold.push_str(&clean);
+            let _ = self.draw();
+            return;
+        }
         self.stream_round_boundary = false;
         self.stream_round_target = None;
         if !clean.trim().is_empty() {
@@ -364,11 +390,52 @@ impl Tui {
         // Live pill estimate ticks per chunk; exact usage reports (set_usage)
         // and TurnEnd bills overwrite it. Bytes/4, the repo estimate heuristic.
         self.streamed_bytes = self.streamed_bytes.saturating_add(clean.len() as u64);
+        // Release a held punctuation burst ahead of this delta so the
+        // renderer's source order matches arrival order (the held chunk
+        // continues the paragraph this delta belongs to).
+        let mut clean = clean;
+        if !self.stream_punct_hold.is_empty() {
+            let held = std::mem::take(&mut self.stream_punct_hold);
+            clean = format!("{held}{clean}");
+        }
         // Feed the live viewport width so tables lay out to fit (or fall back
         // to records) instead of rendering wide and shredding downstream.
         // Reflows first when the size actually changed (same ~75ms trailing
         // debounce as the idle ticker), so a resize mid-table re-lays the
         // committed rows instead of only affecting new tables.
+        let tw = self.live_width().saturating_sub(2);
+        self.markdown_renderer.set_max_table_width(Some(tw));
+        self.markdown_renderer
+            .push_and_render(&clean, Some(gray_markdown::get_syntect()));
+        let frozen_len = self.markdown_renderer.frozen_lines_len();
+        if frozen_len > self.committed_markdown_lines {
+            self.atomic(|t| {
+                if t.committed_markdown_lines == 0 {
+                    t.ensure_gap(1);
+                }
+                let view = t.markdown_renderer.view();
+                let new_lines: Vec<Line<'static>> =
+                    view.lines[t.committed_markdown_lines..frozen_len].to_vec();
+                let hyperlinks = view.hyperlinks.to_vec();
+                let offset = t.committed_markdown_lines;
+                t.committed_markdown_lines = frozen_len;
+                t.push_styled_lines_with_hyperlinks(new_lines, &hyperlinks, offset);
+            });
+        }
+        let _ = self.draw();
+    }
+
+    /// Flushes a held punctuation burst back into the streaming renderer
+    /// (prepended to `following`, which may be empty). Called when evidence
+    /// arrives that the held chunk was not an orphan continuation: a
+    /// meaningful text delta (`stream_text`), thinking starting, a tool/
+    /// reconnect event, or the turn end.
+    pub(crate) fn release_held_punctuation(&mut self, following: &str) {
+        if self.stream_punct_hold.is_empty() {
+            return;
+        }
+        let held = std::mem::take(&mut self.stream_punct_hold);
+        let clean = format!("{held}{following}");
         let tw = self.live_width().saturating_sub(2);
         self.markdown_renderer.set_max_table_width(Some(tw));
         self.markdown_renderer
@@ -386,11 +453,22 @@ impl Tui {
             self.committed_markdown_lines = frozen_len;
             self.push_styled_lines_with_hyperlinks(new_lines, &hyperlinks, offset);
         }
-        let _ = self.draw();
+    }
+
+    /// Drops a held punctuation burst without rendering it. The burst was
+    /// the turn's final delta (interrupt, stream end): as an orphan it
+    /// freezes as a lone `.` row in the live transcript, which is exactly
+    /// what the hold exists to prevent.
+    pub(crate) fn discard_held_punctuation(&mut self) {
+        self.stream_punct_hold.clear();
     }
 
     pub fn end_thinking(&mut self) {
         self.end_thinking_run(true);
+        // A held punctuation burst rides a reasoning-only interlude:
+        // thinking text cannot start a new prose block, so release what
+        // arrived before it (mid-round split into a `Thought for…` run).
+        self.release_held_punctuation("");
         let _ = self.draw();
     }
 
@@ -431,24 +509,25 @@ impl Tui {
         attached: &[std::path::PathBuf],
         trailing_gap: bool,
     ) {
-        self.ensure_gap(1);
-        let lines = format_user_prompt_lines(text, attached, self.width().max(10));
-        self.insert_paragraph(&lines, Some(crate::theme::theme().surface_bg));
-        self.history_entries
-            .push(super::TranscriptEntry::UserPrompt(
+        self.atomic(|t| {
+            t.ensure_gap(1);
+            let lines = format_user_prompt_lines(text, attached, t.width().max(10));
+            t.insert_paragraph(&lines, Some(crate::theme::theme().surface_bg));
+            t.history_entries.push(super::TranscriptEntry::UserPrompt(
                 text.to_string(),
                 attached.to_vec(),
             ));
-        self.transcript.extend(lines);
-        // Trailing gap after every chat card — command and prompt alike.
-        // Handlers that print feedback (say()) treat the gap as idempotent;
-        // handlers that print nothing (dismissed modal) still leave breathing
-        // room before the next prompt instead of jamming against the card.
-        // Slash-command cards skip it (trailing_gap=false): their feedback
-        // hugs the card, and each dismissed-modal arm adds the gap itself.
-        if trailing_gap {
-            self.ensure_gap(1);
-        }
+            t.transcript.extend(lines);
+            // Trailing gap after every chat card — command and prompt alike.
+            // Handlers that print feedback (say()) treat the gap as idempotent;
+            // handlers that print nothing (dismissed modal) still leave breathing
+            // room before the next prompt instead of jamming against the card.
+            // Slash-command cards skip it (trailing_gap=false): their feedback
+            // hugs the card, and each dismissed-modal arm adds the gap itself.
+            if trailing_gap {
+                t.ensure_gap(1);
+            }
+        });
         if self.transcript.len() > 1000 {
             self.transcript.drain(0..100);
         }

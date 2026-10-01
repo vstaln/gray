@@ -416,18 +416,14 @@ fn record_install(
     write_lock(&lock)
 }
 
-fn ensure_gray_native(ecosystem: &str, type_: &str) -> anyhow::Result<()> {
-    if ecosystem != "gray-native" {
-        anyhow::bail!(
-            "unsupported ecosystem '{ecosystem}' (only gray-native sources are installable until Task 2.3)"
-        );
-    }
-    if type_ != "tarball" {
-        anyhow::bail!(
-            "unsupported source type '{type_}' (only gray-native tarballs are installable until Task 2.3)"
-        );
-    }
-    Ok(())
+/// Index entries gray installs by name: curated gray-native tarballs
+/// plus foreign `pi-gallery` git checkouts (pinned ref + verified sha).
+/// Anything else bails with the honest reason.
+fn supported_index_entry(entry: &crate::index::Entry) -> bool {
+    matches!(
+        (entry.ecosystem.as_str(), entry.source.type_.as_str()),
+        ("gray-native", "tarball") | ("pi-gallery", "git")
+    )
 }
 
 /// Derive a plugin name from a URL's last path segment.
@@ -716,6 +712,46 @@ fn glob_base_is_safe(base: &str) -> bool {
     p.components().all(|c| matches!(c, Component::Normal(_)))
 }
 
+/// Command-prompt files foreign plugins ship: Claude `commands/*.md` and
+/// OpenCode `.opencode/command/*.md` (both: frontmatter description + body
+/// prompt). Normalized into `<dest>/commands/<stem>.md` regardless of which
+/// layout declared the stem (`commands/` first, so the Claude layout wins a
+/// stem both declare). `.md` only, like skills — package code is never
+/// executed; the foreign adapter serves them as slash commands.
+fn collect_command_matches(root: &Path) -> Vec<SkillMatch> {
+    let mut out = Vec::new();
+    let mut seen = HashSet::new();
+    for dir in ["commands", ".opencode/command"] {
+        let Ok(rd) = std::fs::read_dir(root.join(dir)) else {
+            continue;
+        };
+        let mut files: Vec<String> = rd
+            .flatten()
+            .filter(|e| e.file_type().map(|t| t.is_file()).unwrap_or(false))
+            .filter_map(|e| e.file_name().into_string().ok())
+            .filter(|n| Path::new(n).extension().is_some_and(|e| e == "md"))
+            .collect();
+        files.sort();
+        for file in files {
+            let stem = file.strip_suffix(".md").unwrap_or(&file);
+            if stem.is_empty() {
+                continue;
+            }
+            let Some(rel) = safe_rel(&["commands", &format!("{stem}.md")]) else {
+                continue;
+            };
+            if seen.insert(rel.clone()) {
+                out.push(SkillMatch {
+                    src: root.join(dir).join(&file),
+                    rel,
+                    label: stem.to_string(),
+                });
+            }
+        }
+    }
+    out
+}
+
 /// Sorted child directories of `dir` that contain a `SKILL.md`.
 fn skill_dirs(dir: &Path) -> Vec<PathBuf> {
     let Ok(rd) = std::fs::read_dir(dir) else {
@@ -925,19 +961,25 @@ pub(crate) fn extract_pi_skills(
     validate_install_key(key)?;
     let (skill_globs, manifest_ext, manifest_themes) = pi_manifest_lists(root);
     let matches = collect_skill_matches(root, &skill_globs);
-    if matches.is_empty() {
+    let cmd_matches = collect_command_matches(root);
+    if matches.is_empty() && cmd_matches.is_empty() {
         anyhow::bail!(
-            "package {key}@{version} ships no skills (nothing to install; extensions/themes need P3)"
+            "package {key}@{version} ships no skills or commands (nothing to install; extensions/themes need P3)"
         );
     }
     let dest = crate::plugins_dir().join("pi").join(key);
     if dest.exists() {
         std::fs::remove_dir_all(&dest)?;
     }
-    if let Err(e) = copy_skill_matches(&dest, &matches) {
-        let _ = std::fs::remove_dir_all(&dest);
-        return Err(e);
-    }
+    let copy = |ms: &[SkillMatch]| -> anyhow::Result<()> {
+        if let Err(e) = copy_skill_matches(&dest, ms) {
+            let _ = std::fs::remove_dir_all(&dest);
+            return Err(e);
+        }
+        Ok(())
+    };
+    copy(&matches)?;
+    copy(&cmd_matches)?;
     let (ext_n, theme_n) = count_skipped(root);
     // Single-component rels are dest-top-level `.md` (undiscoverable by
     // the loader, which recurses with `include_root_files=false`) → docs.
@@ -968,6 +1010,12 @@ pub(crate) fn extract_pi_skills(
     eprintln!("skills taken: {}", taken.join(", "));
     if !docs.is_empty() {
         eprintln!("docs copied for reference: {}", docs.join(", "));
+    }
+    let mut commands_taken: Vec<String> = cmd_matches.iter().map(|m| m.label.clone()).collect();
+    commands_taken.sort();
+    commands_taken.dedup();
+    if !commands_taken.is_empty() {
+        eprintln!("commands taken: {}", commands_taken.join(", "));
     }
     let scope = opts.scope.clone().unwrap_or_else(|| "user".to_string());
     if let Err(e) = record_install(
@@ -1057,13 +1105,32 @@ async fn install_git(
     git_ref: Option<&str>,
     opts: InstallOpts,
 ) -> anyhow::Result<Report> {
+    let version = git_ref
+        .filter(|r| !r.is_empty())
+        .unwrap_or("0.0.0")
+        .to_string();
+    install_git_versioned(url, git_ref, &version, None, opts).await
+}
+
+/// Shared git installer: [`install_git`] passes `None` (unverified, warns);
+/// index installs pass the entry version + expected sha (verified, quiet).
+/// Lock `hash` is always the raw post-clone commit sha (R17).
+async fn install_git_versioned(
+    url: &str,
+    git_ref: Option<&str>,
+    version: &str,
+    expected_sha: Option<&str>,
+    opts: InstallOpts,
+) -> anyhow::Result<Report> {
     if url.trim().is_empty() {
         anyhow::bail!("git URL is empty");
     }
-    eprintln!(
-        "warning: unverified install from {} (no index hash; use an index name for verified installs)",
-        crate::fetch::redact(url)
-    );
+    if expected_sha.is_none() {
+        eprintln!(
+            "warning: unverified install from {} (no index hash; use an index name for verified installs)",
+            crate::fetch::redact(url)
+        );
+    }
     let raw = name_from_git_url(url);
     if raw.trim().is_empty() {
         anyhow::bail!(
@@ -1078,14 +1145,15 @@ async fn install_git(
         )
     })?;
     let (_stage, clone_dir, sha) = clone_git_repo(url, git_ref)?;
-    let version = git_ref
-        .filter(|r| !r.is_empty())
-        .unwrap_or("0.0.0")
-        .to_string();
-    let dest = extract_pi_skills(&clone_dir, &key, &version, &sha, url, "pi-gallery", &opts)?;
+    if let Some(want) = expected_sha
+        && sha != want
+    {
+        anyhow::bail!("sha mismatch for {key} (index pins {want}, cloned {sha})");
+    }
+    let dest = extract_pi_skills(&clone_dir, &key, version, &sha, url, "pi-gallery", &opts)?;
     Ok(Report {
         name: key,
-        version,
+        version: version.to_string(),
         path: dest,
     })
 }
@@ -1280,7 +1348,16 @@ async fn install_index(
     validate_install_key(name)?;
     let index = crate::index::fetch_index(client).await?;
     let entry = crate::index::lookup(&index, name)?;
-    ensure_gray_native(&entry.ecosystem, &entry.source.type_)?;
+    if !supported_index_entry(entry) {
+        anyhow::bail!(
+            "unsupported ecosystem '{}' source type '{}' for {name} (installable: gray-native tarballs, pi-gallery git checkouts)",
+            entry.ecosystem,
+            entry.source.type_
+        );
+    }
+    if entry.ecosystem == "pi-gallery" {
+        return install_index_git(name, entry, opts).await;
+    }
     let archive = crate::fetch::download(client, &entry.source.url, Some(&entry.hash)).await?;
     let scope = if entry.scope.is_empty() {
         opts.scope.clone().unwrap_or_else(|| "user".to_string())
@@ -1303,6 +1380,41 @@ async fn install_index(
         version: entry.version.clone(),
         path: dest,
     })
+}
+
+/// `pi-gallery`+`git` index entry: the URL must derive the requested
+/// key (no key confusion), the clone pins the entry ref, and the HEAD sha
+/// must equal the index hash. Version comes from the index — never `0.0.0`.
+async fn install_index_git(
+    name: &str,
+    entry: &crate::index::Entry,
+    opts: InstallOpts,
+) -> anyhow::Result<Report> {
+    let raw = name_from_git_url(&entry.source.url);
+    let key = install_key(&raw).map_err(|_| {
+        anyhow::anyhow!(
+            "cannot derive a plugin name from git URL: {}",
+            crate::fetch::redact(&entry.source.url)
+        )
+    })?;
+    if key != name {
+        anyhow::bail!(
+            "index entry for {name} points at {} (derives key {key})",
+            crate::fetch::redact(&entry.source.url)
+        );
+    }
+    let want = entry.hash.primary().unwrap_or_default();
+    if want.is_empty() {
+        anyhow::bail!("index entry for {name} has no hash to verify the checkout against");
+    }
+    install_git_versioned(
+        &entry.source.url,
+        entry.source.git_ref.as_deref(),
+        &entry.version,
+        Some(want),
+        opts,
+    )
+    .await
 }
 
 async fn install_url(
@@ -1399,9 +1511,10 @@ fn set_enabled_inner(name: &str, on: bool) -> anyhow::Result<()> {
 }
 
 /// Update one plugin (`target` = name) or all (`target` = `"all"`).
-/// Only gray-native lock entries with an index entry are considered;
-/// anything else is skipped with a warning. Returns per-plugin reports
-/// for the plugins that actually changed.
+/// Only lock entries the index lists under the same ecosystem (gray-native
+/// tarballs, pi-gallery git checkouts) are considered; anything else is
+/// skipped with a warning. Returns per-plugin reports for the plugins
+/// that actually changed.
 pub async fn update(target: &str) -> anyhow::Result<Vec<Report>> {
     update_inner(target).await.map_err(|e| {
         crate::errors::record(&ecosystem_of(target), target, format!("{e:#}"));
@@ -1424,10 +1537,6 @@ async fn update_inner(target: &str) -> anyhow::Result<Vec<Report>> {
     let mut out = Vec::new();
     for name in &names {
         let installed = &lock.plugins[name];
-        if installed.ecosystem != "gray-native" {
-            eprintln!("warning: skipping update of {name} (non-index source)");
-            continue;
-        }
         let entry = match crate::index::lookup(&index, name) {
             Ok(e) => e,
             Err(_) => {
@@ -1435,6 +1544,12 @@ async fn update_inner(target: &str) -> anyhow::Result<Vec<Report>> {
                 continue;
             }
         };
+        // Update only rows install_index would write itself: a foreign row
+        // the index never listed keeps its source (never rewritten).
+        if installed.ecosystem != entry.ecosystem || !supported_index_entry(entry) {
+            eprintln!("warning: skipping update of {name} (non-index source)");
+            continue;
+        }
         if entry.version == installed.version {
             continue;
         }

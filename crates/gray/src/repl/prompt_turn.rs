@@ -72,6 +72,7 @@ pub(crate) async fn run_prompt_turn(
     pending_command: &mut Option<ReplCommand>,
     pending_history: &mut Vec<Message>,
     unconfigured: &mut bool,
+    resumable: &mut bool,
 ) -> anyhow::Result<()> {
     let (shared, _) = if interactive {
         (Some(tui.as_ref().expect("interactive implies tui")), ())
@@ -330,6 +331,7 @@ pub(crate) async fn run_prompt_turn(
     }
     match run_result {
         Ok(_) => {
+            *resumable = false;
             persist_turn_messages(
                 &mut *session_state,
                 agent,
@@ -342,6 +344,7 @@ pub(crate) async fn run_prompt_turn(
             .await;
         }
         Err(CoreError::Cancelled) => {
+            *resumable = true;
             persist_turn_messages(
                 &mut *session_state,
                 agent,
@@ -356,14 +359,16 @@ pub(crate) async fn run_prompt_turn(
                 if let Some((shared, _)) = tui {
                     let mut t = shared.lock().expect("tui lock");
                     t.end_thinking();
+                    t.discard_held_punctuation();
                     t.ensure_gap(1); // never glue "(interrupted)" to the last streamed row
-                    t.stream("(interrupted)\n");
+                    t.stream("(interrupted — press Enter to continue)\n");
                 }
             } else {
-                println!("(interrupted)");
+                println!("(interrupted — press Enter to continue)");
             }
         }
         Err(e) => {
+            *resumable = true;
             persist_turn_messages(
                 &mut *session_state,
                 agent,
@@ -381,9 +386,10 @@ pub(crate) async fn run_prompt_turn(
                     t.end_thinking();
                     t.ensure_gap(1);
                     t.stream(&format!("{msg}\n"));
+                    t.push_dim("(press Enter to continue)".to_string());
                 }
             } else {
-                eprintln!("{msg}");
+                eprintln!("{msg}\n(press Enter to continue)");
             }
         }
     }

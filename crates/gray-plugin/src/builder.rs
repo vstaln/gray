@@ -261,22 +261,6 @@ pub fn take_builder_warnings() -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// Resolve the gray home dir (`$GRAY_HOME` else `$HOME/.gray`), mirroring
-/// `gray-pkg` (which owns the lockfile writes; this crate must not depend
-/// on it — networking lives there, never here). `None` when neither
-/// resolves: user-scope filtering is skipped, the project overlay still
-/// applies.
-fn gray_home() -> Option<PathBuf> {
-    gray_core::paths::gray_home()
-}
-
-/// Install dir for lock entries (`<home>/plugins`), mirroring `gray-pkg`
-/// (which owns the lockfile writes; this crate must not depend on it).
-/// `None` when no home resolves.
-fn plugins_dir() -> Option<PathBuf> {
-    gray_home().map(|h| h.join("plugins"))
-}
-
 /// Resolve the spawn argv for a plugin dir: the dir itself when
 /// executable, else `plugin.sh`, else the single executable inside.
 ///
@@ -352,7 +336,9 @@ fn load_lock_files(cwd: &Path) -> (crate::lock::LockFile, crate::lock::LockFile,
             }
         }
     };
-    let user = gray_home()
+    // `$GRAY_HOME` else `$HOME/.gray` — `gray_core::paths` owns the rule;
+    // this crate must not depend on `gray-pkg` (networking lives there).
+    let user = gray_core::paths::gray_home()
         .map(|h| load(crate::lock::lock_path(&h)))
         .unwrap_or(crate::lock::LockFile {
             schema: 1,
@@ -422,7 +408,9 @@ pub async fn active_plugins(
     // executable paths + install dirs of disabled entries, so a profile
     // sidecar pointing at the same install matches even though the lock
     // argv is empty.
-    let pdir = plugins_dir();
+    // Lock entries install into `<home>/plugins`, mirroring `gray-pkg`
+    // (which owns the lockfile writes this crate must not depend on).
+    let pdir = gray_core::paths::gray_home().map(|h| h.join("plugins"));
     let mut disabled_paths: Vec<String> = Vec::new();
     let mut disabled_dirs: Vec<String> = Vec::new();
     for name in user_lock.plugins.keys() {

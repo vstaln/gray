@@ -161,7 +161,7 @@ pub fn assert_golden(actual: &str, expected: &str) {
     panic!("golden mismatch:\n{}", diff_lines(expected, actual));
 }
 
-// ponytail: naive O(n) line diff, no LCS — good enough for goldens under ~80k lines.
+// naive O(n) line diff, no LCS — good enough for goldens under ~80k lines.
 fn diff_lines(expected: &str, actual: &str) -> String {
     let mut out = String::from("--- expected\n+++ actual\n");
     let exp: Vec<&str> = expected.lines().collect();

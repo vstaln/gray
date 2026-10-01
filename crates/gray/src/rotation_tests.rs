@@ -19,6 +19,10 @@ fn small_log_untouched() {
     assert_eq!(std::fs::read(&log).unwrap(), b"tiny");
 }
 
+/// Unix-only: drift detection compares (dev, ino), and the non-Unix
+/// implementation is deliberately a `false` stub (logging must not crash
+/// boot on missing file-id semantics).
+#[cfg(unix)]
 #[test]
 fn handle_drifted_detects_a_log_rotated_away() {
     use std::io::Write as _;

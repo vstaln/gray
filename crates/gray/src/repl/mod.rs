@@ -409,6 +409,14 @@ pub(crate) fn with_modal_sync<T>(
     r
 }
 
+/// Bare-Enter resume payload (opencode "press Enter instead of typing
+/// \"please continue\""): sent as a normal prompt turn when the last turn
+/// was interrupted or errored.
+pub(crate) const CONTINUE_PROMPT: &str = "continue";
+/// Ghost hint painted in the empty input box while a resume is pending
+/// (display-only — the turn itself sends [`CONTINUE_PROMPT`]).
+pub(crate) const CONTINUE_GHOST: &str = "Please continue…";
+
 /// Runs Gray in interactive REPL mode.
 pub async fn run_repl_mode(
     config: &mut Config,
@@ -756,6 +764,9 @@ pub async fn run_repl_mode(
     // no boot card — the TUI starts clean.
     let mut pending_command: Option<ReplCommand> = None;
     let mut pending_images: Vec<std::path::PathBuf> = Vec::new();
+    // True when the last turn was interrupted (Ctrl-C) or errored: bare
+    // Enter resends [`CONTINUE_PROMPT`] instead of being a no-op.
+    let mut last_turn_resumable = false;
 
     loop {
         // Plugin-initiated `host/say` lines queued while a turn ran (cron
@@ -766,6 +777,13 @@ pub async fn run_repl_mode(
         let cmd = if let Some(c) = pending_command.take() {
             c
         } else {
+            // The composer swallows empty submits unless a resume is
+            // pending — sync the gate before blocking on input.
+            if let Some((shared, _)) = tui.as_ref()
+                && let Ok(mut t) = shared.try_lock()
+            {
+                t.allow_empty_submit = last_turn_resumable && agent.is_some();
+            }
             let (line_text, images) = if interactive {
                 let (shared, stop) = tui.as_ref().expect("interactive implies tui");
                 let (txt, imgs) = {
@@ -819,8 +837,8 @@ pub async fn run_repl_mode(
         }
         match cmd {
             ReplCommand::Empty => {
-                // Bare Enter (no images) is a no-op. An image-only submit runs
-                // the normal prompt turn with empty text.
+                // An image-only submit runs the normal prompt turn with empty
+                // text. Bare Enter resumes after an interrupt/error, else no-op.
                 if !pending_images.is_empty() {
                     prompt_turn::run_prompt_turn(
                         String::new(),
@@ -835,6 +853,42 @@ pub async fn run_repl_mode(
                         &mut pending_command,
                         &mut pending_history,
                         &mut unconfigured,
+                        &mut last_turn_resumable,
+                    )
+                    .await?;
+                } else if last_turn_resumable && agent.is_some() {
+                    if let Some(msg) = crate::turn_caps::check_caps(
+                        config,
+                        session_totals.turns,
+                        session_totals.cost,
+                    ) {
+                        say(tui.as_ref().map(|(s, _)| s), &msg);
+                        shutdown_shell_tasks(&session_state, &tui).await;
+                        break;
+                    }
+                    if let Some((shared, _)) = tui.as_ref() {
+                        shared.lock().expect("tui lock").push_user_prompt(
+                            CONTINUE_PROMPT,
+                            &[],
+                            true,
+                        );
+                    } else {
+                        println!("❯ {CONTINUE_PROMPT}");
+                    }
+                    prompt_turn::run_prompt_turn(
+                        CONTINUE_PROMPT.to_string(),
+                        &mut pending_images,
+                        &mut agent,
+                        config,
+                        &cwd,
+                        &tui,
+                        interactive,
+                        &mut session_state,
+                        &mut session_totals,
+                        &mut pending_command,
+                        &mut pending_history,
+                        &mut unconfigured,
+                        &mut last_turn_resumable,
                     )
                     .await?;
                 }
@@ -860,10 +914,18 @@ pub async fn run_repl_mode(
                     &mut pending_command,
                     &mut pending_history,
                     &mut unconfigured,
+                    &mut last_turn_resumable,
                 )
                 .await?;
             }
             other => {
+                // A fresh or replaced transcript has nothing to resume.
+                if matches!(
+                    other,
+                    ReplCommand::New(_) | ReplCommand::Resume(_) | ReplCommand::Compact(_)
+                ) {
+                    last_turn_resumable = false;
+                }
                 if dispatch::dispatch_command(
                     other,
                     &mut agent,

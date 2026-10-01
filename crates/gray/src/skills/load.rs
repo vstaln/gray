@@ -5,9 +5,9 @@ use super::*;
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Default, Clone)]
-struct SkillFrontmatter {
+pub(crate) struct SkillFrontmatter {
     name: Option<String>,
-    description: Option<String>,
+    pub(crate) description: Option<String>,
     disable_model_invocation: bool,
     args: Vec<String>,
 }
@@ -31,7 +31,7 @@ pub(crate) fn parse_declared_args(val: &str) -> Vec<String> {
         .collect()
 }
 
-fn parse_frontmatter(content: &str) -> Result<(SkillFrontmatter, String), String> {
+pub(crate) fn parse_frontmatter(content: &str) -> Result<(SkillFrontmatter, String), String> {
     let trimmed = content.trim_start();
     if !trimmed.starts_with("---") {
         // no frontmatter → empty, body is whole file
@@ -88,7 +88,7 @@ fn parse_yaml_like(s: &str) -> SkillFrontmatter {
         // `+`/`-`): gather the indented continuation lines YAML folds into
         // the value. Without this a folded description parses as the bare
         // marker (`">"`), silently breaking skill discovery text.
-        // ponytail: chomping nuances ignored, descriptions are trimmed downstream.
+        // chomping nuances ignored, descriptions are trimmed downstream.
         let folded = val == ">" || val == ">-" || val == ">+";
         let literal = val == "|" || val == "|-" || val == "|+";
         if folded || literal {

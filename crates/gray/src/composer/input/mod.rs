@@ -610,7 +610,10 @@ pub(crate) fn read_line(
                         }
                         tui.pending_pastes.clear();
                         let trimmed = text.trim().to_string();
-                        if trimmed.is_empty() && tui.attachments.is_empty() {
+                        if trimmed.is_empty()
+                            && tui.attachments.is_empty()
+                            && !tui.allow_empty_submit
+                        {
                             continue;
                         }
                         if !trimmed.is_empty() {
@@ -636,6 +639,11 @@ pub(crate) fn read_line(
                         }
                         tui.matches.clear();
                         tui.sel = 0;
+                        // Empty continue submits carry no card here — the REPL
+                        // paints the `continue` prompt card when it resumes.
+                        if trimmed.is_empty() && attached.is_empty() {
+                            return Ok(Some((trimmed, attached)));
+                        }
                         // Slash commands hug their feedback: no trailing gap, say() output follows directly.
                         tui.push_user_prompt(&trimmed, &attached, !trimmed.starts_with('/'));
                         return Ok(Some((trimmed, attached)));

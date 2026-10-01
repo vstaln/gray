@@ -16,7 +16,7 @@
 //! can filter, so a pattern the index cannot answer exactly is declined
 //! rather than answered approximately.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -50,10 +50,34 @@ const MAX_RESIDENT_ROOTS: usize = 4;
 const CACHE_FILES: usize = 4096;
 const CACHE_BYTES: u64 = 64 * 1024 * 1024;
 
+/// A warm-probe (`warm_picker`) never blocks: it polls the pool's `resident`
+/// mutex this many times before answering "not warm". A probe that blocks is
+/// how one wedged build freezes every search in the process — measured live on
+/// Windows CI, where fff construction stalled inside its own dependencies and
+/// `warm_picker`'s blocking `lock()` hung the caller for the job's remaining
+/// 48 minutes. `PROBE_POLLS * PROBE_POLL_INTERVAL` ≈ 50ms, cheaper than one
+/// fd spawn; past that the fd/rg fallback lane answers, as it always may.
+const PROBE_POLLS: usize = 10;
+const PROBE_POLL_INTERVAL: Duration = Duration::from_millis(5);
+
+/// A caller joining an already-running build waits this long for the publish
+/// before declining to the fallback lane. Builds are seconds; the wait exists
+/// only to dodge one redundant fd spawn in the common two-searches-in-a-row
+/// case, so it must stay far below what a user would call slow.
+const BUILD_JOIN_WAIT: Duration = Duration::from_secs(3);
+const JOIN_POLL_INTERVAL: Duration = Duration::from_millis(10);
+
 /// Per-root picker pool. Cheap to construct; indexes are built on demand.
 pub struct SearchPool {
     frecency_root: PathBuf,
     resident: Mutex<Resident>,
+    /// Roots with a build in flight. The build itself runs with NO pool lock
+    /// held (fff construction can stall inside its own dependencies — LMDB
+    /// writer lock, git status, watcher init — and a stall under the pool
+    /// lock used to block every probe and search behind it), so this set is
+    /// the only dedup between a background builder and a synchronous caller
+    /// asking for the same root.
+    builds: Mutex<HashSet<PathBuf>>,
     /// Calls served by this pool's indexes — the only way to tell the
     /// identical-output lanes apart, since both lanes return the same bytes.
     hits: AtomicUsize,
@@ -72,6 +96,7 @@ impl SearchPool {
         Self {
             frecency_root,
             resident: Mutex::new(Resident::default()),
+            builds: Mutex::new(HashSet::new()),
             hits: AtomicUsize::new(0),
         }
     }
@@ -82,8 +107,13 @@ impl SearchPool {
     }
 
     /// Number of live indexes (one per canonical dir requested so far).
+    /// Bounded like every other pool read: a contended mutex reads as zero,
+    /// never as a wait.
     pub fn len(&self) -> usize {
-        self.resident.lock().map(|r| r.pickers.len()).unwrap_or(0)
+        self.resident
+            .try_lock()
+            .map(|r| r.pickers.len())
+            .unwrap_or(0)
     }
 
     pub fn is_empty(&self) -> bool {
@@ -92,8 +122,9 @@ impl SearchPool {
 
     /// Shared picker for `dir`, indexed lazily on first request. `None` when
     /// `dir` is not a readable directory, sits outside any git worktree (fff
-    /// drops dotfiles on non-git roots — the fd/rg lanes keep those), or the
-    /// index cannot start.
+    /// drops dotfiles on non-git roots — the fd/rg lanes keep those), a build
+    /// is already in flight and the join window lapses, or the index cannot
+    /// start.
     pub fn picker(&self, dir: &Path) -> Option<SharedFilePicker> {
         let dir = dir.canonicalize().ok()?;
         if !dir.is_dir() {
@@ -104,10 +135,32 @@ impl SearchPool {
         if !dir.ancestors().any(|p| p.join(".git").exists()) {
             return None;
         }
-        let mut res = self.resident.lock().ok()?;
-        if let Some(p) = res.pickers.get(&dir) {
-            return Some(p.clone());
+        // Fast path: already resident. The lock is held only to clone a
+        // handle — microseconds, and still taken through the bounded probe so
+        // even a wedged publisher cannot block a caller here.
+        if let Some(p) = self.probe_resident(&dir) {
+            return Some(p);
         }
+        // Dedup: an in-flight build for the same root is joined, not
+        // duplicated. Bounded — past the window the fd/rg lane answers.
+        {
+            let mut builds = self.builds.lock().ok()?;
+            if !builds.insert(dir.clone()) {
+                drop(builds);
+                return self.join_in_flight_build(&dir);
+            }
+        }
+        // The build runs with NO pool lock held. Everything below — frecency
+        // open, fff construction, watcher init — reaches unbounded waits
+        // inside fff and its deps; holding `resident` across them is what
+        // turned one wedged build into a process-wide search hang on Windows.
+        let built = self.build_picker(&dir);
+        if let Ok(mut builds) = self.builds.lock() {
+            builds.remove(&dir);
+        }
+        let shared = built?;
+        // Publish under a short lock; eviction is bounded bookkeeping.
+        let mut res = self.resident.lock().ok()?;
         while res.order.len() >= MAX_RESIDENT_ROOTS {
             if let Some(evicted) = res.order.pop_front() {
                 // Dropping the shared picker drops the FilePicker with it,
@@ -115,7 +168,13 @@ impl SearchPool {
                 res.pickers.remove(&evicted);
             }
         }
+        res.pickers.insert(dir.clone(), shared.clone());
+        res.order.push_back(dir);
+        Some(shared)
+    }
 
+    /// The unbounded part of index construction, deliberately lock-free.
+    fn build_picker(&self, dir: &Path) -> Option<SharedFilePicker> {
         let shared = SharedFilePicker::default();
         let frecency = SharedFrecency::default();
         // Best-effort frecency persistence: a read-only or exhausted home dir
@@ -141,18 +200,45 @@ impl SearchPool {
             },
         )
         .ok()?;
-        res.pickers.insert(dir.clone(), shared.clone());
-        res.order.push_back(dir);
         Some(shared)
     }
 
-    /// The index for `dir` if this process already built one. Never builds:
-    /// a caller deciding whether to *pay* for an index must be able to ask
-    /// "is it already warm?" without triggering the scan that answers the
-    /// question. `None` means the fd/rg lane is the cheaper answer right now.
+    /// One bounded non-blocking read of the resident map.
+    fn probe_resident(&self, dir: &Path) -> Option<SharedFilePicker> {
+        for _ in 0..PROBE_POLLS {
+            match self.resident.try_lock() {
+                Ok(res) => return res.pickers.get(dir).cloned(),
+                Err(_) => std::thread::sleep(PROBE_POLL_INTERVAL),
+            }
+        }
+        None
+    }
+
+    /// Wait (bounded) for an in-flight build of `dir` to publish. `None` once
+    /// the join window lapses — the fd/rg lane answers instead.
+    fn join_in_flight_build(&self, dir: &Path) -> Option<SharedFilePicker> {
+        let deadline = std::time::Instant::now() + BUILD_JOIN_WAIT;
+        loop {
+            if let Some(p) = self.probe_resident(dir) {
+                return Some(p);
+            }
+            if std::time::Instant::now() >= deadline {
+                return None;
+            }
+            std::thread::sleep(JOIN_POLL_INTERVAL);
+        }
+    }
+
+    /// The index for `dir` if this process already built one. Never builds,
+    /// never blocks: a caller deciding whether to *pay* for an index must be
+    /// able to ask "is it already warm?" without triggering the scan that
+    /// answers the question — and without hanging on a contended or wedged
+    /// builder (the Windows CI hang was exactly this probe blocking on the
+    /// build lock, 48 minutes, no timeout reachable). A brief probe of the
+    /// resident map; `None` means the fd/rg lane is the cheaper answer now.
     pub fn warm_picker(&self, dir: &Path) -> Option<SharedFilePicker> {
         let dir = dir.canonicalize().ok()?;
-        self.resident.lock().ok()?.pickers.get(&dir).cloned()
+        self.probe_resident(&dir)
     }
 
     /// Start building the index for `dir` in the background, without waiting
@@ -168,6 +254,16 @@ impl SearchPool {
             return;
         }
         let dir = dir.to_path_buf();
+        // A build already in flight will publish on its own; spawning a second
+        // builder would race it to the same resident slot.
+        if self
+            .builds
+            .lock()
+            .map(|builds| builds.contains(&dir))
+            .unwrap_or(true)
+        {
+            return;
+        }
         let pool = self.clone();
         std::thread::spawn(move || {
             // `picker` publishes the index and returns without waiting for the

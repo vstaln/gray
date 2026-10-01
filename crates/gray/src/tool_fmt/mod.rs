@@ -188,7 +188,7 @@ fn scalar_key(name: &str, raw: &str) -> &'static str {
         "read" | "write" | "edit" | "ls" => "path",
         "grep" | "find" => "pattern",
         _ => {
-            // ponytail: key order decides, not a schema table. `path` wins
+            // key order decides, not a schema table. `path` wins
             // on ties (the final header's `other` arm prefers it too).
             let path_pos = raw.find("\"path\"").map(|i| (i, "path"));
             let pattern_pos = raw.find("\"pattern\"").map(|i| (i, "pattern"));
@@ -782,7 +782,7 @@ pub fn format_tool_result_lines_with_context(
     } else {
         // Cap display like code blocks (40-line threshold → 18 head + 6 tail):
         // full output stays in model context, TUI only renders a window.
-        // ponytail: reuse render_code_block cap, no new collapsing system.
+        // reuse render_code_block cap, no new collapsing system.
         let (pretty, token) = prettify_output(&trimmed);
         let syntect = gray_markdown::get_syntect();
         let mut highlighter = token.and_then(|t| syntect.highlight_lines_for_token(t));

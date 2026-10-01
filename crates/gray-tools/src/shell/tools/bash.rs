@@ -19,7 +19,7 @@ use crate::shell::contract::{
 use crate::shell::exit::exit_report;
 use crate::shell::fence::fence;
 use crate::shell::kill::term_then_kill;
-use crate::shell::pump::Pump;
+use crate::shell::pump::{Pump, now_grindmill};
 use crate::shell::spawn::spawn;
 use crate::shell::view::{format_elapsed, header, middle_out, resume_hint};
 
@@ -82,6 +82,30 @@ impl BashTool {
 #[async_trait]
 impl Tool for BashTool {
     fn def(&self) -> ToolDef {
+        if !jobs_enabled() {
+            return ToolDef::new(
+                "bash",
+                "Run a shell command via sh -c and wait for it to exit. timeout is an optional \
+                 total runtime limit in seconds (omitted = no limit; capped at 3600s). \
+                 Non-zero exits are data, not tool errors. Full output is logged; inline output \
+                 is bounded. Imaging: to look at an image or video run `gray view <path>...`\
+                 (several at once, downscaled) as the whole command — bare paths only, so pipes,\
+                 globs, `$`, quotes and flags fall through to a normal run. Images\
+                 (png/jpg/jpeg/gif/webp/bmp/heic/heif) come back as themselves; a video\
+                 (mp4/mov/webm/mkv/avi) comes back as a tiled contact sheet of sampled\
+                 frames, with `--frames N` (before the paths) to set the tile count.\
+                 `cat` is for text/source files, not media. Either way the file comes back as\
+                 an image; bash output is otherwise text only, so never pixel-dump or\
+                 ASCII-art an image to inspect it.",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "command": {"type": "string", "description": "Shell command"},
+                        "timeout": {"type": "integer", "description": "Optional total runtime limit in seconds (omitted = no limit; clamped 1-3600)"}
+                    }
+                }),
+            );
+        }
         ToolDef::new(
             "bash",
             "Run a shell command via sh -c. Default: wait for exit. For independent long work, \
@@ -89,10 +113,10 @@ impl Tool for BashTool {
              running after that window. Multiple jobs can run concurrently; continue other work \
              instead of polling. Completion notices arrive between model rounds (or on the next \
              user turn when idle). Use action:list/status/output/cancel with job_id to manage jobs; \
-             output/status accept wait_ms (bounded blocking wait, clamped 0-30000ms) so one call \
+             output/status accept wait_ms (bounded blocking wait, clamped 0-600000ms) so one call \
              can await a job instead of polling. Jobs belong to this session and stop when Gray exits. \
              timeout is an optional total runtime limit (no default: commands run until they exit; \
-             capped at 3600s), NOT the yield window. \
+             capped at 3600s), NOT the yield window. A command that sets no timeout and emits no new output for 600s (MAX_BLOCKING_SILENCE_SECS) is never killed: it moves to a background job so the call returns immediately (with a job id and log) while it keeps running — inspect, await, or cancel it. \
              Non-zero exits are data, not tool errors. Full output is logged; inline output is bounded. \
              Imaging: to look at an image or video run `gray view <path>...`\
              (several at once, downscaled) as the whole command — bare paths only, so pipes,\
@@ -115,7 +139,7 @@ impl Tool for BashTool {
                     "background": {"type": "boolean", "description": "Return immediately; run independently in this session"},
                     "timeout": {"type": "integer", "description": "Optional total runtime limit in seconds (omitted = no limit; clamped 1-3600)"},
                     "yield_ms": {"type": "integer", "description": "Wait at most this many milliseconds before returning a running job (clamped 100-10000); omitted means wait for exit"},
-                    "wait_ms": {"type": "integer", "description": "Bounded blocking wait on action:output/status only: await the job's exit up to this many ms (clamped 0-30000) instead of polling; omitted means return immediately"}
+                    "wait_ms": {"type": "integer", "description": "Bounded blocking wait on action:output/status only: await the job's exit up to this many ms (clamped 0-600000) instead of polling; omitted means return immediately"}
                 }
             }),
         )
@@ -138,6 +162,13 @@ impl Tool for BashTool {
             return fail("wait_ms is only valid for action:output/status".into());
         }
         if action != "run" {
+            if !jobs_enabled() {
+                return fail(
+                    "managed jobs are disabled here (GRAY_NO_JOBS=1): drop `action`, `job_id` and \
+                     `background` and just run the command."
+                        .into(),
+                );
+            }
             // `wait` left the run surface (rejected loudly on the run path
             // below); the async wait path takes `wait_ms` on output/status.
             return self.jobs.action(ctx, action, &args).await;
@@ -207,6 +238,11 @@ impl Tool for BashTool {
         }
         let log_path = log_path(ctx);
         let start = Instant::now();
+        // A `gray view` the claim refused (compound, flags, glob) runs as a
+        // plain shell command and prints `viewed …` with nothing attached:
+        // decide the note here, before `command` moves, append it after the
+        // run. The predicate itself declines when nothing was ever at stake.
+        let unattached = unattached_media_note(&command);
         // Report the final directory to a scratch file so the next command in
         // this session starts where this one finished.
         let cwd_report =
@@ -222,7 +258,7 @@ impl Tool for BashTool {
         };
         #[cfg(not(windows))]
         let guard = crate::shell::kill::GroupGuard::new(spawned.pgid);
-        let out = run_command(
+        let mut out = run_command(
             command,
             log_path,
             secs,
@@ -231,11 +267,18 @@ impl Tool for BashTool {
             spawned,
             #[cfg(not(windows))]
             guard,
+            Some(&self.jobs),
+            stall_bound(),
+            None,
         )
         .await;
         // Whether it succeeded, failed or was killed: a `cd` that ran is a `cd`
         // that ran. A killed command never writes the report, so its cwd stands.
         self.adopt_reported_cwd(ctx, &cwd_report);
+        if let Some(note) = unattached {
+            out.content.push('\n');
+            out.content.push_str(&note);
+        }
         out
     }
 }
@@ -248,9 +291,15 @@ impl Tool for BashTool {
 /// The original exit status is captured and re-raised, because a bare
 /// `; printf ...` would end the command with *the report's* status and turn
 /// every failing command into a success -- which is how the benign-exit table
-/// lost `grep`'s "no matches" the first time this was tried. A command ending
-/// in a `#` comment swallows the whole suffix, reports nothing, and leaves the
-/// cwd where it was.
+/// lost `grep`'s "no matches" the first time this was tried.
+///
+/// Each piece of the suffix sits on its OWN line. Joining with `; ` broke any
+/// command whose last line is a heredoc terminator: `EOF` became
+/// `EOF; __gray_rc=$?`, so the terminator never matched and the suffix landed
+/// inside the heredoc body -- a shell file written with a garbage trailer, or a
+/// SyntaxError for an interpreter heredoc. 33 of 47 DeepSWE runs in the
+/// 2026-09-29 retro reported exactly this; it cost each one a wasted turn at
+/// best.
 fn with_cwd_report(command: &str) -> String {
     // Git Bash's plain `pwd` is an MSYS path (/c/Users/...), which Rust's
     // `is_dir` rejects on Windows, so the report would be read and thrown away
@@ -262,8 +311,17 @@ fn with_cwd_report(command: &str) -> String {
     #[cfg(not(windows))]
     let reported = "\"$PWD\"";
     format!(
-        "{command}; __gray_rc=$?; printf '%s' {reported} > \"$GRAY_CWD_REPORT\" 2>/dev/null; exit $__gray_rc"
+        "{command}\n__gray_rc=$?\nprintf '%s' {reported} > \"$GRAY_CWD_REPORT\" 2>/dev/null\nexit $__gray_rc"
     )
+}
+
+/// `GRAY_NO_JOBS=1` drops the managed-job surface: no `action`, `job_id`,
+/// `background`, `yield_ms` or `wait_ms` in the schema, and those actions are
+/// refused. The DeepSWE runs touched jobs in 153 of 6,915 bash calls while
+/// paying for five extra schema properties (and the prose about them) on
+/// every one. `timeout` stays: it is the anti-hang knob, not a jobs feature.
+fn jobs_enabled() -> bool {
+    std::env::var_os("GRAY_NO_JOBS").is_none()
 }
 
 /// Session identity for the cwd cell: the session id when there is one, empty
@@ -406,6 +464,93 @@ async fn search_command(
 
 fn image_command(command: &str, cwd: &Path) -> Option<ToolOutput> {
     image_command_with_native_cap(command, cwd, MAX_NATIVE_VIDEO_CLAIM_BYTES)
+}
+
+/// What to say when a `gray view` / `cat <media>` ran as an ordinary shell
+/// command instead of being claimed: the CLI then prints `viewed …` (or the
+/// shell streams binary), while nothing is attached to the turn — a success
+/// that reads like a lie and costs the model a pile of re-runs. Only shape
+/// refusals get this: a bare claim that missed on a missing file is already
+/// reported by the shell, and a lecture on top of its own error helps nobody.
+fn unattached_media_note(command: &str) -> Option<String> {
+    let ws: Vec<&str> = command.split_whitespace().collect();
+    // First `view` whose word before it is (or glues onto) `gray`, and only
+    // where `gray` starts a command — bare, after a chain separator (`&&`,
+    // `; do`, `done;`), or glued into one word (`cd x&&gray view`). Without
+    // the gate, `echo gray view` would earn a note about an image it never
+    // meant to show.
+    let view_at = ws.iter().position(|t| *t == "view").filter(|&i| {
+        match ws.get(i.wrapping_sub(1)).copied() {
+            Some("gray") => i == 1 || starts_a_command(ws[i - 2]),
+            Some(p) => p.ends_with("gray"),
+            None => false,
+        }
+    });
+    if let Some(i) = view_at {
+        if i == 1 && ws[0] == "gray" {
+            let mut rest = &ws[2..];
+            if rest.first() == Some(&"--native") {
+                rest = &rest[1..];
+            }
+            // Bare paths (or nothing): the claim took it and only the files
+            // could have failed, which the shell has already reported.
+            if rest.is_empty() || !rest.iter().any(|a| shell_meta(a)) {
+                return None;
+            }
+        }
+        return Some(view_note(&ws[i + 1..]));
+    }
+    let cat_at = ws.iter().position(|t| *t == "cat")?;
+    let arg = *ws.get(cat_at + 1)?;
+    if !crate::images::is_viewable_extension(Path::new(arg)) {
+        return None;
+    }
+    let bare = cat_at == 0 && ws.len() == 2 && !shell_meta(arg);
+    (!bare).then(|| {
+        let rerun = if shell_meta(arg) {
+            "gray view /path/to.jpg".to_string()
+        } else {
+            format!("gray view {arg}")
+        };
+        format!(
+            "note: `cat` on a media file ran as a plain shell command here, so the \
+             media was NOT attached to this turn. Use the whole command instead: {rerun}"
+        )
+    })
+}
+
+/// True for the word that lets a `gray` begin a command: a chain separator,
+/// or a word ending in one (`done;`), or a control keyword that introduces a
+/// command position. Anything else before `gray` means it is an argument to
+/// someone else's command (`echo gray view`), not a view that fell through.
+fn starts_a_command(prev: &str) -> bool {
+    matches!(
+        prev,
+        "&&" | ";" | "|" | "|&" | "do" | "then" | "else" | "fi" | "done" | "esac"
+    ) || prev.ends_with('&')
+        || prev.ends_with(';')
+        || prev.ends_with('|')
+}
+
+/// The `gray view` half of [`unattached_media_note`], naming the paths the
+/// model typed so the re-run is one turn away. Paths the shell would
+/// interpret (globs, `$`) cannot be re-run bare, so those fall back to a
+/// placeholder rather than advice that fails the same way.
+fn view_note(rest: &[&str]) -> String {
+    let paths: Vec<&str> = rest
+        .iter()
+        .copied()
+        .take_while(|a| !shell_meta(a))
+        .collect();
+    let rerun = if paths.is_empty() {
+        "gray view /path/to.jpg".to_string()
+    } else {
+        format!("gray view {}", paths.join(" "))
+    };
+    format!(
+        "note: `gray view` ran as a plain shell command here, so the image was NOT \
+         attached to this turn. Re-run it as the whole command with bare paths: {rerun}"
+    )
 }
 
 /// [`image_command`] with the native-video cap as a parameter, so the
@@ -634,25 +779,62 @@ async fn wait_or_pend(secs: Option<u64>, start: Instant) {
     }
 }
 
-async fn run_command(
-    command: String,
-    log_path: PathBuf,
+/// A still-running command handed back by [`settle_command`] on a silent
+/// stall: the live child, its armed group guard, and its already-draining
+/// pump, so [`run_command`] can register it as a background job. Never a kill.
+struct Handoff {
+    spawned: crate::shell::contract::Spawned,
+    #[cfg(not(windows))]
+    guard: crate::shell::kill::GroupGuard,
+    pump: tokio::task::JoinHandle<crate::shell::contract::PumpSummary>,
+}
+
+enum Settled {
+    /// The command exited, timed out, was cancelled, or failed to wait.
+    Done(ToolOutput),
+    /// A silent blocking command was handed off; it keeps running. Boxed:
+    /// the handoff carries the live child, guard, pump and clock (~300 B)
+    /// and would otherwise blow up every `Settled` on the stack.
+    Stalled(Box<Handoff>),
+}
+
+/// The shared wait-and-render for one spawned command (exit, explicit timeout,
+/// or cancel). When `handoff` is set and no explicit `timeout` was requested, a
+/// command silent longer than `bound` stops the wait early and returns the
+/// running child, its armed group guard and its already-draining pump as
+/// [`Settled::Stalled`] — it is never killed here.
+///
+/// A distinct function from [`run_command`] on purpose: the background
+/// continuation calls it with `handoff=false`, so it is not a recursive
+/// `async fn` and its future stays `Send` for `tokio::spawn`.
+// one lane carries a live child + its group guard + pump + liveness clock
+// + silence bound + registry handle; bundling them into structs is speculative
+// and would thrash this Send-sensitive call path, so the count stands.
+#[allow(clippy::too_many_arguments)]
+async fn settle_command(
+    command: &str,
+    log_path: &std::path::Path,
     secs: Option<u64>,
     start: Instant,
-    ctx: ToolContext,
-    spawned: crate::shell::contract::Spawned,
+    ctx: &ToolContext,
+    mut spawned: crate::shell::contract::Spawned,
     #[cfg(not(windows))] mut guard: crate::shell::kill::GroupGuard,
-) -> ToolOutput {
+    pump: tokio::task::JoinHandle<crate::shell::contract::PumpSummary>,
+    last: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    bound: Duration,
+    handoff: bool,
+) -> Settled {
     #[cfg(not(windows))]
     let target = spawned.pgid;
     #[cfg(windows)]
     let target = &spawned.job;
-    let mut child = spawned.child;
-    let pump = Pump::start(child.stdout.take(), child.stderr.take(), log_path.clone());
+    let child = &mut spawned.child;
+    let stall_on = handoff && secs.is_none() && !bound.is_zero();
     enum Cause {
         Exit,
         Timeout,
         Cancel,
+        Stall,
     }
     let mut exited: Option<std::process::ExitStatus> = None;
     let cause = tokio::select! {
@@ -662,7 +844,7 @@ async fn run_command(
                 let _ = term_then_kill(target, Duration::from_secs(2)).await;
                 let _ = child.start_kill();
                 abort_pump(pump).await;
-                return fail(format!("failed to wait for command: {e}"));
+                return Settled::Done(fail(format!("failed to wait for command: {e}")));
             }
         },
         _ = wait_or_pend(secs, start) => {
@@ -673,11 +855,23 @@ async fn run_command(
             }
         }
         _ = ctx.cancel.cancelled() => Cause::Cancel,
+        _ = stall_arm(stall_on, last.clone(), bound) => Cause::Stall,
     };
-    // Unix escalates SIGTERM → SIGKILL; Windows terminates the owned job.
+    if matches!(cause, Cause::Stall) {
+        // Hand the running child back to run_command, which registers it.
+        return Settled::Stalled(Box::new(Handoff {
+            spawned,
+            #[cfg(not(windows))]
+            guard,
+            pump,
+        }));
+    }
+    // Unix escalates SIGTERM -> SIGKILL; Windows terminates the owned job.
     // Failed termination is a harness error, never a successful timeout.
     let first_line: Option<String> = match cause {
         Cause::Exit => None,
+        // A stall returns above; it never reaches this render path.
+        Cause::Stall => std::unreachable!("stall returns before the render path"),
         Cause::Timeout => {
             // Reap while Unix escalation polls: macOS can return EPERM
             // when only an unreaped zombie remains in the process group.
@@ -693,11 +887,11 @@ async fn run_command(
                 Err(e) => {
                     let _ = child.start_kill();
                     abort_pump(pump).await;
-                    return fail(e);
+                    return Settled::Done(fail(e));
                 }
             }
             Some(format!(
-                "timed out after {}s (process group killed) · rerun without `timeout` to let it finish, or with a larger one (max {MAX_TIMEOUT_SECS}s)",
+                "timed out after {}s (process group killed) \u{b7} rerun without `timeout` to let it finish, or with a larger one (max {MAX_TIMEOUT_SECS}s)",
                 secs.unwrap_or_default()
             ))
         }
@@ -716,7 +910,7 @@ async fn run_command(
                 Err(e) => {
                     let _ = child.start_kill();
                     abort_pump(pump).await;
-                    return fail(e);
+                    return Settled::Done(fail(e));
                 }
             }
             Some(format!(
@@ -733,9 +927,9 @@ async fn run_command(
     #[cfg(not(windows))]
     guard.disarm();
     let status = exited.expect("every cause resolves a status");
-    let (summary, drain_truncated) = match drain_pump(pump, &log_path).await {
+    let (summary, drain_truncated) = match drain_pump(pump, log_path).await {
         Ok(v) => v,
-        Err(e) => return fail(format!("output pump failed: {e}")),
+        Err(e) => return Settled::Done(fail(format!("output pump failed: {e}"))),
     };
     let mut first = first_line;
     if drain_truncated {
@@ -755,8 +949,175 @@ async fn run_command(
             None => note.to_string(),
         });
     }
-    finish_inline(&command, &log_path, status, &summary, start, first)
+    Settled::Done(finish_inline(
+        command, log_path, status, &summary, start, first,
+    ))
 }
+
+/// Blocking + managed-background entry point for one command. Starts the
+/// output pump (or reuses a handed-off command's), runs [`settle_command`]
+/// with `handoff` gated on the blocking lane, and on a silent stall hands the
+/// running child to the background lane: registers the job and spawns the
+/// continuation (a fresh [`settle_command`] with `handoff=false`, so it never
+/// re-hands-off), returning a "still running" notice. The child keeps running
+/// and is never killed.
+// one lane carries a live child + its group guard + pump + liveness clock
+// + silence bound + registry handle; bundling them into structs is speculative
+// and would thrash this Send-sensitive call path, so the count stands.
+#[allow(clippy::too_many_arguments)]
+async fn run_command(
+    command: String,
+    log_path: PathBuf,
+    secs: Option<u64>,
+    start: Instant,
+    ctx: ToolContext,
+    spawned: crate::shell::contract::Spawned,
+    #[cfg(not(windows))] guard: crate::shell::kill::GroupGuard,
+    // Blocking lane only. When `Some`, a command silent longer than `bound`
+    // (with no explicit `timeout`) is registered here as a background job and
+    // the wait continues in a detached worker — never killed. `None` for the
+    // managed background/job lane, whose own call never blocks.
+    adopt: Option<&jobs::Jobs>,
+    // Silent threshold before a stuck blocking command is handed to the
+    // background lane (0 disables). Only armed for `adopt` + no `timeout`.
+    bound: Duration,
+    // Continuation of a handed-off command: reuse the running pump instead of
+    // starting a new one (stdout/stderr are already taken).
+    reuse_pump: Option<tokio::task::JoinHandle<crate::shell::contract::PumpSummary>>,
+) -> ToolOutput {
+    let mut spawned = spawned;
+    let last = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(now_grindmill()));
+    let pump = match reuse_pump {
+        // Continuation: the original pump already owns the child's pipes, so
+        // reuse it and do not take stdout/stderr again.
+        Some(p) => p,
+        None => {
+            let child = &mut spawned.child;
+            Pump::start(
+                child.stdout.take(),
+                child.stderr.take(),
+                log_path.clone(),
+                last.clone(),
+            )
+        }
+    };
+    match settle_command(
+        &command,
+        &log_path,
+        secs,
+        start,
+        &ctx,
+        spawned,
+        #[cfg(not(windows))]
+        guard,
+        pump,
+        last,
+        bound,
+        adopt.is_some(),
+    )
+    .await
+    {
+        Settled::Done(out) => out,
+        Settled::Stalled(hoff) => {
+            let Handoff {
+                spawned,
+                #[cfg(not(windows))]
+                guard,
+                pump,
+            } = *hoff;
+            let jobs = adopt.expect("a stall is only armed for the blocking lane");
+            let (id, tx, worker_ctx) = jobs.register(&ctx, log_path.clone(), start);
+            // With GRAY_NO_JOBS=1 the follow-up actions are not in the schema
+            // and are refused, so the notice must not advertise them.
+            let await_hint = if jobs_enabled() {
+                format!(
+                    ", or await it here with bash action: output/status job_id:{id} and wait_ms \
+                     (e.g. 30000), or cancel it"
+                )
+            } else {
+                String::new()
+            };
+            let notice = ToolOutput::ok(format!(
+                "still running \u{b7} job {id} \u{b7} silent: no new output for {}s \u{b7} log {}\nNot killed \u{2014} moved to a background job so it keeps running. Continue other work (its finish is reported between model rounds or the next turn){await_hint}. Inspect the log to see why it went silent.",
+                bound.as_secs(),
+                log_path.display()
+            ));
+            // A fresh liveness clock feeds the job's own (inert) stall arm.
+            let last = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(now_grindmill()));
+            tokio::spawn(async move {
+                let out = match settle_command(
+                    &command,
+                    &log_path,
+                    secs,
+                    start,
+                    &worker_ctx,
+                    spawned,
+                    #[cfg(not(windows))]
+                    guard,
+                    pump,
+                    last,
+                    Duration::ZERO,
+                    false,
+                )
+                .await
+                {
+                    Settled::Done(out) => out,
+                    // handoff=false keeps the job lane's stall arm inert.
+                    Settled::Stalled(_) => {
+                        std::unreachable!("handoff=false never returns Stalled")
+                    }
+                };
+                let _ = tx.send(Some(out));
+            });
+            notice
+        }
+    }
+}
+/// Poll granularity for the stall arm: fine enough to hand off promptly,
+/// coarse enough that a 600s bound costs a few hundred cheap wakeups at most.
+const STALL_CHECK_MS: u64 = 500;
+
+/// The blocking lane's stall arm: resolves once `last` has not advanced for
+/// `bound` (a silent command still stamps `last` at spawn, so the gap is
+/// measured from the last output chunk). When `enabled` is false it is
+/// `pending()` forever, so the `select!` arm never fires \u{2014} this is how the
+/// background job's own `run_command` (which must never re-hand-off) keeps the
+/// arm inert.
+async fn stall_arm(
+    enabled: bool,
+    last: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    bound: Duration,
+) {
+    if !enabled || bound.is_zero() {
+        std::future::pending::<()>().await;
+    }
+    let bound_ms = u64::try_from(bound.as_millis()).unwrap_or(u64::MAX);
+    loop {
+        let gap = now_grindmill().saturating_sub(last.load(std::sync::atomic::Ordering::Relaxed));
+        if gap >= bound_ms {
+            return;
+        }
+        // Wake to re-check at the earlier of the remaining gap or a coarse
+        // interval, so a command that resumes output is noticed cheaply.
+        let remaining = bound_ms.saturating_sub(gap);
+        tokio::time::sleep(Duration::from_millis(remaining.min(STALL_CHECK_MS))).await;
+    }
+}
+
+/// Silent threshold for the blocking lane (seconds), overridable per-process in
+/// tests via `GRAY_SHELL_STALL_SECS`. Never a kill: past this a stuck command
+/// is handed to the background lane and the agent decides.
+fn stall_bound() -> Duration {
+    std::env::var("GRAY_SHELL_STALL_SECS")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .filter(|&s| s > 0)
+        .map(Duration::from_secs)
+        .unwrap_or(Duration::from_secs(
+            crate::shell::contract::MAX_BLOCKING_SILENCE_SECS,
+        ))
+}
+
 fn gray_home() -> PathBuf {
     gray_core::paths::gray_home().unwrap_or_else(|| std::env::temp_dir().join(".gray"))
 }

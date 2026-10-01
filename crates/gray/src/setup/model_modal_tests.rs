@@ -136,3 +136,59 @@ fn a_live_list_merges_into_the_saved_ordering() {
     let ids: Vec<&str> = merged.iter().map(|(id, _)| id.as_str()).collect();
     assert!(ids.contains(&"zeta/1") && ids.contains(&"alpha/1"));
 }
+
+// ── recent/all divider ──
+
+fn sorted_models() -> Vec<(String, String)> {
+    // What `sort_models` yields: current first, then recents, then the rest.
+    vec![
+        ("cur/m".to_string(), "Current".to_string()),
+        ("a/1".to_string(), "A".to_string()),
+        ("b/2".to_string(), "B".to_string()),
+        ("c/3".to_string(), "C".to_string()),
+    ]
+}
+
+#[test]
+fn recent_prefix_counts_the_sorted_head() {
+    let models = sorted_models();
+    let n = super::recent_prefix_len(
+        Some("cur/m"),
+        &["a/1".to_string(), "b/2".to_string()],
+        models.iter().map(|(id, _)| id.as_str()),
+    );
+    assert_eq!(n, 3, "current + two recents park first");
+}
+
+#[test]
+fn recent_prefix_stops_at_the_first_unknown() {
+    let shuffled = [
+        ("a/1".to_string(), "A".to_string()),
+        ("c/3".to_string(), "C".to_string()),
+        ("b/2".to_string(), "B".to_string()),
+    ];
+    let n = super::recent_prefix_len(
+        None,
+        &["a/1".to_string(), "b/2".to_string()],
+        shuffled.iter().map(|(id, _)| id.as_str()),
+    );
+    assert_eq!(n, 1, "an unknown id ends the recent section");
+}
+
+#[test]
+fn selection_never_rest_on_the_divider() {
+    use super::Row;
+    let rows = vec![Row::Model(0), Row::Divider, Row::Model(1)];
+    assert_eq!(super::skip_divider(&rows, 1, true), 2);
+    assert_eq!(super::skip_divider(&rows, 1, false), 0);
+    assert_eq!(
+        super::skip_divider(&rows, 0, true),
+        0,
+        "models pass through"
+    );
+    assert_eq!(
+        super::skip_divider(&rows, 2, false),
+        2,
+        "models pass through"
+    );
+}

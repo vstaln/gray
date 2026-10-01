@@ -133,7 +133,7 @@ fn source_label(ecosystem: &str) -> &str {
     match ecosystem {
         "gray-native" => "Gray Index",
         "gray-cli" => "Plugin command",
-        "pi-gallery" => "Pi Gallery (preview)",
+        "pi-gallery" => "Pi Index",
         other => other,
     }
 }
@@ -270,8 +270,6 @@ pub(crate) fn run_install_manager(
 ) -> anyhow::Result<bool> {
     use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, poll, read};
     use crossterm::terminal::{EnterAlternateScreen, LeaveAlternateScreen};
-    use ratatui::Terminal;
-    use ratatui::backend::CrosstermBackend;
     use ratatui::layout::Rect;
     use ratatui::style::{Color, Modifier, Style};
     use ratatui::text::{Line, Span};
@@ -298,17 +296,7 @@ pub(crate) fn run_install_manager(
         }
     };
 
-    let _session = TuiSession::acquire()?;
-    let mut stdout_handle = std::io::stdout();
-    crossterm::execute!(
-        stdout_handle,
-        EnterAlternateScreen,
-        crossterm::terminal::Clear(crossterm::terminal::ClearType::All),
-        crossterm::cursor::Hide
-    )?;
-    let _ = crossterm::terminal::size();
-    let backend = CrosstermBackend::new(stdout_handle);
-    let mut terminal = Terminal::new(backend)?;
+    let (_session, mut terminal) = super::open_modal()?;
 
     let box_bg = crate::theme::theme().surface_bg;
     let accent_peach = crate::theme::theme().accent;

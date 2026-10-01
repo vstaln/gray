@@ -79,3 +79,65 @@ fn deepseek_flash_clamps_carried_xhigh_to_max() {
         assert_eq!(clamp_thinking_level(model, "xhigh"), "max", "{model}");
     }
 }
+
+// ── provider model-list disk cache ──
+
+fn cached_list() -> Vec<(String, String)> {
+    vec![
+        ("zai/glm-5.2".to_string(), "GLM 5.2".to_string()),
+        ("openai/gpt-5".to_string(), "GPT 5".to_string()),
+    ]
+}
+
+#[test]
+fn loopback_bases_get_no_disk_entry() {
+    // The leak this closes: a loopback endpoint's port changes on every start
+    // (and a unit test's is random), the fetch is sub-millisecond anyway, and
+    // nothing evicts old keys — so each one is a permanent dead entry in
+    // `~/.gray/provider_models.json`.
+    let dir = tempfile::TempDir::new().expect("temp home");
+    save_provider_model_list_at(dir.path(), "http://127.0.0.1:35757/v1", &cached_list());
+    save_provider_model_list_at(dir.path(), "http://[::1]:1234/v1", &cached_list());
+    save_provider_model_list_at(dir.path(), "http://localhost:8080/v1", &cached_list());
+    assert!(
+        !dir.path().join("provider_models.json").exists(),
+        "no cache file at all for a loopback-only session"
+    );
+    // A real host still persists, so the picker keeps painting instantly.
+    save_provider_model_list_at(dir.path(), "https://api.x.ai/v1", &cached_list());
+    assert_eq!(
+        load_provider_model_list_at(dir.path(), "https://api.x.ai/v1").len(),
+        2
+    );
+}
+
+#[test]
+fn model_list_round_trips_through_disk() {
+    let dir = tempfile::TempDir::new().expect("temp home");
+    save_provider_model_list_at(dir.path(), "https://api.x.ai/v1/", &cached_list());
+    assert_eq!(
+        // No trailing slash on load: normalization must not split the cache.
+        load_provider_model_list_at(dir.path(), "https://api.x.ai/v1"),
+        cached_list()
+    );
+}
+
+#[test]
+fn unknown_base_and_corrupt_file_read_as_empty() {
+    let dir = tempfile::TempDir::new().expect("temp home");
+    assert!(load_provider_model_list_at(dir.path(), "https://nope/v1").is_empty());
+    std::fs::write(dir.path().join("provider_models.json"), b"{oops").unwrap();
+    assert!(load_provider_model_list_at(dir.path(), "https://nope/v1").is_empty());
+}
+
+#[test]
+fn empty_save_never_clobbers_a_cache() {
+    let dir = tempfile::TempDir::new().expect("temp home");
+    save_provider_model_list_at(dir.path(), "https://api.x.ai/v1", &cached_list());
+    save_provider_model_list_at(dir.path(), "https://api.x.ai/v1", &[]);
+    assert_eq!(
+        load_provider_model_list_at(dir.path(), "https://api.x.ai/v1").len(),
+        2,
+        "a failed fetch must not wipe the last good list"
+    );
+}

@@ -57,6 +57,23 @@ fn unsupported_model_500_maps_to_bad_request_and_preserves_cf_ray() {
 }
 
 #[test]
+fn unsupported_model_401_body_outranks_auth_status() {
+    // OpenRouter reported an unknown model as 401 + ModelError. An Auth
+    // verdict sends the user to re-auth for a model problem; the body wins.
+    let err = classify_http_error(
+        reqwest::StatusCode::UNAUTHORIZED,
+        r#"{"type":"error","error":{"type":"ModelError","message":"Model deepseek/deepseek-chat is not supported"}}"#,
+        None,
+        None,
+    );
+    assert!(
+        matches!(err, ProviderError::BadRequest(_)),
+        "must classify as bad request, got {err:?}"
+    );
+    assert!(!is_retryable_error(&err));
+}
+
+#[test]
 fn rate_limited_429_is_retryable() {
     let err = classify_http_error(
         reqwest::StatusCode::TOO_MANY_REQUESTS,
@@ -1542,6 +1559,44 @@ async fn responses_incomplete_and_top_level_error_are_not_success() {
 }
 
 #[tokio::test]
+async fn empty_tool_call_padding_deltas_are_dropped() {
+    // Some gateways pad the final chunk with tool_call entries carrying no
+    // id, name, or args. They must not materialize ghost fragments (the
+    // agent loop used to WARN `dropping tool call index N with empty name`
+    // every turn) and must not disturb the real call on index 0.
+    use futures::StreamExt;
+    let server = wiremock::MockServer::start().await;
+    let real = serde_json::json!({"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"bash","arguments":"{\"command\":\"ls\"}"}}]}}]});
+    let ghost = serde_json::json!({"choices":[{"delta":{"tool_calls":[{"index":1},{"index":2,"function":{"name":"","arguments":""}}]}}]});
+    let finish = serde_json::json!({"choices":[{"delta":{},"finish_reason":"tool_calls"}]});
+    wiremock::Mock::given(wiremock::matchers::any())
+        .respond_with(
+            wiremock::ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_string(format!(
+                    "data: {real}\n\ndata: {ghost}\n\ndata: {finish}\n\ndata: [DONE]\n\n"
+                )),
+        )
+        .mount(&server)
+        .await;
+    let provider = OpenAiProvider::new("key", "test", server.uri(), None, None).unwrap();
+    let events: Vec<_> = provider.stream(empty_chat_req()).collect().await;
+    assert!(!events.iter().any(Result::is_err), "{events:?}");
+    let tool_deltas: Vec<_> = events
+        .iter()
+        .filter_map(|e| match e {
+            Ok(StreamEvent::ToolCallDelta { index, name, .. }) => Some((*index, name.clone())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        tool_deltas,
+        vec![(0, Some("bash".to_string()))],
+        "exactly the real call survives: {tool_deltas:?}"
+    );
+}
+
+#[tokio::test]
 async fn chat_eof_keeps_complete_tool_calls() {
     // Zen closes the stream right after the last delta (no finish chunk): a
     // COMPLETE tool call is still usable, so it survives with a warning.
@@ -1899,6 +1954,84 @@ async fn a_truncated_body_after_delta_completes_with_a_notice() {
         )),
         "{events:?}"
     );
+    server.abort();
+}
+
+/// Clean EOF with no finish chunk (a gateway's empty 200): the same
+/// transient failure as a truncated body, so the retry rule from
+/// `a_truncated_body_retries_when_nothing_was_emitted` must cover it.
+async fn serve_empty_then_good() -> (String, tokio::task::JoinHandle<()>) {
+    use tokio::io::AsyncWriteExt;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = tokio::spawn(async move {
+        let mut served = 0usize;
+        loop {
+            let Ok((mut sock, _)) = listener.accept().await else {
+                return;
+            };
+            let mut buf = [0u8; 4096];
+            let _ = tokio::time::timeout(
+                std::time::Duration::from_millis(500),
+                tokio::io::AsyncReadExt::read(&mut sock, &mut buf),
+            )
+            .await;
+            served += 1;
+            let head = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n";
+            // First body is a well-formed, complete chunked response with no
+            // SSE chunks at all: EOF, no finish_reason, no delta.
+            let mut body = String::new();
+            if served > 1 {
+                for part in [
+                    "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"recovered\"}}]}\n\n",
+                    "data: [DONE]\n\n",
+                ] {
+                    body.push_str(&format!("{:x}\r\n{part}\r\n", part.len()));
+                }
+            }
+            body.push_str("0\r\n\r\n");
+            if sock
+                .write_all(format!("{head}{body}").as_bytes())
+                .await
+                .is_err()
+            {
+                return;
+            }
+            let _ = sock.flush().await;
+            drop(sock);
+        }
+    });
+    (format!("http://{addr}"), handle)
+}
+
+#[tokio::test]
+async fn eof_without_finish_reason_retries_when_nothing_was_emitted() {
+    use futures::StreamExt;
+    let (base, server) = serve_empty_then_good().await;
+    let provider =
+        OpenAiProvider::new("key", "test-model", base, None, None).expect("provider builds");
+    let events: Vec<_> = provider.stream(empty_chat_req()).collect().await;
+    let text: String = events
+        .iter()
+        .filter_map(|r| r.as_ref().ok())
+        .filter_map(|e| match e {
+            StreamEvent::TextDelta { delta } => Some(delta.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        text, "recovered",
+        "the retried stream delivered the text: {events:?}"
+    );
+    assert!(
+        events.iter().all(Result::is_ok),
+        "a finish-less EOF must not end the turn on the first attempt: {events:?}"
+    );
+    let notices = events
+        .iter()
+        .filter(|r| matches!(r, Ok(StreamEvent::StreamError { .. })))
+        .count();
+    assert_eq!(notices, 1, "one reconnect notice per burst: {events:?}");
     server.abort();
 }
 

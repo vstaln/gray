@@ -833,6 +833,67 @@ async fn install_git_clones_and_extracts_skills() {
 }
 
 #[tokio::test]
+async fn install_git_takes_command_prompts() {
+    let _guard = env_guard();
+    let (repo, url) = init_git_fixture(&[
+        ("skills/mulch/SKILL.md", MULCH_SKILL),
+        (
+            "commands/review.md",
+            "---\ndescription: Review the diff\n---\n\nReview $ARGUMENTS\n",
+        ),
+        (
+            ".opencode/command/plan.md",
+            "---\ndescription: Plan it\n---\n\nPlan $ARGUMENTS\n",
+        ),
+        (
+            ".opencode/command/review.md",
+            "---\ndescription: Other review\n---\n\nOther\n",
+        ),
+        ("hooks/run.js", "console.log(1);\n"),
+    ]);
+    let key = git_fixture_key(&repo);
+    let _home = use_git_env();
+
+    let report = install(parse_spec(&format!("git:{url}")), InstallOpts::default())
+        .await
+        .unwrap();
+    assert_eq!(report.name, key);
+    assert_eq!(
+        std::fs::read(report.path.join("commands/review.md")).unwrap(),
+        b"---\ndescription: Review the diff\n---\n\nReview $ARGUMENTS\n",
+        "`commands/` wins a stem both layouts declare"
+    );
+    assert!(report.path.join("commands/plan.md").is_file());
+    assert!(report.path.join("mulch/SKILL.md").is_file());
+    assert!(
+        !report.path.join("hooks").exists(),
+        "code is never installed"
+    );
+    assert!(
+        !report.path.join(".opencode").exists(),
+        "only the normalized commands/ copy lands"
+    );
+}
+
+#[tokio::test]
+async fn install_git_commands_only_still_installs() {
+    let _guard = env_guard();
+    let (repo, url) = init_git_fixture(&[(
+        "commands/review.md",
+        "---\ndescription: Review the diff\n---\n\nReview\n",
+    )]);
+    let key = git_fixture_key(&repo);
+    let _home = use_git_env();
+
+    let report = install(parse_spec(&format!("git:{url}")), InstallOpts::default())
+        .await
+        .unwrap();
+    assert_eq!(report.name, key);
+    assert!(report.path.join("commands/review.md").is_file());
+    assert!(list().unwrap().remove(&key).is_some());
+}
+
+#[tokio::test]
 async fn install_git_pinned_ref_records_version() {
     let _guard = env_guard();
     let (repo, url) = init_git_fixture(&[("skills/a/SKILL.md", MULCH_SKILL)]);
@@ -871,6 +932,147 @@ async fn install_git_pinned_ref_records_version() {
     assert_eq!(entry.version, "feature");
     assert_eq!(entry.hash, sha);
     assert_eq!(entry.source, url);
+}
+
+/// Tag a git fixture repo (pinned-ref index entries clone `--branch`).
+fn tag_git_fixture(dir: &tempfile::TempDir, tag: &str) {
+    let status = std::process::Command::new("git")
+        .args(["tag", tag])
+        .current_dir(dir.path())
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .status()
+        .unwrap();
+    assert!(status.success(), "git tag {tag} failed");
+}
+
+/// Commit working-tree changes on a git fixture repo.
+fn commit_git_fixture(dir: &tempfile::TempDir, msg: &str) {
+    for args in [&["add", "-A"][..], &["commit", "-qm", msg][..]] {
+        let status = std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir.path())
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_AUTHOR_NAME", "t")
+            .env("GIT_AUTHOR_EMAIL", "t@t")
+            .env("GIT_COMMITTER_NAME", "t")
+            .env("GIT_COMMITTER_EMAIL", "t@t")
+            .status()
+            .unwrap();
+        assert!(status.success(), "git {args:?} failed");
+    }
+}
+
+/// Minimal `pi-gallery`+`git` index doc for one plugin.
+fn pi_git_index(
+    key: &str,
+    url: &str,
+    version: &str,
+    git_ref: &str,
+    sha: &str,
+) -> serde_json::Value {
+    serde_json::json!({"plugins": {key: {
+        "ecosystem": "pi-gallery",
+        "version": version,
+        "source": {"type": "git", "url": url, "git_ref": git_ref},
+        "hash": sha,
+    }}})
+}
+
+#[tokio::test]
+async fn index_git_entry_installs_pinned_version_with_verified_sha() {
+    let _guard = env_guard();
+    let (repo, url) = init_git_fixture(&[
+        ("skills/mulch/SKILL.md", MULCH_SKILL),
+        ("package.json", "{\"name\":\"demo\",\"version\":\"1.2.3\"}"),
+    ]);
+    tag_git_fixture(&repo, "v1.2.3");
+    let sha = git_fixture_sha(&repo);
+    let key = git_fixture_key(&repo);
+    let index_url = spawn_index_stub(pi_git_index(&key, &url, "1.2.3", "v1.2.3", &sha)).await;
+    let _home = use_market_env(
+        &index_url,
+        "http://127.0.0.1:1",
+        "http://127.0.0.1:1",
+        "http://127.0.0.1:1",
+    );
+
+    let report = install(parse_spec(&key), InstallOpts::default())
+        .await
+        .unwrap();
+    assert_eq!(report.name, key);
+    assert_eq!(report.version, "1.2.3");
+    assert!(report.path.join("mulch/SKILL.md").is_file());
+    let entry = list().unwrap().remove(&key).expect("lock entry");
+    assert_eq!(entry.ecosystem, "pi-gallery");
+    assert_eq!(entry.version, "1.2.3");
+    assert_eq!(entry.hash, sha);
+    assert_eq!(entry.source, url);
+    assert_eq!(entry.scope, "user");
+    assert!(entry.enabled);
+}
+
+#[tokio::test]
+async fn index_git_entry_rejects_sha_mismatch_without_half_state() {
+    let _guard = env_guard();
+    let (repo, url) = init_git_fixture(&[("skills/mulch/SKILL.md", MULCH_SKILL)]);
+    tag_git_fixture(&repo, "v1.2.3");
+    let key = git_fixture_key(&repo);
+    let index_url =
+        spawn_index_stub(pi_git_index(&key, &url, "1.2.3", "v1.2.3", &"0".repeat(40))).await;
+    let _home = use_market_env(
+        &index_url,
+        "http://127.0.0.1:1",
+        "http://127.0.0.1:1",
+        "http://127.0.0.1:1",
+    );
+
+    let err = install(parse_spec(&key), InstallOpts::default())
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("sha mismatch"), "honest reason: {err}");
+    assert!(list().unwrap().is_empty());
+    assert!(!crate::plugins_dir().join("pi").join(&key).exists());
+}
+
+#[tokio::test]
+async fn update_bumps_index_pi_gallery_git_entry() {
+    let _guard = env_guard();
+    let (repo, url) = init_git_fixture(&[("skills/mulch/SKILL.md", MULCH_SKILL)]);
+    tag_git_fixture(&repo, "v1.2.3");
+    let sha1 = git_fixture_sha(&repo);
+    let key = git_fixture_key(&repo);
+    let stub1 = spawn_index_stub(pi_git_index(&key, &url, "1.2.3", "v1.2.3", &sha1)).await;
+    let _home = use_market_env(
+        &stub1,
+        "http://127.0.0.1:1",
+        "http://127.0.0.1:1",
+        "http://127.0.0.1:1",
+    );
+    install(parse_spec(&key), InstallOpts::default())
+        .await
+        .unwrap();
+
+    std::fs::write(repo.path().join("skills/mulch/SKILL.md"), TMUX_SKILL).unwrap();
+    commit_git_fixture(&repo, "v2");
+    tag_git_fixture(&repo, "v1.2.4");
+    let sha2 = git_fixture_sha(&repo);
+    // Drop the 24h ETag cache so update refetches the bumped index.
+    std::fs::remove_file(crate::plugins_dir().join("index-cache.json")).unwrap();
+    let stub2 = spawn_index_stub(pi_git_index(&key, &url, "1.2.4", "v1.2.4", &sha2)).await;
+    // SAFETY: serialized by ENV_GUARD.
+    unsafe {
+        std::env::set_var(crate::index::INDEX_URL_ENV, stub2);
+    }
+
+    let reports = update(&key).await.unwrap();
+    assert_eq!(reports.len(), 1, "one bumped plugin");
+    assert_eq!(reports[0].version, "1.2.4");
+    assert!(reports[0].path.join("mulch/SKILL.md").is_file());
+    let entry = list().unwrap().remove(&key).expect("lock entry");
+    assert_eq!(entry.ecosystem, "pi-gallery");
+    assert_eq!(entry.version, "1.2.4");
+    assert_eq!(entry.hash, sha2);
 }
 
 #[tokio::test]

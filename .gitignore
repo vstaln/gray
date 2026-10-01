@@ -69,3 +69,17 @@ __pycache__/
 
 # arxiv research corpora stay local, like /papers/ above
 /arxiv-mega/
+
+# internal working journal — kept on disk, never published (never commit)
+# Why: gray is a PUBLIC repo; dated plans/specs, benchmark retros, competitor
+# studies and this box's operator notes are session records, not product docs.
+# Reference docs that describe gray as it works now stay tracked (plugins.md,
+# windows-*.md, fff-search-index.md, native-plugin-ui.md, plus the files the
+# CHANGELOG links as disposition records).
+/docs/superpowers/
+/docs/studies/
+/docs/runtime-reliability-plan.md
+/docs/plan-provenance-and-bash-composability.md
+/docs/deepswe-retro-fixes.md
+/docs/hermes-plugins-vs-gray.md
+/docs/memory-ingest-contract.md

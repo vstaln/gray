@@ -9,6 +9,8 @@
 use std::collections::VecDeque;
 use std::io;
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt, BufWriter};
 use tokio::process::{ChildStderr, ChildStdout};
@@ -19,6 +21,10 @@ use super::contract::{MEM_HEAD_BYTES, MEM_TAIL_BYTES, PumpSummary};
 
 const READ_BUF_BYTES: usize = 8 * 1024;
 const PUMP_CHANNEL_CHUNKS: usize = 64;
+/// Longest unterminated line held back waiting for its terminator. Past it
+/// the bytes are flushed as they are: a command that never ends a line
+/// (`yes`, a `\r` progress bar with no `\r`) must not stall the transcript.
+const CARRY_MAX_BYTES: usize = 4 * 1024;
 /// Shell transcript cap per log file: matches gray.log 10MiB. The 7-day
 /// sweep alone let real usage reach 208MB; the pump stops file writes past
 /// this (memory view continues), the sweep catches pre-cap files.
@@ -59,7 +65,7 @@ impl MemView {
         self.tail.extend(chunk.iter().copied());
         let excess = self.tail.len().saturating_sub(MEM_TAIL_BYTES);
         if excess > 0 {
-            // ponytail: VecDeque drain is O(excess); never Vec::remove(0).
+            // VecDeque drain is O(excess); never Vec::remove(0).
             self.tail.drain(..excess);
         }
         self.total_bytes += chunk.len() as u64;
@@ -81,6 +87,16 @@ impl MemView {
 
 // async pump
 
+/// Wall-clock now in unix milliseconds. The pump stamps this on every chunk so
+/// the blocking shell lane can sense a silent command without polling the pipes
+/// itself (see `shell/tools/bash.rs`).
+pub(crate) fn now_grindmill() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
 pub struct Pump;
 
 impl Pump {
@@ -90,8 +106,9 @@ impl Pump {
         stdout: Option<ChildStdout>,
         stderr: Option<ChildStderr>,
         log_path: PathBuf,
+        last_output: Arc<AtomicU64>,
     ) -> JoinHandle<PumpSummary> {
-        tokio::spawn(pump_main(stdout, stderr, log_path))
+        tokio::spawn(pump_main(stdout, stderr, log_path, last_output))
     }
 }
 
@@ -99,15 +116,18 @@ async fn pump_main(
     stdout: Option<ChildStdout>,
     stderr: Option<ChildStderr>,
     log_path: PathBuf,
+    last_output: Arc<AtomicU64>,
 ) -> PumpSummary {
     let (tx, mut rx) = mpsc::channel::<Vec<u8>>(PUMP_CHANNEL_CHUNKS);
     if let Some(pipe) = stdout {
         let tx = tx.clone();
-        tokio::spawn(async move { read_pipe(pipe, tx).await });
+        let last_output = Arc::clone(&last_output);
+        tokio::spawn(async move { read_pipe(pipe, tx, last_output).await });
     }
     if let Some(pipe) = stderr {
         let tx = tx.clone();
-        tokio::spawn(async move { read_pipe(pipe, tx).await });
+        let last_output = Arc::clone(&last_output);
+        tokio::spawn(async move { read_pipe(pipe, tx, last_output).await });
     }
     drop(tx); // writer now lives on the reader clones; ends at double EOF
 
@@ -190,23 +210,42 @@ async fn pump_main(
     mem.into_summary(log_failed)
 }
 
-/// One reader task per pipe: forward raw bytes unchanged.
-async fn read_pipe<R>(pipe: R, tx: mpsc::Sender<Vec<u8>>)
+/// One reader task per pipe: forward whole lines, bytes unchanged.
+///
+/// The redactor's unit is the line, and a pipe read ends wherever the writer
+/// flushed — so an unterminated tail is held back until its terminator
+/// arrives rather than redacted in pieces. Carrying per pipe keeps a partial
+/// stdout line from being glued to the next stderr line.
+async fn read_pipe<R>(pipe: R, tx: mpsc::Sender<Vec<u8>>, last_output: Arc<AtomicU64>)
 where
     R: AsyncRead + Unpin + Send + 'static,
 {
     let mut pipe = pipe;
     let mut buf = [0u8; READ_BUF_BYTES];
+    let mut carry: Vec<u8> = Vec::new();
     loop {
         match pipe.read(&mut buf).await {
             Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
             Err(_) | Ok(0) => break, // EOF or a real I/O error ends this reader only
             Ok(n) => {
-                if tx.send(buf[..n].to_vec()).await.is_err() {
+                // Liveness on raw arrival, not on whole lines: a command
+                // writing one long line must not look stalled.
+                last_output.store(now_grindmill(), Ordering::Relaxed);
+                carry.extend_from_slice(&buf[..n]);
+                let out = match carry.iter().rposition(|b| *b == b'\n' || *b == b'\r') {
+                    Some(end) => carry.drain(..=end).collect::<Vec<u8>>(),
+                    None if carry.len() >= CARRY_MAX_BYTES => std::mem::take(&mut carry),
+                    None => continue,
+                };
+                if tx.send(out).await.is_err() {
                     break; // writer gone; nothing left to do
                 }
             }
         }
+    }
+    // EOF: the held tail is real output and must still land.
+    if !carry.is_empty() {
+        let _ = tx.send(carry).await;
     }
 }
 

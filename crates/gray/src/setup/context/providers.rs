@@ -477,6 +477,7 @@ async fn fetch_models_async(base: String, key: Option<String>) -> Vec<(String, S
             }
             if !models.is_empty() {
                 cache_provider_model_ids(&base, &models);
+                save_provider_model_list(&base, &models);
                 save_models_cache_to_disk();
                 return models;
             }
@@ -492,21 +493,22 @@ async fn fetch_models_async(base: String, key: Option<String>) -> Vec<(String, S
 pub fn fetch_live_provider_models(base_url: &str, api_key: Option<&str>) -> Vec<(String, String)> {
     let base = base_url.to_string();
     let key = api_key.map(|k| k.to_string());
-    if let Ok(handle) = tokio::runtime::Handle::try_current() {
-        std::thread::scope(|s| {
-            s.spawn(move || handle.block_on(fetch_models_async(base, key)))
-                .join()
-                .unwrap_or_default()
+    // ponytail: isolated short-lived runtime, never the ambient Handle — block_on
+    // on a borrowed handle panics with "Tokio 1.x context ... being shutdown"
+    // when a background fetch outlives REPL shutdown. Own runtime = no coupling.
+    std::thread::scope(|s| {
+        s.spawn(move || {
+            match tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(rt) => rt.block_on(fetch_models_async(base, key)),
+                Err(_) => Vec::new(),
+            }
         })
-    } else {
-        match tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-        {
-            Ok(rt) => rt.block_on(fetch_models_async(base, key)),
-            Err(_) => Vec::new(),
-        }
-    }
+        .join()
+        .unwrap_or_default()
+    })
 }
 
 static MODEL_CONTEXT_CACHE: std::sync::OnceLock<
@@ -582,6 +584,90 @@ pub fn cached_model_ids() -> Vec<String> {
         .read()
         .ok()
         .and_then(|cache| cache.ids.get(&cache.active).cloned())
+        .unwrap_or_default()
+}
+
+/// Loopback endpoint (`localhost`, `127.0.0.0/8`, `::1`) by host, unparseable
+/// input treated as not loopback (the caller is a normalized base URL).
+fn is_loopback_base(base: &str) -> bool {
+    reqwest::Url::parse(base)
+        .ok()
+        .and_then(|u| u.host_str().map(str::to_string))
+        .is_some_and(|host| crate::account::is_loopback_host(&host))
+}
+
+/// A previous session's provider model list, so the picker paints instantly
+/// and only the background refresh touches the network. On-disk list cache
+/// (`~/.gray/provider_models.json`, `{ "<base>": [["id", "name"], ...] }`),
+/// keyed like `recent_models` by normalized base URL.
+pub(crate) fn save_provider_model_list_at(
+    home: &std::path::Path,
+    base_url: &str,
+    models: &[(String, String)],
+) {
+    if models.is_empty() {
+        // A failed fetch must never wipe the last good list.
+        return;
+    }
+    let base = crate::setup::catalog::normalize_custom_base_url(base_url);
+    if base.is_empty() || is_loopback_base(&base) {
+        // Loopback gets no disk entry: the fetch is already sub-millisecond
+        // local (nothing to paint ahead of), and the port changes on every
+        // restart — each one a dead key this cache would keep forever (a unit
+        // test's random port added one per `cargo test`). There is no
+        // eviction, so refusing the write is the only bound that holds.
+        return;
+    }
+    let path = home.join("provider_models.json");
+    let mut map: std::collections::BTreeMap<String, Vec<(String, String)>> =
+        std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default();
+    map.insert(base, models.to_vec());
+    let Ok(s) = serde_json::to_string(&map) else {
+        return;
+    };
+    // Atomic tmp-file + rename (models.json precedent).
+    let tmp = path.with_extension(format!(
+        "json.tmp-{}-{}",
+        std::process::id(),
+        uuid::Uuid::new_v4()
+    ));
+    if std::fs::write(&tmp, s).is_err() {
+        return;
+    }
+    let _ = std::fs::rename(&tmp, path);
+}
+
+/// Best-effort load: missing file, unknown base, or corrupt JSON reads as
+/// an empty list and the caller falls back to the live fetch.
+pub(crate) fn load_provider_model_list_at(
+    home: &std::path::Path,
+    base_url: &str,
+) -> Vec<(String, String)> {
+    let s = std::fs::read_to_string(home.join("provider_models.json")).unwrap_or_default();
+    if s.is_empty() {
+        return Vec::new();
+    }
+    let map: std::collections::BTreeMap<String, Vec<(String, String)>> =
+        serde_json::from_str(&s).unwrap_or_default();
+    let base = crate::setup::catalog::normalize_custom_base_url(base_url);
+    map.get(&base).cloned().unwrap_or_default()
+}
+
+/// Thin `gray_home` wrappers; the `_at` forms above stay testable without
+/// touching process env.
+pub(crate) fn save_provider_model_list(base_url: &str, models: &[(String, String)]) {
+    if let Ok(home) = crate::setup::catalog::gray_home() {
+        save_provider_model_list_at(&home, base_url, models);
+    }
+}
+
+pub(crate) fn load_provider_model_list(base_url: &str) -> Vec<(String, String)> {
+    crate::setup::catalog::gray_home()
+        .ok()
+        .map(|home| load_provider_model_list_at(&home, base_url))
         .unwrap_or_default()
 }
 

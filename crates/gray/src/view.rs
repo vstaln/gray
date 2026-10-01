@@ -109,6 +109,16 @@ fn display_png(shown: &gray_tools::view::Shown) -> Option<String> {
     Some(base64::engine::general_purpose::STANDARD.encode(&buf))
 }
 
+/// What a path reports when it was loaded but *not* drawn: `viewed …` alone
+/// reads as success to an agent whose turn carries no image, so the fallback
+/// names the missing image protocol instead of claiming a view.
+fn fallback_line(part: &gray_tools::view::Shown) -> String {
+    format!(
+        "{} (not shown: terminal has no image protocol)",
+        shown_line(part)
+    )
+}
+
 /// `gray view PATH...`: draw each image inline where the terminal allows it,
 /// name what was shown, non-zero exit if any path failed. A failed draw
 /// reads as a failure, never as a view.
@@ -157,7 +167,7 @@ pub fn run_cli(paths: &[String], frames: Option<usize>, native: bool) -> anyhow:
         }
         let _ = out.flush();
     } else {
-        names.extend(shown.iter().map(shown_line));
+        names.extend(shown.iter().map(fallback_line));
     }
     for line in names {
         println!("{line}");

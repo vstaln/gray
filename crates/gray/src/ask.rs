@@ -19,7 +19,6 @@
 //! pending ask empty so a replaced agent can't strand a sidecar past 330s.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
@@ -580,11 +579,6 @@ fn push_ask_summary(
         }
     }
     t.ensure_gap(1);
-}
-
-/// Current working dir for `host/run` parity (handler pins it at install).
-pub fn run_cwd() -> PathBuf {
-    std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
 }
 
 #[path = "ask_tests.rs"]

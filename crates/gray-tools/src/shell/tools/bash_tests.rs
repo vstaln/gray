@@ -649,6 +649,69 @@ async fn gray_view_through_execute_shows_vision() {
     assert_eq!(out.images.len(), 1, "execute must surface the vision block");
 }
 
+#[test]
+fn unattached_media_note_covers_every_shape_the_claim_refuses() {
+    // Shape refusals: the shell runs the real CLI, which prints `viewed …`
+    // while nothing is attached — the note must say so and name the re-run.
+    for cmd in [
+        "cd /tmp && gray view a.png",
+        "gray view a.png && echo done",
+        "gray view a.png; ls",
+        "gray view a.png | wc -c",
+        "gray view $HOME/a.png",
+        "gray view *.png",
+        "gray view -A a.png",
+        "cd x&&gray view a.png",
+        "for f in /tmp/*.jpg; do gray view \"$f\"; done",
+        "cat a.png && wc -c",
+        "x && cat a.png",
+        "cat *.png",
+    ] {
+        let note = unattached_media_note(cmd).unwrap_or_else(|| panic!("note missing: {cmd}"));
+        assert!(note.contains("NOT attached"), "{cmd}: {note}");
+        assert!(note.contains("gray view"), "{cmd}: {note}");
+    }
+    // The bare claim shapes: a miss is a missing/undecodable file the shell
+    // already reports, a non-media `cat`, or no media command at all.
+    for cmd in [
+        "gray view a.png",
+        "gray view",
+        "gray view missing.png",
+        "gray view --native clip.mp4",
+        "cat a.png",
+        "cat missing.png",
+        "cat notes.txt",
+        "echo gray view",
+        "ls -la",
+    ] {
+        assert!(unattached_media_note(cmd).is_none(), "spurious: {cmd}");
+    }
+    // The advice names the paths it saw, so one turn is enough to recover.
+    let note = unattached_media_note("cd /tmp && gray view a.png b.png").unwrap();
+    assert!(note.contains("gray view a.png b.png"), "{note}");
+}
+
+#[tokio::test]
+async fn compound_gray_view_says_the_image_was_not_attached() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("shot.png"), png_bytes()).unwrap();
+    let ctx = ToolContext {
+        cwd: dir.path().to_path_buf(),
+        ..ToolContext::default()
+    };
+    // cd fails, so `gray` never runs: the note is the tool's own, and the
+    // output must not read as a successful view.
+    let out = BashTool::default()
+        .execute(
+            &ctx,
+            json!({"command": "cd /nonexistent-9f2a && gray view shot.png"}),
+        )
+        .await;
+    assert!(!out.is_error, "{}", out.content);
+    assert!(out.images.is_empty());
+    assert!(out.content.contains("NOT attached"), "{}", out.content);
+}
+
 #[tokio::test]
 async fn cat_expands_a_tilde_the_shell_would_have() {
     // The fast path runs before the shell, so `~` never gets expanded: without
@@ -812,6 +875,43 @@ async fn two_sessions_do_not_share_a_working_directory() {
 }
 
 #[test]
+fn gray_no_jobs_hides_the_managed_job_surface() {
+    // GRAY_NO_JOBS=1 must shrink the schema AND refuse the actions it hides,
+    // so a model that remembered them from elsewhere gets told, not a job.
+    let tool = BashTool::default();
+    let full = tool.def();
+    let props = |d: &ToolDef| -> serde_json::Value { serde_json::to_value(&d.parameters).unwrap() };
+    unsafe { std::env::set_var("GRAY_NO_JOBS", "1") };
+    let lean = tool.def();
+    unsafe { std::env::remove_var("GRAY_NO_JOBS") };
+    let lean_props = props(&lean);
+    for gone in ["action", "job_id", "background", "yield_ms", "wait_ms"] {
+        assert!(
+            lean_props["properties"].get(gone).is_none(),
+            "{gone} still exposed: {lean_props}"
+        );
+        assert!(
+            props(&full)["properties"].get(gone).is_some(),
+            "{gone} missing with jobs on"
+        );
+    }
+    assert!(
+        lean_props["properties"].get("command").is_some(),
+        "command must stay"
+    );
+    assert!(
+        lean_props["properties"].get("timeout").is_some(),
+        "timeout is the anti-hang knob"
+    );
+    assert!(lean_props["required"].is_null() || lean_props["required"].as_array().is_some());
+    assert!(
+        !lean.description.contains("action:list"),
+        "{}",
+        lean.description
+    );
+}
+
+#[test]
 fn the_cwd_report_suffix_is_appended_not_substituted() {
     let wrapped = with_cwd_report("echo hi");
     assert!(wrapped.starts_with("echo hi"), "{wrapped}");
@@ -820,6 +920,19 @@ fn the_cwd_report_suffix_is_appended_not_substituted() {
     // reported and the cwd simply stays put.
     let commented = with_cwd_report("echo hi # note");
     assert!(commented.starts_with("echo hi # note"), "{commented}");
+}
+
+#[test]
+fn the_cwd_report_keeps_a_trailing_heredoc_terminator_alone() {
+    // `cat > f <<EOF` must stay intact: joined with `; `, the terminator line
+    // read `EOF; __gray_rc=$?` and the whole suffix was written INTO the file
+    // (silent corruption; 33 of 47 DeepSWE runs in the 2026-09-29 retro).
+    let wrapped = with_cwd_report("cat > f <<'EOF'\nbody\nEOF");
+    assert!(
+        wrapped.starts_with("cat > f <<'EOF'\nbody\nEOF\n"),
+        "{wrapped}"
+    );
+    assert!(!wrapped.contains("EOF;"), "{wrapped}");
 }
 
 #[test]
@@ -921,5 +1034,155 @@ async fn search_command_leaves_the_shell_its_own() {
                 .is_none(),
             "must fall through to the shell: {cmd}"
         );
+    }
+}
+
+#[test]
+fn blocking_wait_ceiling_covers_long_suites() {
+    // Benchmark probe (10 DeepSWE tasks, Sep 2026): the agent's longest
+    // `sleep`-poll waits ran ~600s because the old 30s ceiling made a
+    // blocking `output` wait useless for real suites. The ceiling must
+    // cover those waits so one blocking call replaces N poll turns.
+    assert_eq!(
+        crate::shell::contract::MAX_ACTION_WAIT_MS,
+        600_000,
+        "wait_ms ceiling regressed below the longest observed suite wait"
+    );
+}
+
+#[tokio::test]
+async fn output_accepts_long_blocking_wait() {
+    // wait_ms=600000 must pass arg validation (only job lookup may fail).
+    let tool = BashTool::default();
+    let s = sess("longwait");
+    let ctx = ctx_for(&s);
+    let out = tool
+        .execute(
+            &ctx,
+            json!({"action": "output", "job_id": "nope", "wait_ms": 600000}),
+        )
+        .await;
+    assert!(
+        out.content.contains("unknown job"),
+        "600s wait must reach job lookup, got: {}",
+        out.content
+    );
+}
+
+#[tokio::test]
+async fn run_still_rejects_wait_ms() {
+    // The ceiling raise must not leak wait_ms onto the run surface.
+    let tool = BashTool::default();
+    let s = sess("runwait");
+    let ctx = ctx_for(&s);
+    let out = tool
+        .execute(&ctx, json!({"command": "echo hi", "wait_ms": 5000}))
+        .await;
+    assert!(
+        out.content.contains("wait_ms is only valid"),
+        "run+wait_ms must fail loudly, got: {}",
+        out.content
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn silent_past_bound_is_handed_to_a_job_not_killed() {
+    // The exact incident shape: a command that prints once, then wedges in a
+    // library call (Playwright's browser.close()). With no explicit timeout and
+    // an injected `bound` of silence, the blocking lane must not wait forever:
+    // it stops blocking, hands the STILL-RUNNING child to the background lane
+    // (never killed), and the agent's decision to cancel is what reaps it.
+    let dir = tempfile::tempdir().unwrap();
+    let log = dir.path().join("bash-stall.log");
+    // `echo ok` produces output, then the child goes silent — the gap the stall
+    // arm measures from there, so `sleep 60` comfortably outlives the 1s bound.
+    let command = "echo ok; sleep 60";
+    let spawned = spawn(command, Path::new("/"), None, None).expect("spawn");
+    let pgid = spawned.pgid;
+
+    let tool = BashTool::default();
+    let ctx = ToolContext::default();
+    let start = Instant::now();
+    let t0 = Instant::now();
+    let out = run_command(
+        command.to_string(),
+        log.clone(),
+        None, // no explicit timeout: the stall arm is what bounds this call
+        start,
+        ctx.clone(),
+        spawned,
+        crate::shell::kill::GroupGuard::new(pgid),
+        Some(&tool.jobs),
+        Duration::from_secs(1),
+        None,
+    )
+    .await;
+
+    // Stopped blocking well before the 60s child could finish on its own.
+    assert!(
+        t0.elapsed() < Duration::from_secs(20),
+        "a silent command must stop blocking: {:?}",
+        t0.elapsed()
+    );
+    assert!(!out.is_error, "{}", out.content);
+    assert!(
+        out.content.starts_with("still running"),
+        "handoff note leads the result: {}",
+        out.content
+    );
+    assert!(
+        out.content.contains("no new output for 1s"),
+        "liveness note names the silence: {}",
+        out.content
+    );
+
+    // Landed in the job registry as a running background job.
+    let (cancel, mut rx) = {
+        let jobs = tool.jobs.0.lock().unwrap();
+        let job = jobs.values().next().expect("handed-off job is registered");
+        assert!(
+            job.yielded,
+            "handed-off job participates in completion notices"
+        );
+        assert!(
+            job.result.borrow().is_none(),
+            "the job is still running, not finished"
+        );
+        (job.cancel.clone(), job.result.clone())
+    };
+
+    // Its process group is ALIVE: the handoff never killed the child.
+    assert_eq!(
+        unsafe { libc::kill(pgid, 0) },
+        0,
+        "handed-off process group must stay alive"
+    );
+
+    // The AGENT's decision to cancel is what reaps it (never an auto-kill).
+    cancel.cancel();
+    let _ = tokio::time::timeout(Duration::from_secs(15), rx.wait_for(|v| v.is_some())).await;
+    let mut gone = false;
+    for _ in 0..80 {
+        if unsafe { libc::kill(pgid, 0) } != 0 {
+            gone = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(
+        gone,
+        "cancel must reap the process group (no leak, no zombie)"
+    );
+    let final_out = tool
+        .jobs
+        .0
+        .lock()
+        .unwrap()
+        .values()
+        .next()
+        .and_then(|j| j.result.borrow().clone());
+    if let Some(out) = final_out {
+        assert!(out.content.contains("cancelled"), "{}", out.content);
     }
 }

@@ -1316,6 +1316,12 @@ pub(crate) fn classify_http_error(
         || lower.contains("unsupported")
         || lower.contains("model not found")
         || lower.contains("unknown model");
+    // Some gateways report an unknown model with 401 (OpenRouter did: 401 +
+    // `ModelError: model … is not supported`). Classify on the body first —
+    // an Auth verdict would send the user to re-auth for a model problem.
+    if is_unsupported {
+        return ProviderError::BadRequest(msg);
+    }
     // Billing/quota exhaustion must surface immediately: re-hitting an
     // exhausted balance burns the full request body against zero quota (and
     // the 429 floor would stall the turn for nothing). Narrow phrases only —
@@ -1346,7 +1352,8 @@ pub(crate) fn classify_http_error(
             "context exhausted — start /new or compact ({msg})"
         )),
         400 | 404 => ProviderError::BadRequest(msg),
-        500..=599 if is_unsupported => ProviderError::BadRequest(msg),
+        // is_unsupported already returned BadRequest above; this arm is the
+        // generic provider-side 5xx (the request was valid).
         500..=599 => ProviderError::ServerError(format!("provider-side {msg} (request was valid)")),
         _ => ProviderError::Stream(msg),
     }
@@ -2184,6 +2191,13 @@ fn emit_tool_calls_and_completion(
     pending_events: &mut VecDeque<StreamEvent>,
 ) -> Result<(), ProviderError> {
     for (index, (id, name, args)) in std::mem::take(accumulated_tools) {
+        // Ghost fragment: an index the model never gave a name or payload
+        // for (padding deltas, resumed-stream stragglers). Dropping it here
+        // keeps the agent loop's empty-name guard from firing per turn.
+        if name.is_empty() && args.trim().is_empty() {
+            log::debug!(target: "gray_provider", "skipping ghost tool-call fragment at index {index} (no name, no args)");
+            continue;
+        }
         let args_fixed = normalize_tool_args(&args, index)?;
         pending_events.push_back(StreamEvent::ToolCallDelta {
             index,
@@ -2210,6 +2224,12 @@ fn emit_responses_tool_calls_and_completion(
     }
     index_to_call_id.clear();
     for (idx, (call_id, name, args)) in ordered {
+        // Ghost fragment (see chat-path emit): never forward an index the
+        // model attached no name and no payload to.
+        if name.is_empty() && args.trim().is_empty() {
+            log::debug!(target: "gray_provider", "skipping ghost Responses tool-call fragment at index {idx} (no name, no args)");
+            continue;
+        }
         let args_fixed = normalize_tool_args(&args, idx)?;
         pending_events.push_back(StreamEvent::ToolCallDelta {
             index: idx,
@@ -2632,10 +2652,22 @@ fn stream_unfold_step(
 
                                             if let Some(tool_calls) = choice.delta.tool_calls {
                                                 for tc in tool_calls {
-                                                    // ponytail: no index cap here — the agent
+                                                    // no index cap here — the agent
                                                     // owns the guard (hard error). A silent
                                                     // drop loses model intent with a clean
                                                     // EndTurn; forwarding keeps one policy.
+                                                    // A delta with no id, name, or args (some
+                                                    // gateways pad the final chunk with empty
+                                                    // tool_call entries) must not materialize
+                                                    // a ghost fragment the loop then WARNs about.
+                                                    let carries_anything = tc.id.is_some()
+                                                        || tc.function.as_ref().is_some_and(|f| {
+                                                            f.name.is_some()
+                                                                || f.arguments.is_some()
+                                                        });
+                                                    if !carries_anything {
+                                                        continue;
+                                                    }
                                                     let entry = accumulated_tools
                                                         .entry(tc.index)
                                                         .or_insert_with(|| {
@@ -2784,12 +2816,42 @@ fn stream_unfold_step(
                                         && serde_json::from_str::<Value>(trimmed).is_ok()
                                 });
                                 if completed || accumulated_tools.is_empty() || !complete {
-                                    return Some((
-                                        Err(ProviderError::Stream(
-                                            "Chat stream ended without a finish reason".into(),
-                                        )),
-                                        StreamState::Done,
-                                    ));
+                                    let err = ProviderError::Stream(
+                                        "Chat stream ended without a finish reason".into(),
+                                    );
+                                    // A clean EOF with no finish chunk is the same
+                                    // transient failure as a truncated body (empty
+                                    // 200 from a gateway, early close). While no
+                                    // delta has reached the caller the re-POST is
+                                    // invisible, and buffered partial tool calls
+                                    // were never executed, so retry like the
+                                    // mid-body transport path instead of failing
+                                    // the turn on the first attempt.
+                                    if !emitted && !completed && attempt < MAX_ATTEMPTS {
+                                        log::warn!(
+                                            target: "gray_provider",
+                                            "stream ended without a finish reason before any delta; retrying (attempt {attempt})"
+                                        );
+                                        let next = StreamState::Init {
+                                            client,
+                                            url,
+                                            api_key,
+                                            body,
+                                            session_id: None,
+                                            attempt: attempt + 1,
+                                            retry_after: None,
+                                        };
+                                        // One notice per burst; attempts 2+ stay
+                                        // silent (append-only transcript).
+                                        if attempt == 1 {
+                                            let notice =
+                                                retry_notice_event(attempt, MAX_ATTEMPTS, &err);
+                                            return Some((Ok(notice), next));
+                                        }
+                                        state = next;
+                                        continue;
+                                    }
+                                    return Some((Err(err), StreamState::Done));
                                 }
                                 match emit_tool_calls_and_completion(
                                     &mut accumulated_tools,

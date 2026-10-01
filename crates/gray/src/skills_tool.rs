@@ -93,7 +93,7 @@ const PROJECT_RULES_NAMES: [&str; 2] = ["AGENTS.md", "CLAUDE.md"];
 /// Cap on served rule bytes. An AGENTS.md is normally a few KB; a
 /// pathological one must not be able to eat the context window, so the tail
 /// is cut with a pointer back to the file.
-const PROJECT_RULES_MAX_CHARS: usize = 32_768;
+pub(crate) const PROJECT_RULES_MAX_CHARS: usize = 32_768;
 
 /// Read the exact `<project_context>` block the prompt hook serves for `cwd`:
 /// the nearest `AGENTS.md` / `CLAUDE.md` at or above `cwd`. `None` when no
@@ -180,7 +180,7 @@ fn is_rationale_comment(line: &str) -> bool {
 /// Drop rationale comments before serving. Byte-identical when the file has
 /// none, so comment-free rule files render exactly as before, and the cap
 /// then applies to rules alone — rationale never eats the budget.
-fn strip_rationale_comments(body: &str) -> String {
+pub(crate) fn strip_rationale_comments(body: &str) -> String {
     if !body.lines().any(is_rationale_comment) {
         return body.to_string();
     }

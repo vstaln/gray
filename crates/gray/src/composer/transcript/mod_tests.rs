@@ -206,6 +206,27 @@ fn streaming_punctuation_guard_only_matches_a_standalone_continuation() {
     assert!(!is_orphan_stream_punctuation(""));
 }
 
+/// A punctuation-only delta with no round boundary armed (mid-round split,
+/// post-interrupt tail) must be held back, not fed to the streaming
+/// renderer — checkpoints only advance on complete blocks, so the chunk
+/// would freeze as its own lone `.` transcript row.
+#[test]
+fn unboundaryed_punctuation_only_chunks_are_held_not_rendered() {
+    // The repro: a trailing `.` arrives as its own chunk.
+    assert!(should_hold_stream_chunk(0, "."));
+    assert!(should_hold_stream_chunk(0, "…"));
+    // Once a burst is held, keep holding punctuation and the whitespace
+    // separators between bursts until a meaningful delta releases them.
+    assert!(should_hold_stream_chunk(1, "."));
+    assert!(should_hold_stream_chunk(3, " "));
+    assert!(should_hold_stream_chunk(3, "\n"));
+    // Meaningful deltas and the empty chunk render normally.
+    assert!(!should_hold_stream_chunk(0, "I'll build it"));
+    assert!(!should_hold_stream_chunk(0, ""));
+    // The boundary-armed path stays `should_drop`'s job.
+    assert!(!should_hold_stream_chunk(0, "x"));
+}
+
 #[test]
 fn user_prompt_wraps_at_word_boundaries() {
     let text = "write a very long poem about the restless sea";

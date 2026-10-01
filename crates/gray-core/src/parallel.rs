@@ -626,9 +626,13 @@ pub const CANCEL_REPORT_GRACE: std::time::Duration = std::time::Duration::from_s
 /// at once). Values are clamped to `Semaphore::MAX_PERMITS`, the largest
 /// permit count tokio accepts. Read once per [`join_ordered`] call.
 pub fn parallel_max() -> usize {
-    std::env::var("GRAY_PARALLEL_MAX")
-        .ok()
-        .and_then(|v| v.trim().parse::<usize>().ok())
+    parse_parallel_max(std::env::var("GRAY_PARALLEL_MAX").ok().as_deref())
+}
+
+/// Pure parse behind [`parallel_max`]: unset/unparseable/0 → unlimited,
+/// clamped to what tokio accepts. Tested table-driven with no env access.
+pub(crate) fn parse_parallel_max(raw: Option<&str>) -> usize {
+    raw.and_then(|v| v.trim().parse::<usize>().ok())
         .filter(|&n| n > 0)
         .unwrap_or(tokio::sync::Semaphore::MAX_PERMITS)
         .min(tokio::sync::Semaphore::MAX_PERMITS)
