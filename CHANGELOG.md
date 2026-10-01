@@ -24,6 +24,32 @@
 ## [Unreleased]
 
 ### Added
+- Command output is compressed by what the command was, and truncation is no
+  longer a dead end. `cargo`, `npm`/`pnpm`/`yarn`, `pip`/`uv` and `pytest`
+  output loses its progress chatter (a 300-crate `cargo build` is 30 KiB of
+  `Compiling …` lines and one `error[E0308]`), a generic rule collapses runs
+  of identical lines for everything else, and the result says so before the
+  body. The raw log stays on disk exactly where it was, so the squeeze costs
+  the model nothing it cannot grep back. `GRAY_NO_SQUEEZE=1` turns it off.
+- `gray spill` reads a tool result back. A result over the inline budget now
+  keeps its preview *and* stores the full original under a content hash, with
+  a `[spilled …]` footer naming the handle — so the middle that truncation used
+  to amputate is recoverable: `gray spill grep <handle> <pattern>`,
+  `gray spill head|tail <handle>`. It is a subcommand rather than a tool on
+  purpose: the model has a shell, and a tool entry is schema every turn pays
+  for. Handles are checked character by character, so one can never name a
+  path outside the store; an evicted or unknown handle is an error that says
+  what to do, never an empty result. `GRAY_NO_SPILL=1` turns the store off.
+- Compression is metered, so the saving is a number instead of a claim.
+  `gray spill stats` reports what was produced against what reached the model,
+  broken down by rule and sorted by what each rule actually saved; `/usage`
+  grows the same counterfactual as one line.
+- A performance floor in CI (`scripts/perf-floor.sh`). Unique dependency
+  count, crates with a C/C++ build step, workspace members and stripped binary
+  size are down-only ceilings committed in `scripts/perf-baseline.json`. The
+  numbers the README sells had no gate; raising one is a reviewable commit.
+  Startup wall time is measured and printed but never enforced, because a time
+  budget on a shared runner fails on load rather than on regressions.
 - **`gray doctor` answers "is my setup OK?" in one command.** One pass/fail
   line each for the gray home (exists, writable), the provider credential
   (never its value), the selected model, the context window *and where that

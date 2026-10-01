@@ -34,6 +34,7 @@ pub mod setup;
 pub mod shell_drain;
 pub mod skills;
 pub mod skills_tool;
+pub mod spill;
 pub mod sys_editor;
 pub mod system_prompt;
 pub mod term_keys;
@@ -489,6 +490,17 @@ pub enum Commands {
         #[command(subcommand)]
         cmd: SessionsCmd,
     },
+    /// Read back a tool result that was too large for context
+    ///
+    /// A tool result over the inline budget ends in `[spilled …]` with a
+    /// handle. This reads it back: `gray spill grep <handle> <pattern>` is
+    /// the one that matters, and the ends are one flag away. A subcommand and
+    /// not a tool — the model has a shell, and a tool entry is schema every
+    /// turn pays for.
+    Spill {
+        #[command(subcommand)]
+        cmd: SpillCmd,
+    },
     /// Install a catalog plugin or register a native executable (gray install plugin NAME)
     Install {
         #[command(subcommand)]
@@ -511,6 +523,52 @@ pub enum InstallCmd {
         #[arg(short, long)]
         force: bool,
     },
+}
+
+/// `gray spill ...` — read back a spilled tool result.
+#[derive(Parser, Debug, Clone)]
+pub enum SpillCmd {
+    /// First N lines (default 50)
+    Head {
+        /// Handle from the `[spilled …]` footer
+        #[arg(value_name = "HANDLE")]
+        handle: String,
+        /// How many lines
+        #[arg(long, short = 'n', default_value_t = 50)]
+        lines: usize,
+    },
+    /// Last N lines (default 50)
+    Tail {
+        /// Handle from the `[spilled …]` footer
+        #[arg(value_name = "HANDLE")]
+        handle: String,
+        /// How many lines
+        #[arg(long, short = 'n', default_value_t = 50)]
+        lines: usize,
+    },
+    /// Matching lines, numbered against the original
+    Grep {
+        /// Handle from the `[spilled …]` footer
+        #[arg(value_name = "HANDLE")]
+        handle: String,
+        /// Pattern (regex unless --literal)
+        #[arg(value_name = "PATTERN")]
+        pattern: String,
+        /// Lines of context around each match
+        #[arg(long, short = 'n', default_value_t = 0)]
+        context: usize,
+        /// Case-insensitive
+        #[arg(long, short)]
+        ignore_case: bool,
+        /// Treat the pattern as literal text, not a regex
+        #[arg(long, short = 'F')]
+        literal: bool,
+        /// Max matching lines to print (default 200)
+        #[arg(long, value_name = "N")]
+        limit: Option<usize>,
+    },
+    /// What compression saved on this machine, by rule
+    Stats,
 }
 
 /// `gray sessions ...` — session store maintenance.

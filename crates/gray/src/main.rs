@@ -52,7 +52,11 @@ async fn main() -> anyhow::Result<()> {
     }
     // Same reason as view: a local search is nobody's provider concern, and
     // the bash tool claims `gray find`/`gray grep` so a model does not have to
-    // know `gray` is on its PATH.
+    // know `gray` is on its PATH. `gray spill` reads a local file for the same
+    // reason — it is the way back into a result the context had to leave out.
+    if let Some(gray::Commands::Spill { cmd }) = &cli.command {
+        return gray::spill::run_cli(cmd);
+    }
     match &cli.command {
         Some(gray::Commands::Find {
             pattern,
@@ -199,8 +203,9 @@ async fn main() -> anyhow::Result<()> {
             }
             gray::Commands::View { .. }
             | gray::Commands::Find { .. }
-            | gray::Commands::Grep { .. } => {
-                unreachable!("view/find/grep CLI dispatch happens before configuration")
+            | gray::Commands::Grep { .. }
+            | gray::Commands::Spill { .. } => {
+                unreachable!("view/find/grep/spill CLI dispatch happens before configuration")
             }
         }
     }

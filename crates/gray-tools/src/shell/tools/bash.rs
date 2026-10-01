@@ -21,7 +21,11 @@ use crate::shell::fence::fence;
 use crate::shell::kill::term_then_kill;
 use crate::shell::pump::{Pump, now_grindmill};
 use crate::shell::spawn::spawn;
-use crate::shell::view::{format_elapsed, header, middle_out, resume_hint, squeeze};
+use crate::shell::view::{
+    format_elapsed, header, middle_out, resume_hint, squeeze as squeeze_view,
+};
+use gray_core::spill::{self, MeterEvent};
+use gray_core::squeeze::squeeze;
 
 /// Bytes served by one `Read more` recovery command. A page has to fit the
 /// head sample verbatim, or paging buys nothing: the page is truncated again
@@ -1350,18 +1354,48 @@ fn finish_inline(
 ) -> ToolOutput {
     let elapsed = start.elapsed();
     let report = exit_report(status, command);
-    let view = build_view(log_path, summary);
+    let mut view = build_view(log_path, summary);
+    // Kind-aware compression, after the window is chosen: `view`'s line
+    // numbers (`shown_lines`, `omitted_lines`) describe the window in the
+    // on-disk log, and every paging hint below is derived from them, so they
+    // have to stay anchored to the log rather than to a squeezed copy of it.
+    // Squeezing the body only changes how much of that window is displayed.
+    // Color and repeat runs go first (the log on disk keeps every byte, so
+    // `dd`/`sed` paging still lands on the text this body was cut from), so
+    // the kind rules match plain lines.
+    view.body = squeeze_view(&view.body);
+    let squeezed = squeeze(&view.body, command);
+    let squeeze_note = squeezed.squeezed().then(|| {
+        spill::record(MeterEvent {
+            ts: spill::now_millis(),
+            rule: squeezed.rule.to_string(),
+            raw: squeezed.raw_bytes as u64,
+            sent: squeezed.sent_bytes as u64,
+        });
+        format!(
+            "squeezed by {} · {} → {}",
+            squeezed.rule,
+            spill::fmt_bytes(squeezed.raw_bytes),
+            spill::fmt_bytes(squeezed.sent_bytes)
+        )
+    });
+    if squeeze_note.is_some() {
+        view.body = squeezed.text.clone();
+    }
     let head = header(&report, Some(&view), elapsed, log_path);
     let mut out = match first_line {
         Some(first) => format!("{first}\n{head}"),
         None => head,
     };
+    // Disclosure before the fence: a body that is shorter than the log is a
+    // statement about the bytes, and the model has to be able to see it.
+    if let Some(note) = &squeeze_note {
+        out.push('\n');
+        out.push_str(note);
+    }
     if !view.body.is_empty() {
         out.push('\n');
-        // Squeezed for the model only: the log on disk keeps every byte, so
-        // `dd`/`sed` paging (whose offsets are raw) still lands on the exact
-        // text this body was cut from.
-        out.push_str(&fence(&squeeze(&view.body)));
+        out.push_str(&fence(&view.body));
     }
     if let Some((start, end)) = view.omitted_range {
         // Absolute, shell-quoted path: never expand the display-only ~/

@@ -194,6 +194,21 @@ pub(crate) fn handle_usage(
     } else {
         None
     };
+    // What compression saved, over every result metered on this machine. Only
+    // shown when something actually happened: an empty counter is noise on a
+    // panel the user opens to see tokens and cost.
+    let squeeze_line = {
+        let totals = gray_core::spill::totals();
+        (totals.events > 0).then(|| {
+            format!(
+                "tool output: {} never sent ({:.0}% of {} produced) · ≈{} tokens",
+                gray_core::spill::fmt_bytes(totals.saved() as usize),
+                totals.saved_pct(),
+                gray_core::spill::fmt_bytes(totals.raw_bytes as usize),
+                totals.saved() / 4,
+            )
+        })
+    };
     let cost_line = match crate::setup::get_model_rate(config.model.as_deref().unwrap_or("")) {
         Some(r) => format!(
             "{} @ ${:.2}/${:.2} per 1M in/out",
@@ -211,6 +226,9 @@ pub(crate) fn handle_usage(
             t.push_dim(time.clone());
         }
         t.push_dim(cost_line);
+        if let Some(squeeze) = squeeze_line {
+            t.push_dim(squeeze);
+        }
         t.ensure_gap(1);
     } else {
         println!("✓ Session usage — {header}\n  {body}");
@@ -218,6 +236,9 @@ pub(crate) fn handle_usage(
             println!("  {time}");
         }
         println!("  {cost_line}");
+        if let Some(squeeze) = squeeze_line {
+            println!("  {squeeze}");
+        }
     }
 }
 
