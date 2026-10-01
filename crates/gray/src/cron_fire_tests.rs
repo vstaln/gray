@@ -131,6 +131,7 @@ fn local_output_writes_atomic_md() {
         origin: None,
         workdir: None,
         fire_claim: None,
+        reminder: false,
         skills: vec![],
         script: None,
     };
@@ -163,17 +164,6 @@ async fn script_timeout_covers_execution() {
 }
 
 #[test]
-fn delivery_wrap_shapes() {
-    // Hermes `_deliver_result` frame: header, 13-dash rule, body, footer.
-    let out = format_delivery("nightly", "abc123", "hello output");
-    assert!(out.starts_with("Cronjob Response: nightly\n(job_id: abc123)\n"));
-    assert!(out.contains("\n-------------\n\nhello output\n\n"));
-    assert!(out.ends_with(
-        "To stop or manage this job, send me a new message (e.g. \"stop reminder nightly\")."
-    ));
-}
-
-#[test]
 fn mirror_message_is_clean_user_label() {
     // Hermes `_cron_mirror_message`: labelled, no wrapper, no file path.
     let out = mirror_message("nightly", "hello output");
@@ -193,8 +183,9 @@ fn delivery_excerpt_caps_at_4000_chars() {
 #[test]
 fn delivery_helpers_are_pure() {
     // Same inputs, byte-identical outputs — every driver renders one box.
-    let a = format_delivery("n", "i", "b");
-    let b = format_delivery("n", "i", "b");
-    assert_eq!(a, b);
     assert_eq!(mirror_message("n", "b"), mirror_message("n", "b"));
+    assert_eq!(
+        format_delivery_plain("n", "b", false, false),
+        format_delivery_plain("n", "b", false, false)
+    );
 }

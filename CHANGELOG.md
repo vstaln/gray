@@ -78,6 +78,26 @@
   and costs CI a two-minute failure with a name on it — instead of a 60-minute
   silent hang. `windows-focused` takes a `test-path` input, so a native
   single-test iteration no longer means editing the workflow.
+### Added
+- `gray cron add "<schedule>" "<text>" --reminder` stores the text and delivers
+  it verbatim at fire time. A reminder runs no agent turn, no pre-script, no
+  skills and no tools, and its name (when `--name` is omitted) is a slug of the
+  exact text — typos included, never rewritten. `--reminder` with `--script` or
+  `--skills` is rejected. `cron_delivery` JSON lines now carry `kind`, `status`,
+  `elapsed_ms` and `final_text`; `job_id` and `path` remain routing/log fields.
+- A cron delivery is the final assistant message, not a transcript. The
+  `[tool:…]` / `[result:…]` stream, the `Cronjob Response:` frame, the
+  `(job_id:)` line, the dashes, the stop/manage footer and the output-file path
+  are gone from the chat text, and the origin-session mirror no longer carries a
+  tool log into the conversation. The full transcript still lands in
+  `cron/output/<id>/<ts>.md` at mode 0600.
+- A fire that failed before producing output now reaches the chat as a red
+  `failed` delivery instead of silence.
+- Cron transcripts are redacted before they are written to disk or shown:
+  exact values from `<home>/auth.json` plus `gray_core::redaction`'s token
+  shapes. Paths stay verbatim in a secret-free transcript. A length cap that cut
+  an `<untrusted-output>` block open now closes it, so the transcript always
+  carries balanced tags.
 
 ## [0.1.7] - 2026-09-29
 
