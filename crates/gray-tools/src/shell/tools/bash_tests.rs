@@ -1255,11 +1255,13 @@ async fn a_tool_without_a_ledger_never_stubs() {
 }
 
 /// PATH and `$GRAY_HOME` are process-global; these tests change both.
+#[cfg(unix)]
 static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// A `cargo` on PATH that prints a build log instead of building: 400
 /// progress lines, one error, one summary — the shape the cargo rule exists
 /// for, without the cost of a real 400-crate build.
+#[cfg(unix)]
 fn fake_cargo(bin: &std::path::Path) {
     std::fs::create_dir_all(bin).expect("bin dir");
     let script = bin.join("cargo");
@@ -1280,6 +1282,9 @@ fn fake_cargo(bin: &std::path::Path) {
     }
 }
 
+/// Unix-only: the fake `cargo` is a `#!/bin/sh` script joined onto PATH
+/// with `:`, neither of which the Windows runner honors.
+#[cfg(unix)]
 #[tokio::test]
 async fn a_noisy_command_is_squeezed_and_its_log_keeps_everything() {
     // The whole contract in one run: what enters the context shrinks and says
