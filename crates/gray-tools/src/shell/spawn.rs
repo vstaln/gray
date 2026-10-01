@@ -68,6 +68,11 @@ pub fn spawn(
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("SUDO_ASKPASS", "/bin/false")
         .env("TERM", "dumb")
+        // Color is noise the model pays for: no ANSI handling exists
+        // downstream, and the inline body is stripped anyway. Both spellings
+        // because tools disagree about which one they honor.
+        .env("NO_COLOR", "1")
+        .env("CLICOLOR", "0")
         .env("PAGER", "cat")
         .env("MANPAGER", "cat")
         .env("GIT_PAGER", "cat")

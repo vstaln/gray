@@ -47,6 +47,36 @@
 ### Changed
 - CI and the release builds pass `--locked` on every platform, so a dependency edit without a lock
   update cannot ship from `main`.
+- A bash result carries 12 KiB instead of 48 KiB (6 KiB head ++ 6 KiB tail),
+  and what rides the wire is squeezed: color escapes are gone and a run of
+  three or more identical lines collapses to one line plus a count. Every
+  later request of the turn re-sends the whole history, so one big dump used
+  to be re-billed for the rest of the session. Nothing is lost — the full log
+  is on disk and the `Read more` hint names the exact byte window, now with
+  4 KiB pages that fit the inline budget in one piece.
+- Old tool output ages out of the context. A `ToolResult` of 8 KiB or more
+  rides a request as a one-line citation stub once it is ten rounds old
+  (arXiv:2607.25066 — masking costs about half an LLM summary and keeps the
+  output addressable), and the mask moves in batches so the provider prefix
+  cache stays warm between them. The stub names the tool-call id and this
+  session's transcript file; the transcript itself keeps every byte. After an
+  idle gap past the prompt-cache TTL the whole mask is applied at once instead
+  — the next request re-bills the prefix either way, so the shorter prompt is
+  free and is what gets cached from there on.
+- `cat`/`sed -n`/`head`/`tail` of a file dedup like the `read` tool. The
+  default profile is bash-only, so the repeated read that costs the tokens was
+  the one with no dedup: an exact repeat of one of those reads, on a file whose
+  mtime and size are unchanged, answers with a citation stub naming the
+  command and the file — once, then the next repeat reads again. The ledger is
+  the one `read`/`write`/`edit` already share, so the same file read through
+  either surface dedups against the other, and `/new` and compaction keep
+  their existing lifecycle. `GRAY_READ_DEDUP=0` still turns it off.
+- The memory prompt and snapshot shrink. The keep/delete rubric moved out of
+  the per-turn policy into `gray memory audit`, which already printed it, and
+  the injected snapshot of each scope is capped at 4 KiB: newest entries
+  first, with a line saying how many older ones were left out. ~700 policy
+  tokens became ~500, and a memory that grew without bound can no longer grow
+  the system prompt with it.
 
 ## [0.1.8] - 2026-09-30
 

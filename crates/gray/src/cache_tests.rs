@@ -54,6 +54,41 @@ fn first_request_is_never_a_miss_and_warms_the_cache() {
 }
 
 #[test]
+fn cold_is_the_ttl_crossed_on_a_reported_cache_only() {
+    let base = Instant::now();
+    let mut tr = CacheTracker::default();
+    // No request seen yet: nothing was cached, so nothing is known to be lost.
+    assert!(!tr.is_cold(t(base, CACHE_TTL.as_secs() * 10)));
+    tr.note(&usage(100_000, 500, 90_000, 10_000), "m", None, t(base, 0));
+    assert!(!tr.is_cold(t(base, CACHE_TTL.as_secs() - 1)));
+    assert!(tr.is_cold(t(base, CACHE_TTL.as_secs())));
+    // A provider that never reports caching: `remaining` is `None` too, but
+    // no warm cache is known to have expired — do not claim a free rewrite.
+    let mut opaque_tr = CacheTracker::default();
+    opaque_tr.note(&opaque(100_000, 500), "m", None, t(base, 0));
+    assert_eq!(opaque_tr.remaining(t(base, 1)), None);
+    assert!(!opaque_tr.is_cold(t(base, CACHE_TTL.as_secs())));
+}
+
+#[test]
+fn a_paused_turn_answers_cold_on_the_idle_gap_it_started_after() {
+    let base = Instant::now();
+    let mut tr = CacheTracker::default();
+    tr.note(&usage(100_000, 500, 90_000, 10_000), "m", None, t(base, 0));
+    // The turn began long after the TTL: the pause freezes the clock there,
+    // so the answer must be cold even though wall time keeps running.
+    tr.pause(t(base, CACHE_TTL.as_secs() + 30));
+    assert!(tr.is_cold(t(base, CACHE_TTL.as_secs() + 30)));
+    assert!(tr.is_cold(t(base, CACHE_TTL.as_secs() + 3_600)));
+    // A turn that began while the cache was still warm is not cold, however
+    // long it runs — the in-turn requests keep refreshing the prefix.
+    tr.rearm(t(base, 30));
+    tr.pause(t(base, 60));
+    assert!(!tr.is_cold(t(base, 60)));
+    assert!(!tr.is_cold(t(base, 60 + 3_600)));
+}
+
+#[test]
 fn warmth_expires_at_the_ttl() {
     let base = Instant::now();
     let mut tr = CacheTracker::default();

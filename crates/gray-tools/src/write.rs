@@ -161,6 +161,10 @@ pub(crate) async fn atomic_write(path: &std::path::Path, bytes: &[u8]) -> std::i
 
 #[async_trait]
 impl Tool for WriteTool {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
     fn def(&self) -> ToolDef {
         ToolDef::new(
             "write",

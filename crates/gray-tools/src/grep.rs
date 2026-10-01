@@ -372,6 +372,10 @@ fn relativize(search_path: &Path, file_path: &str, is_dir: bool) -> String {
 
 #[async_trait]
 impl Tool for GrepTool {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
     fn def(&self) -> ToolDef {
         ToolDef::new(
             "grep",
