@@ -15,6 +15,20 @@ pub struct DeliveredFire {
     pub path: std::path::PathBuf,
     pub excerpt: String,
     pub to_chat: bool,
+    /// A reminder job: `excerpt` is the stored text, delivered verbatim.
+    pub reminder: bool,
+    /// The fire failed; `excerpt` is a short, redacted error line.
+    pub failed: bool,
+    /// Wall time of the agent turn (0 for reminders).
+    pub elapsed_ms: u64,
+}
+
+/// What one fire produced. `transcript` goes to `cron/output/*.md` (redacted,
+/// 0600); only `final_text` is ever delivered to a chat.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FireOutput {
+    pub transcript: String,
+    pub final_text: String,
 }
 
 pub struct TickReport {
@@ -53,6 +67,17 @@ fn refresh_model_from_saved_at(config: &mut crate::config::Config, path: &std::p
 #[async_trait::async_trait(?Send)]
 pub trait AsyncRunner {
     async fn run(&self, prompt: String, cwd: PathBuf) -> anyhow::Result<String>;
+
+    /// Like `run`, but keeps the final assistant message apart from the full
+    /// transcript. Default: the runner has no such split, so both are `run`'s
+    /// text (keeps stub runners in tests unchanged).
+    async fn run_full(&self, prompt: String, cwd: PathBuf) -> anyhow::Result<FireOutput> {
+        let text = self.run(prompt, cwd).await?;
+        Ok(FireOutput {
+            transcript: text.clone(),
+            final_text: text,
+        })
+    }
 }
 
 /// The production runner (CLI tick + gateway daemon): a fresh headless agent
@@ -70,6 +95,10 @@ pub struct HeadlessRunner {
 #[async_trait::async_trait(?Send)]
 impl AsyncRunner for HeadlessRunner {
     async fn run(&self, prompt: String, cwd: PathBuf) -> anyhow::Result<String> {
+        Ok(self.run_full(prompt, cwd).await?.transcript)
+    }
+
+    async fn run_full(&self, prompt: String, cwd: PathBuf) -> anyhow::Result<FireOutput> {
         let mut config = self.config.clone();
         if self.follow_switches {
             refresh_model_from_saved(&mut config);
@@ -84,7 +113,10 @@ impl AsyncRunner for HeadlessRunner {
             .run(gray_core::message::Message::user(prompt), ctx)
             .await
             .map_err(|e| anyhow::anyhow!(crate::repl::format_core_error(&e, &config.base_url)))?;
-        Ok(crate::cron_fire::transcript_text(&events))
+        Ok(FireOutput {
+            transcript: crate::cron_fire::transcript_text(&events),
+            final_text: crate::cron_fire::final_assistant_text(&events),
+        })
     }
 }
 
@@ -106,23 +138,37 @@ pub struct SaveLocalDeliver {
 }
 
 impl SaveLocalDeliver {
-    pub async fn deliver(
+    /// The transcript is saved redacted (mode 0600 via `write_local_output`)
+    /// and the chat — plus the origin mirror — gets ONLY the final text. A
+    /// reminder's stored text is delivered verbatim: it is the user's own
+    /// words, not a model answer that could carry a secret.
+    pub async fn deliver_full(
         &self,
         job: &crate::cron::CronJob,
         now: i64,
-        text: &str,
+        out: &FireOutput,
+        elapsed_ms: u64,
     ) -> Result<DeliveredFire, String> {
-        let path = crate::cron_fire::write_local_output(&self.home, job, now, text)
+        let transcript = crate::cron_fire::redact_secrets(&out.transcript, &self.home);
+        let path = crate::cron_fire::write_local_output(&self.home, job, now, &transcript)
             .map_err(|e| format!("local write failed: {e:#}"))?;
+        let shown = if job.reminder {
+            out.final_text.clone()
+        } else {
+            crate::cron_fire::redact_secrets(&out.final_text, &self.home)
+        };
         // Bounded excerpt: the full transcript is already on disk; the mirror
         // and the live box share this cap.
-        let excerpt = crate::cron_fire::delivery_excerpt(text);
+        let excerpt = crate::cron_fire::delivery_excerpt(&shown);
         let saved = |to_chat: bool| DeliveredFire {
             id: job.id.clone(),
             name: job.name.clone(),
             path: path.clone(),
             excerpt: excerpt.clone(),
             to_chat,
+            reminder: job.reminder,
+            failed: false,
+            elapsed_ms,
         };
         match &job.deliver {
             crate::cron::Deliver::Local => Ok(saved(false)),
@@ -195,6 +241,29 @@ pub async fn fire_one(
         );
         RunStatus::Error
     };
+    if job.reminder {
+        // Literal text: no workdir, no script, no skills, no model turn, no
+        // tools. The whole point of `--reminder`.
+        let out = FireOutput {
+            transcript: job.prompt.clone(),
+            final_text: job.prompt.clone(),
+        };
+        return match deliver.deliver_full(&job, now, &out, 0).await {
+            Ok(saved) => {
+                let _ = store.mark_done(&job.id, job.fire_claim.as_ref(), RunStatus::Ok, None);
+                (RunStatus::Ok, Some(saved))
+            }
+            Err(msg) => {
+                let _ = store.mark_done(
+                    &job.id,
+                    job.fire_claim.as_ref(),
+                    RunStatus::DeliveryFailed,
+                    Some(&msg),
+                );
+                (RunStatus::DeliveryFailed, None)
+            }
+        };
+    }
     let workdir: PathBuf = match &job.workdir {
         Some(w) => w.clone(),
         None => match std::env::current_dir() {
@@ -231,23 +300,43 @@ pub async fn fire_one(
     }
     let prompt =
         crate::cron_fire::assemble_fire_prompt(&job.prompt, &skill_paths, script_stdout.as_deref());
-    let run_fut = std::panic::AssertUnwindSafe(runner.run(prompt, workdir));
-    let text = match tokio::time::timeout(
+    let started = std::time::Instant::now();
+    let run_fut = std::panic::AssertUnwindSafe(runner.run_full(prompt, workdir));
+    let out = match tokio::time::timeout(
         std::time::Duration::from_secs(FIRE_TIMEOUT_SECS),
         futures::FutureExt::catch_unwind(run_fut),
     )
     .await
     {
-        Err(_) => return (fail("fire exceeded 600s".to_string()), None),
-        Ok(Err(_)) => return (fail("agent run panicked".to_string()), None),
-        Ok(Ok(Err(e))) => return (fail(format!("agent run failed: {e:#}")), None),
-        Ok(Ok(Ok(text))) => text,
+        Err(_) => {
+            let msg = "fire exceeded 600s";
+            return (
+                fail(msg.to_string()),
+                failure_delivery(deliver, &job, now, msg),
+            );
+        }
+        Ok(Err(_)) => {
+            let msg = "agent run panicked";
+            return (
+                fail(msg.to_string()),
+                failure_delivery(deliver, &job, now, msg),
+            );
+        }
+        Ok(Ok(Err(e))) => {
+            let msg = format!("agent run failed: {e:#}");
+            return (
+                fail(msg.clone()),
+                failure_delivery(deliver, &job, now, &msg),
+            );
+        }
+        Ok(Ok(Ok(out))) => out,
     };
-    if crate::cron_fire::is_silent_response(&text) {
+    let elapsed_ms = started.elapsed().as_millis() as u64;
+    if crate::cron_fire::is_silent_response(&out.final_text) {
         let _ = store.mark_done(&job.id, job.fire_claim.as_ref(), RunStatus::Ok, None);
         return (RunStatus::Ok, None);
     }
-    match deliver.deliver(&job, now, &text).await {
+    match deliver.deliver_full(&job, now, &out, elapsed_ms).await {
         Ok(saved) => {
             let _ = store.mark_done(&job.id, job.fire_claim.as_ref(), RunStatus::Ok, None);
             (RunStatus::Ok, Some(saved))
@@ -262,6 +351,33 @@ pub async fn fire_one(
             (RunStatus::DeliveryFailed, None)
         }
     }
+}
+
+/// Chat delivery for a fire that failed before it produced output, so the
+/// channel shows the failure instead of silence. Origin jobs only (the same
+/// rule as a successful delivery); the message is redacted and capped to one
+/// line. The full text is saved to `cron/output/` like any other fire.
+fn failure_delivery(
+    deliver: &SaveLocalDeliver,
+    job: &crate::cron::CronJob,
+    now: i64,
+    msg: &str,
+) -> Option<DeliveredFire> {
+    if !matches!(job.deliver, crate::cron::Deliver::Origin) || job.origin.is_none() {
+        return None;
+    }
+    let msg = crate::cron_fire::redact_secrets(msg, &deliver.home);
+    let path = crate::cron_fire::write_local_output(&deliver.home, job, now, &msg).ok()?;
+    Some(DeliveredFire {
+        id: job.id.clone(),
+        name: job.name.clone(),
+        path,
+        excerpt: msg.lines().next().unwrap_or("").chars().take(300).collect(),
+        to_chat: true,
+        reminder: job.reminder,
+        failed: true,
+        elapsed_ms: 0,
+    })
 }
 
 /// Max jobs fired concurrently in one tick pass. `const`, not `Config`:
@@ -351,12 +467,17 @@ pub(crate) async fn tick_once_with(
     Ok(report)
 }
 
-/// Live-chat delivery for one fired job (hermes `_deliver_result` frame):
-/// the wrapped `Cronjob Response:` box plus the output-file path. Pure, so
-/// every driver (REPL, `tick`, `run`) renders the same line.
+/// Plain-text live-chat delivery for one fired job: the fallback for hosts
+/// with no native renderer. No job id, no dashes, no stop/manage footer and
+/// no file path (hosts get the path in `delivery_json`'s `path`, for logs).
+/// Pure, so every driver (REPL, `tick`, `run`) renders the same text.
 pub fn format_fire_chat(saved: &DeliveredFire) -> String {
-    let body = crate::cron_fire::format_delivery(&saved.name, &saved.id, &saved.excerpt);
-    format!("{body}\nFull output: {}", saved.path.display())
+    crate::cron_fire::format_delivery_plain(
+        &saved.name,
+        &saved.excerpt,
+        saved.reminder,
+        saved.failed,
+    )
 }
 
 /// The `cron_delivery` line `gray cron tick --json` prints: the rendered
@@ -380,6 +501,10 @@ pub fn delivery_json(saved: &DeliveredFire, origin: Option<&crate::cron::store::
         "chat": chat,
         "thread": thread,
         "route": route,
+        "kind": if saved.reminder { "reminder" } else { "task" },
+        "status": if saved.failed { "failed" } else { "ok" },
+        "elapsed_ms": saved.elapsed_ms,
+        "final_text": saved.excerpt,
         "text": format_fire_chat(saved),
         "path": saved.path.display().to_string(),
     })

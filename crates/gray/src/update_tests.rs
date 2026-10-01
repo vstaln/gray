@@ -446,3 +446,34 @@ fn path_guards_never_execute_the_path_candidate() {
         },
     );
 }
+
+/// A pin mismatch must leave nothing behind in the shared temp dir. The old
+/// path built `gray-installer-<pid>` with `create_dir_all` and removed it
+/// only on success, so every refused run kept the downloaded script around
+/// (in a directory another local user could pre-create and watch).
+#[test]
+#[cfg(unix)] // drives `sh -c curl`; native Windows refuses self-update earlier
+fn a_pin_mismatch_leaves_no_scratch_dir() {
+    use std::fs;
+    let scratch = tempfile::tempdir().unwrap();
+    let cdn = scratch.path().join("cdn");
+    fs::create_dir_all(cdn.join("dl")).unwrap();
+    fs::write(cdn.join("install.sh"), "#!/bin/sh\nexit 0\n").unwrap();
+    let temp_root = std::env::temp_dir();
+
+    let err = run_pinned_installer(&"0".repeat(64), &format!("file://{}/dl", cdn.display()))
+        .expect_err("a wrong pin must refuse to run the script");
+    assert!(format!("{err}").contains("checksum mismatch"), "{err}");
+
+    // Other tests' tempdirs live here too, so ask the real question: did
+    // *our* scratch directory survive?
+    let leftovers: Vec<_> = fs::read_dir(&temp_root)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .filter(|name| name.to_string_lossy().starts_with("gray-installer"))
+        .collect();
+    assert!(
+        leftovers.is_empty(),
+        "installer scratch left behind: {leftovers:?}"
+    );
+}

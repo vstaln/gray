@@ -39,11 +39,19 @@ impl CredentialStore {
     }
 
     pub fn replace(&self, next: &BTreeMap<String, AuthEntry>) -> anyhow::Result<()> {
+        let _lock = self.lock()?;
+        self.replace_locked(next)
+    }
+
+    /// The write half of [`Self::replace`]; the caller holds the lock.
+    ///
+    /// Read-modify-write must run under one lock: loading before locking let
+    /// two writers overwrite each other, and the loser's credential was gone.
+    fn replace_locked(&self, next: &BTreeMap<String, AuthEntry>) -> anyhow::Result<()> {
         let value = serde_json::to_value(next)?;
         if serde_json::to_vec(&value)?.len() > MAX_AUTH_BYTES {
             anyhow::bail!("auth store exceeds the maximum size");
         }
-        let _lock = self.lock()?;
         validate_path(&self.path)?;
         catalog::save_private_json(&self.path, &value)
     }
@@ -53,9 +61,10 @@ impl CredentialStore {
         value: StoredCredential,
     ) -> anyhow::Result<BTreeMap<String, AuthEntry>> {
         let auth_ref = plugin_auth_ref(&value)?;
+        let _lock = self.lock()?;
         let mut store = self.load()?;
         store.insert(auth_ref, AuthEntry::Plugin(value));
-        self.replace(&store)?;
+        self.replace_locked(&store)?;
         Ok(store)
     }
 
@@ -72,6 +81,7 @@ impl CredentialStore {
         expected_binding: &str,
         next: CredentialMaterial,
     ) -> anyhow::Result<BTreeMap<String, AuthEntry>> {
+        let _lock = self.lock()?;
         let mut store = self.load()?;
         let Some(AuthEntry::Plugin(current)) = store.get(auth_ref) else {
             anyhow::bail!("plugin credential is not installed");
@@ -88,20 +98,22 @@ impl CredentialStore {
             credential: next,
         };
         store.insert(auth_ref.to_string(), AuthEntry::Plugin(replacement));
-        self.replace(&store)?;
+        self.replace_locked(&store)?;
         Ok(store)
     }
 
     pub fn remove(&self, key: &str) -> anyhow::Result<bool> {
+        let _lock = self.lock()?;
         let mut store = self.load()?;
         let removed = store.remove(key).is_some();
         if removed {
-            self.replace(&store)?;
+            self.replace_locked(&store)?;
         }
         Ok(removed)
     }
 
     pub fn remove_plugin_owner(&self, plugin: &str) -> anyhow::Result<usize> {
+        let _lock = self.lock()?;
         let mut store = self.load()?;
         let prefix = format!("plugin:{plugin}:");
         let keys: Vec<String> = store
@@ -113,12 +125,15 @@ impl CredentialStore {
             store.remove(key);
         }
         if !keys.is_empty() {
-            self.replace(&store)?;
+            self.replace_locked(&store)?;
         }
         Ok(keys.len())
     }
 
-    fn lock(&self) -> anyhow::Result<AuthLock> {
+    /// The store's advisory lock. `pub(crate)` so the catalog's own
+    /// read-modify-write on the same file takes it too, instead of
+    /// duplicating the flock.
+    pub(crate) fn lock(&self) -> anyhow::Result<AuthLock> {
         let parent = self.path.parent().unwrap_or_else(|| Path::new("."));
         #[cfg(unix)]
         let existed = parent.symlink_metadata().is_ok();
