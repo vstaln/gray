@@ -339,6 +339,10 @@ pub struct Cli {
     #[arg(long = "dump-manifest")]
     pub dump_manifest: bool,
 
+    /// Print a self-describing SKILL.md for driving gray and exit
+    #[arg(long = "skill")]
+    pub skill: bool,
+
     /// Maximum agent turns per invocation (mini-swe-agent step_limit).
     /// Env: GRAY_MAX_TURNS. Applies to REPL turns this process runs.
     #[arg(long, value_name = "N")]

@@ -35,6 +35,12 @@ async fn main() -> anyhow::Result<()> {
     install_panic_hook();
     let _ = crossterm::terminal::disable_raw_mode();
     let cli = Cli::parse();
+    // A pure text file: no config, no provider, no TTY. It has to work from a
+    // bare shell, because the reader is another agent.
+    if cli.skill {
+        print!("{}", include_str!("../gray-skill.md"));
+        return Ok(());
+    }
     if let Some(gray::Commands::Memory(args)) = &cli.command {
         return gray::memory::run_cli(args);
     }
