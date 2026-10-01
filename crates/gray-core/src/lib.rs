@@ -11,6 +11,8 @@ pub mod message;
 pub mod parallel;
 pub mod paths;
 pub mod redaction;
+pub mod spill;
+pub mod squeeze;
 pub mod tool_out;
 
 pub use agent::{
@@ -28,3 +30,11 @@ mod credential_tests;
 #[cfg(test)]
 #[path = "input_tests.rs"]
 mod input_tests;
+
+#[cfg(test)]
+#[path = "squeeze_tests.rs"]
+mod squeeze_tests;
+
+#[cfg(test)]
+#[path = "spill_tests.rs"]
+mod spill_tests;

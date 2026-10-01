@@ -1136,3 +1136,103 @@ async fn silent_past_bound_is_handed_to_a_job_not_killed() {
         assert!(out.content.contains("cancelled"), "{}", out.content);
     }
 }
+
+/// PATH and `$GRAY_HOME` are process-global; these tests change both.
+static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// A `cargo` on PATH that prints a build log instead of building: 400
+/// progress lines, one error, one summary — the shape the cargo rule exists
+/// for, without the cost of a real 400-crate build.
+fn fake_cargo(bin: &std::path::Path) {
+    std::fs::create_dir_all(bin).expect("bin dir");
+    let script = bin.join("cargo");
+    std::fs::write(
+        &script,
+        concat!(
+            "#!/bin/sh\ni=0\n",
+            "while [ $i -lt 400 ]; do echo \"   Compiling crate-$i v0.1.0\"; i=$((i+1)); done\n",
+            "echo 'error[E0308]: mismatched types'\n",
+            "echo '    Finished dev in 42.19s'\n",
+        ),
+    )
+    .expect("write fake cargo");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    }
+}
+
+#[tokio::test]
+async fn a_noisy_command_is_squeezed_and_its_log_keeps_everything() {
+    // The whole contract in one run: what enters the context shrinks and says
+    // so, and the raw log the shell already writes is untouched, so the
+    // squeeze costs the model nothing it cannot grep back.
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = tempfile::tempdir().expect("tempdir");
+    let home = dir.path().join("home");
+    let bin = dir.path().join("bin");
+    fake_cargo(&bin);
+    let prev_home = std::env::var("GRAY_HOME").ok();
+    let prev_path = std::env::var("PATH").ok();
+    unsafe {
+        std::env::set_var("GRAY_HOME", &home);
+        std::env::set_var(
+            "PATH",
+            format!(
+                "{}:{}",
+                bin.display(),
+                prev_path.clone().unwrap_or_default()
+            ),
+        );
+    }
+    let session = sess("squeeze");
+    let ctx = ctx_for(&session);
+    let r = BashTool::default()
+        .execute(&ctx, json!({"command": "cargo build"}))
+        .await;
+    unsafe {
+        match prev_home {
+            Some(v) => std::env::set_var("GRAY_HOME", v),
+            None => std::env::remove_var("GRAY_HOME"),
+        }
+        match prev_path {
+            Some(v) => std::env::set_var("PATH", v),
+            None => std::env::remove_var("PATH"),
+        }
+    }
+
+    assert!(!r.is_error, "{}", r.content);
+    assert!(
+        r.content.contains("squeezed by cargo"),
+        "the squeeze must be disclosed: {}",
+        r.content
+    );
+    assert!(
+        r.content.contains("progress ×400"),
+        "400 lines must count as one: {}",
+        r.content
+    );
+    // The payload survives compression untouched.
+    assert!(r.content.contains("error[E0308]"), "{}", r.content);
+    assert!(r.content.contains("Finished dev"), "{}", r.content);
+
+    // …and the log still holds every line, so `grep` on it recovers the rest.
+    let log_dir = home.join("shell").join(&session);
+    let log: Vec<_> = std::fs::read_dir(&log_dir)
+        .expect("session log dir")
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "log"))
+        .collect();
+    assert_eq!(log.len(), 1, "one log per command: {log_dir:?}");
+    let text = std::fs::read_to_string(&log[0]).expect("read log");
+    assert_eq!(
+        text.lines()
+            .filter(|l| l.contains("Compiling crate-"))
+            .count(),
+        400,
+        "the raw log must keep every line compression collapsed"
+    );
+    assert!(text.contains("crate-399"), "including the last one");
+}

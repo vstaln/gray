@@ -22,6 +22,8 @@ use crate::shell::kill::term_then_kill;
 use crate::shell::pump::{Pump, now_grindmill};
 use crate::shell::spawn::spawn;
 use crate::shell::view::{format_elapsed, header, middle_out, resume_hint};
+use gray_core::spill::{self, MeterEvent};
+use gray_core::squeeze::squeeze;
 
 /// Bytes served by one `Read more` recovery command. The inline budget is
 /// 48 KiB, so 16 KiB pages need a third of the round trips a 4 KiB page did.
@@ -1145,12 +1147,41 @@ fn finish_inline(
 ) -> ToolOutput {
     let elapsed = start.elapsed();
     let report = exit_report(status, command);
-    let view = build_view(log_path, summary);
+    let mut view = build_view(log_path, summary);
+    // Kind-aware compression, after the window is chosen: `view`'s line
+    // numbers (`shown_lines`, `omitted_lines`) describe the window in the
+    // on-disk log, and every paging hint below is derived from them, so they
+    // have to stay anchored to the log rather than to a squeezed copy of it.
+    // Squeezing the body only changes how much of that window is displayed.
+    let squeezed = squeeze(&view.body, command);
+    let squeeze_note = squeezed.squeezed().then(|| {
+        spill::record(MeterEvent {
+            ts: spill::now_millis(),
+            rule: squeezed.rule.to_string(),
+            raw: squeezed.raw_bytes as u64,
+            sent: squeezed.sent_bytes as u64,
+        });
+        format!(
+            "squeezed by {} · {} → {}",
+            squeezed.rule,
+            spill::fmt_bytes(squeezed.raw_bytes),
+            spill::fmt_bytes(squeezed.sent_bytes)
+        )
+    });
+    if squeeze_note.is_some() {
+        view.body = squeezed.text.clone();
+    }
     let head = header(&report, Some(&view), elapsed, log_path);
     let mut out = match first_line {
         Some(first) => format!("{first}\n{head}"),
         None => head,
     };
+    // Disclosure before the fence: a body that is shorter than the log is a
+    // statement about the bytes, and the model has to be able to see it.
+    if let Some(note) = &squeeze_note {
+        out.push('\n');
+        out.push_str(note);
+    }
     if !view.body.is_empty() {
         out.push('\n');
         out.push_str(&fence(&view.body));
