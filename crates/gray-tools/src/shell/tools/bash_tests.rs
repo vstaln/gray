@@ -1027,6 +1027,11 @@ async fn search_command_leaves_the_shell_its_own() {
         "gray grep --help",
         "find . -name '*.txt'",
         "rg needle",
+        "gray grep needle;touch marker",
+        "gray grep needle && echo done",
+        "gray grep \"$(whoami)\"",
+        "gray grep 'unclosed",
+        "gray grep --limit",
     ] {
         assert!(
             search_command(cmd, dir.path(), &CancellationToken::new())
@@ -1035,6 +1040,61 @@ async fn search_command_leaves_the_shell_its_own() {
             "must fall through to the shell: {cmd}"
         );
     }
+}
+
+#[test]
+fn search_words_splits_like_the_shell() {
+    let w = |s: &str| search_words(s).map(|v| v.join("|"));
+    assert_eq!(
+        w("gray grep 'TODO' src").as_deref(),
+        Some("gray|grep|TODO|src")
+    );
+    assert_eq!(
+        w("gray grep \"fn main\"").as_deref(),
+        Some("gray|grep|fn main")
+    );
+    assert_eq!(
+        w("gray grep fn\\ main").as_deref(),
+        Some("gray|grep|fn main")
+    );
+    assert_eq!(w("gray find *.txt").as_deref(), Some("gray|find|*.txt"));
+    assert_eq!(w("gray grep 'a|b'").as_deref(), Some("gray|grep|a|b"));
+    assert_eq!(w("gray grep a|b"), None);
+}
+
+#[tokio::test]
+async fn search_command_reads_flag_values_once() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(dir.path().join("src")).unwrap();
+    std::fs::write(dir.path().join("src/a.rs"), "fn main() {}\n").unwrap();
+    std::fs::write(dir.path().join("src/b.txt"), "fn main() {}\n").unwrap();
+    let run = |cmd: &'static str| {
+        let d = dir.path().to_path_buf();
+        async move {
+            search_command(cmd, &d, &CancellationToken::new())
+                .await
+                .unwrap_or_else(|| panic!("must be claimed: {cmd}"))
+                .content
+        }
+    };
+
+    // A quoted pattern keeps its space and loses its quotes.
+    let out = run("gray grep 'fn main' src").await;
+    assert!(out.contains("a.rs:1: fn main"), "{out}");
+
+    // `--glob=VALUE` takes its own value, not the next word.
+    let out = run("gray grep --glob=*.rs main src").await;
+    assert!(out.contains("a.rs"), "{out}");
+    assert!(!out.contains("b.txt"), "glob must hold: {out}");
+
+    // `--glob VALUE` consumes the next word, so it is not also the pattern.
+    let out = run("gray grep --glob *.rs main src").await;
+    assert!(out.contains("a.rs"), "{out}");
+    assert!(!out.contains("b.txt"), "glob must hold: {out}");
+
+    // `--limit N` must not leave N behind as the pattern.
+    let out = run("gray grep --limit 5 main src").await;
+    assert!(out.contains("a.rs:1: fn main"), "{out}");
 }
 
 #[test]
