@@ -1368,16 +1368,31 @@ pub(crate) fn maybe_annotate_reasoning_conflict(err: ProviderError, model: &str)
     }
 }
 
+/// `error.message` (OpenAI, Anthropic, OpenRouter) or a top-level `message`
+/// from a JSON error body; `None` when the body is not that shape.
+fn error_body_message(body: &str) -> Option<String> {
+    let v: Value = serde_json::from_str(body.trim()).ok()?;
+    let msg = v
+        .pointer("/error/message")
+        .or_else(|| v.get("message"))
+        .and_then(Value::as_str)?
+        .trim();
+    (!msg.is_empty()).then(|| msg.to_string())
+}
+
 pub(crate) fn classify_http_error(
     status: reqwest::StatusCode,
     snippet: &str,
     cf_ray: Option<&str>,
     req_id: Option<&str>,
 ) -> ProviderError {
-    let mut msg = if snippet.is_empty() {
+    // Display the provider's own sentence, not its JSON envelope; the full
+    // body still drives classification below.
+    let shown = error_body_message(snippet).unwrap_or_else(|| snippet.to_string());
+    let mut msg = if shown.is_empty() {
         format!("status {status}")
     } else {
-        format!("status {status}: {snippet}")
+        format!("status {status}: {shown}")
     };
     if let Some(ray) = cf_ray {
         msg.push_str(&format!(", cf-ray: {ray}"));

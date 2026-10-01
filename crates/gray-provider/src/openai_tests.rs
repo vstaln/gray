@@ -2301,3 +2301,31 @@ fn a_video_block_reaches_the_wire_only_for_a_video_model() {
     assert!(text.contains("no native video input"), "{text}");
     let _ = model_accepts_video("gemini-3-pro");
 }
+
+#[test]
+fn http_errors_show_the_providers_sentence_not_its_json() {
+    let body = r#"{"error": {"message": "Rate limit reached for requests per min (RPM). Please try again in 1s.", "type": "requests", "code": "rate_limit_exceeded"}}"#;
+    let err = classify_http_error(reqwest::StatusCode::TOO_MANY_REQUESTS, body, None, None);
+    let ProviderError::RateLimited(msg) = err else {
+        panic!("{err:?}")
+    };
+    assert_eq!(
+        msg,
+        "status 429 Too Many Requests: Rate limit reached for requests per min (RPM). Please try again in 1s."
+    );
+    // Classification still reads the whole body: a quota code in the JSON is
+    // terminal even when the sentence does not say so.
+    let quota = r#"{"error": {"message": "slow down", "code": "insufficient_quota"}}"#;
+    assert!(matches!(
+        classify_http_error(reqwest::StatusCode::TOO_MANY_REQUESTS, quota, None, None),
+        ProviderError::Auth(_)
+    ));
+    // Plain-text bodies pass through unchanged.
+    let plain = classify_http_error(
+        reqwest::StatusCode::BAD_GATEWAY,
+        "upstream down",
+        None,
+        None,
+    );
+    assert!(plain.to_string().contains("upstream down"), "{plain}");
+}

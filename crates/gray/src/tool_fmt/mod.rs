@@ -704,9 +704,29 @@ fn strip_shell_fence(trimmed: &str) -> String {
     {
         lines.remove(idx);
     }
-    lines
+    // The header's `· log <path>` names the raw log for the model (it can
+    // page it back); on a card it is a long path on every run. Drop that
+    // field from the display only, keeping any field after it.
+    // The header is line 1, or line 2 under a `cancelled by user` row.
+    let mut owned: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
+    for l in owned.iter_mut().take(2) {
+        *l = drop_log_field(l);
+    }
+    owned
         .join("\n")
         .replace("<\\/untrusted-output>", "</untrusted-output>")
+}
+
+fn drop_log_field(header: &str) -> String {
+    const SEP: &str = " \u{00b7} ";
+    let Some(start) = header.find(" \u{00b7} log ") else {
+        return header.to_string();
+    };
+    let rest = &header[start + SEP.len()..];
+    match rest.find(SEP) {
+        Some(end) => format!("{}{}", &header[..start], &rest[end..]),
+        None => header[..start].to_string(),
+    }
 }
 
 /// Formats tool output lines with Codex/Grok-style rendering.

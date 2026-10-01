@@ -365,3 +365,32 @@ fn live_bash_header_survives_multibyte_command() {
     assert!(text.contains("Merge Risk:"), "{text}");
     assert!(crate::text_width::display_width(&text) > 0);
 }
+
+#[test]
+fn the_cards_header_drops_the_log_path_but_keeps_later_fields() {
+    let out = "exit 143 (SIGTERM) \u{00b7} 2.1s \u{00b7} 0 lines \u{00b7} log ~/.gray/shell/s/x.log \u{00b7} no output\n<untrusted-output task=\"t1\">\n</untrusted-output>";
+    let lines = format_tool_result_lines_with_context("bash", None, out, false, None);
+    let rendered: String = lines.iter().map(row_text).collect::<Vec<_>>().join("\n");
+    assert!(!rendered.contains(".gray/shell"), "{rendered:?}");
+    assert!(
+        rendered.contains("0 lines \u{00b7} no output"),
+        "{rendered:?}"
+    );
+    let last = "exit 0 \u{00b7} 0.0s \u{00b7} 1 lines \u{00b7} log ~/.gray/shell/s/t1.log\n<untrusted-output task=\"t1\">\nhi\n</untrusted-output>";
+    let lines = format_tool_result_lines_with_context("bash", None, last, false, None);
+    let rendered: String = lines.iter().map(row_text).collect::<Vec<_>>().join("\n");
+    assert!(
+        rendered.contains("exit 0 \u{00b7} 0.0s \u{00b7} 1 lines"),
+        "{rendered:?}"
+    );
+    assert!(!rendered.contains("log ~"), "{rendered:?}");
+}
+
+#[test]
+fn a_cancelled_runs_second_line_header_drops_the_log_path_too() {
+    let out = "cancelled by user after 2.1s\nexit 143 (SIGTERM) (terminated) \u{00b7} 2.1s \u{00b7} 0 lines \u{00b7} log ~/.gray/shell/s/x.log \u{00b7} no output\n<untrusted-output task=\"t1\">\n</untrusted-output>";
+    let lines = format_tool_result_lines_with_context("bash", None, out, false, None);
+    let rendered: String = lines.iter().map(row_text).collect::<Vec<_>>().join("\n");
+    assert!(!rendered.contains(".gray/shell"), "{rendered:?}");
+    assert!(rendered.contains("cancelled by user"), "{rendered:?}");
+}

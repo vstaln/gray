@@ -83,6 +83,13 @@
   remote command starts in that account's login directory.
 
 ### Fixed
+- **A provider error reads as a sentence, once.** A 429 printed its raw JSON envelope
+  (`{"error": {"message": …, "type": …, "param": …}}`) on every retry row and again in the final
+  error. HTTP errors now show the provider's own `error.message` (the full body still drives the
+  classification), and a retry burst repeating the same cause is one row, not one per attempt.
+- **Tool cards drop the log path.** Every bash card showed `log ~/.gray/shell/<session>/bash-<hash>.log`;
+  the path stays in what the model reads (it pages the log back from it) but is gone from the
+  card. A signal exit no longer says it twice: `exit 143 (SIGTERM) (terminated)`.
 - **Claude caches again behind OpenAI-compatible routers.** The `cache_control` breakpoints were
   removed on 2026-09-23 on the theory that `prompt_cache_key` covers caching; Claude ignores that
   field and caches only at breakpoints, so Claude through OpenRouter re-billed the full prompt on
