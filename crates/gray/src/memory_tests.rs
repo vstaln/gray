@@ -515,6 +515,15 @@ fn injected_snapshot_keeps_the_newest_entries_and_says_what_it_dropped() {
         store.list(Scope::Project).unwrap().contains("- oldest: "),
         "the store keeps everything"
     );
+    // A capped snapshot must replay on resume, notice and all.
+    let session = uuid::Uuid::new_v4().to_string();
+    let first = store
+        .snapshot_with(Some(&session), MemoryInjection::Summary)
+        .unwrap();
+    let again = store
+        .snapshot_with(Some(&session), MemoryInjection::Summary)
+        .expect("a capped snapshot replays");
+    assert_eq!(first, again);
 }
 
 #[test]
