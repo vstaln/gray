@@ -354,7 +354,7 @@ impl MemoryStore {
         // the same bytes (the frozen snapshot depends on it).
         entries.sort_by(|(ka, _), (kb, _)| {
             saved_on(&store, kb)
-                .cmp(&saved_on(&store, ka))
+                .cmp(saved_on(&store, ka))
                 .then_with(|| ka.cmp(kb))
         });
         let mut out = String::new();
