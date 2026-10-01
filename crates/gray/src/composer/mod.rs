@@ -860,12 +860,20 @@ impl Tui {
     /// `/hehe` again: drops the graychan art so the transcript is back to
     /// the default gray ASCII welcome. Scrollback has no per-line delete, so
     /// the removal re-emits the history the way a resize does.
+    ///
+    /// The toggle flag clears first, before the marker is even looked for:
+    /// the history cap evicts the oldest entries, so in a long session the
+    /// marker can be gone while `mascot_shown()` still says the art is up.
+    /// Returning early then would leave `/hehe` answering nothing forever —
+    /// a press that paints nothing and drops nothing. Clearing first makes
+    /// the next press paint graychan again.
+    ///
     /// Returns false when no mascot entry was there to drop.
     pub(crate) fn pop_mascot(&mut self) -> bool {
+        crate::mascot::set_mascot_shown(false);
         if !crate::composer::transcript::drop_mascot_entry(&mut self.history_entries) {
             return false;
         }
-        crate::mascot::set_mascot_shown(false);
         self.reflow_on_resize(self.last_width);
         true
     }

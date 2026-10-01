@@ -180,7 +180,6 @@
   set. `scripts/animate_logo.py` regenerates it (`--lines` for the
   transparent variant on dark surfaces, `--frames N dir` for previews);
   `assets/logo-grow.mp4` is the 1.9s preview.
-
 - The startup banner is the gray ASCII logo again. The graychan art is
   `/hehe` only, and `/hehe` is a toggle: press it again to drop the art and
   get the logo back.
@@ -255,7 +254,6 @@
   attached and how to re-run it bare, and the CLI fallback line says the
   terminal has no image protocol instead of a bare `viewed …`
   (`docs/bug-gray-view-compound-command.md`).
-
 ## [0.1.5] - 2026-09-26
 
 ### Changed
@@ -422,7 +420,6 @@
   switch, and piped stdin prints the rows as text. `/gateway` and `/gw` are
   real commands again (they previously answered "the TUI gateway is gone")
 
-
 - `gray login`, `gray whoami`, `gray logout` (and `/login`, `/whoami`,
   `/logout` in the REPL): enroll this machine with gray.alignment.id. The
   site's account page mints a one-time 5-minute code from a Supabase session;
@@ -439,7 +436,6 @@
   every call carries the token. Nothing in gray is gated on an account — the token
   only names the caller on registry calls — and the onboarding banner now says
   so instead of implying a login exists
-
 
 - `/cron` and `/memory` are interactive on a TTY, riding the same picker loop
   as `/plugin` and `/skills`: `/cron` lists every job (name, id, schedule, next
@@ -492,7 +488,6 @@
   credential files
 
 ## [0.1.1] - 2026-09-21
-
 
 - Windows builds ship with the release: `gray-<channel>-x86_64-windows.zip`
   alongside the four tarballs, checksummed into the same `SHA256SUMS` file.
@@ -581,7 +576,6 @@
 - Gateway autostart defaults off; corrupt gateway.yaml warns instead of silently resetting (S2, S3)
 - Safety / Subcommands / Platform / gateway docs in README (D2, S4)
 
-
 - The connect modal's footer and the install manager's per-tab footers share
   extracted same-file helpers instead of repeating the render scaffolding
   three times each (-188 net lines across the two files). Behavior is
@@ -598,7 +592,6 @@
   name before it is registered
 - Clipboard/image paste is core again: `arboard` + `image` are always compiled in, no `--features clipboard` needed (kept as a no-op alias)
 - Removed the native messaging gateway: deleted `crates/gray-gateway` (adapters, daemon, pairing, delivery, systemd), the `plugins/gateway` sidecar, `gray gateway ...`/`gray send`, and the `telegram`/`discord`/`slack`/`all-platforms` features. Chat returns as a plugin; `gray cron --deliver` targets are stored opaquely until a delivery backend exists. Dropped the `--all-features` CI checks.
-
 
 - Multi-line input is no longer clipped by the inline viewport. The viewport
   cap was pinned near 14 rows regardless of terminal height, so a pasted
@@ -752,7 +745,6 @@
 
 - macOS binaries are not notarized (curl-install unaffected) (D3)
 - Destructive-command guard is best-effort, not a sandbox — see README Safety (S4)
-
 
 - `install.ps1` still installs through WSL by default; a native install
   needs `-Native`. Self-update refuses on native Windows rather than calling
