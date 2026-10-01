@@ -35,7 +35,6 @@ fn empty_dir_is_inert() {
 
 #[test]
 fn session_scan_picks_up_offering_packages_only() {
-    use gray_core::agent::PluginHooks;
     let home = tempfile::TempDir::new().expect("temp home");
     let pi = home.path().join("plugins").join("pi");
     std::fs::create_dir_all(pi.join("pony").join("commands")).unwrap();

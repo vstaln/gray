@@ -167,7 +167,7 @@ fn an_elided_run_is_never_recorded() {
 #[test]
 fn a_whole_file_read_needs_a_whole_view_to_stub() {
     let (dir, ledger) = fixture();
-    let path = write(&dir, "a.rs", "one\ntwo\n");
+    write(&dir, "a.rs", "one\ntwo\n");
     let read = plain_read("cat a.rs", dir.path()).expect("plain read");
     // A record of a *window* on the same file (a head) must not make a later
     // whole-file `cat` stub: the model has not seen the rest.
