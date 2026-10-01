@@ -108,9 +108,17 @@ fn a_changed_file_never_stubs() {
     let read = plain_read("cat a.rs", dir.path()).expect("plain read");
     let size = std::fs::metadata(&path).unwrap().len();
     record(&ledger, &read, size);
-    // Same size, different content: mtime is the other half of the key, and
-    // the write below moves it.
+    // Same size, different content: mtime is the other half of the key. Move
+    // it explicitly — a back-to-back rewrite can land inside the
+    // filesystem's timestamp granularity (it does on the Windows runner).
     std::fs::write(&path, "two\n").expect("rewrite");
+    let later =
+        std::fs::metadata(&path).unwrap().modified().unwrap() + std::time::Duration::from_secs(2);
+    std::fs::File::options()
+        .write(true)
+        .open(&path)
+        .and_then(|f| f.set_modified(later))
+        .expect("bump mtime");
     let changed = plain_read("cat a.rs", dir.path()).expect("plain read");
     assert!(check(&ledger, &changed, true).is_none());
     record(&ledger, &changed, size);
