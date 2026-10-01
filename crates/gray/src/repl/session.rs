@@ -415,8 +415,10 @@ pub(crate) fn dispatch_agent_event(
                 // final scrollback card. Single scrollback commit stays at
                 // `ToolResult`, so this never duplicates.
                 let header = crate::tool_fmt::format_live_tool_header(name, "", None);
-                t.upsert_live_tool(id, header, false);
-                t.set_status(Some(&format!("Preparing tool: {name}")));
+                t.atomic(|t| {
+                    t.upsert_live_tool(id, header, false);
+                    t.set_status(Some(&format!("Preparing tool: {name}")));
+                });
             }
             AgentEvent::ToolCallProgress {
                 id,
@@ -432,14 +434,17 @@ pub(crate) fn dispatch_agent_event(
                 // counts come from usage reports, never chars/4.)
                 pending_tools.insert(id.clone(), (name.clone(), None));
                 let header = crate::tool_fmt::format_live_tool_header(name, args_so_far, None);
-                t.upsert_live_tool(id, header, false);
                 let preview = args_so_far.split_whitespace().collect::<Vec<_>>().join(" ");
                 let preview = crate::repl::format::truncate_chars(&preview, 60);
-                if preview.is_empty() {
-                    t.set_status(Some(&format!("Preparing tool: {name}")));
-                } else {
-                    t.set_status(Some(&format!("Preparing tool: {name} {preview}")));
-                }
+                // Card + status label repaint as one frame per delta (was two).
+                t.atomic(|t| {
+                    t.upsert_live_tool(id, header, false);
+                    if preview.is_empty() {
+                        t.set_status(Some(&format!("Preparing tool: {name}")));
+                    } else {
+                        t.set_status(Some(&format!("Preparing tool: {name} {preview}")));
+                    }
+                });
             }
             AgentEvent::ToolCallEnd { id, args } => {
                 t.end_thinking();
@@ -461,8 +466,10 @@ pub(crate) fn dispatch_agent_event(
                 // transcript line here: the result card below is the single
                 // scrollback render, so a duplicate never lands.
                 let header = crate::tool_fmt::format_tool_call_header(&name, args, Some(cwd));
-                t.upsert_live_tool(id, header, true);
-                t.set_status(Some("Working"));
+                t.atomic(|t| {
+                    t.upsert_live_tool(id, header, true);
+                    t.set_status(Some("Working"));
+                });
             }
             AgentEvent::ToolResult {
                 id,
@@ -487,14 +494,17 @@ pub(crate) fn dispatch_agent_event(
                     );
                     // pi `updateResult`: the scrollback commit is the flip —
                     // drop the live card, then push the single render.
-                    t.remove_live_tool(id);
-                    {
+                    // One synchronized frame: the live card disappearing and
+                    // the scrollback card landing must never be presented
+                    // separately (that gap was the visible tool-call flash).
+                    t.atomic(|t| {
+                        t.remove_live_tool(id);
                         let header = args
                             .as_ref()
                             .map(|a| crate::tool_fmt::format_tool_call_header(&name, a, Some(cwd)))
                             .unwrap_or_else(|| ratatui::text::Line::from(name.clone()));
                         t.push_tool_box(header, lines);
-                    }
+                    });
                 }
             }
             AgentEvent::StepUsage { usage } => {
