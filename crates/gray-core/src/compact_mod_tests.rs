@@ -557,7 +557,7 @@ fn tool_only_round_with_large_output_survives_as_citation() {
         "the stubbed round must not orphan the call or the result"
     );
     let stub = only_tool_result_content(&out).expect("stubbed result survives");
-    assert!(stub.contains("elided by compaction"), "{stub}");
+    assert!(stub.contains("elided from context"), "{stub}");
     assert!(
         stub.contains("call_abc"),
         "citation names the address: {stub}"

@@ -3,7 +3,7 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
@@ -21,14 +21,17 @@ use crate::shell::fence::fence;
 use crate::shell::kill::term_then_kill;
 use crate::shell::pump::{Pump, now_grindmill};
 use crate::shell::spawn::spawn;
-use crate::shell::view::{format_elapsed, header, middle_out, resume_hint};
+use crate::shell::view::{format_elapsed, header, middle_out, resume_hint, squeeze};
 
-/// Bytes served by one `Read more` recovery command. The inline budget is
-/// 48 KiB, so 16 KiB pages need a third of the round trips a 4 KiB page did.
-const READ_CHUNK: u64 = 16 * 1024;
+/// Bytes served by one `Read more` recovery command. A page has to fit the
+/// head sample verbatim, or paging buys nothing: the page is truncated again
+/// on its way back in and its middle is elided with a fresh hint. A round trip
+/// is the expensive part here, not the bytes.
+const READ_CHUNK: u64 = 4 * 1024;
 use crate::{fail, finish, get_opt_bool, get_opt_u64, get_str, resolve_path};
 
 mod jobs;
+mod read_dedup;
 
 impl BashTool {
     /// Completion-wake for the agent loop's turn end: block until any
@@ -73,9 +76,21 @@ pub struct BashTool {
     /// hands over a different context cwd is being explicit, so the stale
     /// record is dropped rather than silently overriding it.
     cwd: Mutex<BTreeMap<String, (PathBuf, PathBuf)>>,
+    /// Session read ledger, shared with `read`/`write`/`edit` when the host
+    /// builds them together (see [`BashTool::with_ledger`]). `None` on the
+    /// `Default` a lone tool gets: no ledger, no dedup.
+    ledger: Option<Arc<crate::ledger::FileLedger>>,
 }
 
 impl BashTool {
+    /// Shares the session's read ledger, so a file read through `read` and
+    /// one read through `cat` dedup against each other, and `/new` +
+    /// compaction's ledger lifecycle covers this tool's entries too.
+    pub fn with_ledger(mut self, ledger: Arc<crate::ledger::FileLedger>) -> Self {
+        self.ledger = Some(ledger);
+        self
+    }
+
     /// Where this session's commands run. Falls back to the context cwd when
     /// the record belongs to a different base, or when the recorded directory
     /// has since been deleted, so neither a moved session nor a vanished
@@ -269,7 +284,22 @@ impl Tool for BashTool {
                 )
                 .await;
         }
+        // Read dedup: a `cat`/`sed`/`head`/`tail` of a file already shown
+        // whole and unchanged since answers with a stub instead of the bytes
+        // (once — see `read_dedup`). Inline lane only: a backgrounded read
+        // neither stubs nor records, so job semantics stay as they were.
+        let dedup = self
+            .ledger
+            .as_deref()
+            .and_then(|ledger| read_dedup::plain_read(&command, &cwd).map(|r| (ledger, r)));
+        let dedup_on = read_dedup::enabled();
+        if let Some((ledger, read)) = &dedup
+            && let Some(hit) = read_dedup::check(ledger, read, dedup_on)
+        {
+            return hit;
+        }
         let log_path = log_path(ctx);
+        let logged = log_path.clone();
         let start = Instant::now();
         // A `gray view` the claim refused (compound, flags, glob) runs as a
         // plain shell command and prints `viewed …` with nothing attached:
@@ -316,6 +346,18 @@ impl Tool for BashTool {
         // Whether it succeeded, failed or was killed: a `cd` that ran is a `cd`
         // that ran. A killed command never writes the report, so its cwd stands.
         self.adopt_reported_cwd(ctx, &cwd_report);
+        // Arm the next dedup from what this run actually showed. A settled,
+        // complete result is the only thing worth citing: a timeout, a
+        // cancellation, a silent hand-off or a truncated pump drain all
+        // prefix the body with a note instead of a header, and their log is
+        // part of an unfinished read.
+        if let Some((ledger, read)) = &dedup
+            && !out.is_error
+            && out.content.starts_with("exit ")
+            && let Ok(meta) = std::fs::metadata(&logged)
+        {
+            read_dedup::record(ledger, read, meta.len());
+        }
         if let Some(note) = unattached {
             out.content.push('\n');
             out.content.push_str(&note);
@@ -1316,7 +1358,10 @@ fn finish_inline(
     };
     if !view.body.is_empty() {
         out.push('\n');
-        out.push_str(&fence(&view.body));
+        // Squeezed for the model only: the log on disk keeps every byte, so
+        // `dd`/`sed` paging (whose offsets are raw) still lands on the exact
+        // text this body was cut from.
+        out.push_str(&fence(&squeeze(&view.body)));
     }
     if let Some((start, end)) = view.omitted_range {
         // Absolute, shell-quoted path: never expand the display-only ~/

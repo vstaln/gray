@@ -483,6 +483,41 @@ fn profile_matches_list_when_every_entry_is_one_sentence() {
 }
 
 #[test]
+fn injected_snapshot_keeps_the_newest_entries_and_says_what_it_dropped() {
+    let (_dir, store) = setup();
+    let long = "x".repeat(2_000);
+    // The store path lives under a directory only a write creates; the first
+    // save makes it, then the file is rewritten by hand so the save dates
+    // differ — the cap has to choose between entries, and newest-wins.
+    store.set(Scope::Project, "seed", "x").unwrap();
+    std::fs::write(
+        store.path(Scope::Project),
+        format!(
+            "- oldest: {long} <!-- gray:saved=2026-01-01;source=cli -->\n\
+             - middle: {long} <!-- gray:saved=2026-06-01;source=cli -->\n\
+             - newest: {long} <!-- gray:saved=2026-09-01;source=cli -->\n"
+        ),
+    )
+    .unwrap();
+
+    let served = store.profile(Scope::Project).unwrap();
+    assert!(
+        served.len() <= SNAPSHOT_SCOPE_BYTES,
+        "{} bytes is over the budget",
+        served.len()
+    );
+    assert!(served.contains("- newest: "), "{served}");
+    assert!(served.contains("- middle: "), "{served}");
+    assert!(!served.contains("- oldest: "), "the oldest goes: {served}");
+    assert!(served.contains("+1 older entries not shown"), "{served}");
+    // The dropped entry is a command away, not gone.
+    assert!(
+        store.list(Scope::Project).unwrap().contains("- oldest: "),
+        "the store keeps everything"
+    );
+}
+
+#[test]
 fn snapshot_carries_summaries_by_default_and_full_text_on_request() {
     let (_dir, store) = setup();
     store

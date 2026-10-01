@@ -48,9 +48,22 @@ fn turn_retry_delay() -> std::time::Duration {
 pub(crate) const CONTAMINATED_SCRUB_MARKER: &str =
     "(previous attempt was cut off by a stream error; partial output omitted — start fresh)";
 
+/// Rounds a tool result must age out before the stale-output mask may claim
+/// it. Ten rounds is past the point where the model is still reasoning from
+/// the raw bytes, and well before a long session's history is anywhere near
+/// the compaction trigger.
+const MASK_STALE_ROUNDS: usize = 10;
+
+/// Newly stale results are masked this many at a time. One rewrite is one
+/// prompt-cache miss, and a miss re-bills the whole prefix — so the mask
+/// moves in batches and holds still in between, instead of costing a
+/// full-prefix miss every round.
+const MASK_BATCH: usize = 4;
+
 impl Agent {
     /// History as the model is allowed to see it: contaminated salvaged
-    /// partials (arXiv:2605.08563) replaced by the one-line scrub marker.
+    /// partials (arXiv:2605.08563) replaced by the one-line scrub marker, and
+    /// stale at-threshold tool outputs replaced by their ARC citation stub.
     ///
     /// `self.messages` — and so the persisted transcript — keeps the full
     /// text the user saw; only outbound requests and the compaction input
@@ -67,7 +80,68 @@ impl Agent {
                 *m = Message::assistant(CONTAMINATED_SCRUB_MARKER);
             }
         }
+        if self.masked_prefix > 0 {
+            for m in msgs[..self.masked_prefix].iter_mut() {
+                for b in m.content.iter_mut() {
+                    if let ContentBlock::ToolResult { id, content, .. } = b
+                        && content.len() >= crate::compact::ARC_STUB_MIN_BYTES
+                    {
+                        *content = crate::compact::tool_result_stub(
+                            id,
+                            content.len(),
+                            self.session_id.as_deref(),
+                        );
+                    }
+                }
+            }
+        }
         msgs
+    }
+
+    /// Index of the first message that has aged past [`MASK_STALE_ROUNDS`]
+    /// rounds, or 0 when the transcript is younger than that.
+    fn stale_boundary(&self) -> usize {
+        let groups = crate::compact::atomic_groups(&self.messages);
+        if groups.len() <= MASK_STALE_ROUNDS {
+            return 0;
+        }
+        groups[..groups.len() - MASK_STALE_ROUNDS]
+            .iter()
+            .map(|g| g.len())
+            .sum()
+    }
+
+    /// Results at/over the stub threshold in `messages[from..to]`.
+    fn stubbable_between(&self, from: usize, to: usize) -> usize {
+        self.messages[from.min(to)..to]
+            .iter()
+            .flat_map(|m| &m.content)
+            .filter(|b| {
+                matches!(b, ContentBlock::ToolResult { content, .. }
+                    if content.len() >= crate::compact::ARC_STUB_MIN_BYTES)
+            })
+            .count()
+    }
+
+    /// Extends the mask once a full [`MASK_BATCH`] of results has gone stale
+    /// (arXiv:2607.25066: masking an old tool output costs ~½ an LLM summary
+    /// and keeps it addressable through the session transcript). Called once
+    /// per round, before the request is built.
+    pub(crate) fn advance_tool_mask(&mut self) {
+        let boundary = self.stale_boundary();
+        if boundary > self.masked_prefix
+            && self.stubbable_between(self.masked_prefix, boundary) >= MASK_BATCH
+        {
+            self.masked_prefix = boundary;
+        }
+    }
+
+    /// Masks every stale result now, ignoring the batch floor. For a caller
+    /// that knows the prompt cache is already cold: the next request re-bills
+    /// the whole prefix whatever it contains, so rewriting it is free and the
+    /// shorter prompt is what gets cached from here on.
+    pub fn mask_stale_tool_output(&mut self) {
+        self.masked_prefix = self.masked_prefix.max(self.stale_boundary());
     }
 }
 
@@ -306,6 +380,11 @@ impl Agent {
                     }
                 }
             }
+            // Stale-output mask (arXiv:2607.25066): results older than
+            // MASK_STALE_ROUNDS ride as citation stubs, so a long session
+            // stops re-sending every old dump. Batched, so the prefix is
+            // rewritten once per batch and stays cacheable in between.
+            self.advance_tool_mask();
             // CCRM scrub (arXiv:2605.08563): contaminated partials stay in
             // `self.messages` (and so in the persisted transcript) but never
             // ride an outbound request — the retry starts from a clean
