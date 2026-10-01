@@ -177,6 +177,11 @@ pub trait Tool: Send + Sync {
     /// Static definition surfaced to the model (name, description, schema).
     fn def(&self) -> crate::message::ToolDef;
 
+    /// Downcast hook for executor-level introspection (the completion-wake
+    /// path finds the bash tool's job registry without a registry-wide
+    /// redesign). Every tool returns `self`.
+    fn as_any(&self) -> &dyn std::any::Any;
+
     /// Drain completed background notices without waiting. Called only at safe
     /// transcript boundaries, never in the middle of tool-result placement.
     fn drain_notifications(&self, _ctx: &ToolContext) -> Vec<String> {
@@ -193,6 +198,26 @@ pub trait Tool: Send + Sync {
 pub trait ToolExecutor: Send + Sync {
     fn drain_notifications(&self, _ctx: &ToolContext) -> Vec<String> {
         Vec::new()
+    }
+
+    /// Bounded wait until at least one background notification is ready (or
+    /// `None` when the timeout elapsed with nothing to deliver). The loop
+    /// calls this at turn end with unfinished background jobs instead of
+    /// ending the run: headless invocations would otherwise exit and kill
+    /// every job. Default `None` — executors without background work answer
+    /// instantly, so callers cannot hang on it.
+    fn wait_for_notification(
+        &self,
+        _ctx: &ToolContext,
+        _timeout: std::time::Duration,
+    ) -> BoxFuture<'static, Option<()>> {
+        Box::pin(std::future::ready(None))
+    }
+
+    /// Whether any background job is still running for this session — the
+    /// gate that decides whether turn-end waits ([`wait_for_notification`]).
+    fn has_pending_background(&self, _ctx: &ToolContext) -> bool {
+        false
     }
 
     fn execute(

@@ -51,6 +51,10 @@ impl Default for ReadTool {
 
 #[async_trait]
 impl Tool for ReadTool {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
     fn def(&self) -> ToolDef {
         ToolDef::new(
             "read",

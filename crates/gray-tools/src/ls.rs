@@ -16,6 +16,10 @@ pub struct LsTool;
 
 #[async_trait]
 impl Tool for LsTool {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
     fn def(&self) -> ToolDef {
         ToolDef::new(
             "ls",

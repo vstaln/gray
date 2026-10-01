@@ -1213,6 +1213,7 @@ dependencies = [
  "async-trait",
  "base64",
  "fff-search",
+ "futures",
  "globset",
  "gray-core",
  "ignore",

@@ -102,6 +102,7 @@ impl Jobs {
                     guard,
                     None,
                     Duration::ZERO,
+                    Duration::ZERO,
                     None,
                 )
                 .await;
@@ -330,6 +331,49 @@ impl Jobs {
             // Do not promote process output (or command-derived exit notes) to instructions.
             Some(format!("Background job {id} finished. Use bash action:output with job_id:{id} for its exit status and output."))
         }).collect()
+    }
+
+    /// True while at least one unfinished job belongs to this session — the
+    /// loop's turn-end condition for completion-wake.
+    pub(super) fn has_unfinished(&self, ctx: &ToolContext) -> bool {
+        let jobs = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        jobs.values()
+            .any(|j| j.session == ctx.session_id && j.result.borrow().is_none())
+    }
+
+    /// Bounded wait until ANY unfinished session job settles (or the timeout
+    /// elapses / the session is cancelled). `Ok(())` = a job landed; the
+    /// caller then drains notifications as usual. Clone-then-drop on the
+    /// receivers so the registry mutex is never held across the await (the
+    /// workers' `send_replace` would otherwise block forever).
+    pub(super) async fn wait_any(&self, ctx: &ToolContext, timeout: Duration) -> bool {
+        let rxs: Vec<_> = {
+            let jobs = self.0.lock().unwrap_or_else(|e| e.into_inner());
+            jobs.values()
+                .filter(|j| j.session == ctx.session_id && j.result.borrow().is_none())
+                .map(|j| j.result.clone())
+                .collect()
+        };
+        if rxs.is_empty() {
+            return false;
+        }
+        let wait_all = futures::future::select_all(rxs.into_iter().map(|mut rx| {
+            // The receiver moves into the async block and is polled by
+            // `changed()` — `wait_for` borrows the receiver for the whole
+            // future, which cannot escape the closure.
+            Box::pin(async move {
+                while rx.borrow().is_none() {
+                    if rx.changed().await.is_err() {
+                        return;
+                    }
+                }
+            })
+        }));
+        tokio::select! {
+            _ = wait_all => true,
+            _ = tokio::time::sleep(timeout) => false,
+            _ = ctx.cancel.cancelled() => false,
+        }
     }
 }
 
