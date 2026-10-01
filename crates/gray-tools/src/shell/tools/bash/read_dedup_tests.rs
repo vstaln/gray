@@ -14,6 +14,10 @@ fn write(dir: &tempfile::TempDir, name: &str, body: &str) -> PathBuf {
     path
 }
 
+/// Unix-only: see the note on the bash dedup tests — the Windows
+/// resolver spelling of the temp path differs from what plain_read
+/// keys on.
+#[cfg(unix)]
 #[test]
 fn only_a_bare_single_file_read_is_a_plain_read() {
     let (dir, _) = fixture();
