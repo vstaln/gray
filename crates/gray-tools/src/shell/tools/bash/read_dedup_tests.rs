@@ -51,7 +51,11 @@ fn only_a_bare_single_file_read_is_a_plain_read() {
     }
     // An absolute path resolves like any other operand.
     let abs = plain_read(&format!("cat {}", path.display()), cwd).expect("abs");
-    assert_eq!(abs.path, std::fs::canonicalize(&path).unwrap());
+    // macOS /tmp is a symlink: compare resolved paths, not spellings.
+    assert_eq!(
+        std::fs::canonicalize(&abs.path).expect("abs resolves"),
+        std::fs::canonicalize(&path).expect("path resolves")
+    );
 
     // A path the shell would rewrite is declined even when the rewritten
     // target exists: the ledger resolves literally, so `~` and `$VAR` would
