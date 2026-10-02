@@ -3,6 +3,12 @@
 ## [Unreleased]
 
 ### Fixed
+- **An interrupt says so again.** Since the "(interrupted — press Enter to continue)" line was
+  dropped, an interrupted turn left nothing in the transcript, and the only hint was the
+  "Please continue…" ghost in an empty composer, which typing hides. An interrupt now leaves a
+  dim `■ Conversation interrupted` line in history, as codex does; the Enter hint stays in the
+  idle ghost, the one place where it is always true. The ghost's gate was also armed with
+  `try_lock` and silently skipped whenever a painter held the TUI; it now always arms.
 - **No doubled gap under the turn footer.** `end_turn` cleared the status dock but committed the
   `Worked for` / `Thought for` footer before the band shrank, so the footer scrolled in above
   the still-docked band and the shrink left a stray blank row between its trailing gap and the
