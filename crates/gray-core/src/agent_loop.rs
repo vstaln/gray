@@ -943,6 +943,10 @@ impl Agent {
                         req,
                         policy.clone(),
                         total_usage.input_tokens,
+                        total_usage.cache_read_input_tokens
+                            + total_usage.cached_tokens
+                            + total_usage.cache_write_input_tokens
+                            > 0,
                         request_sent,
                         warm_spent.clone(),
                     ),

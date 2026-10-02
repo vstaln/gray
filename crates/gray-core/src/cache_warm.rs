@@ -5,7 +5,8 @@
 //! When a tool runs past that, the next request re-bills the whole prompt as
 //! a cache write. While a round's tools run, this re-sends the round's exact
 //! request with a one-token output cap shortly before the entry expires, as
-//! long as the expected saving clears a floor. The refresh never enters the
+//! long as the expected saving clears a floor (or, past pi, the prompt is big
+//! enough that a miss would be warned about). The refresh never enters the
 //! conversation; its usage is billed with the turn.
 
 use std::sync::{Arc, Mutex};
@@ -22,6 +23,11 @@ use crate::message::ChatRequest;
 pub const MAX_WARMING_AGE: Duration = Duration::from_secs(60 * 60);
 /// A refresh is sent only when it is expected to save at least this many dollars.
 pub const MIN_EXPECTED_SAVINGS: f64 = 0.05;
+/// ... or the prompt is at least this big (the host's "huge cache miss"
+/// warning size). Covers cheap models under the dollar floor and models with
+/// no prices at all (subscriptions, free tiers), where a miss still costs
+/// usage limits and latency.
+pub const MIN_WARM_TOKENS: usize = 20_000;
 
 /// USD per token.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -69,13 +75,38 @@ pub fn expected_savings(p: &Prices, prompt_tokens: usize) -> f64 {
     (miss - hit).max(0.0) - warm
 }
 
+/// Whether one refresh is worth sending. With prices: the saving clears
+/// [`MIN_EXPECTED_SAVINGS`], or the prompt is [`MIN_WARM_TOKENS`] or more and
+/// a refresh still saves something. Without prices (or all-zero ones): the
+/// prompt is that big and the provider reported cache activity for it, since
+/// a provider that never reports caching gains nothing from a replay.
+pub fn worth_refreshing(
+    prices: Option<&Prices>,
+    prompt_tokens: usize,
+    cache_reported: bool,
+) -> bool {
+    if prompt_tokens == 0 {
+        return false;
+    }
+    let big = prompt_tokens >= MIN_WARM_TOKENS;
+    match prices.filter(|p| p.input > 0.0 || p.cache_read > 0.0 || p.cache_write > 0.0) {
+        Some(p) => {
+            let savings = expected_savings(p, prompt_tokens);
+            savings >= MIN_EXPECTED_SAVINGS || (big && savings > 0.0)
+        }
+        None => big && cache_reported,
+    }
+}
+
 /// Keeps the cache entry `req` wrote warm until aborted. `sent` is when the
 /// real request went out; `spent` collects each refresh's usage.
+/// `cache_reported` is whether that request's usage showed cache activity.
 pub(crate) async fn keep_warm(
     provider: Arc<dyn Provider>,
     mut req: ChatRequest,
     policy: CacheWarmPolicy,
     prompt_tokens: usize,
+    cache_reported: bool,
     sent: Instant,
     spent: Arc<Mutex<Usage>>,
 ) {
@@ -97,10 +128,7 @@ pub(crate) async fn keep_warm(
             log::debug!(target: "gray_agent", "cache warm: refresh deadline missed");
             return;
         }
-        let Some(prices) = (policy.prices)() else {
-            return;
-        };
-        if prompt_tokens == 0 || expected_savings(&prices, prompt_tokens) < MIN_EXPECTED_SAVINGS {
+        if !worth_refreshing((policy.prices)().as_ref(), prompt_tokens, cache_reported) {
             return;
         }
         // Best effort: a failed refresh never touches the run.

@@ -570,6 +570,35 @@ fn chat_mapping_off_sends_thinking_disabled_only() {
 }
 
 #[test]
+fn a_capped_chat_request_leaves_out_a_budget_it_cannot_fit() {
+    // The cache warmer's 1-token replay at an effort: the effort fields go
+    // out unchanged, a 1024-token budget over a 1-token cap does not.
+    let req = gray_core::message::ChatRequest {
+        max_tokens: Some(1),
+        ..empty_chat_req()
+    };
+    let v =
+        serde_json::to_value(map_chat_request(req, "zai/glm-5.2", Some("low")).unwrap()).unwrap();
+    assert_eq!(v["reasoning_effort"], "low", "{v}");
+    assert_eq!(v["max_tokens"], 1, "{v}");
+    assert!(v.get("thinking").is_none(), "{v}");
+}
+
+#[test]
+fn only_openai_names_the_cap_max_completion_tokens() {
+    let url = |s: &str| Url::parse(s).unwrap();
+    assert!(names_cap_max_completion_tokens(&url(
+        "https://api.openai.com/v1"
+    )));
+    assert!(!names_cap_max_completion_tokens(&url(
+        "https://openrouter.ai/api/v1"
+    )));
+    assert!(!names_cap_max_completion_tokens(&url(
+        "http://localhost:11434/v1"
+    )));
+}
+
+#[test]
 fn chat_mapping_low_sends_all_three_reasoning_params() {
     let body = map_chat_request(empty_chat_req(), "zai/glm-5.2", Some("low")).expect("maps");
     let v = serde_json::to_value(&body).expect("serializes");

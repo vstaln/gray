@@ -3,6 +3,15 @@
 ## [Unreleased]
 
 ### Fixed
+- **Cache warming runs with a thinking effort on.** Any effort other than `off` turned the
+  long-tool cache warmer off, so a 5-minute tool at `xhigh` re-billed the whole prompt. As in
+  pi's `isReplayable`, only a Claude thinking budget blocks the 1-token replay now (the budget is
+  sized from the output cap and Anthropic keys its cache on it); reasoning efforts on every other
+  model replay unchanged. A model with no dollar prices (a subscription or free tier) is warmed
+  once its prompt reaches 20k tokens and the provider has reported cache activity, and so is a
+  cheap model whose saving is under $0.05. On api.openai.com the replay's cap goes out as
+  `max_completion_tokens`, which its reasoning models require, and a chat replay at an effort
+  leaves out a thinking budget that cannot fit under the cap.
 - **The input box follows the transcript, the way codex's does.** The band (status dock, input
   box, footer) was pinned to the screen's last rows, so a short session (a fresh start, a
   dismissed `/resume`) showed the banner at the top, the input box at the bottom and a

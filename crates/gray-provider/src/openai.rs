@@ -172,6 +172,10 @@ pub(crate) struct OpenAiChatRequest {
     /// Output cap (`ChatRequest::max_tokens`; the cache warmer's 1-token replay).
     #[serde(skip_serializing_if = "Option::is_none")]
     max_tokens: Option<u32>,
+    /// The same cap under OpenAI's own name: api.openai.com rejects
+    /// `max_tokens` on its reasoning models.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_completion_tokens: Option<u32>,
     messages: Vec<OpenAiMessageRequest>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     tools: Vec<OpenAiToolDefRequest>,
@@ -350,6 +354,13 @@ fn is_anthropic_model(model: &str) -> bool {
 fn is_muse_model(model: &str) -> bool {
     let lower = model.to_lowercase();
     lower.contains("muse") || lower.contains("spark") || lower.contains("glimmer")
+}
+
+/// OpenAI's own host takes the chat output cap as `max_completion_tokens`
+/// (its reasoning models reject `max_tokens`); compatible servers keep the
+/// older name, which is the one they all accept.
+fn names_cap_max_completion_tokens(base_url: &Url) -> bool {
+    base_url.host_str() == Some("api.openai.com")
 }
 
 fn is_deepseek_model(model: &str) -> bool {
@@ -811,10 +822,16 @@ fn map_chat_request(
                 "max" => 32768,
                 _ => 16384, // high / default
             };
+            // A budget must sit below the output cap; a capped request (the
+            // cache warmer's replay) leaves the budget out rather than send
+            // one the server rejects.
+            let thinking = max_tokens
+                .is_none_or(|cap| budget < cap)
+                .then(|| serde_json::json!({ "type": "enabled", "budget_tokens": budget }));
             (
                 Some(eff.to_string()),
                 Some(serde_json::json!({ "effort": eff })),
-                Some(serde_json::json!({ "type": "enabled", "budget_tokens": budget })),
+                thinking,
             )
         }
         None => (None, None, None),
@@ -834,6 +851,7 @@ fn map_chat_request(
         reasoning: reasoning_val,
         thinking: thinking_val,
         max_tokens,
+        max_completion_tokens: None,
         messages,
         tools,
         prompt_cache_key: None,
@@ -3596,6 +3614,9 @@ impl Provider for OpenAiProvider {
         body.prompt_cache_key = self.session_id.clone().filter(|s| !s.is_empty());
         body.temperature = self.temperature;
         body.top_p = self.top_p;
+        if names_cap_max_completion_tokens(&self.base_url) {
+            body.max_completion_tokens = body.max_tokens.take();
+        }
         let init_state = StreamState::Init {
             client: self.http.clone(),
             url,
