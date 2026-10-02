@@ -3,12 +3,14 @@
 ## [Unreleased]
 
 ### Fixed
-- **One gap under a tool card at every terminal width.** On a terminal 91 to 94 columns wide, a
-  long command left two blank rows between the committed card and `⬡ Working…`. The live
-  card's shrink hint measured the stored `⬢ Ran …` header, but the band draws a running card as
-  `⬡ Running …`, four cells longer, so a command cut at 80 cells fit one row in the hint and
-  took two in the band. The commit then left the uncounted row blank above the dock. The hint now
-  measures the header as the band draws it (`live_card_band_rows`).
+- **The band settles before scrollback lands, so a margin is always one row.** On a terminal
+  91 to 94 columns wide, a long command left two blank rows between the committed card and
+  `⬡ Working…`: the band gave the live card's rows up *after* the card was inserted, and the
+  hint meant to cover that measured the stored `⬢ Ran …` header while the band drew the four
+  cells longer `⬡ Running …`. Every scrollback insert now gives the band its new height first
+  (`draw::settle_band`, geometry only, no paint), so whatever rows the band gives up are vacated
+  before the insert and the insert fills them. The shrink hint is gone; no estimate is left to
+  drift.
 - **One gap above `⬡ Thinking…` at a paragraph break.** While reasoning paused after a blank
   line, two blank rows sat between the last thought and the status dock. Each live thinking row
   (and each `ensure_gap` blank) repainted the dock inside its own insert, before the row reached

@@ -142,12 +142,28 @@ pub(crate) fn footer_badge_visible(model: &str, snapshot: Option<bool>) -> bool 
 }
 
 pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
-    if tui.modal_open {
-        return Ok(());
-    }
     // Inside `Tui::atomic` the repaint is coalesced: the outermost batch
     // draws once, in the same synchronized update as its scrollback inserts.
     if tui.batch_depth > 0 {
+        return Ok(());
+    }
+    frame(tui, true)
+}
+
+/// Gives the band its current height without painting it. Every scrollback
+/// insert runs this first (see `Tui::insert_paragraph`), so rows the band
+/// gives up (a committed live card, a dropped seam, a cleared status) are
+/// vacated *before* the insert, which fills them. Shrunk after the insert,
+/// the band strands those rows as blank margin between the transcript and
+/// the dock, and the only defence was a hint estimating the shrink, which
+/// drifted from what the band really drew. This keeps every margin at one
+/// row by construction.
+pub(crate) fn settle_band(tui: &mut Tui) -> anyhow::Result<()> {
+    frame(tui, false)
+}
+
+fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
+    if tui.modal_open {
         return Ok(());
     }
     let (cols, rows) = crossterm::terminal::size().unwrap_or((80, 24));
@@ -274,6 +290,10 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
     // terminal, so a scrollback commit that ends blank overwrites it instead
     // of stacking a second gap row (see `CustomTerminal::top_slack`).
     tui.terminal.set_top_slack(seam_h);
+    if !paint {
+        tui.end_sync();
+        return Ok(());
+    }
 
     // Hoisted for the draw closure (borrows `tui` immutably inside).
     // Live tool headers hoisted as owned rows — `live_tool_rows` borrows

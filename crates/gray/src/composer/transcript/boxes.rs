@@ -136,6 +136,7 @@ impl Tui {
         let total_h = all_wrapped.len() as u16;
         let lines_only: Vec<Line<'static>> = all_wrapped.iter().map(|(l, _)| l.clone()).collect();
         let _ = self.atomic(|t| {
+            let _ = crate::composer::draw::settle_band(t);
             t.terminal.insert_before(total_h, |buf| {
                 let area = buf.area;
                 for (i, (line, hls)) in all_wrapped.iter().enumerate() {

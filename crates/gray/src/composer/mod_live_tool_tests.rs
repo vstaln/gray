@@ -39,26 +39,6 @@ fn bash_live(command: &str, running: bool) -> LiveTool {
     }
 }
 
-/// The reported stray row under a committed card: an 80-cell command fits
-/// the band as `⬢ Ran …` (87 cells) at 92 columns, but the band draws
-/// `⬡ Running …` (91 cells), which wraps. The shrink hint must count the
-/// drawn rows, or the commit leaves the extra row blank above the dock.
-#[test]
-fn band_rows_count_the_running_header_as_drawn() {
-    let tool = bash_live(&"x".repeat(120), true);
-    let w = 92;
-    let stored = crate::composer::transcript::wrap_styled_line(tool.header.clone(), w - 4).len();
-    assert_eq!(stored, 1, "the stored header alone fits one row");
-    assert_eq!(live_card_band_rows(&[tool.clone()], 0, w), 2);
-    // A card that has not started running is drawn as stored.
-    let preparing = LiveTool {
-        running: false,
-        ..tool
-    };
-    assert_eq!(live_card_band_rows(&[preparing], 0, w), 1);
-    assert_eq!(live_card_band_rows(&[], 0, w), 0);
-}
-
 #[test]
 fn live_rows_mark_running_cards() {
     let tool = bash_live("cargo test", true);

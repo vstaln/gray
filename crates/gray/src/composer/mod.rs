@@ -263,21 +263,6 @@ pub(crate) fn live_tool_rows(tools: &[LiveTool], elapsed: Duration) -> Vec<Line<
         .collect()
 }
 
-/// Band rows the live card at `pos` occupies at terminal width `w`: its
-/// header as drawn (a running card reads `⬡ Running …`, four cells longer
-/// than the stored `⬢ Ran …`), wrapped at the band's `w - 4`. Measuring the
-/// stored header undercounted a header that only the `Running` label pushed
-/// onto a second row, and the committed card then sat on a stray blank row.
-pub(crate) fn live_card_band_rows(tools: &[LiveTool], pos: usize, w: usize) -> usize {
-    live_tool_rows(tools, Duration::ZERO)
-        .get(pos)
-        .map_or(0, |line| {
-            crate::composer::transcript::wrap_styled_line(line.clone(), w.saturating_sub(4).max(1))
-                .len()
-                .max(1)
-        })
-}
-
 /// Overflow count past [`MAX_LIVE_TOOLS`] (pure companion for tests).
 pub(crate) fn live_tool_overflow(len: usize) -> usize {
     len.saturating_sub(MAX_LIVE_TOOLS)
@@ -727,6 +712,7 @@ impl Tui {
     ) {
         let height = lines.len() as u16;
         self.atomic(|t| {
+            let _ = draw::settle_band(t);
             let _ = t.terminal.insert_before(height, |buf| {
                 let mut p = Paragraph::new(lines.to_vec());
                 if let Some(bg) = bg {
@@ -1036,17 +1022,9 @@ impl Tui {
     /// card just goes away).
     pub(crate) fn remove_live_tool(&mut self, id: &str) {
         if let Some(pos) = self.live_tools.iter().position(|t| t.id == id) {
-            // The commit that follows (`push_tool_box`) lands in the same batch as
-            // this removal, so tell the terminal the band is about to lose this
-            // card's rows: the committed rows overwrite them instead of scrolling
-            // the screen and stranding blank rows between the committed card and
-            // the dock (the extra margin under every tool call). Past the cap the
-            // viewport reflows by more than this card, so no hint there.
-            if self.live_tools.len() <= MAX_LIVE_TOOLS {
-                let rows = live_card_band_rows(&self.live_tools, pos, self.width());
-                self.terminal
-                    .hint_shrink(u16::try_from(rows).unwrap_or(u16::MAX));
-            }
+            // The commit that follows (`push_tool_box`) settles the band
+            // before it inserts (`draw::settle_band`), so the card's rows are
+            // vacated first and the committed card fills them.
             self.live_tools.remove(pos);
             let _ = self.draw();
         }
