@@ -7,10 +7,10 @@
   between blocks, so prose and thinking sat flush against every tool and prompt card. The
   padding belongs to the card again, and one unpainted row separates every card from its
   neighbours, the way codex keeps a user cell's padding apart from the row `history_cell`
-  inserts between cells. Prose and thinking moved from a 1-column to codex's 2-column gutter,
-  level with the `●` of a tool card and the `❯` of a prompt card (which moved one column
-  right), and wrapped rows keep one column clear at the right edge. Live streaming, resize
-  reflow and session replay share one wrap budget (`prose_width`), so the three agree.
+  inserts between cells. Prose, thinking, the `●` of a tool card and the `❯` of a prompt card
+  all start in one column (a 1-column gutter), and wrapped rows keep one column clear at the
+  right edge. Live streaming, resize reflow and session replay share one wrap budget
+  (`prose_width`), so the three agree.
 
 - **A card's margin is visible again.** The gap that separates a card from the paragraph
   around it was an unpainted blank row, and an unpainted row against the composer surface

@@ -417,11 +417,12 @@ fn thinking_run_rows_collapse_stacked_blanks() {
         .iter()
         .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
         .collect();
-    // Live blank rows carry the gutter pad (`"  "`); the blank predicate
-    // treats them as blank, so no stacked gaps ever paint.
+    // Live blank rows carry the gutter pad; the blank predicate treats
+    // them as blank, so no stacked gaps ever paint.
+    let pad = " ".repeat(GUTTER);
     assert_eq!(
         texts,
-        vec!["  foo".to_string(), "  ".to_string(), "  bar".to_string()]
+        vec![format!("{pad}foo"), pad.clone(), format!("{pad}bar")]
     );
 }
 

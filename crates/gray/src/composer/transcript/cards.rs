@@ -26,7 +26,8 @@ pub(crate) fn format_tool_box_lines(
     let wrapped_header = wrap_styled_line(header, max_w);
     for mut l in wrapped_header {
         l.style = l.style.patch(bg_style);
-        l.spans.insert(0, Span::styled("  ", bg_style));
+        l.spans
+            .insert(0, Span::styled(" ".repeat(GUTTER), bg_style));
         for span in l.spans.iter_mut() {
             span.style = span.style.bg(bg_color);
         }
