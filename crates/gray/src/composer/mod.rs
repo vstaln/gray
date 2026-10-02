@@ -814,7 +814,7 @@ impl Tui {
                         .is_some_and(crate::composer::transcript::transcript_row_is_blank);
                     let rows = crate::composer::transcript::thinking_run_rows(
                         text,
-                        w.saturating_sub(2).max(1),
+                        crate::composer::transcript::prose_width(w),
                         tail_blank,
                     );
                     if !rows.is_empty() {
@@ -836,12 +836,7 @@ impl Tui {
                     let trailing = new_transcript
                         .iter()
                         .rev()
-                        .take_while(|l| {
-                            l.style.bg.is_none()
-                                && l.spans
-                                    .iter()
-                                    .all(|s| s.style.bg.is_none() && s.content.trim().is_empty())
-                        })
+                        .take_while(|l| crate::composer::transcript::transcript_row_is_blank(l))
                         .count();
                     let need_actual = need.saturating_sub(trailing);
                     if need_actual > 0 {

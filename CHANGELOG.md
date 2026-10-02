@@ -3,6 +3,15 @@
 ## [Unreleased]
 
 ### Fixed
+- **Margins follow codex's layout.** A card's painted padding row was counted as the gap
+  between blocks, so prose and thinking sat flush against every tool and prompt card. The
+  padding belongs to the card again, and one unpainted row separates every card from its
+  neighbours, the way codex keeps a user cell's padding apart from the row `history_cell`
+  inserts between cells. Prose and thinking moved from a 1-column to codex's 2-column gutter,
+  level with the `●` of a tool card and the `❯` of a prompt card (which moved one column
+  right), and wrapped rows keep one column clear at the right edge. Live streaming, resize
+  reflow and session replay share one wrap budget (`prose_width`), so the three agree.
+
 - **A card's margin is visible again.** The gap that separates a card from the paragraph
   around it was an unpainted blank row, and an unpainted row against the composer surface
   is invisible: the margin existed in the transcript and not on screen. Card margins are
@@ -190,6 +199,15 @@
 - **The pinned self-update keeps no scratch directory behind.** `gray-installer-<pid>` under the
   shared temp dir (pre-creatable by another local user, removed only on success) is a private
   `TempDir` now, dropped on every exit including a checksum mismatch.
+
+- **One blank row between blocks, and the card that owns none of it.** A tool card and a
+  prompt card each shipped their own leading and trailing margin row *and* asked the
+  transcript for a separating gap, so a card sitting between two paragraphs was fenced by
+  two blank rows on each side (and a card after a card by four). Codex's rule is one blank
+  row between blocks, contributed by the transcript alone: a block carries no outer
+  margin of its own. The card formatters now emit their content only, and `ensure_gap` is
+  the single owner of the separation, so a paragraph, a card and the next paragraph are
+  always exactly one row apart.
 
 ### Changed
 - CI and the release builds pass `--locked` on every platform, so a dependency edit without a lock
