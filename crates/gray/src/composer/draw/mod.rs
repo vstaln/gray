@@ -60,9 +60,11 @@ pub(crate) fn latched_viewport_floor(
 /// The input box is content-sized and has to be able to grow past the idle
 /// 14-row transcript: capping the viewport at `VIEWPORT_H` clipped a multi-line
 /// paste to a couple of visible rows, however tall the terminal was. Bound by
-/// the screen instead (leaving the shell prompt row), so the box grows until
-/// the terminal is full -- `set_viewport_height` already clamps to the screen
-/// and scrolls if a paste ever exceeds it.
+/// the screen instead, so the box grows until the terminal is full --
+/// `set_viewport_height` already clamps to the screen and scrolls if a paste
+/// ever exceeds it. The two rows left over are the history region above a
+/// full-height band: DECSTBM needs two rows, and with fewer every insert
+/// takes the whole-screen path and repaints the band.
 pub(crate) fn viewport_cap(rows: u16) -> u16 {
     rows.saturating_sub(2).max(MIN_VIEWPORT_H)
 }
@@ -152,11 +154,10 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
 /// Gives the band its current height without painting it. Every scrollback
 /// insert runs this first (see `Tui::insert_paragraph`), so rows the band
 /// gives up (a committed live card, a dropped seam, a cleared status) are
-/// vacated *before* the insert, which fills them. Shrunk after the insert,
-/// the band strands those rows as blank margin between the transcript and
-/// the dock, and the only defence was a hint estimating the shrink, which
-/// drifted from what the band really drew. This keeps every margin at one
-/// row by construction.
+/// free before the insert, which shifts the band down into them instead of
+/// scrolling history while the band is still at its old height. The band
+/// keeps its top either way (`terminal`), so this is about where history
+/// scrolls, never about blank rows between the transcript and the band.
 pub(crate) fn settle_band(tui: &mut Tui) -> anyhow::Result<()> {
     frame(tui, false)
 }

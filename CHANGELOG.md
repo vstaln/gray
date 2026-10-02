@@ -3,14 +3,30 @@
 ## [Unreleased]
 
 ### Fixed
+- **The input box follows the transcript, the way codex's does.** The band (status dock, input
+  box, footer) was pinned to the screen's last rows, so a short session (a fresh start, a
+  dismissed `/resume`) showed the banner at the top, the input box at the bottom and a
+  screenful of dead rows between them. The band is now codex's inline viewport
+  (`composer::terminal`, ported from `custom_terminal.rs`, `insert_history.rs` and
+  `tui/scrollback.rs`): it sits directly under the last transcript row and only reaches the
+  bottom once the transcript fills the screen. A height change keeps its top (the slash popup
+  opens downward and the banner never moves). History goes in through DEC scroll regions:
+  while there is room the band is shifted down with reverse index, then line feeds at the
+  bottom of a region ending just above it push the oldest rows into scrollback, so an insert
+  never erases or repaints the band. Windows Terminal, whose partial regions drop rows, and a
+  one-row history region take codex's whole-screen path instead.
+- **No doubled `❯` after a modal.** Closing `/resume` (or any alternate-screen picker) rebuilt
+  the terminal from a cursor probe. The probe landed on the old prompt row, the band overflowed
+  the screen and scrolled it, and the old input box stayed painted above the new one. The band
+  is now cleared and repainted where it already is, as codex restores its saved viewport, and
+  a resize reflow starts it on row 0 instead of probing.
 - **No stray blank rows above the dock when the band shrinks with nothing to print.** The band
   rides the screen bottom, so any shrink (a multi-line follow-up queued mid-turn collapsing the
   input box, the slash popup closing) slid it down and opened the rows it gave up between the
   transcript and `⬡ Thinking…`/`⬡ Working…`. `settle_band` only filled them when a row was
   inserted, so a paused thinking run or a slow first token showed three or four blank rows
-  where one belongs. On a full screen the band now keeps those rows below its footer (as Claude
-  Code does) and the next inserts spend them; a short transcript keeps the band pinned to the
-  bottom. A band that grew into the blank rows above it also no longer forgets the ones left.
+  where one belongs. The band now keeps its top on every shrink: the rows it gave up sit
+  below its footer and the next inserts spend them.
 - **Live thinking rows never open with a space.** A thinking buffer that exactly filled a row
   was flushed whole, so the next chunk's leading space started the following row
   (` changed and whether…`). Rows now break after the boundary space, and a continuation's
