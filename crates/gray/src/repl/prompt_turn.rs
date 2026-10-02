@@ -419,7 +419,7 @@ pub(crate) async fn run_prompt_turn(
                     t.ensure_gap(1);
                     // The error is history; the instruction to continue is a
                     // property of the idle composer (see the interrupt arm).
-                    t.stream(&format!("{msg}\n"));
+                    t.push_error(&msg);
                 }
             } else {
                 eprintln!("{msg}\n(press Enter to continue)");

@@ -70,3 +70,27 @@ fn compaction_summary_renders_markdown_not_literal() {
     assert!(render_markdown_lines("   \n  ", Some(80)).0.is_empty());
     assert!(render_markdown_lines("", Some(80)).0.is_empty());
 }
+
+#[test]
+fn a_turn_error_reads_as_an_error_not_as_prose() {
+    // A rate limit used to stream as plain assistant prose. The headline
+    // takes the error colour, the hint below it is muted.
+    let theme = crate::theme::theme();
+    let msg = "✗ Rate limited (retryable): status 429: slow down\n  Try again later or switch model via /model.\n";
+    let rows = error_lines(msg);
+    assert_eq!(rows.len(), 2, "{rows:?}");
+    assert!(
+        rows[0]
+            .spans
+            .iter()
+            .all(|s| s.style.fg == Some(theme.error))
+    );
+    assert!(rows[0].spans[0].content.starts_with("✗ Rate limited"));
+    assert!(
+        rows[1]
+            .spans
+            .iter()
+            .all(|s| s.style.fg == Some(theme.text_muted))
+    );
+    assert!(error_lines("  \n").is_empty());
+}

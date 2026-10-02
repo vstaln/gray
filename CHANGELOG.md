@@ -3,6 +3,11 @@
 ## [Unreleased]
 
 ### Fixed
+- **A turn-ending error reads as an error.** A rate limit, auth failure or server error that
+  outlived its retries was streamed as plain prose, in the same colour as the answer. Its
+  headline (`✗ Rate limited (retryable): …`) is now in the theme's error colour and the hint
+  under it is muted, as codex renders errors. The retries before it are unchanged:
+  `⬡ Reconnecting…` in the status dock and one dim `└` row per distinct cause.
 - **An interrupt says so again.** Since the "(interrupted — press Enter to continue)" line was
   dropped, an interrupted turn left nothing in the transcript, and the only hint was the
   "Please continue…" ghost in an empty composer, which typing hides. An interrupt now leaves a
