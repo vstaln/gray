@@ -1,10 +1,11 @@
 //! Ratatui-backed composer: codex/grok-build architecture sized for gray.
 //!
-//! Inline viewport owns the bottom rows permanently — slash-completion
-//! panel, status, `›` input — while transcript goes into scrollback via
-//! `Terminal::insert_before`. Multiline, attachments, slash popup and
-//! history are replicated from `codex-rs/tui/src/bottom_pane/chat_composer.rs`
-//! and `textarea.rs` (one-file adaptation, stdlib only).
+//! An inline viewport (the band: slash-completion panel, status, `❯` input)
+//! sits directly under the transcript, which goes into scrollback via
+//! `CustomTerminal::insert_before` (codex's viewport model, see `terminal`).
+//! Multiline, attachments, slash popup and history are replicated from
+//! `codex-rs/tui/src/bottom_pane/chat_composer.rs` and `textarea.rs`
+//! (one-file adaptation, stdlib only).
 
 use std::io::{Stdout, Write};
 use std::path::PathBuf;
@@ -510,21 +511,19 @@ impl Tui {
         let (cols, rows) = crossterm::terminal::size().unwrap_or((80, 24));
         // Roll back acquired terminal modes when construction fails: without
         // a Tui there is no Drop to restore them.
-        let mut terminal = match CustomTerminal::with_options(
-            CrosstermBackend::new(std::io::stdout()),
-            MIN_VIEWPORT_H,
-        ) {
-            Ok(terminal) => terminal,
-            Err(e) => {
-                let _ = crossterm::terminal::disable_raw_mode();
-                let _ = crossterm::execute!(
-                    std::io::stdout(),
-                    crossterm::event::DisableBracketedPaste,
-                    crossterm::cursor::Show,
-                );
-                return Err(e.into());
-            }
-        };
+        let mut terminal =
+            match CustomTerminal::with_options(CrosstermBackend::new(std::io::stdout())) {
+                Ok(terminal) => terminal,
+                Err(e) => {
+                    let _ = crossterm::terminal::disable_raw_mode();
+                    let _ = crossterm::execute!(
+                        std::io::stdout(),
+                        crossterm::event::DisableBracketedPaste,
+                        crossterm::cursor::Show,
+                    );
+                    return Err(e.into());
+                }
+            };
 
         // Print welcome logo into scrollback once at startup
         let welcome_lines = build_welcome_lines(cols as usize);
@@ -596,12 +595,15 @@ impl Tui {
         })
     }
 
-    /// Re-anchors the inline viewport after an alternate-screen modal
-    /// (`EnterAlternateScreen`/`LeaveAlternateScreen` breaks ratatui's
-    /// `Inline` anchor, so the next draw would render off-screen).
-    /// `LeaveAlternateScreen` already restores the main-screen scrollback,
-    /// so unlike `reflow_on_resize` this must NOT clear or re-emit anything —
-    /// purging here is what destroyed the transcript behind modals.
+    /// Puts the band back after an alternate-screen modal (codex
+    /// `leave_alt_screen`: restore the saved viewport, repaint it).
+    /// `LeaveAlternateScreen` restores the main screen exactly as it was, so
+    /// the band's row is still right: it is cleared and repainted in place.
+    /// It used to rebuild the terminal from a cursor probe, which landed on
+    /// the old prompt row, scrolled the screen when the band overflowed it,
+    /// and left the old input box painted above the new one (a doubled `❯`
+    /// after `/resume`). Nothing is purged or re-emitted either: that is
+    /// what destroyed the transcript behind modals.
     pub(crate) fn reanchor_viewport(&mut self, cols: u16) {
         self.last_width = cols;
         if let Ok((_, rows)) = crossterm::terminal::size() {
@@ -611,13 +613,9 @@ impl Tui {
         // Mode 2004 (bracketed paste) is terminal-global; re-assert after any
         // alternate-screen modal in case a child cleared it.
         let _ = crossterm::execute!(std::io::stdout(), crossterm::event::EnableBracketedPaste);
-        if let Ok(term) = CustomTerminal::with_options(
-            CrosstermBackend::new(std::io::stdout()),
-            self.viewport_h.max(MIN_VIEWPORT_H),
-        ) {
-            self.terminal = term;
-        }
-        let _ = self.draw();
+        self.atomic(|t| {
+            let _ = t.terminal.clear();
+        });
     }
 
     /// Finishes the live markdown renderer and commits every row past the
@@ -768,17 +766,12 @@ impl Tui {
         // right edge and the reasoning reads "shortened".
         self.drain_inflight_for_reflow();
 
-        // Codex-style: reset scroll region, clear visible screen and purge scrollback, home cursor
-        let mut out = std::io::stdout();
-        let _ = write!(out, "\x1b[r\x1b[0m\x1b[H\x1b[2J\x1b[3J\x1b[H");
-        let _ = out.flush();
-
-        if let Ok(term) = CustomTerminal::with_options(
-            CrosstermBackend::new(std::io::stdout()),
-            self.viewport_h.max(MIN_VIEWPORT_H),
-        ) {
-            self.terminal = term;
-        }
+        // Codex-style: purge scrollback and the screen; the band starts over
+        // on row 0 and the re-emitted history pushes it down.
+        let (cols, rows) = crossterm::terminal::size().unwrap_or((new_cols, self.last_height));
+        let _ = self
+            .terminal
+            .clear_scrollback_and_screen(ratatui::layout::Size::new(cols, rows));
 
         // Re-emit the history through the same funnel that laid it out
         // live (see `transcript::margins`), so a resize keeps every margin.
@@ -998,9 +991,8 @@ impl Tui {
     /// card just goes away).
     pub(crate) fn remove_live_tool(&mut self, id: &str) {
         if let Some(pos) = self.live_tools.iter().position(|t| t.id == id) {
-            // The commit that follows (`push_tool_box`) settles the band
-            // before it inserts (`draw::settle_band`), so the card's rows are
-            // vacated first and the committed card fills them.
+            // The band keeps its top as it shrinks; the commit that follows
+            // (`push_tool_box`) shifts it down into the rows it gave up.
             self.live_tools.remove(pos);
             let _ = self.draw();
         }
@@ -1289,12 +1281,9 @@ impl Tui {
         self.is_task_running = false;
         self.status = None;
         self.turn_show_effort = None;
-        // Drop the status dock from the band NOW, before the footer lands.
-        // Inserted first, the footer and its gap scroll in above the still
-        // docked band, and the shrink afterwards leaves the dock's rows as
-        // blank rows between the footer and the input box: the doubled gap
-        // under `Worked for`, most visible after an interrupt. Shrunk first,
-        // the vacated rows are exactly where the footer and gap rows land.
+        // Drop the status dock from the band before the footer lands, so
+        // the footer and its gap fill the rows the dock gave up instead of
+        // scrolling history while the band is still at its taller height.
         let _ = self.draw();
         // Billed output only (exact, reasoning included). `None` prints the
         // bare elapsed — a chars/4 fallback here would reintroduce the very
