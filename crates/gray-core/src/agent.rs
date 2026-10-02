@@ -42,23 +42,6 @@ impl ProviderError {
         matches!(self, Self::ContextOverflow(_))
     }
 
-    /// True when the server rejected the credential itself (401/403) or the
-    /// plugin credential could not be loaded, as opposed to a billing or
-    /// quota failure (402, an exhausted 429), which re-sending only burns.
-    /// Gateways return these transiently (an upstream key rotating) and a
-    /// fresh request re-reads a plugin credential from `auth.json`, so one
-    /// replay recovers what otherwise took a restart.
-    pub fn credential_rejected(&self) -> bool {
-        match self {
-            Self::Auth(msg) => {
-                msg.starts_with("status 401")
-                    || msg.starts_with("status 403")
-                    || msg == "provider credential unavailable"
-            }
-            _ => false,
-        }
-    }
-
     /// True when re-running the same request can plausibly succeed: the
     /// provider or network failed, not the request. Mirrors
     /// [`CoreError::retryable`](crate::error::CoreError::retryable) so the

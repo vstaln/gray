@@ -717,47 +717,10 @@ async fn retryable_failure_budget_exhausts_and_surfaces() {
 }
 
 #[tokio::test]
-async fn a_rejected_credential_is_replayed_once_and_recovers() {
-    // A gateway's transient 401: one replay gets through, as a restart did.
-    let provider = FakeProvider::new(vec![end_script()]).with_failures(vec![ProviderError::Auth(
-        "status 401 Unauthorized: invalid api key".into(),
-    )]);
-    let seen = provider.seen_requests();
-    let mut agent = Agent::new(
-        Box::new(provider),
-        Arc::new(FakeExecutor::new(ToolOutput::ok("unused"))),
-    );
-    agent
-        .run(Message::user("go"), ToolContext::default())
-        .await
-        .expect("one replay recovers a transient 401");
-    assert_eq!(seen.lock().expect("seen lock").len(), 2);
-}
-
-#[tokio::test]
-async fn a_credential_rejected_twice_surfaces() {
-    let rejected = || ProviderError::Auth("status 403 Forbidden: denied".into());
-    let provider =
-        FakeProvider::new(vec![end_script()]).with_failures(vec![rejected(), rejected()]);
-    let seen = provider.seen_requests();
-    let mut agent = Agent::new(
-        Box::new(provider),
-        Arc::new(FakeExecutor::new(ToolOutput::ok("unused"))),
-    );
-    let err = agent
-        .run(Message::user("go"), ToolContext::default())
-        .await
-        .expect_err("a second rejection is real");
-    assert!(err.to_string().contains("403"), "got {err}");
-    assert_eq!(seen.lock().expect("seen lock").len(), 2, "one replay only");
-}
-
-#[tokio::test]
 async fn non_retryable_failure_never_retries_whole_turn() {
-    // Billing is terminal: exactly one request, error surfaced.
-    let provider = FakeProvider::new(vec![end_script()]).with_failures(vec![ProviderError::Auth(
-        "status 402 Payment Required: add credits".into(),
-    )]);
+    // Auth is terminal: exactly one request, error surfaced.
+    let provider = FakeProvider::new(vec![end_script()])
+        .with_failures(vec![ProviderError::Auth("401".into())]);
     let seen = provider.seen_requests();
     let mut agent = Agent::new(
         Box::new(provider),
