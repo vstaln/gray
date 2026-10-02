@@ -12,6 +12,31 @@
   right), and wrapped rows keep one column clear at the right edge. Live streaming, resize
   reflow and session replay share one wrap budget (`prose_width`), so the three agree.
 
+- **A card's margin is visible again.** The gap that separates a card from the paragraph
+  around it was an unpainted blank row, and an unpainted row against the composer surface
+  is invisible: the margin existed in the transcript and not on screen. Card margins are
+  painted again - one row above, one below, edge to edge with real cells in the card
+  background - and `transcript_row_is_blank` now judges a row by its glyphs rather than its
+  background, so a painted margin counts as the blank row it is instead of asking for a
+  second one. Exactly one margin per card side, and a card after a card still shows one.
+
+- **A commit never strands a blank row above the band.** `Tui::atomic` batches its inserts
+  and draws (which resizes the band) once at the end, so `insert_before` had already scrolled
+  the screen for the band's OLD, taller height by the time it shrank. The rows it vacated
+  stayed blank between the transcript and the band: a thinking commit that ended in a blank
+  row stacked on the dock seam and left a second blank above it, and a tool result committed
+  its card against a still-taller band and stranded the difference above the dock. An insert
+  now overwrites the band rows that are about to disappear (`top_slack`, refreshed each frame
+  from the dock seam; `shrink_hint`, declared by `remove_live_tool`), instead of pushing them
+  down. Both are advisory — a wrong guess is corrected by the next `draw`.
+
+- **"Press Enter to continue" stops outliving the turn it was about.** The interrupted
+  line was streamed into the transcript, which made it permanent history: it kept
+  sitting under the next turn's status pill, long after the resume it offered was moot.
+  It is a property of an idle composer, so it now lives only in the idle ghost, which
+  paints while the box is genuinely empty and no turn is running. The error path's
+  permanent copy of the same line went with it.
+
 ## [0.1.10] - 2026-10-01
 
 ### Added
@@ -175,23 +200,14 @@
   shared temp dir (pre-creatable by another local user, removed only on success) is a private
   `TempDir` now, dropped on every exit including a checksum mismatch.
 
-- **A commit never strands a blank row above the band.** `Tui::atomic` batches its inserts
-  and draws (which resizes the band) once at the end, so `insert_before` had already scrolled
-  the screen for the band's OLD, taller height by the time it shrank. The rows it vacated
-  stayed blank between the transcript and the band: a thinking commit that ended in a blank
-  row stacked on the dock seam and left a second blank above it, and a tool result committed
-  its card against a still-taller band and stranded the difference above the dock. An insert
-  now overwrites the band rows that are about to disappear (`top_slack`, refreshed each frame
-  from the dock seam; `shrink_hint`, declared by `remove_live_tool`), instead of pushing them
-  down. Both are advisory — a wrong guess is corrected by the next `draw`.
-- **A card's margin is visible again.** The gap that separates a card from the paragraph
-  around it was an unpainted blank row, and an unpainted row against the composer surface
-  is invisible: the margin existed in the transcript and not on screen. Card margins are
-  painted again - one row above, one below, edge to edge with real cells in the card
-  background - and `transcript_row_is_blank` now judges a row by its glyphs rather than its
-  background, so a painted margin counts as the blank row it is instead of asking for a
-  second one. Exactly one margin per card side, and a card after a card still shows one.
-
+- **One blank row between blocks, and the card that owns none of it.** A tool card and a
+  prompt card each shipped their own leading and trailing margin row *and* asked the
+  transcript for a separating gap, so a card sitting between two paragraphs was fenced by
+  two blank rows on each side (and a card after a card by four). Codex's rule is one blank
+  row between blocks, contributed by the transcript alone: a block carries no outer
+  margin of its own. The card formatters now emit their content only, and `ensure_gap` is
+  the single owner of the separation, so a paragraph, a card and the next paragraph are
+  always exactly one row apart.
 
 ### Changed
 - CI and the release builds pass `--locked` on every platform, so a dependency edit without a lock
