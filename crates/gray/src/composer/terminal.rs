@@ -55,11 +55,6 @@ where
     /// next scrollback insert draws into them, so a shrink never leaves a
     /// permanent blank gap (the doubled margin).
     blank_above: u16,
-    /// Rows at the top of the band that are only the blank seam above the status
-    /// dock (refreshed by `draw` every frame). A scrollback commit that ends in
-    /// a blank row *is* that gap, so it overwrites the seam instead of stacking
-    /// a second blank row on top of it (the doubled margin above `⬡ Working…`).
-    top_slack: u16,
 }
 
 impl<B> Drop for CustomTerminal<B>
@@ -103,7 +98,6 @@ where
             last_known_screen_size: screen_size,
             band_dirty: false,
             blank_above: 0,
-            top_slack: 0,
         };
         term.set_viewport_area(viewport_area);
         Ok(term)
@@ -113,24 +107,6 @@ where
         self.buffers[self.current].resize(area);
         self.buffers[1 - self.current].resize(area);
         self.viewport_area = area;
-    }
-
-    /// Rows at the top of the band that are only the blank seam above the
-    /// status dock. `draw` refreshes this every frame; see `top_slack`.
-    pub fn set_top_slack(&mut self, rows: u16) {
-        self.top_slack = rows;
-    }
-
-    /// How many of the band's top rows an insert of `height` rows overwrites
-    /// rather than pushes down: the dock seam, when the insert ends in a blank
-    /// row (that row *is* the gap the seam held). Rows the band gives up for
-    /// any other reason are vacated before the insert (`draw::settle_band`).
-    fn take_band_rows(&mut self, height: u16, tail_blank: bool) -> u16 {
-        let slack = if tail_blank { self.top_slack } else { 0 };
-        let cap = self.viewport_area.height.saturating_sub(1);
-        let eaten = slack.min(height).min(cap);
-        self.top_slack -= eaten;
-        eaten
     }
 
     pub fn set_viewport_height(&mut self, height: u16, screen_size: Size) -> io::Result<()> {
@@ -317,13 +293,10 @@ where
         draw_fn(&mut buffer);
         let mut buffer_content = buffer.content.as_slice();
 
-        // Rows of the band this insert overwrites instead of pushing down: the
-        // seam above the status dock when the commit ends blank (the commit IS
-        // that gap), and the rows of a live card that is being committed. The
-        // band then comes out the right height with nothing left blank above it.
-        let tail_blank = buffer_last_row_is_blank(&buffer);
-        let eaten = self.take_band_rows(height, tail_blank);
-        let band_height = self.viewport_area.height.saturating_sub(eaten);
+        // The band keeps its height: rows it gives up were vacated before the
+        // insert (`draw::settle_band`), and no commit ends in a blank row that
+        // could double the seam (`transcript::margins`).
+        let band_height = self.viewport_area.height;
 
         // Start at the end of the transcript, not at the band's top: the
         // vacated rows above it are the first rows to fill.
@@ -407,21 +380,6 @@ where
 /// taller than the screen sits at row 0. Pure for testability.
 fn anchored_viewport_y(height: u16, screen_h: u16) -> u16 {
     screen_h.saturating_sub(height)
-}
-
-/// True when the last row of an insert buffer is a bare blank: only spaces on
-/// the terminal's default background, the same predicate the transcript uses
-/// (`transcript_row_is_blank`) for "this block ends with a gap".
-fn buffer_last_row_is_blank(buffer: &Buffer) -> bool {
-    let area = buffer.area;
-    if area.height == 0 {
-        return false;
-    }
-    let y = area.bottom() - 1;
-    (area.x..area.right()).all(|x| {
-        let cell = &buffer[(x, y)];
-        cell.symbol().trim().is_empty() && cell.bg == ratatui::style::Color::Reset
-    })
 }
 
 #[cfg(test)]
@@ -616,46 +574,6 @@ mod tests {
         let buffer = terminal.backend.buffer();
         assert_eq!(buffer[(0, 0)].symbol(), "x");
         assert_eq!(buffer[(0, 1)].symbol(), "y");
-    }
-
-    /// The reported bug: a blank row committed while the status dock's seam
-    /// row is on screen stacked on top of the seam, and the band's shrink
-    /// then left a second vacated blank row above `⬡ Thinking…` until the
-    /// next insert. The commit now overwrites the seam: one gap, no strays.
-    #[test]
-    fn a_blank_commit_overwrites_the_dock_seam_instead_of_doubling_it() {
-        let screen = Size::new(10, 12);
-        let mut terminal = CustomTerminal::with_options(TestBackend::new(10, 12), 6).unwrap();
-        terminal.insert_before(6, |_| {}).unwrap();
-        terminal.set_viewport_height(6, screen).unwrap();
-        assert_eq!(terminal.viewport_area, Rect::new(0, 6, 10, 6));
-
-        terminal.set_top_slack(1);
-        terminal.insert_before(1, |_| {}).unwrap();
-        assert_eq!(terminal.viewport_area, Rect::new(0, 7, 10, 5));
-        terminal.set_viewport_height(5, screen).unwrap();
-        assert_eq!(terminal.viewport_area, Rect::new(0, 7, 10, 5));
-        assert_eq!(terminal.blank_above, 0, "no vacated row above the band");
-    }
-
-    /// A commit that ends in content keeps the seam: only a blank tail *is*
-    /// the gap.
-    #[test]
-    fn a_content_commit_does_not_eat_the_dock_seam() {
-        use ratatui::style::Style;
-
-        let screen = Size::new(10, 12);
-        let mut terminal = CustomTerminal::with_options(TestBackend::new(10, 12), 6).unwrap();
-        terminal.insert_before(6, |_| {}).unwrap();
-        terminal.set_viewport_height(6, screen).unwrap();
-
-        terminal.set_top_slack(1);
-        terminal
-            .insert_before(1, |buf| {
-                buf.set_string(0, 0, "x", Style::default());
-            })
-            .unwrap();
-        assert_eq!(terminal.viewport_area, Rect::new(0, 6, 10, 6));
     }
 
     /// Committing a live tool card: the card's rows leave the band in the

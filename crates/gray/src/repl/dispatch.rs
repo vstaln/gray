@@ -84,7 +84,7 @@ pub(crate) async fn dispatch_command(
             if let Some((shared, _)) = tui {
                 let mut t = shared.lock().expect("tui lock");
                 t.push_dim(out.trim_end().to_string());
-                t.ensure_gap(1);
+                t.ensure_gap();
             } else {
                 println!("{}", crate::rule("commands"));
                 print!("{out}");
@@ -184,7 +184,7 @@ pub(crate) async fn dispatch_command(
                     None
                 };
                 t.push_action("New conversation started", detail.as_deref());
-                t.ensure_gap(1);
+                t.ensure_gap();
             } else {
                 if !short_id.is_empty() {
                     println!("✓ New conversation started ({short_id})");
@@ -410,7 +410,7 @@ pub(crate) async fn dispatch_command(
                         t.clear_draft();
                         // Dismissed picker leaves the slash card with no
                         // feedback: gap so it doesn't jam the input box.
-                        t.ensure_gap(1);
+                        t.ensure_gap();
                         let _ = t.draw();
                     }
                 }

@@ -279,11 +279,9 @@ pub struct Tui {
     pub(crate) matches: Vec<(String, String)>,
     pub(crate) sel: usize,
     status: Option<(Instant, String)>,
-    /// Latched status-dock seam (see `ratchet_seam`): keeps the viewport
-    /// still while the streaming tail flickers. Checkpoint trailing gaps
-    /// release it (see `release_dock_seam`) so it never stacks a second
-    /// blank above the live status.
-    dock_seam: bool,
+    /// A block boundary was marked and its gap is not paid yet: the next
+    /// content row lands one blank row down (see `transcript::margins`).
+    pub(crate) gap_owed: bool,
     /// Nesting depth of the DEC 2026 synchronized-update bracket (see
     /// `Tui::begin_sync`): only the outermost begin/end reach the terminal.
     sync_depth: u32,
@@ -546,7 +544,7 @@ impl Tui {
             matches: Vec::new(),
             sel: 0,
             status: None,
-            dock_seam: false,
+            gap_owed: false,
             sync_depth: 0,
             batch_depth: 0,
             stream_round_boundary: false,
@@ -619,7 +617,6 @@ impl Tui {
         ) {
             self.terminal = term;
         }
-        self.release_dock_seam_for_blank_tail();
         let _ = self.draw();
     }
 
@@ -645,7 +642,7 @@ impl Tui {
         .finish_into_output(Some(gray_markdown::get_syntect()));
         if output.lines.len() > self.committed_markdown_lines {
             if self.committed_markdown_lines == 0 {
-                self.ensure_gap(1);
+                self.ensure_gap();
             }
             let remaining_lines: Vec<Line<'static>> =
                 output.lines[self.committed_markdown_lines..].to_vec();
@@ -783,45 +780,40 @@ impl Tui {
             self.terminal = term;
         }
 
+        // Re-emit the history through the same funnel that laid it out
+        // live (see `transcript::margins`), so a resize keeps every margin.
         let w = new_cols as usize;
-        let mut new_transcript: Vec<Line<'static>> = Vec::new();
+        self.transcript.clear();
+        self.gap_owed = false;
         let entries = std::mem::take(&mut self.history_entries);
         for entry in &entries {
             match entry {
                 TranscriptEntry::Welcome => {
+                    // The banner keeps its own spacing, blank rows included.
                     let lines = build_welcome_lines(w);
                     self.insert_paragraph(&lines, None);
-                    new_transcript.extend(lines);
+                    self.record_rows(lines);
                 }
                 TranscriptEntry::UserPrompt(text, attached) => {
                     let lines =
                         crate::composer::transcript::format_user_prompt_lines(text, attached, w);
-                    self.insert_paragraph(&lines, Some(crate::theme::theme().surface_bg));
-                    new_transcript.extend(lines);
+                    self.emit_rows(lines, Some(crate::theme::theme().surface_bg));
                 }
                 TranscriptEntry::ToolBox { header, body } => {
                     let lines =
                         crate::composer::transcript::format_tool_box_lines(header.clone(), body, w);
-                    self.insert_paragraph(&lines, Some(crate::theme::theme().surface_bg));
-                    new_transcript.extend(lines);
+                    self.emit_rows(lines, Some(crate::theme::theme().surface_bg));
                 }
                 TranscriptEntry::StyledLines { lines, hyperlinks } => {
-                    let lines_only = self.render_and_insert_styled_lines(lines, hyperlinks, w);
-                    new_transcript.extend(lines_only);
+                    self.emit_styled(lines.clone(), hyperlinks.clone());
                 }
                 TranscriptEntry::ThinkingRun(text) => {
-                    let tail_blank = new_transcript
-                        .last()
-                        .is_some_and(crate::composer::transcript::transcript_row_is_blank);
                     let rows = crate::composer::transcript::thinking_run_rows(
                         text,
                         crate::composer::transcript::prose_width(w),
-                        tail_blank,
+                        false,
                     );
-                    if !rows.is_empty() {
-                        self.insert_paragraph(&rows, None);
-                        new_transcript.extend(rows);
-                    }
+                    self.emit_rows(rows, None);
                 }
                 TranscriptEntry::Mascot => {
                     if let Some(lines) = crate::mascot::mascot_lines(
@@ -829,29 +821,13 @@ impl Tui {
                         self.last_height.max(1),
                         Some(w),
                     ) {
-                        self.insert_paragraph(&lines, None);
-                        new_transcript.extend(lines);
+                        self.emit_styled(lines, Vec::new());
                     }
                 }
-                TranscriptEntry::Gap(need) => {
-                    let trailing = new_transcript
-                        .iter()
-                        .rev()
-                        .take_while(|l| crate::composer::transcript::transcript_row_is_blank(l))
-                        .count();
-                    let need_actual = need.saturating_sub(trailing);
-                    if need_actual > 0 {
-                        let blank: Vec<Line<'static>> =
-                            (0..need_actual).map(|_| Line::from("")).collect();
-                        self.insert_paragraph(&blank, None);
-                        new_transcript.extend(blank);
-                    }
-                }
+                TranscriptEntry::Gap(_) => self.gap_owed = true,
             }
         }
         self.history_entries = entries;
-        self.transcript = new_transcript;
-        self.release_dock_seam_for_blank_tail();
 
         let _ = self.draw();
     }
@@ -1181,27 +1157,6 @@ impl Tui {
         let _ = self.draw();
     }
 
-    /// Releases the latched dock seam after a checkpoint trailing gap
-    /// (`Thought for` spacer, tool-box trailing, compaction summary): the
-    /// gap already separates scrollback from the dock, so a latched seam
-    /// would stack a second blank above the live status. Streaming
-    /// re-latches on the next non-blank frame, so per-chunk flicker still
-    /// holds the viewport steady (no input-box bounce).
-    pub(crate) fn release_dock_seam(&mut self) {
-        self.dock_seam = false;
-    }
-
-    fn release_dock_seam_for_blank_tail(&mut self) {
-        if self.is_task_running
-            && self
-                .transcript
-                .last()
-                .is_some_and(crate::composer::transcript::transcript_row_is_blank)
-        {
-            self.release_dock_seam();
-        }
-    }
-
     /// Marks the end of a live provider round.  The next text delta may be a
     /// punctuation-only continuation of the already-painted assistant block.
     pub(crate) fn mark_stream_round_boundary(&mut self) {
@@ -1353,7 +1308,7 @@ impl Tui {
         // viewport is live) surface here as dim transcript lines, once each.
         let warnings = crate::take_profile_warnings();
         if !warnings.is_empty() {
-            self.ensure_gap(1);
+            self.ensure_gap();
             for w in warnings {
                 self.push_dim(format!("warning: {w}"));
             }
@@ -1361,9 +1316,9 @@ impl Tui {
 
         if let Some(elapsed) = elapsed {
             let line = turn_footer_line(had_thinking, elapsed, turn_toks, stream_ms);
-            self.ensure_gap(1);
+            self.ensure_gap();
             self.push_dim(line);
-            self.ensure_gap(1);
+            self.ensure_gap();
         }
         let _ = std::io::stdout().flush();
         let _ = self.draw();
@@ -1433,6 +1388,10 @@ impl Tui {
         self.background_closed = true;
         let _ = self.hide_background();
         self.background = None;
+        // The band's seam row was the gap under the last block; it leaves
+        // with the band, so pay it into scrollback before the shell prompt.
+        self.gap_owed = true;
+        self.pay_gap();
         let _ = self.terminal.clear();
         let _ = crossterm::terminal::disable_raw_mode();
         let _ = crossterm::execute!(std::io::stdout(), crossterm::event::DisableBracketedPaste);

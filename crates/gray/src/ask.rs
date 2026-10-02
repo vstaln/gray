@@ -564,7 +564,7 @@ fn push_ask_summary(
     if questions.is_empty() {
         return;
     }
-    t.ensure_gap(1);
+    t.ensure_gap();
     for q in questions {
         t.push_dim(format!("? {}", q.question));
         let joined = answers
@@ -578,7 +578,7 @@ fn push_ask_summary(
             t.push_dim(format!("  → {joined}"));
         }
     }
-    t.ensure_gap(1);
+    t.ensure_gap();
 }
 
 #[path = "ask_tests.rs"]

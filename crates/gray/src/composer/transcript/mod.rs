@@ -14,6 +14,7 @@ use super::Tui;
 
 mod boxes;
 mod cards;
+mod margins;
 mod rows;
 
 pub(crate) use crate::tui::strip_ansi;
@@ -55,73 +56,64 @@ pub(crate) fn drop_mascot_entry(entries: &mut Vec<super::TranscriptEntry>) -> bo
     }
 }
 
-/// How many of `n` requested blank rows are still missing above the
-/// transcript tail: idempotent, so checkpoint spacers (thinking close,
-/// tool-box edges, turn footer) never stack a second blank onto an existing
-/// gap. Same blank predicate as the paint path (`transcript_row_is_blank`),
-/// so card/code padding rows (tinted bg) count as edges, not gaps. Pure for
-/// testability (`Tui::new` needs a TTY).
-pub(crate) fn gap_need(transcript: &[Line<'static>], n: usize) -> usize {
-    let trailing = transcript
-        .iter()
-        .rev()
-        .take_while(|l| transcript_row_is_blank(l))
-        .count();
-    n.saturating_sub(trailing)
-}
-
-/// Keep streamed block boundaries to one transparent blank row.
-///
-/// A renderer can emit a leading/trailing blank at the same time a caller
-/// requests a gap (or several chunks can accumulate them).  Collapse only
-/// those outer rows: internal paragraph spacing, code-block padding, and
-/// all non-streaming/replay formatting stay untouched.
-pub(crate) fn normalize_stream_boundaries(
-    lines: Vec<Line<'static>>,
-    hyperlinks: Vec<HyperlinkTarget>,
-    tail_blank: bool,
-) -> (Vec<Line<'static>>, Vec<HyperlinkTarget>) {
-    if lines.is_empty() {
-        return (lines, hyperlinks);
-    }
-    if tail_blank && lines.iter().all(transcript_row_is_blank) {
-        return (Vec::new(), Vec::new());
-    }
-
-    let leading = lines
-        .iter()
-        .take_while(|line| transcript_row_is_blank(line))
-        .count();
-    let mut start = leading;
-    if !tail_blank && leading > 0 {
-        // Keep one paragraph separator when the previous row was content;
-        // an existing tail gap already supplies that separator.
-        start = leading.saturating_sub(1);
-    }
-
-    let mut end = lines.len();
-    while end > start && transcript_row_is_blank(&lines[end - 1]) {
-        end -= 1;
-    }
-    // Retain one trailing gap when the block had one, but never a run of
-    // blank rows. If the transcript already supplied a gap, `start` skips
-    // all leading blank rows and this block needs no extra separator.
-    if end < lines.len() {
-        end += 1;
-    }
-
-    let lines = lines[start..end].to_vec();
-    let hyperlinks = hyperlinks
-        .into_iter()
-        .filter_map(|mut hyperlink| {
-            if hyperlink.line_index < start || hyperlink.line_index >= end {
-                return None;
+/// Lays history out at width `w` through the margin funnel without a
+/// terminal: the setup screen's backdrop. Same blocks, same `admit`, so the
+/// copy behind a modal keeps the live transcript's margins. Styled rows stay
+/// unwrapped (the backdrop clips them); `mascot_h` is the screen height the
+/// `/hehe` art is sized for.
+pub(crate) fn layout_history(
+    entries: &[super::TranscriptEntry],
+    w: usize,
+    mascot_h: u16,
+) -> Vec<Line<'static>> {
+    use super::TranscriptEntry;
+    let mut out: Vec<Line<'static>> = Vec::new();
+    let mut owed = false;
+    let place = |out: &mut Vec<Line<'static>>, owed: &mut bool, rows: Vec<Line<'static>>| {
+        let shaped = margins::shape_block(rows, Vec::new());
+        if margins::admit(owed, out, &shaped) {
+            out.push(Line::default());
+        }
+        out.extend(shaped.lines);
+    };
+    for entry in entries {
+        match entry {
+            // The banner keeps its own spacing, blank rows included.
+            TranscriptEntry::Welcome => out.extend(super::build_welcome_lines(w)),
+            TranscriptEntry::UserPrompt(text, attached) => {
+                place(
+                    &mut out,
+                    &mut owed,
+                    format_user_prompt_lines(text, attached, w),
+                );
             }
-            hyperlink.line_index -= start;
-            Some(hyperlink)
-        })
-        .collect();
-    (lines, hyperlinks)
+            TranscriptEntry::ToolBox { header, body } => {
+                place(
+                    &mut out,
+                    &mut owed,
+                    format_tool_box_lines(header.clone(), body, w),
+                );
+            }
+            TranscriptEntry::StyledLines { lines, .. } => place(&mut out, &mut owed, lines.clone()),
+            TranscriptEntry::ThinkingRun(text) => {
+                place(
+                    &mut out,
+                    &mut owed,
+                    thinking_run_rows(text, prose_width(w), false),
+                );
+            }
+            TranscriptEntry::Mascot => {
+                let art = crate::mascot::mascot_lines(
+                    u16::try_from(w).unwrap_or(u16::MAX),
+                    mascot_h,
+                    Some(w),
+                );
+                place(&mut out, &mut owed, art.unwrap_or_default());
+            }
+            TranscriptEntry::Gap(_) => owed = true,
+        }
+    }
+    out
 }
 
 /// Attach a punctuation suffix to the anchored prose block. The live
@@ -224,26 +216,82 @@ pub(crate) fn should_hold_stream_chunk(hold_len: usize, text: &str) -> bool {
 }
 
 impl Tui {
-    pub(crate) fn ensure_gap(&mut self, n: usize) {
-        // An explicit stream boundary owns the separation.  Do not let a
-        // previously latched dock seam sit on top of the blank row we are
-        // about to reuse; this is deliberately limited to live turns.
-        if self.is_task_running {
-            self.release_dock_seam();
+    /// Marks a block boundary: one gap is owed, paid as the prefix of the
+    /// next content (see `margins`). Writes nothing, so a boundary never
+    /// leaves a blank row at the bottom and repeated boundaries never stack.
+    pub(crate) fn ensure_gap(&mut self) {
+        if !self.gap_owed {
+            self.history_entries.push(super::TranscriptEntry::Gap(1));
+            cap_history_entries(&mut self.history_entries);
         }
-        let need = gap_need(&self.transcript, n);
-        if need == 0 {
-            return;
+        self.gap_owed = true;
+    }
+
+    /// Pays an owed gap now, with no block to follow it (the band is about
+    /// to leave: `shutdown`). Only above content, like every gap.
+    pub(crate) fn pay_gap(&mut self) {
+        if margins::gap_due(self.gap_owed, &self.transcript) {
+            self.write_gap();
         }
-        let lines: Vec<Line<'static>> = (0..need).map(|_| Line::from("")).collect();
-        // One batch: the frame that repaints the dock must see the new
-        // blank tail (see `paint_thinking_fragment`).
+        self.gap_owed = false;
+    }
+
+    fn write_gap(&mut self) {
+        let blank = vec![Line::default()];
+        self.insert_paragraph(&blank, None);
+        self.record_rows(blank);
+    }
+
+    /// Mirrors painted rows into `transcript`. Every painted row lands here,
+    /// so this is where a doubled margin would show: debug builds assert it
+    /// cannot.
+    pub(crate) fn record_rows(&mut self, rows: Vec<Line<'static>>) {
+        debug_assert!(
+            margins::junction_blank_run(&self.transcript, &rows) <= 1,
+            "two blank rows between blocks"
+        );
+        self.transcript.extend(rows);
+        if self.transcript.len() > 1000 {
+            self.transcript.drain(0..100);
+        }
+    }
+
+    /// The funnel for logical lines (prose, notices, errors): blank rows at
+    /// the block's edges become boundaries, an owed gap is paid in front, and
+    /// the rows are wrapped and painted. Live commits, reflow and replay all
+    /// pass through here, so they lay out alike.
+    pub(crate) fn emit_styled(
+        &mut self,
+        lines: Vec<Line<'static>>,
+        hyperlinks: Vec<HyperlinkTarget>,
+    ) {
+        let shaped = margins::shape_block(lines, hyperlinks);
+        let w = self.width().max(10);
         self.atomic(|t| {
-            t.insert_paragraph(&lines, None);
-            t.history_entries.push(super::TranscriptEntry::Gap(need));
-            t.transcript.extend(lines);
+            if margins::admit(&mut t.gap_owed, &t.transcript, &shaped) {
+                t.write_gap();
+            }
+            if !shaped.lines.is_empty() {
+                let painted =
+                    t.render_and_insert_styled_lines(&shaped.lines, &shaped.hyperlinks, w);
+                t.record_rows(painted);
+            }
         });
-        cap_history_entries(&mut self.history_entries);
+    }
+
+    /// The same funnel for rows already laid out at the current width
+    /// (cards, a thinking run's rows, the mascot). `bg` paints card rows.
+    pub(crate) fn emit_rows(&mut self, rows: Vec<Line<'static>>, bg: Option<Color>) {
+        let shaped = margins::shape_block(rows, Vec::new());
+        self.atomic(|t| {
+            if margins::admit(&mut t.gap_owed, &t.transcript, &shaped) {
+                t.write_gap();
+            }
+            if !shaped.lines.is_empty() {
+                t.insert_paragraph(&shaped.lines, bg);
+                t.record_rows(shaped.lines);
+            }
+        });
     }
 
     pub fn stream(&mut self, chunk: &str) {
@@ -251,9 +299,6 @@ impl Tui {
         while let Some(idx) = self.pending.find('\n') {
             let line: String = self.pending.drain(..=idx).collect();
             let trimmed = line.trim_end_matches('\n').trim_end_matches('\r');
-            if trimmed.is_empty() && self.transcript.last().is_some_and(transcript_row_is_blank) {
-                continue;
-            }
             let style = if self.thinking {
                 thinking_style()
             } else {
@@ -299,7 +344,7 @@ impl Tui {
         // it continues the prose paragraph above, not the reasoning run.
         self.release_held_punctuation("");
         if !self.thinking {
-            self.ensure_gap(1);
+            self.ensure_gap();
         }
         if self.status.as_ref().map(|s| s.1.as_str()) != Some("Thinking") {
             self.set_status(Some("Thinking"));
@@ -411,7 +456,7 @@ impl Tui {
         if frozen_len > self.committed_markdown_lines {
             self.atomic(|t| {
                 if t.committed_markdown_lines == 0 {
-                    t.ensure_gap(1);
+                    t.ensure_gap();
                 }
                 let view = t.markdown_renderer.view();
                 let new_lines: Vec<Line<'static>> =
@@ -443,7 +488,7 @@ impl Tui {
         let frozen_len = self.markdown_renderer.frozen_lines_len();
         if frozen_len > self.committed_markdown_lines {
             if self.committed_markdown_lines == 0 {
-                self.ensure_gap(1);
+                self.ensure_gap();
             }
             let view = self.markdown_renderer.view();
             let new_lines: Vec<Line<'static>> =
@@ -493,16 +538,15 @@ impl Tui {
             self.paint_thinking_fragment(rest);
         }
         if spacer {
-            self.ensure_gap(1);
-            self.release_dock_seam();
+            self.ensure_gap();
         }
     }
 
-    /// Echoes a submitted prompt as a card. `trailing_gap` leaves one blank
-    /// below the card for the breathing room before the next prompt; slash
-    /// commands pass false so their `say()` feedback hugs the card instead.
+    /// Echoes a submitted prompt as a card. `trailing_gap` marks the card's
+    /// end as a block boundary; slash commands pass false so their `say()`
+    /// feedback (`└ …`) hangs from the card as part of the same block.
     /// Cancelled pickers (dismissed modals) print no feedback, so each of
-    /// their `Ok(false)`/`Ok(None)` arms restores the gap via `ensure_gap`.
+    /// their `Ok(false)`/`Ok(None)` arms marks the boundary via `ensure_gap`.
     pub fn push_user_prompt(
         &mut self,
         text: &str,
@@ -510,29 +554,19 @@ impl Tui {
         trailing_gap: bool,
     ) {
         self.atomic(|t| {
-            // Unpainted gap above, outside the card's painted padding.
-            t.ensure_gap(1);
+            // The card is its own block: the unpainted gap sits outside its
+            // painted padding.
+            t.ensure_gap();
             let lines = format_user_prompt_lines(text, attached, t.width().max(10));
-            t.insert_paragraph(&lines, Some(crate::theme::theme().surface_bg));
             t.history_entries.push(super::TranscriptEntry::UserPrompt(
                 text.to_string(),
                 attached.to_vec(),
             ));
-            t.transcript.extend(lines);
-            // Trailing gap after every chat card, command and prompt alike.
-            // Handlers that print feedback (say()) treat the gap as idempotent;
-            // handlers that print nothing (dismissed modal) still leave
-            // breathing room before the next prompt instead of jamming against
-            // the card. Slash-command cards skip it (trailing_gap=false): their
-            // feedback hugs the card, and each dismissed-modal arm adds the gap
-            // itself.
+            t.emit_rows(lines, Some(crate::theme::theme().surface_bg));
             if trailing_gap {
-                t.ensure_gap(1);
+                t.ensure_gap();
             }
         });
-        if self.transcript.len() > 1000 {
-            self.transcript.drain(0..100);
-        }
         cap_history_entries(&mut self.history_entries);
         let _ = std::io::stdout().flush();
     }

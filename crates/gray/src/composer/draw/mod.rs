@@ -11,8 +11,7 @@ use crate::text_width::display_width;
 mod widgets;
 
 pub(crate) use widgets::{
-    build_input_box, queued_preview_lines, ratchet_seam, shimmer_spans, status_dock_h,
-    transcript_ends_blank,
+    build_input_box, needs_seam, queued_preview_lines, shimmer_spans, status_dock_h,
 };
 
 /// Exact-fit viewport height for the given content, clamped to
@@ -178,23 +177,12 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
     let box_h = ibox.lines.len().max(1) as u16;
     // Attachments row.
     let attach_h: u16 = u16::from(!tui.attachments.is_empty());
-    // Seam (only if scrollback didn't already end blank) + shimmer status
-    // text + one bare breathing row below it. Latched: a per-frame seam
-    // resized the viewport under the input box on every streamed chunk.
-    tui.dock_seam = ratchet_seam(
-        tui.dock_seam,
-        tui.status.is_some(),
-        !transcript_ends_blank(&tui.transcript),
-    );
-    let needs_seam = tui.dock_seam;
+    // Seam (the one gap under the transcript) + shimmer status text + one
+    // bare breathing row below it.
+    let needs_seam = needs_seam(&tui.transcript);
     let status_h: u16 = status_dock_h(tui.status.is_some(), needs_seam);
-    // Row offset of the status text inside its dock: below the seam when
-    // one was reserved, else the very top of the viewport.
-    let seam_h: u16 = if status_h > 0 {
-        u16::from(needs_seam)
-    } else {
-        0
-    };
+    // Row offset of the status text inside its dock: below the seam.
+    let seam_h: u16 = u16::from(needs_seam);
 
     // Exact-fit viewport with in-place resizing (codex parity):
     // Grow and shrink are applied directly to the terminal's viewport area without
@@ -286,10 +274,6 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
     }
     tui.viewport_h = desired;
 
-    // The status dock's seam row (if any) sits on top of the band: tell the
-    // terminal, so a scrollback commit that ends blank overwrites it instead
-    // of stacking a second gap row (see `CustomTerminal::top_slack`).
-    tui.terminal.set_top_slack(seam_h);
     if !paint {
         tui.end_sync();
         return Ok(());

@@ -216,37 +216,22 @@ pub(crate) fn transcript_ends_blank(transcript: &[Line<'static>]) -> bool {
     })
 }
 
-/// Height reserved above the input box for the live status:///   seam    1 row — ONLY when the transcript's last row is not already blank
-///   status  1 row — the plain shimmer text
-///   breath  1 row — bare space below, so it never melts into the input box
-///
-/// The seam is dynamic on purpose. A fixed seam (b377846) stacked with the
-/// blank a paragraph checkpoint leaves behind (2-row gap, hence 8ec9af0);
-/// no seam jams streamed rows flush against `⬡ Working…`. The live need
-/// feeds a [`ratchet_seam`] latch: deciding per frame bounced the input
-/// box 2<->3 rows on every streamed chunk.
+/// Height the band reserves above its queued, live and input rows:
+///   seam    1 row, when the transcript ends in content (see [`needs_seam`])
+///   status  1 row, the shimmer text, while a turn runs
+///   breath  1 row below the status, so it never melts into the input box
 pub(crate) fn status_dock_h(has_status: bool, needs_seam: bool) -> u16 {
-    if !has_status {
-        return 0;
-    }
-    2 + u16::from(needs_seam)
+    u16::from(needs_seam) + if has_status { 2 } else { 0 }
 }
 
-/// Whether the dock reserves a seam row this frame.
-///
-/// Purely structural: a seam exists only while there is a live status AND
-/// the scrollback tail is non-blank. The previous grow-only latch kept the
-/// seam on after a blank row was committed, stacking the viewport seam on
-/// the scrollback gap — the intermittent doubled margin — unless every
-/// writer of a blank row remembered to call `release_dock_seam`. A blank
-/// tail and a seam are mutually exclusive by construction now, so no
-/// writer can forget. `_cached` is kept for call-site compatibility.
-/// Geometry stays smooth: committing the blank moves the seam row into
-/// scrollback and drops it from the viewport in the same synchronized
-/// frame, so the input box does not move. Pure for testability
-/// (`Tui::new` needs a TTY).
-pub(crate) fn ratchet_seam(_cached: bool, has_status: bool, live_needs: bool) -> bool {
-    has_status && live_needs
+/// Whether the band opens with the seam row: the one gap between the
+/// transcript and whatever the band shows first, the status mid-turn or the
+/// input box when idle. Gaps are paid as the prefix of the next block, never
+/// left as a trailing blank (`transcript::margins`), so the transcript ends
+/// in content and the seam is that gap; the only blank tail is the welcome
+/// banner's own trailing row. Pure for testability (`Tui::new` needs a TTY).
+pub(crate) fn needs_seam(transcript: &[Line<'static>]) -> bool {
+    !transcript.is_empty() && !transcript_ends_blank(transcript)
 }
 
 /// Queued follow-up inputs held while a turn is in flight (codex

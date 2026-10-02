@@ -37,60 +37,8 @@ impl BackgroundSnapshot {
         if self.history_entries.is_empty() {
             return self.transcript.clone();
         }
-        let mut lines = Vec::new();
-        for entry in &self.history_entries {
-            match entry {
-                crate::composer::TranscriptEntry::Welcome => {
-                    lines.extend(crate::composer::build_welcome_lines(w));
-                }
-                crate::composer::TranscriptEntry::UserPrompt(text, attached) => {
-                    lines.extend(crate::composer::transcript::format_user_prompt_lines(
-                        text, attached, w,
-                    ));
-                }
-                crate::composer::TranscriptEntry::ToolBox { header, body } => {
-                    lines.extend(crate::composer::transcript::format_tool_box_lines(
-                        header.clone(),
-                        body,
-                        w,
-                    ));
-                }
-                crate::composer::TranscriptEntry::StyledLines {
-                    lines: styled,
-                    hyperlinks: _,
-                } => {
-                    lines.extend(styled.clone());
-                }
-                crate::composer::TranscriptEntry::ThinkingRun(text) => {
-                    let tail_blank = lines
-                        .last()
-                        .is_some_and(crate::composer::transcript::transcript_row_is_blank);
-                    lines.extend(crate::composer::transcript::thinking_run_rows(
-                        text,
-                        crate::composer::transcript::prose_width(w),
-                        tail_blank,
-                    ));
-                }
-                // `/hehe` art, re-derived at this width like the TUI reflow.
-                crate::composer::TranscriptEntry::Mascot => {
-                    let rows = crossterm::terminal::size().map(|(_, r)| r).unwrap_or(24);
-                    lines.extend(
-                        crate::mascot::mascot_lines(
-                            u16::try_from(w).unwrap_or(u16::MAX),
-                            rows,
-                            Some(w),
-                        )
-                        .unwrap_or_default(),
-                    );
-                }
-                crate::composer::TranscriptEntry::Gap(n) => {
-                    for _ in 0..*n {
-                        lines.push(ratatui::text::Line::from(""));
-                    }
-                }
-            }
-        }
-        lines
+        let rows = crossterm::terminal::size().map(|(_, r)| r).unwrap_or(24);
+        crate::composer::transcript::layout_history(&self.history_entries, w, rows)
     }
 }
 

@@ -3,21 +3,19 @@
 ## [Unreleased]
 
 ### Fixed
-- **The band settles before scrollback lands, so a margin is always one row.** On a terminal
-  91 to 94 columns wide, a long command left two blank rows between the committed card and
-  `⬡ Working…`: the band gave the live card's rows up *after* the card was inserted, and the
-  hint meant to cover that measured the stored `⬢ Ran …` header while the band drew the four
-  cells longer `⬡ Running …`. Every scrollback insert now gives the band its new height first
-  (`draw::settle_band`, geometry only, no paint), so whatever rows the band gives up are vacated
-  before the insert and the insert fills them. The shrink hint is gone; no estimate is left to
-  drift.
-- **One gap above `⬡ Thinking…` at a paragraph break.** While reasoning paused after a blank
-  line, two blank rows sat between the last thought and the status dock. Each live thinking row
-  (and each `ensure_gap` blank) repainted the dock inside its own insert, before the row reached
-  the transcript, so the dock decided its seam row against the previous tail: the paragraph
-  break's blank got a seam stacked on it, and when the seam dropped a frame later its row was
-  left behind as a second blank. The insert and the transcript update now land in one batch,
-  and the dock repaints against the row just painted.
+- **One margin rule for the whole transcript.** Blank rows came from seven places at once
+  (51 hand-placed `ensure_gap` calls, the markdown renderer's paragraph blanks, the thinking
+  stream's `\n\n`, card padding, the dock's seam, rows the band vacated, the turn footer), and
+  wherever two met the margin doubled: two blank rows above `⬡ Thinking…` after a paragraph
+  break, two under a tool card at 91-94 columns. Now a block boundary only *owes* a gap, and the
+  gap is paid as the prefix of the next block, never left as a trailing blank. Blank rows at a
+  block's edges become boundaries; blank rows inside one (a code block's) are content and stay.
+  The transcript therefore always ends in content and the band's seam row is the one gap to
+  the dock or the input box, idle or mid-turn. Live streaming, resize reflow, session replay
+  and the setup screen's backdrop all lay blocks out through the same funnel
+  (`transcript::margins::admit`), and debug builds assert no write ever stacks two blank rows.
+  The band also settles its height before every insert (`draw::settle_band`), so rows it gives
+  up are filled rather than stranded; the shrink hint and the seam-overwrite slack are gone.
 - **A turn-ending error reads as an error.** A rate limit, auth failure or server error that
   outlived its retries was streamed as plain prose, in the same colour as the answer. Its
   headline (`✗ Rate limited (retryable): …`) is now in the theme's error colour and the hint

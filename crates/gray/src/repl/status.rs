@@ -229,7 +229,7 @@ pub(crate) fn handle_usage(
         if let Some(squeeze) = squeeze_line {
             t.push_dim(squeeze);
         }
-        t.ensure_gap(1);
+        t.ensure_gap();
     } else {
         println!("✓ Session usage — {header}\n  {body}");
         if let Some(time) = &time_line {
@@ -259,7 +259,7 @@ pub(crate) async fn handle_context_window(
                     t.push_dim(format!("└ {line}"));
                 }
             }
-            t.ensure_gap(1);
+            t.ensure_gap();
             let _ = t.draw();
         } else if ok {
             println!("✓ Context updated: {msg}");
@@ -398,7 +398,7 @@ pub(crate) async fn handle_context_window(
                     // Dismissed modal leaves the slash card with no feedback:
                     // gap so it doesn't jam the input box.
                     if let Some(shared) = tui {
-                        shared.lock().expect("tui lock").ensure_gap(1);
+                        shared.lock().expect("tui lock").ensure_gap();
                     }
                 }
                 Err(e) => emit(format!("context error: {e}"), tui, false),
@@ -663,13 +663,13 @@ pub(crate) async fn handle_compact(
 
             if let Some(shared) = tui {
                 let mut tui = shared.lock().expect("tui lock");
-                tui.ensure_gap(1);
+                tui.ensure_gap();
                 tui.push_dim(format!(
                     "└ Context compacted · {elapsed_str} ({msg_count} messages -> summary)"
                 ));
-                tui.ensure_gap(1);
+                tui.ensure_gap();
                 tui.push_compaction_summary(&summary);
-                tui.ensure_gap(1);
+                tui.ensure_gap();
             } else {
                 println!("Context compacted · {elapsed_str} ({msg_count} messages -> summary)\n");
                 println!("{summary}\n");
