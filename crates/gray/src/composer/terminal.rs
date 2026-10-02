@@ -709,6 +709,53 @@ mod tests {
         assert_eq!(hinted.blank_above, 0);
     }
 
+    /// End of turn: the status dock (2 rows) leaves the band and the footer
+    /// plus its trailing gap (2 rows) are committed. Committed before the
+    /// shrink, the footer scrolls in above the docked band and the shrink
+    /// strands a blank row under the gap (the doubled gap after an
+    /// interrupt). Shrunk first, the two rows land in the vacated rows.
+    #[test]
+    fn shrinking_before_the_turn_footer_leaves_no_stray_gap() {
+        use ratatui::style::Style;
+
+        let screen = Size::new(10, 12);
+        let docked = || {
+            let mut terminal = CustomTerminal::with_options(TestBackend::new(10, 12), 6).unwrap();
+            terminal.insert_before(6, |_| {}).unwrap();
+            terminal.set_viewport_height(6, screen).unwrap();
+            terminal
+        };
+        // Every transcript insert is followed by a frame (`Tui::atomic`),
+        // which re-pins the band to the bottom: `band` is that frame's height.
+        let footer = |terminal: &mut CustomTerminal<TestBackend>, band: u16| {
+            terminal
+                .insert_before(1, |buf| {
+                    buf.set_string(0, 0, "w", Style::default());
+                })
+                .unwrap();
+            terminal.set_viewport_height(band, screen).unwrap();
+        };
+        let gap = |terminal: &mut CustomTerminal<TestBackend>| {
+            terminal.insert_before(1, |_| {}).unwrap();
+            terminal.set_viewport_height(4, screen).unwrap();
+        };
+
+        // Old order: the footer lands while the dock is still in the band,
+        // and the first frame after it drops the dock.
+        let mut late = docked();
+        footer(&mut late, 4);
+        gap(&mut late);
+        assert_eq!(late.blank_above, 1, "footer before shrink: a stray row");
+
+        // New order: the dock leaves first, then the footer and gap.
+        let mut early = docked();
+        early.set_viewport_height(4, screen).unwrap();
+        footer(&mut early, 4);
+        gap(&mut early);
+        assert_eq!(early.blank_above, 0, "shrink first: no stray row");
+        assert_eq!(early.viewport_area, Rect::new(0, 8, 10, 4));
+    }
+
     /// A hint is for one frame: whatever the inserts did not eat is dropped by
     /// the next `set_viewport_height`.
     #[test]

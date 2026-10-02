@@ -3,6 +3,11 @@
 ## [Unreleased]
 
 ### Fixed
+- **No doubled gap under the turn footer.** `end_turn` cleared the status dock but committed the
+  `Worked for` / `Thought for` footer before the band shrank, so the footer scrolled in above
+  the still-docked band and the shrink left a stray blank row between its trailing gap and the
+  input box (most visible after an interrupt). The band now drops the dock first, and the
+  footer and gap land in the rows it gave up.
 - **Margins follow codex's layout.** A card's painted padding row was counted as the gap
   between blocks, so prose and thinking sat flush against every tool and prompt card. The
   padding belongs to the card again, and one unpainted row separates every card from its

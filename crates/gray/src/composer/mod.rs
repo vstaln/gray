@@ -1347,6 +1347,13 @@ impl Tui {
         self.is_task_running = false;
         self.status = None;
         self.turn_show_effort = None;
+        // Drop the status dock from the band NOW, before the footer lands.
+        // Inserted first, the footer and its gap scroll in above the still
+        // docked band, and the shrink afterwards leaves the dock's rows as
+        // blank rows between the footer and the input box: the doubled gap
+        // under `Worked for`, most visible after an interrupt. Shrunk first,
+        // the vacated rows are exactly where the footer and gap rows land.
+        let _ = self.draw();
         // Billed output only (exact, reasoning included). `None` prints the
         // bare elapsed — a chars/4 fallback here would reintroduce the very
         // inflation the pill just dropped (2.5M on a 14s turn).
