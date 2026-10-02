@@ -1026,6 +1026,23 @@ impl Tui {
     /// card just goes away).
     pub(crate) fn remove_live_tool(&mut self, id: &str) {
         if let Some(pos) = self.live_tools.iter().position(|t| t.id == id) {
+            // The commit that follows (`push_tool_box`) lands in the same batch as
+            // this removal, so tell the terminal the band is about to lose this
+            // card's rows: the committed rows overwrite them instead of scrolling
+            // the screen and stranding blank rows between the committed card and
+            // the dock (the extra margin under every tool call). Past the cap the
+            // viewport reflows by more than this card, so no hint there.
+            if self.live_tools.len() <= MAX_LIVE_TOOLS {
+                let wrap_w = self.width().saturating_sub(4).max(1);
+                let rows = crate::composer::transcript::wrap_styled_line(
+                    self.live_tools[pos].header.clone(),
+                    wrap_w,
+                )
+                .len()
+                .max(1);
+                self.terminal
+                    .hint_shrink(u16::try_from(rows).unwrap_or(u16::MAX));
+            }
             self.live_tools.remove(pos);
             let _ = self.draw();
         }

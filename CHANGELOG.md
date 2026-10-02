@@ -165,6 +165,15 @@
   shared temp dir (pre-creatable by another local user, removed only on success) is a private
   `TempDir` now, dropped on every exit including a checksum mismatch.
 
+- **A commit never strands a blank row above the band.** `Tui::atomic` batches its inserts
+  and draws (which resizes the band) once at the end, so `insert_before` had already scrolled
+  the screen for the band's OLD, taller height by the time it shrank. The rows it vacated
+  stayed blank between the transcript and the band: a thinking commit that ended in a blank
+  row stacked on the dock seam and left a second blank above it, and a tool result committed
+  its card against a still-taller band and stranded the difference above the dock. An insert
+  now overwrites the band rows that are about to disappear (`top_slack`, refreshed each frame
+  from the dock seam; `shrink_hint`, declared by `remove_live_tool`), instead of pushing them
+  down. Both are advisory — a wrong guess is corrected by the next `draw`.
 - **A card's margin is visible again.** The gap that separates a card from the paragraph
   around it was an unpainted blank row, and an unpainted row against the composer surface
   is invisible: the margin existed in the transcript and not on screen. Card margins are

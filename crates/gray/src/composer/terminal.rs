@@ -55,6 +55,16 @@ where
     /// next scrollback insert draws into them, so a shrink never leaves a
     /// permanent blank gap (the doubled margin).
     blank_above: u16,
+    /// Rows at the top of the band that are only the blank seam above the status
+    /// dock (refreshed by `draw` every frame). A scrollback commit that ends in
+    /// a blank row *is* that gap, so it overwrites the seam instead of stacking
+    /// a second blank row on top of it (the doubled margin above `⬡ Working…`).
+    top_slack: u16,
+    /// Rows the band is already known to give up in the next frame: a live
+    /// tool card whose result is being committed to scrollback. Rows inserted
+    /// before that frame land on them rather than scrolling the screen and
+    /// leaving blank rows between the committed card and the band afterwards.
+    shrink_hint: u16,
 }
 
 impl<B> Drop for CustomTerminal<B>
@@ -98,6 +108,8 @@ where
             last_known_screen_size: screen_size,
             band_dirty: false,
             blank_above: 0,
+            top_slack: 0,
+            shrink_hint: 0,
         };
         term.set_viewport_area(viewport_area);
         Ok(term)
@@ -109,10 +121,38 @@ where
         self.viewport_area = area;
     }
 
+    /// Rows at the top of the band that are only the blank seam above the
+    /// status dock. `draw` refreshes this every frame; see `top_slack`.
+    pub fn set_top_slack(&mut self, rows: u16) {
+        self.top_slack = rows;
+    }
+
+    /// Declares rows the band is about to give up (see `shrink_hint`). The next
+    /// `set_viewport_height` clears whatever is left, so a hint never outlives
+    /// its frame.
+    pub fn hint_shrink(&mut self, rows: u16) {
+        self.shrink_hint = self.shrink_hint.saturating_add(rows);
+    }
+
+    /// How many of the band's top rows an insert of `height` rows overwrites
+    /// rather than pushes down: the declared shrink, plus the dock seam when
+    /// the insert ends in a blank row (that row *is* the gap the seam held).
+    fn take_band_rows(&mut self, height: u16, tail_blank: bool) -> u16 {
+        let slack = if tail_blank { self.top_slack } else { 0 };
+        let cap = self.viewport_area.height.saturating_sub(1);
+        let eaten = self.shrink_hint.saturating_add(slack).min(height).min(cap);
+        let from_hint = eaten.min(self.shrink_hint);
+        self.shrink_hint -= from_hint;
+        self.top_slack = self.top_slack.saturating_sub(eaten - from_hint);
+        eaten
+    }
+
     pub fn set_viewport_height(&mut self, height: u16, screen_size: Size) -> io::Result<()> {
         let mut area = self.viewport_area;
         area.height = height.min(screen_size.height);
         area.width = screen_size.width;
+        // Whatever the inserts did not eat is settled by this frame.
+        self.shrink_hint = 0;
 
         // Grow up into known-blank rows first: they hold no transcript, so
         // taking them moves nothing else on screen.
@@ -293,12 +333,20 @@ where
         draw_fn(&mut buffer);
         let mut buffer_content = buffer.content.as_slice();
 
+        // Rows of the band this insert overwrites instead of pushing down: the
+        // seam above the status dock when the commit ends blank (the commit IS
+        // that gap), and the rows of a live card that is being committed. The
+        // band then comes out the right height with nothing left blank above it.
+        let tail_blank = buffer_last_row_is_blank(&buffer);
+        let eaten = self.take_band_rows(height, tail_blank);
+        let band_height = self.viewport_area.height.saturating_sub(eaten);
+
         // Start at the end of the transcript, not at the band's top: the
         // vacated rows above it are the first rows to fill.
         let top: i32 = self.viewport_area.top().into();
         let mut drawn_height: i32 = top - i32::from(self.blank_above).min(top);
         let mut buffer_height: i32 = height.into();
-        let viewport_height: i32 = self.viewport_area.height.into();
+        let viewport_height: i32 = band_height.into();
         let screen_height: i32 = self.last_known_screen_size.height.into();
 
         while buffer_height + viewport_height > screen_height {
@@ -325,6 +373,7 @@ where
 
         self.set_viewport_area(Rect {
             y: drawn_height as u16,
+            height: band_height,
             ..self.viewport_area
         });
 
@@ -374,6 +423,21 @@ where
 /// taller than the screen sits at row 0. Pure for testability.
 fn anchored_viewport_y(height: u16, screen_h: u16) -> u16 {
     screen_h.saturating_sub(height)
+}
+
+/// True when the last row of an insert buffer is a bare blank: only spaces on
+/// the terminal's default background, the same predicate the transcript uses
+/// (`transcript_row_is_blank`) for "this block ends with a gap".
+fn buffer_last_row_is_blank(buffer: &Buffer) -> bool {
+    let area = buffer.area;
+    if area.height == 0 {
+        return false;
+    }
+    let y = area.bottom() - 1;
+    (area.x..area.right()).all(|x| {
+        let cell = &buffer[(x, y)];
+        cell.symbol().trim().is_empty() && cell.bg == ratatui::style::Color::Reset
+    })
 }
 
 #[cfg(test)]
@@ -568,6 +632,93 @@ mod tests {
         let buffer = terminal.backend.buffer();
         assert_eq!(buffer[(0, 0)].symbol(), "x");
         assert_eq!(buffer[(0, 1)].symbol(), "y");
+    }
+
+    /// The reported bug: a blank row committed while the status dock's seam
+    /// row is on screen stacked on top of the seam, and the band's shrink
+    /// then left a second vacated blank row above `⬡ Thinking…` until the
+    /// next insert. The commit now overwrites the seam: one gap, no strays.
+    #[test]
+    fn a_blank_commit_overwrites_the_dock_seam_instead_of_doubling_it() {
+        let screen = Size::new(10, 12);
+        let mut terminal = CustomTerminal::with_options(TestBackend::new(10, 12), 6).unwrap();
+        terminal.insert_before(6, |_| {}).unwrap();
+        terminal.set_viewport_height(6, screen).unwrap();
+        assert_eq!(terminal.viewport_area, Rect::new(0, 6, 10, 6));
+
+        terminal.set_top_slack(1);
+        terminal.insert_before(1, |_| {}).unwrap();
+        assert_eq!(terminal.viewport_area, Rect::new(0, 7, 10, 5));
+        terminal.set_viewport_height(5, screen).unwrap();
+        assert_eq!(terminal.viewport_area, Rect::new(0, 7, 10, 5));
+        assert_eq!(terminal.blank_above, 0, "no vacated row above the band");
+    }
+
+    /// A commit that ends in content keeps the seam: only a blank tail *is*
+    /// the gap.
+    #[test]
+    fn a_content_commit_does_not_eat_the_dock_seam() {
+        use ratatui::style::Style;
+
+        let screen = Size::new(10, 12);
+        let mut terminal = CustomTerminal::with_options(TestBackend::new(10, 12), 6).unwrap();
+        terminal.insert_before(6, |_| {}).unwrap();
+        terminal.set_viewport_height(6, screen).unwrap();
+
+        terminal.set_top_slack(1);
+        terminal
+            .insert_before(1, |buf| {
+                buf.set_string(0, 0, "x", Style::default());
+            })
+            .unwrap();
+        assert_eq!(terminal.viewport_area, Rect::new(0, 6, 10, 6));
+    }
+
+    /// Committing a live tool card: the card's rows leave the band in the
+    /// same batch the committed rows arrive in. Hinted, the commit overwrites
+    /// them; unhinted, the screen scrolls and the shrink strands blank rows
+    /// between the committed card and the dock (extra margin under the card).
+    #[test]
+    fn a_hinted_card_commit_leaves_no_blank_rows_above_the_band() {
+        use ratatui::style::Style;
+
+        let screen = Size::new(10, 12);
+        let commit = |terminal: &mut CustomTerminal<TestBackend>| {
+            terminal
+                .insert_before(3, |buf| {
+                    buf.set_string(0, 2, "c", Style::default());
+                })
+                .unwrap();
+            terminal.set_viewport_height(6, screen).unwrap();
+        };
+        let fresh = || {
+            let mut terminal = CustomTerminal::with_options(TestBackend::new(10, 12), 8).unwrap();
+            terminal.insert_before(4, |_| {}).unwrap();
+            terminal.set_viewport_height(8, screen).unwrap();
+            terminal
+        };
+
+        let mut stranded = fresh();
+        commit(&mut stranded);
+        assert_eq!(stranded.blank_above, 2, "unhinted: two stray blank rows");
+
+        let mut hinted = fresh();
+        hinted.hint_shrink(2);
+        commit(&mut hinted);
+        assert_eq!(hinted.viewport_area, Rect::new(0, 6, 10, 6));
+        assert_eq!(hinted.blank_above, 0);
+    }
+
+    /// A hint is for one frame: whatever the inserts did not eat is dropped by
+    /// the next `set_viewport_height`.
+    #[test]
+    fn a_shrink_hint_does_not_outlive_its_frame() {
+        let screen = Size::new(10, 12);
+        let mut terminal = CustomTerminal::with_options(TestBackend::new(10, 12), 8).unwrap();
+        terminal.insert_before(4, |_| {}).unwrap();
+        terminal.hint_shrink(2);
+        terminal.set_viewport_height(8, screen).unwrap();
+        assert_eq!(terminal.shrink_hint, 0);
     }
 
     #[test]
