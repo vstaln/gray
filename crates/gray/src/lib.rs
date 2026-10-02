@@ -173,19 +173,23 @@ pub use gray_plugin::builder::{
 ///
 /// Errors here are user-configuration problems (missing model or API key), so the
 /// message is written for a human, not a log file.
-/// Prompt-cache warming (pi parity) for a build, or `None`. pi gives a cache
-/// lifetime only to the native Anthropic Messages API (5 min), and replays a
-/// request only when the one-token cap leaves its cache entry untouched,
+/// Prompt-cache warming for a build, or `None`. Both the native Anthropic
+/// Messages API and OpenAI-compatible prefix caches live ~5 min, and a replay
+/// runs only when the one-token cap leaves its cache entry untouched,
 /// which a thinking budget does not. `GRAY_NO_CACHE_WARM=1` turns it off.
 fn cache_warm_policy(
     config: &Config,
     model: &str,
     effort: Option<&str>,
 ) -> Option<gray_core::cache_warm::CacheWarmPolicy> {
-    let native = !config.uses_plugin_credentials()
-        && gray_provider::anthropic::is_anthropic_base_url(&config.base_url);
+    // Every built-in provider path caches prefixes (native Anthropic plus
+    // all OpenAI-compatible base URLs — direct OpenAI, routers, local
+    // servers); only plugin-credentialed sidecars are excluded. A second,
+    // runtime gate in `keep_warm` still sends zero refreshes unless the model
+    // has cache prices.
+    let cacheable = !config.uses_plugin_credentials();
     let replayable = matches!(effort, None | Some("off"));
-    if !native || !replayable || std::env::var_os("GRAY_NO_CACHE_WARM").is_some() {
+    if !cacheable || !replayable || std::env::var_os("GRAY_NO_CACHE_WARM").is_some() {
         return None;
     }
     let model = model.to_string();
