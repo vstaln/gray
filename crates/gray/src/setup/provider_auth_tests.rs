@@ -121,3 +121,78 @@ fn plugin_models_request_uses_host_identity() {
     };
     assert_eq!(request.profile_binding, installed.profile_binding.clone());
 }
+
+fn key_config(base_url: &str, key: Option<&str>) -> Config {
+    Config {
+        model: Some("meta/muse-spark-1.3-contributor".into()),
+        base_url: base_url.into(),
+        api_key: key.map(str::to_string),
+        thinking_effort: None,
+        show_reasoning: None,
+        temperature: None,
+        top_p: None,
+        context_window: None,
+        context_reserve: None,
+        context_keep: None,
+        exec_prefix: None,
+        max_turns: None,
+        max_cost_micros: None,
+        max_wall_secs: None,
+        provider_id: String::new(),
+        credential_source: String::new(),
+        auth_ref: String::new(),
+    }
+}
+
+#[test]
+fn a_dismissed_connect_leaves_the_session_as_it_was() {
+    let before = key_config("https://api.commandcode.ai/provider/v1", Some("sk-live"));
+    for outcome in [
+        Ok(crate::setup::ConnectOutcome::Dismissed),
+        Err(anyhow!("modal failed")),
+    ] {
+        // Picking a row wrote its endpoint and key before the model step.
+        let mut config = key_config("https://openrouter.ai/api/v1", Some("sk-picked"));
+        settle_connect_config(&mut config, before.clone(), &outcome);
+        assert!(config == before);
+    }
+    let mut config = key_config("https://openrouter.ai/api/v1", Some("sk-picked"));
+    settle_connect_config(
+        &mut config,
+        before,
+        &Ok(crate::setup::ConnectOutcome::Connected),
+    );
+    assert_eq!(config.api_key.as_deref(), Some("sk-picked"));
+}
+
+#[test]
+fn only_a_changed_key_for_the_same_endpoint_is_adopted() {
+    let url = "https://api.commandcode.ai/provider/v1";
+    let config = key_config(url, Some("sk-old"));
+    let saved = |base: &str, key: &str| SavedConfig {
+        base_url: Some(base.into()),
+        api_key: Some(key.into()),
+        ..SavedConfig::default()
+    };
+    assert_eq!(
+        saved_key_update(&config, &saved(url, "sk-new")).as_deref(),
+        Some("sk-new")
+    );
+    assert_eq!(
+        saved_key_update(&config, &saved(&format!("{url}/"), "sk-new")).as_deref(),
+        Some("sk-new"),
+        "a trailing slash is the same endpoint"
+    );
+    assert_eq!(saved_key_update(&config, &saved(url, "sk-old")), None);
+    assert_eq!(saved_key_update(&config, &saved(url, "  ")), None);
+    // Another window switched provider: that is not this session's key.
+    assert_eq!(
+        saved_key_update(&config, &saved("https://openrouter.ai/api/v1", "sk-or")),
+        None
+    );
+    let plugin = SavedConfig {
+        credential_source: "plugin".into(),
+        ..saved(url, "sk-new")
+    };
+    assert_eq!(saved_key_update(&config, &plugin), None);
+}

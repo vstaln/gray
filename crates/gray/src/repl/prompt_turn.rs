@@ -412,6 +412,27 @@ pub(crate) async fn run_prompt_turn(
             )
             .await;
             let msg = format_core_error(&e, &config.base_url);
+            // A key rewritten on disk by another window reached this session
+            // only on restart; pick it up now so Enter retries with it.
+            let previous_key = config.api_key.clone();
+            let mut reloaded = matches!(e, gray_core::error::CoreError::Auth(_))
+                && crate::setup::adopt_saved_key(config);
+            if reloaded {
+                let sid = session_state.as_ref().map(|s| s.session_id.as_str());
+                match build_agent(config, cwd, sid).await {
+                    Ok(built) => {
+                        let history = agent.messages().to_vec();
+                        *agent = built.with_messages(history);
+                    }
+                    // Keep config and agent on the same key.
+                    Err(_) => {
+                        config.api_key = previous_key;
+                        reloaded = false;
+                    }
+                }
+            }
+            const RELOADED: &str =
+                "└ the API key saved for this provider changed on disk; reloaded it";
             if interactive {
                 if let Some((shared, _)) = tui {
                     let mut t = shared.lock().expect("tui lock");
@@ -420,9 +441,15 @@ pub(crate) async fn run_prompt_turn(
                     // The error is history; the instruction to continue is a
                     // property of the idle composer (see the interrupt arm).
                     t.push_error(&msg);
+                    if reloaded {
+                        t.push_dim(RELOADED.to_string());
+                    }
                 }
             } else {
                 eprintln!("{msg}\n(press Enter to continue)");
+                if reloaded {
+                    eprintln!("{RELOADED}");
+                }
             }
         }
     }

@@ -308,6 +308,9 @@ impl Agent {
         // MAX_TURN_RETRIES). Reset per run; shared by every round in the run
         // so a pathological provider cannot loop forever across rounds.
         let mut turn_retries: u8 = 0;
+        // One replay of a rejected credential per run (see
+        // `ProviderError::credential_rejected`); a second rejection is real.
+        let mut auth_retried = false;
         // Post-tool empty nudge fires once per run; silent-retry budget unchanged.
         let mut empty_nudge_sent = false;
         // Opt-in pre-finish check (`GRAY_FINISH_GATE=1`): see `finish_gate`.
@@ -590,11 +593,13 @@ impl Agent {
                             // has committed it to history; the provider's
                             // partial-answer path owns that case) and so does a
                             // cancelled token.
-                            if e.retryable()
+                            let auth_replay = e.credential_rejected() && !auth_retried;
+                            if (e.retryable() || auth_replay)
                                 && text_parts.is_empty()
                                 && !ctx.cancel.is_cancelled()
                                 && turn_retries < MAX_TURN_RETRIES
                             {
+                                auth_retried |= auth_replay;
                                 turn_retries += 1;
                                 let delay = if turn_retries > 1 {
                                     turn_retry_delay() * 2

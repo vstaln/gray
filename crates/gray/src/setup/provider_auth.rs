@@ -12,8 +12,8 @@ use crate::config::Config;
 use crate::providers::registry::{InstalledProvider, ProviderRpc};
 use crate::providers::runtime::ProviderRuntime;
 use crate::setup::catalog::{
-    SavedConfig, load_saved_config_at, lock_saved_config_at, save_saved_config_at,
-    saved_config_path,
+    SavedConfig, load_saved_config_at, lock_saved_config_at, normalize_custom_base_url,
+    save_saved_config_at, saved_config_path,
 };
 
 /// UI-safe login progress. No event ever carries a token, transcript, or
@@ -225,6 +225,59 @@ pub fn select_api_key_connection(config: &mut Config) -> anyhow::Result<()> {
     let path = saved_config_path()?;
     api_key_selection_at(config, &path);
     Ok(())
+}
+
+/// `/connect` writes the live config as rows are picked (base URL, key) and
+/// saves to disk only once a model is chosen. Leaving it any other way must
+/// leave the session as it was: a dismissed pick otherwise stayed live,
+/// paired with the old model, and every later agent rebuild (`/model`,
+/// `/thinking`, `/new`, a resume) sent it until a restart re-read the file.
+pub fn settle_connect_config(
+    config: &mut Config,
+    before: Config,
+    outcome: &anyhow::Result<crate::setup::ConnectOutcome>,
+) {
+    if matches!(
+        outcome,
+        Ok(crate::setup::ConnectOutcome::Dismissed) | Err(_)
+    ) {
+        *config = before;
+    }
+}
+
+/// The API key saved for this session's own endpoint, when it differs from
+/// the one the session holds. Another window's `/connect` or `gray login`
+/// rewrites the file, and before this only a restart picked that up. A
+/// different saved endpoint or a plugin connection is that window's provider
+/// switch, never adopted here.
+pub fn saved_key_update(config: &Config, saved: &SavedConfig) -> Option<String> {
+    if config.uses_plugin_credentials() || saved.credential_source == "plugin" {
+        return None;
+    }
+    let same_endpoint = saved.base_url.as_deref().is_some_and(|url| {
+        normalize_custom_base_url(url) == normalize_custom_base_url(&config.base_url)
+    });
+    let key = saved
+        .api_key
+        .as_deref()
+        .map(str::trim)
+        .filter(|k| !k.is_empty())?;
+    (same_endpoint && config.api_key.as_deref() != Some(key)).then(|| key.to_string())
+}
+
+/// After an auth failure: adopts the key saved for this endpoint if it
+/// changed on disk. True when `config` now holds a different key.
+pub fn adopt_saved_key(config: &mut Config) -> bool {
+    let Ok(path) = saved_config_path() else {
+        return false;
+    };
+    match saved_key_update(config, &load_saved_config_at(&path)) {
+        Some(key) => {
+            config.api_key = Some(key);
+            true
+        }
+        None => false,
+    }
 }
 
 /// Local-first plugin credential removal plus best-effort remote revoke.
