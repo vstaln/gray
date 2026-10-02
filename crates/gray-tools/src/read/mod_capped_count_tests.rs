@@ -1,5 +1,3 @@
-use super::*;
-
 #[test]
 fn huge_line_count_uses_count_skipped_wording() {
     // Unit-level: the exact total is replaced by a lower bound, but `next`

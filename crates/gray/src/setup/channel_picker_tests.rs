@@ -1,5 +1,4 @@
 use super::*;
-use serde_json::json;
 
 struct FakeSource {
     channels: Vec<Destination>,

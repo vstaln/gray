@@ -169,6 +169,9 @@ pub(crate) struct OpenAiChatRequest {
     reasoning: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     thinking: Option<Value>,
+    /// Output cap (`ChatRequest::max_tokens`; the cache warmer's 1-token replay).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_tokens: Option<u32>,
     messages: Vec<OpenAiMessageRequest>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     tools: Vec<OpenAiToolDefRequest>,
@@ -217,6 +220,8 @@ struct OpenAiToolDefRequest {
     #[serde(rename = "type")]
     tool_type: String,
     function: OpenAiFunctionDefRequest,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cache_control: Option<Value>,
 }
 
 #[derive(Debug, Serialize)]
@@ -337,6 +342,11 @@ struct OpenAiPromptDetails {
     cache_read_tokens: usize,
 }
 
+fn is_anthropic_model(model: &str) -> bool {
+    let lower = model.to_lowercase();
+    lower.contains("claude") || lower.contains("anthropic")
+}
+
 fn is_muse_model(model: &str) -> bool {
     let lower = model.to_lowercase();
     lower.contains("muse") || lower.contains("spark") || lower.contains("glimmer")
@@ -350,11 +360,79 @@ fn is_deepseek_model(model: &str) -> bool {
 /// Responses `function_call_output` item has an `is_error` slot, so an error
 /// result is prefixed (model-visible, strict-provider-safe — no unknown
 /// fields). Success content passes through byte-identical.
-fn wire_tool_output(content: &str, is_error: bool) -> String {
+pub(crate) fn wire_tool_output(content: &str, is_error: bool) -> String {
     if is_error {
         format!("Error: {content}")
     } else {
         content.to_string()
+    }
+}
+
+/// Anthropic prompt caching, pi `applyAnthropicCacheControl`: breakpoints on
+/// 1. the system prompt,
+/// 2. the last tool definition,
+/// 3. the last conversation message that carries text.
+///
+/// Claude caches only at `cache_control` breakpoints — `prompt_cache_key` is
+/// an OpenAI field it ignores — so without these a Claude model behind an
+/// OpenAI-compatible router (OpenRouter) re-bills the whole prompt on every
+/// request. OpenRouter/Anthropic read `cache_control` only on content blocks,
+/// so the marker goes on a text part (pi `addCacheControlToTextContent`); a
+/// message-level field is not a documented placement and caches nothing.
+fn apply_anthropic_cache_control(
+    messages: &mut [OpenAiMessageRequest],
+    tools: &mut [OpenAiToolDefRequest],
+) {
+    let cache_control = serde_json::json!({"type": "ephemeral"});
+
+    if let Some(system) = messages
+        .iter_mut()
+        .find(|m| m.role == "system" || m.role == "developer")
+    {
+        add_cache_control_to_text_content(system, &cache_control);
+    }
+
+    if let Some(last_tool) = tools.last_mut() {
+        last_tool.cache_control = Some(cache_control.clone());
+    }
+
+    // Walk back past messages without text (tool-call-only assistant turns,
+    // image-only parts) to the newest one that can hold the marker.
+    for m in messages.iter_mut().rev() {
+        if matches!(m.role.as_str(), "user" | "assistant" | "tool")
+            && add_cache_control_to_text_content(m, &cache_control)
+        {
+            break;
+        }
+    }
+}
+
+/// Marks the last text part of `m`, promoting plain string content to a
+/// one-part text array first. `false` when there is no text to mark.
+fn add_cache_control_to_text_content(m: &mut OpenAiMessageRequest, cache_control: &Value) -> bool {
+    if let Some(Value::String(text)) = &mut m.content {
+        if text.is_empty() {
+            return false;
+        }
+        let text = std::mem::take(text);
+        m.content = Some(serde_json::json!([
+            {"type": "text", "text": text, "cache_control": cache_control}
+        ]));
+        return true;
+    }
+    let Some(Value::Array(parts)) = &mut m.content else {
+        return false;
+    };
+    let text_part = parts
+        .iter_mut()
+        .rev()
+        .find(|p| p.get("type").and_then(Value::as_str) == Some("text"));
+    match text_part.and_then(Value::as_object_mut) {
+        Some(part) => {
+            part.insert("cache_control".to_string(), cache_control.clone());
+            true
+        }
+        None => false,
     }
 }
 
@@ -376,13 +454,15 @@ pub fn model_accepts_video(model: &str) -> bool {
     id.contains("gemini") || id.contains("gemma")
 }
 
-fn video_rejected(model: &str) -> ProviderError {
+pub(crate) fn video_rejected(model: &str) -> ProviderError {
     ProviderError::BadRequest(format!(
         "{model} has no native video input; use `gray view <file>` for a contact sheet"
     ))
 }
 
-fn filter_valid_tools(tools: Vec<gray_core::message::ToolDef>) -> Vec<gray_core::message::ToolDef> {
+pub(crate) fn filter_valid_tools(
+    tools: Vec<gray_core::message::ToolDef>,
+) -> Vec<gray_core::message::ToolDef> {
     tools
         .into_iter()
         .filter(|t| {
@@ -410,6 +490,7 @@ fn map_chat_request(
     model: &str,
     reasoning_effort: Option<&str>,
 ) -> Result<OpenAiChatRequest, ProviderError> {
+    let max_tokens = req.max_tokens;
     let mut messages = Vec::new();
 
     // 1. Map system prompt
@@ -654,7 +735,7 @@ fn map_chat_request(
     let messages = ordered;
 
     // 3. Map tools — drop empty names that would trigger 400 `name` must be non-empty
-    let tools: Vec<OpenAiToolDefRequest> = filter_valid_tools(req.tools)
+    let mut tools: Vec<OpenAiToolDefRequest> = filter_valid_tools(req.tools)
         .into_iter()
         .map(|tool| OpenAiToolDefRequest {
             tool_type: "function".to_string(),
@@ -663,6 +744,7 @@ fn map_chat_request(
                 description: tool.description,
                 parameters: tool.parameters,
             },
+            cache_control: None,
         })
         .collect();
 
@@ -712,7 +794,13 @@ fn map_chat_request(
         log::warn!(target: "gray_provider", "synthesizing missing tool output for orphaned call {id}");
         fixed.push(stub(&id));
     }
-    let messages = fixed;
+    let mut messages = fixed;
+
+    // Anthropic prompt caching (pi): marked after the orphan guard so the
+    // "last message" breakpoint lands on what is actually sent last.
+    if is_anthropic_model(model) {
+        apply_anthropic_cache_control(&mut messages, &mut tools);
+    }
 
     let (reasoning_effort_val, reasoning_val, thinking_val) = match reasoning_effort {
         Some("off") => (None, None, Some(serde_json::json!({ "type": "disabled" }))),
@@ -745,6 +833,7 @@ fn map_chat_request(
         reasoning_effort: reasoning_effort_val,
         reasoning: reasoning_val,
         thinking: thinking_val,
+        max_tokens,
         messages,
         tools,
         prompt_cache_key: None,
@@ -872,6 +961,10 @@ pub(crate) struct ResponsesRequest {
     /// prefix processing. Only sent when `reasoning` is.
     #[serde(skip_serializing_if = "Option::is_none")]
     include: Option<Vec<String>>,
+    /// Output cap (`ChatRequest::max_tokens`). The Responses API rejects
+    /// values under 16, so a smaller cap is raised to that floor.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_output_tokens: Option<u32>,
     /// Resume a previously started response after a retryable mid-stream
     /// failure (Codex parity): the server continues the prefix instead of
     /// gray replaying the turn. A strict backend may 400 on the unknown id
@@ -904,6 +997,7 @@ fn map_chat_to_responses(
     reasoning_effort: Option<&str>,
 ) -> ResponsesRequest {
     let instructions = req.system;
+    let max_output_tokens = req.max_tokens.map(|n| n.max(16));
     let mut input: Vec<Value> = Vec::new();
     for msg in req.messages {
         match msg.role {
@@ -1099,6 +1193,7 @@ fn map_chat_to_responses(
         store: false,
         reasoning,
         include,
+        max_output_tokens,
         previous_response_id: None,
         tool_choice: None,
         parallel_tool_calls: None,
@@ -1273,16 +1368,31 @@ pub(crate) fn maybe_annotate_reasoning_conflict(err: ProviderError, model: &str)
     }
 }
 
+/// `error.message` (OpenAI, Anthropic, OpenRouter) or a top-level `message`
+/// from a JSON error body; `None` when the body is not that shape.
+fn error_body_message(body: &str) -> Option<String> {
+    let v: Value = serde_json::from_str(body.trim()).ok()?;
+    let msg = v
+        .pointer("/error/message")
+        .or_else(|| v.get("message"))
+        .and_then(Value::as_str)?
+        .trim();
+    (!msg.is_empty()).then(|| msg.to_string())
+}
+
 pub(crate) fn classify_http_error(
     status: reqwest::StatusCode,
     snippet: &str,
     cf_ray: Option<&str>,
     req_id: Option<&str>,
 ) -> ProviderError {
-    let mut msg = if snippet.is_empty() {
+    // Display the provider's own sentence, not its JSON envelope; the full
+    // body still drives classification below.
+    let shown = error_body_message(snippet).unwrap_or_else(|| snippet.to_string());
+    let mut msg = if shown.is_empty() {
         format!("status {status}")
     } else {
-        format!("status {status}: {snippet}")
+        format!("status {status}: {shown}")
     };
     if let Some(ray) = cf_ray {
         msg.push_str(&format!(", cf-ray: {ray}"));
@@ -1471,7 +1581,11 @@ fn parse_http_date_delay(raw: &str) -> Option<Duration> {
 
 /// Exponential backoff with jitter, capped at `MAX_BACKOFF`, floored by
 /// `Retry-After` when present (server-asked delay still wins via max).
-fn backoff_delay(initial: Duration, attempt: usize, retry_after: Option<Duration>) -> Duration {
+pub(crate) fn backoff_delay(
+    initial: Duration,
+    attempt: usize,
+    retry_after: Option<Duration>,
+) -> Duration {
     let exp_factor = 1u64 << (attempt.saturating_sub(1).min(10));
     let backoff_ms = (initial.as_millis() as u64).saturating_mul(exp_factor);
     let max_jitter = backoff_ms / 2;

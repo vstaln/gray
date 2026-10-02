@@ -52,6 +52,15 @@ pub fn exit_report(status: std::process::ExitStatus, command: &str) -> ExitRepor
     } else if effective == 0 {
         note = masked_note(command);
     }
+    // A label that already names the signal (`exit 143 (SIGTERM)`) does not
+    // need the note to say it again: `terminated`, not `terminated (SIGTERM)`.
+    if let Some(n) = note.as_mut()
+        && let Some(i) = n.find(" (SIG")
+        && n.ends_with(')')
+        && label.contains(&n[i + 1..])
+    {
+        n.truncate(i);
+    }
     // `ls` exit 2 ("No such file") is deliberately NOT benign: a missing
     // file is a real error, left unannotated.
     ExitReport {

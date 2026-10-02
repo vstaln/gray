@@ -30,7 +30,15 @@ fn sigterm_maps_to_143() {
     let r = exit_report(sig(15), "sh -c 'kill -15 $$'");
     assert_eq!(r.effective, 143);
     assert!(r.label.contains("SIGTERM"), "{}", r.label);
-    assert!(r.note.as_deref().unwrap_or("").contains("terminated"));
+    // The label already names the signal; the note does not repeat it.
+    assert_eq!(r.note.as_deref(), Some("terminated"));
+}
+
+#[test]
+fn a_shell_spelled_143_keeps_the_signal_in_the_note() {
+    let r = exit_report(code(143), "sh -c 'exit 143'");
+    assert_eq!(r.label, "exit 143");
+    assert_eq!(r.note.as_deref(), Some("terminated (SIGTERM)"));
 }
 
 #[test]

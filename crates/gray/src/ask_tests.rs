@@ -114,7 +114,7 @@ async fn handle_ask_rejects_bad_shape() {
 async fn handle_ask_without_service_errors_loudly() {
     let _guard = ASK_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     crate::ask::shutdown(); // ensure no service
-    let r = crate::ask::handle_ask(serde_json::json!({"questions": []})).await;
+    let _ = crate::ask::handle_ask(serde_json::json!({"questions": []})).await;
     // empty short-circuits before the service check… so install nothing and
     // ask a real question instead:
     let r = crate::ask::handle_ask(

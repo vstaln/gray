@@ -413,7 +413,12 @@ impl Agent {
                 system: (!self.system_text().is_empty()).then(|| self.system_text().to_string()),
                 messages: request_messages,
                 tools: self.tools.clone(),
+                max_tokens: None,
             };
+            // The exact request, kept for a cache refresh while this round's
+            // tools run (pi cache warming). Only cloned when warming is on.
+            let warm_req = self.cache_warm.is_some().then(|| req.clone());
+            let request_sent = tokio::time::Instant::now();
 
             // Accumulate streamed deltas: text chunks in order, tool calls
             // keyed by their stream index (id/name arrive once, arguments
@@ -930,15 +935,30 @@ impl Agent {
                     .map(|(i, _)| crate::parallel::Segment::Single(i))
                     .collect()
             };
+            let warm_spent = std::sync::Arc::new(std::sync::Mutex::new(Usage::default()));
+            let warm_guard = match (&self.cache_warm, warm_req) {
+                (Some(policy), Some(req)) => Some(crate::cache_warm::WarmGuard(tokio::spawn(
+                    crate::cache_warm::keep_warm(
+                        self.provider.clone(),
+                        req,
+                        policy.clone(),
+                        total_usage.input_tokens,
+                        request_sent,
+                        warm_spent.clone(),
+                    ),
+                ))),
+                _ => None,
+            };
             for segment in segments {
                 // Parallel run over `tool_uses` indices. Pre-pass (loop
                 // thread, in order): cancel check, validation, `tool_before`
                 // verdicts, `pre_tool` hooks. Only `executor.execute` runs
                 // concurrently — never `ApprovalGate::check`: batchable names
-                // are statically `Allow` in every mode. Post-pass (loop
-                // thread, input order): `tool_call_end` emission (`start`
-                // already emitted live/at-finalize with the final ID),
-                // `post_tool` hooks, `tool_result` events, history writes.
+                // are statically `Allow` in every mode. `tool_call_end` for
+                // every ready member fires before the run starts (`start`
+                // already emitted live/at-finalize with the final ID).
+                // Post-pass (loop thread, input order): `post_tool` hooks,
+                // `tool_result` events, history writes.
                 if let crate::parallel::Segment::Parallel(idxs) = segment {
                     let (Some(run_start), Some(run_end)) =
                         (idxs.first().copied(), idxs.last().map(|i| *i + 1))
@@ -979,6 +999,14 @@ impl Agent {
                         answer_pending_tools(self, &tool_uses, run_end, "cancelled by user");
                         self.emit_turn_end(&billed).await;
                         return Err(CoreError::Cancelled);
+                    }
+                    // `tool_call_end` is the "args complete, executing" signal
+                    // (the REPL flips the card to running and the status off
+                    // "Preparing tool"): emit it for every member now, before
+                    // the run starts — not after the slowest one finishes.
+                    for (idx, _, _) in &ready {
+                        let (id, _, args) = &tool_uses[*idx];
+                        emit!(AgentEvent::tool_call_end(id.clone(), args.clone()));
                     }
                     // Spawn: one future per ready item. Everything the future
                     // touches is owned (`'static`): no borrow of `self`
@@ -1041,7 +1069,6 @@ impl Agent {
                                 for hook in &self.hooks {
                                     hook.post_tool(name, output).await;
                                 }
-                                emit!(AgentEvent::tool_call_end(id.clone(), args.clone()));
                                 emit!(AgentEvent::tool_result(
                                     id.clone(),
                                     output.content.clone(),
@@ -1161,6 +1188,12 @@ impl Agent {
                     role: Role::User,
                     content: output.message_blocks(id),
                 });
+            }
+
+            // Tools done: stop warming and bill what the refreshes cost.
+            drop(warm_guard);
+            if let Ok(spent) = warm_spent.lock() {
+                billed.accumulate(&spent);
             }
 
             // Repeat guard, run-scoped: the same call returning the same

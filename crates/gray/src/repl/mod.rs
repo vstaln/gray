@@ -688,7 +688,9 @@ pub async fn run_repl_mode(
     // can never `tokio::spawn`. Fires claim through the store's at-most-once
     // contract, so a concurrent `tick`/`serve` simply sees nothing due.
     // Results surface via the host/say queue drained at the top of the loop
-    // (new chat lines in the session's own right, never transcript).
+    // (new chat lines in the session's own right, never transcript); a job
+    // whose origin is this session comes back through its inbox instead, as
+    // a card plus a turn (see `cron::idle_wake`).
     // No join on exit: process return terminates the thread, and an
     // in-flight fire's claim TTL (300s) lets the next ticker reclaim it.
     // File-only cron management remains usable on Windows; automatic firing
@@ -698,6 +700,20 @@ pub async fn run_repl_mode(
         if let Ok(home) = crate::setup::gray_home()
             && let Ok(store) = crate::cron::CronStore::open(home.join("cron"))
         {
+            // Session-origin deliveries land in `cron/inbox/<session>` from
+            // whichever ticker fired them (this one, the gateway, `serve`):
+            // poll this session's inbox and wake the idle prompt.
+            let inbox_home = home.clone();
+            tokio::spawn(async move {
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                    if let Some(sid) = crate::host::live_session()
+                        && crate::cron_serve::session_inbox_pending(&inbox_home, &sid)
+                    {
+                        crate::host::request_wake();
+                    }
+                }
+            });
             std::thread::spawn(move || {
                 let Ok(rt) = tokio::runtime::Builder::new_current_thread()
                     .enable_all()
@@ -767,12 +783,59 @@ pub async fn run_repl_mode(
     // True when the last turn was interrupted (Ctrl-C) or errored: bare
     // Enter resends [`CONTINUE_PROMPT`] instead of being a no-op.
     let mut last_turn_resumable = false;
+    // The waiter that wakes the idle prompt when a background job settles.
+    let mut bg_wake: Option<tokio::task::JoinHandle<()>> = None;
 
     loop {
+        // Cleared before anything is drained: a wake raised after this point
+        // survives to the next pass instead of being swallowed.
+        crate::host::clear_wake();
         // Plugin-initiated `host/say` lines queued while a turn ran (cron
         // reports) surface here, through the composer when it owns the screen.
         for line in crate::host::take_host_say() {
             say(tui.as_ref().map(|(s, _)| s), &line);
+        }
+        // Idle point (no queued input): a cron delivery for this session or a
+        // finished background job paints a card and starts a turn on its own,
+        // Claude Code-style. Mid-turn arrivals wait here; nothing interrupts.
+        if interactive && pending_command.is_none() {
+            let sid = session_state
+                .as_ref()
+                .map(|s| s.session_id.as_str().to_string());
+            crate::host::set_live_session(sid.as_deref());
+            if let Some(h) = bg_wake.take() {
+                h.abort();
+            }
+            // Armed before draining: a job settling in between still wakes.
+            bg_wake = cron::arm_background_wake(agent.as_ref(), sid.as_deref(), &cwd);
+            if let Some((cards, prompt)) = cron::idle_wake(agent.as_ref(), sid.as_deref(), &cwd) {
+                for card in &cards {
+                    say(tui.as_ref().map(|(s, _)| s), card);
+                }
+                if let Some(msg) =
+                    crate::turn_caps::check_caps(config, session_totals.turns, session_totals.cost)
+                {
+                    say(tui.as_ref().map(|(s, _)| s), &msg);
+                } else {
+                    prompt_turn::run_prompt_turn(
+                        prompt,
+                        &mut Vec::new(),
+                        &mut agent,
+                        config,
+                        &cwd,
+                        &tui,
+                        interactive,
+                        &mut session_state,
+                        &mut session_totals,
+                        &mut pending_command,
+                        &mut pending_history,
+                        &mut unconfigured,
+                        &mut last_turn_resumable,
+                    )
+                    .await?;
+                }
+                continue;
+            }
         }
         let cmd = if let Some(c) = pending_command.take() {
             c
@@ -801,6 +864,12 @@ pub async fn run_repl_mode(
                             break;
                         }
                     };
+                    // An idle wake hands back an empty prompt: go round to the
+                    // loop top, which paints and/or runs the turn. (A bare
+                    // Enter that coincides with a wake yields to it.)
+                    if pair.0.is_empty() && pair.1.is_empty() && crate::host::wake_requested() {
+                        continue;
+                    }
                     // Flag stop for background tickers; with per-event locking a
                     // final ticker draw may still slip in before shutdown clears.
                     if matches!(parse_command(&pair.0), ReplCommand::Quit) {

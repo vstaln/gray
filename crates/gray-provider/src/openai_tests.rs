@@ -19,6 +19,7 @@ fn structured_input_is_mapped_as_marked_user_text_in_both_request_shapes() {
             }],
         )],
         tools: Vec::new(),
+        max_tokens: None,
     };
 
     let chat = serde_json::to_value(map_chat_request(request.clone(), "test-model", None).unwrap())
@@ -141,6 +142,7 @@ async fn retry_burst_emits_a_single_reconnect_notice() {
         system: None,
         messages: Vec::new(),
         tools: Vec::new(),
+        max_tokens: None,
     };
     let events: Vec<_> = provider.stream(req).collect().await;
     let notices = events
@@ -175,6 +177,7 @@ async fn session_header_sent_on_chat_post() {
         system: None,
         messages: Vec::new(),
         tools: Vec::new(),
+        max_tokens: None,
     };
     let _events: Vec<_> = provider.stream(req).collect().await;
     let received = server.received_requests().await.expect("requests recorded");
@@ -209,6 +212,7 @@ fn responses_req_with_thinking(_model: &str) -> ChatRequest {
             ],
         }],
         tools: Vec::new(),
+        max_tokens: None,
     }
 }
 
@@ -493,6 +497,7 @@ fn empty_chat_req() -> gray_core::message::ChatRequest {
         system: None,
         messages: Vec::new(),
         tools: Vec::new(),
+        max_tokens: None,
     }
 }
 
@@ -702,6 +707,7 @@ fn chat_mapping_user_and_system_roles_map_without_panic() {
             gray_core::message::Message::system("be nice"),
         ],
         tools: Vec::new(),
+        max_tokens: None,
     };
     let body = map_chat_request(req, "test-model", None).expect("user/system roles map");
     let roles: Vec<&str> = body.messages.iter().map(|m| m.role.as_str()).collect();
@@ -897,6 +903,7 @@ async fn quota_429_body_past_500_chars_terminal_end_to_end() {
         system: None,
         messages: Vec::new(),
         tools: Vec::new(),
+        max_tokens: None,
     };
     let events: Vec<_> = provider.stream(req).collect().await;
     assert_eq!(events.len(), 1, "immediate terminal, no notice: {events:?}");
@@ -932,6 +939,7 @@ async fn dropped_stream_fires_no_retry_post_after_backoff() {
         system: None,
         messages: Vec::new(),
         tools: Vec::new(),
+        max_tokens: None,
     };
     let mut stream = provider.stream(req);
     let first = tokio::time::timeout(Duration::from_secs(10), stream.next())
@@ -981,6 +989,7 @@ async fn chat_post_carries_prompt_cache_key_body() {
         system: None,
         messages: Vec::new(),
         tools: Vec::new(),
+        max_tokens: None,
     };
     let _events: Vec<_> = provider.stream(req).collect().await;
     let received = server.received_requests().await.expect("requests recorded");
@@ -1060,6 +1069,7 @@ fn deepseek_assistant_messages_always_carry_reasoning_content() {
         system: None,
         messages: vec![Message::assistant("hi")],
         tools: Vec::new(),
+        max_tokens: None,
     };
     let last_msg = |v: &serde_json::Value| {
         v.get("messages")
@@ -1098,6 +1108,7 @@ fn deepseek_assistant_messages_always_carry_reasoning_content() {
             ],
         }],
         tools: Vec::new(),
+        max_tokens: None,
     };
     let body = map_chat_request(thinking_req, "deepseek-chat", None).expect("maps");
     let v = serde_json::to_value(&body).expect("serializes");
@@ -1139,6 +1150,7 @@ fn tool_error_flag_survives_chat_wire_encoding() {
             ],
         }],
         tools: Vec::new(),
+        max_tokens: None,
     };
     let body = map_chat_request(req, "test-model", None).expect("maps");
     let v = serde_json::to_value(&body).expect("serializes");
@@ -1177,6 +1189,7 @@ fn tool_error_flag_survives_chat_wire_encoding() {
             }],
         }],
         tools: Vec::new(),
+        max_tokens: None,
     };
     let body = map_chat_request(req, "test-model", None).expect("maps");
     let v = serde_json::to_value(&body).expect("serializes");
@@ -1216,6 +1229,7 @@ fn tool_error_flag_survives_responses_wire_encoding() {
             ],
         }],
         tools: Vec::new(),
+        max_tokens: None,
     };
     let body = map_chat_to_responses(req, "m1", Some("sess"), None);
     let v = serde_json::to_value(&body).expect("serializes");
@@ -1262,6 +1276,7 @@ async fn oversize_tool_index_is_forwarded_not_silently_dropped() {
         system: None,
         messages: Vec::new(),
         tools: Vec::new(),
+        max_tokens: None,
     };
     let events: Vec<_> = provider.stream(req).collect().await;
     assert!(
@@ -1317,6 +1332,7 @@ async fn responses_twin_ids_require_confirmed_completion() {
             system: None,
             messages: Vec::new(),
             tools: Vec::new(),
+            max_tokens: None,
         };
         let events: Vec<_> = provider.stream(req).collect().await;
         if confirmed {
@@ -1443,6 +1459,7 @@ async fn responses_failure_event_is_an_error_not_endturn() {
         system: None,
         messages: Vec::new(),
         tools: Vec::new(),
+        max_tokens: None,
     };
     let events: Vec<_> = provider.stream(req).collect().await;
     assert!(
@@ -1495,6 +1512,7 @@ fn chat_tool_images_follow_all_tool_results() {
                 }],
             },
         ],
+        max_tokens: None,
     };
     let mapped = map_chat_request(request, "test", None).unwrap();
     let value = serde_json::to_value(mapped).unwrap();
@@ -1752,31 +1770,48 @@ fn cached_turn_req() -> gray_core::message::ChatRequest {
             "run",
             serde_json::json!({"type": "object"}),
         )],
+        max_tokens: None,
     }
 }
 
 #[test]
-fn no_model_carries_cache_control() {
-    // The Anthropic `cache_control` breakpoint path was removed: prompt-cache
-    // affinity rides the Responses `prompt_cache_key` alone, so no model — and
-    // specifically not Claude/Anthropic — may emit a `cache_control` marker,
-    // and plain string content must stay a string (never promoted to a
-    // one-part array).
-    for model in ["anthropic/claude-sonnet-4.5", "openai/gpt-5"] {
-        let body = map_chat_request(cached_turn_req(), model, None).expect("maps");
-        let v = serde_json::to_value(&body).expect("serializes");
-        assert!(!v.to_string().contains("cache_control"), "{model}: {v}");
-        let msgs = v["messages"].as_array().expect("messages");
-        assert_eq!(msgs[0]["role"], "system");
-        assert_eq!(
-            msgs[0]["content"], "sys",
-            "{model}: plain string content kept"
-        );
-        assert_eq!(
-            v["tools"][0]["function"]["name"], "bash",
-            "{model}: tool def intact"
-        );
-    }
+fn anthropic_cache_control_rides_content_parts() {
+    // pi `applyAnthropicCacheControl`: Claude caches only at `cache_control`
+    // breakpoints (it ignores `prompt_cache_key`), and OpenRouter/Anthropic
+    // read the marker on content blocks only. Breakpoints: system, last tool,
+    // last message.
+    let model = "anthropic/claude-sonnet-4.5";
+    let body = map_chat_request(cached_turn_req(), model, None).expect("maps");
+    let v = serde_json::to_value(&body).expect("serializes");
+    let msgs = v["messages"].as_array().expect("messages");
+    assert!(
+        msgs.iter().all(|m| m.get("cache_control").is_none()),
+        "never on the message object: {v}"
+    );
+    assert_eq!(msgs[0]["role"], "system");
+    assert_eq!(msgs[0]["content"][0]["text"], "sys");
+    assert_eq!(msgs[0]["content"][0]["cache_control"]["type"], "ephemeral");
+    let last = msgs.last().expect("tool result is last");
+    assert_eq!(last["role"], "tool");
+    assert_eq!(last["content"][0]["cache_control"]["type"], "ephemeral");
+    let marked = msgs
+        .iter()
+        .filter(|m| m.to_string().contains("cache_control"))
+        .count();
+    assert_eq!(marked, 2, "system + last message only: {v}");
+    assert_eq!(v["tools"][0]["cache_control"]["type"], "ephemeral");
+}
+
+#[test]
+fn non_anthropic_models_carry_no_cache_control() {
+    let body = map_chat_request(cached_turn_req(), "openai/gpt-5", None).expect("maps");
+    let v = serde_json::to_value(&body).expect("serializes");
+    assert!(!v.to_string().contains("cache_control"), "{v}");
+    assert_eq!(
+        v["messages"][0]["content"], "sys",
+        "plain string content kept"
+    );
+    assert_eq!(v["tools"][0]["function"]["name"], "bash", "tool def intact");
 }
 
 #[test]
@@ -1871,6 +1906,7 @@ async fn a_truncated_body_retries_when_nothing_was_emitted() {
         system: None,
         messages: Vec::new(),
         tools: Vec::new(),
+        max_tokens: None,
     };
     let events: Vec<_> = provider.stream(req).collect().await;
     let text: String = events
@@ -1924,6 +1960,7 @@ async fn a_truncated_body_after_delta_completes_with_a_notice() {
         system: None,
         messages: Vec::new(),
         tools: Vec::new(),
+        max_tokens: None,
     };
     let events: Vec<_> = provider.stream(req).collect().await;
     let text: String = events
@@ -2168,6 +2205,7 @@ async fn dynamic_codex_profile_sends_declared_transport() {
             vec![ContentBlock::Text { text: "hi".into() }],
         )],
         tools: Vec::new(),
+        max_tokens: None,
     };
     let mut stream = provider.stream(request);
     match stream.next().await.unwrap() {
@@ -2237,6 +2275,7 @@ fn a_video_block_reaches_the_wire_only_for_a_video_model() {
             vec![ContentBlock::video("video/mp4", "QUJD")],
         )],
         tools: Vec::new(),
+        max_tokens: None,
     };
 
     // Gemini: a real video_url part carrying the data URL.
@@ -2261,4 +2300,32 @@ fn a_video_block_reaches_the_wire_only_for_a_video_model() {
     let text = body["input"][0]["content"].as_str().unwrap_or_default();
     assert!(text.contains("no native video input"), "{text}");
     let _ = model_accepts_video("gemini-3-pro");
+}
+
+#[test]
+fn http_errors_show_the_providers_sentence_not_its_json() {
+    let body = r#"{"error": {"message": "Rate limit reached for requests per min (RPM). Please try again in 1s.", "type": "requests", "code": "rate_limit_exceeded"}}"#;
+    let err = classify_http_error(reqwest::StatusCode::TOO_MANY_REQUESTS, body, None, None);
+    let ProviderError::RateLimited(msg) = err else {
+        panic!("{err:?}")
+    };
+    assert_eq!(
+        msg,
+        "status 429 Too Many Requests: Rate limit reached for requests per min (RPM). Please try again in 1s."
+    );
+    // Classification still reads the whole body: a quota code in the JSON is
+    // terminal even when the sentence does not say so.
+    let quota = r#"{"error": {"message": "slow down", "code": "insufficient_quota"}}"#;
+    assert!(matches!(
+        classify_http_error(reqwest::StatusCode::TOO_MANY_REQUESTS, quota, None, None),
+        ProviderError::Auth(_)
+    ));
+    // Plain-text bodies pass through unchanged.
+    let plain = classify_http_error(
+        reqwest::StatusCode::BAD_GATEWAY,
+        "upstream down",
+        None,
+        None,
+    );
+    assert!(plain.to_string().contains("upstream down"), "{plain}");
 }

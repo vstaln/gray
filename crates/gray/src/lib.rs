@@ -84,11 +84,10 @@ Guidelines:
 - Be concise.
 
 - Long commands: `action=run` + `command` + `background=true`; the returned `job_id` takes `status`, `output`, or `cancel` — never send `command` or `timeout` to those follow-up actions. Wait with `output` + `wait_ms`, not `sleep`.
-- Batch independent calls into one turn; they run concurrently unless they might clash, which is serialized for you.
 - Keep going without asking until done or truly blocked; a failed call means try differently, not give up.
 - A file changing under you: re-read and reconcile.
 - Probes are one-shot: if the environment blocks something, probe once, record it, spend the rest on the work.
-Cron: to schedule recurring work, run `gray cron add "<schedule>" "<prompt>"` (manage with `gray cron list/show/remove`). For "remind me ..." run exactly ONE command and do not explore first: `gray cron add "in 2m" "the user's exact words" --reminder`. The text is stored and delivered verbatim with no model turn, so never reword it, never fix typos, never pass --name, never run `gray cron --help` first.
+Cron: to schedule recurring work, run `gray cron add "<schedule>" "<prompt>"` (manage with `gray cron list/show/remove`). For "remind me ..." run exactly ONE command and do not explore first: `gray cron add "in 2m" "the user's exact words" --reminder`. The text is stored and delivered verbatim with no model turn, so never reword it, never fix typos, never pass --name, never run `gray cron --help` first. A job added from this chat reports back to it on its own: the result arrives as a `[Cron delivery: <name>]` message (a finished background job as `[Background task notification]`) and you get a turn to relay it, so end your turn instead of sleeping or polling, and leave out `--deliver` (`local` only writes a file nobody sees).
 "#;
 
 /// Resolves the user's system-prompt file path (`$GRAY_HOME` or `$HOME/.gray`) + `AGENTS.md`.
@@ -174,6 +173,36 @@ pub use gray_plugin::builder::{
 ///
 /// Errors here are user-configuration problems (missing model or API key), so the
 /// message is written for a human, not a log file.
+/// Prompt-cache warming (pi parity) for a build, or `None`. pi gives a cache
+/// lifetime only to the native Anthropic Messages API (5 min), and replays a
+/// request only when the one-token cap leaves its cache entry untouched,
+/// which a thinking budget does not. `GRAY_NO_CACHE_WARM=1` turns it off.
+fn cache_warm_policy(
+    config: &Config,
+    model: &str,
+    effort: Option<&str>,
+) -> Option<gray_core::cache_warm::CacheWarmPolicy> {
+    let native = !config.uses_plugin_credentials()
+        && gray_provider::anthropic::is_anthropic_base_url(&config.base_url);
+    let replayable = matches!(effort, None | Some("off"));
+    if !native || !replayable || std::env::var_os("GRAY_NO_CACHE_WARM").is_some() {
+        return None;
+    }
+    let model = model.to_string();
+    Some(gray_core::cache_warm::CacheWarmPolicy {
+        ttl: std::time::Duration::from_secs(5 * 60),
+        prices: std::sync::Arc::new(move || {
+            let r = crate::setup::get_model_rate(&model)?;
+            r.has_cache_prices.then_some(gray_core::cache_warm::Prices {
+                input: r.input,
+                output: r.output,
+                cache_read: r.cache_read,
+                cache_write: r.cache_write,
+            })
+        }),
+    })
+}
+
 pub async fn build_agent(
     config: &Config,
     cwd: &Path,
@@ -214,14 +243,16 @@ pub async fn build_agent(
     } else {
         None
     };
+    let reasoning_effort = config
+        .thinking_effort
+        .as_deref()
+        .map(|effort| crate::setup::clamp_thinking_level(model, effort).to_string());
+    let cache_warm = cache_warm_policy(config, model, reasoning_effort.as_deref());
     let agent = gray_plugin::builder::build_agent(gray_plugin::builder::BuilderOptions {
         model: model.clone(),
         api_key: api_key.to_string(),
         base_url: config.base_url.clone(),
-        reasoning_effort: config
-            .thinking_effort
-            .as_deref()
-            .map(|effort| crate::setup::clamp_thinking_level(model, effort).to_string()),
+        reasoning_effort,
         temperature: config.temperature,
         top_p: config.top_p,
         context_window: Some(crate::setup::context::resolve_model_context_length(model)),
@@ -268,7 +299,9 @@ pub async fn build_agent(
     // Bash bounds an explicitly requested timeout at 3600 s (and has no
     // default), so the agent-level timeout must sit above that (P2B
     // requirement): it is a last-resort stop, never a budget.
-    Ok(agent.with_tool_timeout(crate::shell_drain::SHELL_TOOL_TIMEOUT))
+    Ok(agent
+        .with_tool_timeout(crate::shell_drain::SHELL_TOOL_TIMEOUT)
+        .with_cache_warm(cache_warm))
 }
 
 /// Command-line arguments for the Gray harness.
@@ -603,7 +636,7 @@ pub enum CronCmd {
         schedule: String,
         /// Prompt the daemon runs at fire time
         prompt: String,
-        /// Delivery target: local saves a file; origin appends to --origin-session then saves (anything else saves only)
+        /// Delivery target. Default inside a gray chat: back into that chat — the result arrives as a new message and the agent gets a turn (no need to sleep or poll). local: only saves a file under cron/output, nobody is told; origin: to --origin-session (anything else saves only)
         #[arg(long)]
         deliver: Option<String>,
         /// Origin chat session id (required with --deliver origin)

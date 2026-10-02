@@ -146,6 +146,67 @@ pub(crate) fn run_cron_modal(
     )
 }
 
+fn idle_ctx(cwd: &Path, sid: &str) -> gray_core::agent::ToolContext {
+    gray_core::agent::ToolContext {
+        cwd: cwd.to_path_buf(),
+        cancel: tokio_util::sync::CancellationToken::new(),
+        session_id: Some(sid.to_string()),
+    }
+}
+
+/// What the idle REPL owes the model, as `(cards, prompt)`: cron deliveries
+/// waiting in this session's inbox, then background-job notices nobody has
+/// drained since the last turn. The cards paint first; the prompt (user-role,
+/// persisted like a typed one) starts a turn so the model reacts in chat.
+pub(super) fn idle_wake(
+    agent: Option<&gray_core::agent::Agent>,
+    sid: Option<&str>,
+    cwd: &Path,
+) -> Option<(Vec<String>, String)> {
+    let sid = sid?;
+    let mut cards = Vec::new();
+    let mut prompts = Vec::new();
+    if let Ok(home) = crate::setup::gray_home() {
+        for (card, prompt) in crate::cron_serve::drain_session_inbox(&home, sid) {
+            cards.push(card);
+            prompts.push(prompt);
+        }
+    }
+    if let Some(agent) = agent {
+        for notice in agent.drain_background_notifications(&idle_ctx(cwd, sid)) {
+            cards.push(format!(
+                "\u{2699} {}",
+                notice
+                    .split_once(". ")
+                    .map_or(notice.as_str(), |(head, _)| head)
+            ));
+            // Same framing the agent loop gives a notice it drains mid-run.
+            prompts.push(format!("[Background task notification]\n{notice}"));
+        }
+    }
+    (!prompts.is_empty()).then(|| (cards, prompts.join("\n\n")))
+}
+
+/// Arms the idle wake for background jobs: while the session has unfinished
+/// jobs, a task waits for the first to settle and wakes the prompt. Re-armed
+/// at every idle point (the caller aborts the previous one), so jobs started
+/// during the last turn are covered.
+pub(super) fn arm_background_wake(
+    agent: Option<&gray_core::agent::Agent>,
+    sid: Option<&str>,
+    cwd: &Path,
+) -> Option<tokio::task::JoinHandle<()>> {
+    // ponytail: one day, then the wait lapses until the next idle point
+    // re-arms it; a job outliving that needs a re-arm loop.
+    let wait =
+        agent?.background_wake(&idle_ctx(cwd, sid?), std::time::Duration::from_secs(86_400))?;
+    Some(tokio::spawn(async move {
+        if wait.await.is_some() {
+            crate::host::request_wake();
+        }
+    }))
+}
+
 #[path = "cron_tests.rs"]
 #[cfg(test)]
 mod tests;

@@ -556,7 +556,10 @@ pub(crate) fn dispatch_agent_event(
                 t.end_thinking();
                 t.mark_stream_round_boundary();
                 t.set_status(Some("Reconnecting"));
-                if !details.is_empty() {
+                // One row per distinct cause: a retry burst repeating the same
+                // 429 is one line, not one per attempt.
+                if !details.is_empty() && t.last_retry_detail.as_deref() != Some(details.as_str()) {
+                    t.last_retry_detail = Some(details.clone());
                     let trunc = crate::repl::format::truncate_chars(details, 200);
                     t.push_dim(format!("└ {trunc}"));
                 }

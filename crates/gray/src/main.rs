@@ -494,6 +494,19 @@ fn origin_from_env() -> Option<gray::cron::store::Origin> {
     })
 }
 
+/// The gray session running this command (`GRAY_SESSION_ID`, exported to
+/// every bash-tool child), as a [`gray::cron_serve::SESSION_PLATFORM`] origin.
+fn session_origin_from_env() -> Option<gray::cron::store::Origin> {
+    let sid = std::env::var("GRAY_SESSION_ID").ok()?;
+    let sid = sid.trim();
+    (!sid.is_empty()).then(|| gray::cron::store::Origin {
+        platform: gray::cron_serve::SESSION_PLATFORM.to_string(),
+        chat: sid.to_string(),
+        thread: None,
+        route: None,
+    })
+}
+
 /// Default job name: prompt's first line, truncated to the store's 50-char cap.
 fn default_job_name(prompt: &str) -> String {
     let name: String = prompt
@@ -613,8 +626,11 @@ async fn run_cron(cmd: gray::CronCmd, config: &gray::config::Config) -> anyhow::
             // A host (a chat plugin) declares the chat a job belongs to in
             // the environment, so the model can add a job with a plain
             // `gray cron add <schedule> <prompt>` and still have it come
-            // back to the conversation. Explicit flags always win.
-            let env_origin = origin_from_env();
+            // back to the conversation. Explicit flags always win. Inside a
+            // gray session (the bash tool exports `GRAY_SESSION_ID`) the
+            // conversation is that session: the REPL showing it gets the
+            // result as a new message and a turn.
+            let env_origin = origin_from_env().or_else(session_origin_from_env);
             let deliver_kind = match (&deliver, &env_origin) {
                 (None, Some(_)) => gray::cron::Deliver::Origin,
                 _ => parse_deliver_flag(deliver.as_deref()),

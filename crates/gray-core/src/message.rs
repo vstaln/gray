@@ -319,4 +319,8 @@ pub struct ChatRequest {
     pub messages: Vec<Message>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tools: Vec<ToolDef>,
+    /// Output cap for this one request (`None` = the provider default). Set
+    /// only by the cache warmer, which replays a request for one token.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_tokens: Option<u32>,
 }

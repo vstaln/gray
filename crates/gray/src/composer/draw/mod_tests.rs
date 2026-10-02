@@ -177,7 +177,7 @@ fn live_card_has_one_left_padding_cell() {
 
 #[test]
 fn footer_badge_snapshot_freezes_the_right_segment_mid_turn() {
-    use crate::setup::context::{cache_model_reasoning, model_supports_reasoning};
+    use crate::setup::context::model_supports_reasoning;
 
     let live_model = "footer-badge-tests/live-flag-model";
     // The flag under the badge is a process-global cache that background
