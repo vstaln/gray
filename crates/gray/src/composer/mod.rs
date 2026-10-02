@@ -263,6 +263,21 @@ pub(crate) fn live_tool_rows(tools: &[LiveTool], elapsed: Duration) -> Vec<Line<
         .collect()
 }
 
+/// Band rows the live card at `pos` occupies at terminal width `w`: its
+/// header as drawn (a running card reads `⬡ Running …`, four cells longer
+/// than the stored `⬢ Ran …`), wrapped at the band's `w - 4`. Measuring the
+/// stored header undercounted a header that only the `Running` label pushed
+/// onto a second row, and the committed card then sat on a stray blank row.
+pub(crate) fn live_card_band_rows(tools: &[LiveTool], pos: usize, w: usize) -> usize {
+    live_tool_rows(tools, Duration::ZERO)
+        .get(pos)
+        .map_or(0, |line| {
+            crate::composer::transcript::wrap_styled_line(line.clone(), w.saturating_sub(4).max(1))
+                .len()
+                .max(1)
+        })
+}
+
 /// Overflow count past [`MAX_LIVE_TOOLS`] (pure companion for tests).
 pub(crate) fn live_tool_overflow(len: usize) -> usize {
     len.saturating_sub(MAX_LIVE_TOOLS)
@@ -1028,13 +1043,7 @@ impl Tui {
             // the dock (the extra margin under every tool call). Past the cap the
             // viewport reflows by more than this card, so no hint there.
             if self.live_tools.len() <= MAX_LIVE_TOOLS {
-                let wrap_w = self.width().saturating_sub(4).max(1);
-                let rows = crate::composer::transcript::wrap_styled_line(
-                    self.live_tools[pos].header.clone(),
-                    wrap_w,
-                )
-                .len()
-                .max(1);
+                let rows = live_card_band_rows(&self.live_tools, pos, self.width());
                 self.terminal
                     .hint_shrink(u16::try_from(rows).unwrap_or(u16::MAX));
             }
