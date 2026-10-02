@@ -285,3 +285,57 @@ fn every_command_the_skill_shows_actually_parses() {
             .unwrap_or_else(|e| panic!("gray-skill.md shows `{}`: {e}", argv.join(" ")));
     }
 }
+
+fn warm_config(base_url: &str, effort: Option<&str>, plugin: bool) -> Config {
+    Config {
+        temperature: None,
+        top_p: None,
+        model: Some("openai/gpt-5".into()),
+        base_url: base_url.into(),
+        api_key: Some("sk-test".into()),
+        provider_id: if plugin { "p".into() } else { String::new() },
+        credential_source: if plugin { "plugin".into() } else { String::new() },
+        auth_ref: if plugin { "auth".into() } else { String::new() },
+        thinking_effort: effort.map(str::to_string),
+        show_reasoning: None,
+        context_window: None,
+        context_reserve: None,
+        context_keep: None,
+        exec_prefix: None,
+        max_turns: None,
+        max_cost_micros: None,
+        max_wall_secs: None,
+    }
+}
+
+#[test]
+fn cache_warm_covers_openai_compatible_hosts() {
+    // GRAY_NO_CACHE_WARM must be unset for the Some-legs; the None-legs hold either way.
+    if std::env::var_os("GRAY_NO_CACHE_WARM").is_some() {
+        return;
+    }
+    for host in [
+        "https://api.openai.com/v1",
+        "https://api.commandcode.ai/provider/v1",
+        "https://openrouter.ai/api/v1",
+        "https://api.anthropic.com/v1",
+        "http://localhost:11434/v1",
+    ] {
+        assert!(
+            cache_warm_policy(&warm_config(host, Some("off"), false), "openai/gpt-5", Some("off")).is_some(),
+            "warms on {host}"
+        );
+        assert!(
+            cache_warm_policy(&warm_config(host, None, false), "openai/gpt-5", None).is_some(),
+            "warms on {host} without effort"
+        );
+    }
+}
+
+#[test]
+fn cache_warm_stays_off_for_plugin_creds_and_thinking() {
+    let url = "https://api.openai.com/v1";
+    assert!(cache_warm_policy(&warm_config(url, Some("off"), true), "openai/gpt-5", Some("off")).is_none());
+    assert!(cache_warm_policy(&warm_config(url, Some("max"), false), "openai/gpt-5", Some("max")).is_none());
+    assert!(cache_warm_policy(&warm_config(url, Some("high"), false), "openai/gpt-5", Some("high")).is_none());
+}
