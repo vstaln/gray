@@ -1076,7 +1076,7 @@ dependencies = [
 
 [[package]]
 name = "gray"
-version = "0.1.11"
+version = "0.1.10"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1116,7 +1116,7 @@ dependencies = [
 
 [[package]]
 name = "gray-core"
-version = "0.1.11"
+version = "0.1.10"
 dependencies = [
  "async-trait",
  "futures",
@@ -1133,7 +1133,7 @@ dependencies = [
 
 [[package]]
 name = "gray-markdown"
-version = "0.1.11"
+version = "0.1.10"
 dependencies = [
  "anstyle",
  "anstyle-lossy",
@@ -1153,7 +1153,7 @@ dependencies = [
 
 [[package]]
 name = "gray-pkg"
-version = "0.1.11"
+version = "0.1.10"
 dependencies = [
  "anyhow",
  "axum",
@@ -1172,7 +1172,7 @@ dependencies = [
 
 [[package]]
 name = "gray-plugin"
-version = "0.1.11"
+version = "0.1.10"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1193,7 +1193,7 @@ dependencies = [
 
 [[package]]
 name = "gray-provider"
-version = "0.1.11"
+version = "0.1.10"
 dependencies = [
  "async-trait",
  "eventsource-stream",
@@ -1209,7 +1209,7 @@ dependencies = [
 
 [[package]]
 name = "gray-tools"
-version = "0.1.11"
+version = "0.1.10"
 dependencies = [
  "async-trait",
  "base64",
