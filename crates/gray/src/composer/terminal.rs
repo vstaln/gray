@@ -55,6 +55,10 @@ where
     /// next scrollback insert draws into them, so a shrink never leaves a
     /// permanent blank gap (the doubled margin).
     blank_above: u16,
+    /// The height the band last asked for. On a full screen a shrink is
+    /// held (see `held_height`): the band keeps its rows and the surplus
+    /// is spent by the next scrollback inserts instead.
+    wanted_height: u16,
 }
 
 impl<B> Drop for CustomTerminal<B>
@@ -98,6 +102,7 @@ where
             last_known_screen_size: screen_size,
             band_dirty: false,
             blank_above: 0,
+            wanted_height: height,
         };
         term.set_viewport_area(viewport_area);
         Ok(term)
@@ -109,9 +114,33 @@ where
         self.viewport_area = area;
     }
 
+    /// The height to give the band when it asks for `height`. A shrink on a
+    /// full screen (transcript flush against the band, band flush against
+    /// the bottom) is held: sliding the band down would open the rows it
+    /// gave up *between* the transcript and the dock, and they stay blank
+    /// until something is inserted to fill them, which mid-turn can be a
+    /// long wait (a queued multi-line prompt shrinking the input box under
+    /// a paused Thinking dock). Held, the spare rows sit below the footer
+    /// (the frame clears them) and `insert_before` spends them first. A
+    /// short transcript keeps the band pinned to the bottom as before.
+    fn held_height(&self, height: u16, screen_size: Size) -> u16 {
+        let area = self.viewport_area;
+        let full = self.blank_above == 0
+            && area.y > 0
+            && area.bottom() == screen_size.height
+            && screen_size == self.last_known_screen_size;
+        if full && height < area.height {
+            area.height
+        } else {
+            height
+        }
+    }
+
     pub fn set_viewport_height(&mut self, height: u16, screen_size: Size) -> io::Result<()> {
+        let height = height.min(screen_size.height);
+        self.wanted_height = height;
         let mut area = self.viewport_area;
-        area.height = height.min(screen_size.height);
+        area.height = self.held_height(height, screen_size);
         area.width = screen_size.width;
 
         // Grow up into known-blank rows first: they hold no transcript, so
@@ -166,9 +195,14 @@ where
                 } else {
                     self.viewport_area.as_position()
                 };
+                // Move first: the clear judges "above the blank rows"
+                // against the band's top, and the old top made a band that
+                // rose into the blank rows forget the ones still left.
+                self.set_viewport_area(area);
                 self.clear_after_position(clear_pos)?;
+            } else {
+                self.set_viewport_area(area);
             }
-            self.set_viewport_area(area);
         }
 
         Ok(())
@@ -280,6 +314,24 @@ where
     {
         if height == 0 {
             return Ok(());
+        }
+
+        // A held shrink is spent here: the band gives up its surplus rows
+        // (up to the rows being inserted) at its top, and the insert draws
+        // into exactly those rows, so the gap above the dock stays one row.
+        let slack = self
+            .viewport_area
+            .height
+            .saturating_sub(self.wanted_height)
+            .min(height);
+        if slack > 0 {
+            let area = Rect {
+                y: self.viewport_area.y + slack,
+                height: self.viewport_area.height - slack,
+                ..self.viewport_area
+            };
+            self.set_viewport_area(area);
+            self.blank_above = self.blank_above.saturating_add(slack);
         }
 
         let width = self.viewport_area.width.max(1);
@@ -578,10 +630,10 @@ mod tests {
 
     /// Committing a live tool card: the card's rows leave the band in the
     /// same batch the committed rows arrive in. Inserted before the band
-    /// shrinks, the commit scrolls the screen and the shrink strands blank
-    /// rows between the committed card and the dock (extra margin under the
-    /// card). Settled first (`draw::settle_band`), the commit fills the rows
-    /// the band gave up, however many that was.
+    /// shrinks, the commit scrolls the screen; the late shrink used to strand
+    /// blank rows between the committed card and the dock, and is now held
+    /// on the full screen instead. Settled first (`draw::settle_band`), the
+    /// commit fills the rows the band gave up, however many that was.
     #[test]
     fn a_settled_card_commit_leaves_no_blank_rows_above_the_band() {
         use ratatui::style::Style;
@@ -601,10 +653,13 @@ mod tests {
             terminal
         };
 
-        let mut stranded = fresh();
-        insert(&mut stranded);
-        stranded.set_viewport_height(6, screen).unwrap();
-        assert_eq!(stranded.blank_above, 2, "shrunk late: two stray blank rows");
+        // Shrunk late, the full screen holds the band's height: no stray
+        // blank rows above it, the surplus waits below the footer.
+        let mut late = fresh();
+        insert(&mut late);
+        late.set_viewport_height(6, screen).unwrap();
+        assert_eq!(late.blank_above, 0, "shrunk late: no stray blank rows");
+        assert_eq!(late.viewport_area.bottom(), 12);
 
         let mut settled = fresh();
         settled.set_viewport_height(6, screen).unwrap();
@@ -616,9 +671,10 @@ mod tests {
 
     /// End of turn: the status dock (2 rows) leaves the band and the footer
     /// plus its trailing gap (2 rows) are committed. Committed before the
-    /// shrink, the footer scrolls in above the docked band and the shrink
-    /// strands a blank row under the gap (the doubled gap after an
-    /// interrupt). Shrunk first, the two rows land in the vacated rows.
+    /// shrink, the footer scrolls in above the docked band, and the shrink
+    /// used to strand a blank row under the gap (the doubled gap after an
+    /// interrupt); it is held now. Shrunk first, the two rows land in the
+    /// vacated rows.
     #[test]
     fn shrinking_before_the_turn_footer_leaves_no_stray_gap() {
         use ratatui::style::Style;
@@ -650,7 +706,7 @@ mod tests {
         let mut late = docked();
         footer(&mut late, 4);
         gap(&mut late);
-        assert_eq!(late.blank_above, 1, "footer before shrink: a stray row");
+        assert_eq!(late.blank_above, 0, "footer before shrink: no stray row");
 
         // New order: the dock leaves first, then the footer and gap.
         let mut early = docked();
@@ -659,6 +715,57 @@ mod tests {
         gap(&mut early);
         assert_eq!(early.blank_above, 0, "shrink first: no stray row");
         assert_eq!(early.viewport_area, Rect::new(0, 8, 10, 4));
+    }
+
+    /// The reported doubled margin: a multi-line follow-up typed and queued
+    /// mid-turn collapses the input box while the dock idles on a paused
+    /// Thinking run. Nothing is inserted, so slid down, the band left the
+    /// rows it gave up blank between the transcript and the dock until the
+    /// next row arrived. On a full screen the band keeps those rows (below
+    /// its footer) and the next inserts spend them.
+    #[test]
+    fn a_shrink_with_nothing_to_insert_keeps_the_dock_under_the_transcript() {
+        use ratatui::style::Style;
+
+        let screen = Size::new(10, 12);
+        let mut terminal = CustomTerminal::with_options(TestBackend::new(10, 12), 7).unwrap();
+        terminal
+            .insert_before(5, |buf| {
+                buf.set_string(0, 4, "t", Style::default());
+            })
+            .unwrap();
+        terminal.set_viewport_height(7, screen).unwrap();
+        assert_eq!(terminal.viewport_area, Rect::new(0, 5, 10, 7));
+
+        // The box collapses: 7 rows wanted, 4 kept. The band stays put,
+        // flush under the transcript's last row.
+        terminal.set_viewport_height(4, screen).unwrap();
+        assert_eq!(terminal.viewport_area, Rect::new(0, 5, 10, 7));
+        assert_eq!(terminal.blank_above, 0, "no blank rows above the dock");
+
+        // One row arrives: it takes one held row, the band shrinks by one
+        // and still sits flush under it and against the screen bottom.
+        terminal
+            .insert_before(1, |buf| {
+                buf.set_string(0, 0, "u", Style::default());
+            })
+            .unwrap();
+        terminal.set_viewport_height(4, screen).unwrap();
+        assert_eq!(terminal.viewport_area, Rect::new(0, 6, 10, 6));
+        assert_eq!(terminal.blank_above, 0);
+        let buffer = terminal.backend.buffer();
+        assert_eq!(buffer[(0, 4)].symbol(), "t", "nothing scrolled");
+        assert_eq!(
+            buffer[(0, 5)].symbol(),
+            "u",
+            "the row lands under the last one"
+        );
+
+        // Enough rows spend the rest: the band is back to its wanted height.
+        terminal.insert_before(4, |_| {}).unwrap();
+        terminal.set_viewport_height(4, screen).unwrap();
+        assert_eq!(terminal.viewport_area, Rect::new(0, 8, 10, 4));
+        assert_eq!(terminal.blank_above, 0);
     }
 
     #[test]

@@ -58,7 +58,7 @@ fn live_thinking_rows_never_open_with_a_space() {
         let mut pending = String::new();
         let mut run = String::new();
         let mut painted: Vec<String> = Vec::new();
-        let mut flush = |frag: &str, run: &mut String, painted: &mut Vec<String>| {
+        let flush = |frag: &str, run: &mut String, painted: &mut Vec<String>| {
             let mid = !run.is_empty() && !run.ends_with('\n');
             run.push_str(frag);
             if let Some(t) = thinking_paint_text(frag, mid) {

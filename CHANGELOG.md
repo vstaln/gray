@@ -3,6 +3,18 @@
 ## [Unreleased]
 
 ### Fixed
+- **No stray blank rows above the dock when the band shrinks with nothing to print.** The band
+  rides the screen bottom, so any shrink (a multi-line follow-up queued mid-turn collapsing the
+  input box, the slash popup closing) slid it down and opened the rows it gave up between the
+  transcript and `⬡ Thinking…`/`⬡ Working…`. `settle_band` only filled them when a row was
+  inserted, so a paused thinking run or a slow first token showed three or four blank rows
+  where one belongs. On a full screen the band now keeps those rows below its footer (as Claude
+  Code does) and the next inserts spend them; a short transcript keeps the band pinned to the
+  bottom. A band that grew into the blank rows above it also no longer forgets the ones left.
+- **Live thinking rows never open with a space.** A thinking buffer that exactly filled a row
+  was flushed whole, so the next chunk's leading space started the following row
+  (` changed and whether…`). Rows now break after the boundary space, and a continuation's
+  leading spaces are trimmed when painted (the stored text is unchanged, so reflow is too).
 - **One margin rule for the whole transcript.** Blank rows came from seven places at once
   (51 hand-placed `ensure_gap` calls, the markdown renderer's paragraph blanks, the thinking
   stream's `\n\n`, card padding, the dock's seam, rows the band vacated, the turn footer), and
