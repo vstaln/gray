@@ -14,7 +14,17 @@ pub(crate) fn format_tool_box_lines(
     // No outer margin rows: `ensure_gap` owns the single blank row between
     // blocks (codex's rule). A card that also carried its own margins
     // stacked two blank rows against every neighbour.
+    // One margin row above and one below, painted edge to edge with real
+    // cells. A card's padding has to carry the card background: an unpainted
+    // blank row is invisible against the composer surface, which is why the
+    // margin could not be seen at all. `ensure_gap` recognises these as
+    // blank, so they are also the single separator - never two.
+    let margin_row = || -> Line<'static> {
+        Line::from(Span::styled(" ".repeat(width.max(1)), bg_style)).style(bg_style)
+    };
+
     let mut box_lines: Vec<Line<'static>> = Vec::new();
+    box_lines.push(margin_row());
 
     let wrapped_header = wrap_styled_line(header, max_w);
     for mut l in wrapped_header {
@@ -69,5 +79,6 @@ pub(crate) fn format_tool_box_lines(
             box_lines.push(l);
         }
     }
+    box_lines.push(margin_row());
     box_lines
 }

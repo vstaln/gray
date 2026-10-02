@@ -165,19 +165,14 @@
   shared temp dir (pre-creatable by another local user, removed only on success) is a private
   `TempDir` now, dropped on every exit including a checksum mismatch.
 
-- **One blank row between blocks, and the card that owns none of it.** A tool card and a
-  prompt card each shipped their own leading and trailing margin row *and* asked the
-  transcript for a separating gap, so a card sitting between two paragraphs was fenced by
-  two blank rows on each side (and a card after a card by four). Codex's rule is one blank
-  row between blocks, contributed by the transcript alone: a block carries no outer
-  margin of its own. The card formatters now emit their content only, and `ensure_gap` is
-  the single owner of the separation, so a paragraph, a card and the next paragraph are
-  always exactly one row apart.
-- **A card keeps its margins when the band shrinks.** The scrollback tail stored a whole
-  card as one multi-row entry while every consumer counted and replayed entries as rows,
-  so the refill after a band shrink reprinted just the card's first row in the wrong
-  place. The tail is now one entry per row and the region above the band is repainted
-  from the tail in order, so scrolled-off rows return where they belong.
+- **A card's margin is visible again.** The gap that separates a card from the paragraph
+  around it was an unpainted blank row, and an unpainted row against the composer surface
+  is invisible: the margin existed in the transcript and not on screen. Card margins are
+  painted again - one row above, one below, edge to edge with real cells in the card
+  background - and `transcript_row_is_blank` now judges a row by its glyphs rather than its
+  background, so a painted margin counts as the blank row it is instead of asking for a
+  second one. Exactly one margin per card side, and a card after a card still shows one.
+
 
 ### Changed
 - CI and the release builds pass `--locked` on every platform, so a dependency edit without a lock
