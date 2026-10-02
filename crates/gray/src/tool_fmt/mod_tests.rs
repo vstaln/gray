@@ -396,6 +396,81 @@ fn a_cancelled_runs_second_line_header_drops_the_log_path_too() {
 }
 
 #[test]
+fn web_search_renders_a_verb_not_the_wire_name() {
+    let args = serde_json::json!({"query": "LibreWolf AppImage download", "max_results": 5});
+    let text = row_text(&format_tool_call_header("web_search", &args, None));
+    assert!(!text.contains("web_search"), "wire name leaked: {text:?}");
+    assert!(text.contains("Searched"), "verb missing: {text:?}");
+    assert!(
+        text.contains("LibreWolf AppImage download"),
+        "query missing: {text:?}"
+    );
+    assert!(
+        !text.contains("max_results"),
+        "non-headline arg leaked: {text:?}"
+    );
+}
+
+#[test]
+fn web_fetch_renders_a_verb_with_the_url() {
+    let args =
+        serde_json::json!({"url": "https://librewolf.net/installation/linux/", "max_chars": 8000});
+    let text = row_text(&format_tool_call_header("web_fetch", &args, None));
+    assert!(!text.contains("web_fetch"), "wire name leaked: {text:?}");
+    assert!(text.contains("Fetched"), "verb missing: {text:?}");
+    assert!(
+        text.contains("https://librewolf.net/installation/linux/"),
+        "url missing: {text:?}"
+    );
+}
+
+#[test]
+fn discord_send_renders_a_verb_with_the_content() {
+    let args = serde_json::json!({"content": "hello channel"});
+    let text = row_text(&format_tool_call_header("discord_send", &args, None));
+    assert!(!text.contains("discord_send"), "wire name leaked: {text:?}");
+    assert!(text.contains("Sent Discord"), "verb missing: {text:?}");
+    assert!(text.contains("hello channel"), "content missing: {text:?}");
+}
+
+#[test]
+fn unknown_tools_humanize_and_labels_override() {
+    let args = serde_json::json!({"foo": "bar"});
+    let text = row_text(&format_tool_call_header("my_custom_tool", &args, None));
+    assert!(text.contains("My Custom Tool"), "not humanized: {text:?}");
+    assert!(
+        !text.contains("my_custom_tool"),
+        "wire name leaked: {text:?}"
+    );
+    let labeled = with_tool_label(&args, Some("Notify Owner"));
+    let labeled_text = row_text(&format_tool_call_header("my_custom_tool", &labeled, None));
+    assert!(
+        labeled_text.contains("Notify Owner"),
+        "label ignored: {labeled_text:?}"
+    );
+    assert!(
+        !labeled_text.contains("label="),
+        "label leaked into preview: {labeled_text:?}"
+    );
+}
+
+#[test]
+fn live_header_streams_plugin_scalars() {
+    let text = row_text(&format_live_tool_header(
+        "web_search",
+        r#"{"query":"LibreWolf AppI"#,
+        None,
+    ));
+    assert!(text.contains("LibreWolf AppI"), "got {text:?}");
+    let text = row_text(&format_live_tool_header(
+        "discord_send",
+        r#"{"content":"hello"#,
+        None,
+    ));
+    assert!(text.contains("hello"), "got {text:?}");
+}
+
+#[test]
 fn a_cut_bash_header_ends_in_an_ellipsis() {
     let long = serde_json::json!({"command": format!("seq 20 | xargs sh -c '{}' | sort | uniq -c", "x".repeat(80))});
     let text = row_text(&format_tool_call_header("bash", &long, None));

@@ -376,6 +376,26 @@ impl TurnStreamClock {
     }
 }
 
+/// Label-aware tool header: the agent's display-only headline (plugin
+/// `label`) rides inside args so `tool_fmt` names the card; the wire name
+/// stays the executor key and events stay unchanged.
+fn tool_header(
+    labels: Option<&HashMap<String, String>>,
+    name: &str,
+    args: &serde_json::Value,
+    cwd: Option<&std::path::Path>,
+) -> ratatui::text::Line<'static> {
+    let owned;
+    let args = match labels.and_then(|m| m.get(name)) {
+        Some(label) => {
+            owned = crate::tool_fmt::with_tool_label(args, Some(label));
+            &owned
+        }
+        None => args,
+    };
+    crate::tool_fmt::format_tool_call_header(name, args, cwd)
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn dispatch_agent_event(
     ev: &AgentEvent,
@@ -389,6 +409,7 @@ pub(crate) fn dispatch_agent_event(
     turn_start: std::time::Instant,
     turn_duration_ms: &mut Option<u64>,
     stream_clock: &mut TurnStreamClock,
+    tool_labels: Option<&HashMap<String, String>>,
 ) {
     // Single elapsed source — TurnEnd stamps duration once so footer,
     // totals, and persisted entry agree even when TUI + headless paths diverge.
@@ -465,7 +486,7 @@ pub(crate) fn dispatch_agent_event(
                 // card uses its full header with a leading execution shimmer. No
                 // transcript line here: the result card below is the single
                 // scrollback render, so a duplicate never lands.
-                let header = crate::tool_fmt::format_tool_call_header(&name, args, Some(cwd));
+                let header = tool_header(tool_labels, &name, args, Some(cwd));
                 t.atomic(|t| {
                     t.upsert_live_tool(id, header, true);
                     t.set_status(Some("Working"));
@@ -501,7 +522,7 @@ pub(crate) fn dispatch_agent_event(
                         t.remove_live_tool(id);
                         let header = args
                             .as_ref()
-                            .map(|a| crate::tool_fmt::format_tool_call_header(&name, a, Some(cwd)))
+                            .map(|a| tool_header(tool_labels, &name, a, Some(cwd)))
                             .unwrap_or_else(|| ratatui::text::Line::from(name.clone()));
                         t.push_tool_box(header, lines);
                     });
@@ -621,6 +642,14 @@ pub(crate) fn dispatch_agent_event(
                     entry.0.as_str()
                 };
                 {
+                    let owned;
+                    let args = match tool_labels.and_then(|m| m.get(name)) {
+                        Some(label) => {
+                            owned = crate::tool_fmt::with_tool_label(args, Some(label));
+                            &owned
+                        }
+                        None => args,
+                    };
                     println!(
                         "\n{}",
                         crate::tool_fmt::format_tool_call_header_plain(name, args, Some(cwd))

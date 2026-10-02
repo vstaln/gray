@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
-use gray_core::agent::{AttachedImage, AttachedVideo, Tool, ToolContext, ToolOutput};
+use gray_core::agent::{Tool, ToolContext, ToolOutput};
 use gray_core::message::ToolDef;
 use serde_json::{Value, json};
 use tokio::task::JoinHandle;
@@ -24,6 +24,7 @@ use crate::shell::spawn::spawn;
 use crate::shell::view::{
     format_elapsed, header, middle_out, resume_hint, squeeze as squeeze_view,
 };
+use crate::view::Attached;
 use gray_core::spill::{self, MeterEvent};
 use gray_core::squeeze::squeeze;
 
@@ -140,14 +141,12 @@ impl Tool for BashTool {
                 "Run a shell command via sh -c and wait for it to exit. timeout is an optional \
                  total runtime limit in seconds (omitted = no limit; capped at 3600s). \
                  Non-zero exits are data, not tool errors. Full output is logged; inline output \
-                 is bounded. Imaging: to look at an image or video run `gray view <path>...`\
-                 (several at once, downscaled) as the whole command — bare paths only, so pipes,\
-                 globs, `$`, quotes and flags fall through to a normal run. Images\
-                 (png/jpg/jpeg/gif/webp/bmp/heic/heif) come back as themselves; a video\
-                 (mp4/mov/webm/mkv/avi) comes back as a tiled contact sheet of sampled\
-                 frames, with `--frames N` (before the paths) to set the tile count.\
-                 `cat` is for text/source files, not media. Either way the file comes back as\
-                 an image; bash output is otherwise text only, so never pixel-dump or\
+                 is bounded. Imaging: `cat <path>...` of images (png/jpg/jpeg/gif/webp/bmp/heic/heif) \
+                 videos (mp4/mov/webm/mkv/avi), PDFs or audio (mp3/wav/m4a/ogg/flac/aac/aiff) shows them \
+                 to you: an image as itself (downscaled); video, PDF and audio natively where the model \
+                 takes them, else as a contact sheet of frames, the PDF's text, or a note. Run it as \
+                 the whole command with bare paths; pipes, globs, `$`, quotes and flags make \
+                 it a plain shell run that shows nothing. Bash output is otherwise text only, so never pixel-dump or \
                  ASCII-art an image to inspect it.",
                 json!({
                     "type": "object",
@@ -164,23 +163,18 @@ impl Tool for BashTool {
              use background:true to return immediately, or yield_ms to return a job ID if still \
              running after that window. Multiple jobs can run concurrently; continue other work \
              instead of polling. Completion notices arrive between model rounds (or on the next \
-             user turn when idle). Use action:list/status/output/cancel with job_id to manage jobs; \
+             user turn when idle). Use action:list/status/output/cancel with job_id (no command/timeout) to manage jobs; \
              output/status accept wait_ms (bounded blocking wait, clamped 0-600000ms) so one call \
              can await a job instead of polling. Jobs belong to this session and stop when Gray exits. \
              timeout is an optional total runtime limit (no default: commands run until they exit; \
              capped at 3600s), NOT the yield window. A command that sets no timeout and emits no new output for 600s (MAX_BLOCKING_SILENCE_SECS) is never killed: it moves to a background job so the call returns immediately (with a job id and log) while it keeps running — inspect, await, or cancel it. \
              Non-zero exits are data, not tool errors. Full output is logged; inline output is bounded. \
-             Imaging: to look at an image or video run `gray view <path>...`\
-             (several at once, downscaled) as the whole command — bare paths only, so pipes,\
-             globs, `$`, quotes and flags fall through to a normal run. Images\
-             (png/jpg/jpeg/gif/webp/bmp/heic/heif) come back as themselves; a video\
-             (mp4/mov/webm/mkv/avi) comes back as a tiled contact sheet of sampled\
-             frames, with `--frames N` (before the paths) to set the tile count.\
-             Add `--native` to send the video itself instead of the sheet — only a\
-             model with a native video part (Gemini) can use that, others reject it,\
-             so use it only when you know the model takes video. `cat` is for\
-             text/source files, not media. Either way the file comes back as an\
-             image; bash output is otherwise text only, so never pixel-dump or\
+             Imaging: `cat <path>...` of images (png/jpg/jpeg/gif/webp/bmp/heic/heif) \
+             videos (mp4/mov/webm/mkv/avi), PDFs or audio (mp3/wav/m4a/ogg/flac/aac/aiff) shows them \
+             to you: an image as itself (downscaled); video, PDF and audio natively where the model \
+             takes them, else as a contact sheet of frames, the PDF's text, or a note. Run it as \
+             the whole command with bare paths; pipes, globs, `$`, quotes and flags make \
+             it a plain shell run that shows nothing. Bash output is otherwise text only, so never pixel-dump or \
              ASCII-art an image to inspect it.",
             json!({
                 "type": "object",
@@ -305,8 +299,8 @@ impl Tool for BashTool {
         let log_path = log_path(ctx);
         let logged = log_path.clone();
         let start = Instant::now();
-        // A `gray view` the claim refused (compound, flags, glob) runs as a
-        // plain shell command and prints `viewed …` with nothing attached:
+        // A media `cat` the claim refused (compound, flags, glob) runs as a
+        // plain shell command with nothing attached:
         // decide the note here, before `command` moves, append it after the
         // run. The predicate itself declines when nothing was ever at stake.
         let unattached = unattached_media_note(&command);
@@ -417,28 +411,16 @@ fn session_key(ctx: &ToolContext) -> String {
     ctx.session_id.clone().unwrap_or_default()
 }
 
-/// `gray view PATH...` returns images (and video contact sheets) as vision
-/// parts instead of the binary garbage a shell would stream. Claims exactly
-/// `gray view` plus bare paths: flags, pipes, redirects, globs, quotes, and
-/// `cat` all fall through to a normal run. A missing or non-media file falls
-/// through too, so the shell's own error message or text output is what the
-/// model sees.
-///
-/// There is exactly one way to see a picture, and it is this command. `cat
-/// <image>` used to be a second, full-resolution one; it is gone, because a
-/// model that learns two ways to do the same thing uses the one it has seen
-/// most, and the two answered differently (full resolution vs the 2000px cap
-/// shared with `read` and pasted attachments). `cat` on a binary is now what
-/// it always was to a reader: bytes — except that a `cat` of a media file is
-/// answered with a one-line pointer to `gray view` rather than a screenful of
-/// binary, because streaming that into a context is the exact failure this
-/// claim exists to prevent.
+/// `cat PATH...` of media returns images, video, PDFs and audio as model
+/// parts instead of the binary garbage a shell would stream: every model
+/// already reaches for `cat`. It shares the 2000px cap with `read` and pasted
+/// attachments.
 ///
 /// The command is claimed before the shell ever runs, so anything the shell
 /// would interpret (flags, pipes, redirects, globs, quotes, `$`) falls through
 /// to a normal run — as does a missing file, so the shell's own error is what
 /// the model sees. A leading `~` is the one thing expanded here: the shell
-/// would have done it and nothing else would, and without it `gray view
+/// would have done it and nothing else would, and without it `cat
 /// ~/shot.png` fails while the absolute path works. A missing, undecodable or
 /// non-media path is skipped with a note and the valid ones still ship; when
 /// nothing is usable the claim is dropped and the shell gives the error, which
@@ -452,30 +434,8 @@ fn session_key(ctx: &ToolContext) -> String {
 const MAX_IMAGE_CLAIM_PATHS: usize = 8;
 const MAX_IMAGE_CLAIM_BYTES: usize = 20 * 1024 * 1024;
 
-/// Raw bytes a `--native` video may carry. Matches the provider's own cap:
-/// agreeing here means the turn fails at the claim with an actionable
-/// message instead of at the endpoint with an opaque 400.
-const MAX_NATIVE_VIDEO_CLAIM_BYTES: u64 = 8 * 1024 * 1024;
-
-/// `cat <one media file>` does not show it, and says so instead of streaming
-/// binary into the context. Only a file that really is media earns the
-/// pointer: anything else — missing, text, unknown extension — falls through
-/// to the shell, which is `cat`'s actual job.
-fn cat_media_pointer(path: &str, cwd: &Path) -> Option<ToolOutput> {
-    if path.starts_with('-') || shell_meta(path) {
-        return None;
-    }
-    let full = resolve_bare_path(cwd, path)?;
-    if !crate::images::is_viewable_extension(&full) {
-        return None;
-    }
-    Some(finish(format!(
-        "`cat` does not show media. Run `gray view {path}` to see it."
-    )))
-}
-
 /// `gray find` / `gray grep` claimed before the shell runs, for the same
-/// reason `gray view` is: the model should not have to know that `gray`
+/// reason `cat` of media is: the model should not have to know that `gray`
 /// happens to be on its PATH. Text in, text out, so this is one thin parse
 /// over [`crate::search_cmd`] — the index, or the tool's own lane, decided
 /// there.
@@ -620,44 +580,13 @@ fn search_words(command: &str) -> Option<Vec<String>> {
     Some(words)
 }
 
-fn image_command(command: &str, cwd: &Path) -> Option<ToolOutput> {
-    image_command_with_native_cap(command, cwd, MAX_NATIVE_VIDEO_CLAIM_BYTES)
-}
-
-/// What to say when a `gray view` / `cat <media>` ran as an ordinary shell
-/// command instead of being claimed: the CLI then prints `viewed …` (or the
-/// shell streams binary), while nothing is attached to the turn — a success
-/// that reads like a lie and costs the model a pile of re-runs. Only shape
+/// What to say when a `cat <media>` ran as an ordinary shell command instead
+/// of being claimed: the shell streams binary (or nothing) while nothing is
+/// attached to the turn, which costs the model a pile of re-runs. Only shape
 /// refusals get this: a bare claim that missed on a missing file is already
 /// reported by the shell, and a lecture on top of its own error helps nobody.
 fn unattached_media_note(command: &str) -> Option<String> {
     let ws: Vec<&str> = command.split_whitespace().collect();
-    // First `view` whose word before it is (or glues onto) `gray`, and only
-    // where `gray` starts a command — bare, after a chain separator (`&&`,
-    // `; do`, `done;`), or glued into one word (`cd x&&gray view`). Without
-    // the gate, `echo gray view` would earn a note about an image it never
-    // meant to show.
-    let view_at = ws.iter().position(|t| *t == "view").filter(|&i| {
-        match ws.get(i.wrapping_sub(1)).copied() {
-            Some("gray") => i == 1 || starts_a_command(ws[i - 2]),
-            Some(p) => p.ends_with("gray"),
-            None => false,
-        }
-    });
-    if let Some(i) = view_at {
-        if i == 1 && ws[0] == "gray" {
-            let mut rest = &ws[2..];
-            if rest.first() == Some(&"--native") {
-                rest = &rest[1..];
-            }
-            // Bare paths (or nothing): the claim took it and only the files
-            // could have failed, which the shell has already reported.
-            if rest.is_empty() || !rest.iter().any(|a| shell_meta(a)) {
-                return None;
-            }
-        }
-        return Some(view_note(&ws[i + 1..]));
-    }
     let cat_at = ws.iter().position(|t| *t == "cat")?;
     let arg = *ws.get(cat_at + 1)?;
     if !crate::images::is_viewable_extension(Path::new(arg)) {
@@ -666,9 +595,9 @@ fn unattached_media_note(command: &str) -> Option<String> {
     let bare = cat_at == 0 && ws.len() == 2 && !shell_meta(arg);
     (!bare).then(|| {
         let rerun = if shell_meta(arg) {
-            "gray view /path/to.jpg".to_string()
+            "cat /path/to.jpg".to_string()
         } else {
-            format!("gray view {arg}")
+            format!("cat {arg}")
         };
         format!(
             "note: `cat` on a media file ran as a plain shell command here, so the \
@@ -677,73 +606,19 @@ fn unattached_media_note(command: &str) -> Option<String> {
     })
 }
 
-/// True for the word that lets a `gray` begin a command: a chain separator,
-/// or a word ending in one (`done;`), or a control keyword that introduces a
-/// command position. Anything else before `gray` means it is an argument to
-/// someone else's command (`echo gray view`), not a view that fell through.
-fn starts_a_command(prev: &str) -> bool {
-    matches!(
-        prev,
-        "&&" | ";" | "|" | "|&" | "do" | "then" | "else" | "fi" | "done" | "esac"
-    ) || prev.ends_with('&')
-        || prev.ends_with(';')
-        || prev.ends_with('|')
-}
-
-/// The `gray view` half of [`unattached_media_note`], naming the paths the
-/// model typed so the re-run is one turn away. Paths the shell would
-/// interpret (globs, `$`) cannot be re-run bare, so those fall back to a
-/// placeholder rather than advice that fails the same way.
-fn view_note(rest: &[&str]) -> String {
-    let paths: Vec<&str> = rest
-        .iter()
-        .copied()
-        .take_while(|a| !shell_meta(a))
-        .collect();
-    let rerun = if paths.is_empty() {
-        "gray view /path/to.jpg".to_string()
-    } else {
-        format!("gray view {}", paths.join(" "))
-    };
-    format!(
-        "note: `gray view` ran as a plain shell command here, so the image was NOT \
-         attached to this turn. Re-run it as the whole command with bare paths: {rerun}"
-    )
-}
-
-/// [`image_command`] with the native-video cap as a parameter, so the
-/// over-cap fallback is testable without a multi-megabyte fixture.
-fn image_command_with_native_cap(
-    command: &str,
-    cwd: &Path,
-    max_native_video_bytes: u64,
-) -> Option<ToolOutput> {
+fn image_command(command: &str, cwd: &Path) -> Option<ToolOutput> {
     let mut parts = command.split_whitespace();
-    let (cmd, sub) = (parts.next()?, parts.next()?);
-    let mut rest: Vec<&str> = parts.collect();
-    if cmd == "cat" && rest.is_empty() {
-        return cat_media_pointer(sub, cwd);
+    if parts.next()? != "cat" {
+        return None;
     }
-    let (paths, native) = match (cmd, rest.is_empty()) {
-        ("gray", false) if sub == "view" => {
-            // `--native` asks for the clip itself rather than a contact
-            // sheet, so the claim attaches a video part instead of an image.
-            // `--frames N` takes an argument, which is a path we cannot
-            // distinguish from a file, so that form falls through to the
-            // shell and the CLI handles it.
-            let mut native = false;
-            if rest.first() == Some(&"--native") {
-                native = true;
-                rest.remove(0);
-            }
-            if rest.iter().any(|a| a.starts_with('-')) {
-                return None;
-            }
-            (rest, native)
-        }
-        _ => return None,
-    };
-    if paths.iter().any(|p| shell_meta(p)) {
+    // Any argument that is not a media path (text, a flag, `|`, `>`) makes
+    // it `cat`'s own job again, so the shell runs it.
+    let paths: Vec<&str> = parts.collect();
+    if paths.is_empty()
+        || paths
+            .iter()
+            .any(|p| shell_meta(p) || !crate::images::is_viewable_extension(Path::new(p)))
+    {
         return None;
     }
     // A path that is not there is skipped like a decode failure, not fatal:
@@ -764,94 +639,51 @@ fn image_command_with_native_cap(
     files.truncate(MAX_IMAGE_CLAIM_PATHS);
     let mut shown = Vec::with_capacity(files.len());
     let mut images = Vec::with_capacity(files.len());
-    let mut videos: Vec<AttachedVideo> = Vec::new();
-    // Why a requested native part did not happen. Kept out of `failed` so it
-    // reads as an explanation, not a failure: the turn still succeeds.
-    let mut refused: Vec<String> = Vec::new();
+    let mut media = Vec::new();
+    let mut texts: Vec<String> = Vec::new();
     let mut bytes: usize = 0;
     for full in files {
-        // `--native` on a video hands over the clip itself. Refused up front
-        // over the cap rather than after base64-ing hundreds of MB: the
-        // provider would reject it anyway, and a silent sheet here would
-        // answer a different question than the one that was asked.
-        if native && crate::images::is_video_extension(&full) {
-            let len = std::fs::metadata(&full).map(|m| m.len()).unwrap_or(0);
-            if len > max_native_video_bytes {
-                // Fall back to the sheet *and say so*. Dropping the claim here
-                // would hand the command to whatever `gray` is on PATH, which
-                // reports a usage error the model cannot act on; attaching a
-                // contact sheet with the reason attached answers the question
-                // that is actually answerable.
-                refused.push(format!(
-                    "{p}: {len} bytes is over the {max_native_video_bytes}-byte native \
-                     cap, so a contact sheet was attached instead",
-                    p = full.display()
-                ));
-                match crate::view::load(&full) {
-                    Ok(part) => {
-                        bytes += part.data.len();
-                        shown.push(format!("{} (contact sheet)", full.display()));
-                        images.push(AttachedImage {
-                            media_type: part.media_type,
-                            data: part.data,
-                        });
-                    }
-                    Err(e) => {
-                        refused.push(e.to_string());
-                    }
-                }
-                continue;
-            }
-            match crate::view::load_native_video(&full) {
-                Ok((media_type, data)) => {
-                    bytes += data.len();
-                    shown.push(format!("{} (native video)", full.display()));
-                    videos.push(AttachedVideo { media_type, data });
-                }
-                Err(e) => {
-                    failed.push(e.to_string());
-                    continue;
-                }
-            }
-            continue;
-        }
-        let (mime, data, sheet) = match crate::view::load(&full) {
-            Ok(part) => (part.media_type, part.data, part.derived_from_video),
+        let part = match crate::view::attach(&full) {
+            Ok(part) => part,
             Err(e) => {
-                failed.push(e.to_string());
+                failed.push(e);
                 continue;
             }
         };
-        if !images.is_empty() && bytes + data.len() > MAX_IMAGE_CLAIM_BYTES {
+        let size = match &part {
+            Attached::Image(img, _) => img.data.len(),
+            Attached::Media(m, _) => m.data.len(),
+            Attached::Text(_, _) => 0,
+        };
+        if (!images.is_empty() || !media.is_empty()) && bytes + size > MAX_IMAGE_CLAIM_BYTES {
             failed.push(format!(
                 "{}: skipped past the multi-image byte budget",
                 full.display()
             ));
             break;
         }
-        bytes += data.len();
-        shown.push(if sheet {
-            format!("{} (contact sheet)", full.display())
-        } else {
-            full.display().to_string()
-        });
-        images.push(AttachedImage {
-            media_type: mime,
-            data,
-        });
+        bytes += size;
+        match part {
+            Attached::Image(img, label) => {
+                shown.push(label);
+                images.push(img);
+            }
+            Attached::Media(m, label) => {
+                shown.push(label);
+                media.push(m);
+            }
+            Attached::Text(t, label) => {
+                shown.push(label);
+                texts.push(t);
+            }
+        }
     }
-    if images.is_empty() && videos.is_empty() {
-        // Every path failed: drop the claim so the shell (or the CLI it runs)
-        // reports the errors directly, which beats a note attached to no media.
+    if images.is_empty() && media.is_empty() && texts.is_empty() {
+        // Every path failed: drop the claim so the shell reports the errors
+        // directly, which beats a note attached to no media.
         return None;
     }
-    let mut content = if videos.is_empty() {
-        format!("Image shown: {}", shown.join(", "))
-    } else if images.is_empty() {
-        format!("Video shown: {}", shown.join(", "))
-    } else {
-        format!("Media shown: {}", shown.join(", "))
-    };
+    let mut content = format!("Shown: {}", shown.join(", "));
     if capped {
         content.push_str(&format!(
             " (showing first {MAX_IMAGE_CLAIM_PATHS} of {total} paths)"
@@ -860,14 +692,15 @@ fn image_command_with_native_cap(
     for f in &failed {
         content.push_str(&format!("; skipped: {f}"));
     }
-    for r in &refused {
-        content.push_str(&format!("; {r}"));
+    for t in texts {
+        content.push_str("\n\n");
+        content.push_str(&t);
     }
     Some(ToolOutput {
         content,
         is_error: false,
         images,
-        videos,
+        media,
     })
 }
 

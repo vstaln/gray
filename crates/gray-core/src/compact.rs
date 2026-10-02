@@ -26,10 +26,12 @@ pub(crate) fn block_tokens(b: &ContentBlock) -> usize {
     match b {
         ContentBlock::Text { text } => text.len() / 4,
         ContentBlock::Image { media_type, data } => image_block_tokens(media_type, data.len()),
-        // Video is priced like the image path (bytes/4): providers that take
-        // it bill the bytes, and a sheet would have been cheaper, but a
-        // cleared block is dropped, not silently replaced with a still.
-        ContentBlock::Video { media_type, data } => image_block_tokens(media_type, data.len()),
+        // Media is priced like the image path (bytes/4): providers that take
+        // it bill the bytes, and the fallback would have been cheaper, but a
+        // cleared block is dropped, not silently replaced with its fallback.
+        ContentBlock::Media {
+            media_type, data, ..
+        } => image_block_tokens(media_type, data.len()),
         ContentBlock::ToolResult { content, .. } => content.len() / 4,
         ContentBlock::StructuredInput {
             protocol,
@@ -353,7 +355,7 @@ fn fit_group_to_budget(group: &[Message], budget: usize) -> Option<Vec<Message>>
         .iter()
         .flat_map(|m| m.content.iter())
         .map(|b| match b {
-            ContentBlock::Text { .. } | ContentBlock::Image { .. } | ContentBlock::Video { .. } => {
+            ContentBlock::Text { .. } | ContentBlock::Image { .. } | ContentBlock::Media { .. } => {
                 0
             }
             _ => block_tokens(b),
@@ -369,7 +371,9 @@ fn fit_group_to_budget(group: &[Message], budget: usize) -> Option<Vec<Message>>
         for block in msg.content.iter_mut().rev() {
             match block {
                 ContentBlock::Image { media_type, data }
-                | ContentBlock::Video { media_type, data } => {
+                | ContentBlock::Media {
+                    media_type, data, ..
+                } => {
                     let price = image_block_tokens(media_type, data.len());
                     if price <= remaining {
                         remaining -= price;
@@ -398,7 +402,7 @@ fn fit_group_to_budget(group: &[Message], budget: usize) -> Option<Vec<Message>>
         }
         msg.content.retain(|b| match b {
             ContentBlock::Text { text } => !text.is_empty(),
-            ContentBlock::Image { data, .. } | ContentBlock::Video { data, .. } => !data.is_empty(),
+            ContentBlock::Image { data, .. } | ContentBlock::Media { data, .. } => !data.is_empty(),
             _ => true,
         });
     }

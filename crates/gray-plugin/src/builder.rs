@@ -738,7 +738,7 @@ pub async fn build_agent(opts: BuilderOptions) -> anyhow::Result<Agent> {
         }
         plugins.push(p);
     }
-    let (registry, _) = from_plugins(&plugins);
+    let (registry, manifests) = from_plugins(&plugins);
     let ledger = current_file_ledger();
     let system = match system_prompt {
         SystemPrompt::Literal(s) => s,
@@ -779,6 +779,20 @@ pub async fn build_agent(opts: BuilderOptions) -> anyhow::Result<Agent> {
         };
 
     let tool_defs = registry.defs();
+    // Display-only headlines (`label` in a manifest `tools` entry):
+    // renderer-injected, never model-visible (providers project
+    // name/description/parameters only).
+    let tool_labels: Vec<(String, String)> = manifests
+        .iter()
+        .flat_map(|m| m.tools.iter())
+        .filter_map(|t| {
+            t.label
+                .as_ref()
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+                .map(|s| (t.name.clone(), s.to_string()))
+        })
+        .collect();
     let executor: Arc<dyn ToolExecutor> = match wrap_executor {
         Some(wrap) => wrap(Arc::new(registry)),
         None => Arc::new(registry),
@@ -787,6 +801,7 @@ pub async fn build_agent(opts: BuilderOptions) -> anyhow::Result<Agent> {
     Ok(Agent::new(provider, executor)
         .with_system(system)
         .with_tools(tool_defs)
+        .with_tool_labels(tool_labels)
         .with_context_window(context_window)
         .with_history_rewrite_hook(Arc::new(move || {
             if let Some(ledger) = &ledger {

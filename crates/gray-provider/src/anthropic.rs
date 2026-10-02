@@ -14,13 +14,12 @@ use eventsource_stream::Eventsource;
 use futures::stream::{self, BoxStream, StreamExt};
 use gray_core::agent::{Provider, ProviderError};
 use gray_core::event::{StopReason, StreamEvent, Usage};
-use gray_core::message::{ChatRequest, ContentBlock, Role};
+use gray_core::message::{ChatRequest, ContentBlock, Role, resolve_media};
 use reqwest::Url;
 use serde_json::{Value, json};
 
 use crate::openai::{
-    backoff_delay, classify_http_error, filter_valid_tools, parse_retry_after, video_rejected,
-    wire_tool_output,
+    backoff_delay, classify_http_error, filter_valid_tools, parse_retry_after, wire_tool_output,
 };
 
 /// Default base URL; `/messages` is appended.
@@ -148,7 +147,11 @@ pub(crate) fn map_request(
     let mut messages: Vec<(Role, Vec<Value>)> = Vec::new();
     for msg in req.messages {
         let mut blocks = Vec::new();
-        for block in msg.content {
+        // PDFs go as document blocks; video/audio fall back to their sheet,
+        // text or note. ponytail: no page-count check (Anthropic caps a PDF
+        // at 100 pages); count pages here if over-long PDFs start 400ing.
+        let content = resolve_media(msg.content, |mt| mt == "application/pdf");
+        for block in content {
             match block {
                 ContentBlock::Text { text } => {
                     if !text.is_empty() {
@@ -164,7 +167,12 @@ pub(crate) fn map_request(
                     "type": "image",
                     "source": {"type": "base64", "media_type": media_type, "data": data},
                 })),
-                ContentBlock::Video { .. } => return Err(video_rejected(model)),
+                ContentBlock::Media {
+                    media_type, data, ..
+                } => blocks.push(json!({
+                    "type": "document",
+                    "source": {"type": "base64", "media_type": media_type, "data": data},
+                })),
                 ContentBlock::ToolUse { id, name, args } => {
                     let input = if args.is_object() { args } else { json!({}) };
                     blocks

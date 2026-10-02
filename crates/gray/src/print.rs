@@ -29,6 +29,9 @@ pub(crate) fn now_millis() -> u64 {
 pub struct ActiveToolCall {
     pub name: String,
     pub args: Option<serde_json::Value>,
+    /// Display-only headline (plugin `label`): renderer-injected into a
+    /// copy of args, so the wire args the executor saw stay untouched.
+    pub label: Option<String>,
 }
 
 /// Renders a single AgentEvent with active tool tracking and CWD context.
@@ -41,6 +44,7 @@ pub fn render_event_with_context<W: Write>(
     event: &AgentEvent,
     cwd: Option<&Path>,
     in_flight: &mut HashMap<String, ActiveToolCall>,
+    tool_labels: &HashMap<String, String>,
 ) -> std::io::Result<()> {
     match event {
         AgentEvent::Start => Ok(()),
@@ -57,6 +61,7 @@ pub fn render_event_with_context<W: Write>(
             in_flight.insert(
                 id.clone(),
                 ActiveToolCall {
+                    label: tool_labels.get(name).cloned(),
                     name: name.clone(),
                     args: None,
                 },
@@ -64,22 +69,41 @@ pub fn render_event_with_context<W: Write>(
             Ok(())
         }
         AgentEvent::ToolCallProgress { id, name, .. } => {
+            let label = tool_labels.get(name).cloned();
             in_flight.entry(id.clone()).or_insert(ActiveToolCall {
                 name: name.clone(),
                 args: None,
+                label,
             });
             Ok(())
         }
         AgentEvent::ToolCallEnd { id, args } => {
-            let entry = in_flight.entry(id.clone()).or_insert(ActiveToolCall {
-                name: "tool".to_string(),
-                args: None,
+            let entry = in_flight.entry(id.clone()).or_insert_with(|| {
+                let label = args
+                    .get("label")
+                    .and_then(|v| v.as_str())
+                    .map(str::trim)
+                    .filter(|t| !t.is_empty())
+                    .map(str::to_string);
+                ActiveToolCall {
+                    name: "tool".to_string(),
+                    args: None,
+                    label,
+                }
             });
             entry.args = Some(args.clone());
             if entry.name.is_empty() {
                 entry.name = "tool".to_string();
             }
             let name = entry.name.as_str();
+            let owned;
+            let args = match entry.label.as_deref() {
+                Some(label) => {
+                    owned = crate::tool_fmt::with_tool_label(args, Some(label));
+                    &owned
+                }
+                None => args,
+            };
             writeln!(
                 w,
                 "\n{}",
@@ -99,12 +123,19 @@ pub fn render_event_with_context<W: Write>(
             } else {
                 tool.name.as_str()
             };
+            let owned;
+            let args = match tool.label.as_deref() {
+                Some(label) => match tool.args.as_ref() {
+                    Some(a) => {
+                        owned = crate::tool_fmt::with_tool_label(a, Some(label));
+                        Some(&owned)
+                    }
+                    None => None,
+                },
+                None => tool.args.as_ref(),
+            };
             let res = crate::tool_fmt::format_tool_result_plain_with_context(
-                name,
-                tool.args.as_ref(),
-                output,
-                *is_error,
-                cwd,
+                name, args, output, *is_error, cwd,
             );
             if !res.is_empty() {
                 write!(w, "{res}")?;
@@ -527,8 +558,8 @@ impl JsonOutput {
 ///
 /// Paths stay verbatim when no secret is present — the same gate as
 /// [`gray_core::redaction::redact_message`]: this wire feeds owner-local
-/// surfaces (Discord narration), where `gray view /tmp/shot.png` redacted to
-/// `gray view <path>` is noise, not safety. A secret in the same string
+/// surfaces (Discord narration), where `cat /tmp/shot.png` redacted to
+/// `cat <path>` is noise, not safety. A secret in the same string
 /// still scrubs the whole unit (paths included).
 fn disclose(text: &str, cap: usize) -> String {
     let flat: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -603,6 +634,16 @@ fn tool_detail(name: &str, args: &serde_json::Value) -> Option<String> {
         "skill" | "use_skill" => arg("skill")
             .or_else(|| arg("name"))
             .map(|n| disclose(n, DETAIL_CAP)),
+        "web_search" => arg("query").map(|q| disclose(q, DETAIL_CAP)),
+        "web_fetch" => arg("url").map(|u| disclose(u, DETAIL_CAP)),
+        "discord_send" => arg("content").map(|c| disclose(c, DETAIL_CAP)),
+        "discord_send_ui" | "discord_open_modal" | "discord_ui_schema" => {
+            Some("(discord ui)".to_string())
+        }
+        "discord_file" => arg("path")
+            .or_else(|| arg("file_id"))
+            .or_else(|| arg("action"))
+            .map(|v| disclose(v, DETAIL_CAP)),
         _ => None,
     }
 }
@@ -665,6 +706,17 @@ async fn run_print_inner(
         anyhow::bail!("max wall time {max}s reached — stopping (--max-wall-secs SECS)");
     }
     let mut agent = build_agent(config, &cwd, Some(session_id.as_str())).await?;
+    let tool_labels: std::collections::HashMap<String, String> = agent
+        .tool_defs()
+        .iter()
+        .filter_map(|t| {
+            t.label
+                .as_ref()
+                .map(|l| l.trim())
+                .filter(|l| !l.is_empty())
+                .map(|l| (t.name.clone(), l.to_string()))
+        })
+        .collect();
     if resume_target.is_none() {
         store
             .create(SessionMeta::new(
@@ -691,11 +743,7 @@ async fn run_print_inner(
     // text for attachment paths.
     let user_msg = if let Some(prompt) = prompt {
         let inline = crate::repl::attachments::extract_inline_image_paths(prompt, &cwd);
-        crate::repl::build_user_message_with_attachments(
-            prompt,
-            &inline,
-            config.model.as_deref().unwrap_or(""),
-        )
+        crate::repl::build_user_message_with_attachments(prompt, &inline)
     } else {
         user_message
     };
@@ -721,9 +769,13 @@ async fn run_print_inner(
             }
             let rendered = match json.as_deref_mut() {
                 Some(output) => output.event(ev),
-                None => {
-                    render_event_with_context(&mut stdout.lock(), ev, Some(&cwd), &mut in_flight)
-                }
+                None => render_event_with_context(
+                    &mut stdout.lock(),
+                    ev,
+                    Some(&cwd),
+                    &mut in_flight,
+                    &tool_labels,
+                ),
             };
             if let Err(e) = rendered {
                 render_cancel.cancel();

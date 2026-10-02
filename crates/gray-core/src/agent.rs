@@ -69,13 +69,11 @@ pub struct ToolOutput {
     /// `#[serde(default)]` keeps old transcripts parsing.
     #[serde(default)]
     pub images: Vec<AttachedImage>,
-    /// Native video parts riding with a tool result (`gray view --native`).
-    /// Empty for every other tool, and for every model without a video
-    /// input — the provider refuses those, naming the contact sheet.
-    ///
-    /// `#[serde(default)]` for the same reason as `images`.
-    #[serde(default)]
-    pub videos: Vec<AttachedVideo>,
+    /// Non-image media riding with a tool result (bash `cat` of a clip,
+    /// PDF or audio file). Each carries what a model that can't take it
+    /// sees instead; the provider picks via [`crate::message::resolve_media`].
+    #[serde(default, alias = "videos")]
+    pub media: Vec<AttachedMedia>,
 }
 
 /// One downscaled image riding with a tool result.
@@ -85,13 +83,16 @@ pub struct AttachedImage {
     pub data: String,
 }
 
-/// One base64 video riding with a tool result. Not downscaled — a re-encode
-/// would change the clip — so the cap that matters is the provider's, and
-/// the producer (`gray view --native`) refuses an oversized file up front.
+/// One base64 video/audio/PDF riding with a tool result. Not re-encoded, so
+/// the producer keeps it under [`crate::message::MAX_NATIVE_MEDIA_BYTES`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AttachedVideo {
+pub struct AttachedMedia {
     pub media_type: String,
     pub data: String,
+    /// What a model without this input sees instead (contact sheet, PDF
+    /// text, a note). The tool cannot know the model.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fallback: Vec<ContentBlock>,
 }
 
 impl ToolOutput {
@@ -100,7 +101,7 @@ impl ToolOutput {
             content: content.into(),
             is_error: false,
             images: Vec::new(),
-            videos: Vec::new(),
+            media: Vec::new(),
         }
     }
     pub fn error(content: impl Into<String>) -> Self {
@@ -108,7 +109,7 @@ impl ToolOutput {
             content: content.into(),
             is_error: true,
             images: Vec::new(),
-            videos: Vec::new(),
+            media: Vec::new(),
         }
     }
     /// Image read success: text note + one vision block (opencode parity).
@@ -117,26 +118,29 @@ impl ToolOutput {
             content: content.into(),
             is_error: false,
             images: vec![AttachedImage { media_type, data }],
-            videos: Vec::new(),
+            media: Vec::new(),
         }
     }
     /// Message blocks for this result: the text result first, then one
-    /// vision block per attached image. Image blocks in user-role messages
-    /// already serialize as vision parts on every provider path.
+    /// vision block per attached image, then one media block per attachment.
+    /// Image blocks in user-role messages already serialize as vision parts
+    /// on every provider path; media resolves per model there.
     pub fn message_blocks(&self, id: &str) -> Vec<ContentBlock> {
         let mut blocks = vec![ContentBlock::ToolResult {
             id: id.to_string(),
             content: self.content.clone(),
             is_error: self.is_error,
         }];
-        blocks.extend(self.images.iter().map(|img| ContentBlock::Image {
-            media_type: img.media_type.clone(),
-            data: img.data.clone(),
-        }));
-        blocks.extend(self.videos.iter().map(|vid| ContentBlock::Video {
-            media_type: vid.media_type.clone(),
-            data: vid.data.clone(),
-        }));
+        for img in &self.images {
+            blocks.push(ContentBlock::image(&img.media_type, &img.data));
+        }
+        for m in &self.media {
+            blocks.push(ContentBlock::media(
+                &m.media_type,
+                &m.data,
+                m.fallback.clone(),
+            ));
+        }
         blocks
     }
 }
@@ -362,6 +366,11 @@ pub struct Agent {
     /// Effective prefix captured once per turn, including plugin context.
     pub(crate) turn_system: Option<String>,
     pub(crate) tools: Vec<ToolDef>,
+    /// Display-only headlines per tool name, consulted by transcript
+    /// renderers (`tool_fmt` reads the entry through injected args).
+    /// Never reaches the model: provider mappers project
+    /// name/description/parameters only. Empty by default.
+    pub(crate) tool_labels: std::collections::HashMap<String, String>,
     pub(crate) messages: Vec<Message>,
     pub(crate) tool_timeout: Duration,
     pub(crate) hooks: Vec<Arc<dyn PluginHooks>>,
@@ -419,6 +428,7 @@ impl Agent {
             system: String::new(),
             turn_system: None,
             tools: Vec::new(),
+            tool_labels: std::collections::HashMap::new(),
             messages: Vec::new(),
             tool_timeout: Duration::from_secs(120),
             hooks: Vec::new(),
@@ -490,6 +500,25 @@ impl Agent {
     pub fn with_tools(mut self, tools: Vec<ToolDef>) -> Self {
         self.tools = tools;
         self
+    }
+
+    /// Display-only headlines per tool name (plugin `label` support).
+    /// Renderers inject the entry as `args.label`; the executor and both
+    /// providers keep using the wire name, and events stay unchanged.
+    pub fn with_tool_labels(
+        mut self,
+        labels: impl IntoIterator<Item = (impl Into<String>, impl Into<String>)>,
+    ) -> Self {
+        self.tool_labels = labels
+            .into_iter()
+            .map(|(k, v)| (k.into(), v.into()))
+            .collect();
+        self
+    }
+
+    /// Display headline for a wire name, if one was registered.
+    pub fn tool_label(&self, name: &str) -> Option<&str> {
+        self.tool_labels.get(name).map(|s| s.as_str())
     }
 
     /// Attaches plugin hooks (protocol v1). Empty by default: no hooks
@@ -647,10 +676,10 @@ impl Agent {
         self.turn_system.as_deref().unwrap_or(&self.system)
     }
 
-    /// Tools advertised to the model. `pub(crate)` for the same reason as
-    /// [`system_text`](Self::system_text): the compaction-v2 trigger call
-    /// reuses them verbatim.
-    pub(crate) fn tool_defs(&self) -> &[ToolDef] {
+    /// Tools advertised to the model. `pub` (not `pub(crate)`): headless
+    /// and REPL surfaces seed display-only labels from these defs, and the
+    /// compaction-v2 trigger call reuses them verbatim.
+    pub fn tool_defs(&self) -> &[ToolDef] {
         &self.tools
     }
 

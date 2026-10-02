@@ -206,11 +206,7 @@ pub(crate) async fn run_prompt_turn(
             images.push(p);
         }
     }
-    let user_msg = build_user_message_with_attachments(
-        &prompt_text,
-        &images,
-        config.model.as_deref().unwrap_or(""),
-    );
+    let user_msg = build_user_message_with_attachments(&prompt_text, &images);
     let user_msg_for_retry = user_msg.clone();
     let mut initial_count = agent.messages().len();
     {
@@ -269,6 +265,20 @@ pub(crate) async fn run_prompt_turn(
     // whole-turn duration (tool waits included).
     let mut stream_clock = super::session::TurnStreamClock::default();
     let history_revision = agent.history_revision();
+    // Display-only headlines snapshot: `dispatch_agent_event` takes the
+    // labels by ref, and the closure already mutably borrows `agent` for
+    // the run — a shared snapshot sidesteps the double borrow.
+    let turn_labels: std::collections::HashMap<String, String> = agent
+        .tool_defs()
+        .iter()
+        .filter_map(|t| {
+            t.label
+                .as_ref()
+                .map(|l| l.trim())
+                .filter(|l| !l.is_empty())
+                .map(|l| (t.name.clone(), l.to_string()))
+        })
+        .collect();
     let mut run_result = {
         let mut on_event = |ev: &AgentEvent| {
             dispatch_agent_event(
@@ -283,6 +293,7 @@ pub(crate) async fn run_prompt_turn(
                 turn_start,
                 &mut turn_duration_ms,
                 &mut stream_clock,
+                Some(&turn_labels),
             );
         };
         run_streaming_cancellable(agent, user_msg, ctx, &cancel, &mut on_event).await
@@ -324,6 +335,7 @@ pub(crate) async fn run_prompt_turn(
                 turn_start,
                 &mut turn_duration_ms,
                 &mut stream_clock,
+                Some(&turn_labels),
             );
         };
         run_result = run_streaming_cancellable(

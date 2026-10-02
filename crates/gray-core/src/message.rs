@@ -27,10 +27,18 @@ pub enum ContentBlock {
     Text { text: String },
     /// Image content (base64-encoded).
     Image { media_type: String, data: String },
-    /// Video content (base64-encoded). Only models with a native video part
-    /// can use this; every other path turns the file into a contact sheet
-    /// (`gray view` / pasted attachments) before it ever reaches here.
-    Video { media_type: String, data: String },
+    /// Non-image media (base64-encoded): video, audio, PDF. Providers send it
+    /// natively when the model takes that `media_type`, else they send
+    /// `fallback` instead (see [`resolve_media`]) — so a session keeps working
+    /// after switching to a model without that input. Old sessions stored
+    /// this as `"type": "video"` without a fallback.
+    #[serde(alias = "video")]
+    Media {
+        media_type: String,
+        data: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        fallback: Vec<ContentBlock>,
+    },
     /// A tool invocation requested by the model.
     ToolUse {
         id: String,
@@ -106,11 +114,17 @@ impl ContentBlock {
         }
     }
 
-    /// Creates a new video block (base64 `data`, e.g. "video/mp4").
-    pub fn video(media_type: impl Into<String>, data: impl Into<String>) -> Self {
-        Self::Video {
+    /// Creates a new media block (base64 `data`, e.g. "video/mp4") with
+    /// what a model that can't take it sees instead.
+    pub fn media(
+        media_type: impl Into<String>,
+        data: impl Into<String>,
+        fallback: Vec<ContentBlock>,
+    ) -> Self {
+        Self::Media {
             media_type: media_type.into(),
             data: data.into(),
+            fallback,
         }
     }
 
@@ -275,7 +289,7 @@ impl Message {
                 // Base64 payload length is the only size signal available
                 // here; providers re-encode, so this is an approximation in
                 // the same spirit as the chars/4 heuristic downstream.
-                ContentBlock::Image { data, .. } | ContentBlock::Video { data, .. } => data.clone(),
+                ContentBlock::Image { data, .. } | ContentBlock::Media { data, .. } => data.clone(),
             };
             if !piece.is_empty() {
                 if !out.is_empty() {
@@ -288,12 +302,53 @@ impl Message {
     }
 }
 
+/// Raw media bytes past this never go on the wire natively: base64 is ~1.33x,
+/// and an inline request over ~20MB is rejected by every provider we speak.
+pub const MAX_NATIVE_MEDIA_BYTES: usize = 8 * 1024 * 1024;
+
+/// Swap each [`ContentBlock::Media`] the model can't take (per `accepts`,
+/// given the media type) or that is over [`MAX_NATIVE_MEDIA_BYTES`] for its
+/// fallback, or a one-line note when it has none. Providers call this on a
+/// message's blocks right before mapping them to the wire.
+pub fn resolve_media(
+    blocks: Vec<ContentBlock>,
+    accepts: impl Fn(&str) -> bool,
+) -> Vec<ContentBlock> {
+    let max_b64 = MAX_NATIVE_MEDIA_BYTES.div_ceil(3) * 4;
+    let mut out = Vec::with_capacity(blocks.len());
+    for block in blocks {
+        match block {
+            ContentBlock::Media {
+                media_type,
+                data,
+                fallback,
+            } if !accepts(&media_type) || data.len() > max_b64 => {
+                if fallback.is_empty() {
+                    out.push(ContentBlock::text(format!(
+                        "({media_type} attachment omitted: this model can't take it)"
+                    )));
+                } else {
+                    out.extend(fallback);
+                }
+            }
+            other => out.push(other),
+        }
+    }
+    out
+}
+
 /// Definition of a tool available to the agent model.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ToolDef {
     pub name: String,
     pub description: String,
     pub parameters: serde_json::Value,
+    /// Display-only headline for transcripts (`None` = derive from the
+    /// wire name). Never reaches the model: both provider mappers project
+    /// `name`/`description`/`parameters` explicitly, and `None` skips
+    /// serialization so persisted payloads stay byte-stable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
 }
 
 impl ToolDef {
@@ -307,7 +362,14 @@ impl ToolDef {
             name: name.into(),
             description: description.into(),
             parameters,
+            label: None,
         }
+    }
+
+    /// Attaches a display headline (plugin manifests, tests).
+    pub fn with_label(mut self, label: impl Into<String>) -> Self {
+        self.label = Some(label.into());
+        self
     }
 }
 

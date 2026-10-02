@@ -109,35 +109,6 @@ fn video_extension_gate_covers_the_common_containers() {
 }
 
 #[test]
-fn native_video_is_raw_bytes_not_a_sheet() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("clip.mp4");
-    // A real mp4 header, so the assertion is about the payload, not luck.
-    let mut bytes = b"\x00\x00\x00\x18ftypmp42".to_vec();
-    bytes.extend_from_slice(&[0u8; 64]);
-    std::fs::write(&path, &bytes).unwrap();
-
-    let (media_type, data) = load_native_video(&path).expect("video must load");
-    use base64::Engine as _;
-    let raw = base64::engine::general_purpose::STANDARD
-        .decode(&data)
-        .unwrap();
-    assert_eq!(raw, bytes, "native must be the file itself, byte for byte");
-    assert_eq!(media_type, "video/mp4");
-}
-
-#[test]
-fn native_refuses_an_image() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("shot.png");
-    std::fs::write(&path, png_bytes(8, 8)).unwrap();
-    assert!(
-        load_native_video(&path).is_err(),
-        "an image is not a video part"
-    );
-}
-
-#[test]
 fn video_media_type_follows_the_extension() {
     use crate::images::video_media_type;
     for (name, want) in [

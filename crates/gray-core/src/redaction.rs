@@ -714,7 +714,15 @@ pub fn redact_message(msg: &crate::message::Message) -> crate::message::Message 
             ContentBlock::StructuredInput { payload, .. } => {
                 redact_json_value(payload);
             }
-            ContentBlock::Image { .. } | ContentBlock::Video { .. } => {}
+            // Fallbacks carry text (PDF text, notes) that can hold secrets.
+            ContentBlock::Media { fallback, .. } => {
+                for b in fallback {
+                    if let ContentBlock::Text { text } = b {
+                        *text = scrub_if_secret(text);
+                    }
+                }
+            }
+            ContentBlock::Image { .. } => {}
         }
     }
     out

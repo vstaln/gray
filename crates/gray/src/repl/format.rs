@@ -172,114 +172,38 @@ pub fn format_core_error(e: &CoreError, base_url: &str) -> String {
     }
 }
 
-pub(crate) fn base64_encode(input: &[u8]) -> String {
-    use base64::Engine as _;
-    base64::engine::general_purpose::STANDARD.encode(input)
-}
-
 /// Builds the user message with MIME-driven attachments (opencode parity):
-/// images normalized (downscaled, capped), PDFs as extracted text, videos as
-/// a native part on a model that takes one and a contact sheet otherwise.
-/// Audio/anything else is reported loudly, never silently dropped.
+/// images normalized (downscaled, capped); video, PDF and audio as native
+/// media carrying a fallback (contact sheet, PDF text, a note) that the
+/// provider sends instead on a model without that input — the same parts a
+/// `cat` of the file produces. Anything else is reported loudly.
 pub(crate) fn build_user_message_with_attachments(
     text: &str,
     paths: &[std::path::PathBuf],
-    model: &str,
 ) -> Message {
-    use super::attachments::{AttachmentKind, attachment_kind};
+    use gray_core::message::ContentBlock;
+    use gray_tools::view::Attached;
     if paths.is_empty() {
         return Message::user(text);
     }
     let mut blocks = Vec::new();
     if !text.is_empty() {
-        blocks.push(gray_core::message::ContentBlock::text(text.to_string()));
+        blocks.push(ContentBlock::text(text.to_string()));
     }
     for path in paths {
-        let name = path.display().to_string();
-        match attachment_kind(path) {
-            AttachmentKind::Image => match std::fs::read(path) {
-                Ok(bytes) => match super::attachments::normalize_image_bytes(&bytes) {
-                    Ok((mime, out)) => blocks.push(gray_core::message::ContentBlock::image(
-                        mime,
-                        base64_encode(&out),
-                    )),
-                    Err(e) => blocks.push(gray_core::message::ContentBlock::text(format!(
-                        "(attached image {name} skipped: {e})"
-                    ))),
-                },
-                Err(e) => blocks.push(gray_core::message::ContentBlock::text(format!(
-                    "(attached image {name} unreadable: {e})"
-                ))),
-            },
-            AttachmentKind::Pdf => match super::attachments::pdf_text(path) {
-                Ok(t) => blocks.push(gray_core::message::ContentBlock::text(format!(
-                    "--- {name} (PDF text) ---\n{t}"
-                ))),
-                Err(e) => blocks.push(gray_core::message::ContentBlock::text(format!(
-                    "(attached PDF {name} skipped: {e})"
-                ))),
-            },
-            // Native video only where the wire actually has a video part and
-            // the clip fits the cap; every other model gets the same contact
-            // sheet `gray view` would produce, so one pasted file works
-            // everywhere.
-            AttachmentKind::Video => {
-                let raw = match std::fs::read(path) {
-                    Ok(bytes) => bytes,
-                    Err(e) => {
-                        blocks.push(gray_core::message::ContentBlock::text(format!(
-                            "(attached video {name} unreadable: {e})"
-                        )));
-                        continue;
-                    }
-                };
-                if gray_provider::openai::model_accepts_video(model)
-                    && raw.len() <= gray_provider::openai::MAX_NATIVE_VIDEO_BYTES
-                {
-                    blocks.push(gray_core::message::ContentBlock::video(
-                        super::attachments::video_media_type(path),
-                        base64_encode(&raw),
-                    ));
-                } else {
-                    let reason = if gray_provider::openai::model_accepts_video(model) {
-                        "over the native size cap"
-                    } else {
-                        "model has no native video input"
-                    };
-                    match gray_tools::video_sheet::video_sheet(
-                        path,
-                        gray_tools::video_sheet::DEFAULT_FRAMES,
-                    ) {
-                        Ok(sheet) => match super::attachments::normalize_image_bytes(&sheet) {
-                            Ok((mime, out)) => {
-                                blocks.push(gray_core::message::ContentBlock::text(format!(
-                                    "({name}: contact sheet, {reason})"
-                                )));
-                                blocks.push(gray_core::message::ContentBlock::image(
-                                    mime,
-                                    base64_encode(&out),
-                                ));
-                            }
-                            Err(e) => blocks.push(gray_core::message::ContentBlock::text(format!(
-                                "(attached video {name} skipped: {e})"
-                            ))),
-                        },
-                        Err(e) => blocks.push(gray_core::message::ContentBlock::text(format!(
-                            "(attached video {name} skipped: {e})"
-                        ))),
-                    }
-                }
-            }
-            // No model-agnostic wire path for audio on our providers — loud skip.
-            AttachmentKind::Audio | AttachmentKind::Unsupported => {
-                blocks.push(gray_core::message::ContentBlock::text(format!(
-                    "(attached file {name} skipped: audio/unsupported type, no model wire path yet)"
-                )))
-            }
+        if !gray_tools::images::is_viewable_extension(path) {
+            blocks.push(ContentBlock::text(format!(
+                "(attached file {} skipped: unsupported type)",
+                path.display()
+            )));
+            continue;
         }
-    }
-    if blocks.is_empty() {
-        return Message::user(text);
+        blocks.push(match gray_tools::view::attach(path) {
+            Ok(Attached::Image(img, _)) => ContentBlock::image(img.media_type, img.data),
+            Ok(Attached::Media(m, _)) => ContentBlock::media(m.media_type, m.data, m.fallback),
+            Ok(Attached::Text(t, _)) => ContentBlock::text(t),
+            Err(e) => ContentBlock::text(format!("(attachment skipped: {e})")),
+        });
     }
     Message::new(gray_core::message::Role::User, blocks)
 }

@@ -2295,40 +2295,121 @@ fn model_accepts_video_is_gemini_only() {
 }
 
 #[test]
-fn a_video_block_reaches_the_wire_only_for_a_video_model() {
-    use crate::openai::model_accepts_video;
-    let req = || ChatRequest {
+fn media_goes_native_where_the_wire_takes_it_else_its_fallback() {
+    let req = |media: ContentBlock| ChatRequest {
         system: None,
-        messages: vec![Message::new(
-            gray_core::Role::User,
-            vec![ContentBlock::video("video/mp4", "QUJD")],
-        )],
+        messages: vec![Message::new(gray_core::Role::User, vec![media])],
         tools: Vec::new(),
         max_tokens: None,
     };
+    let video = || {
+        ContentBlock::media(
+            "video/mp4",
+            "QUJD",
+            vec![
+                ContentBlock::text("(contact sheet of clip.mp4)"),
+                ContentBlock::image("image/jpeg", "U0hFRVQ="),
+            ],
+        )
+    };
+    let pdf = || {
+        ContentBlock::media(
+            "application/pdf",
+            "UERG",
+            vec![ContentBlock::text("--- doc.pdf (PDF text) ---\nhello")],
+        )
+    };
+    let audio = || ContentBlock::media("audio/wav", "V0FW", vec![ContentBlock::text("(no audio)")]);
+    let chat = |b, model| {
+        serde_json::to_value(map_chat_request(req(b), model, None).expect("maps")).unwrap()
+            ["messages"][0]["content"]
+            .clone()
+    };
 
-    // Gemini: a real video_url part carrying the data URL.
-    let chat = map_chat_request(req(), "gemini-3-pro", None).expect("maps");
-    let body = serde_json::to_value(&chat).unwrap();
-    let parts = body["messages"][0]["content"].as_array().unwrap();
-    let video = parts
+    // Gemini: native video_url and input_audio parts.
+    let parts = chat(video(), "gemini-3-pro");
+    assert!(
+        parts[0]["video_url"]["url"]
+            .as_str()
+            .unwrap()
+            .starts_with("data:video/mp4;base64,")
+    );
+    let parts = chat(audio(), "gemini-3-pro");
+    assert_eq!(
+        parts[0]["input_audio"],
+        serde_json::json!({"data": "V0FW", "format": "wav"})
+    );
+
+    // No native input: the fallback, never a 400.
+    let parts = chat(video(), "step-5-preview");
+    assert_eq!(parts[0]["text"], "(contact sheet of clip.mp4)");
+    assert_eq!(parts[1]["type"], "image_url");
+    assert_eq!(chat(audio(), "gpt-5.1"), "(no audio)");
+    // Chat has no base64 PDF part anywhere.
+    assert!(
+        chat(pdf(), "gemini-3-pro")
+            .as_str()
+            .unwrap()
+            .contains("hello")
+    );
+
+    // Responses: PDFs as input_file on OpenAI models, text elsewhere.
+    let body =
+        serde_json::to_value(map_chat_to_responses(req(pdf()), "gpt-5.1", None, None)).unwrap();
+    let part = &body["input"][0]["content"][0];
+    assert_eq!(part["type"], "input_file");
+    assert!(
+        part["file_data"]
+            .as_str()
+            .unwrap()
+            .starts_with("data:application/pdf;base64,")
+    );
+    let body =
+        serde_json::to_value(map_chat_to_responses(req(video()), "gpt-5.1", None, None)).unwrap();
+    assert_eq!(body["input"][0]["content"], "(contact sheet of clip.mp4)");
+}
+
+#[test]
+fn chat_tool_result_fallback_text_follows_all_tool_results() {
+    // A tool result whose media fell back to text+image must not split the
+    // tool-message run (that 400s); it moves after the whole run.
+    let req = ChatRequest {
+        system: None,
+        messages: vec![
+            Message::new(
+                gray_core::Role::Assistant,
+                vec![
+                    ContentBlock::tool_use("a", "bash", serde_json::json!({})),
+                    ContentBlock::tool_use("b", "bash", serde_json::json!({})),
+                ],
+            ),
+            Message::new(
+                gray_core::Role::User,
+                vec![
+                    ContentBlock::tool_result("a", "clip.mp4 (video)", false),
+                    ContentBlock::media(
+                        "video/mp4",
+                        "QUJD",
+                        vec![ContentBlock::text("(contact sheet)")],
+                    ),
+                ],
+            ),
+            Message::new(
+                gray_core::Role::User,
+                vec![ContentBlock::tool_result("b", "ok", false)],
+            ),
+        ],
+        tools: Vec::new(),
+        max_tokens: None,
+    };
+    let body = serde_json::to_value(map_chat_request(req, "gpt-5.1", None).unwrap()).unwrap();
+    let roles: Vec<_> = body["messages"]
+        .as_array()
+        .unwrap()
         .iter()
-        .find(|p| p["type"] == "video_url")
-        .expect("video part must be present");
-    let url = video["video_url"]["url"].as_str().unwrap();
-    assert!(url.starts_with("data:video/mp4;base64,"), "{url}");
-
-    // A model without native video refuses loudly, and names the fallback.
-    let err = map_chat_request(req(), "step-5-preview", None).expect_err("must refuse");
-    let text = err.to_string();
-    assert!(text.contains("gray view"), "{text}");
-
-    // Same rule on the Responses path: a note, not a stray part.
-    let responses = map_chat_to_responses(req(), "gpt-5.1", None, None);
-    let body = serde_json::to_value(&responses).unwrap();
-    let text = body["input"][0]["content"].as_str().unwrap_or_default();
-    assert!(text.contains("no native video input"), "{text}");
-    let _ = model_accepts_video("gemini-3-pro");
+        .map(|m| m["role"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(roles, ["assistant", "tool", "tool", "user"]);
 }
 
 #[test]
