@@ -67,7 +67,7 @@ impl BackgroundSnapshot {
                         .is_some_and(crate::composer::transcript::transcript_row_is_blank);
                     lines.extend(crate::composer::transcript::thinking_run_rows(
                         text,
-                        w.saturating_sub(2).max(1),
+                        crate::composer::transcript::prose_width(w),
                         tail_blank,
                     ));
                 }
