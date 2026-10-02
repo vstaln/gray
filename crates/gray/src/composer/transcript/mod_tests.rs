@@ -32,119 +32,6 @@ fn word_flush_cut_budgets_cells_not_chars() {
 }
 
 #[test]
-fn gap_need_fills_one_above_content() {
-    assert_eq!(gap_need(&[Line::from("text")], 1), 1);
-}
-
-#[test]
-fn gap_need_is_idempotent_above_a_gap() {
-    // Checkpoint spacers (thinking close, tool-box edges, turn footer) must
-    // never stack a second blank onto an existing gap: closing a run right
-    // after another gap leaves the tail alone, so every seam shows exactly
-    // one break instead of two.
-    let t = vec![Line::from("text"), Line::from("")];
-    assert_eq!(gap_need(&t, 1), 0);
-}
-
-#[test]
-fn gap_need_counts_partial_tail() {
-    let t = vec![Line::from("text"), Line::from("")];
-    assert_eq!(gap_need(&t, 2), 1);
-}
-
-#[test]
-fn gap_need_puts_a_real_gap_outside_a_card() {
-    // A card's painted padding row belongs to the card, it is not the gap
-    // between blocks: a tail ending on one still needs the unpainted row,
-    // or the next paragraph sits flush against the card background.
-    let bg = Style::default().bg(crate::theme::GRAY_UI_THEME.surface_bg);
-    let t = vec![Line::from("text"), Line::from("").style(bg)];
-    assert_eq!(gap_need(&t, 1), 1);
-}
-
-#[test]
-fn gap_need_sees_left_padded_rows_as_blank() {
-    // Live thinking rows carry the gutter pad; a pad-only tail is a gap,
-    // never a reason for another blank.
-    let t = vec![Line::from(vec![left_pad()])];
-    assert_eq!(gap_need(&t, 1), 0);
-}
-
-#[test]
-fn gap_need_empty_transcript_still_gaps() {
-    assert_eq!(gap_need(&[], 1), 1);
-}
-
-#[test]
-fn streaming_boundaries_collapse_only_outer_blank_rows() {
-    let lines = vec![
-        Line::from(""),
-        Line::from(""),
-        Line::from("first"),
-        Line::from(""),
-        Line::from("second"),
-        Line::from(""),
-        Line::from(""),
-    ];
-    let (normalized, _) = normalize_stream_boundaries(lines.clone(), vec![], true);
-    let text: Vec<String> = normalized
-        .iter()
-        .map(|line| {
-            line.spans
-                .iter()
-                .map(|span| span.content.as_ref())
-                .collect()
-        })
-        .collect();
-    assert_eq!(text, vec!["first", "", "second", ""]);
-
-    let (normalized, _) = normalize_stream_boundaries(lines, vec![], false);
-    let text: Vec<String> = normalized
-        .into_iter()
-        .map(|line| {
-            line.spans
-                .iter()
-                .map(|span| span.content.as_ref())
-                .collect()
-        })
-        .collect();
-    assert_eq!(text, vec!["", "first", "", "second", ""]);
-}
-
-#[test]
-fn streaming_boundaries_rebase_links_after_dropping_outer_rows() {
-    let lines = vec![
-        Line::from(""),
-        Line::from("body"),
-        Line::from(""),
-        Line::from(""),
-    ];
-    let links = vec![HyperlinkTarget {
-        line_index: 1,
-        column_range: 0..4,
-        url: "file:///repo/body".to_string(),
-        id: 1,
-    }];
-    let (normalized, links) = normalize_stream_boundaries(lines, links, true);
-    assert_eq!(normalized.len(), 2);
-    assert_eq!(links[0].line_index, 0);
-    assert_eq!(links[0].url, "file:///repo/body");
-}
-
-#[test]
-fn streaming_boundaries_keep_one_gap_for_a_blank_only_block() {
-    let (normalized, _) =
-        normalize_stream_boundaries(vec![Line::from(""), Line::from("")], vec![], false);
-    assert_eq!(normalized.len(), 1);
-    assert!(transcript_row_is_blank(&normalized[0]));
-
-    let (normalized, links) =
-        normalize_stream_boundaries(vec![Line::from(""), Line::from("")], vec![], true);
-    assert!(normalized.is_empty());
-    assert!(links.is_empty());
-}
-
-#[test]
 fn deferred_stream_punctuation_stays_with_the_previous_prose_block() {
     let mut entries = vec![TranscriptEntry::StyledLines {
         lines: vec![Line::from("Let's patch")],
@@ -559,44 +446,6 @@ fn tool_box_has_exactly_one_painted_margin_row_top_and_bottom() {
 }
 
 #[test]
-fn a_card_sits_one_unpainted_row_away_from_its_neighbours() {
-    // Codex's layout: prose, one unpainted blank row, the card's own painted
-    // padding, its content, painted padding, one unpainted row, prose. The
-    // bug was the padding standing in for the gap, which left the next
-    // paragraph flush against the card background.
-    let bg = Some(crate::theme::theme().surface_bg);
-    let painted = |l: &Line<'static>| l.style.bg == bg;
-    let mut t: Vec<Line<'static>> = vec![Line::from("before")];
-    // What `push_tool_box` does: gap, card, gap. `ensure_gap` is
-    // `gap_need` blank rows.
-    let gap = |t: &mut Vec<Line<'static>>| {
-        let n = gap_need(t, 1);
-        t.extend((0..n).map(|_| Line::from("")));
-    };
-    gap(&mut t);
-    t.extend(format_tool_box_lines(
-        Line::from("Ran cargo fmt"),
-        &[Line::from("1 | exit 0")],
-        80,
-    ));
-    gap(&mut t);
-    // a second request is idempotent: never two unpainted rows
-    gap(&mut t);
-    let n = t.len();
-    assert!(transcript_row_is_blank(&t[1]), "unpainted gap above: {t:?}");
-    assert!(painted(&t[2]), "card padding follows the gap: {t:?}");
-    assert!(
-        t[3].spans
-            .iter()
-            .any(|x| x.content.contains("Ran cargo fmt"))
-    );
-    assert!(painted(&t[n - 2]), "card padding at the bottom: {t:?}");
-    assert!(transcript_row_is_blank(&t[n - 1]), "unpainted gap below");
-    assert!(!transcript_row_is_blank(&t[n - 3]));
-    assert_eq!(gap_need(&t, 1), 0, "the next block needs no extra gap");
-}
-
-#[test]
 fn prose_and_card_glyphs_share_the_gutter_column() {
     // Prose text, the tool card's header and the prompt card's `❯` all start
     // in the same column, `GUTTER`, so nothing in the transcript is flush to
@@ -618,4 +467,48 @@ fn prose_and_card_glyphs_share_the_gutter_column() {
         let w: usize = row.spans.iter().map(|s| s.width()).sum();
         assert!(w <= 40, "prompt row overflows: {row:?}");
     }
+}
+
+/// The setup screen's backdrop lays history out through the same funnel as
+/// the live transcript: repeated marks, edge blanks in stored blocks and
+/// cards all come out one unpainted row apart, and nothing trails.
+#[test]
+fn the_backdrop_keeps_the_live_margins() {
+    let styled = |rows: &[&str]| TranscriptEntry::StyledLines {
+        lines: rows.iter().map(|r| Line::from(r.to_string())).collect(),
+        hyperlinks: Vec::new(),
+    };
+    let entries = vec![
+        TranscriptEntry::Welcome,
+        TranscriptEntry::Gap(1),
+        TranscriptEntry::UserPrompt("hi".into(), Vec::new()),
+        TranscriptEntry::Gap(1),
+        TranscriptEntry::Gap(1),
+        styled(&["", "a", ""]),
+        styled(&["", "b"]),
+        TranscriptEntry::Gap(1),
+        TranscriptEntry::ToolBox {
+            header: Line::from("Ran ls"),
+            body: vec![Line::from("1 | ok")],
+        },
+        TranscriptEntry::Gap(1),
+    ];
+    let welcome = crate::composer::build_welcome_lines(80).len();
+    let rows = layout_history(&entries, 80, 24);
+    let body = &rows[welcome..];
+    assert!(
+        !transcript_row_is_blank(&body[0]),
+        "the welcome's gap is the gap"
+    );
+    for pair in body.windows(2) {
+        assert!(
+            !(transcript_row_is_blank(&pair[0]) && transcript_row_is_blank(&pair[1])),
+            "two blank rows in {body:?}"
+        );
+    }
+    assert!(!transcript_row_is_blank(rows.last().unwrap()));
+    let texts: Vec<String> = body.iter().map(|l| l.to_string()).collect();
+    let a = texts.iter().position(|t| t == "a").unwrap();
+    assert_eq!(texts[a + 1], "", "one gap between a and b");
+    assert_eq!(texts[a + 2], "b");
 }

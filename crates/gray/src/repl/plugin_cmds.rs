@@ -72,7 +72,7 @@ pub(crate) async fn handle_plugin_command(raw: &str, tui: Option<&crate::compose
                 if let Some(shared) = tui {
                     let mut t = shared.lock().expect("tui lock");
                     t.push_action("Plugins updated", None);
-                    t.ensure_gap(1);
+                    t.ensure_gap();
                     let _ = t.draw();
                 }
             }
@@ -82,7 +82,7 @@ pub(crate) async fn handle_plugin_command(raw: &str, tui: Option<&crate::compose
                     t.clear_draft();
                     // Dismissed picker leaves the slash card with no feedback:
                     // restore the trailing gap so it doesn't jam the input box.
-                    t.ensure_gap(1);
+                    t.ensure_gap();
                     let _ = t.draw();
                 }
             }

@@ -181,7 +181,7 @@ pub(crate) fn say(tui: Option<&crate::composer::SharedTui>, msg: &str) {
             t.push_dim(format!("└ {line}"));
         }
         // Breathing room below command output before the next prompt.
-        t.ensure_gap(1);
+        t.ensure_gap();
     } else {
         println!("{msg}");
     }
@@ -274,7 +274,7 @@ pub(crate) fn push_provider_connected(
             "└ thinking effort clamped from {old} to {new} (not supported by this model)"
         ));
     }
-    t.ensure_gap(1);
+    t.ensure_gap();
     let _ = t.draw();
 }
 
@@ -641,13 +641,13 @@ pub async fn run_repl_mode(
             t.set_cwd(cwd.display().to_string());
             if let Some((ref sid, ref entries)) = resumed_session_info {
                 t.replay_session_history(entries, &cwd);
-                t.ensure_gap(1);
+                t.ensure_gap();
                 t.push_dim(format!(
                     "\u{2b22} Resumed session {} ({} messages)",
                     sid.as_str(),
                     entries.len()
                 ));
-                t.ensure_gap(1);
+                t.ensure_gap();
             }
             t
         }));

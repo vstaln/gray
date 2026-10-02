@@ -11,8 +11,7 @@ use crate::text_width::display_width;
 mod widgets;
 
 pub(crate) use widgets::{
-    build_input_box, queued_preview_lines, ratchet_seam, shimmer_spans, status_dock_h,
-    transcript_ends_blank,
+    build_input_box, needs_seam, queued_preview_lines, shimmer_spans, status_dock_h,
 };
 
 /// Exact-fit viewport height for the given content, clamped to
@@ -142,12 +141,28 @@ pub(crate) fn footer_badge_visible(model: &str, snapshot: Option<bool>) -> bool 
 }
 
 pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
-    if tui.modal_open {
-        return Ok(());
-    }
     // Inside `Tui::atomic` the repaint is coalesced: the outermost batch
     // draws once, in the same synchronized update as its scrollback inserts.
     if tui.batch_depth > 0 {
+        return Ok(());
+    }
+    frame(tui, true)
+}
+
+/// Gives the band its current height without painting it. Every scrollback
+/// insert runs this first (see `Tui::insert_paragraph`), so rows the band
+/// gives up (a committed live card, a dropped seam, a cleared status) are
+/// vacated *before* the insert, which fills them. Shrunk after the insert,
+/// the band strands those rows as blank margin between the transcript and
+/// the dock, and the only defence was a hint estimating the shrink, which
+/// drifted from what the band really drew. This keeps every margin at one
+/// row by construction.
+pub(crate) fn settle_band(tui: &mut Tui) -> anyhow::Result<()> {
+    frame(tui, false)
+}
+
+fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
+    if tui.modal_open {
         return Ok(());
     }
     let (cols, rows) = crossterm::terminal::size().unwrap_or((80, 24));
@@ -162,23 +177,12 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
     let box_h = ibox.lines.len().max(1) as u16;
     // Attachments row.
     let attach_h: u16 = u16::from(!tui.attachments.is_empty());
-    // Seam (only if scrollback didn't already end blank) + shimmer status
-    // text + one bare breathing row below it. Latched: a per-frame seam
-    // resized the viewport under the input box on every streamed chunk.
-    tui.dock_seam = ratchet_seam(
-        tui.dock_seam,
-        tui.status.is_some(),
-        !transcript_ends_blank(&tui.transcript),
-    );
-    let needs_seam = tui.dock_seam;
+    // Seam (the one gap under the transcript) + shimmer status text + one
+    // bare breathing row below it.
+    let needs_seam = needs_seam(&tui.transcript);
     let status_h: u16 = status_dock_h(tui.status.is_some(), needs_seam);
-    // Row offset of the status text inside its dock: below the seam when
-    // one was reserved, else the very top of the viewport.
-    let seam_h: u16 = if status_h > 0 {
-        u16::from(needs_seam)
-    } else {
-        0
-    };
+    // Row offset of the status text inside its dock: below the seam.
+    let seam_h: u16 = u16::from(needs_seam);
 
     // Exact-fit viewport with in-place resizing (codex parity):
     // Grow and shrink are applied directly to the terminal's viewport area without
@@ -270,10 +274,10 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
     }
     tui.viewport_h = desired;
 
-    // The status dock's seam row (if any) sits on top of the band: tell the
-    // terminal, so a scrollback commit that ends blank overwrites it instead
-    // of stacking a second gap row (see `CustomTerminal::top_slack`).
-    tui.terminal.set_top_slack(seam_h);
+    if !paint {
+        tui.end_sync();
+        return Ok(());
+    }
 
     // Hoisted for the draw closure (borrows `tui` immutably inside).
     // Live tool headers hoisted as owned rows — `live_tool_rows` borrows

@@ -3,6 +3,19 @@
 ## [Unreleased]
 
 ### Fixed
+- **One margin rule for the whole transcript.** Blank rows came from seven places at once
+  (51 hand-placed `ensure_gap` calls, the markdown renderer's paragraph blanks, the thinking
+  stream's `\n\n`, card padding, the dock's seam, rows the band vacated, the turn footer), and
+  wherever two met the margin doubled: two blank rows above `⬡ Thinking…` after a paragraph
+  break, two under a tool card at 91-94 columns. Now a block boundary only *owes* a gap, and the
+  gap is paid as the prefix of the next block, never left as a trailing blank. Blank rows at a
+  block's edges become boundaries; blank rows inside one (a code block's) are content and stay.
+  The transcript therefore always ends in content and the band's seam row is the one gap to
+  the dock or the input box, idle or mid-turn. Live streaming, resize reflow, session replay
+  and the setup screen's backdrop all lay blocks out through the same funnel
+  (`transcript::margins::admit`), and debug builds assert no write ever stacks two blank rows.
+  The band also settles its height before every insert (`draw::settle_band`), so rows it gives
+  up are filled rather than stranded; the shrink hint and the seam-overwrite slack are gone.
 - **A turn-ending error reads as an error.** A rate limit, auth failure or server error that
   outlived its retries was streamed as plain prose, in the same colour as the answer. Its
   headline (`✗ Rate limited (retryable): …`) is now in the theme's error colour and the hint

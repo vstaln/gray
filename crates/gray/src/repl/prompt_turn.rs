@@ -104,7 +104,7 @@ pub(crate) async fn run_prompt_turn(
                     if let Some((shared, _)) = tui {
                         let mut t = shared.lock().expect("tui lock");
                         // Dismissed picker: gap so the card doesn't jam the input box.
-                        t.ensure_gap(1);
+                        t.ensure_gap();
                         let _ = t.draw();
                     }
                     return Ok(());
@@ -392,7 +392,7 @@ pub(crate) async fn run_prompt_turn(
                     // continue" is NOT history: it is a promise about the idle,
                     // empty composer that outlived the turn it described, so
                     // only the idle ghost (`continue_ghost`) says it.
-                    t.ensure_gap(1);
+                    t.ensure_gap();
                     t.push_dim(INTERRUPTED_NOTICE.to_string());
                 }
             } else {
@@ -416,7 +416,7 @@ pub(crate) async fn run_prompt_turn(
                 if let Some((shared, _)) = tui {
                     let mut t = shared.lock().expect("tui lock");
                     t.end_thinking();
-                    t.ensure_gap(1);
+                    t.ensure_gap();
                     // The error is history; the instruction to continue is a
                     // property of the idle composer (see the interrupt arm).
                     t.push_error(&msg);

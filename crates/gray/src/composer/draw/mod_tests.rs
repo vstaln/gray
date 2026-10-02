@@ -1,9 +1,11 @@
+use super::widgets::transcript_ends_blank;
 use super::*;
 
 #[test]
-fn status_dock_seam_is_dynamic() {
-    assert_eq!(status_dock_h(false, true), 0);
-    assert_eq!(status_dock_h(true, false), 2); // scrollback already blank: status + breath
+fn status_dock_rows() {
+    assert_eq!(status_dock_h(false, false), 0); // idle under the welcome banner
+    assert_eq!(status_dock_h(false, true), 1); // idle: seam above the input box
+    assert_eq!(status_dock_h(true, false), 2); // status + breath
     assert_eq!(status_dock_h(true, true), 3); // seam + status + breath
 }
 
@@ -84,43 +86,21 @@ fn multiline_input_is_not_clipped_by_the_viewport_cap() {
     assert!(desired <= cap);
 }
 
-/// The dock seam and a blank scrollback tail are mutually exclusive by
-/// construction: a blank tail already separates scrollback from the status,
-/// so a seam on top of it is the doubled margin. Driven through the exact
-/// predicate `draw` uses, including a tail that flips blank / non-blank
-/// between chunks and a stale `cached` flag from an earlier frame.
+/// The seam is the one gap under the transcript, idle or mid-turn: present
+/// above content, absent where the tail is already blank (only the welcome
+/// banner ends that way), absent on an empty transcript. Never both a blank
+/// tail and a seam: that pair is the doubled margin.
 #[test]
-fn seam_never_stacks_on_a_blank_tail() {
-    for cached in [false, true] {
-        for blank_tail in [false, true] {
-            let seam = ratchet_seam(cached, true, !blank_tail);
-            let blank_rows_above_status = usize::from(blank_tail) + usize::from(seam);
-            assert!(
-                blank_rows_above_status <= 1,
-                "cached={cached} blank_tail={blank_tail}: {blank_rows_above_status} blank rows"
-            );
-            // Exactly one separator row in every state.
-            assert_eq!(blank_rows_above_status, 1);
-        }
+fn the_seam_is_the_one_gap_under_the_transcript() {
+    assert!(needs_seam(&[Line::from("text")]));
+    assert!(!needs_seam(&[Line::from("text"), Line::from("")]));
+    assert!(!needs_seam(&[]));
+    for tail in [Line::from("text"), Line::from("")] {
+        let transcript = [tail];
+        let blank_rows =
+            usize::from(transcript_ends_blank(&transcript)) + usize::from(needs_seam(&transcript));
+        assert_eq!(blank_rows, 1, "exactly one row between transcript and band");
     }
-    assert!(!ratchet_seam(true, false, true), "no status, no dock");
-}
-
-/// Checkpoint gaps (`Thought for` spacer, tool-box trailing) need no
-/// explicit release any more: the frame after the gap derives no seam.
-#[test]
-fn checkpoint_gap_yields_single_spaced_status() {
-    // thinking streams: non-blank tail needs the seam.
-    let mut seam = ratchet_seam(false, true, true);
-    assert!(seam);
-    assert_eq!(status_dock_h(true, seam), 3, "seam + status + breath");
-    // The gap commits: blank tail, even if nothing released the old flag.
-    seam = ratchet_seam(seam, true, false);
-    assert!(!seam, "seam must not stack on the checkpoint gap");
-    assert_eq!(status_dock_h(true, seam), 2, "status + breath only");
-    // answer streams: first non-blank row brings the seam back.
-    seam = ratchet_seam(seam, true, true);
-    assert!(seam);
 }
 
 #[test]

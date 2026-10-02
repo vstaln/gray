@@ -125,7 +125,7 @@ pub(crate) async fn handle_resume(
                 // Dismissed picker leaves the slash card with no feedback:
                 // gap so it doesn't jam the input box.
                 if let Some(shared) = &tui {
-                    shared.lock().expect("tui lock").ensure_gap(1);
+                    shared.lock().expect("tui lock").ensure_gap();
                 }
                 return;
             }
@@ -205,7 +205,7 @@ pub(crate) async fn handle_resume(
                     if let Some(shared) = &tui {
                         let mut t = shared.lock().expect("tui lock");
                         t.replay_session_history(&entries, cwd);
-                        t.ensure_gap(1);
+                        t.ensure_gap();
                         // Keep the status-bar model (and its context window)
                         // on the same effective model as the resumed agent.
                         if !model.is_empty() {
@@ -222,7 +222,7 @@ pub(crate) async fn handle_resume(
                             "\u{2b22} Resumed session {} ({n} messages)",
                             sid.as_str()
                         ));
-                        t.ensure_gap(1);
+                        t.ensure_gap();
                         let _ = t.draw();
                     } else {
                         println!(
@@ -525,7 +525,7 @@ pub(crate) fn dispatch_agent_event(
                     t.flush_markdown();
                     t.end_thinking();
                     t.mark_stream_round_boundary();
-                    t.ensure_gap(1);
+                    t.ensure_gap();
                     t.push_warning(&notice);
                 }
             }

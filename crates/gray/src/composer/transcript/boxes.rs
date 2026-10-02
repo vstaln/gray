@@ -4,30 +4,23 @@ use super::*;
 
 impl Tui {
     pub fn push_tool_box(&mut self, header: Line<'static>, body: Vec<Line<'static>>) {
-        // Leading gap + card + trailing gap land as one synchronized frame.
-        // The gaps are unpainted rows outside the card's painted padding;
-        // `ensure_gap` is idempotent, so a neighbour that already left one
-        // never gets a second.
+        // A card is its own block: a boundary on each side, the gap outside
+        // its painted padding (see `margins`).
         self.atomic(|t| {
             t.insert_tool_box(header, body);
-            t.ensure_gap(1);
+            t.ensure_gap();
         });
-        self.release_dock_seam();
-        if self.transcript.len() > 1000 {
-            self.transcript.drain(0..100);
-        }
         cap_history_entries(&mut self.history_entries);
         let _ = std::io::stdout().flush();
     }
 
     fn insert_tool_box(&mut self, header: Line<'static>, body: Vec<Line<'static>>) {
-        self.ensure_gap(1);
+        self.ensure_gap();
         let w = self.width().max(10);
         let box_lines = format_tool_box_lines(header.clone(), &body, w);
-        self.insert_paragraph(&box_lines, Some(crate::theme::theme().surface_bg));
         self.history_entries
             .push(crate::composer::TranscriptEntry::ToolBox { header, body });
-        self.transcript.extend(box_lines);
+        self.emit_rows(box_lines, Some(crate::theme::theme().surface_bg));
     }
 
     pub(crate) fn push_line_styled(&mut self, line: String, style: Style) {
@@ -61,25 +54,12 @@ impl Tui {
 
     /// Paints one flushed thinking fragment (a `\n`-drained logical line, a
     /// live word-cut, or the run tail) without touching `history_entries` —
-    /// the run's raw text is the history. Blank-on-blank skips here, so
-    /// paint and stored source agree exactly.
+    /// the run's raw text is the history. A blank fragment (a paragraph
+    /// break) paints nothing: it owes the gap the next fragment pays, so a
+    /// pause after `\n\n` shows the last thought, one gap, the dock.
     pub(crate) fn paint_thinking_fragment(&mut self, fragment: String) {
-        if fragment.trim().is_empty() && self.transcript.last().is_some_and(transcript_row_is_blank)
-        {
-            self.release_dock_seam_for_blank_tail();
-            return;
-        }
         let line = Line::from(vec![Span::styled(fragment, thinking_style())]);
-        let w = self.width().max(10);
-        let painted = self.render_and_insert_styled_lines(&[line], &[], w);
-        let ends_blank = painted.last().is_some_and(transcript_row_is_blank);
-        self.transcript.extend(painted);
-        if self.is_task_running && ends_blank {
-            self.release_dock_seam();
-        }
-        if self.transcript.len() > 1000 {
-            self.transcript.drain(0..100);
-        }
+        self.emit_styled(vec![line], Vec::new());
         let _ = std::io::stdout().flush();
     }
 
@@ -129,6 +109,7 @@ impl Tui {
         let total_h = all_wrapped.len() as u16;
         let lines_only: Vec<Line<'static>> = all_wrapped.iter().map(|(l, _)| l.clone()).collect();
         let _ = self.atomic(|t| {
+            let _ = crate::composer::draw::settle_band(t);
             t.terminal.insert_before(total_h, |buf| {
                 let area = buf.area;
                 for (i, (line, hls)) in all_wrapped.iter().enumerate() {
@@ -172,37 +153,17 @@ impl Tui {
         line_offset: usize,
     ) {
         if lines.is_empty() {
-            self.release_dock_seam_for_blank_tail();
             return;
         }
-        let w = self.width().max(10);
         let rebased = rebase_hyperlinks_for_slice(hyperlinks, line_offset, lines.len());
-        let tail_blank = self.transcript.last().is_some_and(transcript_row_is_blank);
-        let (lines, rebased) = if self.is_task_running {
-            normalize_stream_boundaries(lines, rebased, tail_blank)
-        } else {
-            (lines, rebased)
-        };
-        if lines.is_empty() {
-            if tail_blank {
-                self.release_dock_seam_for_blank_tail();
-            }
-            return;
-        }
-        let lines_only = self.render_and_insert_styled_lines(&lines, &rebased, w);
+        // History keeps the block as it came (edge blanks included): reflow
+        // and replay run it through the same funnel and land where this did.
         self.history_entries
             .push(crate::composer::TranscriptEntry::StyledLines {
-                lines,
-                hyperlinks: rebased,
+                lines: lines.clone(),
+                hyperlinks: rebased.clone(),
             });
-        let ends_blank = lines_only.last().is_some_and(transcript_row_is_blank);
-        self.transcript.extend(lines_only);
-        if self.is_task_running && ends_blank {
-            self.release_dock_seam();
-        }
-        if self.transcript.len() > 1000 {
-            self.transcript.drain(0..100);
-        }
+        self.emit_styled(lines, rebased);
         cap_history_entries(&mut self.history_entries);
         let _ = std::io::stdout().flush();
     }
@@ -220,15 +181,12 @@ impl Tui {
             return false;
         };
         crate::mascot::set_mascot_shown(true);
-        let lines_only = self.render_and_insert_styled_lines(&lines, &[], w);
+        self.ensure_gap();
         self.history_entries
             .push(crate::composer::TranscriptEntry::Mascot);
         cap_history_entries(&mut self.history_entries);
-        self.transcript.extend(lines_only);
-        self.ensure_gap(1);
-        if self.transcript.len() > 1000 {
-            self.transcript.drain(0..100);
-        }
+        self.emit_styled(lines, Vec::new());
+        self.ensure_gap();
         let _ = std::io::stdout().flush();
         true
     }
@@ -375,14 +333,14 @@ impl Tui {
                                 // that only exists live). Previously dropped.
                                 let rows = thinking_replay_lines(text);
                                 if !rows.is_empty() {
-                                    self.ensure_gap(1);
+                                    self.ensure_gap();
                                     self.push_styled_lines_with_hyperlinks(rows, &[], 0);
                                 }
                             }
                             gray_core::ContentBlock::Text { text } => {
                                 let clean = strip_ansi(text);
                                 if !clean.trim().is_empty() {
-                                    self.ensure_gap(1);
+                                    self.ensure_gap();
                                     // Same budget the insert wrapper will use:
                                     // tables fit by construction instead of shredding.
                                     let tw = prose_width(self.width().max(10));

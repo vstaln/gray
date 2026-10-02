@@ -290,7 +290,7 @@ pub(crate) fn expand_skill_command(
                     if let Some(shared) = tui {
                         let mut t = shared.lock().expect("tui lock");
                         t.push_action("Skills updated", None);
-                        t.ensure_gap(1);
+                        t.ensure_gap();
                         let _ = t.draw();
                     }
                 }
@@ -300,7 +300,7 @@ pub(crate) fn expand_skill_command(
                         t.clear_draft();
                         // Dismissed picker leaves the slash card with no feedback:
                         // restore the trailing gap so it doesn't jam the input box.
-                        t.ensure_gap(1);
+                        t.ensure_gap();
                         let _ = t.draw();
                     }
                 }
@@ -637,7 +637,7 @@ pub(crate) async fn handle_model(
                     "└ thinking effort clamped from {old} to {new} (not supported by this model)"
                 ));
             }
-            t.ensure_gap(1);
+            t.ensure_gap();
             let _ = t.draw();
         } else {
             println!("✓ Model set to {m}");
@@ -697,7 +697,7 @@ pub(crate) async fn handle_model(
                         "└ thinking effort clamped from {old} to {new} (not supported by this model)"
                     ));
                 }
-                t.ensure_gap(1);
+                t.ensure_gap();
                 let _ = t.draw();
             } else if let Some((old, new)) = clamped {
                 println!(
@@ -722,7 +722,7 @@ pub(crate) async fn handle_model(
                 t.clear_draft();
                 // Dismissed picker leaves the slash card with no feedback:
                 // gap so it doesn't jam the input box.
-                t.ensure_gap(1);
+                t.ensure_gap();
                 let _ = t.draw();
             }
         }
@@ -730,7 +730,7 @@ pub(crate) async fn handle_model(
             if let Some(shared) = tui {
                 let mut t = shared.lock().expect("tui lock");
                 t.push_dim(format!("└ error: {e}"));
-                t.ensure_gap(1);
+                t.ensure_gap();
             } else {
                 println!("model error: {e}");
             }
@@ -770,7 +770,7 @@ pub(crate) async fn handle_thinking(
                 t.set_thinking_effort(eff_clean.clone());
                 t.set_hide_thinking(*hide_thinking);
                 t.push_action("Thinking effort set to", Some(&eff_clean));
-                t.ensure_gap(1);
+                t.ensure_gap();
                 let _ = t.draw();
             } else {
                 println!("✓ Thinking effort set to {eff_clean}");
@@ -785,7 +785,7 @@ pub(crate) async fn handle_thinking(
         if let Some(shared) = tui {
             let mut t = shared.lock().expect("tui lock");
             t.push_dim(format!("└ {msg}"));
-            t.ensure_gap(1);
+            t.ensure_gap();
         } else {
             println!("{msg}");
         }
@@ -819,7 +819,7 @@ pub(crate) async fn handle_thinking(
         if let Some(shared) = tui {
             let mut t = shared.lock().expect("tui lock");
             t.push_dim(msg);
-            t.ensure_gap(1);
+            t.ensure_gap();
             let _ = t.draw();
         } else {
             println!("{msg}");
@@ -839,7 +839,7 @@ pub(crate) async fn handle_thinking(
                     *hide_thinking = config.reasoning_hidden();
                     t.set_hide_thinking(*hide_thinking);
                     t.push_action("Thinking effort set to", Some(eff));
-                    t.ensure_gap(1);
+                    t.ensure_gap();
                 }
                 let _ = t.draw();
             }
@@ -865,7 +865,7 @@ pub(crate) async fn handle_thinking(
                     let mut t = shared.lock().expect("tui lock");
                     t.set_hide_thinking(*hide_thinking);
                     t.push_dim(format!("└ {msg}"));
-                    t.ensure_gap(1);
+                    t.ensure_gap();
                 } else {
                     println!("{msg}");
                 }
@@ -874,7 +874,7 @@ pub(crate) async fn handle_thinking(
                 t.clear_draft();
                 // Dismissed picker leaves the slash card with no feedback:
                 // gap so it doesn't jam the input box.
-                t.ensure_gap(1);
+                t.ensure_gap();
                 let _ = t.draw();
             }
         }
