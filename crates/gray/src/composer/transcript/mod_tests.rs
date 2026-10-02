@@ -1,3 +1,4 @@
+use super::rows::RIGHT_MARGIN;
 use super::*;
 use crate::composer::TranscriptEntry;
 
@@ -52,19 +53,20 @@ fn gap_need_counts_partial_tail() {
 }
 
 #[test]
-fn gap_need_treats_card_margins_as_the_separator() {
-    // The card's painted margin row IS the blank row between blocks, so a tail
-    // ending on one must not earn another: that was the double margin.
+fn gap_need_puts_a_real_gap_outside_a_card() {
+    // A card's painted padding row belongs to the card, it is not the gap
+    // between blocks: a tail ending on one still needs the unpainted row,
+    // or the next paragraph sits flush against the card background.
     let bg = Style::default().bg(crate::theme::GRAY_UI_THEME.surface_bg);
     let t = vec![Line::from("text"), Line::from("").style(bg)];
-    assert_eq!(gap_need(&t, 1), 0);
+    assert_eq!(gap_need(&t, 1), 1);
 }
 
 #[test]
 fn gap_need_sees_left_padded_rows_as_blank() {
-    // Live thinking rows carry the 1-space left pad; a pad-only tail is a
-    // gap, never a reason for another blank.
-    let t = vec![Line::from(vec![Span::raw(" ")])];
+    // Live thinking rows carry the gutter pad; a pad-only tail is a gap,
+    // never a reason for another blank.
+    let t = vec![Line::from(vec![left_pad()])];
     assert_eq!(gap_need(&t, 1), 0);
 }
 
@@ -349,7 +351,7 @@ fn thinking_survives_resize_round_trip() {
     // `\n`-drains store terminated, word-cuts concatenate bare (which for
     // `\n`-free text reproduces the source exactly).
     let accumulate = |w_live: usize| {
-        let max_live = w_live.saturating_sub(4).max(1);
+        let max_live = prose_width(w_live);
         let mut run = String::new();
         let mut rest: Vec<char> = text.chars().collect();
         while !rest.is_empty() {
@@ -367,17 +369,15 @@ fn thinking_survives_resize_round_trip() {
     };
     for (w_live, w_new) in [(100usize, 40usize), (40usize, 100usize)] {
         let run = accumulate(w_live);
-        let rows = thinking_run_rows(&run, w_new.saturating_sub(2).max(1), false);
+        let rows = thinking_run_rows(&run, prose_width(w_new), false);
         assert!(!rows.is_empty(), "run must paint at {w_new}");
-        // Render budget is w-2 with the 1-cell left pad on top: padded
-        // rows may reach w-1 but never the full width (Paragraph would
-        // hard-clip anything wider — the "shortened" symptom).
+        // Render budget is `prose_width` with the gutter on top: padded
+        // rows stop short of the right margin, never the full width
+        // (Paragraph would hard-clip anything wider — the "shortened"
+        // symptom).
         for r in &rows {
             let rw: usize = r.spans.iter().map(|s| s.width()).sum();
-            assert!(
-                rw <= w_new.saturating_sub(1).max(1),
-                "row overflows {w_new}: {r:?}"
-            );
+            assert!(rw <= w_new - RIGHT_MARGIN, "row overflows {w_new}: {r:?}");
         }
         let got = row_text(&rows)
             .join(" ")
@@ -388,8 +388,8 @@ fn thinking_survives_resize_round_trip() {
     }
     // The reported bug: streamed narrow (40), widened to 100 — rows must
     // expand past the narrow cut budget instead of lingering as shards.
-    let narrow_rows = thinking_run_rows(&accumulate(40), 40usize - 2, false);
-    let wide_rows = thinking_run_rows(&accumulate(40), 100usize - 2, false);
+    let narrow_rows = thinking_run_rows(&accumulate(40), prose_width(40), false);
+    let wide_rows = thinking_run_rows(&accumulate(40), prose_width(100), false);
     let max_cells = |rows: &[Line<'static>]| {
         rows.iter()
             .map(|r| r.spans.iter().map(|s| s.width()).sum::<usize>())
@@ -403,7 +403,7 @@ fn thinking_survives_resize_round_trip() {
         narrow_rows.len()
     );
     assert!(
-        max_cells(&wide_rows) > 40 - 2,
+        max_cells(&wide_rows) > 40 - RIGHT_MARGIN,
         "widened rows must exceed the narrow budget: {wide_rows:?}"
     );
 }
@@ -417,11 +417,11 @@ fn thinking_run_rows_collapse_stacked_blanks() {
         .iter()
         .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
         .collect();
-    // Live blank rows carry the 1-space left pad (`" "`); the blank
-    // predicate treats them as blank, so no stacked gaps ever paint.
+    // Live blank rows carry the gutter pad (`"  "`); the blank predicate
+    // treats them as blank, so no stacked gaps ever paint.
     assert_eq!(
         texts,
-        vec![" foo".to_string(), " ".to_string(), " bar".to_string()]
+        vec!["  foo".to_string(), "  ".to_string(), "  bar".to_string()]
     );
 }
 
@@ -516,11 +516,11 @@ fn transcript_row_is_blank_matches_gap_predicates() {
     assert!(transcript_row_is_blank(&Line::from(" ")));
     assert!(transcript_row_is_blank(&Line::from(vec![Span::raw(" ")])));
     assert!(!transcript_row_is_blank(&Line::from("text")));
-    // A card's margin row is painted with the card background but is still an
-    // empty row: judging by glyphs is what stops a second gap stacking on it.
+    // A card's padding row is painted with the card background: it is part
+    // of the card, not the gap between blocks (codex keeps the two apart).
     let bg = Style::default().bg(crate::theme::theme().surface_bg);
-    assert!(transcript_row_is_blank(&Line::from("").style(bg)));
-    assert!(transcript_row_is_blank(&Line::from(vec![Span::styled(
+    assert!(!transcript_row_is_blank(&Line::from("").style(bg)));
+    assert!(!transcript_row_is_blank(&Line::from(vec![Span::styled(
         "".to_string(),
         Style::default().bg(crate::theme::theme().surface_bg)
     )])));
@@ -558,32 +558,63 @@ fn tool_box_has_exactly_one_painted_margin_row_top_and_bottom() {
 }
 
 #[test]
-fn a_card_after_paragraphs_does_not_stack_a_second_gap() {
-    // The invariant behind the visible margin: the card's own margin row is
-    // the separation. Adding one through `gap_need` on top of it is what made
-    // "gaps of two, three and four rows".
-    let bg = Style::default().bg(crate::theme::theme().surface_bg);
-    let blank = |l: &Line<'static>| l.spans.iter().all(|x| x.content.trim().is_empty());
+fn a_card_sits_one_unpainted_row_away_from_its_neighbours() {
+    // Codex's layout: prose, one unpainted blank row, the card's own painted
+    // padding, its content, painted padding, one unpainted row, prose. The
+    // bug was the padding standing in for the gap, which left the next
+    // paragraph flush against the card background.
+    let bg = Some(crate::theme::theme().surface_bg);
+    let painted = |l: &Line<'static>| l.style.bg == bg;
     let mut t: Vec<Line<'static>> = vec![Line::from("before")];
+    // What `push_tool_box` does: gap, card, gap. `ensure_gap` is
+    // `gap_need` blank rows.
+    let gap = |t: &mut Vec<Line<'static>>| {
+        let n = gap_need(t, 1);
+        t.extend((0..n).map(|_| Line::from("")));
+    };
+    gap(&mut t);
     t.extend(format_tool_box_lines(
         Line::from("Ran cargo fmt"),
         &[Line::from("1 | exit 0")],
         80,
     ));
-    // one blank row above the card, carrying the card background
-    assert!(blank(&t[1]) && t[1].style.bg == bg.bg, "one margin: {t:?}");
+    gap(&mut t);
+    // a second request is idempotent: never two unpainted rows
+    gap(&mut t);
+    let n = t.len();
+    assert!(transcript_row_is_blank(&t[1]), "unpainted gap above: {t:?}");
+    assert!(painted(&t[2]), "card padding follows the gap: {t:?}");
     assert!(
-        !blank(&t[0]),
-        "prose is still adjacent to exactly one margin"
-    );
-    // the card header follows immediately - no second blank
-    assert!(
-        t[2].spans
+        t[3].spans
             .iter()
             .any(|x| x.content.contains("Ran cargo fmt"))
     );
-    // and the tail is one margin, so a following block needs no extra gap
-    let n = t.len();
-    assert!(blank(&t[n - 1]) && t[n - 1].style.bg == bg.bg);
-    assert_eq!(gap_need(&t, 1), 0, "the card margin already separates");
+    assert!(painted(&t[n - 2]), "card padding at the bottom: {t:?}");
+    assert!(transcript_row_is_blank(&t[n - 1]), "unpainted gap below");
+    assert!(!transcript_row_is_blank(&t[n - 3]));
+    assert_eq!(gap_need(&t, 1), 0, "the next block needs no extra gap");
+}
+
+#[test]
+fn prose_and_card_glyphs_share_the_gutter_column() {
+    // Prose text, the tool card's header and the prompt card's `❯` all start
+    // in the same column, `GUTTER`, so nothing in the transcript is flush to
+    // the terminal edge or misaligned against its neighbour.
+    let first_glyph = |l: &Line<'static>| {
+        let flat: String = l.spans.iter().map(|s| s.content.as_ref()).collect();
+        flat.chars().take_while(|c| *c == ' ').count()
+    };
+    let prose = thinking_run_rows("hello world", prose_width(80), false);
+    assert_eq!(first_glyph(&prose[0]), GUTTER);
+    let card = format_tool_box_lines(Line::from("● Ran cargo fmt"), &[], 80);
+    assert_eq!(first_glyph(&card[1]), GUTTER);
+    let prompt = format_user_prompt_lines("rebuilt?", &[], 80);
+    assert_eq!(first_glyph(&prompt[1]), GUTTER);
+    // wrapped prompt rows hang under the text, not under the glyph
+    let long = format_user_prompt_lines(&"word ".repeat(40), &[], 40);
+    assert_eq!(first_glyph(&long[2]), GUTTER + 2);
+    for row in &long {
+        let w: usize = row.spans.iter().map(|s| s.width()).sum();
+        assert!(w <= 40, "prompt row overflows: {row:?}");
+    }
 }

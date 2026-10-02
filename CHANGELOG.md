@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Fixed
+- **Margins follow codex's layout.** A card's painted padding row was counted as the gap
+  between blocks, so prose and thinking sat flush against every tool and prompt card. The
+  padding belongs to the card again, and one unpainted row separates every card from its
+  neighbours, the way codex keeps a user cell's padding apart from the row `history_cell`
+  inserts between cells. Prose and thinking moved from a 1-column to codex's 2-column gutter,
+  level with the `●` of a tool card and the `❯` of a prompt card (which moved one column
+  right), and wrapped rows keep one column clear at the right edge. Live streaming, resize
+  reflow and session replay share one wrap budget (`prose_width`), so the three agree.
+
 ## [0.1.10] - 2026-10-01
 
 ### Added

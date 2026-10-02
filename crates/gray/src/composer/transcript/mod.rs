@@ -19,8 +19,9 @@ mod rows;
 pub(crate) use crate::tui::strip_ansi;
 pub(crate) use cards::format_tool_box_lines;
 pub(crate) use rows::{
-    format_user_prompt_lines, left_pad, thinking_replay_lines, thinking_run_rows, thinking_style,
-    transcript_row_is_blank, word_flush_cut, wrap_styled_line, wrap_styled_line_with_ranges,
+    GUTTER, format_user_prompt_lines, left_pad, prose_width, thinking_replay_lines,
+    thinking_run_rows, thinking_style, transcript_row_is_blank, word_flush_cut, wrap_styled_line,
+    wrap_styled_line_with_ranges,
 };
 
 // ---------------------------------------------------------------------------
@@ -246,12 +247,7 @@ impl Tui {
         while let Some(idx) = self.pending.find('\n') {
             let line: String = self.pending.drain(..=idx).collect();
             let trimmed = line.trim_end_matches('\n').trim_end_matches('\r');
-            if trimmed.is_empty()
-                && self
-                    .transcript
-                    .last()
-                    .is_some_and(|l| l.spans.iter().all(|s| s.content.trim().is_empty()))
-            {
+            if trimmed.is_empty() && self.transcript.last().is_some_and(transcript_row_is_blank) {
                 continue;
             }
             let style = if self.thinking {
@@ -313,7 +309,7 @@ impl Tui {
         // needs it, never doubled, BPE splits untouched.
         gray_core::event::append_thinking_chunk(&mut self.pending, &clean);
         let w = self.live_width();
-        let max_w = w.saturating_sub(4).max(1);
+        let max_w = prose_width(w);
         while let Some(idx) = self.pending.find('\n') {
             let line: String = self.pending.drain(..=idx).collect();
             let trimmed = line.trim_end_matches('\n').trim_end_matches('\r');
@@ -403,7 +399,7 @@ impl Tui {
         // Reflows first when the size actually changed (same ~75ms trailing
         // debounce as the idle ticker), so a resize mid-table re-lays the
         // committed rows instead of only affecting new tables.
-        let tw = self.live_width().saturating_sub(2);
+        let tw = prose_width(self.live_width());
         self.markdown_renderer.set_max_table_width(Some(tw));
         self.markdown_renderer
             .push_and_render(&clean, Some(gray_markdown::get_syntect()));
@@ -436,7 +432,7 @@ impl Tui {
         }
         let held = std::mem::take(&mut self.stream_punct_hold);
         let clean = format!("{held}{following}");
-        let tw = self.live_width().saturating_sub(2);
+        let tw = prose_width(self.live_width());
         self.markdown_renderer.set_max_table_width(Some(tw));
         self.markdown_renderer
             .push_and_render(&clean, Some(gray_markdown::get_syntect()));
@@ -510,7 +506,8 @@ impl Tui {
         trailing_gap: bool,
     ) {
         self.atomic(|t| {
-            // The card's painted margins are the separation; see push_tool_box.
+            // Unpainted gap above, outside the card's painted padding.
+            t.ensure_gap(1);
             let lines = format_user_prompt_lines(text, attached, t.width().max(10));
             t.insert_paragraph(&lines, Some(crate::theme::theme().surface_bg));
             t.history_entries.push(super::TranscriptEntry::UserPrompt(
@@ -518,10 +515,16 @@ impl Tui {
                 attached.to_vec(),
             ));
             t.transcript.extend(lines);
-            // The trailing margin row the card just painted is the breathing
-            // room: handlers that print nothing (dismissed modal) still leave a
-            // gap before the next prompt instead of jamming against the card.
-            let _ = trailing_gap;
+            // Trailing gap after every chat card, command and prompt alike.
+            // Handlers that print feedback (say()) treat the gap as idempotent;
+            // handlers that print nothing (dismissed modal) still leave
+            // breathing room before the next prompt instead of jamming against
+            // the card. Slash-command cards skip it (trailing_gap=false): their
+            // feedback hugs the card, and each dismissed-modal arm adds the gap
+            // itself.
+            if trailing_gap {
+                t.ensure_gap(1);
+            }
         });
         if self.transcript.len() > 1000 {
             self.transcript.drain(0..100);

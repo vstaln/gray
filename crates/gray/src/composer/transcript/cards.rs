@@ -11,14 +11,11 @@ pub(crate) fn format_tool_box_lines(
     let bg_style = Style::default().bg(bg_color);
     let max_w = width.saturating_sub(4).max(1);
 
-    // No outer margin rows: `ensure_gap` owns the single blank row between
-    // blocks (codex's rule). A card that also carried its own margins
-    // stacked two blank rows against every neighbour.
-    // One margin row above and one below, painted edge to edge with real
-    // cells. A card's padding has to carry the card background: an unpainted
-    // blank row is invisible against the composer surface, which is why the
-    // margin could not be seen at all. `ensure_gap` recognises these as
-    // blank, so they are also the single separator - never two.
+    // One padding row above and one below, painted edge to edge with real
+    // cells: they are the card's own, so the header never touches its top
+    // edge. The unpainted blank row that separates the card from its
+    // neighbours is `ensure_gap`'s (codex's rule, one row between blocks),
+    // and a painted row never counts as that gap (`transcript_row_is_blank`).
     let margin_row = || -> Line<'static> {
         Line::from(Span::styled(" ".repeat(width.max(1)), bg_style)).style(bg_style)
     };

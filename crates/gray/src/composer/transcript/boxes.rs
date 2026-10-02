@@ -4,11 +4,13 @@ use super::*;
 
 impl Tui {
     pub fn push_tool_box(&mut self, header: Line<'static>, body: Vec<Line<'static>>) {
-        // The card's own painted margins ARE the separation on both sides, so
-        // no ensure_gap here: asking for one as well is what produced the
-        // double blank row. One synchronized frame.
+        // Leading gap + card + trailing gap land as one synchronized frame.
+        // The gaps are unpainted rows outside the card's painted padding;
+        // `ensure_gap` is idempotent, so a neighbour that already left one
+        // never gets a second.
         self.atomic(|t| {
             t.insert_tool_box(header, body);
+            t.ensure_gap(1);
         });
         self.release_dock_seam();
         if self.transcript.len() > 1000 {
@@ -19,6 +21,7 @@ impl Tui {
     }
 
     fn insert_tool_box(&mut self, header: Line<'static>, body: Vec<Line<'static>>) {
+        self.ensure_gap(1);
         let w = self.width().max(10);
         let box_lines = format_tool_box_lines(header.clone(), &body, w);
         self.insert_paragraph(&box_lines, Some(crate::theme::theme().surface_bg));
@@ -89,7 +92,7 @@ impl Tui {
         if lines.is_empty() {
             return Vec::new();
         }
-        let max_w = width.saturating_sub(2).max(1);
+        let max_w = prose_width(width);
         let mut by_line: HashMap<usize, Vec<&HyperlinkTarget>> = HashMap::new();
         for h in hyperlinks {
             by_line.entry(h.line_index).or_default().push(h);
@@ -138,7 +141,7 @@ impl Tui {
                     Paragraph::new(line.clone()).render(row_area, buf);
                     for h in hls {
                         for col in h.column_range.clone() {
-                            let padded_col = col + 1;
+                            let padded_col = col + GUTTER;
                             if padded_col >= area.width as usize {
                                 continue;
                             }
@@ -373,9 +376,9 @@ impl Tui {
                                 let clean = strip_ansi(text);
                                 if !clean.trim().is_empty() {
                                     self.ensure_gap(1);
-                                    // Same budget the insert wrapper will use (width-2):
+                                    // Same budget the insert wrapper will use:
                                     // tables fit by construction instead of shredding.
-                                    let tw = self.width().max(10).saturating_sub(2);
+                                    let tw = prose_width(self.width().max(10));
                                     let mut buffers = gray_markdown::MarkdownBuffers::new();
                                     let (output, _) =
                                         gray_markdown::render_markdown_ratatui_with_buffers_width(
@@ -503,7 +506,7 @@ pub(crate) fn render_markdown_lines(
     if clean.trim().is_empty() {
         return (Vec::new(), Vec::new());
     }
-    let tw = width.unwrap_or(80).max(10).saturating_sub(2);
+    let tw = prose_width(width.unwrap_or(80).max(10));
     let mut buffers = gray_markdown::MarkdownBuffers::new();
     let (output, _) = gray_markdown::render_markdown_ratatui_with_buffers_width(
         &clean,

@@ -12,17 +12,40 @@ pub(crate) fn thinking_style() -> Style {
 /// True when a transcript row is a bare blank (no bg, no glyphs): the same
 /// predicate `ensure_gap` / `transcript_ends_blank` use, shared so the live
 /// thinking drain skips a blank exactly when `stream` would.
-/// Visually blank: every span carries no glyph. Background is deliberately
-/// ignored — a card's margin row is painted with the card colour, but it is
-/// still an empty row, and treating it as content is what let a second gap
-/// stack on top of it.
+///
+/// A painted row (a card's padding, a code block's tinted edge) is NOT
+/// blank: it belongs to its block. Codex draws the same distinction: the
+/// user cell owns painted padding rows, and the history inserts one
+/// unpainted row *between* cells (`history_cell/base.rs`, `if !first`).
+/// Counting the padding as the gap is what glued prose flush against
+/// every card.
 pub(crate) fn transcript_row_is_blank(line: &Line<'static>) -> bool {
-    line.spans.iter().all(|s| s.content.trim().is_empty())
+    line.style.bg.is_none()
+        && line
+            .spans
+            .iter()
+            .all(|s| s.style.bg.is_none() && s.content.trim().is_empty())
 }
 
-/// Left padding, omp-style: one space.
+/// Columns left of prose and thinking rows. Codex reserves two (`"• "` /
+/// `"  "`); two also lines prose up with the `●`/`❯` glyph of a card.
+pub(crate) const GUTTER: usize = 2;
+
+/// Columns kept clear at the right edge, so a wrapped row never touches the
+/// terminal border (codex keeps the same single column on prompts).
+pub(crate) const RIGHT_MARGIN: usize = 1;
+
+/// Wrap budget for prose and thinking at terminal `width`: the gutter and
+/// the right margin come off. Every path that cuts, wraps or lays out a
+/// table for the transcript goes through here, so live, reflow and replay
+/// all agree.
+pub(crate) fn prose_width(width: usize) -> usize {
+    width.saturating_sub(GUTTER + RIGHT_MARGIN).max(1)
+}
+
+/// Left padding for prose and thinking rows: the `GUTTER`.
 pub(crate) fn left_pad() -> Span<'static> {
-    Span::raw(" ")
+    Span::raw(" ".repeat(GUTTER))
 }
 
 fn slice_line_spans<'a>(
@@ -384,27 +407,29 @@ pub(crate) fn format_user_prompt_lines(
     let text_primary = crate::theme::theme().text_body;
     let dim_color = crate::theme::theme().text_muted;
     let bg_style = Style::default().bg(crate::theme::theme().surface_bg);
-    // One painted margin row top and bottom, same as a tool card. The card
-    // owns its padding; `ensure_gap` recognises the margin as blank, so the
-    // two can never stack into a double gap.
+    // One painted padding row top and bottom, same as a tool card. The
+    // padding is part of the card; the unpainted gap that separates it from
+    // its neighbours is `ensure_gap`'s, outside the card.
     let margin_row = || -> Line<'static> {
         Line::from(Span::styled(" ".repeat(width.max(1)), bg_style)).style(bg_style)
     };
     let mut lines = Vec::new();
     lines.push(margin_row());
+    // `❯` sits in the gutter column, under the tool card's `●` and level
+    // with the prose around it; text starts two columns later.
     let arrow_span = Span::styled(
-        " ❯ ",
+        "  ❯ ",
         Style::default()
             .fg(prompt_color)
             .add_modifier(Modifier::BOLD),
     );
-    let max_w = width.saturating_sub(4).max(1);
+    let max_w = width.saturating_sub(4 + RIGHT_MARGIN).max(1);
     let lines_raw: Vec<&str> = sanitized.split('\n').collect();
     for (i, raw_line) in lines_raw.iter().enumerate() {
         let prefix = if i == 0 {
             arrow_span.clone()
         } else {
-            Span::raw("   ")
+            Span::raw("    ")
         };
         if raw_line.is_empty() {
             lines.push(Line::from(vec![prefix]).style(bg_style));
@@ -419,7 +444,7 @@ pub(crate) fn format_user_prompt_lines(
                 let row_prefix = if first_row {
                     prefix.clone()
                 } else {
-                    Span::raw("   ")
+                    Span::raw("    ")
                 };
                 first_row = false;
                 lines.push(
@@ -444,7 +469,7 @@ pub(crate) fn format_user_prompt_lines(
             .join(", ");
         lines.push(
             Line::from(vec![
-                Span::raw("   "),
+                Span::raw("    "),
                 Span::styled(
                     format!("↳ attached: {names}"),
                     Style::default().fg(dim_color),
