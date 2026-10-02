@@ -144,7 +144,10 @@ pub fn format_live_tool_header(name: &str, args_so_far: &str, cwd: Option<&Path>
 
 /// Bare `⬡ name` line for empty/garbage partial args (pi `renderCall` with
 /// `undefined` args: `formatShellCall` shows the prompt + `...`).
+/// Wire-encoded names decode here too (`web_search` renders `Web Search`);
+/// single tokens stay raw (see `humanize_tool_name`).
 fn tool_name_line(name: &str) -> Line<'static> {
+    let name = humanize_tool_name(name);
     Line::from(vec![
         Span::styled(
             "\u{2b22} ",
@@ -187,6 +190,10 @@ fn scalar_key(name: &str, raw: &str) -> &'static str {
     match name {
         "read" | "write" | "edit" | "ls" => "path",
         "grep" | "find" => "pattern",
+        "web_search" => "query",
+        "web_fetch" => "url",
+        "discord_send" => "content",
+        "discord_file" => "path",
         _ => {
             // key order decides, not a schema table. `path` wins
             // on ties (the final header's `other` arm prefers it too).
@@ -355,6 +362,25 @@ fn skill_display_name(args: &serde_json::Value) -> String {
     "skill".to_string()
 }
 
+/// Args with a display-only `label` injected (plugin `label` support).
+/// Renderers read `label` in the `other` arm; sub-renderers
+/// (`arg_path`, previews) ignore unknown keys, so injection is safe.
+/// Callers pass the wire args; this stays a pure view helper.
+pub fn with_tool_label(args: &serde_json::Value, label: Option<&str>) -> serde_json::Value {
+    let Some(label) = label.map(str::trim).filter(|t| !t.is_empty()) else {
+        return args.clone();
+    };
+    match args {
+        serde_json::Value::Object(map) => {
+            let mut map = map.clone();
+            map.entry("label".to_string())
+                .or_insert(serde_json::Value::String(label.to_string()));
+            serde_json::Value::Object(map)
+        }
+        _ => args.clone(),
+    }
+}
+
 /// Formats a tool invocation header line matching Grok CLI styling for Ratatui.
 pub fn format_tool_call_header(
     name: &str,
@@ -477,18 +503,103 @@ pub fn format_tool_call_header(
                 Span::styled(format!("\"{skill_name}\""), cmd_style),
             ])
         }
+        "web_search" => {
+            let query = args
+                .get("query")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim();
+            let cut = truncate_cmd(query);
+            let shown = if cut.len() < query.len() {
+                format!("{}{}", cut.trim_end(), "…")
+            } else {
+                cut.to_string()
+            };
+            Line::from(vec![
+                bullet,
+                Span::styled("Searched ", action_style),
+                Span::styled(format!("\"{shown}\""), cmd_style),
+            ])
+        }
+        "web_fetch" => {
+            let url = args.get("url").and_then(|v| v.as_str()).unwrap_or("");
+            let cut = truncate_cmd(url.trim());
+            Line::from(vec![
+                bullet,
+                Span::styled("Fetched ", action_style),
+                Span::styled(cut.to_string(), path_style),
+            ])
+        }
+        "discord_send" => {
+            let content = args
+                .get("content")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim();
+            let cut = truncate_cmd(content);
+            let shown = if cut.len() < content.len() {
+                format!("{}{}", cut.trim_end(), "…")
+            } else {
+                cut.to_string()
+            };
+            Line::from(vec![
+                bullet,
+                Span::styled("Sent Discord ", action_style),
+                Span::styled(format!("\"{shown}\""), cmd_style),
+            ])
+        }
+        "discord_send_ui" => {
+            Line::from(vec![bullet, Span::styled("Sent Discord UI", action_style)])
+        }
+        "discord_open_modal" => Line::from(vec![
+            bullet,
+            Span::styled("Opened Discord modal", action_style),
+        ]),
+        "discord_file" => {
+            let desc = args.get("action").and_then(|v| v.as_str()).unwrap_or("");
+            let target = args
+                .get("path")
+                .or_else(|| args.get("file_id"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let mut spans = vec![bullet, Span::styled("Shared Discord file", action_style)];
+            if !target.is_empty() {
+                spans.push(Span::raw(" "));
+                spans.push(Span::styled(shorten_path(target.trim(), cwd), path_style));
+            } else if !desc.is_empty() {
+                spans.push(Span::styled(format!(" ({desc})"), dim_style));
+            }
+            Line::from(spans)
+        }
+        "discord_ui_schema" => Line::from(vec![
+            bullet,
+            Span::styled("Read Discord UI schema", action_style),
+        ]),
         other => {
+            // `label` is display-only: a plugin may pass one inside args
+            // (see `Agent::with_tool_labels`) so transcripts name the tool
+            // while the wire name stays the executor key. Multi-word wire
+            // names humanize (`my_tool` renders `My Tool`); single tokens
+            // stay raw.
+            let headline = args
+                .get("label")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|t| !t.is_empty())
+                .map(str::to_string)
+                .unwrap_or_else(|| humanize_tool_name(other));
             let path = shorten_path(arg_path(args), cwd);
             if !path.is_empty() {
                 Line::from(vec![
                     bullet,
-                    Span::styled(other.to_string(), action_style),
+                    Span::styled(headline.clone(), action_style),
                     Span::raw(" "),
                     Span::styled(path, path_style),
                 ])
             } else {
                 let args_preview = if let Some(obj) = args.as_object() {
                     obj.iter()
+                        .filter(|(k, _)| *k != "label")
                         .take(2)
                         .map(|(k, v)| {
                             let val_str = if let Some(s) = v.as_str() {
@@ -510,12 +621,44 @@ pub fn format_tool_call_header(
                 let preview_truncated = truncate_cmd(&args_preview);
                 Line::from(vec![
                     bullet,
-                    Span::styled(other.to_string(), action_style),
+                    Span::styled(headline, action_style),
                     Span::raw(" "),
                     Span::styled(preview_truncated.to_string(), dim_style),
                 ])
             }
         }
+    }
+}
+
+/// Humanizes a wire name for the transcript (`web_search` renders `Web Search`).
+/// Known tools get verb arms above; this is the fallback so a new plugin
+/// never renders as raw snake_case. Only wire-encoded names (with `_`/`-`)
+/// are decoded — a single token (`bash`, `custom`) is already displayable
+/// and stays byte-identical, so live and final headers agree with history.
+/// Single pass, no allocs beyond output.
+fn humanize_tool_name(name: &str) -> String {
+    if !name.contains('_') && !name.contains('-') {
+        return name.to_string();
+    }
+    let mut out = String::with_capacity(name.len());
+    let mut capitalize = true;
+    for ch in name.chars() {
+        if ch == '_' || ch == '-' {
+            if !out.is_empty() && !out.ends_with(' ') {
+                out.push(' ');
+            }
+            capitalize = true;
+        } else if capitalize {
+            out.extend(ch.to_uppercase());
+            capitalize = false;
+        } else {
+            out.push(ch);
+        }
+    }
+    if out.is_empty() {
+        name.to_string()
+    } else {
+        out
     }
 }
 mod diff;

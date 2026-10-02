@@ -44,7 +44,7 @@ fn normalize_rejects_garbage_loudly() {
 #[test]
 fn pdf_missing_file_errors() {
     assert!(matches!(
-        pdf_text(Path::new("/tmp/gray-test-no-such-file-xyz.pdf")),
+        gray_tools::images::pdf_text(Path::new("/tmp/gray-test-no-such-file-xyz.pdf")),
         Err(MediaError::Extract(_))
     ));
 }
@@ -116,18 +116,4 @@ fn a_typed_video_path_is_media_too() {
     std::fs::write(&clip, b"fake mp4").unwrap();
     let got = extract_inline_image_paths(&format!("look at {}", clip.display()), dir.path());
     assert_eq!(got, vec![clip], "a typed video path must be carried");
-}
-
-#[test]
-fn a_hanging_media_helper_times_out() {
-    // `sh -c 'sleep 30'` stands in for a wedged pdftotext/ffmpeg: the call
-    // must fail at the bound, not hold the attach flow forever.
-    let err = super::output_with_timeout_in(
-        "sh",
-        &["-c", "sleep 30"],
-        std::time::Duration::from_millis(150),
-    )
-    .err()
-    .expect("a hanging helper must fail");
-    assert!(err.to_string().contains("timed out"), "{err}");
 }

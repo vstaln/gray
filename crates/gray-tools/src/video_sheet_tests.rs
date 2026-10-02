@@ -102,3 +102,12 @@ fn a_bigger_tile_count_yields_a_taller_sheet() {
         "more tiles must be a bigger sheet: {few:?} vs {many:?}"
     );
 }
+
+#[test]
+fn a_hanging_media_helper_times_out() {
+    // `sh -c 'sleep 30'` stands in for a wedged pdftotext/ffmpeg: the call
+    // must fail at the bound, not hold the attach flow forever.
+    let err = run("sh", &["-c", "sleep 30"], Duration::from_millis(150))
+        .expect_err("a hanging helper must fail");
+    assert!(err.to_string().contains("timed out"), "{err}");
+}

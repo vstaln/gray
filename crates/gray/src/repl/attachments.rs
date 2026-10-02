@@ -1,16 +1,14 @@
 //! Media attachments, opencode parity (`@opencode-ai/core` media parts +
 //! `Image.normalize`): MIME-driven kinds instead of an image-only allowlist,
-//! downscale-before-send for images, PDF text via pdftotext, first-frame
-//! stills for video. Audio has no model-agnostic wire path on our
-//! OpenAI-compatible providers — reported loudly, never silently dropped.
+//! downscale-before-send for images. Video, PDF and audio go as native media
+//! with a fallback (contact sheet, pdftotext text, a note) that the provider
+//! swaps in when the model can't take the native part.
 
 use std::path::{Path, PathBuf};
 
 // Image downscale lives in gray-tools (the `read` tool attaches vision
 // blocks too); re-exported so existing users keep working.
 pub use gray_tools::images::{MAX_BASE64_BYTES, MAX_IMAGE_SIDE, MediaError, normalize_image_bytes};
-/// PDF text cap per file (chars).
-pub const MAX_PDF_CHARS: usize = 60_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AttachmentKind {
@@ -31,12 +29,8 @@ pub fn attachment_kind(path: &Path) -> AttachmentKind {
         Some("png") | Some("jpg") | Some("jpeg") | Some("webp") | Some("gif") | Some("bmp")
         | Some("heic") | Some("heif") => AttachmentKind::Image,
         Some("pdf") => AttachmentKind::Pdf,
-        Some("mp4") | Some("mov") | Some("mkv") | Some("webm") | Some("m4v") => {
-            AttachmentKind::Video
-        }
-        Some("mp3") | Some("wav") | Some("m4a") | Some("ogg") | Some("flac") => {
-            AttachmentKind::Audio
-        }
+        _ if gray_tools::images::is_video_extension(path) => AttachmentKind::Video,
+        _ if gray_tools::images::is_audio_extension(path) => AttachmentKind::Audio,
         _ => AttachmentKind::Unsupported,
     }
 }
@@ -50,7 +44,7 @@ const MAX_INLINE_FILE_BYTES: u64 = 100 * 1024 * 1024;
 /// `file:///tmp/a%20b.png`) and return existing image files resolved against
 /// `cwd`. Typed/piped `-p` links never go through paste-attach, so without
 /// this they stay plain text and the model never sees them.
-/// Typed file links in `text` that carry media: images and video. The name
+/// Typed file links in `text` that carry media: images, video, PDF, audio. The name
 /// predates video support; renaming it would churn every caller for no
 /// behavior change, so it stays.
 pub fn extract_inline_image_paths(text: &str, cwd: &Path) -> Vec<PathBuf> {
@@ -81,14 +75,11 @@ pub fn extract_inline_image_paths(text: &str, cwd: &Path) -> Vec<PathBuf> {
         };
         tok = decoded.as_ref();
         let candidate = Path::new(tok);
-        // A typed link to a video is as valid as one to a screenshot: the
-        // builder routes it to a native part or a contact sheet. Filtering
-        // this arm to images made a pasted video path silently arrive as
-        // nothing at all.
-        if !matches!(
-            attachment_kind(candidate),
-            AttachmentKind::Image | AttachmentKind::Video
-        ) {
+        // A typed link to a video, PDF or audio file is as valid as one to a
+        // screenshot: the builder sends it natively or as its fallback.
+        // Filtering this arm to images made a pasted video path silently
+        // arrive as nothing at all.
+        if attachment_kind(candidate) == AttachmentKind::Unsupported {
             continue;
         }
         let full = if candidate.is_absolute() {
@@ -107,75 +98,6 @@ pub fn extract_inline_image_paths(text: &str, cwd: &Path) -> Vec<PathBuf> {
     }
     out
 }
-/// External media helpers (`pdftotext`, `ffmpeg`) run bounded: a malformed
-/// file or a wedged helper must not hold the attach flow forever (audit
-/// #15). Same mpsc pattern as the clipboard text path.
-const MEDIA_CMD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
-
-fn output_with_timeout_in(
-    cmd: &str,
-    args: &[&str],
-    limit: std::time::Duration,
-) -> Result<std::process::Output, MediaError> {
-    let program = cmd.to_string();
-    let argv: Vec<String> = args.iter().map(|a| a.to_string()).collect();
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let _ = tx.send(
-            std::process::Command::new(&program)
-                .args(&argv)
-                .output()
-                .map_err(|e| std::io::Error::other(e.to_string())),
-        );
-    });
-    match rx.recv_timeout(limit) {
-        Ok(Ok(out)) => Ok(out),
-        Ok(Err(e)) => Err(MediaError::Extract(format!("{cmd} not available: {e}"))),
-        Err(_) => Err(MediaError::Extract(format!(
-            "{cmd} timed out after {}s",
-            limit.as_secs()
-        ))),
-    }
-}
-
-fn output_with_timeout(cmd: &str, args: &[&str]) -> Result<std::process::Output, MediaError> {
-    output_with_timeout_in(cmd, args, MEDIA_CMD_TIMEOUT)
-}
-
-/// PDF → text via poppler (`pdftotext -layout file -`). Universal: works on
-/// every model with zero provider changes.
-pub fn pdf_text(path: &Path) -> Result<String, MediaError> {
-    let arg_path = path.display().to_string();
-    let out = output_with_timeout("pdftotext", &["-layout", &arg_path, "-"])?;
-    if !out.status.success() {
-        let detail = String::from_utf8_lossy(&out.stderr).trim().to_string();
-        return Err(MediaError::Extract(if detail.is_empty() {
-            "pdftotext failed".to_string()
-        } else {
-            detail.chars().take(200).collect()
-        }));
-    }
-    let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    if text.is_empty() {
-        return Err(MediaError::Extract(
-            "no extractable text (scanned images?)".to_string(),
-        ));
-    }
-    if text.chars().count() > MAX_PDF_CHARS {
-        let cut: String = text.chars().take(MAX_PDF_CHARS).collect();
-        Ok(format!("{cut}\n… [truncated at {MAX_PDF_CHARS} chars]"))
-    } else {
-        Ok(text)
-    }
-}
-
-/// Wire MIME type for a video attachment, by extension. The table lives in
-/// gray-tools next to the extension gate that admits the file, so the two
-/// can never disagree about what counts as a video.
-pub fn video_media_type(path: &Path) -> &'static str {
-    gray_tools::images::video_media_type(path)
-}
-
 #[path = "attachments_tests.rs"]
 #[cfg(test)]
 mod tests;

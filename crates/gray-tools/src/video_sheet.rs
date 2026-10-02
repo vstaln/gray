@@ -1,4 +1,4 @@
-//! Video → a single contact-sheet JPEG, so `gray view clip.mp4` works on
+//! Video → a single contact-sheet JPEG, so `cat clip.mp4` in bash works on
 //! every model regardless of whether it takes a native video part.
 //!
 //! ffprobe supplies the duration (it sets how fast `fps` samples), and ffmpeg
@@ -23,7 +23,11 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(15);
 pub const DEFAULT_FRAMES: usize = 16;
 const MAX_FRAMES: usize = 64;
 
-fn run(cmd: &str, args: &[&str], limit: Duration) -> Result<std::process::Output, MediaError> {
+pub(crate) fn run(
+    cmd: &str,
+    args: &[&str],
+    limit: Duration,
+) -> Result<std::process::Output, MediaError> {
     let program = cmd.to_string();
     let argv: Vec<String> = args.iter().map(|a| a.to_string()).collect();
     let (tx, rx) = std::sync::mpsc::channel();
@@ -45,7 +49,7 @@ fn run(cmd: &str, args: &[&str], limit: Duration) -> Result<std::process::Output
     }
 }
 
-fn detail(out: &std::process::Output, fallback: &str) -> MediaError {
+pub(crate) fn detail(out: &std::process::Output, fallback: &str) -> MediaError {
     let text = String::from_utf8_lossy(&out.stderr).trim().to_string();
     if text.is_empty() {
         MediaError::Extract(fallback.to_string())

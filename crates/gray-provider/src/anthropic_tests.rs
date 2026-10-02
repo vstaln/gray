@@ -257,3 +257,24 @@ fn only_anthropics_own_host_takes_the_native_wire() {
     assert!(!is_anthropic_base_url("https://openrouter.ai/api/v1"));
     assert!(!is_anthropic_base_url("not a url"));
 }
+
+#[test]
+fn pdf_goes_as_a_document_and_video_as_its_fallback() {
+    let req = ChatRequest {
+        system: None,
+        messages: vec![Message::new(
+            Role::User,
+            vec![
+                ContentBlock::media("application/pdf", "UERG", vec![]),
+                ContentBlock::media("video/mp4", "VklE", vec![ContentBlock::text("(sheet)")]),
+            ],
+        )],
+        tools: Vec::new(),
+        max_tokens: None,
+    };
+    let v = map_request(req, MODEL, None, None, None).unwrap();
+    let blocks = &v["messages"][0]["content"];
+    assert_eq!(blocks[0]["type"], "document");
+    assert_eq!(blocks[0]["source"]["media_type"], "application/pdf");
+    assert_eq!(blocks[1]["text"], "(sheet)");
+}

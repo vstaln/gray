@@ -2264,6 +2264,50 @@ fn tool_output_image_blocks_thread_after_text_result() {
     assert_eq!(ToolOutput::ok("hi").message_blocks("c").len(), 1);
 }
 
+#[test]
+fn tool_output_media_goes_native_or_as_its_fallback() {
+    use crate::message::resolve_media;
+    let out = ToolOutput {
+        content: "clip.mp4 (video)".into(),
+        is_error: false,
+        images: Vec::new(),
+        media: vec![crate::agent::AttachedMedia {
+            media_type: "video/mp4".into(),
+            data: "VID".into(),
+            fallback: vec![
+                ContentBlock::text("(contact sheet)"),
+                ContentBlock::image("image/jpeg", "SHEET"),
+            ],
+        }],
+    };
+    let blocks = out.message_blocks("c");
+    let native = resolve_media(blocks.clone(), |mt| mt == "video/mp4");
+    assert_eq!(native.len(), 2);
+    assert!(matches!(&native[1], ContentBlock::Media { data, .. } if data == "VID"));
+    let sheet = resolve_media(blocks, |_| false);
+    assert_eq!(sheet.len(), 3);
+    assert!(matches!(&sheet[1], ContentBlock::Text { text } if text.contains("contact sheet")));
+    assert!(matches!(&sheet[2], ContentBlock::Image { data, .. } if data == "SHEET"));
+    // No fallback → a note, never a hard error.
+    let bare = resolve_media(vec![ContentBlock::media("audio/wav", "A", vec![])], |_| {
+        false
+    });
+    assert!(matches!(&bare[0], ContentBlock::Text { text } if text.contains("audio/wav")));
+    // Over the native cap → fallback even when the type is accepted.
+    let big = "A".repeat(crate::message::MAX_NATIVE_MEDIA_BYTES / 3 * 4 + 8);
+    let over = resolve_media(vec![ContentBlock::media("video/mp4", big, vec![])], |_| {
+        true
+    });
+    assert!(matches!(&over[0], ContentBlock::Text { .. }));
+}
+
+#[test]
+fn old_session_video_block_still_parses() {
+    let b: ContentBlock =
+        serde_json::from_str(r#"{"type":"video","media_type":"video/mp4","data":"VID"}"#).unwrap();
+    assert!(matches!(b, ContentBlock::Media { fallback, .. } if fallback.is_empty()));
+}
+
 #[tokio::test]
 async fn eof_with_text_and_tool_pending_salvages_visible_text() {
     // The user already saw "hello" on screen; dropping it because a tool

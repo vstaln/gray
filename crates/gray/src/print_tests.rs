@@ -79,6 +79,7 @@ fn error_surfaces_are_scrubbed_before_display() {
 fn concurrent_tool_calls_track_by_id() {
     use gray_core::event::AgentEvent;
     let mut in_flight = HashMap::new();
+    let labels = HashMap::new();
     let mut out = Vec::new();
     let a = serde_json::json!({"x": 1});
     let b = serde_json::json!({"y": 2});
@@ -87,6 +88,7 @@ fn concurrent_tool_calls_track_by_id() {
         &AgentEvent::tool_call_start("id1", "alpha"),
         None,
         &mut in_flight,
+        &labels,
     )
     .unwrap();
     render_event_with_context(
@@ -94,6 +96,7 @@ fn concurrent_tool_calls_track_by_id() {
         &AgentEvent::tool_call_start("id2", "beta"),
         None,
         &mut in_flight,
+        &labels,
     )
     .unwrap();
     render_event_with_context(
@@ -101,6 +104,7 @@ fn concurrent_tool_calls_track_by_id() {
         &AgentEvent::tool_call_end("id1", a.clone()),
         None,
         &mut in_flight,
+        &labels,
     )
     .unwrap();
     // Second call's end must not clobber the first call's name/args.
@@ -111,6 +115,7 @@ fn concurrent_tool_calls_track_by_id() {
         &AgentEvent::tool_call_end("id2", b.clone()),
         None,
         &mut in_flight,
+        &labels,
     )
     .unwrap();
     assert_eq!(in_flight["id2"].name, "beta");
@@ -119,6 +124,7 @@ fn concurrent_tool_calls_track_by_id() {
         &AgentEvent::tool_result("id1", "ok-a", false),
         None,
         &mut in_flight,
+        &labels,
     )
     .unwrap();
     // id2 survives id1's result (no single-slot take() wiping both).
@@ -129,6 +135,7 @@ fn concurrent_tool_calls_track_by_id() {
         &AgentEvent::tool_result("id2", "ok-b", false),
         None,
         &mut in_flight,
+        &labels,
     )
     .unwrap();
     assert!(in_flight.is_empty());
@@ -147,11 +154,13 @@ fn render_error_propagates_for_retry_policy() {
         }
     }
     let mut in_flight = HashMap::new();
+    let labels = HashMap::new();
     let err = render_event_with_context(
         &mut Fail,
         &gray_core::event::AgentEvent::text_delta("hi"),
         None,
         &mut in_flight,
+        &labels,
     )
     .unwrap_err();
     assert_eq!(err.kind(), ErrorKind::BrokenPipe);
@@ -414,11 +423,7 @@ fn progress_detail_redacts_secrets_from_commands() {
 fn progress_detail_preserves_secret_free_paths() {
     // The --json wire feeds owner-local surfaces (Discord narration); a path
     // with no secret in it is the whole point, not a leak.
-    let detail = tool_detail(
-        "bash",
-        &serde_json::json!({"command": "gray view /tmp/shot.png"}),
-    )
-    .unwrap();
+    let detail = tool_detail("bash", &serde_json::json!({"command": "cat /tmp/shot.png"})).unwrap();
     assert!(detail.contains("/tmp/shot.png"), "{detail}");
     assert!(!detail.contains("<path>"), "{detail}");
     let read = tool_detail("read", &serde_json::json!({"path": "/home/u/notes.md"})).unwrap();

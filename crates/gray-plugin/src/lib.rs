@@ -78,6 +78,9 @@ pub struct Manifest {
 
 /// Parse one manifest `tools` entry. Pre-v1 sidecars send bare strings
 /// (`"tools": ["echo"]`) — those still parse, with an empty schema.
+/// An optional `"label"` names the transcript headline; anything else
+/// derives it from the wire name (see `tool_fmt`). Labels never reach
+/// the model — both providers project name/description/parameters only.
 pub fn parse_tool_entry(v: &Value) -> Option<ToolDef> {
     if let Some(name) = v.as_str() {
         return Some(ToolDef::new(
@@ -100,7 +103,14 @@ pub fn parse_tool_entry(v: &Value) -> Option<ToolDef> {
         .get("parameters")
         .cloned()
         .unwrap_or_else(|| serde_json::json!({}));
-    Some(ToolDef::new(name, description, parameters))
+    let mut def = ToolDef::new(name, description, parameters);
+    if let Some(label) = obj.get("label").and_then(|l| l.as_str()) {
+        let label = label.trim();
+        if !label.is_empty() {
+            def = def.with_label(label.to_string());
+        }
+    }
+    Some(def)
 }
 
 /// Parse the `tools` array of a `plugin/manifest` result into definitions.

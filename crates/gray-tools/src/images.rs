@@ -2,8 +2,9 @@
 //!
 //! Moved here from `gray::repl::attachments` so the `read` tool can attach
 //! vision blocks for image files (opencode `read` parity: "Image read
-//! successfully" + file attachment). `gray` re-exports these; its
-//! MIME-driven kinds (pdf/video/audio) stay there.
+//! successfully" + file attachment). Also the extension gates and MIME
+//! tables for video/pdf/audio, and PDF text extraction, so `cat` in bash and
+//! pasted attachments in `gray` agree on what a file is. `gray` re-exports.
 
 use std::io::Cursor;
 use std::path::Path;
@@ -52,7 +53,7 @@ pub fn is_image_extension(path: &Path) -> bool {
     )
 }
 
-/// Extension allowlist for video `gray view` will turn into a contact sheet.
+/// Extension allowlist for video the bash `cat` claim turns into a contact sheet.
 /// Widened only where a real clip lives; the sheet path shells out to ffmpeg,
 /// which is the thing that actually decodes these, so the list is a cheap
 /// first gate rather than a promise.
@@ -73,9 +74,70 @@ pub fn is_video_extension(path: &Path) -> bool {
     )
 }
 
-/// What `gray view` can show: an image as itself, a video as a sheet.
+fn lower_ext(path: &Path) -> Option<String> {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase())
+}
+
+pub fn is_pdf_extension(path: &Path) -> bool {
+    lower_ext(path).as_deref() == Some("pdf")
+}
+
+pub fn is_audio_extension(path: &Path) -> bool {
+    audio_media_type(path).is_some()
+}
+
+/// Wire MIME type for audio, by extension; `None` means not audio.
+pub fn audio_media_type(path: &Path) -> Option<&'static str> {
+    Some(match lower_ext(path)?.as_str() {
+        "mp3" => "audio/mpeg",
+        "wav" => "audio/wav",
+        "m4a" => "audio/mp4",
+        "ogg" => "audio/ogg",
+        "flac" => "audio/flac",
+        "aac" => "audio/aac",
+        "aiff" | "aif" => "audio/aiff",
+        _ => return None,
+    })
+}
+
+/// What a bash `cat` claim can show: an image as itself; video, pdf and
+/// audio natively where the model takes them, else as their fallback.
 pub fn is_viewable_extension(path: &Path) -> bool {
-    is_image_extension(path) || is_video_extension(path)
+    is_image_extension(path)
+        || is_video_extension(path)
+        || is_pdf_extension(path)
+        || is_audio_extension(path)
+}
+
+/// PDF text cap per file (chars).
+pub const MAX_PDF_CHARS: usize = 60_000;
+
+/// PDF → text via poppler (`pdftotext -layout file -`), bounded at 30s.
+/// The fallback for a model that can't take a native PDF.
+pub fn pdf_text(path: &Path) -> Result<String, MediaError> {
+    let arg_path = path.display().to_string();
+    let out = crate::video_sheet::run(
+        "pdftotext",
+        &["-layout", &arg_path, "-"],
+        std::time::Duration::from_secs(30),
+    )?;
+    if !out.status.success() {
+        return Err(crate::video_sheet::detail(&out, "pdftotext failed"));
+    }
+    let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if text.is_empty() {
+        return Err(MediaError::Extract(
+            "no extractable text (scanned images?)".to_string(),
+        ));
+    }
+    if text.chars().count() > MAX_PDF_CHARS {
+        let cut: String = text.chars().take(MAX_PDF_CHARS).collect();
+        Ok(format!("{cut}\n… [truncated at {MAX_PDF_CHARS} chars]"))
+    } else {
+        Ok(text)
+    }
 }
 
 /// Wire MIME type for a video, by extension. A native video part has to name

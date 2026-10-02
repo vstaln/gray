@@ -72,7 +72,7 @@ chat session.
 
 ## Other subcommands
 
-`gray find`, `gray grep`, `gray view` (images and video), `gray plugin list`,
+`gray find`, `gray grep`, `gray plugin list`,
 `gray gateway status`, `gray update`, `gray login`, `gray whoami`.
 
 ## What gray can do

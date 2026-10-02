@@ -44,7 +44,6 @@ pub mod tool_fmt;
 pub mod tui;
 pub mod turn_caps;
 pub mod update;
-pub mod view;
 
 use clap::{ArgGroup, Parser};
 use std::path::{Path, PathBuf};
@@ -71,8 +70,6 @@ AGENTS.md / CLAUDE.md above the working directory. Edit with `/agentsmd`
 -->
 You are gray, a minimal agent on the user's machine.
 
-Gray-specific (nothing below is guessable): `gray view <paths>` is the only way to see an image or video. `gray find <glob> [path]` and `gray grep <pattern> [path]` answer a search from a resident index ranked by what you touched recently — reach for them when searching a lot.
-
 Workflow (every task):
 1. Derive the contract from the repo, not the request.
 2. Checklist, not happy path: every clause, error, edge case, negative path. Root cause over symptom; behavior before docs.
@@ -81,13 +78,10 @@ Workflow (every task):
 5. Re-read every file you wrote and re-run your checks (exact bytes matter).
 
 Guidelines:
-- Be concise.
-
-- Long commands: `action=run` + `command` + `background=true`; the returned `job_id` takes `status`, `output`, or `cancel` — never send `command` or `timeout` to those follow-up actions. Wait with `output` + `wait_ms`, not `sleep`.
 - Keep going without asking until done or truly blocked; a failed call means try differently, not give up.
 - A file changing under you: re-read and reconcile.
 - Probes are one-shot: if the environment blocks something, probe once, record it, spend the rest on the work.
-Cron: to schedule recurring work, run `gray cron add "<schedule>" "<prompt>"` (manage with `gray cron list/show/remove`). For "remind me ..." run exactly ONE command and do not explore first: `gray cron add "in 2m" "the user's exact words" --reminder`. The text is stored and delivered verbatim with no model turn, so never reword it, never fix typos, never pass --name, never run `gray cron --help` first. A job added from this chat reports back to it on its own: the result arrives as a `[Cron delivery: <name>]` message (a finished background job as `[Background task notification]`) and you get a turn to relay it, so end your turn instead of sleeping or polling, and leave out `--deliver` (`local` only writes a file nobody sees).
+- Cron: `gray cron add "<when>" "<prompt>"`.
 "#;
 
 /// Resolves the user's system-prompt file path (`$GRAY_HOME` or `$HOME/.gray`) + `AGENTS.md`.
@@ -464,26 +458,6 @@ pub enum Commands {
         /// Lines of context around each match
         #[arg(long, value_name = "N")]
         context: Option<usize>,
-    },
-    /// Show an image or video as an image (png/jpg/jpeg/gif/webp/bmp/heic/heif, mp4/mov/webm/mkv/avi)
-    ///
-    /// Run `gray view plot.png` and the image is shown, not its bytes: bash
-    /// output is text only, so this is the only way to look at a rendered
-    /// chart, screenshot or diagram. A video path is sampled into one tiled
-    /// contact sheet, or sent as a native video part with `--native` when the
-    /// model has video input.
-    View {
-        /// One or more image or video paths
-        #[arg(value_name = "PATH", required = true)]
-        paths: Vec<String>,
-        /// Tiles in a video contact sheet (default 16, max 64). Ignored for images.
-        #[arg(long, value_name = "N", conflicts_with = "native")]
-        frames: Option<usize>,
-        /// Send the video itself instead of a contact sheet. Only a model with
-        /// a native video part (Gemini) can use this; others reject it, so
-        /// leave it off unless the model is known to take video.
-        #[arg(long)]
-        native: bool,
     },
     /// Log this machine in to gray.alignment.id (paste the site's one-time code)
     Login {

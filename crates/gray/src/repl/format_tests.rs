@@ -49,7 +49,7 @@ fn typed_image_link_becomes_vision_block() {
         dir.path(),
     );
     assert_eq!(found, vec![path]);
-    let msg = build_user_message_with_attachments("look", &found, "test-model");
+    let msg = build_user_message_with_attachments("look", &found);
     assert!(
         msg.content
             .iter()

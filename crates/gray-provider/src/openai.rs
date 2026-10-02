@@ -9,7 +9,7 @@ use futures::stream::{self, BoxStream, StreamExt};
 use gray_core::agent::{Provider, ProviderError};
 use gray_core::credential::{CredentialLease, CredentialSource};
 use gray_core::event::{StopReason, StreamEvent, Usage};
-use gray_core::message::{ChatRequest, ContentBlock, Role};
+use gray_core::message::{ChatRequest, ContentBlock, Role, resolve_media};
 use reqwest::Url;
 use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue};
 use reqwest::redirect::Policy;
@@ -451,24 +451,59 @@ fn image_data_url(media_type: &str, data: &str) -> String {
     format!("data:{media_type};base64,{data}")
 }
 
-/// Raw video bytes past this never go on the wire: a base64 mp4 is ~1.33x
-/// the file, and a 15s clip is already a few MB of prompt. The fallback is
-/// `gray view <file>`, which turns the same file into a tiled contact sheet.
-pub const MAX_NATIVE_VIDEO_BYTES: usize = 8 * 1024 * 1024;
-
 /// Does this model take a native video part? Deliberately a name check, not
 /// a capability table: only the Gemini line documents video input, and a
 /// wrong answer here either 400s at the provider or burns a huge prompt, so
-/// an unlisted model gets the universal contact sheet instead.
+/// an unlisted model gets the media block's fallback instead.
 pub fn model_accepts_video(model: &str) -> bool {
     let id = model.to_ascii_lowercase();
     id.contains("gemini") || id.contains("gemma")
 }
 
-pub(crate) fn video_rejected(model: &str) -> ProviderError {
-    ProviderError::BadRequest(format!(
-        "{model} has no native video input; use `gray view <file>` for a contact sheet"
-    ))
+/// `input_audio.format` for a media type, when the chat wire has one.
+fn input_audio_format(media_type: &str) -> Option<&'static str> {
+    Some(match media_type {
+        "audio/wav" | "audio/x-wav" | "audio/wave" => "wav",
+        "audio/mpeg" | "audio/mp3" => "mp3",
+        "audio/aiff" | "audio/x-aiff" => "aiff",
+        "audio/aac" => "aac",
+        "audio/ogg" => "ogg",
+        "audio/flac" | "audio/x-flac" => "flac",
+        _ => return None,
+    })
+}
+
+/// Which media a chat-completions model takes natively: video and every
+/// listed audio format on Gemini, wav/mp3 on OpenAI's `*audio*` models. PDFs
+/// have no base64 part on this wire (Gemini compat has no `file` type), so
+/// they always go as their extracted text.
+fn chat_accepts_media(model: &str, media_type: &str) -> bool {
+    let id = model.to_ascii_lowercase();
+    if media_type.starts_with("video/") {
+        return model_accepts_video(model);
+    }
+    match input_audio_format(media_type) {
+        Some(_) if id.contains("gemini") => true,
+        Some(fmt) => id.contains("audio") && matches!(fmt, "wav" | "mp3"),
+        None => false,
+    }
+}
+
+/// Which media a Responses-API model takes natively: `input_file` PDFs on
+/// the vision-era OpenAI lines, and video where [`model_accepts_video`].
+fn responses_accepts_media(model: &str, media_type: &str) -> bool {
+    let id = model.to_ascii_lowercase();
+    let id = id.rsplit('/').next().unwrap_or(&id);
+    match media_type {
+        "application/pdf" => {
+            ["gpt-4o", "gpt-4.1", "gpt-5"]
+                .iter()
+                .any(|m| id.contains(m))
+                || ["o1", "o3", "o4"].iter().any(|m| id.starts_with(m))
+        }
+        mt if mt.starts_with("video/") => model_accepts_video(model),
+        _ => false,
+    }
 }
 
 pub(crate) fn filter_valid_tools(
@@ -531,7 +566,7 @@ fn map_chat_request(
                                 text_parts.push(text);
                             }
                         }
-                        ContentBlock::Image { .. } | ContentBlock::Video { .. } => {}
+                        ContentBlock::Image { .. } | ContentBlock::Media { .. } => {}
                         ContentBlock::StructuredInput { .. } => {}
                         ContentBlock::Thinking { text, .. } => {
                             if !text.is_empty() {
@@ -619,13 +654,12 @@ fn map_chat_request(
                 };
 
                 let mut text_parts = Vec::new();
-                let mut image_parts = Vec::new();
-                // At most one video per turn: two clips in one prompt is a
-                // budgeting question the caller should answer, not us.
-                let mut video_part: Option<(String, String)> = None;
+                // Images, video and audio parts in block order.
+                let mut media_parts = Vec::new();
                 let mut tool_results = Vec::new();
 
-                for block in msg.content {
+                let content = resolve_media(msg.content, |mt| chat_accepts_media(model, mt));
+                for block in content {
                     match block {
                         ContentBlock::Text { text } => {
                             if !text.is_empty() {
@@ -638,20 +672,26 @@ fn map_chat_request(
                             }
                         }
                         ContentBlock::Image { media_type, data } => {
-                            image_parts.push((media_type, data));
+                            let url = image_data_url(&media_type, &data);
+                            media_parts.push(
+                                serde_json::json!({"type":"image_url","image_url":{"url": url}}),
+                            );
                         }
-                        ContentBlock::Video { media_type, data } => {
-                            if !model_accepts_video(model) {
-                                return Err(video_rejected(model));
-                            }
-                            if data.len() > MAX_NATIVE_VIDEO_BYTES {
-                                return Err(ProviderError::BadRequest(format!(
-                                    "video too large for a native part ({} bytes, cap {MAX_NATIVE_VIDEO_BYTES}); use `gray view <file>` for a contact sheet",
-                                    data.len()
-                                )));
-                            }
-                            video_part = Some((media_type, data));
-                        }
+                        ContentBlock::Media {
+                            media_type, data, ..
+                        } => match input_audio_format(&media_type) {
+                            Some(format) => media_parts.push(serde_json::json!({
+                                "type":"input_audio",
+                                "input_audio":{"data": data, "format": format},
+                            })),
+                            // Gemini's OpenAI-compatible surface takes video
+                            // as a video_url part carrying a data URL, the
+                            // same shape as image_url above.
+                            None => media_parts.push(serde_json::json!({
+                                "type":"video_url",
+                                "video_url":{"url": image_data_url(&media_type, &data)},
+                            })),
+                        },
                         ContentBlock::ToolResult {
                             id,
                             content,
@@ -679,28 +719,14 @@ fn map_chat_request(
                     });
                 }
 
-                let has_media = !image_parts.is_empty() || video_part.is_some();
+                let has_media = !media_parts.is_empty();
                 if !text_parts.is_empty() || has_media || messages.is_empty() {
                     let content = if has_media {
                         let mut arr = Vec::new();
                         for text in text_parts {
                             arr.push(serde_json::json!({"type":"text","text": text}));
                         }
-                        for (media_type, data) in &image_parts {
-                            let url = image_data_url(media_type, data);
-                            arr.push(
-                                serde_json::json!({"type":"image_url","image_url":{"url": url}}),
-                            );
-                        }
-                        if let Some((media_type, data)) = &video_part {
-                            // Gemini's OpenAI-compatible surface takes video
-                            // as a video_url part carrying a data URL, the
-                            // same shape as image_url above.
-                            arr.push(serde_json::json!({
-                                "type":"video_url",
-                                "video_url":{"url": image_data_url(media_type, data)},
-                            }));
-                        }
+                        arr.append(&mut media_parts);
                         Some(Value::Array(arr))
                     } else {
                         Some(Value::String(text_parts.join("\n")))
@@ -717,20 +743,13 @@ fn map_chat_request(
         }
     }
 
-    // Tool-result images must follow the entire contiguous result run.
+    // Tool-result media (and any fallback text riding with it) must follow
+    // the entire contiguous result run: a user message inside it 400s.
     let mut ordered = Vec::with_capacity(messages.len());
     let mut deferred_images = Vec::new();
     let mut in_results = false;
     for message in messages {
-        let image_only = message.role == "user"
-            && message
-                .content
-                .as_ref()
-                .and_then(Value::as_array)
-                .is_some_and(|parts| {
-                    !parts.is_empty() && parts.iter().all(|p| p["type"] == "image_url")
-                });
-        if in_results && image_only {
+        if in_results && message.role == "user" {
             deferred_images.push(message);
             continue;
         }
@@ -1025,7 +1044,8 @@ fn map_chat_to_responses(
                     _ => "user",
                 };
                 let mut text_parts: Vec<String> = Vec::new();
-                for block in msg.content {
+                let content = resolve_media(msg.content, |mt| responses_accepts_media(model, mt));
+                for block in content {
                     match block {
                         ContentBlock::Text { text } => {
                             if !text.is_empty() {
@@ -1046,29 +1066,20 @@ fn map_chat_to_responses(
                             }
                             input.push(serde_json::json!({"role": "user", "content": [{"type":"input_image","image_url": url}]}));
                         }
-                        ContentBlock::Video { media_type, data } => {
-                            // A Video block only reaches here after the
-                            // composer checked the model and the byte cap;
-                            // re-check anyway so a hand-built ChatRequest
-                            // cannot smuggle a huge base64 blob onto the wire.
-                            if !model_accepts_video(model) {
-                                text_parts
-                                    .push(format!("(video omitted: {})", video_rejected(model)));
-                                continue;
-                            }
-                            if data.len() > MAX_NATIVE_VIDEO_BYTES {
-                                text_parts.push(format!(
-                                    "(video omitted: {} bytes exceeds the {MAX_NATIVE_VIDEO_BYTES}-byte native cap; use `gray view` for a contact sheet)",
-                                    data.len()
-                                ));
-                                continue;
-                            }
+                        ContentBlock::Media {
+                            media_type, data, ..
+                        } => {
                             let url = image_data_url(&media_type, &data);
                             if !text_parts.is_empty() {
                                 input.push(serde_json::json!({"role": role_str, "content": text_parts.join("\n")}));
                                 text_parts.clear();
                             }
-                            input.push(serde_json::json!({"role": "user", "content": [{"type":"input_video","video_url": url}]}));
+                            let part = if media_type == "application/pdf" {
+                                serde_json::json!({"type":"input_file","filename":"document.pdf","file_data": url})
+                            } else {
+                                serde_json::json!({"type":"input_video","video_url": url})
+                            };
+                            input.push(serde_json::json!({"role": "user", "content": [part]}));
                         }
                         ContentBlock::ToolResult {
                             id,
@@ -1113,7 +1124,7 @@ fn map_chat_to_responses(
                                 text_parts.push(text);
                             }
                         }
-                        ContentBlock::Image { .. } | ContentBlock::Video { .. } => {}
+                        ContentBlock::Image { .. } | ContentBlock::Media { .. } => {}
                         ContentBlock::StructuredInput { .. } => {}
                         ContentBlock::Thinking {
                             encrypted_content: Some(ec),

@@ -324,37 +324,24 @@ fn png_bytes() -> Vec<u8> {
 }
 
 #[tokio::test]
-async fn cat_points_at_gray_view_instead_of_streaming_media() {
-    let dir = tempfile::tempdir().unwrap();
-    std::fs::write(dir.path().join("plot.png"), png_bytes()).unwrap();
-    let out = image_command("cat plot.png", dir.path())
-        .expect("cat on a png must not stream binary into the context");
-    assert!(!out.is_error);
-    assert_eq!(
-        out.images.len(),
-        0,
-        "no vision block: gray view is the one way"
-    );
-    assert!(
-        out.content.contains("gray view plot.png"),
-        "must name the command that works: {}",
-        out.content
-    );
-}
-
-#[tokio::test]
-async fn cat_only_claims_plain_single_file() {
+async fn cat_shows_media_as_images() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("a.png"), png_bytes()).unwrap();
     std::fs::write(dir.path().join("b.png"), png_bytes()).unwrap();
     std::fs::write(dir.path().join("notes.txt"), "text").unwrap();
-    // The claimed shape: exactly cat + one bare path, and only for media.
-    assert!(image_command("cat a.png", dir.path()).is_some());
-    assert!(image_command("  cat   a.png  ", dir.path()).is_some());
-    // Everything else is `cat`'s actual job and falls through to the shell.
+    for (cmd, n) in [
+        ("cat a.png", 1),
+        ("  cat   a.png  ", 1),
+        ("cat a.png b.png", 2),
+    ] {
+        let out = image_command(cmd, dir.path()).unwrap_or_else(|| panic!("must claim: {cmd}"));
+        assert!(!out.is_error, "{cmd}: {}", out.content);
+        assert_eq!(out.images.len(), n, "{cmd}");
+    }
+    // Anything that is not all bare media paths is `cat`'s own job.
     for cmd in [
-        "cat a.png b.png",
         "cat -A a.png",
+        "cat a.png notes.txt",
         "cat a.png | wc -c",
         "cat a.png > copy.png",
         "head a.png",
@@ -386,12 +373,12 @@ async fn cat_text_still_runs_in_the_shell() {
 }
 
 #[tokio::test]
-async fn gray_view_shows_every_image_it_names() {
+async fn cat_shows_every_image_it_names() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("a.png"), png_bytes()).unwrap();
     std::fs::write(dir.path().join("b.png"), png_bytes()).unwrap();
-    let out = image_command("gray view a.png b.png", dir.path())
-        .expect("gray view must show the images it names");
+    let out =
+        image_command("cat a.png b.png", dir.path()).expect("cat must show the images it names");
     assert!(!out.is_error, "{}", out.content);
     assert_eq!(out.images.len(), 2, "one vision block per path");
     assert_eq!(out.images[0].media_type, "image/png");
@@ -400,15 +387,11 @@ async fn gray_view_shows_every_image_it_names() {
         "{}",
         out.content
     );
-    assert!(
-        out.content.contains("Image shown"),
-        "same note cat uses: {}",
-        out.content
-    );
+    assert!(out.content.contains("Shown: "), "{}", out.content);
 }
 
 #[tokio::test]
-async fn gray_view_caps_at_the_shared_2000px() {
+async fn cat_caps_at_the_shared_2000px() {
     // One way to see a picture means one resolution rule: the 2000px cap the
     // `read` tool and pasted attachments already use.
     use base64::Engine as _;
@@ -422,7 +405,7 @@ async fn gray_view_caps_at_the_shared_2000px() {
         .unwrap();
     std::fs::write(dir.path().join("wide.png"), &buf).unwrap();
 
-    let out = image_command("gray view wide.png", dir.path()).unwrap();
+    let out = image_command("cat wide.png", dir.path()).unwrap();
     let raw = base64::engine::general_purpose::STANDARD
         .decode(&out.images[0].data)
         .unwrap();
@@ -430,10 +413,10 @@ async fn gray_view_caps_at_the_shared_2000px() {
         .into_decoder()
         .unwrap()
         .dimensions();
-    assert!(w <= 2000 && h < 100, "view caps at 2000px, got {w}x{h}");
+    assert!(w <= 2000 && h < 100, "cat caps at 2000px, got {w}x{h}");
 }
 
-/// A real 2-frame clip, so the sheet fallback has something to decode.
+/// A real 2-frame clip, so the contact sheet has something to decode.
 /// `None` when ffmpeg is unavailable.
 fn tiny_mp4(dir: &std::path::Path) -> Option<std::path::PathBuf> {
     let path = dir.join("real.mp4");
@@ -458,99 +441,60 @@ fn tiny_mp4(dir: &std::path::Path) -> Option<std::path::PathBuf> {
     ok.then_some(path)
 }
 
-/// A file with an mp4 extension and an mp4 header; the claim never decodes
-/// it, so the bytes only have to be plausible enough to identify.
-fn fake_mp4(dir: &std::path::Path, name: &str, size: usize) -> std::path::PathBuf {
-    let path = dir.join(name);
-    let mut bytes = b"\x00\x00\x00\x18ftypmp42".to_vec();
-    bytes.resize(size.max(32), 0);
-    std::fs::write(&path, &bytes).unwrap();
-    path
-}
-
 #[tokio::test]
-async fn gray_view_native_attaches_a_video_part() {
-    use base64::Engine as _;
+async fn cat_of_a_video_attaches_the_clip_with_its_sheet_as_fallback() {
     let dir = tempfile::tempdir().unwrap();
-    fake_mp4(dir.path(), "clip.mp4", 512);
-
-    let out = image_command("gray view --native clip.mp4", dir.path())
-        .expect("--native on a small video must claim");
-    assert_eq!(out.videos.len(), 1, "one video part: {out:?}");
-    assert!(out.images.is_empty(), "native must not also send a sheet");
-    let raw = base64::engine::general_purpose::STANDARD
-        .decode(&out.videos[0].data)
-        .unwrap();
-    assert_eq!(&raw[4..8], b"ftyp", "the clip itself, not a re-encode");
-    assert!(out.content.contains("native video"), "{}", out.content);
-}
-
-#[tokio::test]
-async fn gray_view_native_falls_back_to_a_sheet_over_the_cap() {
-    // Over MAX_NATIVE_VIDEO_CLAIM_BYTES: the turn must still deliver an
-    // image and say why, rather than dropping the claim and letting the
-    // shell report a usage error.
-    let dir = tempfile::tempdir().unwrap();
-    // A real, decodable clip, and a cap of 1 byte. The rule under test is the
-    // fallback, not the constant, so this avoids a 9MB fixture.
-    let path = tiny_mp4(dir.path());
-    let Some(path) = path else {
+    if tiny_mp4(dir.path()).is_none() {
         eprintln!("skipping: ffmpeg could not build the fixture");
         return;
-    };
-    let out = super::image_command_with_native_cap(
-        &format!(
-            "gray view --native {}",
-            path.file_name().unwrap().to_string_lossy()
-        ),
-        dir.path(),
-        1,
-    )
-    .expect("an over-cap video must still claim, with a sheet");
-    assert!(out.videos.is_empty(), "nothing native went out");
-    assert_eq!(out.images.len(), 1, "a sheet was attached instead");
-    assert!(out.content.contains("native cap"), "{}", out.content);
+    }
+    let out = image_command("cat real.mp4", dir.path()).expect("a clip must claim");
+    assert!(out.images.is_empty(), "{}", out.content);
+    assert_eq!(out.media.len(), 1, "{}", out.content);
+    let vid = &out.media[0];
+    assert_eq!(vid.media_type, "video/mp4");
     assert!(
-        !out.is_error,
-        "a refusal explained in text is not a failure"
+        vid.fallback
+            .iter()
+            .any(|b| matches!(b, gray_core::message::ContentBlock::Image { .. })),
+        "a non-video model needs the sheet"
     );
+    assert!(out.content.contains("real.mp4 (video)"), "{}", out.content);
 }
 
 #[tokio::test]
-async fn gray_view_native_on_an_image_is_just_the_image() {
+async fn cat_of_a_pdf_and_audio_attaches_them_with_text_fallbacks() {
+    // No decoder runs for audio, and a bogus PDF still claims: its fallback
+    // is the pdftotext error note, so the model is told rather than handed
+    // nothing.
     let dir = tempfile::tempdir().unwrap();
-    let img = image::RgbImage::from_pixel(8, 8, image::Rgb([4, 5, 6]));
-    let mut buf = Vec::new();
-    image::DynamicImage::ImageRgb8(img)
-        .write_to(&mut std::io::Cursor::new(&mut buf), image::ImageFormat::Png)
-        .unwrap();
-    std::fs::write(dir.path().join("shot.png"), &buf).unwrap();
-
-    let out = image_command("gray view --native shot.png", dir.path()).unwrap();
-    assert_eq!(out.images.len(), 1);
-    assert!(
-        out.videos.is_empty(),
-        "--native must not invent a video part"
-    );
+    std::fs::write(dir.path().join("doc.pdf"), b"%PDF-1.4 not really").unwrap();
+    std::fs::write(dir.path().join("talk.mp3"), b"ID3 fake").unwrap();
+    let out = image_command("cat doc.pdf talk.mp3", dir.path()).expect("pdf+audio must claim");
+    let types: Vec<&str> = out.media.iter().map(|m| m.media_type.as_str()).collect();
+    assert_eq!(types, ["application/pdf", "audio/mpeg"], "{}", out.content);
+    for m in &out.media {
+        assert!(
+            matches!(
+                m.fallback.as_slice(),
+                [gray_core::message::ContentBlock::Text { .. }]
+            ),
+            "{} needs a text fallback",
+            m.media_type
+        );
+    }
+    assert!(out.content.contains("doc.pdf (pdf)"), "{}", out.content);
+    assert!(out.content.contains("talk.mp3 (audio)"), "{}", out.content);
 }
 
 #[tokio::test]
-async fn gray_view_refuses_a_text_file_rather_than_pixel_soup() {
-    let dir = tempfile::tempdir().unwrap();
-    std::fs::write(dir.path().join("notes.txt"), "text").unwrap();
-    // The claim is dropped, so the shell runs `gray view notes.txt` and its
-    // own error message is what the model reads.
-    assert!(image_command("gray view notes.txt", dir.path()).is_none());
-}
-
-#[tokio::test]
-async fn gray_view_skips_a_missing_path_and_keeps_the_rest() {
+async fn cat_skips_a_missing_path_and_keeps_the_rest() {
     // One typo among several paths must not sink the good images: that is the
     // complaint the claim shape exists to avoid. A lone missing path still
     // falls through, so the shell gives the error.
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("good.png"), png_bytes()).unwrap();
-    let out = image_command("gray view good.png typo.png", dir.path())
+    let out = image_command("cat good.png typo.png", dir.path())
         .expect("a missing path must not drop the valid one");
     assert!(!out.is_error, "{}", out.content);
     assert_eq!(
@@ -566,33 +510,17 @@ async fn gray_view_skips_a_missing_path_and_keeps_the_rest() {
         out.content
     );
     // Alone, a missing path is nothing usable, so the shell reports it.
-    assert!(image_command("gray view typo.png", dir.path()).is_none());
     assert!(image_command("cat typo.png", dir.path()).is_none());
 }
 
 #[tokio::test]
-async fn gray_view_keeps_valid_images_when_one_path_fails() {
-    let dir = tempfile::tempdir().unwrap();
-    std::fs::write(dir.path().join("good.png"), png_bytes()).unwrap();
-    std::fs::write(dir.path().join("notes.txt"), "text").unwrap();
-    // One bad path must not sink the good one: the valid image still
-    // returns a vision block, with the failure named in the content.
-    let out = image_command("gray view good.png notes.txt", dir.path())
-        .expect("partial failure must keep the valid image");
-    assert!(!out.is_error, "{}", out.content);
-    assert_eq!(out.images.len(), 1, "{}", out.content);
-    assert!(out.content.contains("good.png"), "{}", out.content);
-    assert!(out.content.contains("skipped"), "{}", out.content);
-}
-
-#[tokio::test]
-async fn gray_view_caps_the_claim_at_eight_paths() {
+async fn cat_caps_the_claim_at_eight_paths() {
     let dir = tempfile::tempdir().unwrap();
     for n in 0..10 {
         std::fs::write(dir.path().join(format!("p{n}.png")), png_bytes()).unwrap();
     }
     let cmd = format!(
-        "gray view {}",
+        "cat {}",
         (0..10)
             .map(|n| format!("p{n}.png"))
             .collect::<Vec<_>>()
@@ -609,24 +537,11 @@ async fn gray_view_caps_the_claim_at_eight_paths() {
 }
 
 #[tokio::test]
-async fn gray_view_only_claims_gray_view() {
+async fn gray_view_is_gone() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("a.png"), png_bytes()).unwrap();
-    // Other gray subcommands are ordinary shell commands: claiming them would
-    // swallow their output entirely.
-    for cmd in [
-        "gray --version",
-        "gray memory list",
-        "gray view",
-        "gray view -A a.png",
-        "gray view a.png | wc -c",
-        "gray view a.png && echo done",
-        "gray view a.png; ls",
-        "gray view $HOME/a.png",
-        "gray view *.png",
-        "gray view missing.png",
-        "gray /usr/bin/view a.png",
-    ] {
+    // `cat` is the one way in; gray subcommands are ordinary shell commands.
+    for cmd in ["gray view a.png", "gray --version", "gray memory list"] {
         assert!(
             image_command(cmd, dir.path()).is_none(),
             "must not claim: {cmd}"
@@ -635,7 +550,7 @@ async fn gray_view_only_claims_gray_view() {
 }
 
 #[tokio::test]
-async fn gray_view_through_execute_shows_vision() {
+async fn cat_through_execute_shows_vision() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("shot.png"), png_bytes()).unwrap();
     let ctx = ToolContext {
@@ -643,7 +558,7 @@ async fn gray_view_through_execute_shows_vision() {
         ..ToolContext::default()
     };
     let out = BashTool::default()
-        .execute(&ctx, json!({"command": "gray view shot.png"}))
+        .execute(&ctx, json!({"command": "cat shot.png"}))
         .await;
     assert!(!out.is_error, "{}", out.content);
     assert_eq!(out.images.len(), 1, "execute must surface the vision block");
@@ -651,60 +566,49 @@ async fn gray_view_through_execute_shows_vision() {
 
 #[test]
 fn unattached_media_note_covers_every_shape_the_claim_refuses() {
-    // Shape refusals: the shell runs the real CLI, which prints `viewed …`
-    // while nothing is attached — the note must say so and name the re-run.
+    // Shape refusals: the shell runs `cat` while nothing is attached — the
+    // note must say so and name the re-run.
     for cmd in [
-        "cd /tmp && gray view a.png",
-        "gray view a.png && echo done",
-        "gray view a.png; ls",
-        "gray view a.png | wc -c",
-        "gray view $HOME/a.png",
-        "gray view *.png",
-        "gray view -A a.png",
-        "cd x&&gray view a.png",
-        "for f in /tmp/*.jpg; do gray view \"$f\"; done",
+        "cd /tmp && cat a.png",
+        "cat a.png | wc -c",
         "cat a.png && wc -c",
         "x && cat a.png",
         "cat *.png",
     ] {
         let note = unattached_media_note(cmd).unwrap_or_else(|| panic!("note missing: {cmd}"));
         assert!(note.contains("NOT attached"), "{cmd}: {note}");
-        assert!(note.contains("gray view"), "{cmd}: {note}");
+        assert!(note.contains("cat "), "{cmd}: {note}");
     }
     // The bare claim shapes: a miss is a missing/undecodable file the shell
     // already reports, a non-media `cat`, or no media command at all.
     for cmd in [
         "gray view a.png",
-        "gray view",
-        "gray view missing.png",
-        "gray view --native clip.mp4",
         "cat a.png",
         "cat missing.png",
         "cat notes.txt",
-        "echo gray view",
         "ls -la",
     ] {
         assert!(unattached_media_note(cmd).is_none(), "spurious: {cmd}");
     }
     // The advice names the paths it saw, so one turn is enough to recover.
-    let note = unattached_media_note("cd /tmp && gray view a.png b.png").unwrap();
-    assert!(note.contains("gray view a.png b.png"), "{note}");
+    let note = unattached_media_note("cd /tmp && cat a.png").unwrap();
+    assert!(note.contains("cat a.png"), "{note}");
 }
 
 #[tokio::test]
-async fn compound_gray_view_says_the_image_was_not_attached() {
+async fn compound_cat_says_the_image_was_not_attached() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("shot.png"), png_bytes()).unwrap();
     let ctx = ToolContext {
         cwd: dir.path().to_path_buf(),
         ..ToolContext::default()
     };
-    // cd fails, so `gray` never runs: the note is the tool's own, and the
+    // cd fails, so `cat` never runs: the note is the tool's own, and the
     // output must not read as a successful view.
     let out = BashTool::default()
         .execute(
             &ctx,
-            json!({"command": "cd /nonexistent-9f2a && gray view shot.png"}),
+            json!({"command": "cd /nonexistent-9f2a && cat shot.png"}),
         )
         .await;
     assert!(!out.is_error, "{}", out.content);
@@ -763,9 +667,8 @@ async fn cat_resolves_a_tilde_path_only_when_the_file_is_there() {
         .to_string_lossy()
         .into_owned();
     let out = image_command(&format!("cat ~/{name}"), Path::new("."))
-        .expect("cat ~/probe.png must answer, not stream bytes");
-    assert_eq!(out.images.len(), 0, "cat shows nothing now");
-    assert!(out.content.contains("gray view"), "{}", out.content);
+        .expect("cat ~/probe.png must show the image, not stream bytes");
+    assert_eq!(out.images.len(), 1, "{}", out.content);
     assert!(out.content.contains(&name), "{}", out.content);
 
     // A `~` path that is not there falls through to the shell's own error.
@@ -987,7 +890,7 @@ async fn the_cwd_report_does_not_mask_the_commands_exit_code() {
 }
 
 // ---------------------------------------------------------------------------
-// `gray find` / `gray grep` are claimed like `gray view`: without gray on the
+// `gray find` / `gray grep` are claimed like a media `cat`: without gray on the
 // child's PATH, the model still gets the index
 // ---------------------------------------------------------------------------
 
