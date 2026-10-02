@@ -236,9 +236,13 @@ impl Tui {
             return;
         }
         let lines: Vec<Line<'static>> = (0..need).map(|_| Line::from("")).collect();
-        self.insert_paragraph(&lines, None);
-        self.history_entries.push(super::TranscriptEntry::Gap(need));
-        self.transcript.extend(lines);
+        // One batch: the frame that repaints the dock must see the new
+        // blank tail (see `paint_thinking_fragment`).
+        self.atomic(|t| {
+            t.insert_paragraph(&lines, None);
+            t.history_entries.push(super::TranscriptEntry::Gap(need));
+            t.transcript.extend(lines);
+        });
         cap_history_entries(&mut self.history_entries);
     }
 

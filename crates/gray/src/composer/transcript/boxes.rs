@@ -71,12 +71,19 @@ impl Tui {
         }
         let line = Line::from(vec![Span::styled(fragment, thinking_style())]);
         let w = self.width().max(10);
-        let painted = self.render_and_insert_styled_lines(&[line], &[], w);
-        let ends_blank = painted.last().is_some_and(transcript_row_is_blank);
-        self.transcript.extend(painted);
-        if self.is_task_running && ends_blank {
-            self.release_dock_seam();
-        }
+        // Insert and record in one batch, so the frame that repaints the
+        // dock sees the row just painted. Drawn between the two, the seam
+        // was decided against the previous tail: a paragraph break's blank
+        // row got a seam stacked on it (two blank rows above `⬡ Thinking…`)
+        // and the seam's later drop stranded a vacated blank row.
+        self.atomic(|t| {
+            let painted = t.render_and_insert_styled_lines(&[line], &[], w);
+            let ends_blank = painted.last().is_some_and(transcript_row_is_blank);
+            t.transcript.extend(painted);
+            if t.is_task_running && ends_blank {
+                t.release_dock_seam();
+            }
+        });
         if self.transcript.len() > 1000 {
             self.transcript.drain(0..100);
         }
@@ -189,17 +196,21 @@ impl Tui {
             }
             return;
         }
-        let lines_only = self.render_and_insert_styled_lines(&lines, &rebased, w);
-        self.history_entries
-            .push(crate::composer::TranscriptEntry::StyledLines {
-                lines,
-                hyperlinks: rebased,
-            });
-        let ends_blank = lines_only.last().is_some_and(transcript_row_is_blank);
-        self.transcript.extend(lines_only);
-        if self.is_task_running && ends_blank {
-            self.release_dock_seam();
-        }
+        // One batch, so the dock repaints against the new tail (see
+        // `paint_thinking_fragment`).
+        self.atomic(|t| {
+            let lines_only = t.render_and_insert_styled_lines(&lines, &rebased, w);
+            t.history_entries
+                .push(crate::composer::TranscriptEntry::StyledLines {
+                    lines,
+                    hyperlinks: rebased,
+                });
+            let ends_blank = lines_only.last().is_some_and(transcript_row_is_blank);
+            t.transcript.extend(lines_only);
+            if t.is_task_running && ends_blank {
+                t.release_dock_seam();
+            }
+        });
         if self.transcript.len() > 1000 {
             self.transcript.drain(0..100);
         }

@@ -3,6 +3,13 @@
 ## [Unreleased]
 
 ### Fixed
+- **One gap above `⬡ Thinking…` at a paragraph break.** While reasoning paused after a blank
+  line, two blank rows sat between the last thought and the status dock. Each live thinking row
+  (and each `ensure_gap` blank) repainted the dock inside its own insert, before the row reached
+  the transcript, so the dock decided its seam row against the previous tail: the paragraph
+  break's blank got a seam stacked on it, and when the seam dropped a frame later its row was
+  left behind as a second blank. The insert and the transcript update now land in one batch,
+  and the dock repaints against the row just painted.
 - **A turn-ending error reads as an error.** A rate limit, auth failure or server error that
   outlived its retries was streamed as plain prose, in the same colour as the answer. Its
   headline (`✗ Rate limited (retryable): …`) is now in the theme's error colour and the hint
