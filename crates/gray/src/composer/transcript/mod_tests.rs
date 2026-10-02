@@ -496,7 +496,10 @@ fn the_backdrop_keeps_the_live_margins() {
     let welcome = crate::composer::build_welcome_lines(80).len();
     let rows = layout_history(&entries, 80, 24);
     let body = &rows[welcome..];
-    assert!(!transcript_row_is_blank(&body[0]), "the welcome's gap is the gap");
+    assert!(
+        !transcript_row_is_blank(&body[0]),
+        "the welcome's gap is the gap"
+    );
     for pair in body.windows(2) {
         assert!(
             !(transcript_row_is_blank(&pair[0]) && transcript_row_is_blank(&pair[1])),
