@@ -20,9 +20,9 @@ mod rows;
 pub(crate) use crate::tui::strip_ansi;
 pub(crate) use cards::format_tool_box_lines;
 pub(crate) use rows::{
-    GUTTER, format_user_prompt_lines, left_pad, prose_width, thinking_replay_lines,
-    thinking_run_rows, thinking_style, transcript_row_is_blank, word_flush_cut, wrap_styled_line,
-    wrap_styled_line_with_ranges,
+    GUTTER, format_user_prompt_lines, left_pad, prose_width, thinking_paint_text,
+    thinking_replay_lines, thinking_run_rows, thinking_style, transcript_row_is_blank,
+    word_flush_cut, wrap_styled_line, wrap_styled_line_with_ranges,
 };
 
 // ---------------------------------------------------------------------------
@@ -365,16 +365,17 @@ impl Tui {
             // Stored terminated (its `\n` rides along); the blank-on-blank
             // guard lives in `paint_thinking_fragment` and in the reflow
             // renderer alike, so stored source and paint agree exactly.
-            self.append_thinking_text(trimmed, true);
-            self.paint_thinking_fragment(trimmed.to_string());
+            self.flush_thinking_fragment(trimmed, true);
         }
-        if display_width(&self.pending) >= max_w {
+        // Strictly wider than a row: a buffer that exactly fills one could
+        // still be mid-word ("actu" + "ally"), and flushing it whole leaves
+        // the next chunk's leading space to open the following row.
+        if display_width(&self.pending) > max_w {
             let chars: Vec<char> = self.pending.chars().collect();
             let cut = word_flush_cut(&chars, max_w);
             let line: String = chars[..cut].iter().collect();
             self.pending = chars[cut..].iter().collect();
-            self.append_thinking_text(&line, false);
-            self.paint_thinking_fragment(line);
+            self.flush_thinking_fragment(&line, false);
         }
         let _ = self.draw();
     }
@@ -534,8 +535,7 @@ impl Tui {
         }
         if !self.pending.is_empty() {
             let rest = std::mem::take(&mut self.pending);
-            self.append_thinking_text(&rest, false);
-            self.paint_thinking_fragment(rest);
+            self.flush_thinking_fragment(&rest, false);
         }
         if spacer {
             self.ensure_gap();

@@ -52,6 +52,26 @@ impl Tui {
         }
     }
 
+    /// True when the open thinking run ends on a live word-cut (no `\n`
+    /// terminator yet): the next flushed fragment continues that line.
+    pub(crate) fn thinking_run_mid_line(&self) -> bool {
+        matches!(
+            self.history_entries.last(),
+            Some(crate::composer::TranscriptEntry::ThinkingRun(run))
+                if !run.is_empty() && !run.ends_with('\n')
+        )
+    }
+
+    /// Stores one flushed thinking fragment in the open run and paints it,
+    /// trimming the word-cut seam (see [`thinking_paint_text`]).
+    pub(crate) fn flush_thinking_fragment(&mut self, fragment: &str, terminated: bool) {
+        let mid_line = self.thinking_run_mid_line();
+        self.append_thinking_text(fragment, terminated);
+        if let Some(text) = thinking_paint_text(fragment, mid_line) {
+            self.paint_thinking_fragment(text.to_string());
+        }
+    }
+
     /// Paints one flushed thinking fragment (a `\n`-drained logical line, a
     /// live word-cut, or the run tail) without touching `history_entries` —
     /// the run's raw text is the history. A blank fragment (a paragraph
