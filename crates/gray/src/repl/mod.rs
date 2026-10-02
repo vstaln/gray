@@ -841,11 +841,15 @@ pub async fn run_repl_mode(
             c
         } else {
             // The composer swallows empty submits unless a resume is
-            // pending — sync the gate before blocking on input.
-            if let Some((shared, _)) = tui.as_ref()
-                && let Ok(mut t) = shared.try_lock()
-            {
-                t.allow_empty_submit = last_turn_resumable && agent.is_some();
+            // pending — sync the gate before blocking on input. A blocking
+            // lock: `try_lock` lost to whichever painter held the TUI that
+            // instant, and a skipped arm meant no "Please continue…" ghost and
+            // a bare Enter that did nothing after an interrupt.
+            if let Some((shared, _)) = tui.as_ref() {
+                shared
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .allow_empty_submit = last_turn_resumable && agent.is_some();
             }
             let (line_text, images) = if interactive {
                 let (shared, stop) = tui.as_ref().expect("interactive implies tui");

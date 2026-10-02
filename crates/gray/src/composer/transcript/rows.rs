@@ -27,9 +27,10 @@ pub(crate) fn transcript_row_is_blank(line: &Line<'static>) -> bool {
             .all(|s| s.style.bg.is_none() && s.content.trim().is_empty())
 }
 
-/// Columns left of prose and thinking rows. Codex reserves two (`"• "` /
-/// `"  "`); two also lines prose up with the `●`/`❯` glyph of a card.
-pub(crate) const GUTTER: usize = 2;
+/// Columns left of prose and thinking rows, and of the `●`/`❯` glyph of a
+/// card, so the whole transcript starts in one column. One is enough to
+/// keep text off the terminal edge; two read as a second, empty column.
+pub(crate) const GUTTER: usize = 1;
 
 /// Columns kept clear at the right edge, so a wrapped row never touches the
 /// terminal border (codex keeps the same single column on prompts).
@@ -417,19 +418,20 @@ pub(crate) fn format_user_prompt_lines(
     lines.push(margin_row());
     // `❯` sits in the gutter column, under the tool card's `●` and level
     // with the prose around it; text starts two columns later.
+    let hang = " ".repeat(GUTTER + 2);
     let arrow_span = Span::styled(
-        "  ❯ ",
+        format!("{}❯ ", " ".repeat(GUTTER)),
         Style::default()
             .fg(prompt_color)
             .add_modifier(Modifier::BOLD),
     );
-    let max_w = width.saturating_sub(4 + RIGHT_MARGIN).max(1);
+    let max_w = width.saturating_sub(GUTTER + 2 + RIGHT_MARGIN).max(1);
     let lines_raw: Vec<&str> = sanitized.split('\n').collect();
     for (i, raw_line) in lines_raw.iter().enumerate() {
         let prefix = if i == 0 {
             arrow_span.clone()
         } else {
-            Span::raw("    ")
+            Span::raw(hang.clone())
         };
         if raw_line.is_empty() {
             lines.push(Line::from(vec![prefix]).style(bg_style));
@@ -444,7 +446,7 @@ pub(crate) fn format_user_prompt_lines(
                 let row_prefix = if first_row {
                     prefix.clone()
                 } else {
-                    Span::raw("    ")
+                    Span::raw(hang.clone())
                 };
                 first_row = false;
                 lines.push(
@@ -469,7 +471,7 @@ pub(crate) fn format_user_prompt_lines(
             .join(", ");
         lines.push(
             Line::from(vec![
-                Span::raw("    "),
+                Span::raw(hang.clone()),
                 Span::styled(
                     format!("↳ attached: {names}"),
                     Style::default().fg(dim_color),

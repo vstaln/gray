@@ -246,6 +246,13 @@ impl Tui {
         self.push_styled_lines_with_hyperlinks(lines, &[], 0);
     }
 
+    /// A turn-ending error (`format_core_error`): the headline in the
+    /// theme's error colour, its hint lines muted. Plain `stream` painted it
+    /// as assistant prose, so a rate limit read like part of the answer.
+    pub fn push_error(&mut self, msg: &str) {
+        self.push_styled_lines_with_hyperlinks(error_lines(msg), &[], 0);
+    }
+
     /// Renders a `/compact` summary (LLM markdown) through the same
     /// pipeline as assistant answers: `**bold**`/`##` markers become
     /// styled rows (BOLD headings/prose, links, tables) instead of
@@ -490,6 +497,27 @@ pub(crate) fn rebase_hyperlinks_for_slice(
             let mut hc = h.clone();
             hc.line_index -= line_offset;
             Some(hc)
+        })
+        .collect()
+}
+
+/// Rows for a turn-ending error: first line (`✗ Rate limited (retryable):
+/// …`) in the error colour, follow-up hint lines (`  Try again later…`)
+/// muted. Codex parity: errors read as errors (`new_error_event`, red).
+/// Blank input yields no rows. Pure for testability (`Tui::new` needs a TTY).
+pub(crate) fn error_lines(msg: &str) -> Vec<Line<'static>> {
+    let theme = crate::theme::theme();
+    msg.trim_end()
+        .lines()
+        .enumerate()
+        .filter(|(_, l)| !l.trim().is_empty())
+        .map(|(i, l)| {
+            let style = if i == 0 {
+                Style::default().fg(theme.error)
+            } else {
+                Style::default().fg(theme.text_muted)
+            };
+            Line::from(Span::styled(l.to_string(), style))
         })
         .collect()
 }

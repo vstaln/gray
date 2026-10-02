@@ -3,14 +3,30 @@
 ## [Unreleased]
 
 ### Fixed
+- **A turn-ending error reads as an error.** A rate limit, auth failure or server error that
+  outlived its retries was streamed as plain prose, in the same colour as the answer. Its
+  headline (`✗ Rate limited (retryable): …`) is now in the theme's error colour and the hint
+  under it is muted, as codex renders errors. The retries before it are unchanged:
+  `⬡ Reconnecting…` in the status dock and one dim `└` row per distinct cause.
+- **An interrupt says so again.** Since the "(interrupted — press Enter to continue)" line was
+  dropped, an interrupted turn left nothing in the transcript, and the only hint was the
+  "Please continue…" ghost in an empty composer, which typing hides. An interrupt now leaves a
+  dim `■ Conversation interrupted` line in history, as codex does; the Enter hint stays in the
+  idle ghost, the one place where it is always true. The ghost's gate was also armed with
+  `try_lock` and silently skipped whenever a painter held the TUI; it now always arms.
+- **No doubled gap under the turn footer.** `end_turn` cleared the status dock but committed the
+  `Worked for` / `Thought for` footer before the band shrank, so the footer scrolled in above
+  the still-docked band and the shrink left a stray blank row between its trailing gap and the
+  input box (most visible after an interrupt). The band now drops the dock first, and the
+  footer and gap land in the rows it gave up.
 - **Margins follow codex's layout.** A card's painted padding row was counted as the gap
   between blocks, so prose and thinking sat flush against every tool and prompt card. The
   padding belongs to the card again, and one unpainted row separates every card from its
   neighbours, the way codex keeps a user cell's padding apart from the row `history_cell`
-  inserts between cells. Prose and thinking moved from a 1-column to codex's 2-column gutter,
-  level with the `●` of a tool card and the `❯` of a prompt card (which moved one column
-  right), and wrapped rows keep one column clear at the right edge. Live streaming, resize
-  reflow and session replay share one wrap budget (`prose_width`), so the three agree.
+  inserts between cells. Prose, thinking, the `●` of a tool card and the `❯` of a prompt card
+  all start in one column (a 1-column gutter), and wrapped rows keep one column clear at the
+  right edge. Live streaming, resize reflow and session replay share one wrap budget
+  (`prose_width`), so the three agree.
 
 - **A card's margin is visible again.** The gap that separates a card from the paragraph
   around it was an unpainted blank row, and an unpainted row against the composer surface

@@ -9,6 +9,10 @@ use super::*;
 /// Past this the transcript is repaired here instead — see below.
 const TURN_CANCEL_GRACE: std::time::Duration = std::time::Duration::from_secs(4);
 
+/// The history line an interrupted turn leaves behind (codex's
+/// `■ Conversation interrupted`, dim like codex's secondary text).
+pub(crate) const INTERRUPTED_NOTICE: &str = "■ Conversation interrupted";
+
 /// One streaming attempt with cooperative cancel: on Ctrl-C, `ctx` shares
 /// the token so the run is already signalled — give it a bounded window to
 /// observe cancel and execute its own cleanup/transcript-repair paths
@@ -382,13 +386,14 @@ pub(crate) async fn run_prompt_turn(
                     let mut t = shared.lock().expect("tui lock");
                     t.end_thinking();
                     t.discard_held_punctuation();
-                    // No transcript line: "press Enter to continue" is a
-                    // promise about the composer being IDLE and empty, and
-                    // streamed it became permanent history that outlived the
-                    // turn it described — it still sat under the next turn's
-                    // status pill, long after the resume it offered was moot.
-                    // The idle ghost (`continue_ghost`) says it, and it only
-                    // paints while that is actually true.
+                    // Codex parity (`on_interrupted_turn`): the interrupt is a
+                    // fact about this turn, so it goes into history as a dim
+                    // `■` line that stays true forever. "Press Enter to
+                    // continue" is NOT history: it is a promise about the idle,
+                    // empty composer that outlived the turn it described, so
+                    // only the idle ghost (`continue_ghost`) says it.
+                    t.ensure_gap(1);
+                    t.push_dim(INTERRUPTED_NOTICE.to_string());
                 }
             } else {
                 println!("(interrupted — press Enter to continue)");
@@ -414,7 +419,7 @@ pub(crate) async fn run_prompt_turn(
                     t.ensure_gap(1);
                     // The error is history; the instruction to continue is a
                     // property of the idle composer (see the interrupt arm).
-                    t.stream(&format!("{msg}\n"));
+                    t.push_error(&msg);
                 }
             } else {
                 eprintln!("{msg}\n(press Enter to continue)");
