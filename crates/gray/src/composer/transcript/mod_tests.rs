@@ -24,6 +24,81 @@ fn word_flush_cut_exact_fit_pushes_whole() {
     assert_eq!(word_flush_cut(&chars, 6), 6);
 }
 
+/// The reported seam: a window ending exactly on a space keeps the space
+/// on its own row, so the next row starts at the word, not at " changed".
+#[test]
+fn word_flush_cut_boundary_space_rides_with_the_row() {
+    let chars: Vec<char> = "hi you  there".chars().collect();
+    let cut = word_flush_cut(&chars, 6);
+    let rest: String = chars[cut..].iter().collect();
+    assert_eq!(rest, "there");
+}
+
+#[test]
+fn thinking_paint_text_trims_only_word_cut_continuations() {
+    assert_eq!(
+        thinking_paint_text(" changed and", true),
+        Some("changed and")
+    );
+    assert_eq!(thinking_paint_text("  - nested", false), Some("  - nested"));
+    // The cut line's own terminator is not a paragraph break.
+    assert_eq!(thinking_paint_text(" ", true), None);
+    assert_eq!(thinking_paint_text("", true), None);
+    assert_eq!(thinking_paint_text("", false), Some(""));
+}
+
+/// Mirrors `stream_thinking` token by token: no painted row may open with
+/// a space, whatever the chunking, and the stored run reproduces the text.
+#[test]
+fn live_thinking_rows_never_open_with_a_space() {
+    let text = "Given the ambiguity, the most useful interpretation: they want to know what \
+                PR #166 actually changed and whether it's in the rebuilt binary. Since I \
+                verified margins symbols = 2 in the binary, #166 IS in.";
+    for max_w in 10..60 {
+        let mut pending = String::new();
+        let mut run = String::new();
+        let mut painted: Vec<String> = Vec::new();
+        let mut flush = |frag: &str, run: &mut String, painted: &mut Vec<String>| {
+            let mid = !run.is_empty() && !run.ends_with('\n');
+            run.push_str(frag);
+            if let Some(t) = thinking_paint_text(frag, mid) {
+                painted.push(t.to_string());
+            }
+        };
+        // Word-sized chunks with their leading space, like provider deltas.
+        for tok in text.split_inclusive(' ') {
+            let tok = match tok.strip_suffix(' ') {
+                Some(t) => format!(" {t}"),
+                None => format!(" {tok}"),
+            };
+            let tok = if pending.is_empty() && run.is_empty() {
+                tok.trim_start().to_string()
+            } else {
+                tok
+            };
+            gray_core::event::append_thinking_chunk(&mut pending, &tok);
+            if display_width(&pending) > max_w {
+                let chars: Vec<char> = pending.chars().collect();
+                let cut = word_flush_cut(&chars, max_w);
+                let line: String = chars[..cut].iter().collect();
+                pending = chars[cut..].iter().collect();
+                flush(&line, &mut run, &mut painted);
+            }
+        }
+        if !pending.is_empty() {
+            let rest = std::mem::take(&mut pending);
+            flush(&rest, &mut run, &mut painted);
+        }
+        for row in &painted {
+            assert!(
+                !row.starts_with(' '),
+                "row opens with a space at {max_w}: {row:?}"
+            );
+        }
+        assert_eq!(run, text, "stored run must round-trip at {max_w}");
+    }
+}
+
 #[test]
 fn word_flush_cut_budgets_cells_not_chars() {
     let chars: Vec<char> = "界界界界".chars().collect();
@@ -243,7 +318,7 @@ fn thinking_survives_resize_round_trip() {
         let mut rest: Vec<char> = text.chars().collect();
         while !rest.is_empty() {
             let s: String = rest.iter().collect();
-            if display_width(&s) < max_live {
+            if display_width(&s) <= max_live {
                 run.push_str(&s);
                 break;
             }

@@ -381,8 +381,34 @@ pub(crate) fn thinking_run_rows(text: &str, max_w: usize, tail_blank: bool) -> V
 /// the first `max_w` cells so rows break between words, never mid-word
 /// ("r|espond"). Falls back to a hard cut at the cell budget when there is
 /// no space (single overlong word) — same as the wrapper's long-word path.
+///
+/// When the window ends exactly on a word boundary, the whole window is the
+/// row and the boundary spaces ride with it: left on the remainder they
+/// would open the next row with a stray space (" changed and…").
 pub(crate) fn word_flush_cut(chars: &[char], max_w: usize) -> usize {
+    let fit = fit_char_count(chars, max_w).min(chars.len());
+    if fit > 0 && chars.get(fit) == Some(&' ') {
+        let mut end = fit;
+        while chars.get(end) == Some(&' ') {
+            end += 1;
+        }
+        return end;
+    }
     word_window_end(chars, 0, max_w)
+}
+
+/// Text to paint for a flushed thinking fragment. A fragment that continues
+/// a word-cut row (`mid_line`) drops its leading spaces: they separate it
+/// from the row above, not indent it. A continuation that is only the
+/// cut line's terminator paints nothing (`None`), so the row break never
+/// reads as a paragraph gap that reflow would not draw. The stored run
+/// text keeps every byte either way.
+pub(crate) fn thinking_paint_text(fragment: &str, mid_line: bool) -> Option<&str> {
+    if !mid_line {
+        return Some(fragment);
+    }
+    let rest = fragment.trim_start_matches(' ');
+    (!rest.trim().is_empty()).then_some(rest)
 }
 
 /// Replay rendering for a persisted thinking block: one dim+italic row per
