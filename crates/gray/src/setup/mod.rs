@@ -125,8 +125,8 @@ pub(crate) use install_manager::{
 pub use install_manager::{run_plugins_modal, run_skills_modal};
 pub(crate) use model_modal::{provider_models_for, run_model_modal, validate_direct_model_id};
 pub use provider_auth::{
-    PluginLoginProgress, activate_plugin_connection, forget_plugin_connection, run_plugin_login,
-    select_api_key_connection,
+    PluginLoginProgress, activate_plugin_connection, adopt_saved_key, forget_plugin_connection,
+    run_plugin_login, select_api_key_connection,
 };
 
 use crate::{config::Config, tui::print_wrapped};

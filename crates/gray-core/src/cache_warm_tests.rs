@@ -98,15 +98,23 @@ async fn run_turn(
     tool_time: Duration,
     prices: Option<Prices>,
 ) -> (Vec<(Option<u32>, usize)>, Usage) {
+    run_turn_reading(tool_time, prices, 0).await
+}
+
+/// `cache_read`: what the first round's usage reports as read from cache.
+async fn run_turn_reading(
+    tool_time: Duration,
+    prices: Option<Prices>,
+    cache_read: usize,
+) -> (Vec<(Option<u32>, usize)>, Usage) {
+    let mut first = Usage::new(100_000, 20);
+    first.cache_read_input_tokens = cache_read;
     let seen = Arc::new(Mutex::new(Vec::new()));
     let provider = Fake {
         scripts: Mutex::new(VecDeque::from(vec![
             vec![
                 StreamEvent::tool_call_delta(0, Some("c1".into()), Some("build".into()), "{}"),
-                StreamEvent::message_complete(
-                    Some(StopReason::ToolUse),
-                    Some(Usage::new(100_000, 20)),
-                ),
+                StreamEvent::message_complete(Some(StopReason::ToolUse), Some(first)),
             ],
             vec![
                 StreamEvent::text_delta("done"),
@@ -162,9 +170,54 @@ async fn a_short_tool_run_sends_nothing_extra() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn unknown_prices_never_warm() {
+async fn unknown_prices_never_warm_a_provider_without_cache_reports() {
     let (seen, _) = run_turn(Duration::from_secs(600), None).await;
     assert!(seen.iter().all(|(m, _)| m.is_none()), "{seen:?}");
+}
+
+#[tokio::test(start_paused = true)]
+async fn unknown_prices_warm_a_big_prompt_the_provider_caches() {
+    // A subscription model: no dollar prices, but the provider reported a
+    // cache read, so a 100k-token miss is worth a refresh.
+    let (seen, _) = run_turn_reading(Duration::from_secs(600), None, 90_000).await;
+    assert_eq!(
+        seen.iter().filter(|(m, _)| *m == Some(1)).count(),
+        2,
+        "{seen:?}"
+    );
+}
+
+#[test]
+fn the_token_floor_backs_up_the_dollar_floor() {
+    // Unpriced: size plus reported caching decides.
+    assert!(worth_refreshing(None, 25_000, true));
+    assert!(!worth_refreshing(None, 25_000, false));
+    assert!(!worth_refreshing(None, 5_000, true));
+    // All-zero prices are no prices (a free tier).
+    let free = Prices {
+        input: 0.0,
+        output: 0.0,
+        cache_read: 0.0,
+        cache_write: 0.0,
+    };
+    assert!(worth_refreshing(Some(&free), 25_000, true));
+    // A cheap model under the dollar floor still warms a big prompt...
+    let cheap = Prices {
+        input: 0.27e-6,
+        output: 1.1e-6,
+        cache_read: 0.07e-6,
+        cache_write: 0.0,
+    };
+    assert!(expected_savings(&cheap, 25_000) < MIN_EXPECTED_SAVINGS);
+    assert!(worth_refreshing(Some(&cheap), 25_000, false));
+    assert!(!worth_refreshing(Some(&cheap), 10_000, true));
+    // ...but never when a refresh costs more than the miss it prevents.
+    let flat = Prices {
+        cache_read: 0.27e-6,
+        ..cheap
+    };
+    assert!(!worth_refreshing(Some(&flat), 100_000, true));
+    assert!(!worth_refreshing(Some(&sonnet()), 0, true));
 }
 
 #[tokio::test(start_paused = true)]
@@ -183,6 +236,7 @@ async fn a_late_timer_skips_the_refresh() {
         ChatRequest::default(),
         policy(Some(sonnet())),
         100_000,
+        true,
         sent,
         Arc::new(Mutex::new(Usage::default())),
     )

@@ -3,6 +3,22 @@
 ## [Unreleased]
 
 ### Fixed
+- **No more 403s that only a restart cleared.** `/connect` writes the picked provider's base URL
+  and key into the live session before the model step saves anything, so dismissing it left that
+  pick in memory beside the old model. Every later agent rebuild (`/model`, `/thinking`, `/new`, a
+  resume) sent it, and the provider answered `403 Authentication failed` until a restart re-read
+  `~/.gray/config.json`. A dismissed or failed `/connect` now restores the session exactly. And an
+  auth failure re-reads the key saved for the same endpoint: when another window's `/connect` or
+  `gray login` changed it, the session adopts it and says so, and Enter retries with it.
+- **Cache warming runs with a thinking effort on.** Any effort other than `off` turned the
+  long-tool cache warmer off, so a 5-minute tool at `xhigh` re-billed the whole prompt. As in
+  pi's `isReplayable`, only a Claude thinking budget blocks the 1-token replay now (the budget is
+  sized from the output cap and Anthropic keys its cache on it); reasoning efforts on every other
+  model replay unchanged. A model with no dollar prices (a subscription or free tier) is warmed
+  once its prompt reaches 20k tokens and the provider has reported cache activity, and so is a
+  cheap model whose saving is under $0.05. On api.openai.com the replay's cap goes out as
+  `max_completion_tokens`, which its reasoning models require, and a chat replay at an effort
+  leaves out a thinking budget that cannot fit under the cap.
 - **The input box follows the transcript, the way codex's does.** The band (status dock, input
   box, footer) was pinned to the screen's last rows, so a short session (a fresh start, a
   dismissed `/resume`) showed the banner at the top, the input box at the bottom and a

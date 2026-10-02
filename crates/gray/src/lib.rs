@@ -175,8 +175,11 @@ pub use gray_plugin::builder::{
 /// message is written for a human, not a log file.
 /// Prompt-cache warming for a build, or `None`. Both the native Anthropic
 /// Messages API and OpenAI-compatible prefix caches live ~5 min, and a replay
-/// runs only when the one-token cap leaves its cache entry untouched,
-/// which a thinking budget does not. `GRAY_NO_CACHE_WARM=1` turns it off.
+/// runs only when the one-token cap leaves its cache entry untouched. pi
+/// `isReplayable`: only a Claude thinking budget breaks that (the budget is
+/// sized from the output cap and Anthropic keys its message cache on it);
+/// a reasoning effort on any other model is a plain request field the replay
+/// sends unchanged. `GRAY_NO_CACHE_WARM=1` turns it off.
 fn cache_warm_policy(
     config: &Config,
     model: &str,
@@ -188,7 +191,11 @@ fn cache_warm_policy(
     // runtime gate in `keep_warm` still sends zero refreshes unless the model
     // has cache prices.
     let cacheable = !config.uses_plugin_credentials();
-    let replayable = matches!(effort, None | Some("off"));
+    let lower = model.to_lowercase();
+    let budget_thinking = gray_provider::anthropic::is_anthropic_base_url(&config.base_url)
+        || lower.contains("claude")
+        || lower.contains("anthropic");
+    let replayable = matches!(effort, None | Some("off")) || !budget_thinking;
     if !cacheable || !replayable || std::env::var_os("GRAY_NO_CACHE_WARM").is_some() {
         return None;
     }

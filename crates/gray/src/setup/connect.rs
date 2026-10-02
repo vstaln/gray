@@ -118,6 +118,16 @@ pub fn run_connect_modal(
     config: &mut Config,
     bg: Option<&BackgroundSnapshot>,
 ) -> anyhow::Result<ConnectOutcome> {
+    let before = config.clone();
+    let outcome = connect_modal(config, bg);
+    super::provider_auth::settle_connect_config(config, before, &outcome);
+    outcome
+}
+
+fn connect_modal(
+    config: &mut Config,
+    bg: Option<&BackgroundSnapshot>,
+) -> anyhow::Result<ConnectOutcome> {
     use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, poll, read};
     use std::time::Duration;
 
