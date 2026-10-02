@@ -270,6 +270,11 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
     }
     tui.viewport_h = desired;
 
+    // The status dock's seam row (if any) sits on top of the band: tell the
+    // terminal, so a scrollback commit that ends blank overwrites it instead
+    // of stacking a second gap row (see `CustomTerminal::top_slack`).
+    tui.terminal.set_top_slack(seam_h);
+
     // Hoisted for the draw closure (borrows `tui` immutably inside).
     // Live tool headers hoisted as owned rows — `live_tool_rows` borrows
     // all of `tui`, which would collide with `terminal.draw`'s mutable

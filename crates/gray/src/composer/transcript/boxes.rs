@@ -4,10 +4,11 @@ use super::*;
 
 impl Tui {
     pub fn push_tool_box(&mut self, header: Line<'static>, body: Vec<Line<'static>>) {
-        // Leading gap + card + trailing gap land as one synchronized frame.
+        // The card's own painted margins ARE the separation on both sides, so
+        // no ensure_gap here: asking for one as well is what produced the
+        // double blank row. One synchronized frame.
         self.atomic(|t| {
             t.insert_tool_box(header, body);
-            t.ensure_gap(1);
         });
         self.release_dock_seam();
         if self.transcript.len() > 1000 {
@@ -18,7 +19,6 @@ impl Tui {
     }
 
     fn insert_tool_box(&mut self, header: Line<'static>, body: Vec<Line<'static>>) {
-        self.ensure_gap(1);
         let w = self.width().max(10);
         let box_lines = format_tool_box_lines(header.clone(), &body, w);
         self.insert_paragraph(&box_lines, Some(crate::theme::theme().surface_bg));

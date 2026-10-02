@@ -12,12 +12,12 @@ pub(crate) fn thinking_style() -> Style {
 /// True when a transcript row is a bare blank (no bg, no glyphs): the same
 /// predicate `ensure_gap` / `transcript_ends_blank` use, shared so the live
 /// thinking drain skips a blank exactly when `stream` would.
+/// Visually blank: every span carries no glyph. Background is deliberately
+/// ignored — a card's margin row is painted with the card colour, but it is
+/// still an empty row, and treating it as content is what let a second gap
+/// stack on top of it.
 pub(crate) fn transcript_row_is_blank(line: &Line<'static>) -> bool {
-    line.style.bg.is_none()
-        && line
-            .spans
-            .iter()
-            .all(|s| s.style.bg.is_none() && s.content.trim().is_empty())
+    line.spans.iter().all(|s| s.content.trim().is_empty())
 }
 
 /// Left padding, omp-style: one space.
@@ -384,10 +384,14 @@ pub(crate) fn format_user_prompt_lines(
     let text_primary = crate::theme::theme().text_body;
     let dim_color = crate::theme::theme().text_muted;
     let bg_style = Style::default().bg(crate::theme::theme().surface_bg);
-    // No outer margin rows: `ensure_gap` owns the single blank row between
-    // blocks (codex's rule). A card that also carried its own margins
-    // stacked two blank rows against every neighbour.
+    // One painted margin row top and bottom, same as a tool card. The card
+    // owns its padding; `ensure_gap` recognises the margin as blank, so the
+    // two can never stack into a double gap.
+    let margin_row = || -> Line<'static> {
+        Line::from(Span::styled(" ".repeat(width.max(1)), bg_style)).style(bg_style)
+    };
     let mut lines = Vec::new();
+    lines.push(margin_row());
     let arrow_span = Span::styled(
         " ❯ ",
         Style::default()
@@ -449,5 +453,6 @@ pub(crate) fn format_user_prompt_lines(
             .style(bg_style),
         );
     }
+    lines.push(margin_row());
     lines
 }

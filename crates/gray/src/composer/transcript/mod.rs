@@ -510,7 +510,7 @@ impl Tui {
         trailing_gap: bool,
     ) {
         self.atomic(|t| {
-            t.ensure_gap(1);
+            // The card's painted margins are the separation; see push_tool_box.
             let lines = format_user_prompt_lines(text, attached, t.width().max(10));
             t.insert_paragraph(&lines, Some(crate::theme::theme().surface_bg));
             t.history_entries.push(super::TranscriptEntry::UserPrompt(
@@ -518,15 +518,10 @@ impl Tui {
                 attached.to_vec(),
             ));
             t.transcript.extend(lines);
-            // Trailing gap after every chat card — command and prompt alike.
-            // Handlers that print feedback (say()) treat the gap as idempotent;
-            // handlers that print nothing (dismissed modal) still leave breathing
-            // room before the next prompt instead of jamming against the card.
-            // Slash-command cards skip it (trailing_gap=false): their feedback
-            // hugs the card, and each dismissed-modal arm adds the gap itself.
-            if trailing_gap {
-                t.ensure_gap(1);
-            }
+            // The trailing margin row the card just painted is the breathing
+            // room: handlers that print nothing (dismissed modal) still leave a
+            // gap before the next prompt instead of jamming against the card.
+            let _ = trailing_gap;
         });
         if self.transcript.len() > 1000 {
             self.transcript.drain(0..100);

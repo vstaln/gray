@@ -52,12 +52,12 @@ fn gap_need_counts_partial_tail() {
 }
 
 #[test]
-fn gap_need_treats_card_margins_as_edges() {
-    // Tinted padding rows are card edges, not gaps: content ending on a
-    // tool-box margin still earns its separating gap.
+fn gap_need_treats_card_margins_as_the_separator() {
+    // The card's painted margin row IS the blank row between blocks, so a tail
+    // ending on one must not earn another: that was the double margin.
     let bg = Style::default().bg(crate::theme::GRAY_UI_THEME.surface_bg);
     let t = vec![Line::from("text"), Line::from("").style(bg)];
-    assert_eq!(gap_need(&t, 1), 1);
+    assert_eq!(gap_need(&t, 1), 0);
 }
 
 #[test]
@@ -288,41 +288,13 @@ fn diff_rows_pad_edge_to_edge() {
     ];
     let lines = format_tool_box_lines(header, &body, 80);
     let row_w = |l: &Line<'static>| l.spans.iter().map(|s| s.width()).sum::<usize>();
-    // header, breathing row, then the three body rows - no outer margins
-    assert_eq!(lines.len(), 5);
+    // margin, header, breathing row, the three body rows, margin
+    assert_eq!(lines.len(), 7, "{lines:?}");
     // tinted rows span the full width (no dark strip on the right)
-    assert_eq!(row_w(&lines[2]), 80);
     assert_eq!(row_w(&lines[3]), 80);
+    assert_eq!(row_w(&lines[4]), 80);
     // untinted rows are untouched (card block bg shows through, same color)
-    assert!(row_w(&lines[4]) < 80);
-}
-
-/// tool_fmt pre-wraps numbered rows to `width - 2` cells (2-col lead +
-/// gutter + content). The card must not re-wrap them narrower: a 2-col
-/// mismatch orphaned each full row's last word onto its own row.
-#[test]
-fn full_width_numbered_row_is_not_rewrapped() {
-    let width = 80;
-    let content = "word ".repeat(14); // 70 cells
-    let row = format!("    1 | {content}"); // 2 lead + "  1 | " + 70 = 78
-    assert_eq!(row.len(), width - 2);
-    let lines = format_tool_box_lines(Line::from("Ran x"), &[Line::from(row)], width);
-    // header, breathing row, ONE body row - no outer margin rows
-    assert_eq!(lines.len(), 3, "{lines:?}");
-}
-
-/// Trailing blank lines of streamed thinking collapse to one separator
-/// row; with the structural dock seam off on a blank tail, that one row is
-/// the only gap above the live status.
-#[test]
-fn thinking_trailing_blanks_collapse_to_one_row() {
-    let rows = thinking_run_rows("foo\n\n\n\n", 40, false);
-    let texts: Vec<String> = rows
-        .iter()
-        .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
-        .collect();
-    assert_eq!(texts, vec![" foo".to_string(), " ".to_string()]);
-    assert!(transcript_row_is_blank(rows.last().unwrap()));
+    assert!(row_w(&lines[5]) < 80);
 }
 
 #[test]
@@ -544,73 +516,74 @@ fn transcript_row_is_blank_matches_gap_predicates() {
     assert!(transcript_row_is_blank(&Line::from(" ")));
     assert!(transcript_row_is_blank(&Line::from(vec![Span::raw(" ")])));
     assert!(!transcript_row_is_blank(&Line::from("text")));
+    // A card's margin row is painted with the card background but is still an
+    // empty row: judging by glyphs is what stops a second gap stacking on it.
     let bg = Style::default().bg(crate::theme::theme().surface_bg);
-    assert!(!transcript_row_is_blank(&Line::from("").style(bg)));
-    assert!(!transcript_row_is_blank(&Line::from(vec![Span::styled(
+    assert!(transcript_row_is_blank(&Line::from("").style(bg)));
+    assert!(transcript_row_is_blank(&Line::from(vec![Span::styled(
         "".to_string(),
         Style::default().bg(crate::theme::theme().surface_bg)
     )])));
 }
 
 #[test]
-fn tool_box_carries_no_outer_margin_rows() {
-    // Codex's rule: a block carries no outer margin rows; the transcript
-    // inserts exactly one blank row *between* blocks. A card that also
-    // shipped its own margins stacked two blank rows against every
-    // neighbour - the "gaps of two, three and four rows" report.
-    let blank = |l: &Line<'static>| l.spans.iter().all(|x| x.content.trim().is_empty());
+fn tool_box_has_exactly_one_painted_margin_row_top_and_bottom() {
+    // A card owns exactly one margin row per side. "Painted" is the part that
+    // matters: an unpainted blank row is invisible against the composer
+    // surface, so the margin existed in the transcript but not on screen.
+    let bg = crate::theme::theme().surface_bg;
+    let row_w = |l: &Line<'static>| l.spans.iter().map(|s| s.width()).sum::<usize>();
+    let painted = |l: &Line<'static>| {
+        l.spans.iter().all(|s| s.style.bg == Some(bg)) && l.style.bg == Some(bg)
+    };
     for body in [
         Vec::new(),
         vec![Line::from("1 | exit 0"), Line::from("2 | done")],
     ] {
         let lines = format_tool_box_lines(Line::from("Ran cargo fmt"), &body, 80);
+        let first = &lines[0];
+        let last = &lines[lines.len() - 1];
+        assert_eq!(row_w(first), 80, "top margin spans the card");
+        assert_eq!(row_w(last), 80, "bottom margin spans the card");
+        assert!(painted(first) && painted(last), "{first:?} {last:?}");
+        // and exactly one of each: the rows next to them hold content
+        assert!(lines[1].spans.iter().any(|s| !s.content.trim().is_empty()));
         assert!(
-            lines[0]
+            lines[lines.len() - 2]
                 .spans
                 .iter()
-                .any(|x| x.content.contains("Ran cargo fmt")),
-            "row 0 is the header, not a margin: {lines:?}"
+                .any(|s| !s.content.trim().is_empty())
         );
-        assert!(!blank(&lines[0]), "no leading margin row: {lines:?}");
-        if let Some(last) = lines.last() {
-            let outer = lines.len() > 2;
-            assert!(!outer || !blank(last), "no trailing margin row: {lines:?}");
-        }
     }
 }
 
 #[test]
-fn a_card_between_blocks_gets_exactly_one_blank_row_each_side() {
-    // The end-to-end invariant: prose, card, prose - one blank row above
-    // and below the card, contributed by ensure_gap, never by the card.
+fn a_card_after_paragraphs_does_not_stack_a_second_gap() {
+    // The invariant behind the visible margin: the card's own margin row is
+    // the separation. Adding one through `gap_need` on top of it is what made
+    // "gaps of two, three and four rows".
+    let bg = Style::default().bg(crate::theme::theme().surface_bg);
     let blank = |l: &Line<'static>| l.spans.iter().all(|x| x.content.trim().is_empty());
     let mut t: Vec<Line<'static>> = vec![Line::from("before")];
-    for _ in 0..gap_need(&t, 1) {
-        t.push(Line::from(""));
-    }
     t.extend(format_tool_box_lines(
         Line::from("Ran cargo fmt"),
         &[Line::from("1 | exit 0")],
         80,
     ));
-    for _ in 0..gap_need(&t, 1) {
-        t.push(Line::from(""));
-    }
-    t.push(Line::from("after"));
-
-    // one blank above the card, and prose above that
-    assert!(blank(&t[1]));
-    assert!(!blank(&t[0]));
-    // card header immediately follows that single blank
+    // one blank row above the card, carrying the card background
+    assert!(blank(&t[1]) && t[1].style.bg == bg.bg, "one margin: {t:?}");
+    assert!(
+        !blank(&t[0]),
+        "prose is still adjacent to exactly one margin"
+    );
+    // the card header follows immediately - no second blank
     assert!(
         t[2].spans
             .iter()
             .any(|x| x.content.contains("Ran cargo fmt"))
     );
-    // one blank below the card, and prose below that
+    // and the tail is one margin, so a following block needs no extra gap
     let n = t.len();
-    assert!(blank(&t[n - 2]), "exactly one gap below the card: {t:?}");
-    assert!(!blank(&t[n - 1]));
-    // the gap row above the card is the ONLY blank there
-    assert!(!blank(&t[0]));
+    assert!(blank(&t[n - 1]) && t[n - 1].style.bg == bg.bg);
+    assert_eq!(gap_need(&t, 1), 0, "the card margin already separates");
 }

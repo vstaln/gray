@@ -382,8 +382,13 @@ pub(crate) async fn run_prompt_turn(
                     let mut t = shared.lock().expect("tui lock");
                     t.end_thinking();
                     t.discard_held_punctuation();
-                    t.ensure_gap(1); // never glue "(interrupted)" to the last streamed row
-                    t.stream("(interrupted — press Enter to continue)\n");
+                    // No transcript line: "press Enter to continue" is a
+                    // promise about the composer being IDLE and empty, and
+                    // streamed it became permanent history that outlived the
+                    // turn it described — it still sat under the next turn's
+                    // status pill, long after the resume it offered was moot.
+                    // The idle ghost (`continue_ghost`) says it, and it only
+                    // paints while that is actually true.
                 }
             } else {
                 println!("(interrupted — press Enter to continue)");
@@ -407,8 +412,9 @@ pub(crate) async fn run_prompt_turn(
                     let mut t = shared.lock().expect("tui lock");
                     t.end_thinking();
                     t.ensure_gap(1);
+                    // The error is history; the instruction to continue is a
+                    // property of the idle composer (see the interrupt arm).
                     t.stream(&format!("{msg}\n"));
-                    t.push_dim("(press Enter to continue)".to_string());
                 }
             } else {
                 eprintln!("{msg}\n(press Enter to continue)");
