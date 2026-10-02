@@ -294,7 +294,11 @@ fn warm_config(base_url: &str, effort: Option<&str>, plugin: bool) -> Config {
         base_url: base_url.into(),
         api_key: Some("sk-test".into()),
         provider_id: if plugin { "p".into() } else { String::new() },
-        credential_source: if plugin { "plugin".into() } else { String::new() },
+        credential_source: if plugin {
+            "plugin".into()
+        } else {
+            String::new()
+        },
         auth_ref: if plugin { "auth".into() } else { String::new() },
         thinking_effort: effort.map(str::to_string),
         show_reasoning: None,
@@ -322,7 +326,12 @@ fn cache_warm_covers_openai_compatible_hosts() {
         "http://localhost:11434/v1",
     ] {
         assert!(
-            cache_warm_policy(&warm_config(host, Some("off"), false), "openai/gpt-5", Some("off")).is_some(),
+            cache_warm_policy(
+                &warm_config(host, Some("off"), false),
+                "openai/gpt-5",
+                Some("off")
+            )
+            .is_some(),
             "warms on {host}"
         );
         assert!(
@@ -335,7 +344,28 @@ fn cache_warm_covers_openai_compatible_hosts() {
 #[test]
 fn cache_warm_stays_off_for_plugin_creds_and_thinking() {
     let url = "https://api.openai.com/v1";
-    assert!(cache_warm_policy(&warm_config(url, Some("off"), true), "openai/gpt-5", Some("off")).is_none());
-    assert!(cache_warm_policy(&warm_config(url, Some("max"), false), "openai/gpt-5", Some("max")).is_none());
-    assert!(cache_warm_policy(&warm_config(url, Some("high"), false), "openai/gpt-5", Some("high")).is_none());
+    assert!(
+        cache_warm_policy(
+            &warm_config(url, Some("off"), true),
+            "openai/gpt-5",
+            Some("off")
+        )
+        .is_none()
+    );
+    assert!(
+        cache_warm_policy(
+            &warm_config(url, Some("max"), false),
+            "openai/gpt-5",
+            Some("max")
+        )
+        .is_none()
+    );
+    assert!(
+        cache_warm_policy(
+            &warm_config(url, Some("high"), false),
+            "openai/gpt-5",
+            Some("high")
+        )
+        .is_none()
+    );
 }
