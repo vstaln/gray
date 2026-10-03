@@ -291,11 +291,26 @@ pub(crate) async fn persist_turn_messages(
                 .append_with_usage_and_duration(&state.session_id, msg, usage, duration)
                 .await
             {
-                state.full_save_pending = true;
-                let warning = save_failure_message("session save", &e);
-                log::warn!(target: "gray_session", "{warning}");
-                crate::profile::queue_profile_warning(warning);
-                break;
+                // Same repair-then-retry as `save_full_history`, gated on
+                // the same retryable errors: a torn tail heals via `load`,
+                // a pruned file re-mints via `create_new` (never truncates).
+                // Only a still-failing append flips to full-save mode — and
+                // if the full save then succeeds, normal appends resume next
+                // turn instead of warning forever.
+                use crate::session_store::SessionError;
+                let retryable = matches!(
+                    &e,
+                    SessionError::Io(_) | SessionError::Corrupt { .. } | SessionError::NotFound(_)
+                );
+                let healed =
+                    retryable && repair_and_retry_append(state, msg, usage, duration).await;
+                if !healed {
+                    state.full_save_pending = true;
+                    let warning = save_failure_message("session save", &e);
+                    log::warn!(target: "gray_session", "{warning}");
+                    crate::profile::queue_profile_warning(warning);
+                    break;
+                }
             }
         }
     }
@@ -746,11 +761,91 @@ async fn save_full_history(state: &mut SessionState, messages: &[Message]) -> Re
             Ok(())
         }
         Err(error) => {
+            // A failed save retries through repair instead of nagging:
+            // `load` heals a torn tail (drops the torn fragment, backs the
+            // original up); a pruned/deleted file re-mints via `create`
+            // (`create_new` never truncates a live file). Retryable errors
+            // are torn tails (`Io(InvalidData)`), tails that parse but fail
+            // validation (`Corrupt` — only `load` can tell torn-fixable from
+            // interior), and a file lost between turns (`NotFound`). Anything
+            // else (real I/O, interior corruption `load` rejects) still warns.
+            use crate::session_store::SessionError;
+            let retryable = matches!(
+                &error,
+                SessionError::Io(_) | SessionError::Corrupt { .. } | SessionError::NotFound(_)
+            );
+            if retryable {
+                // `load` heals a torn tail (or no-ops on a healthy file);
+                // when the file is gone it still fails, so re-mint it.
+                let repaired = state.store.load(&state.session_id).await.is_ok()
+                    || remint_missing_session(state).await;
+                if repaired {
+                    match state
+                        .store
+                        .append_compaction_replacement(&state.session_id, messages)
+                        .await
+                    {
+                        Ok(()) => {
+                            state.full_save_pending = false;
+                            return Ok(());
+                        }
+                        Err(retry_error) => {
+                            let warning = save_failure_message("compaction save", &retry_error);
+                            log::warn!(target: "gray_session", "{warning}");
+                            return Err(warning);
+                        }
+                    }
+                }
+            }
             let warning = save_failure_message("compaction save", &error);
             log::warn!(target: "gray_session", "{warning}");
             Err(warning)
         }
     }
+}
+
+/// Re-mint a session file lost to prune/delete between turns: re-`create`
+/// the header for this state's id and cwd. `create_new` refuses when the
+/// file is back (a sibling re-minted it), so this never truncates live
+/// history — the caller retries the append either way.
+async fn remint_missing_session(state: &SessionState) -> bool {
+    use crate::session_store::SessionMeta;
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("/tmp"));
+    let meta = SessionMeta::new(
+        state.session_id.clone(),
+        crate::print::now_millis(),
+        cwd,
+        "reminted",
+    );
+    match state.store.create(meta).await {
+        Ok(_) => true,
+        Err(crate::session_store::SessionError::AlreadyExists(_)) => true,
+        Err(_) => false,
+    }
+}
+
+/// Repair-then-retry for one per-turn append: heal a torn tail via `load`,
+/// re-mint a pruned file via `create_new`, then retry the single append
+/// once. Returns true when the message landed.
+async fn repair_and_retry_append(
+    state: &SessionState,
+    msg: &Message,
+    usage: Option<gray_core::event::Usage>,
+    duration_ms: Option<u64>,
+) -> bool {
+    // `load` rejects interior corruption (returns Err, heals nothing),
+    // which repair must never touch — that path surfaces once via the
+    // normal warning instead.
+    let repaired =
+        state.store.load(&state.session_id).await.is_ok() || remint_missing_session(state).await;
+    if !repaired {
+        return false;
+    }
+    state
+        .store
+        .append_with_usage_and_duration(&state.session_id, msg, usage, duration_ms)
+        .await
+        .is_ok()
 }
 
 pub(crate) async fn maybe_threshold_compact(
