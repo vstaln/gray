@@ -15,6 +15,13 @@
   humanized the way the TUI headers already show it (`discord_send` reads `Discord Send`; a single
   token such as `bash` stays as it is). Surfaces show that instead of the raw id.
 
+- **`--json` can carry plugin questions.** With `GRAY_JSON_ASK=1`, a `host/ask` from a questions
+  plugin goes out as a `progress` row (`phase: "ask"`, `ask_id`, `questions`) and its answer comes
+  back as one stdin line, `{"ask_id":N,"answers":{"<id>":["<label>"]}}`. Whatever drives gray (a
+  chat bridge, a harness) shows the question in its own UI. gray itself still has no question
+  tool: nothing asks unless a questions plugin is installed. EOF or no answer within the usual 300s
+  resolves empty, as before.
+
 ### Fixed
 - **No more 403s that only a restart cleared.** `/connect` writes the picked provider's base URL
   and key into the live session before the model step saves anything, so dismissing it left that

@@ -802,8 +802,14 @@ async fn run_print_inner(
     crate::setup::set_user_context_window(config.context_window);
     crate::setup::set_user_reserve_tokens(config.context_reserve);
     crate::setup::set_user_keep_recent_tokens(config.context_keep);
-    // Sidecar `host/ask` without a TUI: piped-stdin/empty surfaces.
-    crate::ask::install(None, false);
+    // Sidecar `host/ask` without a TUI: the `--json` wire when the caller
+    // asked for it (a chat bridge answers on stdin), else piped-stdin/empty.
+    match json.as_deref() {
+        Some(output) if crate::ask::json_enabled() => {
+            crate::ask::install_json(output.turn_id.clone())
+        }
+        _ => crate::ask::install(None, false),
+    }
     let cwd = std::env::current_dir()?;
     let store = JsonlSessionStore::default();
     // Explicit `--session` wins over `-c` (same precedence as the REPL).
