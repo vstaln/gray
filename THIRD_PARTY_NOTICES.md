@@ -44,16 +44,6 @@ this row; no verbatim upstream text ships in gray.
 | `crates/gray-core/src/parallel.rs` (parallel batch lane; `MAX_BATCH`/`MAX_WORKERS` constants parity, no verbatim code) | https://github.com/OnlyTerp/toolrush (MIT, Copyright (c) 2026 OnlyTerp) | MIT | constants parity only |
 | `crates/gray/src/repl/attachments.rs`, `crates/gray/src/repl/format.rs`, skills-dir interop | https://github.com/sst/opencode (MIT, Copyright (c) 2025 opencode) | MIT | parity targets, own code |
 
-## GPL-3.0 — study only, nothing shipped
-
-| gray | upstream | license |
-|---|---|---|
-| `docs/openhuman-reference-study.md` (study only — no gray code informed by it yet) | https://github.com/tinyhumansai/openhuman (+ 18 vendored `tinyhumansai/*` engine crates) | GPL-3.0 |
-
-OpenHuman and its vendored engine crates are GPL-3.0, so nothing from
-them may be ported into gray (MIT): the study is design parity only,
-per `docs/reference-study-protocol.md`.
-
 ---
 
 ## Appendix: Apache License 2.0
