@@ -467,8 +467,11 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
         if show_live_overflow {
             let y = live_y + live_rows.len() as u16;
             if y >= area.y && y < area.y + area.height {
+                // Same band background as the live cards above it
+                // (`live_tool_row`) and the queued rows: a bare Paragraph
+                // leaves the terminal default showing through as a stripe.
                 frame.render_widget(
-                    Paragraph::new(Line::from(vec![Span::styled(
+                    chrome_row(Line::from(vec![Span::styled(
                         format!("    … +{live_overflow} more"),
                         Style::default()
                             .fg(crate::theme::theme().text_muted)
