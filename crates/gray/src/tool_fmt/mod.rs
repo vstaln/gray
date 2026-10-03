@@ -636,7 +636,7 @@ pub fn format_tool_call_header(
 /// are decoded — a single token (`bash`, `custom`) is already displayable
 /// and stays byte-identical, so live and final headers agree with history.
 /// Single pass, no allocs beyond output.
-fn humanize_tool_name(name: &str) -> String {
+pub(crate) fn humanize_tool_name(name: &str) -> String {
     if !name.contains('_') && !name.contains('-') {
         return name.to_string();
     }

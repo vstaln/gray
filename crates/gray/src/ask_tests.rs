@@ -123,3 +123,43 @@ async fn handle_ask_without_service_errors_loudly() {
     .await;
     assert!(r.get("error").is_some(), "{r}");
 }
+
+#[test]
+fn json_wire_asks_with_a_row_and_reads_answers_by_id() {
+    let questions = vec![AskQuestion {
+        id: "branch".into(),
+        header: "Branch".into(),
+        question: "Which branch?".into(),
+        options: vec![AskOption {
+            label: "main".into(),
+            description: "production".into(),
+        }],
+    }];
+    let row = json_ask_row("t1", 7, &questions);
+    assert_eq!(row["protocol"], 1);
+    assert_eq!(row["phase"], "ask");
+    assert_eq!(row["ask_id"], 7);
+    assert_eq!(row["questions"][0]["id"], "branch");
+    assert!(
+        parse_json_answer(
+            r#"{"ask_id":8,"answers":{"branch":["main"]}}"#,
+            7,
+            &questions
+        )
+        .is_none()
+    );
+    let answers = parse_json_answer(
+        r#"{"ask_id":7,"answers":{"branch":["main"],"other":["x"]}}"#,
+        7,
+        &questions,
+    )
+    .unwrap();
+    assert_eq!(
+        answers,
+        vec![AskAnswer {
+            id: "branch".into(),
+            answers: vec!["main".into()]
+        }]
+    );
+    assert!(parse_json_answer("not json", 7, &questions).is_none());
+}

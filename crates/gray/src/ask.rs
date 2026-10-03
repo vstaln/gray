@@ -10,6 +10,12 @@
 //!   while the modal owns the keys).
 //! - piped stdin: number-or-free-text per question (the deleted
 //!   `StdinQuestionAsker` semantics, verbatim).
+//! - `--json` with `GRAY_JSON_ASK=1`: the question goes out as an `ask`
+//!   progress row on stdout and the answer comes back as one JSON line on
+//!   stdin (`{"ask_id":N,"answers":{"<id>":["<label>"]}}`). A chat bridge
+//!   driving gray this way (the Discord plugin) shows the question in its
+//!   own UI. Only a questions plugin calling `host/ask` ever asks: gray
+//!   itself has no question tool.
 //! - headless (no TTY, no stdin): empty immediately. Approvals fail closed
 //!   downstream; `request_user_input` reports "no user reachable".
 //!
@@ -81,6 +87,9 @@ struct Service {
     pending: Mutex<HashMap<u64, PendingAsk>>,
     next: Mutex<u64>,
     cancel: tokio_util::sync::CancellationToken,
+    /// `Some(turn_id)` when asks go over the `--json` wire (see
+    /// [`install_json`]).
+    json_turn: Option<String>,
 }
 
 static SERVICE: Mutex<Option<Arc<Service>>> = Mutex::new(None);
@@ -88,12 +97,38 @@ static SERVICE: Mutex<Option<Arc<Service>>> = Mutex::new(None);
 /// Install the process ask service. Called once at REPL boot (before the
 /// first turn) and in `-p`/headless paths with `tui: None`.
 pub fn install(tui: Option<crate::composer::SharedTui>, interactive: bool) {
+    install_service(tui, interactive, None);
+}
+
+/// Install the `--json` wire surface for turn `turn_id`: asks become `ask`
+/// rows on stdout, answers come back on stdin.
+pub fn install_json(turn_id: String) {
+    install_service(None, false, Some(turn_id));
+}
+
+/// `GRAY_JSON_ASK` truthy check (same spelling rules as
+/// `GRAY_SHOW_REASONING`).
+pub fn json_enabled() -> bool {
+    std::env::var("GRAY_JSON_ASK").is_ok_and(|v| {
+        matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        )
+    })
+}
+
+fn install_service(
+    tui: Option<crate::composer::SharedTui>,
+    interactive: bool,
+    json_turn: Option<String>,
+) {
     let svc = Arc::new(Service {
         tui,
         interactive,
         pending: Mutex::new(HashMap::new()),
         next: Mutex::new(0),
         cancel: tokio_util::sync::CancellationToken::new(),
+        json_turn,
     });
     *SERVICE.lock().expect("ask service") = Some(svc);
 }
@@ -163,7 +198,9 @@ pub async fn handle_ask(params: serde_json::Value) -> serde_json::Value {
     // suspended the 300s timeout and the cancellation branch entirely.
     let drive_svc = svc.clone();
     let drive = tokio::spawn(async move {
-        if drive_svc.interactive && drive_svc.tui.is_some() {
+        if let Some(turn) = drive_svc.json_turn.clone() {
+            drive_json(&drive_svc, id, turn).await;
+        } else if drive_svc.interactive && drive_svc.tui.is_some() {
             drive_tui(&drive_svc, id).await;
         } else {
             drive_stdin(&drive_svc, id).await;
@@ -180,6 +217,82 @@ pub async fn handle_ask(params: serde_json::Value) -> serde_json::Value {
     // instead of holding the question open.
     svc.pending.lock().expect("ask pending").remove(&id);
     answers_json(&answers)
+}
+
+/// `--json` surface: one `ask` row out, one answer line back. Answer lines
+/// for another ask id are skipped; EOF resolves empty (the bridge went
+/// away). Runs on a blocking thread, so the 300s TTL still applies.
+async fn drive_json(svc: &Arc<Service>, id: u64, turn: String) {
+    let svc = svc.clone();
+    tokio::task::spawn_blocking(move || {
+        use std::io::{BufRead, Write};
+        let questions = {
+            let pending = svc.pending.lock().expect("ask pending");
+            match pending.get(&id) {
+                Some(p) => p.questions.clone(),
+                None => return,
+            }
+        };
+        {
+            let mut out = std::io::stdout().lock();
+            let _ = writeln!(out, "{}", json_ask_row(&turn, id, &questions));
+            let _ = out.flush();
+        }
+        let mut answers = Vec::new();
+        let stdin = std::io::stdin();
+        let mut line = String::new();
+        loop {
+            line.clear();
+            if stdin.lock().read_line(&mut line).unwrap_or(0) == 0 {
+                break;
+            }
+            if let Some(parsed) = parse_json_answer(&line, id, &questions) {
+                answers = parsed;
+                break;
+            }
+        }
+        let mut pending = svc.pending.lock().expect("ask pending");
+        if let Some(p) = pending.remove(&id) {
+            let _ = p.tx.send(answers);
+        }
+    })
+    .await
+    .ok();
+}
+
+/// The `ask` progress row for the `--json` wire.
+fn json_ask_row(turn: &str, id: u64, questions: &[AskQuestion]) -> serde_json::Value {
+    serde_json::json!({
+        "protocol": 1, "turn_id": turn, "type": "progress", "phase": "ask",
+        "ask_id": id, "questions": questions,
+    })
+}
+
+/// One answer line from the bridge, if it answers ask `id`: answers by
+/// question id, in question order; unknown ids are ignored.
+fn parse_json_answer(line: &str, id: u64, questions: &[AskQuestion]) -> Option<Vec<AskAnswer>> {
+    let v: serde_json::Value = serde_json::from_str(line.trim()).ok()?;
+    if v.get("ask_id").and_then(|a| a.as_u64()) != Some(id) {
+        return None;
+    }
+    let map = v.get("answers").and_then(|a| a.as_object())?;
+    Some(
+        questions
+            .iter()
+            .filter_map(|q| {
+                let picked: Vec<String> = map
+                    .get(&q.id)?
+                    .as_array()?
+                    .iter()
+                    .filter_map(|a| a.as_str().map(str::to_string))
+                    .collect();
+                Some(AskAnswer {
+                    id: q.id.clone(),
+                    answers: picked,
+                })
+            })
+            .collect(),
+    )
 }
 
 /// Piped/headless surface: one stdin line per question (number picks an

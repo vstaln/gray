@@ -300,7 +300,150 @@ fn json_out(show_reasoning: bool) -> JsonOutput {
         tools: HashMap::new(),
         thinking: String::new(),
         show_reasoning,
+        stream_text: false,
+        segment: TextSegment::default(),
+        labels: HashMap::new(),
     }
+}
+
+#[test]
+fn tool_rows_carry_a_display_name() {
+    let mut out = json_out(false);
+    out.labels
+        .insert("discord_send_ui".into(), "Discord Send UI".into());
+    let start = |out: &mut JsonOutput, name: &str| {
+        out.rows(&AgentEvent::ToolCallStart {
+            id: format!("id-{name}"),
+            name: name.into(),
+        })[0]["label"]
+            .clone()
+    };
+    assert_eq!(start(&mut out, "discord_send"), "Discord Send", "humanized");
+    assert_eq!(
+        start(&mut out, "discord_send_ui"),
+        "Discord Send UI",
+        "plugin label wins"
+    );
+    assert_eq!(
+        start(&mut out, "bash"),
+        "bash",
+        "a single token stays as it is"
+    );
+    let ran = out.rows(&AgentEvent::ToolCallEnd {
+        id: "id-discord_send".into(),
+        args: serde_json::json!({"content": "hi"}),
+    });
+    assert_eq!(ran[0]["label"], "Discord Send");
+    let done = out.rows(&AgentEvent::ToolResult {
+        id: "id-discord_send_ui".into(),
+        output: "ok".into(),
+        is_error: false,
+    });
+    assert_eq!(done[0]["label"], "Discord Send UI");
+}
+
+fn text_out() -> JsonOutput {
+    JsonOutput {
+        stream_text: true,
+        ..json_out(false)
+    }
+}
+
+/// What a consumer shows after replaying `rows`: concatenated deltas per
+/// segment plus the latest tail.
+fn replay(rows: &[serde_json::Value]) -> Vec<String> {
+    let mut stable: Vec<String> = Vec::new();
+    let mut tails: Vec<String> = Vec::new();
+    for row in rows.iter().filter(|r| r["phase"] == "text") {
+        let index = row["segment"].as_u64().unwrap() as usize;
+        while stable.len() <= index {
+            stable.push(String::new());
+            tails.push(String::new());
+        }
+        stable[index].push_str(row["delta"].as_str().unwrap());
+        tails[index] = row["tail"].as_str().unwrap().to_string();
+    }
+    stable.into_iter().zip(tails).map(|(s, t)| s + &t).collect()
+}
+
+fn delta(text: &str) -> AgentEvent {
+    AgentEvent::TextDelta {
+        delta: text.to_string(),
+    }
+}
+
+#[test]
+fn text_rows_are_off_unless_asked_for() {
+    let mut out = json_out(false);
+    assert!(out.rows(&delta("hello world")).is_empty());
+    let rows = out.rows(&AgentEvent::TurnEnd {
+        stop_reason: gray_core::event::StopReason::EndTurn,
+        usage: Default::default(),
+    });
+    assert!(rows.iter().all(|r| r["phase"] != "text"), "{rows:?}");
+}
+
+#[test]
+fn text_streams_at_once_and_holds_the_word_being_typed() {
+    let mut out = text_out();
+    let rows = out.rows(&delta("Hello wor"));
+    assert_eq!(
+        rows.len(),
+        1,
+        "first fragment of a segment goes out at once"
+    );
+    assert_eq!(rows[0]["phase"], "text");
+    assert_eq!(rows[0]["segment"], 0);
+    assert_eq!(rows[0]["done"], false);
+    assert_eq!(rows[0]["tail"], "Hello", "the half-typed word is held");
+}
+
+#[test]
+fn text_segments_close_at_tool_calls_and_carry_everything() {
+    let mut out = text_out();
+    let mut rows = Vec::new();
+    for piece in ["Let me ", "check.\nOne ", "moment"] {
+        rows.extend(out.rows(&delta(piece)));
+    }
+    rows.extend(out.rows(&AgentEvent::ToolCallStart {
+        id: "c1".into(),
+        name: "bash".into(),
+    }));
+    let closing = rows.iter().rposition(|r| r["phase"] == "text").unwrap();
+    assert_eq!(rows[closing]["done"], true);
+    assert_eq!(rows[closing + 1]["phase"], "tool_started");
+    for piece in ["All ", "good."] {
+        rows.extend(out.rows(&delta(piece)));
+    }
+    rows.extend(out.rows(&AgentEvent::TurnEnd {
+        stop_reason: gray_core::event::StopReason::EndTurn,
+        usage: Default::default(),
+    }));
+    assert_eq!(
+        replay(&rows),
+        vec![
+            "Let me check.\nOne moment".to_string(),
+            "All good.".to_string()
+        ]
+    );
+    let last = rows.iter().rposition(|r| r["phase"] == "text").unwrap();
+    assert_eq!(rows[last]["segment"], 1);
+    assert_eq!(rows[last]["done"], true);
+}
+
+#[test]
+fn text_rows_redact_secrets_and_never_show_them_half_typed() {
+    let mut out = text_out();
+    let mut rows = Vec::new();
+    for piece in ["key: sk-abc1", "23SECRETxyz789 ok"] {
+        rows.extend(out.rows(&delta(piece)));
+        // Defeat the frame gap so every fragment is observable.
+        out.segment.last_emit = None;
+    }
+    rows.extend(out.take_text(true));
+    let wire = serde_json::to_string(&rows).unwrap();
+    assert!(!wire.contains("sk-abc1"), "leaked: {wire}");
+    assert!(replay(&rows)[0].starts_with("key: "), "{rows:?}");
 }
 
 #[test]
