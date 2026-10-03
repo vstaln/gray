@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 use std::io::{ErrorKind, Write};
 use std::path::Path;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::session_store::{JsonlSessionStore, SessionId, SessionMeta};
 use gray_core::agent::ToolContext;
@@ -277,6 +277,8 @@ async fn run_print_mode_json_message(
         tools: HashMap::new(),
         thinking: String::new(),
         show_reasoning: config.show_reasoning.unwrap_or(true),
+        stream_text: stream_text_enabled(),
+        segment: TextSegment::default(),
     };
     let result = match crate::print_meter::Meter::new(
         max_requests.unwrap_or(32),
@@ -298,6 +300,11 @@ async fn run_print_mode_json_message(
         }
         Err(error) => Err(error),
     };
+    // A failed or cancelled turn never reaches `TurnEnd`: close any prose
+    // still open so the consumer is not left holding a half segment.
+    for row in output.take_text(true) {
+        output.write(row)?;
+    }
     let mut row = match &result {
         Ok(()) => serde_json::json!({"type": "result", "text": output.text, "usage": output.usage}),
         Err(error) => {
@@ -436,6 +443,10 @@ impl std::error::Error for PrintFailure {}
 const DETAIL_CAP: usize = 240;
 const OUTPUT_CAP: usize = 1200;
 const THINKING_FLUSH: usize = 800;
+/// Minimum gap between two streamed `text` rows for one segment. The first
+/// row of a segment goes out at once; after that a chat surface edits at
+/// about one frame a second, so a row per token is pure overhead.
+const TEXT_EVERY: Duration = Duration::from_millis(200);
 
 struct JsonOutput {
     turn_id: String,
@@ -450,6 +461,50 @@ struct JsonOutput {
     /// chars, never one row per token.
     thinking: String,
     show_reasoning: bool,
+    /// `GRAY_STREAM_TEXT=1`: stream assistant prose as `text` rows so a chat
+    /// surface can edit its reply in place instead of posting it at the end.
+    /// Opt-in: a consumer that never asked keeps the old row set.
+    stream_text: bool,
+    segment: TextSegment,
+}
+
+/// The assistant prose streamed since the last tool boundary. A new segment
+/// starts after every tool call, so a surface can give each run of prose its
+/// own message (Hermes' segment break).
+#[derive(Default)]
+struct TextSegment {
+    /// Zero-based segment number within the turn.
+    index: u64,
+    /// Unredacted prose received for this segment.
+    raw: String,
+    /// Byte offset into `raw` up to which complete lines were sent as
+    /// `delta`. Redaction works line by line, so a sent line never changes.
+    sent: usize,
+    /// The provisional tail last sent, to skip rows that say nothing new.
+    tail: String,
+    last_emit: Option<Instant>,
+}
+
+/// Redact a streamed fragment exactly as the final answer is: scrub only
+/// when a secret fired, so prose and paths stay verbatim.
+fn scrub(text: &str) -> String {
+    let redaction = redact_for_disclosure(text);
+    if redaction.has_secret() {
+        redaction.into_text()
+    } else {
+        text.to_string()
+    }
+}
+
+/// `GRAY_STREAM_TEXT` truthy check (same spelling rules as
+/// `GRAY_SHOW_REASONING`).
+fn stream_text_enabled() -> bool {
+    std::env::var("GRAY_STREAM_TEXT").is_ok_and(|v| {
+        matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        )
+    })
 }
 
 impl JsonOutput {
@@ -482,8 +537,33 @@ impl JsonOutput {
             }
             return Vec::new();
         }
+        if let AgentEvent::TextDelta { delta } = event {
+            if !self.stream_text {
+                return Vec::new();
+            }
+            self.segment.raw.push_str(delta);
+            let due = self
+                .segment
+                .last_emit
+                .is_none_or(|at| at.elapsed() >= TEXT_EVERY);
+            return if due {
+                self.take_text(false)
+            } else {
+                Vec::new()
+            };
+        }
+        // A tool call, the end of a provider step, or the end of the turn
+        // closes the prose before it: the closing row carries everything.
+        let mut rows = match event {
+            AgentEvent::ToolCallStart { .. }
+            | AgentEvent::StepUsage { .. }
+            | AgentEvent::TurnEnd { .. } => self.take_text(true),
+            _ => Vec::new(),
+        };
+        if matches!(event, AgentEvent::StepUsage { .. }) {
+            return rows;
+        }
         let mut row = serde_json::json!({"type": "progress"});
-        let mut rows = Vec::new();
         let phase = match event {
             AgentEvent::Start => "generating",
             AgentEvent::ToolCallStart { id, name } => {
@@ -532,11 +612,57 @@ impl JsonOutput {
                 rows.append(&mut self.take_thinking());
                 "persisting"
             }
-            _ => return Vec::new(),
+            _ => return rows,
         };
         row["phase"] = phase.into();
         rows.push(row);
         rows
+    }
+
+    /// One `text` row for the live segment. Complete lines go out once as
+    /// `delta` (append-only: a consumer concatenates them); the unfinished
+    /// line goes out as a provisional `tail` that the next row replaces,
+    /// with its last word held back so a secret is never shown half typed.
+    /// `done` sends everything, marks the segment closed, and starts the
+    /// next one.
+    fn take_text(&mut self, done: bool) -> Vec<serde_json::Value> {
+        let segment = &mut self.segment;
+        if segment.raw.is_empty() {
+            return Vec::new();
+        }
+        let stable = if done {
+            segment.raw.len()
+        } else {
+            segment.raw.rfind('\n').map_or(segment.sent, |i| i + 1)
+        };
+        let delta = scrub(&segment.raw[segment.sent..stable]);
+        let tail = if done {
+            String::new()
+        } else {
+            let open = &segment.raw[stable..];
+            // Hold the word still being typed: its redaction is only known
+            // once it is complete.
+            let shown = open.rfind(char::is_whitespace).map_or("", |i| &open[..i]);
+            scrub(shown)
+        };
+        if !done && delta.is_empty() && tail == segment.tail {
+            return Vec::new();
+        }
+        let row = serde_json::json!({
+            "type": "progress", "phase": "text", "segment": segment.index,
+            "delta": delta, "tail": tail, "done": done,
+        });
+        if done {
+            *segment = TextSegment {
+                index: segment.index + 1,
+                ..TextSegment::default()
+            };
+        } else {
+            segment.sent = stable;
+            segment.tail = tail;
+            segment.last_emit = Some(Instant::now());
+        }
+        vec![row]
     }
 
     /// One `thinking` row for whatever reasoning has accumulated. Redacted
