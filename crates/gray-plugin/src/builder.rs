@@ -14,7 +14,7 @@ use std::sync::Arc;
 use anyhow::Context;
 use gray_core::agent::{Agent, Tool, ToolExecutor};
 use gray_core::credential::CredentialSource;
-use gray_provider::{OpenAiProvider, OpenAiProviderProfile};
+use gray_provider::{ClaudeSubscriptionProvider, OpenAiProvider, OpenAiProviderProfile};
 use gray_tools::Registry;
 
 use crate::profile::{PluginEntry, load_entries};
@@ -744,6 +744,47 @@ pub async fn build_agent(opts: BuilderOptions) -> anyhow::Result<Agent> {
         SystemPrompt::Literal(s) => s,
         SystemPrompt::Build(f) => f(&registry),
     };
+    // `claude-sub/<native>` routes drive the local Claude CLI on the user's
+    // subscription: no API key, no base URL, no sampling passthroughs
+    // (native rejects them), no dynamic profile. Checked before the
+    // credential paths so a stale key can never leak into the spawn env.
+    if let Some(native) = model.strip_prefix(gray_provider::claude_subscription::MODEL_PREFIX) {
+        if dynamic_provider_profile.is_some() || dynamic_credential_source.is_some() {
+            anyhow::bail!("claude-sub models cannot use a dynamic provider profile");
+        }
+        if temperature.is_some() || top_p.is_some() {
+            anyhow::bail!(
+                "claude-sub models reject temperature/top_p: unset them so native uses subscription defaults"
+            );
+        }
+        let provider = ClaudeSubscriptionProvider::new(
+            native.to_string(),
+            reasoning_effort,
+            std::env::var("CLAUDE_SUB_COMMAND").ok(),
+        )
+        .map_err(|e| anyhow::anyhow!("failed to initialize Claude subscription provider: {e}"))?;
+        // Native validates the route (pinned table, Haiku-1M refusal) here so
+        // `/model claude-sub/bogus` fails at switch time, not mid-turn.
+        gray_provider::claude_subscription::native_model(provider.native_model_id())
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        let provider: Box<dyn gray_core::agent::Provider> = Box::new(provider);
+        let tool_defs = registry.defs();
+        let executor: Arc<dyn ToolExecutor> = match wrap_executor {
+            Some(wrap) => wrap(Arc::new(registry)),
+            None => Arc::new(registry),
+        };
+        let hooks = PluginHookAdapter::for_plugins(&plugins, &cwd.to_string_lossy());
+        return Ok(Agent::new(provider, executor)
+            .with_system(system)
+            .with_tools(tool_defs)
+            .with_context_window(context_window)
+            .with_history_rewrite_hook(Arc::new(move || {
+                if let Some(ledger) = &ledger {
+                    ledger.disarm_all_dedup();
+                }
+            }))
+            .with_hooks(hooks));
+    }
     let provider: Box<dyn gray_core::agent::Provider> =
         match (dynamic_provider_profile, dynamic_credential_source) {
             (Some(profile), Some(source)) => Box::new(

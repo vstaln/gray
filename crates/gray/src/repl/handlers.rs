@@ -647,7 +647,10 @@ pub(crate) async fn handle_model(
                 );
             }
         }
-        if crate::setup::get_user_context_window().is_none()
+        // Subscription routes pin their window in the provider: no HTTP
+        // fetch to warm, nothing to cache.
+        if !m.starts_with(gray_provider::claude_subscription::MODEL_PREFIX)
+            && crate::setup::get_user_context_window().is_none()
             && crate::setup::get_cached_model_context(&m).is_none()
         {
             let base = config.base_url.clone();
@@ -705,6 +708,7 @@ pub(crate) async fn handle_model(
                 );
             }
             if let Some(m) = config.model.clone()
+                && !m.starts_with(gray_provider::claude_subscription::MODEL_PREFIX)
                 && crate::setup::get_user_context_window().is_none()
                 && crate::setup::get_cached_model_context(&m).is_none()
             {

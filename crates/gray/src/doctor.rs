@@ -321,6 +321,19 @@ fn provider_call(config: &Config, online: bool) -> Check {
             "plugin-backed provider — its own doctor checks it".to_string(),
         );
     }
+    // Subscription routes drive a local CLI, not HTTP: probe the binary.
+    if let Some(model) = config.model.as_deref()
+        && let Some(_native) = model.strip_prefix(gray_provider::claude_subscription::MODEL_PREFIX)
+    {
+        return match gray_provider::claude_subscription::resolve_command() {
+            Some(bin) => Check::new(name, Status::Pass, format!("claude CLI at {bin}")),
+            None => Check::new(
+                name,
+                Status::Fail,
+                "`claude` not found on PATH (npm install -g @anthropic-ai/claude-code, then `claude auth login`)".to_string(),
+            ),
+        };
+    }
     let models = crate::setup::context::fetch_live_provider_models(
         &config.base_url,
         config.api_key.as_deref(),

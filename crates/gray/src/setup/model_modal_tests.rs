@@ -192,3 +192,19 @@ fn selection_never_rest_on_the_divider() {
         "models pass through"
     );
 }
+
+#[test]
+fn claude_sub_ids_validate_without_known_list() {
+    // No /models endpoint behind subscription routes: the pinned table
+    // decides, even when the known-list is populated with HTTP models.
+    assert_eq!(
+        validate_direct_model_id("claude-sub/sonnet", &models()).unwrap(),
+        "claude-sub/sonnet"
+    );
+    assert_eq!(
+        validate_direct_model_id("claude-sub/opus", &[]).unwrap(),
+        "claude-sub/opus"
+    );
+    let err = validate_direct_model_id("claude-sub/haiku[1m]", &models()).unwrap_err();
+    assert!(err.contains("Haiku"), "{err}");
+}

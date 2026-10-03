@@ -232,6 +232,13 @@ pub fn resolve_model_context_length(model_name: &str) -> usize {
 /// Model max ignoring the user override: live cache → hardcoded fallback.
 /// Use for clamping user input so effective window never exceeds what the model supports.
 pub fn model_max_context(model_name: &str) -> usize {
+    // `claude-sub/` routes are pinned in the provider (opus/sonnet/fable 1M,
+    // haiku 200K, unknown 200K, never guessed up): they win over every cache.
+    if let Some(native) = model_name.strip_prefix(gray_provider::claude_subscription::MODEL_PREFIX)
+        && let Some(w) = gray_provider::claude_subscription::context_window(native)
+    {
+        return w;
+    }
     ensure_disk_loaded();
     // auto-fetched provider value (populated by fetch_live_provider_models)
     if let Some(cached) = get_cached_model_context(model_name) {

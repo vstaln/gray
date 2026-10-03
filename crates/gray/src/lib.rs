@@ -187,7 +187,10 @@ fn cache_warm_policy(
     // servers); only plugin-credentialed sidecars are excluded. A second,
     // runtime gate in `keep_warm` still sends zero refreshes unless the model
     // has cache prices.
-    let cacheable = !config.uses_plugin_credentials();
+    // Subscription turns replay through the native carrier, not a prefix
+    // cache: warming would spend a request for zero reuse.
+    let is_claude_sub = model.starts_with(gray_provider::claude_subscription::MODEL_PREFIX);
+    let cacheable = !config.uses_plugin_credentials() && !is_claude_sub;
     let replayable = matches!(effort, None | Some("off"));
     if !cacheable || !replayable || std::env::var_os("GRAY_NO_CACHE_WARM").is_some() {
         return None;

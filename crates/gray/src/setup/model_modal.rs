@@ -27,6 +27,14 @@ pub(crate) fn provider_models_for(
 /// opening a modal should never wait on an HTTP round-trip.
 pub(super) fn saved_models_for(base_url: &str) -> Vec<(String, String)> {
     let mut models = super::context::load_provider_model_list(base_url);
+    // Subscription routes have no /models endpoint: seed the pinned catalog
+    // so the picker offers them before (and without) any fetch.
+    for id in gray_provider::claude_subscription::pinned_ids() {
+        let full = format!("{}{id}", gray_provider::claude_subscription::MODEL_PREFIX);
+        if !models.iter().any(|(m, _)| m == &full) {
+            models.push((full, format!("Claude {id} (subscription)")));
+        }
+    }
     if let Ok(path) = saved_config_path() {
         let _cfg_lock = crate::setup::lock_saved_config_at(&path).ok();
         load_saved_config_at(&path).sort_models(base_url, &mut models);
@@ -565,6 +573,16 @@ pub(crate) fn validate_direct_model_id(
     let input = raw.trim();
     if input.is_empty() {
         return Err("usage: /model <model-id> — type /model to browse models".to_string());
+    }
+    // Subscription routes never appear in the HTTP known-list (no /models
+    // endpoint): validate against the provider's pinned table instead. The
+    // builder re-checks at switch time; this keeps the direct path and the
+    // picker agreeing on the same ids.
+    if let Some(native) = input.strip_prefix(gray_provider::claude_subscription::MODEL_PREFIX) {
+        return match gray_provider::claude_subscription::native_model(native) {
+            Ok(_) => Ok(input.to_string()),
+            Err(e) => Err(format!("unknown model '{input}': {e}")),
+        };
     }
     if models.is_empty() {
         return Ok(input.to_string());

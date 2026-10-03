@@ -143,6 +143,12 @@ pub fn model_supports_reasoning(model_id: &str) -> Option<bool> {
 /// `off` covers OpenAI `none` (omit reasoning). `None` = family unknown
 /// (offer the full catalog); empty = no reasoning.
 pub fn supported_efforts(model_id: &str) -> Option<Vec<&'static str>> {
+    // Subscription routes take gray's off/low/medium/high/xhigh/max through
+    // native `--effort` (low..max; off = flag omitted). Unknown families
+    // offer the full catalog; claude-sub is known.
+    if model_id.starts_with(gray_provider::claude_subscription::MODEL_PREFIX) {
+        return Some(vec!["off", "low", "medium", "high", "xhigh", "max"]);
+    }
     // CommandCode's Settings docs list `reasoningEffort` values as
     // low/medium/high/xhigh/max (https://api.commandcode.ai/docs/settings).
     // models.dev has no CommandCode rows, and its qualified

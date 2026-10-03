@@ -400,3 +400,13 @@ fn step_models_are_never_offered_a_dishonest_off() {
         .collect();
     assert_eq!(step, vec!["low", "medium", "high", "max"]);
 }
+
+#[test]
+fn claude_sub_window_comes_from_the_pinned_table() {
+    // Pinned routes win over caches and guesses; unknown stays at the 200K
+    // native default and is never guessed up.
+    assert_eq!(model_max_context("claude-sub/sonnet"), 1_000_000);
+    assert_eq!(model_max_context("claude-sub/haiku"), 200_000);
+    assert_eq!(model_max_context("claude-sub/opus"), 1_000_000);
+    assert_eq!(model_max_context("claude-sub/some-future-model"), 200_000);
+}
