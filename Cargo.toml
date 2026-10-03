@@ -71,3 +71,13 @@ regex = "1"
 libc = "0.2"
 zeroize = { version = "1.8", features = ["derive"] }
 
+
+# Dev builds: full DWARF made target/debug/gray ~435 MB, so every edit paid
+# a huge link and rustc RSS. Line tables keep file:line in panics and
+# backtraces; deps carry none (nobody steps into tokio). Need a debugger?
+# CARGO_PROFILE_DEV_DEBUG=2 for that one build.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
