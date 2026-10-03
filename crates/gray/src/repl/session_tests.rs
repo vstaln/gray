@@ -38,7 +38,7 @@ async fn failed_compaction_save_retries_full_history_before_appending() {
     let mut state = Some(SessionState {
         full_save_pending: false,
         store,
-        session_id: sid,
+        session_id: sid.clone(),
     });
     let config = Config {
         temperature: None,
@@ -72,27 +72,67 @@ async fn failed_compaction_save_retries_full_history_before_appending() {
         Arc::new(gray_tools::Registry::default()),
     )
     .with_messages(vec![Message::user("compacted history")]);
+    // Truncated-tail corruption: the last record parses as JSON but fails
+    // entry validation, so `scan_entries` refuses the append (`Corrupt`).
+    // But it IS the final line, so `load` heals it as a torn tail (drops the
+    // fragment, backs the original up) and the retry lands the save: no
+    // warning, no pending flag.
     let mut corrupt = original.clone();
     corrupt.extend_from_slice(b"{torn\n");
     std::fs::write(&path, &corrupt).unwrap();
     persist_compaction_tail(&mut agent, &config, &mut state, dir.path(), None).await;
-    assert_eq!(std::fs::read(&path).unwrap(), corrupt);
-    assert!(state.as_ref().unwrap().full_save_pending);
-    let error = save_full_history(state.as_mut().unwrap(), agent.messages())
-        .await
-        .unwrap_err();
-    assert!(error.contains("compaction save failed"));
-    assert!(error.contains("History remains in memory"));
-    assert!(state.as_ref().unwrap().full_save_pending);
-    assert_eq!(std::fs::read(&path).unwrap(), corrupt);
+    assert!(!state.as_ref().unwrap().full_save_pending);
+    let (_, entries) = state.as_ref().unwrap().store.load(&sid).await.unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(
+        entries[0].message.text_content(),
+        "compacted history",
+        "the corrupt tail heals and the replacement lands"
+    );
+    // A directly-saved corrupt tail heals the same way (not only through
+    // the `persist_compaction_tail` wrapper).
+    std::fs::write(&path, &corrupt).unwrap();
+    state.as_mut().unwrap().full_save_pending = true;
+    assert!(
+        save_full_history(state.as_mut().unwrap(), agent.messages())
+            .await
+            .is_ok()
+    );
+    assert!(!state.as_ref().unwrap().full_save_pending);
+    // A torn tail (crashed writer: last line unterminated) heals through
+    // the repair-then-retry path instead of warning: the save succeeds and
+    // the pending flag clears.
+    let mut torn = original.clone();
+    torn.pop(); // drop the final newline — the classic torn tail
+    std::fs::write(&path, &torn).unwrap();
+    let mut torn_state = Some(SessionState {
+        full_save_pending: false,
+        store: JsonlSessionStore::new(dir.path()),
+        session_id: sid.clone(),
+    });
+    persist_compaction_tail(&mut agent, &config, &mut torn_state, dir.path(), None).await;
+    assert!(!torn_state.as_ref().unwrap().full_save_pending);
+    let (_, entries) = torn_state.as_ref().unwrap().store.load(&sid).await.unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(
+        entries[0].message.text_content(),
+        "compacted history",
+        "the torn fragment heals and the replacement lands"
+    );
     // Repair the storage failure, then advance to a later turn. The next
     // save must replace the stale history, not append only the new answer.
+    // (Reset to the pristine original: the earlier heals landed compaction
+    // replacements on disk, so the file no longer holds `original`.)
     std::fs::write(&path, &original).unwrap();
+    state.as_mut().unwrap().full_save_pending = true;
     agent.set_messages(vec![
         Message::user("compacted history"),
         Message::assistant("later answer"),
     ]);
-    persist_turn_messages(&mut state, &agent, &config, dir.path(), 1, None, None).await;
+    // `initial_count` is the in-memory cursor: 2 messages already reached
+    // memory, so nothing new appends — this turn only retries the pending
+    // full save (replacement lands, flag clears).
+    persist_turn_messages(&mut state, &agent, &config, dir.path(), 2, None, None).await;
     assert!(!state.as_ref().unwrap().full_save_pending);
     let mut next = agent.messages().to_vec();
     next.push(Message::user("ordinary next turn"));
