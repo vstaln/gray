@@ -9,7 +9,7 @@ pub mod notices;
 mod resolve;
 pub mod stream;
 mod tail;
-/// Fixture zoo shared with `tests/read_zoo.rs` (hidden: test-only surface).
+/// Fixture zoo shared with `tests/it/read_zoo.rs` (hidden: test-only surface).
 #[doc(hidden)]
 pub mod testkit;
 pub mod window;

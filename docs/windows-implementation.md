@@ -77,7 +77,7 @@ the same cwd the tools receive. AGENTS.md stays byte-identical (asserted), so
 the runtime path varies without touching the stored prompt. Comment-stripping
 cannot hide the line (empty/unclosed cases assert it still appears). JSON
 quoting keeps Unicode, spaces, quotes and Windows backslashes unambiguous.
-- `cargo test -p gray --test working_directory` fails before, passes after.
+- `cargo test -p gray --test it working_directory::` fails before, passes after.
 - All gray tests pass (unit + integration, serial).
 
 ## Native CI failure repairs

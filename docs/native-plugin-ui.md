@@ -104,7 +104,7 @@ CARGO_BUILD_JOBS=4 cargo test --workspace -- --test-threads=1
 cargo fmt --check
 ```
 
-`crates/gray/tests/native_plugin.rs` runs the real CLI against temporary executable
+`crates/gray/tests/it/native_plugin.rs` runs the real CLI against temporary executable
 fixtures and a fresh Gray home. The widget tests exercise registered-owner lookup,
 disable handling, painting, shimmer, and control-character filtering without any
 locally installed plugin. Quoting regressions also exercise the existing sidecar
