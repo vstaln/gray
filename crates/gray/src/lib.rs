@@ -719,6 +719,42 @@ pub enum GatewayCmd {
     On,
     /// Turn the gateway master switch off (run/start refuse until re-enabled)
     Off,
+    /// Restart/shutdown notices for a chat adapter's daemon (JSON answers)
+    #[command(subcommand)]
+    Lifecycle(LifecycleCmd),
+}
+
+/// `gray gateway lifecycle ...`: the platform-agnostic restart record an
+/// adapter keeps in its own state dir. Every answer is one JSON object.
+#[derive(Parser, Debug, Clone)]
+pub enum LifecycleCmd {
+    /// Daemon starting: say how the last run ended and what to announce
+    Boot {
+        /// The adapter's state dir (holds lifecycle.json)
+        #[arg(long)]
+        dir: std::path::PathBuf,
+        /// Turns that were still running when the last run ended
+        #[arg(long, default_value_t = 0)]
+        interrupted: usize,
+    },
+    /// Daemon exiting cleanly: record it and hand back the notices
+    Stop {
+        /// The adapter's state dir
+        #[arg(long)]
+        dir: std::path::PathBuf,
+    },
+    /// Mark the next stop as a restart (run before signalling the daemon)
+    Restart {
+        /// The adapter's state dir
+        #[arg(long)]
+        dir: std::path::PathBuf,
+    },
+    /// A plain stop is coming: drop any stale restart marker
+    ClearRestart {
+        /// The adapter's state dir
+        #[arg(long)]
+        dir: std::path::PathBuf,
+    },
 }
 
 /// `gray plugin ...` — plugin-side tooling.

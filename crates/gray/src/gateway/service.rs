@@ -292,6 +292,7 @@ pub fn start() -> anyhow::Result<String> {
 
 pub fn stop() -> anyhow::Result<String> {
     let home = crate::setup::gray_home()?;
+    crate::gateway::lifecycle::clear_restart(&home.join("gateway"));
     match detect() {
         Supervisor::Runit { dir } => {
             let svc = dir.join(SERVICE_NAME);
@@ -325,6 +326,11 @@ pub fn stop() -> anyhow::Result<String> {
 
 pub fn restart() -> anyhow::Result<String> {
     let home = crate::setup::gray_home()?;
+    // The daemon reads this on SIGTERM and records the exit as a restart.
+    // Only when a supervisor will bring it back (the None arm bails).
+    if !matches!(detect(), Supervisor::None) {
+        let _ = crate::gateway::lifecycle::request_restart(&home.join("gateway"));
+    }
     match detect() {
         Supervisor::Runit { dir } => {
             let svc = dir.join(SERVICE_NAME);
