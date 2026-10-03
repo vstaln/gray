@@ -279,6 +279,7 @@ async fn run_print_mode_json_message(
         show_reasoning: config.show_reasoning.unwrap_or(true),
         stream_text: stream_text_enabled(),
         segment: TextSegment::default(),
+        labels: HashMap::new(),
     };
     let result = match crate::print_meter::Meter::new(
         max_requests.unwrap_or(32),
@@ -466,6 +467,9 @@ struct JsonOutput {
     /// Opt-in: a consumer that never asked keeps the old row set.
     stream_text: bool,
     segment: TextSegment,
+    /// Display names for plugin tools that declare a manifest `label`.
+    /// Every other tool is named by humanizing its wire name.
+    labels: HashMap<String, String>,
 }
 
 /// The assistant prose streamed since the last tool boundary. A new segment
@@ -508,6 +512,16 @@ fn stream_text_enabled() -> bool {
 }
 
 impl JsonOutput {
+    /// What a surface should call `name`: the plugin's own label, else the
+    /// wire name humanized (`discord_send` → `Discord Send`; a single token
+    /// such as `bash` stays as it is), the same rule the TUI headers use.
+    fn display_name(&self, name: &str) -> String {
+        self.labels
+            .get(name)
+            .cloned()
+            .unwrap_or_else(|| crate::tool_fmt::humanize_tool_name(name))
+    }
+
     fn write(&self, mut row: serde_json::Value) -> std::io::Result<()> {
         row["protocol"] = 1.into();
         row["turn_id"] = self.turn_id.clone().into();
@@ -569,12 +583,14 @@ impl JsonOutput {
             AgentEvent::ToolCallStart { id, name } => {
                 self.tools.insert(id.clone(), name.clone());
                 row["tool"] = name.as_str().into();
+                row["label"] = self.display_name(name).into();
                 row["call_id"] = disclose(id, DETAIL_CAP).into();
                 "tool_started"
             }
             AgentEvent::ToolCallEnd { id, args } => {
                 if let Some(name) = self.tools.get(id) {
                     row["tool"] = name.as_str().into();
+                    row["label"] = self.display_name(name).into();
                     row["call_id"] = disclose(id, DETAIL_CAP).into();
                     if let Some(detail) = tool_detail(name, args) {
                         row["detail"] = detail.into();
@@ -588,6 +604,7 @@ impl JsonOutput {
                 is_error,
             } => {
                 if let Some(name) = self.tools.remove(id) {
+                    row["label"] = self.display_name(&name).into();
                     row["tool"] = name.into();
                 }
                 if !id.is_empty() {
@@ -843,6 +860,9 @@ async fn run_print_inner(
                 .map(|l| (t.name.clone(), l.to_string()))
         })
         .collect();
+    if let Some(output) = json.as_deref_mut() {
+        output.labels = tool_labels.clone();
+    }
     if resume_target.is_none() {
         store
             .create(SessionMeta::new(

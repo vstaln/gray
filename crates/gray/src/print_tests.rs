@@ -302,7 +302,44 @@ fn json_out(show_reasoning: bool) -> JsonOutput {
         show_reasoning,
         stream_text: false,
         segment: TextSegment::default(),
+        labels: HashMap::new(),
     }
+}
+
+#[test]
+fn tool_rows_carry_a_display_name() {
+    let mut out = json_out(false);
+    out.labels
+        .insert("discord_send_ui".into(), "Discord Send UI".into());
+    let start = |out: &mut JsonOutput, name: &str| {
+        out.rows(&AgentEvent::ToolCallStart {
+            id: format!("id-{name}"),
+            name: name.into(),
+        })[0]["label"]
+            .clone()
+    };
+    assert_eq!(start(&mut out, "discord_send"), "Discord Send", "humanized");
+    assert_eq!(
+        start(&mut out, "discord_send_ui"),
+        "Discord Send UI",
+        "plugin label wins"
+    );
+    assert_eq!(
+        start(&mut out, "bash"),
+        "bash",
+        "a single token stays as it is"
+    );
+    let ran = out.rows(&AgentEvent::ToolCallEnd {
+        id: "id-discord_send".into(),
+        args: serde_json::json!({"content": "hi"}),
+    });
+    assert_eq!(ran[0]["label"], "Discord Send");
+    let done = out.rows(&AgentEvent::ToolResult {
+        id: "id-discord_send_ui".into(),
+        output: "ok".into(),
+        is_error: false,
+    });
+    assert_eq!(done[0]["label"], "Discord Send UI");
 }
 
 fn text_out() -> JsonOutput {

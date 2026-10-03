@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+### Added
+- **`--json` streams the answer as it is written.** With `GRAY_STREAM_TEXT=1`, `gray -p --json`
+  emits the assistant's prose as `progress` rows with `phase: "text"`: one numbered `segment` per
+  run of prose between tool calls, complete lines as an append-only `delta`, the unfinished line
+  as a provisional `tail` (the word still being typed held back, so a secret is never shown half
+  written), and a `done` row that closes the segment. Both go through the same redaction as the
+  final answer. A chat surface (the Discord plugin) edits its reply in place instead of posting it
+  at the end. Opt-in, so existing consumers keep the rows they get today.
+- **`--json` tool rows name the tool properly.** `tool_started`, `tool_ran` and `tool_finished`
+  rows carry a `label`: the plugin's manifest label when it declares one, else the wire name
+  humanized the way the TUI headers already show it (`discord_send` reads `Discord Send`; a single
+  token such as `bash` stays as it is). Surfaces show that instead of the raw id.
+
 ### Fixed
 - **No more 403s that only a restart cleared.** `/connect` writes the picked provider's base URL
   and key into the live session before the model step saves anything, so dismissing it left that
