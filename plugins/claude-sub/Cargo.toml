@@ -1,0 +1,24 @@
+[package]
+name = "claude-sub"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+anyhow = { workspace = true }
+gray-core = { workspace = true }
+gray-plugin = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["io-std", "io-util", "macros", "rt-multi-thread", "sync", "time", "process"] }
+
+[lib]
+name = "claude_sub"
+path = "src/lib.rs"
+
+[[bin]]
+name = "claude-sub"
+path = "src/main.rs"

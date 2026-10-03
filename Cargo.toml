@@ -9,6 +9,7 @@ members = [
     "crates/gray-plugin",
     "crates/gray-pkg",
     "plugins/codex-auth",
+    "plugins/claude-sub",
 ]
 # Minimal core: no gateway member. Chat returns as a plugin, not a crate.
 default-members = [

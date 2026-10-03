@@ -133,6 +133,28 @@ fn codex_plugin_manifest_passes_host_protocol_validation() {
 }
 
 #[test]
+fn claude_sub_plugin_manifest_passes_host_protocol_validation() {
+    let manifest = claude_sub::manifest::manifest();
+    assert_eq!(manifest.name, "claude-sub");
+    assert_eq!(manifest.protocol.as_deref(), Some("1.2"));
+    assert!(manifest
+        .capabilities
+        .contains(&crate::providers::registry::PROVIDER_CAPABILITY.to_string()));
+    assert_eq!(manifest.providers.len(), 1);
+    let provider = &manifest.providers[0];
+    assert_eq!(provider.id, "claude-subscription");
+    provider
+        .validate()
+        .expect("claude-sub provider declaration must pass host validation");
+    let method = &provider.auth_methods[0];
+    assert_eq!(method.id, "claude-login");
+    // Pinned catalog is the model list: no HTTP endpoint exists.
+    let catalog = claude_sub::models::catalog();
+    assert!(!catalog.models.is_empty());
+    assert!(catalog.models.iter().any(|m| m.id == "sonnet"));
+}
+
+#[test]
 fn provider_cache_shrinks_entries_for_removed_provider_plugins() {
     let home = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(home.path().join("plugins")).unwrap();
