@@ -9,6 +9,7 @@
 //! are plugin-template territory (`gateway/inbound` + `gateway/deliver` on
 //! the plugin wire); the daemon stays provider-agnostic.
 
+pub mod lifecycle;
 pub mod pid;
 pub mod service;
 pub mod socket;
@@ -50,6 +51,11 @@ mod toggle_tests {
 /// Dispatch `gray gateway <cmd>`.
 pub async fn run_cli(cmd: crate::GatewayCmd, config: &crate::config::Config) -> anyhow::Result<()> {
     use crate::GatewayCmd;
+    // Pure file bookkeeping for an adapter's own daemon: no service manager,
+    // no master switch, so it answers everywhere.
+    if let GatewayCmd::Lifecycle(cmd) = cmd {
+        return lifecycle_cli(cmd);
+    }
     // Native service/IPC lifecycle is not implemented in this preview. Reject
     // before creating pid/socket state or calling Unix service managers.
     anyhow::ensure!(
@@ -118,7 +124,26 @@ pub async fn run_cli(cmd: crate::GatewayCmd, config: &crate::config::Config) -> 
             println!("{}", service::uninstall()?);
             Ok(())
         }
+        GatewayCmd::Lifecycle(_) => unreachable!("handled above"),
     }
+}
+
+fn lifecycle_cli(cmd: crate::LifecycleCmd) -> anyhow::Result<()> {
+    use crate::LifecycleCmd;
+    let answer = match cmd {
+        LifecycleCmd::Boot { dir, interrupted } => lifecycle::boot_json(&dir, interrupted),
+        LifecycleCmd::Stop { dir } => lifecycle::stop_json(&dir),
+        LifecycleCmd::Restart { dir } => {
+            lifecycle::request_restart(&dir)?;
+            serde_json::json!({"restart": true})
+        }
+        LifecycleCmd::ClearRestart { dir } => {
+            lifecycle::clear_restart(&dir);
+            serde_json::json!({"restart": false})
+        }
+    };
+    println!("{answer}");
+    Ok(())
 }
 
 /// Human report for `gateway status`. Live socket first (hermes liveness
