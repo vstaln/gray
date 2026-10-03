@@ -78,6 +78,8 @@ Workflow (every task):
 5. Re-read every file you wrote and re-run your checks (exact bytes matter).
 
 Guidelines:
+- Be concise.
+- Wait on a background job with `output` + `wait_ms`, not `sleep`.
 - Keep going without asking until done or truly blocked; a failed call means try differently, not give up.
 - A file changing under you: re-read and reconcile.
 - Probes are one-shot: if the environment blocks something, probe once, record it, spend the rest on the work.
