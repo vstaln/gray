@@ -54,6 +54,9 @@ pub struct CachedProviderPlugin {
     pub providers: Vec<ProviderDecl>,
     #[serde(default)]
     pub errors: Vec<String>,
+    /// Spawn argv from the lock; filled on load, never trusted from disk.
+    #[serde(skip)]
+    pub argv: Vec<String>,
 }
 
 impl ProviderCache {
@@ -88,9 +91,9 @@ pub struct ProviderRegistry {
 
 impl ProviderRegistry {
     pub fn load_cached(home: &Path) -> Self {
-        Self {
-            cache: ProviderCache::load(&cache_path(home)),
-        }
+        let mut cache = ProviderCache::load(&cache_path(home));
+        let _ = refresh_installed_argv(home, &mut cache);
+        Self { cache }
     }
 
     /// Rebuild the provider cache from installed sidecar manifests. A
@@ -152,6 +155,7 @@ impl ProviderRegistry {
                 manifest_sha256: lock_identity(name, entry),
                 providers,
                 errors,
+                argv: Vec::new(),
             };
             seen.insert(name.clone());
             cache.plugins.insert(name.clone(), cached);
@@ -179,7 +183,7 @@ impl ProviderRegistry {
                             provider: provider.clone(),
                             auth_method: method.clone(),
                             profile_binding: binding,
-                            argv: Vec::new(),
+                            argv: cached.argv.clone(),
                         });
                     }
                 }
@@ -273,6 +277,7 @@ fn refresh_installed_argv(home: &Path, cache: &mut ProviderCache) -> anyhow::Res
     for (name, entry) in lock.plugins {
         if let Some(cached) = cache.plugins.get_mut(&name) {
             cached.enabled = entry.enabled;
+            cached.argv = spawn_argv(&name, home, &entry).unwrap_or_default();
         }
     }
     Ok(())

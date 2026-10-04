@@ -148,3 +148,21 @@ fn provider_cache_shrinks_entries_for_removed_provider_plugins() {
     let reloaded = crate::providers::ProviderCache::load(&cache_path(home.path()));
     assert!(reloaded.plugins.is_empty());
 }
+
+#[tokio::test]
+async fn resolved_provider_carries_lock_spawn_argv() {
+    let home = tempfile::tempdir().unwrap();
+    let argv = registry_argv();
+    let entry = lock_entry(argv.clone());
+    write_lock(home.path(), entry.clone()).unwrap();
+    refresh_plugin(home.path(), &entry).await.unwrap();
+    let registry = ProviderRegistry::load_cached(home.path());
+    let installed = registry
+        .resolve(
+            "provider-registry:provider-good",
+            "plugin:provider-registry:provider-good:chatgpt-subscription",
+        )
+        .expect("provider resolves");
+    assert_eq!(installed.argv, argv);
+    assert!(!installed.argv.is_empty());
+}
