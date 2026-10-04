@@ -27,7 +27,8 @@ pub fn build_system_prompt(custom_prompt: Option<String>) -> String {
     strip_comments(custom_prompt.as_deref().unwrap_or_default())
 }
 
-/// Append runtime context without writing machine-specific paths into AGENTS.md.
+/// Append runtime context without writing machine-specific paths into AGENTS.md:
+/// the caller's cwd, then the static tool-batching facts the model cannot infer.
 /// Use the caller's cwd (also passed to tools), not this process's ambient cwd:
 /// resumed sessions and headless callers must describe their execution context.
 /// JSON quoting keeps newlines, quotes and Windows backslashes unambiguous.
@@ -51,8 +52,30 @@ pub fn build_runtime_prompt(custom_prompt: Option<String>, cwd: &Path) -> String
          into one shell call. They run concurrently; calls that might clash are serialized \
          for you."
     ));
+    prompt.push_str("\n\n");
+    prompt.push_str(TOOL_BATCHING_GUIDANCE);
     prompt
 }
+
+/// Static harness facts the model cannot infer, and that decide how many rounds a
+/// task costs. The concurrency machinery is otherwise invisible: the model issues
+/// one call per round, each round re-bills the whole conversation, and the
+/// parallel lane plus the async bash job API never engage. Kept in the binary so
+/// it is never comment-stripped and never lands in the user's editable file, and
+/// appended after the runtime directory so the user's verbatim text stays ahead
+/// of it. Every claim is true whether or not the parallel lane is enabled:
+/// one turn's calls are collected and returned together either way.
+const TOOL_BATCHING_GUIDANCE: &str = "\
+Tool batching: the tool calls you make in one turn are all run, and their results \
+arrive together in the next turn. Independent calls — reading several files, running \
+the build and the tests, probing two hypotheses — therefore cost one round between \
+them instead of one round each, and every round re-reads the whole conversation. \
+Issue independent calls together in one turn, and only chain calls across turns when \
+the later one actually depends on the earlier one. Same-turn calls may also run \
+concurrently, which changes latency, not cost. For genuinely long work, bash with \
+background:true or yield_ms returns a job id immediately and its completion notice \
+arrives in a later turn, so use those for long work only and keep working instead \
+of polling.";
 
 /// Memory is appended separately: never rewrite AGENTS.md or strip comments
 /// from remembered data. Its snapshot remains fixed for a durable session.
