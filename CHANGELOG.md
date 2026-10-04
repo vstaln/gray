@@ -130,6 +130,19 @@
   paints while the box is genuinely empty and no turn is running. The error path's
   permanent copy of the same line went with it.
 
+### Changed
+- **CI waits on less.** `windows-runtime` gated every run at 9.5 minutes on a PR and 14.5 on
+  main. It no longer builds a release binary: the installer tests run against the debug
+  `gray.exe` the test build already made, and the downloadable preview ZIP is built by its own
+  `windows-preview` job beside it. Tests run under `cargo nextest` (`.config/nextest.toml`,
+  profile `ci`): every test in its own process, all binaries at once, each failure reported by
+  name, so the sleep-bound shell lifecycle suites overlap instead of queueing binary by binary.
+  That made the targeted Windows and macOS test steps and `cargo check --all-targets` pure
+  repetition, so they are gone. The tool-call latency bench is `#[ignore]`d and runs in
+  `perf-floor`. Docs-only changes skip the Rust jobs, a newer push cancels a PR's run in flight,
+  only main writes the Rust cache, CI builds without dev debuginfo, and ripgrep installs without
+  a package index refresh unless it needs one.
+
 ## [0.1.10] - 2026-10-01
 
 ### Added
