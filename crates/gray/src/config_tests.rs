@@ -37,3 +37,15 @@ fn no_exec_prefix_means_local_commands() {
     let config = Config::resolve_with(&cli, |_| None).expect("config resolves");
     assert_eq!(config.exec_prefix, None);
 }
+
+/// `--bare` and `GRAY_BARE=1` both select a bare run; neither = normal run.
+#[test]
+fn bare_comes_from_the_flag_or_env() {
+    let plain = Cli::parse_from(["gray"]);
+    assert!(!Config::resolve_with(&plain, |_| None).expect("config resolves").bare);
+    let flag = Cli::parse_from(["gray", "--bare"]);
+    assert!(Config::resolve_with(&flag, |_| None).expect("config resolves").bare);
+    let env = Config::resolve_with(&plain, |k| (k == "GRAY_BARE").then(|| "1".to_string()))
+        .expect("config resolves");
+    assert!(env.bare);
+}

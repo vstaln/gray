@@ -74,6 +74,8 @@ pub struct Config {
     pub max_cost_micros: Option<u64>,
     /// Wall-clock cap in seconds from process start (`--max-wall-secs`).
     pub max_wall_secs: Option<u64>,
+    /// `--bare` / `GRAY_BARE=1`: stock prompt + bash only (see `Cli::bare`).
+    pub bare: bool,
 }
 
 impl std::fmt::Debug for Config {
@@ -199,6 +201,8 @@ impl Config {
             env("GRAY_MAX_WALL_SECS").and_then(|s| s.trim().parse::<u64>().ok().filter(|&n| n > 0))
         });
 
+        let bare = cli.bare || env("GRAY_BARE").is_some_and(|v| v.trim() == "1");
+
         let config = Self {
             model,
             base_url,
@@ -217,8 +221,9 @@ impl Config {
             max_turns,
             max_cost_micros,
             max_wall_secs,
+            bare,
         };
-        log::info!(target: "gray_config", "config resolved: model={:?}, base_url={}, api_key={}, context_window={:?}", config.model, scrub_url(&config.base_url), config.api_key.as_deref().map(|_| "set").unwrap_or("unset"), config.context_window);
+        log::info!(target: "gray_config", "config resolved: model={:?}, base_url={}, api_key={}, context_window={:?}, bare={}", config.model, scrub_url(&config.base_url), config.api_key.as_deref().map(|_| "set").unwrap_or("unset"), config.context_window, config.bare);
         Ok(config)
     }
 
