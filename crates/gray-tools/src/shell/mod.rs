@@ -4,6 +4,7 @@ pub mod contract;
 pub mod exit;
 pub mod fence;
 pub mod kill;
+pub mod label;
 pub mod pump;
 pub mod spawn;
 pub mod split;

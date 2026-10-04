@@ -1067,7 +1067,7 @@ async fn run_command(
                 silenced: bound_elapsed,
             } = *hoff;
             let jobs = adopt.expect("a stall is only armed for the blocking lane");
-            let (id, tx, worker_ctx) = jobs.register(&ctx, log_path.clone(), start);
+            let (id, tx, worker_ctx) = jobs.register(&ctx, &command, log_path.clone(), start);
             // With GRAY_NO_JOBS=1 the follow-up actions are not in the schema
             // and are refused, so the notice must not advertise them.
             let await_hint = if jobs_enabled() {

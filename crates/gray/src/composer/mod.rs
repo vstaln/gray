@@ -254,10 +254,17 @@ pub(crate) fn live_tool_rows(tools: &[LiveTool], elapsed: Duration) -> Vec<Line<
                 if prefix == 1 {
                     line.spans[0].content = "\u{2b21} ".into();
                 }
-                let end = prefix
-                    + usize::from(line.spans.get(prefix).is_some_and(|s| s.content == "Ran "));
-                line.spans
-                    .splice(prefix..end, draw::shimmer_spans("Running ", elapsed));
+                // The finished verb (`Ran `, `Waited on `, …) shimmers as
+                // its live form; a header without one gets `Running `.
+                let live = line
+                    .spans
+                    .get(prefix)
+                    .and_then(|s| crate::tool_fmt::live_bash_verb(&s.content));
+                let end = prefix + usize::from(live.is_some());
+                line.spans.splice(
+                    prefix..end,
+                    draw::shimmer_spans(live.unwrap_or("Running "), elapsed),
+                );
             }
             line
         })
