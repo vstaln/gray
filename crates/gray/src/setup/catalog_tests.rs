@@ -346,7 +346,7 @@ fn a_valid_store_still_round_trips_through_the_strict_loader() {
     );
     std::fs::write(
         &path,
-        r#"{"openrouter": "sk-a", "codex": {"provider": "codex", "access_token": "t", "expires_at": 0}}"#,
+        r#"{"openrouter": "sk-a", "example": {"provider": "example", "access_token": "t", "expires_at": 0}}"#,
     )
         .unwrap();
     let store = crate::setup::catalog::load_mixed_store_strict(&path).unwrap();

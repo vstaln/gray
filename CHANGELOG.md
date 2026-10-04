@@ -139,6 +139,10 @@
   permanent copy of the same line went with it.
 
 ### Changed
+- **The ChatGPT/Codex subscription plugin moved out of the gray repo** into
+  [`vstaln/gray-codex-sub`](https://github.com/vstaln/gray-codex-sub), where it ships as the
+  standalone `gray-codex-sub` sidecar. Install it, then `/connect` and sign in again —
+  credentials stored under the old `codex-auth` plugin name are not reused.
 - **CI waits on less.** `windows-runtime` gated every run at 9.5 minutes on a PR and 14.5 on
   main. It no longer builds a release binary: the installer tests run against the debug
   `gray.exe` the test build already made, and the downloadable preview ZIP is built by its own

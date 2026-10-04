@@ -135,14 +135,14 @@ fn provider_only_runtime_role_round_trips() {
     provider.runtime_role = Some("provider_only".to_string());
     let expected = LockFile {
         schema: 1,
-        plugins: BTreeMap::from([("codex-auth".to_string(), provider)]),
+        plugins: BTreeMap::from([("example-sub".to_string(), provider)]),
     };
     let dir = tempfile::tempdir().unwrap();
     let path = lock_path(dir.path());
     expected.save(&path).unwrap();
     let loaded = LockFile::load(&path).unwrap();
     assert_eq!(
-        loaded.plugins["codex-auth"].runtime_role.as_deref(),
+        loaded.plugins["example-sub"].runtime_role.as_deref(),
         Some("provider_only")
     );
 }

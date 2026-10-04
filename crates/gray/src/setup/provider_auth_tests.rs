@@ -9,11 +9,11 @@ use crate::setup::{ConnectAuth, build_connect_items};
 
 fn installed_provider() -> InstalledProvider {
     let provider = ProviderDecl {
-        id: "codex".into(),
-        name: "Codex".into(),
+        id: "example".into(),
+        name: "Example".into(),
         transport: ProviderTransportDecl {
             kind: "openai-responses".into(),
-            base_url: "https://chatgpt.com/backend-api/codex".parse().unwrap(),
+            base_url: "https://example.test/v1".parse().unwrap(),
             authorization: ProviderAuthorizationDecl {
                 kind: "bearer".into(),
                 secret_name: "access_token".into(),
@@ -35,14 +35,14 @@ fn installed_provider() -> InstalledProvider {
             }],
         },
         auth_methods: vec![AuthMethodDecl {
-            id: "chatgpt-subscription".into(),
-            name: "ChatGPT".into(),
+            id: "example-login".into(),
+            name: "Example login".into(),
             kind: "oauth".into(),
             operations: vec!["refresh".into()],
         }],
     };
     InstalledProvider {
-        plugin: "codex-auth".into(),
+        plugin: "example-sub".into(),
         auth_method: provider.auth_methods[0].clone(),
         provider,
         profile_binding: "sha256:test".into(),
@@ -56,9 +56,8 @@ fn connect_rows_include_each_plugin_auth_method() {
     let providers = vec![installed_provider()];
     let rows = build_connect_items(&catalog, &providers);
     assert!(
-        rows.iter()
-            .any(|row| row.id == "codex-auth:codex"
-                && matches!(&row.auth, ConnectAuth::Plugin { .. }))
+        rows.iter().any(|row| row.id == "example-sub:example"
+            && matches!(&row.auth, ConnectAuth::Plugin { .. }))
     );
     assert!(
         rows.iter()
@@ -95,11 +94,8 @@ fn selecting_plugin_clears_api_key_and_writes_only_references() {
     let body = std::fs::read_to_string(&path).unwrap();
     assert_eq!(config.api_key, None);
     assert_eq!(config.credential_source, "plugin");
-    assert_eq!(config.provider_id, "codex-auth:codex");
-    assert_eq!(
-        config.auth_ref,
-        "plugin:codex-auth:codex:chatgpt-subscription"
-    );
+    assert_eq!(config.provider_id, "example-sub:example");
+    assert_eq!(config.auth_ref, "plugin:example-sub:example:example-login");
     assert!(!body.contains("test-openai-key"));
     assert!(body.contains("\"credential_source\": \"plugin\""));
 }
@@ -112,9 +108,9 @@ fn plugin_models_request_uses_host_identity() {
         auth_method: installed.auth_method.id.clone(),
         profile_binding: installed.profile_binding.clone(),
         credential: CredentialEnvelope::new(
-            "codex-auth",
-            "codex",
-            "chatgpt-subscription",
+            "example-sub",
+            "example",
+            "example-login",
             installed.profile_binding.clone(),
             CredentialMaterial::empty(),
         )

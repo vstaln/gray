@@ -92,7 +92,7 @@ async fn provider_rpcs_round_trip_without_shutdown() {
     p.set_capabilities(vec![crate::PROVIDER_CREDENTIALS.into()]);
 
     let started = p
-        .provider_auth_start("codex", "chatgpt-subscription")
+        .provider_auth_start("example", "example-login")
         .await
         .unwrap();
     assert_eq!(started.operation_id, "op-test");
@@ -102,9 +102,9 @@ async fn provider_rpcs_round_trip_without_shutdown() {
     p.provider_auth_cancel(&started.operation_id).await.unwrap();
 
     let envelope = gray_core::credential::CredentialEnvelope::new(
-        "codex-auth",
-        "codex",
-        "chatgpt-subscription",
+        "example-sub",
+        "example",
+        "example-login",
         "sha256:test",
         gray_core::credential::CredentialMaterial {
             secrets: gray_core::credential::SecretMap::from_iter([("access_token", "test-access")]),
@@ -117,8 +117,8 @@ async fn provider_rpcs_round_trip_without_shutdown() {
     .unwrap();
     let refreshed = p
         .provider_auth_refresh(&crate::ProviderRefreshRequest {
-            provider: "codex".into(),
-            auth_method: "chatgpt-subscription".into(),
+            provider: "example".into(),
+            auth_method: "example-login".into(),
             profile_binding: "sha256:test".into(),
             credential: envelope.clone(),
         })
@@ -128,8 +128,8 @@ async fn provider_rpcs_round_trip_without_shutdown() {
 
     assert!(matches!(
         p.provider_auth_revoke(&crate::ProviderRevokeRequest {
-            provider: "codex".into(),
-            auth_method: "chatgpt-subscription".into(),
+            provider: "example".into(),
+            auth_method: "example-login".into(),
             profile_binding: "sha256:test".into(),
             credential: envelope.clone(),
         })
@@ -140,8 +140,8 @@ async fn provider_rpcs_round_trip_without_shutdown() {
 
     let models = p
         .provider_models(&crate::ProviderModelsRequest {
-            provider: "codex".into(),
-            auth_method: "chatgpt-subscription".into(),
+            provider: "example".into(),
+            auth_method: "example-login".into(),
             profile_binding: "sha256:test".into(),
             credential: envelope,
         })
@@ -163,7 +163,7 @@ async fn provider_rpc_requires_the_sensitive_capability() {
         .await
         .unwrap();
     let error = p
-        .provider_auth_start("codex", "chatgpt-subscription")
+        .provider_auth_start("example", "example-login")
         .await
         .unwrap_err();
     assert!(matches!(

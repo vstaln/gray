@@ -2132,7 +2132,7 @@ impl gray_core::credential::CredentialSource for StaticProviderSource {
 }
 
 #[tokio::test]
-async fn dynamic_codex_profile_sends_declared_transport() {
+async fn dynamic_profile_sends_declared_transport() {
     use futures::StreamExt;
     use gray_core::message::{ChatRequest, ContentBlock, Message, Role};
 
@@ -2148,7 +2148,7 @@ async fn dynamic_codex_profile_sends_declared_transport() {
         let head = &received[..head_end];
         let body = &received[head_end + 4..];
         assert!(head.contains("authorization: Bearer test-access"), "{head}");
-        assert!(head.contains("chatgpt-account-id: acct_test"), "{head}");
+        assert!(head.contains("x-example-account: acct_test"), "{head}");
         assert!(head.contains("session-id: session-test"), "{head}");
         assert!(head.contains("originator: gray"), "{head}");
         assert!(head.contains("application/json"), "{head}");
@@ -2187,7 +2187,7 @@ async fn dynamic_codex_profile_sends_declared_transport() {
         },
         headers: vec![
             OpenAiHeader {
-                name: "chatgpt-account-id".into(),
+                name: "x-example-account".into(),
                 source: OpenAiHeaderSource::Metadata("account_id".into()),
                 required: true,
             },
