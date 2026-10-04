@@ -89,6 +89,7 @@ fn concurrent_tool_calls_track_by_id() {
         None,
         &mut in_flight,
         &labels,
+        &HashMap::new(),
     )
     .unwrap();
     render_event_with_context(
@@ -97,6 +98,7 @@ fn concurrent_tool_calls_track_by_id() {
         None,
         &mut in_flight,
         &labels,
+        &HashMap::new(),
     )
     .unwrap();
     render_event_with_context(
@@ -105,6 +107,7 @@ fn concurrent_tool_calls_track_by_id() {
         None,
         &mut in_flight,
         &labels,
+        &HashMap::new(),
     )
     .unwrap();
     // Second call's end must not clobber the first call's name/args.
@@ -116,6 +119,7 @@ fn concurrent_tool_calls_track_by_id() {
         None,
         &mut in_flight,
         &labels,
+        &HashMap::new(),
     )
     .unwrap();
     assert_eq!(in_flight["id2"].name, "beta");
@@ -125,6 +129,7 @@ fn concurrent_tool_calls_track_by_id() {
         None,
         &mut in_flight,
         &labels,
+        &HashMap::new(),
     )
     .unwrap();
     // id2 survives id1's result (no single-slot take() wiping both).
@@ -136,6 +141,7 @@ fn concurrent_tool_calls_track_by_id() {
         None,
         &mut in_flight,
         &labels,
+        &HashMap::new(),
     )
     .unwrap();
     assert!(in_flight.is_empty());
@@ -161,6 +167,7 @@ fn render_error_propagates_for_retry_policy() {
         None,
         &mut in_flight,
         &labels,
+        &HashMap::new(),
     )
     .unwrap_err();
     assert_eq!(err.kind(), ErrorKind::BrokenPipe);
@@ -303,6 +310,7 @@ fn json_out(show_reasoning: bool) -> JsonOutput {
         stream_text: false,
         segment: TextSegment::default(),
         labels: HashMap::new(),
+        previews: HashMap::new(),
     }
 }
 
@@ -340,6 +348,48 @@ fn tool_rows_carry_a_display_name() {
         is_error: false,
     });
     assert_eq!(done[0]["label"], "Discord Send UI");
+}
+
+#[test]
+fn tool_detail_prefers_injected_preview_text() {
+    // Surfaces resolve the text; core only discloses it. No wire-shape
+    // parsing in `tool_detail`.
+    let detail = tool_detail(
+        "some_surface_tool",
+        &serde_json::json!({"preview": "## Hello", "document": {"title": "Hi"}}),
+    );
+    assert_eq!(detail.as_deref(), Some("## Hello"));
+    // No injected text -> built-in arms (unknown tool: none).
+    assert!(
+        tool_detail(
+            "some_surface_tool",
+            &serde_json::json!({"document": {"title": "Hi"}})
+        )
+        .is_none()
+    );
+}
+
+#[test]
+fn tool_ran_row_uses_declared_preview_path() {
+    // End-to-end on the --json wire: a manifest `preview` path resolves
+    // against the call args into `detail`.
+    let mut out = json_out(false);
+    out.previews
+        .insert("send_card".into(), "document.title".into());
+    out.tools.insert("c1".into(), "send_card".into());
+    let rows = out.rows(&AgentEvent::ToolCallEnd {
+        id: "c1".into(),
+        args: serde_json::json!({"document": {"title": "  ## Hello  "}}),
+    });
+    assert_eq!(rows[0]["detail"], "## Hello");
+    // Undeclared path -> built-in arms (unknown tool: no detail key).
+    let mut out2 = json_out(false);
+    out2.tools.insert("c1".into(), "send_card".into());
+    let rows2 = out2.rows(&AgentEvent::ToolCallEnd {
+        id: "c1".into(),
+        args: serde_json::json!({"document": {"title": "Hi"}}),
+    });
+    assert!(rows2[0].get("detail").is_none());
 }
 
 fn text_out() -> JsonOutput {

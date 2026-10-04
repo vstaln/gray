@@ -398,6 +398,40 @@ fn skill_display_name(args: &serde_json::Value) -> String {
     "skill".to_string()
 }
 
+/// First non-empty string at a plugin-declared dot path (`"document.title"`).
+/// Core walks object keys only: no array indices, no wildcards, no schema
+/// knowledge. Anything missing, non-string, or whitespace-only is `None`,
+/// so a surface that declares a path for a shape it never sends degrades
+/// to the built-in preview instead of an error.
+pub fn preview_at(args: &serde_json::Value, path: &str) -> Option<String> {
+    let mut cur = args;
+    for key in path.split('.').map(str::trim).filter(|k| !k.is_empty()) {
+        cur = cur.as_object()?.get(key)?;
+    }
+    cur.as_str()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
+/// Args with a display-only `preview` path injected (plugin `preview`
+/// support). Same contract as [`with_tool_label`]: renderers read `preview`
+/// in the `other` arm, sub-renderers ignore it, callers pass wire args.
+pub fn with_tool_preview(args: &serde_json::Value, preview: Option<&str>) -> serde_json::Value {
+    let Some(preview) = preview.map(str::trim).filter(|t| !t.is_empty()) else {
+        return args.clone();
+    };
+    match args {
+        serde_json::Value::Object(map) => {
+            let mut map = map.clone();
+            map.entry("preview".to_string())
+                .or_insert(serde_json::Value::String(preview.to_string()));
+            serde_json::Value::Object(map)
+        }
+        _ => args.clone(),
+    }
+}
+
 /// Args with a display-only `label` injected (plugin `label` support).
 /// Renderers read `label` in the `other` arm; sub-renderers
 /// (`arg_path`, previews) ignore unknown keys, so injection is safe.
@@ -610,6 +644,26 @@ pub fn format_tool_call_header(
                 .filter(|t| !t.is_empty())
                 .map(str::to_string)
                 .unwrap_or_else(|| humanize_tool_name(other));
+            if let Some(preview_path) = args
+                .get("preview")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|t| !t.is_empty())
+                && let Some(text) = preview_at(args, preview_path)
+            {
+                let cut = truncate_cmd(&text);
+                let shown = if cut.len() < text.len() {
+                    format!("{}\u{2026}", cut.trim_end())
+                } else {
+                    cut.to_string()
+                };
+                return Line::from(vec![
+                    bullet,
+                    Span::styled(headline.clone(), action_style),
+                    Span::raw(" "),
+                    Span::styled(format!("\"{shown}\""), cmd_style),
+                ]);
+            }
             let path = shorten_path(arg_path(args), cwd);
             if !path.is_empty() {
                 Line::from(vec![
@@ -621,7 +675,7 @@ pub fn format_tool_call_header(
             } else {
                 let args_preview = if let Some(obj) = args.as_object() {
                     obj.iter()
-                        .filter(|(k, _)| *k != "label")
+                        .filter(|(k, _)| *k != "label" && *k != "preview")
                         .take(2)
                         .map(|(k, v)| {
                             let val_str = if let Some(s) = v.as_str() {

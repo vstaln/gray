@@ -793,6 +793,17 @@ pub async fn build_agent(opts: BuilderOptions) -> anyhow::Result<Agent> {
                 .map(|s| (t.name.clone(), s.to_string()))
         })
         .collect();
+    let tool_previews: Vec<(String, String)> = manifests
+        .iter()
+        .flat_map(|m| m.tools.iter())
+        .filter_map(|t| {
+            t.preview
+                .as_ref()
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+                .map(|s| (t.name.clone(), s.to_string()))
+        })
+        .collect();
     let executor: Arc<dyn ToolExecutor> = match wrap_executor {
         Some(wrap) => wrap(Arc::new(registry)),
         None => Arc::new(registry),
@@ -802,6 +813,7 @@ pub async fn build_agent(opts: BuilderOptions) -> anyhow::Result<Agent> {
         .with_system(system)
         .with_tools(tool_defs)
         .with_tool_labels(tool_labels)
+        .with_tool_previews(tool_previews)
         .with_context_window(context_window)
         .with_history_rewrite_hook(Arc::new(move || {
             if let Some(ledger) = &ledger {

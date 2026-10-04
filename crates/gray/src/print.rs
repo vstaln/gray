@@ -32,6 +32,8 @@ pub struct ActiveToolCall {
     /// Display-only headline (plugin `label`): renderer-injected into a
     /// copy of args, so the wire args the executor saw stay untouched.
     pub label: Option<String>,
+    /// Display-only arg preview path (plugin `preview`): same injection.
+    pub preview: Option<String>,
 }
 
 /// Renders a single AgentEvent with active tool tracking and CWD context.
@@ -45,6 +47,7 @@ pub fn render_event_with_context<W: Write>(
     cwd: Option<&Path>,
     in_flight: &mut HashMap<String, ActiveToolCall>,
     tool_labels: &HashMap<String, String>,
+    tool_previews: &HashMap<String, String>,
 ) -> std::io::Result<()> {
     match event {
         AgentEvent::Start => Ok(()),
@@ -62,6 +65,7 @@ pub fn render_event_with_context<W: Write>(
                 id.clone(),
                 ActiveToolCall {
                     label: tool_labels.get(name).cloned(),
+                    preview: tool_previews.get(name).cloned(),
                     name: name.clone(),
                     args: None,
                 },
@@ -70,10 +74,12 @@ pub fn render_event_with_context<W: Write>(
         }
         AgentEvent::ToolCallProgress { id, name, .. } => {
             let label = tool_labels.get(name).cloned();
+            let preview = tool_previews.get(name).cloned();
             in_flight.entry(id.clone()).or_insert(ActiveToolCall {
                 name: name.clone(),
                 args: None,
                 label,
+                preview,
             });
             Ok(())
         }
@@ -85,10 +91,17 @@ pub fn render_event_with_context<W: Write>(
                     .map(str::trim)
                     .filter(|t| !t.is_empty())
                     .map(str::to_string);
+                let preview = args
+                    .get("preview")
+                    .and_then(|v| v.as_str())
+                    .map(str::trim)
+                    .filter(|t| !t.is_empty())
+                    .map(str::to_string);
                 ActiveToolCall {
                     name: "tool".to_string(),
                     args: None,
                     label,
+                    preview,
                 }
             });
             entry.args = Some(args.clone());
@@ -101,6 +114,14 @@ pub fn render_event_with_context<W: Write>(
                 Some(label) => {
                     owned = crate::tool_fmt::with_tool_label(args, Some(label));
                     &owned
+                }
+                None => args,
+            };
+            let owned2;
+            let args = match entry.preview.as_deref() {
+                Some(preview) => {
+                    owned2 = crate::tool_fmt::with_tool_preview(args, Some(preview));
+                    &owned2
                 }
                 None => args,
             };
@@ -133,6 +154,17 @@ pub fn render_event_with_context<W: Write>(
                     None => None,
                 },
                 None => tool.args.as_ref(),
+            };
+            let owned2;
+            let args = match tool.preview.as_deref() {
+                Some(preview) => match args {
+                    Some(a) => {
+                        owned2 = crate::tool_fmt::with_tool_preview(a, Some(preview));
+                        Some(&owned2)
+                    }
+                    None => None,
+                },
+                None => args,
             };
             let res = crate::tool_fmt::format_tool_result_plain_with_context(
                 name, args, output, *is_error, cwd,
@@ -280,6 +312,7 @@ async fn run_print_mode_json_message(
         stream_text: stream_text_enabled(),
         segment: TextSegment::default(),
         labels: HashMap::new(),
+        previews: HashMap::new(),
     };
     let result = match crate::print_meter::Meter::new(
         max_requests.unwrap_or(32),
@@ -470,6 +503,10 @@ struct JsonOutput {
     /// Display names for plugin tools that declare a manifest `label`.
     /// Every other tool is named by humanizing its wire name.
     labels: HashMap<String, String>,
+    /// Arg preview dot paths for plugin tools that declare a manifest
+    /// `preview`. Same contract as `labels`: display-only, never
+    /// model-visible.
+    previews: HashMap<String, String>,
 }
 
 /// The assistant prose streamed since the last tool boundary. A new segment
@@ -592,6 +629,26 @@ impl JsonOutput {
                     row["tool"] = name.as_str().into();
                     row["label"] = self.display_name(name).into();
                     row["call_id"] = disclose(id, DETAIL_CAP).into();
+                    // Surface-declared preview first: the plugin names a dot
+                    // path, core resolves it. Falls through to the built-in
+                    // arms when the path resolves to nothing.
+                    let preview = self
+                        .previews
+                        .get(name)
+                        .map(|x| x.trim())
+                        .filter(|x| !x.is_empty())
+                        .and_then(|path| crate::tool_fmt::preview_at(args, path));
+                    let owned;
+                    let args = match preview {
+                        Some(ref text) => {
+                            owned = crate::tool_fmt::with_tool_preview(args, Some(text));
+                            &owned
+                        }
+                        None => args,
+                    };
+                    // `with_tool_preview` injects the resolved text (not the
+                    // path): `tool_detail` reads it back through the same
+                    // `preview` key the TUI header uses, so both agree.
                     if let Some(detail) = tool_detail(name, args) {
                         row["detail"] = detail.into();
                     }
@@ -750,6 +807,13 @@ fn disclose_output(text: &str, cap: usize) -> String {
 /// understand is exactly where a token hides.
 fn tool_detail(name: &str, args: &serde_json::Value) -> Option<String> {
     let arg = |k: &str| args.get(k).and_then(serde_json::Value::as_str);
+    // Plugin-declared arg preview (`preview` injected like `label`):
+    // surfaces resolve the text before injecting (see `rows`), so core
+    // never parses a surface's wire shape here either. Falls through to
+    // the built-in arms when there is no injected text.
+    if let Some(text) = arg("preview") {
+        return Some(disclose(text, DETAIL_CAP));
+    }
     match name {
         "bash" | "shell" => arg("command").map(|c| disclose(c, DETAIL_CAP)),
         "read" | "view" | "cat" => {
@@ -780,9 +844,7 @@ fn tool_detail(name: &str, args: &serde_json::Value) -> Option<String> {
         "web_search" => arg("query").map(|q| disclose(q, DETAIL_CAP)),
         "web_fetch" => arg("url").map(|u| disclose(u, DETAIL_CAP)),
         "discord_send" => arg("content").map(|c| disclose(c, DETAIL_CAP)),
-        "discord_send_ui" | "discord_open_modal" | "discord_ui_schema" => {
-            Some("(discord ui)".to_string())
-        }
+        "discord_open_modal" | "discord_ui_schema" => None,
         "discord_file" => arg("path")
             .or_else(|| arg("file_id"))
             .or_else(|| arg("action"))
@@ -866,8 +928,20 @@ async fn run_print_inner(
                 .map(|l| (t.name.clone(), l.to_string()))
         })
         .collect();
+    let tool_previews: std::collections::HashMap<String, String> = agent
+        .tool_defs()
+        .iter()
+        .filter_map(|t| {
+            t.preview
+                .as_ref()
+                .map(|x| x.trim())
+                .filter(|x| !x.is_empty())
+                .map(|x| (t.name.clone(), x.to_string()))
+        })
+        .collect();
     if let Some(output) = json.as_deref_mut() {
         output.labels = tool_labels.clone();
+        output.previews = tool_previews.clone();
     }
     if resume_target.is_none() {
         store
@@ -927,6 +1001,7 @@ async fn run_print_inner(
                     Some(&cwd),
                     &mut in_flight,
                     &tool_labels,
+                    &tool_previews,
                 ),
             };
             if let Err(e) = rendered {
