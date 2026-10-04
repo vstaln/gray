@@ -1,0 +1,11 @@
+# cargo-nextest runs every test in its own process and schedules tests from
+# all binaries at once, so the sleep-bound process lifecycle suites overlap
+# instead of queueing behind each other binary by binary.
+
+[profile.ci]
+# Report every failing test, never stop at the first: on Windows and macOS
+# one failure must not hide another suite's native evidence.
+fail-fast = false
+# Print a failing test's output when it fails and again in the final summary,
+# so the cause is at the bottom of the log.
+failure-output = "immediate-final"

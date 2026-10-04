@@ -4,7 +4,10 @@
 //!
 //! Purpose: lock in today's numbers. Any future fast path (grep envelope,
 //! parallel dispatch) must beat these or it doesn't ship. Run with:
-//! `cargo test -p gray-tools --test tool_bench -- --nocapture`
+//! `cargo test --release -p gray-tools --test tool_bench -- --ignored --nocapture`
+//!
+//! `baseline_tool_bench` is a measurement, not a correctness check, so it is
+//! `#[ignore]`d in the per-OS test jobs and runs in CI's perf-floor job.
 //!
 //! These are tool-operation wall times, NOT model-inclusive turn speed:
 //! tool-heavy turns move with these numbers, chat-heavy turns barely do.
@@ -51,6 +54,7 @@ fn fixture() -> TempDir {
 }
 
 #[tokio::test]
+#[ignore = "benchmark: runs in the ci perf-floor job (-- --ignored)"]
 async fn baseline_tool_bench() {
     let dir = fixture();
     let ctx = ctx_for(dir.path());
