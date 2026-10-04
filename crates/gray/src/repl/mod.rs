@@ -121,6 +121,33 @@ async fn spawn_ctrl_c_policy() {
         }
     }
 }
+/// Closing the terminal (SIGHUP) or a `kill` (SIGTERM) used to take the
+/// default action — instant death — and a turn in flight only persists when
+/// it ends, so its user message and every finished tool round vanished from
+/// the session. Now: cancel the turn like Ctrl-C, wait for it to persist,
+/// then exit. Idle, everything is already on disk and this exits at once.
+async fn spawn_hangup_policy() {
+    use tokio::signal::unix::{SignalKind, signal};
+    let (Ok(mut hup), Ok(mut term)) = (
+        signal(SignalKind::hangup()),
+        signal(SignalKind::terminate()),
+    ) else {
+        return;
+    };
+    let code = tokio::select! {
+        _ = hup.recv() => 129,
+        _ = term.recv() => 143,
+    };
+    if let Some(t) = TURN_STATE.lock().ok().and_then(|mut g| g.take()) {
+        t.cancel();
+    }
+    drain_in_flight_turn(TURN_DRAIN_TIMEOUT).await;
+    // SIGTERM leaves the terminal alive; a hung-up tty just ignores this.
+    let _ = crossterm::terminal::disable_raw_mode();
+    let _ = write!(std::io::stdout(), "\x1b[?25h\r\n");
+    let _ = std::io::stdout().flush();
+    std::process::exit(code);
+}
 use crate::config::Config;
 use crate::{DEFAULT_SYS_PROMPT, build_agent, load_or_create_system_prompt_at};
 
@@ -452,6 +479,7 @@ pub async fn run_repl_mode(
     // boot: no forced wizard. A dim hint appears when unconfigured,
     // and the provider picker fires the moment credentials are needed.
     tokio::spawn(spawn_ctrl_c_policy());
+    tokio::spawn(spawn_hangup_policy());
     // Sidecar `host/ask` (questions/permissions plugins): installed once per
     // process; the TUI handle arrives with the composer below (interactive)
     // or stays None (piped/headless → stdin/empty surfaces).
