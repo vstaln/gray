@@ -98,6 +98,41 @@ pub fn expand_tabs(s: &str) -> String {
 /// review's `\u{1f7e0}` marker did to a live REPL (byte index 80 inside the
 /// 4-byte emoji). ASCII text cuts at exactly 80, as before; wide text now
 /// fills the same 80 cells instead of being cut a quarter of the way in.
+/// Discord-bound text without its markdown markers: `**bold**` → `bold`,
+/// `__underline__` → `underline`, `` `code` `` → `code`, `~~strike~~` → `strike`.
+/// Single `*`/`_` stay (Discord only pairs them) and the `||spoiler||` bars
+/// stay too — stripping one bar of a spoiler pair corrupts worse than noise.
+fn strip_markup(s: &str) -> String {
+    let mut out = s.to_string();
+    for (open, close) in [("**", "**"), ("__", "__"), ("~~", "~~")] {
+        loop {
+            let Some(a) = out.find(open) else { break };
+            let after = a + open.len();
+            let Some(rel) = out[after..].find(close) else { break };
+            let b = after + rel;
+            let inner = out[after..b].to_string();
+            if inner.trim().is_empty() {
+                break;
+            }
+            out.replace_range(a..b + close.len(), &inner);
+        }
+    }
+    // Single-backtick code spans: drop the fences, keep the code.
+    let mut res = String::with_capacity(out.len());
+    let mut chars = out.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '`' {
+            if chars.peek() == Some(&'`') {
+                res.push('`');
+                chars.next();
+            }
+            continue;
+        }
+        res.push(ch);
+    }
+    res
+}
+
 fn truncate_cmd(cmd: &str) -> &str {
     let line = cmd.lines().next().unwrap_or(cmd);
     if crate::text_width::display_width(line) <= 80 {
@@ -518,8 +553,12 @@ pub fn format_tool_call_header(
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .trim();
-            let cut = truncate_cmd(content);
-            let shown = if cut.len() < content.len() {
+            // Discord renders markdown, the terminal does not: strip the
+            // markers (`**bold**` reads as literal asterisks) so the
+            // preview matches what the channel actually shows.
+            let plain = strip_markup(content);
+            let cut = truncate_cmd(&plain);
+            let shown = if cut.len() < plain.len() {
                 format!("{}{}", cut.trim_end(), "…")
             } else {
                 cut.to_string()
