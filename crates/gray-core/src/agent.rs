@@ -375,6 +375,10 @@ pub struct Agent {
     pub(crate) tool_timeout: Duration,
     pub(crate) hooks: Vec<Arc<dyn PluginHooks>>,
     pub(crate) context_window: Option<usize>,
+    /// Pre-turn compaction reserve and retained-tail budget overrides
+    /// (`GRAY_CONTEXT_RESERVE` / `GRAY_CONTEXT_KEEP`); `None` = core defaults.
+    pub(crate) compact_reserve: Option<usize>,
+    pub(crate) compact_keep: Option<usize>,
     /// Latest provider-reported context size and the history length it
     /// covered (pi `getLastAssistantUsage`). Cleared on every history
     /// rewrite: a pre-rewrite report describes a context that no longer exists.
@@ -434,6 +438,8 @@ impl Agent {
             tool_timeout: Duration::from_secs(120),
             hooks: Vec::new(),
             context_window: None,
+            compact_reserve: None,
+            compact_keep: None,
             context_usage: None,
             history_revision: 0,
             history_rewrite_hook: None,
@@ -555,6 +561,14 @@ impl Agent {
     /// `resolve_model_context_length` at build surfaces.
     pub fn with_context_window(mut self, window: Option<usize>) -> Self {
         self.context_window = window;
+        self
+    }
+
+    /// Overrides the pre-turn compaction reserve and the retained-tail
+    /// budget of automatic compaction; `None` keeps the core default.
+    pub fn with_compaction_budget(mut self, reserve: Option<usize>, keep: Option<usize>) -> Self {
+        self.compact_reserve = reserve;
+        self.compact_keep = keep;
         self
     }
 
@@ -717,7 +731,10 @@ async fn drain_reply_text(mut stream: ProviderStream) -> Result<String, CoreErro
             StreamEvent::ThinkingDelta { delta } => {
                 append_thinking_chunk(&mut result, &delta);
             }
-            StreamEvent::MessageComplete { .. } => break,
+            StreamEvent::MessageComplete { usage, .. } => {
+                usage.unwrap_or_default().log_request("compaction");
+                break;
+            }
             _ => {}
         }
     }
