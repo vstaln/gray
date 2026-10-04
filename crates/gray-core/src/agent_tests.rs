@@ -2807,43 +2807,23 @@ fn tool_result_bodies(msgs: &[Message]) -> Vec<&str> {
 }
 
 #[test]
-fn stale_tool_output_masks_in_batches_and_keeps_history_intact() {
+fn stale_tool_output_masks_with_citations_and_keeps_history_intact() {
     let bytes = crate::compact::ARC_STUB_MIN_BYTES + 1;
     let mut agent = Agent::new(
         Box::new(FakeProvider::new(vec![])),
         Arc::new(FakeExecutor::new(ToolOutput::ok("unused"))),
     );
     agent.session_id = Some("sess-mask".into());
-    // 12 tool rounds, one user turn on top: the last 10 rounds are fresh,
-    // the first 2 are stale.
-    let mut msgs = vec![Message::user("go")];
-    for i in 0..12 {
-        msgs.extend(big_tool_round(&format!("call_{i}"), bytes));
-    }
-    msgs.push(Message::user("status?"));
-    agent.set_messages(msgs);
-
-    // A partial batch holds the mask: rewriting the prefix costs a
-    // prompt-cache miss, so it waits for a full batch of newly stale results.
-    agent.advance_tool_mask();
-    let view = agent.scrubbed_messages();
-    assert!(
-        tool_result_bodies(&view)
-            .iter()
-            .all(|b| !b.contains("elided from context")),
-        "two stale results are below the batch floor: {view:?}"
-    );
-
-    // Five stale results cross it. 16 groups (opening user turn + 14 tool
-    // rounds + closing user turn) put the six oldest out of reach of the
-    // model, and one of those six is the opening turn.
+    // 16 groups (opening user turn + 14 tool rounds + closing user turn) put
+    // the six oldest out of reach of the model, and one of those six is the
+    // opening turn.
     let mut msgs = vec![Message::user("go")];
     for i in 0..14 {
         msgs.extend(big_tool_round(&format!("call_{i}"), bytes));
     }
     msgs.push(Message::user("status?"));
     agent.set_messages(msgs);
-    agent.advance_tool_mask();
+    agent.mask_stale_tool_output();
     let view = agent.scrubbed_messages();
     let bodies = tool_result_bodies(&view);
     assert_eq!(bodies.len(), 14, "every result still rides the request");
@@ -2870,6 +2850,39 @@ fn stale_tool_output_masks_in_batches_and_keeps_history_intact() {
     );
 }
 
+/// The mask never moves mid-turn: rewriting an old result into a stub
+/// changes the cached prefix, and the next request re-bills all of it.
+#[tokio::test]
+async fn a_long_turn_never_rewrites_its_own_prefix() {
+    let big = "y".repeat(crate::compact::ARC_STUB_MIN_BYTES + 1);
+    let mut scripts: Vec<_> = (0..14)
+        .map(|i| tool_script_with_args(&format!("c{i}"), &format!(r#"{{"q":"{i}"}}"#)))
+        .collect();
+    scripts.push(end_script());
+    let provider = FakeProvider::new(scripts);
+    let seen = provider.seen_requests();
+    let mut agent = Agent::new(
+        Box::new(provider),
+        Arc::new(FakeExecutor::new(ToolOutput::ok(big))),
+    )
+    .with_tools(vec![tool_def()]);
+
+    agent
+        .run(Message::user("go"), ToolContext::default())
+        .await
+        .expect("fourteen tool rounds then end");
+
+    let seen = seen.lock().expect("seen lock").clone();
+    assert_eq!(seen.len(), 15, "one request per round");
+    for (i, w) in seen.windows(2).enumerate() {
+        assert!(
+            w[1].1.starts_with(&w[0].1),
+            "request {}: a stale result was rewritten mid-turn",
+            i + 1
+        );
+    }
+}
+
 #[test]
 fn a_cold_cache_masks_every_stale_result_now() {
     let bytes = crate::compact::ARC_STUB_MIN_BYTES + 1;
@@ -2884,8 +2897,6 @@ fn a_cold_cache_masks_every_stale_result_now() {
     msgs.push(Message::user("status?"));
     agent.set_messages(msgs);
 
-    // The batch floor is a cache-warmth rule; a caller that knows the cache
-    // is gone ignores it.
     agent.mask_stale_tool_output();
     let view = agent.scrubbed_messages();
     let bodies = tool_result_bodies(&view);
@@ -2920,7 +2931,6 @@ fn small_results_and_recent_rounds_are_never_masked() {
     }
     msgs.push(Message::user("status?"));
     agent.set_messages(msgs);
-    agent.advance_tool_mask();
     agent.mask_stale_tool_output();
     assert!(
         tool_result_bodies(&agent.scrubbed_messages())

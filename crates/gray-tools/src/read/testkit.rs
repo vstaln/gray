@@ -3,7 +3,7 @@
 //! Wired by T1.1 as `#[cfg(test)] pub(crate) mod testkit` in `read/mod.rs`.
 //!
 //! Fixtures are generated at test time into a `TempDir` and never committed.
-//! `crates/gray-tools/tests/read_zoo.rs` carries a self-contained copy of the
+//! `crates/gray-tools/tests/it/read_zoo.rs` carries a self-contained copy of the
 //! builders until T1.1 dedups the two (this file uses `crate::` paths, the
 //! integration test uses `gray_tools::`).
 

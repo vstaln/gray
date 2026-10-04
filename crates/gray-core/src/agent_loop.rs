@@ -54,12 +54,6 @@ pub(crate) const CONTAMINATED_SCRUB_MARKER: &str =
 /// the compaction trigger.
 const MASK_STALE_ROUNDS: usize = 10;
 
-/// Newly stale results are masked this many at a time. One rewrite is one
-/// prompt-cache miss, and a miss re-bills the whole prefix — so the mask
-/// moves in batches and holds still in between, instead of costing a
-/// full-prefix miss every round.
-const MASK_BATCH: usize = 4;
-
 impl Agent {
     /// History as the model is allowed to see it: contaminated salvaged
     /// partials (arXiv:2605.08563) replaced by the one-line scrub marker, and
@@ -111,35 +105,11 @@ impl Agent {
             .sum()
     }
 
-    /// Results at/over the stub threshold in `messages[from..to]`.
-    fn stubbable_between(&self, from: usize, to: usize) -> usize {
-        self.messages[from.min(to)..to]
-            .iter()
-            .flat_map(|m| &m.content)
-            .filter(|b| {
-                matches!(b, ContentBlock::ToolResult { content, .. }
-                    if content.len() >= crate::compact::ARC_STUB_MIN_BYTES)
-            })
-            .count()
-    }
-
-    /// Extends the mask once a full [`MASK_BATCH`] of results has gone stale
-    /// (arXiv:2607.25066: masking an old tool output costs ~½ an LLM summary
-    /// and keeps it addressable through the session transcript). Called once
-    /// per round, before the request is built.
-    pub(crate) fn advance_tool_mask(&mut self) {
-        let boundary = self.stale_boundary();
-        if boundary > self.masked_prefix
-            && self.stubbable_between(self.masked_prefix, boundary) >= MASK_BATCH
-        {
-            self.masked_prefix = boundary;
-        }
-    }
-
-    /// Masks every stale result now, ignoring the batch floor. For a caller
+    /// Masks every stale result now (arXiv:2607.25066). Only for a caller
     /// that knows the prompt cache is already cold: the next request re-bills
     /// the whole prefix whatever it contains, so rewriting it is free and the
-    /// shorter prompt is what gets cached from here on.
+    /// shorter prompt is what gets cached from here on. Never mid-turn — a
+    /// prefix rewrite on a warm cache re-bills the whole prefix.
     pub fn mask_stale_tool_output(&mut self) {
         self.masked_prefix = self.masked_prefix.max(self.stale_boundary());
     }
@@ -391,11 +361,6 @@ impl Agent {
                     }
                 }
             }
-            // Stale-output mask (arXiv:2607.25066): results older than
-            // MASK_STALE_ROUNDS ride as citation stubs, so a long session
-            // stops re-sending every old dump. Batched, so the prefix is
-            // rewritten once per batch and stays cacheable in between.
-            self.advance_tool_mask();
             // CCRM scrub (arXiv:2605.08563): contaminated partials stay in
             // `self.messages` (and so in the persisted transcript) but never
             // ride an outbound request — the retry starts from a clean

@@ -399,8 +399,9 @@ pub struct Agent {
     pub(crate) contaminated: std::collections::BTreeSet<usize>,
     /// Stale-output mask watermark: every at-threshold `ToolResult` in
     /// `messages[..masked_prefix]` rides outbound requests as a citation
-    /// stub. Advanced in batches (see `agent_loop::advance_tool_mask`) and
-    /// reset by every history rewrite, which invalidates the index.
+    /// stub. Advanced only when the cache is already cold (see
+    /// `agent_loop::mask_stale_tool_output`) and reset by every history
+    /// rewrite, which invalidates the index.
     pub(crate) masked_prefix: usize,
     /// Prompt-cache warming during long tool runs; `None` = off.
     pub(crate) cache_warm: Option<crate::cache_warm::CacheWarmPolicy>,

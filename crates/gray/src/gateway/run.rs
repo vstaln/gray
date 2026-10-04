@@ -46,6 +46,15 @@ pub async fn run_foreground(config: &Config) -> anyhow::Result<()> {
         record.pid,
         home.display()
     );
+    // The same restart record chat adapters keep: a run that never said
+    // goodbye is logged as a crash, not as a quiet start.
+    let lifecycle_dir = home.join("gateway");
+    match crate::gateway::lifecycle::boot(&lifecycle_dir) {
+        crate::gateway::lifecycle::Previous::Crashed => {
+            log::warn!("gateway: previous run ended unexpectedly (crash, kill, or reboot)")
+        }
+        previous => log::info!("gateway: previous run: {}", previous.as_str()),
+    }
     let _ = state::write(
         &home,
         &state::record(state::STATE_STARTING, None, started_at),
@@ -127,6 +136,8 @@ pub async fn run_foreground(config: &Config) -> anyhow::Result<()> {
         }
     }
 
+    let restart = crate::gateway::lifecycle::mark_stopped(&lifecycle_dir);
+    let exit_reason = if restart { "restart" } else { exit_reason };
     let _ = state::write(
         &home,
         &state::record(state::STATE_STOPPED, Some(exit_reason), started_at),

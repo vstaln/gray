@@ -261,6 +261,20 @@ fn diff_rows_pad_edge_to_edge() {
     assert!(row_w(&lines[5]) < 80);
 }
 
+/// tool_fmt pre-wraps numbered rows to `width - 2` cells (2-col lead +
+/// gutter + content). The card must not re-wrap them narrower: a 2-col
+/// mismatch orphaned each full row's last word onto its own row.
+#[test]
+fn full_width_numbered_row_is_not_rewrapped() {
+    let width = 80;
+    let content = "word ".repeat(14); // 70 cells
+    let row = format!("    1 | {content}"); // 2 lead + "  1 | " + 70 = 78
+    assert_eq!(row.len(), width - 2);
+    let lines = format_tool_box_lines(Line::from("Ran x"), &[Line::from(row)], width);
+    // margin, header, breathing row, ONE body row, margin
+    assert_eq!(lines.len(), 5, "{lines:?}");
+}
+
 #[test]
 fn wrap_ranges_round_trip_and_identity() {
     // identity: short line maps to the whole source

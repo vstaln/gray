@@ -83,3 +83,6 @@ __pycache__/
 /docs/deepswe-retro-fixes.md
 /docs/hermes-plugins-vs-gray.md
 /docs/memory-ingest-contract.md
+# agent memory strays (never commit)
+/CLAUDE.md
+/GEMINI.md

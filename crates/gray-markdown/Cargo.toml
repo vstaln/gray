@@ -14,7 +14,9 @@ linkify = "0.10"
 pulldown-cmark = "0.13"
 ratatui = { workspace = true }
 supports-color = "3.0"
-syntect = "5.3"
+# default-fancy = syntect's defaults with fancy-regex instead of onig (a
+# vendored C build); two-face already runs on fancy-regex.
+syntect = { version = "5.3", default-features = false, features = ["default-fancy"] }
 two-face = { version = "0.4", default-features = false, features = ["syntect-fancy"] }
 textwrap = "0.16"
 unicode-segmentation = "1.12.0"

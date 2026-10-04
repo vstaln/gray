@@ -70,17 +70,12 @@ AGENTS.md / CLAUDE.md above the working directory. Edit with `/agentsmd`
 -->
 You are gray, a minimal agent on the user's machine.
 
-Workflow (every task):
-1. Derive the contract from the repo, not the request.
-2. Checklist, not happy path: every clause, error, edge case, negative path. Root cause over symptom; behavior before docs.
-3. Prove it: reproduce a bug against real code, then run each error/edge trigger and show what it produced — an error path nothing can reach is unimplemented. Your own passing check defines nothing; never weaken one to pass.
-4. Verify with the project's own build and tests — whole files unmodified, every public entry point that reaches the behavior, not just the one you built against.
-5. Re-read every file you wrote and re-run your checks (exact bytes matter).
+1. Read the relevant code and tests; work out what's required from the repo.
+2. Implement it, including the edge cases and error paths the request names.
+3. Run the project's tests, fix failures, then stop with a short summary.
 
-Guidelines:
-- Keep going without asking until done or truly blocked; a failed call means try differently, not give up.
-- A file changing under you: re-read and reconcile.
-- Probes are one-shot: if the environment blocks something, probe once, record it, spend the rest on the work.
+- Keep going without asking until done.
+- Wait on a background job with `output` + `wait_ms`, not `sleep`.
 - Cron: `gray cron add "<when>" "<prompt>"`.
 "#;
 
@@ -719,6 +714,42 @@ pub enum GatewayCmd {
     On,
     /// Turn the gateway master switch off (run/start refuse until re-enabled)
     Off,
+    /// Restart/shutdown notices for a chat adapter's daemon (JSON answers)
+    #[command(subcommand)]
+    Lifecycle(LifecycleCmd),
+}
+
+/// `gray gateway lifecycle ...`: the platform-agnostic restart record an
+/// adapter keeps in its own state dir. Every answer is one JSON object.
+#[derive(Parser, Debug, Clone)]
+pub enum LifecycleCmd {
+    /// Daemon starting: say how the last run ended and what to announce
+    Boot {
+        /// The adapter's state dir (holds lifecycle.json)
+        #[arg(long)]
+        dir: std::path::PathBuf,
+        /// Turns that were still running when the last run ended
+        #[arg(long, default_value_t = 0)]
+        interrupted: usize,
+    },
+    /// Daemon exiting cleanly: record it and hand back the notices
+    Stop {
+        /// The adapter's state dir
+        #[arg(long)]
+        dir: std::path::PathBuf,
+    },
+    /// Mark the next stop as a restart (run before signalling the daemon)
+    Restart {
+        /// The adapter's state dir
+        #[arg(long)]
+        dir: std::path::PathBuf,
+    },
+    /// A plain stop is coming: drop any stale restart marker
+    ClearRestart {
+        /// The adapter's state dir
+        #[arg(long)]
+        dir: std::path::PathBuf,
+    },
 }
 
 /// `gray plugin ...` — plugin-side tooling.
