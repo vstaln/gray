@@ -336,12 +336,20 @@ impl Agent {
             // extends the previous one and the provider prefix cache stays
             // hot. Compaction is the only rewrite, and it runs only when the
             // provider-anchored estimate reaches the window.
-            if needs_pre_turn_compact(self.estimate_tokens(), self.context_window) {
+            if needs_pre_turn_compact(
+                self.estimate_tokens(),
+                self.context_window,
+                self.compact_reserve,
+            ) {
                 // False = nothing to gain (all tail): fall through; the provider's
                 // own overflow path remains the backstop. Success strictly shrinks
                 // history, so re-check without looping forever. Errors finalize
                 // the turn first: no silent exit without turn_end.
-                while needs_pre_turn_compact(self.estimate_tokens(), self.context_window) {
+                while needs_pre_turn_compact(
+                    self.estimate_tokens(),
+                    self.context_window,
+                    self.compact_reserve,
+                ) {
                     let before = (self.estimate_tokens(), self.messages.len());
                     match self.try_compact_budgeted().await {
                         Ok(true) => {
@@ -662,6 +670,7 @@ impl Agent {
                 total_usage.normalize();
             }
             billed.accumulate(&usage);
+            usage.log_request("turn");
             // Stream-identity hardening: calls that never got a provider ID
             // get a conversation-unique fallback now and emit their single
             // start here, so every dispatched call already has its start and

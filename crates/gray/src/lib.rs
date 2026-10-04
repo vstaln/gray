@@ -292,7 +292,7 @@ pub async fn build_agent(
     // Foreign packages (pi-installed plugin dirs with AGENTS.md / commands /
     // gray.json) ride as in-process hooks beside the builder's own: same
     // per-turn inject and slash commands, no sidecar, no per-plugin code.
-    let mut agent = agent;
+    let mut agent = agent.with_compaction_budget(config.context_reserve, config.context_keep);
     let mut hooks = agent.hooks().to_vec();
     hooks.extend(crate::foreign::foreign_hooks());
     agent = agent.with_hooks(hooks);

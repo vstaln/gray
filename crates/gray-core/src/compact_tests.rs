@@ -268,9 +268,9 @@ async fn budgeted_compact_false_when_summary_would_not_shrink() {
 
 #[tokio::test]
 async fn budget_math() {
-    assert!(needs_pre_turn_compact(120_000, Some(128_000))); // 120k+16k >= 128k
-    assert!(!needs_pre_turn_compact(100_000, Some(128_000)));
-    assert!(!needs_pre_turn_compact(999_999_999, None)); // unknown window: never
+    assert!(needs_pre_turn_compact(120_000, Some(128_000), None)); // 120k+16k >= 128k
+    assert!(!needs_pre_turn_compact(100_000, Some(128_000), None));
+    assert!(!needs_pre_turn_compact(999_999_999, None, None)); // unknown window: never
 }
 
 /// Provider whose stream immediately fails: exercises the provider-error
