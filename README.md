@@ -208,7 +208,7 @@ Make gray yours via skills, plugins, providers, and config.
 
 **Skills** — `SKILL.md` bodies discovered in your global (`~/.gray/skills`) and project (`.gray/skills`) directories, plus a few conventional shared skill locations. `/skills` lists them, `/skills [name] [args]` pastes one into the chat and runs it (`/skill` is an alias). The model gets the fresh `<available_skills>` list every turn and reads matches with bash (`cat <location>`) — no skill tool, tools stay bash-only.
 
-**Plugins** — sidecar child processes speaking newline-delimited JSON over stdio, with timeout and crash degradation. `gray.yml` profiles order built-ins and sidecars; [`plugins/echo/`](plugins/echo) is a copy-paste reference implementation.
+**Plugins** — sidecar child processes speaking newline-delimited JSON over stdio, with timeout and crash degradation. `gray.yml` profiles order built-ins and sidecars; [`crates/gray-plugin/testdata/echo.sh`](crates/gray-plugin/testdata/echo.sh) is a copy-paste reference implementation.
 
 /undo rewinds the **conversation** only: the last thing you said and everything
 the model said after it leave both the context and the saved session (the

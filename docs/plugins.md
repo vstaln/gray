@@ -33,18 +33,36 @@ Index entries are `gray-native`/`tarball` with `sha256:<hex>`:
  "hash": "sha256:<hex>", "scope": ""}
 ```
 
-## First-party apps (`background`)
+## Where plugins live
 
-First-party apps install through the index like any verified plugin
-(`gray plugin install background`). Each app owns its own setup, doctor,
-and service install — gray core keeps none of it. Discord lives in
-[gray-discord-plugin](https://github.com/vstaln/gray-discord-plugin):
+Plugins are not developed in this repo — gray keeps only the host side
+(protocol, loader, installer) plus test fixtures. Each plugin is its own
+repository under [github.com/vstaln](https://github.com/vstaln):
+
+- [gray-account](https://github.com/vstaln/gray-account)
+- [gray-antigravity-sub](https://github.com/vstaln/gray-antigravity-sub)
+- [gray-background](https://github.com/vstaln/gray-background)
+- [gray-claude-sub](https://github.com/vstaln/gray-claude-sub)
+- [gray-codex-sub](https://github.com/vstaln/gray-codex-sub)
+- gray-devin-sub (local only — no GitHub remote yet)
+- [gray-discord-plugin](https://github.com/vstaln/gray-discord-plugin)
+- [gray-ledger](https://github.com/vstaln/gray-ledger)
+- [gray-permissions](https://github.com/vstaln/gray-permissions)
+- [gray-questions](https://github.com/vstaln/gray-questions)
+- [graysearch](https://github.com/vstaln/graysearch)
+- [gray-subagents](https://github.com/vstaln/gray-subagents)
+
+Install one by building it so `gray-<name>` is on PATH, then registering:
 
 ```sh
-cargo install --git https://github.com/vstaln/gray-discord-plugin --locked
-gray plugin install discord
-gray discord setup
+cargo install --git https://github.com/vstaln/<repo> --locked
+gray plugin install <name>
 ```
+
+or, for plugins published in the index, `gray plugin install <index-name>`.
+The live index is served from
+`https://gray.alignment.id/plugins/index.json` (source:
+`vstaln/graysite`, `public/plugins/index.json`) — it is not kept here.
 
 User-written plugins may be Python, a shell script, or anything else that
 runs: `gray plugin install /path/to/my-plugin` registers any executable,

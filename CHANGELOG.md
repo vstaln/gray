@@ -139,6 +139,10 @@
   permanent copy of the same line went with it.
 
 ### Changed
+- **The in-repo `plugins/` dir and the `plugins-release` workflow are gone.** Plugins live in
+  their own repositories under github.com/vstaln (see `docs/plugins.md`); the served plugin
+  index comes from `vstaln/graysite`. The `echo` reference sidecar moved to
+  `crates/gray-plugin/testdata/echo.sh`.
 - **Account login moved to the
   [`gray-account`](https://github.com/vstaln/gray-account) plugin.** `gray login`, `gray whoami`,
   `gray logout` and the `/login` `/whoami` `/logout` REPL commands left core: install the plugin,
