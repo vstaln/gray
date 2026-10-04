@@ -459,9 +459,25 @@ pub fn set_managed_enabled(name: &str, on: bool) -> anyhow::Result<()> {
 }
 
 /// `gray plugin update [name|all]` — index-installed entries only; local
-/// registrations carry no index source and `ops::update` skips them.
+/// command registrations carry no index source and are skipped with a
+/// warning before any index fetch.
 pub async fn update_managed(target: &str) -> anyhow::Result<Vec<gray_pkg::ops::Report>> {
+    if target != "all" && is_local_command(&home()?, target) {
+        eprintln!("warning: skipping update of {target} (non-index source)");
+        return Ok(Vec::new());
+    }
     gray_pkg::ops::update(target).await
+}
+
+/// A lock row with `cli_argv` is a local command registration, not an
+/// index-installed package. Lock load errors answer false (the index path
+/// then reports whatever went wrong itself).
+fn is_local_command(home: &Path, name: &str) -> bool {
+    migrate_commands_json(home);
+    load_lock(home)
+        .ok()
+        .and_then(|lock| lock.plugins.get(name).map(|e| e.cli_argv.is_some()))
+        .unwrap_or(false)
 }
 
 /// Resolve only explicitly registered commands (never arbitrary PATH executables).
@@ -608,13 +624,13 @@ pub async fn register_native(
         },
     );
     lock.save(&gray_plugin::lock::lock_path(home))?;
-    // Refresh the provider cache from the plugin lock so provider rows are
-    // discoverable by `/connect` immediately after this registration.
-    crate::providers::ProviderRegistry::refresh(home)?;
     let mut metadata = tempfile::NamedTempFile::new_in(home.join("plugins"))?;
     use std::io::Write;
     writeln!(metadata, "{}", manifest)?;
     metadata.persist(home.join("plugins").join(format!("{name}-manifest.json")))?;
+    // Refresh the provider cache from the plugin lock so provider rows are
+    // discoverable by `/connect` immediately after this registration.
+    crate::providers::ProviderRegistry::refresh(home)?;
     if manifest["widget"].as_bool() == Some(true) && !wire_only {
         let mut tmp = tempfile::NamedTempFile::new_in(home.join("plugins"))?;
         use std::io::Write;
@@ -951,5 +967,84 @@ done
         assert_eq!(entry.cli_argv, None);
         assert_eq!(entry.adapter_version, "1.1");
         assert!(home.path().join("plugins/wiretest-manifest.json").exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn register_native_caches_a_new_provider_plugin_on_first_install() {
+        use std::os::unix::fs::PermissionsExt;
+        let home = tempfile::tempdir().unwrap();
+        let exe = home.path().join("provider-sidecar.sh");
+        // Wire-only sidecar whose manifest declares one provider.
+        std::fs::write(
+            &exe,
+            r#"#!/bin/sh
+if [ $# -gt 0 ]; then exit 1; fi
+while IFS= read -r line; do
+  case "$line" in
+    *plugin/shutdown*) exit 0 ;;
+    *plugin/manifest*)
+      id=$(printf '%s' "$line" | sed 's/.*"id":\([0-9][0-9]*\).*/\1/')
+      printf '{"id":%s,"result":{"name":"provtest","version":"1.0.0","protocol":"1.2","tools":[],"commands":[],"providers":[{"id":"prov","name":"Prov","transport":{"kind":"openai-responses","base_url":"https://127.0.0.1:1/","authorization":{"kind":"bearer","secret_name":"k"}},"auth_methods":[{"id":"a","kind":"api_key","name":"A","operations":["models"]}]}]}}\n' "$id"
+      ;;
+  esac
+done
+"#,
+        )
+        .unwrap();
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+        register_native(home.path(), None, &exe, false)
+            .await
+            .unwrap();
+        // One install must land the plugin in the provider cache — the
+        // refresh reads plugins/<name>-manifest.json, so it has to run
+        // after that file exists (a second install used to be required).
+        let cached = crate::providers::ProviderRegistry::load_cached(home.path());
+        let entry = &cached.cache().plugins["provtest"];
+        // Non-interactive consent grants nothing: the declared provider is
+        // cached but hidden until granted.
+        assert!(entry.providers.is_empty());
+        assert!(
+            entry
+                .errors
+                .iter()
+                .any(|e| e.contains("provider capability not granted")),
+            "{:?}",
+            entry.errors
+        );
+        // After granting, a refresh exposes the declared provider.
+        let mut lock = load_lock(home.path()).unwrap();
+        lock.plugins
+            .get_mut("provtest")
+            .unwrap()
+            .granted_capabilities = vec![gray_plugin::PROVIDER_CREDENTIALS.into()];
+        lock.save(&gray_plugin::lock::lock_path(home.path()))
+            .unwrap();
+        crate::providers::ProviderRegistry::refresh(home.path()).unwrap();
+        let cached = crate::providers::ProviderRegistry::load_cached(home.path());
+        let entry = &cached.cache().plugins["provtest"];
+        assert_eq!(entry.providers.len(), 1);
+        assert_eq!(entry.providers[0].id, "prov");
+    }
+
+    #[test]
+    fn is_local_command_recognizes_cli_lock_rows() {
+        let home = tempfile::tempdir().unwrap();
+        let home = home.path();
+        let mut cli = cli_entry(&["/usr/bin/false"]);
+        cli.cli_argv = Some(cli.argv.clone());
+        write_lock(
+            home,
+            &serde_json::json!({"cli-one": cli, "sidecar-one": LockEntry::default()}),
+        );
+        assert!(is_local_command(home, "cli-one"));
+        assert!(!is_local_command(home, "sidecar-one"));
+        assert!(!is_local_command(home, "absent"));
+        // A not-yet-migrated commands.json row counts too.
+        write_commands(
+            home,
+            &serde_json::json!({"migrated": cli_entry(&["/usr/bin/legacy"])}),
+        );
+        assert!(is_local_command(home, "migrated"));
     }
 }
