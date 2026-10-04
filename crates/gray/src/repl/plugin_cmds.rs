@@ -123,7 +123,7 @@ pub(crate) async fn handle_plugin_command(raw: &str, tui: Option<&crate::compose
             // existing paths, gray-<name> on PATH, then index/URL — plus the
             // commands.json migration. Output lines come back for `say`
             // instead of printing to stdout under the live TUI.
-            match crate::plugin_cli::home().map_err(anyhow::Error::from) {
+            match crate::plugin_cli::home() {
                 Ok(home) => {
                     match crate::plugin_cli::install_spec_lines(&home, &spec, false).await {
                         Ok(lines) => {

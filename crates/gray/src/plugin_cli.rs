@@ -340,7 +340,7 @@ pub fn print_capabilities(only: Option<&str>) -> anyhow::Result<()> {
             continue;
         }
         shown += 1;
-        let entry = Some(&row.entry);
+        let entry = &row.entry;
         let declared = metadata(&home, &row.name)
             .ok()
             .and_then(|m| {
@@ -351,13 +351,10 @@ pub fn print_capabilities(only: Option<&str>) -> anyhow::Result<()> {
                 })
             })
             .unwrap_or_default();
-        let (granted, hash) = match entry {
-            Some(e) => (
-                gray_plugin::capabilities::granted_for(e, &declared),
-                e.capabilities_hash.clone(),
-            ),
-            None => (Default::default(), None),
-        };
+        let (granted, hash) = (
+            gray_plugin::capabilities::granted_for(entry, &declared),
+            entry.capabilities_hash.clone(),
+        );
         println!(
             "{} ({}, {})",
             row.name, row.entry.ecosystem, row.entry.version
@@ -380,10 +377,7 @@ pub fn print_capabilities(only: Option<&str>) -> anyhow::Result<()> {
                 row.name
             ),
             Some(h) => {
-                let drift = gray_plugin::capabilities::needs_reconsent(
-                    entry.expect("hashed entry"),
-                    &declared,
-                );
+                let drift = gray_plugin::capabilities::needs_reconsent(entry, &declared);
                 if drift {
                     println!(
                         "  consent: hash {h} no longer matches the manifest — re-run `gray plugin update {}`",
