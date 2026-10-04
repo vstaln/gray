@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use gray_core::credential::{
-    CredentialEnvelope, CredentialError, CredentialLease, CredentialMaterial,
+    CredentialEnvelope, CredentialError, CredentialLease, CredentialMaterial, SecretMap,
 };
 use gray_plugin::{ProviderChatRequest, ProviderRefreshRequest, ProviderRpcError};
 use tokio::sync::Mutex;
@@ -218,6 +218,35 @@ impl PluginCredentialSource {
     /// never the relay wire shape. The per-turn bearer goes in
     /// `secrets[relay_token]` (the manifest's declared `secret_name`); the
     /// URL rides in `metadata[relay_url]` for the dynamic POST override.
+    /// Marker envelope proving `/connect` verified this login: a relay-only
+    /// login has no stored credential, so `connect_dynamic_provider` calls this
+    /// after a successful `provider/chat` and the row counts as connected.
+    pub async fn mark_relay_verified(&self) -> Result<(), CredentialError> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_secs())
+            .unwrap_or_default();
+        let material = CredentialMaterial {
+            secrets: SecretMap::from_iter([("relay_verified", "1")]),
+            metadata: [("verified_at".to_string(), now.to_string())]
+                .into_iter()
+                .collect(),
+            expires_at: None,
+        };
+        let envelope = CredentialEnvelope::new(
+            self.installed.plugin.clone(),
+            self.installed.provider.id.clone(),
+            self.installed.auth_method.id.clone(),
+            self.installed.profile_binding.clone(),
+            material,
+        )
+        .map_err(|e| CredentialError::ReauthRequired(format!("{e}")))?;
+        self.store
+            .put_plugin(envelope)
+            .map_err(|e| CredentialError::ReauthRequired(format!("{e}")))?;
+        Ok(())
+    }
+
     async fn acquire_relay(&self) -> Result<CredentialLease, CredentialError> {
         let identity = self.identity();
         let request = ProviderChatRequest {

@@ -545,3 +545,80 @@ async fn relay_chat_unavailable_maps_to_login_required() {
         gray_core::credential::CredentialError::ReauthRequired(_)
     ));
 }
+
+#[tokio::test]
+async fn relay_verified_marker_counts_as_connected() {
+    // `/connect` on a relay-only login stores no secret: the verified marker
+    // must read back through the store so the row counts as connected.
+    struct OkChat;
+    #[async_trait::async_trait]
+    impl ProviderRpc for OkChat {
+        async fn auth_start(
+            &self,
+            _provider: &str,
+            _auth_method: &str,
+        ) -> Result<ProviderAuthStart, ProviderRpcError> {
+            unimplemented!()
+        }
+        async fn auth_poll(
+            &self,
+            _operation_id: &str,
+        ) -> Result<ProviderAuthPoll, ProviderRpcError> {
+            unimplemented!()
+        }
+        async fn auth_cancel(&self, _operation_id: &str) -> Result<(), ProviderRpcError> {
+            unimplemented!()
+        }
+        async fn refresh(
+            &self,
+            _request: ProviderRefreshRequest,
+        ) -> Result<CredentialMaterial, ProviderRpcError> {
+            unimplemented!()
+        }
+        async fn revoke(
+            &self,
+            _request: ProviderRevokeRequest,
+        ) -> Result<ProviderRevokeResult, ProviderRpcError> {
+            unimplemented!()
+        }
+        async fn models(
+            &self,
+            _request: ProviderModelsRequest,
+        ) -> Result<ProviderModelCatalog, ProviderRpcError> {
+            unimplemented!()
+        }
+        async fn chat(
+            &self,
+            _request: ProviderChatRequest,
+        ) -> Result<ProviderChatResult, ProviderRpcError> {
+            Ok(ProviderChatResult {
+                relay_url: "http://127.0.0.1:9/relay/tok/responses".into(),
+                relay_token: "per-turn-bearer".into(),
+            })
+        }
+        async fn shutdown(&self) {}
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let store = CredentialStore::new(dir.path().join("auth.json"));
+    let mut relay = installed();
+    relay.auth_method.operations = vec!["models".into(), "chat".into()];
+    let source = shared_plugin_source(relay.clone(), store.clone(), Arc::new(OkChat));
+    source.acquire().await.expect("relay handshake proves the login");
+    source
+        .mark_relay_verified()
+        .await
+        .expect("verified marker stores");
+    let saved = store
+        .read_plugin(&source.auth_ref())
+        .expect("marker reads back")
+        .expect("marker present");
+    assert_eq!(saved.plugin, relay.plugin);
+    assert_eq!(saved.provider, relay.provider.id);
+    assert_eq!(saved.auth_method, relay.auth_method.id);
+    assert_eq!(
+        saved.credential.secrets.get("relay_verified"),
+        Some("1"),
+        "marker holds no secret, only the verified flag"
+    );
+}

@@ -1,9 +1,10 @@
 //! Host-owned plugin provider authentication for `/connect`.
 
 use std::path::Path;
+use std::sync::Arc;
 
 use anyhow::{Context, anyhow};
-use gray_core::credential::CredentialEnvelope;
+use gray_core::credential::{CredentialEnvelope, CredentialSource};
 use gray_plugin::ProviderModelsRequest;
 use tokio_util::sync::CancellationToken;
 
@@ -48,6 +49,20 @@ pub async fn run_plugin_login(
     cancel: CancellationToken,
     progress: tokio::sync::mpsc::UnboundedSender<PluginLoginProgress>,
 ) -> anyhow::Result<()> {
+    // Relay providers (external login: agy, claude) own their auth in the
+    // user's terminal — there is no browser OAuth to drive. Verify the login
+    // answers (sidecar probe, no browser), prove one relay turn works, mark
+    // the connection verified, then list models. No `xdg-open` anywhere here:
+    // auto-open fired a Firefox OAuth page on the wrong profile out of every
+    // `/connect` pick, even when the user was already logged in.
+    if installed
+        .auth_method
+        .operations
+        .iter()
+        .any(|operation| operation == "chat")
+    {
+        return run_external_login(installed, cancel, progress).await;
+    }
     let home = crate::setup::gray_home()?;
     let runtime = ProviderRuntime::start(installed.clone()).await?;
     let rpc = runtime.rpc();
@@ -58,7 +73,6 @@ pub async fn run_plugin_login(
     let _ = progress.send(PluginLoginProgress::Started {
         verification_uri: operation.verification_uri.clone(),
     });
-    crate::feedback::open_in_browser(&operation.verification_uri);
 
     let mut delay = std::time::Duration::from_millis(1_000);
     loop {
@@ -154,6 +168,75 @@ pub async fn run_plugin_login(
             }
         }
     }
+}
+
+/// External-login connect: no browser loop, no credential save. The sidecar's
+/// own probe already checked the real login (no browser window); here one
+/// `provider/chat` handshake proves a relay turn opens, the verified marker
+/// is stored so the row counts as connected, and the pinned catalog becomes
+/// the model list. Logged-out surfaces the sidecar's terminal hint.
+///
+/// Relay-only logins hold no secret: the store keeps just the marker. Treat
+/// it as connected while it verifies; anything else is a failure message.
+async fn run_external_login(
+    installed: InstalledProvider,
+    cancel: CancellationToken,
+    progress: tokio::sync::mpsc::UnboundedSender<PluginLoginProgress>,
+) -> anyhow::Result<()> {
+    if cancel.is_cancelled() {
+        let _ = progress.send(PluginLoginProgress::Cancelled);
+        return Ok(());
+    }
+    let home = crate::setup::gray_home()?;
+    let runtime = ProviderRuntime::start(installed.clone()).await?;
+    let rpc = runtime.rpc();
+    let store = CredentialStore::new(home.join("auth.json"));
+    let source = crate::auth::shared_plugin_source(
+        installed.clone(),
+        store,
+        Arc::clone(&runtime.rpc()) as Arc<dyn ProviderRpc>,
+    );
+    match source.acquire().await {
+        Ok(_) => {}
+        Err(error) => {
+            let _ = progress.send(PluginLoginProgress::Failed(format!("{error}")));
+            return Ok(());
+        }
+    }
+    if cancel.is_cancelled() {
+        let _ = progress.send(PluginLoginProgress::Cancelled);
+        return Ok(());
+    }
+    if let Err(error) = source.mark_relay_verified().await {
+        let _ = progress.send(PluginLoginProgress::Failed(format!("{error}")));
+        return Ok(());
+    }
+    let _ = progress.send(PluginLoginProgress::CredentialSaved);
+    let request = ProviderModelsRequest {
+        provider: installed.provider.id.clone(),
+        auth_method: installed.auth_method.id.clone(),
+        profile_binding: installed.profile_binding.clone(),
+        credential: gray_core::credential::CredentialEnvelope::new(
+            installed.plugin.clone(),
+            installed.provider.id.clone(),
+            installed.auth_method.id.clone(),
+            installed.profile_binding.clone(),
+            gray_core::credential::CredentialMaterial::empty(),
+        )
+        .map_err(|e| anyhow!("provider credential rejected: {e}"))?,
+    };
+    match rpc.models(request).await {
+        Ok(catalog) => {
+            let models = catalog.models.iter().map(model_tuple).collect::<Vec<_>>();
+            let _ = progress.send(PluginLoginProgress::Models(models));
+        }
+        Err(_) => {
+            let _ = progress.send(PluginLoginProgress::ModelsUnavailable(
+                "provider model discovery unavailable".into(),
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Persist a plugin-backed provider selection: never a plaintext key.

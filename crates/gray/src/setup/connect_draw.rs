@@ -605,32 +605,37 @@ pub(crate) fn render_authorizing_plugin(
     let title = format!("Connect \u{2014} {}", item.name);
     render_header_esc(frame, inner, &title, colors);
 
-    let status = status_msg.unwrap_or("Starting provider login");
-    let uri = verification_uri.unwrap_or("Waiting for provider verification URL");
-    let lines = vec![
+    // External-login providers never produce a browser URL: show the
+    // terminal-first status, not a "waiting for URL" line that reads broken.
+    let status = status_msg.unwrap_or("Checking your terminal login (no browser)");
+    let uri = verification_uri.unwrap_or("");
+    let mut lines = vec![
         Line::from(vec![Span::styled(
             status,
             Style::default().fg(Color::White).bg(colors.box_bg),
         )]),
         Line::from(""),
-        Line::from(vec![Span::styled(
+    ];
+    // External-login providers never produce a URL line; OAuth rows keep theirs.
+    if !uri.is_empty() {
+        lines.push(Line::from(vec![Span::styled(
             uri,
             Style::default().fg(colors.text_dim).bg(colors.box_bg),
-        )]),
-        Line::from(""),
-        Line::from(vec![
-            Span::styled(
-                "esc",
-                Style::default()
-                    .fg(Color::White)
-                    .add_modifier(Modifier::BOLD)
-                    .bg(colors.box_bg),
-            ),
-            Span::styled(
-                " cancel",
-                Style::default().fg(colors.text_dim).bg(colors.box_bg),
-            ),
-        ]),
-    ];
+        )]));
+        lines.push(Line::from(""));
+    }
+    lines.push(Line::from(vec![
+        Span::styled(
+            "esc",
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD)
+                .bg(colors.box_bg),
+        ),
+        Span::styled(
+            " cancel",
+            Style::default().fg(colors.text_dim).bg(colors.box_bg),
+        ),
+    ]));
     frame.render_widget(Paragraph::new(lines), inner);
 }
