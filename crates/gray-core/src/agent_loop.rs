@@ -243,6 +243,9 @@ impl Agent {
         // Loop backstop: 6 identical consecutive tool calls → LoopDetected.
         let mut last_sig: Option<String> = None;
         let mut repeat: usize = 0;
+        // A turn whose every round is a job-progress notice clears the streak
+        // below, so it would otherwise bill forever on a no-timeout job.
+        let mut poll_rounds: usize = 0;
         // Forward each event to the optional streaming sink, then collect it.
         macro_rules! emit {
             ($ev:expr) => {{
@@ -1134,8 +1137,18 @@ impl Agent {
                         })
                 });
             if poll_round {
+                poll_rounds += 1;
+                const MAX_POLL_ROUNDS: usize = 20;
+                if poll_rounds >= MAX_POLL_ROUNDS {
+                    self.emit_turn_end(&billed).await;
+                    return Err(CoreError::LoopDetected(format!(
+                        "job polling exceeded {poll_rounds} consecutive rounds"
+                    )));
+                }
                 repeat = 0;
                 last_sig = None;
+            } else {
+                poll_rounds = 0;
             }
         }
     }
