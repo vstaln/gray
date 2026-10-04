@@ -126,6 +126,7 @@ async fn spawn_ctrl_c_policy() {
 /// it ends, so its user message and every finished tool round vanished from
 /// the session. Now: cancel the turn like Ctrl-C, wait for it to persist,
 /// then exit. Idle, everything is already on disk and this exits at once.
+#[cfg(unix)]
 async fn spawn_hangup_policy() {
     use tokio::signal::unix::{SignalKind, signal};
     let (Ok(mut hup), Ok(mut term)) = (
@@ -148,6 +149,9 @@ async fn spawn_hangup_policy() {
     let _ = std::io::stdout().flush();
     std::process::exit(code);
 }
+/// No SIGHUP/SIGTERM on Windows; a turn persists when it ends.
+#[cfg(not(unix))]
+async fn spawn_hangup_policy() {}
 use crate::config::Config;
 use crate::{DEFAULT_SYS_PROMPT, build_agent, load_or_create_system_prompt_at};
 
