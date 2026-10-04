@@ -304,28 +304,6 @@ pub(crate) fn strip_escape_sequences(raw: &str) -> String {
     out
 }
 
-/// Turns bracketed paste OFF for the duration and back ON on drop — the
-/// mirror of the per-turn assertion in [`read_line`]. Mode 2004 is
-/// terminal-global and survives `disable_raw_mode`, so a *cooked* stdin
-/// prompt (`print!` + `read_line`) run under the REPL receives the
-/// `ESC[200~ ... ESC[201~` wrapper the terminal adds to every paste as plain
-/// text, and the line discipline echoes it back as `^[[200~` garbage.
-/// `/login`'s `code:` prompt used to exchange that whole wrapper as an
-/// enrollment code. Re-enabled on drop so the next composer prompt still gets
-/// real `Event::Paste` values (also re-asserted by every prompt turn).
-pub(crate) struct BracketedPasteOffGuard;
-impl BracketedPasteOffGuard {
-    pub(crate) fn push() -> Self {
-        let _ = crossterm::execute!(std::io::stdout(), crossterm::event::DisableBracketedPaste);
-        Self
-    }
-}
-impl Drop for BracketedPasteOffGuard {
-    fn drop(&mut self) {
-        let _ = crossterm::execute!(std::io::stdout(), crossterm::event::EnableBracketedPaste);
-    }
-}
-
 /// Reads one submitted line, redrawing on each keystroke. The TUI lock is
 /// held only per phase — never across the input wait — so background
 /// painters (boot watcher, footer ticker) can draw while idling at the

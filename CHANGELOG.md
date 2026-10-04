@@ -139,6 +139,11 @@
   permanent copy of the same line went with it.
 
 ### Changed
+- **Account login moved to the
+  [`gray-account`](https://github.com/vstaln/gray-account) plugin.** `gray login`, `gray whoami`,
+  `gray logout` and the `/login` `/whoami` `/logout` REPL commands left core: install the plugin,
+  then use `/login`, `/whoami`, `/logout` in the REPL or `gray account login|whoami|logout` in a
+  shell. The existing `~/.gray/registry-token.json` is reused, so an earlier login keeps working.
 - **The ChatGPT/Codex subscription plugin moved out of the gray repo** into
   [`vstaln/gray-codex-sub`](https://github.com/vstaln/gray-codex-sub), where it ships as the
   standalone `gray-codex-sub` sidecar. Install it, then `/connect` and sign in again —

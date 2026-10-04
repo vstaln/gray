@@ -641,10 +641,14 @@ pub async fn register_native(
         )?;
         tmp.persist(home.join("plugins/widgets.json"))?;
     }
-    println!(
-        "Registered '{name}' from {}. Run: gray {name} settings",
-        binary.display()
-    );
+    if wire_only {
+        println!("Registered '{name}' from {}", binary.display());
+    } else {
+        println!(
+            "Registered '{name}' from {}. Run: gray {name} --help",
+            binary.display()
+        );
+    }
     Ok(())
 }
 

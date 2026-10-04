@@ -593,7 +593,19 @@ fn is_loopback_base(base: &str) -> bool {
     reqwest::Url::parse(base)
         .ok()
         .and_then(|u| u.host_str().map(str::to_string))
-        .is_some_and(|host| crate::account::is_loopback_host(&host))
+        .is_some_and(|host| is_loopback_host(&host))
+}
+
+/// Loopback by name or by address, IPv6 brackets included.
+fn is_loopback_host(host: &str) -> bool {
+    let host = host
+        .strip_prefix('[')
+        .and_then(|h| h.strip_suffix(']'))
+        .unwrap_or(host);
+    host == "localhost"
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback())
 }
 
 /// A previous session's provider model list, so the picker paints instantly

@@ -234,11 +234,10 @@ fn registry_parse_uses_canonical() {
     ));
     assert!(matches!(
         parse_command("/login openrouter"),
-        ReplCommand::Login(Some(code)) if code == "openrouter"
+        ReplCommand::Unknown(_)
     ));
-    assert!(matches!(parse_command("/login"), ReplCommand::Login(None)));
-    assert!(matches!(parse_command("/whoami"), ReplCommand::Whoami));
-    assert!(matches!(parse_command("/logout"), ReplCommand::Logout));
+    assert!(matches!(parse_command("/whoami"), ReplCommand::Unknown(_)));
+    assert!(matches!(parse_command("/logout"), ReplCommand::Unknown(_)));
     assert!(matches!(
         parse_command("/skills foo"),
         ReplCommand::Skill(Some(_))

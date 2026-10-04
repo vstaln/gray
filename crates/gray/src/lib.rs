@@ -1,6 +1,5 @@
 //! Gray: a minimal, modular agent harness in Rust.
 
-pub mod account;
 pub mod ask;
 pub mod auth;
 pub mod cache;
@@ -465,17 +464,6 @@ pub enum Commands {
         #[arg(long, value_name = "N")]
         context: Option<usize>,
     },
-    /// Log this machine in to gray.alignment.id (paste the site's one-time code)
-    Login {
-        /// One-time enrollment code from gray.alignment.id/account. Omit to be
-        /// walked through it and prompted.
-        #[arg(value_name = "CODE")]
-        code: Option<String>,
-    },
-    /// Show the account the stored registry token belongs to
-    Whoami,
-    /// Revoke the stored registry token and forget it
-    Logout,
     /// Resume a previous conversation
     Resume {
         /// Session id (UUID or prefix). If omitted, shows picker unless --last.
