@@ -1409,6 +1409,23 @@ fn error_body_message(body: &str) -> Option<String> {
     (!msg.is_empty()).then(|| msg.to_string())
 }
 
+// Billing/quota exhaustion must surface immediately: re-hitting an
+// exhausted balance burns the full request body against zero quota (and
+// the 429 floor would stall the turn for nothing). Narrow phrases only —
+// bare "billing"/"plan" also appear in legit rate-limit upsell copy.
+const QUOTA_EXHAUSTED_HINTS: [&str; 10] = [
+    "insufficient_quota",
+    "insufficient quota",
+    "insufficient credits",
+    "insufficient balance",
+    "exceeded your current quota",
+    "exceeds your allocated quota",
+    "quota exceeded",
+    "quota_exceeded",
+    "gousagelimiterror",
+    "available balance",
+];
+
 pub(crate) fn classify_http_error(
     status: reqwest::StatusCode,
     snippet: &str,
@@ -1461,22 +1478,6 @@ pub(crate) fn classify_http_error(
     if is_unsupported {
         return ProviderError::BadRequest(msg);
     }
-    // Billing/quota exhaustion must surface immediately: re-hitting an
-    // exhausted balance burns the full request body against zero quota (and
-    // the 429 floor would stall the turn for nothing). Narrow phrases only —
-    // bare "billing"/"plan" also appear in legit rate-limit upsell copy.
-    const QUOTA_EXHAUSTED_HINTS: [&str; 10] = [
-        "insufficient_quota",
-        "insufficient quota",
-        "insufficient credits",
-        "insufficient balance",
-        "exceeded your current quota",
-        "exceeds your allocated quota",
-        "quota exceeded",
-        "quota_exceeded",
-        "gousagelimiterror",
-        "available balance",
-    ];
     let quota_exhausted = QUOTA_EXHAUSTED_HINTS.iter().any(|h| lower.contains(h));
     match status.as_u16() {
         401 | 403 => ProviderError::Auth(msg),
@@ -1507,6 +1508,20 @@ pub(crate) fn is_retryable_error(err: &ProviderError) -> bool {
             | ProviderError::Timeout(_)
             | ProviderError::Connection(_)
     )
+}
+
+/// A bare 403 gets exactly one same-key re-POST: gateway edges emit transient
+/// "Authentication failed" 403s that clear on the next request. 401 and
+/// quota/billing-flavored 403s stay terminal (re-POSTing burns zero quota).
+fn should_retry_request(err: &ProviderError, http_status: u16, attempt: usize) -> bool {
+    if is_retryable_error(err) {
+        return true;
+    }
+    let ProviderError::Auth(msg) = err else {
+        return false;
+    };
+    let lower = msg.to_lowercase();
+    http_status == 403 && attempt == 1 && !QUOTA_EXHAUSTED_HINTS.iter().any(|h| lower.contains(h))
 }
 
 /// True for the body-level transport failures `eventsource-stream` reports
@@ -2544,7 +2559,9 @@ fn stream_unfold_step(
                                 };
                                 continue;
                             }
-                            if is_retryable_error(&err) && attempt < MAX_ATTEMPTS {
+                            if should_retry_request(&err, http_status, attempt)
+                                && attempt < MAX_ATTEMPTS
+                            {
                                 log::warn!(target: "gray_provider", "retrying (attempt {attempt}) after error: {err}");
                                 let next = StreamState::Init {
                                     client,
@@ -2688,7 +2705,9 @@ fn stream_unfold_step(
                                 };
                                 continue;
                             }
-                            if is_retryable_error(&err) && attempt < MAX_ATTEMPTS {
+                            if should_retry_request(&err, http_status, attempt)
+                                && attempt < MAX_ATTEMPTS
+                            {
                                 log::warn!(target: "gray_provider", "retrying responses (attempt {attempt}) after error: {err}");
                                 let next = StreamState::ResponsesInit {
                                     client,
