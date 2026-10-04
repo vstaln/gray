@@ -168,6 +168,52 @@ pub fn format_core_error(e: &CoreError, base_url: &str) -> String {
                 )
             }
         }
+        CoreError::Auth(detail) => {
+            // Subscription relays surface here with no HTTP status (the 403
+            // came from native inside the sidecar, already classified). Name
+            // the login that failed so the next command is obvious.
+            let cleaned = clean_provider_detail(detail);
+            let short = truncate_chars(&cleaned, 600);
+            format!(
+                "✗ Auth failed (not retryable): {short}\n  Run /connect to re-login the subscription provider."
+            )
+        }
+        CoreError::BadRequest(detail) => {
+            let cleaned = clean_provider_detail(detail);
+            let short = truncate_chars(&cleaned, 600);
+            format!(
+                "✗ Bad request (not retryable): {short}\n  Check model/provider settings via /model or /connect."
+            )
+        }
+        CoreError::RateLimited(detail) => {
+            let cleaned = clean_provider_detail(detail);
+            let short = truncate_chars(&cleaned, 600);
+            format!(
+                "✗ Rate limited (retryable): {short}\n  Try again later or switch model via /model."
+            )
+        }
+        CoreError::ContextOverflow(detail) => {
+            let cleaned = clean_provider_detail(detail);
+            let short = truncate_chars(&cleaned, 600);
+            format!("✗ Context exhausted (not retryable): {short}\n  Start /new or run /compact.")
+        }
+        CoreError::ServerError(detail) => {
+            let cleaned = clean_provider_detail(detail);
+            let short = truncate_chars(&cleaned, 600);
+            format!(
+                "✗ Provider server error (retryable): {short}\n  Upstream model or provider ({base_url}) encountered a server error. Run /model to switch to another model or try again later."
+            )
+        }
+        CoreError::Stream(detail) => {
+            let cleaned = clean_provider_detail(detail);
+            let short = truncate_chars(&cleaned, 600);
+            format!("✗ Stream broken (retryable): {short}\n  Retrying the turn usually succeeds.")
+        }
+        CoreError::LoopDetected(detail) => {
+            let short = truncate_chars(detail, 600);
+            format!("✗ Tool loop detected (not retryable): {short}")
+        }
+        CoreError::Cancelled => "■ Cancelled.".to_string(),
         _ => format!("agent error: {e}"),
     }
 }
