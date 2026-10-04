@@ -963,6 +963,8 @@ done
             .unwrap();
         let lock = load_lock(home.path()).unwrap();
         let entry = &lock.plugins["wiretest"];
+        // register_native canonicalizes (macOS: /var → /private/var).
+        let exe = std::fs::canonicalize(&exe).unwrap();
         assert_eq!(entry.argv, vec![exe.to_string_lossy().into_owned()]);
         assert_eq!(entry.cli_argv, None);
         assert_eq!(entry.adapter_version, "1.1");
