@@ -23,6 +23,7 @@
   resolves empty, as before.
 
 ### Fixed
+- **Empty sessions stay out of the resume list.** A session that never sent a message (`(no message yet)`, usually the `just now` row at the top) no longer shows in the `/resume` picker, headless lists, or `--last`. Explicit `resume <id>` still loads one.
 - **The `discord_send` preview reads like the channel does.** The transcript echoed raw markdown (`**bold**` with literal asterisks) while Discord renders it. The row now strips paired markers (`**`, `__`, `` ` ``, `~~`); unpaired `*`/`_` and spoiler bars stay untouched.
 
 - **No more 403s that only a restart cleared.** `/connect` writes the picked provider's base URL
