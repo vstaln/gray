@@ -230,7 +230,9 @@ async fn main() -> anyhow::Result<()> {
         )
         .await?;
     } else {
-        gray::update::startup_check().await;
+        if !config.bare {
+            gray::update::startup_check().await;
+        }
         run_repl_mode(&mut config, cli.continue_last, cli.session.as_deref()).await?;
     }
     Ok(())

@@ -185,7 +185,8 @@ fn cache_warm_policy(
         || lower.contains("claude")
         || lower.contains("anthropic");
     let replayable = matches!(effort, None | Some("off")) || !budget_thinking;
-    if !cacheable || !replayable || std::env::var_os("GRAY_NO_CACHE_WARM").is_some() {
+    if config.bare || !cacheable || !replayable || std::env::var_os("GRAY_NO_CACHE_WARM").is_some()
+    {
         return None;
     }
     let model = model.to_string();
@@ -215,13 +216,18 @@ pub async fn build_agent(
     };
     // Keyless upstreams (free tiers, local servers) run with an empty key.
     let api_key = config.api_key.as_deref().unwrap_or("");
-    let body = load_or_create_system_prompt_at(&sys_prompt_path()?)?;
+    // Bare: the embedded default, never the user's file (and never create it).
+    let body = if config.bare {
+        DEFAULT_SYS_PROMPT.to_string()
+    } else {
+        load_or_create_system_prompt_at(&sys_prompt_path()?)?
+    };
     // Same directory as the tool context; never persist it in the user's file.
     let prompt_cwd = cwd.to_path_buf();
 
     // `/memory off` keeps the snapshot out of the prompt (context economy);
     // the env var stays the hard kill-switch that also stops saves.
-    let snapshot = if memory::disabled() || !crate::setup::memory_auto_enabled() {
+    let snapshot = if config.bare || memory::disabled() || !crate::setup::memory_auto_enabled() {
         None
     } else {
         match setup::gray_home()
@@ -272,10 +278,15 @@ pub async fn build_agent(
         // Bash-only tools; the context-only skills + project-context
         // plugins are always on (every profile, including the default
         // `tools-minimal`).
-        extra_plugins: vec![
-            Arc::new(crate::skills_tool::SkillsPlugin::default()),
-            Arc::new(crate::skills_tool::ProjectContextPlugin),
-        ],
+        extra_plugins: if config.bare {
+            Vec::new()
+        } else {
+            vec![
+                Arc::new(crate::skills_tool::SkillsPlugin::default()),
+                Arc::new(crate::skills_tool::ProjectContextPlugin),
+            ]
+        },
+        bare: config.bare,
         host_handler: Some(host::default_handler(cwd.to_path_buf())),
         profile_path: "gray.yml".to_string(),
         abort_on_spawn_failure: true,
@@ -293,9 +304,11 @@ pub async fn build_agent(
     // gray.json) ride as in-process hooks beside the builder's own: same
     // per-turn inject and slash commands, no sidecar, no per-plugin code.
     let mut agent = agent.with_compaction_budget(config.context_reserve, config.context_keep);
-    let mut hooks = agent.hooks().to_vec();
-    hooks.extend(crate::foreign::foreign_hooks());
-    agent = agent.with_hooks(hooks);
+    if !config.bare {
+        let mut hooks = agent.hooks().to_vec();
+        hooks.extend(crate::foreign::foreign_hooks());
+        agent = agent.with_hooks(hooks);
+    }
     // Bash bounds an explicitly requested timeout at 3600 s (and has no
     // default), so the agent-level timeout must sit above that (P2B
     // requirement): it is a last-resort stop, never a budget.
@@ -375,6 +388,13 @@ pub struct Cli {
     /// Print a self-describing SKILL.md for driving gray and exit
     #[arg(long = "skill")]
     pub skill: bool,
+
+    /// Bare run: gray's stock system prompt and the bash tool, nothing else.
+    /// Skips ~/.gray/AGENTS.md, memory, skills, project AGENTS.md/CLAUDE.md,
+    /// plugins (gray.yml, installed, pi), cache warming and the update check.
+    /// Model/provider config still loads. Env: GRAY_BARE=1.
+    #[arg(long)]
+    pub bare: bool,
 
     /// Maximum agent turns per invocation (mini-swe-agent step_limit).
     /// Env: GRAY_MAX_TURNS. Applies to REPL turns this process runs.

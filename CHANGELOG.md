@@ -3,6 +3,11 @@
 ## [Unreleased]
 
 ### Added
+- **`--bare` (or `GRAY_BARE=1`) runs gray with nothing but itself.** The built-in system prompt
+  and the `bash` tool; `~/.gray/AGENTS.md` (neither read nor created), memory, skills, project
+  AGENTS.md/CLAUDE.md, plugins (`gray.yml`, installed, pi), cache warming and the update check are
+  all skipped. Model, provider and context settings still apply. For benchmarks and reproducible
+  runs, where whatever happens to be installed on the machine must not leak into the result.
 - **`--json` streams the answer as it is written.** With `GRAY_STREAM_TEXT=1`, `gray -p --json`
   emits the assistant's prose as `progress` rows with `phase: "text"`: one numbered `segment` per
   run of prose between tool calls, complete lines as an append-only `delta`, the unfinished line
