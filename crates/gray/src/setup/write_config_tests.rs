@@ -35,6 +35,7 @@ const DECL: SetupDecl = SetupDecl {
     verify: &["test-app", "doctor"],
     post_steps: &[],
     service: None,
+    check: None,
 };
 
 fn supplied_token(value: &str) -> Supplied {

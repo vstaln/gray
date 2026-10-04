@@ -8,7 +8,8 @@ use std::process::Command;
 use anyhow::{Context, Result};
 
 use super::channel_picker::{ChannelSource, Destination, RestChannels};
-use super::registry::{FieldKind, SetupDecl, SetupField};
+use super::discord_check::{self, BotCheck, CheckError};
+use super::registry::{CHECK_DISCORD_BOT, FieldKind, SetupDecl, SetupField};
 use super::supervise::start_daemon;
 use super::write_config::{Supplied, write_config};
 
@@ -144,6 +145,260 @@ pub fn run_step(argv: &[String]) -> StepOutput {
     }
 }
 
+/// The token check gray runs before writing anything, injected so tests
+/// keep the network out (`discord_check::check_bot_token` in production).
+pub type Checker<'a> = &'a dyn Fn(&str) -> Result<BotCheck, CheckError>;
+
+/// What a pasted token turned into.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TokenVerdict {
+    /// Discord knows it.
+    Accepted(BotCheck),
+    /// Discord could not be asked (offline, odd answer): saved anyway, with
+    /// this warning (Hermes parity).
+    Unverified(String),
+    /// Ask again; the line says why and how.
+    Reask(String),
+    /// Three rejections in a row: stop here, nothing is saved.
+    GiveUp(String),
+}
+
+/// Re-asks Discord's rejections up to three times and a numeric app-ID
+/// paste once. Holds counts only, never a token.
+#[derive(Debug, Default)]
+pub struct TokenGate {
+    rejected: u8,
+    numeric_warned: bool,
+}
+
+pub const TOKEN_TRIES: u8 = 3;
+pub const INTENT_RECHECKS: u8 = 5;
+pub const OFFLINE_INTENT_NOTE: &str = "Make sure Message Content Intent is on (Bot page \u{2192} Privileged Gateway Intents), or Discord will refuse the bot's connection.";
+
+impl TokenGate {
+    /// Clean the paste (curly quotes, non-ASCII, whitespace), then ask
+    /// Discord. Returns the cleaned token alongside the verdict: only an
+    /// `Accepted` or `Unverified` token may be saved.
+    pub fn submit(&mut self, raw: &str, check: Checker) -> (String, TokenVerdict) {
+        let token = discord_check::clean_token(raw);
+        if token.is_empty() {
+            return (
+                token,
+                TokenVerdict::Reask("this one is required".to_string()),
+            );
+        }
+        if let Some(why) = discord_check::token_shape_error(&token) {
+            if !self.numeric_warned {
+                self.numeric_warned = true;
+                return (token, TokenVerdict::Reask(why.to_string()));
+            }
+        } else {
+            self.numeric_warned = false;
+        }
+        let rejected = |gate: &mut Self, why: &str| {
+            gate.rejected += 1;
+            if gate.rejected >= TOKEN_TRIES {
+                TokenVerdict::GiveUp(
+                    "Discord rejected three tokens in a row; nothing was saved.".to_string(),
+                )
+            } else {
+                TokenVerdict::Reask(why.to_string())
+            }
+        };
+        if discord_check::has_inner_break(&token) {
+            let verdict = rejected(
+                self,
+                "That isn't a bot token (it contains a line break). Copy it again from the Bot page.",
+            );
+            return (token, verdict);
+        }
+        let verdict = match check(&token) {
+            Ok(bot) => TokenVerdict::Accepted(bot),
+            Err(CheckError::Rejected) => rejected(
+                self,
+                "Discord rejected that token. On the Bot page click Reset Token, copy the new token and paste it here.",
+            ),
+            Err(CheckError::Status(code)) => TokenVerdict::Unverified(format!(
+                "Couldn't verify the token (Discord answered {code}); saving it anyway."
+            )),
+            Err(CheckError::Unreachable(why)) => TokenVerdict::Unverified(format!(
+                "Couldn't reach Discord to verify the token ({why}); saving it anyway."
+            )),
+        };
+        (token, verdict)
+    }
+}
+
+/// Ask again after the operator flipped the intent toggle. A failed
+/// re-check keeps what was already known.
+pub fn recheck_intent(token: &str, current: &BotCheck, check: Checker) -> BotCheck {
+    check(token).unwrap_or_else(|_| current.clone())
+}
+
+/// Discord user IDs from a comma-separated answer, mention syntax stripped.
+fn clean_user_ids(raw: &str) -> Vec<String> {
+    raw.split(',')
+        .map(|id| {
+            let id = id.trim();
+            let id = id
+                .strip_prefix("<@")
+                .and_then(|i| i.strip_suffix('>'))
+                .map(|i| i.trim_start_matches('!'))
+                .unwrap_or(id);
+            let id = id.strip_prefix("user:").unwrap_or(id);
+            id.trim().to_string()
+        })
+        .filter(|id| !id.is_empty())
+        .collect()
+}
+
+/// Who is already allowed: the config's `allowed_users`, then this run's.
+fn current_allowed(supplied: &Supplied, config_path: &Path) -> Vec<String> {
+    let existing = match super::write_config::read_object(config_path).get("allowed_users") {
+        Some(serde_json::Value::Array(items)) => items
+            .iter()
+            .filter_map(|v| v.as_str().map(str::to_string))
+            .collect(),
+        Some(serde_json::Value::String(raw)) => clean_user_ids(raw),
+        _ => Vec::new(),
+    };
+    let fresh = match (
+        supplied.list("allowed_users"),
+        supplied.get("allowed_users"),
+    ) {
+        (Some(items), _) => items.to_vec(),
+        (None, Some(raw)) => clean_user_ids(raw),
+        (None, None) => Vec::new(),
+    };
+    discord_check::merge_allowed(&existing, &fresh)
+}
+
+fn current_owner(supplied: &Supplied, config_path: &Path) -> Option<String> {
+    supplied.get("owner_id").map(str::to_string).or_else(|| {
+        super::write_config::read_object(config_path)
+            .get("owner_id")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string)
+    })
+}
+
+/// Owners Discord named who are neither the owner nor allowlisted yet.
+pub fn owners_to_allow(bot: &BotCheck, supplied: &Supplied, config_path: &Path) -> Vec<String> {
+    let allowed = current_allowed(supplied, config_path);
+    let owner = current_owner(supplied, config_path);
+    bot.owners
+        .iter()
+        .map(|(id, _)| id.clone())
+        .filter(|id| owner.as_ref() != Some(id) && !allowed.contains(id))
+        .collect()
+}
+
+/// Allowlist the detected owner(s): `owner_id` is filled only when nobody
+/// set one, and `allowed_users` starts from what is already allowed and
+/// only adds.
+pub fn allow_owners(bot: &BotCheck, supplied: &mut Supplied, config_path: &Path) {
+    if current_owner(supplied, config_path).is_none()
+        && let Some((id, _)) = bot.owners.first()
+    {
+        supplied.insert("owner_id", id.clone(), false);
+    }
+    let owners: Vec<String> = bot.owners.iter().map(|(id, _)| id.clone()).collect();
+    let merged = discord_check::merge_allowed(&current_allowed(supplied, config_path), &owners);
+    supplied.insert_list("allowed_users", merged);
+}
+
+/// The app stores `allowed_users` as an array: a comma-separated answer is
+/// merged into whatever the config already allows, never replacing it.
+pub fn normalize_allowed(supplied: &mut Supplied, config_path: &Path) {
+    if supplied.get("allowed_users").is_some() {
+        let merged = current_allowed(supplied, config_path);
+        supplied.insert_list("allowed_users", merged);
+    }
+}
+
+pub fn allowlisted_line(bot: &BotCheck) -> String {
+    format!(
+        "You are allowlisted ({}): owner detected, no Developer Mode needed.",
+        discord_check::owner_names(bot)
+    )
+}
+
+/// The headless Discord onboarding: check the `--field token=` with
+/// Discord before anything is written. A rejected token is an error and
+/// never saved; offline saves with a warning. `ask` re-checks the intent
+/// when a terminal is attached. Returns the lines to show the operator.
+pub fn onboard_flags(
+    supplied: &mut Supplied,
+    config_path: &Path,
+    check: Checker,
+    mut ask: Option<&mut dyn FnMut(&str) -> String>,
+) -> Result<Vec<String>> {
+    let mut notes = Vec::new();
+    if let Some(raw) = supplied.get("token").map(str::to_string) {
+        let (token, verdict) = TokenGate::default().submit(&raw, check);
+        match verdict {
+            TokenVerdict::Reask(why) | TokenVerdict::GiveUp(why) => {
+                anyhow::bail!("{why}\nNothing was saved.")
+            }
+            TokenVerdict::Unverified(warning) => {
+                supplied.insert("token", token, true);
+                notes.push(warning);
+                notes.push(OFFLINE_INTENT_NOTE.to_string());
+            }
+            TokenVerdict::Accepted(mut bot) => {
+                supplied.insert("token", token.clone(), true);
+                notes.push(format!(
+                    "Token checked with Discord: this is the bot \"{}\".",
+                    bot.bot_name
+                ));
+                if !bot.message_content
+                    && let Some(ask) = ask.as_mut()
+                {
+                    for _ in 0..INTENT_RECHECKS {
+                        for line in discord_check::intent_lines(&bot) {
+                            eprintln!("{line}");
+                        }
+                        let answer =
+                            ask("Press Enter once it's saved to re-check, or type 'skip': ");
+                        if answer.trim().eq_ignore_ascii_case("skip") {
+                            break;
+                        }
+                        bot = recheck_intent(&token, &bot, check);
+                        if bot.message_content {
+                            break;
+                        }
+                    }
+                }
+                if bot.message_content {
+                    notes.push("Message Content Intent is on.".to_string());
+                } else {
+                    notes.extend(discord_check::intent_lines(&bot));
+                }
+                notes.extend(discord_check::invite_lines(&bot));
+                if !owners_to_allow(&bot, supplied, config_path).is_empty() {
+                    allow_owners(&bot, supplied, config_path);
+                    notes.push(allowlisted_line(&bot));
+                }
+            }
+        }
+    }
+    normalize_allowed(supplied, config_path);
+    Ok(notes)
+}
+
+/// A stdin line reader for the intent re-check, only when a person is there.
+fn terminal_ask() -> Option<impl FnMut(&str) -> String> {
+    use std::io::IsTerminal;
+    (std::io::stdin().is_terminal() && std::io::stderr().is_terminal()).then_some(|text: &str| {
+        use std::io::Write;
+        eprint!("{text}");
+        let _ = std::io::stderr().flush();
+        let mut line = String::new();
+        let _ = std::io::stdin().read_line(&mut line);
+        line
+    })
+}
+
 /// Headless twin of the /gateway flow: write what the flags answer, prove it
 /// with the app's doctor, register the app's tool, and say so. Anything
 /// missing is reported, never guessed; nothing success-shaped is printed
@@ -152,8 +407,21 @@ pub fn run_headless(app: &str, fields: &[String], start: bool) -> Result<()> {
     let (gray_home, user) = (crate::plugin_cli::home()?, super::user_home()?);
     let decl = crate::plugin_cli::setup_decl(app)
         .with_context(|| format!("gray has no setup declaration for '{app}'"))?;
-    let supplied = supplied_from_flags(decl, fields)?;
-    let missing = missing_required(decl, &supplied, &user.join(decl.config_path));
+    let mut supplied = supplied_from_flags(decl, fields)?;
+    let config_path = user.join(decl.config_path);
+    if decl.check == Some(CHECK_DISCORD_BOT) {
+        let mut ask = terminal_ask();
+        let ask = ask.as_mut().map(|f| f as &mut dyn FnMut(&str) -> String);
+        for line in onboard_flags(
+            &mut supplied,
+            &config_path,
+            &discord_check::check_bot_token,
+            ask,
+        )? {
+            println!("{line}");
+        }
+    }
+    let missing = missing_required(decl, &supplied, &config_path);
     if !missing.is_empty() {
         anyhow::bail!("{} still needs:\n  {}", app, describe_missing(&missing));
     }
@@ -171,7 +439,7 @@ pub fn run_app_setup_modal(app: &str) -> anyhow::Result<()> {
     use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, poll, read};
     use ratatui::style::{Modifier, Style};
     use ratatui::text::{Line, Span};
-    use ratatui::widgets::{Block, Clear, Paragraph};
+    use ratatui::widgets::{Block, Clear, Paragraph, Wrap};
     use std::time::Duration;
 
     let (gray_home, user) = (crate::plugin_cli::home()?, super::user_home()?);
@@ -198,10 +466,46 @@ pub fn run_app_setup_modal(app: &str) -> anyhow::Result<()> {
             sel: usize,
             at_guilds: bool,
         },
+        /// Message Content Intent is off: link to the toggle, Enter re-checks.
+        Intent {
+            bot: BotCheck,
+            tries: u8,
+        },
+        /// The owner Discord named is not allowlisted yet: offer it.
+        Allow {
+            bot: BotCheck,
+        },
         Verifying,
         Failed,
         Done,
     }
+    /// After the token (and intent) step: the invite link, then the owner
+    /// offer when there is someone to allowlist, else the next field.
+    fn after_intent(
+        bot: BotCheck,
+        notes: &mut Vec<String>,
+        supplied: &Supplied,
+        config_path: &Path,
+        done: bool,
+    ) -> Phase {
+        notes.extend(discord_check::invite_lines(&bot));
+        if !owners_to_allow(&bot, supplied, config_path).is_empty() {
+            Phase::Allow { bot }
+        } else {
+            next_field(done)
+        }
+    }
+    fn next_field(done: bool) -> Phase {
+        if done {
+            Phase::Verifying
+        } else {
+            Phase::Filling
+        }
+    }
+    let checks_token = decl.check == Some(CHECK_DISCORD_BOT);
+    let config_path = user.join(decl.config_path);
+    let mut gate = TokenGate::default();
+    let mut notes: Vec<String> = Vec::new();
     let mut supplied = Supplied::default();
     let mut idx = 0usize;
     let mut buf = String::new();
@@ -221,11 +525,15 @@ pub fn run_app_setup_modal(app: &str) -> anyhow::Result<()> {
                 let w = (area.width.saturating_sub(4))
                     .clamp(40, 100)
                     .min(area.width);
+                // Room for the onboarding notes (the invite link wraps).
+                let h = (12 + 2 * notes.len() as u16)
+                    .min(area.height.saturating_sub(2))
+                    .max(10);
                 let rect = ratatui::layout::Rect::new(
                     (area.width.saturating_sub(w)) / 2,
-                    area.height / 4,
+                    (area.height.saturating_sub(h)) / 4,
                     w,
-                    12.min(area.height.saturating_sub(2).max(10)),
+                    h,
                 );
                 frame.render_widget(Clear, rect);
                 frame.render_widget(Block::default().style(Style::default().bg(box_bg)), rect);
@@ -245,6 +553,12 @@ pub fn run_app_setup_modal(app: &str) -> anyhow::Result<()> {
                 match &phase {
                     Phase::Filling => {
                         let field = fields[idx];
+                        for note in &notes {
+                            lines.push(Line::from(Span::styled(
+                                note.clone(),
+                                Style::default().fg(text_dim).bg(box_bg),
+                            )));
+                        }
                         lines.push(Line::from(Span::styled(
                             format!("{}/{}", idx + 1, fields.len()),
                             Style::default().fg(text_dim).bg(box_bg),
@@ -312,9 +626,43 @@ pub fn run_app_setup_modal(app: &str) -> anyhow::Result<()> {
                             )));
                         }
                     }
+                    Phase::Intent { bot, .. } => {
+                        for line in discord_check::intent_lines(bot) {
+                            lines.push(Line::from(Span::styled(
+                                line,
+                                Style::default().fg(text_dim).bg(box_bg),
+                            )));
+                        }
+                        if let Some(status) = &status {
+                            lines.push(Line::from(Span::styled(
+                                status.clone(),
+                                Style::default().fg(text_dim).bg(box_bg),
+                            )));
+                        }
+                        lines.push(Line::from(Span::styled(
+                            "Enter \u{2014} re-check once it's saved \u{00b7} s \u{2014} skip",
+                            Style::default().fg(accent).bg(box_bg),
+                        )));
+                    }
+                    Phase::Allow { bot } => {
+                        let who = discord_check::owner_names(bot);
+                        let question = if bot.owners.len() == 1 {
+                            format!("Allow yourself ({who}) to talk to the bot?")
+                        } else {
+                            format!("Allow your team ({who}) to talk to the bot?")
+                        };
+                        lines.push(Line::from(Span::styled(
+                            question,
+                            Style::default().fg(text_dim).bg(box_bg),
+                        )));
+                        lines.push(Line::from(Span::styled(
+                            "Enter/y \u{2014} yes \u{00b7} n \u{2014} no",
+                            Style::default().fg(accent).bg(box_bg),
+                        )));
+                    }
                     Phase::Verifying | Phase::Failed | Phase::Done => {
                         let text = report.clone().unwrap_or_default();
-                        for line in text.lines().take(6) {
+                        for line in text.lines().take(16) {
                             lines.push(Line::from(Span::styled(
                                 line.to_string(),
                                 Style::default().fg(text_dim).bg(box_bg),
@@ -322,7 +670,7 @@ pub fn run_app_setup_modal(app: &str) -> anyhow::Result<()> {
                         }
                     }
                 }
-                frame.render_widget(Paragraph::new(lines), inner);
+                frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
             })?;
             if !poll(Duration::from_millis(100))? {
                 continue;
@@ -341,6 +689,47 @@ pub fn run_app_setup_modal(app: &str) -> anyhow::Result<()> {
                 }) => match phase {
                     Phase::Filling => match code {
                         KeyCode::Esc => return Ok(()),
+                        KeyCode::Enter if checks_token && fields[idx].key == "token" => {
+                            // Check with Discord before it can be saved: a
+                            // rejected token is re-asked, never written.
+                            let field = fields[idx];
+                            let (token, verdict) =
+                                gate.submit(&buf, &discord_check::check_bot_token);
+                            buf.clear();
+                            status = None;
+                            let done = idx + 1 >= fields.len();
+                            match verdict {
+                                TokenVerdict::Reask(why) => {
+                                    status = Some(why);
+                                    continue;
+                                }
+                                TokenVerdict::GiveUp(why) => {
+                                    report = Some(why);
+                                    phase = Phase::Failed;
+                                    continue;
+                                }
+                                TokenVerdict::Unverified(warning) => {
+                                    supplied.insert(field.key, token, field.secret);
+                                    notes.push(warning);
+                                    notes.push(OFFLINE_INTENT_NOTE.to_string());
+                                    idx += 1;
+                                    phase = next_field(done);
+                                }
+                                TokenVerdict::Accepted(bot) => {
+                                    supplied.insert(field.key, token, field.secret);
+                                    notes.push(format!(
+                                        "Token checked with Discord: this is the bot \"{}\".",
+                                        bot.bot_name
+                                    ));
+                                    idx += 1;
+                                    phase = if bot.message_content {
+                                        after_intent(bot, &mut notes, &supplied, &config_path, done)
+                                    } else {
+                                        Phase::Intent { bot, tries: 0 }
+                                    };
+                                }
+                            }
+                        }
                         KeyCode::Enter => {
                             let field = fields[idx];
                             let value = buf.trim().to_string();
@@ -465,6 +854,78 @@ pub fn run_app_setup_modal(app: &str) -> anyhow::Result<()> {
                             _ => {}
                         }
                     }
+                    Phase::Intent { .. } => {
+                        let Phase::Intent { bot, tries } = &phase else {
+                            unreachable!("matched Intent above")
+                        };
+                        let (bot, tries) = (bot.clone(), *tries);
+                        let done = idx >= fields.len();
+                        match code {
+                            KeyCode::Esc => return Ok(()),
+                            KeyCode::Enter => {
+                                let token = supplied.get("token").unwrap_or_default().to_string();
+                                let bot =
+                                    recheck_intent(&token, &bot, &discord_check::check_bot_token);
+                                let tries = tries + 1;
+                                if bot.message_content {
+                                    status = None;
+                                    notes.push("Message Content Intent is on.".to_string());
+                                    phase = after_intent(
+                                        bot,
+                                        &mut notes,
+                                        &supplied,
+                                        &config_path,
+                                        done,
+                                    );
+                                } else if tries >= INTENT_RECHECKS {
+                                    status = None;
+                                    notes.extend(discord_check::intent_lines(&bot));
+                                    phase = after_intent(
+                                        bot,
+                                        &mut notes,
+                                        &supplied,
+                                        &config_path,
+                                        done,
+                                    );
+                                } else {
+                                    status = Some(format!(
+                                        "still off ({tries}/{INTENT_RECHECKS}): toggle it, Save Changes, then Enter"
+                                    ));
+                                    phase = Phase::Intent { bot, tries };
+                                }
+                            }
+                            KeyCode::Char('s') => {
+                                status = None;
+                                notes.extend(discord_check::intent_lines(&bot));
+                                phase =
+                                    after_intent(bot, &mut notes, &supplied, &config_path, done);
+                            }
+                            _ => {}
+                        }
+                    }
+                    Phase::Allow { .. } => {
+                        let Phase::Allow { bot } = &phase else {
+                            unreachable!("matched Allow above")
+                        };
+                        let bot = bot.clone();
+                        let done = idx >= fields.len();
+                        match code {
+                            KeyCode::Esc => return Ok(()),
+                            KeyCode::Enter | KeyCode::Char('y') => {
+                                allow_owners(&bot, &mut supplied, &config_path);
+                                notes.push(allowlisted_line(&bot));
+                                phase = next_field(done);
+                            }
+                            KeyCode::Char('n') => {
+                                notes.push(
+                                    "Not allowlisted: DM the bot later and approve the pairing code."
+                                        .to_string(),
+                                );
+                                phase = next_field(done);
+                            }
+                            _ => {}
+                        }
+                    }
                     Phase::Failed => match code {
                         KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') => {
                             anyhow::bail!("{}", report.clone().unwrap_or_default())
@@ -484,13 +945,23 @@ pub fn run_app_setup_modal(app: &str) -> anyhow::Result<()> {
                 _ => {}
             }
             if matches!(phase, Phase::Verifying) && report.is_none() {
+                if checks_token {
+                    normalize_allowed(&mut supplied, &config_path);
+                }
+                // The onboarding notes (invite link first of all) stay on
+                // screen whatever the doctor says.
+                let lead = if notes.is_empty() {
+                    String::new()
+                } else {
+                    format!("{}\n\n", notes.join("\n"))
+                };
                 match finish_after_answers(app, decl, &gray_home, &user, &supplied, true) {
                     Ok(line) => {
-                        report = Some(line);
+                        report = Some(format!("{lead}{line}"));
                         phase = Phase::Done;
                     }
                     Err(e) => {
-                        report = Some(format!("{e:#}"));
+                        report = Some(format!("{lead}{e:#}"));
                         phase = Phase::Failed;
                     }
                 }

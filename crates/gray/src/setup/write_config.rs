@@ -14,6 +14,8 @@ use super::registry::SetupDecl;
 #[derive(Clone, Default)]
 pub struct Supplied {
     values: HashMap<String, String>,
+    /// Answers the app stores as a JSON array of strings (`allowed_users`).
+    lists: HashMap<String, Vec<String>>,
     secret_keys: Vec<String>,
 }
 
@@ -22,7 +24,18 @@ impl Supplied {
         if secret && !self.secret_keys.iter().any(|k| k == key) {
             self.secret_keys.push(key.to_string());
         }
+        self.lists.remove(key);
         self.values.insert(key.to_string(), value);
+    }
+
+    /// An answer written as a JSON array; replaces a plain answer for `key`.
+    pub fn insert_list(&mut self, key: &str, items: Vec<String>) {
+        self.values.remove(key);
+        self.lists.insert(key.to_string(), items);
+    }
+
+    pub fn list(&self, key: &str) -> Option<&[String]> {
+        self.lists.get(key).map(Vec::as_slice)
     }
 
     pub fn get(&self, key: &str) -> Option<&str> {
@@ -30,7 +43,7 @@ impl Supplied {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.values.is_empty()
+        self.values.is_empty() && self.lists.is_empty()
     }
 }
 
@@ -45,6 +58,11 @@ impl std::fmt::Debug for Supplied {
             } else {
                 out.entry(key, value);
             }
+        }
+        let mut lists: Vec<(&String, &Vec<String>)> = self.lists.iter().collect();
+        lists.sort_by(|a, b| a.0.cmp(b.0));
+        for (key, items) in lists {
+            out.entry(key, items);
         }
         out.finish()
     }
@@ -65,13 +83,17 @@ pub fn write_config(
     for (key, value) in &supplied.values {
         data.insert(key.clone(), Value::String(value.clone()));
     }
+    for (key, items) in &supplied.lists {
+        let items = items.iter().cloned().map(Value::String).collect();
+        data.insert(key.clone(), Value::Array(items));
+    }
     for (key, value) in decl.derived(gray_home, user_home) {
         data.insert(key.to_string(), Value::String(value));
     }
     atomic_write(config_path, &Value::Object(data))
 }
 
-fn read_object(path: &Path) -> Map<String, Value> {
+pub(crate) fn read_object(path: &Path) -> Map<String, Value> {
     match std::fs::read(path) {
         Ok(bytes) => match serde_json::from_slice::<Value>(&bytes) {
             Ok(Value::Object(map)) => map,
