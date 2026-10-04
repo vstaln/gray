@@ -425,6 +425,53 @@ fn web_fetch_renders_a_verb_with_the_url() {
 }
 
 #[test]
+fn web_search_body_renders_like_bash() {
+    // Screenshot case: each `web_search` was a header-only dark card.
+    // The sidecar returns JSON; the card must carry it like bash does
+    // (pretty-printed, numbered) instead of an empty body.
+    let out = r#"{"provider":"bing","results":[{"title":"t","url":"https://example.com","snippet":"hi"}]}"#;
+    let lines = format_tool_result_lines_with_context("web_search", None, out, false, None);
+    assert!(
+        !lines.is_empty(),
+        "web_search body must render, got header-only"
+    );
+    let text: String = lines.iter().map(row_text).collect::<Vec<_>>().join("\n");
+    assert!(
+        text.contains("1 | "),
+        "body not numbered like bash: {text:?}"
+    );
+    assert!(text.contains("example.com"), "result lost: {text:?}");
+}
+
+#[test]
+fn web_fetch_body_renders_like_bash() {
+    // Same header-only bug for `web_fetch`: fetched text never reached
+    // the card. Plain text must render numbered like bash output.
+    let out = "line one\nline two";
+    let lines = format_tool_result_lines_with_context("web_fetch", None, out, false, None);
+    assert!(
+        !lines.is_empty(),
+        "web_fetch body must render, got header-only"
+    );
+    let text: String = lines.iter().map(row_text).collect::<Vec<_>>().join("\n");
+    assert!(
+        text.contains("1 | "),
+        "body not numbered like bash: {text:?}"
+    );
+    assert!(text.contains("line one"), "body lost: {text:?}");
+}
+
+#[test]
+fn web_search_caps_long_output_like_bash() {
+    let out: String = (1..=60)
+        .map(|i| format!("result {i}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let lines = format_tool_result_lines_with_context("web_search", None, &out, false, None);
+    assert_eq!(lines.len(), 25, "must cap like bash, got {}", lines.len());
+}
+
+#[test]
 fn an_unknown_tool_humanizes_its_name_and_shows_args() {
     let args = serde_json::json!({"content": "hello channel"});
     let text = row_text(&format_tool_call_header("my_channel_send", &args, None));
@@ -434,6 +481,48 @@ fn an_unknown_tool_humanizes_its_name_and_shows_args() {
     );
     assert!(text.contains("My Channel Send"), "name missing: {text:?}");
     assert!(text.contains("hello channel"), "arg missing: {text:?}");
+}
+
+#[test]
+fn plugin_preview_path_renders_first_string_at_that_path() {
+    let args =
+        serde_json::json!({"preview": "document.title", "document": {"title": "  ## Hello  "}});
+    let text = row_text(&format_tool_call_header("some_surface_tool", &args, None));
+    assert!(
+        text.contains("Some Surface Tool"),
+        "headline missing: {text:?}"
+    );
+    assert!(text.contains("## Hello"), "preview missing: {text:?}");
+    assert!(
+        !text.contains("preview="),
+        "preview key leaked into dump: {text:?}"
+    );
+}
+
+#[test]
+fn plugin_preview_path_missing_falls_back_to_generic_dump() {
+    let args = serde_json::json!({"preview": "document.title", "document": {}});
+    let text = row_text(&format_tool_call_header("some_surface_tool", &args, None));
+    assert!(
+        text.contains("Some Surface Tool"),
+        "headline missing: {text:?}"
+    );
+    assert!(
+        text.contains("document="),
+        "fallback dump missing: {text:?}"
+    );
+}
+
+#[test]
+fn preview_at_walks_object_keys_only() {
+    let args = serde_json::json!({"document": {"title": "  Hi  "}});
+    assert_eq!(preview_at(&args, "document.title").as_deref(), Some("Hi"));
+    assert!(preview_at(&args, "document.missing").is_none());
+    assert!(preview_at(&args, "document.title.deeper").is_none());
+    assert!(preview_at(&args, "").is_none());
+    assert!(preview_at(&args, "  ").is_none());
+    let ws = serde_json::json!({"document": {"title": "   "}});
+    assert!(preview_at(&ws, "document.title").is_none());
 }
 
 #[test]

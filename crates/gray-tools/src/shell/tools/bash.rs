@@ -135,57 +135,38 @@ impl Tool for BashTool {
     }
 
     fn def(&self) -> ToolDef {
+        // Only what the model can't infer: shell basics it already knows.
+        const VIEW: &str =
+            "`cat` bare image, video, PDF or audio paths (as the whole command) to view them.";
         if !jobs_enabled() {
             return ToolDef::new(
                 "bash",
-                "Run a shell command via sh -c and wait for it to exit. timeout is an optional \
-                 total runtime limit in seconds (omitted = no limit; capped at 3600s). \
-                 Non-zero exits are data, not tool errors. Full output is logged; inline output \
-                 is bounded. Imaging: `cat <path>...` of images (png/jpg/jpeg/gif/webp/bmp/heic/heif) \
-                 videos (mp4/mov/webm/mkv/avi), PDFs or audio (mp3/wav/m4a/ogg/flac/aac/aiff) shows them \
-                 to you: an image as itself (downscaled); video, PDF and audio natively where the model \
-                 takes them, else as a contact sheet of frames, the PDF's text, or a note. Run it as \
-                 the whole command with bare paths; pipes, globs, `$`, quotes and flags make \
-                 it a plain shell run that shows nothing. Bash output is otherwise text only, so never pixel-dump or \
-                 ASCII-art an image to inspect it.",
+                format!("Run a shell command; no default timeout. {VIEW}"),
                 json!({
                     "type": "object",
                     "properties": {
-                        "command": {"type": "string", "description": "Shell command"},
-                        "timeout": {"type": "integer", "description": "Optional total runtime limit in seconds (omitted = no limit; clamped 1-3600)"}
+                        "command": {"type": "string"},
+                        "timeout": {"type": "integer", "description": "Seconds; omitted = no limit (max 3600)"}
                     }
                 }),
             );
         }
         ToolDef::new(
             "bash",
-            "Run a shell command via sh -c. Default: wait for exit. For independent long work, \
-             use background:true to return immediately, or yield_ms to return a job ID if still \
-             running after that window. Multiple jobs can run concurrently; continue other work \
-             instead of polling. Completion notices arrive between model rounds (or on the next \
-             user turn when idle). Use action:list/status/output/cancel with job_id (no command/timeout) to manage jobs; \
-             output/status accept wait_ms (bounded blocking wait, clamped 0-600000ms) so one call \
-             can await a job instead of polling. Jobs belong to this session and stop when Gray exits. \
-             timeout is an optional total runtime limit (no default: commands run until they exit; \
-             capped at 3600s), NOT the yield window. A command that sets no timeout and emits no new output for 600s (MAX_BLOCKING_SILENCE_SECS) is never killed: it moves to a background job so the call returns immediately (with a job id and log) while it keeps running — inspect, await, or cancel it. \
-             Non-zero exits are data, not tool errors. Full output is logged; inline output is bounded. \
-             Imaging: `cat <path>...` of images (png/jpg/jpeg/gif/webp/bmp/heic/heif) \
-             videos (mp4/mov/webm/mkv/avi), PDFs or audio (mp3/wav/m4a/ogg/flac/aac/aiff) shows them \
-             to you: an image as itself (downscaled); video, PDF and audio natively where the model \
-             takes them, else as a contact sheet of frames, the PDF's text, or a note. Run it as \
-             the whole command with bare paths; pipes, globs, `$`, quotes and flags make \
-             it a plain shell run that shows nothing. Bash output is otherwise text only, so never pixel-dump or \
-             ASCII-art an image to inspect it.",
+            format!(
+                "Run a shell command; no default timeout. background:true or yield_ms \
+                 returns a job id; then action status/output/cancel/list with job_id. {VIEW}"
+            ),
             json!({
                 "type": "object",
                 "properties": {
-                    "command": {"type": "string", "description": "Shell command; required for action:run (default)"},
+                    "command": {"type": "string"},
                     "action": {"type": "string", "enum": ["run", "list", "status", "output", "cancel"]},
-                    "job_id": {"type": "string", "description": "Job ID returned by bash; required for status/output/cancel"},
-                    "background": {"type": "boolean", "description": "Return immediately; run independently in this session"},
-                    "timeout": {"type": "integer", "description": "Optional total runtime limit in seconds (omitted = no limit; clamped 1-3600)"},
-                    "yield_ms": {"type": "integer", "description": "Wait at most this many milliseconds before returning a running job (clamped 100-10000); omitted means wait for exit"},
-                    "wait_ms": {"type": "integer", "description": "Bounded blocking wait on action:output/status only: await the job's exit up to this many ms (clamped 0-600000) instead of polling; omitted means return immediately"}
+                    "job_id": {"type": "string"},
+                    "background": {"type": "boolean"},
+                    "timeout": {"type": "integer", "description": "Seconds; omitted = no limit (max 3600)"},
+                    "yield_ms": {"type": "integer", "description": "Return a job id if still running after this (100-10000)"},
+                    "wait_ms": {"type": "integer", "description": "output/status: wait up to this for exit (max 600000)"}
                 }
             }),
         )

@@ -133,7 +133,7 @@ pub fn project_context_block(cwd: &Path) -> Option<String> {
     // stored prompt that never mentions <project_context> still learns what
     // it is and how to weigh it.
     Some(format!(
-        "<project_context source=\"{}\">\nProject rules for this working directory, served automatically each turn. Follow them; they outrank general defaults. Lines like `# r1: ...` are maintainer rationale for a rule and are stripped before you see them; preserve them when editing this file.\n\n{body}\n</project_context>",
+        "<project_context source=\"{}\">\nProject rules; they outrank general defaults. The file also has `# r1: ...` rationale lines, stripped here; keep them when editing it.\n\n{body}\n</project_context>",
         path.display()
     ))
 }

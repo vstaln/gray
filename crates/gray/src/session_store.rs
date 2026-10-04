@@ -1055,16 +1055,58 @@ impl JsonlSessionStore {
         Ok(dropped)
     }
 
+    /// Reads a session file as text, together with its raw bytes (so a repair
+    /// can back up exactly what was on disk).
+    ///
+    /// A crash mid-append can stop anywhere, including between the bytes of a
+    /// single multi-byte character, and that tail is no more recoverable than a
+    /// tear on a character boundary: the decodable prefix is kept and its final
+    /// partial line is dropped by the torn-record rule below. Invalid bytes that
+    /// are followed by a complete line are *not* a tear — the writer got past
+    /// them — so those stay an error, since a silently-wrong resume is worse
+    /// than a loud one.
+    async fn read_session_text(path: &Path) -> Result<Option<(String, Vec<u8>)>> {
+        let bytes = match tokio::fs::read(path).await {
+            Ok(b) => b,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(SessionError::Io(e)),
+        };
+        match String::from_utf8(bytes) {
+            Ok(text) => {
+                let raw = text.clone().into_bytes();
+                Ok(Some((text, raw)))
+            }
+            Err(error) => {
+                let valid = error.utf8_error().valid_up_to();
+                let rest = &error.as_bytes()[valid..];
+                if rest.contains(&b'\n') {
+                    return Err(SessionError::Io(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "session file contains invalid UTF-8 before the final record",
+                    )));
+                }
+                let bytes = error.into_bytes();
+                // `valid` is exactly where decoding failed, so the prefix in
+                // front of it is valid UTF-8 by construction.
+                let prefix = std::str::from_utf8(&bytes[..valid])
+                    .expect("prefix bounded by valid_up_to is valid UTF-8")
+                    .to_owned();
+                Ok(Some((prefix, bytes)))
+            }
+        }
+    }
+
+    /// Replays a session: the header, the entries, then only the transcript
+    /// after the last compaction boundary. A torn or unparseable final record
+    /// is dropped and the file repaired in place; corruption anywhere else is
+    /// an error, so a quietly-wrong resume can never happen.
     pub async fn load(&self, id: &SessionId) -> Result<(SessionMeta, Vec<SessionEntry>)> {
         let _lock_file = self.lock_session_file(id).await?;
         let _guard = self.lock.lock().await;
         let path = self.session_path(id)?;
-        let content = match tokio::fs::read_to_string(&path).await {
-            Ok(c) => c,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                return Err(SessionError::NotFound(id.clone()));
-            }
-            Err(e) => return Err(SessionError::Io(e)),
+        let (content, raw) = match Self::read_session_text(&path).await? {
+            Some(both) => both,
+            None => return Err(SessionError::NotFound(id.clone())),
         };
 
         let all_lines: Vec<(usize, &str)> = content
@@ -1141,7 +1183,7 @@ impl JsonlSessionStore {
             let mut backup = tempfile::Builder::new()
                 .prefix("session-tail-backup-")
                 .tempfile_in(&self.root_dir)?;
-            backup.write_all(content.as_bytes())?;
+            backup.write_all(&raw)?;
             let (_, backup_path) = backup.keep().map_err(|e| SessionError::Io(e.error))?;
             let mut repaired = String::new();
             let keep = if damaged_tail {

@@ -18,11 +18,11 @@ fn plain_exit_code_is_honest() {
 }
 
 #[test]
-fn sigkill_maps_to_137_with_oom_note() {
+fn sigkill_maps_to_137() {
     let r = exit_report(sig(9), "sh -c 'kill -9 $$'");
     assert_eq!(r.effective, 137);
     assert!(r.label.contains("SIGKILL"), "{}", r.label);
-    assert!(r.note.as_deref().unwrap_or("").contains("OOM"));
+    assert!(r.note.is_none());
 }
 
 #[test]
@@ -30,34 +30,13 @@ fn sigterm_maps_to_143() {
     let r = exit_report(sig(15), "sh -c 'kill -15 $$'");
     assert_eq!(r.effective, 143);
     assert!(r.label.contains("SIGTERM"), "{}", r.label);
-    // The label already names the signal; the note does not repeat it.
-    assert_eq!(r.note.as_deref(), Some("terminated"));
-}
-
-#[test]
-fn a_shell_spelled_143_keeps_the_signal_in_the_note() {
-    let r = exit_report(code(143), "sh -c 'exit 143'");
-    assert_eq!(r.label, "exit 143");
-    assert_eq!(r.note.as_deref(), Some("terminated (SIGTERM)"));
-}
-
-#[test]
-fn grep_no_match_is_benign() {
-    let r = exit_report(code(1), "grep zzz /dev/null");
-    assert_eq!(r.effective, 1);
-    assert!(r.note.as_deref().unwrap_or("").contains("no matches"));
+    assert!(r.note.is_none());
 }
 
 #[test]
 fn diff_success_is_plain() {
     let r = exit_report(code(0), "diff a a");
     assert!(r.note.is_none());
-}
-
-#[test]
-fn diff_difference_is_benign() {
-    let r = exit_report(code(1), "diff a b");
-    assert!(r.note.as_deref().unwrap_or("").contains("files differ"));
 }
 
 #[test]
@@ -145,21 +124,6 @@ fn text_filter_last_with_no_masking_risk_stays_silent() {
 }
 
 #[test]
-fn wrapped_heads_are_taken_literally_now() {
-    // The destructive-command guard owned wrapper stripping (`sudo`/`env`/
-    // `nice`/`timeout`). With the guard gone, exit reporting reads the
-    // literal head, so a wrapped benign command gets no benign note.
-    let r = exit_report(code(1), "sudo env X=1 grep z f");
-    assert!(r.note.is_none());
-}
-
-#[test]
-fn command_dash_v_is_benign() {
-    let r = exit_report(code(1), "command -v foo");
-    assert!(r.note.as_deref().unwrap_or("").contains("PATH"));
-}
-
-#[test]
 fn or_or_is_not_a_pipeline() {
     let r = exit_report(code(0), "false || true");
     assert!(r.note.is_none());
@@ -178,9 +142,7 @@ fn ls_missing_file_stays_an_error() {
 }
 
 #[test]
-fn interrupt_notes() {
-    let r = exit_report(code(130), "sleep 10");
-    assert!(r.note.as_deref().unwrap_or("").contains("interrupted"));
+fn sigint_maps_to_130() {
     let r = exit_report(sig(2), "sh -c 'kill -INT $$'");
     assert_eq!(r.effective, 130);
     assert!(r.label.contains("SIGINT"), "{}", r.label);

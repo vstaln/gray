@@ -311,13 +311,9 @@ pub fn format_skills_for_prompt(
     if visible.is_empty() {
         return String::new();
     }
-    // One sentence per rule that changes behavior. The old six-line preamble
-    // cost ~1 KB per turn to say the same thing (and named a `read` tool that
-    // tools-minimal does not have).
+    // Only what the model can't know: that skills exist and how to load one.
     let mut lines = vec![
-        "\n\nThe following skills provide specialized instructions.".to_string(),
-        "When a task matches one, read its SKILL.md at the listed location before acting — or immediately if you already started: the skill outranks the plan you are mid-way through. Load it with the read tool (`cat <location>` in bash, fallback only) and name the skill you used. Paths inside SKILL.md are relative to its directory."
-            .to_string(),
+        "Skills: when a task matches one, `cat` its SKILL.md before acting; paths in it are relative to its directory.".to_string(),
         String::new(),
         "<available_skills>".to_string(),
     ];

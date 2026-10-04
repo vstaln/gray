@@ -1,11 +1,11 @@
 //! Exercise the actual CLI/provider boundary, without a real API key or model.
-//! The first request must identify the same directory that tools execute in;
-//! a model should not spend a tool call discovering context Gray already owns.
+//! The first request carries the saved prompt verbatim (comments stripped)
+//! and no runtime context, launched from a non-ASCII, spaced directory.
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 #[tokio::test]
-async fn first_request_includes_launch_directory_without_changing_saved_prompt() {
+async fn first_request_sends_saved_prompt_verbatim_without_changing_it() {
     check_first_request(false).await;
 }
 
@@ -114,19 +114,11 @@ async fn check_first_request(native_profile: bool) {
         .unwrap()["content"]
         .as_str()
         .unwrap();
-    let directory = system
-        .lines()
-        .find_map(|line| line.strip_prefix("Working directory: "))
-        .unwrap_or_else(|| panic!("first request missing cwd: {system}"));
-    let directory: String = serde_json::from_str(directory).unwrap();
-    // macOS getcwd resolves /var -> /private/var. Compare directory identity,
-    // not the alias tempfile happened to return; don't change production cwd.
-    assert_eq!(
-        std::fs::canonicalize(directory).unwrap(),
-        std::fs::canonicalize(&cwd).unwrap()
-    );
-    assert!(system.starts_with("Custom instructions."));
+    // The saved prompt verbatim minus comments; no runtime context (memory,
+    // a separate feature, may follow).
+    assert!(system.starts_with("Custom instructions."), "{system}");
     assert!(!system.contains("private editor note"));
+    assert!(!system.contains("Working directory"), "{system}");
     assert_eq!(
         std::fs::read_to_string(home.join("AGENTS.md")).unwrap(),
         saved

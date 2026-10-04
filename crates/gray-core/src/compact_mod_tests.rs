@@ -334,9 +334,7 @@ async fn compaction_call_reuses_system_tools_and_appends_trigger() {
     assert_eq!(req.system, Some("S".to_string()));
     assert_eq!(req.tools, tools);
     let mut expected = history.clone();
-    expected.push(Message::user(format!(
-        "{COMPACTION_TRIGGER}\n\n{COMPACTION_MARKER_GUIDANCE}"
-    )));
+    expected.push(Message::user(COMPACTION_TRIGGER));
     assert_eq!(req.messages, expected);
     assert_eq!(
         history,
@@ -448,8 +446,6 @@ fn trigger_is_task_neutral() {
     assert!(COMPACTION_TRIGGER.contains("outcomes"));
     assert!(COMPACTION_TRIGGER.contains("decisions"));
     assert!(COMPACTION_TRIGGER.contains("open questions"));
-    assert!(COMPACTION_TRIGGER.contains("omit superseded"));
-    assert!(COMPACTION_TRIGGER.contains("adds no domain instructions"));
     assert!(
         !COMPACTION_TRIGGER.contains("file states"),
         "summarizer must not assume a coding task"

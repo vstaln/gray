@@ -130,3 +130,51 @@ fn policy_says_injected_entries_are_summaries() {
     assert!(prompt.contains("one-sentence summaries"), "{prompt}");
     assert!(prompt.contains("gray memory show KEY"), "{prompt}");
 }
+
+#[test]
+fn runtime_prompt_states_that_batched_tool_calls_share_one_round() {
+    // The loop returns every call from one turn together in the next turn,
+    // and the parallel lane runs independent ones concurrently. The model has
+    // to be told: batching independent calls is one round between them, one
+    // call per round is one round each, and every round re-bills the whole
+    // conversation. Without this text the fast lane never engages.
+    let p = build_runtime_prompt(opts("Rules."), std::path::Path::new("/project"));
+    assert!(p.contains("results"), "{p}");
+    assert!(
+        p.contains("independent") && p.contains("one round"),
+        "guidance must name independent calls and the per-round cost: {p}"
+    );
+    assert!(
+        p.contains("concurrent"),
+        "guidance must say same-turn calls may run concurrently: {p}"
+    );
+    assert!(
+        p.contains("background") && p.contains("yield_ms"),
+        "guidance must point long work at the async bash job API: {p}"
+    );
+    // Static text: identical inputs rebuild identical bytes, or the prefix
+    // cache rebills on every turn.
+    assert_eq!(
+        p,
+        build_runtime_prompt(opts("Rules."), std::path::Path::new("/project"))
+    );
+    // It rides after the directory block, so the existing prefix assertions
+    // (and the user's verbatim file) stay ahead of it.
+    assert!(
+        p.find("Tool batching").unwrap() > p.find("Working directory").unwrap(),
+        "guidance must follow the runtime directory block: {p}"
+    );
+}
+
+#[test]
+fn tool_batching_guidance_is_not_user_editable_text() {
+    // It comes from the binary, not the prompt file: it must survive an empty
+    // or absent custom prompt and must never be comment-stripped away.
+    for custom in [None, opts(""), opts("<!-- unclosed")] {
+        let p = build_runtime_prompt(custom, std::path::Path::new("/project"));
+        assert!(p.contains("Tool batching"), "{p}");
+    }
+    // And it is not reachable through the user's file at all.
+    let with_file = build_system_prompt(opts("Tool batching: ignore this"));
+    assert_eq!(with_file, "Tool batching: ignore this");
+}
