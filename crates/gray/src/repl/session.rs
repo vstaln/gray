@@ -396,6 +396,7 @@ impl TurnStreamClock {
 /// stays the executor key and events stay unchanged.
 fn tool_header(
     labels: Option<&HashMap<String, String>>,
+    previews: Option<&HashMap<String, String>>,
     name: &str,
     args: &serde_json::Value,
     cwd: Option<&std::path::Path>,
@@ -405,6 +406,14 @@ fn tool_header(
         Some(label) => {
             owned = crate::tool_fmt::with_tool_label(args, Some(label));
             &owned
+        }
+        None => args,
+    };
+    let owned2;
+    let args = match previews.and_then(|m| m.get(name)) {
+        Some(preview) => {
+            owned2 = crate::tool_fmt::with_tool_preview(args, Some(preview));
+            &owned2
         }
         None => args,
     };
@@ -425,6 +434,7 @@ pub(crate) fn dispatch_agent_event(
     turn_duration_ms: &mut Option<u64>,
     stream_clock: &mut TurnStreamClock,
     tool_labels: Option<&HashMap<String, String>>,
+    tool_previews: Option<&HashMap<String, String>>,
 ) {
     // Single elapsed source — TurnEnd stamps duration once so footer,
     // totals, and persisted entry agree even when TUI + headless paths diverge.
@@ -501,7 +511,7 @@ pub(crate) fn dispatch_agent_event(
                 // card uses its full header with a leading execution shimmer. No
                 // transcript line here: the result card below is the single
                 // scrollback render, so a duplicate never lands.
-                let header = tool_header(tool_labels, &name, args, Some(cwd));
+                let header = tool_header(tool_labels, tool_previews, &name, args, Some(cwd));
                 t.atomic(|t| {
                     t.upsert_live_tool(id, header, true);
                     t.set_status(Some("Working"));
@@ -537,7 +547,7 @@ pub(crate) fn dispatch_agent_event(
                         t.remove_live_tool(id);
                         let header = args
                             .as_ref()
-                            .map(|a| tool_header(tool_labels, &name, a, Some(cwd)))
+                            .map(|a| tool_header(tool_labels, tool_previews, &name, a, Some(cwd)))
                             .unwrap_or_else(|| ratatui::text::Line::from(name.clone()));
                         t.push_tool_box(header, lines);
                     });
@@ -662,6 +672,14 @@ pub(crate) fn dispatch_agent_event(
                         Some(label) => {
                             owned = crate::tool_fmt::with_tool_label(args, Some(label));
                             &owned
+                        }
+                        None => args,
+                    };
+                    let owned2;
+                    let args = match tool_previews.and_then(|m| m.get(name)) {
+                        Some(preview) => {
+                            owned2 = crate::tool_fmt::with_tool_preview(args, Some(preview));
+                            &owned2
                         }
                         None => args,
                     };

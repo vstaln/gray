@@ -371,6 +371,10 @@ pub struct Agent {
     /// Never reaches the model: provider mappers project
     /// name/description/parameters only. Empty by default.
     pub(crate) tool_labels: std::collections::HashMap<String, String>,
+    /// Display-only arg preview paths per tool name, consulted by the same
+    /// renderers (`tool_fmt` reads the entry through injected args).
+    /// Same visibility contract as `tool_labels`. Empty by default.
+    pub(crate) tool_previews: std::collections::HashMap<String, String>,
     pub(crate) messages: Vec<Message>,
     pub(crate) tool_timeout: Duration,
     pub(crate) hooks: Vec<Arc<dyn PluginHooks>>,
@@ -434,6 +438,7 @@ impl Agent {
             turn_system: None,
             tools: Vec::new(),
             tool_labels: std::collections::HashMap::new(),
+            tool_previews: std::collections::HashMap::new(),
             messages: Vec::new(),
             tool_timeout: Duration::from_secs(120),
             hooks: Vec::new(),
@@ -526,6 +531,24 @@ impl Agent {
     /// Display headline for a wire name, if one was registered.
     pub fn tool_label(&self, name: &str) -> Option<&str> {
         self.tool_labels.get(name).map(|s| s.as_str())
+    }
+
+    /// Display-only arg preview paths per tool name (plugin `preview`
+    /// support). Same merge/render contract as [`Self::with_tool_labels`].
+    pub fn with_tool_previews(
+        mut self,
+        previews: impl IntoIterator<Item = (impl Into<String>, impl Into<String>)>,
+    ) -> Self {
+        self.tool_previews = previews
+            .into_iter()
+            .map(|(k, v)| (k.into(), v.into()))
+            .collect();
+        self
+    }
+
+    /// Display arg preview path for a wire name, if one was registered.
+    pub fn tool_preview(&self, name: &str) -> Option<&str> {
+        self.tool_previews.get(name).map(|s| s.as_str())
     }
 
     /// Attaches plugin hooks (protocol v1). Empty by default: no hooks

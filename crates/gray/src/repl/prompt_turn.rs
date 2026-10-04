@@ -279,6 +279,17 @@ pub(crate) async fn run_prompt_turn(
                 .map(|l| (t.name.clone(), l.to_string()))
         })
         .collect();
+    let turn_previews: std::collections::HashMap<String, String> = agent
+        .tool_defs()
+        .iter()
+        .filter_map(|t| {
+            t.preview
+                .as_ref()
+                .map(|x| x.trim())
+                .filter(|x| !x.is_empty())
+                .map(|x| (t.name.clone(), x.to_string()))
+        })
+        .collect();
     let mut run_result = {
         let mut on_event = |ev: &AgentEvent| {
             dispatch_agent_event(
@@ -294,6 +305,7 @@ pub(crate) async fn run_prompt_turn(
                 &mut turn_duration_ms,
                 &mut stream_clock,
                 Some(&turn_labels),
+                Some(&turn_previews),
             );
         };
         run_streaming_cancellable(agent, user_msg, ctx, &cancel, &mut on_event).await
@@ -336,6 +348,7 @@ pub(crate) async fn run_prompt_turn(
                 &mut turn_duration_ms,
                 &mut stream_clock,
                 Some(&turn_labels),
+                Some(&turn_previews),
             );
         };
         run_result = run_streaming_cancellable(

@@ -434,6 +434,48 @@ fn discord_send_renders_a_verb_with_the_content() {
 }
 
 #[test]
+fn plugin_preview_path_renders_first_string_at_that_path() {
+    let args =
+        serde_json::json!({"preview": "document.title", "document": {"title": "  ## Hello  "}});
+    let text = row_text(&format_tool_call_header("some_surface_tool", &args, None));
+    assert!(
+        text.contains("Some Surface Tool"),
+        "headline missing: {text:?}"
+    );
+    assert!(text.contains("## Hello"), "preview missing: {text:?}");
+    assert!(
+        !text.contains("preview="),
+        "preview key leaked into dump: {text:?}"
+    );
+}
+
+#[test]
+fn plugin_preview_path_missing_falls_back_to_generic_dump() {
+    let args = serde_json::json!({"preview": "document.title", "document": {}});
+    let text = row_text(&format_tool_call_header("some_surface_tool", &args, None));
+    assert!(
+        text.contains("Some Surface Tool"),
+        "headline missing: {text:?}"
+    );
+    assert!(
+        text.contains("document="),
+        "fallback dump missing: {text:?}"
+    );
+}
+
+#[test]
+fn preview_at_walks_object_keys_only() {
+    let args = serde_json::json!({"document": {"title": "  Hi  "}});
+    assert_eq!(preview_at(&args, "document.title").as_deref(), Some("Hi"));
+    assert!(preview_at(&args, "document.missing").is_none());
+    assert!(preview_at(&args, "document.title.deeper").is_none());
+    assert!(preview_at(&args, "").is_none());
+    assert!(preview_at(&args, "  ").is_none());
+    let ws = serde_json::json!({"document": {"title": "   "}});
+    assert!(preview_at(&ws, "document.title").is_none());
+}
+
+#[test]
 fn unknown_tools_humanize_and_labels_override() {
     let args = serde_json::json!({"foo": "bar"});
     let text = row_text(&format_tool_call_header("my_custom_tool", &args, None));

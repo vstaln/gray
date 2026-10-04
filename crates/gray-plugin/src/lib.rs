@@ -110,6 +110,12 @@ pub fn parse_tool_entry(v: &Value) -> Option<ToolDef> {
             def = def.with_label(label.to_string());
         }
     }
+    if let Some(preview) = obj.get("preview").and_then(|x| x.as_str()) {
+        let preview = preview.trim();
+        if !preview.is_empty() {
+            def = def.with_preview(preview.to_string());
+        }
+    }
     Some(def)
 }
 
