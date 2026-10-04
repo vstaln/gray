@@ -73,6 +73,9 @@ pub async fn run_plugin_login(
     let _ = progress.send(PluginLoginProgress::Started {
         verification_uri: operation.verification_uri.clone(),
     });
+    // OAuth path only (relay/external-login returned above): the browser
+    // completes a real OAuth callback here.
+    crate::feedback::open_in_browser(&operation.verification_uri);
 
     let mut delay = std::time::Duration::from_millis(1_000);
     loop {
