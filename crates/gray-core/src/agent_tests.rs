@@ -2956,3 +2956,62 @@ fn small_results_and_recent_rounds_are_never_masked() {
         "the tenth round back is still in play"
     );
 }
+
+#[tokio::test]
+async fn checkpoint_fires_once_per_step_with_consistent_prefix() {
+    use std::sync::Arc;
+    // First script ends with a tool call, second ends the turn.
+    let provider = FakeProvider::new(vec![tool_script("call_1"), end_script()]);
+    let executor = FakeExecutor::new(ToolOutput::ok("result payload"));
+    let mut agent = Agent::new(Box::new(provider), Arc::new(executor)).with_tools(vec![tool_def()]);
+
+    // One atomic group per step: assistant tool-use + its result travel together.
+    let seen: Arc<Mutex<Vec<Vec<Message>>>> = Arc::new(Mutex::new(Vec::new()));
+    let seen_hook = seen.clone();
+    agent.set_checkpoint(Some(Arc::new(move |msgs: &[Message], _rev: u64| {
+        seen_hook
+            .lock()
+            .expect("seen lock poisoned")
+            .push(msgs.to_vec());
+        Box::pin(async move {})
+    })));
+
+    agent
+        .run(Message::user("find it"), ToolContext::default())
+        .await
+        .expect("run should succeed");
+
+    let seen = seen.lock().expect("seen lock poisoned");
+    // One fire per round: [user] before round 1, then
+    // [user, assistant, result] before round 2.
+    assert_eq!(seen.len(), 2, "hook must fire once before each round");
+    assert_eq!(seen[0].len(), 1, "first round sees only the user message");
+    assert_eq!(
+        seen[1],
+        agent.messages()[..3],
+        "second round sees full prefix"
+    );
+    // Every snapshot is answerable: each ToolUse has its ToolResult.
+    for snap in seen.iter() {
+        let uses: Vec<&str> = snap
+            .iter()
+            .flat_map(|m| m.content.iter())
+            .filter_map(|b| match b {
+                ContentBlock::ToolUse { id, .. } => Some(id.as_str()),
+                _ => None,
+            })
+            .collect();
+        let results: Vec<&str> = snap
+            .iter()
+            .flat_map(|m| m.content.iter())
+            .filter_map(|b| match b {
+                ContentBlock::ToolResult { id, .. } => Some(id.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            uses, results,
+            "snapshot must pair every call with its result"
+        );
+    }
+}

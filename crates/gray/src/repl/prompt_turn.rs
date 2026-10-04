@@ -265,6 +265,43 @@ pub(crate) async fn run_prompt_turn(
     // whole-turn duration (tool waits included).
     let mut stream_clock = super::session::TurnStreamClock::default();
     let history_revision = agent.history_revision();
+    // Persist the turn step by step, not only when it ends: a kill -9, crash,
+    // or power cut mid-turn then loses at most the step in flight. The hook
+    // stops on any history rewrite (compaction saves the full file itself)
+    // and on the first failed append (the end-of-turn path owns repair).
+    super::session::ensure_session_state(&mut *session_state, config, cwd).await;
+    let checkpointed = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(initial_count));
+    let checkpoint_failed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    if let Some(state) = session_state.as_ref().filter(|s| !s.full_save_pending) {
+        let store = std::sync::Arc::new(crate::session_store::JsonlSessionStore::new(
+            state.store.root_dir(),
+        ));
+        let sid = state.session_id.clone();
+        let (done, failed) = (checkpointed.clone(), checkpoint_failed.clone());
+        agent.set_checkpoint(Some(std::sync::Arc::new(
+            move |msgs: &[Message], rev: u64| {
+                use std::sync::atomic::Ordering::Relaxed;
+                let from = done.load(Relaxed);
+                let fresh =
+                    if rev == history_revision && !failed.load(Relaxed) && from <= msgs.len() {
+                        msgs[from..].to_vec()
+                    } else {
+                        Vec::new()
+                    };
+                let (store, sid, done, failed) =
+                    (store.clone(), sid.clone(), done.clone(), failed.clone());
+                Box::pin(async move {
+                    for m in &fresh {
+                        if store.append(&sid, m).await.is_err() {
+                            failed.store(true, Relaxed);
+                            return;
+                        }
+                        done.fetch_add(1, Relaxed);
+                    }
+                })
+            },
+        )));
+    }
     // Display-only headlines snapshot: `dispatch_agent_event` takes the
     // labels by ref, and the closure already mutably borrows `agent` for
     // the run — a shared snapshot sidesteps the double borrow.
@@ -361,6 +398,14 @@ pub(crate) async fn run_prompt_turn(
         .await;
     }
     TURN_STATE.lock().unwrap_or_else(|e| e.into_inner()).take();
+    agent.set_checkpoint(None);
+    // Whatever the checkpoints already wrote must not be appended twice.
+    // A failed checkpoint leaves the file untouched (append is all-or-nothing
+    // per call, and the hook stops after the first error), so the end-of-turn
+    // repair path still owns exactly the messages checkpoints never wrote.
+    if !checkpoint_failed.load(std::sync::atomic::Ordering::Relaxed) {
+        initial_count = initial_count.max(checkpointed.load(std::sync::atomic::Ordering::Relaxed));
+    }
     // Stop and join before the idle reader starts. Otherwise the old watcher
     // can steal its first key between poll() and read(). No TUI lock held here.
     watch_stop.store(true, std::sync::atomic::Ordering::Relaxed);

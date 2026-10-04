@@ -180,6 +180,16 @@ pub trait Provider: Send + Sync {
 /// message, so it joins the turn rather than replacing it.
 pub type SteerHook = std::sync::Arc<dyn Fn() -> Option<String> + Send + Sync>;
 
+/// Host callback awaited at every step boundary of a turn, with the whole
+/// history (consistent there: each tool call has its result) and the current
+/// [`Agent::history_revision`]. Lets the host persist a turn as it goes, so a
+/// process that dies mid-turn loses at most the step in flight.
+pub type CheckpointHook = std::sync::Arc<
+    dyn Fn(&[Message], u64) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>
+        + Send
+        + Sync,
+>;
+
 /// A single agent-callable tool.
 #[async_trait]
 pub trait Tool: Send + Sync {
@@ -393,6 +403,8 @@ pub struct Agent {
     /// turn in flight by appending a user message the model reads on its next
     /// request. `None` (no hook, or nothing typed) leaves the turn alone.
     pub(crate) steer: Option<SteerHook>,
+    /// See [`CheckpointHook`]. Set per turn by the host.
+    pub(crate) checkpoint: Option<CheckpointHook>,
     /// Session this transcript persists to, when known — woven into
     /// compaction citation stubs (arXiv:2607.25066). Captured from each
     /// run's [`ToolContext`].
@@ -449,6 +461,7 @@ impl Agent {
             history_revision: 0,
             history_rewrite_hook: None,
             steer: None,
+            checkpoint: None,
             session_id: None,
             contaminated: std::collections::BTreeSet::new(),
             masked_prefix: 0,
@@ -481,6 +494,11 @@ impl Agent {
     /// own task and must not block: the model's next request waits on it.
     pub fn set_steer(&mut self, hook: SteerHook) {
         self.steer = Some(hook);
+    }
+
+    /// Install the step-boundary checkpoint hook (see [`CheckpointHook`]).
+    pub fn set_checkpoint(&mut self, hook: Option<CheckpointHook>) {
+        self.checkpoint = hook;
     }
 
     pub fn with_history_rewrite_hook(mut self, hook: Arc<dyn Fn() + Send + Sync>) -> Self {
