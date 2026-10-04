@@ -105,10 +105,11 @@ pub fn expand_tabs(s: &str) -> String {
 fn strip_markup(s: &str) -> String {
     let mut out = s.to_string();
     for (open, close) in [("**", "**"), ("__", "__"), ("~~", "~~")] {
-        loop {
-            let Some(a) = out.find(open) else { break };
+        while let Some(a) = out.find(open) {
             let after = a + open.len();
-            let Some(rel) = out[after..].find(close) else { break };
+            let Some(rel) = out[after..].find(close) else {
+                break;
+            };
             let b = after + rel;
             let inner = out[after..b].to_string();
             if inner.trim().is_empty() {
