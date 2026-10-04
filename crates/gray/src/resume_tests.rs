@@ -219,3 +219,92 @@ fn the_cwd_scope_still_wins_over_recency() {
     let latest = latest_summary(&summaries, Some(std::path::Path::new("/tmp"))).expect("scoped");
     assert_eq!(latest.id.as_str(), "here");
 }
+
+#[test]
+fn empty_sessions_hide_from_the_picker_filter() {
+    let empty = summary(None, None, now_millis(), now_millis());
+    assert!(
+        !session_matches(&empty, "", None),
+        "an empty session must not match the unfiltered picker list"
+    );
+    assert!(
+        !session_matches(&empty, &empty.id.as_str()[..8], None),
+        "an empty session must not match even its own id"
+    );
+    let live = summary(
+        Some("real opener"),
+        Some("real followup"),
+        now_millis(),
+        now_millis(),
+    );
+    assert!(session_matches(&live, "", None));
+}
+
+#[test]
+fn whitespace_only_user_text_still_counts_as_empty() {
+    let mut s = summary(None, None, now_millis(), now_millis());
+    s.first_user_text = Some("   ".to_string());
+    s.last_user_text = Some("  \n ".to_string());
+    assert!(!session_matches(&s, "", None));
+    assert!(latest_summary(std::slice::from_ref(&s), None).is_none());
+}
+
+#[test]
+fn last_and_headless_lists_skip_empty_sessions() {
+    let empty = summary(None, None, now_millis(), now_millis());
+    let mut live = summary(
+        Some("real opener"),
+        Some("real followup"),
+        now_millis().saturating_sub(60_000),
+        now_millis().saturating_sub(60_000),
+    );
+    live.cwd = std::path::PathBuf::from("/tmp");
+    let summaries = vec![empty, live];
+    // --last skips the newer-but-empty session for the older live one.
+    let latest = latest_summary(&summaries, None).expect("live session");
+    assert_eq!(
+        latest.last_user_text.as_deref(),
+        Some("real followup"),
+        "an empty session must never win --last, even when newest"
+    );
+    // Same skip the headless list applies (mirror its filter chain).
+    let listed: Vec<&SessionSummary> = summaries
+        .iter()
+        .filter(|s| super::session_matches(s, "", None))
+        .collect();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].last_user_text.as_deref(), Some("real followup"));
+}
+
+#[tokio::test]
+async fn empty_sessions_exist_on_disk_but_hide_from_resume() {
+    // End-to-end against the real store: a created-but-never-used session
+    // is a header-only file. `list()` keeps reporting it (no data loss),
+    // but no resume surface offers it — while an explicit id still loads.
+    let dir = tempfile::tempdir().unwrap();
+    let store = JsonlSessionStore::new(dir.path());
+    let cwd = std::env::current_dir().unwrap();
+    store
+        .create(crate::session_store::SessionMeta::new(
+            SessionId::new("empty-hide-1"),
+            now_millis(),
+            cwd,
+            "test-model",
+        ))
+        .await
+        .unwrap();
+    let summaries = store.list().await;
+    assert_eq!(summaries.len(), 1, "the store keeps the empty session");
+    assert!(summaries[0].first_user_text.is_none());
+    assert!(summaries[0].last_user_text.is_none());
+    assert!(!session_matches(&summaries[0], "", None));
+    assert!(latest_summary(&summaries, None).is_none());
+    assert_eq!(
+        resolve_prefix(&store, "empty-hide-1", false)
+            .await
+            .unwrap()
+            .as_str(),
+        "empty-hide-1",
+        "hiding is a listing rule, not a delete: explicit ids still resolve"
+    );
+}
