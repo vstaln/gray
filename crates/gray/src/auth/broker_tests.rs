@@ -4,9 +4,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use gray_core::credential::{CredentialEnvelope, CredentialMaterial, CredentialSource, SecretMap};
 use gray_plugin::{
-    AuthMethodDecl, ProviderAuthPoll, ProviderAuthStart, ProviderAuthorizationDecl, ProviderDecl,
-    ProviderHeaderDecl, ProviderModelCatalog, ProviderModelsRequest, ProviderRefreshRequest,
-    ProviderRevokeRequest, ProviderRevokeResult, ProviderTransportDecl,
+    AuthMethodDecl, ProviderAuthPoll, ProviderAuthStart, ProviderAuthorizationDecl,
+    ProviderChatRequest, ProviderChatResult, ProviderDecl, ProviderHeaderDecl,
+    ProviderModelCatalog, ProviderModelsRequest, ProviderRefreshRequest, ProviderRevokeRequest,
+    ProviderRevokeResult, ProviderTransportDecl,
 };
 
 use super::*;
@@ -49,6 +50,12 @@ impl ProviderRpc for FakeRefresh {
         &self,
         _request: ProviderModelsRequest,
     ) -> Result<ProviderModelCatalog, ProviderRpcError> {
+        unimplemented!("not needed for refresh tests")
+    }
+    async fn chat(
+        &self,
+        _request: ProviderChatRequest,
+    ) -> Result<ProviderChatResult, ProviderRpcError> {
         unimplemented!("not needed for refresh tests")
     }
     async fn shutdown(&self) {}
@@ -197,6 +204,12 @@ async fn terminal_refresh_rejection_removes_one_entry() {
         ) -> Result<ProviderModelCatalog, ProviderRpcError> {
             unimplemented!()
         }
+        async fn chat(
+            &self,
+            _request: ProviderChatRequest,
+        ) -> Result<ProviderChatResult, ProviderRpcError> {
+            unimplemented!()
+        }
         async fn shutdown(&self) {}
     }
 
@@ -287,6 +300,12 @@ async fn profile_mismatch_does_not_delete_credential() {
         ) -> Result<ProviderModelCatalog, ProviderRpcError> {
             unimplemented!()
         }
+        async fn chat(
+            &self,
+            _request: ProviderChatRequest,
+        ) -> Result<ProviderChatResult, ProviderRpcError> {
+            unimplemented!()
+        }
         async fn shutdown(&self) {}
     }
 
@@ -354,6 +373,12 @@ async fn expired_credential_fails_closed() {
         ) -> Result<ProviderModelCatalog, ProviderRpcError> {
             unimplemented!()
         }
+        async fn chat(
+            &self,
+            _request: ProviderChatRequest,
+        ) -> Result<ProviderChatResult, ProviderRpcError> {
+            unimplemented!()
+        }
         async fn shutdown(&self) {}
     }
 
@@ -380,4 +405,143 @@ async fn expired_credential_fails_closed() {
             .unwrap()
             .is_none()
     );
+}
+
+#[tokio::test]
+async fn relay_chat_returns_url_and_bearer_without_store() {
+    struct FakeChat {
+        seen_model: std::sync::Arc<std::sync::Mutex<String>>,
+    }
+    #[async_trait::async_trait]
+    impl ProviderRpc for FakeChat {
+        async fn auth_start(
+            &self,
+            _provider: &str,
+            _auth_method: &str,
+        ) -> Result<ProviderAuthStart, ProviderRpcError> {
+            unimplemented!()
+        }
+        async fn auth_poll(
+            &self,
+            _operation_id: &str,
+        ) -> Result<ProviderAuthPoll, ProviderRpcError> {
+            unimplemented!()
+        }
+        async fn auth_cancel(&self, _operation_id: &str) -> Result<(), ProviderRpcError> {
+            unimplemented!()
+        }
+        async fn refresh(
+            &self,
+            _request: ProviderRefreshRequest,
+        ) -> Result<CredentialMaterial, ProviderRpcError> {
+            unimplemented!()
+        }
+        async fn revoke(
+            &self,
+            _request: ProviderRevokeRequest,
+        ) -> Result<ProviderRevokeResult, ProviderRpcError> {
+            unimplemented!()
+        }
+        async fn models(
+            &self,
+            _request: ProviderModelsRequest,
+        ) -> Result<ProviderModelCatalog, ProviderRpcError> {
+            unimplemented!()
+        }
+        async fn chat(
+            &self,
+            request: ProviderChatRequest,
+        ) -> Result<ProviderChatResult, ProviderRpcError> {
+            *self.seen_model.lock().unwrap() = request.model.clone();
+            Ok(ProviderChatResult {
+                relay_url: "http://127.0.0.1:9/relay/tok/responses".into(),
+                relay_token: "per-turn-bearer".into(),
+            })
+        }
+        async fn shutdown(&self) {}
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let store = CredentialStore::new(dir.path().join("auth.json"));
+    let mut relay = installed();
+    relay.auth_method.operations = vec!["models".into(), "chat".into()];
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    let source = shared_plugin_source_with_model(
+        relay.clone(),
+        store,
+        Arc::new(FakeChat {
+            seen_model: seen.clone(),
+        }),
+        Some("flash".into()),
+    );
+    let lease = source.acquire().await.expect("relay chat succeeds");
+    assert_eq!(lease.secrets.get("access_token"), Some("per-turn-bearer"));
+    assert_eq!(
+        lease.metadata.get("relay_url").map(String::as_str),
+        Some("http://127.0.0.1:9/relay/tok/responses")
+    );
+    assert_eq!(seen.lock().unwrap().as_str(), "flash");
+}
+
+#[tokio::test]
+async fn relay_chat_unavailable_maps_to_login_required() {
+    struct NoRelay;
+    #[async_trait::async_trait]
+    impl ProviderRpc for NoRelay {
+        async fn auth_start(
+            &self,
+            _provider: &str,
+            _auth_method: &str,
+        ) -> Result<ProviderAuthStart, ProviderRpcError> {
+            unimplemented!()
+        }
+        async fn auth_poll(
+            &self,
+            _operation_id: &str,
+        ) -> Result<ProviderAuthPoll, ProviderRpcError> {
+            unimplemented!()
+        }
+        async fn auth_cancel(&self, _operation_id: &str) -> Result<(), ProviderRpcError> {
+            unimplemented!()
+        }
+        async fn refresh(
+            &self,
+            _request: ProviderRefreshRequest,
+        ) -> Result<CredentialMaterial, ProviderRpcError> {
+            unimplemented!()
+        }
+        async fn revoke(
+            &self,
+            _request: ProviderRevokeRequest,
+        ) -> Result<ProviderRevokeResult, ProviderRpcError> {
+            unimplemented!()
+        }
+        async fn models(
+            &self,
+            _request: ProviderModelsRequest,
+        ) -> Result<ProviderModelCatalog, ProviderRpcError> {
+            unimplemented!()
+        }
+        async fn chat(
+            &self,
+            _request: ProviderChatRequest,
+        ) -> Result<ProviderChatResult, ProviderRpcError> {
+            Err(ProviderRpcError::Unavailable(
+                "run agy once and complete the Google sign-in".into(),
+            ))
+        }
+        async fn shutdown(&self) {}
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let store = CredentialStore::new(dir.path().join("auth.json"));
+    let mut relay = installed();
+    relay.auth_method.operations = vec!["models".into(), "chat".into()];
+    let source =
+        shared_plugin_source_with_model(relay, store, Arc::new(NoRelay), Some("flash".into()));
+    let error = source.acquire().await.unwrap_err();
+    assert!(matches!(
+        error,
+        gray_core::credential::CredentialError::ReauthRequired(_)
+    ));
 }

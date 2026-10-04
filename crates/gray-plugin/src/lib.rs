@@ -27,10 +27,11 @@ pub use capabilities::{
 };
 pub use provider::{
     AuthMethodDecl, PROVIDER_CREDENTIALS, PROVIDER_PROTOCOL, ProviderAuthPoll, ProviderAuthStart,
-    ProviderAuthorizationDecl, ProviderDecl, ProviderHeaderDecl, ProviderHeaderSourceDecl,
-    ProviderModel, ProviderModelCatalog, ProviderModelsRequest, ProviderRefreshRequest,
-    ProviderRequestPolicyDecl, ProviderRevokeRequest, ProviderRevokeResult, ProviderRpcError,
-    ProviderRpcFailure, ProviderTransportDecl, ProviderValidationError,
+    ProviderAuthorizationDecl, ProviderChatRequest, ProviderChatResult, ProviderDecl,
+    ProviderHeaderDecl, ProviderHeaderSourceDecl, ProviderModel, ProviderModelCatalog,
+    ProviderModelsRequest, ProviderRefreshRequest, ProviderRequestPolicyDecl,
+    ProviderRevokeRequest, ProviderRevokeResult, ProviderRpcError, ProviderRpcFailure,
+    ProviderTransportDecl, ProviderValidationError,
 };
 
 #[derive(Debug, Clone)]

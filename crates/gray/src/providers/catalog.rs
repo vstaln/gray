@@ -13,7 +13,7 @@ use gray_provider::{
     OpenAiRequestPolicy, OpenAiWire,
 };
 
-use crate::auth::{CredentialStore, shared_plugin_source};
+use crate::auth::{CredentialStore, shared_plugin_source_with_model};
 use crate::config::Config;
 use crate::providers::registry::ProviderRpc;
 use crate::providers::registry::{InstalledProvider, ProviderRegistry};
@@ -64,10 +64,11 @@ pub async fn connect_dynamic_provider(
     let profile = profile_for_provider(&installed)?;
     let runtime = ProviderRuntime::start(installed.clone()).await?;
     let store = CredentialStore::new(home.join("auth.json"));
-    let source: Arc<dyn CredentialSource> = shared_plugin_source(
+    let source: Arc<dyn CredentialSource> = shared_plugin_source_with_model(
         installed.clone(),
         store,
         Arc::clone(&runtime.rpc()) as Arc<dyn ProviderRpc>,
+        config.model.clone(),
     );
     Ok(DynamicProvider {
         installed,
@@ -161,23 +162,49 @@ pub async fn fetch_models_for_config(config: &Config) -> Vec<(String, String)> {
     let Ok(runtime) = ProviderRuntime::start(installed.clone()).await else {
         return Vec::new();
     };
-    let store = CredentialStore::new(home.join("auth.json"));
-    let source = shared_plugin_source(
-        installed.clone(),
-        store.clone(),
-        Arc::clone(&runtime.rpc()) as Arc<dyn ProviderRpc>,
-    );
-    if source.acquire().await.is_err() {
-        return Vec::new();
-    }
-    let Ok(Some(credential)) = store.read_plugin(&installed.auth_ref()) else {
-        return Vec::new();
-    };
-    let request = ProviderModelsRequest {
-        provider: installed.provider.id.clone(),
-        auth_method: installed.auth_method.id.clone(),
-        profile_binding: installed.profile_binding.clone(),
-        credential,
+    // Relay providers (`chat` operation): the per-turn loopback URL only
+    // exists after `provider/chat`, so discovery calls `provider/models`
+    // directly with an empty envelope (the sidecar ignores it) instead of
+    // going through `acquire`, which would burn a relay on a listing.
+    let is_relay = installed
+        .auth_method
+        .operations
+        .iter()
+        .any(|operation| operation == "chat");
+    let request = if is_relay {
+        ProviderModelsRequest {
+            provider: installed.provider.id.clone(),
+            auth_method: installed.auth_method.id.clone(),
+            profile_binding: installed.profile_binding.clone(),
+            credential: gray_core::credential::CredentialEnvelope::new(
+                installed.plugin.clone(),
+                installed.provider.id.clone(),
+                installed.auth_method.id.clone(),
+                installed.profile_binding.clone(),
+                gray_core::credential::CredentialMaterial::empty(),
+            )
+            .expect("relay models envelope"),
+        }
+    } else {
+        let store = CredentialStore::new(home.join("auth.json"));
+        let source = shared_plugin_source_with_model(
+            installed.clone(),
+            store.clone(),
+            Arc::clone(&runtime.rpc()) as Arc<dyn ProviderRpc>,
+            config.model.clone(),
+        );
+        if source.acquire().await.is_err() {
+            return Vec::new();
+        }
+        let Ok(Some(credential)) = store.read_plugin(&installed.auth_ref()) else {
+            return Vec::new();
+        };
+        ProviderModelsRequest {
+            provider: installed.provider.id.clone(),
+            auth_method: installed.auth_method.id.clone(),
+            profile_binding: installed.profile_binding.clone(),
+            credential,
+        }
     };
     match runtime.rpc().models(request).await {
         Ok(catalog) => catalog

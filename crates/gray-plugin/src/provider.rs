@@ -237,6 +237,39 @@ impl fmt::Debug for ProviderModelsRequest {
 }
 
 #[derive(Clone, Serialize, Deserialize)]
+pub struct ProviderChatRequest {
+    pub provider: String,
+    pub auth_method: String,
+    #[serde(default)]
+    pub model: String,
+}
+
+impl fmt::Debug for ProviderChatRequest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ProviderChatRequest")
+            .field("provider", &self.provider)
+            .field("auth_method", &self.auth_method)
+            .field("model", &self.model)
+            .finish()
+    }
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct ProviderChatResult {
+    pub relay_url: String,
+    pub relay_token: String,
+}
+
+impl fmt::Debug for ProviderChatResult {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ProviderChatResult")
+            .field("relay_url", &self.relay_url)
+            .field("relay_token", &"<redacted>")
+            .finish()
+    }
+}
+
+#[derive(Clone, Serialize, Deserialize)]
 pub struct ProviderModelCatalog {
     pub models: Vec<ProviderModel>,
 }
@@ -321,7 +354,7 @@ impl ProviderDecl {
             for operation in &method.operations {
                 if !matches!(
                     operation.as_str(),
-                    "login" | "refresh" | "revoke" | "models"
+                    "login" | "refresh" | "revoke" | "models" | "chat"
                 ) {
                     return Err(ProviderValidationError::new("unsupported auth operation"));
                 }

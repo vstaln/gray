@@ -6,9 +6,10 @@ use std::path::{Path, PathBuf};
 use async_trait::async_trait;
 use gray_plugin::lock::LockEntry;
 use gray_plugin::{
-    AuthMethodDecl, Plugin, ProviderAuthPoll, ProviderAuthStart, ProviderDecl,
-    ProviderModelCatalog, ProviderModelsRequest, ProviderRefreshRequest, ProviderRevokeRequest,
-    ProviderRevokeResult, ProviderRpcError, SidecarPlugin,
+    AuthMethodDecl, Plugin, ProviderAuthPoll, ProviderAuthStart, ProviderChatRequest,
+    ProviderChatResult, ProviderDecl, ProviderModelCatalog, ProviderModelsRequest,
+    ProviderRefreshRequest, ProviderRevokeRequest, ProviderRevokeResult, ProviderRpcError,
+    SidecarPlugin,
 };
 use serde::{Deserialize, Serialize};
 
@@ -304,6 +305,10 @@ pub trait ProviderRpc: Send + Sync {
         &self,
         request: ProviderModelsRequest,
     ) -> Result<ProviderModelCatalog, ProviderRpcError>;
+    async fn chat(
+        &self,
+        request: ProviderChatRequest,
+    ) -> Result<ProviderChatResult, ProviderRpcError>;
     async fn shutdown(&self);
 }
 

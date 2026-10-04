@@ -2276,6 +2276,123 @@ fn dynamic_profile_debug_is_redacted() {
     assert!(!format!("{provider:?}").contains("acct_test"));
 }
 
+#[tokio::test]
+async fn relay_url_override_posts_to_lease_url() {
+    use futures::StreamExt;
+    use gray_core::message::{ChatRequest, ContentBlock, Message, Role};
+
+    // Two loopbacks: the declared base (must see NOTHING) and the relay URL
+    // the lease carries (must see the POST). The relay single-admission rule
+    // means a second POST would 400; the test asserts exactly one POST lands
+    // on the relay and zero on the declared base.
+    let declared = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let declared_addr = declared.local_addr().unwrap();
+    let declared_hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let declared_hits2 = declared_hits.clone();
+    let declared_server = tokio::spawn(async move {
+        if tokio::time::timeout(std::time::Duration::from_secs(5), declared.accept())
+            .await
+            .is_ok()
+        {
+            // A connection arrived: the provider wrongly POSTed to the
+            // declared base instead of the relay URL.
+            declared_hits2.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+    });
+
+    let relay = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let relay_addr = relay.local_addr().unwrap();
+    let relay_server = tokio::spawn(async move {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let (mut socket, _) = relay.accept().await.unwrap();
+        let mut buffer = [0u8; 8192];
+        let read = socket.read(&mut buffer).await.unwrap();
+        let received = String::from_utf8_lossy(&buffer[..read]).to_string();
+        let head_end = received.find("\r\n\r\n").expect("request head");
+        let head = &received[..head_end];
+        assert!(head.contains("POST /relay/tok/responses"), "{head}");
+        assert!(head.contains("Bearer per-turn-bearer"), "{head}");
+        let sse = concat!(
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hi-relay\"}\n\n",
+            "data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}\n\n",
+            "data: [DONE]\n\n"
+        );
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\n\r\n{}",
+            sse.len(),
+            sse
+        );
+        socket.write_all(response.as_bytes()).await.unwrap();
+        socket.flush().await.unwrap();
+    });
+
+    let profile = OpenAiProviderProfile {
+        base_url: format!("http://{declared_addr}/v1").parse().unwrap(),
+        wire: OpenAiWire::Responses,
+        authorization: OpenAiAuthorization::Bearer {
+            secret_name: "relay_token".into(),
+        },
+        headers: Vec::new(),
+        request: OpenAiRequestPolicy::default(),
+        follow_redirects: false,
+    };
+    let provider = OpenAiProvider::new_with_profile(
+        "gpt-test",
+        None,
+        None,
+        profile,
+        std::sync::Arc::new(StaticProviderSource {
+            secrets: gray_core::credential::SecretMap::from_iter([(
+                "relay_token",
+                "per-turn-bearer",
+            )]),
+            metadata: [(
+                "relay_url".into(),
+                format!("http://{relay_addr}/relay/tok/responses"),
+            )]
+            .into_iter()
+            .collect(),
+        }),
+    )
+    .unwrap();
+
+    let request = ChatRequest {
+        system: None,
+        messages: vec![Message::new(
+            Role::User,
+            vec![ContentBlock::Text { text: "hi".into() }],
+        )],
+        tools: Vec::new(),
+        max_tokens: None,
+    };
+    let mut stream = provider.stream(request);
+    match stream.next().await.unwrap() {
+        Ok(StreamEvent::TextDelta { delta }) => assert_eq!(delta, "hi-relay"),
+        other => panic!("expected relay text delta, got {other:?}"),
+    }
+    declared_server.abort();
+    relay_server.abort();
+    assert_eq!(
+        declared_hits.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "declared base must see no POST when the lease carries a relay URL"
+    );
+}
+
+#[test]
+fn admission_consumed_400_is_terminal_bad_request() {
+    // Section 4 checkpoint: the relay's single-admission 400 must surface as
+    // a terminal BadRequest, never a retried ServerError/RateLimited.
+    let err = classify_http_error(
+        reqwest::StatusCode::BAD_REQUEST,
+        r#"{"type":"error","error":{"type":"invalid_request_error","message":"ANTIGRAVITY_MODEL_ADMISSION_CONSUMED"}}"#,
+        None,
+        None,
+    );
+    assert!(matches!(err, ProviderError::BadRequest(_)));
+    assert!(!is_retryable_error(&err));
+}
+
 #[test]
 fn model_accepts_video_is_gemini_only() {
     use crate::openai::model_accepts_video;

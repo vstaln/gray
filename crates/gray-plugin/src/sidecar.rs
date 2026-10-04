@@ -55,8 +55,9 @@ use gray_core::message::ToolDef;
 
 use crate::{
     CoreEvent, Manifest, PROVIDER_CREDENTIALS, Plugin, ProviderAuthPoll, ProviderAuthStart,
-    ProviderModelCatalog, ProviderModelsRequest, ProviderRefreshRequest, ProviderRevokeRequest,
-    ProviderRevokeResult, ProviderRpcError, ToolBefore, manifest_tools,
+    ProviderChatRequest, ProviderChatResult, ProviderModelCatalog, ProviderModelsRequest,
+    ProviderRefreshRequest, ProviderRevokeRequest, ProviderRevokeResult, ProviderRpcError,
+    ToolBefore, manifest_tools,
 };
 
 /// Plugin→host request handler (`host/run`, `host/say`). Set by the host via
@@ -840,6 +841,19 @@ impl SidecarPlugin {
             .await?;
         serde_json::from_value(value)
             .map_err(|_| ProviderRpcError::Protocol("invalid provider model catalog".into()))
+    }
+
+    pub async fn provider_chat(
+        &self,
+        request: &ProviderChatRequest,
+    ) -> Result<ProviderChatResult, ProviderRpcError> {
+        let params = serde_json::to_value(request)
+            .map_err(|_| ProviderRpcError::Protocol("invalid provider chat request".into()))?;
+        let value = self
+            .provider_rpc("provider/chat", params, Duration::from_secs(10))
+            .await?;
+        serde_json::from_value(value)
+            .map_err(|_| ProviderRpcError::Protocol("invalid provider chat result".into()))
     }
 
     pub async fn set_host_handler(&self, handler: HostHandler) {

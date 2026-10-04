@@ -5,8 +5,9 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use gray_plugin::sidecar::SidecarPlugin;
 use gray_plugin::{
-    ProviderAuthPoll, ProviderAuthStart, ProviderModelCatalog, ProviderModelsRequest,
-    ProviderRefreshRequest, ProviderRevokeRequest, ProviderRevokeResult, ProviderRpcError,
+    ProviderAuthPoll, ProviderAuthStart, ProviderChatRequest, ProviderChatResult,
+    ProviderModelCatalog, ProviderModelsRequest, ProviderRefreshRequest, ProviderRevokeRequest,
+    ProviderRevokeResult, ProviderRpcError,
 };
 
 use super::registry::{InstalledProvider, ProviderRpc};
@@ -63,6 +64,13 @@ impl ProviderRpc for SidecarProviderRpc {
         request: ProviderModelsRequest,
     ) -> Result<ProviderModelCatalog, ProviderRpcError> {
         self.plugin.provider_models(&request).await
+    }
+
+    async fn chat(
+        &self,
+        request: ProviderChatRequest,
+    ) -> Result<ProviderChatResult, ProviderRpcError> {
+        self.plugin.provider_chat(&request).await
     }
 
     async fn shutdown(&self) {

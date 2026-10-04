@@ -5,7 +5,7 @@ use std::sync::Arc;
 use gray_core::credential::{
     CredentialEnvelope, CredentialError, CredentialLease, CredentialMaterial,
 };
-use gray_plugin::{ProviderRefreshRequest, ProviderRpcError};
+use gray_plugin::{ProviderChatRequest, ProviderRefreshRequest, ProviderRpcError};
 use tokio::sync::Mutex;
 
 use super::store::CredentialStore;
@@ -19,6 +19,9 @@ pub struct PluginCredentialSource {
     store: CredentialStore,
     rpc: Arc<dyn ProviderRpc>,
     refresh: Mutex<()>,
+    /// Model id for the per-turn relay handshake (`provider/chat`); `None`
+    /// preserves the stored-credential flow for providers without a relay.
+    model: Option<String>,
 }
 
 /// Process-wide handle so the broker, agent, setup, and model discovery share
@@ -28,11 +31,24 @@ pub fn shared_plugin_source(
     store: CredentialStore,
     rpc: Arc<dyn ProviderRpc>,
 ) -> Arc<PluginCredentialSource> {
+    shared_plugin_source_with_model(installed, store, rpc, None)
+}
+
+/// Same as [`shared_plugin_source`], plus the model id the per-turn relay
+/// handshake (`provider/chat`) needs. `None` preserves the stored-credential
+/// flow for providers without a relay.
+pub fn shared_plugin_source_with_model(
+    installed: InstalledProvider,
+    store: CredentialStore,
+    rpc: Arc<dyn ProviderRpc>,
+    model: Option<String>,
+) -> Arc<PluginCredentialSource> {
     Arc::new(PluginCredentialSource {
         installed,
         store,
         rpc,
         refresh: Mutex::new(()),
+        model,
     })
 }
 
@@ -119,6 +135,15 @@ impl PluginCredentialSource {
 #[async_trait::async_trait]
 impl gray_core::credential::CredentialSource for PluginCredentialSource {
     async fn acquire(&self) -> Result<CredentialLease, CredentialError> {
+        if self
+            .installed
+            .auth_method
+            .operations
+            .iter()
+            .any(|operation| operation == "chat")
+        {
+            return self.acquire_relay().await;
+        }
         let identity = self.identity();
         let auth_ref = self.auth_ref();
         let stored = self
@@ -183,6 +208,47 @@ impl gray_core::credential::CredentialSource for PluginCredentialSource {
         Ok(CredentialLease {
             secrets: next.secrets,
             metadata: next.metadata,
+        })
+    }
+}
+
+impl PluginCredentialSource {
+    /// Per-turn relay handshake: the sidecar opens a loopback relay and hands
+    /// back its URL + bearer. Core stays agnostic — a URL plus a secret,
+    /// never the relay wire shape. The per-turn bearer goes in
+    /// `secrets[relay_token]` (the manifest's declared `secret_name`); the
+    /// URL rides in `metadata[relay_url]` for the dynamic POST override.
+    async fn acquire_relay(&self) -> Result<CredentialLease, CredentialError> {
+        let identity = self.identity();
+        let request = ProviderChatRequest {
+            provider: self.installed.provider.id.clone(),
+            auth_method: self.installed.auth_method.id.clone(),
+            model: self.model.clone().unwrap_or_default(),
+        };
+        let result = self
+            .rpc
+            .chat(request)
+            .await
+            .map_err(|e| self.map_error(e))?;
+        if result.relay_url.trim().is_empty() || result.relay_token.trim().is_empty() {
+            return Err(
+                self.map_error(gray_plugin::ProviderRpcError::Unavailable(identity.clone()))
+            );
+        }
+        let secret_name = self
+            .installed
+            .provider
+            .transport
+            .authorization
+            .secret_name
+            .clone();
+        let mut secrets = std::collections::BTreeMap::new();
+        secrets.insert(secret_name, result.relay_token);
+        Ok(CredentialLease {
+            secrets: gray_core::credential::SecretMap::from_iter(secrets),
+            metadata: [("relay_url".to_string(), result.relay_url)]
+                .into_iter()
+                .collect(),
         })
     }
 }

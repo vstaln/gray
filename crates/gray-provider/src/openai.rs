@@ -2197,7 +2197,13 @@ impl OpenAiProvider {
             self.reasoning_effort.as_deref(),
         );
         apply_dynamic_policy(&mut body, &profile.request, self.session_id.as_deref());
-        let url = match responses_url(&profile.base_url) {
+        // The per-turn relay URL only exists after `acquire` (the sidecar
+        // opens the loopback in `provider/chat`), so URL selection moves
+        // after the lease: `metadata[relay_url]` is already the full
+        // `/responses` URL, used verbatim. Anything else falls back to the
+        // declared base. Core stays agnostic — a URL override, never the
+        // relay wire shape.
+        let profile_url = match responses_url(&profile.base_url) {
             Ok(url) => url,
             Err(error) => return stream::once(async move { Err(error) }).boxed(),
         };
@@ -2208,14 +2214,22 @@ impl OpenAiProvider {
                 .acquire()
                 .await
                 .map_err(|_| ProviderError::Auth("provider credential unavailable".into()))
-                .map(|lease| (lease, body))
+                .and_then(|lease| {
+                    let url = match lease.metadata.get("relay_url") {
+                        Some(relay) => relay.parse::<Url>().map_err(|e| {
+                            ProviderError::BadRequest(format!("invalid relay URL: {e}"))
+                        }),
+                        None => Ok(profile_url.clone()),
+                    }?;
+                    Ok((lease, body, url))
+                })
         });
         started
             .flat_map(move |result| match result {
-                Ok((lease, body)) => stream::unfold(
+                Ok((lease, body, url)) => stream::unfold(
                     DynamicState::Init {
                         client: client.clone(),
-                        url: url.clone(),
+                        url,
                         profile: Box::new(profile.clone()),
                         lease,
                         body: Box::new(body),
