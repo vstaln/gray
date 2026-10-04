@@ -47,13 +47,13 @@ curl -fsSL https://gray.alignment.id/install.sh | sh -s -- beta   # rebuilt on e
 cargo build --release -p gray                                     # from source
 ```
 
-**Windows 11 x64** (native, no WSL; Git for Windows supplies the shell). In PowerShell:
+**Native Windows 11 x64** (no WSL; Git for Windows supplies the shell). In PowerShell:
 
 ```powershell
 irm https://gray.alignment.id/install.ps1 | iex
 ```
 
-The installer checks the release `SHA256SUMS`. Gateway/cron execution and self-update aren't supported on native Windows yet — see the [Windows guide](docs/windows-preview.md) for beta, offline and WSL installs.
+The installer checks the release `SHA256SUMS`. For an offline install keep `dist/install.ps1` and the zip together and run `.\dist\install.ps1 -ArchivePath .\gray-stable-x86_64-windows.zip -Sha256 <digest>`. Gateway/cron execution and self-update aren't supported on native Windows yet — see the [Windows guide](docs/windows-preview.md) for beta, offline and WSL installs.
 
 ## Quick start
 
