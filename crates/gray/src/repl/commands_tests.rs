@@ -408,7 +408,8 @@ fn model_completes_cached_ids() {
             .set_read_timeout(Some(std::time::Duration::from_secs(5)))
             .unwrap();
         let mut request = [0; 4096];
-        stream.read(&mut request).unwrap();
+        let request_len = stream.read(&mut request).unwrap();
+        assert!(request_len > 0);
         let body = r#"{"data":[{"id":"test-completion-model-xyz"}]}"#;
         write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
     });

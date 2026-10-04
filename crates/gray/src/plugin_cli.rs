@@ -1,145 +1,14 @@
 //! Native plugin command registration, help metadata and bounded UI requests. No model calls.
+//!
+//! One registry: `lock.json`. A `cli_argv` on a lock entry makes the plugin
+//! a `gray <name> …` command and enables slash-command capture; `argv` is
+//! always the sidecar invocation vector.
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::setup::registry::{FieldKind, SetupDecl, SetupField};
 use anyhow::Context;
-use gray_plugin::Plugin;
 use gray_plugin::lock::{LockEntry, LockFile};
 use serde_json::Value;
-
-/// One first-party plugin. `source` is a `git+<url>@<commit>` pin; the crate
-/// is built with `cargo build --release --locked` and the resulting binary is
-/// published under `<home>/plugins/<name>/` and spawned with `sidecar_args`.
-#[derive(Debug)]
-struct Catalog {
-    name: &'static str,
-    source: &'static str,
-    /// The crate's `[[bin]]` name, as produced under `target/release/`.
-    bin: &'static str,
-    /// Arguments that make the binary serve the sidecar wire.
-    sidecar_args: &'static [&'static str],
-    /// What setup needs from the user, and how gray proves it worked.
-    setup: &'static SetupDecl,
-}
-
-/// The Discord app's setup declaration: one secret from the Developer
-/// Portal, one destination (pickable), one owner ID; paths are derived;
-/// no budget, no quiz.
-pub static DISCORD_SETUP: SetupDecl = SetupDecl {
-    config_path: ".config/gray-discord/config.json",
-    fields: &[
-        SetupField {
-            key: "token",
-            kind: FieldKind::Required,
-            description: "Discord bot token — Developer Portal, your app, Bot, Reset Token",
-            url: Some("https://discord.com/developers/applications"),
-            secret: true,
-            picker: None,
-        },
-        SetupField {
-            key: "owner_id",
-            // Not Required: the app runs ownerless and admits its first human
-            // through the Discord-side pairing reply (their own ID, told to
-            // them by the bot), so nobody has to hunt a snowflake.
-            kind: FieldKind::Optional,
-            description: "Your Discord user ID (Developer Mode, Copy User ID) — gates who can trigger the bot",
-            url: None,
-            secret: false,
-            picker: None,
-        },
-        SetupField {
-            key: "channel_id",
-            kind: FieldKind::Required,
-            description: "Where the bot posts — pick a channel or DM below, or paste an ID",
-            url: None,
-            secret: false,
-            picker: Some(crate::setup::registry::PICKER_CHANNELS),
-        },
-        SetupField {
-            key: "allowed_users",
-            kind: FieldKind::Optional,
-            description: "Extra user IDs allowed to trigger the bot (comma-separated)",
-            url: None,
-            secret: false,
-            picker: None,
-        },
-        SetupField {
-            key: "gray_bin",
-            kind: FieldKind::Derived,
-            description: "gray binary",
-            url: None,
-            secret: false,
-            picker: None,
-        },
-        SetupField {
-            key: "gray_home",
-            kind: FieldKind::Derived,
-            description: "gray home",
-            url: None,
-            secret: false,
-            picker: None,
-        },
-        SetupField {
-            key: "workdir",
-            kind: FieldKind::Derived,
-            description: "working directory",
-            url: None,
-            secret: false,
-            picker: None,
-        },
-    ],
-    verify: &["gray-discord", "doctor"],
-    post_steps: &["register", "start"],
-    service: Some(&["gray-discord", "run"]),
-};
-
-/// First-party plugins, pinned by commit. Every entry is a Rust crate built
-/// locally: gray itself ships no Python, and its own plugins must not
-/// reintroduce one. User-written plugins may still be any executable — see
-/// `GRAY_PLUGIN_PATH` in [`install`] and [`gray_plugin::builder::resolve_argv`].
-const CATALOG: &[Catalog] = &[Catalog {
-    name: "discord",
-    source: "git+https://github.com/vstaln/gray-discord-plugin.git@07f3d2e6b5782589e4fa27826e8b42c57467c66f",
-    bin: "gray-discord",
-    sidecar_args: &["sidecar"],
-    setup: &DISCORD_SETUP,
-}];
-
-/// The app's setup declaration, when gray ships one.
-pub fn setup_decl(name: &str) -> Option<&'static SetupDecl> {
-    catalog(name).ok().map(|entry| entry.setup)
-}
-
-fn catalog(name: &str) -> anyhow::Result<&'static Catalog> {
-    CATALOG
-        .iter()
-        .find(|entry| entry.name == name)
-        .with_context(|| format!("Unknown plugin '{name}'. Available: background, discord"))
-}
-
-/// Split a catalog source into its clone URL and pinned commit. Sources are
-/// always `git+<url>@<commit>`; the pin must be a full commit ID so an
-/// install reproduces exactly the code that was reviewed.
-fn parse_git_source(source: &str) -> anyhow::Result<(&str, &str)> {
-    const SHAPE: &str = "plugin source must be git+<url>@<40-hex commit>";
-    let rest = source
-        .strip_prefix("git+")
-        .with_context(|| format!("{SHAPE}, got {source}"))?;
-    // rsplit: an ssh URL may itself contain '@' (user@host).
-    let (url, pin) = rest
-        .rsplit_once('@')
-        .with_context(|| format!("{SHAPE}, got {source}"))?;
-    anyhow::ensure!(
-        pin.len() == 40 && pin.bytes().all(|b| b.is_ascii_hexdigit()),
-        "{SHAPE}, got pin {pin}"
-    );
-    anyhow::ensure!(
-        url.starts_with("https://") || url.starts_with("ssh://") || url.starts_with("git@"),
-        "plugin source URL must be https or ssh, got {url}"
-    );
-    Ok((url, pin))
-}
 
 pub fn home() -> anyhow::Result<PathBuf> {
     Ok(crate::sys_prompt_path()?
@@ -148,66 +17,52 @@ pub fn home() -> anyhow::Result<PathBuf> {
         .to_path_buf())
 }
 
-fn registry_path(home: &Path) -> PathBuf {
-    home.join("plugins/commands.json")
+fn load_lock(home: &Path) -> anyhow::Result<LockFile> {
+    let lock = LockFile::load(&gray_plugin::lock::lock_path(home))?;
+    anyhow::ensure!(lock.schema == 1, "unsupported plugin lock schema");
+    Ok(lock)
 }
 
-fn load(home: &Path) -> anyhow::Result<LockFile> {
-    let registry = LockFile::load(&registry_path(home))?;
-    anyhow::ensure!(
-        registry.schema == 1,
-        "unsupported plugin command registry schema"
-    );
-    Ok(registry)
-}
-
-/// How long a registry write waits for a competing plugin-manager operation
-/// (the same discipline as the gray-pkg and session-store locks).
-const COMMANDS_LOCK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
-
-/// Exclusive cross-process guard for registry writes: held for the caller's
-/// whole read-modify-write via the returned handle. Advisory only (a crashed
-/// holder releases on close). A *contended* lock is retried until
-/// [`COMMANDS_LOCK_TIMEOUT`] and then fails the operation — the previous
-/// code dropped the `try_lock` error, so two managers could edit
-/// `commands.json` concurrently and one silently won. A filesystem without
-/// flock still degrades to no guard rather than breaking the op.
-fn hold_commands_lock_timeout(
-    home: &Path,
-    timeout: std::time::Duration,
-) -> anyhow::Result<Option<std::fs::File>> {
-    let path = home.join("plugins/.commands.lock");
-    let f = std::fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .open(&path)?;
-    let deadline = std::time::Instant::now() + timeout;
-    loop {
-        match f.try_lock() {
-            Ok(()) => return Ok(Some(f)),
-            Err(std::fs::TryLockError::WouldBlock) => {
-                if std::time::Instant::now() >= deadline {
-                    anyhow::bail!(
-                        "another plugin operation is modifying the registry ({}); try again",
-                        path.display()
-                    );
-                }
-                std::thread::sleep(std::time::Duration::from_millis(10));
-            }
-            Err(std::fs::TryLockError::Error(e)) => {
-                log::warn!(
-                    "plugin registry locking unsupported on {} ({e}); proceeding unlocked",
-                    path.display()
-                );
-                return Ok(None);
-            }
-        }
+/// One-time migration: fold a legacy `plugins/commands.json` registry into
+/// `lock.json`. Each entry becomes (or fills in) a lock entry whose
+/// `cli_argv` is the old command argv; the file is renamed to
+/// `commands.json.migrated` so a second call is a no-op. Failures warn and
+/// leave both files untouched.
+fn migrate_commands_json(home: &Path) {
+    let commands = home.join("plugins/commands.json");
+    if !commands.exists() {
+        return;
+    }
+    if let Err(e) = migrate_commands(home, &commands) {
+        log::warn!("commands.json migration skipped: {e:#}");
     }
 }
 
-fn hold_commands_lock(home: &Path) -> anyhow::Result<Option<std::fs::File>> {
-    hold_commands_lock_timeout(home, COMMANDS_LOCK_TIMEOUT)
+fn migrate_commands(home: &Path, commands: &Path) -> anyhow::Result<()> {
+    let _guard = gray_pkg::ops::hold_registry_lock_in(&home.join("plugins"))?;
+    let old = LockFile::load(commands)?;
+    let path = gray_plugin::lock::lock_path(home);
+    let mut lock = LockFile::load(&path)?;
+    merge_command_entries(&mut lock, old);
+    lock.save(&path)?;
+    std::fs::rename(commands, commands.with_file_name("commands.json.migrated"))?;
+    Ok(())
+}
+
+fn merge_command_entries(lock: &mut LockFile, old: LockFile) {
+    for (name, mut entry) in old.plugins {
+        match lock.plugins.get_mut(&name) {
+            Some(cur) => {
+                if cur.cli_argv.is_none() {
+                    cur.cli_argv = Some(entry.argv);
+                }
+            }
+            None => {
+                entry.cli_argv = Some(entry.argv.clone());
+                lock.plugins.insert(name, entry);
+            }
+        }
+    }
 }
 
 fn validate_name(name: &str) -> anyhow::Result<()> {
@@ -260,169 +115,46 @@ fn metadata(home: &Path, name: &str) -> anyhow::Result<serde_json::Value> {
     )?)?)
 }
 
-/// Install a first-party plugin from the pinned catalog. `background` keeps
-/// its own prebuilt-binary path; every other entry is a Rust crate built from
-/// source. A file lock serializes registry updates; temp dirs roll back
-/// failed installs.
-async fn install_catalog(home: &Path, name: &str, force: bool) -> anyhow::Result<()> {
-    validate_name(name)?;
-    if name == "background" {
-        return native::install(home).await;
-    }
-    install_cargo(home, catalog(name)?, force).await
-}
-
-/// Build a Rust plugin from its pinned source and register it as a sidecar.
-/// No interpreter is involved at any step: `cargo build --release` produces
-/// the binary gray spawns, so a first-party plugin install needs neither
-/// Python nor a package index.
-async fn install_cargo(home: &Path, entry: &Catalog, force: bool) -> anyhow::Result<()> {
-    let name = entry.name;
-    let (url, pin) = parse_git_source(entry.source)?;
-    let root = home.join("plugins");
-    std::fs::create_dir_all(&root)?;
-    let lock = std::fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .open(root.join(".commands.lock"))?;
-    lock.try_lock()
-        .context("another plugin installation is running")?;
-    // Sidecars live in lock.json (commands.json holds CLI commands), so the
-    // already-installed check must read the registry this kind publishes to.
-    let sidecars = LockFile::load(&gray_plugin::lock::lock_path(home))?;
-    anyhow::ensure!(sidecars.schema == 1, "unsupported plugin lock schema");
-    if sidecars.plugins.contains_key(name) {
-        println!("Plugin '{name}' is already registered. Run: gray {name} --help");
+/// `gray plugin install <name|url|path>` — one entry point for every
+/// plugin source, tried in order:
+///   0. a skill spec (`clawhub:`/`github:`/`url:`) → `skills_ops` (skill
+///      installs write `~/.gray/skills`, never a plugin lock row);
+///   a. `GRAY_PLUGIN_PATH` set → register that executable under `spec`.
+///   b. `spec` is an existing path → register it (the manifest names it).
+///   c. `spec` is a valid name and `gray-<spec>` is on PATH → register it.
+///   d. otherwise → a gray-pkg index name or an https tarball URL.
+pub async fn install_spec(home: &Path, spec: &str, force: bool) -> anyhow::Result<()> {
+    migrate_commands_json(home);
+    if gray_pkg::skills_ops::is_skill_spec(spec) {
+        let r = gray_pkg::skills_ops::install(spec).await?;
+        println!("installed {} {} at {}", r.name, r.version, r.path.display());
         return Ok(());
     }
-    println!(
-        "Installing '{name}' from {} (compiling from source; plugin code runs with your user permissions).",
-        entry.source
-    );
-    let (_repo, repo_dir) = gray_pkg::sources::clone_into_tmp(url, &[], false)?;
-    gray_pkg::sources::checkout_pinned_commit(&repo_dir, name, pin)?;
-    // Scan the exact source this pin resolves to, before it is compiled:
-    // building unvetted code is a bigger commitment than reading it.
-    scan_or_block(&repo_dir, force)?;
-    let built = build_plugin(&repo_dir, entry.bin)?;
-    // Prove the artifact speaks the sidecar wire while it is still inside the
-    // build tempdir: a plugin that fails this check leaves nothing behind.
-    let probe = sidecar_argv(&built, entry.sidecar_args);
-    let plugin = gray_plugin::SidecarPlugin::spawn(probe).await?;
-    let manifest = plugin.manifest();
-    plugin.shutdown(std::time::Duration::from_secs(2)).await;
-    anyhow::ensure!(
-        manifest.name == name,
-        "built plugin reports name '{}', expected '{name}'",
-        manifest.name
-    );
-    let (granted, capabilities_hash) = consent_capabilities(name, &manifest.capabilities);
-    // Publish under <home>/plugins/<name>/ so the recorded argv stays valid
-    // once the build tempdir is dropped.
-    let dest = root.join(name);
-    std::fs::create_dir_all(&dest)?;
-    let executable = dest.join(entry.bin);
-    std::fs::copy(&built, &executable)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755))?;
-    }
-    let argv = sidecar_argv(&executable, entry.sidecar_args);
-    let runtime_role = provider_only_role(&manifest);
-    let mut sidecars = LockFile::load(&gray_plugin::lock::lock_path(home))?;
-    sidecars.plugins.insert(
-        name.into(),
-        LockEntry {
-            runtime_role,
-            ecosystem: "gray-native".into(),
-            version: manifest.version.clone(),
-            hash: String::new(),
-            source: entry.source.to_string(),
-            argv,
-            adapter_version: manifest.protocol.clone().unwrap_or_else(|| "1".into()),
-            installed_at: chrono::Utc::now().to_rfc3339(),
-            scope: "user".into(),
-            enabled: true,
-            granted_capabilities: granted.clone(),
-            capabilities_hash,
-        },
-    );
-    sidecars.save(&gray_plugin::lock::lock_path(home))?;
-    // Same cache refresh as native registration: a catalog plugin that
-    // declares providers is usable in `/connect` without a manual edit.
-    crate::providers::ProviderRegistry::refresh(home)?;
-    // Cache the manifest beside the install: same file `register_native`
-    // writes, so `plugin capabilities` and command lookup work for
-    // catalog plugins too.
-    let mut cached = tempfile::NamedTempFile::new_in(&root)?;
-    use std::io::Write as _;
-    writeln!(cached, "{}", serde_json::to_string_pretty(&manifest)?)?;
-    cached.persist(root.join(format!("{name}-manifest.json")))?;
-    println!("Installed '{name}'. Next: gray {name} setup");
-    Ok(())
-}
-
-/// Spawn argv for a built plugin: the binary plus its sidecar arguments.
-fn sidecar_argv(executable: &Path, sidecar_args: &[&str]) -> Vec<String> {
-    let mut argv = vec![executable.to_string_lossy().into_owned()];
-    argv.extend(sidecar_args.iter().map(|arg| (*arg).to_string()));
-    argv
-}
-
-/// `cargo build --release --locked` inside the checked-out source. The
-/// lockfile must be committed: an unpinned dependency tree is not the build
-/// that was reviewed. Returns the built binary.
-fn build_plugin(repo_dir: &Path, bin: &str) -> anyhow::Result<PathBuf> {
-    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
-    // Pin the target dir inside the checkout: an inherited CARGO_TARGET_DIR
-    // would otherwise build the artifact somewhere else and leave the check
-    // below looking in the wrong place.
-    let target = repo_dir.join("target");
-    let status = Command::new(&cargo)
-        .args(["build", "--release", "--locked"])
-        .arg("--target-dir")
-        .arg(&target)
-        .current_dir(repo_dir)
-        .status()
-        .context("could not start cargo; install Rust or point CARGO at it")?;
-    anyhow::ensure!(
-        status.success(),
-        "cargo build failed ({status}); see output above"
-    );
-    let built = target
-        .join("release")
-        .join(format!("{bin}{}", std::env::consts::EXE_SUFFIX));
-    anyhow::ensure!(
-        built.is_file(),
-        "cargo build did not produce {}",
-        built.display()
-    );
-    Ok(built)
-}
-
-/// Register a separately built native plugin. No hardcoded plugin catalog.
-/// Download/version resolution remains the existing `gray plugin install` API.
-pub async fn install(home: &Path, name: &str, force: bool) -> anyhow::Result<()> {
-    validate_name(name)?;
     if let Some(path) = std::env::var_os("GRAY_PLUGIN_PATH") {
-        return register_native(home, name, Path::new(&path), force).await;
+        anyhow::ensure!(!path.is_empty(), "GRAY_PLUGIN_PATH is set but empty");
+        return register_native(home, Some(spec), Path::new(&path), force).await;
     }
-    if matches!(name, "background" | "discord") {
-        return install_catalog(home, name, force).await;
+    let path = Path::new(spec);
+    if path.exists() {
+        return register_native(home, None, path, force).await;
     }
-    if let Some(paths) = std::env::var_os("PATH") {
+    if validate_name(spec).is_ok()
+        && let Some(paths) = std::env::var_os("PATH")
+    {
         for dir in std::env::split_paths(&paths) {
-            let path = dir.join(format!("gray-{name}{}", std::env::consts::EXE_SUFFIX));
-            if path.is_file() {
-                return register_native(home, name, &path, force).await;
+            let candidate = dir.join(format!("gray-{spec}{}", std::env::consts::EXE_SUFFIX));
+            if candidate.is_file() {
+                return register_native(home, Some(spec), &candidate, force).await;
             }
         }
     }
-    anyhow::bail!(
-        "Unknown plugin '{name}'. Catalog: background, discord. For a local native plugin, put gray-{name} on PATH or set GRAY_PLUGIN_PATH to its executable"
+    let r = gray_pkg::ops::install(
+        gray_pkg::ops::parse_spec(spec),
+        gray_pkg::ops::InstallOpts::default(),
     )
+    .await?;
+    println!("installed {} {} at {}", r.name, r.version, r.path.display());
+    Ok(())
 }
 
 /// Run the install-time security scan and act on its verdict.
@@ -479,20 +211,9 @@ fn scan_or_block(root: &Path, force: bool) -> anyhow::Result<()> {
     }
 }
 
-/// Runtime role for a protocol-1.2 sidecar that owns no other surface.
-/// It stays in `lock.json` for provider discovery but `active_plugins`
-/// skips it, so the provider runtime is the only process it spawns.
-fn provider_only_role(manifest: &gray_plugin::Manifest) -> Option<String> {
-    let provider_only = manifest.protocol.as_deref() == Some("1.2")
-        && !manifest.providers.is_empty()
-        && manifest.tools.is_empty()
-        && manifest.commands.is_empty()
-        && manifest.hooks.is_empty();
-    provider_only.then(|| "provider_only".to_string())
-}
-
-/// Same rule for a JSON manifest (native registration reads JSON before
-/// a typed sidecar manifest is available).
+/// Same rule as the typed-manifest check: a protocol-1.2 sidecar that owns
+/// no other surface stays in `lock.json` for provider discovery while
+/// `active_plugins` skips spawning it.
 fn provider_only_role_json(manifest: &serde_json::Value) -> Option<String> {
     let empty = |key: &str| {
         manifest
@@ -570,7 +291,7 @@ fn consent_capabilities(name: &str, declared: &[String]) -> (Vec<String>, Option
 /// install writes, so a plugin that never booted still lists correctly.
 pub fn print_capabilities(only: Option<&str>) -> anyhow::Result<()> {
     let home = home()?;
-    let sidecars = gray_plugin::lock::LockFile::load(&gray_plugin::lock::lock_path(&home))?;
+    let lock = load_lock(&home)?;
     let rows = list_managed(&home)?;
     let mut shown = 0usize;
     for row in &rows {
@@ -580,9 +301,9 @@ pub fn print_capabilities(only: Option<&str>) -> anyhow::Result<()> {
             continue;
         }
         shown += 1;
-        let entry = sidecars.plugins.get(&row.name);
-        let declared = entry
-            .and_then(|_| metadata(&home, &row.name).ok())
+        let entry = lock.plugins.get(&row.name);
+        let declared = metadata(&home, &row.name)
+            .ok()
             .and_then(|m| {
                 m["capabilities"].as_array().map(|a| {
                     a.iter()
@@ -643,10 +364,8 @@ pub fn print_capabilities(only: Option<&str>) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// One installed plugin in the merged manager view (`lock.json` sidecars +
-/// `commands.json` native/CLI commands). `cli` is true for `commands.json`
-/// entries; when both registries hold the same name the CLI entry wins at
-/// runtime (see [`forward`]) so it shadows the sidecar row.
+/// One installed plugin in `lock.json`. `cli` is true for entries carrying
+/// `cli_argv` — they forward `gray <name> …` to an executable.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ManagedPlugin {
     pub name: String,
@@ -654,38 +373,23 @@ pub struct ManagedPlugin {
     pub cli: bool,
 }
 
-/// Merged manager view over both registries, sorted by name: every
-/// `commands.json` entry (native/CLI commands like `discord`) plus every
-/// `lock.json` sidecar not shadowed by the same name. Missing files read
-/// as empty; a corrupt file is an error (callers warn the same way boot
-/// does for the sidecar lock).
+/// The unified registry listing, sorted by name. Missing lockfile reads as
+/// empty; a corrupt file is an error (callers warn the same way boot does).
 pub fn list_managed(home: &Path) -> anyhow::Result<Vec<ManagedPlugin>> {
-    use std::collections::BTreeMap;
-    let mut merged: BTreeMap<String, ManagedPlugin> = BTreeMap::new();
-    for (name, entry) in load(home)?.plugins {
-        merged.insert(
-            name.clone(),
-            ManagedPlugin {
-                name,
-                entry,
-                cli: true,
-            },
-        );
-    }
-    for (name, entry) in
-        gray_plugin::lock::LockFile::load(&gray_plugin::lock::lock_path(home))?.plugins
-    {
-        merged.entry(name.clone()).or_insert(ManagedPlugin {
-            name,
-            entry,
-            cli: false,
-        });
-    }
-    Ok(merged.into_values().collect())
+    migrate_commands_json(home);
+    let lock = load_lock(home)?;
+    Ok(lock
+        .plugins
+        .into_iter()
+        .map(|(name, entry)| {
+            let cli = entry.cli_argv.is_some();
+            ManagedPlugin { name, entry, cli }
+        })
+        .collect())
 }
 
-/// One display row of the merged manager view, pre-resolved: `on` already
-/// folds the sidecar enable overlay (see [`enabled`]).
+/// One display row of the registry, pre-resolved: `on` already folds the
+/// project enable overlay (see [`enabled`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ManagedRow {
     pub name: String,
@@ -696,22 +400,20 @@ pub struct ManagedRow {
     pub cli: bool,
 }
 
-/// Merged display rows (sidecars + CLI commands, sorted by name) for
-/// `plugin list`, `/plugin list`, and the manager picker. When the home dir
-/// is unresolvable, falls back to the sidecar-only listing instead of
-/// failing (the previous `plugin list` never failed here — `gray-pkg` falls
-/// back to a relative `.gray` dir).
+/// Display rows (sorted by name) for `plugin list`, `/plugin list`, and the
+/// manager picker. When the home dir is unresolvable, falls back to the
+/// gray-pkg lockfile view instead of failing.
 pub fn list_rows() -> anyhow::Result<Vec<ManagedRow>> {
     let Ok(home) = home() else {
         return Ok(gray_pkg::ops::list()?
             .into_iter()
             .map(|(name, e)| ManagedRow {
+                cli: e.cli_argv.is_some(),
                 name,
                 version: e.version,
                 scope: e.scope,
                 ecosystem: e.ecosystem,
                 on: e.enabled,
-                cli: false,
             })
             .collect());
     };
@@ -728,48 +430,14 @@ pub fn list_rows() -> anyhow::Result<Vec<ManagedRow>> {
         .collect())
 }
 
-/// Flip a `commands.json` entry's `enabled` flag (native/CLI commands only;
-/// sidecars stay on `gray-pkg::ops`). Miss message matches `ops::remove`.
-pub fn set_command_enabled(home: &Path, name: &str, on: bool) -> anyhow::Result<()> {
+/// Remove a plugin: drop its `lock.json` entry and plugin dir via gray-pkg,
+/// then drop its `<name>-manifest.json` so completion and help stop
+/// advertising it, and clear a widget slot it owned.
+pub fn remove_managed(name: &str) -> anyhow::Result<()> {
+    let home = home()?;
+    migrate_commands_json(&home);
     validate_name(name)?;
-    let _guard = hold_commands_lock(home)?;
-    let mut registry = load(home)?;
-    let Some(entry) = registry.plugins.get_mut(name) else {
-        anyhow::bail!("not installed: {name}");
-    };
-    entry.enabled = on;
-    registry.save(&registry_path(home))?;
-    Ok(())
-}
-
-/// Remove one `commands.json` entry (native/CLI commands only; sidecars stay
-/// on `gray-pkg::ops`). Also drops its `<name>-manifest.json` so completion
-/// and help stop advertising it, and clears a widget slot it owned.
-/// Miss message matches `ops::remove`.
-pub fn remove_command(home: &Path, name: &str) -> anyhow::Result<()> {
-    validate_name(name)?;
-    if name.is_empty() || name.contains('/') || name.contains("..") {
-        anyhow::bail!("not installed: {name}");
-    }
-    let _guard = hold_commands_lock(home)?;
-    let mut registry = load(home)?;
-    // `register_native` mirrors the entry into `lock.json` as a zero-tool
-    // sidecar: drop the mirror too, or its ghost row outlives the remove.
-    // Only a same-argv row is the mirror — an independent same-named
-    // sidecar (different argv) survives.
-    let Some(dropped) = registry.plugins.remove(name) else {
-        anyhow::bail!("not installed: {name}");
-    };
-    registry.save(&registry_path(home))?;
-    if let Ok(mut sidecars) = gray_plugin::lock::LockFile::load(&gray_plugin::lock::lock_path(home))
-        && sidecars
-            .plugins
-            .get(name)
-            .is_some_and(|s| s.argv == dropped.argv)
-    {
-        sidecars.plugins.remove(name);
-        let _ = sidecars.save(&gray_plugin::lock::lock_path(home));
-    }
+    gray_pkg::ops::remove(name)?;
     let _ = std::fs::remove_file(home.join("plugins").join(format!("{name}-manifest.json")));
     let widgets = home.join("plugins/widgets.json");
     if let Ok(raw) = std::fs::read(&widgets)
@@ -783,45 +451,16 @@ pub fn remove_command(home: &Path, name: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Is `name` a `commands.json` native/CLI command (missing registry: no)?
-pub fn is_command(home: &Path, name: &str) -> bool {
-    load(home)
-        .map(|r| r.plugins.contains_key(name))
-        .unwrap_or(false)
-}
-
-/// Remove from whichever registry owns `name` (`commands.json` CLI entries
-/// shadow sidecars at runtime, so they win ties). Both misses read
-/// "not installed: {name}", matching `ops::remove`.
-pub fn remove_managed(name: &str) -> anyhow::Result<()> {
-    let home = home()?;
-    if is_command(&home, name) {
-        remove_command(&home, name)
-    } else {
-        gray_pkg::ops::remove(name)
-    }
-}
-
-/// Enable/disable in whichever registry owns `name`, same routing as
-/// [`remove_managed`].
+/// `gray plugin enable/disable <name>`.
 pub fn set_managed_enabled(name: &str, on: bool) -> anyhow::Result<()> {
     let home = home()?;
-    if is_command(&home, name) {
-        set_command_enabled(&home, name, on)
-    } else {
-        gray_pkg::ops::set_enabled(name, on)
-    }
+    migrate_commands_json(&home);
+    gray_pkg::ops::set_enabled(name, on)
 }
 
-/// `update` only knows sidecar sources: a `commands.json` entry would fail
-/// as "not installed", so skip it with the same warning shape `ops` uses
-/// for non-index rows and report nothing changed.
+/// `gray plugin update [name|all]` — index-installed entries only; local
+/// registrations carry no index source and `ops::update` skips them.
 pub async fn update_managed(target: &str) -> anyhow::Result<Vec<gray_pkg::ops::Report>> {
-    let home = home()?;
-    if target != "all" && is_command(&home, target) {
-        eprintln!("warning: skipping update of {target} (non-index source)");
-        return Ok(Vec::new());
-    }
     gray_pkg::ops::update(target).await
 }
 
@@ -829,16 +468,20 @@ pub async fn update_managed(target: &str) -> anyhow::Result<Vec<gray_pkg::ops::R
 /// exec preserves terminal, signals, argument boundaries, and the child's exit code.
 pub fn forward(home: &Path, name: &str, rest: &[String]) -> anyhow::Result<()> {
     validate_name(name)?;
-    let registry = load(home)?;
-    let entry = registry.plugins.get(name).with_context(|| {
-        format!("no plugin command '{name}' — install it with: gray install plugin {name}")
+    migrate_commands_json(home);
+    let lock = load_lock(home)?;
+    let entry = lock.plugins.get(name).with_context(|| {
+        format!("no plugin command '{name}' — install it with: gray plugin install {name}")
     })?;
+    let argv = entry
+        .cli_argv
+        .as_ref()
+        .with_context(|| format!("'{name}' is a sidecar plugin, not a CLI command"))?;
     anyhow::ensure!(
         enabled(home, name, entry),
         "plugin command '{name}' is disabled"
     );
-    let (program, args) = entry
-        .argv
+    let (program, args) = argv
         .split_first()
         .context("plugin command has no entry point")?;
     anyhow::ensure!(
@@ -864,46 +507,59 @@ pub fn forward(home: &Path, name: &str, rest: &[String]) -> anyhow::Result<()> {
     }
 }
 
-/// The registered argv (binary plus its own args) for an installed command
-/// plugin. The setup flow runs the app's subcommands (`doctor`, `register`)
-/// through this instead of re-deriving a path.
-pub fn command_argv(home: &Path, name: &str) -> anyhow::Result<Vec<String>> {
-    validate_name(name)?;
-    let entry = load(home)?
-        .plugins
-        .get(name)
-        .with_context(|| {
-            format!(
-                "no plugin command '{name}' \u{2014} install it with: gray install plugin {name}"
-            )
-        })?
-        .clone();
-    anyhow::ensure!(
-        enabled(home, name, &entry),
-        "plugin command '{name}' is disabled"
-    );
-    anyhow::ensure!(!entry.argv.is_empty(), "plugin command has no entry point");
-    Ok(entry.argv)
-}
-
 /// Register a user-selected native executable; registration runs its manifest.
 /// The executable and widgets remain owned by the separate plugin repository.
+/// When `expected` is `Some`, the manifest name must match it; when `None`,
+/// the manifest names the plugin (validated as a command name).
+///
+/// Writes one `lock.json` entry: `argv` is the sidecar invocation vector,
+/// `cli_argv` enables `gray <name> …` forwarding and slash capture.
+///
+/// The CLI probe runs `<bin> manifest`; a wire-only sidecar (no CLI argv,
+/// NDJSON on stdin) fails it and is probed over `plugin/manifest` instead —
+/// those register sidecar-only (`cli_argv: None`, no widget slot).
 pub async fn register_native(
     home: &Path,
-    name: &str,
+    expected: Option<&str>,
     binary: &Path,
     force: bool,
 ) -> anyhow::Result<()> {
-    validate_name(name)?;
     let binary = std::fs::canonicalize(binary)?;
     let mut command = tokio::process::Command::new(&binary);
     command.arg("manifest");
-    let bytes = capture(command, std::time::Duration::from_secs(10)).await?;
-    let manifest: serde_json::Value = serde_json::from_slice(&bytes)?;
-    anyhow::ensure!(
-        manifest["name"].as_str() == Some(name),
-        "manifest name does not match requested plugin"
-    );
+    let cli_probe = capture(command, std::time::Duration::from_secs(10))
+        .await
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        .filter(|m| m["name"].is_string());
+    let (manifest, wire_only) = match cli_probe {
+        Some(m) => (m, false),
+        None => {
+            use gray_plugin::Plugin as _;
+            let bin = binary.to_string_lossy().into_owned();
+            let plugin = gray_plugin::SidecarPlugin::spawn(vec![bin]).await?;
+            let manifest = serde_json::to_value(plugin.manifest())?;
+            plugin.shutdown(std::time::Duration::from_secs(2)).await;
+            (manifest, true)
+        }
+    };
+    let name = match expected {
+        Some(name) => {
+            validate_name(name)?;
+            anyhow::ensure!(
+                manifest["name"].as_str() == Some(name),
+                "manifest name does not match requested plugin"
+            );
+            name.to_string()
+        }
+        None => {
+            let name = manifest["name"]
+                .as_str()
+                .context("plugin manifest has no name")?;
+            validate_name(name)?;
+            name.to_string()
+        }
+    };
     // A directory plugin is source we can read; a bare binary is not, so
     // scanning (and every verdict about its code) is skipped there.
     if binary.is_dir() {
@@ -917,38 +573,33 @@ pub async fn register_native(
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
-    let (granted, capabilities_hash) = consent_capabilities(name, &declared);
+    let (granted, capabilities_hash) = consent_capabilities(&name, &declared);
     let runtime_role = provider_only_role_json(&manifest);
     std::fs::create_dir_all(home.join("plugins"))?;
-    let lock = std::fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .open(home.join("plugins/.commands.lock"))?;
-    lock.try_lock()
-        .context("another plugin installation is running")?;
-    if manifest["widget"].as_bool() == Some(true) {
+    let _guard = gray_pkg::ops::hold_registry_lock_in(&home.join("plugins"))?;
+    if manifest["widget"].as_bool() == Some(true) && !wire_only {
         // v1 supports one above-editor plugin surface. Refuse to displace another.
         let path = home.join("plugins/widgets.json");
         if path.exists() {
             let old: serde_json::Value = serde_json::from_slice(&std::fs::read(&path)?)?;
             anyhow::ensure!(
-                old["name"].as_str() == Some(name),
+                old["name"].as_str() == Some(name.as_str()),
                 "another plugin owns the widget slot"
             );
         }
     }
-    let mut registry = load(home)?;
-    registry.plugins.insert(
-        name.into(),
+    let mut lock = load_lock(home)?;
+    lock.plugins.insert(
+        name.clone(),
         LockEntry {
-            runtime_role: runtime_role.clone(),
+            runtime_role,
             ecosystem: "gray-native".into(),
             version: manifest["version"].as_str().unwrap_or("unknown").into(),
             hash: String::new(),
             source: binary.to_string_lossy().into_owned(),
             argv: vec![binary.to_string_lossy().into_owned()],
-            adapter_version: "1".into(),
+            cli_argv: (!wire_only).then(|| vec![binary.to_string_lossy().into_owned()]),
+            adapter_version: manifest["protocol"].as_str().unwrap_or("1").to_string(),
             installed_at: chrono::Utc::now().to_rfc3339(),
             scope: "user".into(),
             enabled: true,
@@ -956,13 +607,7 @@ pub async fn register_native(
             capabilities_hash,
         },
     );
-    registry.save(&registry_path(home))?;
-    // Register its zero-tool sidecar so commands and Bash guidance load normally.
-    let mut sidecars = LockFile::load(&gray_plugin::lock::lock_path(home))?;
-    sidecars
-        .plugins
-        .insert(name.into(), registry.plugins[name].clone());
-    sidecars.save(&gray_plugin::lock::lock_path(home))?;
+    lock.save(&gray_plugin::lock::lock_path(home))?;
     // Refresh the provider cache from the plugin lock so provider rows are
     // discoverable by `/connect` immediately after this registration.
     crate::providers::ProviderRegistry::refresh(home)?;
@@ -970,7 +615,7 @@ pub async fn register_native(
     use std::io::Write;
     writeln!(metadata, "{}", manifest)?;
     metadata.persist(home.join("plugins").join(format!("{name}-manifest.json")))?;
-    if manifest["widget"].as_bool() == Some(true) {
+    if manifest["widget"].as_bool() == Some(true) && !wire_only {
         let mut tmp = tempfile::NamedTempFile::new_in(home.join("plugins"))?;
         use std::io::Write;
         writeln!(
@@ -990,11 +635,13 @@ pub async fn register_native(
 /// Slash commands use the registered executable without replacing the TUI.
 pub async fn capture_slash(name: &str, args: &[String]) -> anyhow::Result<Option<String>> {
     let home = home()?;
-    let registry = load(&home)?;
-    let selected = if let Some(entry) = registry.plugins.get(name) {
+    migrate_commands_json(&home);
+    let lock = load_lock(&home)?;
+    let selected = if let Some(entry) = lock.plugins.get(name).filter(|e| e.cli_argv.is_some()) {
         Some((name.to_string(), entry))
     } else {
-        registry.plugins.iter().find_map(|(owner, entry)| {
+        lock.plugins.iter().find_map(|(owner, entry)| {
+            entry.cli_argv.as_ref()?;
             let m = metadata(&home, owner).ok()?;
             m["commands"]
                 .as_array()?
@@ -1010,7 +657,8 @@ pub async fn capture_slash(name: &str, args: &[String]) -> anyhow::Result<Option
         return Ok(None);
     };
     anyhow::ensure!(enabled(&home, &owner, entry), "plugin command is disabled");
-    let (program, base) = entry.argv.split_first().context("empty plugin command")?;
+    let argv = entry.cli_argv.as_ref().context("empty plugin command")?;
+    let (program, base) = argv.split_first().context("empty plugin command")?;
     let mut command = tokio::process::Command::new(program);
     command
         .args(base)
@@ -1023,12 +671,13 @@ pub async fn capture_slash(name: &str, args: &[String]) -> anyhow::Result<Option
 /// Only explicitly installed command metadata participates in completion.
 pub(crate) fn completions(query: &str) -> Vec<(String, String)> {
     let Ok(home) = home() else { return Vec::new() };
-    let Ok(registry) = load(&home) else {
+    migrate_commands_json(&home);
+    let Ok(lock) = load_lock(&home) else {
         return Vec::new();
     };
     let mut out = Vec::new();
-    for (name, entry) in registry.plugins {
-        if !enabled(&home, &name, &entry) {
+    for (name, entry) in lock.plugins {
+        if entry.cli_argv.is_none() || !enabled(&home, &name, &entry) {
             continue;
         }
         let Ok(raw) = std::fs::read(home.join("plugins").join(format!("{name}-manifest.json")))
@@ -1100,18 +749,18 @@ pub(crate) async fn capture(
 mod tests {
     use super::*;
 
-    fn command_entry(enabled: bool) -> LockEntry {
+    fn cli_entry(argv: &[&str]) -> LockEntry {
         LockEntry {
             runtime_role: None,
             ecosystem: "gray-cli".into(),
             version: "catalog".into(),
             hash: String::new(),
             source: "git+https://example.invalid/x.git".into(),
-            argv: vec!["/usr/bin/false".into()],
+            argv: argv.iter().map(|s| s.to_string()).collect(),
             adapter_version: "1".into(),
             installed_at: "2026-09-18T00:00:00Z".into(),
             scope: "user".into(),
-            enabled,
+            enabled: true,
             ..Default::default()
         }
     }
@@ -1125,192 +774,125 @@ mod tests {
         .unwrap();
     }
 
-    #[test]
-    fn list_managed_merges_both_registries_with_cli_shadowing() {
-        let home = tempfile::tempdir().unwrap();
-        let home = home.path();
-        write_commands(
-            home,
-            &serde_json::json!({"cli-only": command_entry(true), "both": command_entry(true)}),
-        );
-        let mut sidecars =
-            gray_plugin::lock::LockFile::load(&gray_plugin::lock::lock_path(home)).unwrap();
-        sidecars.plugins.insert(
-            "both".into(),
-            gray_plugin::lock::LockEntry {
-                runtime_role: None,
-                ecosystem: "gray-native".into(),
-                version: "9.9.9".into(),
-                hash: String::new(),
-                source: "sidecar".into(),
-                argv: Vec::new(),
-                adapter_version: "1".into(),
-                installed_at: String::new(),
-                scope: "user".into(),
-                // Disabled here: `register_native` mirrors native entries
-                // into `lock.json`, and `enabled()` reads that overlay.
-                enabled: false,
-                ..Default::default()
-            },
-        );
-        sidecars.plugins.insert(
-            "sidecar-only".into(),
-            gray_plugin::lock::LockEntry {
-                runtime_role: None,
-                ecosystem: "gray-native".into(),
-                version: "1.0.0".into(),
-                hash: String::new(),
-                source: "sidecar".into(),
-                argv: Vec::new(),
-                adapter_version: "1".into(),
-                installed_at: String::new(),
-                scope: "user".into(),
-                enabled: false,
-                ..Default::default()
-            },
-        );
-        sidecars.save(&gray_plugin::lock::lock_path(home)).unwrap();
-        let merged = list_managed(home).unwrap();
-        let names: Vec<_> = merged.iter().map(|p| p.name.as_str()).collect();
-        assert_eq!(names, vec!["both", "cli-only", "sidecar-only"]);
-        // Same name in both registries: the CLI entry (what `forward` runs)
-        // shadows the sidecar row instead of listing twice.
-        let both = merged.iter().find(|p| p.name == "both").unwrap();
-        assert!(both.cli);
-        assert_eq!(both.entry.ecosystem, "gray-cli");
-        // Effective enablement still honors the sidecar overlay (see
-        // `enabled`): the mirrored `lock.json` entry disables the row, and
-        // the CLI entry itself stays enabled.
-        assert!(!enabled(home, "both", &both.entry));
-        assert!(both.entry.enabled);
-        assert!(is_command(home, "cli-only"));
-        assert!(!is_command(home, "sidecar-only"));
+    fn write_lock(home: &Path, plugins: &serde_json::Value) {
+        std::fs::create_dir_all(home.join("plugins")).unwrap();
+        std::fs::write(
+            gray_plugin::lock::lock_path(home),
+            serde_json::json!({"schema": 1, "plugins": plugins}).to_string(),
+        )
+        .unwrap();
     }
 
     #[test]
-    fn list_managed_is_empty_when_both_registries_missing() {
+    fn list_managed_reads_lock_json_and_marks_cli_entries() {
+        let home = tempfile::tempdir().unwrap();
+        let home = home.path();
+        let mut cli = cli_entry(&["/usr/bin/false"]);
+        cli.cli_argv = Some(cli.argv.clone());
+        let sidecar = LockEntry {
+            ecosystem: "gray-native".into(),
+            version: "1.0.0".into(),
+            source: "sidecar".into(),
+            enabled: false,
+            ..Default::default()
+        };
+        write_lock(
+            home,
+            &serde_json::json!({"cli-one": cli, "sidecar-one": sidecar}),
+        );
+        let rows = list_managed(home).unwrap();
+        let names: Vec<_> = rows.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, vec!["cli-one", "sidecar-one"]);
+        assert!(rows[0].cli);
+        assert!(!rows[1].cli);
+    }
+
+    #[test]
+    fn list_managed_is_empty_when_lockfile_missing() {
         let home = tempfile::tempdir().unwrap();
         assert!(list_managed(home.path()).unwrap().is_empty());
     }
 
     #[test]
-    fn set_command_enabled_flips_only_the_command_registry() {
+    fn migrate_inserts_commands_entries_with_cli_argv() {
         let home = tempfile::tempdir().unwrap();
         let home = home.path();
-        write_commands(home, &serde_json::json!({"demo": command_entry(true)}));
-        set_command_enabled(home, "demo", false).unwrap();
-        assert!(!load(home).unwrap().plugins["demo"].enabled);
-        set_command_enabled(home, "demo", true).unwrap();
-        assert!(load(home).unwrap().plugins["demo"].enabled);
-        let miss = set_command_enabled(home, "ghost", true).unwrap_err();
-        assert!(miss.to_string().contains("not installed: ghost"), "{miss}");
-        let bad = set_command_enabled(home, "BAD NAME", true).unwrap_err();
-        assert!(
-            bad.to_string().contains("invalid plugin command name"),
-            "{bad}"
+        write_commands(
+            home,
+            &serde_json::json!({"demo": cli_entry(&["/usr/bin/demo"])}),
+        );
+        migrate_commands_json(home);
+        let lock = load_lock(home).unwrap();
+        let entry = &lock.plugins["demo"];
+        assert_eq!(
+            entry.cli_argv.as_deref(),
+            Some(&["/usr/bin/demo".to_string()][..])
+        );
+        assert_eq!(entry.argv, vec!["/usr/bin/demo".to_string()]);
+        // The old registry is renamed aside; a second call is a no-op.
+        assert!(!home.join("plugins/commands.json").exists());
+        assert!(home.join("plugins/commands.json.migrated").exists());
+        write_lock(
+            home,
+            &serde_json::json!({"demo": cli_entry(&["/usr/bin/kept"])}),
+        );
+        migrate_commands_json(home);
+        assert_eq!(
+            load_lock(home).unwrap().plugins["demo"].argv,
+            vec!["/usr/bin/kept".to_string()]
         );
     }
 
     #[test]
-    fn remove_command_drops_mirrored_sidecar_but_keeps_independent_row() {
-        // `register_native` mirrors into lock.json with the same argv: the
-        // mirror goes with the remove.
+    fn migrate_fills_missing_cli_argv_but_keeps_existing() {
         let home = tempfile::tempdir().unwrap();
         let home = home.path();
-        let entry = command_entry(true);
-        write_commands(home, &serde_json::json!({"demo": entry}));
-        let mut sidecars =
-            gray_plugin::lock::LockFile::load(&gray_plugin::lock::lock_path(home)).unwrap();
-        sidecars.plugins.insert(
-            "demo".into(),
-            gray_plugin::lock::LockEntry {
-                runtime_role: None,
-                ecosystem: "gray-native".into(),
-                version: "catalog".into(),
-                hash: String::new(),
-                source: "mirror".into(),
-                argv: entry.argv.clone(),
-                adapter_version: "1".into(),
-                installed_at: String::new(),
-                scope: "user".into(),
-                enabled: true,
-                ..Default::default()
-            },
+        // A same-named lock entry without cli_argv inherits the command argv.
+        let bare = LockEntry {
+            ecosystem: "gray-native".into(),
+            argv: vec!["/sidecar".into()],
+            ..Default::default()
+        };
+        write_lock(home, &serde_json::json!({"demo": bare}));
+        write_commands(
+            home,
+            &serde_json::json!({"demo": cli_entry(&["/usr/bin/demo"])}),
         );
-        sidecars.save(&gray_plugin::lock::lock_path(home)).unwrap();
-        remove_command(home, "demo").unwrap();
-        assert!(!load(home).unwrap().plugins.contains_key("demo"));
-        assert!(
-            !gray_plugin::lock::LockFile::load(&gray_plugin::lock::lock_path(home))
-                .unwrap()
-                .plugins
-                .contains_key("demo")
+        migrate_commands_json(home);
+        let lock = load_lock(home).unwrap();
+        let entry = &lock.plugins["demo"];
+        assert_eq!(entry.argv, vec!["/sidecar".to_string()]);
+        assert_eq!(
+            entry.cli_argv.as_deref(),
+            Some(&["/usr/bin/demo".to_string()][..])
         );
-        // Same name, different argv: an independent sidecar, not the mirror —
-        // it survives and keeps listing (without `[command]`).
-        write_commands(home, &serde_json::json!({"demo": command_entry(true)}));
-        let mut sidecars =
-            gray_plugin::lock::LockFile::load(&gray_plugin::lock::lock_path(home)).unwrap();
-        sidecars.plugins.insert(
-            "demo".into(),
-            gray_plugin::lock::LockEntry {
-                runtime_role: None,
-                ecosystem: "gray-native".into(),
-                version: "2.0.0".into(),
-                hash: String::new(),
-                source: "other".into(),
-                argv: vec!["/other/binary".into()],
-                adapter_version: "1".into(),
-                installed_at: String::new(),
-                scope: "user".into(),
-                enabled: true,
-                ..Default::default()
-            },
-        );
-        sidecars.save(&gray_plugin::lock::lock_path(home)).unwrap();
-        remove_command(home, "demo").unwrap();
-        let ghost = gray_plugin::lock::LockFile::load(&gray_plugin::lock::lock_path(home))
-            .unwrap()
-            .plugins
-            .remove("demo")
-            .unwrap();
-        assert_eq!(ghost.argv, vec!["/other/binary".to_string()]);
-        let merged = list_managed(home).unwrap();
-        assert_eq!(merged.len(), 1);
-        assert!(!merged[0].cli);
-        assert_eq!(merged[0].entry.version, "2.0.0");
     }
 
     #[test]
-    fn remove_command_drops_registry_manifest_and_widget_slot() {
+    fn migrate_keeps_an_existing_cli_argv() {
         let home = tempfile::tempdir().unwrap();
         let home = home.path();
-        write_commands(home, &serde_json::json!({"demo": command_entry(true)}));
-        std::fs::write(
-            home.join("plugins/demo-manifest.json"),
-            r#"{"name":"demo","commands":["/demo"]}"#,
-        )
-        .unwrap();
-        std::fs::write(
-            home.join("plugins/widgets.json"),
-            r#"{"name":"demo","argv":["demo","widget"]}"#,
-        )
-        .unwrap();
-        remove_command(home, "demo").unwrap();
-        assert!(!load(home).unwrap().plugins.contains_key("demo"));
-        assert!(!home.join("plugins/demo-manifest.json").exists());
-        assert!(!home.join("plugins/widgets.json").exists());
-        // A widget slot owned by someone else survives.
-        std::fs::write(
-            home.join("plugins/widgets.json"),
-            r#"{"name":"other","argv":["other","widget"]}"#,
-        )
-        .unwrap();
-        write_commands(home, &serde_json::json!({"demo": command_entry(true)}));
-        remove_command(home, "demo").unwrap();
-        assert!(home.join("plugins/widgets.json").exists());
-        let miss = remove_command(home, "ghost").unwrap_err();
-        assert!(miss.to_string().contains("not installed: ghost"), "{miss}");
+        let mut already = cli_entry(&["/current/bin"]);
+        already.cli_argv = Some(vec!["/current/bin".into()]);
+        write_lock(home, &serde_json::json!({"demo": already}));
+        write_commands(
+            home,
+            &serde_json::json!({"demo": cli_entry(&["/stale/bin"])}),
+        );
+        migrate_commands_json(home);
+        assert_eq!(
+            load_lock(home).unwrap().plugins["demo"].cli_argv.as_deref(),
+            Some(&["/current/bin".to_string()][..])
+        );
+    }
+
+    #[test]
+    fn migrate_is_a_no_op_when_commands_json_is_absent() {
+        let home = tempfile::tempdir().unwrap();
+        let home = home.path();
+        migrate_commands_json(home);
+        assert!(load_lock(home).unwrap().plugins.is_empty());
+        assert!(!home.join("plugins/commands.json.migrated").exists());
     }
 
     #[cfg(unix)]
@@ -1335,99 +917,39 @@ mod tests {
         assert!(start.elapsed() < std::time::Duration::from_secs(3));
     }
 
-    #[test]
-    fn git_source_splits_url_from_pinned_commit() {
-        let (url, pin) = parse_git_source(
-            "git+https://github.com/vstaln/gray-discord-plugin.git@07f3d2e6b5782589e4fa27826e8b42c57467c66f",
-        )
-        .unwrap();
-        assert_eq!(url, "https://github.com/vstaln/gray-discord-plugin.git");
-        assert_eq!(pin, "07f3d2e6b5782589e4fa27826e8b42c57467c66f");
-        // An ssh URL carries its own '@': the pin is the last segment.
-        let (url, pin) = parse_git_source(
-            "git+ssh://git@github.com/vstaln/gray-discord-plugin.git@07f3d2e6b5782589e4fa27826e8b42c57467c66f",
-        )
-        .unwrap();
-        assert_eq!(url, "ssh://git@github.com/vstaln/gray-discord-plugin.git");
-        assert_eq!(pin, "07f3d2e6b5782589e4fa27826e8b42c57467c66f");
-    }
-
-    #[test]
-    fn git_source_rejects_anything_but_a_full_commit_pin() {
-        for source in [
-            "https://github.com/vstaln/gray-discord-plugin.git",
-            "git+https://github.com/vstaln/gray-discord-plugin.git",
-            "git+https://github.com/vstaln/gray-discord-plugin.git@main",
-            "git+https://github.com/vstaln/gray-discord-plugin.git@648952d",
-            "git+https://github.com/vstaln/gray-discord-plugin.git@07f3d2e6b5782589e4fa27826e8b42c57467c66f0",
-            "git+http://example.invalid/x.git@07f3d2e6b5782589e4fa27826e8b42c57467c66f",
-            "git+file:///tmp/x.git@07f3d2e6b5782589e4fa27826e8b42c57467c66f",
-            "git+https://github.com/vstaln/gray-discord-plugin.git@648952dc01a78a5eee031846f5f964877bfdac9g",
-        ] {
-            assert!(parse_git_source(source).is_err(), "{source}");
-        }
-    }
-
-    #[test]
-    fn catalog_discord_builds_from_rust_source() {
-        let entry = catalog("discord").unwrap();
-        assert_eq!(entry.name, "discord");
-        assert_eq!(entry.bin, "gray-discord");
-        assert_eq!(entry.sidecar_args, &["sidecar"][..]);
-        let miss = catalog("nope").err().expect("an unknown name must fail");
-        assert!(miss.to_string().contains("Unknown plugin"), "{miss}");
-    }
-
-    #[test]
-    fn discord_setup_declaration_asks_for_exactly_what_it_needs() {
-        let required: Vec<&str> = DISCORD_SETUP
-            .fields
-            .iter()
-            .filter(|f| f.is_required())
-            .map(|f| f.key)
-            .collect();
-        // Token and home channel only: the owner is discovered by the
-        // Discord-side pairing reply instead of typed, and the extras
-        // (allowed_users) plus derived paths are filled in around them.
-        assert_eq!(required, ["token", "channel_id"]);
-        let owner = DISCORD_SETUP.field("owner_id").unwrap();
-        assert!(matches!(owner.kind, FieldKind::Optional));
-        assert_eq!(
-            DISCORD_SETUP.field("allowed_users").unwrap().kind,
-            FieldKind::Optional
-        );
-        assert!(DISCORD_SETUP.field("token").unwrap().secret);
-    }
-}
-
-#[path = "plugin_native.rs"]
-mod native;
-
-#[cfg(test)]
-mod lock_tests {
-    use super::*;
-
-    #[test]
-    fn commands_lock_fails_loudly_when_contended() {
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn register_native_falls_back_to_the_wire_probe_for_cli_less_sidecars() {
+        use std::os::unix::fs::PermissionsExt;
         let home = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(home.path().join("plugins")).unwrap();
-        let lock_path = home.path().join("plugins/.commands.lock");
-        let holder = std::fs::OpenOptions::new()
-            .create(true)
-            .write(true)
-            .open(&lock_path)
+        let exe = home.path().join("wire-sidecar.sh");
+        // Any argv fails the CLI probe instantly (exit 1); the sidecar wire
+        // is the only language it speaks.
+        std::fs::write(
+            &exe,
+            r#"#!/bin/sh
+if [ $# -gt 0 ]; then exit 1; fi
+while IFS= read -r line; do
+  case "$line" in
+    *plugin/shutdown*) exit 0 ;;
+    *plugin/manifest*)
+      id=$(printf '%s' "$line" | sed 's/.*"id":\([0-9][0-9]*\).*/\1/')
+      printf '{"id":%s,"result":{"name":"wiretest","version":"1.0.0","protocol":"1.1","tools":[],"commands":[]}}\n' "$id"
+      ;;
+  esac
+done
+"#,
+        )
+        .unwrap();
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+        register_native(home.path(), None, &exe, false)
+            .await
             .unwrap();
-        holder.try_lock().unwrap();
-        let err = hold_commands_lock_timeout(home.path(), std::time::Duration::from_millis(50))
-            .err()
-            .expect("a contended commands lock must fail the op");
-        assert!(
-            err.to_string().contains("another plugin operation"),
-            "{err}"
-        );
-        drop(holder);
-        assert!(
-            hold_commands_lock_timeout(home.path(), std::time::Duration::from_millis(50)).is_ok()
-        );
+        let lock = load_lock(home.path()).unwrap();
+        let entry = &lock.plugins["wiretest"];
+        assert_eq!(entry.argv, vec![exe.to_string_lossy().into_owned()]);
+        assert_eq!(entry.cli_argv, None);
+        assert_eq!(entry.adapter_version, "1.1");
+        assert!(home.path().join("plugins/wiretest-manifest.json").exists());
     }
 }

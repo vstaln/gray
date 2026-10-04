@@ -217,7 +217,9 @@ fn add_ignore_rules(matcher: &mut IgnoreMatcher, dir: &Path, root_dir: &Path) {
 // Frontmatter
 mod load;
 
-pub(crate) use load::{load_skills_from_dir_internal, parse_frontmatter};
+pub(crate) use load::load_skills_from_dir_internal;
+#[cfg(test)]
+pub(crate) use load::parse_frontmatter;
 
 pub fn load_skills_from_dir(dir: &Path, source: &str) -> LoadSkillsResult {
     let root = dir.to_path_buf();

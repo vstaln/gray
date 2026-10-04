@@ -843,12 +843,6 @@ fn tool_detail(name: &str, args: &serde_json::Value) -> Option<String> {
             .map(|n| disclose(n, DETAIL_CAP)),
         "web_search" => arg("query").map(|q| disclose(q, DETAIL_CAP)),
         "web_fetch" => arg("url").map(|u| disclose(u, DETAIL_CAP)),
-        "discord_send" => arg("content").map(|c| disclose(c, DETAIL_CAP)),
-        "discord_open_modal" | "discord_ui_schema" => None,
-        "discord_file" => arg("path")
-            .or_else(|| arg("file_id"))
-            .or_else(|| arg("action"))
-            .map(|v| disclose(v, DETAIL_CAP)),
         _ => None,
     }
 }

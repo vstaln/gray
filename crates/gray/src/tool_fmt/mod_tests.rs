@@ -425,12 +425,15 @@ fn web_fetch_renders_a_verb_with_the_url() {
 }
 
 #[test]
-fn discord_send_renders_a_verb_with_the_content() {
+fn an_unknown_tool_humanizes_its_name_and_shows_args() {
     let args = serde_json::json!({"content": "hello channel"});
-    let text = row_text(&format_tool_call_header("discord_send", &args, None));
-    assert!(!text.contains("discord_send"), "wire name leaked: {text:?}");
-    assert!(text.contains("Sent Discord"), "verb missing: {text:?}");
-    assert!(text.contains("hello channel"), "content missing: {text:?}");
+    let text = row_text(&format_tool_call_header("my_channel_send", &args, None));
+    assert!(
+        !text.contains("my_channel_send"),
+        "wire name leaked: {text:?}"
+    );
+    assert!(text.contains("My Channel Send"), "name missing: {text:?}");
+    assert!(text.contains("hello channel"), "arg missing: {text:?}");
 }
 
 #[test]
@@ -504,12 +507,14 @@ fn live_header_streams_plugin_scalars() {
         None,
     ));
     assert!(text.contains("LibreWolf AppI"), "got {text:?}");
+    // Unknown plugin tools stream a scalar too: the fallback guesses the
+    // headline key from the buffer (`path` beats `pattern`/`command`).
     let text = row_text(&format_live_tool_header(
-        "discord_send",
-        r#"{"content":"hello"#,
+        "my_surface_tool",
+        r#"{"path":"/tmp/gra"#,
         None,
     ));
-    assert!(text.contains("hello"), "got {text:?}");
+    assert!(text.contains("/tmp/gra"), "got {text:?}");
 }
 
 #[test]
@@ -698,26 +703,11 @@ fn an_error_lines_up_with_numbered_output() {
 }
 
 #[test]
-fn discord_send_preview_strips_markdown_markers() {
-    let args = serde_json::json!({"content": "**gray updated + Discord restarted**"});
-    let text = row_text(&format_tool_call_header("discord_send", &args, None));
-    assert!(text.contains("Sent Discord"), "verb missing: {text:?}");
-    assert!(
-        text.contains("gray updated + Discord restarted"),
-        "words missing: {text:?}"
-    );
-    assert!(!text.contains("**"), "literal markers leaked: {text:?}");
-}
-
-#[test]
-fn discord_send_preview_strips_pairs_but_keeps_singles() {
-    for (raw, want) in [
-        ("`code` and **bold**", "code and bold"),
-        ("__under__ plus ~~gone~~", "under plus gone"),
-        ("a * b and 5_6 stay", "a * b and 5_6 stay"),
-    ] {
-        let args = serde_json::json!({"content": raw});
-        let text = row_text(&format_tool_call_header("discord_send", &args, None));
-        assert!(text.contains(want), "{raw:?} became {text:?}");
-    }
+fn an_unknown_tool_renders_its_args_verbatim() {
+    // Plugin tools get no hard-coded rendering: the wire name humanizes and
+    // the args print as they arrived — markup stays literal.
+    let args = serde_json::json!({"content": "**updated**"});
+    let text = row_text(&format_tool_call_header("my_channel_send", &args, None));
+    assert!(text.contains("My Channel Send"), "name missing: {text:?}");
+    assert!(text.contains("**updated**"), "arg missing: {text:?}");
 }

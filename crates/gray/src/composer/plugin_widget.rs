@@ -106,7 +106,7 @@ async fn read_widget_at(home: &std::path::Path, cwd: &std::path::Path) -> anyhow
     let name = spec["name"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("missing widget owner"))?;
-    let registry = gray_plugin::lock::LockFile::load(&home.join("plugins/commands.json"))?;
+    let registry = gray_plugin::lock::LockFile::load(&gray_plugin::lock::lock_path(home))?;
     let entry = registry
         .plugins
         .get(name)
@@ -116,8 +116,8 @@ async fn read_widget_at(home: &std::path::Path, cwd: &std::path::Path) -> anyhow
         "widget owner is disabled"
     );
     // The slot can select the owner only, never arbitrary argv edited into JSON.
-    let (program, args) = entry
-        .argv
+    let argv = entry.cli_argv.as_ref().unwrap_or(&entry.argv);
+    let (program, args) = argv
         .split_first()
         .ok_or_else(|| anyhow::anyhow!("empty widget argv"))?;
     let mut command = tokio::process::Command::new(program);
@@ -196,7 +196,7 @@ fi
 "#;
         std::fs::write(&exe, program).unwrap();
         std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
-        crate::plugin_cli::register_native(home.path(), "sample", &exe, false)
+        crate::plugin_cli::register_native(home.path(), Some("sample"), &exe, false)
             .await
             .unwrap();
         // Injected slot argv must never be executed; only the registered owner is.

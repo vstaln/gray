@@ -154,6 +154,23 @@
   `perf-floor`. Docs-only changes skip the Rust jobs, a newer push cancels a PR's run in flight,
   only main writes the Rust cache, CI builds without dev debuginfo, and ripgrep installs without
   a package index refresh unless it needs one.
+- **Plugins have one registry and one installer.** `commands.json` is gone: a `cli_argv` field on
+  each `plugins/lock.json` entry carries the `gray <name> …` forwarding vector, and a legacy
+  `commands.json` is folded in on first use and renamed `commands.json.migrated`. `gray install
+  plugin` is removed — `gray plugin install <name|url|path>` is the one install path (index name,
+  https tarball, or local executable; `GRAY_PLUGIN_PATH` still overrides). The foreign plugin
+  arms (`npm:`, `git:`, `claude:`, pi-gallery `clawhub:`) are gone from `plugin install` — skill
+  specs (`clawhub:…`, `github:…`, `url:…`) route to the skill installer as before and land in
+  `~/.gray/skills`.
+- **Discord setup moved out of core.** The app-setup flow, the pinned-catalog build, and the
+  Discord-specific transcript rendering left `gray`; the Discord plugin owns `setup`, `doctor`,
+  `register`, `run`, and service install. Install it from
+  [gray-discord-plugin](https://github.com/vstaln/gray-discord-plugin)
+  (`cargo install --git https://github.com/vstaln/gray-discord-plugin --locked`, so `gray-discord`
+  is on PATH), then `gray plugin install discord` and `gray discord setup` replace the old
+  `/gateway` wizard. `/gateway` now just lists installed apps and their declared subcommands.
+- **The structured input protocol is `gray.input`.** The old `gray.discord.input` identifier
+  still validates, so plugins that already emit it keep working.
 
 ## [0.1.10] - 2026-10-01
 

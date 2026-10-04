@@ -13,7 +13,6 @@ pub mod cron_serve;
 pub mod cron_status;
 pub mod doctor;
 pub mod feedback;
-pub mod foreign;
 pub mod gateway;
 pub mod host;
 pub mod logging;
@@ -300,15 +299,7 @@ pub async fn build_agent(
     for w in gray_plugin::builder::take_builder_warnings() {
         profile::queue_profile_warning(w);
     }
-    // Foreign packages (pi-installed plugin dirs with AGENTS.md / commands /
-    // gray.json) ride as in-process hooks beside the builder's own: same
-    // per-turn inject and slash commands, no sidecar, no per-plugin code.
-    let mut agent = agent.with_compaction_budget(config.context_reserve, config.context_keep);
-    if !config.bare {
-        let mut hooks = agent.hooks().to_vec();
-        hooks.extend(crate::foreign::foreign_hooks());
-        agent = agent.with_hooks(hooks);
-    }
+    let agent = agent.with_compaction_budget(config.context_reserve, config.context_keep);
     // Bash bounds an explicitly requested timeout at 3600 s (and has no
     // default), so the agent-level timeout must sit above that (P2B
     // requirement): it is a last-resort stop, never a budget.
@@ -538,28 +529,9 @@ pub enum Commands {
         #[command(subcommand)]
         cmd: SpillCmd,
     },
-    /// Install a catalog plugin or register a native executable (gray install plugin NAME)
-    Install {
-        #[command(subcommand)]
-        cmd: InstallCmd,
-    },
     /// Plugin-provided commands (`gray NAME setup`, …) — forwarded to the plugin
     #[command(external_subcommand)]
     External(Vec<String>),
-}
-
-/// `gray install plugin <name>` — native plugin registration.
-#[derive(Parser, Debug, Clone)]
-pub enum InstallCmd {
-    /// Register a plugin command from PATH or GRAY_PLUGIN_PATH
-    Plugin {
-        /// Plugin name
-        #[arg(value_name = "NAME")]
-        name: String,
-        /// Accept a caution scan verdict (never overrides `dangerous`)
-        #[arg(short, long)]
-        force: bool,
-    },
 }
 
 /// `gray spill ...` — read back a spilled tool result.
@@ -718,18 +690,6 @@ pub enum GatewayCmd {
     },
     /// Stop and remove the installed service
     Uninstall,
-    /// Set an app up from flags (headless twin of the /gateway flow)
-    Setup {
-        /// The app to set up (its setup declaration lives in gray's catalog)
-        app: String,
-        /// `key=value` answers for the declaration's non-derived fields,
-        /// repeatable; anything still missing is reported, not guessed
-        #[arg(long = "field")]
-        fields: Vec<String>,
-        /// Also start the daemon (runit/systemd/gray-supervised)
-        #[arg(long)]
-        start: bool,
-    },
     /// Turn the gateway master switch on (run/start allowed again)
     On,
     /// Turn the gateway master switch off (run/start refuse until re-enabled)
@@ -777,11 +737,10 @@ pub enum LifecycleCmd {
 pub enum PluginCmd {
     /// List installed plugins
     List,
-    /// Install a plugin by index name or https URL
+    /// Install a plugin: index name, https tarball URL, or local executable path
     Install {
-        /// Index name or https URL
-        #[arg(value_parser = |s: &str| Ok::<_, std::convert::Infallible>(gray_pkg::ops::parse_spec(s)))]
-        spec: gray_pkg::ops::NameOrUrl,
+        /// Index name, https tarball URL, or executable path
+        spec: String,
         /// Accept a caution scan verdict (never overrides `dangerous`)
         #[arg(short, long)]
         force: bool,

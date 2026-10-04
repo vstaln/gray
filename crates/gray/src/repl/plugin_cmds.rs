@@ -120,7 +120,13 @@ pub(crate) async fn handle_plugin_command(raw: &str, tui: Option<&crate::compose
             Err(e) => say(tui, &format!("plugin list failed: {e:#}")),
         },
         PluginAction::Install(spec) => {
-            match ops::install(ops::parse_spec(&spec), InstallOpts::default()).await {
+            let installed = if gray_pkg::skills_ops::is_skill_spec(&spec) {
+                // Skill specs land in ~/.gray/skills, not the plugin lock.
+                gray_pkg::skills_ops::install(&spec).await
+            } else {
+                ops::install(ops::parse_spec(&spec), InstallOpts::default()).await
+            };
+            match installed {
                 Ok(r) => say(
                     tui,
                     &format!("installed {} {} at {}", r.name, r.version, r.path.display()),

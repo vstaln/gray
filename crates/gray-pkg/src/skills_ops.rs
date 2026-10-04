@@ -47,6 +47,14 @@ pub(crate) fn skills_dir() -> PathBuf {
     crate::gray_home().join("skills")
 }
 
+/// Specs this installer resolves remotely (`clawhub:`/`github:`/`url:`);
+/// anything else is a local path. Shared so `plugin install` routes skill
+/// specs here instead of into the plugin lock.
+pub fn is_skill_spec(spec: &str) -> bool {
+    let t = spec.trim();
+    t.starts_with("clawhub:") || t.starts_with("github:") || t.starts_with("url:")
+}
+
 /// `(registry, item)` identity for install failures, from the spec kind.
 fn spec_identity(spec: &str) -> (String, String) {
     let t = spec.trim();

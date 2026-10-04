@@ -181,7 +181,7 @@ fn cli_ecosystem_labels_plugin_commands() {
         format_plugin_row("demo", &entry("gray-cli", true)),
         "✓ demo 1.2.3 (user) [Plugin command]"
     );
-    // The modal renders `commands.json` rows through the same builder.
+    // The modal renders `lock.json` CLI rows through the same builder.
     assert_eq!(
         format_plugin_row_parts("demo", "1.2.3", "user", "gray-cli", true),
         format_plugin_row("demo", &entry("gray-cli", true))
