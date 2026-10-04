@@ -654,3 +654,28 @@ fn an_error_lines_up_with_numbered_output() {
     assert_eq!(text_col(&err[1], "second"), text_col(&ok[0], "exit"));
     assert!(row_text(&err[0]).contains('\u{2717}'));
 }
+
+#[test]
+fn discord_send_preview_strips_markdown_markers() {
+    let args = serde_json::json!({"content": "**gray updated + Discord restarted**"});
+    let text = row_text(&format_tool_call_header("discord_send", &args, None));
+    assert!(text.contains("Sent Discord"), "verb missing: {text:?}");
+    assert!(
+        text.contains("gray updated + Discord restarted"),
+        "words missing: {text:?}"
+    );
+    assert!(!text.contains("**"), "literal markers leaked: {text:?}");
+}
+
+#[test]
+fn discord_send_preview_strips_pairs_but_keeps_singles() {
+    for (raw, want) in [
+        ("`code` and **bold**", "code and bold"),
+        ("__under__ plus ~~gone~~", "under plus gone"),
+        ("a * b and 5_6 stay", "a * b and 5_6 stay"),
+    ] {
+        let args = serde_json::json!({"content": raw});
+        let text = row_text(&format_tool_call_header("discord_send", &args, None));
+        assert!(text.contains(want), "{raw:?} became {text:?}");
+    }
+}

@@ -24,6 +24,8 @@
 
 ### Fixed
 - **Empty sessions stay out of the resume list.** A session that never sent a message (`(no message yet)`, usually the `just now` row at the top) no longer shows in the `/resume` picker, headless lists, or `--last`. Explicit `resume <id>` still loads one.
+- **The `discord_send` preview reads like the channel does.** The transcript echoed raw markdown (`**bold**` with literal asterisks) while Discord renders it. The row now strips paired markers (`**`, `__`, `` ` ``, `~~`); unpaired `*`/`_` and spoiler bars stay untouched.
+
 - **No more 403s that only a restart cleared.** `/connect` writes the picked provider's base URL
   and key into the live session before the model step saves anything, so dismissing it left that
   pick in memory beside the old model. Every later agent rebuild (`/model`, `/thinking`, `/new`, a
@@ -130,6 +132,19 @@
   It is a property of an idle composer, so it now lives only in the idle ghost, which
   paints while the box is genuinely empty and no turn is running. The error path's
   permanent copy of the same line went with it.
+
+### Changed
+- **CI waits on less.** `windows-runtime` gated every run at 9.5 minutes on a PR and 14.5 on
+  main. It no longer builds a release binary: the installer tests run against the debug
+  `gray.exe` the test build already made, and the downloadable preview ZIP is built by its own
+  `windows-preview` job beside it. Tests run under `cargo nextest` (`.config/nextest.toml`,
+  profile `ci`): every test in its own process, all binaries at once, each failure reported by
+  name, so the sleep-bound shell lifecycle suites overlap instead of queueing binary by binary.
+  That made the targeted Windows and macOS test steps and `cargo check --all-targets` pure
+  repetition, so they are gone. The tool-call latency bench is `#[ignore]`d and runs in
+  `perf-floor`. Docs-only changes skip the Rust jobs, a newer push cancels a PR's run in flight,
+  only main writes the Rust cache, CI builds without dev debuginfo, and ripgrep installs without
+  a package index refresh unless it needs one.
 
 ## [0.1.10] - 2026-10-01
 

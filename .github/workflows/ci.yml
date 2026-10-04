@@ -8,8 +8,47 @@ on:
 permissions:
   contents: read
 
+# A newer push to a PR supersedes the run in flight: stop it instead of
+# holding a macOS and a Windows runner for a result nobody will read. Pushes
+# to main are grouped by sha, so every main commit keeps its own full run.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
+
+env:
+  # CI never attaches a debugger; workspace crates drop the line tables the
+  # dev profile keeps for local work. Smaller objects link faster (Windows
+  # PDBs especially) and shrink the cache. Panic messages still carry
+  # file:line; only backtrace frames lose it.
+  CARGO_PROFILE_DEV_DEBUG: 0
+
 jobs:
+  changes:
+    # Docs-only changes (docs/, top-level *.md) cannot change the binary or a
+    # test, so the Rust jobs below are skipped for them. A job skipped by `if`
+    # reports success, so required checks still resolve. crates/gray/gray-skill.md
+    # is compiled in and is deliberately NOT excluded.
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      code: ${{ steps.filter.outputs.code }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          predicate-quantifier: every
+          filters: |
+            code:
+              - '**'
+              - '!docs/**'
+              - '!*.md'
+
   test:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     permissions:
       contents: read
       checks: write
@@ -24,25 +63,41 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
       - uses: Swatinem/rust-cache@v2
+        with:
+          # PRs restore main's cache; only main writes it, so PR runs skip the
+          # upload and never evict the cache every other branch starts from.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: install ripgrep (grep tool + parity tests shell out to rg)
         shell: bash
         run: |
           if command -v rg >/dev/null; then rg --version; exit 0; fi
           if [ "$(uname)" = "Darwin" ]; then brew install ripgrep
-          else sudo apt-get update -qq && sudo apt-get install -y -qq ripgrep; fi
+          # The image's package lists usually have ripgrep already; pay for
+          # `apt-get update` only when they do not.
+          else sudo apt-get install -y -qq ripgrep \
+            || { sudo apt-get update -qq && sudo apt-get install -y -qq ripgrep; }
+          fi
           rg --version
       - if: matrix.os == 'ubuntu-latest'
         run: cargo fmt --check
       - run: cargo clippy --locked --workspace -- -D warnings
-      # Keep platform process tests ahead of unrelated suites, so a failure
-      # elsewhere cannot hide the macOS cancellation regression evidence.
-      - if: matrix.os == 'macos-latest'
-        name: Verify macOS timeout and complete shell library tests
+      # nextest runs every test in its own process, all binaries at once, and
+      # --no-fail-fast reports each failure by name: a failure elsewhere cannot
+      # hide the macOS cancellation regression evidence, which is why that
+      # suite no longer needs a separate step ahead of this one.
+      - name: Run workspace tests
         env:
           RUST_BACKTRACE: 1
-        run: cargo test --locked -p gray-tools --lib -- --nocapture
-      - run: cargo test --locked --workspace --quiet
+        run: cargo nextest run --locked --workspace --profile ci
+      # nextest does not run doctests. They are platform-neutral, so one OS is
+      # enough.
+      - if: matrix.os == 'ubuntu-latest'
+        name: Run doctests
+        run: cargo test --locked --workspace --doc
       - if: matrix.os == 'ubuntu-latest'
         uses: rustsec/audit-check@v2
         with:
@@ -53,11 +108,15 @@ jobs:
     # surface, a fast start — had no gate, so they drifted on nobody's watch.
     # Every metric here is a ceiling that may only go down; a regression fails
     # the job and raising one is a reviewable baseline commit.
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       # Dependency counts need no build at all, so they fail fast; the binary
       # size is measured only after the release build this job does anyway.
       - name: Dependency floor
@@ -66,6 +125,17 @@ jobs:
         run: cargo build --locked --release -p gray
       - name: Binary size floor
         run: ./scripts/perf-floor.sh
+      - name: install ripgrep (the tool bench's grep lanes shell out to rg)
+        shell: bash
+        run: |
+          sudo apt-get install -y -qq ripgrep \
+            || { sudo apt-get update -qq && sudo apt-get install -y -qq ripgrep; }
+          rg --version
+      # A benchmark, not a correctness test: it is #[ignore]d so the test jobs
+      # do not spend half a minute on it per OS, and it runs here instead,
+      # off the critical path and against the release deps this job built.
+      - name: Tool-call latency baseline
+        run: cargo test --locked --release -p gray-tools --test tool_bench -- --ignored --nocapture
 
   installer-smoke:
     runs-on: ubuntu-latest
@@ -86,6 +156,8 @@ jobs:
     # This is a runtime gate, not a Windows support announcement. The first
     # port must prove Git Bash timeout/cancel kills descendants before we
     # publish a native installer. Do not suppress failures with continue-on-error.
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: windows-2025
     timeout-minutes: 60
     env:
@@ -95,7 +167,12 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Configure explicit Git for Windows shell and isolated storage
         shell: pwsh
         run: |
@@ -112,44 +189,79 @@ jobs:
         shell: pwsh
         run: |
           if (-not (Get-Command rg -ErrorAction SilentlyContinue)) {
-            choco install ripgrep --yes --no-progress
-            if ($LASTEXITCODE -ne 0) { throw 'ripgrep installation failed' }
+            # The pinned release zip, checked against its published digest,
+            # takes a couple of seconds; Chocolatey takes 12-25s. Any failure
+            # on the fast path falls back to Chocolatey, never to no ripgrep.
+            $ver = '14.1.1'
+            $name = "ripgrep-$ver-x86_64-pc-windows-msvc"
+            $base = "https://github.com/BurntSushi/ripgrep/releases/download/$ver/$name.zip"
+            $zip = Join-Path $env:RUNNER_TEMP "$name.zip"
+            $dir = Join-Path $env:RUNNER_TEMP $name
+            try {
+              Invoke-WebRequest -Uri $base -OutFile $zip
+              $want = ((Invoke-WebRequest -Uri "$base.sha256").Content.ToString().Trim() -split '\s+')[0].ToLowerInvariant()
+              $got = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLowerInvariant()
+              if ($got -ne $want) { throw "ripgrep zip digest $got != published $want" }
+              Expand-Archive $zip -DestinationPath $env:RUNNER_TEMP -Force
+              if (-not (Test-Path (Join-Path $dir 'rg.exe'))) { throw 'rg.exe missing from the release zip' }
+              $dir >> $env:GITHUB_PATH
+              $env:PATH = "$dir;$env:PATH"
+            } catch {
+              Write-Host "ripgrep release download failed ($_); falling back to Chocolatey"
+              choco install ripgrep --yes --no-progress
+              if ($LASTEXITCODE -ne 0) { throw 'ripgrep installation failed' }
+            }
           }
           rg --version
-      - run: cargo check --locked --workspace --all-targets
+      # Lint covers the native Windows cfg paths; the test build below compiles
+      # every test target, so a separate `cargo check --all-targets` only
+      # repeated that work.
       - name: Check native Windows lint paths
         run: cargo clippy --locked --workspace -- -D warnings
-      - name: Run complete cross-platform shell lifecycle regression file
-        run: "cargo test --locked -p gray-tools --test it -- --nocapture platform_shell::"
-      - name: Run complete shell contract with native fixture paths
-        # Run even if the new lifecycle regression fails, so both complete
-        # test files report native evidence instead of stopping at one failure.
+      - name: Run full native workspace tests (report every test)
+        # One run of the complete suite. nextest reports each failing test by
+        # name and keeps going, so the shell lifecycle, shell contract,
+        # home_paths, windows_limits and working_directory suites each report
+        # native evidence without their own steps re-running them first.
+        env:
+          RUST_BACKTRACE: 1
+        run: cargo nextest run --locked --workspace --profile ci
+      # The installer only places and verifies a binary; it never depends on
+      # optimisation. The debug gray.exe the integration tests above already
+      # built is exactly as good, and skips a 2-3 minute release build here.
+      # Installer evidence is independent of workspace runtime failures.
+      - name: Test native installer with PowerShell 7
         if: ${{ !cancelled() }}
-        run: "cargo test --locked -p gray-tools --test it -- --nocapture shell_contract::"
-      - name: Resolve native profile without Unix HOME
-        run: "cargo test --locked -p gray --test it -- --nocapture home_paths::"
-      - name: Check explicit preview limitations and real first-request cwd
-        run: "cargo test --locked -p gray --test it -- --nocapture windows_limits:: working_directory::"
-      - name: Run full native workspace tests (report every test binary)
-        # Selected preview files above are not a substitute for the full suite.
-        # Keep collecting evidence after a failed lint/targeted test, but never
-        # package an artifact from a failed run.
+        run: ./dist/tests/install-native.ps1 -Binary (Resolve-Path target/debug/gray.exe)
+      - name: Test native installer with Windows PowerShell 5.1
         if: ${{ !cancelled() }}
-        run: cargo test --locked --workspace --no-fail-fast
+        shell: powershell
+        run: ./dist/tests/install-native.ps1 -Binary (Resolve-Path target/debug/gray.exe)
+
+  windows-preview:
+    # The downloadable native preview ZIP. A job of its own, so the 2-3 minute
+    # release build runs beside the runtime gate instead of after it. The ZIP
+    # is packaged only when this job's build and smoke test pass; it does not
+    # wait on windows-runtime, so a red runtime gate (which still fails the
+    # run) is what tells you not to trust a preview from that run.
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: windows-2025
+    timeout-minutes: 60
+    env:
+      CARGO_BUILD_JOBS: 4
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Build native preview artifact (not a release)
-        # Installer evidence is independent of workspace runtime failures.
-        id: native-build
-        if: ${{ !cancelled() }}
         env:
           GRAY_CHANNEL: beta
         run: cargo build --locked --release -p gray
-      - name: Test native installer with PowerShell 7
-        if: ${{ !cancelled() && steps.native-build.outcome == 'success' }}
-        run: ./dist/tests/install-native.ps1 -Binary (Resolve-Path target/release/gray.exe)
-      - name: Test native installer with Windows PowerShell 5.1
-        if: ${{ !cancelled() && steps.native-build.outcome == 'success' }}
-        shell: powershell
-        run: ./dist/tests/install-native.ps1 -Binary (Resolve-Path target/release/gray.exe)
+      - name: Smoke test the preview binary
+        run: ./target/release/gray.exe --version
       - name: Package preview ZIP and checksum
         shell: pwsh
         run: |
