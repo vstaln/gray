@@ -138,8 +138,8 @@
   profile `ci`): every test in its own process, all binaries at once, each failure reported by
   name, so the sleep-bound shell lifecycle suites overlap instead of queueing binary by binary.
   That made the targeted Windows and macOS test steps and `cargo check --all-targets` pure
-  repetition, so they are gone. The tool-call latency bench is `#[ignore]`d and runs in
-  `perf-floor`. Docs-only changes skip the Rust jobs, a newer push cancels a PR's run in flight,
+  repetition, so they are gone. The tool-call latency bench is `#[ignore]`d and runs once, in
+  the Ubuntu test job, on the build that job already made. Docs-only changes skip the Rust jobs, a newer push cancels a PR's run in flight,
   only main writes the Rust cache, CI builds without dev debuginfo, and ripgrep installs without
   a package index refresh unless it needs one.
 
