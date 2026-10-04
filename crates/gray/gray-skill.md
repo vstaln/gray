@@ -83,7 +83,7 @@ chat session.
 ## Other subcommands
 
 `gray find`, `gray grep`, `gray plugin list`,
-`gray gateway status`, `gray update`, `gray login`, `gray whoami`.
+`gray gateway status`, `gray update`.
 
 ## What gray can do
 

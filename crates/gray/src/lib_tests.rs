@@ -275,8 +275,6 @@ fn every_command_the_skill_shows_actually_parses() {
         &["gray", "plugin", "list"],
         &["gray", "gateway", "status"],
         &["gray", "update"],
-        &["gray", "login"],
-        &["gray", "whoami"],
         &["gray", "--skill"],
         &["gray", "--json", "--input-json", "task.json"],
     ];
