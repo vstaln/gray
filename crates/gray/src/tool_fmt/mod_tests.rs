@@ -261,7 +261,7 @@ fn live_header_full_json_matches_final_header() {
     let v: serde_json::Value = serde_json::from_str(raw).unwrap();
     assert_eq!(
         row_text(&format_live_tool_header("bash", raw, None)),
-        row_text(&format_tool_call_header("bash", &v, None)),
+        row_text(&format_tool_call_header("bash", &v, None, None)),
     );
 }
 
@@ -298,7 +298,7 @@ fn live_header_huge_raw_still_streams_prefix() {
     let v: serde_json::Value = serde_json::from_str(&full).unwrap();
     assert_eq!(
         row_text(&format_live_tool_header("bash", &big, None)),
-        row_text(&format_tool_call_header("bash", &v, None)),
+        row_text(&format_tool_call_header("bash", &v, None, None)),
     );
 }
 
@@ -398,7 +398,7 @@ fn a_cancelled_runs_second_line_header_drops_the_log_path_too() {
 #[test]
 fn web_search_renders_a_verb_not_the_wire_name() {
     let args = serde_json::json!({"query": "LibreWolf AppImage download", "max_results": 5});
-    let text = row_text(&format_tool_call_header("web_search", &args, None));
+    let text = row_text(&format_tool_call_header("web_search", &args, None, None));
     assert!(!text.contains("web_search"), "wire name leaked: {text:?}");
     assert!(text.contains("Searched"), "verb missing: {text:?}");
     assert!(
@@ -415,7 +415,7 @@ fn web_search_renders_a_verb_not_the_wire_name() {
 fn web_fetch_renders_a_verb_with_the_url() {
     let args =
         serde_json::json!({"url": "https://librewolf.net/installation/linux/", "max_chars": 8000});
-    let text = row_text(&format_tool_call_header("web_fetch", &args, None));
+    let text = row_text(&format_tool_call_header("web_fetch", &args, None, None));
     assert!(!text.contains("web_fetch"), "wire name leaked: {text:?}");
     assert!(text.contains("Fetched"), "verb missing: {text:?}");
     assert!(
@@ -474,7 +474,12 @@ fn web_search_caps_long_output_like_bash() {
 #[test]
 fn an_unknown_tool_humanizes_its_name_and_shows_args() {
     let args = serde_json::json!({"content": "hello channel"});
-    let text = row_text(&format_tool_call_header("my_channel_send", &args, None));
+    let text = row_text(&format_tool_call_header(
+        "my_channel_send",
+        &args,
+        None,
+        None,
+    ));
     assert!(
         !text.contains("my_channel_send"),
         "wire name leaked: {text:?}"
@@ -485,9 +490,15 @@ fn an_unknown_tool_humanizes_its_name_and_shows_args() {
 
 #[test]
 fn plugin_preview_path_renders_first_string_at_that_path() {
-    let args =
-        serde_json::json!({"preview": "document.title", "document": {"title": "  ## Hello  "}});
-    let text = row_text(&format_tool_call_header("some_surface_tool", &args, None));
+    // The declared dot path arrives as the separate display param — wire
+    // args carry only real arguments, never the display directive.
+    let args = serde_json::json!({"document": {"title": "  ## Hello  "}});
+    let text = row_text(&format_tool_call_header(
+        "some_surface_tool",
+        &args,
+        None,
+        Some("document.title"),
+    ));
     assert!(
         text.contains("Some Surface Tool"),
         "headline missing: {text:?}"
@@ -501,50 +512,13 @@ fn plugin_preview_path_renders_first_string_at_that_path() {
 
 #[test]
 fn plugin_preview_path_missing_falls_back_to_generic_dump() {
-    let args = serde_json::json!({"preview": "document.title", "document": {}});
-    let text = row_text(&format_tool_call_header("some_surface_tool", &args, None));
-    assert!(
-        text.contains("Some Surface Tool"),
-        "headline missing: {text:?}"
-    );
-    assert!(
-        text.contains("document="),
-        "fallback dump missing: {text:?}"
-    );
-}
-
-#[test]
-fn preview_at_walks_object_keys_only() {
-    let args = serde_json::json!({"document": {"title": "  Hi  "}});
-    assert_eq!(preview_at(&args, "document.title").as_deref(), Some("Hi"));
-    assert!(preview_at(&args, "document.missing").is_none());
-    assert!(preview_at(&args, "document.title.deeper").is_none());
-    assert!(preview_at(&args, "").is_none());
-    assert!(preview_at(&args, "  ").is_none());
-    let ws = serde_json::json!({"document": {"title": "   "}});
-    assert!(preview_at(&ws, "document.title").is_none());
-}
-
-#[test]
-fn plugin_preview_path_renders_first_string_at_that_path() {
-    let args =
-        serde_json::json!({"preview": "document.title", "document": {"title": "  ## Hello  "}});
-    let text = row_text(&format_tool_call_header("some_surface_tool", &args, None));
-    assert!(
-        text.contains("Some Surface Tool"),
-        "headline missing: {text:?}"
-    );
-    assert!(text.contains("## Hello"), "preview missing: {text:?}");
-    assert!(
-        !text.contains("preview="),
-        "preview key leaked into dump: {text:?}"
-    );
-}
-
-#[test]
-fn plugin_preview_path_missing_falls_back_to_generic_dump() {
-    let args = serde_json::json!({"preview": "document.title", "document": {}});
-    let text = row_text(&format_tool_call_header("some_surface_tool", &args, None));
+    let args = serde_json::json!({"document": {}});
+    let text = row_text(&format_tool_call_header(
+        "some_surface_tool",
+        &args,
+        None,
+        Some("document.title"),
+    ));
     assert!(
         text.contains("Some Surface Tool"),
         "headline missing: {text:?}"
@@ -570,14 +544,24 @@ fn preview_at_walks_object_keys_only() {
 #[test]
 fn unknown_tools_humanize_and_labels_override() {
     let args = serde_json::json!({"foo": "bar"});
-    let text = row_text(&format_tool_call_header("my_custom_tool", &args, None));
+    let text = row_text(&format_tool_call_header(
+        "my_custom_tool",
+        &args,
+        None,
+        None,
+    ));
     assert!(text.contains("My Custom Tool"), "not humanized: {text:?}");
     assert!(
         !text.contains("my_custom_tool"),
         "wire name leaked: {text:?}"
     );
     let labeled = with_tool_label(&args, Some("Notify Owner"));
-    let labeled_text = row_text(&format_tool_call_header("my_custom_tool", &labeled, None));
+    let labeled_text = row_text(&format_tool_call_header(
+        "my_custom_tool",
+        &labeled,
+        None,
+        None,
+    ));
     assert!(
         labeled_text.contains("Notify Owner"),
         "label ignored: {labeled_text:?}"
@@ -609,18 +593,20 @@ fn live_header_streams_plugin_scalars() {
 #[test]
 fn a_cut_bash_header_ends_in_an_ellipsis() {
     let long = serde_json::json!({"command": format!("seq 20 | xargs sh -c '{}' | sort | uniq -c", "x".repeat(80))});
-    let text = row_text(&format_tool_call_header("bash", &long, None));
+    let text = row_text(&format_tool_call_header("bash", &long, None, None));
     assert!(text.ends_with('\u{2026}'), "{text:?}");
     let multi = serde_json::json!({"command": "cd x\nmake"});
-    assert!(row_text(&format_tool_call_header("bash", &multi, None)).ends_with("cd x\u{2026}"));
+    assert!(
+        row_text(&format_tool_call_header("bash", &multi, None, None)).ends_with("cd x\u{2026}")
+    );
     let short = serde_json::json!({"command": "ls"});
-    assert!(row_text(&format_tool_call_header("bash", &short, None)).ends_with("Ran ls"));
+    assert!(row_text(&format_tool_call_header("bash", &short, None, None)).ends_with("Ran ls"));
 }
 
 // --- bash: one tool, five actions; headers say which, jobs go by name. ---
 
 fn header(args: serde_json::Value) -> String {
-    row_text(&format_tool_call_header("bash", &args, None))
+    row_text(&format_tool_call_header("bash", &args, None, None))
 }
 
 fn body(args: serde_json::Value, out: &str) -> String {
@@ -796,7 +782,12 @@ fn an_unknown_tool_renders_its_args_verbatim() {
     // Plugin tools get no hard-coded rendering: the wire name humanizes and
     // the args print as they arrived — markup stays literal.
     let args = serde_json::json!({"content": "**updated**"});
-    let text = row_text(&format_tool_call_header("my_channel_send", &args, None));
+    let text = row_text(&format_tool_call_header(
+        "my_channel_send",
+        &args,
+        None,
+        None,
+    ));
     assert!(text.contains("My Channel Send"), "name missing: {text:?}");
     assert!(text.contains("**updated**"), "arg missing: {text:?}");
 }

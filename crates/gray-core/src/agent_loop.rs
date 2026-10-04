@@ -276,6 +276,9 @@ impl Agent {
         // (provider prefix caching survives multi-round turns) and sidecar
         // hooks pay one call per turn instead of one per tool round.
         let mut hook_context = String::new();
+        if let Some(hook) = self.checkpoint.clone() {
+            hook(&self.messages, self.history_revision()).await;
+        }
         for hook in &self.hooks {
             if let Some(text) = hook.prompt_context().await
                 && !text.trim().is_empty()
@@ -322,6 +325,9 @@ impl Agent {
                 && let Some(text) = steer()
             {
                 self.messages.push(Message::user(text));
+            }
+            if let Some(hook) = self.checkpoint.clone() {
+                hook(&self.messages, self.history_revision()).await;
             }
 
             // Pre-turn budget (pi `_compactBeforeNextAssistantResponse`):

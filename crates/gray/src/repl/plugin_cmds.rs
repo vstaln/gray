@@ -4,7 +4,6 @@
 //! messages through [`say`](super::say).
 
 use super::*;
-use gray_pkg::ops::{self, InstallOpts};
 
 #[derive(Debug, PartialEq)]
 pub(crate) enum PluginAction {
@@ -120,17 +119,21 @@ pub(crate) async fn handle_plugin_command(raw: &str, tui: Option<&crate::compose
             Err(e) => say(tui, &format!("plugin list failed: {e:#}")),
         },
         PluginAction::Install(spec) => {
-            let installed = if gray_pkg::skills_ops::is_skill_spec(&spec) {
-                // Skill specs land in ~/.gray/skills, not the plugin lock.
-                gray_pkg::skills_ops::install(&spec).await
-            } else {
-                ops::install(ops::parse_spec(&spec), InstallOpts::default()).await
-            };
-            match installed {
-                Ok(r) => say(
-                    tui,
-                    &format!("installed {} {} at {}", r.name, r.version, r.path.display()),
-                ),
+            // Same resolution as the CLI: skill specs, GRAY_PLUGIN_PATH,
+            // existing paths, gray-<name> on PATH, then index/URL — plus the
+            // commands.json migration. Output lines come back for `say`
+            // instead of printing to stdout under the live TUI.
+            match crate::plugin_cli::home().map_err(anyhow::Error::from) {
+                Ok(home) => {
+                    match crate::plugin_cli::install_spec_lines(&home, &spec, false).await {
+                        Ok(lines) => {
+                            for line in lines {
+                                say(tui, &line);
+                            }
+                        }
+                        Err(e) => say(tui, &format!("install failed: {e:#}")),
+                    }
+                }
                 Err(e) => say(tui, &format!("install failed: {e:#}")),
             }
         }

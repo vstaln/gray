@@ -409,15 +409,12 @@ fn tool_header(
         }
         None => args,
     };
-    let owned2;
-    let args = match previews.and_then(|m| m.get(name)) {
-        Some(preview) => {
-            owned2 = crate::tool_fmt::with_tool_preview(args, Some(preview));
-            &owned2
-        }
-        None => args,
-    };
-    crate::tool_fmt::format_tool_call_header(name, args, cwd)
+    crate::tool_fmt::format_tool_call_header(
+        name,
+        args,
+        cwd,
+        previews.and_then(|m| m.get(name)).map(String::as_str),
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -675,17 +672,14 @@ pub(crate) fn dispatch_agent_event(
                         }
                         None => args,
                     };
-                    let owned2;
-                    let args = match tool_previews.and_then(|m| m.get(name)) {
-                        Some(preview) => {
-                            owned2 = crate::tool_fmt::with_tool_preview(args, Some(preview));
-                            &owned2
-                        }
-                        None => args,
-                    };
                     println!(
                         "\n{}",
-                        crate::tool_fmt::format_tool_call_header_plain(name, args, Some(cwd))
+                        crate::tool_fmt::format_tool_call_header_plain(
+                            name,
+                            args,
+                            Some(cwd),
+                            tool_previews.and_then(|m| m.get(name)).map(String::as_str),
+                        )
                     );
                 }
             }

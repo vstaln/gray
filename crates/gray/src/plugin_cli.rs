@@ -123,20 +123,43 @@ fn metadata(home: &Path, name: &str) -> anyhow::Result<serde_json::Value> {
 ///   b. `spec` is an existing path → register it (the manifest names it).
 ///   c. `spec` is a valid name and `gray-<spec>` is on PATH → register it.
 ///   d. otherwise → a gray-pkg index name or an https tarball URL.
-pub async fn install_spec(home: &Path, spec: &str, force: bool) -> anyhow::Result<()> {
+///
+/// Returns the user-facing lines; callers choose how to display them (the
+/// CLI prints, the TUI routes them through `say` — never stdout mid-frame).
+pub async fn install_spec_lines(
+    home: &Path,
+    spec: &str,
+    force: bool,
+) -> anyhow::Result<Vec<String>> {
     migrate_commands_json(home);
     if gray_pkg::skills_ops::is_skill_spec(spec) {
         let r = gray_pkg::skills_ops::install(spec).await?;
-        println!("installed {} {} at {}", r.name, r.version, r.path.display());
-        return Ok(());
+        return Ok(vec![format!(
+            "installed {} {} at {}",
+            r.name,
+            r.version,
+            r.path.display()
+        )]);
     }
     if let Some(path) = std::env::var_os("GRAY_PLUGIN_PATH") {
         anyhow::ensure!(!path.is_empty(), "GRAY_PLUGIN_PATH is set but empty");
-        return register_native(home, Some(spec), Path::new(&path), force).await;
+        return register_native(home, Some(spec), Path::new(&path), force)
+            .await
+            .map(|line| vec![line]);
     }
     let path = Path::new(spec);
-    if path.exists() {
-        return register_native(home, None, path, force).await;
+    // A bare name only resolves as a path when it looks like one — absolute,
+    // dot-prefixed, or containing a separator. Otherwise `gray plugin install
+    // demo` in a directory that happens to contain `demo` would register and
+    // execute it instead of installing `demo` from the index.
+    let path_like = path.is_absolute()
+        || spec.starts_with('.')
+        || spec.contains(std::path::MAIN_SEPARATOR)
+        || spec.contains('/');
+    if path_like && path.exists() {
+        return register_native(home, None, path, force)
+            .await
+            .map(|line| vec![line]);
     }
     if validate_name(spec).is_ok()
         && let Some(paths) = std::env::var_os("PATH")
@@ -144,7 +167,9 @@ pub async fn install_spec(home: &Path, spec: &str, force: bool) -> anyhow::Resul
         for dir in std::env::split_paths(&paths) {
             let candidate = dir.join(format!("gray-{spec}{}", std::env::consts::EXE_SUFFIX));
             if candidate.is_file() {
-                return register_native(home, Some(spec), &candidate, force).await;
+                return register_native(home, Some(spec), &candidate, force)
+                    .await
+                    .map(|line| vec![line]);
             }
         }
     }
@@ -153,7 +178,20 @@ pub async fn install_spec(home: &Path, spec: &str, force: bool) -> anyhow::Resul
         gray_pkg::ops::InstallOpts::default(),
     )
     .await?;
-    println!("installed {} {} at {}", r.name, r.version, r.path.display());
+    Ok(vec![format!(
+        "installed {} {} at {}",
+        r.name,
+        r.version,
+        r.path.display()
+    )])
+}
+
+/// `gray plugin install` — CLI entry: same resolution as the REPL's, printed
+/// to stdout.
+pub async fn install_spec(home: &Path, spec: &str, force: bool) -> anyhow::Result<()> {
+    for line in install_spec_lines(home, spec, force).await? {
+        println!("{line}");
+    }
     Ok(())
 }
 
@@ -291,7 +329,8 @@ fn consent_capabilities(name: &str, declared: &[String]) -> (Vec<String>, Option
 /// install writes, so a plugin that never booted still lists correctly.
 pub fn print_capabilities(only: Option<&str>) -> anyhow::Result<()> {
     let home = home()?;
-    let lock = load_lock(&home)?;
+    // list_managed runs the commands.json migration itself, so row.entry is
+    // the post-migration lock entry — a lock loaded here would predate it.
     let rows = list_managed(&home)?;
     let mut shown = 0usize;
     for row in &rows {
@@ -301,7 +340,7 @@ pub fn print_capabilities(only: Option<&str>) -> anyhow::Result<()> {
             continue;
         }
         shown += 1;
-        let entry = lock.plugins.get(&row.name);
+        let entry = Some(&row.entry);
         let declared = metadata(&home, &row.name)
             .ok()
             .and_then(|m| {
@@ -534,12 +573,14 @@ pub fn forward(home: &Path, name: &str, rest: &[String]) -> anyhow::Result<()> {
 /// The CLI probe runs `<bin> manifest`; a wire-only sidecar (no CLI argv,
 /// NDJSON on stdin) fails it and is probed over `plugin/manifest` instead —
 /// those register sidecar-only (`cli_argv: None`, no widget slot).
+/// Returns the user-facing confirmation line; callers choose how to display
+/// it (CLI prints, the TUI routes it through `say`).
 pub async fn register_native(
     home: &Path,
     expected: Option<&str>,
     binary: &Path,
     force: bool,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<String> {
     let binary = std::fs::canonicalize(binary)?;
     let mut command = tokio::process::Command::new(&binary);
     command.arg("manifest");
@@ -641,15 +682,14 @@ pub async fn register_native(
         )?;
         tmp.persist(home.join("plugins/widgets.json"))?;
     }
-    if wire_only {
-        println!("Registered '{name}' from {}", binary.display());
+    Ok(if wire_only {
+        format!("Registered '{name}' from {}", binary.display())
     } else {
-        println!(
+        format!(
             "Registered '{name}' from {}. Run: gray {name} --help",
             binary.display()
-        );
-    }
-    Ok(())
+        )
+    })
 }
 
 /// Slash commands use the registered executable without replacing the TUI.

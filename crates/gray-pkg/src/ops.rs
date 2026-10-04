@@ -45,6 +45,12 @@ pub struct LockEntry {
     /// so `set_enabled`/`remove`/`update` never drop it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cli_argv: Option<Vec<String>>,
+    /// Fields this crate does not own (`granted_capabilities`,
+    /// `capabilities_hash`, `runtime_role`, …) — gray_plugin writes them, and a
+    /// gray-pkg rewrite that dropped them would silently re-grant capabilities
+    /// or re-boot a provider-only entry as a normal sidecar.
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 impl Default for LockEntry {
@@ -60,6 +66,7 @@ impl Default for LockEntry {
             scope: String::new(),
             enabled: true,
             cli_argv: None,
+            extra: Default::default(),
         }
     }
 }
@@ -202,8 +209,14 @@ fn record_install(
     let mut lock = read_lock()?.unwrap_or_default();
     let enabled = lock.plugins.get(name).map(|e| e.enabled).unwrap_or(true);
     // A CLI registration's `cli_argv` survives a reinstall/update the same
-    // way `enabled` does.
+    // way `enabled` does — as do fields owned by gray_plugin::lock (grants,
+    // consent hash, runtime role), which this rewrite must not drop.
     let cli_argv = lock.plugins.get(name).and_then(|e| e.cli_argv.clone());
+    let extra = lock
+        .plugins
+        .get(name)
+        .map(|e| e.extra.clone())
+        .unwrap_or_default();
     lock.plugins.insert(
         name.to_string(),
         LockEntry {
@@ -217,6 +230,7 @@ fn record_install(
             scope,
             enabled,
             cli_argv,
+            extra,
         },
     );
     write_lock(&lock)
@@ -541,6 +555,12 @@ async fn update_inner(target: &str) -> anyhow::Result<Vec<Report>> {
     let mut out = Vec::new();
     for name in &names {
         let installed = &lock.plugins[name];
+        // Local commands (`cli_argv` rows) are user-registered executables,
+        // not index installs — never let a same-named index entry replace one.
+        if installed.cli_argv.is_some() {
+            eprintln!("warning: skipping update of {name} (local command)");
+            continue;
+        }
         let entry = match crate::index::lookup(&index, name) {
             Ok(e) => e,
             Err(_) => {

@@ -45,8 +45,9 @@ pub fn format_tool_call_header_plain(
     name: &str,
     args: &serde_json::Value,
     cwd: Option<&Path>,
+    preview_path: Option<&str>,
 ) -> String {
-    line_to_ansi(&format_tool_call_header(name, args, cwd))
+    line_to_ansi(&format_tool_call_header(name, args, cwd, preview_path))
 }
 
 /// Plain ANSI string formatting for tool output lines with context.

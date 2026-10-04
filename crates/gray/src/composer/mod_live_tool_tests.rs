@@ -34,6 +34,7 @@ fn bash_live(command: &str, running: bool) -> LiveTool {
             "bash",
             &serde_json::json!({"command": command}),
             None,
+            None,
         ),
         running,
     }
@@ -98,7 +99,12 @@ fn running_label_does_not_orphan_a_trailing_status() {
 fn other_tools_keep_their_identity_and_empty_headers_are_safe() {
     let tool = LiveTool {
         id: "plugin".into(),
-        header: crate::tool_fmt::format_tool_call_header("custom", &serde_json::json!({}), None),
+        header: crate::tool_fmt::format_tool_call_header(
+            "custom",
+            &serde_json::json!({}),
+            None,
+            None,
+        ),
         running: true,
     };
     let rows = live_tool_rows(&[tool], Duration::ZERO);

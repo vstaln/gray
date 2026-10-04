@@ -132,12 +132,12 @@ pub fn format_live_tool_header(name: &str, args_so_far: &str, cwd: Option<&Path>
     }
     // Fast path: complete JSON renders exactly like the final header.
     if let Ok(v) = serde_json::from_str::<serde_json::Value>(trimmed) {
-        return format_tool_call_header(name, &v, cwd);
+        return format_tool_call_header(name, &v, cwd, None);
     }
     // Slow path: stream the in-progress scalar, tolerating unclosed quotes
     // and trailing escapes. Stays a dumb string scan (no new deps).
     match extract_partial_scalar(name, trimmed, RAW_CAP) {
-        Some(partial) => format_tool_call_header(name, &partial, cwd),
+        Some(partial) => format_tool_call_header(name, &partial, cwd, None),
         None => tool_name_line(name),
     }
 }
@@ -376,24 +376,6 @@ pub fn preview_at(args: &serde_json::Value, path: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-/// Args with a display-only `preview` path injected (plugin `preview`
-/// support). Same contract as [`with_tool_label`]: renderers read `preview`
-/// in the `other` arm, sub-renderers ignore it, callers pass wire args.
-pub fn with_tool_preview(args: &serde_json::Value, preview: Option<&str>) -> serde_json::Value {
-    let Some(preview) = preview.map(str::trim).filter(|t| !t.is_empty()) else {
-        return args.clone();
-    };
-    match args {
-        serde_json::Value::Object(map) => {
-            let mut map = map.clone();
-            map.entry("preview".to_string())
-                .or_insert(serde_json::Value::String(preview.to_string()));
-            serde_json::Value::Object(map)
-        }
-        _ => args.clone(),
-    }
-}
-
 /// Args with a display-only `label` injected (plugin `label` support).
 /// Renderers read `label` in the `other` arm; sub-renderers
 /// (`arg_path`, previews) ignore unknown keys, so injection is safe.
@@ -414,10 +396,14 @@ pub fn with_tool_label(args: &serde_json::Value, label: Option<&str>) -> serde_j
 }
 
 /// Formats a tool invocation header line matching Grok CLI styling for Ratatui.
+///
+/// `preview_path` is the plugin-declared dot path into `args` (display
+/// metadata, never a wire argument — a real `preview` arg stays opaque).
 pub fn format_tool_call_header(
     name: &str,
     args: &serde_json::Value,
     cwd: Option<&Path>,
+    preview_path: Option<&str>,
 ) -> Line<'static> {
     let bullet = Span::styled(
         "\u{2b22} ",
@@ -557,11 +543,7 @@ pub fn format_tool_call_header(
                 .filter(|t| !t.is_empty())
                 .map(str::to_string)
                 .unwrap_or_else(|| humanize_tool_name(other));
-            if let Some(preview_path) = args
-                .get("preview")
-                .and_then(|v| v.as_str())
-                .map(str::trim)
-                .filter(|t| !t.is_empty())
+            if let Some(preview_path) = preview_path.map(str::trim).filter(|t| !t.is_empty())
                 && let Some(text) = preview_at(args, preview_path)
             {
                 let cut = truncate_cmd(&text);
@@ -588,7 +570,7 @@ pub fn format_tool_call_header(
             } else {
                 let args_preview = if let Some(obj) = args.as_object() {
                     obj.iter()
-                        .filter(|(k, _)| *k != "label" && *k != "preview")
+                        .filter(|(k, _)| *k != "label")
                         .take(2)
                         .map(|(k, v)| {
                             let val_str = if let Some(s) = v.as_str() {

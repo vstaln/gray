@@ -403,7 +403,7 @@ impl Tui {
             }
         }
         for (_id, (name, args)) in tool_calls {
-            let header = crate::tool_fmt::format_tool_call_header(&name, &args, Some(cwd));
+            let header = crate::tool_fmt::format_tool_call_header(&name, &args, Some(cwd), None);
             self.push_tool_box(header, Vec::new());
         }
         // NOTE: persisted turn usage is billed Σ-per-round (the cost basis),
@@ -439,7 +439,7 @@ fn replay_tool_result(
         .unwrap_or_else(|| ("tool".to_string(), None));
     let header = args
         .as_ref()
-        .map(|a| crate::tool_fmt::format_tool_call_header(&name, a, Some(cwd)))
+        .map(|a| crate::tool_fmt::format_tool_call_header(&name, a, Some(cwd), None))
         .unwrap_or_else(|| Line::from(name.clone()));
     let lines = crate::tool_fmt::format_tool_result_lines_with_context(
         &name,

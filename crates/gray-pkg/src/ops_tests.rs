@@ -227,6 +227,7 @@ fn lock_roundtrips_exact_shape() {
             scope: "user".into(),
             enabled: true,
             cli_argv: None,
+            extra: Default::default(),
         },
     );
     let v: serde_json::Value =
@@ -306,6 +307,52 @@ fn set_enabled_flips_flag_and_bails_on_miss() {
     assert!(list().unwrap()["demo"].enabled);
     let err = set_enabled("nope", false).unwrap_err();
     assert_eq!(err.to_string(), "not installed: nope");
+}
+
+#[test]
+fn set_enabled_preserves_plugin_owned_lock_fields() {
+    // gray_plugin::lock owns fields this crate does not model (grants,
+    // consent hash, runtime role). A gray-pkg rewrite must carry them or a
+    // disable/enable cycle silently re-grants every declared capability.
+    let _guard = env_guard();
+    let _home = use_home_env();
+    let mut extra = serde_json::Map::new();
+    extra.insert(
+        "granted_capabilities".to_string(),
+        serde_json::json!(["fs.read"]),
+    );
+    extra.insert("capabilities_hash".to_string(), serde_json::json!("abc123"));
+    extra.insert(
+        "runtime_role".to_string(),
+        serde_json::json!("provider_only"),
+    );
+    let mut lock = LockFile::default();
+    lock.plugins.insert(
+        "demo".to_string(),
+        LockEntry {
+            ecosystem: "gray-native".into(),
+            version: "1.0.0".into(),
+            enabled: true,
+            extra,
+            ..LockEntry::default()
+        },
+    );
+    write_lock(&lock).unwrap();
+    set_enabled("demo", false).unwrap();
+    let entry = &list().unwrap()["demo"];
+    assert!(!entry.enabled);
+    assert_eq!(
+        entry.extra["granted_capabilities"],
+        serde_json::json!(["fs.read"])
+    );
+    assert_eq!(
+        entry.extra["capabilities_hash"],
+        serde_json::json!("abc123")
+    );
+    assert_eq!(
+        entry.extra["runtime_role"],
+        serde_json::json!("provider_only")
+    );
 }
 
 #[test]
@@ -483,6 +530,7 @@ fn remove_keeps_files_when_the_registry_write_fails() {
             scope: "user".to_string(),
             enabled: true,
             cli_argv: None,
+            extra: Default::default(),
         },
     );
     write_lock(&lock).unwrap();

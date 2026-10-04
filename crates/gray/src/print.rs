@@ -91,17 +91,11 @@ pub fn render_event_with_context<W: Write>(
                     .map(str::trim)
                     .filter(|t| !t.is_empty())
                     .map(str::to_string);
-                let preview = args
-                    .get("preview")
-                    .and_then(|v| v.as_str())
-                    .map(str::trim)
-                    .filter(|t| !t.is_empty())
-                    .map(str::to_string);
                 ActiveToolCall {
                     name: "tool".to_string(),
                     args: None,
                     label,
-                    preview,
+                    preview: None,
                 }
             });
             entry.args = Some(args.clone());
@@ -117,18 +111,16 @@ pub fn render_event_with_context<W: Write>(
                 }
                 None => args,
             };
-            let owned2;
-            let args = match entry.preview.as_deref() {
-                Some(preview) => {
-                    owned2 = crate::tool_fmt::with_tool_preview(args, Some(preview));
-                    &owned2
-                }
-                None => args,
-            };
+            // The declared preview path comes from the tool's manifest entry —
+            // a wire `preview` argument is data, not a display directive.
+            let preview_path = entry
+                .preview
+                .as_deref()
+                .or_else(|| tool_previews.get(name).map(String::as_str));
             writeln!(
                 w,
                 "\n{}",
-                crate::tool_fmt::format_tool_call_header_plain(name, args, cwd)
+                crate::tool_fmt::format_tool_call_header_plain(name, args, cwd, preview_path)
             )?;
             w.flush()
         }
@@ -154,17 +146,6 @@ pub fn render_event_with_context<W: Write>(
                     None => None,
                 },
                 None => tool.args.as_ref(),
-            };
-            let owned2;
-            let args = match tool.preview.as_deref() {
-                Some(preview) => match args {
-                    Some(a) => {
-                        owned2 = crate::tool_fmt::with_tool_preview(a, Some(preview));
-                        Some(&owned2)
-                    }
-                    None => None,
-                },
-                None => args,
             };
             let res = crate::tool_fmt::format_tool_result_plain_with_context(
                 name, args, output, *is_error, cwd,
@@ -638,18 +619,9 @@ impl JsonOutput {
                         .map(|x| x.trim())
                         .filter(|x| !x.is_empty())
                         .and_then(|path| crate::tool_fmt::preview_at(args, path));
-                    let owned;
-                    let args = match preview {
-                        Some(ref text) => {
-                            owned = crate::tool_fmt::with_tool_preview(args, Some(text));
-                            &owned
-                        }
-                        None => args,
-                    };
-                    // `with_tool_preview` injects the resolved text (not the
-                    // path): `tool_detail` reads it back through the same
-                    // `preview` key the TUI header uses, so both agree.
-                    if let Some(detail) = tool_detail(name, args) {
+                    // The resolved text passes explicitly — a wire `preview`
+                    // arg is data, never a display directive.
+                    if let Some(detail) = tool_detail(name, args, preview.as_deref()) {
                         row["detail"] = detail.into();
                     }
                 }
@@ -805,13 +777,11 @@ fn disclose_output(text: &str, cap: usize) -> String {
 /// The one-line "what did it just do" for known tools. Returns `None` for
 /// anything else rather than dumping raw args: a value we do not
 /// understand is exactly where a token hides.
-fn tool_detail(name: &str, args: &serde_json::Value) -> Option<String> {
+fn tool_detail(name: &str, args: &serde_json::Value, preview: Option<&str>) -> Option<String> {
     let arg = |k: &str| args.get(k).and_then(serde_json::Value::as_str);
-    // Plugin-declared arg preview (`preview` injected like `label`):
-    // surfaces resolve the text before injecting (see `rows`), so core
-    // never parses a surface's wire shape here either. Falls through to
-    // the built-in arms when there is no injected text.
-    if let Some(text) = arg("preview") {
+    // Plugin-declared arg preview: the surface resolved the declared path
+    // and passes the text explicitly — never read from wire args.
+    if let Some(text) = preview {
         return Some(disclose(text, DETAIL_CAP));
     }
     match name {

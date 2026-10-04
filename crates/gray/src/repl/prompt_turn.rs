@@ -399,11 +399,15 @@ pub(crate) async fn run_prompt_turn(
     }
     TURN_STATE.lock().unwrap_or_else(|e| e.into_inner()).take();
     agent.set_checkpoint(None);
-    // Whatever the checkpoints already wrote must not be appended twice.
-    // A failed checkpoint leaves the file untouched (append is all-or-nothing
-    // per call, and the hook stops after the first error), so the end-of-turn
-    // repair path still owns exactly the messages checkpoints never wrote.
-    if !checkpoint_failed.load(std::sync::atomic::Ordering::Relaxed) {
+    // Whatever the checkpoints already wrote must not be appended twice. A
+    // checkpoint pass is atomic per line but not per pass: a failure midway
+    // leaves earlier lines on disk, so the only safe end-of-turn write is a
+    // full-history replacement — blind appends would duplicate them.
+    if checkpoint_failed.load(std::sync::atomic::Ordering::Relaxed) {
+        if let Some(state) = session_state.as_mut() {
+            state.full_save_pending = true;
+        }
+    } else {
         initial_count = initial_count.max(checkpointed.load(std::sync::atomic::Ordering::Relaxed));
     }
     // Stop and join before the idle reader starts. Otherwise the old watcher

@@ -356,14 +356,17 @@ fn tool_detail_prefers_injected_preview_text() {
     // parsing in `tool_detail`.
     let detail = tool_detail(
         "some_surface_tool",
-        &serde_json::json!({"preview": "## Hello", "document": {"title": "Hi"}}),
+        &serde_json::json!({"document": {"title": "Hi"}}),
+        Some("## Hello"),
     );
     assert_eq!(detail.as_deref(), Some("## Hello"));
-    // No injected text -> built-in arms (unknown tool: none).
+    // No resolved text -> built-in arms (unknown tool: none). A wire
+    // `preview` arg is data, not a display directive.
     assert!(
         tool_detail(
             "some_surface_tool",
-            &serde_json::json!({"document": {"title": "Hi"}})
+            &serde_json::json!({"document": {"title": "Hi"}, "preview": "x"}),
+            None,
         )
         .is_none()
     );
@@ -573,6 +576,7 @@ fn progress_read_detail_is_a_one_based_line_range() {
     let detail = tool_detail(
         "read",
         &serde_json::json!({"path": "config.yaml", "offset": 110, "limit": 30}),
+        None,
     );
     assert_eq!(detail.as_deref(), Some("config.yaml L110-139"));
 }
@@ -580,13 +584,14 @@ fn progress_read_detail_is_a_one_based_line_range() {
 #[test]
 fn progress_read_detail_is_just_the_path_for_tail_and_zero() {
     assert_eq!(
-        tool_detail("read", &serde_json::json!({"path": "f"})).as_deref(),
+        tool_detail("read", &serde_json::json!({"path": "f"}), None).as_deref(),
         Some("f")
     );
     assert_eq!(
         tool_detail(
             "read",
-            &serde_json::json!({"path": "f", "offset": -20, "limit": 20})
+            &serde_json::json!({"path": "f", "offset": -20, "limit": 20}),
+            None,
         )
         .as_deref(),
         Some("f")
@@ -594,7 +599,8 @@ fn progress_read_detail_is_just_the_path_for_tail_and_zero() {
     assert_eq!(
         tool_detail(
             "read",
-            &serde_json::json!({"path": "f", "offset": 5, "limit": 0})
+            &serde_json::json!({"path": "f", "offset": 5, "limit": 0}),
+            None,
         )
         .as_deref(),
         Some("f")
@@ -606,6 +612,7 @@ fn progress_detail_redacts_secrets_from_commands() {
     let detail = tool_detail(
         "bash",
         &serde_json::json!({"command": "curl -H 'Authorization: Bearer sk-abc123SECRET' https://x"}),
+        None,
     )
     .unwrap();
     assert!(!detail.contains("sk-abc123SECRET"), "leaked: {detail}");
@@ -616,10 +623,20 @@ fn progress_detail_redacts_secrets_from_commands() {
 fn progress_detail_preserves_secret_free_paths() {
     // The --json wire feeds owner-local surfaces (Discord narration); a path
     // with no secret in it is the whole point, not a leak.
-    let detail = tool_detail("bash", &serde_json::json!({"command": "cat /tmp/shot.png"})).unwrap();
+    let detail = tool_detail(
+        "bash",
+        &serde_json::json!({"command": "cat /tmp/shot.png"}),
+        None,
+    )
+    .unwrap();
     assert!(detail.contains("/tmp/shot.png"), "{detail}");
     assert!(!detail.contains("<path>"), "{detail}");
-    let read = tool_detail("read", &serde_json::json!({"path": "/home/u/notes.md"})).unwrap();
+    let read = tool_detail(
+        "read",
+        &serde_json::json!({"path": "/home/u/notes.md"}),
+        None,
+    )
+    .unwrap();
     assert!(read.contains("/home/u/notes.md"), "{read}");
 }
 
@@ -643,7 +660,8 @@ fn progress_detail_for_an_unknown_tool_drops_the_args() {
     assert!(
         tool_detail(
             "some_plugin_tool",
-            &serde_json::json!({"query": "sk-secret"})
+            &serde_json::json!({"query": "sk-secret"}),
+            None,
         )
         .is_none()
     );
@@ -652,7 +670,7 @@ fn progress_detail_for_an_unknown_tool_drops_the_args() {
 #[test]
 fn progress_detail_is_capped() {
     let long = "x".repeat(DETAIL_CAP * 2);
-    let detail = tool_detail("bash", &serde_json::json!({"command": long})).unwrap();
+    let detail = tool_detail("bash", &serde_json::json!({"command": long}), None).unwrap();
     assert!(
         detail.chars().count() <= DETAIL_CAP + 1,
         "{}",
