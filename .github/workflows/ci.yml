@@ -120,16 +120,16 @@ jobs:
       - name: Check native Windows lint paths
         run: cargo clippy --locked --workspace -- -D warnings
       - name: Run complete cross-platform shell lifecycle regression file
-        run: cargo test --locked -p gray-tools --test it -- --nocapture platform_shell::
+        run: "cargo test --locked -p gray-tools --test it -- --nocapture platform_shell::"
       - name: Run complete shell contract with native fixture paths
         # Run even if the new lifecycle regression fails, so both complete
         # test files report native evidence instead of stopping at one failure.
         if: ${{ !cancelled() }}
-        run: cargo test --locked -p gray-tools --test it -- --nocapture shell_contract::
+        run: "cargo test --locked -p gray-tools --test it -- --nocapture shell_contract::"
       - name: Resolve native profile without Unix HOME
-        run: cargo test --locked -p gray --test it -- --nocapture home_paths::
+        run: "cargo test --locked -p gray --test it -- --nocapture home_paths::"
       - name: Check explicit preview limitations and real first-request cwd
-        run: cargo test --locked -p gray --test it -- --nocapture windows_limits:: working_directory::
+        run: "cargo test --locked -p gray --test it -- --nocapture windows_limits:: working_directory::"
       - name: Run full native workspace tests (report every test binary)
         # Selected preview files above are not a substitute for the full suite.
         # Keep collecting evidence after a failed lint/targeted test, but never
