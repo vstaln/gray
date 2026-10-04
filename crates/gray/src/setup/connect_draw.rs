@@ -637,5 +637,12 @@ pub(crate) fn render_authorizing_plugin(
             Style::default().fg(colors.text_dim).bg(colors.box_bg),
         ),
     ]));
-    frame.render_widget(Paragraph::new(lines), inner);
+    // Body starts below the header row; drawing at `inner` overwrote the title.
+    let body = Rect::new(
+        inner.x,
+        inner.y + 2,
+        inner.width,
+        inner.height.saturating_sub(2),
+    );
+    frame.render_widget(Paragraph::new(lines), body);
 }

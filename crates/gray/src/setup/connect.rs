@@ -276,7 +276,11 @@ fn connect_modal(
                 }
             })?;
 
-            if !poll(Duration::from_millis(100))? {
+            // Login progress arrives from a background task, so the authorizing
+            // dialog must redraw on a timer, not only on a key press.
+            if !matches!(state, ModalState::AuthorizingPlugin { .. })
+                && !poll(Duration::from_millis(100))?
+            {
                 continue;
             }
 
@@ -394,11 +398,22 @@ fn connect_modal(
                                         let (progress_sender, progress_receiver) =
                                             tokio::sync::mpsc::unbounded_channel();
                                         let cancel = tokio_util::sync::CancellationToken::new();
-                                        tokio::spawn(run_plugin_login(
-                                            installed,
-                                            cancel.clone(),
-                                            progress_sender,
-                                        ));
+                                        let login_cancel = cancel.clone();
+                                        tokio::spawn(async move {
+                                            // An early error (sidecar start, auth_start)
+                                            // must reach the dialog, or it waits forever.
+                                            if let Err(err) = run_plugin_login(
+                                                installed,
+                                                login_cancel,
+                                                progress_sender.clone(),
+                                            )
+                                            .await
+                                            {
+                                                let _ = progress_sender.send(
+                                                    PluginLoginProgress::Failed(err.to_string()),
+                                                );
+                                            }
+                                        });
                                         state = ModalState::AuthorizingPlugin {
                                             item: item.clone(),
                                             verification_uri: None,
@@ -673,6 +688,9 @@ fn connect_modal(
                     }
                     if let Some(next_state) = next_state.take() {
                         state = next_state;
+                        continue;
+                    }
+                    if !poll(Duration::from_millis(100))? {
                         continue;
                     }
                     match read()? {
