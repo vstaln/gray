@@ -33,15 +33,12 @@ Index entries are `gray-native`/`tarball` with `sha256:<hex>`:
  "hash": "sha256:<hex>", "scope": ""}
 ```
 
-## First-party apps (`background`, `discord`)
+## First-party apps (`background`)
 
 First-party apps install through the index like any verified plugin
 (`gray plugin install background`). Each app owns its own setup, doctor,
-and service install — gray core keeps none of it. The index `discord`
-entry is only the shell scaffold in `plugins/`; for the real bridge,
-build/install the plugin so `gray-discord` is on PATH (from
-[gray-discord-plugin](https://github.com/vstaln/gray-discord-plugin)) —
-the PATH lookup wins over the index — then register and set it up:
+and service install — gray core keeps none of it. Discord lives in
+[gray-discord-plugin](https://github.com/vstaln/gray-discord-plugin):
 
 ```sh
 cargo install --git https://github.com/vstaln/gray-discord-plugin --locked

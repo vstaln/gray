@@ -7,7 +7,6 @@ reference). `gray plugin check <dir>` boots it exactly like `gray.yml` would.
 
 | dir | manifest name | commands | asset |
 |---|---|---|---|
-| `discord/` | `discord` | `/discord` | `graydiscord-<ver>.tar.gz` (no hyphen — matches the published index) |
 | `background/` | `background` | `/bg` | `gray-background-<ver>.tar.gz` |
 | `permissions/` | `permissions` | `/perms` | `gray-permissions-<ver>.tar.gz` |
 
@@ -17,5 +16,5 @@ tarballs each dir, and creates release `plugins-v<version>` with the assets +
 `SHA256SUMS-plugins`. Then copy `index.json` to the site, replacing each
 `FILL_SHA256` with the real digest.
 
-`discord/` and friends are scaffolds until the real bridge/runner/gate logic
-is ported in — each file's TODO says where (token config, hooks, wire notes).
+`background/` and `permissions/` are scaffolds until the real runner/gate
+logic is ported in — each file's TODO says where.
