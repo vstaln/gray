@@ -52,9 +52,9 @@ pub async fn run_plugin_login(
     // Relay providers (external login: agy, claude) own their auth in the
     // user's terminal — there is no browser OAuth to drive. Verify the login
     // answers (sidecar probe, no browser), prove one relay turn works, mark
-    // the connection verified, then list models. No `xdg-open` anywhere here:
-    // auto-open fired a Firefox OAuth page on the wrong profile out of every
-    // `/connect` pick, even when the user was already logged in.
+    // the connection verified, then list models. This path never auto-opens
+    // a browser (that fired a Firefox OAuth page on the wrong profile out of
+    // every `/connect` pick); the OAuth path below keeps its auto-open.
     if installed
         .auth_method
         .operations
