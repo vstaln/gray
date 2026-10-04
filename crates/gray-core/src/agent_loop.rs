@@ -304,11 +304,6 @@ impl Agent {
         self.turn_system = Some(system);
 
         'turn: loop {
-            // Step boundary: everything so far is consistent, hand it to the
-            // host to persist before the next (slow, killable) request.
-            if let Some(hook) = self.checkpoint.clone() {
-                hook(&self.messages, self.history_revision()).await;
-            }
             // Cancellation is honored between turns, never mid-stream: a
             // half-finished assistant message would leave the transcript
             // inconsistent for the provider.
@@ -329,6 +324,11 @@ impl Agent {
             {
                 self.messages.push(Message::user(text));
             }
+
+            // Step boundary: everything so far is consistent, hand it to the
+            // host to persist before the next (slow, killable) request. Runs
+            // after notification collection and steering so a kill between the
+            // append and the checkpoint cannot drop the queued message.
             if let Some(hook) = self.checkpoint.clone() {
                 hook(&self.messages, self.history_revision()).await;
             }

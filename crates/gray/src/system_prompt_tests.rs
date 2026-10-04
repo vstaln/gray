@@ -20,7 +20,8 @@ fn shipped_default_prompt_strips_to_the_agent_line() {
     let p = build_system_prompt(opts(crate::DEFAULT_SYS_PROMPT));
     // Stripping the leading comment leaves its trailing newline in place.
     assert!(
-        p.trim_start().starts_with("You are gray, a minimal agent"),
+        p.trim_start()
+            .starts_with("You are Gray, running on the user's machine."),
         "{p:.60}"
     );
     assert!(!p.contains("-->"), "stray comment marker leaked");
@@ -95,7 +96,9 @@ fn memory_is_separate_from_verbatim_prompt_and_is_not_comment_stripped() {
     let prompt = with_memory(build_system_prompt(body.clone()), Some(data));
     assert!(prompt.starts_with("You are gray.\n\n"));
     assert!(prompt.contains("gray memory"));
-    assert!(prompt.ends_with(data));
+    // The snapshot is reserialized: `project` id and empty fields are dropped,
+    // so the model sees only the facts. Keys serialize sorted.
+    assert!(prompt.ends_with(r#"{"decisions":"Use Rust.","user":"<!-- fact -->"}"#));
     assert_eq!(
         prompt,
         with_memory(build_system_prompt(body.clone()), Some(data))
@@ -113,7 +116,7 @@ fn memory_preserves_runtime_directory_and_stored_prompt() {
     let data = r#"{"user":"Keep replies concise.","decisions":"Use Rust."}"#;
     let combined = with_memory(runtime.clone(), Some(data));
     assert!(combined.starts_with(&runtime));
-    assert!(combined.ends_with(data));
+    assert!(combined.ends_with(r#"{"decisions":"Use Rust.","user":"Keep replies concise."}"#));
     assert!(combined.contains("Working directory: \"/work/project café\""));
     assert!(!combined.contains("private note"));
     assert_eq!(with_memory(runtime.clone(), None), runtime);

@@ -2703,12 +2703,14 @@ async fn checkpoint_fires_once_per_step_with_consistent_prefix() {
         .expect("run should succeed");
 
     let seen = seen.lock().expect("seen lock poisoned");
-    // One fire per round: [user] before round 1, then
+    // Once before the (slow, killable) prompt hooks, then once per round
+    // boundary after notifications/steer: [user], [user] again, then
     // [user, assistant, result] before round 2.
-    assert_eq!(seen.len(), 2, "hook must fire once before each round");
-    assert_eq!(seen[0].len(), 1, "first round sees only the user message");
+    assert_eq!(seen.len(), 3, "hook must fire before each killable span");
+    assert_eq!(seen[0].len(), 1, "first fire sees only the user message");
+    assert_eq!(seen[1], seen[0], "round 1 boundary repeats the prefix");
     assert_eq!(
-        seen[1],
+        seen[2],
         agent.messages()[..3],
         "second round sees full prefix"
     );
