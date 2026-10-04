@@ -1,7 +1,7 @@
 <div align="center">
   <img alt="Gray" src="assets/logo-dark.svg" width="160" height="160" />
   <h1>gray</h1>
-  <p><strong>A minimal, modular AI agent harness.</strong><br/>Start small. Extend anything.</p>
+  <p><strong>A minimal, always-on AI agent harness.</strong><br/>One binary. Any model. Runs while you sleep.</p>
   <p>
     <a href="https://gray.alignment.id">Website</a> ·
     <a href="CHANGELOG.md">Changelog</a> ·
@@ -10,303 +10,151 @@
   <p>
     <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-1c1c20?style=flat-square&labelColor=0a0a0b" /></a>
     <a href="https://www.rust-lang.org"><img alt="Built with Rust" src="https://img.shields.io/badge/built%20with-rust-1c1c20?style=flat-square&labelColor=0a0a0b&logo=rust&logoColor=d4a373" /></a>
-    <a href="#platform-support"><img alt="Platform: linux and macOS" src="https://img.shields.io/badge/platform-linux%20%C2%B7%20macos-1c1c20?style=flat-square&labelColor=0a0a0b" /></a>
+    <a href="#platform-support"><img alt="Platform: linux, macOS, windows" src="https://img.shields.io/badge/platform-linux%20%C2%B7%20macos%20%C2%B7%20windows-1c1c20?style=flat-square&labelColor=0a0a0b" /></a>
     <a href="https://github.com/vstaln/gray/releases"><img alt="Latest release" src="https://img.shields.io/github/v/release/vstaln/gray?style=flat-square&labelColor=0a0a0b&color=131316" /></a>
   </p>
 </div>
 
 <br/>
 
-Gray is a tiny agent core — streaming tool calls over SSE, JSONL sessions, self-managing context — that you extend only when you need to: skills, stdio plugins, cron. Any OpenAI-compatible provider works out of the box. No plugin marketplace, no roadmap promises.
-
-| | |
-|---|---|
-| **One binary, no runtime** | musl-static on Linux, Rust-static on macOS. `curl \| sh` lands you in a REPL; `gray update` self-updates. |
-| **Any provider, your keys** | OpenAI, Anthropic, Google, OpenRouter, DeepSeek, Groq, Mistral, xAI — anything OpenAI-compatible, local models via Ollama — with Anthropic-style prompt caching on Claude models. Searchable model picker over the bundled models.dev catalog. |
-| **Sessions that survive** | JSONL transcripts in `~/.gray/sessions` with parent-id branching. `-c` reopens the latest, `/resume` picks any of them. Interrupted turns keep what reached memory. |
-| **Context that manages itself** | The window auto-resolves from your provider, gray auto-compacts before the limit and retries once on overflow. `/compact` forces it by hand. |
-| **Bash only** | The default surface is `bash` — read, search, edit, run, all through bash. The model schedules its own recurring work by running `gray cron add …` through bash. Ctrl-C cancels a runaway turn. |
-| **Extend the harness** | Skills from `SKILL.md`, or sidecar plugins over stdio (frozen wire v1). |
-
-## Install
+Gray is a coding and automation agent in a single Rust binary. Bring any model — Claude, GPT, Gemini, open models, or a local one — give it a shell, and let it work. Schedule it with cron and the gateway daemon keeps it running with no terminal open.
 
 ```bash
-curl -fsSL https://gray.alignment.id/install.sh | sh              # stable
-curl -fsSL https://gray.alignment.id/install.sh | sh -s -- beta   # bleeding edge, rebuilt on every main push
+curl -fsSL https://gray.alignment.id/install.sh | sh && gray
 ```
-
-or from source:
-
-```bash
-cargo build --release -p gray                          # harness core (image paste included)
-```
-
-harness core: CLI, TUI (with image paste), provider, sessions, tools, cron.
-
-### Windows
-
-**Native Windows 11 x64** — no WSL, no Linux distro, no elevation. Git for
-Windows supplies the shell for tool calls; Gray does not install it or WSL.
-In PowerShell:
-
-```powershell
-irm https://gray.alignment.id/install.ps1 | iex                                            # stable
-& ([scriptblock]::Create((irm https://gray.alignment.id/install.ps1))) -Channel beta      # beta
-```
-
-The installer verifies the zip against the release `SHA256SUMS` before touching
-anything. For an offline install keep `dist/install.ps1` and
-`dist/install-native.ps1` together and run
-`.\dist\install.ps1 -ArchivePath .\gray-stable-x86_64-windows.zip -Sha256 <digest>`.
-`-Native` is accepted and is already the default. Pass `-Wsl` for the
-compatibility route that installs the Linux build inside WSL. Native installs
-never fall back to WSL. Artifacts are unsigned — the digest catches corruption,
-not publisher identity. Close Gray and rerun the installer to update; self-update
-is refused on native Windows. Gateway and cron execution are unsupported and
-refused explicitly; cron jobs can still be managed as files. See the
-[native installation guide](docs/windows-preview.md).
-
-macOS binaries are Rust-static but **not notarized** — curl-installed binaries run fine, browser downloads may hit Gatekeeper quarantine.
-
-## Quick start
-
-```bash
-gray
-```
-
-First run drops you straight at the prompt. Configure whenever you feel like it:
-
-| command | what it does |
-|---|---|
-| `/provider` | pick a provider — API key, free tier, or local |
-| `/key openrouter` | paste an API key right in the CLI (input hidden), stored per-provider in `~/.gray/auth.json` |
-| `/login` | log this machine in to gray.alignment.id — optional, and nothing is gated on it |
-| `/whoami` | show the account the stored registry token belongs to |
-| `/logout` | revoke the registry token and forget it |
-| `/model` | searchable picker over the bundled models.dev catalog |
-
-## Account (optional)
-
-gray.alignment.id holds the plugin registry. An account is not required to run
-gray, and nothing in the CLI is gated on one — the token only names you on
-registry calls.
-
-```bash
-gray login                 # walks you through it, then prompts for the code
-gray login <code>          # same, non-interactive
-gray whoami                # who the stored token belongs to
-gray logout                # revokes the token, then forgets it
-```
-
-Mint a code at [gray.alignment.id/account](https://gray.alignment.id/account)
-(sign in with GitHub, Google, or Discord, then "Generate CLI login code"). It
-is one-time and expires in 5 minutes. The token lands in
-`~/.gray/registry-token.json` (mode 0600). Point gray at a local registry with
-`GRAY_REGISTRY_URL=http://127.0.0.1:4000/api`.
-
-## Watch it go
 
 <div align="center">
   <img alt="gray building HorseTinder — session replay from gray.alignment.id" src="assets/gray-demo.gif" width="100%" />
 </div>
 
-## Small core, open world
-
-<div align="center">
-  <img alt="Dithered Blue Marble" src="assets/space/bluemarble-dither.png" width="560" />
-</div>
-
-Bring your provider, tools, and skills. Keep only what you use.
-
-## Background shell jobs
-
-The AI can start independent commands without waiting for them to finish:
-
-```json
-{"command":"cargo test", "background":true, "timeout":600}
-```
-
-Or let short commands finish normally, yielding a job ID only if still running:
-
-```json
-{"command":"cargo test", "yield_ms":1000, "timeout":600}
-```
-
-Multiple jobs run concurrently (up to 32 per tool instance). Use the same `bash`
-tool with `action: "list"`, or `action: "status"`, `"output"`, or `"cancel"` plus
-`job_id`. Status/output calls return immediately. Jobs are session-scoped;
-finished outputs remain retrievable, with a bounded history of 128 jobs.
-
-Completion notices reach the AI between model rounds. If the AI has already
-finished its turn, notices arrive on the next user turn—jobs do not hold the
-turn open or trigger an unsolicited model call. Cancellation and the total
-runtime timeout still terminate the owned process tree; quitting Gray stops
-managed jobs. Jobs are not restored after restart, but their logs remain.
-
-Without `background` or `yield_ms`, bash retains its blocking behavior. Only
-start jobs concurrently when they are independent; don't run competing writes
-or builds against the same output directory.
-
-## Run the commands somewhere else
-
-One setting moves every shell command off this machine:
-
-```json
-// ~/.gray/config.json
-{ "exec_prefix": "docker exec -i dev sh -s" }
-```
-
-`exec_prefix` (or `GRAY_EXEC_PREFIX`) is a program that ends in a shell
-reading its script from stdin, so one value covers both a local container and
-a remote box:
+## Why gray
 
 | | |
 |---|---|
-| `docker exec -i dev sh -s` | commands run inside the `dev` container |
-| `ssh box sh -s` · `ssh -p 2222 'my box' sh -s` | commands run on a remote host |
-| unset (default) | commands run in your own shell |
+| **Any model, your keys** | Native Anthropic Messages API for Claude (prompt caching, extended thinking). Every OpenAI-compatible provider — OpenAI, Google, OpenRouter, DeepSeek, Groq, Mistral, xAI, Fireworks, Together and the rest of the 172 in the bundled models.dev catalog — plus local models via Ollama. |
+| **Always on** | The agent schedules its own work with `gray cron add`. `gray gateway install` runs it as a user service, so jobs fire with your terminal closed. |
+| **One binary, no runtime** | Static builds for Linux, macOS and Windows. `gray update` self-updates. |
+| **Bash is the tool** | Read, search, edit, run — all through one `bash` tool, with background jobs for long work. Point `exec_prefix` at a container or SSH box to run it somewhere else. |
+| **Sessions that survive** | JSONL transcripts with branching. `-c` reopens the latest, `/resume` picks any, `/undo` and `/retry` rewind. Context auto-compacts before the limit. |
+| **Remembers you** | Cross-session memory of your preferences and project decisions (`gray memory`). |
+| **Your setup already works** | Reads project `AGENTS.md` / `CLAUDE.md`, and `SKILL.md` skills from `~/.gray`, `~/.claude`, `~/.agents`, opencode and pi — no porting. Extend further with stdio plugins. |
 
-The command crosses as **text**, so nothing re-quotes it: `$VAR`, globs,
-pipes, heredocs and quoting reach the far shell exactly as written. Gray's own
-non-interactive environment (`GIT_TERMINAL_PROMPT=0`, `GRAY_SESSION_ID`,
-`GRAY_CWD_REPORT`, …) is exported across the boundary too, because neither
-`ssh` nor `docker exec` forwards it.
+## Install
 
-What does **not** cross: paths. `current_dir` is applied to the local client
-process, so a remote command starts in that account's login directory — `cd`
-first if it matters, and note that files the model edits on the far side are
-not the ones on your laptop.
+```bash
+curl -fsSL https://gray.alignment.id/install.sh | sh              # stable
+curl -fsSL https://gray.alignment.id/install.sh | sh -s -- beta   # rebuilt on every main push
+cargo build --release -p gray                                     # from source
+```
+
+**Windows 11 x64** (native, no WSL; Git for Windows supplies the shell). In PowerShell:
+
+```powershell
+irm https://gray.alignment.id/install.ps1 | iex
+```
+
+The installer checks the release `SHA256SUMS`. Gateway/cron execution and self-update aren't supported on native Windows yet — see the [Windows guide](docs/windows-preview.md) for beta, offline and WSL installs.
+
+## Quick start
+
+```bash
+gray                 # drops you at the prompt
+```
+
+| | |
+|---|---|
+| `/provider` | pick a provider — API key, free tier, or local |
+| `/key anthropic` | paste a key (input hidden), stored in `~/.gray/auth.json` |
+| `/model` | searchable model picker |
+| `gray -p "fix the failing test"` | one-shot, non-interactive (`--json` for machine-readable events) |
+| `gray doctor` | check this machine's setup (`--online` also pings the provider) |
+
+An account at [gray.alignment.id](https://gray.alignment.id/account) is optional — it's only used for the plugin registry (`gray login` / `whoami` / `logout`).
+
+## Always on: cron + gateway
+
+```bash
+gray cron add "0 9 * * 1-5" "summarize yesterday's commits and open issues"
+gray gateway install    # user service: systemd --user, or runit on Void
+gray gateway status
+```
+
+The model can run `gray cron add` itself, so "check this every morning" just works. Jobs fire from whatever ticks the store: the gateway daemon, `gray cron serve`, a `gray cron tick` host (systemd timer / crontab), or an open REPL. The gateway is a 60s ticker plus a control socket at `$GRAY_HOME/gateway.sock`; it drains an in-flight job on shutdown.
 
 ## Commands
 
-Slash commands autocomplete: Enter completes and fires, Tab inserts for editing — suffixes too, so `/context r` suggests `reserve`.
+Slash commands autocomplete — Enter completes and fires, Tab inserts.
 
 | | |
 |---|---|
-| `/new` · `/resume [id\|--last\|--all]` | fresh conversation, or reopen a previous one |
-| `/model [id]` · `/provider` · `/key [provider]` | models, providers, keys — without leaving the chat |
-| `/compact [instructions]` | summarize context (auto-compacts near the limit) |
-| `/undo` · `/retry` | drop the last exchange · drop it and ask again |
-| type during a turn | steers the running turn at its next model step (never cancels) |
-| `/context [tokens\|auto]` | inspect or set the window — `128k`, `1m`, `auto` to clear |
-| `/thinking` · `/effort [level]` | toggle reasoning, pick the effort |
+| `/new` · `/resume [id\|--last\|--all]` | fresh conversation, or reopen one |
+| `/model` · `/provider` · `/key` | switch without leaving the chat |
+| `/compact [instructions]` | summarize context (also automatic) |
+| `/undo` · `/retry` | drop the last exchange · drop it and ask again (files are git's job) |
+| type during a turn | steers the running turn at its next step |
+| `/context [128k\|1m\|auto]` | inspect or set the window |
+| `/thinking` · `/effort [level]` | reasoning on/off, effort level |
 | `/usage` | session tokens & cost |
-| `/skills` · `/skills [name] [args]` | list skills, run one |
-| `/plugin <subcommand>` | list · search · install · remove · update · enable · disable · check |
-| `/agentsmd` | edit the full system prompt in the built-in editor (`show`, `reset` too) |
-| `/feedback <text>` | save feedback locally + open a prefilled GitHub issue |
-| `/help` · `/quit` | you know these |
+| `/memory` | view cross-session memory |
+| `/skills [name] [args]` | list or run a skill |
+| `/plugin …` | list · search · install · remove · update · enable · disable · check |
+| `/agentsmd` | edit the system prompt |
+| `/feedback <text>` | save feedback + open a prefilled GitHub issue |
 
-Outside the REPL, `gray doctor` reports whether this machine is set up right —
-home, credential, model, context window and its source, shell, exec prefix,
-gateway, plugins — and exits non-zero if a check fails. Add `--online` to also
-reach the provider (a `GET /models`, no tokens). It never changes anything.
-
-### CLI surface
-
-`gray` itself plus six subcommands — everything else is a slash command away:
-
-| subcommand | what it does |
-|---|---|
-| `gray resume [--last\|--all] [SESSION_ID]` | resume a conversation — picker, most-recent, or by id/prefix |
-| `gray plugin <list\|search\|install\|remove\|update\|enable\|disable\|check>` | manage plugins |
-| `gray cron <list\|add\|remove\|show>` | recurring/one-shot jobs (fired by the gateway, `serve`, a `tick` host, or the REPL) |
-| `gray gateway <run\|status\|start\|stop\|restart\|install\|uninstall>` | the daemon that fires cron with no REPL open — cron ticker + control socket, supervised as a user service |
-| `gray sessions prune` | session store maintenance |
-| `gray update` | update gray to the latest release |
-
-Global flags: `-p/--print` (one-shot), `-c/--continue` (reopen latest), `--session <ID>`, `--context-window <TOKENS>`, `--context-reserve`, `--context-keep`, `--dump-manifest`, `--json` (machine-readable print mode).
-
-`--json` print mode writes one JSON record per event and exits with the failure class: `0` success, `1` the turn failed (do not retry), `3` provider/network death (retrying the turn usually succeeds). The error record carries `code` (`auth_failed`, `rate_limited`, `bad_request`, `context_overflow`, `server_error`, `stream_broken`, `connection_failed`, `timeout`, `loop_detected`, `cancelled`, `serialization`, `turn_failed`), `retryable`, `message`, and a `hint` naming the command that fixes it — so harnesses branch on the class instead of parsing prose.
+CLI: `gray resume`, `gray cron`, `gray gateway`, `gray plugin`, `gray memory`, `gray sessions prune`, `gray update`, `gray doctor`. Flags: `-p`, `-c`, `--session <ID>`, `--context-window`, `--json`, `--bare`. `--json` exits `0` success, `1` turn failed, `3` provider/network failure (retryable); error records carry a `code` and a `hint`.
 
 ## Extend
 
-Make gray yours via skills, plugins, providers, and config.
+**Skills** — `SKILL.md` files from `~/.gray/skills`, `.gray/skills`, and the Claude Code / opencode / agents / pi locations, global and per-project. The model sees the list every turn and reads the one it needs.
 
-**Skills** — `SKILL.md` bodies discovered in your global (`~/.gray/skills`) and project (`.gray/skills`) directories, plus a few conventional shared skill locations. `/skills` lists them, `/skills [name] [args]` pastes one into the chat and runs it (`/skill` is an alias). The model gets the fresh `<available_skills>` list every turn and reads matches with bash (`cat <location>`) — no skill tool, tools stay bash-only.
+**Plugins** — sidecar processes speaking NDJSON over stdio (wire v1, frozen), with timeouts and crash isolation. `gray.yml` profiles order them; [`plugins/echo/`](plugins/echo) is a copy-paste starting point. More in [docs/plugins.md](docs/plugins.md).
 
-**Plugins** — sidecar child processes speaking newline-delimited JSON over stdio, with timeout and crash degradation. `gray.yml` profiles order built-ins and sidecars; [`plugins/echo/`](plugins/echo) is a copy-paste reference implementation.
+**Run commands elsewhere** — one setting moves every shell command off your machine:
 
-/undo rewinds the **conversation** only: the last thing you said and everything
-the model said after it leave both the context and the saved session (the
-pre-undo transcript is kept in `~/.gray/sessions/archive/`). Files the model
-wrote are untouched — that is git's job, not the transcript's. `/retry` is the
-same rewind with your message sent again, so a wrong turn costs one command
-instead of a retyped paragraph.
+```json
+// ~/.gray/config.json
+{ "exec_prefix": "docker exec -i dev sh -s" }    // or "ssh box sh -s"
+```
 
-## Scheduling
+The command crosses as text, so quoting, globs and heredocs reach the far shell untouched. Paths don't cross: remote commands start in that account's home.
 
-The agent stores recurring work with `gray cron add "<schedule>" "<prompt>"` (manage with `gray cron list/show/remove`). Jobs fire when something ticks the store — the gateway daemon, `gray cron serve`, a `gray cron tick` host (cron/systemd timer), or an open REPL.
-
-**Gateway** — `gray gateway install` writes a user service (runit on Void, systemd `--user` elsewhere; `install --print` previews) running `gray gateway run`: a 60s cron ticker plus a control socket at `$GRAY_HOME/gateway.sock` answering `identify`/`status` (one JSON line in, one out — a connectable socket with a well-formed answer *is* liveness). `gray gateway status` reports daemon + service + ticker health and exits 1 when down; `start`/`stop`/`restart` drive the service, `uninstall` removes it. The daemon claims `$GRAY_HOME/gateway.pid` (O_EXCL, start-time-checked against PID reuse), records why it stopped in `gateway.state.json`, and drains an in-flight fire up to 65s on SIGTERM.
-
-<div align="center">
-  <img alt="Dithered Jupiter storm" src="assets/space/jupiter-dither.png" width="31%" />
-</div>
+**Background jobs** — `bash` takes `"background": true` (or `"yield_ms": 1000`) and returns a job id; `action: list|status|output|cancel` manages them. Up to 32 concurrent per session, completion notices arrive between model steps.
 
 ## Safety
 
-`gray` executes shell commands from the model. There is **no command guard and no approval prompt**: the model's `bash` runs what it writes, with your user's privileges. There is no container or VM isolation — run gray in a container/VM for untrusted work, or point [`exec_prefix`](#run-the-commands-somewhere-else) at a box that is already isolated: the model still has no approval prompt, but the blast radius is that box, not your workstation. Security reports: [SECURITY.md](SECURITY.md).
+Gray runs the model's shell commands with **your privileges, no approval prompt, no sandbox**. For untrusted work, run it in a container/VM or set `exec_prefix` to an isolated box. Session transcripts in `~/.gray/sessions` (mode `0600`) keep whatever crossed a tool call, secrets included; `-p` mode scrubs them. Reports: [SECURITY.md](SECURITY.md).
 
-Persistence note: REPL sessions keep raw transcripts at `0600` under `~/.gray/sessions` for exact resume — including any secret that crossed a tool call. `gray -p` print mode scrubs secrets before persisting. Plan backups, snapshots, and disk access accordingly.
+## Reference
 
-## Context window & auto-compact
+**Context window** — `--context-window` / `GRAY_CONTEXT_WINDOW` → provider value → LiteLLM table → fallback. Auto-compacts at `window − 16k`, and compacts + retries once on overflow.
 
-The window resolves as: `--context-window` / `GRAY_CONTEXT_WINDOW` → auto-fetched provider value → LiteLLM model table → hardcoded fallback. Inspect with `/context`, set with `/context 128k` (or `1m`; `auto` clears).
-
-When usage nears the limit (`tokens > window − 16k` reserve), gray summarizes history into a 2-message summary before the next turn — the same flow as manual `/compact` — and on `context_length` / `max_tokens` overflow errors it compacts and retries once. Auto is the default; no flag needed.
-
-## Layout
-
-| crate | role |
-|---|---|
-| `gray` | REPL · onboarding · config · TUI · JSONL session store (`src/session_store.rs`, parent-id branching) · cron (`src/cron/`) |
-| `gray-core` | agent loop · events · messages |
-| `gray-provider` | OpenAI-compatible SSE streaming, retries, prompt caching |
-| `gray-tools` | bash · read · write · edit · grep · find · ls · shell control (profile-selectable) |
-| `gray-plugin` | plugin trait · manifest · `gray.yml` profile loader |
-| `gray-pkg` | plugin package management |
-| `gray-markdown` | streaming markdown renderer for the TUI |
-
-Design notes: streaming first — text deltas, tool calls, and usage arrive as typed events over SSE. Logs go to `~/.gray/logs/gray.log` (`GRAY_LOG=debug` for the firehose).
-
-## Environment
-
-The essentials — everything else is one `--help` or doc page away.
+**Environment**
 
 | var | meaning |
 |---|---|
 | `GRAY_HOME` | config root (default `~/.gray`) |
 | `GRAY_API_KEY` / `OPENAI_API_KEY` | API key — env beats stored keys |
-| `GRAY_MODEL` · `GRAY_BASE_URL` | defaults before `~/.gray/config.json` is consulted |
-| `GRAY_CONTEXT_WINDOW` | override the window in tokens — `128000`, `128k`, `1m`, or `auto` |
-| `GRAY_NO_UPDATE_CHECK=1` · `GRAY_AUTO_UPDATE=1` | silence the startup update check, or background self-update |
-| `GRAY_LOG` | `error`…`trace` (default `info`) |
-| `GRAY_EXEC_PREFIX` | run every shell command through this program (`docker exec -i dev sh -s`, `ssh box sh -s`); the saved `exec_prefix` is the durable form |
-| `GRAY_PARALLEL_READS` | `0` runs every tool sequentially (default: read-only tools concurrent, input order preserved) |
+| `GRAY_MODEL` · `GRAY_BASE_URL` | defaults before `config.json` |
+| `GRAY_CONTEXT_WINDOW` | `128k`, `1m`, `auto` |
+| `GRAY_EXEC_PREFIX` | run shell commands through this program |
+| `GRAY_NO_MEMORY=1` | disable memory |
+| `GRAY_NO_UPDATE_CHECK=1` · `GRAY_AUTO_UPDATE=1` | update check off, or background self-update |
+| `GRAY_LOG` | `error`…`trace` → `~/.gray/logs/gray.log` |
 
-## Platform support
+### Platform support
 
 | OS / arch | binary | notes |
 |---|---|---|
-| Linux x86_64 / aarch64 | musl-static | fully supported — systemd user service (Linux-only) |
-| macOS arm64 / x86_64 | Rust-static, **not notarized** | curl-installed binaries run fine; browser downloads may hit Gatekeeper quarantine |
-| Windows x86_64 | native, Windows 11+ | Git Bash supplies the shell; gateway/cron execution unsupported |
+| Linux x86_64 / aarch64 | musl-static | full support, gateway as a user service |
+| macOS arm64 / x86_64 | Rust-static, not notarized | curl installs run fine; browser downloads may hit Gatekeeper |
+| Windows x86_64 | native, Windows 11+ | Git Bash shell; no gateway/cron execution yet |
 
-"Zero runtime deps" means no sidecar services — you still need `sh`, `curl` / `wget`, `tar`, and `sha256sum` / `shasum` for the installer.
+**Layout** — `gray` (CLI, TUI, sessions, cron, gateway) · `gray-core` (agent loop) · `gray-provider` (OpenAI-compatible + native Anthropic streaming) · `gray-tools` · `gray-plugin` · `gray-pkg` · `gray-markdown`.
 
-## Stability
-
-The 1.x stability contract (CLI flags, session JSONL schema, plugin wire v1, `~/.gray` layout) takes effect at 1.0 — on 0.x these are best-effort. Not stable: the TUI, internal crate APIs, `gray-markdown`. Per-release changes: [CHANGELOG.md](CHANGELOG.md). Rollback is publisher-side today (manifest re-point); user-side `gray update --to <version>` is planned.
-
-<div align="center">
-  <img alt="Dithered Saturn" src="assets/space/saturn-dither.png" width="31%" />
-</div>
+**Stability** — CLI flags, session JSONL, plugin wire v1 and the `~/.gray` layout become a contract at 1.0; best-effort on 0.x. Changes per release: [CHANGELOG.md](CHANGELOG.md).
 
 ---
 
-Ideas and designs informed by the projects listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) — thanks to those projects and their authors.
-
-A naming note: `cargo install gray` belongs to another crate, so the install path is the installer script above (or a source build). The binary stays `gray`.
+Informed by the projects in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) — thanks to them. `cargo install gray` is a different crate; use the installer or build from source.
 
 MIT © 2026 vstaln

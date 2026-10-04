@@ -229,19 +229,6 @@ fn read_script(id: &str, path: &str) -> Vec<StreamEvent> {
     ]
 }
 
-fn write_script(id: &str) -> Vec<StreamEvent> {
-    vec![
-        StreamEvent::text_delta("writing..."),
-        StreamEvent::tool_call_delta(
-            0,
-            Some(id.to_string()),
-            Some("write".to_string()),
-            r#"{"path":"/tmp/x","content":"y"}"#,
-        ),
-        StreamEvent::message_complete(Some(StopReason::ToolUse), None),
-    ]
-}
-
 fn end_script() -> Vec<StreamEvent> {
     vec![
         StreamEvent::text_delta("done"),
@@ -415,8 +402,8 @@ async fn tool_error_is_fed_back_and_model_recovers() {
 }
 
 #[tokio::test]
-async fn loop_guard_nudges_once_then_aborts_at_six() {
-    // Same tool+args 3× → nudge, run continues; still identical at 6× → abort.
+async fn loop_guard_aborts_at_six_silently() {
+    // Same tool+args 6× in a row → abort, with no nudge text injected.
     let scripts: Vec<Vec<StreamEvent>> = (0..6).map(|i| tool_script(&format!("c{i}"))).collect();
     let provider = FakeProvider::new(scripts);
     let executor = FakeExecutor::new(ToolOutput::ok("ok"));
@@ -428,18 +415,18 @@ async fn loop_guard_nudges_once_then_aborts_at_six() {
         .expect_err("six identical rounds must abort");
 
     assert!(matches!(err, CoreError::LoopDetected(_)), "got {err:?}");
-    let nudges = agent
-        .messages()
-        .iter()
-        .filter(|m| m.text_content().contains("gray loop guard"))
-        .count();
-    assert_eq!(nudges, 1, "exactly one nudge lands before the abort");
+    assert!(
+        !agent
+            .messages()
+            .iter()
+            .any(|m| m.text_content().contains("gray loop guard")),
+        "the backstop must not inject text"
+    );
 }
 
 #[tokio::test]
-async fn loop_guard_nudge_lets_the_model_recover() {
-    // Three identical rounds (nudge) → one different call → clean end. A poll
-    // that changes approach after the nudge must not be killed.
+async fn loop_guard_lets_the_model_recover() {
+    // Three identical rounds → one different call → clean end.
     let mut scripts: Vec<Vec<StreamEvent>> =
         (0..3).map(|i| tool_script(&format!("c{i}"))).collect();
     scripts.push(read_script("r1", "/tmp/other.rs"));
@@ -451,19 +438,12 @@ async fn loop_guard_nudge_lets_the_model_recover() {
     let events = agent
         .run(Message::user("poll then finish"), ToolContext::default())
         .await
-        .expect("nudge must not abort a run that changes approach");
+        .expect("a run that changes approach must not abort");
 
     assert!(
         events
             .iter()
             .any(|e| matches!(e, AgentEvent::TurnEnd { .. }))
-    );
-    assert!(
-        agent
-            .messages()
-            .iter()
-            .any(|m| m.text_content().contains("gray loop guard")),
-        "expected the loop-guard nudge in history"
     );
 }
 
@@ -486,176 +466,6 @@ async fn loop_guard_exempts_job_polls() {
         .run(Message::user("poll the job"), ToolContext::default())
         .await
         .expect("polling a live job must not abort the run");
-
-    assert!(
-        events
-            .iter()
-            .any(|e| matches!(e, AgentEvent::TurnEnd { .. }))
-    );
-    assert!(
-        !agent
-            .messages()
-            .iter()
-            .any(|m| m.text_content().contains("gray loop guard")),
-        "polls of a live job must neither nudge nor abort"
-    );
-}
-
-#[tokio::test]
-async fn loop_guard_nudges_hung_job_polls() {
-    // A job polled forever is still called out once — but the run ends
-    // cleanly instead of being killed mid-wait.
-    let mut scripts: Vec<Vec<StreamEvent>> =
-        (0..20).map(|i| tool_script(&format!("c{i}"))).collect();
-    scripts.push(end_script());
-    let provider = FakeProvider::new(scripts);
-    let executor = FakeExecutor::new(ToolOutput::ok(
-        "job j1 · running · elapsed 900s · log /tmp/j1.log",
-    ));
-    let mut agent = Agent::new(Box::new(provider), Arc::new(executor)).with_tools(vec![tool_def()]);
-
-    let events = agent
-        .run(Message::user("poll forever"), ToolContext::default())
-        .await
-        .expect("hung-job polls must not abort the run");
-
-    assert!(
-        events
-            .iter()
-            .any(|e| matches!(e, AgentEvent::TurnEnd { .. }))
-    );
-    assert!(
-        agent
-            .messages()
-            .iter()
-            .any(|m| m.text_content().contains("has been polled 20 times")),
-        "expected the hung-job nudge in history"
-    );
-}
-
-#[tokio::test]
-async fn exploration_stall_aborts_varied_read_rounds() {
-    // 25 rounds of `read`, each with a DIFFERENT path: the consecutive-identical
-    // signature guard never trips, so the exploration-stall guard must.
-    let scripts: Vec<Vec<StreamEvent>> = (0..25)
-        .map(|i| read_script(&format!("r{i}"), &format!("/tmp/f{i}.rs")))
-        .collect();
-    let provider = FakeProvider::new(scripts);
-    let executor = FakeExecutor::new(ToolOutput::ok("file body"));
-    let mut agent = Agent::new(Box::new(provider), Arc::new(executor));
-
-    let err = agent
-        .run(Message::user("explore"), ToolContext::default())
-        .await
-        .expect_err("exploration-only loop should abort");
-
-    assert!(matches!(err, CoreError::LoopDetected(_)), "got {err:?}");
-}
-
-#[tokio::test]
-async fn exploration_stall_injects_nudge_then_recovers() {
-    // Nudge after 12 exploration-only rounds must land in history without
-    // killing the run — the model can still end the turn cleanly.
-    let mut scripts: Vec<Vec<StreamEvent>> = (0..12)
-        .map(|i| read_script(&format!("r{i}"), &format!("/tmp/f{i}.rs")))
-        .collect();
-    scripts.push(end_script());
-    let provider = FakeProvider::new(scripts);
-    let executor = FakeExecutor::new(ToolOutput::ok("file body"));
-    let mut agent = Agent::new(Box::new(provider), Arc::new(executor));
-
-    let events = agent
-        .run(Message::user("explore"), ToolContext::default())
-        .await
-        .expect("nudge should not kill the run");
-
-    assert!(
-        events
-            .iter()
-            .any(|e| matches!(e, AgentEvent::TurnEnd { .. }))
-    );
-    assert!(
-        agent
-            .messages()
-            .iter()
-            .any(|m| m.text_content().contains("stall guard")),
-        "expected a stall-guard nudge message in history"
-    );
-}
-
-#[tokio::test]
-async fn mutating_tool_resets_exploration_streak() {
-    // 11 reads → 1 write → 11 reads = 23 rounds: without the reset the
-    // streak would pass 20 and abort; with it the run completes.
-    let mut scripts: Vec<Vec<StreamEvent>> = Vec::new();
-    for i in 0..11 {
-        scripts.push(read_script(&format!("a{i}"), &format!("/tmp/a{i}.rs")));
-    }
-    scripts.push(write_script("w1"));
-    for i in 0..11 {
-        scripts.push(read_script(&format!("b{i}"), &format!("/tmp/b{i}.rs")));
-    }
-    scripts.push(end_script());
-    let provider = FakeProvider::new(scripts);
-    let executor = FakeExecutor::new(ToolOutput::ok("ok"));
-    let mut agent = Agent::new(Box::new(provider), Arc::new(executor));
-
-    let events = agent
-        .run(Message::user("work"), ToolContext::default())
-        .await
-        .expect("a write must reset the stall streak");
-
-    assert!(
-        events
-            .iter()
-            .any(|e| matches!(e, AgentEvent::TurnEnd { .. }))
-    );
-}
-
-#[tokio::test]
-async fn exploration_stall_aborts_six_rounds_after_nudge() {
-    // Nudge at 12 + 6 post-nudge rounds = abort at 18.
-    let scripts: Vec<Vec<StreamEvent>> = (0..18)
-        .map(|i| read_script(&format!("r{i}"), &format!("/tmp/f{i}.rs")))
-        .collect();
-    let provider = FakeProvider::new(scripts);
-    let executor = FakeExecutor::new(ToolOutput::ok("file body"));
-    let mut agent = Agent::new(Box::new(provider), Arc::new(executor));
-
-    let err = agent
-        .run(Message::user("explore"), ToolContext::default())
-        .await
-        .expect_err("18 exploration-only rounds should abort");
-
-    match err {
-        CoreError::LoopDetected(msg) => assert!(
-            msg.starts_with("Stopped: 18 consecutive exploration rounds"),
-            "got {msg:?}"
-        ),
-        other => panic!("got {other:?}"),
-    }
-}
-
-#[tokio::test]
-async fn exploration_stall_post_nudge_reset_continues() {
-    // 12 reads (nudge) → 1 write (reset) → 12 reads (nudge again) → end:
-    // post-nudge counter resets so the turn completes.
-    let mut scripts: Vec<Vec<StreamEvent>> = (0..12)
-        .map(|i| read_script(&format!("a{i}"), &format!("/tmp/a{i}.rs")))
-        .collect();
-    scripts.push(write_script("w1"));
-    for i in 0..12 {
-        scripts.push(read_script(&format!("b{i}"), &format!("/tmp/b{i}.rs")));
-    }
-    scripts.push(end_script());
-    let provider = FakeProvider::new(scripts);
-    let executor = FakeExecutor::new(ToolOutput::ok("ok"));
-    let mut agent = Agent::new(Box::new(provider), Arc::new(executor));
-
-    let events = agent
-        .run(Message::user("work"), ToolContext::default())
-        .await
-        .expect("a write after the nudge must reset the post-nudge counter");
 
     assert!(
         events
@@ -2498,95 +2308,6 @@ async fn background_notices_land_at_safe_boundaries_without_waiting() {
             );
         }
     }
-}
-
-/// Executor whose output changes on every call: models a poll that makes
-/// progress (or a growing log). Same command, different result.
-struct ChangingExecutor {
-    n: std::sync::Mutex<usize>,
-}
-
-impl ChangingExecutor {
-    fn new() -> Self {
-        Self {
-            n: std::sync::Mutex::new(0),
-        }
-    }
-}
-
-#[async_trait]
-impl ToolExecutor for ChangingExecutor {
-    fn execute(
-        &self,
-        _ctx: &ToolContext,
-        _name: &str,
-        _args: serde_json::Value,
-    ) -> BoxFuture<'static, ToolOutput> {
-        let mut n = self.n.lock().expect("n lock poisoned");
-        *n += 1;
-        let out = format!("output revision {}", *n);
-        Box::pin(async move { ToolOutput::ok(out) })
-    }
-}
-
-#[tokio::test]
-async fn repeat_guard_nudges_interleaved_identical_calls() {
-    // The DeepSWE campaign's worst case re-ran one test command 16x,
-    // interleaved with other calls, so no two consecutive rounds ever matched
-    // and the consecutive-signature guard never fired. Same call, same
-    // result, four times total (not in a row) must nudge.
-    let mut scripts = vec![tool_script("c0"), tool_script("c0")];
-    scripts.push(read_script("r1", "/tmp/a.rs"));
-    scripts.push(tool_script("c0"));
-    scripts.push(read_script("r2", "/tmp/b.rs"));
-    scripts.push(tool_script("c0"));
-    scripts.push(read_script("r3", "/tmp/c.rs"));
-    scripts.push(tool_script("c0"));
-    scripts.push(end_script());
-    let provider = FakeProvider::new(scripts);
-    let executor = FakeExecutor::new(ToolOutput::ok("same output every time"));
-    let mut agent = Agent::new(Box::new(provider), Arc::new(executor)).with_tools(vec![tool_def()]);
-
-    agent
-        .run(Message::user("flail"), ToolContext::default())
-        .await
-        .expect("the run must finish; the repeat guard nudges, it does not abort");
-
-    assert!(
-        agent
-            .messages()
-            .iter()
-            .any(|m| m.text_content().contains("gray repeat guard")),
-        "expected the interleaved-repeat nudge in history"
-    );
-}
-
-#[tokio::test]
-async fn repeat_guard_ignores_calls_whose_output_keeps_changing() {
-    // A poll that makes progress is deliberate: same command, different
-    // output each time must never nudge.
-    let mut scripts = vec![tool_script("c0"), tool_script("c0")];
-    for i in 0..6 {
-        scripts.push(read_script(&format!("r{i}"), &format!("/tmp/{i}.rs")));
-        scripts.push(tool_script("c0"));
-    }
-    scripts.push(end_script());
-    let provider = FakeProvider::new(scripts);
-    let executor = ChangingExecutor::new();
-    let mut agent = Agent::new(Box::new(provider), Arc::new(executor)).with_tools(vec![tool_def()]);
-
-    agent
-        .run(Message::user("poll and read"), ToolContext::default())
-        .await
-        .expect("changing output is progress");
-
-    assert!(
-        !agent
-            .messages()
-            .iter()
-            .any(|m| m.text_content().contains("gray repeat guard")),
-        "same command with changing output must not nudge"
-    );
 }
 
 // --- arXiv-driven harness hardening (2026-09 sweep) -------------------------

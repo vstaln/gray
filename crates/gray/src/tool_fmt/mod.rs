@@ -872,7 +872,7 @@ fn render_numbered_lines(
 pub fn tool_may_render_body(tool_name: &str) -> bool {
     matches!(
         tool_name,
-        "bash" | "grep" | "find" | "ls" | "edit" | "write"
+        "bash" | "grep" | "find" | "ls" | "edit" | "write" | "web_search" | "web_fetch"
     )
 }
 

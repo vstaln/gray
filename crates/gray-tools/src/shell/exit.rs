@@ -19,8 +19,8 @@ use super::contract::ExitReport;
 use super::split::split_pipeline;
 
 /// Build an honest [`ExitReport`] from a wait status and the command that
-/// produced it. Never lies about 128+N; annotates what a model would
-/// otherwise misread (OOM, benign grep/diff, masked pipelines).
+/// produced it. Never lies about 128+N; the only note is a masked pipeline
+/// status, which the model cannot see. The signal name says the rest.
 pub fn exit_report(status: std::process::ExitStatus, command: &str) -> ExitReport {
     let code = status.code();
     #[cfg(unix)]
@@ -43,26 +43,11 @@ pub fn exit_report(status: std::process::ExitStatus, command: &str) -> ExitRepor
         }
         (None, None) => (1, "exit unknown".to_string()),
     };
-    let head = command_head(command);
-    // Signal notes key off the effective value, so a plain `exit 137`
-    // (the shell's own 128+N spelling of SIGKILL) annotates the same way.
-    let mut note: Option<String> = signal_note(effective).map(str::to_string);
-    if let Some(b) = benign_note(&head, effective) {
-        note = Some(b.to_string());
-    } else if effective == 0 {
-        note = masked_note(command);
-    }
-    // A label that already names the signal (`exit 143 (SIGTERM)`) does not
-    // need the note to say it again: `terminated`, not `terminated (SIGTERM)`.
-    if let Some(n) = note.as_mut()
-        && let Some(i) = n.find(" (SIG")
-        && n.ends_with(')')
-        && label.contains(&n[i + 1..])
-    {
-        n.truncate(i);
-    }
-    // `ls` exit 2 ("No such file") is deliberately NOT benign: a missing
-    // file is a real error, left unannotated.
+    let note = if effective == 0 {
+        masked_note(command)
+    } else {
+        None
+    };
     ExitReport {
         effective,
         label,
@@ -87,40 +72,6 @@ fn signal_name(sig: i32) -> String {
         _ => return format!("SIG{sig}"),
     };
     format!("SIG{name}")
-}
-
-/// Notes for the effective values a model would otherwise misread.
-fn signal_note(effective: i32) -> Option<&'static str> {
-    match effective {
-        137 => Some("likely OOM-killed; check `dmesg | tail` or reduce parallelism"),
-        143 => Some("terminated (SIGTERM)"),
-        139 => Some("segmentation fault"),
-        130 => Some("interrupted (SIGINT)"),
-        _ => None,
-    }
-}
-
-/// Benign-exit table: nonzero codes that are data, not errors.
-fn benign_note(head: &str, effective: i32) -> Option<&'static str> {
-    match (head, effective) {
-        ("grep" | "egrep" | "fgrep" | "rg" | "ag", 1) => Some("no matches — not an error"),
-        ("diff" | "cmp", 1) => Some("files differ — not an error"),
-        ("test" | "[", 1) => Some("condition false — not an error"),
-        ("which" | "command", 1) => Some("not found on PATH"),
-        ("pgrep" | "pkill", 1) => Some("no processes matched"),
-        _ => None,
-    }
-}
-
-/// Head binary: first whitespace token, basename after `/`.
-/// `command -v foo` normalizes to `-v foo` (wrapper-strip), so the
-/// `command` head is recovered when the raw first token says so.
-fn command_head(command: &str) -> String {
-    let head = command.split_whitespace().next().unwrap_or("");
-    if head == "-v" && base_head(command) == "command" {
-        return "command".to_string();
-    }
-    base_head(command).to_string()
 }
 
 fn base_head(cmd: &str) -> &str {

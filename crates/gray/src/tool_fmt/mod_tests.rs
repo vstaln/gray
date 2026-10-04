@@ -425,6 +425,53 @@ fn web_fetch_renders_a_verb_with_the_url() {
 }
 
 #[test]
+fn web_search_body_renders_like_bash() {
+    // Screenshot case: each `web_search` was a header-only dark card.
+    // The sidecar returns JSON; the card must carry it like bash does
+    // (pretty-printed, numbered) instead of an empty body.
+    let out = r#"{"provider":"bing","results":[{"title":"t","url":"https://example.com","snippet":"hi"}]}"#;
+    let lines = format_tool_result_lines_with_context("web_search", None, out, false, None);
+    assert!(
+        !lines.is_empty(),
+        "web_search body must render, got header-only"
+    );
+    let text: String = lines.iter().map(row_text).collect::<Vec<_>>().join("\n");
+    assert!(
+        text.contains("1 | "),
+        "body not numbered like bash: {text:?}"
+    );
+    assert!(text.contains("example.com"), "result lost: {text:?}");
+}
+
+#[test]
+fn web_fetch_body_renders_like_bash() {
+    // Same header-only bug for `web_fetch`: fetched text never reached
+    // the card. Plain text must render numbered like bash output.
+    let out = "line one\nline two";
+    let lines = format_tool_result_lines_with_context("web_fetch", None, out, false, None);
+    assert!(
+        !lines.is_empty(),
+        "web_fetch body must render, got header-only"
+    );
+    let text: String = lines.iter().map(row_text).collect::<Vec<_>>().join("\n");
+    assert!(
+        text.contains("1 | "),
+        "body not numbered like bash: {text:?}"
+    );
+    assert!(text.contains("line one"), "body lost: {text:?}");
+}
+
+#[test]
+fn web_search_caps_long_output_like_bash() {
+    let out: String = (1..=60)
+        .map(|i| format!("result {i}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let lines = format_tool_result_lines_with_context("web_search", None, &out, false, None);
+    assert_eq!(lines.len(), 25, "must cap like bash, got {}", lines.len());
+}
+
+#[test]
 fn discord_send_renders_a_verb_with_the_content() {
     let args = serde_json::json!({"content": "hello channel"});
     let text = row_text(&format_tool_call_header("discord_send", &args, None));

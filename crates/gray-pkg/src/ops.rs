@@ -416,13 +416,12 @@ fn record_install(
     write_lock(&lock)
 }
 
-/// Index entries gray installs by name: curated gray-native tarballs
-/// plus foreign `pi-gallery` git checkouts (pinned ref + verified sha).
+/// Index entries gray installs by name: curated gray-native tarballs.
 /// Anything else bails with the honest reason.
 fn supported_index_entry(entry: &crate::index::Entry) -> bool {
     matches!(
         (entry.ecosystem.as_str(), entry.source.type_.as_str()),
-        ("gray-native", "tarball") | ("pi-gallery", "git")
+        ("gray-native", "tarball")
     )
 }
 
@@ -1050,7 +1049,7 @@ async fn install_npm(
         &staged.version,
         &staged.integrity,
         &staged.tarball,
-        "pi-gallery",
+        "npm",
         &opts,
     )?;
     Ok(Report {
@@ -1150,7 +1149,7 @@ async fn install_git_versioned(
     {
         anyhow::bail!("sha mismatch for {key} (index pins {want}, cloned {sha})");
     }
-    let dest = extract_pi_skills(&clone_dir, &key, version, &sha, url, "pi-gallery", &opts)?;
+    let dest = extract_pi_skills(&clone_dir, &key, version, &sha, url, "git", &opts)?;
     Ok(Report {
         name: key,
         version: version.to_string(),
@@ -1350,13 +1349,10 @@ async fn install_index(
     let entry = crate::index::lookup(&index, name)?;
     if !supported_index_entry(entry) {
         anyhow::bail!(
-            "unsupported ecosystem '{}' source type '{}' for {name} (installable: gray-native tarballs, pi-gallery git checkouts)",
+            "unsupported ecosystem '{}' source type '{}' for {name} (installable: gray-native tarballs)",
             entry.ecosystem,
             entry.source.type_
         );
-    }
-    if entry.ecosystem == "pi-gallery" {
-        return install_index_git(name, entry, opts).await;
     }
     let archive = crate::fetch::download(client, &entry.source.url, Some(&entry.hash)).await?;
     let scope = if entry.scope.is_empty() {
@@ -1380,41 +1376,6 @@ async fn install_index(
         version: entry.version.clone(),
         path: dest,
     })
-}
-
-/// `pi-gallery`+`git` index entry: the URL must derive the requested
-/// key (no key confusion), the clone pins the entry ref, and the HEAD sha
-/// must equal the index hash. Version comes from the index — never `0.0.0`.
-async fn install_index_git(
-    name: &str,
-    entry: &crate::index::Entry,
-    opts: InstallOpts,
-) -> anyhow::Result<Report> {
-    let raw = name_from_git_url(&entry.source.url);
-    let key = install_key(&raw).map_err(|_| {
-        anyhow::anyhow!(
-            "cannot derive a plugin name from git URL: {}",
-            crate::fetch::redact(&entry.source.url)
-        )
-    })?;
-    if key != name {
-        anyhow::bail!(
-            "index entry for {name} points at {} (derives key {key})",
-            crate::fetch::redact(&entry.source.url)
-        );
-    }
-    let want = entry.hash.primary().unwrap_or_default();
-    if want.is_empty() {
-        anyhow::bail!("index entry for {name} has no hash to verify the checkout against");
-    }
-    install_git_versioned(
-        &entry.source.url,
-        entry.source.git_ref.as_deref(),
-        &entry.version,
-        Some(want),
-        opts,
-    )
-    .await
 }
 
 async fn install_url(
@@ -1512,7 +1473,7 @@ fn set_enabled_inner(name: &str, on: bool) -> anyhow::Result<()> {
 
 /// Update one plugin (`target` = name) or all (`target` = `"all"`).
 /// Only lock entries the index lists under the same ecosystem (gray-native
-/// tarballs, pi-gallery git checkouts) are considered; anything else is
+/// tarballs) are considered; anything else is
 /// skipped with a warning. Returns per-plugin reports for the plugins
 /// that actually changed.
 pub async fn update(target: &str) -> anyhow::Result<Vec<Report>> {

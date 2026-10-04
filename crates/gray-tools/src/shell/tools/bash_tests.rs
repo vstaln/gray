@@ -855,8 +855,7 @@ fn the_cwd_report_asks_for_a_path_rust_can_resolve() {
 #[tokio::test]
 async fn the_cwd_report_does_not_mask_the_commands_exit_code() {
     // The suffix must re-raise the command's own status: ending on the
-    // report's `printf` would turn every failure into a success and cost the
-    // benign-exit table its "no matches" note.
+    // report's `printf` would turn every failure into a success.
     let tool = BashTool::default();
     let ctx = ctx_for(&sess("exit"));
     let r = tool
@@ -871,7 +870,6 @@ async fn the_cwd_report_does_not_mask_the_commands_exit_code() {
         "{}",
         r.content
     );
-    assert!(r.content.contains("no matches"), "{}", r.content);
 
     let r = tool.execute(&ctx, json!({"command": "exit 3"})).await;
     assert!(

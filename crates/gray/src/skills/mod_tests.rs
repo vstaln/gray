@@ -90,21 +90,8 @@ fn prompt_block_gives_proactive_skill_guidance() {
     let s = test_skill("anything", &[]);
     let out = format_skills_for_prompt(&[s], true, &BTreeSet::new());
     assert!(
-        out.contains("read its SKILL.md"),
-        "proactive read-first hint missing: {out}"
-    );
-    assert!(
-        out.contains("already started"),
-        "mid-task re-anchor hint missing: {out}"
-    );
-    assert!(out.contains("read tool"), "read-tool hint missing: {out}");
-    assert!(
-        out.contains("fallback only"),
-        "bash-fallback-only hint missing: {out}"
-    );
-    assert!(
-        out.contains("name the skill"),
-        "name-the-skill hint missing: {out}"
+        out.contains("`cat` its SKILL.md"),
+        "load hint missing: {out}"
     );
     assert!(out.contains("<available_skills>"));
 }

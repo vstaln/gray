@@ -82,6 +82,16 @@ fn paths_match(a: &Path, b: &Path) -> bool {
     ca == cb
 }
 
+/// An "empty" session has no user text on either end — created but never
+/// sent a message (the `(no message yet)` row, usually the `just now`
+/// session at the top). Noise in every resume listing, so the picker,
+/// headless lists, and `--last` all skip them. Explicit `resume <id>`
+/// still loads one.
+fn is_empty_session(s: &SessionSummary) -> bool {
+    let has = |o: &Option<String>| o.as_deref().is_some_and(|t| !t.trim().is_empty());
+    !(has(&s.first_user_text) || has(&s.last_user_text))
+}
+
 /// Picker filter: cwd scope plus case-insensitive query over id, cwd, and user
 /// text (both ends — the preview shows the latest, a remembered opener still
 /// identifies the session). Shared by the draw loop and the Down/Enter handlers.
@@ -89,6 +99,9 @@ fn session_matches(s: &SessionSummary, query: &str, cwd_filter: Option<&Path>) -
     if let Some(f) = cwd_filter
         && !paths_match(&s.cwd, f)
     {
+        return false;
+    }
+    if is_empty_session(s) {
         return false;
     }
     if query.is_empty() {
@@ -111,7 +124,8 @@ fn session_matches(s: &SessionSummary, query: &str, cwd_filter: Option<&Path>) -
 
 /// The session `--last` resumes: the one touched most recently, scoped to
 /// the cwd. Activity, not creation — a session opened last week and used
-/// this morning is the one to continue.
+/// this morning is the one to continue. Empty sessions (never sent a
+/// message) are skipped.
 pub fn latest_summary<'a>(
     summaries: &'a [SessionSummary],
     cwd_filter: Option<&Path>,
@@ -119,13 +133,14 @@ pub fn latest_summary<'a>(
     summaries
         .iter()
         .filter(|s| cwd_filter.is_none_or(|cwd| paths_match(&s.cwd, cwd)))
+        .filter(|s| !is_empty_session(s))
         .max_by_key(|s| s.last_message_at)
 }
 
 /// Session summaries for headless list output, newest activity first
 /// (`/resume` with piped stdout, `gray resume` without a TTY): the picker
 /// needs a real terminal, so these print as text instead. Same cwd filter
-/// as [`latest_summary`] (`--all` disables it).
+/// as [`latest_summary`] (`--all` disables it). Empty sessions never show.
 pub async fn recent_summaries(store: &JsonlSessionStore, all: bool) -> Vec<SessionSummary> {
     let cwd = std::env::current_dir().ok();
     let filt = if all { None } else { cwd.as_deref() };
@@ -134,6 +149,7 @@ pub async fn recent_summaries(store: &JsonlSessionStore, all: bool) -> Vec<Sessi
         .await
         .into_iter()
         .filter(|s| filt.is_none_or(|c| paths_match(&s.cwd, c)))
+        .filter(|s| !is_empty_session(s))
         .collect();
     // Newest activity first, like the picker: the printed age then reads
     // monotonically instead of jumping around.
@@ -325,6 +341,7 @@ pub async fn run_resume_picker(
     // `list()` already orders by last activity; sort again so the picker's
     // order does not depend on that internal detail.
     let mut summaries = store.list().await;
+    summaries.retain(|s| !is_empty_session(s));
     summaries.sort_by_key(|s| s.last_message_at);
     summaries.reverse();
     if summaries.is_empty() {

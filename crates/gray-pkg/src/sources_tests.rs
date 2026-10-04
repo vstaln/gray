@@ -4,7 +4,6 @@ use super::*;
 #[test]
 fn source_labels_are_exact() {
     assert_eq!(Source::GrayIndex.label(), "Gray Index");
-    assert_eq!(Source::PiGallery.label(), "Pi Index");
     assert_eq!(Source::ClawHub.label(), "ClawHub");
     assert_eq!(Source::ClaudeRepo.label(), "Claude");
 }
@@ -175,7 +174,6 @@ async fn status_never_hard_fails() {
         std::env::set_var(crate::index::INDEX_URL_ENV, "http://127.0.0.1:9/i.json");
     }
     assert!(!status(Source::GrayIndex).await);
-    assert!(!status(Source::PiGallery).await);
     assert!(!status(Source::ClawHub).await);
     assert!(!status(Source::ClaudeRepo).await);
     unsafe {

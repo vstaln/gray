@@ -184,3 +184,38 @@ fn separator_is_after_custom_not_after_first_connected_provider() {
     assert!(rows[custom + 1].contains("────"));
     assert!(rows[custom + 2].contains("OpenAI"));
 }
+
+#[test]
+fn plugin_login_status_does_not_overwrite_title() {
+    let item = ConnectItem {
+        id: "claude-subscription".into(),
+        name: "Claude subscription".into(),
+        sublabel: String::new(),
+        base_url: String::new(),
+        no_auth: false,
+        auth: ConnectAuth::ApiKey,
+    };
+    let colors = ConnectColors {
+        box_bg: Color::Black,
+        input_bg: Color::Black,
+        accent_peach: Color::Yellow,
+        text_dim: Color::DarkGray,
+    };
+    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap();
+    terminal
+        .draw(|frame| render_authorizing_plugin(frame, frame.area(), &item, None, None, &colors))
+        .unwrap();
+    let buf = terminal.backend().buffer();
+    let rows: Vec<String> = (0..24)
+        .map(|y| (0..80).map(|x| buf[(x, y)].symbol()).collect())
+        .collect();
+    let title = rows
+        .iter()
+        .position(|r| r.contains("Connect \u{2014} Claude subscription"))
+        .unwrap();
+    let status = rows
+        .iter()
+        .position(|r| r.contains("Starting provider login"))
+        .unwrap();
+    assert!(status > title);
+}

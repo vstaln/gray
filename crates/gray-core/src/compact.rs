@@ -65,17 +65,14 @@ pub(crate) fn image_block_tokens(_media_type: &str, base64_len: usize) -> usize 
 /// `ResponseItem::CompactionTrigger` + summary instruction, appended to the
 /// retained history for the summarization call only.
 //
-// Task-neutral wording, no domain (coding or otherwise) assumed: keep
-// outcomes/decisions/open questions, omit superseded detail, and by default
-// the summary adds no domain instructions.
+// Task-neutral wording, no domain (coding or otherwise) assumed.
 /// Opening words of the [`summary_message`] envelope. A transcript whose
 /// second message carries this prefix was compacted before and its first
 /// message is the pinned intent anchor (see [`anchor_message`]).
 pub(crate) const SUMMARY_ENVELOPE_PREFIX: &str =
     "The conversation history before this point was compacted into the following summary:";
 
-// guidance shape from @howaboua/pi-auto-trees (MIT)
-pub(crate) const COMPACTION_TRIGGER: &str = "Compact this conversation for context compaction: reply with ONLY a concise summary keeping the outcomes, decisions and open questions that matter for continuing this conversation; omit superseded detail. Default adds no domain instructions. No tool calls.";
+pub(crate) const COMPACTION_TRIGGER: &str = "Summarize this conversation so far for continuing it: outcomes, decisions, open questions. No tool calls.";
 
 /// One in-band summarization call over `history`: same system prompt + same
 /// tools as live turns, plus [`COMPACTION_TRIGGER`]. Identical request prefix
@@ -91,9 +88,7 @@ pub(crate) async fn run_compaction_call(
     instructions: Option<&str>,
 ) -> Result<String, CoreError> {
     let mut messages = history.to_vec();
-    // Checkpoint-structure guidance rides the trigger so the summary
-    // captures IDs/decisions/next-steps (shape from pi-codex-conversion).
-    let mut trigger = format!("{COMPACTION_TRIGGER}\n\n{COMPACTION_MARKER_GUIDANCE}");
+    let mut trigger = COMPACTION_TRIGGER.to_string();
     if let Some(instructions) = instructions.map(str::trim).filter(|s| !s.is_empty()) {
         trigger.push_str(&format!(
             "\n\n<user-instructions>\nThe user provided these instructions for this summary. Follow them with high priority:\n{instructions}\n</user-instructions>"
@@ -111,13 +106,6 @@ pub(crate) async fn run_compaction_call(
         )
         .await
 }
-
-/// Compaction-boundary recovery guidance: what the checkpoint must capture
-/// and how the post-compaction turn resumes. Tool-agnostic on purpose — core
-/// owns no notes/history tools, so it names the checkpoint, not the tool.
-//
-// guidance shape from @howaboua/pi-codex-conversion (MIT)
-pub(crate) const COMPACTION_MARKER_GUIDANCE: &str = "Checkpoint the active request, checkpoint/session IDs, decisions, progress, learnings and next steps at the compaction boundary. After compaction, read the hinted checkpoint first and resume; consult history only for a missing detail.";
 
 /// Retained-history token budget, mirroring codex v2's
 /// `RETAINED_MESSAGE_TOKEN_BUDGET` verbatim.

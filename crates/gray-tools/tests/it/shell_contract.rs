@@ -98,22 +98,6 @@ async fn exit_code_is_data_not_error() {
 }
 
 #[tokio::test]
-async fn grep_miss_is_benign() {
-    let out = BashTool::default()
-        .execute(
-            &ToolContext::default(),
-            json!({"command": "grep zzz_no_such_match_xyz /dev/null"}),
-        )
-        .await;
-    assert!(!out.is_error, "{}", out.content);
-    assert!(
-        first_line(&out).contains("no matches \u{2014} not an error"),
-        "{}",
-        out.content
-    );
-}
-
-#[tokio::test]
 async fn sigkill_is_honest() {
     // `exec`: without it an extra `sh` layer converts the signal into a
     // plain 137 exit code (POSIX shells report signaled children as 128+N).

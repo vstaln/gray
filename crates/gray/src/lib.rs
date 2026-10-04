@@ -61,22 +61,16 @@ pub const DEFAULT_SYS_PROMPT: &str = r#"<!--
 Unreadable note: this HTML comment stays in the file but is stripped before
 the prompt reaches the model — only the text after this note reaches it.
 
-This file IS the stored system prompt, sent verbatim every turn. Gray
-adds the runtime working directory and ephemeral per-turn context: the
-<available_skills> list (fresh skill discovery for the turn's directory) —
-no skill tool, read matches with bash — plus <project_context>, the nearest
-AGENTS.md / CLAUDE.md above the working directory. Edit with `/agentsmd`
+This file IS the stored system prompt, sent verbatim every turn with no
+runtime context appended. Only what the model can't already know: the
+tools describe themselves and the task says the rest.
+Gray adds only ephemeral per-turn context: the <available_skills> list
+(fresh skill discovery for the turn's directory) — no skill tool, read
+matches with bash — plus <project_context>, the nearest AGENTS.md /
+CLAUDE.md above the working directory. Edit with `/agentsmd`
 (Ctrl-S save & apply, Ctrl-R reset to this default, Ctrl-X cancel).
 -->
-You are gray, a minimal agent on the user's machine.
-
-1. Read the relevant code and tests; work out what's required from the repo.
-2. Implement it, including the edge cases and error paths the request names.
-3. Run the project's tests, fix failures, then stop with a short summary.
-
-- Keep going without asking until done.
-- Wait on a background job with `output` + `wait_ms`, not `sleep`.
-- Cron: `gray cron add "<when>" "<prompt>"`.
+You are Gray, running on the user's machine.
 "#;
 
 /// Resolves the user's system-prompt file path (`$GRAY_HOME` or `$HOME/.gray`) + `AGENTS.md`.
@@ -185,10 +179,7 @@ fn cache_warm_policy(
         || lower.contains("claude")
         || lower.contains("anthropic");
     let replayable = matches!(effort, None | Some("off")) || !budget_thinking;
-    if config.bare
-        || !cacheable
-        || !replayable
-        || std::env::var_os("GRAY_NO_CACHE_WARM").is_some()
+    if config.bare || !cacheable || !replayable || std::env::var_os("GRAY_NO_CACHE_WARM").is_some()
     {
         return None;
     }
@@ -225,8 +216,6 @@ pub async fn build_agent(
     } else {
         load_or_create_system_prompt_at(&sys_prompt_path()?)?
     };
-    // Same directory as the tool context; never persist it in the user's file.
-    let prompt_cwd = cwd.to_path_buf();
 
     // `/memory off` keeps the snapshot out of the prompt (context economy);
     // the env var stays the hard kill-switch that also stops saves.
@@ -267,11 +256,11 @@ pub async fn build_agent(
         context_window: Some(crate::setup::context::resolve_model_context_length(model)),
         session_id: session_id.map(str::to_string),
         cwd: cwd.to_path_buf(),
-        // Keep stored instructions intact; append runtime cwd before any turn.
+        // Stored instructions verbatim; no runtime context (cwd etc.).
         system_prompt: gray_plugin::builder::SystemPrompt::Build(Box::new(
             move |_registry: &gray_tools::Registry| {
                 system_prompt::with_memory(
-                    system_prompt::build_runtime_prompt(Some(body), &prompt_cwd),
+                    system_prompt::build_system_prompt(Some(body)),
                     snapshot.as_deref(),
                 )
             },

@@ -14,10 +14,6 @@
 //!   `archiveUrl`) instead of bytes.
 //! - Claude `marketplace.json` source kinds: relative-path string,
 //!   `github`, `url`, `git-subdir`, `npm`, `archive`, `command` (skip).
-//! - pi.dev: SSR HTML only (no listing `/api/*` — `/api/packages` 501s,
-//!   `preview-media` is per-package media; no embedded JSON), so the npm
-//!   `/-/v1/search` proxy stays the listing layer and npm stays the
-//!   artifact resolver. No HTML scraping (fragile, forbidden).
 //!
 //! No auth anywhere here (public read endpoints only). No new runtime
 //! dependencies: reqwest/serde_json/git-CLI/std-fs only.
@@ -33,7 +29,6 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Source {
     GrayIndex,
-    PiGallery,
     ClawHub,
     ClaudeRepo,
 }
@@ -42,7 +37,6 @@ impl Source {
     pub fn label(self) -> &'static str {
         match self {
             Source::GrayIndex => "Gray Index",
-            Source::PiGallery => "Pi Index",
             Source::ClawHub => "ClawHub",
             Source::ClaudeRepo => "Claude",
         }
@@ -67,15 +61,6 @@ pub async fn status(source: Source) -> bool {
                 .send()
                 .await
                 .map(|r| r.status().is_success())
-                .unwrap_or(false)
-        }
-        Source::PiGallery => {
-            let url = crate::ops::npm_registry_base();
-            client
-                .get(&url)
-                .send()
-                .await
-                .map(|r| r.status().is_success() || r.status().is_redirection())
                 .unwrap_or(false)
         }
         Source::ClawHub => {
