@@ -480,3 +480,177 @@ fn a_cut_bash_header_ends_in_an_ellipsis() {
     let short = serde_json::json!({"command": "ls"});
     assert!(row_text(&format_tool_call_header("bash", &short, None)).ends_with("Ran ls"));
 }
+
+// --- bash: one tool, five actions; headers say which, jobs go by name. ---
+
+fn header(args: serde_json::Value) -> String {
+    row_text(&format_tool_call_header("bash", &args, None))
+}
+
+fn body(args: serde_json::Value, out: &str) -> String {
+    format_tool_result_lines_with_context("bash", Some(&args), out, false, None)
+        .iter()
+        .map(row_text)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[test]
+fn a_run_header_shows_the_command_without_its_setup() {
+    let text = header(
+        serde_json::json!({"command": "cd ~/wt/provider-chat && CARGO_BUILD_BUILD_DIR=target nice -n 19 ionice -c3 flock /tmp/l cargo check -p gray-provider --tests"}),
+    );
+    assert!(
+        text.ends_with("Ran cargo check -p gray-provider --tests \u{00b7} in ~/wt/provider-chat"),
+        "{text:?}"
+    );
+    // Setup that could do work is never hidden.
+    let risky = header(serde_json::json!({"command": "rm -rf build && cargo check"}));
+    assert!(
+        risky.ends_with("Ran rm -rf build && cargo check"),
+        "{risky:?}"
+    );
+}
+
+#[test]
+fn each_action_gets_its_own_verb() {
+    let cases = [
+        (
+            serde_json::json!({"command": "cargo test", "background": true}),
+            "Started cargo test \u{00b7} in background",
+        ),
+        (
+            serde_json::json!({"action": "output", "job_id": "cargo-check"}),
+            "Checked cargo-check",
+        ),
+        (
+            serde_json::json!({"action": "status", "job_id": "cargo-check", "wait_ms": 30000}),
+            "Waited on cargo-check \u{00b7} up to 30s",
+        ),
+        (
+            serde_json::json!({"action": "output", "job_id": "cargo-check", "wait_ms": 900000}),
+            "Waited on cargo-check \u{00b7} up to 15m",
+        ),
+        (
+            serde_json::json!({"action": "cancel", "job_id": "npm-test"}),
+            "Stopped npm-test",
+        ),
+        (
+            serde_json::json!({"action": "list"}),
+            "Listed background jobs",
+        ),
+    ];
+    for (args, want) in cases {
+        let text = header(args);
+        assert!(text.ends_with(want), "{text:?} should end with {want:?}");
+        assert!(!text.contains("Ran"), "{text:?}");
+    }
+}
+
+#[test]
+fn old_random_job_ids_shrink_to_a_short_tag() {
+    let text = header(
+        serde_json::json!({"action": "output", "job_id": "bash-bbc7b00c1f4e48aa842a5ad1e7ada886"}),
+    );
+    assert!(text.ends_with("Checked job bbc7b0"), "{text:?}");
+}
+
+#[test]
+fn every_verb_has_a_live_form() {
+    for (done, live) in [
+        ("Ran ", "Running "),
+        ("Started ", "Starting "),
+        ("Waited on ", "Waiting on "),
+        ("Checked ", "Checking "),
+        ("Stopped ", "Stopping "),
+        ("Listed ", "Listing "),
+    ] {
+        assert_eq!(live_bash_verb(done), Some(live));
+    }
+    assert_eq!(live_bash_verb("Read "), None);
+}
+
+#[test]
+fn a_yield_notice_reads_as_running_in_background() {
+    let out = "still running \u{00b7} job cargo-check \u{00b7} yielded after 10s \u{00b7} timeout 900s \u{00b7} log /tmp/bash-x.log\nContinue other work. Use bash action:output/status with job_id:cargo-check and wait_ms (e.g. 30000) to await it in one call instead of polling; completion will also be reported between model rounds or on the next user turn.";
+    let text = body(serde_json::json!({"command": "cargo check"}), out);
+    let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    for part in [
+        "running in background as cargo-check",
+        "after 10s",
+        "limit 15m",
+    ] {
+        assert!(flat.contains(part), "{part:?} missing: {text:?}");
+    }
+    assert!(!text.contains("Continue other work"), "{text:?}");
+    assert!(!text.contains("action:output"), "{text:?}");
+    assert!(!text.contains("/tmp/bash-x.log"), "{text:?}");
+}
+
+#[test]
+fn a_finished_job_drops_its_id_line_and_keeps_the_output() {
+    let out = "job cargo-check\nexit 0 \u{00b7} 12s \u{00b7} 2 lines\n<untrusted-output>\nerror[E0308]: mismatched types\nContinue other work is fine inside output\n</untrusted-output>";
+    let text = body(
+        serde_json::json!({"action": "output", "job_id": "cargo-check"}),
+        out,
+    );
+    assert!(!text.contains("job cargo-check"), "{text:?}");
+    let piped = body(
+        serde_json::json!({"action": "output", "job_id": "x"}),
+        "exit 0 (`head` masks earlier stages' exit; rerun without the pipe to check) \u{00b7} 1s",
+    );
+    assert!(
+        piped.contains("(`head` masks earlier stages' exit) \u{00b7} 1s"),
+        "{piped:?}"
+    );
+    assert!(text.contains("exit 0"), "{text:?}");
+    assert!(text.contains("error[E0308]"), "{text:?}");
+    // Command output is never rewritten, even when it looks like a hint.
+    assert!(
+        text.contains("Continue other work is fine inside output"),
+        "{text:?}"
+    );
+}
+
+#[test]
+fn a_snapshot_reads_plainly() {
+    let out = "job cargo-check \u{00b7} running \u{00b7} elapsed 1m 3s \u{00b7} log /tmp/l.log\nLiveness: producing (2.0KB new output in the last 30s) \u{2014} still working, keep waiting or do other work.\nPartial output (snapshot):\n<untrusted-output>\nCompiling gray\n</untrusted-output>";
+    let text = body(
+        serde_json::json!({"action": "output", "job_id": "cargo-check", "wait_ms": 30000}),
+        out,
+    );
+    assert!(
+        text.contains("cargo-check \u{00b7} running \u{00b7} 1m 3s"),
+        "{text:?}"
+    );
+    assert!(
+        text.contains("producing (2.0KB new output in the last 30s)"),
+        "{text:?}"
+    );
+    assert!(!text.contains("keep waiting"), "{text:?}");
+    assert!(text.contains("output so far:"), "{text:?}");
+    assert!(text.contains("Compiling gray"), "{text:?}");
+    let stop = body(
+        serde_json::json!({"action": "cancel", "job_id": "npm-test"}),
+        "cancellation requested for job npm-test; use action:status/output for final result",
+    );
+    assert!(stop.contains("stopping npm-test"), "{stop:?}");
+}
+
+#[test]
+fn an_error_lines_up_with_numbered_output() {
+    let ok = format_tool_result_lines_with_context("bash", None, "exit 0 \u{00b7} 1s", false, None);
+    let err = format_tool_result_lines_with_context(
+        "bash",
+        None,
+        "unknown job in this session: x\nsecond line",
+        true,
+        None,
+    );
+    let text_col = |l: &Line<'_>, needle: &str| {
+        crate::text_width::display_width(row_text(l).split(needle).next().unwrap())
+    };
+    assert_eq!(text_col(&err[0], "unknown"), text_col(&ok[0], "exit"));
+    assert_eq!(text_col(&err[1], "second"), text_col(&ok[0], "exit"));
+    assert!(row_text(&err[0]).contains('\u{2717}'));
+}
