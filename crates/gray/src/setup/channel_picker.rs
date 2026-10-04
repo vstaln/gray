@@ -33,34 +33,22 @@ pub trait ChannelSource {
 /// The real thing: Discord REST over the just-written bot token.
 pub struct RestChannels {
     token: String,
-    base: String,
     runtime: tokio::runtime::Runtime,
 }
 
+const BASE: &str = "https://discord.com/api/v10";
 const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 
 impl RestChannels {
     pub fn new(token: &str) -> anyhow::Result<Self> {
-        Self::with_base(token, super::discord_check::API_BASE)
-    }
-
-    /// Against another API root (tests point it at a loopback stand-in).
-    pub fn with_base(token: &str, base: &str) -> anyhow::Result<Self> {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .map_err(|e| anyhow::anyhow!("cannot start the HTTP runtime: {e}"))?;
         Ok(Self {
             token: token.to_string(),
-            base: base.to_string(),
             runtime,
         })
-    }
-
-    /// Discord bot tokens go in `Authorization: Bot <token>`; a Bearer
-    /// header is an OAuth2 user token and Discord refuses it with 401.
-    fn auth(&self) -> String {
-        super::discord_check::auth_header(&self.token)
     }
 
     async fn get(&self, path: &str) -> anyhow::Result<Value> {
@@ -69,8 +57,8 @@ impl RestChannels {
             .build()
             .map_err(|e| anyhow::anyhow!("cannot build the HTTP client: {e}"))?;
         let response = client
-            .get(format!("{}{path}", self.base))
-            .header(reqwest::header::AUTHORIZATION, self.auth())
+            .get(format!("{BASE}{path}"))
+            .bearer_auth(&self.token)
             .send()
             .await
             .map_err(|e| anyhow::anyhow!("Discord did not answer: {e}"))?;
@@ -95,8 +83,8 @@ impl RestChannels {
             .build()
             .map_err(|e| anyhow::anyhow!("cannot build the HTTP client: {e}"))?;
         let response = client
-            .post(format!("{}/users/@me/channels", self.base))
-            .header(reqwest::header::AUTHORIZATION, self.auth())
+            .post(format!("{BASE}/users/@me/channels"))
+            .bearer_auth(&self.token)
             .json(&serde_json::json!({ "recipient_id": owner_id }))
             .send()
             .await

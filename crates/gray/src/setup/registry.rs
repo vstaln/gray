@@ -6,10 +6,6 @@ use std::path::{Path, PathBuf};
 /// A destination the user may pick instead of pasting an ID.
 pub const PICKER_CHANNELS: &str = "channels";
 
-/// Live-check the token with Discord before anything is written
-/// (`setup::discord_check`).
-pub const CHECK_DISCORD_BOT: &str = "discord-bot";
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FieldKind {
     /// The user must supply it (secrets are masked, never logged).
@@ -44,9 +40,6 @@ pub struct SetupDecl {
     pub post_steps: &'static [&'static str],
     /// argv that runs the app's daemon in the foreground.
     pub service: Option<&'static [&'static str]>,
-    /// `Some("discord-bot")` checks the token with the platform first: a
-    /// rejected token is re-asked and never saved.
-    pub check: Option<&'static str>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

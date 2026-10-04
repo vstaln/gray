@@ -157,59 +157,6 @@ sidecar `plugin/manifest` wire. Budgets are not part of setup — an app's
 own accounting command (`gray discord budget set`) turns that on if you
 want it.
 
-### Discord
-
-gray has no `.env` template; the Discord plugin's settings live in its own
-config file, `~/.config/gray-discord/config.json` (dir `0700`, file
-`0600`). The easiest path is `/gateway` (or `gray gateway setup discord
---field token=…`), which does the portal work for you:
-
-1. **Token checked with Discord.** Before anything is written, gray calls
-   `GET https://discord.com/api/v10/applications/@me` with
-   `Authorization: Bot <token>` (10 s timeout). A token Discord rejects
-   (401) is asked for again, up to three times, and never saved. A numeric
-   paste is the application ID from General Information, not the token, and
-   is refused with that guidance once. Curly quotes and other non-ASCII
-   characters from a rich-text paste are stripped before the check and the
-   save. If Discord cannot be reached, the token is saved with a warning.
-2. **Message Content Intent.** If it is off, gray links straight to the
-   toggle (`https://discord.com/developers/applications/<app-id>/bot` →
-   Privileged Gateway Intents → Message Content Intent → Save Changes);
-   Enter re-checks (up to five times), `s`/`skip` keeps going. The plugin's
-   doctor refuses to pass until it is on.
-3. **Invite link.** Printed with the right permissions, one click to add the
-   bot (the wording changes when the bot is in no server yet):
-   `https://discord.com/oauth2/authorize?client_id=<app-id>&scope=bot+applications.commands&permissions=309240908864&integration_type=0`.
-   `309240908864` is Add Reactions (6), View Channels (10), Send Messages
-   (11), Embed Links (14), Attach Files (15), Read Message History (16),
-   Connect (20), Speak (21), Create Public Threads (35) and Send Messages in
-   Threads (38) (`setup::discord_check::INVITE_PERMISSION_BITS`).
-4. **You are allowlisted.** The same response names the application's owner
-   (or every accepted member of its team), so no Developer Mode is needed:
-   gray fills `owner_id` when none is set and adds the owner to
-   `allowed_users`, starting from whoever is already there and only adding.
-
-Hand-written, the config looks like this (paths are absolute; gray fills
-`gray_bin`, `gray_home` and `workdir` for you):
-
-```json
-{
-  "token": "<bot token from the Bot page: Reset Token>",
-  "owner_id": "<your Discord user ID>",
-  "allowed_users": ["<another user ID>"],
-  "channel_id": "<home channel ID, or the DM channel with the owner>",
-  "gray_bin": "/home/you/.local/bin/gray",
-  "gray_home": "/home/you/.gray",
-  "workdir": "/home/you/.config/gray-discord"
-}
-```
-
-Portal: <https://discord.com/developers/applications> → New Application →
-Bot → Reset Token. Other people's IDs still need Developer Mode (Settings →
-Advanced → Developer Mode, then right-click their name → Copy User ID), or
-let them DM the bot and approve its pairing code with
-`gray discord pairing approve discord <code>`.
-
 ## codex-auth (ChatGPT subscription provider)
 
 `codex-auth` is a protocol-1.2 provider plugin. It owns the ChatGPT

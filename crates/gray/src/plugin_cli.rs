@@ -32,9 +32,7 @@ pub static DISCORD_SETUP: SetupDecl = SetupDecl {
         SetupField {
             key: "token",
             kind: FieldKind::Required,
-            // Checked with Discord (GET /applications/@me) before it is
-            // saved: a rejected token is re-asked, never written.
-            description: "Discord bot token — Developer Portal, your app, Bot, Reset Token (checked with Discord before it is saved)",
+            description: "Discord bot token — Developer Portal, your app, Bot, Reset Token",
             url: Some("https://discord.com/developers/applications"),
             secret: true,
             picker: None,
@@ -43,10 +41,9 @@ pub static DISCORD_SETUP: SetupDecl = SetupDecl {
             key: "owner_id",
             // Not Required: the app runs ownerless and admits its first human
             // through the Discord-side pairing reply (their own ID, told to
-            // them by the bot), so nobody has to hunt a snowflake. A token
-            // that checks out fills it from the application's owner.
+            // them by the bot), so nobody has to hunt a snowflake.
             kind: FieldKind::Optional,
-            description: "Your Discord user ID — filled in from the bot's owner once the token checks out; gates who can trigger the bot",
+            description: "Your Discord user ID (Developer Mode, Copy User ID) — gates who can trigger the bot",
             url: None,
             secret: false,
             picker: None,
@@ -62,7 +59,7 @@ pub static DISCORD_SETUP: SetupDecl = SetupDecl {
         SetupField {
             key: "allowed_users",
             kind: FieldKind::Optional,
-            description: "Extra user IDs allowed to trigger the bot (comma-separated; the owner is added for you, existing entries are kept)",
+            description: "Extra user IDs allowed to trigger the bot (comma-separated)",
             url: None,
             secret: false,
             picker: None,
@@ -95,7 +92,6 @@ pub static DISCORD_SETUP: SetupDecl = SetupDecl {
     verify: &["gray-discord", "doctor"],
     post_steps: &["register", "start"],
     service: Some(&["gray-discord", "run"]),
-    check: Some(crate::setup::registry::CHECK_DISCORD_BOT),
 };
 
 /// First-party plugins, pinned by commit. Every entry is a Rust crate built
@@ -1401,18 +1397,6 @@ mod tests {
             FieldKind::Optional
         );
         assert!(DISCORD_SETUP.field("token").unwrap().secret);
-        // The token is checked with Discord before the write, and nothing
-        // sends the operator to Developer Mode any more.
-        assert_eq!(
-            DISCORD_SETUP.check,
-            Some(crate::setup::registry::CHECK_DISCORD_BOT)
-        );
-        assert!(
-            DISCORD_SETUP
-                .fields
-                .iter()
-                .all(|f| !f.description.contains("Developer Mode")),
-        );
     }
 }
 

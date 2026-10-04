@@ -117,33 +117,3 @@ fn rest_impl_refuses_are_described_without_the_token() {
     assert!(text.contains("403"));
     assert!(!text.contains("Bot "));
 }
-
-#[test]
-fn rest_calls_use_the_bot_authorization_header() {
-    // Discord answers a Bearer header with 401 for bot tokens: the picker
-    // must send `Authorization: Bot <token>`, the same as the token check.
-    let (base, request) =
-        crate::setup::discord_check::tests::stub_discord("200 OK", r#"[{"id":"1","name":"test"}]"#);
-    let source = RestChannels::with_base("tok.en.value", &base).unwrap();
-    let guilds = source.guilds().unwrap();
-    assert_eq!(guilds.len(), 1);
-    let request = request.recv().unwrap().to_ascii_lowercase();
-    assert!(request.starts_with("get /users/@me/guilds"), "{request}");
-    assert!(
-        request.contains("authorization: bot tok.en.value"),
-        "{request}"
-    );
-    assert!(!request.contains("bearer"), "{request}");
-}
-
-#[test]
-fn a_refused_rest_call_never_echoes_the_token() {
-    let (base, _request) = crate::setup::discord_check::tests::stub_discord(
-        "401 Unauthorized",
-        r#"{"message":"401: Unauthorized"}"#,
-    );
-    let source = RestChannels::with_base("sk-SECRET.part.two", &base).unwrap();
-    let err = format!("{:#}", source.guilds().err().expect("a 401 must fail"));
-    assert!(err.contains("401"), "{err}");
-    assert!(!err.contains("sk-SECRET"), "{err}");
-}

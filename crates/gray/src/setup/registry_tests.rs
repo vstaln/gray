@@ -56,7 +56,6 @@ const TEST_DECL: SetupDecl = SetupDecl {
     verify: &["test-app", "doctor"],
     post_steps: &["register", "start"],
     service: Some(&["test-app", "run"]),
-    check: None,
 };
 
 fn write_config(home: &Path, body: &str) {
