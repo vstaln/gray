@@ -7,11 +7,11 @@ pub(crate) fn print_exit_hint(session_state: &Option<SessionState>) {
         use std::io::IsTerminal as _;
         if std::io::stdout().is_terminal() {
             println!(
-                "\x1b[2mTo resume: gray resume {}\x1b[0m",
+                "\x1b[2mTo resume: gray -r {}\x1b[0m",
                 state.session_id.as_str()
             );
         } else {
-            println!("To resume: gray resume {}", state.session_id.as_str());
+            println!("To resume: gray -r {}", state.session_id.as_str());
         }
         let _ = std::io::stdout().flush();
     }
@@ -333,7 +333,7 @@ pub(crate) async fn ensure_session_state(
         && let Some(root) = default_root()
     {
         let store = JsonlSessionStore::new(root);
-        let session_id = SessionId::generate();
+        let session_id = store.fresh_id().await;
         let timestamp = crate::print::now_millis();
         let meta = SessionMeta::new(
             session_id.clone(),

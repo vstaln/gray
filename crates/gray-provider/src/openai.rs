@@ -1761,6 +1761,32 @@ struct DynamicToolCall {
     done: bool,
 }
 
+/// Per-stream SSE breadcrumb: total events parsed plus the last 8 event
+/// `type` strings, carried in the streaming state so an
+/// "ended before response.completed" warn log can name what the stream
+/// actually contained. Logging only — no behavior change.
+#[derive(Default)]
+struct EventTrail {
+    count: usize,
+    tail: VecDeque<String>,
+}
+
+impl EventTrail {
+    const TAIL_CAP: usize = 8;
+
+    fn push(&mut self, typ: &str) {
+        self.count += 1;
+        if self.tail.len() == Self::TAIL_CAP {
+            self.tail.pop_front();
+        }
+        self.tail.push_back(typ.to_string());
+    }
+
+    fn tail_joined(&self) -> String {
+        self.tail.iter().cloned().collect::<Vec<_>>().join(",")
+    }
+}
+
 enum DynamicState {
     Init {
         client: reqwest::Client,
@@ -1777,6 +1803,7 @@ enum DynamicState {
         pending: VecDeque<StreamEvent>,
         last_usage: Option<Usage>,
         completed: bool,
+        trail: EventTrail,
     },
     Done,
 }
@@ -2090,6 +2117,7 @@ async fn dynamic_step(
                             pending: VecDeque::new(),
                             last_usage: None,
                             completed: false,
+                            trail: EventTrail::default(),
                         };
                     }
                     Err(error) => return Some((Err(error), DynamicState::Done)),
@@ -2102,6 +2130,7 @@ async fn dynamic_step(
                 mut pending,
                 mut last_usage,
                 mut completed,
+                mut trail,
             } => {
                 if completed && pending.is_empty() {
                     return None;
@@ -2109,6 +2138,10 @@ async fn dynamic_step(
                 let next = event_stream.next().await;
                 match next {
                     None => {
+                        log::warn!(target: "gray_provider", "responses stream ended before response.completed: events={} tail=[{}] pending_tool_calls={}",
+                            trail.count,
+                            trail.tail_joined(),
+                            tools.values().filter(|c| !c.done).count());
                         return Some((
                             Err(ProviderError::Stream(
                                 "dynamic Responses stream ended before response.completed".into(),
@@ -2132,10 +2165,15 @@ async fn dynamic_step(
                                 pending,
                                 last_usage,
                                 completed,
+                                trail,
                             };
                             continue;
                         }
                         if data == "[DONE]" {
+                            log::warn!(target: "gray_provider", "responses stream ended before response.completed: events={} tail=[{}] pending_tool_calls={}",
+                                trail.count,
+                                trail.tail_joined(),
+                                tools.values().filter(|c| !c.done).count());
                             return Some((
                                 Err(ProviderError::Stream(
                                     "dynamic Responses stream ended before response.completed"
@@ -2155,6 +2193,7 @@ async fn dynamic_step(
                                 ));
                             }
                         };
+                        trail.push(value.get("type").and_then(|v| v.as_str()).unwrap_or(""));
                         match process_dynamic_event(
                             value,
                             &mut pending,
@@ -2174,6 +2213,7 @@ async fn dynamic_step(
                                 pending,
                                 last_usage,
                                 completed,
+                                trail,
                             };
                             return Some((Ok(event), state));
                         }
@@ -2187,6 +2227,7 @@ async fn dynamic_step(
                             pending,
                             last_usage,
                             completed,
+                            trail,
                         };
                     }
                 }
@@ -2325,6 +2366,7 @@ enum StreamState {
         body: ResponsesRequest,
         stream_attempt: usize,
         last_response_id: Option<String>,
+        trail: EventTrail,
     },
     Done,
 }
@@ -2647,6 +2689,7 @@ fn stream_unfold_step(
                                 stream_attempt,
                                 last_response_id,
                                 saw_output_text: false,
+                                trail: EventTrail::default(),
                             };
                         }
                         Err((err, floor, http_status)) => {
@@ -3110,6 +3153,7 @@ fn stream_unfold_step(
                     body,
                     stream_attempt,
                     mut last_response_id,
+                    mut trail,
                 } => {
                     if let Some(event) = pending_events.pop_front() {
                         return Some((
@@ -3128,6 +3172,7 @@ fn stream_unfold_step(
                                 stream_attempt,
                                 last_response_id,
                                 saw_output_text,
+                                trail,
                             },
                         ));
                     }
@@ -3153,6 +3198,7 @@ fn stream_unfold_step(
                                     stream_attempt,
                                     last_response_id,
                                     saw_output_text,
+                                    trail,
                                 };
                                 continue;
                             }
@@ -3168,6 +3214,7 @@ fn stream_unfold_step(
                                 }
                             };
                             let typ = value.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                            trail.push(typ);
                             // Retain the response envelope id for resume:
                             // `response.created`/`response.completed` carry
                             // `response.id`, deltas carry `response_id`.
@@ -3498,6 +3545,7 @@ fn stream_unfold_step(
                                 stream_attempt,
                                 last_response_id,
                                 saw_output_text,
+                                trail,
                             };
                         }
                         Some(Err(err)) => {
@@ -3575,9 +3623,26 @@ fn stream_unfold_step(
                                     body,
                                     stream_attempt,
                                     last_response_id,
+                                    trail,
                                 };
                                 continue;
                             }
+                            // Name what the stream actually contained: total
+                            // events, last few types, unconfirmed tool calls
+                            // (distinct output indices, deduping the
+                            // call_id/item_id twins), and whether a response
+                            // id ever arrived (some/none — never the value).
+                            let pending_tool_calls = tools_by_call_id
+                                .values()
+                                .map(|(idx, _, _)| *idx)
+                                .collect::<std::collections::BTreeSet<_>>()
+                                .len();
+                            log::warn!(target: "gray_provider", "responses stream ended before response.completed: events={} tail=[{}] pending_tool_calls={} saw_output_text={} response_id={}",
+                                trail.count,
+                                trail.tail_joined(),
+                                pending_tool_calls,
+                                saw_output_text,
+                                if last_response_id.is_some() { "some" } else { "none" });
                             return Some((
                                 Err(ProviderError::Stream(
                                     "Responses stream ended before response.completed".into(),

@@ -840,7 +840,11 @@ async fn run_print_inner(
     let store = JsonlSessionStore::default();
     // Explicit `--session` wins over `-c` (same precedence as the REPL).
     let resume_target: Option<SessionId> = match session {
-        Some(raw) if json.is_some() && uuid::Uuid::parse_str(raw).is_ok() => {
+        Some(raw)
+            if json.is_some()
+                && crate::session_store::valid_session_id(raw)
+                && store.exists_on_disk(&SessionId::new(raw)).await =>
+        {
             let id = SessionId::new(raw);
             store.maintain(&id).await?;
             Some(id)
@@ -860,7 +864,10 @@ async fn run_print_inner(
         None => Vec::new(),
     };
     // Pin memory to the same durable identity for plain and JSON print mode.
-    let session_id = resume_target.clone().unwrap_or_else(SessionId::generate);
+    let session_id = match resume_target.clone() {
+        Some(id) => id,
+        None => store.fresh_id().await,
+    };
     if let Some(output) = json.as_deref_mut() {
         output.session_id = Some(session_id.as_str().to_owned());
     }
@@ -1108,7 +1115,7 @@ pub async fn save_session(
     cwd: &Path,
     messages: &[Message],
 ) -> anyhow::Result<SessionId> {
-    let session_id = SessionId::generate();
+    let session_id = store.fresh_id().await;
     let timestamp = now_millis();
 
     let meta = SessionMeta::new(

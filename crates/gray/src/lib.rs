@@ -71,6 +71,10 @@ CLAUDE.md above the working directory. Edit with `/agentsmd`
 You are Gray, running on the user's machine.
 "#;
 
+/// `--bare` system prompt, the whole of it: mini-swe-agent's and dsh minimal's
+/// one-line persona, no runtime context. The task says the rest.
+pub const BARE_SYS_PROMPT: &str = "You are a helpful assistant that can interact with a computer.";
+
 /// Resolves the user's system-prompt file path (`$GRAY_HOME` or `$HOME/.gray`) + `AGENTS.md`.
 ///
 /// Single editable system prompt — users add to this one file. Migrates legacy `sys.md` if present.
@@ -208,9 +212,9 @@ pub async fn build_agent(
     };
     // Keyless upstreams (free tiers, local servers) run with an empty key.
     let api_key = config.api_key.as_deref().unwrap_or("");
-    // Bare: the embedded default, never the user's file (and never create it).
+    // Bare: one fixed line, never the user's file (and never create it).
     let body = if config.bare {
-        DEFAULT_SYS_PROMPT.to_string()
+        BARE_SYS_PROMPT.to_string()
     } else {
         load_or_create_system_prompt_at(&sys_prompt_path()?)?
     };
@@ -251,7 +255,9 @@ pub async fn build_agent(
         reasoning_effort,
         temperature: config.temperature,
         top_p: config.top_p,
-        context_window: Some(crate::setup::context::resolve_model_context_length(model)),
+        // No window = no in-loop compaction; bare runs to the provider's limit.
+        context_window: (!config.bare)
+            .then(|| crate::setup::context::resolve_model_context_length(model)),
         session_id: session_id.map(str::to_string),
         cwd: cwd.to_path_buf(),
         // Stored instructions verbatim; no runtime context (cwd etc.).
@@ -351,6 +357,18 @@ pub struct Cli {
     #[arg(long, value_name = "ID")]
     pub session: Option<String>,
 
+    /// Resume a session: `-r <ID>` works like `--session <ID>`, bare `-r`
+    /// opens the same picker as `gray resume`
+    #[arg(
+        short = 'r',
+        long = "resume",
+        value_name = "ID",
+        num_args = 0..=1,
+        conflicts_with = "session",
+        conflicts_with = "continue_last"
+    )]
+    pub resume: Option<Option<String>>,
+
     /// Override model context window in tokens (e.g. 128000 or 128k). Env: GRAY_CONTEXT_WINDOW. Highest priority over auto-fetched provider value.
     #[arg(long, value_name = "TOKENS", value_parser = parse_context_window_cli)]
     pub context_window: Option<usize>,
@@ -371,9 +389,9 @@ pub struct Cli {
     #[arg(long = "skill")]
     pub skill: bool,
 
-    /// Bare run: gray's stock system prompt and the bash tool, nothing else.
-    /// Skips ~/.gray/AGENTS.md, memory, skills, project AGENTS.md/CLAUDE.md,
-    /// plugins (gray.yml, installed, pi), cache warming and the update check.
+    /// Bare run, mini-swe-agent shaped: a one-line system prompt and plain
+    /// blocking bash (no job control), no compaction. Skips ~/.gray/AGENTS.md,
+    /// memory, skills, project AGENTS.md/CLAUDE.md, plugins (gray.yml, installed, pi), cache warming and the update check.
     /// Model/provider config still loads. Env: GRAY_BARE=1.
     #[arg(long)]
     pub bare: bool,
@@ -458,7 +476,7 @@ pub enum Commands {
     },
     /// Resume a previous conversation
     Resume {
-        /// Session id (UUID or prefix). If omitted, shows picker unless --last.
+        /// Session id (three-word name or UUID, or a prefix of either). If omitted, shows picker unless --last.
         #[arg(value_name = "SESSION_ID")]
         session_id: Option<String>,
         /// Resume the most recent session without showing the picker

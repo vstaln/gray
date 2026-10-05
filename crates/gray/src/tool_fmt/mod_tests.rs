@@ -427,8 +427,8 @@ fn web_fetch_renders_a_verb_with_the_url() {
 #[test]
 fn web_search_body_renders_like_bash() {
     // Screenshot case: each `web_search` was a header-only dark card.
-    // The sidecar returns JSON; the card must carry it like bash does
-    // (pretty-printed, numbered) instead of an empty body.
+    // The sidecar returns JSON; the card must render the results as
+    // readable numbered lines, not bare JSON and not an empty body.
     let out = r#"{"provider":"bing","results":[{"title":"t","url":"https://example.com","snippet":"hi"}]}"#;
     let lines = format_tool_result_lines_with_context("web_search", None, out, false, None);
     assert!(
@@ -441,6 +441,7 @@ fn web_search_body_renders_like_bash() {
         "body not numbered like bash: {text:?}"
     );
     assert!(text.contains("example.com"), "result lost: {text:?}");
+    assert!(!text.contains('{'), "bare json leaked: {text:?}");
 }
 
 #[test]
@@ -463,12 +464,94 @@ fn web_fetch_body_renders_like_bash() {
 
 #[test]
 fn web_search_caps_long_output_like_bash() {
+    // Non-JSON output falls back to the generic path and caps like bash.
     let out: String = (1..=60)
         .map(|i| format!("result {i}"))
         .collect::<Vec<_>>()
         .join("\n");
     let lines = format_tool_result_lines_with_context("web_search", None, &out, false, None);
     assert_eq!(lines.len(), 25, "must cap like bash, got {}", lines.len());
+}
+
+#[test]
+fn web_search_results_render_readable_and_decode_entities() {
+    let out = r#"{"provider":"bing","results":[
+        {"title":"First title","url":"https://a.example","snippet":"Sep 22, 2026 &nbsp;&#0183;&#32;LibreWolf is a browser"},
+        {"title":"Second title","url":"https://b.example","snippet":"plain snippet"}
+    ]}"#;
+    let lines = format_tool_result_lines_with_context("web_search", None, out, false, None);
+    let text: String = lines.iter().map(row_text).collect::<Vec<_>>().join("\n");
+    for needle in [
+        "First title",
+        "https://a.example",
+        "Second title",
+        "https://b.example",
+        "\u{00b7}",
+    ] {
+        assert!(text.contains(needle), "missing {needle:?}: {text:?}");
+    }
+    for banned in ["&#0183;", "\"provider\"", "\"results\"", "{"] {
+        assert!(!text.contains(banned), "leaked {banned:?}: {text:?}");
+    }
+}
+
+#[test]
+fn web_search_unrecognized_json_falls_back_to_pretty() {
+    let out = r#"{"foo":1}"#;
+    let lines = format_tool_result_lines_with_context("web_search", None, out, false, None);
+    let text: String = lines.iter().map(row_text).collect::<Vec<_>>().join("\n");
+    assert!(text.contains("\"foo\""), "pretty json lost: {text:?}");
+}
+
+#[test]
+fn web_search_empty_results_says_no_results() {
+    let out = r#"{"provider":"bing","results":[]}"#;
+    let lines = format_tool_result_lines_with_context("web_search", None, out, false, None);
+    let text: String = lines.iter().map(row_text).collect::<Vec<_>>().join("\n");
+    assert!(text.contains("no results"), "got: {text:?}");
+}
+
+#[test]
+fn web_fetch_decodes_entities_and_keeps_unknown_literal() {
+    let out = "don&#x27;t &quot;x&quot; &#27;";
+    let lines = format_tool_result_lines_with_context("web_fetch", None, out, false, None);
+    let text: String = lines.iter().map(row_text).collect::<Vec<_>>().join("\n");
+    assert!(text.contains("don't \"x\""), "entities undecoded: {text:?}");
+    assert!(
+        text.contains("&#27;"),
+        "control-decoding ref must stay literal: {text:?}"
+    );
+}
+
+#[test]
+fn web_fetch_giant_line_is_char_truncated_not_row_flooded() {
+    // One ~5000-char line used to wrap into hundreds of rows (the 40-line
+    // cap counts raw lines, not wrapped rows); the body is cut to ~2000
+    // chars with a `… +N chars` marker instead.
+    let out = "word ".repeat(1000);
+    let lines = format_tool_result_lines_with_context("web_fetch", None, &out, false, None);
+    let text: String = lines.iter().map(row_text).collect::<Vec<_>>().join("\n");
+    assert!(text.contains("… +"), "no truncation marker: {text:?}");
+    assert!(text.contains("chars"), "no char count: {text:?}");
+    assert!(
+        lines.len() < 40,
+        "giant fetch flooded the card: {} rows",
+        lines.len()
+    );
+}
+
+#[test]
+fn web_search_many_results_hit_the_omission_marker() {
+    // 20 results → 60 body lines → bash-style 18-head/6-tail cap.
+    let results: Vec<String> = (1..=20)
+        .map(|i| {
+            format!(r#"{{"title":"title {i}","url":"https://r{i}.example","snippet":"s{i}"}}"#)
+        })
+        .collect();
+    let out = format!(r#"{{"provider":"bing","results":[{}]}}"#, results.join(","));
+    let lines = format_tool_result_lines_with_context("web_search", None, &out, false, None);
+    let text: String = lines.iter().map(row_text).collect::<Vec<_>>().join("\n");
+    assert!(text.contains("… +"), "no omission marker: {text:?}");
 }
 
 #[test]
