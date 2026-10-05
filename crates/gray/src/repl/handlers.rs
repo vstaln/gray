@@ -38,7 +38,7 @@ fn paste_skill_into_chat(
 ) {
     if let Some(shared) = tui {
         let args = serde_json::json!({ "name": name });
-        let header = crate::tool_fmt::format_tool_call_header("skill", &args, Some(cwd));
+        let header = crate::tool_fmt::format_tool_call_header("skill", &args, Some(cwd), None);
         let body: Vec<ratatui::text::Line<'static>> = expanded
             .lines()
             .map(|l| ratatui::text::Line::from(l.to_string()))

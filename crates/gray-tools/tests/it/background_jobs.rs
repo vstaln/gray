@@ -345,3 +345,63 @@ fn runtime_teardown_kills_a_running_background_group() {
     assert!(!dir.path().join("escaped").exists());
     drop(tool);
 }
+
+#[tokio::test]
+async fn job_ids_are_named_after_the_command() {
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = ctx(dir.path());
+    let tool = BashTool::default();
+    let mut ids = vec![];
+    for _ in 0..2 {
+        let out = tool
+            .execute(
+                &ctx,
+                json!({"command": "cd . && nice -n 5 sleep 0.2", "background": true, "timeout": 10}),
+            )
+            .await;
+        ids.push(job_id(&out));
+    }
+    // Readable, and a repeat gets a counter instead of a clash.
+    assert_eq!(ids, ["sleep", "sleep-2"]);
+    for id in &ids {
+        let out = result(&tool, &ctx, id).await;
+        assert!(
+            out.content.starts_with(&format!("job {id}\n")),
+            "{}",
+            out.content
+        );
+    }
+}
+
+#[tokio::test]
+async fn an_unknown_job_names_the_jobs_that_exist() {
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = ctx(dir.path());
+    let tool = BashTool::default();
+    let none = tool
+        .execute(&ctx, json!({"action": "output", "job_id": "cargo-check"}))
+        .await;
+    assert!(none.is_error);
+    assert!(
+        none.content.contains("no background jobs in this session"),
+        "{}",
+        none.content
+    );
+    let started = tool
+        .execute(
+            &ctx,
+            json!({"command": "sleep 0.2", "background": true, "timeout": 10}),
+        )
+        .await;
+    let id = job_id(&started);
+    let typo = tool
+        .execute(&ctx, json!({"action": "status", "job_id": "slep"}))
+        .await;
+    assert!(typo.is_error);
+    assert!(
+        typo.content.contains(&format!("jobs here: {id}")),
+        "{}",
+        typo.content
+    );
+    result(&tool, &ctx, &id).await;
+}

@@ -332,8 +332,8 @@ pub fn settle_connect_config(
 }
 
 /// The API key saved for this session's own endpoint, when it differs from
-/// the one the session holds. Another window's `/connect` or `gray login`
-/// rewrites the file, and before this only a restart picked that up. A
+/// the one the session holds. Another window's `/connect` rewrites the
+/// file, and before this only a restart picked that up. A
 /// different saved endpoint or a plugin connection is that window's provider
 /// switch, never adopted here.
 pub fn saved_key_update(config: &Config, saved: &SavedConfig) -> Option<String> {

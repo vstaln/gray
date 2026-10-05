@@ -32,6 +32,8 @@ pub struct ActiveToolCall {
     /// Display-only headline (plugin `label`): renderer-injected into a
     /// copy of args, so the wire args the executor saw stay untouched.
     pub label: Option<String>,
+    /// Display-only arg preview path (plugin `preview`): same injection.
+    pub preview: Option<String>,
 }
 
 /// Renders a single AgentEvent with active tool tracking and CWD context.
@@ -45,6 +47,7 @@ pub fn render_event_with_context<W: Write>(
     cwd: Option<&Path>,
     in_flight: &mut HashMap<String, ActiveToolCall>,
     tool_labels: &HashMap<String, String>,
+    tool_previews: &HashMap<String, String>,
 ) -> std::io::Result<()> {
     match event {
         AgentEvent::Start => Ok(()),
@@ -62,6 +65,7 @@ pub fn render_event_with_context<W: Write>(
                 id.clone(),
                 ActiveToolCall {
                     label: tool_labels.get(name).cloned(),
+                    preview: tool_previews.get(name).cloned(),
                     name: name.clone(),
                     args: None,
                 },
@@ -70,10 +74,12 @@ pub fn render_event_with_context<W: Write>(
         }
         AgentEvent::ToolCallProgress { id, name, .. } => {
             let label = tool_labels.get(name).cloned();
+            let preview = tool_previews.get(name).cloned();
             in_flight.entry(id.clone()).or_insert(ActiveToolCall {
                 name: name.clone(),
                 args: None,
                 label,
+                preview,
             });
             Ok(())
         }
@@ -89,6 +95,7 @@ pub fn render_event_with_context<W: Write>(
                     name: "tool".to_string(),
                     args: None,
                     label,
+                    preview: None,
                 }
             });
             entry.args = Some(args.clone());
@@ -104,10 +111,16 @@ pub fn render_event_with_context<W: Write>(
                 }
                 None => args,
             };
+            // The declared preview path comes from the tool's manifest entry —
+            // a wire `preview` argument is data, not a display directive.
+            let preview_path = entry
+                .preview
+                .as_deref()
+                .or_else(|| tool_previews.get(name).map(String::as_str));
             writeln!(
                 w,
                 "\n{}",
-                crate::tool_fmt::format_tool_call_header_plain(name, args, cwd)
+                crate::tool_fmt::format_tool_call_header_plain(name, args, cwd, preview_path)
             )?;
             w.flush()
         }
@@ -280,6 +293,7 @@ async fn run_print_mode_json_message(
         stream_text: stream_text_enabled(),
         segment: TextSegment::default(),
         labels: HashMap::new(),
+        previews: HashMap::new(),
     };
     let result = match crate::print_meter::Meter::new(
         max_requests.unwrap_or(32),
@@ -470,6 +484,10 @@ struct JsonOutput {
     /// Display names for plugin tools that declare a manifest `label`.
     /// Every other tool is named by humanizing its wire name.
     labels: HashMap<String, String>,
+    /// Arg preview dot paths for plugin tools that declare a manifest
+    /// `preview`. Same contract as `labels`: display-only, never
+    /// model-visible.
+    previews: HashMap<String, String>,
 }
 
 /// The assistant prose streamed since the last tool boundary. A new segment
@@ -592,7 +610,18 @@ impl JsonOutput {
                     row["tool"] = name.as_str().into();
                     row["label"] = self.display_name(name).into();
                     row["call_id"] = disclose(id, DETAIL_CAP).into();
-                    if let Some(detail) = tool_detail(name, args) {
+                    // Surface-declared preview first: the plugin names a dot
+                    // path, core resolves it. Falls through to the built-in
+                    // arms when the path resolves to nothing.
+                    let preview = self
+                        .previews
+                        .get(name)
+                        .map(|x| x.trim())
+                        .filter(|x| !x.is_empty())
+                        .and_then(|path| crate::tool_fmt::preview_at(args, path));
+                    // The resolved text passes explicitly — a wire `preview`
+                    // arg is data, never a display directive.
+                    if let Some(detail) = tool_detail(name, args, preview.as_deref()) {
                         row["detail"] = detail.into();
                     }
                 }
@@ -748,8 +777,13 @@ fn disclose_output(text: &str, cap: usize) -> String {
 /// The one-line "what did it just do" for known tools. Returns `None` for
 /// anything else rather than dumping raw args: a value we do not
 /// understand is exactly where a token hides.
-fn tool_detail(name: &str, args: &serde_json::Value) -> Option<String> {
+fn tool_detail(name: &str, args: &serde_json::Value, preview: Option<&str>) -> Option<String> {
     let arg = |k: &str| args.get(k).and_then(serde_json::Value::as_str);
+    // Plugin-declared arg preview: the surface resolved the declared path
+    // and passes the text explicitly — never read from wire args.
+    if let Some(text) = preview {
+        return Some(disclose(text, DETAIL_CAP));
+    }
     match name {
         "bash" | "shell" => arg("command").map(|c| disclose(c, DETAIL_CAP)),
         "read" | "view" | "cat" => {
@@ -779,14 +813,6 @@ fn tool_detail(name: &str, args: &serde_json::Value) -> Option<String> {
             .map(|n| disclose(n, DETAIL_CAP)),
         "web_search" => arg("query").map(|q| disclose(q, DETAIL_CAP)),
         "web_fetch" => arg("url").map(|u| disclose(u, DETAIL_CAP)),
-        "discord_send" => arg("content").map(|c| disclose(c, DETAIL_CAP)),
-        "discord_send_ui" | "discord_open_modal" | "discord_ui_schema" => {
-            Some("(discord ui)".to_string())
-        }
-        "discord_file" => arg("path")
-            .or_else(|| arg("file_id"))
-            .or_else(|| arg("action"))
-            .map(|v| disclose(v, DETAIL_CAP)),
         _ => None,
     }
 }
@@ -866,8 +892,20 @@ async fn run_print_inner(
                 .map(|l| (t.name.clone(), l.to_string()))
         })
         .collect();
+    let tool_previews: std::collections::HashMap<String, String> = agent
+        .tool_defs()
+        .iter()
+        .filter_map(|t| {
+            t.preview
+                .as_ref()
+                .map(|x| x.trim())
+                .filter(|x| !x.is_empty())
+                .map(|x| (t.name.clone(), x.to_string()))
+        })
+        .collect();
     if let Some(output) = json.as_deref_mut() {
         output.labels = tool_labels.clone();
+        output.previews = tool_previews.clone();
     }
     if resume_target.is_none() {
         store
@@ -927,6 +965,7 @@ async fn run_print_inner(
                     Some(&cwd),
                     &mut in_flight,
                     &tool_labels,
+                    &tool_previews,
                 ),
             };
             if let Err(e) = rendered {

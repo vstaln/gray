@@ -132,12 +132,12 @@ pub fn format_live_tool_header(name: &str, args_so_far: &str, cwd: Option<&Path>
     }
     // Fast path: complete JSON renders exactly like the final header.
     if let Ok(v) = serde_json::from_str::<serde_json::Value>(trimmed) {
-        return format_tool_call_header(name, &v, cwd);
+        return format_tool_call_header(name, &v, cwd, None);
     }
     // Slow path: stream the in-progress scalar, tolerating unclosed quotes
     // and trailing escapes. Stays a dumb string scan (no new deps).
     match extract_partial_scalar(name, trimmed, RAW_CAP) {
-        Some(partial) => format_tool_call_header(name, &partial, cwd),
+        Some(partial) => format_tool_call_header(name, &partial, cwd, None),
         None => tool_name_line(name),
     }
 }
@@ -192,8 +192,6 @@ fn scalar_key(name: &str, raw: &str) -> &'static str {
         "grep" | "find" => "pattern",
         "web_search" => "query",
         "web_fetch" => "url",
-        "discord_send" => "content",
-        "discord_file" => "path",
         _ => {
             // key order decides, not a schema table. `path` wins
             // on ties (the final header's `other` arm prefers it too).
@@ -362,6 +360,22 @@ fn skill_display_name(args: &serde_json::Value) -> String {
     "skill".to_string()
 }
 
+/// First non-empty string at a plugin-declared dot path (`"document.title"`).
+/// Core walks object keys only: no array indices, no wildcards, no schema
+/// knowledge. Anything missing, non-string, or whitespace-only is `None`,
+/// so a surface that declares a path for a shape it never sends degrades
+/// to the built-in preview instead of an error.
+pub fn preview_at(args: &serde_json::Value, path: &str) -> Option<String> {
+    let mut cur = args;
+    for key in path.split('.').map(str::trim).filter(|k| !k.is_empty()) {
+        cur = cur.as_object()?.get(key)?;
+    }
+    cur.as_str()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
 /// Args with a display-only `label` injected (plugin `label` support).
 /// Renderers read `label` in the `other` arm; sub-renderers
 /// (`arg_path`, previews) ignore unknown keys, so injection is safe.
@@ -382,10 +396,14 @@ pub fn with_tool_label(args: &serde_json::Value, label: Option<&str>) -> serde_j
 }
 
 /// Formats a tool invocation header line matching Grok CLI styling for Ratatui.
+///
+/// `preview_path` is the plugin-declared dot path into `args` (display
+/// metadata, never a wire argument — a real `preview` arg stays opaque).
 pub fn format_tool_call_header(
     name: &str,
     args: &serde_json::Value,
     cwd: Option<&Path>,
+    preview_path: Option<&str>,
 ) -> Line<'static> {
     let bullet = Span::styled(
         "\u{2b22} ",
@@ -405,25 +423,7 @@ pub fn format_tool_call_header(
     let dim_style = Style::default().fg(crate::theme::theme().tool_dim);
 
     match name {
-        "bash" => {
-            let full = args
-                .get("command")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .trim();
-            let cut = truncate_cmd(full);
-            // A cut command says so: `… | sort |` alone reads as a broken pipe.
-            let cmd = if cut.len() < full.len() {
-                format!("{}\u{2026}", cut.trim_end())
-            } else {
-                cut.to_string()
-            };
-            Line::from(vec![
-                bullet,
-                Span::styled("Ran ", action_style),
-                Span::styled(cmd, cmd_style),
-            ])
-        }
+        "bash" => bash_header(args, bullet, action_style, cmd_style, dim_style),
         "write" => {
             let path = shorten_path(arg_path(args), cwd);
             let content = arg_content(args);
@@ -530,51 +530,6 @@ pub fn format_tool_call_header(
                 Span::styled(cut.to_string(), path_style),
             ])
         }
-        "discord_send" => {
-            let content = args
-                .get("content")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .trim();
-            let cut = truncate_cmd(content);
-            let shown = if cut.len() < content.len() {
-                format!("{}{}", cut.trim_end(), "…")
-            } else {
-                cut.to_string()
-            };
-            Line::from(vec![
-                bullet,
-                Span::styled("Sent Discord ", action_style),
-                Span::styled(format!("\"{shown}\""), cmd_style),
-            ])
-        }
-        "discord_send_ui" => {
-            Line::from(vec![bullet, Span::styled("Sent Discord UI", action_style)])
-        }
-        "discord_open_modal" => Line::from(vec![
-            bullet,
-            Span::styled("Opened Discord modal", action_style),
-        ]),
-        "discord_file" => {
-            let desc = args.get("action").and_then(|v| v.as_str()).unwrap_or("");
-            let target = args
-                .get("path")
-                .or_else(|| args.get("file_id"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            let mut spans = vec![bullet, Span::styled("Shared Discord file", action_style)];
-            if !target.is_empty() {
-                spans.push(Span::raw(" "));
-                spans.push(Span::styled(shorten_path(target.trim(), cwd), path_style));
-            } else if !desc.is_empty() {
-                spans.push(Span::styled(format!(" ({desc})"), dim_style));
-            }
-            Line::from(spans)
-        }
-        "discord_ui_schema" => Line::from(vec![
-            bullet,
-            Span::styled("Read Discord UI schema", action_style),
-        ]),
         other => {
             // `label` is display-only: a plugin may pass one inside args
             // (see `Agent::with_tool_labels`) so transcripts name the tool
@@ -588,6 +543,22 @@ pub fn format_tool_call_header(
                 .filter(|t| !t.is_empty())
                 .map(str::to_string)
                 .unwrap_or_else(|| humanize_tool_name(other));
+            if let Some(preview_path) = preview_path.map(str::trim).filter(|t| !t.is_empty())
+                && let Some(text) = preview_at(args, preview_path)
+            {
+                let cut = truncate_cmd(&text);
+                let shown = if cut.len() < text.len() {
+                    format!("{}\u{2026}", cut.trim_end())
+                } else {
+                    cut.to_string()
+                };
+                return Line::from(vec![
+                    bullet,
+                    Span::styled(headline.clone(), action_style),
+                    Span::raw(" "),
+                    Span::styled(format!("\"{shown}\""), cmd_style),
+                ]);
+            }
             let path = shorten_path(arg_path(args), cwd);
             if !path.is_empty() {
                 Line::from(vec![
@@ -628,6 +599,213 @@ pub fn format_tool_call_header(
             }
         }
     }
+}
+
+/// The `bash` header names what the call did, not just "Ran": one tool runs
+/// commands and manages their background jobs (`action`), so a job check
+/// reads `Waited on cargo-check`, never an empty `Ran`. Commands show
+/// without their setup (`cd … && nice … flock …`, see
+/// [`gray_tools::shell::label`]); a peeled `cd` stays visible, dimmed.
+fn bash_header(
+    args: &serde_json::Value,
+    bullet: Span<'static>,
+    action_style: Style,
+    cmd_style: Style,
+    dim_style: Style,
+) -> Line<'static> {
+    let action = args.get("action").and_then(|v| v.as_str()).unwrap_or("run");
+    let job = args
+        .get("job_id")
+        .and_then(|v| v.as_str())
+        .map(job_label)
+        .unwrap_or_else(|| "job".to_string());
+    let waits = args
+        .get("wait_ms")
+        .and_then(|v| v.as_u64())
+        .filter(|ms| *ms > 0);
+    let verb = |v: &'static str| Span::styled(v, action_style);
+    match action {
+        "output" | "status" => {
+            let mut spans = vec![
+                bullet,
+                verb(if waits.is_some() {
+                    "Waited on "
+                } else {
+                    "Checked "
+                }),
+                Span::styled(job, cmd_style),
+            ];
+            if let Some(ms) = waits {
+                spans.push(Span::styled(
+                    format!(" \u{00b7} up to {}", human_secs(ms.div_ceil(1000))),
+                    dim_style,
+                ));
+            }
+            Line::from(spans)
+        }
+        "cancel" => Line::from(vec![bullet, verb("Stopped "), Span::styled(job, cmd_style)]),
+        "list" => Line::from(vec![
+            bullet,
+            verb("Listed "),
+            Span::styled("background jobs", dim_style),
+        ]),
+        _ => {
+            let full = args
+                .get("command")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim();
+            let core = gray_tools::shell::label::core_command(full);
+            let cut = truncate_cmd(core.command);
+            // A cut command says so: `… | sort |` alone reads as a broken pipe.
+            let cmd = if cut.len() < core.command.len() || full.lines().nth(1).is_some() {
+                format!("{}\u{2026}", cut.trim_end())
+            } else {
+                cut.to_string()
+            };
+            let background = args.get("background").and_then(|v| v.as_bool()) == Some(true);
+            let mut spans = vec![
+                bullet,
+                verb(if background { "Started " } else { "Ran " }),
+                Span::styled(cmd, cmd_style),
+            ];
+            if let Some(dir) = core.cwd {
+                spans.push(Span::styled(format!(" \u{00b7} in {dir}"), dim_style));
+            }
+            if background {
+                spans.push(Span::styled(" \u{00b7} in background", dim_style));
+            }
+            Line::from(spans)
+        }
+    }
+}
+
+/// The verb a running `bash` header shimmers instead of its finished one.
+pub(crate) fn live_bash_verb(done: &str) -> Option<&'static str> {
+    Some(match done {
+        "Ran " => "Running ",
+        "Started " => "Starting ",
+        "Waited on " => "Waiting on ",
+        "Checked " => "Checking ",
+        "Stopped " => "Stopping ",
+        "Listed " => "Listing ",
+        _ => return None,
+    })
+}
+
+/// A job as people read it: its name (`cargo-check`). Ids from before jobs
+/// had names (`bash-<32 hex>`) shrink to `job bbc7b0`.
+fn job_label(id: &str) -> String {
+    match id.strip_prefix("bash-") {
+        Some(hex) if hex.len() == 32 && hex.bytes().all(|b| b.is_ascii_hexdigit()) => {
+            format!("job {}", &hex[..6])
+        }
+        _ => id.to_string(),
+    }
+}
+
+/// `900` → `15m`, `75` → `1m 15s`, `30` → `30s`.
+fn human_secs(secs: u64) -> String {
+    match (secs / 3600, (secs % 3600) / 60, secs % 60) {
+        (0, 0, s) => format!("{s}s"),
+        (0, m, 0) => format!("{m}m"),
+        (0, m, s) => format!("{m}m {s}s"),
+        (h, 0, _) => format!("{h}h"),
+        (h, m, _) => format!("{h}h {m}m"),
+    }
+}
+
+/// Rewrite the `bash` tool's job notices for people, display only. They are
+/// written for the model (`still running · job … · yielded after 10s`, then
+/// how to await it); the card says what is happening instead. Only lines
+/// outside the `<untrusted-output>` fence are touched: command output is
+/// shown exactly as it came.
+fn humanize_bash_notices(text: &str) -> String {
+    let lines: Vec<&str> = text.lines().collect();
+    let open = lines
+        .iter()
+        .position(|l| l.trim_start().starts_with("<untrusted-output"));
+    let close = lines.iter().rposition(|l| {
+        let t = l.trim();
+        t == "</untrusted-output>" || t == "<\\/untrusted-output>"
+    });
+    let in_body = |i: usize| match (open, close) {
+        (Some(o), Some(c)) => i > o && i < c,
+        (Some(o), None) => i > o,
+        _ => false,
+    };
+    let more_after = |i: usize| lines.len() > i + 1;
+    let mut out: Vec<String> = Vec::new();
+    for (i, line) in lines.iter().enumerate() {
+        if in_body(i) || Some(i) == open || Some(i) == close {
+            out.push(line.to_string());
+            continue;
+        }
+        let t = line.trim();
+        // `job cargo-check` above a finished result: the header names it.
+        if i == 0 && more_after(i) && t.starts_with("job ") && t.split_whitespace().count() == 2 {
+            continue;
+        }
+        if MODEL_HINTS.iter().any(|h| t.starts_with(h)) {
+            continue;
+        }
+        if let Some(rest) = t.strip_prefix("still running \u{00b7} job ") {
+            out.push(running_line(rest));
+        } else if let Some(rest) = t.strip_prefix("Liveness: ") {
+            out.push(rest.split(" \u{2014} ").next().unwrap_or(rest).to_string());
+        } else if let Some(rest) = t.strip_prefix("cancellation requested for job ") {
+            out.push(format!(
+                "stopping {}",
+                rest.split(';').next().unwrap_or(rest)
+            ));
+        } else if let Some(cut) = line.find("; rerun without the pipe to check") {
+            // `exit 0 (\`head\` masks earlier stages' exit; rerun …)`: keep
+            // the fact, drop the instruction.
+            let tail = &line[cut + "; rerun without the pipe to check".len()..];
+            out.push(format!("{}{tail}", &line[..cut]));
+        } else if t == "Partial output (snapshot):" {
+            out.push("output so far:".to_string());
+        } else if let Some(rest) = t.strip_prefix("job ")
+            && rest.contains(" \u{00b7} ")
+        {
+            // A status row: `job X · running · elapsed 1m 3s · log …`.
+            out.push(drop_log_field(&rest.replace("elapsed ", "")));
+        } else {
+            out.push(line.to_string());
+        }
+    }
+    out.join("\n")
+}
+
+/// Lines that tell the model what to do next; people never need them.
+const MODEL_HINTS: &[&str] = &[
+    "Continue other work",
+    "Moved to a background job",
+    "Not killed",
+];
+
+/// `cargo-check · yielded after 10s (duration limit, not a stall) ·
+/// timeout 900s · log …` → `running in background as cargo-check · after
+/// 10s · limit 15m`.
+fn running_line(fields: &str) -> String {
+    let mut parts = fields.split(" \u{00b7} ");
+    let id = job_label(parts.next().unwrap_or("job"));
+    let mut out = format!("running in background as {id}");
+    for field in parts {
+        if let Some(after) = field.strip_prefix("yielded after ") {
+            let after = after.split(" (").next().unwrap_or(after);
+            out.push_str(&format!(" \u{00b7} after {after}"));
+        } else if let Some(quiet) = field.strip_prefix("silent: no new output for ") {
+            out.push_str(&format!(" \u{00b7} quiet for {quiet}"));
+        } else if let Some(limit) = field
+            .strip_prefix("timeout ")
+            .and_then(|t| t.strip_suffix('s'))
+            .and_then(|t| t.parse::<u64>().ok())
+        {
+            out.push_str(&format!(" \u{00b7} limit {}", human_secs(limit)));
+        }
+    }
+    out
 }
 
 /// Humanizes a wire name for the transcript (`web_search` renders `Web Search`).
@@ -818,7 +996,7 @@ fn render_numbered_lines(
 pub fn tool_may_render_body(tool_name: &str) -> bool {
     matches!(
         tool_name,
-        "bash" | "grep" | "find" | "ls" | "edit" | "write"
+        "bash" | "grep" | "find" | "ls" | "edit" | "write" | "web_search" | "web_fetch"
     )
 }
 
@@ -892,8 +1070,14 @@ pub fn format_tool_result_lines_with_context(
             return Vec::new();
         }
         let mut lines = Vec::new();
+        // Same margins as a numbered output row (`  ` + `  1 | `): the
+        // mark sits in the number column, the text where output text starts.
         for (i, l) in trimmed.lines().take(8).enumerate() {
-            let prefix = if i == 0 { " ✗ " } else { "   " };
+            let prefix = if i == 0 {
+                "    \u{2717}   "
+            } else {
+                "        "
+            };
             lines.push(Line::from(vec![
                 Span::styled(
                     prefix,
@@ -945,7 +1129,11 @@ pub fn format_tool_result_lines_with_context(
         return Vec::new();
     }
 
-    let trimmed = strip_shell_fence(output.trim());
+    let trimmed = if tool_name == "bash" {
+        strip_shell_fence(&humanize_bash_notices(output.trim()))
+    } else {
+        strip_shell_fence(output.trim())
+    };
     let mut rows = if trimmed.is_empty() {
         Vec::new()
     } else {

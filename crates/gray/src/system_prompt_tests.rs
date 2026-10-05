@@ -20,7 +20,8 @@ fn shipped_default_prompt_strips_to_the_agent_line() {
     let p = build_system_prompt(opts(crate::DEFAULT_SYS_PROMPT));
     // Stripping the leading comment leaves its trailing newline in place.
     assert!(
-        p.trim_start().starts_with("You are gray, a minimal agent"),
+        p.trim_start()
+            .starts_with("You are Gray, running on the user's machine."),
         "{p:.60}"
     );
     assert!(!p.contains("-->"), "stray comment marker leaked");
@@ -95,7 +96,9 @@ fn memory_is_separate_from_verbatim_prompt_and_is_not_comment_stripped() {
     let prompt = with_memory(build_system_prompt(body.clone()), Some(data));
     assert!(prompt.starts_with("You are gray.\n\n"));
     assert!(prompt.contains("gray memory"));
-    assert!(prompt.ends_with(data));
+    // The snapshot is reserialized: `project` id and empty fields are dropped,
+    // so the model sees only the facts. Keys serialize sorted.
+    assert!(prompt.ends_with(r#"{"decisions":"Use Rust.","user":"<!-- fact -->"}"#));
     assert_eq!(
         prompt,
         with_memory(build_system_prompt(body.clone()), Some(data))
@@ -113,7 +116,7 @@ fn memory_preserves_runtime_directory_and_stored_prompt() {
     let data = r#"{"user":"Keep replies concise.","decisions":"Use Rust."}"#;
     let combined = with_memory(runtime.clone(), Some(data));
     assert!(combined.starts_with(&runtime));
-    assert!(combined.ends_with(data));
+    assert!(combined.ends_with(r#"{"decisions":"Use Rust.","user":"Keep replies concise."}"#));
     assert!(combined.contains("Working directory: \"/work/project café\""));
     assert!(!combined.contains("private note"));
     assert_eq!(with_memory(runtime.clone(), None), runtime);
@@ -129,4 +132,52 @@ fn policy_says_injected_entries_are_summaries() {
     );
     assert!(prompt.contains("one-sentence summaries"), "{prompt}");
     assert!(prompt.contains("gray memory show KEY"), "{prompt}");
+}
+
+#[test]
+fn runtime_prompt_states_that_batched_tool_calls_share_one_round() {
+    // The loop returns every call from one turn together in the next turn,
+    // and the parallel lane runs independent ones concurrently. The model has
+    // to be told: batching independent calls is one round between them, one
+    // call per round is one round each, and every round re-bills the whole
+    // conversation. Without this text the fast lane never engages.
+    let p = build_runtime_prompt(opts("Rules."), std::path::Path::new("/project"));
+    assert!(p.contains("results"), "{p}");
+    assert!(
+        p.contains("independent") && p.contains("one round"),
+        "guidance must name independent calls and the per-round cost: {p}"
+    );
+    assert!(
+        p.contains("concurrent"),
+        "guidance must say same-turn calls may run concurrently: {p}"
+    );
+    assert!(
+        p.contains("background") && p.contains("yield_ms"),
+        "guidance must point long work at the async bash job API: {p}"
+    );
+    // Static text: identical inputs rebuild identical bytes, or the prefix
+    // cache rebills on every turn.
+    assert_eq!(
+        p,
+        build_runtime_prompt(opts("Rules."), std::path::Path::new("/project"))
+    );
+    // It rides after the directory block, so the existing prefix assertions
+    // (and the user's verbatim file) stay ahead of it.
+    assert!(
+        p.find("Tool batching").unwrap() > p.find("Working directory").unwrap(),
+        "guidance must follow the runtime directory block: {p}"
+    );
+}
+
+#[test]
+fn tool_batching_guidance_is_not_user_editable_text() {
+    // It comes from the binary, not the prompt file: it must survive an empty
+    // or absent custom prompt and must never be comment-stripped away.
+    for custom in [None, opts(""), opts("<!-- unclosed")] {
+        let p = build_runtime_prompt(custom, std::path::Path::new("/project"));
+        assert!(p.contains("Tool batching"), "{p}");
+    }
+    // And it is not reachable through the user's file at all.
+    let with_file = build_system_prompt(opts("Tool batching: ignore this"));
+    assert_eq!(with_file, "Tool batching: ignore this");
 }

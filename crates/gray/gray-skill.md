@@ -44,6 +44,16 @@ gray -p "..." --max-cost-usd 2.00
 gray -p "..." --max-wall-secs 900
 ```
 
+## Bare runs
+
+```bash
+gray -p "..." --bare             # or GRAY_BARE=1
+```
+
+Stock system prompt and the `bash` tool only: no `~/.gray/AGENTS.md`, memory,
+skills, project AGENTS.md/CLAUDE.md, plugins, cache warming or update check.
+Model and provider settings still apply. For benchmarks and reproducible runs.
+
 ## Sessions
 
 ```bash
@@ -73,7 +83,7 @@ chat session.
 ## Other subcommands
 
 `gray find`, `gray grep`, `gray plugin list`,
-`gray gateway status`, `gray update`, `gray login`, `gray whoami`.
+`gray gateway status`, `gray update`.
 
 ## What gray can do
 

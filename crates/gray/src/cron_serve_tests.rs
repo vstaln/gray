@@ -64,6 +64,7 @@ fn test_config() -> crate::config::Config {
         max_turns: None,
         max_cost_micros: None,
         max_wall_secs: None,
+        bare: false,
     }
 }
 

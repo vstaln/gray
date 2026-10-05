@@ -678,6 +678,8 @@ pub struct BuilderOptions {
     pub extra_plugins: Vec<Arc<dyn Plugin>>,
     pub host_handler: Option<HostHandler>,
     pub profile_path: String,
+    /// Bare run: `tools-minimal` only; no gray.yml profile, no lock sidecars.
+    pub bare: bool,
     pub abort_on_spawn_failure: bool,
     pub wrap_executor: Option<ExecutorWrap>,
     /// Declared plugin-backed provider profile; `None` preserves the
@@ -707,6 +709,7 @@ pub async fn build_agent(opts: BuilderOptions) -> anyhow::Result<Agent> {
         extra_plugins,
         host_handler,
         profile_path,
+        bare,
         abort_on_spawn_failure,
         wrap_executor,
         dynamic_provider_profile,
@@ -714,19 +717,25 @@ pub async fn build_agent(opts: BuilderOptions) -> anyhow::Result<Agent> {
     } = opts;
     // Catalog: any of these may be named in `gray.yml`. Fallback (no profile)
     // is `tools-minimal` — one persistent shell, gray's default surface.
-    let defaults: Vec<Arc<dyn Plugin>> = vec![
+    let mut defaults: Vec<Arc<dyn Plugin>> = vec![
         Arc::new(ToolsMinimalPlugin) as Arc<dyn Plugin>,
         Arc::new(ToolsBasicPlugin) as Arc<dyn Plugin>,
         Arc::new(ToolsSearchPlugin) as Arc<dyn Plugin>,
     ];
-    let (mut plugins, _) = active_plugins(
-        defaults,
-        &["tools-minimal"],
-        &profile_path,
-        host_handler,
-        abort_on_spawn_failure,
-    )
-    .await?;
+    let mut plugins = if bare {
+        defaults.retain(|p| p.manifest().name == "tools-minimal");
+        defaults
+    } else {
+        active_plugins(
+            defaults,
+            &["tools-minimal"],
+            &profile_path,
+            host_handler,
+            abort_on_spawn_failure,
+        )
+        .await?
+        .0
+    };
     // Always-on surface plugins (see `extra_plugins`): appended after the
     // profile + lock set so they survive `tools-minimal`-only profiles.
     // Same-name dedupe as `active_plugins` (later wins) keeps a profile
@@ -793,6 +802,17 @@ pub async fn build_agent(opts: BuilderOptions) -> anyhow::Result<Agent> {
                 .map(|s| (t.name.clone(), s.to_string()))
         })
         .collect();
+    let tool_previews: Vec<(String, String)> = manifests
+        .iter()
+        .flat_map(|m| m.tools.iter())
+        .filter_map(|t| {
+            t.preview
+                .as_ref()
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+                .map(|s| (t.name.clone(), s.to_string()))
+        })
+        .collect();
     let executor: Arc<dyn ToolExecutor> = match wrap_executor {
         Some(wrap) => wrap(Arc::new(registry)),
         None => Arc::new(registry),
@@ -802,6 +822,7 @@ pub async fn build_agent(opts: BuilderOptions) -> anyhow::Result<Agent> {
         .with_system(system)
         .with_tools(tool_defs)
         .with_tool_labels(tool_labels)
+        .with_tool_previews(tool_previews)
         .with_context_window(context_window)
         .with_history_rewrite_hook(Arc::new(move || {
             if let Some(ledger) = &ledger {

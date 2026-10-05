@@ -261,7 +261,7 @@ fn live_header_full_json_matches_final_header() {
     let v: serde_json::Value = serde_json::from_str(raw).unwrap();
     assert_eq!(
         row_text(&format_live_tool_header("bash", raw, None)),
-        row_text(&format_tool_call_header("bash", &v, None)),
+        row_text(&format_tool_call_header("bash", &v, None, None)),
     );
 }
 
@@ -298,7 +298,7 @@ fn live_header_huge_raw_still_streams_prefix() {
     let v: serde_json::Value = serde_json::from_str(&full).unwrap();
     assert_eq!(
         row_text(&format_live_tool_header("bash", &big, None)),
-        row_text(&format_tool_call_header("bash", &v, None)),
+        row_text(&format_tool_call_header("bash", &v, None, None)),
     );
 }
 
@@ -398,7 +398,7 @@ fn a_cancelled_runs_second_line_header_drops_the_log_path_too() {
 #[test]
 fn web_search_renders_a_verb_not_the_wire_name() {
     let args = serde_json::json!({"query": "LibreWolf AppImage download", "max_results": 5});
-    let text = row_text(&format_tool_call_header("web_search", &args, None));
+    let text = row_text(&format_tool_call_header("web_search", &args, None, None));
     assert!(!text.contains("web_search"), "wire name leaked: {text:?}");
     assert!(text.contains("Searched"), "verb missing: {text:?}");
     assert!(
@@ -415,7 +415,7 @@ fn web_search_renders_a_verb_not_the_wire_name() {
 fn web_fetch_renders_a_verb_with_the_url() {
     let args =
         serde_json::json!({"url": "https://librewolf.net/installation/linux/", "max_chars": 8000});
-    let text = row_text(&format_tool_call_header("web_fetch", &args, None));
+    let text = row_text(&format_tool_call_header("web_fetch", &args, None, None));
     assert!(!text.contains("web_fetch"), "wire name leaked: {text:?}");
     assert!(text.contains("Fetched"), "verb missing: {text:?}");
     assert!(
@@ -425,25 +425,143 @@ fn web_fetch_renders_a_verb_with_the_url() {
 }
 
 #[test]
-fn discord_send_renders_a_verb_with_the_content() {
+fn web_search_body_renders_like_bash() {
+    // Screenshot case: each `web_search` was a header-only dark card.
+    // The sidecar returns JSON; the card must carry it like bash does
+    // (pretty-printed, numbered) instead of an empty body.
+    let out = r#"{"provider":"bing","results":[{"title":"t","url":"https://example.com","snippet":"hi"}]}"#;
+    let lines = format_tool_result_lines_with_context("web_search", None, out, false, None);
+    assert!(
+        !lines.is_empty(),
+        "web_search body must render, got header-only"
+    );
+    let text: String = lines.iter().map(row_text).collect::<Vec<_>>().join("\n");
+    assert!(
+        text.contains("1 | "),
+        "body not numbered like bash: {text:?}"
+    );
+    assert!(text.contains("example.com"), "result lost: {text:?}");
+}
+
+#[test]
+fn web_fetch_body_renders_like_bash() {
+    // Same header-only bug for `web_fetch`: fetched text never reached
+    // the card. Plain text must render numbered like bash output.
+    let out = "line one\nline two";
+    let lines = format_tool_result_lines_with_context("web_fetch", None, out, false, None);
+    assert!(
+        !lines.is_empty(),
+        "web_fetch body must render, got header-only"
+    );
+    let text: String = lines.iter().map(row_text).collect::<Vec<_>>().join("\n");
+    assert!(
+        text.contains("1 | "),
+        "body not numbered like bash: {text:?}"
+    );
+    assert!(text.contains("line one"), "body lost: {text:?}");
+}
+
+#[test]
+fn web_search_caps_long_output_like_bash() {
+    let out: String = (1..=60)
+        .map(|i| format!("result {i}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let lines = format_tool_result_lines_with_context("web_search", None, &out, false, None);
+    assert_eq!(lines.len(), 25, "must cap like bash, got {}", lines.len());
+}
+
+#[test]
+fn an_unknown_tool_humanizes_its_name_and_shows_args() {
     let args = serde_json::json!({"content": "hello channel"});
-    let text = row_text(&format_tool_call_header("discord_send", &args, None));
-    assert!(!text.contains("discord_send"), "wire name leaked: {text:?}");
-    assert!(text.contains("Sent Discord"), "verb missing: {text:?}");
-    assert!(text.contains("hello channel"), "content missing: {text:?}");
+    let text = row_text(&format_tool_call_header(
+        "my_channel_send",
+        &args,
+        None,
+        None,
+    ));
+    assert!(
+        !text.contains("my_channel_send"),
+        "wire name leaked: {text:?}"
+    );
+    assert!(text.contains("My Channel Send"), "name missing: {text:?}");
+    assert!(text.contains("hello channel"), "arg missing: {text:?}");
+}
+
+#[test]
+fn plugin_preview_path_renders_first_string_at_that_path() {
+    // The declared dot path arrives as the separate display param — wire
+    // args carry only real arguments, never the display directive.
+    let args = serde_json::json!({"document": {"title": "  ## Hello  "}});
+    let text = row_text(&format_tool_call_header(
+        "some_surface_tool",
+        &args,
+        None,
+        Some("document.title"),
+    ));
+    assert!(
+        text.contains("Some Surface Tool"),
+        "headline missing: {text:?}"
+    );
+    assert!(text.contains("## Hello"), "preview missing: {text:?}");
+    assert!(
+        !text.contains("preview="),
+        "preview key leaked into dump: {text:?}"
+    );
+}
+
+#[test]
+fn plugin_preview_path_missing_falls_back_to_generic_dump() {
+    let args = serde_json::json!({"document": {}});
+    let text = row_text(&format_tool_call_header(
+        "some_surface_tool",
+        &args,
+        None,
+        Some("document.title"),
+    ));
+    assert!(
+        text.contains("Some Surface Tool"),
+        "headline missing: {text:?}"
+    );
+    assert!(
+        text.contains("document="),
+        "fallback dump missing: {text:?}"
+    );
+}
+
+#[test]
+fn preview_at_walks_object_keys_only() {
+    let args = serde_json::json!({"document": {"title": "  Hi  "}});
+    assert_eq!(preview_at(&args, "document.title").as_deref(), Some("Hi"));
+    assert!(preview_at(&args, "document.missing").is_none());
+    assert!(preview_at(&args, "document.title.deeper").is_none());
+    assert!(preview_at(&args, "").is_none());
+    assert!(preview_at(&args, "  ").is_none());
+    let ws = serde_json::json!({"document": {"title": "   "}});
+    assert!(preview_at(&ws, "document.title").is_none());
 }
 
 #[test]
 fn unknown_tools_humanize_and_labels_override() {
     let args = serde_json::json!({"foo": "bar"});
-    let text = row_text(&format_tool_call_header("my_custom_tool", &args, None));
+    let text = row_text(&format_tool_call_header(
+        "my_custom_tool",
+        &args,
+        None,
+        None,
+    ));
     assert!(text.contains("My Custom Tool"), "not humanized: {text:?}");
     assert!(
         !text.contains("my_custom_tool"),
         "wire name leaked: {text:?}"
     );
     let labeled = with_tool_label(&args, Some("Notify Owner"));
-    let labeled_text = row_text(&format_tool_call_header("my_custom_tool", &labeled, None));
+    let labeled_text = row_text(&format_tool_call_header(
+        "my_custom_tool",
+        &labeled,
+        None,
+        None,
+    ));
     assert!(
         labeled_text.contains("Notify Owner"),
         "label ignored: {labeled_text:?}"
@@ -462,21 +580,214 @@ fn live_header_streams_plugin_scalars() {
         None,
     ));
     assert!(text.contains("LibreWolf AppI"), "got {text:?}");
+    // Unknown plugin tools stream a scalar too: the fallback guesses the
+    // headline key from the buffer (`path` beats `pattern`/`command`).
     let text = row_text(&format_live_tool_header(
-        "discord_send",
-        r#"{"content":"hello"#,
+        "my_surface_tool",
+        r#"{"path":"/tmp/gra"#,
         None,
     ));
-    assert!(text.contains("hello"), "got {text:?}");
+    assert!(text.contains("/tmp/gra"), "got {text:?}");
 }
 
 #[test]
 fn a_cut_bash_header_ends_in_an_ellipsis() {
     let long = serde_json::json!({"command": format!("seq 20 | xargs sh -c '{}' | sort | uniq -c", "x".repeat(80))});
-    let text = row_text(&format_tool_call_header("bash", &long, None));
+    let text = row_text(&format_tool_call_header("bash", &long, None, None));
     assert!(text.ends_with('\u{2026}'), "{text:?}");
     let multi = serde_json::json!({"command": "cd x\nmake"});
-    assert!(row_text(&format_tool_call_header("bash", &multi, None)).ends_with("cd x\u{2026}"));
+    assert!(
+        row_text(&format_tool_call_header("bash", &multi, None, None)).ends_with("cd x\u{2026}")
+    );
     let short = serde_json::json!({"command": "ls"});
-    assert!(row_text(&format_tool_call_header("bash", &short, None)).ends_with("Ran ls"));
+    assert!(row_text(&format_tool_call_header("bash", &short, None, None)).ends_with("Ran ls"));
+}
+
+// --- bash: one tool, five actions; headers say which, jobs go by name. ---
+
+fn header(args: serde_json::Value) -> String {
+    row_text(&format_tool_call_header("bash", &args, None, None))
+}
+
+fn body(args: serde_json::Value, out: &str) -> String {
+    format_tool_result_lines_with_context("bash", Some(&args), out, false, None)
+        .iter()
+        .map(row_text)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[test]
+fn a_run_header_shows_the_command_without_its_setup() {
+    let text = header(
+        serde_json::json!({"command": "cd ~/wt/provider-chat && CARGO_BUILD_BUILD_DIR=target nice -n 19 ionice -c3 flock /tmp/l cargo check -p gray-provider --tests"}),
+    );
+    assert!(
+        text.ends_with("Ran cargo check -p gray-provider --tests \u{00b7} in ~/wt/provider-chat"),
+        "{text:?}"
+    );
+    // Setup that could do work is never hidden.
+    let risky = header(serde_json::json!({"command": "rm -rf build && cargo check"}));
+    assert!(
+        risky.ends_with("Ran rm -rf build && cargo check"),
+        "{risky:?}"
+    );
+}
+
+#[test]
+fn each_action_gets_its_own_verb() {
+    let cases = [
+        (
+            serde_json::json!({"command": "cargo test", "background": true}),
+            "Started cargo test \u{00b7} in background",
+        ),
+        (
+            serde_json::json!({"action": "output", "job_id": "cargo-check"}),
+            "Checked cargo-check",
+        ),
+        (
+            serde_json::json!({"action": "status", "job_id": "cargo-check", "wait_ms": 30000}),
+            "Waited on cargo-check \u{00b7} up to 30s",
+        ),
+        (
+            serde_json::json!({"action": "output", "job_id": "cargo-check", "wait_ms": 900000}),
+            "Waited on cargo-check \u{00b7} up to 15m",
+        ),
+        (
+            serde_json::json!({"action": "cancel", "job_id": "npm-test"}),
+            "Stopped npm-test",
+        ),
+        (
+            serde_json::json!({"action": "list"}),
+            "Listed background jobs",
+        ),
+    ];
+    for (args, want) in cases {
+        let text = header(args);
+        assert!(text.ends_with(want), "{text:?} should end with {want:?}");
+        assert!(!text.contains("Ran"), "{text:?}");
+    }
+}
+
+#[test]
+fn old_random_job_ids_shrink_to_a_short_tag() {
+    let text = header(
+        serde_json::json!({"action": "output", "job_id": "bash-bbc7b00c1f4e48aa842a5ad1e7ada886"}),
+    );
+    assert!(text.ends_with("Checked job bbc7b0"), "{text:?}");
+}
+
+#[test]
+fn every_verb_has_a_live_form() {
+    for (done, live) in [
+        ("Ran ", "Running "),
+        ("Started ", "Starting "),
+        ("Waited on ", "Waiting on "),
+        ("Checked ", "Checking "),
+        ("Stopped ", "Stopping "),
+        ("Listed ", "Listing "),
+    ] {
+        assert_eq!(live_bash_verb(done), Some(live));
+    }
+    assert_eq!(live_bash_verb("Read "), None);
+}
+
+#[test]
+fn a_yield_notice_reads_as_running_in_background() {
+    let out = "still running \u{00b7} job cargo-check \u{00b7} yielded after 10s \u{00b7} timeout 900s \u{00b7} log /tmp/bash-x.log\nContinue other work. Use bash action:output/status with job_id:cargo-check and wait_ms (e.g. 30000) to await it in one call instead of polling; completion will also be reported between model rounds or on the next user turn.";
+    let text = body(serde_json::json!({"command": "cargo check"}), out);
+    let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    for part in [
+        "running in background as cargo-check",
+        "after 10s",
+        "limit 15m",
+    ] {
+        assert!(flat.contains(part), "{part:?} missing: {text:?}");
+    }
+    assert!(!text.contains("Continue other work"), "{text:?}");
+    assert!(!text.contains("action:output"), "{text:?}");
+    assert!(!text.contains("/tmp/bash-x.log"), "{text:?}");
+}
+
+#[test]
+fn a_finished_job_drops_its_id_line_and_keeps_the_output() {
+    let out = "job cargo-check\nexit 0 \u{00b7} 12s \u{00b7} 2 lines\n<untrusted-output>\nerror[E0308]: mismatched types\nContinue other work is fine inside output\n</untrusted-output>";
+    let text = body(
+        serde_json::json!({"action": "output", "job_id": "cargo-check"}),
+        out,
+    );
+    assert!(!text.contains("job cargo-check"), "{text:?}");
+    let piped = body(
+        serde_json::json!({"action": "output", "job_id": "x"}),
+        "exit 0 (`head` masks earlier stages' exit; rerun without the pipe to check) \u{00b7} 1s",
+    );
+    assert!(
+        piped.contains("(`head` masks earlier stages' exit) \u{00b7} 1s"),
+        "{piped:?}"
+    );
+    assert!(text.contains("exit 0"), "{text:?}");
+    assert!(text.contains("error[E0308]"), "{text:?}");
+    // Command output is never rewritten, even when it looks like a hint.
+    assert!(
+        text.contains("Continue other work is fine inside output"),
+        "{text:?}"
+    );
+}
+
+#[test]
+fn a_snapshot_reads_plainly() {
+    let out = "job cargo-check \u{00b7} running \u{00b7} elapsed 1m 3s \u{00b7} log /tmp/l.log\nLiveness: producing (2.0KB new output in the last 30s) \u{2014} still working, keep waiting or do other work.\nPartial output (snapshot):\n<untrusted-output>\nCompiling gray\n</untrusted-output>";
+    let text = body(
+        serde_json::json!({"action": "output", "job_id": "cargo-check", "wait_ms": 30000}),
+        out,
+    );
+    assert!(
+        text.contains("cargo-check \u{00b7} running \u{00b7} 1m 3s"),
+        "{text:?}"
+    );
+    assert!(
+        text.contains("producing (2.0KB new output in the last 30s)"),
+        "{text:?}"
+    );
+    assert!(!text.contains("keep waiting"), "{text:?}");
+    assert!(text.contains("output so far:"), "{text:?}");
+    assert!(text.contains("Compiling gray"), "{text:?}");
+    let stop = body(
+        serde_json::json!({"action": "cancel", "job_id": "npm-test"}),
+        "cancellation requested for job npm-test; use action:status/output for final result",
+    );
+    assert!(stop.contains("stopping npm-test"), "{stop:?}");
+}
+
+#[test]
+fn an_error_lines_up_with_numbered_output() {
+    let ok = format_tool_result_lines_with_context("bash", None, "exit 0 \u{00b7} 1s", false, None);
+    let err = format_tool_result_lines_with_context(
+        "bash",
+        None,
+        "unknown job in this session: x\nsecond line",
+        true,
+        None,
+    );
+    let text_col = |l: &Line<'_>, needle: &str| {
+        crate::text_width::display_width(row_text(l).split(needle).next().unwrap())
+    };
+    assert_eq!(text_col(&err[0], "unknown"), text_col(&ok[0], "exit"));
+    assert_eq!(text_col(&err[1], "second"), text_col(&ok[0], "exit"));
+    assert!(row_text(&err[0]).contains('\u{2717}'));
+}
+
+#[test]
+fn an_unknown_tool_renders_its_args_verbatim() {
+    // Plugin tools get no hard-coded rendering: the wire name humanizes and
+    // the args print as they arrived — markup stays literal.
+    let args = serde_json::json!({"content": "**updated**"});
+    let text = row_text(&format_tool_call_header(
+        "my_channel_send",
+        &args,
+        None,
+        None,
+    ));
+    assert!(text.contains("My Channel Send"), "name missing: {text:?}");
+    assert!(text.contains("**updated**"), "arg missing: {text:?}");
 }

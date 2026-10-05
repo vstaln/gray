@@ -71,8 +71,8 @@ fn expires_in(seconds: u64) -> u64 {
 
 fn provider() -> ProviderDecl {
     ProviderDecl {
-        id: "codex".into(),
-        name: "Codex".into(),
+        id: "example".into(),
+        name: "Example".into(),
         transport: ProviderTransportDecl {
             kind: "openai-responses".into(),
             base_url: "https://example.test/v1".parse().unwrap(),
@@ -97,8 +97,8 @@ fn provider() -> ProviderDecl {
             }],
         },
         auth_methods: vec![AuthMethodDecl {
-            id: "chatgpt-subscription".into(),
-            name: "ChatGPT".into(),
+            id: "example-login".into(),
+            name: "Example login".into(),
             kind: "oauth".into(),
             operations: vec!["refresh".into()],
         }],
@@ -109,7 +109,7 @@ fn installed() -> InstalledProvider {
     let provider = provider();
     let auth_method = provider.auth_methods[0].clone();
     InstalledProvider {
-        plugin: "codex-auth".into(),
+        plugin: "example-sub".into(),
         provider,
         auth_method,
         profile_binding: "sha256:test".into(),
@@ -135,9 +135,9 @@ async fn concurrent_callers_share_one_rotation() {
     let dir = tempfile::tempdir().unwrap();
     let store = CredentialStore::new(dir.path().join("auth.json"));
     let current = CredentialEnvelope::new(
-        "codex-auth",
-        "codex",
-        "chatgpt-subscription",
+        "example-sub",
+        "example",
+        "example-login",
         "sha256:test",
         material(Some(expires_in(30)), "old-refresh"),
     )
@@ -218,9 +218,9 @@ async fn terminal_refresh_rejection_removes_one_entry() {
     store
         .put_plugin(
             CredentialEnvelope::new(
-                "codex-auth",
-                "codex",
-                "chatgpt-subscription",
+                "example-sub",
+                "example",
+                "example-login",
                 "sha256:test",
                 material(Some(expires_in(30)), "old-refresh"),
             )
@@ -230,9 +230,9 @@ async fn terminal_refresh_rejection_removes_one_entry() {
     store
         .put_plugin(
             CredentialEnvelope::new(
-                "codex-auth",
-                "codex",
-                "other-subscription",
+                "example-sub",
+                "example",
+                "other-login",
                 "sha256:test",
                 material(Some(expires_in(3600)), "unrelated"),
             )
@@ -244,13 +244,13 @@ async fn terminal_refresh_rejection_removes_one_entry() {
     assert!(matches!(error, CredentialError::ReauthRequired(_)));
     assert!(
         store
-            .read_plugin("plugin:codex-auth:codex:chatgpt-subscription")
+            .read_plugin("plugin:example-sub:example:example-login")
             .unwrap()
             .is_none()
     );
     assert!(
         store
-            .read_plugin("plugin:codex-auth:codex:other-subscription")
+            .read_plugin("plugin:example-sub:example:other-login")
             .unwrap()
             .is_some()
     );
@@ -314,9 +314,9 @@ async fn profile_mismatch_does_not_delete_credential() {
     store
         .put_plugin(
             CredentialEnvelope::new(
-                "codex-auth",
-                "codex",
-                "chatgpt-subscription",
+                "example-sub",
+                "example",
+                "example-login",
                 "sha256:test",
                 material(Some(expires_in(30)), "old-refresh"),
             )
@@ -328,7 +328,7 @@ async fn profile_mismatch_does_not_delete_credential() {
     assert!(matches!(error, CredentialError::Invalid(_)));
     assert!(
         store
-            .read_plugin("plugin:codex-auth:codex:chatgpt-subscription")
+            .read_plugin("plugin:example-sub:example:example-login")
             .unwrap()
             .is_some()
     );
@@ -387,9 +387,9 @@ async fn expired_credential_fails_closed() {
     store
         .put_plugin(
             CredentialEnvelope::new(
-                "codex-auth",
-                "codex",
-                "chatgpt-subscription",
+                "example-sub",
+                "example",
+                "example-login",
                 "sha256:test",
                 material(Some(1), "expired"),
             )
@@ -401,7 +401,7 @@ async fn expired_credential_fails_closed() {
     assert!(matches!(error, CredentialError::ReauthRequired(_)));
     assert!(
         store
-            .read_plugin("plugin:codex-auth:codex:chatgpt-subscription")
+            .read_plugin("plugin:example-sub:example:example-login")
             .unwrap()
             .is_none()
     );
@@ -604,7 +604,10 @@ async fn relay_verified_marker_counts_as_connected() {
     let mut relay = installed();
     relay.auth_method.operations = vec!["models".into(), "chat".into()];
     let source = shared_plugin_source(relay.clone(), store.clone(), Arc::new(OkChat));
-    source.acquire().await.expect("relay handshake proves the login");
+    source
+        .acquire()
+        .await
+        .expect("relay handshake proves the login");
     source
         .mark_relay_verified()
         .await

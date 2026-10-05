@@ -290,3 +290,25 @@ async fn install_url_downloads_skill_md_over_loopback() {
     assert_eq!(skills.len(), 1);
     assert_eq!(skills[0].source, "url");
 }
+
+#[test]
+fn is_skill_spec_matches_only_the_remote_prefixes() {
+    for spec in [
+        "clawhub:owner/slug",
+        "github:owner/repo/path",
+        "url:https://example.com/SKILL.md",
+        "  clawhub:owner/slug  ",
+    ] {
+        assert!(is_skill_spec(spec), "{spec}");
+    }
+    for spec in [
+        "demo",
+        "./skills/demo",
+        "/abs/path/SKILL.md",
+        "https://example.com/p.tgz",
+        "claude:pack",
+        "npm:pi-foo",
+    ] {
+        assert!(!is_skill_spec(spec), "{spec}");
+    }
+}

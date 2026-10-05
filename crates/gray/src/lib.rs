@@ -1,6 +1,5 @@
 //! Gray: a minimal, modular agent harness in Rust.
 
-pub mod account;
 pub mod ask;
 pub mod auth;
 pub mod cache;
@@ -13,7 +12,6 @@ pub mod cron_serve;
 pub mod cron_status;
 pub mod doctor;
 pub mod feedback;
-pub mod foreign;
 pub mod gateway;
 pub mod host;
 pub mod logging;
@@ -61,22 +59,16 @@ pub const DEFAULT_SYS_PROMPT: &str = r#"<!--
 Unreadable note: this HTML comment stays in the file but is stripped before
 the prompt reaches the model — only the text after this note reaches it.
 
-This file IS the stored system prompt, sent verbatim every turn. Gray
-adds the runtime working directory and ephemeral per-turn context: the
-<available_skills> list (fresh skill discovery for the turn's directory) —
-no skill tool, read matches with bash — plus <project_context>, the nearest
-AGENTS.md / CLAUDE.md above the working directory. Edit with `/agentsmd`
+This file IS the stored system prompt, sent verbatim every turn with no
+runtime context appended. Only what the model can't already know: the
+tools describe themselves and the task says the rest.
+Gray adds only ephemeral per-turn context: the <available_skills> list
+(fresh skill discovery for the turn's directory) — no skill tool, read
+matches with bash — plus <project_context>, the nearest AGENTS.md /
+CLAUDE.md above the working directory. Edit with `/agentsmd`
 (Ctrl-S save & apply, Ctrl-R reset to this default, Ctrl-X cancel).
 -->
-You are gray, a minimal agent on the user's machine.
-
-1. Read the relevant code and tests; work out what's required from the repo.
-2. Implement it, including the edge cases and error paths the request names.
-3. Run the project's tests, fix failures, then stop with a short summary.
-
-- Keep going without asking until done.
-- Wait on a background job with `output` + `wait_ms`, not `sleep`.
-- Cron: `gray cron add "<when>" "<prompt>"`.
+You are Gray, running on the user's machine.
 "#;
 
 /// Resolves the user's system-prompt file path (`$GRAY_HOME` or `$HOME/.gray`) + `AGENTS.md`.
@@ -185,7 +177,8 @@ fn cache_warm_policy(
         || lower.contains("claude")
         || lower.contains("anthropic");
     let replayable = matches!(effort, None | Some("off")) || !budget_thinking;
-    if !cacheable || !replayable || std::env::var_os("GRAY_NO_CACHE_WARM").is_some() {
+    if config.bare || !cacheable || !replayable || std::env::var_os("GRAY_NO_CACHE_WARM").is_some()
+    {
         return None;
     }
     let model = model.to_string();
@@ -215,13 +208,16 @@ pub async fn build_agent(
     };
     // Keyless upstreams (free tiers, local servers) run with an empty key.
     let api_key = config.api_key.as_deref().unwrap_or("");
-    let body = load_or_create_system_prompt_at(&sys_prompt_path()?)?;
-    // Same directory as the tool context; never persist it in the user's file.
-    let prompt_cwd = cwd.to_path_buf();
+    // Bare: the embedded default, never the user's file (and never create it).
+    let body = if config.bare {
+        DEFAULT_SYS_PROMPT.to_string()
+    } else {
+        load_or_create_system_prompt_at(&sys_prompt_path()?)?
+    };
 
     // `/memory off` keeps the snapshot out of the prompt (context economy);
     // the env var stays the hard kill-switch that also stops saves.
-    let snapshot = if memory::disabled() || !crate::setup::memory_auto_enabled() {
+    let snapshot = if config.bare || memory::disabled() || !crate::setup::memory_auto_enabled() {
         None
     } else {
         match setup::gray_home()
@@ -258,11 +254,11 @@ pub async fn build_agent(
         context_window: Some(crate::setup::context::resolve_model_context_length(model)),
         session_id: session_id.map(str::to_string),
         cwd: cwd.to_path_buf(),
-        // Keep stored instructions intact; append runtime cwd before any turn.
+        // Stored instructions verbatim; no runtime context (cwd etc.).
         system_prompt: gray_plugin::builder::SystemPrompt::Build(Box::new(
             move |_registry: &gray_tools::Registry| {
                 system_prompt::with_memory(
-                    system_prompt::build_runtime_prompt(Some(body), &prompt_cwd),
+                    system_prompt::build_system_prompt(Some(body)),
                     snapshot.as_deref(),
                 )
             },
@@ -272,10 +268,15 @@ pub async fn build_agent(
         // Bash-only tools; the context-only skills + project-context
         // plugins are always on (every profile, including the default
         // `tools-minimal`).
-        extra_plugins: vec![
-            Arc::new(crate::skills_tool::SkillsPlugin::default()),
-            Arc::new(crate::skills_tool::ProjectContextPlugin),
-        ],
+        extra_plugins: if config.bare {
+            Vec::new()
+        } else {
+            vec![
+                Arc::new(crate::skills_tool::SkillsPlugin::default()),
+                Arc::new(crate::skills_tool::ProjectContextPlugin),
+            ]
+        },
+        bare: config.bare,
         host_handler: Some(host::default_handler(cwd.to_path_buf())),
         profile_path: "gray.yml".to_string(),
         abort_on_spawn_failure: true,
@@ -289,13 +290,7 @@ pub async fn build_agent(
     for w in gray_plugin::builder::take_builder_warnings() {
         profile::queue_profile_warning(w);
     }
-    // Foreign packages (pi-installed plugin dirs with AGENTS.md / commands /
-    // gray.json) ride as in-process hooks beside the builder's own: same
-    // per-turn inject and slash commands, no sidecar, no per-plugin code.
-    let mut agent = agent;
-    let mut hooks = agent.hooks().to_vec();
-    hooks.extend(crate::foreign::foreign_hooks());
-    agent = agent.with_hooks(hooks);
+    let agent = agent.with_compaction_budget(config.context_reserve, config.context_keep);
     // Bash bounds an explicitly requested timeout at 3600 s (and has no
     // default), so the agent-level timeout must sit above that (P2B
     // requirement): it is a last-resort stop, never a budget.
@@ -376,6 +371,13 @@ pub struct Cli {
     #[arg(long = "skill")]
     pub skill: bool,
 
+    /// Bare run: gray's stock system prompt and the bash tool, nothing else.
+    /// Skips ~/.gray/AGENTS.md, memory, skills, project AGENTS.md/CLAUDE.md,
+    /// plugins (gray.yml, installed, pi), cache warming and the update check.
+    /// Model/provider config still loads. Env: GRAY_BARE=1.
+    #[arg(long)]
+    pub bare: bool,
+
     /// Maximum agent turns per invocation (mini-swe-agent step_limit).
     /// Env: GRAY_MAX_TURNS. Applies to REPL turns this process runs.
     #[arg(long, value_name = "N")]
@@ -454,17 +456,6 @@ pub enum Commands {
         #[arg(long, value_name = "N")]
         context: Option<usize>,
     },
-    /// Log this machine in to gray.alignment.id (paste the site's one-time code)
-    Login {
-        /// One-time enrollment code from gray.alignment.id/account. Omit to be
-        /// walked through it and prompted.
-        #[arg(value_name = "CODE")]
-        code: Option<String>,
-    },
-    /// Show the account the stored registry token belongs to
-    Whoami,
-    /// Revoke the stored registry token and forget it
-    Logout,
     /// Resume a previous conversation
     Resume {
         /// Session id (UUID or prefix). If omitted, shows picker unless --last.
@@ -518,28 +509,9 @@ pub enum Commands {
         #[command(subcommand)]
         cmd: SpillCmd,
     },
-    /// Install a catalog plugin or register a native executable (gray install plugin NAME)
-    Install {
-        #[command(subcommand)]
-        cmd: InstallCmd,
-    },
     /// Plugin-provided commands (`gray NAME setup`, …) — forwarded to the plugin
     #[command(external_subcommand)]
     External(Vec<String>),
-}
-
-/// `gray install plugin <name>` — native plugin registration.
-#[derive(Parser, Debug, Clone)]
-pub enum InstallCmd {
-    /// Register a plugin command from PATH or GRAY_PLUGIN_PATH
-    Plugin {
-        /// Plugin name
-        #[arg(value_name = "NAME")]
-        name: String,
-        /// Accept a caution scan verdict (never overrides `dangerous`)
-        #[arg(short, long)]
-        force: bool,
-    },
 }
 
 /// `gray spill ...` — read back a spilled tool result.
@@ -698,18 +670,6 @@ pub enum GatewayCmd {
     },
     /// Stop and remove the installed service
     Uninstall,
-    /// Set an app up from flags (headless twin of the /gateway flow)
-    Setup {
-        /// The app to set up (its setup declaration lives in gray's catalog)
-        app: String,
-        /// `key=value` answers for the declaration's non-derived fields,
-        /// repeatable; anything still missing is reported, not guessed
-        #[arg(long = "field")]
-        fields: Vec<String>,
-        /// Also start the daemon (runit/systemd/gray-supervised)
-        #[arg(long)]
-        start: bool,
-    },
     /// Turn the gateway master switch on (run/start allowed again)
     On,
     /// Turn the gateway master switch off (run/start refuse until re-enabled)
@@ -757,11 +717,10 @@ pub enum LifecycleCmd {
 pub enum PluginCmd {
     /// List installed plugins
     List,
-    /// Install a plugin by index name or https URL
+    /// Install a plugin: index name, https tarball URL, or local executable path
     Install {
-        /// Index name or https URL
-        #[arg(value_parser = |s: &str| Ok::<_, std::convert::Infallible>(gray_pkg::ops::parse_spec(s)))]
-        spec: gray_pkg::ops::NameOrUrl,
+        /// Index name, https tarball URL, or executable path
+        spec: String,
         /// Accept a caution scan verdict (never overrides `dangerous`)
         #[arg(short, long)]
         force: bool,

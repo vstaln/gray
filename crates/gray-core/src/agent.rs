@@ -180,6 +180,16 @@ pub trait Provider: Send + Sync {
 /// message, so it joins the turn rather than replacing it.
 pub type SteerHook = std::sync::Arc<dyn Fn() -> Option<String> + Send + Sync>;
 
+/// Host callback awaited at every step boundary of a turn, with the whole
+/// history (consistent there: each tool call has its result) and the current
+/// [`Agent::history_revision`]. Lets the host persist a turn as it goes, so a
+/// process that dies mid-turn loses at most the step in flight.
+pub type CheckpointHook = std::sync::Arc<
+    dyn Fn(&[Message], u64) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>
+        + Send
+        + Sync,
+>;
+
 /// A single agent-callable tool.
 #[async_trait]
 pub trait Tool: Send + Sync {
@@ -371,10 +381,18 @@ pub struct Agent {
     /// Never reaches the model: provider mappers project
     /// name/description/parameters only. Empty by default.
     pub(crate) tool_labels: std::collections::HashMap<String, String>,
+    /// Display-only arg preview paths per tool name, consulted by the same
+    /// renderers (`tool_fmt` reads the entry through injected args).
+    /// Same visibility contract as `tool_labels`. Empty by default.
+    pub(crate) tool_previews: std::collections::HashMap<String, String>,
     pub(crate) messages: Vec<Message>,
     pub(crate) tool_timeout: Duration,
     pub(crate) hooks: Vec<Arc<dyn PluginHooks>>,
     pub(crate) context_window: Option<usize>,
+    /// Pre-turn compaction reserve and retained-tail budget overrides
+    /// (`GRAY_CONTEXT_RESERVE` / `GRAY_CONTEXT_KEEP`); `None` = core defaults.
+    pub(crate) compact_reserve: Option<usize>,
+    pub(crate) compact_keep: Option<usize>,
     /// Latest provider-reported context size and the history length it
     /// covered (pi `getLastAssistantUsage`). Cleared on every history
     /// rewrite: a pre-rewrite report describes a context that no longer exists.
@@ -385,6 +403,8 @@ pub struct Agent {
     /// turn in flight by appending a user message the model reads on its next
     /// request. `None` (no hook, or nothing typed) leaves the turn alone.
     pub(crate) steer: Option<SteerHook>,
+    /// See [`CheckpointHook`]. Set per turn by the host.
+    pub(crate) checkpoint: Option<CheckpointHook>,
     /// Session this transcript persists to, when known — woven into
     /// compaction citation stubs (arXiv:2607.25066). Captured from each
     /// run's [`ToolContext`].
@@ -430,14 +450,18 @@ impl Agent {
             turn_system: None,
             tools: Vec::new(),
             tool_labels: std::collections::HashMap::new(),
+            tool_previews: std::collections::HashMap::new(),
             messages: Vec::new(),
             tool_timeout: Duration::from_secs(120),
             hooks: Vec::new(),
             context_window: None,
+            compact_reserve: None,
+            compact_keep: None,
             context_usage: None,
             history_revision: 0,
             history_rewrite_hook: None,
             steer: None,
+            checkpoint: None,
             session_id: None,
             contaminated: std::collections::BTreeSet::new(),
             masked_prefix: 0,
@@ -470,6 +494,11 @@ impl Agent {
     /// own task and must not block: the model's next request waits on it.
     pub fn set_steer(&mut self, hook: SteerHook) {
         self.steer = Some(hook);
+    }
+
+    /// Install the step-boundary checkpoint hook (see [`CheckpointHook`]).
+    pub fn set_checkpoint(&mut self, hook: Option<CheckpointHook>) {
+        self.checkpoint = hook;
     }
 
     pub fn with_history_rewrite_hook(mut self, hook: Arc<dyn Fn() + Send + Sync>) -> Self {
@@ -522,6 +551,24 @@ impl Agent {
         self.tool_labels.get(name).map(|s| s.as_str())
     }
 
+    /// Display-only arg preview paths per tool name (plugin `preview`
+    /// support). Same merge/render contract as [`Self::with_tool_labels`].
+    pub fn with_tool_previews(
+        mut self,
+        previews: impl IntoIterator<Item = (impl Into<String>, impl Into<String>)>,
+    ) -> Self {
+        self.tool_previews = previews
+            .into_iter()
+            .map(|(k, v)| (k.into(), v.into()))
+            .collect();
+        self
+    }
+
+    /// Display arg preview path for a wire name, if one was registered.
+    pub fn tool_preview(&self, name: &str) -> Option<&str> {
+        self.tool_previews.get(name).map(|s| s.as_str())
+    }
+
     /// Attaches plugin hooks (protocol v1). Empty by default: no hooks
     /// means the loop behaves exactly as before.
     pub fn with_hooks(mut self, hooks: Vec<Arc<dyn PluginHooks>>) -> Self {
@@ -555,6 +602,14 @@ impl Agent {
     /// `resolve_model_context_length` at build surfaces.
     pub fn with_context_window(mut self, window: Option<usize>) -> Self {
         self.context_window = window;
+        self
+    }
+
+    /// Overrides the pre-turn compaction reserve and the retained-tail
+    /// budget of automatic compaction; `None` keeps the core default.
+    pub fn with_compaction_budget(mut self, reserve: Option<usize>, keep: Option<usize>) -> Self {
+        self.compact_reserve = reserve;
+        self.compact_keep = keep;
         self
     }
 
@@ -717,7 +772,10 @@ async fn drain_reply_text(mut stream: ProviderStream) -> Result<String, CoreErro
             StreamEvent::ThinkingDelta { delta } => {
                 append_thinking_chunk(&mut result, &delta);
             }
-            StreamEvent::MessageComplete { .. } => break,
+            StreamEvent::MessageComplete { usage, .. } => {
+                usage.unwrap_or_default().log_request("compaction");
+                break;
+            }
             _ => {}
         }
     }

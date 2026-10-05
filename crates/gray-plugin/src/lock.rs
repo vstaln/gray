@@ -41,6 +41,9 @@ pub struct LockEntry {
     /// skip it; an ordinary plugin leaves this `None`.
     #[serde(default)]
     pub runtime_role: Option<String>,
+    /// argv for `gray <name> …` forwarding and plugin slash capture; `None` = sidecar-only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cli_argv: Option<Vec<String>>,
 }
 
 /// Lockfile body: schema + plugins keyed by manifest name.

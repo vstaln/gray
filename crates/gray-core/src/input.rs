@@ -7,7 +7,10 @@
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
-pub const STRUCTURED_INPUT_PROTOCOL: &str = "gray.discord.input";
+pub const STRUCTURED_INPUT_PROTOCOL: &str = "gray.input";
+/// The first version of the identifier, kept for envelopes produced by
+/// plugins that still emit it.
+pub const LEGACY_STRUCTURED_INPUT_PROTOCOL: &str = "gray.discord.input";
 pub const STRUCTURED_INPUT_VERSION: u32 = 1;
 pub const MAX_INPUT_BYTES: usize = 1_048_576;
 pub const MAX_KIND_CHARS: usize = 64;
@@ -65,7 +68,9 @@ impl InputEnvelope {
     }
 
     pub fn validate(&self) -> Result<(), InputError> {
-        if self.protocol != STRUCTURED_INPUT_PROTOCOL {
+        if self.protocol != STRUCTURED_INPUT_PROTOCOL
+            && self.protocol != LEGACY_STRUCTURED_INPUT_PROTOCOL
+        {
             return Err(InputError::UnsupportedProtocol);
         }
         if self.version != STRUCTURED_INPUT_VERSION {

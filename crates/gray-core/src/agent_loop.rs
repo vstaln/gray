@@ -1,7 +1,7 @@
 //! Agent turn loop: [`Agent::run`] / [`run_streaming`](Agent::run_streaming).
 //!
 //! Split from `agent.rs` (move-only): the multi-turn stream → finalize →
-//! dispatch cycle plus its stall guards. Shared transcript helpers live in
+//! dispatch cycle plus its loop backstop. Shared transcript helpers live in
 //! `agent.rs`, tool-call plumbing in `agent_tools`, compaction in
 //! `agent_compact`.
 
@@ -198,9 +198,8 @@ impl Agent {
     /// message, then execute any requested tools sequentially and feed their
     /// outputs back as tool-result messages. Stops when a turn ends without
     /// tool calls (`TurnEnd`) or when cancellation fires
-    /// ([`CoreError::Cancelled`]). Two stall guards abort runaway loops:
-    /// 3 identical consecutive tool calls, or 18 consecutive read-only
-    /// (read/ls/find/grep) rounds with no file changes — nudged at 12.
+    /// ([`CoreError::Cancelled`]). 6 identical consecutive tool calls abort
+    /// with [`CoreError::LoopDetected`].
     /// Tool failures are *not* errors: they become `is_error` tool results
     /// so the model can recover.
     pub async fn run(
@@ -241,18 +240,12 @@ impl Agent {
         self.session_id = ctx.session_id.clone();
         log::info!(target: "gray_agent", "agent run start ({} messages)", self.messages.len());
         let mut events = Vec::new();
-        // Stall guard: 3 identical consecutive tool calls → LoopDetected.
+        // Loop backstop: 6 identical consecutive tool calls → LoopDetected.
         let mut last_sig: Option<String> = None;
         let mut repeat: usize = 0;
-        // Exploration-stall guard: consecutive rounds using only read-only
-        // lookup tools — the "keeps re-reading instead of acting" loop.
-        let mut stall_rounds: usize = 0;
-        // Poll streak: rounds whose only results were "job still running"
-        // progress notices (see `is_job_progress`).
+        // A turn whose every round is a job-progress notice clears the streak
+        // below, so it would otherwise bill forever on a no-timeout job.
         let mut poll_rounds: usize = 0;
-        // Run-scoped repeat guard: (tool, args, result-hash) -> times seen.
-        let mut repeat_results: std::collections::HashMap<String, usize> =
-            std::collections::HashMap::new();
         // Forward each event to the optional streaming sink, then collect it.
         macro_rules! emit {
             ($ev:expr) => {{
@@ -280,14 +273,15 @@ impl Agent {
         let mut turn_retries: u8 = 0;
         // Post-tool empty nudge fires once per run; silent-retry budget unchanged.
         let mut empty_nudge_sent = false;
-        // Opt-in pre-finish check (`GRAY_FINISH_GATE=1`): see `finish_gate`.
-        let mut gate = finish_gate::Tracker::new();
 
         // Protocol v1 `prompt/context`: fetched once per turn, not per round,
         // so the system prefix stays byte-stable across a turn's requests
         // (provider prefix caching survives multi-round turns) and sidecar
         // hooks pay one call per turn instead of one per tool round.
         let mut hook_context = String::new();
+        if let Some(hook) = self.checkpoint.clone() {
+            hook(&self.messages, self.history_revision()).await;
+        }
         for hook in &self.hooks {
             if let Some(text) = hook.prompt_context().await
                 && !text.trim().is_empty()
@@ -331,17 +325,33 @@ impl Agent {
                 self.messages.push(Message::user(text));
             }
 
+            // Step boundary: everything so far is consistent, hand it to the
+            // host to persist before the next (slow, killable) request. Runs
+            // after notification collection and steering so a kill between the
+            // append and the checkpoint cannot drop the queued message.
+            if let Some(hook) = self.checkpoint.clone() {
+                hook(&self.messages, self.history_revision()).await;
+            }
+
             // Pre-turn budget (pi `_compactBeforeNextAssistantResponse`):
             // history is append-only (mini-swe-agent / pi), so each request
             // extends the previous one and the provider prefix cache stays
             // hot. Compaction is the only rewrite, and it runs only when the
             // provider-anchored estimate reaches the window.
-            if needs_pre_turn_compact(self.estimate_tokens(), self.context_window) {
+            if needs_pre_turn_compact(
+                self.estimate_tokens(),
+                self.context_window,
+                self.compact_reserve,
+            ) {
                 // False = nothing to gain (all tail): fall through; the provider's
                 // own overflow path remains the backstop. Success strictly shrinks
                 // history, so re-check without looping forever. Errors finalize
                 // the turn first: no silent exit without turn_end.
-                while needs_pre_turn_compact(self.estimate_tokens(), self.context_window) {
+                while needs_pre_turn_compact(
+                    self.estimate_tokens(),
+                    self.context_window,
+                    self.compact_reserve,
+                ) {
                     let before = (self.estimate_tokens(), self.messages.len());
                     match self.try_compact_budgeted().await {
                         Ok(true) => {
@@ -662,6 +672,7 @@ impl Agent {
                 total_usage.normalize();
             }
             billed.accumulate(&usage);
+            usage.log_request("turn");
             // Stream-identity hardening: calls that never got a provider ID
             // get a conversation-unique fallback now and emit their single
             // start here, so every dispatched call already has its start and
@@ -790,13 +801,6 @@ impl Agent {
                 if self.collect_background_notifications(&ctx) {
                     continue 'turn;
                 }
-                // One-shot: the newest file change is newer than the newest
-                // test run, so ask for a re-run before the turn ends.
-                if let Some(nudge) = gate.nudge() {
-                    log::warn!(target: "gray_agent", "finish gate: last edit is newer than last test run; nudging before end of turn");
-                    self.messages.push(Message::user(nudge));
-                    continue 'turn;
-                }
                 let hit = if total_usage.input_tokens > 0 {
                     total_usage.cached_tokens as f64 / total_usage.input_tokens as f64 * 100.0
                 } else {
@@ -808,26 +812,9 @@ impl Agent {
                 return Ok(events);
             }
 
-            // Feed the finish gate this round's plain `bash` runs (job
-            // management calls carry no `command`).
-            gate.observe(tool_uses.iter().filter_map(|(_, name, args)| {
-                let plain_run = matches!(
-                    args.get("action").and_then(|a| a.as_str()),
-                    None | Some("run")
-                );
-                (name.as_str() == "bash" && plain_run)
-                    .then(|| args.get("command").and_then(|c| c.as_str()))
-                    .flatten()
-            }));
-
-            // Stall guard: nudge once, then abort only if the identical call
-            // keeps coming. A deliberate poll (a job whose output keeps
-            // changing) is not a loop; ignoring the nudge and repeating the
-            // same call is.
-            const SIGNATURE_NUDGE_REPEATS: usize = 3;
+            // Loop backstop: no nudge text, just stop if the identical call
+            // keeps coming. Deliberate job polls reset the streak below.
             const SIGNATURE_ABORT_REPEATS: usize = 6;
-            const POLL_NUDGE_ROUNDS: usize = 20;
-            let mut nudge_repeat = 0usize;
             {
                 let sig = tool_uses
                     .iter()
@@ -847,36 +834,6 @@ impl Agent {
                         "same tool call {repeat}× in a row: {sig}"
                     )));
                 }
-                if repeat == SIGNATURE_NUDGE_REPEATS {
-                    nudge_repeat = repeat;
-                }
-            }
-
-            // Exploration-stall guard: a round made up entirely of read-only
-            // lookup tools extends the streak; any other tool (bash, write,
-            // edit, questions, …) proves progress and resets it. Nudge once,
-            // then abort — a varied-args read loop never trips the signature
-            // guard above but burns tokens forever otherwise.
-            const STALL_NUDGE_ROUNDS: usize = 12;
-            const STALL_POST_NUDGE_ROUNDS: usize = 6;
-            const STALL_ABORT_ROUNDS: usize = STALL_NUDGE_ROUNDS + STALL_POST_NUDGE_ROUNDS;
-            const EXPLORATION_TOOLS: [&str; 4] = ["read", "ls", "find", "grep"];
-            if tool_uses
-                .iter()
-                .all(|(_, n, _)| EXPLORATION_TOOLS.contains(&n.as_str()))
-            {
-                stall_rounds += 1;
-            } else {
-                stall_rounds = 0;
-            }
-            if stall_rounds >= STALL_ABORT_ROUNDS {
-                answer_pending_tools(self, &tool_uses, 0, "aborted: exploration stall");
-                self.emit_turn_end(&billed).await;
-                let explored: Vec<String> = tool_uses.iter().map(|(_, n, _)| n.clone()).collect();
-                return Err(CoreError::LoopDetected(format!(
-                    "Stopped: {stall_rounds} consecutive exploration rounds with no file changes — last round used [{}]",
-                    explored.join(", ")
-                )));
             }
 
             // W3 dispatch validation: unknown tools and malformed args never
@@ -1165,57 +1122,12 @@ impl Agent {
                 billed.accumulate(&spent);
             }
 
-            // Repeat guard, run-scoped: the same call returning the same
-            // result again is a loop the consecutive-signature guard cannot
-            // see — the DeepSWE campaign's worst case re-ran one test command
-            // 16x, interleaved with other calls, so no two rounds ever
-            // matched. Result-sensitive (a poll whose output keeps changing is
-            // progress), skips job-status results (elapsed always moves), and
-            // leaves consecutive streaks to the signature guard above.
-            const REPEAT_SAME_RESULT_TOTAL: usize = 4;
-            let mut repeat_nudge: Option<String> = None;
-            for (id, name, args) in &tool_uses {
-                if repeat > 1 {
-                    continue;
-                }
-                let Some(content) = self.messages[round_start..]
-                    .iter()
-                    .flat_map(|m| m.content.iter())
-                    .find_map(|b| match b {
-                        ContentBlock::ToolResult {
-                            id: rid, content, ..
-                        } if rid == id => Some(content),
-                        _ => None,
-                    })
-                else {
-                    continue;
-                };
-                if is_job_progress(content) {
-                    continue;
-                }
-                use std::hash::{Hash, Hasher};
-                let mut hasher = std::collections::hash_map::DefaultHasher::new();
-                content.hash(&mut hasher);
-                let key = format!("{name}:{args}:{}", hasher.finish());
-                let seen = repeat_results.entry(key).or_insert(0);
-                *seen += 1;
-                if *seen == REPEAT_SAME_RESULT_TOTAL {
-                    log::warn!(target: "gray_agent", "identical call+result seen {REPEAT_SAME_RESULT_TOTAL}x: nudging");
-                    repeat_nudge = Some(format!(
-                        "[gray repeat guard: `{name}` with identical arguments and identical output has now run {REPEAT_SAME_RESULT_TOTAL} times (not necessarily in a row). \
-                         If you keep re-running the same thing hoping for a different result, change approach; \
-                         if the repetition is deliberate, say why, then continue.]"
-                    ));
-                }
-            }
-
             // A round whose every result is a "job still running" notice is a
             // deliberate poll, not a stall: gray answers a repeated command
             // with the live status of the job it already started, so the
             // elapsed time moves and the model is waiting on real work. Clear
             // the signature streak for those rounds — a genuinely stuck call
-            // returns ordinary output and still trips the guard — but cap the
-            // streak so a hung job gets called out instead of polled forever.
+            // returns ordinary output and still trips the guard.
             let poll_round = !self.messages[round_start..].is_empty()
                 && self.messages[round_start..].iter().all(|m| {
                     !m.content.is_empty()
@@ -1225,41 +1137,18 @@ impl Agent {
                         })
                 });
             if poll_round {
-                repeat = 0;
-                last_sig = None;
                 poll_rounds += 1;
-                if poll_rounds == POLL_NUDGE_ROUNDS {
-                    log::warn!(target: "gray_agent", "job polled {poll_rounds} times without finishing: nudging");
-                    self.messages.push(Message::user(format!(
-                        "[gray loop guard: this background job has been polled {poll_rounds} times and is still running. Read its log, wait on it with bash action: output / job_id: ... / wait_ms: 30000, or cancel it and take a different approach.]"
+                const MAX_POLL_ROUNDS: usize = 20;
+                if poll_rounds >= MAX_POLL_ROUNDS {
+                    self.emit_turn_end(&billed).await;
+                    return Err(CoreError::LoopDetected(format!(
+                        "job polling exceeded {poll_rounds} consecutive rounds"
                     )));
                 }
+                repeat = 0;
+                last_sig = None;
             } else {
                 poll_rounds = 0;
-            }
-
-            // The signature nudge lands after the tool results: a user-role
-            // message between an assistant tool call and its results would
-            // break the provider's call/result pairing.
-            if nudge_repeat > 0 {
-                log::warn!(target: "gray_agent", "repeated tool call: injecting nudge after {nudge_repeat} identical rounds");
-                self.messages.push(Message::user(format!(
-                    "[gray loop guard: the same tool call with the same arguments ran {nudge_repeat} times in a row. \
-                     Are you in a loop? If you are, change approach now; if the repetition is deliberate \
-                     (for example polling something that keeps changing), say why, then continue.]"
-                )));
-            }
-
-            if let Some(nudge) = repeat_nudge {
-                self.messages.push(Message::user(nudge));
-            }
-
-            if stall_rounds == STALL_NUDGE_ROUNDS {
-                log::warn!(target: "gray_agent", "exploration stall: injecting nudge after {stall_rounds} read-only rounds");
-                self.messages.push(Message::user(format!(
-                    "[gray stall guard: {stall_rounds} consecutive exploration tool rounds with no file changes. \
-                     Stop re-reading — either make the edit now, or report your findings and stop exploring.]"
-                )));
             }
         }
     }
@@ -1271,331 +1160,4 @@ impl Agent {
 /// is a deliberate wait, never a stall.
 fn is_job_progress(content: &str) -> bool {
     content.contains("· running · elapsed ") || content.contains("still running · job ")
-}
-
-/// Advisory pre-finish check (opt-in via `GRAY_FINISH_GATE=1`).
-///
-/// The DeepSWE campaign had runs that ended with a long edit streak and no
-/// test run after it (bandit-structured-nosec-directives: one `pytest -x`
-/// early, ~100 edit/commit commands after, one existing p2p test regressed).
-/// A prompt clause asks for "the full suite before finishing"; this enforces
-/// it once, mechanically: when the model tries to end the turn and its newest
-/// file change is newer than its newest test run, the loop pushes a single
-/// user message and lets the model continue. Advisory only: it never blocks a
-/// second finish attempt, so a model that has a reason can still stop.
-///
-/// Classification is command-text heuristics over `bash` calls. A wrong guess
-/// is cheap by construction: a missed edit means no nudge; a missed test run
-/// means one extra nudge.
-mod finish_gate {
-    /// Test-runner needles, matched on word boundaries (see `has_word`).
-    const TEST_NEEDLES: &[&str] = &[
-        "pytest",
-        "py.test",
-        "unittest",
-        "tox",
-        "nox",
-        "cargo test",
-        "cargo nextest",
-        "go test",
-        "npm test",
-        "npm run test",
-        "pnpm test",
-        "pnpm run test",
-        "pnpm -r test",
-        "yarn test",
-        "yarn run test",
-        "jest",
-        "vitest",
-        "mocha",
-        "make test",
-        "make check",
-        "ctest",
-        "rspec",
-        "rake test",
-        "mvn test",
-        "mvn verify",
-        "gradle test",
-        "gradlew test",
-        "dotnet test",
-        "phpunit",
-        "deno test",
-        "bun test",
-    ];
-
-    /// File-changing needles that are unambiguous in command text.
-    const EDIT_NEEDLES: &[&str] = &[
-        "sed -i",
-        "perl -pi",
-        "perl -i",
-        "git apply",
-        "git am",
-        "patch -p",
-        "apply_patch",
-        "write_text(",
-        "write_bytes(",
-        "git restore",
-        "git mv",
-    ];
-
-    pub(super) fn enabled() -> bool {
-        matches!(
-            std::env::var("GRAY_FINISH_GATE").as_deref(),
-            Ok("1") | Ok("true") | Ok("on")
-        )
-    }
-
-    /// True when `needle` occurs in `hay` as a whole word: not glued to an
-    /// identifier/flag/extension on either side (so `pytest.ini`,
-    /// `jest.config.js` and `attest` do not count, while `python -m pytest`,
-    /// `.venv/bin/pytest` and `pytest;` do).
-    fn has_word(hay: &str, needle: &str) -> bool {
-        let is_glue_before = |c: char| c.is_alphanumeric() || matches!(c, '_' | '-' | '.');
-        let is_glue_after = |c: char| c.is_alphanumeric() || matches!(c, '_' | '-' | '.');
-        let mut from = 0;
-        while let Some(pos) = hay[from..].find(needle) {
-            let start = from + pos;
-            let end = start + needle.len();
-            let before_ok = !hay[..start].chars().next_back().is_some_and(is_glue_before);
-            let after_ok = !hay[end..].chars().next().is_some_and(is_glue_after);
-            if before_ok && after_ok {
-                return true;
-            }
-            from = start + needle.chars().next().map_or(1, char::len_utf8);
-        }
-        false
-    }
-
-    pub(super) fn is_test_command(cmd: &str) -> bool {
-        let lower = cmd.to_ascii_lowercase();
-        TEST_NEEDLES.iter().any(|n| has_word(&lower, n))
-    }
-
-    /// Redirect targets that never change the worktree.
-    fn scratch_target(t: &str) -> bool {
-        let t = t.trim_matches(|c| c == '"' || c == '\'');
-        t.starts_with("/dev/")
-            || t.starts_with('&')
-            || t.starts_with("/tmp/")
-            || t.starts_with("$TMPDIR")
-            || t.is_empty()
-    }
-
-    /// A `>`/`>>` redirect (`>f`, `> f`, `1>f`, `&>f`, `>>f`, `x>f`) whose
-    /// target is not scratch. `2>&1`, `>/dev/null`, `> /tmp/x`, `->` and `=>`
-    /// are ignored.
-    fn writes_via_redirect(cmd: &str) -> bool {
-        let mut toks = cmd.split_whitespace().peekable();
-        while let Some(tok) = toks.next() {
-            let Some(gt) = tok.find('>') else { continue };
-            if tok[..gt].ends_with(['-', '=']) {
-                continue;
-            }
-            let attached = tok[gt..].trim_start_matches('>');
-            let target = if attached.is_empty() {
-                match toks.peek() {
-                    Some(t) => *t,
-                    None => continue,
-                }
-            } else {
-                attached
-            };
-            if !scratch_target(target) {
-                return true;
-            }
-        }
-        false
-    }
-
-    /// `tee <file>` with a non-scratch first file operand.
-    fn writes_via_tee(cmd: &str) -> bool {
-        let toks: Vec<&str> = cmd.split_whitespace().collect();
-        toks.iter().enumerate().any(|(i, t)| {
-            *t == "tee"
-                && toks[i + 1..]
-                    .iter()
-                    .find(|a| !a.starts_with('-'))
-                    .is_some_and(|f| !scratch_target(f))
-        })
-    }
-
-    /// Python one-liners that open a file for writing/appending.
-    fn writes_via_python_open(cmd: &str) -> bool {
-        cmd.contains("open(")
-            && [", 'w", ", \"w", ", 'a", ", \"a"]
-                .iter()
-                .any(|m| cmd.contains(m))
-    }
-
-    pub(super) fn is_edit_command(cmd: &str) -> bool {
-        let lower = cmd.to_ascii_lowercase();
-        EDIT_NEEDLES.iter().any(|n| lower.contains(n))
-            || writes_via_redirect(cmd)
-            || writes_via_tee(cmd)
-            || writes_via_python_open(cmd)
-    }
-
-    /// Per-run state. Rounds are counted per dispatched tool round.
-    #[derive(Default)]
-    pub(super) struct Tracker {
-        enabled: bool,
-        round: usize,
-        last_edit: Option<usize>,
-        last_test: Option<usize>,
-        sent: bool,
-    }
-
-    impl Tracker {
-        pub(super) fn new() -> Self {
-            Self {
-                enabled: enabled(),
-                ..Self::default()
-            }
-        }
-
-        #[cfg(test)]
-        pub(super) fn enabled_for_test() -> Self {
-            Self {
-                enabled: true,
-                ..Self::default()
-            }
-        }
-
-        /// Record one dispatched round. `commands` are the `command` strings
-        /// of that round's plain `bash` runs (job-management calls carry none).
-        pub(super) fn observe<'a>(&mut self, commands: impl IntoIterator<Item = &'a str>) {
-            if !self.enabled {
-                return;
-            }
-            self.round += 1;
-            for cmd in commands {
-                if is_edit_command(cmd) {
-                    self.last_edit = Some(self.round);
-                }
-                if is_test_command(cmd) {
-                    self.last_test = Some(self.round);
-                }
-            }
-        }
-
-        /// The one-shot message to send when the model tries to finish, or
-        /// `None` (disabled, nothing edited, tests already newer, or already sent).
-        pub(super) fn nudge(&mut self) -> Option<String> {
-            if !self.enabled || self.sent {
-                return None;
-            }
-            let edit = self.last_edit?;
-            let stale = match self.last_test {
-                Some(t) if t >= edit => return None,
-                Some(t) => format!(
-                    "your last test run was in round {t}, your last file change in round {edit}"
-                ),
-                None => format!("you changed files in round {edit} and have not run any tests"),
-            };
-            self.sent = true;
-            Some(format!(
-                "[gray finish gate: {stale}. Before finishing, run the project's tests that cover what you touched, \
-                 then the full suite, and read the failures (a green run that predates your last edit proves nothing). \
-                 If a failure is environmental, say so. If you already verified after your last edit, name the command and finish.]"
-            ))
-        }
-    }
-
-    #[cfg(test)]
-    mod tests {
-        use super::*;
-
-        #[test]
-        fn test_commands() {
-            for c in [
-                "python -m pytest tests/ -x -q",
-                ".venv/bin/pytest tests/unit",
-                "cd x && cargo test -p foo 2>&1 | tail -20",
-                "go test ./... -run TestX",
-                "npx jest --runInBand",
-                "pnpm -r test",
-                "make test",
-                "python3 -m unittest discover",
-            ] {
-                assert!(is_test_command(c), "{c}");
-            }
-            for c in [
-                "cat pytest.ini",
-                "sed -n 1,20p jest.config.js",
-                "ls tests/attest",
-                "cargo build",
-                "git diff",
-            ] {
-                assert!(!is_test_command(c), "{c}");
-            }
-        }
-
-        #[test]
-        fn edit_commands() {
-            for c in [
-                "sed -i 's/a/b/' src/x.py",
-                "cat > src/x.py <<'EOF'\nprint(1)\nEOF",
-                "echo hi >> notes.txt",
-                "git apply /tmp/p.diff",
-                "python3 -c \"open('f.py', 'w').write('x')\"",
-                "python3 - <<'EOF'\nfrom pathlib import Path\nPath('a').write_text('x')\nEOF",
-                "printf x | tee src/out.txt",
-                "echo x>src/a.txt",
-            ] {
-                assert!(is_edit_command(c), "{c}");
-            }
-            for c in [
-                "pytest -x 2>&1 | tail",
-                "make build >/dev/null 2>&1",
-                "cargo test 2> /dev/null",
-                "cargo test > /tmp/out.txt",
-                "pytest | tee /tmp/run.log",
-                "git status && git log --oneline",
-                "rg foo src",
-            ] {
-                assert!(!is_edit_command(c), "{c}");
-            }
-        }
-
-        #[test]
-        fn nudge_fires_once_when_edit_is_newer_than_test() {
-            let mut t = Tracker::enabled_for_test();
-            t.observe(["pytest -x -q"]);
-            t.observe(["sed -i 's/a/b/' x.py"]);
-            t.observe(["git commit -am wip"]);
-            let n = t.nudge().expect("should nudge");
-            assert!(n.contains("round 2") && n.contains("round 1"), "{n}");
-            assert!(t.nudge().is_none(), "one-shot");
-        }
-
-        #[test]
-        fn no_nudge_when_tested_after_last_edit_or_never_edited_or_disabled() {
-            let mut t = Tracker::enabled_for_test();
-            t.observe(["sed -i 's/a/b/' x.py"]);
-            t.observe(["pytest"]);
-            assert!(t.nudge().is_none());
-
-            let mut t = Tracker::enabled_for_test();
-            t.observe(["rg foo", "cat x.py"]);
-            assert!(t.nudge().is_none());
-
-            let mut t = Tracker::enabled_for_test();
-            t.observe(["sed -i 's/a/b/' x.py && pytest"]);
-            assert!(
-                t.nudge().is_none(),
-                "same-command edit+test counts as tested"
-            );
-
-            let mut t = Tracker::default();
-            t.observe(["sed -i 's/a/b/' x.py"]);
-            assert!(t.nudge().is_none(), "disabled by default");
-        }
-
-        #[test]
-        fn never_tested_message() {
-            let mut t = Tracker::enabled_for_test();
-            t.observe(["cat > a.py <<'EOF'\nx=1\nEOF"]);
-            assert!(t.nudge().unwrap().contains("have not run any tests"));
-        }
-    }
 }

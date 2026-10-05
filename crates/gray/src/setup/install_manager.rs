@@ -133,7 +133,6 @@ fn source_label(ecosystem: &str) -> &str {
     match ecosystem {
         "gray-native" => "Gray Index",
         "gray-cli" => "Plugin command",
-        "pi-gallery" => "Pi Index",
         other => other,
     }
 }
@@ -233,9 +232,8 @@ pub fn run_plugins_modal(bg: Option<&BackgroundSnapshot>) -> anyhow::Result<bool
         None,
         &PLUGINS_SPEC,
         || {
-            // Merged view: `lock.json` sidecars + `commands.json` native/CLI
-            // commands (a bare CLI install otherwise shows an empty picker).
-            // A corrupt registry reads as no rows.
+            // The unified `lock.json` registry (a corrupt file reads as
+            // no rows).
             crate::plugin_cli::list_rows().ok().map(|rows| {
                 rows.into_iter()
                     .map(|r| ManagerItem {

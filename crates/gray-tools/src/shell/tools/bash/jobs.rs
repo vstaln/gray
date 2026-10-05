@@ -67,7 +67,7 @@ impl Jobs {
                 }
             }
             let log = log_path(ctx);
-            let id = log.file_stem().unwrap().to_string_lossy().into_owned();
+            let id = readable_id(&jobs, &command);
             let started = Instant::now();
             let spawned = match spawn(&command, &cwd, ctx.session_id.as_deref(), None) {
                 Ok(s) => s,
@@ -144,10 +144,10 @@ impl Jobs {
     pub(super) fn register(
         &self,
         parent: &ToolContext,
+        command: &str,
         log: std::path::PathBuf,
         started: Instant,
     ) -> (String, watch::Sender<Option<ToolOutput>>, ToolContext) {
-        let id = log.file_stem().unwrap().to_string_lossy().into_owned();
         let cancel = parent.cancel.child_token();
         let mut worker_ctx = parent.clone();
         worker_ctx.cancel = cancel.clone();
@@ -165,6 +165,7 @@ impl Jobs {
         {
             jobs.remove(&oldest);
         }
+        let id = readable_id(&jobs, command);
         jobs.insert(
             id.clone(),
             Job {
@@ -235,9 +236,28 @@ impl Jobs {
         };
         let liveness = self.await_settled(ctx, &id, action, wait).await;
         let mut jobs = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        let Some(job) = jobs.get_mut(&id).filter(|j| j.session == ctx.session_id) else {
-            return fail(format!("unknown job in this session: {id}"));
-        };
+        if !jobs.get(&id).is_some_and(|j| j.session == ctx.session_id) {
+            // Name what does exist so a mistyped or stale id (jobs end when
+            // gray exits) is one retry away, not a guessing game.
+            let known: Vec<&str> = jobs
+                .iter()
+                .filter(|(_, j)| j.session == ctx.session_id)
+                .map(|(k, _)| k.as_str())
+                .collect();
+            return fail(if known.is_empty() {
+                format!(
+                    "unknown job in this session: {id} (no background jobs in this session; jobs end when gray exits)"
+                )
+            } else {
+                format!(
+                    "unknown job in this session: {id} (jobs here: {})",
+                    known.join(", ")
+                )
+            });
+        }
+        let job = jobs
+            .get_mut(&id)
+            .expect("checked just above under the same lock");
         let output = job.result.borrow().clone();
         if action == "cancel" && output.is_none() {
             job.cancel.cancel();
@@ -376,6 +396,15 @@ impl Jobs {
             _ = ctx.cancel.cancelled() => false,
         }
     }
+}
+
+/// A job id a person (and the model) can read: the command's name
+/// (`cargo-check`), numbered when that name is already held (`cargo-check-2`).
+/// The log file keeps its random name: logs share the temp dir across
+/// sessions, ids only need to be unique in this registry.
+fn readable_id(jobs: &BTreeMap<String, Job>, command: &str) -> String {
+    let name = crate::shell::label::job_name(command);
+    crate::shell::label::unique_name(&name, |n| jobs.contains_key(n))
 }
 
 /// (log bytes, had any output yet): the pump appends as the child

@@ -20,6 +20,7 @@ fn config() -> Config {
         max_turns: None,
         max_cost_micros: None,
         max_wall_secs: None,
+        bare: false,
     }
 }
 
@@ -208,7 +209,13 @@ fn plugin_login_status_does_not_overwrite_title() {
     let rows: Vec<String> = (0..24)
         .map(|y| (0..80).map(|x| buf[(x, y)].symbol()).collect())
         .collect();
-    let title = rows.iter().position(|r| r.contains("Connect \u{2014} Claude subscription")).unwrap();
-    let status = rows.iter().position(|r| r.contains("Checking your terminal login")).unwrap();
+    let title = rows
+        .iter()
+        .position(|r| r.contains("Connect \u{2014} Claude subscription"))
+        .unwrap();
+    let status = rows
+        .iter()
+        .position(|r| r.contains("Checking your terminal login"))
+        .unwrap();
     assert!(status > title);
 }

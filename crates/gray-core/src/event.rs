@@ -64,6 +64,22 @@ impl Usage {
         }
     }
 
+    /// One `request usage` log line per provider request, so per-request
+    /// context and billing survive runs killed before the final accounting.
+    pub fn log_request(&self, kind: &str) {
+        let mut u = *self;
+        u.normalize();
+        log::info!(
+            target: "gray_agent",
+            "request usage: kind={kind} in={} cache_read={} cache_write={} out={} reasoning={}",
+            u.input_tokens,
+            u.cache_read_input_tokens,
+            u.cache_write_input_tokens,
+            u.output_tokens,
+            u.reasoning_tokens
+        );
+    }
+
     /// Add another report into this cumulative total (saturating).
     /// Every provider request bills its full input, so billable turn
     /// totals sum every round's report — unlike the context gauge, which

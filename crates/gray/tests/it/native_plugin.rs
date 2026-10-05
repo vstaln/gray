@@ -25,7 +25,7 @@ fn cli(home: &Path) -> Command {
 }
 fn install(home: &Path, path: &Path, name: &str) -> std::process::Output {
     cli(home)
-        .args(["install", "plugin", name])
+        .args(["plugin", "install", name])
         .env("GRAY_PLUGIN_PATH", path)
         .output()
         .unwrap()
@@ -89,8 +89,7 @@ fn conflicting_widget_registration_does_not_publish_partial_command() {
     assert!(install(temp.path(), &one, "one").status.success());
     assert!(!install(temp.path(), &two, "two").status.success());
     let registry: Value =
-        serde_json::from_slice(&fs::read(temp.path().join("plugins/commands.json")).unwrap())
-            .unwrap();
+        serde_json::from_slice(&fs::read(temp.path().join("plugins/lock.json")).unwrap()).unwrap();
     assert!(registry["plugins"].get("two").is_none());
     assert!(!temp.path().join("plugins/two-manifest.json").exists());
 }
@@ -118,7 +117,7 @@ fn disabled_plugin_is_unavailable_in_help_commands_and_widget() {
 #[test]
 fn plugin_list_shows_registered_command_alongside_sidecars() {
     // Repro for "gray plugin list says none installed" with discord present:
-    // `install plugin` writes commands.json only, and list must merge it.
+    // `plugin install` writes a `cli_argv` lock row, and list must show it.
     let temp = tempfile::tempdir().unwrap();
     let bin = fixture(temp.path(), "sample", false);
     assert!(install(temp.path(), &bin, "sample").status.success());

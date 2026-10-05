@@ -349,6 +349,14 @@ pub struct ToolDef {
     /// serialization so persisted payloads stay byte-stable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
+    /// Display-only arg preview for transcripts: dot path to the first
+    /// string worth showing (e.g. `"document.title"`), resolved against
+    /// the call args at render time. `None` = the renderer's built-in
+    /// preview. Plugin-declared, never model-visible (same projection as
+    /// `label`), and surfaces never learn the plugin's wire shape — core
+    /// walks a declared path of object keys, nothing else.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview: Option<String>,
 }
 
 impl ToolDef {
@@ -363,12 +371,19 @@ impl ToolDef {
             description: description.into(),
             parameters,
             label: None,
+            preview: None,
         }
     }
 
     /// Attaches a display headline (plugin manifests, tests).
     pub fn with_label(mut self, label: impl Into<String>) -> Self {
         self.label = Some(label.into());
+        self
+    }
+
+    /// Attaches a display-only arg preview path (plugin manifests, tests).
+    pub fn with_preview(mut self, preview: impl Into<String>) -> Self {
+        self.preview = Some(preview.into());
         self
     }
 }

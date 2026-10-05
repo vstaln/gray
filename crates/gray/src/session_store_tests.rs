@@ -1,6 +1,7 @@
 // temporary: appended to lib.rs tests then removed
 
 use super::*;
+use gray_core::message::ContentBlock;
 use tempfile::tempdir;
 
 #[tokio::test]
@@ -1042,5 +1043,286 @@ async fn rewind_past_the_start_drops_nothing() {
     assert!(
         !dir.path().join("archive").exists(),
         "no rewrite, no archive"
+    );
+}
+
+/// Deterministic xorshift64: the property sweep below must be reproducible in
+/// CI (a failing seed has to reproduce), and the crate takes no rng dependency
+/// for a test.
+struct Rng(u64);
+impl Rng {
+    fn next(&mut self) -> u64 {
+        let mut x = self.0;
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        self.0 = x;
+        x
+    }
+    fn below(&mut self, n: u64) -> u64 {
+        self.next() % n
+    }
+}
+
+/// One varied turn: the block kinds that actually reach a session file, with
+/// the awkward payloads (quotes, newlines, unicode, JSON metacharacters, empty
+/// tool args) that a JSONL round-trip has to survive verbatim.
+fn random_message(rng: &mut Rng, i: usize) -> Message {
+    let role = if rng.below(2) == 0 {
+        Role::User
+    } else {
+        Role::Assistant
+    };
+    let mut content = Vec::new();
+    let kinds = rng.below(5);
+    for k in 0..=kinds {
+        match k {
+            0 => content.push(ContentBlock::text(format!(
+                "t{i}-{k} \"quoted\"\nnewline\u{2028}sep — ünïcode \u{1F600}"
+            ))),
+            1 => content.push(ContentBlock::Thinking {
+                text: format!("think {i}"),
+                encrypted_content: Some(format!("enc\u{2028}{i}-{k}")),
+                item_id: Some(format!("item-{i}-{k}")),
+                model: Some("m".to_string()),
+            }),
+            2 => content.push(ContentBlock::ToolUse {
+                id: format!("call-{i}-{k}"),
+                name: "bash".to_string(),
+                args: serde_json::json!({"command": "echo \"hi\\n\"", "n": i}),
+            }),
+            3 => content.push(ContentBlock::ToolResult {
+                id: format!("call-{i}-{k}"),
+                content: format!("out {i} \"quoted\" }}{{"),
+                is_error: i % 3 == 0,
+            }),
+            _ => content.push(ContentBlock::Image {
+                media_type: "image/png".to_string(),
+                data: "AAAA".to_string(),
+            }),
+        }
+    }
+    Message::new(role, content)
+}
+
+/// The invariant that makes a resumable session actually resumable: whatever was
+/// appended must come back out of `load` unchanged, once, in order — and a
+/// compaction must leave exactly the post-boundary transcript replayed, nothing
+/// more, nothing less. Every existing test here covers one hand-picked shape;
+/// this sweeps hundreds of random ones.
+#[tokio::test]
+async fn random_session_log_replays_exactly_what_was_appended() {
+    for seed in 1..=120u64 {
+        let mut rng = Rng(seed.wrapping_mul(0x9E3779B97F4A7C15) | 1);
+        let dir = tempfile::tempdir().unwrap();
+        let store = JsonlSessionStore::new(dir.path());
+        let id = store
+            .create(SessionMeta::new(
+                SessionId::new(&format!("r{seed}")),
+                1,
+                "/tmp",
+                "m",
+            ))
+            .await
+            .unwrap();
+
+        // Append a random transcript, remembering it independently.
+        let mut appended: Vec<Message> = Vec::new();
+        for i in 0..rng.below(12) {
+            let msg = random_message(&mut rng, i as usize);
+            store.append(&id, &msg).await.unwrap();
+            appended.push(msg);
+        }
+        // Zero or more compactions, each superseding everything before it.
+        let compactions = rng.below(3);
+        let mut active: Vec<Message> = appended;
+        for c in 0..compactions {
+            let mut replacement = Vec::new();
+            for i in 0..rng.below(4) {
+                replacement.push(random_message(&mut rng, 100 + i as usize));
+            }
+            store
+                .append_compaction_replacement(&id, &replacement)
+                .await
+                .unwrap();
+            active = replacement;
+            // Turns appended after a boundary are ordinary history again.
+            if rng.below(2) == 0 {
+                let msg = random_message(&mut rng, 200 + c as usize);
+                store.append(&id, &msg).await.unwrap();
+                active.push(msg);
+            }
+        }
+
+        let (_, entries) = store.load(&id).await.unwrap();
+        let replayed: Vec<&Message> = entries.iter().map(|e| &e.message).collect();
+        assert_eq!(
+            replayed,
+            active.iter().collect::<Vec<_>>(),
+            "seed {seed}: replay diverged (compactions={compactions})"
+        );
+
+        // Sequence ids strictly increase across the active window, and the
+        // graph survives a second read with no drift from tail repair.
+        for pair in entries.windows(2) {
+            assert!(
+                pair[1].entry_id > pair[0].entry_id,
+                "seed {seed}: entry ids did not increase"
+            );
+        }
+        let (_, again) = store.load(&id).await.unwrap();
+        assert_eq!(again, entries, "seed {seed}: second load drifted");
+    }
+}
+
+/// A crash-interrupted final write must cost exactly that one entry, and the
+/// file must stay appendable afterwards. Cut at every byte offset of the final
+/// record rather than one hand-picked spot: a tear can land anywhere, and the
+/// repair must drop the torn entry without disturbing the ones before it.
+///
+/// Two cut classes are covered deliberately. A cut on a character boundary
+/// leaves valid UTF-8; a cut *inside* a multi-byte character leaves invalid
+/// UTF-8 in the tail and must be treated the same way, because a crash does not
+/// know where the character boundaries are. Invalid bytes that precede a
+/// complete line are real mid-file corruption and still error (covered by
+/// `invalid_utf8_before_the_final_record_is_still_corruption`).
+///
+/// The last position (`cut == record length`) is distinct from the rest: the
+/// record is complete but its newline is missing, which exercises the
+/// missing-trailing-newline repair and must keep both entries.
+#[tokio::test]
+async fn torn_final_line_at_every_offset_costs_only_that_entry() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = JsonlSessionStore::new(dir.path());
+    let id = store
+        .create(SessionMeta::new(SessionId::new("torn"), 1, "/tmp", "m"))
+        .await
+        .unwrap();
+    store.append(&id, &Message::user("first")).await.unwrap();
+    // A real second entry, written through the store, is the record under test.
+    // It must carry multi-byte characters, or the mid-UTF-8 cut class is empty
+    // and the sweep below silently loses half its meaning.
+    store
+        .append(&id, &Message::user("second \u{00e9}\u{4e2d}\u{1F600} tail"))
+        .await
+        .unwrap();
+    let path = store.session_path(&id).unwrap();
+    let bytes = tokio::fs::read(&path).await.unwrap();
+    assert_eq!(bytes.last(), Some(&b'\n'), "records end with a newline");
+    let body = &bytes[..bytes.len() - 1];
+    let record_start = match body.iter().rev().position(|&b| b == b'\n') {
+        Some(p) => body.len() - p,
+        None => 0,
+    };
+    let record = &bytes[record_start..bytes.len() - 1];
+    assert!(
+        std::str::from_utf8(record).is_ok(),
+        "the record under test must be valid UTF-8 on its own"
+    );
+
+    let mut boundary_cuts = 0;
+    let mut mid_utf8_cuts = 0;
+    for cut in 1..record.len() {
+        // Everything before the final record, plus `cut` bytes of it.
+        let damaged = &bytes[..record_start + cut];
+        tokio::fs::write(&path, damaged).await.unwrap();
+        let mid_utf8 = std::str::from_utf8(damaged).is_err();
+        let (_, entries) = store.load(&id).await.unwrap_or_else(|e| {
+            panic!(
+                "cut {cut} (mid-utf8={mid_utf8}): a torn final record must cost only itself, got {e}"
+            )
+        });
+        assert_eq!(
+            entries.len(),
+            1,
+            "cut {cut} (mid-utf8={mid_utf8}): a torn final record must cost only itself"
+        );
+        assert_eq!(entries[0].message.text_content(), "first");
+        // The whole point of the repair: the session is still appendable.
+        store
+            .append(&id, &Message::user("after"))
+            .await
+            .unwrap_or_else(|e| panic!("cut {cut}: append after repair failed: {e}"));
+        assert_eq!(
+            store.load(&id).await.unwrap().1.len(),
+            2,
+            "cut {cut}: repair dropped an entry"
+        );
+        if mid_utf8 {
+            mid_utf8_cuts += 1;
+        } else {
+            boundary_cuts += 1;
+        }
+    }
+    // The sweep is only meaningful if it actually exercises both classes, so a
+    // record with no multi-byte character (which would make the mid-UTF8 class
+    // empty) is a broken fixture, not a lucky pass.
+    assert!(
+        boundary_cuts > 0,
+        "no character-boundary cuts were exercised"
+    );
+    assert!(
+        mid_utf8_cuts > 0,
+        "no mid-UTF-8 cuts were exercised; the torn record must contain a multi-byte character"
+    );
+
+    // Complete record, missing its newline: a different repair branch, and it
+    // must keep both entries.
+    let damaged = &bytes[..record_start + record.len()];
+    tokio::fs::write(&path, damaged).await.unwrap();
+    let (_, entries) = store.load(&id).await.unwrap();
+    assert_eq!(
+        entries
+            .iter()
+            .map(|e| e.message.text_content())
+            .collect::<Vec<_>>(),
+        vec![
+            "first".to_string(),
+            "second \u{00e9}\u{4e2d}\u{1F600} tail".to_string()
+        ],
+        "a complete record with no trailing newline must not lose the entry"
+    );
+}
+
+/// The tail-tear rule must not swallow real corruption: invalid UTF-8 that sits
+/// *before* a complete record means the file was not simply truncated mid-write,
+/// so loading it stays an error rather than a silent repair.
+#[tokio::test]
+async fn invalid_utf8_before_the_final_record_is_still_corruption() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = JsonlSessionStore::new(dir.path());
+    let id = store
+        .create(SessionMeta::new(SessionId::new("mid"), 1, "/tmp", "m"))
+        .await
+        .unwrap();
+    store
+        .append(&id, &Message::user("first \u{00e9}"))
+        .await
+        .unwrap();
+    store.append(&id, &Message::user("second")).await.unwrap();
+    let path = store.session_path(&id).unwrap();
+    let bytes = tokio::fs::read(&path).await.unwrap();
+    let body = &bytes[..bytes.len() - 1];
+    let last_start = match body.iter().rev().position(|&b| b == b'\n') {
+        Some(p) => body.len() - p,
+        None => 0,
+    };
+    let first_line_end = match body.iter().position(|&b| b == b'\n') {
+        Some(p) => p,
+        None => body.len(),
+    };
+    assert!(
+        first_line_end < last_start,
+        "need a record before the last one"
+    );
+    // Invalid bytes inside the first record, with a complete record after it.
+    let mut damaged = Vec::new();
+    damaged.extend_from_slice(&bytes[..first_line_end]);
+    damaged.extend_from_slice(&[0xFF, 0xFE]);
+    damaged.extend_from_slice(&bytes[first_line_end..]);
+    tokio::fs::write(&path, &damaged).await.unwrap();
+    assert!(
+        store.load(&id).await.is_err(),
+        "invalid UTF-8 before a complete record is corruption, not a torn tail"
     );
 }
