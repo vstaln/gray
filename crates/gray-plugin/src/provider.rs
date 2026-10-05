@@ -262,10 +262,11 @@ pub struct ProviderChatResult {
 
 impl fmt::Debug for ProviderChatResult {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Both fields carry the per-turn bearer: relay_url embeds it in its
+        // path, relay_token is it. Neither may reach a log.
         f.debug_struct("ProviderChatResult")
-            .field("relay_url", &self.relay_url)
-            .field("relay_token", &"<redacted>")
-            .finish()
+            .field("relay_url", &"<redacted>")
+            .finish_non_exhaustive()
     }
 }
 
@@ -383,9 +384,20 @@ impl ProviderDecl {
         transport
             .headers
             .sort_by_key(|h| h.name.to_ascii_lowercase());
+        // The ops list is part of the contract the credential was issued
+        // against: adding `chat` must rebind rather than silently widening
+        // what an existing profile is allowed to do.
+        let mut operations = self
+            .auth_methods
+            .iter()
+            .find(|m| m.id == auth_method_id)
+            .map(|m| m.operations.clone())
+            .unwrap_or_default();
+        operations.sort();
         let value = serde_json::json!({
             "provider_id": self.id,
             "auth_method_id": auth_method_id,
+            "operations": operations,
             "transport": transport,
         });
         let canonical = canonical_json(value);

@@ -254,15 +254,17 @@ impl PluginCredentialSource {
             auth_method: self.installed.auth_method.id.clone(),
             model: self.model.clone().unwrap_or_default(),
         };
-        let result = self
-            .rpc
-            .chat(request)
-            .await
-            .map_err(|e| self.map_error(e))?;
+        let result = self.rpc.chat(request).await.map_err(|e| match e {
+            // `provider/chat` reporting Unavailable means the sidecar has no
+            // usable login ("run agy once and complete the Google sign-in") —
+            // the stored row is stale, so prompt for reauth rather than retry.
+            gray_plugin::ProviderRpcError::Unavailable(_) => {
+                CredentialError::ReauthRequired(identity.clone())
+            }
+            other => self.map_error(other),
+        })?;
         if result.relay_url.trim().is_empty() || result.relay_token.trim().is_empty() {
-            return Err(
-                self.map_error(gray_plugin::ProviderRpcError::Unavailable(identity.clone()))
-            );
+            return Err(CredentialError::ReauthRequired(identity));
         }
         let secret_name = self
             .installed
