@@ -243,13 +243,26 @@ pub async fn build_agent(
     } else {
         None
     };
+    // Fast mode prefers the provider's fast-serving variant of the model
+    // (`-fast`/`-priority` catalog rows) — the wire id composes here while
+    // `config.model` keeps the base for display and the effort picker.
+    let mut wire_model = model.clone();
+    if config.fast_mode == Some(true)
+        && let Some(fast_id) = crate::setup::compose_fast_model(
+            model,
+            config.thinking_effort.as_deref(),
+            &crate::setup::canonical_model_rows(config),
+        )
+    {
+        wire_model = fast_id;
+    }
     let reasoning_effort = config
         .thinking_effort
         .as_deref()
-        .map(|effort| crate::setup::clamp_thinking_level(model, effort).to_string());
-    let cache_warm = cache_warm_policy(config, model, reasoning_effort.as_deref());
+        .map(|effort| crate::setup::clamp_thinking_level(&wire_model, effort).to_string());
+    let cache_warm = cache_warm_policy(config, &wire_model, reasoning_effort.as_deref());
     let agent = gray_plugin::builder::build_agent(gray_plugin::builder::BuilderOptions {
-        model: model.clone(),
+        model: wire_model.clone(),
         api_key: api_key.to_string(),
         base_url: config.base_url.clone(),
         reasoning_effort,

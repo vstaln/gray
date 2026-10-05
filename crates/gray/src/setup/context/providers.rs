@@ -29,7 +29,25 @@ pub fn friendly_model_name(model_id: &str) -> String {
             }
         })
         .collect();
-    words.join(" ")
+    // The split above destroys version dots: `claude-opus-5-5` was `5.5`
+    // upstream, never `5 5`. Merge a lone digit onto a word ending in a
+    // digit (`v3-1` -> `v3.1`, `5-5` -> `5.5`); longer tokens (`2025`,
+    // `0324`, `30b`) stay separate so dates and size stamps survive.
+    let mut merged: Vec<String> = Vec::with_capacity(words.len());
+    for w in words {
+        let lone_digit = w.len() == 1 && w.bytes().next().is_some_and(|b| b.is_ascii_digit());
+        if lone_digit
+            && merged
+                .last()
+                .is_some_and(|prev| prev.ends_with(|c: char| c.is_ascii_digit()))
+        {
+            merged.last_mut().unwrap().push('.');
+            merged.last_mut().unwrap().push_str(&w);
+        } else {
+            merged.push(w);
+        }
+    }
+    merged.join(" ")
 }
 
 /// Whether a model can reason, keyed like the context cache (exact id +
@@ -168,6 +186,22 @@ pub fn supported_efforts(model_id: &str) -> Option<Vec<&'static str>> {
         }
     }
     let id = model_id.to_lowercase();
+    // Plugin-relay providers (loopback base) may serve effort-in-id
+    // catalogs: `swe-2-max`, `claude-opus-5-5-low-fast` bake the tier into
+    // the name — there is no runtime knob to offer. Declared efforts won
+    // above; this catches stale saved picks and hand-typed ids. Real API
+    // endpoints are unaffected (the rule never runs for them).
+    if is_loopback_base(&active_provider_base_url()) {
+        let leaf = id.rsplit('/').next().unwrap_or(id.as_str());
+        let core = leaf
+            .strip_suffix("-fast")
+            .or_else(|| leaf.strip_suffix("-priority"))
+            .unwrap_or(leaf);
+        let seg = core.rsplit('-').next().unwrap_or("");
+        if seg == "none" || super::super::THINKING_LEVELS.iter().any(|(l, _)| *l == seg) {
+            return Some(vec![]);
+        }
+    }
     // OpenAI: values are model-dependent —
     // https://developers.openai.com/api/docs/guides/reasoning
     // (`none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`).
@@ -509,6 +543,112 @@ pub fn fetch_live_provider_models(base_url: &str, api_key: Option<&str>) -> Vec<
         .join()
         .unwrap_or_default()
     })
+}
+
+/// Live model list for a plugin-backed provider: the sidecar's
+/// `provider/models` RPC is the only real source — the declared `base_url`
+/// is a relay placeholder an HTTP fetch can never satisfy. A non-empty
+/// result persists under [`crate::setup::catalog::plugin_models_key`], so
+/// the `/model` picker paints instantly on the next open (loopback bases
+/// themselves get no disk entry — see `save_provider_model_list_at`).
+/// Same own-runtime discipline as [`fetch_live_provider_models`].
+pub(crate) fn fetch_plugin_provider_models(
+    installed: crate::providers::InstalledProvider,
+) -> Vec<(String, String)> {
+    std::thread::scope(|s| {
+        s.spawn(move || {
+            match tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(rt) => rt.block_on(plugin_models_rpc(&installed)),
+                Err(_) => Vec::new(),
+            }
+        })
+        .join()
+        .unwrap_or_default()
+    })
+}
+
+/// The async half of [`fetch_plugin_provider_models`]: spawn the sidecar,
+/// ask for its catalog, persist a usable list. The stored credential goes
+/// in when one exists; subscription plugins that keep their own login state
+/// answer to an empty envelope (the connect-login path uses exactly that).
+async fn plugin_models_rpc(
+    installed: &crate::providers::InstalledProvider,
+) -> Vec<(String, String)> {
+    use crate::providers::registry::ProviderRpc;
+    let Ok(runtime) = crate::providers::ProviderRuntime::start(installed.clone()).await else {
+        return Vec::new();
+    };
+    let credential = crate::setup::catalog::auth_store_path()
+        .ok()
+        .and_then(|path| {
+            crate::auth::CredentialStore::new(path)
+                .read_plugin(&installed.auth_ref())
+                .ok()
+                .flatten()
+        })
+        .or_else(|| {
+            gray_core::credential::CredentialEnvelope::new(
+                installed.plugin.clone(),
+                installed.provider.id.clone(),
+                installed.auth_method.id.clone(),
+                installed.profile_binding.clone(),
+                gray_core::credential::CredentialMaterial::empty(),
+            )
+            .ok()
+        });
+    let Some(credential) = credential else {
+        return Vec::new();
+    };
+    let request = gray_plugin::ProviderModelsRequest {
+        provider: installed.provider.id.clone(),
+        auth_method: installed.auth_method.id.clone(),
+        profile_binding: installed.profile_binding.clone(),
+        credential,
+    };
+    let Ok(catalog) = runtime.rpc().models(request).await else {
+        return Vec::new();
+    };
+    // Provider-declared metadata feeds the same caches a live /models
+    // payload does — effort levels the plugin advertises become
+    // authoritative for the clamp and /thinking rows. A plugin catalog IS
+    // the declaration: an empty efforts list means "no effort knob" (the
+    // tier is baked into the model id, e.g. Devin's `swe-2-max`), not
+    // "didn't say" — mark it so the picker reports no levels, the footer
+    // hides the effort badge, and no default effort is sent.
+    for m in &catalog.models {
+        if let Some(w) = m.context_window {
+            cache_model_context_if_absent(&m.id, w as usize);
+        }
+        if !m.reasoning_efforts.is_empty() {
+            cache_model_efforts(&m.id, m.reasoning_efforts.clone());
+        }
+        cache_model_reasoning(&m.id, !m.reasoning_efforts.is_empty());
+    }
+    let models: Vec<(String, String)> = catalog
+        .models
+        .iter()
+        .map(|m| {
+            let name = m.name.trim();
+            (
+                m.id.clone(),
+                if name.is_empty() {
+                    m.id.clone()
+                } else {
+                    name.to_string()
+                },
+            )
+        })
+        .collect();
+    if !models.is_empty() {
+        save_provider_model_list(
+            &crate::setup::catalog::plugin_models_key(&installed.provider_id()),
+            &models,
+        );
+    }
+    models
 }
 
 static MODEL_CONTEXT_CACHE: std::sync::OnceLock<

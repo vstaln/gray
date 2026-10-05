@@ -273,6 +273,9 @@ fn activate_plugin_connection_at(
     saved.credential_source = config.credential_source.clone();
     saved.auth_ref = config.auth_ref.clone();
     saved.model = config.model.clone();
+    // This connection+model's own effort — never whatever level the
+    // previous provider left behind.
+    apply_connection_effort(config, &mut saved);
     save_saved_config_at(path, &saved)
 }
 
@@ -313,6 +316,41 @@ pub fn select_api_key_connection(config: &mut Config) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Effort belongs to a connection+model, not to gray: on a provider or
+/// model switch the level riding in is the *previous* target's. Restore
+/// this target's remembered level (`SavedConfig::effort_memory`), or the
+/// `high` default, and move `saved.thinking_effort` with it so the next
+/// boot agrees. `GRAY_THINKING_EFFORT` stays a user override — apply never
+/// fights it.
+pub(crate) fn apply_connection_effort(config: &mut Config, saved: &mut SavedConfig) {
+    if std::env::var_os("GRAY_THINKING_EFFORT").is_some() {
+        return;
+    }
+    let key = crate::setup::catalog::effort_memory_key(
+        &config.provider_id,
+        &config.base_url,
+        config.model.as_deref().unwrap_or_default(),
+    );
+    config.thinking_effort = Some(
+        saved
+            .remembered_effort(&key)
+            .unwrap_or_else(|| "high".to_string()),
+    );
+    saved.thinking_effort = config.thinking_effort.clone();
+}
+
+/// Load/save-owning variant of [`apply_connection_effort`] for callers
+/// without `saved` in hand.
+pub(crate) fn adopt_connection_effort(config: &mut Config) {
+    let Ok(path) = saved_config_path() else {
+        return;
+    };
+    let _cfg_lock = lock_saved_config_at(&path).ok();
+    let mut saved = load_saved_config_at(&path);
+    apply_connection_effort(config, &mut saved);
+    let _ = save_saved_config_at(&path, &saved);
+}
+
 /// `/connect` writes the live config as rows are picked (base URL, key) and
 /// saves to disk only once a model is chosen. Leaving it any other way must
 /// leave the session as it was: a dismissed pick otherwise stayed live,
@@ -323,11 +361,28 @@ pub fn settle_connect_config(
     before: Config,
     outcome: &anyhow::Result<crate::setup::ConnectOutcome>,
 ) {
-    if matches!(
-        outcome,
-        Ok(crate::setup::ConnectOutcome::Dismissed) | Err(_)
-    ) {
-        *config = before;
+    match outcome {
+        Ok(crate::setup::ConnectOutcome::Dismissed) | Err(_) => *config = before,
+        Ok(crate::setup::ConnectOutcome::Connected) => {
+            // A provider or model switch: the effort that rode in belonged
+            // to the previous target — adopt this one's own remembered
+            // level. Same connection+model re-connecting is a no-op, so the
+            // key also guards the redundant disk write.
+            let old_key = crate::setup::catalog::effort_memory_key(
+                &before.provider_id,
+                &before.base_url,
+                before.model.as_deref().unwrap_or_default(),
+            );
+            let new_key = crate::setup::catalog::effort_memory_key(
+                &config.provider_id,
+                &config.base_url,
+                config.model.as_deref().unwrap_or_default(),
+            );
+            if old_key != new_key {
+                adopt_connection_effort(config);
+            }
+        }
+        Ok(crate::setup::ConnectOutcome::Removed(_)) => {}
     }
 }
 

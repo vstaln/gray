@@ -2,6 +2,7 @@
 /AGENTS.md
 
 /target/
+plugins/*/target/
 # local reference clones (never commit)
 /reference/
 /port/

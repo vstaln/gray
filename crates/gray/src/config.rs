@@ -51,6 +51,10 @@ pub struct Config {
     /// Show reasoning text in the transcript. None (default) = shown.
     /// `GRAY_SHOW_REASONING=0/false/no/off` hides. Effort "off" always hides.
     pub show_reasoning: Option<bool>,
+    /// Prefer the provider's fast-serving variant of the current model
+    /// (`-fast`/`-priority` catalog rows). None/false = standard serving.
+    /// `GRAY_FAST=0/false/no/off` disables; any other value enables.
+    pub fast_mode: Option<bool>,
     /// Sampling temperature sent with every chat request (`GRAY_TEMPERATURE`
     /// or saved config). None = provider default; out-of-range ignored.
     pub temperature: Option<f32>,
@@ -152,6 +156,15 @@ impl Config {
             })
             .or(saved.show_reasoning);
 
+        let fast_mode = env("GRAY_FAST")
+            .map(|s| {
+                !matches!(
+                    s.trim().to_ascii_lowercase().as_str(),
+                    "0" | "false" | "no" | "off"
+                )
+            })
+            .or(saved.fast_mode);
+
         // Sampling params pass through to providers that accept them.
         // Out-of-range values are ignored, never clamped or sent.
         let temperature = env("GRAY_TEMPERATURE")
@@ -221,6 +234,7 @@ impl Config {
             auth_ref: nonempty(Some(saved.auth_ref.as_str())).unwrap_or_default(),
             thinking_effort,
             show_reasoning,
+            fast_mode,
             temperature,
             top_p,
             context_window,

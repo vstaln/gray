@@ -2,6 +2,7 @@ use super::*;
 
 fn cfg() -> Config {
     Config {
+        fast_mode: None,
         temperature: None,
         top_p: None,
         model: None,

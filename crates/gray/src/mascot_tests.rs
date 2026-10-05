@@ -70,6 +70,9 @@ fn tiny_terminals_decline_the_mascot() {
 
 #[test]
 fn lines_tile_the_grid_with_merged_runs() {
+    // `mascot_lines` declines under NO_COLOR — the truecolor path needs
+    // it cleared regardless of what the dev shell exported.
+    unsafe { std::env::remove_var("NO_COLOR") };
     let grid = decode_grid(120, 40).expect("asset decodes");
     let lines = super::mascot_lines(120, 40, Some(120)).expect("truecolor path");
     assert_eq!(lines.len(), grid.rows, "one line per cell row");
@@ -113,6 +116,7 @@ fn welcome_is_the_ascii_logo_by_default() {
 
 #[test]
 fn mascot_art_paints_as_half_block_cells() {
+    unsafe { std::env::remove_var("NO_COLOR") };
     // Same size probe build_welcome_lines used to use (no TTY under cargo
     // test, so crossterm fails and the fallback wins on both sides).
     let (cols, rows) = crossterm::terminal::size().unwrap_or((120, 24));

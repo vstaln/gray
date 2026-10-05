@@ -545,9 +545,11 @@ pub fn forward(home: &Path, name: &str, rest: &[String]) -> anyhow::Result<()> {
     migrate_commands_json(home);
     let lock = load_lock(home)?;
     let entry = lock.plugins.get(name).with_context(|| {
-        removed_builtin(name).map(str::to_string).unwrap_or_else(|| {
-            format!("no plugin command '{name}' — install it with: gray plugin install {name}")
-        })
+        removed_builtin(name)
+            .map(str::to_string)
+            .unwrap_or_else(|| {
+                format!("no plugin command '{name}' — install it with: gray plugin install {name}")
+            })
     })?;
     let argv = entry
         .cli_argv

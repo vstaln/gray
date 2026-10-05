@@ -852,6 +852,15 @@ async fn run_print_inner(
     continue_last: bool,
     mut json: Option<&mut JsonOutput>,
 ) -> anyhow::Result<()> {
+    // Same canonicalization as the REPL boot: a saved `swe-2-max` becomes
+    // `swe-2` at `max` before the agent is built, so headless runs ride
+    // the family row too (the wire id is re-expanded at request build).
+    let mut config_owned = config.clone();
+    {
+        let rows = crate::setup::canonical_model_rows(&config_owned);
+        crate::setup::canonicalize_effort_variant(&mut config_owned, &rows);
+    }
+    let config = &config_owned;
     crate::setup::set_user_context_window(config.context_window);
     crate::setup::set_user_reserve_tokens(config.context_reserve);
     crate::setup::set_user_keep_recent_tokens(config.context_keep);

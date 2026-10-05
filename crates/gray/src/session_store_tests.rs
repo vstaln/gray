@@ -1411,7 +1411,13 @@ async fn open_lock_blocks_second_owner_and_names_holder_pid() {
     assert!(sa.open_lock_held(&id).await);
     assert!(sb.open_lock_held(&id).await);
 
+    // The in-process registry would merge sb's acquire into sa's lock
+    // (by design — same process, same owner). Stash it so sb exercises
+    // the OS flock path a genuine second process always hits, then
+    // restore — sa's re-acquire below must merge again.
+    let stashed = std::mem::take(&mut *OPEN_LOCKS.lock().expect("open-lock registry poisoned"));
     let err = sb.acquire_open(&id).await.unwrap_err();
+    *OPEN_LOCKS.lock().expect("open-lock registry poisoned") = stashed;
     match err {
         SessionError::Locked { id: locked_id, pid } => {
             assert_eq!(locked_id, id);

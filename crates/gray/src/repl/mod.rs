@@ -176,7 +176,8 @@ pub use commands::{ReplCommand, ResumeArgs, SysAction, parse_command};
 pub(crate) use format::build_user_message_with_attachments;
 pub use format::{THINKING_STYLE, fmt_usage, format_core_error};
 pub(crate) use handlers::{
-    expand_skill_command, handle_model, handle_sys, handle_thinking, handle_undo, reload_agent,
+    expand_skill_command, handle_fast, handle_model, handle_sys, handle_thinking, handle_undo,
+    reload_agent,
 };
 pub(crate) use plugin_cmds::handle_plugin_command;
 pub(crate) use session::{
@@ -246,7 +247,16 @@ pub(crate) fn clamp_thinking_to_model_name(
     if let Ok(path) = crate::setup::saved_config_path() {
         let _cfg_lock = crate::setup::lock_saved_config_at(&path).ok();
         let mut saved = crate::setup::load_saved_config_at(&path);
-        saved.thinking_effort = Some(new.clone());
+        // The clamped value is this connection+model's level — remember it
+        // under its own key so a switch away and back restores it.
+        saved.remember_effort(
+            &crate::setup::effort_memory_key(
+                &config.provider_id,
+                &config.base_url,
+                config.model.as_deref().unwrap_or_default(),
+            ),
+            &new,
+        );
         let _ = crate::setup::save_saved_config_at(&path, &saved);
     }
     Some((old, new))
@@ -270,9 +280,8 @@ pub(crate) fn push_provider_connected(
 ) {
     crate::setup::set_active_model_provider(&config.base_url);
     let clamped = clamp_thinking_to_model(config);
-    if clamped.is_some()
-        && let Some(h) = hide_thinking
-    {
+    if let Some(h) = hide_thinking {
+        // The connection's adopted effort (not just a clamp) decides this.
         *h = config.reasoning_hidden();
     }
     let Some((shared, _)) = tui else {
@@ -285,8 +294,10 @@ pub(crate) fn push_provider_connected(
     if let Some(m) = &config.model {
         t.set_model(m.clone());
     }
-    if let Some((_, ref new)) = clamped {
-        t.set_thinking_effort(new.clone());
+    // Paint the effort unconditionally: a provider/model switch adopts the
+    // target's own remembered level even when no clamp fires.
+    if let Some(eff) = &config.thinking_effort {
+        t.set_thinking_effort(eff.clone());
         t.set_hide_thinking(config.reasoning_hidden());
     }
     let model_str = config.model.as_deref().unwrap_or("default");
@@ -616,6 +627,12 @@ pub async fn run_repl_mode(
         if config.model.is_none() && !meta.model.is_empty() {
             config.model = Some(meta.model.clone());
         }
+        // The session may predate the family collapse: canonicalize a
+        // stored variant id before the agent is built on it.
+        {
+            let rows = crate::setup::canonical_model_rows(config);
+            crate::setup::canonicalize_effort_variant(config, &rows);
+        }
         // Startup resume lands on the session's model: clamp a stale effort
         // (e.g. saved `max` under a Spark session) before the first build
         // and before the TUI init below paints the footer.
@@ -643,6 +660,13 @@ pub async fn run_repl_mode(
         resumed_session_info = Some((sid, entries));
     }
 
+    // A stored `<base>-<tier>` id — picked before its family collapsed into
+    // one row, or hand-typed — canonicalizes to the row + its tier effort
+    // (`swe-2-max` → `swe-2` at `max`) before the clamp runs below.
+    {
+        let rows = crate::setup::canonical_model_rows(config);
+        crate::setup::canonicalize_effort_variant(config, &rows);
+    }
     // Fresh sessions need the same normalization as model switches and resumes.
     if let Some((old, new)) = clamp_thinking_to_model(config) {
         println!("Thinking effort clamped from {old} to {new} (not supported by this model)");

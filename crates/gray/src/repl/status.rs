@@ -61,7 +61,7 @@ pub(crate) fn turn_tokens_per_second(output_tokens: usize, duration_ms: u64) -> 
 /// The rate divides by `streamed_ms` (streaming time only, from
 /// `TurnStreamClock`), never the whole-turn `duration_ms` the `· 6s` shows:
 /// tool waits and inter-round gaps must not dilute it, and a turn that
-/// streamed nothing (pure tool turn) shows no rate at all.
+/// produced no output tokens (pure tool turn) shows no rate at all.
 pub(crate) fn turn_footer(
     usage: &gray_core::event::Usage,
     model: &str,

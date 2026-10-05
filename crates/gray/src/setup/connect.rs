@@ -154,6 +154,22 @@ fn spawn_plugin_login(
     (cancel, progress_receiver)
 }
 
+/// Is `item` the connection `config` is already on? Plugin rows compare by
+/// provider id (their declared base_url is a shared placeholder); every
+/// other row by normalized base URL.
+fn same_connection(item: &ConnectItem, config: &Config) -> bool {
+    match &item.auth {
+        ConnectAuth::Plugin { .. } => {
+            !config.provider_id.is_empty() && config.provider_id == item.id
+        }
+        _ => {
+            !config.base_url.is_empty()
+                && normalize_custom_base_url(&item.base_url)
+                    == normalize_custom_base_url(&config.base_url)
+        }
+    }
+}
+
 /// Connect-modal id of the active provider: the plugin provider, else the
 /// catalog entry serving `base_url`. None for custom endpoints.
 pub fn active_connect_id(config: &Config) -> Option<String> {
@@ -715,6 +731,13 @@ fn connect_modal(
                                 *status_msg = Some("Credential saved".into())
                             }
                             PluginLoginProgress::Models(models) => {
+                                // Cache under the plugin key: `/model`
+                                // paints from it next open — the
+                                // placeholder base can never serve a list.
+                                super::context::save_provider_model_list(
+                                    &super::catalog::plugin_models_key(&item.id),
+                                    &models,
+                                );
                                 next_state = Some(ModalState::SelectingModel {
                                     item: item.clone(),
                                     models,
@@ -870,6 +893,18 @@ fn connect_modal(
                                         m_id.clone()
                                     } else if !m_filter.is_empty() {
                                         m_filter.trim().to_string()
+                                    } else if same_connection(item, config) {
+                                        // The list fetch failed on the live
+                                        // connection: keep its model rather
+                                        // than stamping a literal "default"
+                                        // over a valid one. A different
+                                        // provider still gets "default" —
+                                        // inheriting the old id would be
+                                        // just as blind.
+                                        config
+                                            .model
+                                            .clone()
+                                            .unwrap_or_else(|| "default".to_string())
                                     } else {
                                         "default".to_string()
                                     };

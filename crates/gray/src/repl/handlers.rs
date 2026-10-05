@@ -604,28 +604,73 @@ pub(crate) async fn handle_model(
 ) {
     if let Some(m) = direct {
         // Validate against the cached list first; only an id it doesn't
-        // know waits on the live /models fetch (a brand-new model).
-        let cached = crate::setup::saved_models_for(&config.base_url);
-        let checked = match crate::setup::validate_direct_model_id(&m, &cached) {
-            Ok(canonical) => Ok(canonical),
-            Err(_) => {
-                let (_, _, known) =
-                    crate::setup::provider_models_for(&config.base_url, config.api_key.as_deref());
-                crate::setup::validate_direct_model_id(&m, &known)
+        // know waits on the live fetch (a brand-new model). Plugin
+        // connections list via `provider/models`, not the placeholder base.
+        let (_, list_key, _) = crate::setup::picker_scope(config);
+        let cached = crate::setup::saved_models_for(&list_key, &config.base_url);
+        let mut checked = crate::setup::validate_direct_model_id(&m, &cached);
+        let mut live_rows: Vec<(String, String)> = Vec::new();
+        if checked.is_err() {
+            let (_, known) = crate::setup::provider_models_for_config(config);
+            checked = crate::setup::validate_direct_model_id(&m, &known);
+            live_rows = known;
+        }
+        // Decompose the target once against the merged known list: a
+        // declared `-fast`/`-priority` row and a stale `<base>-<tier>` id
+        // alike split into base + tier + fast.
+        let mut ids = cached.clone();
+        for row in live_rows {
+            if !ids.iter().any(|(id, _)| *id == row.0) {
+                ids.push(row);
             }
-        };
-        let m = match checked {
-            Ok(canonical) => canonical,
+        }
+        let (m, variant_tier, fast) = match checked {
+            Ok(canonical) => crate::setup::decompose_model_variant(&canonical, &ids)
+                .unwrap_or((canonical, None, false)),
             Err(msg) => {
-                say(tui, &msg);
-                return;
+                // A `<base>-<tier>` id names a level on its family row: the
+                // picker collapsed the variants into `base`, so a stale or
+                // hand-typed `swe-2-max` resolves to `swe-2` at `max`.
+                match crate::setup::decompose_model_variant(&m, &ids) {
+                    Some(v) => v,
+                    None => {
+                        say(tui, &msg);
+                        return;
+                    }
+                }
             }
         };
+        if fast && std::env::var_os("GRAY_FAST").is_none() {
+            config.fast_mode = Some(true);
+            if let Ok(path) = crate::setup::saved_config_path() {
+                let mut saved = crate::setup::load_saved_config_at(&path);
+                saved.fast_mode = Some(true);
+                let _ = crate::setup::save_saved_config_at(&path, &saved);
+            }
+        }
         config.model = Some(m.clone());
-        // Clamp a stale effort before painting (e.g. deepseek `max` → Spark
-        // `xhigh`) so the footer never shows an unsupported level.
+        // Effort follows the model: adopt this target's remembered level
+        // (or the default) before clamping, so a stale level never lands on
+        // the new model or gets remembered under its key. A tier the id
+        // itself named wins over memory — `swe-2-max` means max.
+        let prev_effort = config.thinking_effort.clone();
+        match &variant_tier {
+            Some(tier) if std::env::var_os("GRAY_THINKING_EFFORT").is_none() => {
+                config.thinking_effort = Some(tier.clone());
+                if let Ok(path) = crate::setup::saved_config_path() {
+                    let mut saved = crate::setup::load_saved_config_at(&path);
+                    saved.remember_effort(
+                        &crate::setup::effort_memory_key(&config.provider_id, &config.base_url, &m),
+                        tier,
+                    );
+                    saved.thinking_effort = config.thinking_effort.clone();
+                    let _ = crate::setup::save_saved_config_at(&path, &saved);
+                }
+            }
+            _ => crate::setup::adopt_connection_effort(config),
+        }
         let clamped = super::clamp_thinking_to_model(config);
-        if clamped.is_some() {
+        if clamped.is_some() || config.thinking_effort != prev_effort {
             *hide_thinking = config.reasoning_hidden();
         }
         if let Ok(path) = crate::setup::saved_config_path() {
@@ -636,8 +681,10 @@ pub(crate) async fn handle_model(
         if let Some(shared) = tui {
             let mut t = shared.lock().expect("tui lock");
             t.set_model(m.clone());
-            if let Some((_, ref new)) = clamped {
-                t.set_thinking_effort(new.clone());
+            if config.thinking_effort != prev_effort
+                && let Some(eff) = &config.thinking_effort
+            {
+                t.set_thinking_effort(crate::setup::effort_chip(eff, config));
                 t.set_hide_thinking(*hide_thinking);
             }
             t.push_action("Model set to", Some(&m));
@@ -681,14 +728,16 @@ pub(crate) async fn handle_model(
         }
         return;
     }
+    let prev_effort = config.thinking_effort.clone();
     let bg = tui.map(|shared| shared.lock().expect("tui lock").snapshot());
     let result = with_modal(tui, crate::setup::run_model_menu(config, bg.as_ref())).await;
     match result {
         Ok(true) => {
-            // Picker switched the model: clamp a stale effort before
-            // painting so the footer never shows an unsupported level.
+            // The picker already adopted the new model's remembered effort;
+            // clamp whatever came out so the footer never shows an
+            // unsupported level, and paint the adopted level too.
             let clamped = super::clamp_thinking_to_model(config);
-            if clamped.is_some() {
+            if clamped.is_some() || config.thinking_effort != prev_effort {
                 *hide_thinking = config.reasoning_hidden();
             }
             if let Some(shared) = tui {
@@ -697,8 +746,10 @@ pub(crate) async fn handle_model(
                     t.set_model(m.clone());
                     t.push_action("Model set to", Some(m));
                 }
-                if let Some((_, ref new)) = clamped {
-                    t.set_thinking_effort(new.clone());
+                if config.thinking_effort != prev_effort
+                    && let Some(eff) = &config.thinking_effort
+                {
+                    t.set_thinking_effort(crate::setup::effort_chip(eff, config));
                     t.set_hide_thinking(*hide_thinking);
                 }
                 if let Some((old, new)) = clamped {
@@ -770,13 +821,20 @@ pub(crate) async fn handle_thinking(
             config.thinking_effort = Some(eff_clean.clone());
             if let Ok(path) = crate::setup::saved_config_path() {
                 let mut saved = crate::setup::load_saved_config_at(&path);
-                saved.thinking_effort = Some(eff_clean.clone());
+                saved.remember_effort(
+                    &crate::setup::effort_memory_key(
+                        &config.provider_id,
+                        &config.base_url,
+                        config.model.as_deref().unwrap_or_default(),
+                    ),
+                    &eff_clean,
+                );
                 let _ = crate::setup::save_saved_config_at(&path, &saved);
             }
             *hide_thinking = config.reasoning_hidden();
             if let Some(shared) = tui {
                 let mut t = shared.lock().expect("tui lock");
-                t.set_thinking_effort(eff_clean.clone());
+                t.set_thinking_effort(crate::setup::effort_chip(&eff_clean, config));
                 t.set_hide_thinking(*hide_thinking);
                 t.push_action("Thinking effort set to", Some(&eff_clean));
                 t.ensure_gap();
@@ -844,7 +902,7 @@ pub(crate) async fn handle_thinking(
             if let Some(shared) = tui {
                 let mut t = shared.lock().expect("tui lock");
                 if let Some(eff) = &config.thinking_effort {
-                    t.set_thinking_effort(eff.clone());
+                    t.set_thinking_effort(crate::setup::effort_chip(eff, config));
                     *hide_thinking = config.reasoning_hidden();
                     t.set_hide_thinking(*hide_thinking);
                     t.push_action("Thinking effort set to", Some(eff));
@@ -897,6 +955,77 @@ pub(crate) async fn handle_thinking(
                 println!("effort error: {e}");
             }
         }
+    }
+}
+
+/// Handles `/fast [on|off|status]`: prefer the provider's fast-serving
+/// variant of the current model (`-fast`/`-priority` catalog rows). Bare
+/// `/fast` toggles; `status` reports without changing. The wire model id
+/// composes at agent build, so toggling reloads the agent.
+pub(crate) async fn handle_fast(
+    config: &mut Config,
+    cwd: &Path,
+    direct: Option<String>,
+    agent: &mut Option<Agent>,
+    tui: Option<&crate::composer::SharedTui>,
+    session_id: Option<&str>,
+) {
+    let arg = direct.as_deref().unwrap_or("").trim().to_lowercase();
+    let current = config.fast_mode == Some(true);
+    let (next, report_only) = match arg.as_str() {
+        "" => (!current, false),
+        "on" => (true, false),
+        "off" => (false, false),
+        "status" => (current, true),
+        _ => {
+            say(
+                tui,
+                "usage: /fast [on|off|status] — prefer the provider's fast model variant",
+            );
+            return;
+        }
+    };
+    // What the flag would send — the mode is global, but only catalog fast
+    // rows change the wire id, so report the honest outcome for this model.
+    let model = config.model.clone().unwrap_or_default();
+    let rows = crate::setup::canonical_model_rows(config);
+    let wire = crate::setup::compose_fast_model(&model, config.thinking_effort.as_deref(), &rows);
+    let detail = if next {
+        match &wire {
+            Some(id) => format!("{model} → {id}"),
+            None => format!("{model} has no fast variant — sends unchanged"),
+        }
+    } else {
+        model.clone()
+    };
+    if !report_only {
+        config.fast_mode = Some(next);
+        if let Ok(path) = crate::setup::saved_config_path() {
+            let mut saved = crate::setup::load_saved_config_at(&path);
+            saved.fast_mode = Some(next);
+            let _ = crate::setup::save_saved_config_at(&path, &saved);
+        }
+    }
+    let verb = if next { "on" } else { "off" };
+    let msg = if report_only {
+        format!("fast mode is {verb} — {detail}")
+    } else {
+        format!("fast mode {verb} — {detail}")
+    };
+    if let Some(shared) = tui {
+        let mut t = shared.lock().expect("tui lock");
+        if let Some(eff) = &config.thinking_effort {
+            t.set_thinking_effort(crate::setup::effort_chip(eff, config));
+        }
+        t.push_action("Fast mode", Some(verb));
+        t.push_dim(format!("└ {msg}"));
+        t.ensure_gap();
+        let _ = t.draw();
+    } else {
+        println!("{msg}");
+    }
+    if !report_only {
+        reload_agent(agent, config, cwd, session_id, tui).await;
     }
 }
 

@@ -400,3 +400,32 @@ fn step_models_are_never_offered_a_dishonest_off() {
         .collect();
     assert_eq!(step, vec!["low", "medium", "high", "max"]);
 }
+
+#[test]
+fn effort_in_id_models_offer_no_knob() {
+    // Under a plugin-relay provider (loopback base), ids that bake the
+    // tier into the name — stale saves and hand-typed ones — get no
+    // picker even when no catalog declared them.
+    set_active_model_provider("https://127.0.0.1:1/");
+    for id in [
+        "swe-2-max",
+        "swe-2-medium",
+        "claude-opus-5-5-xhigh",
+        "claude-opus-5-5-low-fast",
+    ] {
+        assert_eq!(
+            supported_thinking_levels(id),
+            vec![("off", "No reasoning")],
+            "{id} carries its effort in the id — the picker must not open"
+        );
+    }
+    // The same rule must not blindfold real API providers: `codex-max`
+    // names a model line served over api.openai.com, not a baked tier.
+    set_active_model_provider("https://api.openai.com/v1");
+    let codex: Vec<&str> = supported_thinking_levels("gpt-5.3-codex-max")
+        .iter()
+        .map(|(l, _)| *l)
+        .collect();
+    assert_eq!(codex, vec!["off", "low", "medium", "high", "xhigh"]);
+    set_active_model_provider("");
+}

@@ -193,6 +193,7 @@ fn format_skill_paste_body_and_args() {
 #[tokio::test]
 async fn reload_agent_failure_preserves_agent() {
     let config = Config {
+        fast_mode: None,
         temperature: None,
         top_p: None,
         model: None,

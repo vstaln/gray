@@ -61,6 +61,7 @@ impl Drop for TuiSession {
 }
 
 pub mod catalog;
+pub(crate) use catalog::effort_memory_key;
 pub(crate) use catalog::save_auth_key;
 pub use catalog::{
     AUTH_MODE_API_KEY, AUTH_MODE_NONE, Catalog, CatalogProvider, ConnectAuth, ConnectItem,
@@ -119,8 +120,11 @@ pub(crate) use install_manager::{
 };
 pub use install_manager::{run_plugins_modal, run_skills_modal};
 pub(crate) use model_modal::{
-    provider_models_for, run_model_modal, saved_models_for, validate_direct_model_id,
+    canonical_model_rows, canonicalize_effort_variant, compose_fast_model, decompose_model_variant,
+    effort_chip, picker_scope, provider_models_for_config, run_model_modal, saved_models_for,
+    validate_direct_model_id,
 };
+pub(crate) use provider_auth::adopt_connection_effort;
 pub use provider_auth::{
     PluginLoginProgress, activate_plugin_connection, adopt_saved_key, forget_plugin_connection,
     run_plugin_login, select_api_key_connection,

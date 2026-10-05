@@ -143,6 +143,22 @@ fn empty_save_never_clobbers_a_cache() {
 }
 
 #[test]
+fn friendly_model_name_restores_version_dots() {
+    assert_eq!(friendly_model_name("claude-opus-5-5"), "Claude Opus 5.5");
+    assert_eq!(
+        friendly_model_name("claude-opus-5-5-low-fast"),
+        "Claude Opus 5.5 Low Fast"
+    );
+    assert_eq!(friendly_model_name("deepseek-v3-1"), "Deepseek v3.1");
+    assert_eq!(friendly_model_name("gpt-5-2"), "GPT 5.2");
+    // Not digit runs: dates, build stamps, and size suffixes stay apart.
+    assert_eq!(friendly_model_name("gpt-5-2025-08-07"), "GPT 5 2025 08 07");
+    assert_eq!(friendly_model_name("deepseek-v3-0324"), "Deepseek v3 0324");
+    assert_eq!(friendly_model_name("qwen3-30b-a3b"), "Qwen3 30b A3b");
+    assert_eq!(friendly_model_name(""), "");
+}
+
+#[test]
 fn loopback_hosts_are_recognized_with_and_without_brackets() {
     assert!(is_loopback_host("localhost"));
     assert!(is_loopback_host("127.0.0.1"));

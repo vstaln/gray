@@ -385,3 +385,91 @@ fn the_config_lock_serializes_writers_then_releases() {
         "release took too long: {waited:?}"
     );
 }
+
+#[test]
+fn effort_memory_scopes_by_connection_and_model() {
+    // Two models on the same plugin provider keep separate levels, and the
+    // shared `*-sub` placeholder base never collides with a URL connection.
+    let mut saved = SavedConfig::default();
+    let devin = "devin-sub:devin-subscription";
+    let loopback = "https://127.0.0.1:1/";
+    saved.remember_effort(&effort_memory_key(devin, loopback, "swe-2-max"), "high");
+    saved.remember_effort(
+        &effort_memory_key(devin, loopback, "meta/muse-spark-1.3-contributor"),
+        "xhigh",
+    );
+    saved.remember_effort(
+        &effort_memory_key("", "https://api.example.com/v1", "swe-2-max"),
+        "low",
+    );
+    assert_eq!(
+        saved
+            .remembered_effort(&effort_memory_key(devin, loopback, "swe-2-max"))
+            .as_deref(),
+        Some("high")
+    );
+    assert_eq!(
+        saved
+            .remembered_effort(&effort_memory_key(
+                devin,
+                loopback,
+                "meta/muse-spark-1.3-contributor",
+            ))
+            .as_deref(),
+        Some("xhigh")
+    );
+    assert_eq!(
+        saved
+            .remembered_effort(&effort_memory_key(
+                "",
+                "https://api.example.com/v1",
+                "swe-2-max"
+            ))
+            .as_deref(),
+        Some("low")
+    );
+    // The flat live field tracks the last effort written.
+    assert_eq!(saved.thinking_effort.as_deref(), Some("low"));
+    // A model-less key is the bare connection scope.
+    assert_eq!(
+        effort_memory_key(devin, loopback, ""),
+        format!("plugin:{devin}")
+    );
+}
+
+#[test]
+fn effort_memory_round_trips_and_survives_partial_parse() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.json");
+    let mut saved = SavedConfig::default();
+    saved.remember_effort(
+        &effort_memory_key("devin-sub:devin-subscription", "", "swe-2-max"),
+        "xhigh",
+    );
+    save_saved_config_at(&path, &saved).unwrap();
+    let loaded = load_saved_config_at(&path);
+    assert_eq!(
+        loaded
+            .remembered_effort(&effort_memory_key(
+                "devin-sub:devin-subscription",
+                "",
+                "swe-2-max"
+            ))
+            .as_deref(),
+        Some("xhigh")
+    );
+    // A mistyped field next door loses itself, not the memory map.
+    std::fs::write(
+        &path,
+        r#"{"effort_memory":{"plugin:devin-sub:devin-subscription|m":"low"},"model":7}"#,
+    )
+    .unwrap();
+    let loaded = load_saved_config_at(&path);
+    assert_eq!(loaded.model, None);
+    assert_eq!(
+        loaded
+            .remembered_effort("plugin:devin-sub:devin-subscription|m")
+            .as_deref(),
+        Some("low")
+    );
+}

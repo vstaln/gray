@@ -78,6 +78,9 @@ pub struct SavedConfig {
     /// None (default) = shown.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub show_reasoning: Option<bool>,
+    /// Prefer fast-serving model variants (`-fast`/`-priority` rows).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fast_mode: Option<bool>,
     /// Sampling temperature sent with every chat request (None = provider default).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub temperature: Option<f32>,
@@ -136,6 +139,13 @@ pub struct SavedConfig {
     /// Namespaced plugin credential reference.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub auth_ref: String,
+    /// Thinking effort remembered per connection+model, keyed by
+    /// [`effort_memory_key`]. `thinking_effort` stays the live value; this
+    /// map restores each target's own level on a provider or model switch,
+    /// so one model's level never leaks onto another (a Spark `xhigh` must
+    /// not ride onto SWE 2 Max just because it matches no family table).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub effort_memory: BTreeMap<String, String>,
 }
 
 /// Canonical `SavedConfig.auth_mode` values (kept as strings on disk).
@@ -273,6 +283,7 @@ fn partial_saved_config(obj: &serde_json::Map<String, serde_json::Value>) -> Sav
         auth_mode: opt_field(obj, "auth_mode"),
         thinking_effort: opt_field(obj, "thinking_effort"),
         show_reasoning: opt_field(obj, "show_reasoning"),
+        fast_mode: opt_field(obj, "fast_mode"),
         temperature: opt_field(obj, "temperature"),
         top_p: opt_field(obj, "top_p"),
         context_window: opt_field(obj, "context_window"),
@@ -287,6 +298,7 @@ fn partial_saved_config(obj: &serde_json::Map<String, serde_json::Value>) -> Sav
         provider_id: string_field(obj, "provider_id"),
         credential_source: string_field(obj, "credential_source"),
         auth_ref: string_field(obj, "auth_ref"),
+        effort_memory: opt_field(obj, "effort_memory").unwrap_or_default(),
     }
 }
 
@@ -614,6 +626,20 @@ pub(crate) fn sort_connect_items(
 }
 
 impl SavedConfig {
+    /// The effort remembered for an [`effort_memory_key`], if one was set.
+    pub(crate) fn remembered_effort(&self, key: &str) -> Option<String> {
+        self.effort_memory.get(key).cloned()
+    }
+
+    /// Record `effort` under `key` and move the flat live field with it —
+    /// every effort write goes through here so a later provider/model switch
+    /// can restore this connection's own level.
+    pub(crate) fn remember_effort(&mut self, key: &str, effort: &str) {
+        self.effort_memory
+            .insert(key.to_string(), effort.to_string());
+        self.thinking_effort = Some(effort.to_string());
+    }
+
     /// Only reorder available IDs: history must not resurrect removed models
     /// or change the validation contract of the provider's live model list.
     pub(crate) fn sort_models(&self, base_url: &str, models: &mut [(String, String)]) {
@@ -655,6 +681,40 @@ pub fn normalize_custom_base_url(raw: &str) -> String {
         }
     }
     s
+}
+
+/// `provider_models.json` key for a plugin provider: the declared base_url
+/// is a loopback relay placeholder — identical across every `*-sub` plugin —
+/// so the list rides under `plugin:<provider_id>`. Stable across restarts,
+/// unparseable as a URL with a host, hence exempt from the loopback
+/// no-write rule in `save_provider_model_list_at`.
+pub fn plugin_models_key(provider_id: &str) -> String {
+    format!("plugin:{provider_id}")
+}
+
+/// Which connection an effort or other per-provider value belongs to:
+/// `plugin:<provider_id>` for plugin connections (their shared placeholder
+/// base would collapse every `*-sub` provider into one slot), else
+/// `url:<normalized base>`.
+pub fn provider_effort_key(provider_id: &str, base_url: &str) -> String {
+    if provider_id.trim().is_empty() {
+        format!("url:{}", normalize_custom_base_url(base_url))
+    } else {
+        plugin_models_key(provider_id)
+    }
+}
+
+/// Key for a remembered effort: the connection identity
+/// ([`provider_effort_key`]) plus the model it was chosen on. Effort is
+/// per-model — levels one model supports don't carry to the next.
+pub fn effort_memory_key(provider_id: &str, base_url: &str, model: &str) -> String {
+    let scope = provider_effort_key(provider_id, base_url);
+    let model = model.trim();
+    if model.is_empty() {
+        scope
+    } else {
+        format!("{scope}|{model}")
+    }
 }
 
 /// Builds the full list of providers for the connect modal:

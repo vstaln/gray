@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="970" height="970" viewBox="0 0 970 970">
+  <title>gray mark intro</title>
+  <defs><clipPath id="hull"><path d="M 28.41797 0.0 L 118.27719 0.0 L 146.69458 49.221035 L 101.76586 127.03985 L 44.930503 127.04018 L 0.0 49.221465 Z" /></clipPath></defs>
+  <g class="mark">
+    <g transform="translate(84 138) scale(5.46)">
+      <g clip-path="url(#hull)" fill="none" stroke="#ffffff" stroke-width="5.893" stroke-linecap="butt">
+        <path class="b side" pathLength="1" stroke-linejoin="miter" d="M 29.9691 3.2063 L 30.1191 2.9465 L 116.5760 2.9465 L 143.2923 49.2210 L 100.0647 124.0934 L 99.7647 124.0934" />
+        <path class="b side" pathLength="1" stroke-linejoin="miter" d="M 30.4191 2.9465 L 30.1191 2.9465 L 3.4023 49.2214 L 46.6316 124.0937 L 100.0647 124.0934 L 100.2147 123.8336" />
+        <path class="b diag" style="--d:0.000s" pathLength="1" d="M 26.9947 1.6695 L 146.2069 50.4137" />
+        <path class="b diag" style="--d:0.000s" pathLength="1" d="M 28.4180 0.0000 L 101.7659 127.0398" />
+        <path class="b diag" style="--d:0.000s" pathLength="1" d="M 29.6946 -0.1740 L 47.0880 127.4381" />
+        <path class="b diag" style="--d:0.515s" pathLength="1" d="M 0.4877 50.4141 L 119.7005 1.6695" />
+        <path class="b diag" style="--d:0.515s" pathLength="1" d="M 0.0000 49.2215 L 146.6946 49.2210" />
+        <path class="b diag" style="--d:0.515s" pathLength="1" d="M 0.7342 47.1541 L 102.5549 126.0212" />
+        <path class="b diag" style="--d:0.572s" pathLength="1" d="M 117.0005 -0.1740 L 99.6084 127.4378" />
+        <path class="b diag" style="--d:0.572s" pathLength="1" d="M 118.2772 0.0000 L 44.9305 127.0402" />
+        <path class="b diag" style="--d:0.678s" pathLength="1" d="M 145.9605 47.1537 L 44.1415 126.0215" />
+      </g>
+    </g>
+  </g>
+  <style>
+    .b { stroke-dasharray: 1 1; }
+    .mark { transform-origin: 484.48px 458.80px; }
+    .side, .diag, .mark { animation: 6.0s linear var(--d, 0s) infinite both; }
+    .side { animation-name: side; }
+    .diag { animation-name: diag; }
+    .mark { animation-name: settle; }
+    @keyframes side { 0%, 2.50% { stroke-dashoffset: 1; animation-timing-function: cubic-bezier(0.65, 0, 0.35, 1); } 23.33%, 65.00% { stroke-dashoffset: 0; animation-timing-function: cubic-bezier(0.65, 0, 0.35, 1); } 83.33%, 100% { stroke-dashoffset: -1; } }
+    @keyframes diag { 0%, 2.50% { stroke-dashoffset: 1; animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1); } 16.67%, 62.50% { stroke-dashoffset: 0; animation-timing-function: cubic-bezier(0.65, 0, 0.35, 1); } 72.50%, 100% { stroke-dashoffset: -1; } }
+    @keyframes settle { 0% { transform: scale(0.95); opacity: 1; animation-timing-function: cubic-bezier(0.33, 1, 0.68, 1); } 43.33%, 60.00% { transform: scale(1); opacity: 1; animation-timing-function: cubic-bezier(0.55, 0, 0.75, 0.2); } 85.00% { opacity: 1; } 91.67%, 100% { transform: scale(0.97); opacity: 0; } }
+    @media (prefers-reduced-motion: reduce) {
+      .side, .diag, .mark { animation: none; }
+    }
+  </style>
+</svg>

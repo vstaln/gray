@@ -71,6 +71,7 @@ fn selecting_plugin_clears_api_key_and_writes_only_references() {
     let path = dir.path().join("config.json");
     let installed = installed_provider();
     let mut config = Config {
+        fast_mode: None,
         model: None,
         base_url: "https://api.openai.com/v1".into(),
         api_key: Some("test-openai-key".into()),
@@ -121,6 +122,7 @@ fn plugin_models_request_uses_host_identity() {
 
 fn key_config(base_url: &str, key: Option<&str>) -> Config {
     Config {
+        fast_mode: None,
         model: Some("meta/muse-spark-1.3-contributor".into()),
         base_url: base_url.into(),
         api_key: key.map(str::to_string),

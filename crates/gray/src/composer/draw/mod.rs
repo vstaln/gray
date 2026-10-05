@@ -670,13 +670,12 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
         // Unknown/`None` (between turns) resolves the flag live, so the
         // provider's own answer still lands once discovery finishes.
         let show_effort = footer_badge_visible(&tui.model_name, tui.turn_show_effort);
-        // `off` already implies hidden — don't render "off · hidden".
-        // Non-reasoning models (show_effort false) render no badge; the
-        // separator is omitted with it so the footer never trails " · ".
-        let effort_display = if !show_effort {
+        // `off` renders nothing — reasoning disabled is the quiet state,
+        // not a status worth a badge. Non-reasoning models (show_effort
+        // false) render no badge either; the separator is omitted with it
+        // so the footer never trails " · ".
+        let effort_display = if !show_effort || tui.thinking_effort == "off" {
             String::new()
-        } else if tui.thinking_effort == "off" {
-            "off".to_string()
         } else if tui.hide_thinking {
             if tui.thinking_effort.is_empty() {
                 "hidden".to_string()
