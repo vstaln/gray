@@ -617,6 +617,23 @@ async fn compound_cat_says_the_image_was_not_attached() {
 }
 
 #[tokio::test]
+async fn bare_noop_commands_are_steered_not_spawned() {
+    let ctx = ToolContext::default();
+    for cmd in ["true", ":", " true "] {
+        let out = BashTool::default()
+            .execute(&ctx, json!({"command": cmd}))
+            .await;
+        assert!(!out.is_error, "{cmd}: {}", out.content);
+        assert!(out.content.contains("no-op"), "{cmd}: {}", out.content);
+    }
+    // A compound that merely contains `true` still reaches the shell.
+    let out = BashTool::default()
+        .execute(&ctx, json!({"command": "true && echo ran"}))
+        .await;
+    assert!(out.content.contains("ran"), "{}", out.content);
+}
+
+#[tokio::test]
 async fn cat_expands_a_tilde_the_shell_would_have() {
     // The fast path runs before the shell, so `~` never gets expanded: without
     // this, `cat ~/shot.png` streams binary garbage.
