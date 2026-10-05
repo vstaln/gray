@@ -153,6 +153,25 @@ pub(crate) fn resolve(name: &str) -> Option<&'static CmdDef> {
     REGISTRY.iter().find(|d| d.aliases.iter().any(|a| *a == n))
 }
 
+/// `/claude`, `/devin`, ...: one `(command, provider id, provider name)` per
+/// installed `<name>-sub` provider plugin, opening its login directly.
+/// Built-in names and aliases always win.
+pub(crate) fn provider_shortcuts() -> Vec<(String, String, String)> {
+    let Ok(home) = crate::setup::gray_home() else {
+        return Vec::new();
+    };
+    let mut out: Vec<(String, String, String)> = Vec::new();
+    for p in crate::providers::ProviderRegistry::load_cached(&home).installed() {
+        let Some(short) = p.plugin.strip_suffix("-sub") else {
+            continue;
+        };
+        if resolve(short).is_none() && !out.iter().any(|(s, _, _)| s == short) {
+            out.push((short.to_string(), p.provider_id(), p.provider.name.clone()));
+        }
+    }
+    out
+}
+
 /// Commands matching `filter` (the text after '/'), auto-sorted by relevance.
 pub(crate) fn completion_matches(filter: &str) -> Vec<(&'static str, &'static str)> {
     let f = filter.to_lowercase();
@@ -217,6 +236,13 @@ pub(crate) fn completion_matches_dyn(
             .into_iter()
             .map(|(a, b)| (a.to_string(), b.to_string()))
             .collect();
+        let f = inner.to_lowercase();
+        matches.extend(
+            provider_shortcuts()
+                .into_iter()
+                .filter(|(short, _, _)| short.starts_with(&f))
+                .map(|(short, _, name)| (short, format!("log in to {name}"))),
+        );
         matches.extend(crate::plugin_cli::completions(inner));
         return matches;
     }
@@ -230,6 +256,7 @@ pub(crate) fn completion_matches_dyn(
 pub(crate) fn completion_fill(name: &str) -> String {
     if name.contains(' ')
         || resolve(name).is_some()
+        || provider_shortcuts().iter().any(|(s, _, _)| s == name)
         || crate::plugin_cli::completions(name)
             .iter()
             .any(|(n, _)| n == name)
@@ -420,6 +447,9 @@ pub enum ReplCommand {
     Sys(SysAction),
     /// Open the provider selection menu (`/connect` or `/provider`).
     Provider,
+    /// Log in to one plugin provider directly (`/claude`, `/devin`, ...);
+    /// holds its `plugin:provider` id. See [`provider_shortcuts`].
+    ProviderLogin(String),
     /// Start a fresh conversation (`/new` or `/clear [prompt]`).
     New(Option<String>),
     /// Resume a previous session (`/resume [id|--last|--all]`).
@@ -589,6 +619,11 @@ pub fn parse_command(line: &str) -> ReplCommand {
             let name = t[1..].split_whitespace().next().unwrap_or("");
             if name.is_empty() || name.contains('/') {
                 ReplCommand::Prompt(t.to_string())
+            } else if let Some((_, id, _)) = provider_shortcuts()
+                .into_iter()
+                .find(|(short, _, _)| short.eq_ignore_ascii_case(name))
+            {
+                ReplCommand::ProviderLogin(id)
             } else {
                 ReplCommand::Unknown(t.to_string())
             }

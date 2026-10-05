@@ -258,8 +258,9 @@ impl PluginCredentialSource {
             // `provider/chat` reporting Unavailable means the sidecar has no
             // usable login ("run agy once and complete the Google sign-in") —
             // the stored row is stale, so prompt for reauth rather than retry.
-            gray_plugin::ProviderRpcError::Unavailable(_) => {
-                CredentialError::ReauthRequired(identity.clone())
+            // Carry the sidecar's hint so `/connect` can show the fix.
+            gray_plugin::ProviderRpcError::Unavailable(message) => {
+                CredentialError::ReauthRequired(message)
             }
             other => self.map_error(other),
         })?;

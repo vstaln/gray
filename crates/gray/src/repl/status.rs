@@ -431,7 +431,7 @@ pub(crate) async fn handle_context_window(
         {
             let base = config.base_url.clone();
             let key = config.api_key.clone();
-            tokio::spawn(async move {
+            tokio::task::spawn_blocking(move || {
                 crate::setup::fetch_live_provider_models(&base, key.as_deref());
             });
         }

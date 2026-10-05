@@ -25,7 +25,7 @@ pub(crate) fn provider_models_for(
 /// list for this provider, persisted to disk after every successful fetch.
 /// The picker paints from this immediately and refreshes in the background —
 /// opening a modal should never wait on an HTTP round-trip.
-pub(super) fn saved_models_for(base_url: &str) -> Vec<(String, String)> {
+pub(crate) fn saved_models_for(base_url: &str) -> Vec<(String, String)> {
     let mut models = super::context::load_provider_model_list(base_url);
     if let Ok(path) = saved_config_path() {
         let _cfg_lock = crate::setup::lock_saved_config_at(&path).ok();
@@ -84,6 +84,20 @@ fn skip_divider(rows: &[Row], sel: usize, down: bool) -> usize {
     } else {
         sel
     }
+}
+
+/// Connect-modal list: the last good list now, refreshed in the background.
+/// Only a provider never fetched before waits on the network (up to 3s per
+/// probed endpoint), which is what made /connect feel stuck.
+pub(super) fn cached_models_for(base_url: &str, api_key: Option<&str>) -> Vec<(String, String)> {
+    let cached = saved_models_for(base_url);
+    if cached.is_empty() {
+        return picker_models_for(base_url, api_key);
+    }
+    let (base, key) = (base_url.to_string(), api_key.map(str::to_string));
+    // Detached: the fetch persists the fresh list to disk for the next open.
+    std::thread::spawn(move || super::context::fetch_live_provider_models(&base, key.as_deref()));
+    cached
 }
 
 /// Merge a live list into what the picker already shows, keeping the

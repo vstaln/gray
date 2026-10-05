@@ -429,6 +429,7 @@ pub(crate) async fn run_prompt_turn(
         .await;
         initial_count = agent.messages().len();
     }
+    let mut auth_relogin: Option<String> = None;
     match run_result {
         Ok(_) => {
             *resumable = false;
@@ -505,6 +506,16 @@ pub(crate) async fn run_prompt_turn(
                     }
                 }
             }
+            // Rejected credentials: queue the login for this provider so the
+            // key prompt / login opens by itself instead of telling the user
+            // to type /connect.
+            if !reloaded
+                && interactive
+                && tui.is_some()
+                && matches!(e, gray_core::error::CoreError::Auth(_))
+            {
+                auth_relogin = crate::setup::active_connect_id(config);
+            }
             const RELOADED: &str =
                 "└ the API key saved for this provider changed on disk; reloaded it";
             if interactive {
@@ -555,6 +566,11 @@ pub(crate) async fn run_prompt_turn(
             ));
             *pending_images = qimages;
         }
+    }
+    if pending_command.is_none()
+        && let Some(id) = auth_relogin
+    {
+        *pending_command = Some(ReplCommand::ProviderLogin(id));
     }
     Ok(())
 }

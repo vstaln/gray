@@ -175,7 +175,7 @@ pub fn format_core_error(e: &CoreError, base_url: &str) -> String {
             let cleaned = clean_provider_detail(detail);
             let short = truncate_chars(&cleaned, 600);
             format!(
-                "✗ Auth failed (not retryable): {short}\n  Run /connect to re-login the subscription provider."
+                "✗ Auth failed (not retryable): {short}\n  The provider rejected the saved credentials; re-saving the same key won't help. Use a new key or log in again (/connect)."
             )
         }
         CoreError::BadRequest(detail) => {

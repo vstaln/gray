@@ -112,13 +112,15 @@ mod connect_draw;
 mod connect_models;
 mod provider_auth;
 
-pub use connect::{ConnectOutcome, run_connect_modal};
+pub use connect::{ConnectOutcome, active_connect_id, run_connect_modal, run_connect_modal_for};
 pub use effort::run_effort_modal;
 pub(crate) use install_manager::{
     ManagerItem, ManagerSpec, format_plugin_row_parts, run_install_manager,
 };
 pub use install_manager::{run_plugins_modal, run_skills_modal};
-pub(crate) use model_modal::{provider_models_for, run_model_modal, validate_direct_model_id};
+pub(crate) use model_modal::{
+    provider_models_for, run_model_modal, saved_models_for, validate_direct_model_id,
+};
 pub use provider_auth::{
     PluginLoginProgress, activate_plugin_connection, adopt_saved_key, forget_plugin_connection,
     run_plugin_login, select_api_key_connection,

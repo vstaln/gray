@@ -118,15 +118,60 @@ pub fn run_connect_modal(
     config: &mut Config,
     bg: Option<&BackgroundSnapshot>,
 ) -> anyhow::Result<ConnectOutcome> {
+    run_connect_modal_for(config, bg, None)
+}
+
+/// `run_connect_modal` that skips the provider menu and starts the login of
+/// the plugin provider `preselect` (`plugin:provider` id), e.g. `/claude`.
+pub fn run_connect_modal_for(
+    config: &mut Config,
+    bg: Option<&BackgroundSnapshot>,
+    preselect: Option<&str>,
+) -> anyhow::Result<ConnectOutcome> {
     let before = config.clone();
-    let outcome = connect_modal(config, bg);
+    let outcome = connect_modal(config, bg, preselect);
     super::provider_auth::settle_connect_config(config, before, &outcome);
     outcome
+}
+
+/// Start a plugin login in the background; the modal drains its progress.
+fn spawn_plugin_login(
+    installed: crate::providers::InstalledProvider,
+) -> (
+    tokio_util::sync::CancellationToken,
+    tokio::sync::mpsc::UnboundedReceiver<PluginLoginProgress>,
+) {
+    let (progress_sender, progress_receiver) = tokio::sync::mpsc::unbounded_channel();
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let login_cancel = cancel.clone();
+    tokio::spawn(async move {
+        // An early error (sidecar start, auth_start)
+        // must reach the dialog, or it waits forever.
+        if let Err(err) = run_plugin_login(installed, login_cancel, progress_sender.clone()).await {
+            let _ = progress_sender.send(PluginLoginProgress::Failed(err.to_string()));
+        }
+    });
+    (cancel, progress_receiver)
+}
+
+/// Connect-modal id of the active provider: the plugin provider, else the
+/// catalog entry serving `base_url`. None for custom endpoints.
+pub fn active_connect_id(config: &Config) -> Option<String> {
+    if !config.provider_id.is_empty() {
+        return Some(config.provider_id.clone());
+    }
+    let base = normalize_custom_base_url(&config.base_url);
+    load_catalog()
+        .ok()?
+        .into_iter()
+        .find(|(_, p)| normalize_custom_base_url(&p.base_url) == base)
+        .map(|(id, _)| id)
 }
 
 fn connect_modal(
     config: &mut Config,
     bg: Option<&BackgroundSnapshot>,
+    mut preselect: Option<&str>,
 ) -> anyhow::Result<ConnectOutcome> {
     use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, poll, read};
     use std::time::Duration;
@@ -199,6 +244,32 @@ fn connect_modal(
                     .installed();
             let mut all_items = build_connect_items(&catalog, &providers);
             catalog::sort_connect_items(&mut all_items, config, &auth);
+            if let Some(id) = preselect.take()
+                && let Some(item) = all_items.iter().find(|item| item.id == id)
+            {
+                if let Some(installed) = providers.iter().find(|p| p.provider_id() == id) {
+                    let (cancel, progress) = spawn_plugin_login(installed.clone());
+                    state = ModalState::AuthorizingPlugin {
+                        item: item.clone(),
+                        verification_uri: None,
+                        status_msg: None,
+                        cancel,
+                        progress,
+                    };
+                } else if matches!(item.auth, ConnectAuth::ApiKey) {
+                    // Reached after the provider rejected the saved key: ask
+                    // for a new one, since re-saving the old one can't help.
+                    state = ModalState::EnteringKey {
+                        item: item.clone(),
+                        key_buf: String::new(),
+                        existing_key: load_auth_keys().get(&item.id).cloned(),
+                        status_msg: Some(format!(
+                            "{} rejected the saved key — paste a new one",
+                            item.name
+                        )),
+                    };
+                }
+            }
 
             terminal.draw(|frame| {
                 let area = frame.area();
@@ -375,7 +446,7 @@ fn connect_modal(
                                     } else if item.no_auth {
                                         config.base_url = item.base_url.clone();
                                         config.api_key = None;
-                                        let models = super::model_modal::picker_models_for(
+                                        let models = super::model_modal::cached_models_for(
                                             &item.base_url,
                                             None,
                                         );
@@ -395,31 +466,13 @@ fn connect_modal(
                                             state = ModalState::Selecting;
                                             continue;
                                         };
-                                        let (progress_sender, progress_receiver) =
-                                            tokio::sync::mpsc::unbounded_channel();
-                                        let cancel = tokio_util::sync::CancellationToken::new();
-                                        let login_cancel = cancel.clone();
-                                        tokio::spawn(async move {
-                                            // An early error (sidecar start, auth_start)
-                                            // must reach the dialog, or it waits forever.
-                                            if let Err(err) = run_plugin_login(
-                                                installed,
-                                                login_cancel,
-                                                progress_sender.clone(),
-                                            )
-                                            .await
-                                            {
-                                                let _ = progress_sender.send(
-                                                    PluginLoginProgress::Failed(err.to_string()),
-                                                );
-                                            }
-                                        });
+                                        let (cancel, progress) = spawn_plugin_login(installed);
                                         state = ModalState::AuthorizingPlugin {
                                             item: item.clone(),
                                             verification_uri: None,
                                             status_msg: None,
                                             cancel,
-                                            progress: progress_receiver,
+                                            progress,
                                         };
                                     } else {
                                         let existing =
@@ -562,7 +615,7 @@ fn connect_modal(
                                     config.base_url = item.base_url.clone();
                                     config.api_key = None;
                                     let models =
-                                        super::model_modal::picker_models_for(&item.base_url, None);
+                                        super::model_modal::cached_models_for(&item.base_url, None);
                                     state = ModalState::SelectingModel {
                                         item: item.clone(),
                                         models,
@@ -588,7 +641,7 @@ fn connect_modal(
                                 saved.api_key = config.api_key.clone();
                                 saved.auth_mode = Some(AUTH_MODE_API_KEY.into());
                                 if is_switching {
-                                    let models = super::model_modal::picker_models_for(
+                                    let models = super::model_modal::cached_models_for(
                                         &item.base_url,
                                         Some(&final_key),
                                     );
@@ -598,7 +651,7 @@ fn connect_modal(
                                     if let Some(m) = &config.model {
                                         saved.model = Some(m.clone());
                                     } else {
-                                        let models = super::model_modal::picker_models_for(
+                                        let models = super::model_modal::cached_models_for(
                                             &item.base_url,
                                             Some(&final_key),
                                         );
@@ -614,7 +667,7 @@ fn connect_modal(
                                 save_auth_key(&item.id, &final_key)?;
                                 config.base_url = item.base_url.clone();
                                 config.api_key = Some(final_key.clone());
-                                let models = super::model_modal::picker_models_for(
+                                let models = super::model_modal::cached_models_for(
                                     &item.base_url,
                                     Some(&final_key),
                                 );
