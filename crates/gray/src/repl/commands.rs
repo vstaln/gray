@@ -154,18 +154,23 @@ pub(crate) fn resolve(name: &str) -> Option<&'static CmdDef> {
 }
 
 /// `/claude`, `/devin`, ...: one `(command, provider id, provider name)` per
-/// installed `<name>-sub` provider plugin, opening its login directly.
-/// Built-in names and aliases always win.
+/// slash command a provider plugin declares in its manifest, opening its
+/// login directly. The plugin owns the name — core invents nothing and has
+/// no naming convention. Built-in names and aliases always win.
 pub(crate) fn provider_shortcuts() -> Vec<(String, String, String)> {
     let Ok(home) = crate::setup::gray_home() else {
         return Vec::new();
     };
     let mut out: Vec<(String, String, String)> = Vec::new();
     for p in crate::providers::ProviderRegistry::load_cached(&home).installed() {
-        let Some(short) = p.plugin.strip_suffix("-sub") else {
-            continue;
-        };
-        if resolve(short).is_none() && !out.iter().any(|(s, _, _)| s == short) {
+        for cmd in crate::plugin_cli::declared_commands(&home, &p.plugin) {
+            let short = cmd.trim_start_matches('/');
+            if short.is_empty()
+                || resolve(short).is_some()
+                || out.iter().any(|(s, _, _)| s == short)
+            {
+                continue;
+            }
             out.push((short.to_string(), p.provider_id(), p.provider.name.clone()));
         }
     }
@@ -237,13 +242,20 @@ pub(crate) fn completion_matches_dyn(
             .map(|(a, b)| (a.to_string(), b.to_string()))
             .collect();
         let f = inner.to_lowercase();
+        let shortcuts = provider_shortcuts();
         matches.extend(
-            provider_shortcuts()
-                .into_iter()
+            shortcuts
+                .iter()
                 .filter(|(short, _, _)| short.starts_with(&f))
-                .map(|(short, _, name)| (short, format!("log in to {name}"))),
+                .map(|(short, _, name)| (short.clone(), format!("log in to {name}"))),
         );
-        matches.extend(crate::plugin_cli::completions(inner));
+        // A provider plugin's declared command is listed once, as its
+        // shortcut — not again as a bare `{name} plugin` row.
+        matches.extend(
+            crate::plugin_cli::completions(inner)
+                .into_iter()
+                .filter(|(n, _)| !shortcuts.iter().any(|(s, _, _)| s == n)),
+        );
         return matches;
     }
     Vec::new()
