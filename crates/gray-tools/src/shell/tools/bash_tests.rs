@@ -900,7 +900,7 @@ async fn the_cwd_report_does_not_mask_the_commands_exit_code() {
     );
 
     // And a success still reports success.
-    let r = tool.execute(&ctx, json!({"command": "true"})).await;
+    let r = tool.execute(&ctx, json!({"command": "printf ''"})).await;
     assert!(
         r.content.lines().next().unwrap_or("").contains("exit 0"),
         "{}",
