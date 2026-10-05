@@ -215,7 +215,7 @@ fn plugin_login_status_does_not_overwrite_title() {
         .unwrap();
     let status = rows
         .iter()
-        .position(|r| r.contains("Starting provider login"))
+        .position(|r| r.contains("Checking your terminal login"))
         .unwrap();
     assert!(status > title);
 }

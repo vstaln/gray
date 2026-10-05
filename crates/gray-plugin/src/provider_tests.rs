@@ -157,3 +157,44 @@ fn invalid_url_and_request_policy_are_rejected() {
     bad_policy["transport"]["request"]["tool_choice"] = json!("bogus");
     assert!(ProviderDecl::from_value(&bad_policy).is_err());
 }
+
+#[test]
+fn chat_operation_is_accepted_and_bound_to_profile() {
+    let mut value = valid_provider_value();
+    value["auth_methods"][0]["operations"] =
+        serde_json::json!(["login", "refresh", "revoke", "models", "chat"]);
+    let decl = ProviderDecl::from_value(&value).expect("chat is a valid operation");
+    // The profile binding covers the ops list: adding chat changes it.
+    assert_ne!(
+        decl.profile_binding("oauth").unwrap(),
+        valid_provider_decl().profile_binding("oauth").unwrap()
+    );
+}
+
+#[test]
+fn chat_request_result_round_trip() {
+    use super::provider::{ProviderChatRequest, ProviderChatResult};
+    let req = ProviderChatRequest {
+        provider: "antigravity-subscription".into(),
+        auth_method: "antigravity-login".into(),
+        model: "flash".into(),
+    };
+    let v = serde_json::to_value(&req).unwrap();
+    assert_eq!(v["model"], serde_json::json!("flash"));
+    // `model` defaults empty so older sidecars stay parseable.
+    let back: ProviderChatRequest =
+        serde_json::from_value(serde_json::json!({"provider": "p", "auth_method": "a"})).unwrap();
+    assert!(back.model.is_empty());
+    let res = ProviderChatResult {
+        relay_url: "http://127.0.0.1:9/relay/tok/responses".into(),
+        relay_token: "tok".into(),
+    };
+    let v = serde_json::to_value(&res).unwrap();
+    assert_eq!(
+        v["relay_url"],
+        serde_json::json!("http://127.0.0.1:9/relay/tok/responses")
+    );
+    // Debug never leaks the per-turn bearer.
+    let dbg = format!("{res:?}");
+    assert!(!dbg.contains("tok"), "{dbg}");
+}

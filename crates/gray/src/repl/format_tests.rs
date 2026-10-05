@@ -57,3 +57,52 @@ fn typed_image_link_becomes_vision_block() {
         "typed link must produce a vision block: {msg:?}"
     );
 }
+
+#[test]
+fn typed_auth_error_names_connect_not_agent_error() {
+    // Screenshot case: subscription relay 403 arrives as CoreError::Auth
+    // (no HTTP status — native classified inside the sidecar). It must
+    // read as an auth failure with a next command, never "agent error".
+    let out = format_core_error(
+        &CoreError::Auth(
+            "status 403 Forbidden: Authentication failed. Please check your credentials.".into(),
+        ),
+        "https://127.0.0.1:1/",
+    );
+    assert!(out.contains("Auth failed"), "must classify: {out}");
+    assert!(out.contains("/connect"), "must name the fix: {out}");
+    assert!(!out.contains("agent error"), "must not fall through: {out}");
+}
+
+#[test]
+fn typed_taxonomy_arms_never_fall_through_to_agent_error() {
+    let cases = [
+        (
+            CoreError::BadRequest("bad request: nope".into()),
+            "Bad request",
+        ),
+        (
+            CoreError::RateLimited("rate limited: slow".into()),
+            "Rate limited",
+        ),
+        (
+            CoreError::ContextOverflow("context exhausted".into()),
+            "Context exhausted",
+        ),
+        (
+            CoreError::ServerError("server error: boom".into()),
+            "server error",
+        ),
+        (
+            CoreError::Stream("stream broken: cut".into()),
+            "Stream broken",
+        ),
+        (CoreError::LoopDetected("same call 3x".into()), "Tool loop"),
+        (CoreError::Cancelled, "Cancelled"),
+    ];
+    for (err, want) in cases {
+        let out = format_core_error(&err, "https://127.0.0.1:1/");
+        assert!(out.contains(want), "missing {want}: {out}");
+        assert!(!out.contains("agent error"), "fell through: {out}");
+    }
+}

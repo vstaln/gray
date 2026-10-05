@@ -2276,6 +2276,123 @@ fn dynamic_profile_debug_is_redacted() {
     assert!(!format!("{provider:?}").contains("acct_test"));
 }
 
+#[tokio::test]
+async fn relay_url_override_posts_to_lease_url() {
+    use futures::StreamExt;
+    use gray_core::message::{ChatRequest, ContentBlock, Message, Role};
+
+    // Two loopbacks: the declared base (must see NOTHING) and the relay URL
+    // the lease carries (must see the POST). The relay single-admission rule
+    // means a second POST would 400; the test asserts exactly one POST lands
+    // on the relay and zero on the declared base.
+    let declared = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let declared_addr = declared.local_addr().unwrap();
+    let declared_hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let declared_hits2 = declared_hits.clone();
+    let declared_server = tokio::spawn(async move {
+        if tokio::time::timeout(std::time::Duration::from_secs(5), declared.accept())
+            .await
+            .is_ok()
+        {
+            // A connection arrived: the provider wrongly POSTed to the
+            // declared base instead of the relay URL.
+            declared_hits2.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+    });
+
+    let relay = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let relay_addr = relay.local_addr().unwrap();
+    let relay_server = tokio::spawn(async move {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let (mut socket, _) = relay.accept().await.unwrap();
+        let mut buffer = [0u8; 8192];
+        let read = socket.read(&mut buffer).await.unwrap();
+        let received = String::from_utf8_lossy(&buffer[..read]).to_string();
+        let head_end = received.find("\r\n\r\n").expect("request head");
+        let head = &received[..head_end];
+        assert!(head.contains("POST /relay/tok/responses"), "{head}");
+        assert!(head.contains("Bearer per-turn-bearer"), "{head}");
+        let sse = concat!(
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hi-relay\"}\n\n",
+            "data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}\n\n",
+            "data: [DONE]\n\n"
+        );
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\n\r\n{}",
+            sse.len(),
+            sse
+        );
+        socket.write_all(response.as_bytes()).await.unwrap();
+        socket.flush().await.unwrap();
+    });
+
+    let profile = OpenAiProviderProfile {
+        base_url: format!("http://{declared_addr}/v1").parse().unwrap(),
+        wire: OpenAiWire::Responses,
+        authorization: OpenAiAuthorization::Bearer {
+            secret_name: "relay_token".into(),
+        },
+        headers: Vec::new(),
+        request: OpenAiRequestPolicy::default(),
+        follow_redirects: false,
+    };
+    let provider = OpenAiProvider::new_with_profile(
+        "gpt-test",
+        None,
+        None,
+        profile,
+        std::sync::Arc::new(StaticProviderSource {
+            secrets: gray_core::credential::SecretMap::from_iter([(
+                "relay_token",
+                "per-turn-bearer",
+            )]),
+            metadata: [(
+                "relay_url".into(),
+                format!("http://{relay_addr}/relay/tok/responses"),
+            )]
+            .into_iter()
+            .collect(),
+        }),
+    )
+    .unwrap();
+
+    let request = ChatRequest {
+        system: None,
+        messages: vec![Message::new(
+            Role::User,
+            vec![ContentBlock::Text { text: "hi".into() }],
+        )],
+        tools: Vec::new(),
+        max_tokens: None,
+    };
+    let mut stream = provider.stream(request);
+    match stream.next().await.unwrap() {
+        Ok(StreamEvent::TextDelta { delta }) => assert_eq!(delta, "hi-relay"),
+        other => panic!("expected relay text delta, got {other:?}"),
+    }
+    declared_server.abort();
+    relay_server.abort();
+    assert_eq!(
+        declared_hits.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "declared base must see no POST when the lease carries a relay URL"
+    );
+}
+
+#[test]
+fn admission_consumed_400_is_terminal_bad_request() {
+    // Section 4 checkpoint: the relay's single-admission 400 must surface as
+    // a terminal BadRequest, never a retried ServerError/RateLimited.
+    let err = classify_http_error(
+        reqwest::StatusCode::BAD_REQUEST,
+        r#"{"type":"error","error":{"type":"invalid_request_error","message":"ANTIGRAVITY_MODEL_ADMISSION_CONSUMED"}}"#,
+        None,
+        None,
+    );
+    assert!(matches!(err, ProviderError::BadRequest(_)));
+    assert!(!is_retryable_error(&err));
+}
+
 #[test]
 fn model_accepts_video_is_gemini_only() {
     use crate::openai::model_accepts_video;
@@ -2438,4 +2555,152 @@ fn http_errors_show_the_providers_sentence_not_its_json() {
         None,
     );
     assert!(plain.to_string().contains("upstream down"), "{plain}");
+}
+
+#[test]
+fn should_retry_request_allows_one_bare_403_retry() {
+    // Transient gateway-edge 403: one same-key re-POST, then terminal.
+    let auth = || ProviderError::Auth("status 403: Authentication failed".to_string());
+    assert!(should_retry_request(&auth(), 403, 1));
+    assert!(!should_retry_request(&auth(), 403, 2));
+    assert!(!should_retry_request(&auth(), 401, 1));
+    // Quota-flavored 403s stay terminal (re-POSTing burns zero quota).
+    let quota = ProviderError::Auth("status 403: insufficient quota".to_string());
+    assert!(!should_retry_request(&quota, 403, 1));
+    // Ordinary retryable errors are unchanged.
+    let server_err = ProviderError::ServerError("status 500: boom".to_string());
+    assert!(should_retry_request(&server_err, 500, 3));
+}
+
+#[tokio::test]
+async fn transient_403_retries_once_then_surfaces_auth() {
+    // commandcode.ai edge: a valid key intermittently gets a bare 403 that
+    // clears on the next POST. Exactly one retry, then the Auth surfaces.
+    use futures::StreamExt;
+    let server = wiremock::MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::any())
+        .respond_with(
+            wiremock::ResponseTemplate::new(403)
+                .set_body_string("Authentication failed. Please check your credentials."),
+        )
+        .mount(&server)
+        .await;
+    let provider = OpenAiProvider::new("key", "test-model", server.uri(), None, None)
+        .expect("provider builds");
+    let events: Vec<_> = provider.stream(empty_chat_req()).collect().await;
+    let received = server.received_requests().await.expect("requests recorded");
+    assert_eq!(
+        received.len(),
+        2,
+        "one retry then terminal, got: {events:?}"
+    );
+    let notices = events
+        .iter()
+        .filter(|r| matches!(r, Ok(StreamEvent::StreamError { .. })))
+        .count();
+    assert_eq!(notices, 1, "one reconnect notice per burst: {events:?}");
+    assert!(
+        matches!(events.last(), Some(Err(ProviderError::Auth(_)))),
+        "burst ends with terminal Auth: {events:?}"
+    );
+}
+
+#[tokio::test]
+async fn auth_401_is_single_attempt() {
+    // 401 is a real auth failure: no re-POST, no notice, terminal Auth.
+    use futures::StreamExt;
+    let server = wiremock::MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::any())
+        .respond_with(
+            wiremock::ResponseTemplate::new(401)
+                .set_body_string("Authentication failed. Please check your credentials."),
+        )
+        .mount(&server)
+        .await;
+    let provider = OpenAiProvider::new("key", "test-model", server.uri(), None, None)
+        .expect("provider builds");
+    let events: Vec<_> = provider.stream(empty_chat_req()).collect().await;
+    let received = server.received_requests().await.expect("requests recorded");
+    assert_eq!(received.len(), 1, "401 must not retry: {events:?}");
+    let notices = events
+        .iter()
+        .filter(|r| matches!(r, Ok(StreamEvent::StreamError { .. })))
+        .count();
+    assert_eq!(notices, 0, "no reconnect notice for 401: {events:?}");
+    assert!(
+        matches!(events.last(), Some(Err(ProviderError::Auth(_)))),
+        "ends with terminal Auth: {events:?}"
+    );
+}
+
+#[tokio::test]
+async fn quota_403_is_single_attempt() {
+    // A 403 naming quota exhaustion stays terminal: re-POSTing burns zero
+    // quota, so the transient-403 carve-out must not catch it.
+    use futures::StreamExt;
+    let server = wiremock::MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::any())
+        .respond_with(wiremock::ResponseTemplate::new(403).set_body_string("insufficient quota"))
+        .mount(&server)
+        .await;
+    let provider = OpenAiProvider::new("key", "test-model", server.uri(), None, None)
+        .expect("provider builds");
+    let events: Vec<_> = provider.stream(empty_chat_req()).collect().await;
+    let received = server.received_requests().await.expect("requests recorded");
+    assert_eq!(received.len(), 1, "quota 403 must not retry: {events:?}");
+}
+
+#[tokio::test]
+async fn responses_transient_403_then_success_delivers_text() {
+    // Same carve-out on the Responses path: first POST 403s, the retry gets
+    // the SSE body and the turn delivers text with no error events.
+    use futures::StreamExt;
+    let server = wiremock::MockServer::start().await;
+    let delta = serde_json::json!({
+        "type": "response.output_text.delta",
+        "response_id": "resp_1",
+        "delta": "hello"
+    });
+    let body = format!("data: {delta}\n\n");
+    // wiremock serves the first-mounted matching mock: the one-shot 403
+    // answers POST 1, then burns out and the SSE mock answers the retry.
+    wiremock::Mock::given(wiremock::matchers::any())
+        .respond_with(
+            wiremock::ResponseTemplate::new(403)
+                .set_body_string("Authentication failed. Please check your credentials."),
+        )
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    wiremock::Mock::given(wiremock::matchers::any())
+        .respond_with(
+            wiremock::ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_string(body),
+        )
+        .mount(&server)
+        .await;
+    let provider = OpenAiProvider::new(
+        "key",
+        "muse-test",
+        format!("{}/opencode.ai/zen", server.uri()),
+        None,
+        None,
+    )
+    .expect("provider builds");
+    let events: Vec<_> = provider.stream(empty_chat_req()).collect().await;
+    let received = server.received_requests().await.expect("requests recorded");
+    assert_eq!(received.len(), 2, "one retry then success: {events:?}");
+    let text: String = events
+        .iter()
+        .filter_map(|event| match event {
+            Ok(StreamEvent::TextDelta { delta }) => Some(delta.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(text, "hello", "text delivered after retry: {events:?}");
+    assert!(
+        events.iter().all(|event| event.is_ok()),
+        "transient 403 must not surface an error: {events:?}"
+    );
 }

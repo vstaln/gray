@@ -237,6 +237,40 @@ impl fmt::Debug for ProviderModelsRequest {
 }
 
 #[derive(Clone, Serialize, Deserialize)]
+pub struct ProviderChatRequest {
+    pub provider: String,
+    pub auth_method: String,
+    #[serde(default)]
+    pub model: String,
+}
+
+impl fmt::Debug for ProviderChatRequest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ProviderChatRequest")
+            .field("provider", &self.provider)
+            .field("auth_method", &self.auth_method)
+            .field("model", &self.model)
+            .finish()
+    }
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct ProviderChatResult {
+    pub relay_url: String,
+    pub relay_token: String,
+}
+
+impl fmt::Debug for ProviderChatResult {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Both fields carry the per-turn bearer: relay_url embeds it in its
+        // path, relay_token is it. Neither may reach a log.
+        f.debug_struct("ProviderChatResult")
+            .field("relay_url", &"<redacted>")
+            .finish_non_exhaustive()
+    }
+}
+
+#[derive(Clone, Serialize, Deserialize)]
 pub struct ProviderModelCatalog {
     pub models: Vec<ProviderModel>,
 }
@@ -321,7 +355,7 @@ impl ProviderDecl {
             for operation in &method.operations {
                 if !matches!(
                     operation.as_str(),
-                    "login" | "refresh" | "revoke" | "models"
+                    "login" | "refresh" | "revoke" | "models" | "chat"
                 ) {
                     return Err(ProviderValidationError::new("unsupported auth operation"));
                 }
@@ -350,9 +384,20 @@ impl ProviderDecl {
         transport
             .headers
             .sort_by_key(|h| h.name.to_ascii_lowercase());
+        // The ops list is part of the contract the credential was issued
+        // against: adding `chat` must rebind rather than silently widening
+        // what an existing profile is allowed to do.
+        let mut operations = self
+            .auth_methods
+            .iter()
+            .find(|m| m.id == auth_method_id)
+            .map(|m| m.operations.clone())
+            .unwrap_or_default();
+        operations.sort();
         let value = serde_json::json!({
             "provider_id": self.id,
             "auth_method_id": auth_method_id,
+            "operations": operations,
             "transport": transport,
         });
         let canonical = canonical_json(value);
