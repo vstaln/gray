@@ -447,7 +447,10 @@ impl TurnStreamClock {
     /// after a boundary bills the request's dispatch+generate leg, which
     /// for a batch provider IS the generation time.
     pub(crate) fn tick(&mut self) {
-        let now = std::time::Instant::now();
+        self.tick_at(std::time::Instant::now());
+    }
+
+    fn tick_at(&mut self, now: std::time::Instant) {
         if let Some(prev) = self.anchor.replace(now) {
             self.streamed = self.streamed.saturating_add(now.duration_since(prev));
         }
@@ -457,7 +460,11 @@ impl TurnStreamClock {
     /// round report, compaction, reconnect) without billing: the wait the
     /// boundary closes is host-side or transport, never token generation.
     pub(crate) fn open_span(&mut self) {
-        self.anchor = Some(std::time::Instant::now());
+        self.open_span_at(std::time::Instant::now());
+    }
+
+    fn open_span_at(&mut self, now: std::time::Instant) {
+        self.anchor = Some(now);
     }
 
     /// Closes the open window at turn end; post-turn events never bill.

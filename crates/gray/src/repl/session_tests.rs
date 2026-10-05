@@ -158,27 +158,24 @@ fn stream_clock_measures_only_the_time_tokens_flowed() {
     use super::TurnStreamClock;
     let mut clock = TurnStreamClock::default();
     assert_eq!(clock.streamed_ms(), None, "nothing streamed yet");
-    clock.open_span(); // AgentEvent::Start: window opens at the request.
-    std::thread::sleep(std::time::Duration::from_millis(60));
-    clock.tick();
+    let start = std::time::Instant::now();
+    clock.open_span_at(start); // AgentEvent::Start: window opens at the request.
+    clock.tick_at(start + std::time::Duration::from_millis(60));
     let first = clock
         .streamed_ms()
         .expect("the dispatch+generate leg is generation time");
     // Lower bound only: a loaded machine can overshoot the sleep, and the
     // assertions that matter below are exact (spans, not wall clock).
     assert!(first >= 40, "{first}");
-    std::thread::sleep(std::time::Duration::from_millis(40));
-    clock.tick();
+    clock.tick_at(start + std::time::Duration::from_millis(100));
     let burst = clock.streamed_ms().expect("inter-delta gap counted");
     assert!(burst > first, "{burst} > {first}");
 
     // A round boundary then the tool wait: neither gap lands in the rate
     // (the boundary opens a fresh window; the tool result re-anchors it).
-    clock.open_span(); // StepUsage: round report.
-    std::thread::sleep(std::time::Duration::from_millis(80));
-    clock.open_span(); // ToolResult: host-side tool wait just closed.
-    std::thread::sleep(std::time::Duration::from_millis(50));
-    clock.tick();
+    clock.open_span_at(start + std::time::Duration::from_millis(100)); // StepUsage: round report.
+    clock.open_span_at(start + std::time::Duration::from_millis(180)); // ToolResult: host-side tool wait just closed.
+    clock.tick_at(start + std::time::Duration::from_millis(230));
     let second = clock.streamed_ms().expect("second request window counted");
     assert!(
         second > burst && second < burst + 80,
@@ -187,7 +184,6 @@ fn stream_clock_measures_only_the_time_tokens_flowed() {
 
     // Turn end: post-turn strays open a fresh window instead of billing.
     clock.close_span();
-    std::thread::sleep(std::time::Duration::from_millis(80));
     assert_eq!(clock.streamed_ms(), Some(second));
 }
 
@@ -198,14 +194,14 @@ fn stream_clock_measures_only_the_time_tokens_flowed() {
 fn stream_clock_bills_batch_delivery_its_generation_window() {
     use super::TurnStreamClock;
     let mut clock = TurnStreamClock::default();
-    clock.open_span(); // request dispatched
-    std::thread::sleep(std::time::Duration::from_millis(90));
-    clock.tick(); // the whole reply lands at once
+    let start = std::time::Instant::now();
+    clock.open_span_at(start); // request dispatched
+    clock.tick_at(start + std::time::Duration::from_millis(90)); // the whole reply lands at once
     let ms = clock
         .streamed_ms()
         .expect("batch delivery bills its window");
     assert!(ms >= 60, "{ms}");
-    clock.tick();
+    clock.tick_at(start + std::time::Duration::from_micros(90_001));
     assert!(
         clock.streamed_ms().unwrap() < ms + 60,
         "back-to-back batch events add ~nothing on top"
