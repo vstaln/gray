@@ -3,6 +3,7 @@ use super::*;
 /// Anthropic-ish per-token pricing (USD per token) with cache prices.
 fn priced() -> ModelRate {
     ModelRate {
+        tiers: Vec::new(),
         input: 3.0e-6,
         output: 15.0e-6,
         cache_read: 0.3e-6,

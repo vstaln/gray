@@ -575,8 +575,7 @@ impl BashTool {
             return None;
         }
         let live = self.jobs.live_ids(ctx);
-        let mut note =
-            format!("`{trimmed}` is a no-op — nothing ran and nothing was waited on.");
+        let mut note = format!("`{trimmed}` is a no-op — nothing ran and nothing was waited on.");
         if live.is_empty() {
             note.push_str(
                 " To end the turn just end it; to collect a finished job use \

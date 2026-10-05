@@ -541,7 +541,11 @@ async fn gray_subcommands_are_not_claimed() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("a.png"), png_bytes()).unwrap();
     // `cat` is the one way in; gray subcommands are ordinary shell commands.
-    for cmd in ["gray plugin install a.png", "gray --version", "gray memory list"] {
+    for cmd in [
+        "gray plugin install a.png",
+        "gray --version",
+        "gray memory list",
+    ] {
         assert!(
             image_command(cmd, dir.path()).is_none(),
             "must not claim: {cmd}"

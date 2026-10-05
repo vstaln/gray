@@ -156,6 +156,16 @@ pub(crate) fn mascot_lines(
     if std::env::var_os("NO_COLOR").is_some() {
         return None;
     }
+    mascot_lines_unchecked(term_cols, term_rows, center_in)
+}
+
+/// The grid→lines render without the `NO_COLOR` gate — tests and callers
+/// that have already decided the terminal can paint.
+fn mascot_lines_unchecked(
+    term_cols: u16,
+    term_rows: u16,
+    center_in: Option<usize>,
+) -> Option<Vec<Line<'static>>> {
     let grid = decode_grid(term_cols, term_rows)?;
     let pad = center_in
         .unwrap_or(term_cols as usize)

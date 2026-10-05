@@ -114,6 +114,7 @@ fn empty_prompt_hides_slash_popup_like_codex() {
             d.name
         );
     }
+    assert!(dyn_matches.len() >= super::REGISTRY.len());
 }
 
 #[test]

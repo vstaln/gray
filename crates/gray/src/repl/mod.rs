@@ -84,6 +84,67 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
+/// The trailing text a signal exit prints after clearing the band: the same
+/// resume hint `/quit` leaves, or nothing when no session was ever minted.
+fn signal_exit_text(session_id: Option<&str>, styled: bool) -> String {
+    match session_id {
+        Some(id) => format!("{}\r\n", session::exit_hint_line(id, styled)),
+        None => String::new(),
+    }
+}
+
+/// Leaves the way `/quit` does, from a signal task that can't reach the
+/// loop: clear the composer band (retrying its lock briefly — a wedged loop
+/// holding it must not block the exit), then print the resume hint.
+fn exit_from_signal(code: i32, clear_band: bool) -> ! {
+    use std::io::IsTerminal as _;
+    // Bound outside the lock loop: the guard borrows it and must live until
+    // process::exit.
+    let shared = clear_band.then(crate::host::registered_tui).flatten();
+    let mut tui_guard = None;
+    if let Some(shared) = &shared {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(250);
+        loop {
+            match shared.try_lock() {
+                Ok(g) => {
+                    tui_guard = Some(g);
+                    break;
+                }
+                Err(std::sync::TryLockError::Poisoned(e)) => {
+                    tui_guard = Some(e.into_inner());
+                    break;
+                }
+                Err(std::sync::TryLockError::WouldBlock) => {
+                    if std::time::Instant::now() >= deadline {
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+            }
+        }
+    }
+    // The guard stays alive until process::exit: no painter may redraw the
+    // band after it's cleared.
+    if let Some(t) = tui_guard.as_mut() {
+        t.shutdown();
+    } else {
+        let _ = crossterm::terminal::disable_raw_mode();
+        let _ = write!(std::io::stdout(), "\x1b[?25h\r\n");
+    }
+    // write!, never println!: a hung-up tty must not panic here — that would
+    // kill the task and leave the process alive.
+    let _ = write!(
+        std::io::stdout(),
+        "{}",
+        signal_exit_text(
+            session::exit_session().as_deref(),
+            std::io::stdout().is_terminal()
+        )
+    );
+    let _ = std::io::stdout().flush();
+    std::process::exit(code);
+}
+
 /// Installs the single global Ctrl-C policy:
 /// - during a turn: cancel the turn (first press), the turn handler reports
 ///   it and the REPL stays alive; a second press with no token exits.
@@ -106,14 +167,9 @@ async fn spawn_ctrl_c_policy() {
                 // interrupted turn may still be persisting — let it land
                 // first, or the turn is lost instead of saved.
                 drain_in_flight_turn(TURN_DRAIN_TIMEOUT).await;
-                // Say something — a bare exit(0) mid-turn looks like a crash.
-                let _ = crossterm::terminal::disable_raw_mode();
-                let _ = write!(
-                    std::io::stdout(),
-                    "\x1b[?25h\r\n\x1b[2m(interrupted — bye)\x1b[0m\r\n"
-                );
-                let _ = std::io::stdout().flush();
-                std::process::exit(0);
+                // Say something — a bare exit(0) mid-turn looks like a crash:
+                // the resume hint, same as /quit.
+                exit_from_signal(0, true);
             }
             // First press at the prompt: arm exit, stay alive (the prompt
             // key handler clears the draft; exit via second press or /quit).
@@ -144,10 +200,7 @@ async fn spawn_hangup_policy() {
     }
     drain_in_flight_turn(TURN_DRAIN_TIMEOUT).await;
     // SIGTERM leaves the terminal alive; a hung-up tty just ignores this.
-    let _ = crossterm::terminal::disable_raw_mode();
-    let _ = write!(std::io::stdout(), "\x1b[?25h\r\n");
-    let _ = std::io::stdout().flush();
-    std::process::exit(code);
+    exit_from_signal(code, code == 143);
 }
 /// No SIGHUP/SIGTERM on Windows; a turn persists when it ends.
 #[cfg(not(unix))]
@@ -857,6 +910,9 @@ pub async fn run_repl_mode(
         // Cleared before anything is drained: a wake raised after this point
         // survives to the next pass instead of being swallowed.
         crate::host::clear_wake();
+        // The signal-task exits can't see `session_state` — keep their copy
+        // of the id the resume hint names current.
+        session::remember_exit_session(session_state.as_ref().map(|s| s.session_id.as_str()));
         // Plugin-initiated `host/say` lines queued while a turn ran (cron
         // reports) surface here, through the composer when it owns the screen.
         for line in crate::host::take_host_say() {

@@ -1,4 +1,4 @@
-use super::{MascotGrid, decode_grid, mascot_lines};
+use super::{MascotGrid, decode_grid, mascot_lines_unchecked};
 use ratatui::backend::TestBackend;
 use ratatui::text::Line;
 use ratatui::widgets::{Paragraph, Widget};
@@ -74,7 +74,7 @@ fn lines_tile_the_grid_with_merged_runs() {
     // it cleared regardless of what the dev shell exported.
     unsafe { std::env::remove_var("NO_COLOR") };
     let grid = decode_grid(120, 40).expect("asset decodes");
-    let lines = super::mascot_lines(120, 40, Some(120)).expect("truecolor path");
+    let lines = super::mascot_lines_unchecked(120, 40, Some(120)).expect("truecolor path");
     assert_eq!(lines.len(), grid.rows, "one line per cell row");
     for line in &lines {
         let width: usize = line.spans.iter().map(|s| display_width(&s.content)).sum();
@@ -121,7 +121,7 @@ fn mascot_art_paints_as_half_block_cells() {
     // test, so crossterm fails and the fallback wins on both sides).
     let (cols, rows) = crossterm::terminal::size().unwrap_or((120, 24));
     let grid = decode_grid(cols, rows).expect("asset decodes");
-    let art = mascot_lines(cols, rows, Some(120)).expect("truecolor path");
+    let art = mascot_lines_unchecked(cols, rows, Some(120)).expect("truecolor path");
     // Painted through a TestBackend the block is real cells, not escapes.
     let backend = TestBackend::new(120, 40);
     let mut terminal = ratatui::Terminal::new(backend).expect("test terminal");

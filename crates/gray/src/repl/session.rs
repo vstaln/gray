@@ -2,17 +2,38 @@
 
 use super::*;
 
+/// The session the resume hint names, mirrored out of the REPL loop because
+/// the double-Ctrl-C and SIGHUP/SIGTERM exits run in signal tasks that can't
+/// see `session_state`. Synced at the loop top and wherever a turn mints a
+/// session (`ensure_session_state`).
+static EXIT_SESSION: StdMutex<Option<String>> = StdMutex::new(None);
+
+pub(crate) fn remember_exit_session(id: Option<&str>) {
+    *EXIT_SESSION.lock().unwrap_or_else(|e| e.into_inner()) = id.map(str::to_string);
+}
+
+pub(crate) fn exit_session() -> Option<String> {
+    EXIT_SESSION
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+}
+
+pub(crate) fn exit_hint_line(session_id: &str, styled: bool) -> String {
+    if styled {
+        format!("\x1b[2mTo resume: gray -r {session_id}\x1b[0m")
+    } else {
+        format!("To resume: gray -r {session_id}")
+    }
+}
+
 pub(crate) fn print_exit_hint(session_state: &Option<SessionState>) {
     if let Some(state) = session_state {
         use std::io::IsTerminal as _;
-        if std::io::stdout().is_terminal() {
-            println!(
-                "\x1b[2mTo resume: gray -r {}\x1b[0m",
-                state.session_id.as_str()
-            );
-        } else {
-            println!("To resume: gray -r {}", state.session_id.as_str());
-        }
+        println!(
+            "{}",
+            exit_hint_line(state.session_id.as_str(), std::io::stdout().is_terminal())
+        );
         let _ = std::io::stdout().flush();
     }
 }
@@ -392,6 +413,7 @@ pub(crate) async fn ensure_session_state(
             _open_guard: open_guard,
         });
     }
+    remember_exit_session(session_state.as_ref().map(|s| s.session_id.as_str()));
 }
 
 /// Streaming-only clock for one turn — the denominator every tps readout

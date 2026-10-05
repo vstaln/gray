@@ -429,3 +429,104 @@ fn effort_in_id_models_offer_no_knob() {
     assert_eq!(codex, vec!["off", "low", "medium", "high", "xhigh"]);
     set_active_model_provider("");
 }
+
+#[test]
+fn litellm_above_200k_tier_prices_long_context() {
+    // Claude-style surcharge rows: same shape opencode's `cost.tiers` carries.
+    let v: serde_json::Value = serde_json::json!({
+        "test-tiered": {
+            "max_input_tokens": 1_000_000,
+            "input_cost_per_token": 0.000003,
+            "output_cost_per_token": 0.000015,
+            "cache_read_input_token_cost": 0.0000003,
+            "cache_creation_input_token_cost": 0.00000375,
+            "input_cost_per_token_above_200k_tokens": 0.000006,
+            "output_cost_per_token_above_200k_tokens": 0.0000225,
+            "cache_read_input_token_cost_above_200k_tokens": 0.0000006,
+            "cache_creation_input_token_cost_above_200k_tokens": 0.0000075,
+        },
+    });
+    parse_litellm_context_json(&v);
+    let r = get_model_rate("test-tiered").expect("tiered rate");
+    assert_eq!(r.tiers.len(), 1);
+    assert_eq!(r.tiers[0].size, 200_000);
+    // Under the boundary: base rates. Over: tier rates. At exactly 200k the
+    // base applies (opencode: `context > tier.size`).
+    let under = gray_core::event::Usage::new(200_000, 1_000);
+    let over = gray_core::event::Usage::new(200_001, 1_000);
+    let base = turn_cost(&under, "test-tiered").unwrap();
+    let tiered = turn_cost(&over, "test-tiered").unwrap();
+    assert!((base - (200_000.0 * 0.000003 + 1_000.0 * 0.000015)).abs() < 1e-9);
+    assert!((tiered - (200_001.0 * 0.000006 + 1_000.0 * 0.0000225)).abs() < 1e-9);
+    // Cache tokens bill at the tier's cache prices, not the base ones.
+    let cached = gray_core::event::Usage {
+        input_tokens: 300_000,
+        output_tokens: 0,
+        non_cached_input_tokens: 100_000,
+        cache_read_input_tokens: 150_000,
+        cache_write_input_tokens: 50_000,
+        ..Default::default()
+    };
+    let c = turn_cost(&cached, "test-tiered").unwrap();
+    let want = 100_000.0 * 0.000006 + 150_000.0 * 0.0000006 + 50_000.0 * 0.0000075;
+    assert!((c - want).abs() < 1e-9, "got {c}, want {want}");
+}
+
+#[test]
+fn models_dev_cost_gap_fills_and_tiers_merge_in_either_order() {
+    // models.dev `cost` is USD per 1M tokens.
+    let dev: serde_json::Value = serde_json::json!({
+        "prov": {"models": {
+            "test-dev-only": {"cost": {"input": 2.0, "output": 12.0,
+                "cache_read": 0.2,
+                "tiers": [{"input": 4.0, "output": 18.0, "cache_read": 0.4,
+                           "tier": {"type": "context", "size": 200000}}],
+                "context_over_200k": {"input": 4.0, "output": 18.0, "cache_read": 0.4}}},
+            "test-dev-tier-only": {"cost": {"tiers": [
+                {"input": 9.0, "output": 9.0,
+                 "tier": {"type": "context", "size": 32000}}]}},
+            "test-dev-partial": {"cost": {"input": 1.0}},
+        }},
+    });
+    parse_models_dev_json(&dev);
+    // Full cost object creates a rate where LiteLLM has none; the tier came
+    // from both `tiers` and `context_over_200k` — one slot, not two.
+    let r = get_model_rate("test-dev-only").expect("dev rate");
+    assert!((r.input - 0.000002).abs() < 1e-12);
+    assert_eq!(r.tiers.len(), 1);
+    let over = gray_core::event::Usage::new(250_000, 0);
+    let under = gray_core::event::Usage::new(250_000 - 50_000 - 1, 0);
+    assert!((turn_cost(&over, "test-dev-only").unwrap() - 250_000.0 * 0.000004).abs() < 1e-9);
+    assert!((turn_cost(&under, "test-dev-only").unwrap() - 199_999.0 * 0.000002).abs() < 1e-9);
+    // No base rate in the entry: tiers still merge for whoever prices it later.
+    parse_litellm_context_json(&serde_json::json!({
+        "test-dev-tier-only": {
+            "max_input_tokens": 200000,
+            "input_cost_per_token": 0.000001,
+            "output_cost_per_token": 0.000002,
+        }
+    }));
+    let r2 = get_model_rate("test-dev-tier-only").unwrap();
+    assert!((r2.input - 0.000001).abs() < 1e-12);
+    assert_eq!(r2.tiers.len(), 1);
+    let big = gray_core::event::Usage::new(40_000, 1_000);
+    assert!(
+        (turn_cost(&big, "test-dev-tier-only").unwrap()
+            - (40_000.0 * 0.000009 + 1_000.0 * 0.000009))
+            .abs()
+            < 1e-9
+    );
+    // Half-priced rows still drop.
+    assert!(get_model_rate("test-dev-partial").is_none());
+    // LiteLLM applied afterwards keeps its base; models.dev cannot clobber it.
+    parse_litellm_context_json(&serde_json::json!({
+        "test-dev-only": {
+            "max_input_tokens": 200000,
+            "input_cost_per_token": 0.000009,
+            "output_cost_per_token": 0.000099,
+        }
+    }));
+    let r3 = get_model_rate("test-dev-only").unwrap();
+    assert!((r3.input - 0.000009).abs() < 1e-12, "litellm base wins");
+    assert_eq!(r3.tiers.len(), 1, "dev tier survives the litellm apply");
+}

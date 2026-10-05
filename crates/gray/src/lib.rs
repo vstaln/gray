@@ -656,6 +656,12 @@ pub enum CronCmd {
 /// `gray gateway ...` — the daemon host (hermes-shaped; adapters live elsewhere).
 #[derive(Parser, Debug, Clone)]
 pub enum GatewayCmd {
+    /// Connect a chat platform: installs its app if needed, then runs its
+    /// setup wizard (`gray gateway setup discord`)
+    Setup {
+        /// Platform app to set up; asked when several are installed
+        platform: Option<String>,
+    },
     /// Run in the foreground (what the service/supervisor executes)
     Run,
     /// Report daemon + service + cron-ticker health (exit 1 when not running)

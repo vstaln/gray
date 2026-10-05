@@ -1,8 +1,8 @@
 """gray mark (K6) logo intro, Google-2015 style, looping.
 
-Everything leaves the top-left corner: two pens trace the rim to bottom-right,
-and each diagonal sets off from its corner as a pen passes -> mark eases up ->
-hold -> lines unwind, mark eases back and fades -> loop. Transparent background.
+A straight front sweeps top-left -> bottom-right at 45 deg, drawing every band
+where it passes; bands lying across it grow both ways from their middle -> hold -> a second sweep
+retracts them -> loop. The mark never moves or scales. Transparent background.
 
 Geometry (checked against a render of logo-dark.svg): every band is 5.893 wide;
 sides lie inside the hull, long diagonals are centred on the vertex line, short
@@ -15,7 +15,7 @@ Run: python3 logo-intro.py [snapdir]  -> logo-intro.svg (+ paused
 snapshot SVGs in snapdir).
 """
 import math, sys
-from shapely.geometry import LineString, Point, Polygon
+from shapely.geometry import LineString, Polygon
 
 BAND = 5.893
 P = [(28.41797, 0.0), (118.27719, 0.0), (146.69458, 49.221035),   # hull from logo-dark.svg
@@ -62,92 +62,92 @@ def stroke(i, j):
     clipped = seg.buffer(BAND / 2, cap_style="flat").intersection(hull)
     ts = [(x - A[0]) * vx + (y - A[1]) * vy for x, y in clipped.exterior.coords]
     a, b = min(ts), max(ts)
-    return f"M {A[0] + vx * a:.4f} {A[1] + vy * a:.4f} L {A[0] + vx * b:.4f} {A[1] + vy * b:.4f}"
+    return (A[0] + vx * a, A[1] + vy * a), (A[0] + vx * b, A[1] + vy * b)
 
 
-# ---- timeline (seconds). Each group shares one keyframe; per-element --d staggers it.
+# ---- timeline (seconds)
 T = 6.0
-pct = lambda t: f"{100 * t / T:.2f}%"
-IN_OUT = "cubic-bezier(0.65, 0, 0.35, 1)"      # pen: eases in, cruises, eases out
-OUT = "cubic-bezier(0.22, 1, 0.36, 1)"         # quint out: quick start, long glide
-IN = "cubic-bezier(0.55, 0, 0.75, 0.2)"        # gentle accelerate away
+kfs = []
+
+# A front sweeps the mark at 45 deg, top-left -> bottom-right, easing in and out;
+# every band is drawn exactly where the front has passed, so the reveal is one
+# straight edge. Bands lying across the front (within 30 deg of it) can't follow
+# it, so they grow both ways from their midpoint once the front reaches it (two
+# halves, each nudged 0.2 back over the seam). The retract is a second sweep.
+# Each path gets its own keyframes, sampled from that model.
+DRAW, RETRACT = (0.15, 1.4), (3.7, 1.1)                              # (start, sweep length)
+GROW = 0.6
 
 
-def line_kf(name, draw, dur, ease, retract, rdur):
-    return (f"    @keyframes {name} {{ 0%, {pct(draw)} {{ stroke-dashoffset: 1; animation-timing-function: {ease}; }} "
-            f"{pct(draw + dur)}, {pct(retract)} {{ stroke-dashoffset: 0; animation-timing-function: {IN_OUT}; }} "
-            f"{pct(retract + rdur)}, 100% {{ stroke-dashoffset: -1; }} }}")
-
-
-kfs = [
-    line_kf("side", 0.15, 1.25, IN_OUT, 3.9, 1.1),    # two pens round the rim, top-left -> bottom-right
-    line_kf("diag", 0.15, 0.85, OUT, 3.75, 0.6),      # +--d: each leaves its corner as a rim pen passes
-    # whole mark: drifts up to size while drawing, eases back and fades on the way out
-    f"    @keyframes settle {{ 0% {{ transform: scale(0.95); opacity: 1; animation-timing-function: cubic-bezier(0.33, 1, 0.68, 1); }} "
-    f"{pct(2.6)}, {pct(3.6)} {{ transform: scale(1); opacity: 1; animation-timing-function: {IN}; }} "
-    f"{pct(5.1)} {{ opacity: 1; }} "
-    f"{pct(5.5)}, 100% {{ transform: scale(0.97); opacity: 0; }} }}",
-]
-
-# Rim: the inset hexagon as two pens leaving the top-left corner, one each way,
-# meeting at bottom-right. Each runs a hair past both corners so its miter joins
-# fill them.
-rim = list(hull.buffer(-BAND / 2, join_style="mitre").exterior.coords)[:-1]
-k0 = min(range(6), key=lambda k: math.dist(rim[k], P[0]))
-rim = rim[k0:] + rim[:k0]                                            # rim[0] ~ top-left
-if math.dist(rim[1], P[1]) > math.dist(rim[-1], P[1]):
-    rim = rim[:1] + rim[:0:-1]                                       # clockwise, like P
-toward = lambda p, q, e=0.3: (p[0] + (q[0] - p[0]) * e / math.dist(p, q), p[1] + (q[1] - p[1]) * e / math.dist(p, q))
-halves = [[rim[0], rim[1], rim[2], rim[3]], [rim[0], rim[5], rim[4], rim[3]]]
-pens = [[toward(h[0], o), *h, toward(h[3], f)] for h, o, f in zip(halves, (rim[5], rim[1]), (rim[4], rim[2]))]
-
-
-def bezier_time(f, x1=0.65, y1=0.0, x2=0.35, y2=1.0):
-    """Time fraction at which IN_OUT reaches progress f."""
-    b = lambda s, p1, p2: 3 * (1 - s) ** 2 * s * p1 + 3 * (1 - s) * s * s * p2 + s ** 3
+def bez(x, x1, y1, x2, y2):
+    """cubic-bezier(x1, y1, x2, y2) at time fraction x."""
+    c = lambda s, p1, p2: 3 * (1 - s) ** 2 * s * p1 + 3 * (1 - s) * s * s * p2 + s ** 3
     lo, hi = 0.0, 1.0
     for _ in range(40):
         m = (lo + hi) / 2
-        lo, hi = (m, hi) if b(m, y1, y2) < f else (lo, m)
-    return b(lo, x1, x2)
+        lo, hi = (m, hi) if c(m, x1, x2) < x else (lo, m)
+    return c(lo, y1, y2)
 
 
-# When a rim pen reaches each corner; a diagonal leaves from whichever end is reached first.
-reach = {0: 0.0, 3: 1.25}
-for h in halves:
-    ls = LineString(h)
-    for v, pt in zip((1, 2), h[1:3]):
-        reach[[i for i in range(6) if math.dist(rim[i], pt) < 1e-9][0]] = 1.25 * bezier_time(ls.project(Point(pt)) / ls.length)
-diags = sorted(((i, j) if reach[i] <= reach[j] else (j, i) for i, j in DIAGS), key=lambda e: reach[e[0]])
-lines = [f'        <path class="b side" pathLength="1" stroke-linejoin="miter" d="M {" L ".join(f"{x:.4f} {y:.4f}" for x, y in p)}" />'
-         for p in pens]
-lines += [f'        <path class="b diag" style="--d:{reach[i]:.3f}s" pathLength="1" d="{stroke(i, j)}" />'
-          for i, j in diags]
+clamp = lambda v: min(1.0, max(0.0, v))
+ends = [x + y for e in SIDES + DIAGS for x, y in stroke(*e)]
+lo, hi = min(ends), max(ends)
+pr = lambda p: (p[0] + p[1] - lo) / (hi - lo)                       # 0 at the top-left .. 1 at bottom-right
+front = lambda t, ph: bez(clamp((t - ph[0]) / ph[1]), 0.65, 0, 0.35, 1)
+
+
+def reached(x, ph):
+    a, b = ph[0], ph[0] + ph[1]
+    for _ in range(40):
+        m = (a + b) / 2
+        a, b = (m, b) if front(m, ph) < x else (a, m)
+    return a
+
+
+def shown(t, ph, run):
+    """Drawn fraction of a path at t within phase ph."""
+    if run[0] == "one":
+        p, q = run[1], run[2]
+        return clamp((front(t, ph) - pr(p)) / (pr(q) - pr(p)))
+    return bez(clamp((t - reached(pr(run[1]), ph)) / GROW), 0.22, 1, 0.36, 1)
+
+
+toward = lambda p, q, e: (p[0] + (q[0] - p[0]) * e / math.dist(p, q), p[1] + (q[1] - p[1]) * e / math.dist(p, q))
+runs = []                                                            # (kind, start, end)
+for e in SIDES + DIAGS:
+    a, b = sorted(stroke(*e), key=pr)
+    if abs(pr(b) - pr(a)) * (hi - lo) / math.sqrt(2) < 0.5 * math.dist(a, b):
+        m = ((a[0] + b[0]) / 2, (a[1] + b[1]) / 2)
+        runs += [("both", m, a, toward(m, b, 0.2)), ("both", m, b, toward(m, a, 0.2))]
+    else:
+        runs.append(("one", a, b, a))
+N = 180                                                              # samples per loop; retract overshoots 1% so no dash edge sits on the end
+lines = []
+for n, run in enumerate(runs):
+    v = [1 - shown(t, DRAW, run) if t < RETRACT[0] else -1.01 * shown(t, RETRACT, run) for t in (T * i / N for i in range(N + 1))]
+    keep = [i for i in range(N + 1) if i in (0, N) or abs(v[i - 1] - 2 * v[i] + v[i + 1]) > 1e-3]
+    kfs.append(f"    @keyframes g{n} {{ " + " ".join(f"{100 * i / N:.3f}% {{ stroke-dashoffset: {v[i]:.4f}; }}" for i in keep) + " }")
+    s0, end = run[3], run[2]
+    lines.append(f'        <path class="b" style="animation-name:g{n}" pathLength="1" '
+                 f'd="M {s0[0]:.4f} {s0[1]:.4f} L {end[0]:.4f} {end[1]:.4f}" />')
 hull_d = "M " + " L ".join(f"{x} {y}" for x, y in P) + " Z"
-ox, oy = TX + CX * SCALE, TY + CY * SCALE
 
 
 def svg(extra=""):
     return f"""<svg xmlns="http://www.w3.org/2000/svg" width="970" height="970" viewBox="0 0 970 970">
   <title>gray mark intro</title>
   <defs><clipPath id="hull"><path d="{hull_d}" /></clipPath></defs>
-  <g class="mark">
     <g transform="translate({TX} {TY}) scale({SCALE})">
       <g clip-path="url(#hull)" fill="none" stroke="#ffffff" stroke-width="{BAND}" stroke-linecap="butt">
 {chr(10).join(lines)}
       </g>
     </g>
-  </g>
   <style>
-    .b {{ stroke-dasharray: 1 1; }}
-    .mark {{ transform-origin: {ox:.2f}px {oy:.2f}px; }}
-    .side, .diag, .mark {{ animation: {T}s linear var(--d, 0s) infinite both; }}
-    .side {{ animation-name: side; }}
-    .diag {{ animation-name: diag; }}
-    .mark {{ animation-name: settle; }}
+    .b {{ stroke-dasharray: 1 2; }}
+    .b {{ animation: {T}s linear 0s infinite both; }}
 {chr(10).join(kfs)}
     @media (prefers-reduced-motion: reduce) {{
-      .side, .diag, .mark {{ animation: none; }}
+      .b {{ animation: none; }}
     }}{extra}
   </style>
 </svg>
@@ -157,11 +157,11 @@ def svg(extra=""):
 open(__file__.replace(".py", ".svg"), "w").write(svg())
 
 if len(sys.argv) > 1:  # frozen moments for visual checks
-    moments = {"1-sides": 0.6, "2-diags": 1.1, "3-settle": 2.0,
+    moments = {"1-start": 0.5, "2-wave": 0.9, "3-drawn": 2.0,
                "4-full": 3.2, "5-retract": 4.3, "6-empty": 5.8}
     for name, at in moments.items():
         open(f"{sys.argv[1]}/snap-{name}.svg", "w").write(svg(
-            f"\n    .side, .diag, .mark {{ animation-delay: calc(var(--d, 0s) - {at}s) !important;"
+            f"\n    .b {{ animation-delay: -{at}s !important;"
             f" animation-play-state: paused !important; }}"))
     open(f"{sys.argv[1]}/snap-static.svg", "w").write(svg(
-        "\n    .side, .diag, .mark { animation: none !important; }"))
+        "\n    .b { animation: none !important; }"))
