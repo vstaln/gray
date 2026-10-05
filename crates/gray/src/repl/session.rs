@@ -150,6 +150,23 @@ pub(crate) async fn handle_resume(
         return;
     };
     let store = JsonlSessionStore::new(root);
+    // One owner per session: a live holder stays put — switching anyway
+    // would interleave two processes' appends into one history. Claiming
+    // before the load so the file can't change under another owner; a
+    // session we already hold shares our lock (registry), never self-locks.
+    let open_guard = match store.acquire_open(&sid).await {
+        Ok(guard) => guard,
+        Err(e) => {
+            let msg = match &e {
+                crate::session_store::SessionError::Locked { id, pid } => {
+                    crate::session_store::SessionError::locked_notice(id, *pid)
+                }
+                _ => e.to_string(),
+            };
+            say(tui, &msg);
+            return;
+        }
+    };
     match store.load(&sid).await {
         Ok((meta, entries)) => {
             let history: Vec<Message> = entries.iter().map(|e| e.message.clone()).collect();
@@ -200,6 +217,7 @@ pub(crate) async fn handle_resume(
                         full_save_pending: false,
                         session_id: sid.clone(),
                         store,
+                        _open_guard: Some(open_guard),
                     });
                     *totals = SessionTotals::from_entries(&entries, model);
                     if let Some(shared) = &tui {
@@ -344,10 +362,21 @@ pub(crate) async fn ensure_session_state(
         if let Err(e) = store.create(meta).await {
             log::warn!(target: "gray_session", "session create failed: {e}");
         }
+        // Fresh id — the open lock should always be free; hold it so a
+        // second gray can't `-r` this session out from under us. A failure
+        // is pathological: degrade to guardless, like create-failure above.
+        let open_guard = match store.acquire_open(&session_id).await {
+            Ok(guard) => Some(guard),
+            Err(e) => {
+                log::warn!(target: "gray_session", "session open-lock failed: {e}");
+                None
+            }
+        };
         *session_state = Some(SessionState {
             full_save_pending: false,
             store,
             session_id,
+            _open_guard: open_guard,
         });
     }
 }

@@ -39,6 +39,7 @@ async fn failed_compaction_save_retries_full_history_before_appending() {
         full_save_pending: false,
         store,
         session_id: sid.clone(),
+        _open_guard: None,
     });
     let config = Config {
         temperature: None,
@@ -110,6 +111,7 @@ async fn failed_compaction_save_retries_full_history_before_appending() {
         full_save_pending: false,
         store: JsonlSessionStore::new(dir.path()),
         session_id: sid.clone(),
+        _open_guard: None,
     });
     persist_compaction_tail(&mut agent, &config, &mut torn_state, dir.path(), None).await;
     assert!(!torn_state.as_ref().unwrap().full_save_pending);

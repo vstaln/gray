@@ -200,6 +200,10 @@ pub(crate) struct SessionState {
     pub(crate) full_save_pending: bool,
     pub(crate) store: crate::session_store::JsonlSessionStore,
     pub(crate) session_id: crate::session_store::SessionId,
+    /// `<id>.open` flock held while this session is open here; a second
+    /// gray process gets `SessionError::Locked` naming our PID. Drops with
+    /// the state (exit, `/new`, `/resume`), releasing the claim.
+    pub(crate) _open_guard: Option<crate::session_store::SessionOpenGuard>,
 }
 
 /// Command feedback: through the composer when it owns the terminal, else stdout.
@@ -605,6 +609,10 @@ pub async fn run_repl_mode(
     }
 
     if let Some((sid, meta, entries, store)) = loaded {
+        // One owner per session: `--session`/`-c` asked for THIS session —
+        // a live holder gets the `Locked` refusal (with its PID), never a
+        // silent substitute or a second writer on the same history.
+        let open_guard = Some(store.acquire_open(&sid).await?);
         if config.model.is_none() && !meta.model.is_empty() {
             config.model = Some(meta.model.clone());
         }
@@ -628,6 +636,7 @@ pub async fn run_repl_mode(
             full_save_pending: false,
             session_id: sid.clone(),
             store,
+            _open_guard: open_guard,
         });
         session_totals =
             SessionTotals::from_entries(&entries, config.model.as_deref().unwrap_or(""));

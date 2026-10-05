@@ -31,6 +31,20 @@ fn read_structured_input(path: &Path) -> Result<Vec<u8>, InputError> {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let result = run().await;
+    // A session-live refusal is routine contention, not a crash: render it
+    // as a `⬢`/`└` card (sibling of `Resumed session`), not an `Error:` dump.
+    if let Err(e) = &result
+        && let Some(gray::session_store::SessionError::Locked { id, pid }) =
+            e.downcast_ref::<gray::session_store::SessionError>()
+    {
+        eprintln!("{}", gray::resume::locked_session_card(id, *pid));
+        std::process::exit(1);
+    }
+    result
+}
+
+async fn run() -> anyhow::Result<()> {
     gray::logging::init();
     install_panic_hook();
     let _ = crossterm::terminal::disable_raw_mode();
@@ -280,6 +294,10 @@ async fn run_resume_subcommand(
             None => return Ok(()),
         }
     };
+    // Claim the session before announcing it: a session open in another
+    // gray process reports the holder's PID here instead of "Resumed"
+    // followed by the refusal the REPL would print.
+    let _open_guard = store.acquire_open(&target_id).await?;
     // Non-TTY (`resume <id> < /dev/null`, scripts): the REPL would hit EOF
     // and exit silently, so announce what was resumed first — never exit 0
     // with no output. Interactive terminals skip this (the TUI owns the screen).

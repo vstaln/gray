@@ -151,12 +151,23 @@ pub(crate) async fn dispatch_command(
                 if let Err(e) = store.create(meta).await {
                     log::warn!(target: "gray_session", "session create failed: {e}");
                 }
+                // Fresh id — always free; held so a second gray can't
+                // `-r` this session out from under us (see
+                // `ensure_session_state`).
+                let open_guard = match store.acquire_open(&session_id).await {
+                    Ok(guard) => Some(guard),
+                    Err(e) => {
+                        log::warn!(target: "gray_session", "session open-lock failed: {e}");
+                        None
+                    }
+                };
                 short_id = crate::resume::short_id(&session_id);
                 new_sid = Some(session_id.clone());
                 *session_state = Some(SessionState {
                     full_save_pending: false,
                     store,
                     session_id,
+                    _open_guard: open_guard,
                 });
             }
             // Build with the new session id so the prompt-cache shard
