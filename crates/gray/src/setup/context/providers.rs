@@ -29,7 +29,25 @@ pub fn friendly_model_name(model_id: &str) -> String {
             }
         })
         .collect();
-    words.join(" ")
+    // The split above destroys version dots: `claude-opus-5-5` was `5.5`
+    // upstream, never `5 5`. Merge a lone digit onto a word ending in a
+    // digit (`v3-1` -> `v3.1`, `5-5` -> `5.5`); longer tokens (`2025`,
+    // `0324`, `30b`) stay separate so dates and size stamps survive.
+    let mut merged: Vec<String> = Vec::with_capacity(words.len());
+    for w in words {
+        let lone_digit = w.len() == 1 && w.bytes().next().is_some_and(|b| b.is_ascii_digit());
+        if lone_digit
+            && merged
+                .last()
+                .is_some_and(|prev| prev.ends_with(|c: char| c.is_ascii_digit()))
+        {
+            merged.last_mut().unwrap().push('.');
+            merged.last_mut().unwrap().push_str(&w);
+        } else {
+            merged.push(w);
+        }
+    }
+    merged.join(" ")
 }
 
 /// Whether a model can reason, keyed like the context cache (exact id +
@@ -168,6 +186,22 @@ pub fn supported_efforts(model_id: &str) -> Option<Vec<&'static str>> {
         }
     }
     let id = model_id.to_lowercase();
+    // Plugin-relay providers (loopback base) may serve effort-in-id
+    // catalogs: `swe-2-max`, `claude-opus-5-5-low-fast` bake the tier into
+    // the name — there is no runtime knob to offer. Declared efforts won
+    // above; this catches stale saved picks and hand-typed ids. Real API
+    // endpoints are unaffected (the rule never runs for them).
+    if is_loopback_base(&active_provider_base_url()) {
+        let leaf = id.rsplit('/').next().unwrap_or(id.as_str());
+        let core = leaf
+            .strip_suffix("-fast")
+            .or_else(|| leaf.strip_suffix("-priority"))
+            .unwrap_or(leaf);
+        let seg = core.rsplit('-').next().unwrap_or("");
+        if seg == "none" || super::super::THINKING_LEVELS.iter().any(|(l, _)| *l == seg) {
+            return Some(vec![]);
+        }
+    }
     // OpenAI: values are model-dependent —
     // https://developers.openai.com/api/docs/guides/reasoning
     // (`none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`).
@@ -511,6 +545,112 @@ pub fn fetch_live_provider_models(base_url: &str, api_key: Option<&str>) -> Vec<
     })
 }
 
+/// Live model list for a plugin-backed provider: the sidecar's
+/// `provider/models` RPC is the only real source — the declared `base_url`
+/// is a relay placeholder an HTTP fetch can never satisfy. A non-empty
+/// result persists under [`crate::setup::catalog::plugin_models_key`], so
+/// the `/model` picker paints instantly on the next open (loopback bases
+/// themselves get no disk entry — see `save_provider_model_list_at`).
+/// Same own-runtime discipline as [`fetch_live_provider_models`].
+pub(crate) fn fetch_plugin_provider_models(
+    installed: crate::providers::InstalledProvider,
+) -> Vec<(String, String)> {
+    std::thread::scope(|s| {
+        s.spawn(move || {
+            match tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(rt) => rt.block_on(plugin_models_rpc(&installed)),
+                Err(_) => Vec::new(),
+            }
+        })
+        .join()
+        .unwrap_or_default()
+    })
+}
+
+/// The async half of [`fetch_plugin_provider_models`]: spawn the sidecar,
+/// ask for its catalog, persist a usable list. The stored credential goes
+/// in when one exists; subscription plugins that keep their own login state
+/// answer to an empty envelope (the connect-login path uses exactly that).
+async fn plugin_models_rpc(
+    installed: &crate::providers::InstalledProvider,
+) -> Vec<(String, String)> {
+    use crate::providers::registry::ProviderRpc;
+    let Ok(runtime) = crate::providers::ProviderRuntime::start(installed.clone()).await else {
+        return Vec::new();
+    };
+    let credential = crate::setup::catalog::auth_store_path()
+        .ok()
+        .and_then(|path| {
+            crate::auth::CredentialStore::new(path)
+                .read_plugin(&installed.auth_ref())
+                .ok()
+                .flatten()
+        })
+        .or_else(|| {
+            gray_core::credential::CredentialEnvelope::new(
+                installed.plugin.clone(),
+                installed.provider.id.clone(),
+                installed.auth_method.id.clone(),
+                installed.profile_binding.clone(),
+                gray_core::credential::CredentialMaterial::empty(),
+            )
+            .ok()
+        });
+    let Some(credential) = credential else {
+        return Vec::new();
+    };
+    let request = gray_plugin::ProviderModelsRequest {
+        provider: installed.provider.id.clone(),
+        auth_method: installed.auth_method.id.clone(),
+        profile_binding: installed.profile_binding.clone(),
+        credential,
+    };
+    let Ok(catalog) = runtime.rpc().models(request).await else {
+        return Vec::new();
+    };
+    // Provider-declared metadata feeds the same caches a live /models
+    // payload does — effort levels the plugin advertises become
+    // authoritative for the clamp and /thinking rows. A plugin catalog IS
+    // the declaration: an empty efforts list means "no effort knob" (the
+    // tier is baked into the model id, e.g. Devin's `swe-2-max`), not
+    // "didn't say" — mark it so the picker reports no levels, the footer
+    // hides the effort badge, and no default effort is sent.
+    for m in &catalog.models {
+        if let Some(w) = m.context_window {
+            cache_model_context_if_absent(&m.id, w as usize);
+        }
+        if !m.reasoning_efforts.is_empty() {
+            cache_model_efforts(&m.id, m.reasoning_efforts.clone());
+        }
+        cache_model_reasoning(&m.id, !m.reasoning_efforts.is_empty());
+    }
+    let models: Vec<(String, String)> = catalog
+        .models
+        .iter()
+        .map(|m| {
+            let name = m.name.trim();
+            (
+                m.id.clone(),
+                if name.is_empty() {
+                    m.id.clone()
+                } else {
+                    name.to_string()
+                },
+            )
+        })
+        .collect();
+    if !models.is_empty() {
+        save_provider_model_list(
+            &crate::setup::catalog::plugin_models_key(&installed.provider_id()),
+            &models,
+        );
+    }
+    models
+}
+
 static MODEL_CONTEXT_CACHE: std::sync::OnceLock<
     std::sync::RwLock<std::collections::HashMap<String, usize>>,
 > = std::sync::OnceLock::new();
@@ -784,7 +924,22 @@ fn json_usize(v: &serde_json::Value) -> Option<usize> {
 
 /// USD-per-token rates from LiteLLM's table (same source as the context
 /// windows — and the one T3 Code prices against). Base tier, like T3.
-#[derive(Debug, Clone, Copy, Default)]
+/// A priced context tier (models.dev `cost.tiers`, LiteLLM
+/// `*_above_200k_tokens`): when a turn's inclusive input exceeds `size`,
+/// these rates replace the base ones — opencode `getUsage` semantics
+/// (`context > tier.size`, largest matching tier wins). Fields left `None`
+/// inherit the base rate: models.dev `context_over_200k` often omits
+/// `cache_write`, and zero-filling it (opencode's `?? 0`) undercharges.
+#[derive(Debug, Clone, Copy)]
+pub struct RateTier {
+    pub size: usize,
+    pub input: Option<f64>,
+    pub output: Option<f64>,
+    pub cache_read: Option<f64>,
+    pub cache_write: Option<f64>,
+}
+
+#[derive(Debug, Clone, Default)]
 pub struct ModelRate {
     pub input: f64,
     pub output: f64,
@@ -792,6 +947,8 @@ pub struct ModelRate {
     pub cache_write: f64,
     /// False when the entry had no cache prices — price all input at `input`.
     pub has_cache_prices: bool,
+    /// Context-priced tiers, sorted descending by `size`. Empty = flat rate.
+    pub tiers: Vec<RateTier>,
 }
 
 static MODEL_RATES: std::sync::OnceLock<
@@ -802,13 +959,122 @@ fn model_rates_cell() -> &'static std::sync::RwLock<std::collections::HashMap<St
     MODEL_RATES.get_or_init(|| std::sync::RwLock::new(std::collections::HashMap::new()))
 }
 
-fn cache_model_rate(model_id: &str, rate: ModelRate) {
-    if let Ok(mut g) = model_rates_cell().write() {
-        g.insert(model_id.to_string(), rate);
+/// Tiers seen before their base rate exists (a models.dev entry that ships
+/// `cost.tiers`/`context_over_200k` but no base `input`/`output`). Drained by
+/// the next rate write for that id — whichever source prices it first picks
+/// the tiers up, so apply order between the catalog fetches never loses one.
+static PENDING_TIERS: std::sync::OnceLock<
+    std::sync::RwLock<std::collections::HashMap<String, Vec<RateTier>>>,
+> = std::sync::OnceLock::new();
+
+fn pending_tiers_cell()
+-> &'static std::sync::RwLock<std::collections::HashMap<String, Vec<RateTier>>> {
+    PENDING_TIERS.get_or_init(|| std::sync::RwLock::new(std::collections::HashMap::new()))
+}
+
+fn stash_pending_tiers(model_id: &str, tiers: Vec<RateTier>) {
+    if tiers.is_empty() {
+        return;
+    }
+    if let Ok(mut g) = pending_tiers_cell().write() {
+        merge_tiers(g.entry(model_id.to_string()).or_default(), tiers.clone());
         let lower = model_id.to_lowercase();
         if lower != model_id {
-            g.insert(lower, rate);
+            merge_tiers(g.entry(lower).or_default(), tiers);
         }
+    }
+}
+
+fn take_pending_tiers(model_id: &str) -> Vec<RateTier> {
+    pending_tiers_cell()
+        .write()
+        .ok()
+        .and_then(|mut g| g.remove(model_id))
+        .unwrap_or_default()
+}
+
+/// Union tier lists by `size`; an incoming tier replaces the stored one at
+/// the same size (the caller's source is authoritative for the tiers it
+/// ships). Result stays sorted descending.
+fn merge_tiers(existing: &mut Vec<RateTier>, incoming: Vec<RateTier>) {
+    for t in incoming {
+        match existing.iter_mut().find(|e| e.size == t.size) {
+            Some(e) => *e = t,
+            None => existing.push(t),
+        }
+    }
+    existing.sort_by_key(|tier| std::cmp::Reverse(tier.size));
+}
+
+/// LiteLLM path: the base rates replace (authoritative); tiers union into
+/// whatever arrived earlier so a models.dev apply in either boot order
+/// yields the same merged rate.
+fn cache_model_rate(model_id: &str, rate: ModelRate) {
+    fn merge_into(
+        map: &mut std::collections::HashMap<String, ModelRate>,
+        id: String,
+        rate: ModelRate,
+    ) {
+        match map.get_mut(&id) {
+            Some(cur) => {
+                merge_tiers(&mut cur.tiers, rate.tiers);
+                let tiers = std::mem::take(&mut cur.tiers);
+                *cur = ModelRate { tiers, ..rate };
+            }
+            None => {
+                let mut rate = rate;
+                merge_tiers(&mut rate.tiers, take_pending_tiers(&id));
+                map.insert(id, rate);
+            }
+        }
+    }
+    if let Ok(mut g) = model_rates_cell().write() {
+        merge_into(&mut g, model_id.to_string(), rate.clone());
+        let lower = model_id.to_lowercase();
+        if lower != model_id {
+            merge_into(&mut g, lower, rate);
+        }
+    }
+}
+
+/// models.dev path: gap-fill — base rates are added only when no source has
+/// priced the model (LiteLLM/OpenRouter stay authoritative); tiers always
+/// merge, but an existing tier at the same size keeps its rates.
+fn cache_models_dev_rate(model_id: &str, base: Option<ModelRate>, tiers: Vec<RateTier>) {
+    if base.is_none() && tiers.is_empty() {
+        return;
+    }
+    let mut ids = vec![model_id.to_string()];
+    let lower = model_id.to_lowercase();
+    if lower != model_id {
+        ids.push(lower);
+    }
+    let mut stashed: Vec<String> = Vec::new();
+    if let Ok(mut g) = model_rates_cell().write() {
+        for id in &ids {
+            match g.get_mut(id) {
+                Some(cur) => {
+                    let missing: Vec<RateTier> = tiers
+                        .iter()
+                        .copied()
+                        .filter(|t| !cur.tiers.iter().any(|e| e.size == t.size))
+                        .collect();
+                    cur.tiers.extend(missing);
+                    cur.tiers.sort_by_key(|tier| std::cmp::Reverse(tier.size));
+                }
+                None => {
+                    if let Some(mut r) = base.clone() {
+                        merge_tiers(&mut r.tiers, tiers.clone());
+                        g.insert(id.clone(), r);
+                    } else {
+                        stashed.push(id.clone());
+                    }
+                }
+            }
+        }
+    }
+    for id in stashed {
+        stash_pending_tiers(&id, tiers.clone());
     }
 }
 
@@ -816,15 +1082,15 @@ fn cache_model_rate(model_id: &str, rate: ModelRate) {
 /// context cache. None = unpriced (LiteLLM has no rate for it).
 pub fn get_model_rate(model_id: &str) -> Option<ModelRate> {
     if let Ok(g) = model_rates_cell().read() {
-        if let Some(r) = g.get(model_id).copied() {
+        if let Some(r) = g.get(model_id).cloned() {
             return Some(r);
         }
         let lower = model_id.to_lowercase();
-        if let Some(r) = g.get(&lower).copied() {
+        if let Some(r) = g.get(&lower).cloned() {
             return Some(r);
         }
         if let Some((_, suffix)) = model_id.rsplit_once('/')
-            && let Some(r) = g.get(suffix).copied()
+            && let Some(r) = g.get(suffix).cloned()
         {
             return Some(r);
         }
@@ -843,18 +1109,47 @@ fn json_rate(v: &serde_json::Value) -> Option<f64> {
 /// fill inclusive `input_tokens` get it all priced fresh.
 pub fn turn_cost(usage: &gray_core::event::Usage, model: &str) -> Option<f64> {
     let r = get_model_rate(model)?;
+    let (input, output, cache_read, cache_write, has_cache) =
+        rate_at_context(&r, usage.input_tokens);
     let read = usage.cache_read_input_tokens as f64;
     let write = usage.cache_write_input_tokens as f64;
     let mut fresh = usage.non_cached_input_tokens as f64;
     if fresh == 0.0 {
         fresh = (usage.input_tokens as f64 - read - write).max(0.0);
     }
-    let input_cost = if r.has_cache_prices {
-        fresh * r.input + read * r.cache_read + write * r.cache_write
+    let input_cost = if has_cache {
+        fresh * input + read * cache_read + write * cache_write
     } else {
-        (fresh + read + write) * r.input
+        (fresh + read + write) * input
     };
-    Some(input_cost + usage.output_tokens as f64 * r.output)
+    Some(input_cost + usage.output_tokens as f64 * output)
+}
+
+/// The rate in force for a prompt of `context` tokens — the base rate, or
+/// the largest tier strictly below it (opencode `getUsage`: tiers apply on
+/// `context > tier.size`; models.dev only ships `type: "context"` tiers).
+fn rate_at_context(r: &ModelRate, context: usize) -> (f64, f64, f64, f64, bool) {
+    let Some(t) = r
+        .tiers
+        .iter()
+        .filter(|t| context > t.size)
+        .max_by_key(|t| t.size)
+    else {
+        return (
+            r.input,
+            r.output,
+            r.cache_read,
+            r.cache_write,
+            r.has_cache_prices,
+        );
+    };
+    (
+        t.input.unwrap_or(r.input),
+        t.output.unwrap_or(r.output),
+        t.cache_read.unwrap_or(r.cache_read),
+        t.cache_write.unwrap_or(r.cache_write),
+        r.has_cache_prices || t.cache_read.is_some() || t.cache_write.is_some(),
+    )
 }
 
 /// `$0.004`, `$0.41`, `$1.50` — 4 decimals trimmed, 2 minimum past a dollar.
@@ -891,6 +1186,11 @@ pub struct LiteLlmEntry {
     output_cost_per_token: Field,
     cache_read_input_token_cost: Field,
     cache_creation_input_token_cost: Field,
+    /// Anthropic-style long-context surcharge: present => tier at 200k.
+    input_cost_per_token_above_200k_tokens: Field,
+    output_cost_per_token_above_200k_tokens: Field,
+    cache_read_input_token_cost_above_200k_tokens: Field,
+    cache_creation_input_token_cost_above_200k_tokens: Field,
 }
 type LiteLlm = std::collections::BTreeMap<String, LiteLlmEntry>;
 
@@ -905,6 +1205,41 @@ pub struct ModelsDevEntry {
     max_input_tokens: Field,
     reasoning: Field,
     reasoning_options: Option<Vec<ModelsDevOption>>,
+    /// USD per 1M tokens (opencode `model.cost`), with optional context tiers.
+    cost: Option<ModelsDevCost>,
+}
+#[derive(serde::Deserialize)]
+pub struct ModelsDevCost {
+    input: Field,
+    output: Field,
+    cache_read: Field,
+    cache_write: Field,
+    tiers: Option<Vec<ModelsDevCostTier>>,
+    /// Flattened 200k tier (newer key for opencode's `experimentalOver200K`).
+    context_over_200k: Option<ModelsDevTierRates>,
+    #[serde(alias = "experimentalOver200K")]
+    experimental_over_200k: Option<ModelsDevTierRates>,
+}
+#[derive(serde::Deserialize)]
+pub struct ModelsDevCostTier {
+    input: Field,
+    output: Field,
+    cache_read: Field,
+    cache_write: Field,
+    tier: Option<ModelsDevTierBound>,
+}
+#[derive(serde::Deserialize)]
+pub struct ModelsDevTierBound {
+    #[serde(rename = "type")]
+    kind: Field,
+    size: Field,
+}
+#[derive(serde::Deserialize)]
+pub struct ModelsDevTierRates {
+    input: Field,
+    output: Field,
+    cache_read: Field,
+    cache_write: Field,
 }
 #[derive(serde::Deserialize)]
 pub struct ModelsDevLimit {
@@ -976,14 +1311,30 @@ fn apply_litellm(map: LiteLlm) -> usize {
                 (Some(r), Some(w)) => (r, w, true),
                 _ => (0.0, 0.0, false),
             };
+            let tiers = {
+                let t_in = rate(&entry.input_cost_per_token_above_200k_tokens);
+                let t_out = rate(&entry.output_cost_per_token_above_200k_tokens);
+                if t_in.is_some() || t_out.is_some() {
+                    vec![RateTier {
+                        size: 200_000,
+                        input: t_in,
+                        output: t_out,
+                        cache_read: rate(&entry.cache_read_input_token_cost_above_200k_tokens),
+                        cache_write: rate(&entry.cache_creation_input_token_cost_above_200k_tokens),
+                    }]
+                } else {
+                    Vec::new()
+                }
+            };
             let rate = ModelRate {
                 input,
                 output,
                 cache_read,
                 cache_write,
                 has_cache_prices: has_cache,
+                tiers,
             };
-            cache_model_rate(key, rate);
+            cache_model_rate(key, rate.clone());
             if let Some((_, suffix)) = key.rsplit_once('/') {
                 cache_model_rate(suffix, rate);
             }
@@ -1057,6 +1408,65 @@ fn apply_models_dev(providers: ModelsDev) -> usize {
                     cache_model_efforts(key, efforts);
                 }
             }
+            // models.dev `cost` (per-1M USD, divided here to match the
+            // per-token LiteLLM rates). Gap-fill: LiteLLM stays authoritative
+            // for base rates; tiers union (weaker `context_over_200k` first,
+            // explicit `tiers` last so they win a same-size slot).
+            if let Some(cost) = &entry.cost {
+                let per_m = |f: &Field| f.as_ref().and_then(json_rate).map(|v| v / 1_000_000.0);
+                let mut tiers: Vec<RateTier> = Vec::new();
+                for flat in [&cost.context_over_200k, &cost.experimental_over_200k]
+                    .into_iter()
+                    .flatten()
+                {
+                    tiers.push(RateTier {
+                        size: 200_000,
+                        input: per_m(&flat.input),
+                        output: per_m(&flat.output),
+                        cache_read: per_m(&flat.cache_read),
+                        cache_write: per_m(&flat.cache_write),
+                    });
+                }
+                for t in cost.tiers.iter().flatten() {
+                    let Some(bound) = t.tier.as_ref() else {
+                        continue;
+                    };
+                    if bound.kind.as_ref().and_then(|v| v.as_str()) != Some("context") {
+                        continue;
+                    }
+                    let Some(size) = bound.size.as_ref().and_then(json_usize) else {
+                        continue;
+                    };
+                    // Same-size replaces (explicit tier wins over the flat
+                    // 200k shorthand) — one `size` maps one rate.
+                    tiers.retain(|e| e.size != size);
+                    tiers.push(RateTier {
+                        size,
+                        input: per_m(&t.input),
+                        output: per_m(&t.output),
+                        cache_read: per_m(&t.cache_read),
+                        cache_write: per_m(&t.cache_write),
+                    });
+                }
+                let base = match (per_m(&cost.input), per_m(&cost.output)) {
+                    (Some(input), Some(output)) => Some(ModelRate {
+                        input,
+                        output,
+                        cache_read: per_m(&cost.cache_read).unwrap_or(0.0),
+                        cache_write: per_m(&cost.cache_write).unwrap_or(0.0),
+                        // Cache-aware only when both sides are priced —
+                        // a read-only price would bill writes at input rate.
+                        has_cache_prices: per_m(&cost.cache_read).is_some()
+                            && per_m(&cost.cache_write).is_some(),
+                        tiers: Vec::new(),
+                    }),
+                    _ => None,
+                };
+                cache_models_dev_rate(key, base.clone(), tiers.clone());
+                if let Some((_, suffix)) = key.rsplit_once('/') {
+                    cache_models_dev_rate(suffix, base, tiers);
+                }
+            }
         }
     }
     n
@@ -1080,6 +1490,10 @@ fn cache_model_rate_if_absent(model_id: &str, rate: ModelRate) {
     {
         return;
     }
+    // New rate: merge may stash nothing when tiers predate the base (the
+    // models.dev-only-tier case) — fold the pending list in here instead.
+    let mut rate = rate;
+    merge_tiers(&mut rate.tiers, take_pending_tiers(model_id));
     cache_model_rate(model_id, rate);
 }
 
@@ -1119,10 +1533,11 @@ fn apply_openrouter(list: OpenRouter) -> usize {
             cache_read: 0.0,
             cache_write: 0.0,
             has_cache_prices: false,
+            tiers: Vec::new(),
         };
-        cache_model_rate_if_absent(id, rate);
+        cache_model_rate_if_absent(id, rate.clone());
         let lower = id.to_lowercase();
-        cache_model_rate_if_absent(&lower, rate);
+        cache_model_rate_if_absent(&lower, rate.clone());
         if let Some((_, suffix)) = id.rsplit_once('/') {
             cache_model_rate_if_absent(suffix, rate);
         }

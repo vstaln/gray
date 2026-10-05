@@ -39,11 +39,19 @@ pub fn run_effort_modal(
         .position(|(l, _)| *l == current_level)
         .unwrap_or(levels.len().saturating_sub(1));
     // Trailing rows: a blank separator, then the reasoning-text display
-    // toggle (not an effort level). The gap groups the levels so the toggle
-    // reads as a separate action.
+    // toggle and the fast-variant toggle (not effort levels). The gap
+    // groups the levels so the toggles read as separate actions.
     let gap_idx = levels.len();
-    let rows = levels.len() + 2;
+    let display_idx = levels.len() + 1;
+    let rows = levels.len() + 3;
     let max_sel = rows.saturating_sub(1);
+    // Preview of the wire id fast mode would send for this model at the
+    // live effort — `None` means the catalog has no fast sibling row.
+    let fast_wire = super::compose_fast_model(
+        config.model.as_deref().unwrap_or_default(),
+        config.thinking_effort.as_deref(),
+        &super::canonical_model_rows(config),
+    );
 
     let result = (|| -> anyhow::Result<bool> {
         loop {
@@ -119,7 +127,7 @@ pub fn run_effort_modal(
                     let (level, desc, is_current) = if idx < levels.len() {
                         let (l, d) = levels[idx];
                         (l, d, current_level == l)
-                    } else {
+                    } else if idx == display_idx {
                         let shown = config.show_reasoning.unwrap_or(true);
                         (
                             "display",
@@ -129,6 +137,16 @@ pub fn run_effort_modal(
                                 "Reasoning text hidden"
                             },
                             shown,
+                        )
+                    } else {
+                        let on = config.fast_mode == Some(true);
+                        (
+                            "fast",
+                            match &fast_wire {
+                                Some(id) => id.as_str(),
+                                None => "no fast variant for this model",
+                            },
+                            on,
                         )
                     };
                     let is_selected = idx == sel;
@@ -259,7 +277,7 @@ pub fn run_effort_modal(
                         if sel == gap_idx {
                             continue;
                         }
-                        if sel == max_sel {
+                        if sel == display_idx {
                             // Display toggle: flip, persist, stay open.
                             let shown = !config.show_reasoning.unwrap_or(true);
                             config.show_reasoning = Some(shown);
@@ -270,13 +288,31 @@ pub fn run_effort_modal(
                             save_saved_config_at(&path, &saved)?;
                             continue;
                         }
+                        if sel == max_sel {
+                            // Fast-variant toggle: flip, persist, stay open.
+                            let on = !(config.fast_mode == Some(true));
+                            config.fast_mode = Some(on);
+                            let path = saved_config_path()?;
+                            let _cfg_lock = crate::setup::lock_saved_config_at(&path).ok();
+                            let mut saved = load_saved_config_at(&path);
+                            saved.fast_mode = Some(on);
+                            save_saved_config_at(&path, &saved)?;
+                            continue;
+                        }
                         let (chosen, _) = levels[sel];
                         config.thinking_effort = Some(chosen.to_string());
 
                         let path = saved_config_path()?;
                         let _cfg_lock = crate::setup::lock_saved_config_at(&path).ok();
                         let mut saved = load_saved_config_at(&path);
-                        saved.thinking_effort = config.thinking_effort.clone();
+                        saved.remember_effort(
+                            &crate::setup::effort_memory_key(
+                                &config.provider_id,
+                                &config.base_url,
+                                config.model.as_deref().unwrap_or_default(),
+                            ),
+                            chosen,
+                        );
                         save_saved_config_at(&path, &saved)?;
 
                         return Ok(true);

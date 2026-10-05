@@ -98,6 +98,25 @@ pub(crate) fn enabled(home: &Path, name: &str, entry: &LockEntry) -> bool {
 /// …); the slash aliases live in `commands`, and a caller showing the app's
 /// own name has no use for them. Empty when the plugin registered no manifest
 /// (or the file is unreadable) — nothing is invented on its behalf.
+/// Installed CLI apps that declare a `setup` wizard (the platforms
+/// `gray gateway setup` offers).
+pub(crate) fn setup_apps(home: &Path) -> Vec<String> {
+    load_lock(home)
+        .map(|lock| {
+            lock.plugins
+                .iter()
+                .filter(|(name, e)| {
+                    e.cli_argv.is_some()
+                        && declared_subcommands(home, name)
+                            .iter()
+                            .any(|s| s == "setup")
+                })
+                .map(|(name, _)| name.clone())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 pub(crate) fn declared_subcommands(home: &Path, name: &str) -> Vec<String> {
     metadata(home, name)
         .ok()
@@ -526,6 +545,18 @@ fn is_local_command(home: &Path, name: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Removed builtin subcommands still land in the plugin fallback — name what
+/// replaced them instead of pointing at an index that has no entry.
+fn removed_builtin(name: &str) -> Option<&'static str> {
+    match name {
+        "view" => Some(
+            "`gray view` was removed — `cat <path>` as the whole bash command \
+             attaches the media to the turn",
+        ),
+        _ => None,
+    }
+}
+
 /// Resolve only explicitly registered commands (never arbitrary PATH executables).
 /// exec preserves terminal, signals, argument boundaries, and the child's exit code.
 pub fn forward(home: &Path, name: &str, rest: &[String]) -> anyhow::Result<()> {
@@ -533,7 +564,11 @@ pub fn forward(home: &Path, name: &str, rest: &[String]) -> anyhow::Result<()> {
     migrate_commands_json(home);
     let lock = load_lock(home)?;
     let entry = lock.plugins.get(name).with_context(|| {
-        format!("no plugin command '{name}' — install it with: gray plugin install {name}")
+        removed_builtin(name)
+            .map(str::to_string)
+            .unwrap_or_else(|| {
+                format!("no plugin command '{name}' — install it with: gray plugin install {name}")
+            })
     })?;
     let argv = entry
         .cli_argv
@@ -661,7 +696,17 @@ pub async fn register_native(
             version: manifest["version"].as_str().unwrap_or("unknown").into(),
             hash: String::new(),
             source: binary.to_string_lossy().into_owned(),
-            argv: vec![binary.to_string_lossy().into_owned()],
+            // A CLI-speaking binary may serve the wire under a subcommand
+            // (`gray-discord sidecar`); its manifest says which.
+            argv: std::iter::once(binary.to_string_lossy().into_owned())
+                .chain(
+                    manifest["sidecar_args"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|v| v.as_str().map(str::to_string)),
+                )
+                .collect(),
             cli_argv: (!wire_only).then(|| vec![binary.to_string_lossy().into_owned()]),
             adapter_version: manifest["protocol"].as_str().unwrap_or("1").to_string(),
             installed_at: chrono::Utc::now().to_rfc3339(),

@@ -122,7 +122,7 @@ fn the_live_fetch_works_from_a_thread_with_no_runtime() {
 fn saved_models_need_no_network() {
     // Whatever the saved config holds, this must not fail or block: it is
     // what the first frame is drawn from.
-    let _ = super::saved_models_for("http://127.0.0.1:1/v1");
+    let _ = super::saved_models_for("http://127.0.0.1:1/v1", "http://127.0.0.1:1/v1");
 }
 
 #[test]
@@ -190,5 +190,167 @@ fn selection_never_rest_on_the_divider() {
         super::skip_divider(&rows, 2, false),
         2,
         "models pass through"
+    );
+}
+
+use super::split_effort_variant;
+
+#[test]
+fn collapsed_variant_splits_to_base_and_tier() {
+    // The picker collapses swe-2-{high,medium,max} into one `swe-2` row;
+    // a stale or hand-typed variant id resolves to the row + its tier.
+    let rows = vec![
+        ("swe-2".to_string(), "SWE-2".to_string()),
+        ("swe-1-7".to_string(), "SWE-1.7".to_string()),
+    ];
+    assert_eq!(
+        split_effort_variant("swe-2-max", &rows),
+        Some(("swe-2".to_string(), "max".to_string()))
+    );
+    assert_eq!(
+        split_effort_variant("swe-2-medium", &rows),
+        Some(("swe-2".to_string(), "medium".to_string()))
+    );
+}
+
+#[test]
+fn declared_row_never_splits() {
+    // `qwen3-max` listed as its own model is not a tier of `qwen3`.
+    let rows = vec![
+        ("qwen3".to_string(), "Qwen 3".to_string()),
+        ("qwen3-max".to_string(), "Qwen 3 Max".to_string()),
+    ];
+    assert_eq!(split_effort_variant("qwen3-max", &rows), None);
+}
+
+#[test]
+fn unknown_bases_and_non_tier_suffixes_stay_put() {
+    let rows = vec![("swe-2".to_string(), "SWE-2".to_string())];
+    assert_eq!(split_effort_variant("swe-9-max", &rows), None);
+    assert_eq!(split_effort_variant("swe-2-fast", &rows), None);
+    assert_eq!(split_effort_variant("swe-2", &rows), None);
+    assert_eq!(split_effort_variant("swe-2-max", &[]), None);
+}
+
+use super::{compose_fast_model, decompose_model_variant};
+
+#[test]
+fn fast_variant_decomposes_to_base_tier_fast() {
+    // The devin-sub catalog serves speed baked into the id:
+    // claude rows use `-fast`, gpt rows `-priority`.
+    let rows = vec![
+        ("claude-opus-5-5".to_string(), "Opus 5.5".to_string()),
+        (
+            "claude-opus-5-5-high-fast".to_string(),
+            "Opus 5.5 High Fast".to_string(),
+        ),
+        ("gpt-6-sol".to_string(), "GPT-6 Sol".to_string()),
+        (
+            "gpt-6-sol-high-priority".to_string(),
+            "GPT-6 Sol Thinking Fast".to_string(),
+        ),
+    ];
+    assert_eq!(
+        decompose_model_variant("claude-opus-5-5-high-fast", &rows),
+        Some((
+            "claude-opus-5-5".to_string(),
+            Some("high".to_string()),
+            true
+        ))
+    );
+    assert_eq!(
+        decompose_model_variant("gpt-6-sol-high-priority", &rows),
+        Some(("gpt-6-sol".to_string(), Some("high".to_string()), true))
+    );
+}
+
+#[test]
+fn fast_variant_without_tier_and_tier_without_fast() {
+    let rows = vec![
+        ("swe-1-6".to_string(), "SWE-1.6".to_string()),
+        ("swe-1-6-fast".to_string(), "SWE-1.6 Fast".to_string()),
+        ("swe-2".to_string(), "SWE-2".to_string()),
+    ];
+    // No effort stem: fast flag alone.
+    assert_eq!(
+        decompose_model_variant("swe-1-6-fast", &rows),
+        Some(("swe-1-6".to_string(), None, true))
+    );
+    // Effort stem alone (the stale/hand-typed path).
+    assert_eq!(
+        decompose_model_variant("swe-2-max", &rows),
+        Some(("swe-2".to_string(), Some("max".to_string()), false))
+    );
+    // Plain rows and unknown ids don't decompose.
+    assert_eq!(decompose_model_variant("swe-2", &rows), None);
+    assert_eq!(decompose_model_variant("swe-9-max-fast", &rows), None);
+}
+
+#[test]
+fn fast_suffix_case_insensitive_and_unresolvable_stem() {
+    let rows = vec![("glm-5-2".to_string(), "GLM 5.2".to_string())];
+    assert_eq!(
+        decompose_model_variant("GLM-5-2-Fast", &rows),
+        Some(("glm-5-2".to_string(), None, true))
+    );
+    // `-fast` in the product name with no resolvable base is not a variant.
+    let rows = vec![("some-fast-model".to_string(), "X".to_string())];
+    assert_eq!(decompose_model_variant("some-fast-model", &rows), None);
+}
+
+#[test]
+fn compose_fast_model_picks_catalog_spelling() {
+    let rows = vec![
+        ("claude-opus-5-5".to_string(), "Opus 5.5".to_string()),
+        (
+            "claude-opus-5-5-high-fast".to_string(),
+            "Opus 5.5 High Fast".to_string(),
+        ),
+        (
+            "claude-opus-5-5-medium-fast".to_string(),
+            "Opus 5.5 Medium Fast".to_string(),
+        ),
+        ("gpt-6-sol".to_string(), "GPT-6 Sol".to_string()),
+        (
+            "gpt-6-sol-none-priority".to_string(),
+            "GPT-6 Sol Instant Fast".to_string(),
+        ),
+        (
+            "gpt-6-sol-high-priority".to_string(),
+            "GPT-6 Sol Thinking Fast".to_string(),
+        ),
+        ("swe-1-6".to_string(), "SWE-1.6".to_string()),
+        ("swe-1-6-fast".to_string(), "SWE-1.6 Fast".to_string()),
+        ("swe-2".to_string(), "SWE-2".to_string()),
+    ];
+    assert_eq!(
+        compose_fast_model("claude-opus-5-5", Some("high"), &rows).as_deref(),
+        Some("claude-opus-5-5-high-fast")
+    );
+    assert_eq!(
+        compose_fast_model("claude-opus-5-5", Some("medium"), &rows).as_deref(),
+        Some("claude-opus-5-5-medium-fast")
+    );
+    // Effort "off" maps to the catalog's `-none-` product spelling.
+    assert_eq!(
+        compose_fast_model("gpt-6-sol", Some("off"), &rows).as_deref(),
+        Some("gpt-6-sol-none-priority")
+    );
+    assert_eq!(
+        compose_fast_model("gpt-6-sol", Some("high"), &rows).as_deref(),
+        Some("gpt-6-sol-high-priority")
+    );
+    // Effort-free fast row.
+    assert_eq!(
+        compose_fast_model("swe-1-6", Some("high"), &rows).as_deref(),
+        Some("swe-1-6-fast")
+    );
+    // No fast sibling → None (caller sends the base id).
+    assert_eq!(compose_fast_model("swe-2", Some("high"), &rows), None);
+    assert_eq!(compose_fast_model("swe-2", Some("max"), &rows), None);
+    // An id already carrying the suffix never re-composes.
+    assert_eq!(
+        compose_fast_model("swe-1-6-fast", Some("high"), &rows),
+        None
     );
 }

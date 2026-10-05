@@ -1,7 +1,29 @@
 use std::path::Path;
 use std::process::{Command, Output};
 
+fn register_memory(home: &Path, cwd: &Path) {
+    if home.join("plugins/lock.json").exists() {
+        return;
+    }
+    let binary = std::env::var_os("GRAY_MEMORY_TEST_BIN")
+        .expect("build gray-memory and set GRAY_MEMORY_TEST_BIN for the plugin integration tests");
+    let out = Command::new(env!("CARGO_BIN_EXE_gray"))
+        .env("GRAY_HOME", home)
+        .env_remove("GRAY_PLUGIN_PATH")
+        .current_dir(cwd)
+        .args(["plugin", "install"])
+        .arg(binary)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
 fn command(home: &Path, cwd: &Path, args: &[&str]) -> Output {
+    register_memory(home, cwd);
     Command::new(env!("CARGO_BIN_EXE_gray"))
         .env("GRAY_HOME", home)
         .env_remove("GRAY_NO_MEMORY")
@@ -124,6 +146,7 @@ fn rejects_bad_input_without_echoing_secret() {
 #[test]
 fn concurrent_processes_preserve_different_entries() {
     let tmp = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
+    register_memory(tmp.path(), tmp.path());
     let mut children = Vec::new();
     for i in 0..8 {
         children.push(

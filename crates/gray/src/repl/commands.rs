@@ -22,6 +22,11 @@ pub(crate) const REGISTRY: &[CmdDef] = &[
         aliases: &["effort", "reasoning"],
     },
     CmdDef {
+        name: "fast",
+        desc: "fast model variant",
+        aliases: &[],
+    },
+    CmdDef {
         name: "context",
         desc: "set context window",
         aliases: &[],
@@ -90,11 +95,6 @@ pub(crate) const REGISTRY: &[CmdDef] = &[
         name: "skills",
         desc: "list skills (/skills [name] [args] to run one, /skills on|off for auto-context, /skills enable|disable <name>)",
         aliases: &["skill"],
-    },
-    CmdDef {
-        name: "memory",
-        desc: "memory master switch (/memory on|off; bare lists entries)",
-        aliases: &[],
     },
     CmdDef {
         name: "gateway",
@@ -298,6 +298,7 @@ pub(crate) fn complete_command_args(
         "context" => complete_context_args(arg_text),
         "plugin" | "plugins" => complete_plugin_args(cmd, arg_text, cwd),
         "thinking" | "effort" | "reasoning" => complete_thinking_args(cmd, arg_text),
+        "fast" => complete_from_table(cmd, arg_text, FAST_ARGS),
         "resume" => complete_resume_args(cmd, arg_text),
         "skill" | "skills" => complete_skill_args(cmd, arg_text, cwd),
         "agentsmd" | "sys" => complete_agentsmd_args(cmd, arg_text),
@@ -474,6 +475,8 @@ pub enum ReplCommand {
     Retry,
     /// Set reasoning effort (`/thinking [level]`, `/effort`, `/reasoning`; bare toggles hide/show).
     Thinking(Option<String>),
+    /// Toggle the provider's fast-serving model variant (`/fast [on|off]`; bare toggles).
+    Fast(Option<String>),
     /// Print the command list (`/help`).
     Help,
     /// Open the model picker (`/model`) or set directly (`/model provider/id`).
@@ -489,8 +492,6 @@ pub enum ReplCommand {
     Usage,
     /// List cron jobs (read-only; manage via `gray cron` CLI).
     CronJobs(Option<String>),
-    /// Memory master switch (`/memory on|off`; bare lists entries).
-    Memory(Option<String>),
     /// Connections panel (`/gateway` or `/gw`): installed apps plus pointers
     /// at daemon/cron/memory. A switch word (`on`/`off`) flips the persisted
     /// gateway master switch, same as `gray gateway on|off`.
@@ -554,6 +555,13 @@ pub(crate) fn parse_resume_args(rest: &str) -> ResumeArgs {
     ResumeArgs { target, last, all }
 }
 
+/// `/fast` arg candidates.
+const FAST_ARGS: &[(&str, &str)] = &[
+    ("on", "enable fast/priority model variant"),
+    ("off", "disable fast variant"),
+    ("status", "show current fast-mode state"),
+];
+
 /// Parses a line of input into a [`ReplCommand`]: resolve the first token
 /// to its canonical registry name, then match on canonical only.
 pub fn parse_command(line: &str) -> ReplCommand {
@@ -599,12 +607,12 @@ pub fn parse_command(line: &str) -> ReplCommand {
         Some("undo") => ReplCommand::Undo,
         Some("retry") => ReplCommand::Retry,
         Some("thinking") => ReplCommand::Thinking(opt(rest)),
+        Some("fast") => ReplCommand::Fast(opt(rest)),
         Some("context") => ReplCommand::ContextWindow(opt(rest)),
         Some("update") => ReplCommand::Update,
         Some("restart") => ReplCommand::Restart,
         Some("usage") => ReplCommand::Usage,
         Some("cron") => ReplCommand::CronJobs(opt(rest)),
-        Some("memory") => ReplCommand::Memory(opt(rest)),
         Some("gateway") => ReplCommand::Gateway(opt(rest)),
         Some("copy") => ReplCommand::Copy,
         Some("feedback") => ReplCommand::Feedback(opt(rest)),

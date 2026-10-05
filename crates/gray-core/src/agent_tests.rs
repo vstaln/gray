@@ -1173,6 +1173,217 @@ async fn alternating_tool_empty_stays_bounded_and_nudges_once() {
     assert_eq!(nudges, 1, "post-tool empty nudge must fire once per run");
 }
 
+/// Text ending on EndTurn — distinct from `end_script` so the tail says what
+/// the case needs (announced intent vs. a clean ending).
+fn text_end_script(text: &str) -> Vec<StreamEvent> {
+    vec![
+        StreamEvent::text_delta(text.to_string()),
+        StreamEvent::message_complete(Some(StopReason::EndTurn), None),
+    ]
+}
+
+#[tokio::test]
+async fn announced_step_ending_nudges_and_continues() {
+    // The real-world miss: a text-only EndTurn whose tail commits to a step
+    // ("Now let me find out … — searching for …") leaves the run dead while
+    // the user is still waiting on the announced action.
+    let provider = FakeProvider::new(vec![
+        tool_script("c1"),
+        text_end_script(
+            "`ddgs` CLI is available. Now let me find out what it looks like — searching for images.",
+        ),
+        end_script(),
+    ]);
+    let mut agent = Agent::new(
+        Box::new(provider),
+        Arc::new(FakeExecutor::new(ToolOutput::ok("tool says hi"))),
+    )
+    .with_tools(vec![tool_def()]);
+
+    let events = agent
+        .run(Message::user("go"), ToolContext::default())
+        .await
+        .expect("nudge should recover the turn");
+
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::TurnEnd { .. }))
+    );
+    assert!(
+        agent
+            .messages()
+            .iter()
+            .any(|m| m.text_content().contains("announcing a next step")),
+        "expected the announced-step nudge in history"
+    );
+}
+
+#[tokio::test]
+async fn announced_step_nudge_fires_once_per_run() {
+    // intent ending -> nudge -> intent ending again: the repeat is the
+    // model's answer to the nudge and must be honored, not nudged forever.
+    let provider = FakeProvider::new(vec![
+        text_end_script("Let me check the logs."),
+        text_end_script("I'll look at the config next."),
+    ]);
+    let mut agent = Agent::new(
+        Box::new(provider),
+        Arc::new(FakeExecutor::new(ToolOutput::ok("unused"))),
+    )
+    .with_tools(vec![tool_def()]);
+
+    let events = agent
+        .run(Message::user("go"), ToolContext::default())
+        .await
+        .expect("repeat intent endings must still terminate");
+
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::TurnEnd { .. }))
+    );
+    let nudges = agent
+        .messages()
+        .iter()
+        .filter(|m| m.text_content().contains("announcing a next step"))
+        .count();
+    assert_eq!(nudges, 1, "announced-step nudge must fire once per run");
+}
+
+#[tokio::test]
+async fn clean_and_user_directed_endings_do_not_nudge() {
+    // Each of these is a legitimate turn end: a question for the user, a
+    // "let me know" deferral, a negated plan, and a plain summary.
+    for text in [
+        "Which file should I change?",
+        "All done — let me know if you want changes.",
+        "I won't touch the migration until you confirm.",
+        "Updated the script and regenerated the plate.",
+        "I can't proceed without the API key.",
+    ] {
+        let provider = FakeProvider::new(vec![text_end_script(text)]);
+        let mut agent = Agent::new(
+            Box::new(provider),
+            Arc::new(FakeExecutor::new(ToolOutput::ok("unused"))),
+        )
+        .with_tools(vec![tool_def()]);
+
+        agent
+            .run(Message::user("go"), ToolContext::default())
+            .await
+            .expect("run should end cleanly");
+
+        assert!(
+            !agent
+                .messages()
+                .iter()
+                .any(|m| m.text_content().contains("announcing a next step")),
+            "no nudge expected for ending: {text}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn pending_enumeration_endings_nudge() {
+    // The real miss: swe-2 ended a turn on "I'm mid-investigation. Two
+    // things to pin down: whether …, and how …" — no first-person marker,
+    // and the intent clause sat past the old 160-char window.
+    for text in [
+        "I'm mid-investigation. Two things to pin down: whether the CLI has a separate effort flag (or the tier only lives in the model id), and how the picker sends the chosen effort to `provider/chat`.",
+        "Still need: the elided middle of `mod` and the host's param shapes.",
+        "Progress so far: the relay answers but the calls never parse. Next: fix the funnel.",
+        "I'm still checking whether the sidecar respawned.",
+        "Retrying the reads — the previous calls didn't return output.",
+        "We need to verify the wire format before writing the adapter.",
+    ] {
+        let provider = FakeProvider::new(vec![text_end_script(text), end_script()]);
+        let mut agent = Agent::new(
+            Box::new(provider),
+            Arc::new(FakeExecutor::new(ToolOutput::ok("unused"))),
+        )
+        .with_tools(vec![tool_def()]);
+
+        agent
+            .run(Message::user("go"), ToolContext::default())
+            .await
+            .expect("run should nudge then end");
+
+        assert!(
+            agent
+                .messages()
+                .iter()
+                .any(|m| m.text_content().contains("announcing a next step")),
+            "expected nudge for ending: {text}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn leaked_call_markup_ending_nudges() {
+    // swe-2 via the devin-sub funnel writes its calls as a fenced block
+    // terminated by native markup instead of the close fence, then
+    // hallucinates the next [User]/[Assistant] turns — the reply is
+    // text-only on the wire, so the run used to die.
+    let leaked = concat!(
+        "Before writing code, let me grab the middle of `mod`.\n\n```gray_calls\n",
+        "[{\"name\": \"bash\", \"arguments\": {\"command\": \"sed -n '167,355p' mod\"}}]",
+        "<\x7cclose\x7c>argument<\x7csep\x7c><\x7cclose\x7c>call<\x7csep\x7c><\x7cclose\x7c>tools<\x7csep\x7c>",
+        "\n\n[User]\nContinue.\n\n[Assistant]\nRetrying my reads — the previous calls didn't return output."
+    );
+    let provider = FakeProvider::new(vec![text_end_script(leaked), end_script()]);
+    let mut agent = Agent::new(
+        Box::new(provider),
+        Arc::new(FakeExecutor::new(ToolOutput::ok("unused"))),
+    )
+    .with_tools(vec![tool_def()]);
+
+    agent
+        .run(Message::user("go"), ToolContext::default())
+        .await
+        .expect("markup leak should nudge");
+
+    assert!(
+        agent
+            .messages()
+            .iter()
+            .any(|m| m.text_content().contains("announcing a next step")),
+        "leaked tool-call markup should count as an announced step"
+    );
+}
+
+#[tokio::test]
+async fn instruction_endings_do_not_nudge() {
+    // Answers that hand the user a step are finals, not pending work:
+    // "you can …", "run X to verify", "here's how to fix it".
+    for text in [
+        "Fixed. You can verify with `cargo check`.",
+        "Here's how to confirm it: run the probe again.",
+        "The fix was the missing close fence — calls parse now.",
+        "All green — tests pass, docs updated.",
+    ] {
+        let provider = FakeProvider::new(vec![text_end_script(text)]);
+        let mut agent = Agent::new(
+            Box::new(provider),
+            Arc::new(FakeExecutor::new(ToolOutput::ok("unused"))),
+        )
+        .with_tools(vec![tool_def()]);
+
+        agent
+            .run(Message::user("go"), ToolContext::default())
+            .await
+            .expect("run should end cleanly");
+
+        assert!(
+            !agent
+                .messages()
+                .iter()
+                .any(|m| m.text_content().contains("announcing a next step")),
+            "no nudge expected for ending: {text}"
+        );
+    }
+}
+
 #[tokio::test]
 async fn maxtokens_truncation_continues_and_stitches_partial() {
     let provider = FakeProvider::new(vec![

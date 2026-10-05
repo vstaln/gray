@@ -1,6 +1,19 @@
 # Changelog
 
-## [Unreleased]
+## [0.1.11] - 2026-10-05
+
+### Changed
+- **Memory is a plugin now.** `gray-memory` carries the whole curated store —
+  the markdown files under `~/.gray/memory/`, the per-session frozen snapshot,
+  the ingest budgets, the `gray memory` CLI — as a wire-v1.1 sidecar instead
+  of ~1.6k lines of core. The system-prompt block now arrives through the
+  `prompt/context` hook per turn rather than being baked in at agent build
+  (a `/memory`-era edit lands next turn), `/memory on|off` runs over
+  `command/run` against a plugin marker seeded from the legacy `memory_auto`
+  config key, and `session.id` rides `prompt/context`, `command/run`,
+  `tool/before` and `event/notify` so the snapshot freeze keeps its
+  session-pinned bytes. `GRAY_NO_MEMORY` still gates saves. Not installed →
+  no memory block, same as `--bare`.
 
 ### Added
 - **`--bare` (or `GRAY_BARE=1`) runs gray with nothing but itself.** Shaped like
@@ -30,6 +43,18 @@
   resolves empty, as before.
 
 ### Fixed
+- **A turn that announces a step and then just stops no longer dies.** The model
+  sometimes ends its turn with a text-only message whose tail still commits to an
+  action it never ran — "Let me check the logs", "Two things to pin down: whether
+  …", "Still need: …" — and the run ended on `Worked for …` mid-thought, leaving
+  the user to type `.` to revive it. The same goes for a reply that carries raw
+  tool-call markup instead of real calls (a funnel `gray_calls` block, native
+  `<|…|>` tokens, or hallucinated `[User]`/`[Assistant]` turns): the model
+  believed it called a tool. A tool-free ending like that now gets one
+  continuation nudge per run ("take it now, or state that the task is complete");
+  a repeat ending is honored as the answer. Questions to the user, "let me know"
+  deferrals, instructional answers ("you can verify with …"), negated plans and
+  plain summaries still end the turn untouched.
 - **Empty sessions stay out of the resume list.** A session that never sent a message (`(no message yet)`, usually the `just now` row at the top) no longer shows in the `/resume` picker, headless lists, or `--last`. Explicit `resume <id>` still loads one.
 - **The `discord_send` preview reads like the channel does.** The transcript echoed raw markdown (`**bold**` with literal asterisks) while Discord renders it. The row now strips paired markers (`**`, `__`, `` ` ``, `~~`); unpaired `*`/`_` and spoiler bars stay untouched.
 

@@ -104,11 +104,17 @@ fn empty_prompt_hides_slash_popup_like_codex() {
     assert!(super::completion_matches_dyn("", cwd).is_empty());
     assert!(super::completion_matches_dyn("hello", cwd).is_empty());
     assert!(super::completion_matches_dyn("/ ", cwd).is_empty());
-    // bare `/` opens the popup with every command.
-    assert_eq!(
-        super::completion_matches_dyn("/", cwd).len(),
-        super::REGISTRY.len()
-    );
+    // bare `/` opens the popup with every command. Installed plugins add
+    // their own rows on a real machine, so assert coverage, not count.
+    let dyn_matches = super::completion_matches_dyn("/", cwd);
+    for d in super::REGISTRY {
+        assert!(
+            dyn_matches.iter().any(|(name, _)| name == d.name),
+            "missing /{} in popup",
+            d.name
+        );
+    }
+    assert!(dyn_matches.len() >= super::REGISTRY.len());
 }
 
 #[test]

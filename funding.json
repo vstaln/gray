@@ -1,0 +1,51 @@
+{
+  "$schema": "https://fundingjson.org/schema/v1.1.0.json",
+  "version": "v1.1.0",
+  "entity": {
+    "type": "individual",
+    "role": "owner",
+    "name": "Vstalin Grady",
+    "email": "hi@alignment.id",
+    "description": "Solo developer in Indonesia building gray, an MIT-licensed AI agent harness in Rust: one static binary, bash-only tools, resumable sessions, cron scheduling. Self-funded ($0); seeking sponsorship to cover inference credits and hosting for the hosted beta.",
+    "webpageUrl": {
+      "url": "https://github.com/vstaln"
+    }
+  },
+  "projects": [
+    {
+      "guid": "gray",
+      "name": "gray",
+      "description": "Gray is an open-source (MIT) AI agent harness shipped as one static Rust binary. Bash-only tools, resumable JSONL sessions, a self-compacting context window, skills, plugins and cron. Works with any OpenAI-compatible provider using your own API keys.",
+      "webpageUrl": {
+        "url": "https://github.com/vstaln/gray"
+      },
+      "repositoryUrl": {
+        "url": "https://github.com/vstaln/gray"
+      },
+      "licenses": ["spdx:MIT"],
+      "tags": ["ai-agents", "rust", "developer-tools", "automation", "cli"]
+    }
+  ],
+  "funding": {
+    "channels": [
+      {
+        "guid": "github-sponsors",
+        "type": "payment-provider",
+        "address": "https://github.com/sponsors/vstaln",
+        "description": "One-time or monthly sponsorship via GitHub Sponsors."
+      }
+    ],
+    "plans": [
+      {
+        "guid": "sustain-gray",
+        "status": "active",
+        "name": "Sustain gray development",
+        "description": "Any amount, monthly or one-time. Covers inference credits for testing, hosting for the beta, and full-time solo development.",
+        "amount": 0,
+        "currency": "USD",
+        "frequency": "monthly",
+        "channels": ["github-sponsors"]
+      }
+    ]
+  }
+}

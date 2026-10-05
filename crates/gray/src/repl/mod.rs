@@ -84,6 +84,67 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
+/// The trailing text a signal exit prints after clearing the band: the same
+/// resume hint `/quit` leaves, or nothing when no session was ever minted.
+fn signal_exit_text(session_id: Option<&str>, styled: bool) -> String {
+    match session_id {
+        Some(id) => format!("{}\r\n", session::exit_hint_line(id, styled)),
+        None => String::new(),
+    }
+}
+
+/// Leaves the way `/quit` does, from a signal task that can't reach the
+/// loop: clear the composer band (retrying its lock briefly — a wedged loop
+/// holding it must not block the exit), then print the resume hint.
+fn exit_from_signal(code: i32, clear_band: bool) -> ! {
+    use std::io::IsTerminal as _;
+    // Bound outside the lock loop: the guard borrows it and must live until
+    // process::exit.
+    let shared = clear_band.then(crate::host::registered_tui).flatten();
+    let mut tui_guard = None;
+    if let Some(shared) = &shared {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(250);
+        loop {
+            match shared.try_lock() {
+                Ok(g) => {
+                    tui_guard = Some(g);
+                    break;
+                }
+                Err(std::sync::TryLockError::Poisoned(e)) => {
+                    tui_guard = Some(e.into_inner());
+                    break;
+                }
+                Err(std::sync::TryLockError::WouldBlock) => {
+                    if std::time::Instant::now() >= deadline {
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+            }
+        }
+    }
+    // The guard stays alive until process::exit: no painter may redraw the
+    // band after it's cleared.
+    if let Some(t) = tui_guard.as_mut() {
+        t.shutdown();
+    } else {
+        let _ = crossterm::terminal::disable_raw_mode();
+        let _ = write!(std::io::stdout(), "\x1b[?25h\r\n");
+    }
+    // write!, never println!: a hung-up tty must not panic here — that would
+    // kill the task and leave the process alive.
+    let _ = write!(
+        std::io::stdout(),
+        "{}",
+        signal_exit_text(
+            session::exit_session().as_deref(),
+            std::io::stdout().is_terminal()
+        )
+    );
+    let _ = std::io::stdout().flush();
+    std::process::exit(code);
+}
+
 /// Installs the single global Ctrl-C policy:
 /// - during a turn: cancel the turn (first press), the turn handler reports
 ///   it and the REPL stays alive; a second press with no token exits.
@@ -106,14 +167,9 @@ async fn spawn_ctrl_c_policy() {
                 // interrupted turn may still be persisting — let it land
                 // first, or the turn is lost instead of saved.
                 drain_in_flight_turn(TURN_DRAIN_TIMEOUT).await;
-                // Say something — a bare exit(0) mid-turn looks like a crash.
-                let _ = crossterm::terminal::disable_raw_mode();
-                let _ = write!(
-                    std::io::stdout(),
-                    "\x1b[?25h\r\n\x1b[2m(interrupted — bye)\x1b[0m\r\n"
-                );
-                let _ = std::io::stdout().flush();
-                std::process::exit(0);
+                // Say something — a bare exit(0) mid-turn looks like a crash:
+                // the resume hint, same as /quit.
+                exit_from_signal(0, true);
             }
             // First press at the prompt: arm exit, stay alive (the prompt
             // key handler clears the draft; exit via second press or /quit).
@@ -144,10 +200,7 @@ async fn spawn_hangup_policy() {
     }
     drain_in_flight_turn(TURN_DRAIN_TIMEOUT).await;
     // SIGTERM leaves the terminal alive; a hung-up tty just ignores this.
-    let _ = crossterm::terminal::disable_raw_mode();
-    let _ = write!(std::io::stdout(), "\x1b[?25h\r\n");
-    let _ = std::io::stdout().flush();
-    std::process::exit(code);
+    exit_from_signal(code, code == 143);
 }
 /// No SIGHUP/SIGTERM on Windows; a turn persists when it ends.
 #[cfg(not(unix))]
@@ -164,7 +217,6 @@ mod gateway_panel;
 pub(crate) mod handlers; // subsystem toggles are crate-wide (gateway CLI, cron)
 mod key_watcher;
 pub(crate) mod maintenance;
-mod memory_panel;
 mod plugin_cmds;
 mod prompt_turn;
 mod session;
@@ -176,7 +228,8 @@ pub use commands::{ReplCommand, ResumeArgs, SysAction, parse_command};
 pub(crate) use format::build_user_message_with_attachments;
 pub use format::{THINKING_STYLE, fmt_usage, format_core_error};
 pub(crate) use handlers::{
-    expand_skill_command, handle_model, handle_sys, handle_thinking, handle_undo, reload_agent,
+    expand_skill_command, handle_fast, handle_model, handle_sys, handle_thinking, handle_undo,
+    reload_agent,
 };
 pub(crate) use plugin_cmds::handle_plugin_command;
 pub(crate) use session::{
@@ -200,6 +253,10 @@ pub(crate) struct SessionState {
     pub(crate) full_save_pending: bool,
     pub(crate) store: crate::session_store::JsonlSessionStore,
     pub(crate) session_id: crate::session_store::SessionId,
+    /// `<id>.open` flock held while this session is open here; a second
+    /// gray process gets `SessionError::Locked` naming our PID. Drops with
+    /// the state (exit, `/new`, `/resume`), releasing the claim.
+    pub(crate) _open_guard: Option<crate::session_store::SessionOpenGuard>,
 }
 
 /// Command feedback: through the composer when it owns the terminal, else stdout.
@@ -242,7 +299,16 @@ pub(crate) fn clamp_thinking_to_model_name(
     if let Ok(path) = crate::setup::saved_config_path() {
         let _cfg_lock = crate::setup::lock_saved_config_at(&path).ok();
         let mut saved = crate::setup::load_saved_config_at(&path);
-        saved.thinking_effort = Some(new.clone());
+        // The clamped value is this connection+model's level — remember it
+        // under its own key so a switch away and back restores it.
+        saved.remember_effort(
+            &crate::setup::effort_memory_key(
+                &config.provider_id,
+                &config.base_url,
+                config.model.as_deref().unwrap_or_default(),
+            ),
+            &new,
+        );
         let _ = crate::setup::save_saved_config_at(&path, &saved);
     }
     Some((old, new))
@@ -266,9 +332,8 @@ pub(crate) fn push_provider_connected(
 ) {
     crate::setup::set_active_model_provider(&config.base_url);
     let clamped = clamp_thinking_to_model(config);
-    if clamped.is_some()
-        && let Some(h) = hide_thinking
-    {
+    if let Some(h) = hide_thinking {
+        // The connection's adopted effort (not just a clamp) decides this.
         *h = config.reasoning_hidden();
     }
     let Some((shared, _)) = tui else {
@@ -281,8 +346,10 @@ pub(crate) fn push_provider_connected(
     if let Some(m) = &config.model {
         t.set_model(m.clone());
     }
-    if let Some((_, ref new)) = clamped {
-        t.set_thinking_effort(new.clone());
+    // Paint the effort unconditionally: a provider/model switch adopts the
+    // target's own remembered level even when no clamp fires.
+    if let Some(eff) = &config.thinking_effort {
+        t.set_thinking_effort(eff.clone());
         t.set_hide_thinking(config.reasoning_hidden());
     }
     let model_str = config.model.as_deref().unwrap_or("default");
@@ -605,8 +672,18 @@ pub async fn run_repl_mode(
     }
 
     if let Some((sid, meta, entries, store)) = loaded {
+        // One owner per session: `--session`/`-c` asked for THIS session —
+        // a live holder gets the `Locked` refusal (with its PID), never a
+        // silent substitute or a second writer on the same history.
+        let open_guard = Some(store.acquire_open(&sid).await?);
         if config.model.is_none() && !meta.model.is_empty() {
             config.model = Some(meta.model.clone());
+        }
+        // The session may predate the family collapse: canonicalize a
+        // stored variant id before the agent is built on it.
+        {
+            let rows = crate::setup::canonical_model_rows(config);
+            crate::setup::canonicalize_effort_variant(config, &rows);
         }
         // Startup resume lands on the session's model: clamp a stale effort
         // (e.g. saved `max` under a Spark session) before the first build
@@ -628,12 +705,20 @@ pub async fn run_repl_mode(
             full_save_pending: false,
             session_id: sid.clone(),
             store,
+            _open_guard: open_guard,
         });
         session_totals =
             SessionTotals::from_entries(&entries, config.model.as_deref().unwrap_or(""));
         resumed_session_info = Some((sid, entries));
     }
 
+    // A stored `<base>-<tier>` id — picked before its family collapsed into
+    // one row, or hand-typed — canonicalizes to the row + its tier effort
+    // (`swe-2-max` → `swe-2` at `max`) before the clamp runs below.
+    {
+        let rows = crate::setup::canonical_model_rows(config);
+        crate::setup::canonicalize_effort_variant(config, &rows);
+    }
     // Fresh sessions need the same normalization as model switches and resumes.
     if let Some((old, new)) = clamp_thinking_to_model(config) {
         println!("Thinking effort clamped from {old} to {new} (not supported by this model)");
@@ -825,6 +910,9 @@ pub async fn run_repl_mode(
         // Cleared before anything is drained: a wake raised after this point
         // survives to the next pass instead of being swallowed.
         crate::host::clear_wake();
+        // The signal-task exits can't see `session_state` — keep their copy
+        // of the id the resume hint names current.
+        session::remember_exit_session(session_state.as_ref().map(|s| s.session_id.as_str()));
         // Plugin-initiated `host/say` lines queued while a turn ran (cron
         // reports) surface here, through the composer when it owns the screen.
         for line in crate::host::take_host_say() {

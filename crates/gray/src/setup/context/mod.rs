@@ -10,7 +10,10 @@ pub use providers::{
     save_models_cache_to_disk, set_active_model_provider, supported_efforts,
     supported_thinking_levels, turn_cost,
 };
-pub(crate) use providers::{ensure_disk_loaded, load_provider_model_list};
+pub(crate) use providers::{
+    ensure_disk_loaded, fetch_plugin_provider_models, load_provider_model_list,
+    save_provider_model_list,
+};
 
 static USER_CONTEXT_WINDOW: std::sync::OnceLock<std::sync::RwLock<Option<usize>>> =
     std::sync::OnceLock::new();

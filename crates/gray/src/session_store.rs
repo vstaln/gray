@@ -20,6 +20,18 @@
 //! `create_new` and needs no lock; `load`/`list` are lock-free reads (a torn
 //! final line is ignored on load, appends refuse a damaged tail).
 //!
+//! # Open-locks: one owner per session
+//! `<root>/<id>.open` is a different lock from `<id>.lock`: it is held for
+//! the whole time a process has the session open (REPL, `-p`), not for one
+//! write critical section. A second process's [`JsonlSessionStore::acquire_open`]
+//! fails with [`SessionError::Locked`], which carries the holder PID the
+//! lock file records. Within one process repeated acquires share the flock
+//! through a `Weak` registry — the OS lock lives on a single open file
+//! description, so a self-reacquire can never report `Locked`. `load` and
+//! `list` stay lock-free: readers do not claim ownership. `delete` refuses
+//! a session another process holds open (`prune` skips it), since deleting
+//! under a live owner strands its appends on an unlinked inode.
+//!
 //! # Storage privacy: private resumable storage vs redacted export (ONE rule)
 //! The store is private resumable storage: `<root>` is 0700 and every
 //! `.jsonl`/`.lock`/tmp file is 0600 on unix (best-effort chmod after
@@ -413,6 +425,19 @@ pub enum SessionError {
     #[error("session {0} already exists")]
     AlreadyExists(SessionId),
 
+    /// The session is open in a live process (`<id>.open` flock held).
+    /// `pid` is the holder recorded in the lock file, when readable.
+    #[error(
+        "session '{id}' is already open in another process{}. Close the other instance before opening it here.",
+        .pid.map(|p| format!(" (PID {p})")).unwrap_or_default()
+    )]
+    Locked {
+        /// Session that could not be claimed.
+        id: SessionId,
+        /// Recorded holder PID, when the lock file could be read.
+        pid: Option<u32>,
+    },
+
     /// A corrupt or malformed entry was encountered in a session file.
     /// `source` carries the detail (JSON syntax or structural validation:
     /// unsupported version, id mismatch, duplicate id, bad parent chain), so
@@ -431,6 +456,21 @@ pub enum SessionError {
 
 /// Type alias for results from session operations.
 pub type Result<T> = std::result::Result<T, SessionError>;
+
+impl SessionError {
+    /// Two-line human notice for a [`SessionError::Locked`] refusal —
+    /// headline then the next action, no glyphs or ANSI. Shared by the
+    /// REPL `say` surface (it prefixes each line itself) and the CLI
+    /// boundary card in `main` (`⬢`/`└` styling wraps this text). The
+    /// variant `Display` stays one line for logs and JSON message fields.
+    pub fn locked_notice(id: &SessionId, pid: Option<u32>) -> String {
+        let head = match pid {
+            Some(p) => format!("session '{id}' is already open in another process (pid {p})"),
+            None => format!("session '{id}' is already open in another process"),
+        };
+        format!("{head}\nclose the other instance, or open a different session")
+    }
+}
 
 /// Header metadata stored as the first line of a session `.jsonl` file.
 #[derive(Debug, Serialize, Deserialize)]
@@ -712,6 +752,96 @@ impl JsonlSessionStore {
                 }
             }
         }
+    }
+
+    /// Sibling open-lock token for `id` (`<root>/<id>.open`), the session
+    /// owner claim distinct from the `<id>.lock` write critical section.
+    /// Validates the id via [`Self::session_path`] first so traversal ids
+    /// never reach the fs.
+    fn session_open_path(&self, id: &SessionId) -> std::io::Result<PathBuf> {
+        self.session_path(id)?;
+        Ok(self.root_dir.join(format!("{}.open", id.as_str())))
+    }
+
+    /// Claims `id` as open in this process until every clone of the returned
+    /// guard drops (process death releases the flock — a crash can never
+    /// strand it). The file records this PID so the next opener's
+    /// [`SessionError::Locked`] names who holds it.
+    ///
+    /// One flock per (process, session): re-acquiring a session this process
+    /// already holds returns a guard sharing the live lock — never a
+    /// self-`Locked` (the OS lock is per open-file-description, so a blind
+    /// second `try_lock` would deadlock-report on ourselves). Filesystems
+    /// without flock degrade to unlocked-with-warning like
+    /// [`Self::lock_session_file`]: availability over mutual exclusion.
+    pub async fn acquire_open(&self, id: &SessionId) -> Result<SessionOpenGuard> {
+        let open_path = self.session_open_path(id)?;
+        ensure_private_dir(&self.root_dir)?;
+        let mut options = std::fs::OpenOptions::new();
+        options.create(true).truncate(false).read(true).write(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options.open(&open_path)?;
+        tighten_file_mode(&open_path);
+        // The registry mutex also serializes the check+claim below, so two
+        // in-process acquirers racing a free lock can't both `try_lock`.
+        let mut held = OPEN_LOCKS.lock().expect("open-lock registry poisoned");
+        if let Some(inner) = held.get(&open_path).and_then(std::sync::Weak::upgrade) {
+            return Ok(SessionOpenGuard { _inner: inner });
+        }
+        held.remove(&open_path); // dead Weak — never accumulate
+        match file.try_lock() {
+            Ok(()) => {}
+            Err(std::fs::TryLockError::WouldBlock) => {
+                return Err(SessionError::Locked {
+                    id: id.clone(),
+                    pid: read_open_holder(&open_path),
+                });
+            }
+            Err(std::fs::TryLockError::Error(e)) => {
+                log::warn!(
+                    "session open-lock unsupported on {} ({e}); proceeding unlocked",
+                    open_path.display()
+                );
+            }
+        }
+        write_open_holder(&mut file, &open_path);
+        let inner = std::sync::Arc::new(OpenLockInner { _file: file });
+        held.insert(open_path, std::sync::Arc::downgrade(&inner));
+        Ok(SessionOpenGuard { _inner: inner })
+    }
+
+    /// Whether a process holds `id`'s open lock right now — this process
+    /// included (the probe cannot tell self from other, which is what
+    /// `delete` wants: your own open session is still held). Advisory:
+    /// never creates the file, and a filesystem without flock answers
+    /// false like the writer path does.
+    pub async fn open_lock_held(&self, id: &SessionId) -> bool {
+        let Ok(open_path) = self.session_open_path(id) else {
+            return false;
+        };
+        let Ok(file) = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&open_path)
+        else {
+            return false;
+        };
+        match file.try_lock() {
+            // Free — the probe's own lock releases when `file` drops.
+            Ok(()) => false,
+            Err(std::fs::TryLockError::WouldBlock) => true,
+            Err(std::fs::TryLockError::Error(_)) => false,
+        }
+    }
+
+    /// The holder PID recorded in `<id>.open`, for `Locked` detail on
+    /// paths that refuse rather than claim (`delete`).
+    fn open_holder_pid(&self, id: &SessionId) -> Option<u32> {
+        read_open_holder(&self.session_open_path(id).ok()?)
     }
 
     /// Moves a corrupt session file aside as `<stem>.corrupt-<n>`, keeping the newest 3.
@@ -1627,6 +1757,16 @@ impl JsonlSessionStore {
         // appending to an unlinked inode (its writes vanish silently).
         let _lock = self.lock_session_file(id).await?;
         let _guard = self.lock.lock().await;
+        // A session with a live owner keeps its file: deleting under it
+        // strands the owner's appends on an unlinked inode — the same loss
+        // the lock above prevents, one level up (prune skips, it doesn't
+        // fail).
+        if self.open_lock_held(id).await {
+            return Err(SessionError::Locked {
+                id: id.clone(),
+                pid: self.open_holder_pid(id),
+            });
+        }
         let path = self.session_path(id)?;
         match tokio::fs::remove_file(&path).await {
             Ok(()) => Ok(()),
@@ -1642,8 +1782,13 @@ impl JsonlSessionStore {
         let mut removed = Vec::new();
         for summary in self.list().await {
             if summary.started_at < cutoff_ms {
-                self.delete(&summary.id).await?;
-                removed.push(summary.id);
+                match self.delete(&summary.id).await {
+                    Ok(()) => removed.push(summary.id),
+                    // Open in a live process: leave it alone rather than
+                    // fail the whole sweep.
+                    Err(SessionError::Locked { .. }) => {}
+                    Err(e) => return Err(e),
+                }
             }
         }
         Ok(removed)
@@ -1653,6 +1798,82 @@ impl JsonlSessionStore {
 /// Returns the default session directory (`~/.gray/sessions`), or `None` if `$HOME` is not set.
 pub fn default_root() -> Option<PathBuf> {
     gray_core::paths::gray_home().map(|home| home.join("sessions"))
+}
+
+/// Held open-locks this process owns, keyed by `<id>.open` path. The OS
+/// lock lives on one open file description per session; repeated
+/// `acquire_open` calls share it through `Weak` so a self-reacquire can
+/// never `Locked` on ourselves. Dead entries are pruned on the next
+/// acquire for that path.
+static OPEN_LOCKS: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<PathBuf, std::sync::Weak<OpenLockInner>>>,
+> = std::sync::LazyLock::new(Default::default);
+
+/// The open file description carrying one session's flock.
+#[derive(Debug)]
+struct OpenLockInner {
+    _file: std::fs::File,
+}
+
+/// A held "session is open here" claim (`<root>/<id>.open` flock). The
+/// claim ends when the last clone of the guard drops; the OS releases the
+/// flock on file close or process death, so a crash can never strand it.
+#[derive(Debug)]
+pub struct SessionOpenGuard {
+    _inner: std::sync::Arc<OpenLockInner>,
+}
+
+/// Holder record written into `<id>.open`: who a `Locked` error names.
+#[derive(Debug, Serialize, Deserialize)]
+struct OpenHolder {
+    pid: u32,
+    started_ms: u64,
+}
+
+/// Best-effort holder stamp: the PID only matters when a second opener
+/// trips the lock, and a write failure leaves a nameless (still held)
+/// lock rather than failing the acquire.
+fn write_open_holder(file: &mut std::fs::File, path: &Path) {
+    use std::io::{Seek, SeekFrom, Write};
+    #[cfg(not(windows))]
+    let _ = path;
+    let holder = OpenHolder {
+        pid: std::process::id(),
+        started_ms: now_millis(),
+    };
+    let Ok(json) = serde_json::to_string(&holder) else {
+        return;
+    };
+    let _ = file.seek(SeekFrom::Start(0));
+    let _ = file.set_len(0);
+    let _ = file.write_all(json.as_bytes());
+    let _ = file.write_all(b"\n");
+    let _ = file.sync_all();
+    #[cfg(windows)]
+    {
+        let hint_path = path.with_extension("open-holder");
+        let _ = std::fs::remove_file(&hint_path);
+        if let Some(parent) = path.parent()
+            && let Ok(mut hint) = tempfile::NamedTempFile::new_in(parent)
+            && hint.write_all(json.as_bytes()).is_ok()
+            && hint.as_file().sync_all().is_ok()
+        {
+            let _ = hint.persist(hint_path);
+        }
+    }
+}
+
+/// PID recorded by the lock holder, for `Locked` detail. A bare number
+/// parses too (a holder build that wrote the pid alone).
+fn read_open_holder(path: &Path) -> Option<u32> {
+    #[cfg(windows)]
+    let path = path.with_extension("open-holder");
+    let content = std::fs::read_to_string(path).ok()?;
+    let content = content.trim();
+    serde_json::from_str::<OpenHolder>(content)
+        .ok()
+        .map(|h| h.pid)
+        .or_else(|| content.parse::<u32>().ok())
 }
 
 /// Helper function to return current time in milliseconds since Unix epoch.

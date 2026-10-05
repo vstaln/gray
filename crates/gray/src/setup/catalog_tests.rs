@@ -292,8 +292,7 @@ fn subsystem_switches_default_on_and_only_explicit_false_turns_them_off() {
     let dir = tempfile::tempdir().unwrap();
     let cfg = dir.path().join("config.json");
     for at in [
-        crate::setup::memory_auto_enabled_at as fn(&std::path::Path) -> bool,
-        crate::setup::cron_auto_enabled_at,
+        crate::setup::cron_auto_enabled_at as fn(&std::path::Path) -> bool,
         crate::setup::gw_auto_enabled_at,
     ] {
         assert!(at(&cfg), "missing config reads as enabled");
@@ -303,17 +302,18 @@ fn subsystem_switches_default_on_and_only_explicit_false_turns_them_off() {
     saved.cron_auto = Some(false);
     saved.gw_auto = Some(false);
     crate::setup::save_saved_config_at(&cfg, &saved).unwrap();
-    assert!(!crate::setup::memory_auto_enabled_at(&cfg));
     assert!(!crate::setup::cron_auto_enabled_at(&cfg));
     assert!(!crate::setup::gw_auto_enabled_at(&cfg));
-    // Round-trips through the tolerant parser (not just the struct).
+    // Round-trips through the tolerant parser (not just the struct). The
+    // legacy memory_auto key must survive host saves: the gray-memory plugin
+    // seeds its own toggle from it.
     let reloaded = crate::setup::load_saved_config_at(&cfg);
     assert_eq!(reloaded.memory_auto, Some(false));
     assert_eq!(reloaded.cron_auto, Some(false));
     assert_eq!(reloaded.gw_auto, Some(false));
-    // A mistyped value degrades to None (default on) instead of nuking the file.
-    std::fs::write(&cfg, r#"{"memory_auto":"yes"}"#).unwrap();
-    assert!(crate::setup::memory_auto_enabled_at(&cfg));
+    // A mistyped value degrades to None instead of nuking the file.
+    std::fs::write(&cfg, r#"{"cron_auto":"yes"}"#).unwrap();
+    assert!(crate::setup::cron_auto_enabled_at(&cfg));
 }
 
 #[test]
@@ -383,5 +383,93 @@ fn the_config_lock_serializes_writers_then_releases() {
     assert!(
         waited < std::time::Duration::from_secs(4),
         "release took too long: {waited:?}"
+    );
+}
+
+#[test]
+fn effort_memory_scopes_by_connection_and_model() {
+    // Two models on the same plugin provider keep separate levels, and the
+    // shared `*-sub` placeholder base never collides with a URL connection.
+    let mut saved = SavedConfig::default();
+    let devin = "devin-sub:devin-subscription";
+    let loopback = "https://127.0.0.1:1/";
+    saved.remember_effort(&effort_memory_key(devin, loopback, "swe-2-max"), "high");
+    saved.remember_effort(
+        &effort_memory_key(devin, loopback, "meta/muse-spark-1.3-contributor"),
+        "xhigh",
+    );
+    saved.remember_effort(
+        &effort_memory_key("", "https://api.example.com/v1", "swe-2-max"),
+        "low",
+    );
+    assert_eq!(
+        saved
+            .remembered_effort(&effort_memory_key(devin, loopback, "swe-2-max"))
+            .as_deref(),
+        Some("high")
+    );
+    assert_eq!(
+        saved
+            .remembered_effort(&effort_memory_key(
+                devin,
+                loopback,
+                "meta/muse-spark-1.3-contributor",
+            ))
+            .as_deref(),
+        Some("xhigh")
+    );
+    assert_eq!(
+        saved
+            .remembered_effort(&effort_memory_key(
+                "",
+                "https://api.example.com/v1",
+                "swe-2-max"
+            ))
+            .as_deref(),
+        Some("low")
+    );
+    // The flat live field tracks the last effort written.
+    assert_eq!(saved.thinking_effort.as_deref(), Some("low"));
+    // A model-less key is the bare connection scope.
+    assert_eq!(
+        effort_memory_key(devin, loopback, ""),
+        format!("plugin:{devin}")
+    );
+}
+
+#[test]
+fn effort_memory_round_trips_and_survives_partial_parse() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.json");
+    let mut saved = SavedConfig::default();
+    saved.remember_effort(
+        &effort_memory_key("devin-sub:devin-subscription", "", "swe-2-max"),
+        "xhigh",
+    );
+    save_saved_config_at(&path, &saved).unwrap();
+    let loaded = load_saved_config_at(&path);
+    assert_eq!(
+        loaded
+            .remembered_effort(&effort_memory_key(
+                "devin-sub:devin-subscription",
+                "",
+                "swe-2-max"
+            ))
+            .as_deref(),
+        Some("xhigh")
+    );
+    // A mistyped field next door loses itself, not the memory map.
+    std::fs::write(
+        &path,
+        r#"{"effort_memory":{"plugin:devin-sub:devin-subscription|m":"low"},"model":7}"#,
+    )
+    .unwrap();
+    let loaded = load_saved_config_at(&path);
+    assert_eq!(loaded.model, None);
+    assert_eq!(
+        loaded
+            .remembered_effort("plugin:devin-sub:devin-subscription|m")
+            .as_deref(),
+        Some("low")
     );
 }

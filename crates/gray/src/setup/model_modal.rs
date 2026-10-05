@@ -2,36 +2,254 @@
 
 use super::*;
 
-/// Provider id + display name resolved from the catalog by base URL,
-/// plus the known-model list behind the picker (live `/models`).
-/// Shared by the picker and direct `/model <id>` validation so both
-/// accept exactly the same ids.
-pub(crate) fn provider_models_for(
-    base_url: &str,
-    api_key: Option<&str>,
-) -> (String, String, Vec<(String, String)>) {
+/// Direct `/model <id>` validation for the live connection — same candidate
+/// list as the picker: `provider/models` for plugin connections, a live
+/// `/models` fetch otherwise.
+pub(crate) fn provider_models_for_config(config: &Config) -> (String, Vec<(String, String)>) {
+    let (name, _key, plugin) = picker_scope(config);
+    let models = match plugin {
+        Some(installed) => super::context::fetch_plugin_provider_models(installed),
+        None => picker_models_for(&config.base_url, config.api_key.as_deref()),
+    };
+    (name, models)
+}
+
+/// The provider behind the live config, as the picker sees it. Plugin
+/// connections own their list via the sidecar's `provider/models` RPC —
+/// the declared base_url is a shared relay placeholder an HTTP fetch can
+/// never satisfy — so the cache key is `plugin:<provider_id>` (see
+/// [`super::catalog::plugin_models_key`]) and the title is the plugin's own
+/// name rather than a catalog lookup that can only ever say "Custom".
+/// Returns (title, `provider_models.json` key, installed plugin provider).
+pub(crate) fn picker_scope(
+    config: &Config,
+) -> (String, String, Option<crate::providers::InstalledProvider>) {
+    if config.uses_plugin_credentials()
+        && let Ok(home) = super::catalog::gray_home()
+        && let Some(installed) = crate::providers::ProviderRegistry::load_cached(&home)
+            .installed()
+            .into_iter()
+            .find(|p| p.provider_id() == config.provider_id)
+    {
+        let key = super::catalog::plugin_models_key(&installed.provider_id());
+        return (installed.provider.name.clone(), key, Some(installed));
+    }
     let catalog = load_catalog().unwrap_or_default();
-    let (item_id, item_name) =
-        if let Some((pid, p)) = catalog.iter().find(|(_, p)| p.base_url == base_url) {
-            (pid.clone(), p.name.clone())
-        } else {
-            ("custom".to_string(), "Custom".to_string())
-        };
-    let models = picker_models_for(base_url, api_key);
-    (item_id, item_name, models)
+    let name = catalog
+        .iter()
+        .find(|(_, p)| p.base_url == config.base_url)
+        .map(|(_, p)| p.name.clone())
+        .unwrap_or_else(|| "Custom".to_string());
+    (name, config.base_url.clone(), None)
 }
 
 /// Models we already know without touching the network: the last fetched
 /// list for this provider, persisted to disk after every successful fetch.
 /// The picker paints from this immediately and refreshes in the background —
-/// opening a modal should never wait on an HTTP round-trip.
-pub(crate) fn saved_models_for(base_url: &str) -> Vec<(String, String)> {
-    let mut models = super::context::load_provider_model_list(base_url);
+/// opening a modal should never wait on a round-trip.
+/// `list_key` is the `provider_models.json` slot — a `plugin:` pseudo-key
+/// for plugin providers; `sort_base` stays the configured base_url so the
+/// current model and recents resolve under their normal key.
+pub(crate) fn saved_models_for(list_key: &str, sort_base: &str) -> Vec<(String, String)> {
+    let mut models = super::context::load_provider_model_list(list_key);
     if let Ok(path) = saved_config_path() {
         let _cfg_lock = crate::setup::lock_saved_config_at(&path).ok();
-        load_saved_config_at(&path).sort_models(base_url, &mut models);
+        load_saved_config_at(&path).sort_models(sort_base, &mut models);
     }
     models
+}
+
+/// Effort words that may ride at the end of a model id (`swe-2-max`):
+/// the tier vocabulary minus `off` — a `-none` row is its own product,
+/// never a level of the base. Mirrors the devin-sub `EFFORT_VARIANTS`
+/// list and the clamp's known levels.
+pub(crate) const VARIANT_EFFORT_WORDS: &[&str] =
+    &["minimal", "low", "medium", "high", "xhigh", "max"];
+
+/// Leaf segments naming a fast-serving variant at the end of a model id:
+/// `-fast` on claude/swe-family rows, `-priority` on gpt-family rows
+/// (the devin-sub catalog labels them "… Fast" / "… Thinking Fast").
+/// Compared case-insensitively — upstream catalogs mix case (`GLM-5.2-Fast`).
+pub(crate) const FAST_SUFFIXES: &[&str] = &["fast", "priority"];
+
+/// `Some((base, tier))` when `model` reads as `<base>-<effort>`: the split
+/// itself, checked only against the effort vocabulary — no row lookup.
+fn effort_variant_shape(model: &str) -> Option<(&str, &str)> {
+    let (base, tier) = model.rsplit_once('-')?;
+    (!base.is_empty() && VARIANT_EFFORT_WORDS.contains(&tier)).then_some((base, tier))
+}
+
+/// A stored or typed id like `swe-2-max`: when the provider's known rows
+/// declare `<base>` but not the id itself, the trailing word is the tier —
+/// the family collapsed into one picker row whose `reasoning_efforts`
+/// own the level. A declared row always wins (`qwen3-max` listed as its
+/// own model is never split); `None` when no declared base matches.
+pub(crate) fn split_effort_variant(
+    model: &str,
+    known: &[(String, String)],
+) -> Option<(String, String)> {
+    let (base, tier) = effort_variant_shape(model)?;
+    if known.iter().any(|(id, _)| id == model) {
+        return None;
+    }
+    known
+        .iter()
+        .any(|(id, _)| id == base)
+        .then(|| (base.to_string(), tier.to_string()))
+}
+
+/// `Some((stem, suffix))` when `model` ends in a [`FAST_SUFFIXES`] leaf AND
+/// the stem resolves back to a declared base — directly (`swe-1-6-fast` →
+/// `swe-1-6`) or through one effort tier (`claude-opus-5-5-high-fast` →
+/// `claude-opus-5-5-high` → `claude-opus-5-5`). Unlike the effort split a
+/// declared `...-fast` row still decomposes: the fast row IS a variant of
+/// its base, and keeping base+tier+flag separate preserves the effort knob.
+fn split_fast_variant(model: &str, known: &[(String, String)]) -> Option<(String, &'static str)> {
+    let (stem, leaf) = model.rsplit_once('-')?;
+    if stem.is_empty() {
+        return None;
+    }
+    let suffix = FAST_SUFFIXES
+        .iter()
+        .find(|s| leaf.eq_ignore_ascii_case(s))?;
+    // The stem's canonical form: a declared row wins (its id keeps the
+    // catalog's case); an effort-bearing stem resolves through the tier
+    // split.
+    let stem = match known.iter().find(|(id, _)| id.eq_ignore_ascii_case(stem)) {
+        Some((id, _)) => id.clone(),
+        None if split_effort_variant(stem, known).is_some() => stem.to_string(),
+        None => return None,
+    };
+    Some((stem, *suffix))
+}
+
+/// Decompose a catalog id into `(base, tier, fast)` — a `-fast`/`-priority`
+/// leaf peels first (even on declared rows), then the standard
+/// `<base>-<effort>` split applies to the stem. Either half may be absent:
+/// `swe-1-6-fast` is base+fast with no tier, `swe-2-max` is base+tier with
+/// no fast. `None` when nothing decomposes.
+pub(crate) fn decompose_model_variant(
+    model: &str,
+    known: &[(String, String)],
+) -> Option<(String, Option<String>, bool)> {
+    let (work, fast) = match split_fast_variant(model, known) {
+        Some((stem, _)) => (stem, true),
+        None => (model.to_string(), false),
+    };
+    let (base, tier) = split_effort_variant(&work, known)
+        .map(|(b, t)| (b, Some(t)))
+        .unwrap_or((work, None));
+    (fast || tier.is_some()).then_some((base, tier, fast))
+}
+
+/// The provider's fast-serving sibling of `model` at `effort`, spelled the
+/// way the catalog declares it: `claude-opus-5-5` + `high` →
+/// `claude-opus-5-5-high-fast`; `gpt-6-sol` + `off` →
+/// `gpt-6-sol-none-priority`; `swe-1-6` + anything → `swe-1-6-fast`.
+/// `None` when the catalog has no fast row for the target — the caller
+/// then sends `model` unchanged. An id already carrying the suffix is
+/// already the fast product and never re-composes.
+pub(crate) fn compose_fast_model(
+    model: &str,
+    effort: Option<&str>,
+    known: &[(String, String)],
+) -> Option<String> {
+    if split_fast_variant(model, known).is_some() {
+        return None;
+    }
+    let mut candidates: Vec<String> = Vec::with_capacity(4);
+    let level = match effort {
+        Some("off") | Some("") | None => Some("none"),
+        Some(l) => Some(l),
+    };
+    if let Some(l) = level {
+        for s in FAST_SUFFIXES {
+            candidates.push(format!("{model}-{l}-{s}"));
+        }
+    }
+    for s in FAST_SUFFIXES {
+        candidates.push(format!("{model}-{s}"));
+    }
+    for cand in candidates {
+        if let Some((id, _)) = known.iter().find(|(id, _)| id.eq_ignore_ascii_case(&cand)) {
+            return Some(id.clone());
+        }
+    }
+    None
+}
+
+/// The rows canonicalization may split against: the persisted picker
+/// list, plus — for a plugin connection whose stored id still reads as a
+/// variant it can't confirm — one live `provider/models` fetch (the
+/// persisted list may predate the family collapse, or never have run).
+/// Only the variant pattern pays the fetch; a clean id returns instantly.
+/// Status-line effort chip: `high` normally, `high·fast` while the fast
+/// model variant is on. Display only — the wire id composes in build_agent.
+pub(crate) fn effort_chip(eff: &str, config: &Config) -> String {
+    if config.fast_mode == Some(true) && eff != "off" {
+        format!("{eff}·fast")
+    } else {
+        eff.to_string()
+    }
+}
+
+pub(crate) fn canonical_model_rows(config: &Config) -> Vec<(String, String)> {
+    let (_, list_key, plugin) = picker_scope(config);
+    let known = saved_models_for(&list_key, &config.base_url);
+    let stale_variant = config
+        .model
+        .as_deref()
+        .is_some_and(|m| effort_variant_shape(m).is_some() && !known.iter().any(|(id, _)| id == m));
+    match (stale_variant, plugin) {
+        (true, Some(installed)) => {
+            let live = super::context::fetch_plugin_provider_models(installed);
+            if live.is_empty() { known } else { live }
+        }
+        _ => known,
+    }
+}
+
+/// Adopt a `<base>-<tier>` id as `base` + `tier` effort: a collapsed
+/// family row owns the level through `/thinking`, so a stale variant id
+/// (`swe-2-max` saved before the collapse) shows the real model, makes
+/// the effort knob honest — the variant IS the level it runs at — and
+/// keeps the upstream call identical (the plugin maps `base`+`tier` back
+/// to the same native id). Returns the applied `(base, tier)`; the model
+/// and this target's remembered effort persist under the canonical key.
+/// `GRAY_THINKING_EFFORT` stays a user override: the model still
+/// canonicalizes but the env level wins.
+pub(crate) fn canonicalize_effort_variant(
+    config: &mut Config,
+    known: &[(String, String)],
+) -> Option<(String, Option<String>, bool)> {
+    let model = config.model.clone()?;
+    let (base, tier, fast) = decompose_model_variant(&model, known)?;
+    config.model = Some(base.clone());
+    if let Some(t) = &tier
+        && std::env::var_os("GRAY_THINKING_EFFORT").is_none()
+    {
+        config.thinking_effort = Some(t.clone());
+    }
+    if fast && std::env::var_os("GRAY_FAST").is_none() {
+        config.fast_mode = Some(true);
+    }
+    if let Ok(path) = saved_config_path() {
+        let _cfg_lock = lock_saved_config_at(&path).ok();
+        let mut saved = load_saved_config_at(&path);
+        saved.model = Some(base.clone());
+        if let Some(t) = &tier {
+            saved.remember_effort(
+                &crate::setup::effort_memory_key(&config.provider_id, &config.base_url, &base),
+                t,
+            );
+        }
+        saved.thinking_effort = config.thinking_effort.clone();
+        if fast {
+            saved.fast_mode = Some(true);
+        }
+        let _ = save_saved_config_at(&path, &saved);
+    }
+    Some((base, tier, fast))
 }
 
 /// The saved current model + recents for this provider: the same source
@@ -90,7 +308,7 @@ fn skip_divider(rows: &[Row], sel: usize, down: bool) -> usize {
 /// Only a provider never fetched before waits on the network (up to 3s per
 /// probed endpoint), which is what made /connect feel stuck.
 pub(super) fn cached_models_for(base_url: &str, api_key: Option<&str>) -> Vec<(String, String)> {
-    let cached = saved_models_for(base_url);
+    let cached = saved_models_for(base_url, base_url);
     if cached.is_empty() {
         return picker_models_for(base_url, api_key);
     }
@@ -132,36 +350,26 @@ pub fn run_model_modal(
     use ratatui::widgets::{Block, Clear, Paragraph};
     use std::time::Duration;
 
-    // The provider identity is local catalog work; only the model list
-    // needs the network, and that no longer blocks the first frame.
-    let catalog = load_catalog().unwrap_or_default();
-    let (item_id, item_name) =
-        if let Some((pid, p)) = catalog.iter().find(|(_, p)| p.base_url == config.base_url) {
-            (pid.clone(), p.name.clone())
-        } else {
-            ("custom".to_string(), "Custom".to_string())
-        };
-    let mut models = saved_models_for(&config.base_url);
+    // The provider identity is local work; only the model list needs I/O,
+    // and that no longer blocks the first frame. Plugin connections scope
+    // by provider id — the placeholder base can never serve a list.
+    let (item_name, list_key, plugin) = picker_scope(config);
+    let mut models = saved_models_for(&list_key, &config.base_url);
     let (mut current_id, mut recent_ids) = recent_head_for(&config.base_url);
     let (refresh_tx, refresh_rx) = std::sync::mpsc::channel::<Vec<(String, String)>>();
     // Detached on purpose: a late reply lands in a channel nobody reads.
     let _refresh = {
+        let plugin = plugin.clone();
         let base_url = config.base_url.clone();
         let api_key = config.api_key.clone();
         let tx = refresh_tx;
         std::thread::spawn(move || {
-            let live = super::context::fetch_live_provider_models(&base_url, api_key.as_deref());
+            let live = match plugin {
+                Some(installed) => super::context::fetch_plugin_provider_models(installed),
+                None => super::context::fetch_live_provider_models(&base_url, api_key.as_deref()),
+            };
             let _ = tx.send(live);
         })
-    };
-
-    let item = ConnectItem {
-        id: item_id.clone(),
-        name: item_name.clone(),
-        sublabel: String::new(),
-        base_url: config.base_url.clone(),
-        no_auth: false,
-        auth: crate::setup::ConnectAuth::ApiKey,
     };
 
     let (_session, mut terminal) = super::open_modal()?;
@@ -246,7 +454,7 @@ pub fn run_model_modal(
                 );
 
                 // Header
-                let title_str = format!("Select model \u{2014} {}", item.name);
+                let title_str = format!("Select model \u{2014} {}", item_name);
                 let esc_str = "esc";
                 // Say so while the live list is still loading: a short list
                 // that is still filling in must not read as the whole truth.
@@ -521,6 +729,15 @@ pub fn run_model_modal(
                     }
                     KeyCode::Esc => return Ok(false),
                     KeyCode::Enter => {
+                        // An empty list has nothing to select. With a model
+                        // already configured, Enter dismisses — the old
+                        // literal "default" fallback silently clobbered the
+                        // live model whenever a provider answered with no
+                        // list (plugin providers hit exactly that).
+                        if filtered_models.is_empty() && filter.is_empty() && config.model.is_some()
+                        {
+                            return Ok(false);
+                        }
                         let picked: Option<String> = match rows.get(sel) {
                             Some(Row::Model(mi)) => {
                                 filtered_models.get(*mi).map(|(m_id, _)| m_id.clone())
@@ -538,16 +755,27 @@ pub fn run_model_modal(
                             validate_direct_model_id(filter.trim(), &models)
                                 .unwrap_or_else(|_| filter.trim().to_string())
                         } else {
+                            // Reached only with nothing configured: first
+                            // run needs *a* value to continue.
                             "default".to_string()
                         };
 
                         config.model = Some(chosen_model.clone());
 
+                        // A variant pick (`base-tier`, `base-tier-fast`)
+                        // decomposes: the tier/fast it names wins over the
+                        // remembered values applied below.
+                        let variant = canonicalize_effort_variant(config, &models);
                         let path = saved_config_path()?;
                         let _cfg_lock = crate::setup::lock_saved_config_at(&path).ok();
                         let mut saved = load_saved_config_at(&path);
                         saved.base_url = Some(config.base_url.clone());
                         saved.model = config.model.clone();
+                        // The model's own remembered effort (or default) —
+                        // not whatever level the last model left behind.
+                        if variant.as_ref().and_then(|(_, t, _)| t.as_ref()).is_none() {
+                            super::provider_auth::apply_connection_effort(config, &mut saved);
+                        }
                         save_saved_config_at(&path, &saved)?;
 
                         return Ok(true);

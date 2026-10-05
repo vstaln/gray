@@ -121,9 +121,9 @@ without a model call it also replaces the "summarise this" step entirely.
 
 For gray this is ~100 lines: one process-global store keyed by digest with the
 256-entry / 64 MiB bound, a footer carrying the handle, and one read-only tool
-that pulls it back. The shape already exists here for binaries — `gray view`
-renders a blob the model cannot see as text — so this is the text twin of a tool
-gray ships. The compression *per content kind* (JSON tables, diff squeezing, code
+that pulls it back. The shape already exists here for binaries — `cat` on a media
+file attaches a blob the model cannot see as text — so this is the text twin of
+a path gray ships. The compression *per content kind* (JSON tables, diff squeezing, code
 folding via tree-sitter, HTML stripping, an optional local salience model) is a
 research project — do not adopt it.
 

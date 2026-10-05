@@ -1390,3 +1390,120 @@ async fn fresh_id_skips_taken_names_and_salts_when_exhausted() {
     assert!(suffix.bytes().all(|b| b.is_ascii_hexdigit()), "{suffix}");
     assert!(valid_session_id(salted.as_str()));
 }
+
+// UNRUN (cargo test banned under X): run in TTY/CI.
+// Open-locks: `<id>.open` marks the process that owns a live session.
+
+#[tokio::test]
+async fn open_lock_blocks_second_owner_and_names_holder_pid() {
+    let dir = tempdir().unwrap();
+    // Two store handles = two "processes" as far as the flock is
+    // concerned (the lock lives on the open file description, not the
+    // store instance).
+    let sa = JsonlSessionStore::new(dir.path());
+    let sb = JsonlSessionStore::new(dir.path());
+    let id = SessionId::new("open1");
+    sa.create(SessionMeta::new(id.clone(), 1, "/tmp", "m"))
+        .await
+        .unwrap();
+
+    let guard = sa.acquire_open(&id).await.unwrap();
+    assert!(sa.open_lock_held(&id).await);
+    assert!(sb.open_lock_held(&id).await);
+
+    // The in-process registry would merge sb's acquire into sa's lock
+    // (by design — same process, same owner). Stash it so sb exercises
+    // the OS flock path a genuine second process always hits, then
+    // restore — sa's re-acquire below must merge again.
+    let stashed = std::mem::take(&mut *OPEN_LOCKS.lock().expect("open-lock registry poisoned"));
+    let err = sb.acquire_open(&id).await.unwrap_err();
+    *OPEN_LOCKS.lock().expect("open-lock registry poisoned") = stashed;
+    match err {
+        SessionError::Locked { id: locked_id, pid } => {
+            assert_eq!(locked_id, id);
+            // The holder stamped its own pid for the error to name.
+            assert_eq!(pid, Some(std::process::id()));
+        }
+        other => panic!("expected Locked, got {other:?}"),
+    }
+    let text = SessionError::Locked {
+        id: id.clone(),
+        pid: Some(10087),
+    }
+    .to_string();
+    assert_eq!(
+        text,
+        "session 'open1' is already open in another process (PID 10087). \
+         Close the other instance before opening it here."
+    );
+
+    // Same-process re-acquire shares the held lock (registry), never
+    // reports Locked on ourselves.
+    let again = sa.acquire_open(&id).await.unwrap();
+    drop(guard);
+    assert!(sb.open_lock_held(&id).await, "shared guard keeps the claim");
+    drop(again);
+    assert!(
+        !sb.open_lock_held(&id).await,
+        "last clone dropping releases the flock"
+    );
+    sb.acquire_open(&id).await.unwrap();
+}
+
+#[tokio::test]
+async fn open_lock_reacquire_after_release_overwrites_stale_pid() {
+    let dir = tempdir().unwrap();
+    let store = JsonlSessionStore::new(dir.path());
+    let id = SessionId::new("open2");
+    store
+        .create(SessionMeta::new(id.clone(), 1, "/tmp", "m"))
+        .await
+        .unwrap();
+    {
+        let _g = store.acquire_open(&id).await.unwrap();
+    }
+    assert!(!store.open_lock_held(&id).await);
+    // The released file's stale PID is never mistaken for a live holder.
+    let _g = store.acquire_open(&id).await.unwrap();
+    assert!(store.open_lock_held(&id).await);
+}
+
+#[tokio::test]
+async fn delete_and_prune_leave_open_sessions_alone() {
+    let dir = tempdir().unwrap();
+    let store = JsonlSessionStore::new(dir.path());
+    let open = SessionId::new("open3");
+    let old = SessionId::new("open4");
+    for id in [&open, &old] {
+        store
+            .create(SessionMeta::new(id.clone(), 1, "/tmp", "m"))
+            .await
+            .unwrap();
+    }
+    let guard = store.acquire_open(&open).await.unwrap();
+
+    assert!(matches!(
+        store.delete(&open).await,
+        Err(SessionError::Locked { .. })
+    ));
+    // Prune removes the old unlocked session, skips the live one.
+    let removed = store.prune_before(u64::MAX).await.unwrap();
+    assert_eq!(removed, vec![old]);
+    assert!(dir.path().join("open3.jsonl").exists());
+
+    drop(guard);
+    let removed = store.prune_before(u64::MAX).await.unwrap();
+    assert_eq!(removed, vec![open]);
+}
+
+#[tokio::test]
+async fn open_lock_probe_does_not_create_files() {
+    let dir = tempdir().unwrap();
+    let store = JsonlSessionStore::new(dir.path());
+    let id = SessionId::new("open5");
+    assert!(!store.open_lock_held(&id).await);
+    assert!(
+        !dir.path().join("open5.open").exists(),
+        "the advisory probe must not mint lock files"
+    );
+}

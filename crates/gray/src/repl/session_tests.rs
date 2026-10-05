@@ -39,8 +39,10 @@ async fn failed_compaction_save_retries_full_history_before_appending() {
         full_save_pending: false,
         store,
         session_id: sid.clone(),
+        _open_guard: None,
     });
     let config = Config {
+        fast_mode: None,
         temperature: None,
         top_p: None,
         model: None,
@@ -110,6 +112,7 @@ async fn failed_compaction_save_retries_full_history_before_appending() {
         full_save_pending: false,
         store: JsonlSessionStore::new(dir.path()),
         session_id: sid.clone(),
+        _open_guard: None,
     });
     persist_compaction_tail(&mut agent, &config, &mut torn_state, dir.path(), None).await;
     assert!(!torn_state.as_ref().unwrap().full_save_pending);
@@ -145,43 +148,62 @@ async fn failed_compaction_save_retries_full_history_before_appending() {
     assert_eq!(messages, agent.messages());
 }
 
-/// The tps denominator: only the time tokens were actually flowing counts,
-/// so a turn that sat in tools for a minute is not billed as slow generation.
+/// The tps denominator: response events bill their gaps; boundaries
+/// (tool results, round reports, turn end) re-anchor without billing,
+/// so a turn that sat in tools for a minute is not billed as slow
+/// generation — but a provider that delivers its whole reply in one
+/// batch still reports the window it took to generate it.
 #[test]
 fn stream_clock_measures_only_the_time_tokens_flowed() {
     use super::TurnStreamClock;
     let mut clock = TurnStreamClock::default();
     assert_eq!(clock.streamed_ms(), None, "nothing streamed yet");
-    clock.tick();
-    assert_eq!(
-        clock.streamed_ms(),
-        None,
-        "a lone delta opens the span but has no gap yet"
-    );
-    std::thread::sleep(std::time::Duration::from_millis(60));
-    clock.tick();
-    let first = clock.streamed_ms().expect("the gap is streaming time");
+    let start = std::time::Instant::now();
+    clock.open_span_at(start); // AgentEvent::Start: window opens at the request.
+    clock.tick_at(start + std::time::Duration::from_millis(60));
+    let first = clock
+        .streamed_ms()
+        .expect("the dispatch+generate leg is generation time");
     // Lower bound only: a loaded machine can overshoot the sleep, and the
     // assertions that matter below are exact (spans, not wall clock).
     assert!(first >= 40, "{first}");
+    clock.tick_at(start + std::time::Duration::from_millis(100));
+    let burst = clock.streamed_ms().expect("inter-delta gap counted");
+    assert!(burst > first, "{burst} > {first}");
 
-    // Tool wait between rounds: the span closes, so the gap until the next
-    // round's first delta never lands in the rate.
-    clock.close_span();
-    std::thread::sleep(std::time::Duration::from_millis(80));
-    clock.tick();
-    assert_eq!(
-        clock.streamed_ms(),
-        Some(first),
-        "the tool wait must not count as generation"
+    // A round boundary then the tool wait: neither gap lands in the rate
+    // (the boundary opens a fresh window; the tool result re-anchors it).
+    clock.open_span_at(start + std::time::Duration::from_millis(100)); // StepUsage: round report.
+    clock.open_span_at(start + std::time::Duration::from_millis(180)); // ToolResult: host-side tool wait just closed.
+    clock.tick_at(start + std::time::Duration::from_millis(230));
+    let second = clock.streamed_ms().expect("second request window counted");
+    assert!(
+        second > burst && second < burst + 80,
+        "{second} should add ~50ms of generation, not the 80ms tool wait"
     );
-    std::thread::sleep(std::time::Duration::from_millis(60));
-    clock.tick();
-    let second = clock.streamed_ms().expect("second burst counted");
-    assert!(second > first, "{second} > {first}");
 
-    // Turn end: the finalize gap after the last delta is dropped too.
+    // Turn end: post-turn strays open a fresh window instead of billing.
     clock.close_span();
-    std::thread::sleep(std::time::Duration::from_millis(80));
     assert_eq!(clock.streamed_ms(), Some(second));
+}
+
+/// Batch delivery: one response event a full generation after the window
+/// opened still yields a real denominator — never a µs-scale one that
+/// prints a million tps.
+#[test]
+fn stream_clock_bills_batch_delivery_its_generation_window() {
+    use super::TurnStreamClock;
+    let mut clock = TurnStreamClock::default();
+    let start = std::time::Instant::now();
+    clock.open_span_at(start); // request dispatched
+    clock.tick_at(start + std::time::Duration::from_millis(90)); // the whole reply lands at once
+    let ms = clock
+        .streamed_ms()
+        .expect("batch delivery bills its window");
+    assert!(ms >= 60, "{ms}");
+    clock.tick_at(start + std::time::Duration::from_micros(90_001));
+    assert!(
+        clock.streamed_ms().unwrap() < ms + 60,
+        "back-to-back batch events add ~nothing on top"
+    );
 }

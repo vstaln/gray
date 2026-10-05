@@ -2,17 +2,38 @@
 
 use super::*;
 
+/// The session the resume hint names, mirrored out of the REPL loop because
+/// the double-Ctrl-C and SIGHUP/SIGTERM exits run in signal tasks that can't
+/// see `session_state`. Synced at the loop top and wherever a turn mints a
+/// session (`ensure_session_state`).
+static EXIT_SESSION: StdMutex<Option<String>> = StdMutex::new(None);
+
+pub(crate) fn remember_exit_session(id: Option<&str>) {
+    *EXIT_SESSION.lock().unwrap_or_else(|e| e.into_inner()) = id.map(str::to_string);
+}
+
+pub(crate) fn exit_session() -> Option<String> {
+    EXIT_SESSION
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+}
+
+pub(crate) fn exit_hint_line(session_id: &str, styled: bool) -> String {
+    if styled {
+        format!("\x1b[2mTo resume: gray -r {session_id}\x1b[0m")
+    } else {
+        format!("To resume: gray -r {session_id}")
+    }
+}
+
 pub(crate) fn print_exit_hint(session_state: &Option<SessionState>) {
     if let Some(state) = session_state {
         use std::io::IsTerminal as _;
-        if std::io::stdout().is_terminal() {
-            println!(
-                "\x1b[2mTo resume: gray -r {}\x1b[0m",
-                state.session_id.as_str()
-            );
-        } else {
-            println!("To resume: gray -r {}", state.session_id.as_str());
-        }
+        println!(
+            "{}",
+            exit_hint_line(state.session_id.as_str(), std::io::stdout().is_terminal())
+        );
         let _ = std::io::stdout().flush();
     }
 }
@@ -150,6 +171,23 @@ pub(crate) async fn handle_resume(
         return;
     };
     let store = JsonlSessionStore::new(root);
+    // One owner per session: a live holder stays put — switching anyway
+    // would interleave two processes' appends into one history. Claiming
+    // before the load so the file can't change under another owner; a
+    // session we already hold shares our lock (registry), never self-locks.
+    let open_guard = match store.acquire_open(&sid).await {
+        Ok(guard) => guard,
+        Err(e) => {
+            let msg = match &e {
+                crate::session_store::SessionError::Locked { id, pid } => {
+                    crate::session_store::SessionError::locked_notice(id, *pid)
+                }
+                _ => e.to_string(),
+            };
+            say(tui, &msg);
+            return;
+        }
+    };
     match store.load(&sid).await {
         Ok((meta, entries)) => {
             let history: Vec<Message> = entries.iter().map(|e| e.message.clone()).collect();
@@ -158,35 +196,48 @@ pub(crate) async fn handle_resume(
             // explicit/config model wins, else the session's recorded model.
             // Every consumer below (agent build, totals, TUI label) uses this
             // one string, so the resolved context window agrees on all paths.
+            // A live or saved `<base>-<tier>` id canonicalizes first — a
+            // session recorded on `swe-2-max` lands on `swe-2` at `max`.
+            {
+                let rows = crate::setup::canonical_model_rows(config);
+                crate::setup::canonicalize_effort_variant(config, &rows);
+            }
             let eff_model = crate::resume::effective_session_model(
                 config.model.as_deref(),
                 meta.model.as_str(),
             );
-            let model = eff_model.as_deref().unwrap_or("");
             let mut build_config = config.clone();
             build_config.model = eff_model.clone();
-            // Resume lands on the session's model: clamp a stale effort
-            // (e.g. saved `max` under a Spark session) before painting,
-            // and write the result back to the live config + saved file
-            // so the footer and the next boot agree.
-            if !model.is_empty()
-                && let Some((old, new)) =
-                    super::clamp_thinking_to_model_name(&mut build_config, model)
             {
-                config.thinking_effort = Some(new.clone());
-                if let Ok(path) = crate::setup::saved_config_path() {
-                    let _cfg_lock = crate::setup::lock_saved_config_at(&path).ok();
-                    let mut saved = crate::setup::load_saved_config_at(&path);
-                    saved.thinking_effort = Some(new.clone());
-                    let _ = crate::setup::save_saved_config_at(&path, &saved);
+                let rows = crate::setup::canonical_model_rows(&build_config);
+                crate::setup::canonicalize_effort_variant(&mut build_config, &rows);
+            }
+            let model = build_config.model.clone().unwrap_or_default();
+            let model = model.as_str();
+            // Resume lands on the session's model: adopt that target's own
+            // remembered effort (or the default) so the level a different
+            // connection left behind never follows, then clamp whatever came
+            // out (e.g. saved `max` under a Spark session) and paint the
+            // result so the footer and the next boot agree.
+            if !model.is_empty() {
+                let before_effort = build_config.thinking_effort.clone();
+                crate::setup::adopt_connection_effort(&mut build_config);
+                let clamped = super::clamp_thinking_to_model_name(&mut build_config, model);
+                if build_config.thinking_effort != before_effort {
+                    config.thinking_effort = build_config.thinking_effort.clone();
+                    *hide_thinking = build_config.reasoning_hidden();
                 }
-                *hide_thinking = build_config.reasoning_hidden();
-                say(
-                    tui,
-                    &format!(
-                        "Thinking effort clamped from {old} to {new} (not supported by this model)"
-                    ),
-                );
+                if build_config.fast_mode != config.fast_mode {
+                    config.fast_mode = build_config.fast_mode;
+                }
+                if let Some((old, new)) = clamped {
+                    say(
+                        tui,
+                        &format!(
+                            "Thinking effort clamped from {old} to {new} (not supported by this model)"
+                        ),
+                    );
+                }
             }
             match build_agent(&build_config, cwd, Some(sid.as_str())).await {
                 Ok(built) => {
@@ -200,6 +251,7 @@ pub(crate) async fn handle_resume(
                         full_save_pending: false,
                         session_id: sid.clone(),
                         store,
+                        _open_guard: Some(open_guard),
                     });
                     *totals = SessionTotals::from_entries(&entries, model);
                     if let Some(shared) = &tui {
@@ -215,7 +267,7 @@ pub(crate) async fn handle_resume(
                         // the footer follows the switch instead of the stale
                         // pre-resume level.
                         if let Some(eff) = &build_config.thinking_effort {
-                            t.set_thinking_effort(eff.clone());
+                            t.set_thinking_effort(crate::setup::effort_chip(eff, &build_config));
                             t.set_hide_thinking(build_config.reasoning_hidden());
                         }
                         t.push_dim(format!(
@@ -344,50 +396,86 @@ pub(crate) async fn ensure_session_state(
         if let Err(e) = store.create(meta).await {
             log::warn!(target: "gray_session", "session create failed: {e}");
         }
+        // Fresh id — the open lock should always be free; hold it so a
+        // second gray can't `-r` this session out from under us. A failure
+        // is pathological: degrade to guardless, like create-failure above.
+        let open_guard = match store.acquire_open(&session_id).await {
+            Ok(guard) => Some(guard),
+            Err(e) => {
+                log::warn!(target: "gray_session", "session open-lock failed: {e}");
+                None
+            }
+        };
         *session_state = Some(SessionState {
             full_save_pending: false,
             store,
             session_id,
+            _open_guard: open_guard,
         });
     }
+    remember_exit_session(session_state.as_ref().map(|s| s.session_id.as_str()));
 }
 
 /// Streaming-only clock for one turn — the denominator every tps readout
 /// should use, because a rate is only meaningful over the time tokens were
-/// actually flowing. Tool-call waits, provider round-trips between rounds,
-/// and compaction never open a span, so a turn that spent 40s in tools and
-/// 4s streaming reports the 4s rate instead of a whole-turn average that
-/// makes every model look slow.
+/// actually flowing. Response-side events (deltas, tool-call start/end)
+/// each bill the gap since the previous event; boundary events (turn
+/// start, tool results, round usage, compaction, reconnects) re-anchor
+/// the window without billing, so the host-side waits they close — tool
+/// runs, round-trips, retries — never land in the rate. The sum telescopes
+/// to each burst's whole response window including the leg before the
+/// first delta: a provider that delivers its reply in one batch (relay
+/// plugins fold a finished turn into a single SSE burst) still reports
+/// the generation time it took instead of a near-zero denominator that
+/// would print millions of tps.
 #[derive(Debug, Default)]
 pub(crate) struct TurnStreamClock {
-    /// Open since the first delta of the current burst.
+    /// Arrival time of the previous window-relevant event.
     anchor: Option<std::time::Instant>,
-    /// Sum of the inter-delta gaps across every burst this turn.
-    streamed_ms: u64,
+    /// Billed response-window total across every burst this turn, at full
+    /// `Duration` precision. Millisecond-granular accumulation undercounts
+    /// catastrophically: real events land microseconds apart, so each gap
+    /// truncated to 0ms and a 5-minute turn ended with a ~10ms denominator
+    /// (6,266 tok → 626,600 tps). The sum still telescopes to each burst's
+    /// last-minus-first window; only the readout truncates to ms.
+    streamed: std::time::Duration,
 }
 
 impl TurnStreamClock {
-    /// Notes one streamed delta (text, reasoning, or tool arguments).
-    /// Consecutive deltas accumulate the gap between them; the first delta
-    /// of a burst only opens the span.
+    /// Notes one response-side event (text/reasoning/arg deltas, tool-call
+    /// start/end). Bills the gap since the previous event — the first one
+    /// after a boundary bills the request's dispatch+generate leg, which
+    /// for a batch provider IS the generation time.
     pub(crate) fn tick(&mut self) {
-        let now = std::time::Instant::now();
+        self.tick_at(std::time::Instant::now());
+    }
+
+    fn tick_at(&mut self, now: std::time::Instant) {
         if let Some(prev) = self.anchor.replace(now) {
-            let gap = u64::try_from(now.duration_since(prev).as_millis()).unwrap_or(u64::MAX);
-            self.streamed_ms = self.streamed_ms.saturating_add(gap);
+            self.streamed = self.streamed.saturating_add(now.duration_since(prev));
         }
     }
 
-    /// Closes the open burst at a round or turn boundary. The gap between
-    /// the last delta and the boundary is finalize/dispatch time, not
-    /// streaming, so it is deliberately dropped rather than counted.
+    /// Re-anchors the window at a boundary (turn start, tool result,
+    /// round report, compaction, reconnect) without billing: the wait the
+    /// boundary closes is host-side or transport, never token generation.
+    pub(crate) fn open_span(&mut self) {
+        self.open_span_at(std::time::Instant::now());
+    }
+
+    fn open_span_at(&mut self, now: std::time::Instant) {
+        self.anchor = Some(now);
+    }
+
+    /// Closes the open window at turn end; post-turn events never bill.
     pub(crate) fn close_span(&mut self) {
         self.anchor = None;
     }
 
     /// Streaming-only elapsed ms, or `None` when nothing streamed.
     pub(crate) fn streamed_ms(&self) -> Option<u64> {
-        (self.streamed_ms > 0).then_some(self.streamed_ms)
+        let ms = u64::try_from(self.streamed.as_millis()).unwrap_or(u64::MAX);
+        (ms > 0).then_some(ms)
     }
 }
 
@@ -436,16 +524,27 @@ pub(crate) fn dispatch_agent_event(
     // Single elapsed source — TurnEnd stamps duration once so footer,
     // totals, and persisted entry agree even when TUI + headless paths diverge.
     let elapsed_ms = || turn_start.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
+    // Stream-clock routing: boundary events re-anchor the window without
+    // billing (the tool waits, round-trips and retry stalls they close are
+    // never token time); every other event is response-side and bills the
+    // gap since the previous one. TurnEnd closes the window outright.
+    match ev {
+        AgentEvent::Start
+        | AgentEvent::ToolResult { .. }
+        | AgentEvent::StepUsage { .. }
+        | AgentEvent::Compacted { .. }
+        | AgentEvent::StreamError { .. } => stream_clock.open_span(),
+        AgentEvent::TurnEnd { .. } => stream_clock.close_span(),
+        _ => stream_clock.tick(),
+    }
     if let Some(shared) = tui_stream
         && let Ok(mut t) = shared.lock()
     {
         match ev {
             AgentEvent::ThinkingDelta { delta } => {
-                stream_clock.tick();
                 t.stream_thinking(delta);
             }
             AgentEvent::TextDelta { delta } => {
-                stream_clock.tick();
                 t.stream_text(delta);
             }
             AgentEvent::ToolCallStart { id, name } => {
@@ -468,9 +567,6 @@ pub(crate) fn dispatch_agent_event(
                 name,
                 args_so_far,
             } => {
-                // Tool arguments stream as tokens too: they belong in the
-                // rate's denominator, not in a tool wait.
-                stream_clock.tick();
                 // pi `updateArgs`: stream the in-progress command into the
                 // live card head (same header family as the final card).
                 // (No token accounting: the pill carries no estimate — exact
@@ -551,10 +647,6 @@ pub(crate) fn dispatch_agent_event(
                 }
             }
             AgentEvent::StepUsage { usage } => {
-                // New round segment: close the streaming span so the gap
-                // until the next delta (tools, round-trip) is never billed
-                // as generation time.
-                stream_clock.close_span();
                 t.set_usage(*usage);
                 // Prompt-cache bookkeeping: every round's report is one
                 // provider request, so it re-arms the footer warmth timer
@@ -611,7 +703,6 @@ pub(crate) fn dispatch_agent_event(
                 *turn_usage = Some(*usage);
                 let ms = elapsed_ms();
                 *turn_duration_ms = Some(ms);
-                stream_clock.close_span();
                 // pi `settle_pending_cards`: leftovers never stick (cancel/
                 // error paths emit no ToolResult for in-flight calls).
                 t.clear_live_tools();
@@ -643,11 +734,9 @@ pub(crate) fn dispatch_agent_event(
     if !interactive {
         match ev {
             AgentEvent::TextDelta { delta } => {
-                stream_clock.tick();
                 print!("{delta}");
             }
             AgentEvent::ThinkingDelta { delta } => {
-                stream_clock.tick();
                 print!("{THINKING_STYLE}{delta}\x1b[0m");
             }
             AgentEvent::ToolCallStart { id, name } => {
@@ -725,9 +814,7 @@ pub(crate) fn dispatch_agent_event(
                     messages_after
                 );
             }
-            AgentEvent::StepUsage { .. } => stream_clock.close_span(),
             AgentEvent::TurnEnd { usage, .. } => {
-                stream_clock.close_span();
                 *turn_usage = Some(*usage);
                 let ms = elapsed_ms();
                 *turn_duration_ms = Some(ms);

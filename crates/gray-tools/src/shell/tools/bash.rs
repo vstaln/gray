@@ -160,7 +160,7 @@ impl Tool for BashTool {
             json!({
                 "type": "object",
                 "properties": {
-                    "command": {"type": "string"},
+                    "command": {"type": "string", "description": "Shell command to run (run action only — omit for job actions)"},
                     "action": {"type": "string", "enum": ["run", "list", "status", "output", "cancel"]},
                     "job_id": {"type": "string"},
                     "background": {"type": "boolean"},
@@ -225,6 +225,9 @@ impl Tool for BashTool {
             Ok(_) => return fail("command must be non-empty".into()),
             Err(e) => return e,
         };
+        if let Some(out) = self.noop_steer(ctx, &command) {
+            return out;
+        }
         let secs = match get_opt_u64(&args, "timeout") {
             Ok(v) => v.map(|s| s.clamp(1, MAX_TIMEOUT_SECS)),
             Err(e) => return e,
@@ -559,6 +562,35 @@ fn search_words(command: &str) -> Option<Vec<String>> {
         words.push(word);
     }
     Some(words)
+}
+
+impl BashTool {
+    /// Whole-command no-ops (`true`, `:`) are how a model stalls for a
+    /// background job it does not know how to await — jobs report on their
+    /// own between turns, so steer the stall instead of spawning a shell
+    /// that does nothing and prints nothing.
+    fn noop_steer(&self, ctx: &ToolContext, command: &str) -> Option<ToolOutput> {
+        let trimmed = command.trim();
+        if !matches!(trimmed, "true" | ":") {
+            return None;
+        }
+        let live = self.jobs.live_ids(ctx);
+        let mut note = format!("`{trimmed}` is a no-op — nothing ran and nothing was waited on.");
+        if live.is_empty() {
+            note.push_str(
+                " To end the turn just end it; to collect a finished job use \
+                 action:output with job_id.",
+            );
+        } else {
+            note.push_str(&format!(
+                " Live jobs: {}. Collect one with action:output + job_id \
+                 (wait_ms blocks until it settles), or end the turn — \
+                 completions are reported automatically.",
+                live.join(", ")
+            ));
+        }
+        Some(ToolOutput::ok(note))
+    }
 }
 
 /// What to say when a `cat <media>` ran as an ordinary shell command instead

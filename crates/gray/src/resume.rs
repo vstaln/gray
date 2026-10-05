@@ -337,6 +337,27 @@ pub async fn resumed_session_line(
     ))
 }
 
+/// Styled stderr card for a `session_locked` refusal — the refusal sibling
+/// of [`resumed_session_line`]: same `⬢` sigil, `└` continuation, and the
+/// action line dimmed on a real terminal. `main` prints this instead of
+/// anyhow's `Error:` dump; contention is routine, not a crash.
+pub fn locked_session_card(id: &SessionId, pid: Option<u32>) -> String {
+    use std::io::IsTerminal as _;
+    let notice = crate::session_store::SessionError::locked_notice(id, pid);
+    let mut lines = notice.lines();
+    let head = lines.next().unwrap_or_default();
+    let mut out = format!("\u{2b22} {head}");
+    let dim = std::io::stderr().is_terminal();
+    for line in lines {
+        if dim {
+            out.push_str(&format!("\n  \x1b[2m\u{2514} {line}\x1b[0m"));
+        } else {
+            out.push_str(&format!("\n  \u{2514} {line}"));
+        }
+    }
+    out
+}
+
 pub async fn run_resume_picker(
     show_all: bool,
     bg: Option<&crate::setup::BackgroundSnapshot>,

@@ -237,7 +237,7 @@ async fn fence_escape_keeps_single_pair() {
 #[tokio::test]
 async fn empty_output_is_header_only() {
     let out = BashTool::default()
-        .execute(&ToolContext::default(), json!({"command": "true"}))
+        .execute(&ToolContext::default(), json!({"command": "printf ''"}))
         .await;
     assert!(!out.is_error, "{}", out.content);
     assert!(!out.content.is_empty());

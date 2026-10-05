@@ -103,6 +103,12 @@ impl AsyncRunner for HeadlessRunner {
         if self.follow_switches {
             refresh_model_from_saved(&mut config);
         }
+        // Same canonicalization as REPL/print: a stored `<base>-<tier>` id
+        // rides the family row + its effort, not the literal variant.
+        {
+            let rows = crate::setup::canonical_model_rows(&config);
+            crate::setup::canonicalize_effort_variant(&mut config, &rows);
+        }
         let mut agent = crate::build_agent(&config, &cwd, None).await?;
         let ctx = gray_core::agent::ToolContext {
             cwd,

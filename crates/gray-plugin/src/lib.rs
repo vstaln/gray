@@ -219,11 +219,15 @@ pub trait Plugin: Send + Sync {
         Vec::new()
     }
     async fn on_event(&self, _e: CoreEvent) {}
-    /// `prompt/context` hook (`params: {"cwd"}` → `result: {"text"}`).
+    /// `prompt/context` hook (`params: {"cwd", "session"}` → `result: {"text"}`).
     /// Default `None` = no extra context (pre-v1 behavior).
     async fn prompt_context(&self, _cwd: &str) -> Option<String> {
         None
     }
+    /// Pin the agent's session id for `session.id` on wire points with no
+    /// `ToolContext` (`prompt/context`). Default no-op: only sidecars carry
+    /// wire state.
+    fn set_session_id(&self, _id: &str) {}
     /// `tool/before` hook (`params: {"name","args"}` → allow/deny/modify).
     /// Default allow = no veto (pre-v1 behavior).
     async fn tool_before(&self, _name: &str, _args: &Value) -> ToolBefore {

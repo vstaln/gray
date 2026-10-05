@@ -89,6 +89,14 @@ jobs:
       # --no-fail-fast reports each failure by name: a failure elsewhere cannot
       # hide the macOS cancellation regression evidence, which is why that
       # suite no longer needs a separate step ahead of this one.
+      - name: Build the standalone memory plugin integration fixture
+        shell: bash
+        run: |
+          git init "$RUNNER_TEMP/gray-memory"
+          git -C "$RUNNER_TEMP/gray-memory" fetch --depth 1 https://github.com/vstaln/gray-memory.git 2ba5532fc3657eae1107e361e05e59e0df74d2bf
+          git -C "$RUNNER_TEMP/gray-memory" checkout --detach FETCH_HEAD
+          CARGO_BUILD_JOBS=4 cargo build --locked --manifest-path "$RUNNER_TEMP/gray-memory/Cargo.toml" --bin gray-memory
+          echo "GRAY_MEMORY_TEST_BIN=$RUNNER_TEMP/gray-memory/target/debug/gray-memory" >> "$GITHUB_ENV"
       - name: Run workspace tests
         env:
           RUST_BACKTRACE: 1
@@ -218,6 +226,14 @@ jobs:
       # repeated that work.
       - name: Check native Windows lint paths
         run: cargo clippy --locked --workspace -- -D warnings
+      - name: Build the standalone memory plugin integration fixture
+        shell: bash
+        run: |
+          git init "$RUNNER_TEMP/gray-memory"
+          git -C "$RUNNER_TEMP/gray-memory" fetch --depth 1 https://github.com/vstaln/gray-memory.git 2ba5532fc3657eae1107e361e05e59e0df74d2bf
+          git -C "$RUNNER_TEMP/gray-memory" checkout --detach FETCH_HEAD
+          cargo build --locked --manifest-path "$RUNNER_TEMP/gray-memory/Cargo.toml" --bin gray-memory
+          echo "GRAY_MEMORY_TEST_BIN=$RUNNER_TEMP/gray-memory/target/debug/gray-memory.exe" >> "$GITHUB_ENV"
       - name: Run full native workspace tests (report every test)
         # One run of the complete suite. nextest reports each failing test by
         # name and keeps going, so the shell lifecycle, shell contract,

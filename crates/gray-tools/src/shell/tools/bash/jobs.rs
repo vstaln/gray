@@ -354,6 +354,17 @@ impl Jobs {
         }).collect()
     }
 
+    /// Ids of this session's still-running jobs — for steering a `true`/`:`    /// no-op toward the job actions it was probably meant to be.
+    pub(super) fn live_ids(&self, ctx: &ToolContext) -> Vec<String> {
+        self.0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .filter(|(_, j)| j.session == ctx.session_id && j.result.borrow().is_none())
+            .map(|(id, _)| id.clone())
+            .collect()
+    }
+
     /// True while at least one unfinished job belongs to this session — the
     /// loop's turn-end condition for completion-wake.
     pub(super) fn has_unfinished(&self, ctx: &ToolContext) -> bool {

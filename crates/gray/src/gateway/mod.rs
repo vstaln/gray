@@ -49,12 +49,59 @@ mod toggle_tests {
 }
 
 /// Dispatch `gray gateway <cmd>`.
+/// Hermes' `gateway setup`: pick a platform, install its app when missing,
+/// hand the terminal to the app's own wizard.
+async fn setup_platform(platform: Option<String>) -> anyhow::Result<()> {
+    use anyhow::Context as _;
+    let home = crate::setup::gray_home()?;
+    let name = match platform {
+        Some(p) => p,
+        None => {
+            let apps = crate::plugin_cli::setup_apps(&home);
+            match apps.len() {
+                // ponytail: discord is the only published platform app; list
+                // the index here once there are more.
+                0 => "discord".to_string(),
+                1 => apps[0].clone(),
+                _ => {
+                    use std::io::Write;
+                    for (i, a) in apps.iter().enumerate() {
+                        println!("  {}. {a}", i + 1);
+                    }
+                    print!("Platform [1]: ");
+                    std::io::stdout().flush()?;
+                    let mut line = String::new();
+                    std::io::stdin().read_line(&mut line)?;
+                    let pick = line.trim();
+                    let i = if pick.is_empty() {
+                        1
+                    } else {
+                        pick.parse::<usize>()?
+                    };
+                    apps.get(i.wrapping_sub(1))
+                        .context("no such platform")?
+                        .clone()
+                }
+            }
+        }
+    };
+    if !crate::plugin_cli::setup_apps(&home).contains(&name) {
+        for line in crate::plugin_cli::install_spec_lines(&home, &name, false).await? {
+            println!("{line}");
+        }
+    }
+    crate::plugin_cli::forward(&home, &name, &["setup".to_string()])
+}
+
 pub async fn run_cli(cmd: crate::GatewayCmd, config: &crate::config::Config) -> anyhow::Result<()> {
     use crate::GatewayCmd;
     // Pure file bookkeeping for an adapter's own daemon: no service manager,
     // no master switch, so it answers everywhere.
     if let GatewayCmd::Lifecycle(cmd) = cmd {
         return lifecycle_cli(cmd);
+    }
+    if let GatewayCmd::Setup { platform } = cmd {
+        return setup_platform(platform).await;
     }
     // Native service/IPC lifecycle is not implemented in this preview. Reject
     // before creating pid/socket state or calling Unix service managers.
@@ -121,7 +168,7 @@ pub async fn run_cli(cmd: crate::GatewayCmd, config: &crate::config::Config) -> 
             println!("{}", service::uninstall()?);
             Ok(())
         }
-        GatewayCmd::Lifecycle(_) => unreachable!("handled above"),
+        GatewayCmd::Lifecycle(_) | GatewayCmd::Setup { .. } => unreachable!("handled above"),
     }
 }
 

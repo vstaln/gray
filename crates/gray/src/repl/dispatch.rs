@@ -151,12 +151,23 @@ pub(crate) async fn dispatch_command(
                 if let Err(e) = store.create(meta).await {
                     log::warn!(target: "gray_session", "session create failed: {e}");
                 }
+                // Fresh id — always free; held so a second gray can't
+                // `-r` this session out from under us (see
+                // `ensure_session_state`).
+                let open_guard = match store.acquire_open(&session_id).await {
+                    Ok(guard) => Some(guard),
+                    Err(e) => {
+                        log::warn!(target: "gray_session", "session open-lock failed: {e}");
+                        None
+                    }
+                };
                 short_id = crate::resume::short_id(&session_id);
                 new_sid = Some(session_id.clone());
                 *session_state = Some(SessionState {
                     full_save_pending: false,
                     store,
                     session_id,
+                    _open_guard: open_guard,
                 });
             }
             // Build with the new session id so the prompt-cache shard
@@ -242,6 +253,18 @@ pub(crate) async fn dispatch_command(
             .await;
             Flow::Continue
         }
+        ReplCommand::Fast(arg) => {
+            handle_fast(
+                config,
+                cwd,
+                arg,
+                &mut *agent,
+                tui.as_ref().map(|(s, _)| s),
+                session_state.as_ref().map(|s| s.session_id.as_str()),
+            )
+            .await;
+            Flow::Continue
+        }
         ReplCommand::ContextWindow(val) => {
             handle_context_window(config, cwd, agent, val, tui.as_ref().map(|(s, _)| s)).await;
             Flow::Continue
@@ -290,36 +313,6 @@ pub(crate) async fn dispatch_command(
                 say(tui_shared, &text);
                 Flow::Continue
             }
-        }
-        ReplCommand::Memory(arg) => {
-            // Bare opens the entries picker on a TTY; a switch word flips the
-            // persisted master switch; headless keeps the one-line state
-            // report (switch + entry count).
-            let tui_shared = tui.as_ref().map(|(s, _)| s);
-            if let Some(on) = arg.as_deref().and_then(handlers::parse_on_off) {
-                let text = handlers::toggle_subsystem(handlers::Subsystem::Memory, on);
-                say(tui_shared, &text);
-            } else if tui_shared.is_some() {
-                let bg = tui_shared.map(|s| s.lock().expect("tui lock").snapshot());
-                let opened = with_modal_sync(tui_shared, || {
-                    super::memory_panel::run_memory_modal(bg.as_ref(), cwd)
-                });
-                // Read-only listing: nothing to report beyond what it showed.
-                if let Err(e) = opened {
-                    say(tui_shared, &format!("memory picker failed: {e}"));
-                }
-            } else {
-                let entries = crate::setup::gray_home()
-                    .ok()
-                    .and_then(|home| crate::memory::MemoryStore::new(&home, cwd).ok())
-                    .map(|s| s.entry_count())
-                    .unwrap_or(0);
-                say(
-                    tui_shared,
-                    &format_memory_state(crate::setup::memory_auto_enabled(), entries),
-                );
-            }
-            Flow::Continue
         }
 
         ReplCommand::Update => {
@@ -502,33 +495,4 @@ pub(crate) async fn dispatch_command(
             Flow::Continue
         }
     })
-}
-
-/// The bare `/memory` line: switch state + entry count. Pure so the wording
-/// is testable without a store.
-pub(crate) fn format_memory_state(on: bool, entries: usize) -> String {
-    format!(
-        "memory {} — {entries} entries · /memory off hides them from the model (entries keep saving)",
-        if on { "on" } else { "off" }
-    )
-}
-
-#[cfg(test)]
-mod toggle_tests {
-    use super::format_memory_state;
-
-    #[test]
-    fn memory_state_line_names_the_manual_path() {
-        let on = format_memory_state(true, 12);
-        assert!(on.starts_with("memory on"), "{on}");
-        assert!(on.contains("12 entries"), "{on}");
-        let off = format_memory_state(false, 0);
-        assert!(off.starts_with("memory off"), "{off}");
-        assert!(off.contains("0 entries"), "{off}");
-        // Both states advertise the switch and that entries keep saving.
-        for line in [&on, &off] {
-            assert!(line.contains("/memory off"), "{line}");
-            assert!(line.contains("entries keep saving"), "{line}");
-        }
-    }
 }

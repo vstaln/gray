@@ -22,6 +22,11 @@ pub(crate) fn register_tui(tui: &crate::composer::SharedTui) {
     *TUI.lock().expect("background registration") = std::sync::Arc::downgrade(tui);
 }
 
+/// The live composer, for exit paths outside the REPL loop.
+pub(crate) fn registered_tui() -> Option<crate::composer::SharedTui> {
+    TUI.lock().ok()?.upgrade()
+}
+
 fn background(params: serde_json::Value) -> anyhow::Result<()> {
     #[derive(serde::Deserialize)]
     #[serde(deny_unknown_fields)]

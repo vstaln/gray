@@ -173,3 +173,38 @@ async fn provider_rpc_requires_the_sensitive_capability() {
     ));
     p.shutdown(std::time::Duration::from_secs(2)).await;
 }
+
+/// `session.id` rides `prompt/context`: anonymous until the builder pins the
+/// agent's session, then pinned — the freeze-per-session contract a
+/// session-scoped plugin (memory) builds on.
+#[tokio::test]
+async fn prompt_context_carries_the_agent_session_id() {
+    let dir = tempfile::tempdir().unwrap();
+    let echo = dir.path().join("echo.log");
+    let p = SidecarPlugin::spawn(vec![
+        "testdata/session_echo_plugin.sh".into(),
+        echo.to_string_lossy().into_owned(),
+    ])
+    .await
+    .unwrap();
+    assert_eq!(
+        crate::Plugin::prompt_context(&p, "/cwd").await.as_deref(),
+        Some("ok")
+    );
+    let sent = std::fs::read_to_string(&echo).unwrap();
+    assert!(
+        sent.contains(r#""session":{"cwd":"/cwd","id":""}"#),
+        "{sent}"
+    );
+    crate::Plugin::set_session_id(&p, "sess-abc-123");
+    assert_eq!(
+        crate::Plugin::prompt_context(&p, "/cwd").await.as_deref(),
+        Some("ok")
+    );
+    let sent = std::fs::read_to_string(&echo).unwrap();
+    assert!(
+        sent.contains(r#""session":{"cwd":"/cwd","id":"sess-abc-123"}"#),
+        "{sent}"
+    );
+    p.shutdown(std::time::Duration::from_secs(2)).await;
+}

@@ -329,6 +329,17 @@ async fn run_print_mode_json_message(
             if let Some(hint) = failure.hint {
                 row["hint"] = hint.into();
             }
+            // A locked session names the holder: the canned message carries
+            // no session id, and the PID lets an orchestrator wait on the
+            // process that owns it.
+            if let Some(crate::session_store::SessionError::Locked { pid, .. }) =
+                error.downcast_ref::<crate::session_store::SessionError>()
+            {
+                row["message"] = error.to_string().into();
+                if let Some(pid) = pid {
+                    row["lockHolderPid"] = (*pid).into();
+                }
+            }
             row
         }
     };
@@ -378,6 +389,20 @@ impl PrintFailure {
     /// Classify an anyhow error by downcasting to [`gray_core::error::CoreError`];
     /// anything unrecognized is a plain turn failure.
     pub fn of(error: &anyhow::Error) -> Self {
+        // Session-store failures keep their own taxonomy: a live owner is
+        // `session_locked`, safe to re-run once that process closes —
+        // the harness-visible shape mirrors every other retryable class.
+        if matches!(
+            error.downcast_ref::<crate::session_store::SessionError>(),
+            Some(crate::session_store::SessionError::Locked { .. })
+        ) {
+            return Self {
+                code: "session_locked",
+                retryable: true,
+                exit: EXIT_INFRA,
+                hint: Self::hint_for("session_locked"),
+            };
+        }
         let Some(core) = error.downcast_ref::<gray_core::error::CoreError>() else {
             return Self {
                 code: "turn_failed",
@@ -413,6 +438,7 @@ impl PrintFailure {
             "loop_detected" => "Agent stopped on a repeated-tool loop.",
             "cancelled" => "Cancelled.",
             "serialization" => "Serialization failure.",
+            "session_locked" => "The session is already open in another process.",
             _ => {
                 "Agent turn failed; actions may already have occurred. Do not automatically retry."
             }
@@ -435,6 +461,7 @@ impl PrintFailure {
             }
             "timeout" => "Retry, or raise the request timeout for slow providers.",
             "server_error" | "stream_broken" => "Retrying the turn usually succeeds.",
+            "session_locked" => "Close the other instance, or open a different session.",
             _ => return None,
         })
     }
@@ -825,6 +852,15 @@ async fn run_print_inner(
     continue_last: bool,
     mut json: Option<&mut JsonOutput>,
 ) -> anyhow::Result<()> {
+    // Same canonicalization as the REPL boot: a saved `swe-2-max` becomes
+    // `swe-2` at `max` before the agent is built, so headless runs ride
+    // the family row too (the wire id is re-expanded at request build).
+    let mut config_owned = config.clone();
+    {
+        let rows = crate::setup::canonical_model_rows(&config_owned);
+        crate::setup::canonicalize_effort_variant(&mut config_owned, &rows);
+    }
+    let config = &config_owned;
     crate::setup::set_user_context_window(config.context_window);
     crate::setup::set_user_reserve_tokens(config.context_reserve);
     crate::setup::set_user_keep_recent_tokens(config.context_keep);
@@ -839,20 +875,32 @@ async fn run_print_inner(
     let cwd = std::env::current_dir()?;
     let store = JsonlSessionStore::default();
     // Explicit `--session` wins over `-c` (same precedence as the REPL).
-    let resume_target: Option<SessionId> = match session {
+    let (resume_target, needs_maintain): (Option<SessionId>, bool) = match session {
         Some(raw)
             if json.is_some()
                 && crate::session_store::valid_session_id(raw)
                 && store.exists_on_disk(&SessionId::new(raw)).await =>
         {
-            let id = SessionId::new(raw);
-            store.maintain(&id).await?;
-            Some(id)
+            (Some(SessionId::new(raw)), true)
         }
-        Some(raw) => Some(crate::resume::resolve_session_strict(&store, raw, false).await?),
-        None if continue_last => crate::resume::latest_session_anywhere(&store).await,
-        None => None,
+        Some(raw) => (
+            Some(crate::resume::resolve_session_strict(&store, raw, false).await?),
+            false,
+        ),
+        None if continue_last => (crate::resume::latest_session_anywhere(&store).await, false),
+        None => (None, false),
     };
+    // One owner per session: a second `-p` on a live session gets
+    // `session_locked` with the holder's PID, never silent interleaved
+    // appends. Claimed before maintain/load so the file can't change
+    // under another owner.
+    let mut _open_guard = None;
+    if let Some(sid) = resume_target.as_ref() {
+        _open_guard = Some(store.acquire_open(sid).await?);
+        if needs_maintain {
+            store.maintain(sid).await?;
+        }
+    }
     let history: Vec<Message> = match &resume_target {
         Some(sid) => {
             let (_, entries) = store
@@ -923,6 +971,13 @@ async fn run_print_inner(
                 config.model.as_deref().unwrap_or("unset"),
             ))
             .await?;
+        // Fresh id — always free; held so `gray -r` can't double-open the
+        // session while this turn writes it. Pathological failure degrades
+        // to guardless rather than failing the turn.
+        match store.acquire_open(&session_id).await {
+            Ok(guard) => _open_guard = Some(guard),
+            Err(e) => log::warn!("session open-lock failed: {e}"),
+        }
     }
     if let Some(meter) = json.as_ref().and_then(|output| output.meter.as_ref()) {
         agent = agent.map_provider(|provider| meter.wrap(provider));

@@ -31,6 +31,20 @@ fn read_structured_input(path: &Path) -> Result<Vec<u8>, InputError> {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let result = run().await;
+    // A session-live refusal is routine contention, not a crash: render it
+    // as a `⬢`/`└` card (sibling of `Resumed session`), not an `Error:` dump.
+    if let Err(e) = &result
+        && let Some(gray::session_store::SessionError::Locked { id, pid }) =
+            e.downcast_ref::<gray::session_store::SessionError>()
+    {
+        eprintln!("{}", gray::resume::locked_session_card(id, *pid));
+        std::process::exit(1);
+    }
+    result
+}
+
+async fn run() -> anyhow::Result<()> {
     gray::logging::init();
     install_panic_hook();
     let _ = crossterm::terminal::disable_raw_mode();
@@ -41,10 +55,7 @@ async fn main() -> anyhow::Result<()> {
         print!("{}", include_str!("../gray-skill.md"));
         return Ok(());
     }
-    if let Some(gray::Commands::Memory(args)) = &cli.command {
-        return gray::memory::run_cli(args);
-    }
-    // Same reason as memory: a local search is nobody's provider concern, and
+    // A local search is nobody's provider concern, and
     // the bash tool claims `gray find`/`gray grep` so a model does not have to
     // know `gray` is on its PATH. `gray spill` reads a local file for the same
     // reason — it is the way back into a result the context had to leave out.
@@ -138,7 +149,6 @@ async fn main() -> anyhow::Result<()> {
     gray::setup::set_user_keep_recent_tokens(config.context_keep);
     if let Some(cmd) = cli.command {
         match cmd {
-            gray::Commands::Memory(_) => unreachable!("handled before provider configuration"),
             gray::Commands::Doctor { .. } => {
                 unreachable!("handled right after config resolution")
             }
@@ -280,6 +290,10 @@ async fn run_resume_subcommand(
             None => return Ok(()),
         }
     };
+    // Claim the session before announcing it: a session open in another
+    // gray process reports the holder's PID here instead of "Resumed"
+    // followed by the refusal the REPL would print.
+    let _open_guard = store.acquire_open(&target_id).await?;
     // Non-TTY (`resume <id> < /dev/null`, scripts): the REPL would hit EOF
     // and exit silently, so announce what was resumed first — never exit 0
     // with no output. Interactive terminals skip this (the TUI owns the screen).

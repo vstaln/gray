@@ -228,7 +228,7 @@ async fn fast_yield_finishes_inline_and_bad_args_never_spawn() {
         ..ctx.clone()
     };
     assert!(
-        tool.execute(&missing, json!({"command":"true","background":true}))
+        tool.execute(&missing, json!({"command":"printf ''","background":true}))
             .await
             .is_error
     );
