@@ -98,42 +98,6 @@ pub fn expand_tabs(s: &str) -> String {
 /// review's `\u{1f7e0}` marker did to a live REPL (byte index 80 inside the
 /// 4-byte emoji). ASCII text cuts at exactly 80, as before; wide text now
 /// fills the same 80 cells instead of being cut a quarter of the way in.
-/// Discord-bound text without its markdown markers: `**bold**` → `bold`,
-/// `__underline__` → `underline`, `` `code` `` → `code`, `~~strike~~` → `strike`.
-/// Single `*`/`_` stay (Discord only pairs them) and the `||spoiler||` bars
-/// stay too — stripping one bar of a spoiler pair corrupts worse than noise.
-fn strip_markup(s: &str) -> String {
-    let mut out = s.to_string();
-    for (open, close) in [("**", "**"), ("__", "__"), ("~~", "~~")] {
-        while let Some(a) = out.find(open) {
-            let after = a + open.len();
-            let Some(rel) = out[after..].find(close) else {
-                break;
-            };
-            let b = after + rel;
-            let inner = out[after..b].to_string();
-            if inner.trim().is_empty() {
-                break;
-            }
-            out.replace_range(a..b + close.len(), &inner);
-        }
-    }
-    // Single-backtick code spans: drop the fences, keep the code.
-    let mut res = String::with_capacity(out.len());
-    let mut chars = out.chars().peekable();
-    while let Some(ch) = chars.next() {
-        if ch == '`' {
-            if chars.peek() == Some(&'`') {
-                res.push('`');
-                chars.next();
-            }
-            continue;
-        }
-        res.push(ch);
-    }
-    res
-}
-
 fn truncate_cmd(cmd: &str) -> &str {
     let line = cmd.lines().next().unwrap_or(cmd);
     if crate::text_width::display_width(line) <= 80 {
@@ -168,12 +132,12 @@ pub fn format_live_tool_header(name: &str, args_so_far: &str, cwd: Option<&Path>
     }
     // Fast path: complete JSON renders exactly like the final header.
     if let Ok(v) = serde_json::from_str::<serde_json::Value>(trimmed) {
-        return format_tool_call_header(name, &v, cwd);
+        return format_tool_call_header(name, &v, cwd, None);
     }
     // Slow path: stream the in-progress scalar, tolerating unclosed quotes
     // and trailing escapes. Stays a dumb string scan (no new deps).
     match extract_partial_scalar(name, trimmed, RAW_CAP) {
-        Some(partial) => format_tool_call_header(name, &partial, cwd),
+        Some(partial) => format_tool_call_header(name, &partial, cwd, None),
         None => tool_name_line(name),
     }
 }
@@ -228,8 +192,6 @@ fn scalar_key(name: &str, raw: &str) -> &'static str {
         "grep" | "find" => "pattern",
         "web_search" => "query",
         "web_fetch" => "url",
-        "discord_send" => "content",
-        "discord_file" => "path",
         _ => {
             // key order decides, not a schema table. `path` wins
             // on ties (the final header's `other` arm prefers it too).
@@ -398,6 +360,22 @@ fn skill_display_name(args: &serde_json::Value) -> String {
     "skill".to_string()
 }
 
+/// First non-empty string at a plugin-declared dot path (`"document.title"`).
+/// Core walks object keys only: no array indices, no wildcards, no schema
+/// knowledge. Anything missing, non-string, or whitespace-only is `None`,
+/// so a surface that declares a path for a shape it never sends degrades
+/// to the built-in preview instead of an error.
+pub fn preview_at(args: &serde_json::Value, path: &str) -> Option<String> {
+    let mut cur = args;
+    for key in path.split('.').map(str::trim).filter(|k| !k.is_empty()) {
+        cur = cur.as_object()?.get(key)?;
+    }
+    cur.as_str()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
 /// Args with a display-only `label` injected (plugin `label` support).
 /// Renderers read `label` in the `other` arm; sub-renderers
 /// (`arg_path`, previews) ignore unknown keys, so injection is safe.
@@ -418,10 +396,14 @@ pub fn with_tool_label(args: &serde_json::Value, label: Option<&str>) -> serde_j
 }
 
 /// Formats a tool invocation header line matching Grok CLI styling for Ratatui.
+///
+/// `preview_path` is the plugin-declared dot path into `args` (display
+/// metadata, never a wire argument — a real `preview` arg stays opaque).
 pub fn format_tool_call_header(
     name: &str,
     args: &serde_json::Value,
     cwd: Option<&Path>,
+    preview_path: Option<&str>,
 ) -> Line<'static> {
     let bullet = Span::styled(
         "\u{2b22} ",
@@ -548,55 +530,6 @@ pub fn format_tool_call_header(
                 Span::styled(cut.to_string(), path_style),
             ])
         }
-        "discord_send" => {
-            let content = args
-                .get("content")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .trim();
-            // Discord renders markdown, the terminal does not: strip the
-            // markers (`**bold**` reads as literal asterisks) so the
-            // preview matches what the channel actually shows.
-            let plain = strip_markup(content);
-            let cut = truncate_cmd(&plain);
-            let shown = if cut.len() < plain.len() {
-                format!("{}{}", cut.trim_end(), "…")
-            } else {
-                cut.to_string()
-            };
-            Line::from(vec![
-                bullet,
-                Span::styled("Sent Discord ", action_style),
-                Span::styled(format!("\"{shown}\""), cmd_style),
-            ])
-        }
-        "discord_send_ui" => {
-            Line::from(vec![bullet, Span::styled("Sent Discord UI", action_style)])
-        }
-        "discord_open_modal" => Line::from(vec![
-            bullet,
-            Span::styled("Opened Discord modal", action_style),
-        ]),
-        "discord_file" => {
-            let desc = args.get("action").and_then(|v| v.as_str()).unwrap_or("");
-            let target = args
-                .get("path")
-                .or_else(|| args.get("file_id"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            let mut spans = vec![bullet, Span::styled("Shared Discord file", action_style)];
-            if !target.is_empty() {
-                spans.push(Span::raw(" "));
-                spans.push(Span::styled(shorten_path(target.trim(), cwd), path_style));
-            } else if !desc.is_empty() {
-                spans.push(Span::styled(format!(" ({desc})"), dim_style));
-            }
-            Line::from(spans)
-        }
-        "discord_ui_schema" => Line::from(vec![
-            bullet,
-            Span::styled("Read Discord UI schema", action_style),
-        ]),
         other => {
             // `label` is display-only: a plugin may pass one inside args
             // (see `Agent::with_tool_labels`) so transcripts name the tool
@@ -610,6 +543,22 @@ pub fn format_tool_call_header(
                 .filter(|t| !t.is_empty())
                 .map(str::to_string)
                 .unwrap_or_else(|| humanize_tool_name(other));
+            if let Some(preview_path) = preview_path.map(str::trim).filter(|t| !t.is_empty())
+                && let Some(text) = preview_at(args, preview_path)
+            {
+                let cut = truncate_cmd(&text);
+                let shown = if cut.len() < text.len() {
+                    format!("{}\u{2026}", cut.trim_end())
+                } else {
+                    cut.to_string()
+                };
+                return Line::from(vec![
+                    bullet,
+                    Span::styled(headline.clone(), action_style),
+                    Span::raw(" "),
+                    Span::styled(format!("\"{shown}\""), cmd_style),
+                ]);
+            }
             let path = shorten_path(arg_path(args), cwd);
             if !path.is_empty() {
                 Line::from(vec![
@@ -1047,7 +996,7 @@ fn render_numbered_lines(
 pub fn tool_may_render_body(tool_name: &str) -> bool {
     matches!(
         tool_name,
-        "bash" | "grep" | "find" | "ls" | "edit" | "write"
+        "bash" | "grep" | "find" | "ls" | "edit" | "write" | "web_search" | "web_fetch"
     )
 }
 

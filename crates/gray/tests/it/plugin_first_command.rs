@@ -4,7 +4,8 @@ fn plugin_command_initializes_lazy_agent_without_provider_call() {
     use std::io::Write;
     use std::process::{Command, Stdio};
     let dir = tempfile::tempdir().unwrap();
-    let echo = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugins/echo/echo.sh");
+    let echo =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../gray-plugin/testdata/echo.sh");
     std::fs::write(
         dir.path().join("gray.yml"),
         format!(

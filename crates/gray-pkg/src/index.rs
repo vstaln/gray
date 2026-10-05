@@ -42,10 +42,6 @@ pub struct Source {
     #[serde(rename = "type")]
     pub type_: String,
     pub url: String,
-    /// Pinned git ref (branch/tag) for `pi-gallery`+`git` entries.
-    /// Absent on every existing entry — old index files still parse.
-    #[serde(default)]
-    pub git_ref: Option<String>,
 }
 
 /// Index hash: either `"sha256:<hex>"` or a per-target map.

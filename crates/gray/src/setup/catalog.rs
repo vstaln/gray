@@ -684,7 +684,7 @@ pub fn build_connect_items(catalog: &Catalog, providers: &[InstalledProvider]) -
         (
             "openai",
             "OpenAI",
-            "(ChatGPT login or API key)",
+            "(API key)",
             "https://api.openai.com/v1",
             false,
         ),

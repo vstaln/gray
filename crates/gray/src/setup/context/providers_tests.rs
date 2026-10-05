@@ -141,3 +141,15 @@ fn empty_save_never_clobbers_a_cache() {
         "a failed fetch must not wipe the last good list"
     );
 }
+
+#[test]
+fn loopback_hosts_are_recognized_with_and_without_brackets() {
+    assert!(is_loopback_host("localhost"));
+    assert!(is_loopback_host("127.0.0.1"));
+    assert!(is_loopback_host("127.0.0.2"));
+    assert!(is_loopback_host("[::1]"));
+    assert!(is_loopback_host("::1"));
+    assert!(!is_loopback_host("example.com"));
+    assert!(!is_loopback_host("0.0.0.0"));
+    assert!(!is_loopback_host(""));
+}

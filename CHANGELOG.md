@@ -3,6 +3,11 @@
 ## [Unreleased]
 
 ### Added
+- **`--bare` (or `GRAY_BARE=1`) runs gray with nothing but itself.** The built-in system prompt
+  and the `bash` tool; `~/.gray/AGENTS.md` (neither read nor created), memory, skills, project
+  AGENTS.md/CLAUDE.md, plugins (`gray.yml`, installed, pi), cache warming and the update check are
+  all skipped. Model, provider and context settings still apply. For benchmarks and reproducible
+  runs, where whatever happens to be installed on the machine must not leak into the result.
 - **`--json` streams the answer as it is written.** With `GRAY_STREAM_TEXT=1`, `gray -p --json`
   emits the assistant's prose as `progress` rows with `phase: "text"`: one numbered `segment` per
   run of prose between tool calls, complete lines as an append-only `delta`, the unfinished line
@@ -134,6 +139,19 @@
   permanent copy of the same line went with it.
 
 ### Changed
+- **The in-repo `plugins/` dir and the `plugins-release` workflow are gone.** Plugins live in
+  their own repositories under github.com/vstaln (see `docs/plugins.md`); the served plugin
+  index comes from `vstaln/graysite`. The `echo` reference sidecar moved to
+  `crates/gray-plugin/testdata/echo.sh`.
+- **Account login moved to the
+  [`gray-account`](https://github.com/vstaln/gray-account) plugin.** `gray login`, `gray whoami`,
+  `gray logout` and the `/login` `/whoami` `/logout` REPL commands left core: install the plugin,
+  then use `/login`, `/whoami`, `/logout` in the REPL or `gray account login|whoami|logout` in a
+  shell. The existing `~/.gray/registry-token.json` is reused, so an earlier login keeps working.
+- **The ChatGPT/Codex subscription plugin moved out of the gray repo** into
+  [`vstaln/gray-codex-sub`](https://github.com/vstaln/gray-codex-sub), where it ships as the
+  standalone `gray-codex-sub` sidecar. Install it, then `/connect` and sign in again —
+  credentials stored under the old `codex-auth` plugin name are not reused.
 - **CI waits on less.** `windows-runtime` gated every run at 9.5 minutes on a PR and 14.5 on
   main. It no longer builds a release binary: the installer tests run against the debug
   `gray.exe` the test build already made, and the downloadable preview ZIP is built by its own
@@ -145,6 +163,23 @@
   `perf-floor`. Docs-only changes skip the Rust jobs, a newer push cancels a PR's run in flight,
   only main writes the Rust cache, CI builds without dev debuginfo, and ripgrep installs without
   a package index refresh unless it needs one.
+- **Plugins have one registry and one installer.** `commands.json` is gone: a `cli_argv` field on
+  each `plugins/lock.json` entry carries the `gray <name> …` forwarding vector, and a legacy
+  `commands.json` is folded in on first use and renamed `commands.json.migrated`. `gray install
+  plugin` is removed — `gray plugin install <name|url|path>` is the one install path (index name,
+  https tarball, or local executable; `GRAY_PLUGIN_PATH` still overrides). The foreign plugin
+  arms (`npm:`, `git:`, `claude:`, pi-gallery `clawhub:`) are gone from `plugin install` — skill
+  specs (`clawhub:…`, `github:…`, `url:…`) route to the skill installer as before and land in
+  `~/.gray/skills`.
+- **Discord setup moved out of core.** The app-setup flow, the pinned-catalog build, and the
+  Discord-specific transcript rendering left `gray`; the Discord plugin owns `setup`, `doctor`,
+  `register`, `run`, and service install. Install it from
+  [gray-discord-plugin](https://github.com/vstaln/gray-discord-plugin)
+  (`cargo install --git https://github.com/vstaln/gray-discord-plugin --locked`, so `gray-discord`
+  is on PATH), then `gray plugin install discord` and `gray discord setup` replace the old
+  `/gateway` wizard. `/gateway` now just lists installed apps and their declared subcommands.
+- **The structured input protocol is `gray.input`.** The old `gray.discord.input` identifier
+  still validates, so plugins that already emit it keep working.
 
 ## [0.1.10] - 2026-10-01
 

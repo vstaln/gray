@@ -197,6 +197,7 @@ mod tests {
             enabled: true,
             granted_capabilities: granted.into_iter().map(str::to_string).collect(),
             capabilities_hash: hash.map(str::to_string),
+            cli_argv: None,
         }
     }
 

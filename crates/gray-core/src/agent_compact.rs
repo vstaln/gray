@@ -34,7 +34,14 @@ impl Agent {
     /// `Ok(true)` knowing each success makes progress, and must stop on
     /// `Ok(false)`.
     pub(crate) async fn try_compact_budgeted(&mut self) -> Result<bool, CoreError> {
-        Ok(self.compact_v2(None, None).await?.is_some())
+        let before = self.estimate_tokens();
+        let compacted = self.compact_v2(None, self.compact_keep).await?.is_some();
+        log::info!(
+            target: "gray_agent",
+            "compaction: ok={compacted} before={before} after={}",
+            self.estimate_tokens()
+        );
+        Ok(compacted)
     }
 
     /// The v2 pipeline behind [`try_compact_budgeted`](Self::try_compact_budgeted),
@@ -167,11 +174,15 @@ pub(crate) fn est_tokens(msgs: &[Message]) -> usize {
 pub const COMPACT_RESERVE_TOKENS: usize = 16_000;
 
 /// Pre-turn budget check: true when the estimate plus reserve reaches the
-/// window. `None` window never fires (fail-safe).
-pub(crate) fn needs_pre_turn_compact(estimate: usize, window: Option<usize>) -> bool {
+/// window. `None` window never fires (fail-safe); `None` reserve = 16k.
+pub(crate) fn needs_pre_turn_compact(
+    estimate: usize,
+    window: Option<usize>,
+    reserve: Option<usize>,
+) -> bool {
     match window {
         None => false,
-        Some(w) => estimate.saturating_add(COMPACT_RESERVE_TOKENS) >= w,
+        Some(w) => estimate.saturating_add(reserve.unwrap_or(COMPACT_RESERVE_TOKENS)) >= w,
     }
 }
 

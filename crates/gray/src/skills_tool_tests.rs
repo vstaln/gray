@@ -162,7 +162,7 @@ async fn skills_plugin_is_context_only_and_serves_block() {
     assert!(ctx.contains("paste-demo"), "missing skill name: {ctx}");
     assert!(ctx.contains("SKILL.md"), "missing exact location: {ctx}");
     assert!(
-        ctx.contains("cat <location>") || ctx.contains("cat "),
+        ctx.contains("`cat` its SKILL.md"),
         "block must tell the model to read via bash: {ctx}"
     );
 }
@@ -220,7 +220,7 @@ fn project_context_block_strips_rationale_comments_for_the_executor() {
         "a rationale line leaked into the served block: {block}"
     );
     assert!(
-        block.contains("stripped before you see them"),
+        block.contains("stripped here; keep them"),
         "block must explain the channel so an editor preserves it: {block}"
     );
 }

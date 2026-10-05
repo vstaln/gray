@@ -275,8 +275,6 @@ fn every_command_the_skill_shows_actually_parses() {
         &["gray", "plugin", "list"],
         &["gray", "gateway", "status"],
         &["gray", "update"],
-        &["gray", "login"],
-        &["gray", "whoami"],
         &["gray", "--skill"],
         &["gray", "--json", "--input-json", "task.json"],
     ];
@@ -309,6 +307,7 @@ fn warm_config(base_url: &str, effort: Option<&str>, plugin: bool) -> Config {
         max_turns: None,
         max_cost_micros: None,
         max_wall_secs: None,
+        bare: false,
     }
 }
 

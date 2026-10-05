@@ -79,20 +79,6 @@ async fn main() -> anyhow::Result<()> {
         }
         _ => {}
     }
-    // Account commands run before provider configuration: enrolling a fresh
-    // machine must not require a model and a key first.
-    match &cli.command {
-        Some(gray::Commands::Login { code }) => {
-            return gray::account::run_login(code.as_deref()).await;
-        }
-        Some(gray::Commands::Whoami) => {
-            return gray::account::run_whoami().await;
-        }
-        Some(gray::Commands::Logout) => {
-            return gray::account::run_logout().await;
-        }
-        _ => {}
-    }
     if cli.dump_manifest {
         match gray::build_registry().await {
             Ok((_registry, manifests, fallback)) => {
@@ -114,19 +100,11 @@ async fn main() -> anyhow::Result<()> {
         }
     }
     // Plugin terminal commands do not depend on provider configuration.
-    match &cli.command {
-        Some(gray::Commands::Install {
-            cmd: gray::InstallCmd::Plugin { name, force },
-        }) => {
-            return gray::plugin_cli::install(&gray::plugin_cli::home()?, name, *force).await;
-        }
-        Some(gray::Commands::External(args)) => {
-            let (name, rest) = args
-                .split_first()
-                .expect("clap external command is nonempty");
-            return gray::plugin_cli::forward(&gray::plugin_cli::home()?, name, rest);
-        }
-        _ => {}
+    if let Some(gray::Commands::External(args)) = &cli.command {
+        let (name, rest) = args
+            .split_first()
+            .expect("clap external command is nonempty");
+        return gray::plugin_cli::forward(&gray::plugin_cli::home()?, name, rest);
     }
     let structured_input = if let Some(path) = cli.input_json.as_deref() {
         let bytes = match read_structured_input(path) {
@@ -188,12 +166,8 @@ async fn main() -> anyhow::Result<()> {
             }
             // Handled before Config::resolve so plugin commands work with no
             // provider configured (fresh machine, venv-only install).
-            gray::Commands::Install { .. } | gray::Commands::External(_) => {
+            gray::Commands::External(_) => {
                 unreachable!("plugin CLI dispatch happens before configuration")
-            }
-            // Same reason, one step earlier still: no provider needed to log in.
-            gray::Commands::Login { .. } | gray::Commands::Whoami | gray::Commands::Logout => {
-                unreachable!("account CLI dispatch happens before configuration")
             }
             gray::Commands::Find { .. }
             | gray::Commands::Grep { .. }
@@ -230,7 +204,9 @@ async fn main() -> anyhow::Result<()> {
         )
         .await?;
     } else {
-        gray::update::startup_check().await;
+        if !config.bare {
+            gray::update::startup_check().await;
+        }
         run_repl_mode(&mut config, cli.continue_last, cli.session.as_deref()).await?;
     }
     Ok(())
@@ -335,10 +311,6 @@ async fn run_plugin_inner(cmd: gray::PluginCmd) -> anyhow::Result<()> {
             Ok(())
         }
         PluginCmd::List => {
-            // Merged view: `lock.json` sidecars + `commands.json` native/CLI
-            // commands (`install plugin` wrote there, `plugin list` never
-            // looked). CLI rows carry a `[command]` tag since `update` and
-            // `install <spec>` stay sidecar-only.
             let rows = gray::plugin_cli::list_rows()?;
             if rows.is_empty() {
                 println!("no plugins installed");
@@ -350,21 +322,15 @@ async fn run_plugin_inner(cmd: gray::PluginCmd) -> anyhow::Result<()> {
             }
             Ok(())
         }
-        PluginCmd::Install { spec, force: _ } => {
-            let r = gray_pkg::ops::install(spec, gray_pkg::ops::InstallOpts::default()).await?;
-            println!("installed {} {} at {}", r.name, r.version, r.path.display());
-            Ok(())
+        PluginCmd::Install { spec, force } => {
+            gray::plugin_cli::install_spec(&gray::plugin_cli::home()?, &spec, force).await
         }
         PluginCmd::Remove { name } => {
-            // `install plugin` entries live in `commands.json`, not the
-            // sidecar lock: route to whichever registry owns the name.
             gray::plugin_cli::remove_managed(&name)?;
             println!("removed {name}");
             Ok(())
         }
         PluginCmd::Update { target } => {
-            // `update` only knows sidecar sources: `commands.json` entries
-            // warn and no-op instead of failing as "not installed".
             let reports = gray::plugin_cli::update_managed(&target).await?;
             if reports.is_empty() {
                 println!("up to date");
@@ -375,7 +341,6 @@ async fn run_plugin_inner(cmd: gray::PluginCmd) -> anyhow::Result<()> {
             Ok(())
         }
         PluginCmd::Enable { name } => {
-            // Same routing as remove: the name may live in either registry.
             gray::plugin_cli::set_managed_enabled(&name, true)?;
             println!("enabled {name}");
             Ok(())

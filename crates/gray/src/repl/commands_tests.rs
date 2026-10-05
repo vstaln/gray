@@ -130,9 +130,6 @@ fn registry_resolve_canonical_and_aliases() {
         ("key", "connect"),
         ("providers", "connect"),
         ("provider", "connect"),
-        ("login", "login"),
-        ("whoami", "whoami"),
-        ("logout", "logout"),
         ("effort", "thinking"),
         ("reasoning", "thinking"),
         ("compress", "compact"),
@@ -161,9 +158,6 @@ fn registry_completion_covers_aliases() {
         ("key", "connect"),
         ("providers", "connect"),
         ("provider", "connect"),
-        ("login", "login"),
-        ("whoami", "whoami"),
-        ("logout", "logout"),
         ("effort", "thinking"),
         ("reasoning", "thinking"),
         ("compress", "compact"),
@@ -234,11 +228,10 @@ fn registry_parse_uses_canonical() {
     ));
     assert!(matches!(
         parse_command("/login openrouter"),
-        ReplCommand::Login(Some(code)) if code == "openrouter"
+        ReplCommand::Unknown(_)
     ));
-    assert!(matches!(parse_command("/login"), ReplCommand::Login(None)));
-    assert!(matches!(parse_command("/whoami"), ReplCommand::Whoami));
-    assert!(matches!(parse_command("/logout"), ReplCommand::Logout));
+    assert!(matches!(parse_command("/whoami"), ReplCommand::Unknown(_)));
+    assert!(matches!(parse_command("/logout"), ReplCommand::Unknown(_)));
     assert!(matches!(
         parse_command("/skills foo"),
         ReplCommand::Skill(Some(_))
@@ -408,7 +401,8 @@ fn model_completes_cached_ids() {
             .set_read_timeout(Some(std::time::Duration::from_secs(5)))
             .unwrap();
         let mut request = [0; 4096];
-        stream.read(&mut request).unwrap();
+        let request_len = stream.read(&mut request).unwrap();
+        assert!(request_len > 0);
         let body = r#"{"data":[{"id":"test-completion-model-xyz"}]}"#;
         write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
     });

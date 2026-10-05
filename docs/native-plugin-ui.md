@@ -8,9 +8,9 @@ model-facing tools; a plugin's sidecar manifest still controls its own tools.
 
 ```sh
 # Native executable already built/installed locally:
-GRAY_PLUGIN_PATH=/absolute/path/to/gray-example gray install plugin example
-# Or find gray-example on PATH:
-gray install plugin example
+GRAY_PLUGIN_PATH=/absolute/path/to/gray-example gray plugin install example
+# Or find gray-example on PATH, or pass its path directly:
+gray plugin install example
 
 gray example settings
 ```
@@ -86,10 +86,10 @@ exit status is reported as an error; stderr is not painted into the TUI.
 - Shutdown stops polling; the current request remains bounded by its deadline.
   This is not a sandbox for malicious plugins or deliberately detached descendants.
 
-`plugin list` (CLI + `/plugin list`, alias `/plugins list`) merges both registries: every `commands.json` entry plus every `lock.json` sidecar not shadowed by the same name, sorted by name with CLI rows tagged `[command]`. `plugin enable|disable|remove <name>` route to whichever registry owns the name (CLI first — it shadows at runtime); `register_native` mirrors into `lock.json`, so removing a native command also drops its mirror row (an independent same-named sidecar with different argv survives). `plugin update <command>` warns (`non-index source`) and no-ops; `install <spec>` stays sidecar-only.
+`plugin list` (CLI + `/plugin list`, alias `/plugins list`) reads one registry, `lock.json`: an entry with `cli_argv` is a CLI command and is tagged `[command]`; `argv` is the sidecar invocation. `plugin enable|disable|remove|update <name>` operate on that same file. A legacy `commands.json` is migrated into `lock.json` on first use (its argv becomes each entry's `cli_argv`) and renamed `commands.json.migrated`.
 
-Data lives under `$GRAY_HOME/plugins` (default `~/.gray/plugins`): `commands.json`,
-`lock.json`, `<name>-manifest.json`, and `widgets.json`. Registration checks widget
+Data lives under `$GRAY_HOME/plugins` (default `~/.gray/plugins`): `lock.json`,
+`<name>-manifest.json`, and `widgets.json`. Registration checks widget
 ownership under a file lock. Files are individually atomically replaced; the
 multi-file registration is not a crash-atomic transaction. Re-register the plugin
 if interrupted. The executable must remain available at the registered path.

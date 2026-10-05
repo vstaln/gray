@@ -113,7 +113,7 @@ fn tool_before_parses_deny_modify_and_unknown() {
 #[tokio::test]
 async fn echo_reference_plugin_manifest_and_command_round_trip() {
     // Reference plugin ships with the repo; boot the real script, not a fixture.
-    let p = SidecarPlugin::spawn(vec!["../../plugins/echo/echo.sh".into()])
+    let p = SidecarPlugin::spawn(vec!["testdata/echo.sh".into()])
         .await
         .unwrap();
     let m = p.manifest();

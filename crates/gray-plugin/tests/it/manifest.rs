@@ -52,6 +52,35 @@ fn manifest_result_with_tool_schema_round_trips_def() {
 }
 
 #[test]
+fn tool_preview_parses_and_stays_model_invisible() {
+    // A manifest `preview` names the args dot path for the transcript
+    // preview; same visibility contract as `label`.
+    let v = serde_json::json!({
+        "name": "x", "version": "0.1.0",
+        "tools": [{"name": "send_card", "description": "d",
+                   "parameters": {"type": "object"}, "preview": "document.title"}],
+    });
+    let m = Manifest::from_result(&v);
+    assert_eq!(m.tools[0].preview.as_deref(), Some("document.title"));
+    // Blank previews do not stick.
+    let v2 = serde_json::json!({
+        "name": "x", "version": "0.1.0",
+        "tools": [{"name": "t", "description": "d",
+                   "parameters": {"type": "object"}, "preview": "  "}],
+    });
+    assert!(Manifest::from_result(&v2).tools[0].preview.is_none());
+    // `None` skips serialization: persisted payloads stay byte-stable.
+    let def = gray_core::message::ToolDef::new("t", "d", serde_json::json!({}));
+    assert!(
+        !serde_json::to_value(&def)
+            .unwrap()
+            .as_object()
+            .unwrap()
+            .contains_key("preview")
+    );
+}
+
+#[test]
 fn legacy_string_tool_entries_still_parse() {
     // Pre-v1 sidecars send `"tools": ["echo"]` — keep working.
     let v = serde_json::json!({"name": "echo", "version": "0.1.0", "tools": ["echo"]});

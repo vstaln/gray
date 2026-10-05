@@ -1,10 +1,13 @@
-use crate::input::{InputEnvelope, STRUCTURED_INPUT_PROTOCOL, STRUCTURED_INPUT_VERSION};
+use crate::input::{
+    InputEnvelope, LEGACY_STRUCTURED_INPUT_PROTOCOL, STRUCTURED_INPUT_PROTOCOL,
+    STRUCTURED_INPUT_VERSION,
+};
 use crate::message::{ContentBlock, Message};
 
 #[test]
-fn valid_discord_event_envelope_round_trips_as_a_typed_block() {
+fn valid_event_envelope_round_trips_as_a_typed_block() {
     let input = InputEnvelope::from_json(
-        br#"{"protocol":"gray.discord.input","version":1,"kind":"component_event","payload":{"action":"refresh","values":{"id":"7"}}}"#,
+        br#"{"protocol":"gray.input","version":1,"kind":"component_event","payload":{"action":"refresh","values":{"id":"7"}}}"#,
     )
     .unwrap();
     assert_eq!(input.protocol, STRUCTURED_INPUT_PROTOCOL);
@@ -22,6 +25,16 @@ fn valid_discord_event_envelope_round_trips_as_a_typed_block() {
 }
 
 #[test]
+fn the_legacy_protocol_identifier_still_validates() {
+    let input = InputEnvelope::from_json(
+        br#"{"protocol":"gray.discord.input","version":1,"kind":"component_event","payload":{}}"#,
+    )
+    .unwrap();
+    assert_eq!(input.protocol, LEGACY_STRUCTURED_INPUT_PROTOCOL);
+    assert_ne!(input.protocol, STRUCTURED_INPUT_PROTOCOL);
+}
+
+#[test]
 fn envelope_rejects_unknown_protocol_version_and_non_object_payload() {
     assert!(
         InputEnvelope::from_json(
@@ -29,23 +42,27 @@ fn envelope_rejects_unknown_protocol_version_and_non_object_payload() {
         )
         .is_err()
     );
-    assert!(InputEnvelope::from_json(
-        br#"{"protocol":"gray.discord.input","version":2,"kind":"component_event","payload":{}}"#,
-    )
-    .is_err());
-    assert!(InputEnvelope::from_json(
-        br#"{"protocol":"gray.discord.input","version":1,"kind":"component_event","payload":[]}"#,
-    )
-    .is_err());
+    assert!(
+        InputEnvelope::from_json(
+            br#"{"protocol":"gray.input","version":2,"kind":"component_event","payload":{}}"#,
+        )
+        .is_err()
+    );
+    assert!(
+        InputEnvelope::from_json(
+            br#"{"protocol":"gray.input","version":1,"kind":"component_event","payload":[]}"#,
+        )
+        .is_err()
+    );
 }
 
 #[test]
 fn envelope_rejects_unknown_fields_and_oversized_kind() {
-    let unknown = br#"{"protocol":"gray.discord.input","version":1,"kind":"component_event","payload":{},"extra":true}"#;
+    let unknown = br#"{"protocol":"gray.input","version":1,"kind":"component_event","payload":{},"extra":true}"#;
     assert!(InputEnvelope::from_json(unknown).is_err());
 
     let long_kind = format!(
-        r#"{{"protocol":"gray.discord.input","version":1,"kind":"{}","payload":{{}}}}"#,
+        r#"{{"protocol":"gray.input","version":1,"kind":"{}","payload":{{}}}}"#,
         "x".repeat(65)
     );
     assert!(InputEnvelope::from_json(long_kind.as_bytes()).is_err());
@@ -56,7 +73,7 @@ fn structured_payload_is_redacted_without_changing_its_shape() {
     use crate::redaction::redact_message;
 
     let input = InputEnvelope::from_json(
-        br#"{"protocol":"gray.discord.input","version":1,"kind":"component_event","payload":{"values":{"token":"sk-live-do-not-leak","count":2}}}"#,
+        br#"{"protocol":"gray.input","version":1,"kind":"component_event","payload":{"values":{"token":"sk-live-do-not-leak","count":2}}}"#,
     )
     .unwrap();
     let redacted = redact_message(&Message::structured_input(input));
@@ -69,7 +86,7 @@ fn structured_payload_is_redacted_without_changing_its_shape() {
 #[test]
 fn provider_marker_uses_deterministic_object_key_order() {
     let block = ContentBlock::StructuredInput {
-        protocol: "gray.discord.input".into(),
+        protocol: "gray.input".into(),
         version: 1,
         kind: "component_event".into(),
         payload: serde_json::json!({"z": 1, "a": {"y": 2, "b": 3}}),
