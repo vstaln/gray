@@ -603,9 +603,18 @@ pub(crate) async fn handle_model(
     hide_thinking: &mut bool,
 ) {
     if let Some(m) = direct {
-        let (_, _, known) =
-            crate::setup::provider_models_for(&config.base_url, config.api_key.as_deref());
-        let m = match crate::setup::validate_direct_model_id(&m, &known) {
+        // Validate against the cached list first; only an id it doesn't
+        // know waits on the live /models fetch (a brand-new model).
+        let cached = crate::setup::saved_models_for(&config.base_url);
+        let checked = match crate::setup::validate_direct_model_id(&m, &cached) {
+            Ok(canonical) => Ok(canonical),
+            Err(_) => {
+                let (_, _, known) =
+                    crate::setup::provider_models_for(&config.base_url, config.api_key.as_deref());
+                crate::setup::validate_direct_model_id(&m, &known)
+            }
+        };
+        let m = match checked {
             Ok(canonical) => canonical,
             Err(msg) => {
                 say(tui, &msg);
@@ -652,7 +661,7 @@ pub(crate) async fn handle_model(
         {
             let base = config.base_url.clone();
             let key = config.api_key.clone();
-            tokio::spawn(async move {
+            tokio::task::spawn_blocking(move || {
                 crate::setup::fetch_live_provider_models(&base, key.as_deref());
             });
         }
@@ -710,7 +719,7 @@ pub(crate) async fn handle_model(
             {
                 let base = config.base_url.clone();
                 let key = config.api_key.clone();
-                tokio::spawn(async move {
+                tokio::task::spawn_blocking(move || {
                     crate::setup::fetch_live_provider_models(&base, key.as_deref());
                 });
             }

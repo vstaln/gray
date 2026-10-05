@@ -69,7 +69,7 @@ pub async fn run_plugin_login(
     let operation = rpc
         .auth_start(&installed.provider.id, &installed.auth_method.id)
         .await
-        .map_err(|_| anyhow!("provider login unavailable"))?;
+        .map_err(|e| anyhow!("provider login unavailable: {e}"))?;
     let _ = progress.send(PluginLoginProgress::Started {
         verification_uri: operation.verification_uri.clone(),
     });
@@ -163,10 +163,10 @@ pub async fn run_plugin_login(
                 ));
                 return Ok(());
             }
-            Err(_) => {
-                let _ = progress.send(PluginLoginProgress::Failed(
-                    "provider login unavailable".into(),
-                ));
+            Err(e) => {
+                let _ = progress.send(PluginLoginProgress::Failed(format!(
+                    "provider login unavailable: {e}"
+                )));
                 return Ok(());
             }
         }

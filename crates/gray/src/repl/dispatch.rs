@@ -371,12 +371,16 @@ pub(crate) async fn dispatch_command(
             handle_feedback(text, config, session_state, tui.as_ref().map(|(s, _)| s));
             Flow::Continue
         }
-        ReplCommand::Provider => {
+        cmd @ (ReplCommand::Provider | ReplCommand::ProviderLogin(_)) => {
+            let preselect = match cmd {
+                ReplCommand::ProviderLogin(id) => Some(id),
+                _ => None,
+            };
             let bg = tui
                 .as_ref()
                 .map(|(shared, _)| shared.lock().expect("tui lock").snapshot());
             let result = with_modal_sync(tui.as_ref().map(|(s, _)| s), || {
-                crate::setup::run_connect_modal(config, bg.as_ref())
+                crate::setup::run_connect_modal_for(config, bg.as_ref(), preselect.as_deref())
             });
             match result {
                 Ok(crate::setup::ConnectOutcome::Connected) => {

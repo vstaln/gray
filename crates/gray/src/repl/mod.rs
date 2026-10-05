@@ -489,8 +489,11 @@ pub async fn run_repl_mode(
     // or stays None (piped/headless → stdin/empty surfaces).
     crate::ask::install(None, interactive);
     // Shell logs: 7-day + 10MiB startup sweep (blocking-only bash keeps
-    // per-call logs on disk for the header's grep hint).
-    crate::shell_drain::sweep_old_shell_logs();
+    // per-call logs on disk for the header's grep hint). Off the critical
+    // path: thousands of session dirs made it ~0.4s warm / >1s cold before
+    // the prompt, and it only ever deletes stale files, so racing the
+    // session is harmless. A plain thread so exit never waits on it.
+    std::thread::spawn(crate::shell_drain::sweep_old_shell_logs);
 
     let mut unconfigured = config.model.is_none();
     // Piped first-run skips onboarding like `-p` (never blocks on a picker).
@@ -515,7 +518,7 @@ pub async fn run_repl_mode(
             {
                 let base = config.base_url.clone();
                 let key = config.api_key.clone();
-                tokio::spawn(async move {
+                tokio::task::spawn_blocking(move || {
                     crate::setup::fetch_live_provider_models(&base, key.as_deref());
                 });
             }

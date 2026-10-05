@@ -26,7 +26,8 @@ fn sweep_due(len: u64, age: Option<Duration>) -> bool {
 }
 
 /// Startup sweep: delete `~/.gray/shell/*/*.log` older than 7 days or
-/// bigger than 10MiB (size catches pre-cap runaway logs the pump now stops).
+/// bigger than 10MiB (size catches pre-cap runaway logs the pump now stops),
+/// then any session dir left empty that is itself older than 7 days.
 pub fn sweep_old_shell_logs() {
     let Ok(home) = crate::setup::gray_home() else {
         return;
@@ -37,6 +38,12 @@ pub fn sweep_old_shell_logs() {
         return;
     };
     for sess in sessions.flatten() {
+        // Read before the file loop: deleting a file bumps the dir mtime.
+        let dir_age = sess
+            .metadata()
+            .ok()
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| now.duration_since(t).ok());
         let Ok(files) = std::fs::read_dir(sess.path()) else {
             continue;
         };
@@ -55,6 +62,12 @@ pub fn sweep_old_shell_logs() {
             if sweep_due(len, age) {
                 let _ = std::fs::remove_file(&p);
             }
+        }
+        // Emptied session dirs otherwise pile up forever (thousands seen)
+        // and every startup walks them. `remove_dir` refuses a non-empty
+        // dir; the pump recreates a missing parent before each log.
+        if dir_age.is_some_and(|a| a > LOG_SWEEP_AGE) {
+            let _ = std::fs::remove_dir(sess.path());
         }
     }
 }

@@ -541,8 +541,8 @@ async fn relay_chat_unavailable_maps_to_login_required() {
         shared_plugin_source_with_model(relay, store, Arc::new(NoRelay), Some("flash".into()));
     let error = source.acquire().await.unwrap_err();
     assert!(matches!(
-        error,
-        gray_core::credential::CredentialError::ReauthRequired(_)
+        &error,
+        gray_core::credential::CredentialError::ReauthRequired(hint) if hint.contains("run agy once")
     ));
 }
 
