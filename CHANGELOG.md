@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.1.11] - 2026-10-05
 
 ### Changed
 - **Memory is a plugin now.** `gray-memory` carries the whole curated store —

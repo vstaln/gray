@@ -250,7 +250,7 @@ fn spawn_child(argv: &[String]) -> anyhow::Result<(Child, ChildStdin, ChildStdou
         let script = prog.replace('\\', "/");
         let mut cmd = Command::new(gray_tools::shell::shell_path()?);
         cmd.arg("-c")
-            .arg("exec \"$1\"")
+            .arg("exec \"$@\"")
             .arg("sh")
             .arg(script)
             .args(args);

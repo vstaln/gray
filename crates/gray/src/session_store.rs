@@ -808,7 +808,7 @@ impl JsonlSessionStore {
                 );
             }
         }
-        write_open_holder(&mut file);
+        write_open_holder(&mut file, &open_path);
         let inner = std::sync::Arc::new(OpenLockInner { _file: file });
         held.insert(open_path, std::sync::Arc::downgrade(&inner));
         Ok(SessionOpenGuard { _inner: inner })
@@ -1833,8 +1833,10 @@ struct OpenHolder {
 /// Best-effort holder stamp: the PID only matters when a second opener
 /// trips the lock, and a write failure leaves a nameless (still held)
 /// lock rather than failing the acquire.
-fn write_open_holder(file: &mut std::fs::File) {
+fn write_open_holder(file: &mut std::fs::File, path: &Path) {
     use std::io::{Seek, SeekFrom, Write};
+    #[cfg(not(windows))]
+    let _ = path;
     let holder = OpenHolder {
         pid: std::process::id(),
         started_ms: now_millis(),
@@ -1847,11 +1849,25 @@ fn write_open_holder(file: &mut std::fs::File) {
     let _ = file.write_all(json.as_bytes());
     let _ = file.write_all(b"\n");
     let _ = file.sync_all();
+    #[cfg(windows)]
+    {
+        let hint_path = path.with_extension("open-holder");
+        let _ = std::fs::remove_file(&hint_path);
+        if let Some(parent) = path.parent()
+            && let Ok(mut hint) = tempfile::NamedTempFile::new_in(parent)
+            && hint.write_all(json.as_bytes()).is_ok()
+            && hint.as_file().sync_all().is_ok()
+        {
+            let _ = hint.persist(hint_path);
+        }
+    }
 }
 
 /// PID recorded by the lock holder, for `Locked` detail. A bare number
 /// parses too (a holder build that wrote the pid alone).
 fn read_open_holder(path: &Path) -> Option<u32> {
+    #[cfg(windows)]
+    let path = path.with_extension("open-holder");
     let content = std::fs::read_to_string(path).ok()?;
     let content = content.trim();
     serde_json::from_str::<OpenHolder>(content)
