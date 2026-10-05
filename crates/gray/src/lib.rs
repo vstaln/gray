@@ -16,7 +16,6 @@ pub mod gateway;
 pub mod host;
 pub mod logging;
 pub(crate) mod mascot;
-pub mod memory;
 pub mod plugin_check;
 pub mod plugin_cli;
 pub mod print;
@@ -219,21 +218,6 @@ pub async fn build_agent(
         load_or_create_system_prompt_at(&sys_prompt_path()?)?
     };
 
-    // `/memory off` keeps the snapshot out of the prompt (context economy);
-    // the env var stays the hard kill-switch that also stops saves.
-    let snapshot = if config.bare || memory::disabled() || !crate::setup::memory_auto_enabled() {
-        None
-    } else {
-        match setup::gray_home()
-            .and_then(|home| memory::MemoryStore::new(&home, cwd)?.snapshot(session_id))
-        {
-            Ok(snapshot) => Some(snapshot),
-            Err(_) => {
-                profile::queue_profile_warning("Memory unavailable; continuing without memory. Inspect `gray memory list` and `gray memory --scope user list`.".to_string());
-                None
-            }
-        }
-    };
     // Plugin-backed connections own their credential through the provider
     // sidecar; a failure here must stop the build, not silently fall back
     // to an unrelated API key.
@@ -275,12 +259,7 @@ pub async fn build_agent(
         cwd: cwd.to_path_buf(),
         // Stored instructions verbatim; no runtime context (cwd etc.).
         system_prompt: gray_plugin::builder::SystemPrompt::Build(Box::new(
-            move |_registry: &gray_tools::Registry| {
-                system_prompt::with_memory(
-                    system_prompt::build_system_prompt(Some(body)),
-                    snapshot.as_deref(),
-                )
-            },
+            move |_registry: &gray_tools::Registry| system_prompt::build_system_prompt(Some(body)),
         )),
         // Sidecars get the host runner so plugin-initiated `host/run`
         // / `host/say` don't fall back to loud `{"error":…}`.
@@ -437,9 +416,6 @@ fn parse_context_window_cli(s: &str) -> Result<usize, String> {
 /// Subcommands mirroring `codex resume` / `codex fork` ergonomics.
 #[derive(Parser, Debug, Clone)]
 pub enum Commands {
-    /// Curated cross-session memory (local files, no model required)
-    Memory(memory::MemoryArgs),
-
     /// Find files by glob, off a resident index when one can answer exactly
     ///
     /// The command form of the `find` tool: the same answer `fd` would give,

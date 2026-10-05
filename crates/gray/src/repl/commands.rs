@@ -97,11 +97,6 @@ pub(crate) const REGISTRY: &[CmdDef] = &[
         aliases: &["skill"],
     },
     CmdDef {
-        name: "memory",
-        desc: "memory master switch (/memory on|off; bare lists entries)",
-        aliases: &[],
-    },
-    CmdDef {
         name: "gateway",
         desc: "connections: apps + daemon/cron/memory (space toggles)",
         aliases: &["gw"],
@@ -497,8 +492,6 @@ pub enum ReplCommand {
     Usage,
     /// List cron jobs (read-only; manage via `gray cron` CLI).
     CronJobs(Option<String>),
-    /// Memory master switch (`/memory on|off`; bare lists entries).
-    Memory(Option<String>),
     /// Connections panel (`/gateway` or `/gw`): installed apps plus pointers
     /// at daemon/cron/memory. A switch word (`on`/`off`) flips the persisted
     /// gateway master switch, same as `gray gateway on|off`.
@@ -620,7 +613,6 @@ pub fn parse_command(line: &str) -> ReplCommand {
         Some("restart") => ReplCommand::Restart,
         Some("usage") => ReplCommand::Usage,
         Some("cron") => ReplCommand::CronJobs(opt(rest)),
-        Some("memory") => ReplCommand::Memory(opt(rest)),
         Some("gateway") => ReplCommand::Gateway(opt(rest)),
         Some("copy") => ReplCommand::Copy,
         Some("feedback") => ReplCommand::Feedback(opt(rest)),

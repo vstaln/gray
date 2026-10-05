@@ -8,7 +8,8 @@
 //!   `{"name","version","tools":[{"name","description","parameters"}],
 //!   "commands":["/x"],"hooks":[...]}`. Pre-v1 `"tools":["name"]` still parses.
 //! - `tool/call` (request): params `{"name","args"}`, reply `{"content","is_error?"}`.
-//! - `prompt/context` (request): params `{"cwd"}`, reply `{"text"}`.
+//! - `prompt/context` (request): params `{"cwd","session"}` (`session.id`
+//!   is the agent's session id, `""` anonymous), reply `{"text"}`.
 //! - `tool/before` (request): params `{"name","args"}`, reply allow/deny/modify.
 //! - `command/run` (request): params `{"name":"/x","argv"}`, reply `{"text"}`.
 //! - `event/notify` (notification): NO `id`, NO reply expected. Params carry a
@@ -206,6 +207,12 @@ pub struct SidecarPlugin {
     /// not apply. v1.1-only so a pre-v1 sidecar that never answers still
     /// fails fast at 30s.
     asks: bool,
+    /// The agent's session id, pinned once at build
+    /// (`builder::build_agent`); carried as `session.id` on `prompt/context`
+    /// so a plugin can freeze a per-session answer (the memory plugin's
+    /// snapshot). A respawn keeps it — the field lives on the plugin, not
+    /// the child process. Empty = anonymous.
+    session_id: std::sync::Mutex<String>,
 }
 
 /// ETXTBSY (os error 26) means the executable was open for writing at the
@@ -672,7 +679,13 @@ impl SidecarPlugin {
             transport,
             cwd,
             asks,
+            session_id: std::sync::Mutex::new(String::new()),
         })
+    }
+
+    /// The pinned agent session id (`""` before the builder sets it).
+    fn pinned_sid(&self) -> String {
+        self.session_id.lock().expect("session_id").clone()
     }
 
     /// Graceful lifecycle teardown: send `plugin/shutdown` (`reason:
@@ -922,11 +935,14 @@ impl Plugin for SidecarPlugin {
     fn tools(&self) -> Vec<Arc<dyn Tool>> {
         self.tools.clone()
     }
+    fn set_session_id(&self, id: &str) {
+        *self.session_id.lock().expect("session_id") = id.to_string();
+    }
     async fn prompt_context(&self, cwd: &str) -> Option<String> {
         if !self.claims("prompt/context") {
             return None;
         }
-        let params = json!({"cwd": cwd, "session": session_json("", cwd)});
+        let params = json!({"cwd": cwd, "session": session_json(&self.pinned_sid(), cwd)});
         let v = self
             .transport
             .request("prompt/context", Some(params), Duration::from_secs(30))
@@ -941,7 +957,7 @@ impl Plugin for SidecarPlugin {
         if !self.claims("tool/before") {
             return ToolBefore::Allow;
         }
-        let params = json!({"name": name, "args": args, "session": session_json("", &self.cwd)});
+        let params = json!({"name": name, "args": args, "session": session_json(&self.pinned_sid(), &self.cwd)});
         let ttl = if self.asks { ASK_TTL } else { HOST_TTL };
         match self
             .transport
@@ -963,7 +979,7 @@ impl Plugin for SidecarPlugin {
         {
             return None;
         }
-        let params = json!({"name": name, "argv": argv, "session": session_json("", &self.cwd)});
+        let params = json!({"name": name, "argv": argv, "session": session_json(&self.pinned_sid(), &self.cwd)});
         let v = self
             .transport
             .request("command/run", Some(params), Duration::from_secs(30))
@@ -984,7 +1000,7 @@ impl Plugin for SidecarPlugin {
     }
     async fn on_event(&self, e: CoreEvent) {
         // Minimal tagged JSON (see protocol v1 doc comment above) + v1.1 session.
-        let session = session_json("", &self.cwd);
+        let session = session_json(&self.pinned_sid(), &self.cwd);
         let params = match &e {
             CoreEvent::PreTool { name, args } => {
                 json!({"type": "pre_tool", "name": name, "args": args, "session": session})

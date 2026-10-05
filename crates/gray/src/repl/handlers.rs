@@ -153,11 +153,10 @@ pub(crate) fn apply_skill_toggle(
 }
 
 /// Subsystems carrying a persisted on/off master switch, mirroring
-/// `skills_auto`. Each gates its autonomous path — memory injection, cron
-/// fires, the gateway server — while the manual path keeps working.
+/// `skills_auto`. Each gates its autonomous path — cron fires, the gateway
+/// server — while the manual path keeps working.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Subsystem {
-    Memory,
     Cron,
     Gateway,
 }
@@ -166,7 +165,6 @@ impl Subsystem {
     /// The name users type (`/memory`, `/cron`, `gray gateway`).
     pub(crate) fn label(self) -> &'static str {
         match self {
-            Subsystem::Memory => "memory",
             Subsystem::Cron => "cron",
             Subsystem::Gateway => "gateway",
         }
@@ -175,11 +173,6 @@ impl Subsystem {
     /// (on report, off effect, manual path that survives off).
     fn copy(self) -> (&'static str, &'static str, &'static str) {
         match self {
-            Subsystem::Memory => (
-                "memory on — back in context",
-                "hidden from the model",
-                "gray memory still saves",
-            ),
             Subsystem::Cron => (
                 "cron on — scheduled jobs will fire",
                 "scheduled jobs won't fire",
@@ -196,7 +189,6 @@ impl Subsystem {
     /// The persisted field this switch flips.
     fn field(self, saved: &mut crate::setup::SavedConfig) -> &mut Option<bool> {
         match self {
-            Subsystem::Memory => &mut saved.memory_auto,
             Subsystem::Cron => &mut saved.cron_auto,
             Subsystem::Gateway => &mut saved.gw_auto,
         }

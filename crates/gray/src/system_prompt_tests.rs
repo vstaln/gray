@@ -90,51 +90,6 @@ fn directory_is_quoted_without_losing_path_characters() {
 }
 
 #[test]
-fn memory_is_separate_from_verbatim_prompt_and_is_not_comment_stripped() {
-    let body = Some("You are gray.<!-- hidden -->".to_string());
-    let data = r#"{"user":"<!-- fact -->","decisions":"Use Rust."}"#;
-    let prompt = with_memory(build_system_prompt(body.clone()), Some(data));
-    assert!(prompt.starts_with("You are gray.\n\n"));
-    assert!(prompt.contains("gray memory"));
-    // The snapshot is reserialized: `project` id and empty fields are dropped,
-    // so the model sees only the facts. Keys serialize sorted.
-    assert!(prompt.ends_with(r#"{"decisions":"Use Rust.","user":"<!-- fact -->"}"#));
-    assert_eq!(
-        prompt,
-        with_memory(build_system_prompt(body.clone()), Some(data))
-    );
-    assert_eq!(
-        with_memory(build_system_prompt(body), None),
-        "You are gray."
-    );
-}
-
-#[test]
-fn memory_preserves_runtime_directory_and_stored_prompt() {
-    let cwd = std::path::Path::new("/work/project café");
-    let runtime = build_runtime_prompt(opts("Rules.<!-- private note -->"), cwd);
-    let data = r#"{"user":"Keep replies concise.","decisions":"Use Rust."}"#;
-    let combined = with_memory(runtime.clone(), Some(data));
-    assert!(combined.starts_with(&runtime));
-    assert!(combined.ends_with(r#"{"decisions":"Use Rust.","user":"Keep replies concise."}"#));
-    assert!(combined.contains("Working directory: \"/work/project café\""));
-    assert!(!combined.contains("private note"));
-    assert_eq!(with_memory(runtime.clone(), None), runtime);
-}
-
-#[test]
-fn policy_says_injected_entries_are_summaries() {
-    // The policy rides with the memory block, so with_memory is the real
-    // entry point (build_system_prompt alone never carries it).
-    let prompt = with_memory(
-        build_system_prompt(opts("You are gray.")),
-        Some(r#"{"project":"p","user":"","decisions":""}"#),
-    );
-    assert!(prompt.contains("one-sentence summaries"), "{prompt}");
-    assert!(prompt.contains("gray memory show KEY"), "{prompt}");
-}
-
-#[test]
 fn runtime_prompt_states_that_batched_tool_calls_share_one_round() {
     // The loop returns every call from one turn together in the next turn,
     // and the parallel lane runs independent ones concurrently. The model has
