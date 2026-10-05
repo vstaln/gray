@@ -526,6 +526,18 @@ fn is_local_command(home: &Path, name: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Removed builtin subcommands still land in the plugin fallback — name what
+/// replaced them instead of pointing at an index that has no entry.
+fn removed_builtin(name: &str) -> Option<&'static str> {
+    match name {
+        "view" => Some(
+            "`gray view` was removed — `cat <path>` as the whole bash command \
+             attaches the media to the turn",
+        ),
+        _ => None,
+    }
+}
+
 /// Resolve only explicitly registered commands (never arbitrary PATH executables).
 /// exec preserves terminal, signals, argument boundaries, and the child's exit code.
 pub fn forward(home: &Path, name: &str, rest: &[String]) -> anyhow::Result<()> {
@@ -533,7 +545,9 @@ pub fn forward(home: &Path, name: &str, rest: &[String]) -> anyhow::Result<()> {
     migrate_commands_json(home);
     let lock = load_lock(home)?;
     let entry = lock.plugins.get(name).with_context(|| {
-        format!("no plugin command '{name}' — install it with: gray plugin install {name}")
+        removed_builtin(name).map(str::to_string).unwrap_or_else(|| {
+            format!("no plugin command '{name}' — install it with: gray plugin install {name}")
+        })
     })?;
     let argv = entry
         .cli_argv
