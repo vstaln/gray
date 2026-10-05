@@ -108,6 +108,19 @@ pub(crate) fn declared_subcommands(home: &Path, name: &str) -> Vec<String> {
         .collect()
 }
 
+/// Slash commands a plugin declares in its manifest (`"/x"` entries, kept
+/// verbatim — the `/` prefix is the caller's concern). Provider plugins use
+/// these to name their login shortcut; the plugin owns the name.
+pub(crate) fn declared_commands(home: &Path, name: &str) -> Vec<String> {
+    metadata(home, name)
+        .ok()
+        .and_then(|m| m["commands"].as_array().cloned())
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|v| v.as_str().map(str::to_string))
+        .collect()
+}
+
 fn metadata(home: &Path, name: &str) -> anyhow::Result<serde_json::Value> {
     validate_name(name)?;
     Ok(serde_json::from_slice(&std::fs::read(
