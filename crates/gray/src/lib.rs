@@ -71,6 +71,11 @@ CLAUDE.md above the working directory. Edit with `/agentsmd`
 You are Gray, running on the user's machine.
 "#;
 
+/// `--bare` system prompt, the whole of it: mini-swe-agent's and dsh minimal's
+/// one-line persona, no runtime context. The task says the rest.
+pub const BARE_SYS_PROMPT: &str =
+    "You are a helpful assistant that can interact with a computer.";
+
 /// Resolves the user's system-prompt file path (`$GRAY_HOME` or `$HOME/.gray`) + `AGENTS.md`.
 ///
 /// Single editable system prompt — users add to this one file. Migrates legacy `sys.md` if present.
@@ -208,9 +213,9 @@ pub async fn build_agent(
     };
     // Keyless upstreams (free tiers, local servers) run with an empty key.
     let api_key = config.api_key.as_deref().unwrap_or("");
-    // Bare: the embedded default, never the user's file (and never create it).
+    // Bare: one fixed line, never the user's file (and never create it).
     let body = if config.bare {
-        DEFAULT_SYS_PROMPT.to_string()
+        BARE_SYS_PROMPT.to_string()
     } else {
         load_or_create_system_prompt_at(&sys_prompt_path()?)?
     };
@@ -251,7 +256,9 @@ pub async fn build_agent(
         reasoning_effort,
         temperature: config.temperature,
         top_p: config.top_p,
-        context_window: Some(crate::setup::context::resolve_model_context_length(model)),
+        // No window = no in-loop compaction; bare runs to the provider's limit.
+        context_window: (!config.bare)
+            .then(|| crate::setup::context::resolve_model_context_length(model)),
         session_id: session_id.map(str::to_string),
         cwd: cwd.to_path_buf(),
         // Stored instructions verbatim; no runtime context (cwd etc.).
@@ -371,9 +378,9 @@ pub struct Cli {
     #[arg(long = "skill")]
     pub skill: bool,
 
-    /// Bare run: gray's stock system prompt and the bash tool, nothing else.
-    /// Skips ~/.gray/AGENTS.md, memory, skills, project AGENTS.md/CLAUDE.md,
-    /// plugins (gray.yml, installed, pi), cache warming and the update check.
+    /// Bare run, mini-swe-agent shaped: a one-line system prompt and plain
+    /// blocking bash (no job control), no compaction. Skips ~/.gray/AGENTS.md,
+    /// memory, skills, project AGENTS.md/CLAUDE.md, plugins (gray.yml, installed, pi), cache warming and the update check.
     /// Model/provider config still loads. Env: GRAY_BARE=1.
     #[arg(long)]
     pub bare: bool,
