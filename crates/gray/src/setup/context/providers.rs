@@ -876,24 +876,83 @@ pub fn format_cost(usd: f64) -> String {
     format!("${trimmed}")
 }
 
+// Field subsets of the public catalogs. Deserializing straight into these,
+// never into a full `Value` tree (5+ MB of tiny nodes), keeps startup
+// memory flat: a dropped tree leaves its pages pinned by cache entries
+// allocated in between. Leaf fields stay `Value` so a type change in one
+// field reads as absent; `BTreeMap` keeps the sorted order `Value` maps had.
+type Field = Option<serde_json::Value>;
+
+#[derive(serde::Deserialize)]
+pub struct LiteLlmEntry {
+    max_input_tokens: Field,
+    max_tokens: Field,
+    input_cost_per_token: Field,
+    output_cost_per_token: Field,
+    cache_read_input_token_cost: Field,
+    cache_creation_input_token_cost: Field,
+}
+type LiteLlm = std::collections::BTreeMap<String, LiteLlmEntry>;
+
+#[derive(serde::Deserialize)]
+pub struct ModelsDevProvider {
+    models: Option<std::collections::BTreeMap<String, ModelsDevEntry>>,
+}
+#[derive(serde::Deserialize)]
+pub struct ModelsDevEntry {
+    limit: Option<ModelsDevLimit>,
+    context_window: Field,
+    max_input_tokens: Field,
+    reasoning: Field,
+    reasoning_options: Option<Vec<ModelsDevOption>>,
+}
+#[derive(serde::Deserialize)]
+pub struct ModelsDevLimit {
+    context: Field,
+}
+#[derive(serde::Deserialize)]
+pub struct ModelsDevOption {
+    #[serde(rename = "type")]
+    kind: Field,
+    values: Field,
+}
+type ModelsDev = std::collections::BTreeMap<String, ModelsDevProvider>;
+
+#[derive(serde::Deserialize)]
+pub struct OpenRouter {
+    data: Vec<OpenRouterEntry>,
+}
+#[derive(serde::Deserialize)]
+pub struct OpenRouterEntry {
+    id: Field,
+    pricing: Option<OpenRouterPricing>,
+}
+#[derive(serde::Deserialize)]
+pub struct OpenRouterPricing {
+    prompt: Field,
+    completion: Field,
+}
+
 /// Projects LiteLLM's public `model_prices_and_context_window.json` (the same
 /// table T3 Code / ccusage price against) into the context cache.
 /// `max_input_tokens` is the window; legacy `max_tokens` is the fallback
 /// (on new entries it can mean output size, so it loses). Gap-fill only.
 /// Returns the number of models cached.
 pub fn parse_litellm_context_json(val: &serde_json::Value) -> usize {
-    let Some(map) = val.as_object() else {
-        return 0;
-    };
+    serde::Deserialize::deserialize(val).map_or(0, apply_litellm)
+}
+
+fn apply_litellm(map: LiteLlm) -> usize {
     let mut n = 0;
-    for (key, entry) in map {
+    for (key, entry) in &map {
         if key == "sample_spec" {
             continue;
         }
         let len = entry
-            .get("max_input_tokens")
+            .max_input_tokens
+            .as_ref()
             .and_then(json_usize)
-            .or_else(|| entry.get("max_tokens").and_then(json_usize));
+            .or_else(|| entry.max_tokens.as_ref().and_then(json_usize));
         if let Some(len) = len.filter(|&v| v >= 1024) {
             cache_model_context_if_absent(key, len);
             // Keys are usually bare (`gpt-4o`); index the tail too so
@@ -905,15 +964,14 @@ pub fn parse_litellm_context_json(val: &serde_json::Value) -> usize {
         }
         // Rates ride the same loop. Both base rates required — a half-priced
         // model silently under-reports, which is worse than unpriced.
+        let rate = |f: &Field| f.as_ref().and_then(json_rate);
         if let (Some(input), Some(output)) = (
-            entry.get("input_cost_per_token").and_then(json_rate),
-            entry.get("output_cost_per_token").and_then(json_rate),
+            rate(&entry.input_cost_per_token),
+            rate(&entry.output_cost_per_token),
         ) {
             let (cache_read, cache_write, has_cache) = match (
-                entry.get("cache_read_input_token_cost").and_then(json_rate),
-                entry
-                    .get("cache_creation_input_token_cost")
-                    .and_then(json_rate),
+                rate(&entry.cache_read_input_token_cost),
+                rate(&entry.cache_creation_input_token_cost),
             ) {
                 (Some(r), Some(w)) => (r, w, true),
                 _ => (0.0, 0.0, false),
@@ -939,23 +997,7 @@ pub fn parse_litellm_context_json(val: &serde_json::Value) -> usize {
 /// `/models` fetch. Failures are silent — the hardcoded fallback covers offline.
 pub async fn fetch_litellm_context_windows() {
     const URL: &str = "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json";
-    let client = match reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .user_agent(concat!("gray/", env!("CARGO_PKG_VERSION")))
-        .build()
-    {
-        Ok(c) => c,
-        Err(_) => return,
-    };
-    let Ok(resp) = client.get(URL).send().await else {
-        return;
-    };
-    if !resp.status().is_success() {
-        return;
-    }
-    if let Ok(json) = resp.json::<serde_json::Value>().await
-        && parse_litellm_context_json(&json) > 0
-    {
+    if load_catalog("litellm.json", URL, apply_litellm).await > 0 {
         save_models_cache_to_disk();
     }
 }
@@ -965,21 +1007,20 @@ pub async fn fetch_litellm_context_windows() {
 /// context cache. Also accepts `context_window` / `max_input_tokens` keys.
 /// Gap-fill only. Returns the number of models cached.
 pub fn parse_models_dev_json(val: &serde_json::Value) -> usize {
-    let Some(providers) = val.as_object() else {
-        return 0;
-    };
+    serde::Deserialize::deserialize(val).map_or(0, apply_models_dev)
+}
+
+fn apply_models_dev(providers: ModelsDev) -> usize {
     let mut n = 0;
-    for (_pid, pval) in providers {
-        let Some(models) = pval.get("models").and_then(|m| m.as_object()) else {
-            continue;
-        };
+    for models in providers.values().filter_map(|p| p.models.as_ref()) {
         for (key, entry) in models {
             let len = entry
-                .get("limit")
-                .and_then(|l| l.get("context"))
+                .limit
+                .as_ref()
+                .and_then(|l| l.context.as_ref())
                 .and_then(json_usize)
-                .or_else(|| entry.get("context_window").and_then(json_usize))
-                .or_else(|| entry.get("max_input_tokens").and_then(json_usize));
+                .or_else(|| entry.context_window.as_ref().and_then(json_usize))
+                .or_else(|| entry.max_input_tokens.as_ref().and_then(json_usize));
             if let Some(len) = len.filter(|&v| v >= 1024) {
                 cache_models_dev_if_absent(key, len);
                 if let Some((_, suffix)) = key.rsplit_once('/') {
@@ -989,7 +1030,7 @@ pub fn parse_models_dev_json(val: &serde_json::Value) -> usize {
             }
             // models.dev `reasoning` bool — same flag opencode maps to
             // `capabilities.reasoning`.
-            if let Some(r) = entry.get("reasoning").and_then(|v| v.as_bool()) {
+            if let Some(r) = entry.reasoning.as_ref().and_then(|v| v.as_bool()) {
                 cache_model_reasoning(key, r);
             }
             // models.dev `reasoning_options` effort values — the automatic
@@ -997,15 +1038,11 @@ pub fn parse_models_dev_json(val: &serde_json::Value) -> usize {
             // (`reasoningVariants`, transform.ts). `null` means `none`.
             // Toggle/budget-only entries stay on family tables.
             if let Some(values) = entry
-                .get("reasoning_options")
-                .and_then(|v| v.as_array())
-                .and_then(|opts| {
-                    opts.iter().find_map(|o| {
-                        (o.get("type").and_then(|t| t.as_str()) == Some("effort"))
-                            .then(|| o.get("values"))
-                            .flatten()
-                    })
-                })
+                .reasoning_options
+                .iter()
+                .flatten()
+                .find(|o| o.kind.as_ref().and_then(|t| t.as_str()) == Some("effort"))
+                .and_then(|o| o.values.as_ref())
                 .and_then(|v| v.as_array())
             {
                 let efforts: Vec<String> = values
@@ -1030,24 +1067,7 @@ pub fn parse_models_dev_json(val: &serde_json::Value) -> usize {
 /// Returns the number of models cached (0 on any failure).
 pub async fn fetch_models_dev_context() -> usize {
     const URL: &str = "https://models.dev/api.json";
-    let client = match reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .user_agent(concat!("gray/", env!("CARGO_PKG_VERSION")))
-        .build()
-    {
-        Ok(c) => c,
-        Err(_) => return 0,
-    };
-    let Ok(resp) = client.get(URL).send().await else {
-        return 0;
-    };
-    if !resp.status().is_success() {
-        return 0;
-    }
-    let Ok(json) = resp.json::<serde_json::Value>().await else {
-        return 0;
-    };
-    let n = parse_models_dev_json(&json);
+    let n = load_catalog("models.dev.json", URL, apply_models_dev).await;
     if n > 0 {
         save_models_cache_to_disk();
     }
@@ -1067,9 +1087,10 @@ fn cache_model_rate_if_absent(model_id: &str, rate: ModelRate) {
 /// Gap-fill only — LiteLLM stays authoritative; this just covers models too
 /// new for LiteLLM's table (e.g. Muse Spark at launch).
 pub fn parse_openrouter_models_json(val: &serde_json::Value) -> usize {
-    let Some(list) = val.get("data").and_then(|d| d.as_array()) else {
-        return 0;
-    };
+    serde::Deserialize::deserialize(val).map_or(0, apply_openrouter)
+}
+
+fn apply_openrouter(list: OpenRouter) -> usize {
     fn num(v: &serde_json::Value) -> Option<f64> {
         v.as_str()
             .and_then(|s| s.parse::<f64>().ok())
@@ -1077,16 +1098,15 @@ pub fn parse_openrouter_models_json(val: &serde_json::Value) -> usize {
             .filter(|f| f.is_finite() && *f >= 0.0)
     }
     let mut n = 0;
-    for entry in list {
-        let (Some(id), Some(pricing)) = (
-            entry.get("id").and_then(|v| v.as_str()),
-            entry.get("pricing"),
-        ) else {
+    for entry in &list.data {
+        let (Some(id), Some(pricing)) =
+            (entry.id.as_ref().and_then(|v| v.as_str()), &entry.pricing)
+        else {
             continue;
         };
         let (Some(input), Some(output)) = (
-            pricing.get("prompt").and_then(num),
-            pricing.get("completion").and_then(num),
+            pricing.prompt.as_ref().and_then(num),
+            pricing.completion.as_ref().and_then(num),
         ) else {
             continue;
         };
@@ -1115,25 +1135,71 @@ pub fn parse_openrouter_models_json(val: &serde_json::Value) -> usize {
 /// No auth needed — OpenRouter's model list is public.
 pub async fn fetch_openrouter_rates() -> usize {
     const URL: &str = "https://openrouter.ai/api/v1/models";
-    let client = match reqwest::Client::builder()
+    load_catalog("openrouter.json", URL, apply_openrouter).await
+}
+
+/// Catalogs change a few times a day at most; a day-old copy is plenty.
+const CATALOG_TTL: std::time::Duration = std::time::Duration::from_secs(24 * 3600);
+
+/// Applies a public catalog: the on-disk copy (`~/.gray/cache/<name>`) while
+/// it is under a day old, else a fresh download (saved for next launch),
+/// else the stale copy so offline still has data.
+async fn load_catalog<T: serde::de::DeserializeOwned>(
+    name: &str,
+    url: &str,
+    apply: fn(T) -> usize,
+) -> usize {
+    let path = crate::setup::catalog::gray_home()
+        .ok()
+        .map(|h| h.join("cache").join(name));
+    let from_disk = |max_age: std::time::Duration| -> Option<T> {
+        let p = path.as_ref()?;
+        let age = std::fs::metadata(p)
+            .ok()?
+            .modified()
+            .ok()?
+            .elapsed()
+            .unwrap_or_default();
+        (age <= max_age).then_some(())?;
+        serde_json::from_slice(&std::fs::read(p).ok()?).ok()
+    };
+    let catalog = match from_disk(CATALOG_TTL) {
+        Some(t) => Some(t),
+        None => match fetch_body(url)
+            .await
+            .and_then(|body| Some((serde_json::from_slice::<T>(body.as_ref()).ok()?, body)))
+        {
+            Some((t, body)) => {
+                if let Some(p) = &path
+                    && let Some(dir) = p.parent()
+                    && std::fs::create_dir_all(dir).is_ok()
+                {
+                    let tmp = p.with_extension("json.tmp");
+                    if std::fs::write(&tmp, body.as_ref()).is_ok() {
+                        let _ = std::fs::rename(&tmp, p);
+                    }
+                }
+                Some(t)
+            }
+            None => from_disk(std::time::Duration::MAX),
+        },
+    };
+    catalog.map_or(0, apply)
+}
+
+async fn fetch_body(url: &str) -> Option<impl AsRef<[u8]>> {
+    let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
         .user_agent(concat!("gray/", env!("CARGO_PKG_VERSION")))
         .build()
-    {
-        Ok(c) => c,
-        Err(_) => return 0,
-    };
-    let Ok(resp) = client.get(URL).send().await else {
-        return 0;
-    };
+        .ok()?;
+    let resp = client.get(url).send().await.ok()?;
     if !resp.status().is_success() {
-        return 0;
+        return None;
     }
-    let Ok(json) = resp.json::<serde_json::Value>().await else {
-        return 0;
-    };
-    parse_openrouter_models_json(&json)
+    resp.bytes().await.ok()
 }
+
 /// A previous session's live/litellm/models.dev values beat the hardcoded
 /// guess on cold boot, before any fetch completes.
 /// On-disk context cache (`~/.gray/models.json`, `{ "model-id": tokens }`).

@@ -662,3 +662,21 @@ fn ingest_set_refuses_a_verbatim_duplicate_under_a_new_key() {
     // One write was spent, not two.
     assert_eq!(store.entry_count(), 1);
 }
+
+#[test]
+fn snapshot_accepts_three_word_session_names() {
+    let (_dir, store) = setup();
+    let named = store.snapshot(Some("chiral-xenon-pulsar")).unwrap();
+    assert_eq!(
+        store.snapshot(Some("chiral-xenon-pulsar")).unwrap(),
+        named,
+        "frozen under the name it was written"
+    );
+    // UUIDs still parse; traversal still fails closed.
+    assert!(
+        store
+            .snapshot(Some(&uuid::Uuid::new_v4().to_string()))
+            .is_ok()
+    );
+    assert!(store.snapshot(Some("../escape")).is_err());
+}

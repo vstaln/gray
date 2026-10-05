@@ -50,8 +50,10 @@ gray -p "..." --max-wall-secs 900
 gray -p "..." --bare             # or GRAY_BARE=1
 ```
 
-Stock system prompt and the `bash` tool only: no `~/.gray/AGENTS.md`, memory,
-skills, project AGENTS.md/CLAUDE.md, plugins, cache warming or update check.
+Mini-swe-agent shaped: a one-line system prompt (no workflow, no working
+directory) and plain blocking `bash` (no background jobs); no compaction, so a
+run that fills the window stops. No `~/.gray/AGENTS.md`, memory, skills,
+project AGENTS.md/CLAUDE.md, plugins, cache warming or update check.
 Model and provider settings still apply. For benchmarks and reproducible runs.
 
 ## Sessions

@@ -176,12 +176,22 @@ async fn main() -> anyhow::Result<()> {
             }
         }
     }
+    // `-r` with no id is the `gray resume` picker; `-r <id>` is `--session <id>`
+    // (clap already made `-r`/`--session` mutually exclusive).
+    if let Some(None) = &cli.resume {
+        return run_resume_subcommand(&mut config, None, false, false).await;
+    }
+    let session_arg = cli
+        .resume
+        .as_ref()
+        .and_then(|r| r.as_deref())
+        .or(cli.session.as_deref());
     if let Some(prompt) = cli.print.as_deref() {
         if cli.json {
             gray::print::run_print_mode_json(
                 &config,
                 prompt,
-                cli.session.as_deref(),
+                session_arg,
                 cli.continue_last,
                 cli.max_requests,
                 cli.input_price,
@@ -189,14 +199,13 @@ async fn main() -> anyhow::Result<()> {
             )
             .await?;
         } else {
-            run_print_mode_with_session(&config, prompt, cli.session.as_deref(), cli.continue_last)
-                .await?;
+            run_print_mode_with_session(&config, prompt, session_arg, cli.continue_last).await?;
         }
     } else if let Some(input) = structured_input.as_ref() {
         gray::print::run_print_mode_json_input(
             &config,
             input,
-            cli.session.as_deref(),
+            session_arg,
             cli.continue_last,
             cli.max_requests,
             cli.input_price,
@@ -207,7 +216,7 @@ async fn main() -> anyhow::Result<()> {
         if !config.bare {
             gray::update::startup_check().await;
         }
-        run_repl_mode(&mut config, cli.continue_last, cli.session.as_deref()).await?;
+        run_repl_mode(&mut config, cli.continue_last, session_arg).await?;
     }
     Ok(())
 }

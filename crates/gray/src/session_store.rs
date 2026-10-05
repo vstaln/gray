@@ -74,19 +74,219 @@ fn tighten_file_mode(path: &Path) {
     }
 }
 
+// Session-id word lists: `<qualifier>-<middle>-<phenomenon>` (`Why three-word
+// names` on `SessionId`). Lowercase a-z only so `valid_session_id` always
+// accepts them.
+const QUALIFIER_WORDS: &[&str] = &[
+    "chiral",
+    "ionic",
+    "polar",
+    "quantum",
+    "fractal",
+    "spectral",
+    "thermal",
+    "kinetic",
+    "orbital",
+    "binary",
+    "covalent",
+    "magnetic",
+    "photonic",
+    "entropic",
+    "nuclear",
+    "cryogenic",
+    "stellar",
+    "lunar",
+    "solar",
+    "sonic",
+    "tidal",
+    "tectonic",
+    "volcanic",
+    "seismic",
+    "atomic",
+    "axial",
+    "radial",
+    "inert",
+    "noble",
+    "refractive",
+    "ferric",
+    "isotropic",
+    "harmonic",
+    "boreal",
+    "abyssal",
+    "galactic",
+    "cosmic",
+    "gamma",
+    "infrared",
+    "laminar",
+    "turbulent",
+    "viscous",
+    "gravitic",
+    "elliptic",
+    "hyperbolic",
+    "parabolic",
+    "prismatic",
+    "metallic",
+    "neural",
+    "synaptic",
+    "genomic",
+    "cellular",
+    "microbial",
+    "fungal",
+    "primordial",
+    "geodesic",
+    "tensor",
+    "vector",
+    "scalar",
+    "nonlinear",
+    "stochastic",
+    "adiabatic",
+];
+
+const MIDDLE_WORDS: &[&str] = &[
+    "argon",
+    "xenon",
+    "neon",
+    "krypton",
+    "radon",
+    "helium",
+    "cobalt",
+    "carbon",
+    "iridium",
+    "osmium",
+    "cesium",
+    "lithium",
+    "titanium",
+    "tungsten",
+    "vanadium",
+    "gallium",
+    "indium",
+    "bismuth",
+    "thorium",
+    "radium",
+    "boron",
+    "silicon",
+    "sodium",
+    "nickel",
+    "zinc",
+    "copper",
+    "chromium",
+    "selenium",
+    "tellurium",
+    "rhodium",
+    "palladium",
+    "platinum",
+    "hafnium",
+    "niobium",
+    "yttrium",
+    "europium",
+    "neodymium",
+    "erbium",
+    "thulium",
+    "boson",
+    "fermion",
+    "gluon",
+    "muon",
+    "quark",
+    "lepton",
+    "photon",
+    "neutrino",
+    "positron",
+    "hadron",
+    "meson",
+    "pion",
+    "kaon",
+    "tachyon",
+    "graviton",
+    "axion",
+    "proton",
+    "neutron",
+    "electron",
+    "isotope",
+    "plasma",
+];
+
+const PHENOMENON_WORDS: &[&str] = &[
+    "pulsar",
+    "quasar",
+    "nebula",
+    "magnetar",
+    "nova",
+    "supernova",
+    "comet",
+    "aurora",
+    "corona",
+    "eclipse",
+    "vortex",
+    "horizon",
+    "zenith",
+    "nadir",
+    "perihelion",
+    "aphelion",
+    "parallax",
+    "redshift",
+    "flux",
+    "lattice",
+    "helix",
+    "spiral",
+    "cascade",
+    "resonance",
+    "flare",
+    "halo",
+    "void",
+    "cluster",
+    "filament",
+    "manifold",
+    "tesseract",
+    "wavefront",
+    "soliton",
+    "plasmon",
+    "phonon",
+    "exciton",
+    "meridian",
+    "equinox",
+    "solstice",
+    "ecliptic",
+    "orbit",
+    "apogee",
+    "perigee",
+    "transit",
+    "cyclone",
+    "monsoon",
+    "caldera",
+    "geyser",
+    "fumarole",
+    "glacier",
+    "moraine",
+    "delta",
+    "fjord",
+];
+
+/// Word-list picks per `fresh_id` attempt before we salt with hex (see
+/// [`JsonlSessionStore::fresh_id`]).
+const FRESH_ID_ATTEMPTS: usize = 16;
+
 /// A unique session identifier.
 ///
-/// # Why UUID v4
-/// Session IDs must be globally unique, filesystem-safe, coordination-free identifiers;
-/// v4 gives 122 random bits with negligible collision probability from a maintained stdlib-grade
-/// crate — no counter state or clock needed.
+/// # Why three-word names
+/// Session IDs must be globally unique, filesystem-safe, coordination-free
+/// identifiers. We build them as `<qualifier>-<middle>-<phenomenon>`
+/// (`chiral-xenon-pulsar`) so they read and type like names, not hex — and
+/// still draw 128 random bits from UUID v4 (a maintained stdlib-grade crate,
+/// no counter state or clock) to index three fixed word lists. The space is
+/// 62×60×53 ≈ 197k names; [`JsonlSessionStore::fresh_id`] retries on collision
+/// and `create`'s atomic `create_new` is the real race guard.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct SessionId(String);
 
 impl SessionId {
-    /// Generates a new random session ID using UUID v4.
+    /// Generates a new random session id: `<qualifier>-<middle>-<phenomenon>`
+    /// picked uniformly from the word lists above by UUID v4 bits.
     pub fn generate() -> Self {
-        Self(uuid::Uuid::new_v4().to_string())
+        let bits = uuid::Uuid::new_v4().as_u128();
+        let q = QUALIFIER_WORDS[(bits as usize) % QUALIFIER_WORDS.len()];
+        let m = MIDDLE_WORDS[((bits >> 32) as usize) % MIDDLE_WORDS.len()];
+        let p = PHENOMENON_WORDS[((bits >> 64) as usize) % PHENOMENON_WORDS.len()];
+        Self(format!("{q}-{m}-{p}"))
     }
 
     /// Creates a session ID from an existing string.
@@ -263,7 +463,7 @@ impl Default for JsonlSessionStore {
 /// One policy for session identifiers: 1..=128 bytes of ASCII alphanumerics,
 /// `-`, `_` — and never a Windows reserved device basename (case-insensitive):
 /// `CON.jsonl` opens the console device, not a file.
-fn valid_session_id(s: &str) -> bool {
+pub(crate) fn valid_session_id(s: &str) -> bool {
     if s.is_empty()
         || s.len() > 128
         || !s
@@ -397,6 +597,40 @@ impl JsonlSessionStore {
             }
             Err(_) => None,
         }
+    }
+
+    /// Whether `<root>/<id>.jsonl` exists (invalid id or IO error → false).
+    pub(crate) async fn exists_on_disk(&self, id: &SessionId) -> bool {
+        let Ok(path) = self.session_path(id) else {
+            return false;
+        };
+        tokio::fs::metadata(&path)
+            .await
+            .map(|m| m.is_file())
+            .unwrap_or(false)
+    }
+
+    /// A session id no existing file claims: [`SessionId::generate`] retried
+    /// until its `.jsonl` is absent (up to [`FRESH_ID_ATTEMPTS`] picks — the
+    /// name space is ~197k, so one pick almost always suffices). Past that
+    /// we salt a last pick with `-` plus 4 hex chars from a fresh UUID. The
+    /// real race protection stays `create`'s atomic `create_new`.
+    pub async fn fresh_id(&self) -> SessionId {
+        self.fresh_id_with(SessionId::generate).await
+    }
+
+    /// [`fresh_id`](Self::fresh_id) with the id generator injected, so the
+    /// collision-skip path is testable without 197k-to-1 luck.
+    async fn fresh_id_with(&self, mut next_id: impl FnMut() -> SessionId) -> SessionId {
+        for _ in 0..FRESH_ID_ATTEMPTS {
+            let id = next_id();
+            if !self.exists_on_disk(&id).await {
+                return id;
+            }
+        }
+        let base = next_id();
+        let salt = (uuid::Uuid::new_v4().as_u128() & 0xffff) as u16;
+        SessionId::new(format!("{}-{salt:04x}", base.as_str()))
     }
 
     /// `(next_id, parent_id)` for append paths: reads the file and runs the

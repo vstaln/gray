@@ -103,6 +103,15 @@ impl Config {
             // at boot, so an unused typo never blocks a session.
             unsafe { std::env::set_var(gray_tools::shell::spawn::EXEC_PREFIX_ENV, prefix) };
         }
+        if config.bare {
+            // Bare = mini-swe-agent shape: plain blocking bash (no job
+            // control in its schema) and no automatic compaction. Same
+            // set-once-before-any-tool rule as the exec prefix above.
+            unsafe {
+                std::env::set_var("GRAY_NO_JOBS", "1");
+                std::env::set_var("GRAY_NO_AUTO_COMPACT", "1");
+            }
+        }
         Ok(config)
     }
 

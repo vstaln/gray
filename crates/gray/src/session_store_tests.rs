@@ -1326,3 +1326,67 @@ async fn invalid_utf8_before_the_final_record_is_still_corruption() {
         "invalid UTF-8 before a complete record is corruption, not a torn tail"
     );
 }
+
+#[test]
+fn generate_makes_three_word_names_from_the_lists() {
+    for _ in 0..64 {
+        let id = SessionId::generate();
+        let s = id.as_str();
+        let parts: Vec<&str> = s.split('-').collect();
+        assert_eq!(parts.len(), 3, "{s}");
+        assert!(QUALIFIER_WORDS.contains(&parts[0]), "{s}");
+        assert!(MIDDLE_WORDS.contains(&parts[1]), "{s}");
+        assert!(PHENOMENON_WORDS.contains(&parts[2]), "{s}");
+        assert!(valid_session_id(s), "{s}");
+    }
+    // No duplicates inside a list: a word maps to exactly one slot.
+    for list in [QUALIFIER_WORDS, MIDDLE_WORDS, PHENOMENON_WORDS] {
+        let mut sorted = list.to_vec();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(sorted.len(), list.len());
+    }
+}
+
+#[tokio::test]
+async fn fresh_id_skips_taken_names_and_salts_when_exhausted() {
+    let dir = tempdir().unwrap();
+    let store = JsonlSessionStore::new(dir.path());
+    store
+        .create(SessionMeta::new(
+            SessionId::new("taken-one"),
+            1,
+            "/tmp",
+            "t",
+        ))
+        .await
+        .unwrap();
+    let mut calls = 0;
+    let id = store
+        .fresh_id_with(|| {
+            calls += 1;
+            SessionId::new(if calls == 1 { "taken-one" } else { "free-two" })
+        })
+        .await;
+    assert_eq!(id.as_str(), "free-two");
+    assert_eq!(calls, 2);
+
+    // Every candidate taken: after FRESH_ID_ATTEMPTS the id is hex-salted.
+    store
+        .create(SessionMeta::new(
+            SessionId::new("taken-always"),
+            1,
+            "/tmp",
+            "t",
+        ))
+        .await
+        .unwrap();
+    let salted = store.fresh_id_with(|| SessionId::new("taken-always")).await;
+    let suffix = salted
+        .as_str()
+        .strip_prefix("taken-always-")
+        .unwrap_or_else(|| panic!("{}", salted.as_str()));
+    assert_eq!(suffix.len(), 4, "{suffix}");
+    assert!(suffix.bytes().all(|b| b.is_ascii_hexdigit()), "{suffix}");
+    assert!(valid_session_id(salted.as_str()));
+}

@@ -86,6 +86,52 @@ fn decode_html_entity(entity: &str) -> Option<String> {
     Some(decoded.into_owned())
 }
 
+/// Decode every HTML entity reference in `text`, returning the decoded
+/// string. Same bounded scan as [`MarkdownParser::scan_inline_html_entities`]
+/// (MAX_ENTITY_LEN 33, ASCII-only entity chars) for callers that need the
+/// decoded text rather than transform ranges — e.g. tool output cards for
+/// `web_search`/`web_fetch` bodies. Unrecognized references and references
+/// decoding to control characters stay literal.
+pub fn decode_html_entities_text(text: &str) -> String {
+    // Longest HTML5 named entity reference is 33 bytes including `&`/`;`.
+    const MAX_ENTITY_LEN: usize = 33;
+    let bytes = text.as_bytes();
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    let mut literal_start = 0;
+    while let Some(&b) = bytes.get(i) {
+        if b != b'&' {
+            i += 1;
+            continue;
+        }
+        let max = (i + MAX_ENTITY_LEN).min(bytes.len());
+        let mut j = i + 1;
+        let end = loop {
+            if j >= max {
+                break None;
+            }
+            match bytes.get(j) {
+                Some(b';') => break Some(j),
+                Some(b'#' | b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9') => j += 1,
+                _ => break None,
+            }
+        };
+        if let Some(end) = end
+            && let Some(entity) = text.get(i..=end)
+            && let Some(decoded) = decode_html_entity(entity)
+        {
+            out.push_str(&text[literal_start..i]);
+            out.push_str(&decoded);
+            i = end + 1;
+            literal_start = i;
+            continue;
+        }
+        i += 1;
+    }
+    out.push_str(&text[literal_start..]);
+    out
+}
+
 /// Check if there's a blank line (empty line) after the given position.
 fn has_blank_line_after(text: &str, pos: usize) -> bool {
     text.as_bytes()[pos..]
