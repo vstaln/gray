@@ -158,6 +158,14 @@ fn entity_in_table_cell_still_decodes() {
 }
 
 #[test]
+fn decode_html_entities_text_decodes_and_leaves_unknown_literal() {
+    // Tool-card path: known refs decode, control-decoding and unknown refs
+    // and a bare `&` stay literal.
+    let got = crate::decode_html_entities_text("&lt;a&gt; &amp; it&#x27;s &#27; &bogus; & alone");
+    assert_eq!(got, "<a> & it's &#27; &bogus; & alone");
+}
+
+#[test]
 fn no_panic_on_entity_edge_cases() {
     for text in [
         "&\n\n",

@@ -1136,6 +1136,11 @@ pub fn format_tool_result_lines_with_context(
     };
     let mut rows = if trimmed.is_empty() {
         Vec::new()
+    } else if let Some(text) = web::web_body_text(tool_name, &trimmed) {
+        // Web bodies render as plain numbered text: search results are
+        // already structured (title/url/snippet) and fetch text is prose —
+        // a syntax highlighter only re-colors JSON braces it no longer sees.
+        render_numbered_lines(&text.lines().collect::<Vec<_>>(), &mut None)
     } else {
         // Cap display like code blocks (40-line threshold → 18 head + 6 tail):
         // full output stays in model context, TUI only renders a window.
@@ -1164,6 +1169,7 @@ pub fn format_tool_result_lines_with_context(
 }
 
 mod plain;
+mod web;
 
 pub use plain::{format_tool_call_header_plain, format_tool_result_plain_with_context};
 

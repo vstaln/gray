@@ -73,8 +73,7 @@ You are Gray, running on the user's machine.
 
 /// `--bare` system prompt, the whole of it: mini-swe-agent's and dsh minimal's
 /// one-line persona, no runtime context. The task says the rest.
-pub const BARE_SYS_PROMPT: &str =
-    "You are a helpful assistant that can interact with a computer.";
+pub const BARE_SYS_PROMPT: &str = "You are a helpful assistant that can interact with a computer.";
 
 /// Resolves the user's system-prompt file path (`$GRAY_HOME` or `$HOME/.gray`) + `AGENTS.md`.
 ///

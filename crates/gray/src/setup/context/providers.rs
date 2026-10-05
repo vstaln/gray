@@ -1099,7 +1099,8 @@ fn apply_openrouter(list: OpenRouter) -> usize {
     }
     let mut n = 0;
     for entry in &list.data {
-        let (Some(id), Some(pricing)) = (entry.id.as_ref().and_then(|v| v.as_str()), &entry.pricing)
+        let (Some(id), Some(pricing)) =
+            (entry.id.as_ref().and_then(|v| v.as_str()), &entry.pricing)
         else {
             continue;
         };
@@ -1153,7 +1154,12 @@ async fn load_catalog<T: serde::de::DeserializeOwned>(
         .map(|h| h.join("cache").join(name));
     let from_disk = |max_age: std::time::Duration| -> Option<T> {
         let p = path.as_ref()?;
-        let age = std::fs::metadata(p).ok()?.modified().ok()?.elapsed().unwrap_or_default();
+        let age = std::fs::metadata(p)
+            .ok()?
+            .modified()
+            .ok()?
+            .elapsed()
+            .unwrap_or_default();
         (age <= max_age).then_some(())?;
         serde_json::from_slice(&std::fs::read(p).ok()?).ok()
     };
