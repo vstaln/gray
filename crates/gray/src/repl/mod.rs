@@ -164,7 +164,6 @@ mod gateway_panel;
 pub(crate) mod handlers; // subsystem toggles are crate-wide (gateway CLI, cron)
 mod key_watcher;
 pub(crate) mod maintenance;
-mod memory_panel;
 mod plugin_cmds;
 mod prompt_turn;
 mod session;

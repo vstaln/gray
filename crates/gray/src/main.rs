@@ -41,10 +41,7 @@ async fn main() -> anyhow::Result<()> {
         print!("{}", include_str!("../gray-skill.md"));
         return Ok(());
     }
-    if let Some(gray::Commands::Memory(args)) = &cli.command {
-        return gray::memory::run_cli(args);
-    }
-    // Same reason as memory: a local search is nobody's provider concern, and
+    // A local search is nobody's provider concern, and
     // the bash tool claims `gray find`/`gray grep` so a model does not have to
     // know `gray` is on its PATH. `gray spill` reads a local file for the same
     // reason — it is the way back into a result the context had to leave out.
@@ -138,7 +135,6 @@ async fn main() -> anyhow::Result<()> {
     gray::setup::set_user_keep_recent_tokens(config.context_keep);
     if let Some(cmd) = cli.command {
         match cmd {
-            gray::Commands::Memory(_) => unreachable!("handled before provider configuration"),
             gray::Commands::Doctor { .. } => {
                 unreachable!("handled right after config resolution")
             }

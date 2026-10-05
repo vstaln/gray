@@ -747,6 +747,13 @@ pub async fn build_agent(opts: BuilderOptions) -> anyhow::Result<Agent> {
         }
         plugins.push(p);
     }
+    // The agent's session id reaches sidecars so `prompt/context` can pin a
+    // session-scoped answer (a plugin serving per-session state, like a
+    // memory snapshot, replays identical bytes on rebuild). Empty = the
+    // anonymous case.
+    for p in &plugins {
+        p.set_session_id(session_id.as_deref().unwrap_or(""));
+    }
     let (registry, manifests) = from_plugins(&plugins);
     let ledger = current_file_ledger();
     let system = match system_prompt {

@@ -111,10 +111,10 @@ pub struct SavedConfig {
     /// these while manual `/skills <name>` still runs.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub disabled_skills: BTreeSet<String>,
-    /// Master switch for memory injection (`/memory on` | `/memory off`,
-    /// default on). `Some(false)` keeps the snapshot out of the model's
-    /// prompt; `gray memory` still saves and reads entries, so the record
-    /// keeps accumulating while the context stays lean.
+    /// Legacy master switch for memory injection (`/memory on` | `/memory
+    /// off`, default on). Kept in the schema so saves preserve the key: the
+    /// gray-memory plugin seeds its own toggle from it once, and dropping
+    /// the field would silently re-enable memory for users who had it off.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub memory_auto: Option<bool>,
     /// Master switch for scheduled cron fires (`/cron on` | `/cron off`,
@@ -174,18 +174,6 @@ pub fn skills_auto_enabled() -> bool {
 /// Explicit-config-path seam for [`skills_auto_enabled`] (tests).
 pub fn skills_auto_enabled_at(path: &Path) -> bool {
     load_saved_config_at(path).skills_auto.unwrap_or(true)
-}
-
-/// Master switch for memory injection (`/memory on` | `/memory off`).
-/// Same shape and default as `skills_auto`: only an explicit `Some(false)`
-/// turns injection off; missing/unresolvable/corrupt reads as enabled.
-pub fn memory_auto_enabled() -> bool {
-    subsystem_enabled(|s| s.memory_auto)
-}
-
-/// Explicit-config-path seam for [`memory_auto_enabled`] (tests).
-pub fn memory_auto_enabled_at(path: &Path) -> bool {
-    subsystem_enabled_at(path, |s| s.memory_auto)
 }
 
 /// Master switch for scheduled cron fires (`/cron on` | `/cron off`).

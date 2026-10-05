@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+### Changed
+- **Memory is a plugin now.** `gray-memory` carries the whole curated store —
+  the markdown files under `~/.gray/memory/`, the per-session frozen snapshot,
+  the ingest budgets, the `gray memory` CLI — as a wire-v1.1 sidecar instead
+  of ~1.6k lines of core. The system-prompt block now arrives through the
+  `prompt/context` hook per turn rather than being baked in at agent build
+  (a `/memory`-era edit lands next turn), `/memory on|off` runs over
+  `command/run` against a plugin marker seeded from the legacy `memory_auto`
+  config key, and `session.id` rides `prompt/context`, `command/run`,
+  `tool/before` and `event/notify` so the snapshot freeze keeps its
+  session-pinned bytes. `GRAY_NO_MEMORY` still gates saves. Not installed →
+  no memory block, same as `--bare`.
+
 ### Added
 - **`--bare` (or `GRAY_BARE=1`) runs gray with nothing but itself.** Shaped like
   mini-swe-agent and dsh's minimal preset: a one-line system prompt ("You are a helpful

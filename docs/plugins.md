@@ -47,6 +47,12 @@ repository under [github.com/vstaln](https://github.com/vstaln):
 - gray-devin-sub (local only — no GitHub remote yet)
 - [gray-discord-plugin](https://github.com/vstaln/gray-discord-plugin)
 - [gray-ledger](https://github.com/vstaln/gray-ledger)
+- gray-memory (local only — no GitHub remote yet): curated cross-session
+  memory, extracted from core. Serves the per-session snapshot through
+  `prompt/context` (`session.id` pins the freeze), owns `/memory` over
+  `command/run`, and keeps `gray memory …` through `cli_argv` forwarding.
+  `/memory off` writes its own marker (`<home>/memory/enabled`) seeded once
+  from the legacy `memory_auto` config key.
 - [gray-permissions](https://github.com/vstaln/gray-permissions)
 - [gray-questions](https://github.com/vstaln/gray-questions)
 - [graysearch](https://github.com/vstaln/graysearch)
