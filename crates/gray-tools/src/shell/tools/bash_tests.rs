@@ -537,11 +537,11 @@ async fn cat_caps_the_claim_at_eight_paths() {
 }
 
 #[tokio::test]
-async fn gray_view_is_gone() {
+async fn gray_subcommands_are_not_claimed() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("a.png"), png_bytes()).unwrap();
     // `cat` is the one way in; gray subcommands are ordinary shell commands.
-    for cmd in ["gray view a.png", "gray --version", "gray memory list"] {
+    for cmd in ["gray plugin install a.png", "gray --version", "gray memory list"] {
         assert!(
             image_command(cmd, dir.path()).is_none(),
             "must not claim: {cmd}"
@@ -582,7 +582,7 @@ fn unattached_media_note_covers_every_shape_the_claim_refuses() {
     // The bare claim shapes: a miss is a missing/undecodable file the shell
     // already reports, a non-media `cat`, or no media command at all.
     for cmd in [
-        "gray view a.png",
+        "gray plugin a.png",
         "cat a.png",
         "cat missing.png",
         "cat notes.txt",
