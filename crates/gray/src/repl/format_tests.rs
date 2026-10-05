@@ -21,6 +21,92 @@ fn codex_style_server_error_extracts_message_not_raw_json() {
 }
 
 #[test]
+fn nested_devin_limit_is_actionable_without_retry_logs() {
+    let native = "Reached free model rate limit. Please switch to a different model. Your limit will reset in 6 hours 9 minutes (at 21:01 UTC). (trace ID: private-trace)";
+    let message = format!(
+        "Devin quota exhausted (native: {native}) 2026-10-05T14:50:17Z WARN autofanato::agent::control_loop: attempt=1 max=3 error=Inference(ServerError({native})) Transient inference error; retrying on native"
+    );
+    let detail = format!(
+        "provider-side status 500 Internal Server Error: {} (request was valid)",
+        serde_json::json!({"error": {"message": message}})
+    );
+    let out = format_core_error(&CoreError::ServerError(detail), "https://127.0.0.1:1/");
+    assert_eq!(
+        out,
+        "✗ Model limit reached\n  Resets in 6 hours 9 minutes (21:01 UTC).\n  Run /model to switch to another model."
+    );
+}
+
+#[test]
+fn json_followed_by_another_json_log_still_extracts_first_error() {
+    let detail =
+        r#"status 503: {"error":{"message":"Service overloaded"}} WARN retry {"attempt":3}"#;
+    let out = format_core_error(
+        &CoreError::ServerError(detail.into()),
+        "https://example.com",
+    );
+    assert!(
+        out.starts_with("✗ Provider server error (retryable):\n"),
+        "{out}"
+    );
+    assert!(out.contains("Service overloaded"), "{out}");
+    assert!(!out.contains("WARN"), "{out}");
+    assert!(!out.contains("attempt"), "{out}");
+}
+
+#[test]
+fn nested_provider_json_is_unwrapped() {
+    let inner = serde_json::json!({"error": {"message": "Session expired. Sign in again."}});
+    let detail =
+        serde_json::json!({"error": {"message": format!("native API error: {inner}")}}).to_string();
+    let out = format_core_error(&CoreError::Auth(detail), "https://example.com");
+    assert!(out.contains("Session expired. Sign in again."), "{out}");
+    assert!(!out.contains('{'), "{out}");
+    assert!(out.lines().next().unwrap().len() < 60, "{out}");
+}
+
+#[test]
+fn quota_messages_from_other_plugins_use_the_shared_display() {
+    for err in [
+        CoreError::RateLimited("status 429: usage limit reached; try again after reset".into()),
+        CoreError::Provider(r#"status 500: {"error":{"message":"Quota exceeded"}}"#.into()),
+        CoreError::BadRequest("insufficient_quota".into()),
+        CoreError::Auth("Your credit balance is too low to access the API.".into()),
+    ] {
+        let out = format_core_error(&err, "https://example.com");
+        assert!(out.starts_with("✗ Model limit reached\n"), "{out}");
+        assert!(out.contains("/model"), "{out}");
+        assert!(!out.contains("server error"), "{out}");
+    }
+}
+
+#[test]
+fn claude_limit_preserves_the_reset_time() {
+    let out = format_core_error(
+        &CoreError::ServerError("You've hit your limit · resets at 4pm (Europe/London)".into()),
+        "https://127.0.0.1:1/",
+    );
+    assert!(out.starts_with("✗ Model limit reached\n"), "{out}");
+    assert!(out.contains("Resets at 4pm (Europe/London)."), "{out}");
+}
+
+#[test]
+fn ordinary_rate_limits_are_not_reported_as_exhausted_quota() {
+    let out = format_core_error(
+        &CoreError::RateLimited("Too many requests".into()),
+        "https://example.com",
+    );
+    assert!(out.starts_with("✗ Rate limited (retryable):\n"), "{out}");
+}
+
+#[test]
+fn long_unicode_error_details_have_a_visible_truncation_marker() {
+    let out = format_core_error(&CoreError::Stream("界".repeat(1000)), "https://example.com");
+    assert!(out.contains('…'), "{out}");
+    assert!(out.chars().count() < 400, "{out}");
+}
+
+#[test]
 fn formats_subsecond_as_ms() {
     assert_eq!(fmt_duration_ms(850), "850ms");
 }

@@ -31,24 +31,22 @@ pub fn clean_provider_detail(detail: &str) -> String {
         Some(i) => i,
         None => return detail.to_string(),
     };
-    let end = match detail.rfind('}') {
-        Some(i) if i > start => i,
+    let mut values =
+        serde_json::Deserializer::from_str(&detail[start..]).into_iter::<serde_json::Value>();
+    let parsed = match values.next() {
+        Some(Ok(v)) => v,
         _ => return detail.to_string(),
     };
-    let parsed: serde_json::Value = match serde_json::from_str(&detail[start..=end]) {
-        Ok(v) => v,
-        Err(_) => return detail.to_string(),
-    };
+    let end = start + values.byte_offset();
     // Shape is usually {"model":..,"error":{"message","type","code"}} or just {"error":..}.
     let err_obj = parsed.get("error").unwrap_or(&parsed);
     let message = err_obj
         .get("message")
         .and_then(|v| v.as_str())
-        .unwrap_or("")
+        .or_else(|| err_obj.as_str())
+        .or_else(|| err_obj.get("code").and_then(|v| v.as_str()))
+        .unwrap_or("Provider returned an error without a readable message.")
         .trim();
-    if message.is_empty() {
-        return detail.to_string();
-    }
     let typ = err_obj.get("type").and_then(|v| v.as_str()).unwrap_or("");
     let code = err_obj
         .get("code")
@@ -106,24 +104,117 @@ pub fn clean_provider_detail(detail: &str) -> String {
     out
 }
 
+fn display_provider_detail(detail: &str) -> String {
+    let mut cleaned = detail.to_string();
+    for _ in 0..4 {
+        let next = clean_provider_detail(&cleaned);
+        if next == cleaned {
+            break;
+        }
+        cleaned = next;
+    }
+    let end = [
+        " (trace ID:",
+        " (trace_id:",
+        " WARN ",
+        " ERROR ",
+        " Transient inference error",
+        " (request was valid)",
+    ]
+    .iter()
+    .filter_map(|marker| cleaned.find(marker))
+    .min()
+    .unwrap_or(cleaned.len());
+    let text = cleaned[..end]
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let short = truncate_chars(&text, 280);
+    if short.len() < text.len() {
+        format!("{short}…")
+    } else {
+        text
+    }
+}
+
+fn format_model_limit(detail: &str) -> Option<String> {
+    let cleaned = display_provider_detail(detail);
+    let lower = cleaned.to_lowercase();
+    if ![
+        "quota exhausted",
+        "quota exceeded",
+        "insufficient_quota",
+        "usage limit reached",
+        "usage limit exceeded",
+        "usage_limit_reached",
+        "you've hit your limit",
+        "you have hit your limit",
+        "reached free model rate limit",
+        "credit balance is too low",
+        "insufficient credits",
+        "insufficient balance",
+    ]
+    .iter()
+    .any(|hint| lower.contains(hint))
+    {
+        return None;
+    }
+    let reset = regex::Regex::new(
+        r"(?i)(?:will reset|resets|reset) in ([^.(]+)(?:\s*\((?:at\s+)?([^)]*)\))?",
+    )
+    .unwrap();
+    let explanation = if let Some(captures) = reset.captures(&cleaned) {
+        let duration = captures[1].trim();
+        match captures.get(2) {
+            Some(time) => format!("Resets in {duration} ({}).", time.as_str().trim()),
+            None => format!("Resets in {duration}."),
+        }
+    } else if let Some(reset) = regex::Regex::new(r"(?i)\bresets ([^.\n]+)")
+        .unwrap()
+        .captures(&cleaned)
+    {
+        format!("Resets {}.", truncate_chars(reset[1].trim(), 120))
+    } else {
+        "Your provider's usage allowance is exhausted. Wait for it to reset or check your plan."
+            .into()
+    };
+    Some(format!(
+        "✗ Model limit reached\n  {explanation}\n  Run /model to switch to another model."
+    ))
+}
+
 /// Formats a [`CoreError`] for REPL display.
 /// Connection/timeout failures get a friendly, actionable message with the
 /// provider's `base_url`; all other errors fall back to the generic prefix.
 pub fn format_core_error(e: &CoreError, base_url: &str) -> String {
+    if let CoreError::Provider(detail)
+    | CoreError::BadRequest(detail)
+    | CoreError::Auth(detail)
+    | CoreError::RateLimited(detail)
+    | CoreError::ServerError(detail) = e
+        && let Some(message) = format_model_limit(detail)
+    {
+        return message;
+    }
     match e {
-        CoreError::Connection(detail) => format!(
-            "✗ Connection failed: Unable to reach {base_url} ({detail})\n  Please check your internet connection or run /connect to configure provider settings."
-        ),
-        CoreError::Timeout(detail) => format!(
-            "✗ Connection failed: Unable to reach {base_url} (request timed out: {detail})\n  Please check your internet connection or run /connect to configure provider settings."
-        ),
+        CoreError::Connection(detail) => {
+            let short = display_provider_detail(detail);
+            format!(
+                "✗ Connection failed\n  Unable to reach {base_url}: {short}\n  Check your connection or run /connect to configure the provider."
+            )
+        }
+        CoreError::Timeout(detail) => {
+            let short = display_provider_detail(detail);
+            format!(
+                "✗ Request timed out\n  {short}\n  Try again or run /connect to check the provider settings."
+            )
+        }
         CoreError::Provider(detail) => {
             // Bounded detail (never raw multi-KB dumps) + explicit
             // retryability on the first line of each classified arm.
             // Codex steal: extract Status/Code/Type/Message from JSON blobs
             // instead of dumping {"model":..,"error":{...}} raw.
-            let cleaned = clean_provider_detail(detail);
-            let short = truncate_chars(&cleaned, 600);
+            let short = display_provider_detail(detail);
             let lower = short.to_lowercase();
             if lower.contains("not supported")
                 || lower.contains("unsupported")
@@ -133,7 +224,7 @@ pub fn format_core_error(e: &CoreError, base_url: &str) -> String {
                 || short.contains("status 404")
             {
                 format!(
-                    "✗ Bad request (not retryable): {short}\n  Model may not be supported on {base_url}. Run /model to pick a valid model or /connect to change provider."
+                    "✗ Bad request (not retryable):\n  {short}\n  Model may not be supported on {base_url}. Run /model to pick a valid model or /connect to change provider."
                 )
             } else if lower.contains("auth")
                 || short.contains(" 401")
@@ -141,15 +232,18 @@ pub fn format_core_error(e: &CoreError, base_url: &str) -> String {
                 || lower.contains("unauthorized")
             {
                 format!(
-                    "✗ Auth failed (not retryable): {short}\n  Check API key or run /connect to reconfigure provider."
+                    "✗ Auth failed (not retryable):\n  {short}\n  Check API key or run /connect to reconfigure provider."
                 )
-            } else if lower.contains("rate") || short.contains(" 429") {
+            } else if lower.contains("rate limit")
+                || lower.contains("too many requests")
+                || short.contains(" 429")
+            {
                 format!(
-                    "✗ Rate limited (retryable): {short}\n  Try again later or switch model via /model."
+                    "✗ Rate limited (retryable):\n  {short}\n  Try again later or switch model via /model."
                 )
             } else if lower.contains("bad request") || short.contains(" 400") {
                 format!(
-                    "✗ Bad request (not retryable): {short}\n  Check model/provider settings via /model or /connect."
+                    "✗ Bad request (not retryable):\n  {short}\n  Check model/provider settings via /model or /connect."
                 )
             } else if lower.contains("server error")
                 || lower.contains("status 5")
@@ -159,12 +253,12 @@ pub fn format_core_error(e: &CoreError, base_url: &str) -> String {
                 || lower.contains("504")
             {
                 format!(
-                    "✗ Provider server error (retryable): {short}\n  Upstream model or provider ({base_url}) encountered a server error. Run /model to switch to another model or try again later."
+                    "✗ Provider server error (retryable):\n  {short}\n  Try again later or run /model to switch to another model."
                 )
             } else {
                 // Steal codex's UnexpectedResponseError display: keep status+body but add provider hint
                 format!(
-                    "✗ Provider error: {short}\n  Provider: {base_url} — try /model or /connect if this persists."
+                    "✗ Provider error:\n  {short}\n  Provider: {base_url} — try /model or /connect if this persists."
                 )
             }
         }
@@ -172,42 +266,40 @@ pub fn format_core_error(e: &CoreError, base_url: &str) -> String {
             // Subscription relays surface here with no HTTP status (the 403
             // came from native inside the sidecar, already classified). Name
             // the login that failed so the next command is obvious.
-            let cleaned = clean_provider_detail(detail);
-            let short = truncate_chars(&cleaned, 600);
+            let short = display_provider_detail(detail);
             format!(
-                "✗ Auth failed (not retryable): {short}\n  The provider rejected the saved credentials; re-saving the same key won't help. Use a new key or log in again (/connect)."
+                "✗ Auth failed (not retryable):\n  {short}\n  Run /connect to sign in again or update your API key."
             )
         }
         CoreError::BadRequest(detail) => {
-            let cleaned = clean_provider_detail(detail);
-            let short = truncate_chars(&cleaned, 600);
+            let short = display_provider_detail(detail);
             format!(
-                "✗ Bad request (not retryable): {short}\n  Check model/provider settings via /model or /connect."
+                "✗ Bad request (not retryable):\n  {short}\n  Check model/provider settings via /model or /connect."
             )
         }
         CoreError::RateLimited(detail) => {
-            let cleaned = clean_provider_detail(detail);
-            let short = truncate_chars(&cleaned, 600);
+            let short = display_provider_detail(detail);
             format!(
-                "✗ Rate limited (retryable): {short}\n  Try again later or switch model via /model."
+                "✗ Rate limited (retryable):\n  {short}\n  Try again later or switch model via /model."
             )
         }
         CoreError::ContextOverflow(detail) => {
-            let cleaned = clean_provider_detail(detail);
-            let short = truncate_chars(&cleaned, 600);
-            format!("✗ Context exhausted (not retryable): {short}\n  Start /new or run /compact.")
+            let short = display_provider_detail(detail);
+            format!(
+                "✗ Context exhausted (not retryable):\n  {short}\n  Start /new or run /compact."
+            )
         }
         CoreError::ServerError(detail) => {
-            let cleaned = clean_provider_detail(detail);
-            let short = truncate_chars(&cleaned, 600);
+            let short = display_provider_detail(detail);
             format!(
-                "✗ Provider server error (retryable): {short}\n  Upstream model or provider ({base_url}) encountered a server error. Run /model to switch to another model or try again later."
+                "✗ Provider server error (retryable):\n  {short}\n  Try again later or run /model to switch to another model."
             )
         }
         CoreError::Stream(detail) => {
-            let cleaned = clean_provider_detail(detail);
-            let short = truncate_chars(&cleaned, 600);
-            format!("✗ Stream broken (retryable): {short}\n  Retrying the turn usually succeeds.")
+            let short = display_provider_detail(detail);
+            format!(
+                "✗ Stream broken (retryable):\n  {short}\n  Retrying the turn usually succeeds."
+            )
         }
         CoreError::LoopDetected(detail) => {
             let short = truncate_chars(detail, 600);
