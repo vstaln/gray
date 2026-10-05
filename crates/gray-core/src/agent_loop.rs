@@ -199,7 +199,8 @@ impl Agent {
     /// outputs back as tool-result messages. Stops when a turn ends without
     /// tool calls (`TurnEnd`) or when cancellation fires
     /// ([`CoreError::Cancelled`]). 6 identical consecutive tool calls abort
-    /// with [`CoreError::LoopDetected`].
+    /// with [`CoreError::LoopDetected`]. A tool-free ending whose text still
+    /// announces a next step is nudged once before the stop is honored.
     /// Tool failures are *not* errors: they become `is_error` tool results
     /// so the model can recover.
     pub async fn run(
@@ -273,6 +274,10 @@ impl Agent {
         let mut turn_retries: u8 = 0;
         // Post-tool empty nudge fires once per run; silent-retry budget unchanged.
         let mut empty_nudge_sent = false;
+        // An ending that announces a step the model never ran ("Let me check
+        // …" then EndTurn, no tool call) gets one nudge per run; a repeat is
+        // respected — the model may have reconsidered mid-sentence.
+        let mut intent_nudge_sent = false;
 
         // Protocol v1 `prompt/context`: fetched once per turn, not per round,
         // so the system prefix stays byte-stable across a turn's requests
@@ -710,6 +715,13 @@ impl Agent {
             }
             let text = text_parts.concat();
             let text_is_empty = text.is_empty();
+            // Evaluated before `text` moves into the content block; used only
+            // on the no-tool end path below. A leaked tool-call envelope
+            // (funnel fence / native markup the provider left as text) counts
+            // as an announced step: the model tried to call, the call never
+            // materialized.
+            let announced_step = matches!(stop_reason, StopReason::EndTurn | StopReason::ToolUse)
+                && (announced_unfinished_step(&text) || leaked_call_markup(&text));
             if !text.is_empty() {
                 content.push(ContentBlock::Text { text });
             }
@@ -796,6 +808,18 @@ impl Agent {
             }
 
             if tool_uses.is_empty() {
+                // A text-only ending whose tail commits to a step the model
+                // never ran looks like the run died mid-thought: the footer
+                // prints and the user has to type "." to revive it. Nudge
+                // once so the step happens or the model says it's done.
+                if announced_step && !intent_nudge_sent {
+                    intent_nudge_sent = true;
+                    log::info!(target: "gray_agent", "end turn announced an untaken step; nudging once");
+                    self.messages.push(Message::user(
+                        "you ended your turn right after announcing a next step — take it now, or state that the task is complete",
+                    ));
+                    continue 'turn;
+                }
                 // A job that finished during inference gets a follow-up now;
                 // unfinished jobs never hold this turn open.
                 if self.collect_background_notifications(&ctx) {
@@ -1152,6 +1176,142 @@ impl Agent {
             }
         }
     }
+}
+
+/// True when a text-only ending carries raw tool-call/template markup the
+/// provider never turned into calls: a fenced `gray_calls` block (the
+/// text-funnel contract some providers front), native pipe-delimited call
+/// tokens, or hallucinated `[User]`/`[Assistant]` transcript turns. The
+/// model believed it called a tool; ending here looks like dying mid-task.
+fn leaked_call_markup(text: &str) -> bool {
+    if text.contains("```gray_calls")
+        || text.contains("\n[User]\n")
+        || text.contains("\n[Assistant]\n")
+    {
+        return true;
+    }
+    // `<|close|>` / `<|sep|>`-family specials, built without literal pipes
+    // so this file's own diff never carries the raw markup.
+    const TOKENS: &[&str] = &[
+        "<\x7cclose\x7c>",
+        "<\x7csep\x7c>",
+        "<\x7ccall\x7c>",
+        "<\x7ctools\x7c>",
+        "<\x7cargument\x7c>",
+        "<\x7cstart\x7c>",
+        "<\x7cend\x7c>",
+    ];
+    TOKENS.iter().filter(|t| text.contains(**t)).count() >= 2
+}
+
+/// True when a round-ending text's tail commits to an action the model then
+/// never performed: "Let me check the logs", "Two things to pin down: …",
+/// "— searching for images …". Only the last line (truncated to 400 chars)
+/// is read: intent stated earlier in a message and then resolved ("Let me
+/// check. It was X.") is stale, and a trailing `?` means the turn was handed
+/// to the user on purpose. User-directed, instructional and negated
+/// readings ("let me know if…", "you can verify with …", "I won't …") are
+/// scrubbed before the markers are checked.
+fn announced_unfinished_step(text: &str) -> bool {
+    let tail = text.trim_end();
+    if tail.is_empty() || tail.ends_with('?') {
+        return false;
+    }
+    let last_line = tail.lines().next_back().unwrap_or_default();
+    let window: String = last_line
+        .chars()
+        .rev()
+        .take(400)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+    let lower = window.to_lowercase().replace(['’', '‘'], "'");
+    let scrubbed = lower
+        .replace("let me know", "")
+        .replace("i'll let you", "")
+        .replace("i won't", "")
+        .replace("i will not", "")
+        .replace("i can't", "")
+        .replace("i cannot", "")
+        .replace("i couldn't", "")
+        .replace("i could not", "")
+        .replace("i'll skip", "")
+        .replace("i'll leave", "")
+        .replace("i'll stop", "")
+        .replace("let's not", "")
+        .replace("let's skip", "")
+        // Instructions handed to the user are answers, not commitments the
+        // model still owes ("run X to verify", "you can check …").
+        .replace("you can ", "")
+        .replace("you could ", "")
+        .replace("you may ", "")
+        .replace("you might ", "")
+        .replace("you should ", "")
+        .replace("feel free", "")
+        .replace("here's how to ", "")
+        .replace("here is how to ", "")
+        .replace("here's how", "")
+        .replace("here is how", "")
+        .replace("how to ", "");
+    const MARKERS: &[&str] = &[
+        "let me",
+        "i'll",
+        "i will ",
+        "i'm going to ",
+        "i am going to ",
+        "i need to ",
+        "i have to ",
+        "i'm about to ",
+        "let's ",
+        "time to ",
+        "next step",
+        // Still-mid-task declarations and pending-work enumerations —
+        // the phrasing swe-2/other models actually die on.
+        "i'm mid-",
+        "i am mid-",
+        "i'm still ",
+        "i am still ",
+        "still working",
+        "still checking",
+        "still digging",
+        "still investigating",
+        "still need",
+        "still have to",
+        "still left",
+        "left to ",
+        "left:",
+        "remaining:",
+        "remains to",
+        "to do:",
+        "todo:",
+        "next:",
+        "up next",
+        "then i'll",
+        "we need to",
+        "we have to",
+        "we should ",
+        "we'll",
+        "to pin down",
+        "to figure out",
+        "to work out",
+        "to nail down",
+        "to determine",
+        "to investigate",
+        "to dig into",
+        "to look into",
+        "to double-check",
+        "to track down",
+        "to confirm",
+        "to verify",
+        "to check",
+        "to test",
+        "to try",
+        "to retry",
+        "retrying",
+        "trying again",
+    ];
+    MARKERS.iter().any(|m| scrubbed.contains(m))
 }
 
 /// True when a tool result is gray's "the job is still going" progress
