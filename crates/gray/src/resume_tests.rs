@@ -308,3 +308,11 @@ async fn empty_sessions_exist_on_disk_but_hide_from_resume() {
         "hiding is a listing rule, not a delete: explicit ids still resolve"
     );
 }
+
+#[test]
+fn short_id_keeps_uuid_prefix_and_full_names() {
+    let uuid_id = SessionId::new("30e3f464-aaaa-bbbb-cccc-d60f2104dcd9");
+    assert_eq!(short_id(&uuid_id), "30e3f464");
+    let name = SessionId::new("chiral-xenon-pulsar");
+    assert_eq!(short_id(&name), "chiral-xenon-pulsar");
+}

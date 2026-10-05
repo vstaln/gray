@@ -140,7 +140,7 @@ pub(crate) async fn dispatch_command(
             let mut new_sid: Option<SessionId> = None;
             if let Some(root) = default_root() {
                 let store = JsonlSessionStore::new(root);
-                let session_id = SessionId::generate();
+                let session_id = store.fresh_id().await;
                 let timestamp = crate::print::now_millis();
                 let meta = SessionMeta::new(
                     session_id.clone(),
@@ -151,12 +151,7 @@ pub(crate) async fn dispatch_command(
                 if let Err(e) = store.create(meta).await {
                     log::warn!(target: "gray_session", "session create failed: {e}");
                 }
-                short_id = session_id
-                    .as_str()
-                    .split('-')
-                    .next()
-                    .unwrap_or("new")
-                    .to_string();
+                short_id = crate::resume::short_id(&session_id);
                 new_sid = Some(session_id.clone());
                 *session_state = Some(SessionState {
                     full_save_pending: false,

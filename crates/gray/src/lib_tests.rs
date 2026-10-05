@@ -397,3 +397,18 @@ fn cache_warm_runs_with_reasoning_effort_off_claude() {
         );
     }
 }
+
+#[test]
+fn resume_flag_parses_bare_id_and_conflicts() {
+    let cli = Cli::try_parse_from(["gray", "-r"]).unwrap();
+    assert_eq!(cli.resume, Some(None));
+
+    let cli = Cli::try_parse_from(["gray", "-r", "chiral-xenon-pulsar"]).unwrap();
+    assert_eq!(cli.resume, Some(Some("chiral-xenon-pulsar".to_string())));
+
+    let cli = Cli::try_parse_from(["gray", "--resume"]).unwrap();
+    assert_eq!(cli.resume, Some(None));
+
+    assert!(Cli::try_parse_from(["gray", "-r", "x", "--session", "y"]).is_err());
+    assert!(Cli::try_parse_from(["gray", "-r", "x", "-c"]).is_err());
+}

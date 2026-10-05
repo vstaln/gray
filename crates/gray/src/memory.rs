@@ -293,9 +293,19 @@ impl MemoryStore {
         let Some(id) = session else {
             return capture();
         };
-        let id = uuid::Uuid::parse_str(id)
-            .context("invalid memory session id")?
-            .to_string();
+        // Legacy UUID snapshots keep their canonical lowercase form; anything
+        // else must pass the session-id policy (`chiral-xenon-pulsar` ok,
+        // `../escape` rejected).
+        let id = match uuid::Uuid::parse_str(id) {
+            Ok(u) => u.to_string(),
+            Err(e) => {
+                ensure!(
+                    crate::session_store::valid_session_id(id),
+                    "invalid memory session id: {e}"
+                );
+                id.to_string()
+            }
+        };
         let dir = self.root.join("snapshots");
         private_dir(&dir)?;
         let path = dir.join(format!("{id}.json"));

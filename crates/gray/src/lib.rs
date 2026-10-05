@@ -357,6 +357,18 @@ pub struct Cli {
     #[arg(long, value_name = "ID")]
     pub session: Option<String>,
 
+    /// Resume a session: `-r <ID>` works like `--session <ID>`, bare `-r`
+    /// opens the same picker as `gray resume`
+    #[arg(
+        short = 'r',
+        long = "resume",
+        value_name = "ID",
+        num_args = 0..=1,
+        conflicts_with = "session",
+        conflicts_with = "continue_last"
+    )]
+    pub resume: Option<Option<String>>,
+
     /// Override model context window in tokens (e.g. 128000 or 128k). Env: GRAY_CONTEXT_WINDOW. Highest priority over auto-fetched provider value.
     #[arg(long, value_name = "TOKENS", value_parser = parse_context_window_cli)]
     pub context_window: Option<usize>,
@@ -464,7 +476,7 @@ pub enum Commands {
     },
     /// Resume a previous conversation
     Resume {
-        /// Session id (UUID or prefix). If omitted, shows picker unless --last.
+        /// Session id (three-word name or UUID, or a prefix of either). If omitted, shows picker unless --last.
         #[arg(value_name = "SESSION_ID")]
         session_id: Option<String>,
         /// Resume the most recent session without showing the picker

@@ -71,9 +71,15 @@ fn preview_text(s: &SessionSummary, width: usize) -> String {
     }
 }
 
-fn short_id(id: &SessionId) -> String {
+/// Display id: the first 8 hex chars for a legacy UUID, the full string for
+/// a three-word name (its first `-` segment would read as just "chiral").
+pub(crate) fn short_id(id: &SessionId) -> String {
     let s = id.as_str();
-    s.split('-').next().unwrap_or(s).to_string()
+    if uuid::Uuid::parse_str(s).is_ok() {
+        s.split('-').next().unwrap_or(s).to_string()
+    } else {
+        s.to_string()
+    }
 }
 
 fn paths_match(a: &Path, b: &Path) -> bool {
