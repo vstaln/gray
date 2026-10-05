@@ -1003,7 +1003,7 @@ fn merge_tiers(existing: &mut Vec<RateTier>, incoming: Vec<RateTier>) {
             None => existing.push(t),
         }
     }
-    existing.sort_by(|a, b| b.size.cmp(&a.size));
+    existing.sort_by_key(|tier| std::cmp::Reverse(tier.size));
 }
 
 /// LiteLLM path: the base rates replace (authoritative); tiers union into
@@ -1060,7 +1060,7 @@ fn cache_models_dev_rate(model_id: &str, base: Option<ModelRate>, tiers: Vec<Rat
                         .filter(|t| !cur.tiers.iter().any(|e| e.size == t.size))
                         .collect();
                     cur.tiers.extend(missing);
-                    cur.tiers.sort_by(|a, b| b.size.cmp(&a.size));
+                    cur.tiers.sort_by_key(|tier| std::cmp::Reverse(tier.size));
                 }
                 None => {
                     if let Some(mut r) = base.clone() {
