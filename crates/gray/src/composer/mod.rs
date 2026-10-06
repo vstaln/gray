@@ -349,6 +349,9 @@ pub struct Tui {
     /// `None` between turns resolves the flag live, so the converged
     /// provider answer still lands.
     turn_show_effort: Option<bool>,
+    /// Footer segment for pending background work (`2 jobs · wake in 28m`),
+    /// kept current by `repl::jobs::spawn_footer_poller`; `None` hides it.
+    pub(crate) background_work: Option<String>,
     pub(crate) history_entries: Vec<TranscriptEntry>,
     pub transcript: Vec<Line<'static>>,
     pub(crate) last_width: u16,
@@ -578,6 +581,7 @@ impl Tui {
             cwd,
             thinking_effort: String::new(),
             turn_show_effort: None,
+            background_work: None,
             history_entries: vec![TranscriptEntry::Welcome],
             transcript: welcome_lines,
             last_width: cols,
@@ -1141,6 +1145,14 @@ impl Tui {
     /// Restores a parked status dock label (for `host/ask` modal teardown).
     pub(crate) fn restore_status(&mut self, status: Option<(Instant, String)>) {
         self.status = status;
+    }
+
+    /// Show (or hide, `None`) the footer's background-work segment.
+    pub(crate) fn set_background_work(&mut self, label: Option<String>) {
+        if self.background_work != label {
+            self.background_work = label;
+            let _ = self.draw();
+        }
     }
 
     pub fn set_status(&mut self, label: Option<&str>) {

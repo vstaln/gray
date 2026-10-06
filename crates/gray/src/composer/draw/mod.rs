@@ -726,8 +726,17 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
             .as_ref()
             .map(|(text, _)| 3 + display_width(text))
             .unwrap_or(0);
-        let left_len =
-            1 + display_width(&ctx_display) + 3 + display_width(&cache_display) + timer_len;
+        let work_len = tui
+            .background_work
+            .as_deref()
+            .map(|text| 3 + display_width(text))
+            .unwrap_or(0);
+        let left_len = 1
+            + display_width(&ctx_display)
+            + 3
+            + display_width(&cache_display)
+            + timer_len
+            + work_len;
         let pad_len = w.saturating_sub(left_len + right_len);
 
         let cache_color = if hit_rate > 0.0 {
@@ -754,6 +763,18 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
                 Style::default().fg(crate::theme::theme().text_faint),
             ));
             footer_spans.push(Span::styled(timer_text, Style::default().fg(timer_color)));
+        }
+        // Pending background work (running jobs, scheduled wakes): what the
+        // session will wake up for, so an idle prompt never looks finished.
+        if let Some(work) = &tui.background_work {
+            footer_spans.push(Span::styled(
+                " \u{b7} ",
+                Style::default().fg(crate::theme::theme().text_faint),
+            ));
+            footer_spans.push(Span::styled(
+                work.clone(),
+                Style::default().fg(crate::theme::theme().accent),
+            ));
         }
         footer_spans.push(Span::raw(" ".repeat(pad_len)));
         footer_spans.extend(right_parts);

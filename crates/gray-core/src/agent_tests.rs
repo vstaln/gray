@@ -1285,6 +1285,40 @@ async fn clean_and_user_directed_endings_do_not_nudge() {
 }
 
 #[tokio::test]
+async fn endings_waiting_on_the_user_do_not_nudge() {
+    // The real misses: a plan that ends on "Say go … and I'll implement",
+    // and an apology that ends waiting on the user's call. Nudging these
+    // ("take it now") makes the model act on work the user never approved.
+    for text in [
+        "Two questions before I start:\n\n1. **Quit with jobs running?** Confirm, or leave them?\n2. **Verb scope.** Is that set right, or add `git` too?\n\nSay go, with your answers, and I'll implement both.",
+        "Should I switch back and delete the new branch, or keep it? I'll wait for that, your answers to the two questions, and your go.",
+        "Plan: wire the footer, then the picker.\n\nOnce you confirm, I'll start with the footer.",
+        "Want me to open a PR?\nI'll push the branch after that.",
+        "I'll hold off until you approve the design.",
+    ] {
+        let provider = FakeProvider::new(vec![text_end_script(text)]);
+        let mut agent = Agent::new(
+            Box::new(provider),
+            Arc::new(FakeExecutor::new(ToolOutput::ok("unused"))),
+        )
+        .with_tools(vec![tool_def()]);
+
+        agent
+            .run(Message::user("go"), ToolContext::default())
+            .await
+            .expect("run should end cleanly");
+
+        assert!(
+            !agent
+                .messages()
+                .iter()
+                .any(|m| m.text_content().contains("announcing a next step")),
+            "no nudge expected for ending: {text}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn pending_enumeration_endings_nudge() {
     // The real miss: swe-2 ended a turn on "I'm mid-investigation. Two
     // things to pin down: whether …, and how …" — no first-person marker,
@@ -2412,6 +2446,66 @@ async fn reasoning_only_maxtokens_is_not_retried_as_empty() {
         thinking,
         "truncated reasoning must persist: {:?}",
         agent.messages().last()
+    );
+}
+
+/// A reasoning item that arrives with no summary text still attaches its
+/// encrypted carrier to history (claude-sub relays the item alone —
+/// thinking prose is never forwarded). The empty-text block replays the
+/// same: the wire item carries the blob, not the text.
+#[tokio::test]
+async fn reasoning_item_without_summary_attaches_carrier() {
+    struct Modeled {
+        inner: FakeProvider,
+    }
+    #[async_trait]
+    impl Provider for Modeled {
+        fn stream(&self, req: ChatRequest) -> ProviderStream {
+            self.inner.stream(req)
+        }
+        fn model_id(&self) -> &str {
+            "m1"
+        }
+    }
+    let provider = Modeled {
+        inner: FakeProvider::new(vec![vec![
+            StreamEvent::reasoning_item("rs_1", "blob"),
+            StreamEvent::text_delta("visible"),
+            StreamEvent::message_complete(Some(StopReason::EndTurn), None),
+        ]]),
+    };
+    let mut agent = Agent::new(
+        Box::new(provider),
+        Arc::new(FakeExecutor::new(ToolOutput::ok(""))),
+    );
+    agent
+        .run(Message::user("go"), ToolContext::default())
+        .await
+        .unwrap();
+    let last = agent.messages().last().unwrap();
+    let carrier = last.content.iter().find_map(|b| match b {
+        ContentBlock::Thinking {
+            text,
+            encrypted_content,
+            item_id,
+            model,
+        } => Some((
+            text.clone(),
+            encrypted_content.clone(),
+            item_id.clone(),
+            model.clone(),
+        )),
+        _ => None,
+    });
+    assert_eq!(
+        carrier,
+        Some((
+            String::new(),
+            Some("blob".to_string()),
+            Some("rs_1".to_string()),
+            Some("m1".to_string())
+        )),
+        "carrier must attach even without thinking text: {last:?}"
     );
 }
 

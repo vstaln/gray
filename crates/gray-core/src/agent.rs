@@ -249,12 +249,34 @@ pub trait ToolExecutor: Send + Sync {
         false
     }
 
+    /// This session's still-running background jobs, oldest first, for a
+    /// host that shows them (footer count, `/jobs`). Default: none.
+    fn background_jobs(&self, _ctx: &ToolContext) -> Vec<BackgroundJob> {
+        Vec::new()
+    }
+
+    /// Ask one of this session's running jobs to stop; `false` when no such
+    /// job is running. The job's finish still arrives as a notification.
+    fn cancel_background(&self, _ctx: &ToolContext, _id: &str) -> bool {
+        false
+    }
+
     fn execute(
         &self,
         ctx: &ToolContext,
         name: &str,
         args: serde_json::Value,
     ) -> BoxFuture<'static, ToolOutput>;
+}
+
+/// A running background job as a host shows it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BackgroundJob {
+    /// The job id the model uses (`cargo-check`).
+    pub id: String,
+    pub elapsed: Duration,
+    /// Cancellation was requested and the job has not settled yet.
+    pub stopping: bool,
 }
 
 /// Convenience alias used by Agent wiring.
@@ -665,6 +687,23 @@ impl Agent {
             .then(|| self.executor.wait_for_notification(ctx, timeout))
     }
 
+    /// A shared handle on the tool executor, for a host task that watches
+    /// background work while a turn holds the agent (`&mut`).
+    pub fn executor_handle(&self) -> std::sync::Arc<dyn ToolExecutor> {
+        std::sync::Arc::clone(&self.executor)
+    }
+
+    /// This session's running background jobs (see
+    /// [`ToolExecutor::background_jobs`]).
+    pub fn background_jobs(&self, ctx: &ToolContext) -> Vec<BackgroundJob> {
+        self.executor.background_jobs(ctx)
+    }
+
+    /// Stop one running background job; `false` when it is not running.
+    pub fn cancel_background(&self, ctx: &ToolContext, id: &str) -> bool {
+        self.executor.cancel_background(ctx, id)
+    }
+
     /// Takes finished background-job notices for an idle host, which turns
     /// them into the next turn's input (the loop drains them only mid-run).
     pub fn drain_background_notifications(&self, ctx: &ToolContext) -> Vec<String> {
@@ -844,7 +883,7 @@ pub(crate) fn salvage_partial_text(
     model: &str,
 ) {
     let mut content = Vec::new();
-    if !thinking.is_empty() {
+    if !thinking.is_empty() || pending_reasoning.is_some() {
         content.push(thinking_block(thinking, pending_reasoning, model));
     }
     content.push(ContentBlock::Text { text });

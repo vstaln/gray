@@ -88,6 +88,26 @@ pub(crate) fn clear_wake() {
     WAKE.store(false, std::sync::atomic::Ordering::Relaxed);
 }
 
+/// What the footer poller reads background jobs from: the live agent's
+/// executor and the context naming its session. Set at every idle point,
+/// because `/new`, `/resume` and `/model` replace the agent or the session.
+type BackgroundSource = (
+    std::sync::Arc<dyn gray_core::agent::ToolExecutor>,
+    gray_core::agent::ToolContext,
+);
+static BACKGROUND_SOURCE: Mutex<Option<BackgroundSource>> = Mutex::new(None);
+
+pub(crate) fn set_background_source(source: Option<BackgroundSource>) {
+    *BACKGROUND_SOURCE.lock().unwrap_or_else(|e| e.into_inner()) = source;
+}
+
+pub(crate) fn background_source() -> Option<BackgroundSource> {
+    BACKGROUND_SOURCE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+}
+
 /// The session the interactive REPL is showing: the inbox poller (a separate
 /// task) reads it, and `/new` / `/resume` change it under the poller.
 static LIVE_SESSION: Mutex<Option<String>> = Mutex::new(None);
