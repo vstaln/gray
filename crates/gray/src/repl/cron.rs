@@ -196,15 +196,32 @@ pub(super) fn arm_background_wake(
     sid: Option<&str>,
     cwd: &Path,
 ) -> Option<tokio::task::JoinHandle<()>> {
-    // ponytail: one day, then the wait lapses until the next idle point
-    // re-arms it; a job outliving that needs a re-arm loop.
-    let wait =
-        agent?.background_wake(&idle_ctx(cwd, sid?), std::time::Duration::from_secs(86_400))?;
-    Some(tokio::spawn(async move {
-        if wait.await.is_some() {
+    let ctx = idle_ctx(cwd, sid?);
+    let exec = agent?.executor_handle();
+    if !exec.has_pending_background(&ctx) {
+        return None;
+    }
+    Some(tokio::spawn(wait_then_wake(exec, ctx, WAKE_WAIT_SLICE)))
+}
+
+/// One bounded wait on the executor; the waiter re-waits while jobs are
+/// still pending, so a job of any length wakes the prompt when it settles.
+const WAKE_WAIT_SLICE: std::time::Duration = std::time::Duration::from_secs(3600);
+
+async fn wait_then_wake(
+    exec: std::sync::Arc<dyn gray_core::agent::ToolExecutor>,
+    ctx: gray_core::agent::ToolContext,
+    slice: std::time::Duration,
+) {
+    loop {
+        if exec.wait_for_notification(&ctx, slice).await.is_some() {
             crate::host::request_wake();
+            return;
         }
-    }))
+        if !exec.has_pending_background(&ctx) {
+            return;
+        }
+    }
 }
 
 #[path = "cron_tests.rs"]

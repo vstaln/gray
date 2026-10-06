@@ -1340,3 +1340,19 @@ async fn a_noisy_command_is_squeezed_and_its_log_keeps_everything() {
     );
     assert!(text.contains("crate-399"), "including the last one");
 }
+
+#[test]
+#[cfg(not(windows))]
+fn the_job_surface_says_how_to_pause_and_be_woken() {
+    let def = BashTool::default().def();
+    assert!(
+        def.description.contains("a finished job wakes you"),
+        "{}",
+        def.description
+    );
+    assert!(
+        def.description.contains("--reminder"),
+        "{}",
+        def.description
+    );
+}

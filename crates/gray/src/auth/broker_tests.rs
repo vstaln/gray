@@ -82,6 +82,7 @@ fn provider() -> ProviderDecl {
             },
             request: gray_plugin::ProviderRequestPolicyDecl {
                 prompt_cache_key: false,
+                warm_replay: false,
                 store: false,
                 include_reasoning_encrypted: true,
                 previous_response_id: false,

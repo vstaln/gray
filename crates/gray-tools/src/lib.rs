@@ -342,6 +342,22 @@ impl ToolExecutor for Registry {
         })
     }
 
+    fn background_jobs(&self, ctx: &ToolContext) -> Vec<gray_core::agent::BackgroundJob> {
+        self.tools
+            .iter()
+            .filter_map(|tool| tool.as_any().downcast_ref::<BashTool>())
+            .flat_map(|bash| bash.running_jobs(ctx))
+            .collect()
+    }
+
+    fn cancel_background(&self, ctx: &ToolContext, id: &str) -> bool {
+        self.tools.iter().any(|tool| {
+            tool.as_any()
+                .downcast_ref::<BashTool>()
+                .is_some_and(|bash| bash.cancel_job(ctx, id))
+        })
+    }
+
     fn execute(
         &self,
         ctx: &ToolContext,

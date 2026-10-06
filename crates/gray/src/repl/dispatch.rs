@@ -26,6 +26,16 @@ pub(crate) async fn dispatch_command(
     Ok(match cmd {
         ReplCommand::Empty | ReplCommand::Prompt(_) => Flow::Continue,
         ReplCommand::Quit => {
+            let sid = session_state.as_ref().map(|s| s.session_id.as_str());
+            let ctx = super::jobs::session_ctx(cwd, sid);
+            let exec = agent.as_ref().map(|a| a.executor_handle());
+            if let Some(warning) = super::jobs::confirm_quit(exec.as_deref(), &ctx) {
+                say(tui.as_ref().map(|(s, _)| s), &warning);
+                return Ok(Flow::Continue);
+            }
+            if let Some(exec) = &exec {
+                super::jobs::stop_all(exec.as_ref(), &ctx).await;
+            }
             shutdown_hooks(agent.as_ref()).await;
             if let Some((shared, stop)) = tui {
                 stop.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -286,6 +296,37 @@ pub(crate) async fn dispatch_command(
             handle_usage(session_totals, config, tui.as_ref().map(|(s, _)| s));
             Flow::Continue
         }
+        ReplCommand::Jobs => {
+            let tui_shared = tui.as_ref().map(|(s, _)| s);
+            let sid = session_state
+                .as_ref()
+                .map(|s| s.session_id.as_str().to_string());
+            let ctx = super::jobs::session_ctx(cwd, sid.as_deref());
+            let home = crate::setup::gray_home()?;
+            match (agent.as_ref().map(|a| a.executor_handle()), tui_shared) {
+                (Some(exec), Some(shared)) => {
+                    let bg = shared.lock().expect("tui lock").snapshot();
+                    let changed = with_modal_sync(tui_shared, || {
+                        super::jobs::run_jobs_modal(Some(&bg), &home, exec, ctx)
+                    });
+                    match changed {
+                        Ok(true) => say(tui_shared, "background work updated"),
+                        Ok(false) => {}
+                        Err(e) => say(tui_shared, &format!("jobs picker failed: {e}")),
+                    }
+                }
+                (exec, _) => {
+                    let jobs = exec.map(|e| e.background_jobs(&ctx)).unwrap_or_default();
+                    let wakes = super::jobs::load_wakes(&home, sid.as_deref());
+                    say(
+                        tui_shared,
+                        &super::jobs::dashboard(&jobs, &wakes, crate::cron::now_secs()),
+                    );
+                }
+            }
+            Flow::Continue
+        }
+
         ReplCommand::CronJobs(arg) => {
             // A bare switch word flips the master switch (skills-shaped);
             // the dashboard keeps the bare and `<id>` behavior. A command

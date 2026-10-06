@@ -159,29 +159,29 @@ pub use gray_plugin::builder::{
 /// message is written for a human, not a log file.
 /// Prompt-cache warming for a build, or `None`. Both the native Anthropic
 /// Messages API and OpenAI-compatible prefix caches live ~5 min, and a replay
-/// runs only when the one-token cap leaves its cache entry untouched. pi
-/// `isReplayable`: only a Claude thinking budget breaks that (the budget is
-/// sized from the output cap and Anthropic keys its message cache on it);
-/// a reasoning effort on any other model is a plain request field the replay
-/// sends unchanged. `GRAY_NO_CACHE_WARM=1` turns it off.
+/// runs only when its capped output preserves the request's cache key — the
+/// provider's `warm_output_cap` returns 1 everywhere except where the key
+/// derives from the cap (Claude thinking budget; past pi `isReplayable`'s
+/// carve-out the replay re-derives the same budget). `GRAY_NO_CACHE_WARM=1`
+/// turns it off.
+///
+/// `plugin_warm_replay` is the manifest opt-in (`request.warm_replay`) of
+/// the connected plugin provider: a verbatim host replay is only safe for
+/// transports the host calls directly (a real HTTPS endpoint), not for
+/// relay sidecars that spawn per-turn CLI children.
 fn cache_warm_policy(
     config: &Config,
     model: &str,
-    effort: Option<&str>,
+    plugin_warm_replay: bool,
 ) -> Option<gray_core::cache_warm::CacheWarmPolicy> {
     // Every built-in provider path caches prefixes (native Anthropic plus
     // all OpenAI-compatible base URLs — direct OpenAI, routers, local
-    // servers); only plugin-credentialed sidecars are excluded. A second,
-    // runtime gate in `keep_warm` still sends zero refreshes unless the model
-    // has cache prices.
-    let cacheable = !config.uses_plugin_credentials();
-    let lower = model.to_lowercase();
-    let budget_thinking = gray_provider::anthropic::is_anthropic_base_url(&config.base_url)
-        || lower.contains("claude")
-        || lower.contains("anthropic");
-    let replayable = matches!(effort, None | Some("off")) || !budget_thinking;
-    if config.bare || !cacheable || !replayable || std::env::var_os("GRAY_NO_CACHE_WARM").is_some()
-    {
+    // servers); plugin-credentialed sidecars are excluded unless their
+    // manifest opts into verbatim replay. A second, runtime gate in
+    // `keep_warm` still sends zero refreshes unless the model has cache
+    // prices.
+    let cacheable = !config.uses_plugin_credentials() || plugin_warm_replay;
+    if config.bare || !cacheable || std::env::var_os("GRAY_NO_CACHE_WARM").is_some() {
         return None;
     }
     let model = model.to_string();
@@ -243,7 +243,10 @@ pub async fn build_agent(
         .thinking_effort
         .as_deref()
         .map(|effort| crate::setup::clamp_thinking_level(effort_model, effort).to_string());
-    let cache_warm = cache_warm_policy(config, &wire_model, reasoning_effort.as_deref());
+    let plugin_warm_replay = dynamic
+        .as_ref()
+        .is_some_and(|p| p.installed().provider.transport.request.warm_replay);
+    let cache_warm = cache_warm_policy(config, &wire_model, plugin_warm_replay);
     let agent = gray_plugin::builder::build_agent(gray_plugin::builder::BuilderOptions {
         model: wire_model.clone(),
         api_key: api_key.to_string(),

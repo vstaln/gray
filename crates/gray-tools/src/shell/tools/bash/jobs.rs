@@ -365,6 +365,43 @@ impl Jobs {
             .collect()
     }
 
+    /// Yielded, unfinished jobs of this session, oldest first. A job still
+    /// inside its start window is a foreground call, not background work.
+    pub(super) fn running(&self, ctx: &ToolContext) -> Vec<gray_core::agent::BackgroundJob> {
+        let jobs = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let mut out: Vec<_> = jobs
+            .iter()
+            .filter(|(_, j)| {
+                j.session == ctx.session_id && j.yielded && j.result.borrow().is_none()
+            })
+            .map(|(id, j)| {
+                (
+                    j.started,
+                    gray_core::agent::BackgroundJob {
+                        id: id.clone(),
+                        elapsed: j.started.elapsed(),
+                        stopping: j.cancel.is_cancelled(),
+                    },
+                )
+            })
+            .collect();
+        out.sort_by_key(|(started, _)| *started);
+        out.into_iter().map(|(_, job)| job).collect()
+    }
+
+    /// Cancel one running job of this session (same effect as the model's
+    /// `action:cancel`); `false` when there is no such running job.
+    pub(super) fn cancel_running(&self, ctx: &ToolContext, id: &str) -> bool {
+        let jobs = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        match jobs.get(id) {
+            Some(j) if j.session == ctx.session_id && j.result.borrow().is_none() => {
+                j.cancel.cancel();
+                true
+            }
+            _ => false,
+        }
+    }
+
     /// True while at least one unfinished job belongs to this session — the
     /// loop's turn-end condition for completion-wake.
     pub(super) fn has_unfinished(&self, ctx: &ToolContext) -> bool {
@@ -817,6 +854,42 @@ mod tests {
         assert!(
             waiter.await.expect("waiter task"),
             "a job settling after the snapshot wakes the turn"
+        );
+    }
+
+    #[test]
+    fn running_lists_only_this_sessions_background_jobs_and_cancels_them() {
+        let tool = BashTool::default();
+        let ctx = ToolContext::default();
+        let other = ToolContext {
+            session_id: Some("other".into()),
+            ..ToolContext::default()
+        };
+        {
+            let mut jobs = tool.jobs.0.lock().unwrap();
+            jobs.insert("bg".into(), entry(false, false, true).0);
+            jobs.insert("done".into(), entry(true, false, true).0);
+            // Still inside its start window: a foreground call, not background.
+            jobs.insert("window".into(), entry(false, false, false).0);
+            let (mut theirs, _) = entry(false, false, true);
+            theirs.session = Some("other".into());
+            jobs.insert("theirs".into(), theirs);
+        }
+        let ids = |ctx: &ToolContext| -> Vec<String> {
+            tool.running_jobs(ctx).into_iter().map(|j| j.id).collect()
+        };
+        assert_eq!(ids(&ctx), vec!["bg".to_string()]);
+        assert_eq!(ids(&other), vec!["theirs".to_string()]);
+
+        assert!(!tool.cancel_job(&ctx, "theirs"), "another session's job");
+        assert!(!tool.cancel_job(&ctx, "done"), "a finished job");
+        assert!(!tool.cancel_job(&ctx, "nope"), "an unknown id");
+        assert!(tool.cancel_job(&ctx, "bg"));
+        let after = tool.running_jobs(&ctx);
+        assert_eq!(after.len(), 1);
+        assert!(
+            after[0].stopping,
+            "a cancelled job shows as stopping until it settles"
         );
     }
 }

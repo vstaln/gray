@@ -125,6 +125,16 @@ fn thinking_budget(effort: Option<&str>) -> Option<u32> {
     }
 }
 
+/// The `thinking.budget_tokens` a request carries: the effort table
+/// clamped below `max_tokens` (the API demands 1024 tokens of headroom),
+/// or `None` when no budget fits — the request then sends no thinking
+/// at all.
+fn derived_budget(effort: Option<&str>, max_tokens: u32) -> Option<u32> {
+    thinking_budget(effort)
+        .map(|b| b.min(max_tokens.saturating_sub(1024)))
+        .filter(|b| *b >= 1024)
+}
+
 fn ephemeral() -> Value {
     json!({"type": "ephemeral"})
 }
@@ -140,9 +150,7 @@ pub(crate) fn map_request(
     let max_tokens = req.max_tokens.unwrap_or_else(|| default_max_tokens(model));
     // A budget must leave room below `max_tokens` (min 1024): a request that
     // cannot fit one sends no thinking rather than a 400.
-    let budget = thinking_budget(reasoning_effort)
-        .map(|b| b.min(max_tokens.saturating_sub(1024)))
-        .filter(|b| *b >= 1024);
+    let budget = derived_budget(reasoning_effort, max_tokens);
 
     let mut messages: Vec<(Role, Vec<Value>)> = Vec::new();
     for msg in req.messages {
@@ -650,6 +658,20 @@ async fn step(mut st: State) -> Option<(Result<StreamEvent, ProviderError>, Stat
 impl Provider for AnthropicProvider {
     fn model_id(&self) -> &str {
         &self.model
+    }
+
+    /// Anthropic keys the prompt cache on `thinking.budget_tokens`, which
+    /// is derived from `max_tokens`: a 1-token replay drops thinking
+    /// entirely and warms a different entry (or none). Replaying with
+    /// `budget + 1024` derives the identical budget — same cache key,
+    /// still a capped throwaway reply.
+    fn warm_output_cap(&self, req: &ChatRequest) -> u32 {
+        let max = req
+            .max_tokens
+            .unwrap_or_else(|| default_max_tokens(&self.model));
+        derived_budget(self.reasoning_effort.as_deref(), max)
+            .map(|b| b + 1024)
+            .unwrap_or(1)
     }
 
     fn stream(&self, req: ChatRequest) -> BoxStream<'static, Result<StreamEvent, ProviderError>> {

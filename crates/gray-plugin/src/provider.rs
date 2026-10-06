@@ -43,6 +43,13 @@ pub struct ProviderAuthorizationDecl {
 pub struct ProviderRequestPolicyDecl {
     #[serde(default)]
     pub prompt_cache_key: bool,
+    /// Opt-in: the host may verbatim-replay this provider's requests for
+    /// prompt-cache warming. Only for transports the host calls directly
+    /// (a real HTTPS endpoint); relay sidecars that spawn per-turn
+    /// children must leave it off. Skipped when false so declarations
+    /// that don't opt in keep their existing profile binding.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub warm_replay: bool,
     #[serde(default)]
     pub store: bool,
     #[serde(default)]
@@ -529,6 +536,10 @@ impl ProviderTransportDecl {
         }
         Ok(())
     }
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 fn normalize_base_url(mut url: Url) -> Url {

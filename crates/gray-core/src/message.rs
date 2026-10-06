@@ -397,7 +397,8 @@ pub struct ChatRequest {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tools: Vec<ToolDef>,
     /// Output cap for this one request (`None` = the provider default). Set
-    /// only by the cache warmer, which replays a request for one token.
+    /// only by the cache warmer, which replays a request under
+    /// [`crate::agent::Provider::warm_output_cap`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<u32>,
 }

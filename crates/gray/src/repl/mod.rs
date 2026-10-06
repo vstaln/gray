@@ -98,6 +98,10 @@ fn signal_exit_text(session_id: Option<&str>, styled: bool) -> String {
 /// holding it must not block the exit), then print the resume hint.
 fn exit_from_signal(code: i32, clear_band: bool) -> ! {
     use std::io::IsTerminal as _;
+    // `process::exit` skips the job workers' kill-on-drop: stop them first,
+    // before the band lock below — a worker that paints on its way out
+    // must not wait on a lock this thread holds until exit.
+    jobs::stop_all_blocking();
     // Bound outside the lock loop: the guard borrows it and must live until
     // process::exit.
     let shared = clear_band.then(crate::host::registered_tui).flatten();
@@ -215,6 +219,7 @@ mod dispatch;
 pub mod format;
 mod gateway_panel;
 pub(crate) mod handlers; // subsystem toggles are crate-wide (gateway CLI, cron)
+mod jobs;
 mod key_watcher;
 pub(crate) mod maintenance;
 mod plugin_cmds;
@@ -449,8 +454,23 @@ async fn run_plugin_command(
     owner.run_command(name, argv).await
 }
 
-// No background shell tasks exist (blocking-only bash): nothing to stop on quit.
-async fn shutdown_shell_tasks(_session_state: &Option<SessionState>, _tui: &TuiOpt) {}
+/// Stops the session's background jobs on the way out. Every exit path runs
+/// it, so a job never outlives the REPL that started it (`/quit` and Ctrl-D
+/// first ask, see [`jobs::confirm_quit`]).
+async fn shutdown_shell_tasks(
+    agent: Option<&gray_core::agent::Agent>,
+    session_state: &Option<SessionState>,
+    cwd: &std::path::Path,
+) {
+    if let Some(agent) = agent {
+        let sid = session_state.as_ref().map(|s| s.session_id.as_str());
+        jobs::stop_all(
+            agent.executor_handle().as_ref(),
+            &jobs::session_ctx(cwd, sid),
+        )
+        .await;
+    }
+}
 
 /// Graceful sidecar teardown (`plugin/shutdown`); best-effort, never fails.
 async fn shutdown_hooks(agent: Option<&gray_core::agent::Agent>) {
@@ -907,6 +927,10 @@ pub async fn run_repl_mode(
     let mut last_turn_resumable = false;
     // The waiter that wakes the idle prompt when a background job settles.
     let mut bg_wake: Option<tokio::task::JoinHandle<()>> = None;
+    // Footer segment for running jobs and scheduled wakes.
+    if interactive {
+        jobs::spawn_footer_poller();
+    }
 
     loop {
         // Cleared before anything is drained: a wake raised after this point
@@ -928,6 +952,11 @@ pub async fn run_repl_mode(
                 .as_ref()
                 .map(|s| s.session_id.as_str().to_string());
             crate::host::set_live_session(sid.as_deref());
+            crate::host::set_background_source(
+                agent
+                    .as_ref()
+                    .map(|a| (a.executor_handle(), jobs::session_ctx(&cwd, sid.as_deref()))),
+            );
             if let Some(h) = bg_wake.take() {
                 h.abort();
             }
@@ -984,11 +1013,19 @@ pub async fn run_repl_mode(
                     let pair = match crate::composer::input::read_line(shared)? {
                         Some(v) => v,
                         None => {
+                            let sid = session_state.as_ref().map(|s| s.session_id.as_str());
+                            let exec = agent.as_ref().map(|a| a.executor_handle());
+                            if let Some(warning) =
+                                jobs::confirm_quit(exec.as_deref(), &jobs::session_ctx(&cwd, sid))
+                            {
+                                say(Some(shared), &warning);
+                                continue;
+                            }
                             stop.store(true, std::sync::atomic::Ordering::Relaxed);
                             shared.lock().expect("tui lock").shutdown();
                             crate::ask::shutdown();
                             shutdown_hooks(agent.as_ref()).await;
-                            shutdown_shell_tasks(&session_state, &tui).await;
+                            shutdown_shell_tasks(agent.as_ref(), &session_state, &cwd).await;
                             print_exit_hint(&session_state);
                             break;
                         }
@@ -1016,7 +1053,7 @@ pub async fn run_repl_mode(
                 if std::io::stdin().read_line(&mut buf)? == 0 {
                     crate::ask::shutdown();
                     shutdown_hooks(agent.as_ref()).await;
-                    shutdown_shell_tasks(&session_state, &tui).await;
+                    shutdown_shell_tasks(agent.as_ref(), &session_state, &cwd).await;
                     break;
                 }
                 (buf.trim().to_string(), Vec::new())
@@ -1061,7 +1098,7 @@ pub async fn run_repl_mode(
                         session_totals.cost,
                     ) {
                         say(tui.as_ref().map(|(s, _)| s), &msg);
-                        shutdown_shell_tasks(&session_state, &tui).await;
+                        shutdown_shell_tasks(agent.as_ref(), &session_state, &cwd).await;
                         break;
                     }
                     if let Some((shared, _)) = tui.as_ref() {
@@ -1096,7 +1133,7 @@ pub async fn run_repl_mode(
                     crate::turn_caps::check_caps(config, session_totals.turns, session_totals.cost)
                 {
                     say(tui.as_ref().map(|(s, _)| s), &msg);
-                    shutdown_shell_tasks(&session_state, &tui).await;
+                    shutdown_shell_tasks(agent.as_ref(), &session_state, &cwd).await;
                     break;
                 }
                 prompt_turn::run_prompt_turn(
@@ -1140,7 +1177,7 @@ pub async fn run_repl_mode(
                 .await?
                     == dispatch::Flow::Break
                 {
-                    shutdown_shell_tasks(&session_state, &tui).await;
+                    shutdown_shell_tasks(agent.as_ref(), &session_state, &cwd).await;
                     break;
                 }
             }
