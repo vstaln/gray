@@ -16,6 +16,18 @@
   charging the larger capped reply against the expected saving (a `max`-effort
   refresh still declines when it would cost as much as the miss it prevents).
 
+### Added
+- **Plugin providers can opt into cache warming.** The provider request
+  policy gains `warm_replay` (wire default false): a plugin-credentialed
+  provider whose transport is a real HTTPS endpoint the host calls
+  directly — like codex-sub's pinned `chatgpt.com/backend-api/codex` —
+  declares it and the warmer replays the last request verbatim during long
+  tool runs, landing on the same `prompt_cache_key` shard. Relay sidecars
+  that spawn per-turn CLI children (devin-sub, claude-sub,
+  antigravity-sub) leave it off, so a host replay can't conjure real
+  children. The flag skips serialization when false, so declarations that
+  don't opt in keep their existing profile binding.
+
 ## [0.1.11] - 2026-10-05
 
 ### Changed

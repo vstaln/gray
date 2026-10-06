@@ -164,16 +164,23 @@ pub use gray_plugin::builder::{
 /// derives from the cap (Claude thinking budget; past pi `isReplayable`'s
 /// carve-out the replay re-derives the same budget). `GRAY_NO_CACHE_WARM=1`
 /// turns it off.
+///
+/// `plugin_warm_replay` is the manifest opt-in (`request.warm_replay`) of
+/// the connected plugin provider: a verbatim host replay is only safe for
+/// transports the host calls directly (a real HTTPS endpoint), not for
+/// relay sidecars that spawn per-turn CLI children.
 fn cache_warm_policy(
     config: &Config,
     model: &str,
+    plugin_warm_replay: bool,
 ) -> Option<gray_core::cache_warm::CacheWarmPolicy> {
     // Every built-in provider path caches prefixes (native Anthropic plus
     // all OpenAI-compatible base URLs — direct OpenAI, routers, local
-    // servers); only plugin-credentialed sidecars are excluded. A second,
-    // runtime gate in `keep_warm` still sends zero refreshes unless the model
-    // has cache prices.
-    let cacheable = !config.uses_plugin_credentials();
+    // servers); plugin-credentialed sidecars are excluded unless their
+    // manifest opts into verbatim replay. A second, runtime gate in
+    // `keep_warm` still sends zero refreshes unless the model has cache
+    // prices.
+    let cacheable = !config.uses_plugin_credentials() || plugin_warm_replay;
     if config.bare || !cacheable || std::env::var_os("GRAY_NO_CACHE_WARM").is_some() {
         return None;
     }
@@ -237,7 +244,10 @@ pub async fn build_agent(
         .thinking_effort
         .as_deref()
         .map(|effort| crate::setup::clamp_thinking_level(&wire_model, effort).to_string());
-    let cache_warm = cache_warm_policy(config, &wire_model);
+    let plugin_warm_replay = dynamic
+        .as_ref()
+        .is_some_and(|p| p.installed().provider.transport.request.warm_replay);
+    let cache_warm = cache_warm_policy(config, &wire_model, plugin_warm_replay);
     let agent = gray_plugin::builder::build_agent(gray_plugin::builder::BuilderOptions {
         model: wire_model.clone(),
         api_key: api_key.to_string(),
