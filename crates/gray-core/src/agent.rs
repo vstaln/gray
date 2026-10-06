@@ -173,6 +173,16 @@ pub trait Provider: Send + Sync {
     fn model_id(&self) -> &str {
         ""
     }
+
+    /// The output cap a cache-warming replay of `req` must carry for the
+    /// replay to land on the same cache entry the request wrote (the
+    /// warmer's usual `max_tokens: 1`). A provider that derives a
+    /// cache-keyed field from the cap — Anthropic derives
+    /// `thinking.budget_tokens` — returns the smallest cap preserving
+    /// that field instead.
+    fn warm_output_cap(&self, _req: &ChatRequest) -> u32 {
+        1
+    }
 }
 
 /// Host callback polled before each model request of a turn. Returns text the
@@ -437,6 +447,10 @@ impl Provider for SharedProvider {
 
     fn model_id(&self) -> &str {
         self.0.model_id()
+    }
+
+    fn warm_output_cap(&self, req: &ChatRequest) -> u32 {
+        self.0.warm_output_cap(req)
     }
 }
 

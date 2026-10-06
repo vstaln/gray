@@ -531,6 +531,17 @@ fn is_valid_tool_name(name: &str, id: &str) -> bool {
     }
 }
 
+/// `thinking.budget_tokens` for an effort level on Anthropic models
+/// reached through an OpenAI-compatible host (the chat mapper's table).
+fn chat_thinking_budget(effort: &str) -> u32 {
+    match effort {
+        "low" => 1024,
+        "medium" => 4096,
+        "max" => 32768,
+        _ => 16384, // high / default
+    }
+}
+
 fn map_chat_request(
     req: ChatRequest,
     model: &str,
@@ -835,12 +846,7 @@ fn map_chat_request(
     let (reasoning_effort_val, reasoning_val, thinking_val) = match reasoning_effort {
         Some("off") => (None, None, Some(serde_json::json!({ "type": "disabled" }))),
         Some(eff) => {
-            let budget = match eff {
-                "low" => 1024,
-                "medium" => 4096,
-                "max" => 32768,
-                _ => 16384, // high / default
-            };
+            let budget = chat_thinking_budget(eff);
             // A budget must sit below the output cap; a capped request (the
             // cache warmer's replay) leaves the budget out rather than send
             // one the server rejects.
@@ -3664,6 +3670,19 @@ fn stream_unfold_step(
 impl Provider for OpenAiProvider {
     fn model_id(&self) -> &str {
         &self.model
+    }
+
+    /// Anthropic models reached through an OpenAI-compatible host carry
+    /// the same cache-keyed `thinking.budget_tokens`; any cap above the
+    /// budget keeps the field identical (`map_chat_request` drops it only
+    /// when it no longer fits under the cap).
+    fn warm_output_cap(&self, _req: &ChatRequest) -> u32 {
+        match self.reasoning_effort.as_deref() {
+            Some(eff) if eff != "off" && is_anthropic_model(&self.model) => {
+                chat_thinking_budget(eff) + 1
+            }
+            _ => 1,
+        }
     }
 
     fn stream(&self, req: ChatRequest) -> BoxStream<'static, Result<StreamEvent, ProviderError>> {

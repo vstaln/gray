@@ -4,10 +4,12 @@
 //! A provider's prompt cache entry expires a fixed time after its last use.
 //! When a tool runs past that, the next request re-bills the whole prompt as
 //! a cache write. While a round's tools run, this re-sends the round's exact
-//! request with a one-token output cap shortly before the entry expires, as
-//! long as the expected saving clears a floor (or, past pi, the prompt is big
-//! enough that a miss would be warned about). The refresh never enters the
-//! conversation; its usage is billed with the turn.
+//! request with a capped output shortly before the entry expires — one token,
+//! or the smallest cap that preserves the request's cache key (the provider's
+//! `warm_output_cap`, e.g. Anthropic's thinking budget) — as long as the
+//! expected saving clears a floor (or, past pi, the prompt is big enough that
+//! a miss would be warned about). The refresh never enters the conversation;
+//! its usage is billed with the turn.
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -62,8 +64,10 @@ pub fn warming_delay(ttl: Duration) -> Option<Duration> {
 
 /// pi `evaluate`, streaming phase (continuation probability 1): the extra
 /// price of a cache miss on a prompt this size, minus the refresh's own price
-/// (a cache read of the prompt plus one output token).
-pub fn expected_savings(p: &Prices, prompt_tokens: usize) -> f64 {
+/// (a cache read of the prompt plus up to `warm_output` output tokens — the
+/// replay's cap, which a provider may raise above 1 to preserve its cache
+/// key, e.g. Anthropic's thinking budget).
+pub fn expected_savings(p: &Prices, prompt_tokens: usize, warm_output: u32) -> f64 {
     let n = prompt_tokens as f64;
     let hit = n * p.cache_read;
     let miss = if p.cache_write > 0.0 {
@@ -71,7 +75,7 @@ pub fn expected_savings(p: &Prices, prompt_tokens: usize) -> f64 {
     } else {
         n * p.input
     };
-    let warm = hit + p.output;
+    let warm = hit + f64::from(warm_output) * p.output;
     (miss - hit).max(0.0) - warm
 }
 
@@ -83,6 +87,7 @@ pub fn expected_savings(p: &Prices, prompt_tokens: usize) -> f64 {
 pub fn worth_refreshing(
     prices: Option<&Prices>,
     prompt_tokens: usize,
+    warm_output: u32,
     cache_reported: bool,
 ) -> bool {
     if prompt_tokens == 0 {
@@ -91,7 +96,7 @@ pub fn worth_refreshing(
     let big = prompt_tokens >= MIN_WARM_TOKENS;
     match prices.filter(|p| p.input > 0.0 || p.cache_read > 0.0 || p.cache_write > 0.0) {
         Some(p) => {
-            let savings = expected_savings(p, prompt_tokens);
+            let savings = expected_savings(p, prompt_tokens, warm_output);
             savings >= MIN_EXPECTED_SAVINGS || (big && savings > 0.0)
         }
         None => big && cache_reported,
@@ -113,7 +118,10 @@ pub(crate) async fn keep_warm(
     let Some(delay) = warming_delay(policy.ttl) else {
         return;
     };
-    req.max_tokens = Some(1);
+    // The smallest output cap that still lands on the request's own cache
+    // entry (1 everywhere except providers whose key derives from it).
+    let warm_output = provider.warm_output_cap(&req);
+    req.max_tokens = Some(warm_output);
     let mut next = sent + delay;
     loop {
         if next > sent + MAX_WARMING_AGE {
@@ -128,7 +136,12 @@ pub(crate) async fn keep_warm(
             log::debug!(target: "gray_agent", "cache warm: refresh deadline missed");
             return;
         }
-        if !worth_refreshing((policy.prices)().as_ref(), prompt_tokens, cache_reported) {
+        if !worth_refreshing(
+            (policy.prices)().as_ref(),
+            prompt_tokens,
+            warm_output,
+            cache_reported,
+        ) {
             return;
         }
         // Best effort: a failed refresh never touches the run.

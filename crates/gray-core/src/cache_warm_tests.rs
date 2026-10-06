@@ -39,32 +39,47 @@ fn refresh_at_ninety_percent_with_ten_seconds_of_margin() {
 #[test]
 fn savings_follow_pi_and_clear_the_floor_only_for_big_prompts() {
     // 100k tokens: a miss costs a $0.375 write vs a $0.03 read.
-    let big = expected_savings(&sonnet(), 100_000);
+    let big = expected_savings(&sonnet(), 100_000, 1);
     assert!((big - (0.375 - 0.03 - 0.03 - 15e-6)).abs() < 1e-9, "{big}");
     assert!(big >= MIN_EXPECTED_SAVINGS);
-    assert!(expected_savings(&sonnet(), 10_000) < MIN_EXPECTED_SAVINGS);
+    assert!(expected_savings(&sonnet(), 10_000, 1) < MIN_EXPECTED_SAVINGS);
     // No write price: a miss is billed as plain input.
     let plain = Prices {
         cache_write: 0.0,
         ..sonnet()
     };
-    assert!((expected_savings(&plain, 100_000) - (0.3 - 0.03 - 0.03 - 15e-6)).abs() < 1e-9);
+    assert!((expected_savings(&plain, 100_000, 1) - (0.3 - 0.03 - 0.03 - 15e-6)).abs() < 1e-9);
+    // A budget-preserving cap (Claude thinking) bills the refresh's
+    // larger output against the saving: 2048 tokens still clears the
+    // floor on a big prompt, 32k never does.
+    let capped = expected_savings(&sonnet(), 100_000, 2048);
+    assert!(
+        (capped - (0.375 - 0.03 - 0.03 - 2048.0 * 15e-6)).abs() < 1e-9,
+        "{capped}"
+    );
+    assert!(capped >= MIN_EXPECTED_SAVINGS);
+    assert!(expected_savings(&sonnet(), 100_000, 32_000) < 0.0);
 }
 
-/// Serves scripted rounds; a one-token request is a cache refresh.
+/// Serves scripted rounds; a `warm_cap`-capped request is a cache refresh.
 struct Fake {
     scripts: Mutex<VecDeque<Vec<StreamEvent>>>,
     seen: Arc<Mutex<Vec<(Option<u32>, usize)>>>,
+    warm_cap: u32,
 }
 
 impl Provider for Fake {
+    fn warm_output_cap(&self, _req: &ChatRequest) -> u32 {
+        self.warm_cap
+    }
+
     fn stream(&self, req: ChatRequest) -> BoxStream<'static, Result<StreamEvent, ProviderError>> {
         self.seen
             .lock()
             .unwrap()
             .push((req.max_tokens, req.messages.len()));
-        let events = if req.max_tokens == Some(1) {
-            let mut u = Usage::new(100_000, 1);
+        let events = if req.max_tokens == Some(self.warm_cap) {
+            let mut u = Usage::new(100_000, self.warm_cap as usize);
             u.cache_read_input_tokens = 100_000;
             vec![StreamEvent::message_complete(
                 Some(StopReason::MaxTokens),
@@ -98,14 +113,16 @@ async fn run_turn(
     tool_time: Duration,
     prices: Option<Prices>,
 ) -> (Vec<(Option<u32>, usize)>, Usage) {
-    run_turn_reading(tool_time, prices, 0).await
+    run_turn_reading(tool_time, prices, 0, 1).await
 }
 
-/// `cache_read`: what the first round's usage reports as read from cache.
+/// `cache_read`: what the first round's usage reports as read from cache;
+/// `warm_cap`: the provider's `warm_output_cap` for the replay.
 async fn run_turn_reading(
     tool_time: Duration,
     prices: Option<Prices>,
     cache_read: usize,
+    warm_cap: u32,
 ) -> (Vec<(Option<u32>, usize)>, Usage) {
     let mut first = Usage::new(100_000, 20);
     first.cache_read_input_tokens = cache_read;
@@ -125,6 +142,7 @@ async fn run_turn_reading(
             ],
         ])),
         seen: seen.clone(),
+        warm_cap,
     };
     let mut agent = Agent::new(Box::new(provider), Arc::new(Slow(tool_time)))
         .with_tools(vec![ToolDef::new("build", "b", serde_json::json!({}))])
@@ -179,7 +197,7 @@ async fn unknown_prices_never_warm_a_provider_without_cache_reports() {
 async fn unknown_prices_warm_a_big_prompt_the_provider_caches() {
     // A subscription model: no dollar prices, but the provider reported a
     // cache read, so a 100k-token miss is worth a refresh.
-    let (seen, _) = run_turn_reading(Duration::from_secs(600), None, 90_000).await;
+    let (seen, _) = run_turn_reading(Duration::from_secs(600), None, 90_000, 1).await;
     assert_eq!(
         seen.iter().filter(|(m, _)| *m == Some(1)).count(),
         2,
@@ -190,9 +208,9 @@ async fn unknown_prices_warm_a_big_prompt_the_provider_caches() {
 #[test]
 fn the_token_floor_backs_up_the_dollar_floor() {
     // Unpriced: size plus reported caching decides.
-    assert!(worth_refreshing(None, 25_000, true));
-    assert!(!worth_refreshing(None, 25_000, false));
-    assert!(!worth_refreshing(None, 5_000, true));
+    assert!(worth_refreshing(None, 25_000, 1, true));
+    assert!(!worth_refreshing(None, 25_000, 1, false));
+    assert!(!worth_refreshing(None, 5_000, 1, true));
     // All-zero prices are no prices (a free tier).
     let free = Prices {
         input: 0.0,
@@ -200,7 +218,7 @@ fn the_token_floor_backs_up_the_dollar_floor() {
         cache_read: 0.0,
         cache_write: 0.0,
     };
-    assert!(worth_refreshing(Some(&free), 25_000, true));
+    assert!(worth_refreshing(Some(&free), 25_000, 1, true));
     // A cheap model under the dollar floor still warms a big prompt...
     let cheap = Prices {
         input: 0.27e-6,
@@ -208,16 +226,33 @@ fn the_token_floor_backs_up_the_dollar_floor() {
         cache_read: 0.07e-6,
         cache_write: 0.0,
     };
-    assert!(expected_savings(&cheap, 25_000) < MIN_EXPECTED_SAVINGS);
-    assert!(worth_refreshing(Some(&cheap), 25_000, false));
-    assert!(!worth_refreshing(Some(&cheap), 10_000, true));
+    assert!(expected_savings(&cheap, 25_000, 1) < MIN_EXPECTED_SAVINGS);
+    assert!(worth_refreshing(Some(&cheap), 25_000, 1, false));
+    assert!(!worth_refreshing(Some(&cheap), 10_000, 1, true));
     // ...but never when a refresh costs more than the miss it prevents.
     let flat = Prices {
         cache_read: 0.27e-6,
         ..cheap
     };
-    assert!(!worth_refreshing(Some(&flat), 100_000, true));
-    assert!(!worth_refreshing(Some(&sonnet()), 0, true));
+    assert!(!worth_refreshing(Some(&flat), 100_000, 1, true));
+    assert!(!worth_refreshing(Some(&sonnet()), 0, 1, true));
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_thinking_replay_warms_at_the_providers_cap() {
+    // Claude + thinking: the provider reports the budget-preserving cap
+    // and the replay carries it — a 1-token cap would drop `thinking`
+    // and key a different cache entry.
+    let (seen, billed) = run_turn_reading(Duration::from_secs(600), Some(sonnet()), 0, 2048).await;
+    let warms: Vec<_> = seen.iter().filter(|(m, _)| *m == Some(2048)).collect();
+    assert_eq!(warms.len(), 2, "{seen:?}");
+    assert_eq!(
+        seen.last().unwrap().0,
+        None,
+        "the real follow-up is uncapped"
+    );
+    // Two rounds of 20 + 5 output, plus the capped refresh replies.
+    assert_eq!(billed.output_tokens, 20 + 5 + 2 * 2048);
 }
 
 #[tokio::test(start_paused = true)]
@@ -228,6 +263,7 @@ async fn a_late_timer_skips_the_refresh() {
     let provider: Arc<dyn Provider> = Arc::new(Fake {
         scripts: Mutex::new(VecDeque::new()),
         seen: seen.clone(),
+        warm_cap: 1,
     });
     let sent = Instant::now();
     tokio::time::advance(Duration::from_secs(400)).await;

@@ -326,49 +326,40 @@ fn cache_warm_covers_openai_compatible_hosts() {
         "http://localhost:11434/v1",
     ] {
         assert!(
-            cache_warm_policy(
-                &warm_config(host, Some("off"), false),
-                "openai/gpt-5",
-                Some("off")
-            )
-            .is_some(),
+            cache_warm_policy(&warm_config(host, Some("off"), false), "openai/gpt-5").is_some(),
             "warms on {host}"
         );
         assert!(
-            cache_warm_policy(&warm_config(host, None, false), "openai/gpt-5", None).is_some(),
+            cache_warm_policy(&warm_config(host, None, false), "openai/gpt-5").is_some(),
             "warms on {host} without effort"
         );
     }
 }
 
 #[test]
-fn cache_warm_stays_off_for_plugin_creds_and_claude_thinking() {
+fn cache_warm_stays_off_for_plugin_creds_but_covers_claude_thinking() {
     let url = "https://api.openai.com/v1";
-    assert!(
-        cache_warm_policy(
-            &warm_config(url, Some("off"), true),
-            "openai/gpt-5",
-            Some("off")
-        )
-        .is_none()
-    );
-    // A Claude thinking budget is sized from the output cap: natively or
-    // through a router, the replay would key a different cache entry.
+    assert!(cache_warm_policy(&warm_config(url, Some("off"), true), "openai/gpt-5").is_none());
+    if std::env::var_os("GRAY_NO_CACHE_WARM").is_some() {
+        return;
+    }
+    // A Claude thinking budget is sized from the output cap, so the
+    // replay carries a budget-preserving cap instead of 1 token: natively
+    // or through a router it re-derives the same budget_tokens and lands
+    // on the same cache key.
     assert!(
         cache_warm_policy(
             &warm_config("https://api.anthropic.com/v1", Some("high"), false),
-            "claude-sonnet-4-5",
-            Some("high")
+            "claude-sonnet-4-5"
         )
-        .is_none()
+        .is_some()
     );
     assert!(
         cache_warm_policy(
             &warm_config("https://openrouter.ai/api/v1", Some("max"), false),
-            "anthropic/claude-opus-4.5",
-            Some("max")
+            "anthropic/claude-opus-4.5"
         )
-        .is_none()
+        .is_some()
     );
 }
 
@@ -392,8 +383,7 @@ fn cache_warm_runs_with_reasoning_effort_off_claude() {
         ),
     ] {
         assert!(
-            cache_warm_policy(&warm_config(url, Some(effort), false), model, Some(effort))
-                .is_some(),
+            cache_warm_policy(&warm_config(url, Some(effort), false), model).is_some(),
             "warms {model} at {effort}"
         );
     }

@@ -1,5 +1,21 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+- **Cache warming covers Claude with a thinking effort on.** Warming was
+  switched off entirely there: the replay's one-token cap could not fit the
+  thinking budget (which is sized from the output cap), and Anthropic keys its
+  prompt cache on `thinking.budget_tokens`, so a capped replay would warm a
+  different entry — the whole thing was disabled instead. A long tool run at
+  any effort then re-billed the whole prompt (~100k ≈ $0.50 a miss). The
+  provider now names the smallest cap that preserves the request's cache key —
+  `Provider::warm_output_cap`: `budget + 1024` natively (re-deriving the same
+  `budget_tokens`), `budget + 1` for a Claude model through an
+  OpenAI-compatible host, 1 everywhere else — and the warmer replays under it,
+  charging the larger capped reply against the expected saving (a `max`-effort
+  refresh still declines when it would cost as much as the miss it prevents).
+
 ## [0.1.11] - 2026-10-05
 
 ### Changed

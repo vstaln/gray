@@ -68,6 +68,9 @@ impl Provider for Metered {
     fn model_id(&self) -> &str {
         self.inner.model_id()
     }
+    fn warm_output_cap(&self, req: &ChatRequest) -> u32 {
+        self.inner.warm_output_cap(req)
+    }
     fn stream(&self, request: ChatRequest) -> ProviderStream {
         let mut state = self.meter.state.lock().unwrap();
         if state.requests >= self.meter.limit
