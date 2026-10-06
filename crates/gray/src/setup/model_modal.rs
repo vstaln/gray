@@ -574,7 +574,11 @@ impl RowEfforts {
         parts: &super::variants::Parts,
     ) -> Option<&'static str> {
         let levels = row_levels(model, self.fast, parts);
-        let initial = initial_effort_in(config, saved, model, &levels)?;
+        // Knob existence rides the standard serving: fast narrows into a
+        // single level but the row still has a knob, while a single-level
+        // standard serving means no knob at all.
+        let knob_levels = row_levels(model, false, parts);
+        let initial = initial_effort_in(config, saved, model, &knob_levels)?;
         let want = self
             .stepped
             .get(&Self::key(model, parts))
