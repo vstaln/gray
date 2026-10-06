@@ -220,4 +220,9 @@ fn plugin_login_status_does_not_overwrite_title() {
         .position(|r| r.contains("Checking your terminal login"))
         .unwrap();
     assert!(status > title);
+    // The dialog hugs its content: header + status + esc-cancel, no dead space.
+    let box_rows = (0..24)
+        .filter(|&y| (0..80).any(|x| buf[(x, y)].bg == Color::Black))
+        .count();
+    assert_eq!(box_rows, 7);
 }

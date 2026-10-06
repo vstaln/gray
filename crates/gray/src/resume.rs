@@ -427,9 +427,12 @@ fn run_picker_sync(
                 crate::setup::render_dimmed_background(frame, &bg_snapshot);
 
                 let modal_w = 84.min(area.width.saturating_sub(2)).max(40).min(area.width);
-                let modal_h = 20
+                // Height hugs the filtered list: 8 rows of chrome (title,
+                // search, filter, gap, spacer, footer) + one row per session.
+                let modal_h = (filtered.len().clamp(1, 12) as u16 + 8)
+                    .min(20)
                     .min(area.height.saturating_sub(2))
-                    .max(12)
+                    .max(9)
                     .min(area.height);
                 let modal_x = (area.width.saturating_sub(modal_w)) / 2;
                 let modal_y = (area.height.saturating_sub(modal_h)) / 3;

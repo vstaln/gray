@@ -126,9 +126,11 @@ pub fn run_context_modal(
                 }
                 render_dimmed_background(frame, &bg_snapshot);
                 let modal_w = 76.min(area.width.saturating_sub(2)).max(60).min(area.width);
-                let modal_h = 24
+                // Fixed content (10-row grid + 3 settings rows) ends at inner
+                // row 16; 21 leaves one spacer above the footer, no dead band.
+                let modal_h = 21
                     .min(area.height.saturating_sub(1))
-                    .max(22)
+                    .max(19)
                     .min(area.height);
                 let modal_x = (area.width.saturating_sub(modal_w)) / 2;
                 let modal_y = (area.height.saturating_sub(modal_h)) / 3;

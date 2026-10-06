@@ -342,10 +342,7 @@ pub(crate) fn render_confirm_remove(
     colors: &ConnectColors,
 ) {
     let dialog_w = 64.min(area.width.saturating_sub(4)).max(40).min(area.width);
-    let dialog_h = 10
-        .min(area.height.saturating_sub(2))
-        .max(8)
-        .min(area.height);
+    let dialog_h = 9.min(area.height.saturating_sub(2)).max(7).min(area.height);
     let dialog_x = (area.width.saturating_sub(dialog_w)) / 2;
     let dialog_y = (area.height.saturating_sub(dialog_h)) / 3;
     let dialog_rect = Rect::new(dialog_x, dialog_y, dialog_w, dialog_h);
@@ -601,14 +598,24 @@ pub(crate) fn render_authorizing_plugin(
     status_msg: Option<&str>,
     colors: &ConnectColors,
 ) {
-    let inner = centered_dialog(frame, area, 68, 14, 42, 10, colors);
-    let title = format!("Connect \u{2014} {}", item.name);
-    render_header_esc(frame, inner, &title, colors);
-
     // External-login providers never produce a browser URL: show the
     // terminal-first status, not a "waiting for URL" line that reads broken.
     let status = status_msg.unwrap_or("Checking your terminal login (no browser)");
     let uri = verification_uri.unwrap_or("");
+
+    // Size the dialog to its content: title, status, optional URI row,
+    // esc-cancel footer. Anything taller paints an empty box.
+    let inner = centered_dialog(
+        frame,
+        area,
+        68,
+        if uri.is_empty() { 7 } else { 9 },
+        42,
+        6,
+        colors,
+    );
+    let title = format!("Connect \u{2014} {}", item.name);
+    render_header_esc(frame, inner, &title, colors);
     let mut lines = vec![
         Line::from(vec![Span::styled(
             status,
