@@ -198,3 +198,80 @@ fn chat_request_result_round_trip() {
     let dbg = format!("{res:?}");
     assert!(!dbg.contains("tok"), "{dbg}");
 }
+
+#[test]
+fn provider_model_legacy_json_parses_without_variants_or_slots() {
+    use super::provider::ProviderModel;
+    let m: ProviderModel = serde_json::from_value(json!({
+        "id": "swe-2",
+        "name": "SWE-2",
+        "reasoning_efforts": ["low", "high"]
+    }))
+    .unwrap();
+    assert_eq!(m.id, "swe-2");
+    assert!(m.context_window.is_none());
+    assert!(m.variants.is_empty());
+    assert!(m.slots.is_empty());
+    // Empty composite fields stay off the wire so older hosts see the old shape.
+    let v = serde_json::to_value(&m).unwrap();
+    assert!(v.get("variants").is_none(), "{v}");
+    assert!(v.get("slots").is_none(), "{v}");
+}
+
+#[test]
+fn provider_model_fusion_row_round_trips() {
+    use super::provider::{ModelSlot, ModelVariant, ProviderModel, SlotOption};
+    use std::collections::BTreeMap;
+    let parts = BTreeMap::from([
+        ("lead".to_string(), "claude-opus-5-5".to_string()),
+        ("sidekick".to_string(), "swe-2-high".to_string()),
+    ]);
+    let model = ProviderModel {
+        id: "fusion".into(),
+        name: "Fusion".into(),
+        context_window: None,
+        reasoning_efforts: vec!["high".into()],
+        variants: vec![
+            ModelVariant {
+                id: "fusion-claude-opus-5-5-high-sidekick-swe-2-high".into(),
+                effort: Some("high".into()),
+                fast: false,
+                parts: parts.clone(),
+            },
+            ModelVariant {
+                id: "fusion-claude-opus-5-5-high-fast-sidekick-swe-2-high-priority".into(),
+                effort: Some("high".into()),
+                fast: true,
+                parts,
+            },
+        ],
+        slots: vec![
+            ModelSlot {
+                key: "lead".into(),
+                label: "Lead".into(),
+                options: vec![SlotOption {
+                    id: "claude-opus-5-5".into(),
+                    name: "Claude Opus 5.5".into(),
+                }],
+            },
+            ModelSlot {
+                key: "sidekick".into(),
+                label: "Sidekick".into(),
+                options: vec![SlotOption {
+                    id: "swe-2-high".into(),
+                    name: "SWE-2 High".into(),
+                }],
+            },
+        ],
+    };
+    let v = serde_json::to_value(&model).unwrap();
+    // `fast: false` is omitted; `fast: true` is emitted.
+    assert!(v["variants"][0].get("fast").is_none(), "{v}");
+    assert_eq!(v["variants"][1]["fast"], json!(true));
+    assert_eq!(v["variants"][0]["parts"]["sidekick"], json!("swe-2-high"));
+    let back: ProviderModel = serde_json::from_value(v).unwrap();
+    assert_eq!(back.id, "fusion");
+    assert_eq!(back.variants, model.variants);
+    assert_eq!(back.slots, model.slots);
+    assert_eq!(back.reasoning_efforts, model.reasoning_efforts);
+}

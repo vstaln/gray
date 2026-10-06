@@ -262,6 +262,7 @@ pub(crate) async fn handle_resume(
                         // on the same effective model as the resumed agent.
                         if !model.is_empty() {
                             t.set_model(model.to_string());
+                            t.set_model_label(crate::setup::composite_label_for(config));
                         }
                         // The resumed model keeps its own effort: paint it so
                         // the footer follows the switch instead of the stale

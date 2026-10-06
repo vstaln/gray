@@ -26,12 +26,12 @@ pub use capabilities::{
     WIDGET_OVERRIDE,
 };
 pub use provider::{
-    AuthMethodDecl, PROVIDER_CREDENTIALS, PROVIDER_PROTOCOL, ProviderAuthPoll, ProviderAuthStart,
-    ProviderAuthorizationDecl, ProviderChatRequest, ProviderChatResult, ProviderDecl,
-    ProviderHeaderDecl, ProviderHeaderSourceDecl, ProviderModel, ProviderModelCatalog,
-    ProviderModelsRequest, ProviderRefreshRequest, ProviderRequestPolicyDecl,
+    AuthMethodDecl, ModelSlot, ModelVariant, PROVIDER_CREDENTIALS, PROVIDER_PROTOCOL,
+    ProviderAuthPoll, ProviderAuthStart, ProviderAuthorizationDecl, ProviderChatRequest,
+    ProviderChatResult, ProviderDecl, ProviderHeaderDecl, ProviderHeaderSourceDecl, ProviderModel,
+    ProviderModelCatalog, ProviderModelsRequest, ProviderRefreshRequest, ProviderRequestPolicyDecl,
     ProviderRevokeRequest, ProviderRevokeResult, ProviderRpcError, ProviderRpcFailure,
-    ProviderTransportDecl, ProviderValidationError,
+    ProviderTransportDecl, ProviderValidationError, SlotOption,
 };
 
 #[derive(Debug, Clone)]
@@ -309,6 +309,7 @@ impl PluginHooks for PluginHookAdapter {
         match self.plugin.run_command(name, argv).await? {
             CommandOutcome::Say(s) if s.is_empty() => None,
             CommandOutcome::Prompt(s) if s.is_empty() => None,
+            CommandOutcome::ModelPicker(s) if s.is_empty() => None,
             o => Some(o),
         }
     }

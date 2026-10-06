@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 fn config() -> Config {
     Config {
         fast_mode: None,
+        model_parts: Default::default(),
         temperature: None,
         top_p: None,
         model: None,

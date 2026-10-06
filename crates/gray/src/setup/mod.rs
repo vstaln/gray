@@ -103,9 +103,9 @@ pub use icons::icon;
 pub mod tabs;
 
 mod context_modal;
-mod effort;
 mod install_manager;
 mod model_modal;
+pub(crate) mod variants;
 
 pub use context_modal::run_context_modal;
 mod connect;
@@ -114,15 +114,14 @@ mod connect_models;
 mod provider_auth;
 
 pub use connect::{ConnectOutcome, active_connect_id, run_connect_modal, run_connect_modal_for};
-pub use effort::run_effort_modal;
 pub(crate) use install_manager::{
     ManagerItem, ManagerSpec, format_plugin_row_parts, run_install_manager,
 };
 pub use install_manager::{run_plugins_modal, run_skills_modal};
 pub(crate) use model_modal::{
-    canonical_model_rows, canonicalize_effort_variant, compose_fast_model, decompose_model_variant,
-    effort_chip, picker_scope, provider_models_for_config, run_model_modal, saved_models_for,
-    validate_direct_model_id,
+    canonical_model_rows, canonicalize_effort_variant, composite_label_for,
+    decompose_model_variant, effort_chip, fast_wire_for, picker_scope, provider_models_for_config,
+    run_model_modal, saved_models_for, validate_direct_model_id, wire_model_for,
 };
 pub(crate) use provider_auth::adopt_connection_effort;
 pub use provider_auth::{
@@ -143,18 +142,12 @@ pub const THINKING_LEVELS: &[(&str, &str)] = &[
     ("max", "Maximum reasoning"),
 ];
 
-pub async fn run_effort_menu(
-    config: &mut Config,
-    bg: Option<&BackgroundSnapshot>,
-) -> anyhow::Result<bool> {
-    run_effort_modal(config, bg)
-}
-
 pub async fn run_model_menu(
     config: &mut Config,
     bg: Option<&BackgroundSnapshot>,
+    focus: Option<&str>,
 ) -> anyhow::Result<bool> {
-    run_model_modal(config, bg)
+    run_model_modal(config, bg, focus)
 }
 
 pub async fn run_onboarding(config: &mut Config) -> anyhow::Result<bool> {

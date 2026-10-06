@@ -287,6 +287,7 @@ fn every_command_the_skill_shows_actually_parses() {
 fn warm_config(base_url: &str, effort: Option<&str>, plugin: bool) -> Config {
     Config {
         fast_mode: None,
+        model_parts: Default::default(),
         temperature: None,
         top_p: None,
         model: Some("openai/gpt-5".into()),

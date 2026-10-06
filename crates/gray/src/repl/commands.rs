@@ -13,12 +13,12 @@ pub(crate) const REGISTRY: &[CmdDef] = &[
     },
     CmdDef {
         name: "model",
-        desc: "switch model",
+        desc: "switch model & effort",
         aliases: &["models"],
     },
     CmdDef {
         name: "thinking",
-        desc: "reasoning effort",
+        desc: "set reasoning effort (bare: /model picker)",
         aliases: &["effort", "reasoning"],
     },
     CmdDef {
@@ -463,6 +463,12 @@ pub enum ReplCommand {
     /// Log in to one plugin provider directly (`/claude`, `/devin`, ...);
     /// holds its `plugin:provider` id. See [`provider_shortcuts`].
     ProviderLogin(String),
+    /// A command a provider plugin declares (`/devin`, `/fusion`): its
+    /// sidecar's `command/run` answers first; no answer = login shortcut.
+    ProviderCommand {
+        cmd: String,
+        provider_id: String,
+    },
     /// Start a fresh conversation (`/new` or `/clear [prompt]`).
     New(Option<String>),
     /// Resume a previous session (`/resume [id|--last|--all]`).
@@ -473,7 +479,7 @@ pub enum ReplCommand {
     Undo,
     /// Drop the last exchange and send it again (`/retry`).
     Retry,
-    /// Set reasoning effort (`/thinking [level]`, `/effort`, `/reasoning`; bare toggles hide/show).
+    /// Set reasoning effort (`/thinking [level]`, `/effort`, `/reasoning`; bare opens the `/model` picker).
     Thinking(Option<String>),
     /// Toggle the provider's fast-serving model variant (`/fast [on|off]`; bare toggles).
     Fast(Option<String>),
@@ -481,6 +487,9 @@ pub enum ReplCommand {
     Help,
     /// Open the model picker (`/model`) or set directly (`/model provider/id`).
     Model(Option<String>),
+    /// Open the model picker focused on a row — never typed; a plugin's
+    /// `model_picker` command outcome (`/fusion`) queues it.
+    ModelFocus(String),
     /// Set context window (`/context [128k|auto|reserve 16k|keep 20k|status]`).
     ContextWindow(Option<String>),
     /// Session token + cost totals (`/usage` or `/cost`).
@@ -643,7 +652,12 @@ pub fn parse_command(line: &str) -> ReplCommand {
                 .into_iter()
                 .find(|(short, _, _)| short.eq_ignore_ascii_case(name))
             {
-                ReplCommand::ProviderLogin(id)
+                // The plugin answers its own commands first (`/fusion` opens
+                // the model picker); unanswered ones are its login shortcut.
+                ReplCommand::ProviderCommand {
+                    cmd: format!("/{name}"),
+                    provider_id: id,
+                }
             } else {
                 ReplCommand::Unknown(t.to_string())
             }

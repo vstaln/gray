@@ -55,6 +55,10 @@ pub struct Config {
     /// (`-fast`/`-priority` catalog rows). None/false = standard serving.
     /// `GRAY_FAST=0/false/no/off` disables; any other value enables.
     pub fast_mode: Option<bool>,
+    /// Composite-row selection (`{"lead": …, "sidekick": …}`) for the
+    /// current model — one option id per declared slot. Empty for every
+    /// non-composite row.
+    pub model_parts: std::collections::BTreeMap<String, String>,
     /// Sampling temperature sent with every chat request (`GRAY_TEMPERATURE`
     /// or saved config). None = provider default; out-of-range ignored.
     pub temperature: Option<f32>,
@@ -235,6 +239,7 @@ impl Config {
             thinking_effort,
             show_reasoning,
             fast_mode,
+            model_parts: saved.model_parts.clone(),
             temperature,
             top_p,
             context_window,

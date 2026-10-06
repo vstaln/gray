@@ -89,7 +89,7 @@ fn model_efforts_cell() -> &'static std::sync::RwLock<std::collections::HashMap<
     MODEL_EFFORTS.get_or_init(|| std::sync::RwLock::new(std::collections::HashMap::new()))
 }
 
-fn cache_model_efforts(model_id: &str, efforts: Vec<String>) {
+pub(crate) fn cache_model_efforts(model_id: &str, efforts: Vec<String>) {
     if let Ok(mut g) = model_efforts_cell().write() {
         // Exact key as the provider names it: authoritative, always wins.
         g.insert(model_id.to_string(), efforts.clone());
@@ -622,30 +622,37 @@ async fn plugin_models_rpc(
         if let Some(w) = m.context_window {
             cache_model_context_if_absent(&m.id, w as usize);
         }
-        if !m.reasoning_efforts.is_empty() {
-            cache_model_efforts(&m.id, m.reasoning_efforts.clone());
-        }
-        cache_model_reasoning(&m.id, !m.reasoning_efforts.is_empty());
     }
-    let models: Vec<(String, String)> = catalog
+    // Rows go to disk as objects (efforts, variants, slots ride along) so
+    // the next open — and the request builder resolving a variant — knows
+    // them before any RPC; registering feeds the in-memory caches now.
+    let rows: Vec<crate::setup::variants::CachedRow> = catalog
         .models
         .iter()
         .map(|m| {
             let name = m.name.trim();
-            (
-                m.id.clone(),
-                if name.is_empty() {
+            crate::setup::variants::CachedRow::Full(crate::setup::variants::CachedModel {
+                id: m.id.clone(),
+                name: if name.is_empty() {
                     m.id.clone()
                 } else {
                     name.to_string()
                 },
-            )
+                reasoning_efforts: m.reasoning_efforts.clone(),
+                variants: m.variants.clone(),
+                slots: m.slots.clone(),
+                declared: true,
+            })
         })
         .collect();
-    if !models.is_empty() {
-        save_provider_model_list(
+    for row in &rows {
+        row.register();
+    }
+    let models: Vec<(String, String)> = rows.iter().map(|r| r.pair()).collect();
+    if !rows.is_empty() {
+        save_provider_model_rows(
             &crate::setup::catalog::plugin_models_key(&installed.provider_id()),
-            &models,
+            rows,
         );
     }
     models
@@ -751,13 +758,31 @@ fn is_loopback_host(host: &str) -> bool {
 /// A previous session's provider model list, so the picker paints instantly
 /// and only the background refresh touches the network. On-disk list cache
 /// (`~/.gray/provider_models.json`, `{ "<base>": [["id", "name"], ...] }`),
-/// keyed like `recent_models` by normalized base URL.
+/// keyed like `recent_models` by normalized base URL. Rows with catalog
+/// metadata (plugin efforts / variants / slots) are stored as objects
+/// instead of pairs; both forms load ([`crate::setup::variants::CachedRow`]).
 pub(crate) fn save_provider_model_list_at(
     home: &std::path::Path,
     base_url: &str,
     models: &[(String, String)],
 ) {
-    if models.is_empty() {
+    let rows = models
+        .iter()
+        .map(|(id, name)| crate::setup::variants::CachedRow::Pair(id.clone(), name.clone()))
+        .collect();
+    save_provider_model_rows_at(home, base_url, rows);
+}
+
+/// [`save_provider_model_list_at`] for rows that may carry metadata. A bare
+/// pair re-saved over an object (a generic refresh of the same id) keeps the
+/// object's metadata and takes the new name.
+pub(crate) fn save_provider_model_rows_at(
+    home: &std::path::Path,
+    base_url: &str,
+    rows: Vec<crate::setup::variants::CachedRow>,
+) {
+    use crate::setup::variants::CachedRow;
+    if rows.is_empty() {
         // A failed fetch must never wipe the last good list.
         return;
     }
@@ -771,12 +796,21 @@ pub(crate) fn save_provider_model_list_at(
         return;
     }
     let path = home.join("provider_models.json");
-    let mut map: std::collections::BTreeMap<String, Vec<(String, String)>> =
-        std::fs::read_to_string(&path)
-            .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default();
-    map.insert(base, models.to_vec());
+    let mut map = read_model_list_map(&path);
+    let old = map.remove(&base).unwrap_or_default();
+    let rows = rows
+        .into_iter()
+        .map(|row| match row {
+            CachedRow::Pair(id, name) => match old.iter().find(|o| o.id() == id) {
+                Some(CachedRow::Full(m)) => {
+                    CachedRow::Full(crate::setup::variants::CachedModel { name, ..m.clone() })
+                }
+                _ => CachedRow::Pair(id, name),
+            },
+            full => full,
+        })
+        .collect();
+    map.insert(base, rows);
     let Ok(s) = serde_json::to_string(&map) else {
         return;
     };
@@ -792,20 +826,38 @@ pub(crate) fn save_provider_model_list_at(
     let _ = std::fs::rename(&tmp, path);
 }
 
+/// The whole cache file; missing or corrupt reads as empty.
+fn read_model_list_map(
+    path: &std::path::Path,
+) -> std::collections::BTreeMap<String, Vec<crate::setup::variants::CachedRow>> {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
+}
+
+/// Best-effort load of one provider's cached rows (pairs and objects).
+pub(crate) fn load_provider_model_rows_at(
+    home: &std::path::Path,
+    base_url: &str,
+) -> Vec<crate::setup::variants::CachedRow> {
+    let base = crate::setup::catalog::normalize_custom_base_url(base_url);
+    read_model_list_map(&home.join("provider_models.json"))
+        .remove(&base)
+        .unwrap_or_default()
+}
+
 /// Best-effort load: missing file, unknown base, or corrupt JSON reads as
 /// an empty list and the caller falls back to the live fetch.
+#[cfg(test)]
 pub(crate) fn load_provider_model_list_at(
     home: &std::path::Path,
     base_url: &str,
 ) -> Vec<(String, String)> {
-    let s = std::fs::read_to_string(home.join("provider_models.json")).unwrap_or_default();
-    if s.is_empty() {
-        return Vec::new();
-    }
-    let map: std::collections::BTreeMap<String, Vec<(String, String)>> =
-        serde_json::from_str(&s).unwrap_or_default();
-    let base = crate::setup::catalog::normalize_custom_base_url(base_url);
-    map.get(&base).cloned().unwrap_or_default()
+    load_provider_model_rows_at(home, base_url)
+        .iter()
+        .map(|r| r.pair())
+        .collect()
 }
 
 /// Thin `gray_home` wrappers; the `_at` forms above stay testable without
@@ -816,11 +868,27 @@ pub(crate) fn save_provider_model_list(base_url: &str, models: &[(String, String
     }
 }
 
+pub(crate) fn save_provider_model_rows(
+    base_url: &str,
+    rows: Vec<crate::setup::variants::CachedRow>,
+) {
+    if let Ok(home) = crate::setup::catalog::gray_home() {
+        save_provider_model_rows_at(&home, base_url, rows);
+    }
+}
+
+/// The cached list for `base_url`; object rows register their metadata
+/// (efforts, variants, slots) on the way out, so whoever reads the list
+/// next — picker or request builder — sees the declared shapes.
 pub(crate) fn load_provider_model_list(base_url: &str) -> Vec<(String, String)> {
-    crate::setup::catalog::gray_home()
-        .ok()
-        .map(|home| load_provider_model_list_at(&home, base_url))
-        .unwrap_or_default()
+    let Ok(home) = crate::setup::catalog::gray_home() else {
+        return Vec::new();
+    };
+    let rows = load_provider_model_rows_at(&home, base_url);
+    for row in &rows {
+        row.register();
+    }
+    rows.iter().map(|r| r.pair()).collect()
 }
 
 /// Gap-fill insert: leaves an existing entry (e.g. provider-fetched) alone.

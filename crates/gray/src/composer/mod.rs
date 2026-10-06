@@ -338,6 +338,9 @@ pub struct Tui {
     pub(crate) attachments: Vec<(String, PathBuf)>,
     pub(crate) pending_pastes: Vec<(String, String)>,
     model_name: String,
+    /// Footer label overriding the friendly model name (a composite
+    /// selection: `Fusion · Opus 5.5 High + SWE-2 High`).
+    model_label: Option<String>,
     cwd: String,
     thinking_effort: String,
     /// Effort-badge visibility snapshotted for the turn in flight.
@@ -575,6 +578,7 @@ impl Tui {
             attachments: Vec::new(),
             pending_pastes: Vec::new(),
             model_name: String::new(),
+            model_label: None,
             cwd,
             thinking_effort: String::new(),
             turn_show_effort: None,
@@ -855,6 +859,10 @@ impl Tui {
 
     pub fn set_model(&mut self, model: String) {
         self.model_name = model;
+    }
+    /// Footer label for the model (`None` = its friendly name).
+    pub fn set_model_label(&mut self, label: Option<String>) {
+        self.model_label = label;
     }
     pub fn set_cwd(&mut self, cwd: String) {
         self.cwd = cwd;

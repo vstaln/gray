@@ -283,6 +283,43 @@ pub struct ProviderModel {
     pub context_window: Option<u32>,
     #[serde(default)]
     pub reasoning_efforts: Vec<String>,
+    /// Concrete wire ids behind this row. Empty = the row id is the only wire id
+    /// (legacy behavior: effort travels as a request parameter).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub variants: Vec<ModelVariant>,
+    /// Composite rows (e.g. Fusion): sub-selections the user makes. Each variant's
+    /// `parts` names one option id per slot key.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub slots: Vec<ModelSlot>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelVariant {
+    /// Wire id sent as the chat model.
+    pub id: String,
+    /// Effort this id is pinned to ("off" for no-thinking ids); None = provider default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub fast: bool,
+    /// slot key -> option id, for composite rows.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub parts: BTreeMap<String, String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelSlot {
+    /// Slot key referenced by `ModelVariant::parts` ("lead" | "sidekick").
+    pub key: String,
+    /// Human label ("Lead" | "Sidekick").
+    pub label: String,
+    pub options: Vec<SlotOption>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SlotOption {
+    pub id: String,
+    pub name: String,
 }
 
 #[derive(Clone, Serialize, Deserialize)]

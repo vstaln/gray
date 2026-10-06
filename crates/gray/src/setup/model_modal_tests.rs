@@ -354,3 +354,441 @@ fn compose_fast_model_picks_catalog_spelling() {
         None
     );
 }
+
+// ── per-row effort (←/→ in the picker) ──
+
+use super::{RowEfforts, commit_row_effort, initial_row_effort};
+use crate::config::Config;
+use crate::setup::{SavedConfig, effort_memory_key};
+
+const PICKER_BASE: &str = "http://127.0.0.1:1/v1";
+
+fn effort_config(model: &str, effort: Option<&str>) -> Config {
+    Config {
+        fast_mode: None,
+        model_parts: Default::default(),
+        model: Some(model.into()),
+        base_url: PICKER_BASE.into(),
+        api_key: None,
+        thinking_effort: effort.map(str::to_string),
+        show_reasoning: None,
+        temperature: None,
+        top_p: None,
+        context_window: None,
+        context_reserve: None,
+        context_keep: None,
+        exec_prefix: None,
+        max_turns: None,
+        max_cost_micros: None,
+        max_wall_secs: None,
+        bare: false,
+        provider_id: String::new(),
+        credential_source: String::new(),
+        auth_ref: String::new(),
+    }
+}
+
+/// The step family always reasons at low/medium/high/max — a fixed,
+/// cache-independent level list to step through.
+const STEP_MODEL: &str = "step-3";
+
+#[test]
+fn arrows_step_within_supported_levels_and_clamp_at_the_ends() {
+    let config = effort_config("other/live-model", Some("low"));
+    let saved = SavedConfig::default();
+    let mut efforts = RowEfforts::default();
+    // Not the live model, nothing remembered: the `high` default.
+    assert_eq!(efforts.shown(&config, &saved, STEP_MODEL), Some("high"));
+    assert!(!efforts.was_stepped(STEP_MODEL));
+    efforts.step(&config, &saved, STEP_MODEL, true);
+    assert_eq!(efforts.shown(&config, &saved, STEP_MODEL), Some("max"));
+    efforts.step(&config, &saved, STEP_MODEL, true);
+    assert_eq!(
+        efforts.shown(&config, &saved, STEP_MODEL),
+        Some("max"),
+        "→ clamps at the top, no wrap"
+    );
+    for _ in 0..5 {
+        efforts.step(&config, &saved, STEP_MODEL, false);
+    }
+    assert_eq!(
+        efforts.shown(&config, &saved, STEP_MODEL),
+        Some("low"),
+        "← clamps at the bottom; `off` is not a step-family level"
+    );
+    assert!(efforts.was_stepped(STEP_MODEL));
+    // Stepping one row never touches another.
+    assert!(!efforts.was_stepped("other/live-model"));
+}
+
+#[test]
+fn a_model_without_reasoning_shows_no_effort_and_ignores_arrows() {
+    let plain = "picker-test/plain-no-reasoning";
+    crate::setup::cache_model_reasoning(plain, false);
+    let config = effort_config(plain, Some("high"));
+    let saved = SavedConfig::default();
+    let mut efforts = RowEfforts::default();
+    assert_eq!(efforts.shown(&config, &saved, plain), None);
+    efforts.step(&config, &saved, plain, true);
+    efforts.step(&config, &saved, plain, false);
+    assert_eq!(efforts.shown(&config, &saved, plain), None);
+    assert!(!efforts.was_stepped(plain));
+}
+
+#[test]
+fn rows_open_at_the_remembered_effort_and_the_live_level() {
+    let mut saved = SavedConfig::default();
+    saved.remember_effort(&effort_memory_key("", PICKER_BASE, STEP_MODEL), "medium");
+    // Another model is live: the row shows this model's own memory.
+    let config = effort_config("other/live-model", Some("max"));
+    assert_eq!(
+        initial_row_effort(&config, &saved, STEP_MODEL),
+        Some("medium")
+    );
+    // The live model's row shows what it actually runs at.
+    let config = effort_config(STEP_MODEL, Some("low"));
+    assert_eq!(initial_row_effort(&config, &saved, STEP_MODEL), Some("low"));
+    // An unsupported remembered level clamps to what the model accepts.
+    let mut saved = SavedConfig::default();
+    saved.remember_effort(&effort_memory_key("", PICKER_BASE, STEP_MODEL), "xhigh");
+    let config = effort_config("other/live-model", None);
+    assert_eq!(initial_row_effort(&config, &saved, STEP_MODEL), Some("max"));
+}
+
+#[test]
+fn enter_commits_model_and_row_effort_together() {
+    // Enter already set `config.model` to the picked row.
+    let mut config = effort_config(STEP_MODEL, Some("high"));
+    let mut saved = SavedConfig::default();
+    commit_row_effort(&mut config, &mut saved, Some("low"), true);
+    assert_eq!(config.thinking_effort.as_deref(), Some("low"));
+    assert_eq!(
+        saved
+            .remembered_effort(&effort_memory_key("", PICKER_BASE, STEP_MODEL))
+            .as_deref(),
+        Some("low"),
+        "the effort persists per model"
+    );
+    assert_eq!(
+        saved.thinking_effort.as_deref(),
+        Some("low"),
+        "the flat saved level syncs with it"
+    );
+}
+
+#[test]
+fn enter_on_a_row_without_effort_restores_the_remembered_level() {
+    let plain = "picker-test/plain-commit";
+    crate::setup::cache_model_reasoning(plain, false);
+    let mut config = effort_config(plain, Some("max"));
+    let mut saved = SavedConfig::default();
+    saved.remember_effort(&effort_memory_key("", PICKER_BASE, plain), "off");
+    saved.thinking_effort = Some("max".into());
+    commit_row_effort(&mut config, &mut saved, None, false);
+    assert_eq!(config.thinking_effort.as_deref(), Some("off"));
+    assert_eq!(saved.thinking_effort.as_deref(), Some("off"));
+}
+
+#[test]
+fn fit_chars_marks_a_cut() {
+    assert_eq!(super::fit_chars("Claude Opus", 20), "Claude Opus");
+    assert_eq!(super::fit_chars("Claude Opus", 7), "Claude…");
+    assert_eq!(super::fit_chars("abc", 0), "");
+}
+
+// ── picker rendering helpers ──
+
+use super::{
+    METER_W, PRICE_DOTS, PickerKey, PickerToggles, effort_label, list_window, meter_fill,
+    per_million, picker_key, price_level, price_marker, rate_text,
+};
+
+#[test]
+fn the_meter_fills_by_position_among_the_models_own_levels() {
+    let step = ["low", "medium", "high", "max"];
+    let fills: Vec<usize> = step.iter().map(|l| meter_fill(&step, l, METER_W)).collect();
+    assert_eq!(
+        fills,
+        vec![2, 3, 5, 6],
+        "every step moves the bar; top is full"
+    );
+    let full = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+    let fills: Vec<usize> = full.iter().map(|l| meter_fill(&full, l, METER_W)).collect();
+    assert_eq!(fills, vec![0, 1, 2, 3, 4, 5, 6], "`off` draws empty");
+    assert_eq!(
+        meter_fill(&step, "xhigh", METER_W),
+        0,
+        "a level the model lacks draws empty"
+    );
+    assert_eq!(meter_fill(&["off", "high"], "high", METER_W), METER_W);
+}
+
+#[test]
+fn effort_labels_read_as_words() {
+    assert_eq!(effort_label("high"), "High");
+    assert_eq!(effort_label("xhigh"), "XHigh");
+    assert_eq!(effort_label("minimal"), "Minimal");
+    assert_eq!(effort_label("off"), "Off");
+    assert!(
+        ["off", "minimal", "low", "medium", "high", "xhigh", "max"]
+            .iter()
+            .all(|l| effort_label(l).chars().count() <= 7),
+        "the label column is 7 cells"
+    );
+}
+
+#[test]
+fn the_list_window_keeps_the_selection_in_view_and_hints_hidden_rows() {
+    // Everything fits: no hints, no scroll.
+    assert_eq!(list_window(5, 4, 0, 8), (0, 5));
+    // At the top: rows below hide behind one hint slot.
+    assert_eq!(list_window(20, 0, 0, 8), (0, 7));
+    // Moving past the window scrolls; both hints take a slot.
+    let (top, shown) = list_window(20, 10, 0, 8);
+    assert!(top > 0 && top <= 10 && 10 < top + shown, "{top} {shown}");
+    assert_eq!(shown, 6, "a hint above and below");
+    // At the bottom: the tail fills, only the above hint remains.
+    assert_eq!(list_window(20, 19, 0, 8), (13, 7));
+    // A stale scroll past the end snaps back so the slots stay full.
+    assert_eq!(list_window(20, 19, 18, 8), (13, 7));
+    // Too short for hints: plain scrolling.
+    assert_eq!(list_window(20, 19, 0, 2), (18, 2));
+}
+
+#[test]
+fn prices_read_per_million_tokens() {
+    assert_eq!(per_million(3e-6), "$3");
+    assert_eq!(per_million(3e-7), "$0.3");
+    assert_eq!(per_million(1.25e-6), "$1.25");
+    assert_eq!(per_million(7.5e-8), "$0.075");
+    assert_eq!(per_million(0.0), "$0");
+}
+
+#[test]
+fn the_price_marker_sits_on_a_log_scale_between_the_listed_ends() {
+    assert_eq!(price_marker(1e-6, 1e-6, 1e-4, 21), Some(0));
+    assert_eq!(price_marker(1e-4, 1e-6, 1e-4, 21), Some(20));
+    assert_eq!(price_marker(1e-5, 1e-6, 1e-4, 21), Some(10), "log midpoint");
+    assert_eq!(price_marker(1e-3, 1e-6, 1e-4, 21), Some(20), "clamped");
+    assert_eq!(price_marker(2e-6, 2e-6, 2e-6, 21), None, "no spread");
+    assert_eq!(price_marker(1e-6, 1e-6, 1e-4, 0), None);
+}
+
+#[test]
+fn the_price_level_is_a_one_to_dots_gauge_on_the_same_scale() {
+    assert_eq!(price_level(1e-6, 1e-6, 1e-4), Some(1), "cheapest");
+    assert_eq!(price_level(1e-4, 1e-6, 1e-4), Some(PRICE_DOTS), "priciest");
+    assert_eq!(price_level(1e-5, 1e-6, 1e-4), Some(3), "log midpoint");
+    assert_eq!(price_level(2e-6, 2e-6, 2e-6), None, "no spread, no gauge");
+}
+
+#[test]
+fn the_rate_line_folds_to_the_room_it_gets() {
+    use super::super::context::ModelRate;
+    let r = ModelRate {
+        input: 2e-6,
+        output: 1e-5,
+        cache_read: 2e-7,
+        has_cache_prices: true,
+        ..ModelRate::default()
+    };
+    assert_eq!(rate_text(&r, 80), "in $2 · cached $0.2 · out $10 / 1M");
+    assert_eq!(rate_text(&r, 24), "in $2 · out $10 / 1M", "cached drops");
+    assert_eq!(rate_text(&r, 17), "in $2 · out $10", "then the suffix");
+    assert_eq!(rate_text(&r, 8), "in $2 ·…", "then it truncates");
+    let plain = ModelRate {
+        input: 2e-6,
+        output: 1e-5,
+        ..ModelRate::default()
+    };
+    assert_eq!(
+        rate_text(&plain, 80),
+        "in $2 · out $10 / 1M",
+        "no cache price"
+    );
+}
+
+#[test]
+fn picker_keys_map_tab_to_fast_and_ctrl_r_to_reasoning() {
+    use crossterm::event::{KeyCode, KeyModifiers};
+    let none = KeyModifiers::NONE;
+    let ctrl = KeyModifiers::CONTROL;
+    assert_eq!(picker_key(KeyCode::Tab, none), Some(PickerKey::ToggleFast));
+    assert_eq!(
+        picker_key(KeyCode::Char('r'), ctrl),
+        Some(PickerKey::ToggleReasoning)
+    );
+    assert_eq!(
+        picker_key(KeyCode::Char('r'), none),
+        Some(PickerKey::Type('r'))
+    );
+    assert_eq!(picker_key(KeyCode::Left, none), Some(PickerKey::EffortDown));
+    assert_eq!(picker_key(KeyCode::Right, none), Some(PickerKey::EffortUp));
+    assert_eq!(
+        picker_key(KeyCode::Char('c'), ctrl),
+        Some(PickerKey::Cancel)
+    );
+    assert_eq!(picker_key(KeyCode::Esc, none), Some(PickerKey::Cancel));
+    assert_eq!(picker_key(KeyCode::Char('x'), ctrl), None);
+}
+
+#[test]
+fn toggles_stay_pending_and_commit_only_what_changed() {
+    let mut config = effort_config(STEP_MODEL, Some("high"));
+    config.fast_mode = Some(false);
+    let mut toggles = PickerToggles::from_config(&config);
+    toggles.toggle_fast(false);
+    assert!(!toggles.fast, "no fast variant: tab does nothing");
+    toggles.toggle_fast(true);
+    toggles.toggle_reasoning();
+    assert_eq!(config.fast_mode, Some(false), "nothing lands before Enter");
+    let mut saved = SavedConfig::default();
+    toggles.commit(&mut config, &mut saved);
+    assert_eq!(config.fast_mode, Some(true));
+    assert_eq!(saved.fast_mode, Some(true));
+    assert_eq!(config.show_reasoning, Some(false));
+    assert_eq!(saved.show_reasoning, Some(false));
+    // Toggled twice is untouched: nothing is written.
+    let mut toggles = PickerToggles::from_config(&config);
+    toggles.toggle_reasoning();
+    toggles.toggle_reasoning();
+    let mut saved = SavedConfig::default();
+    toggles.commit(&mut config, &mut saved);
+    assert_eq!(saved.show_reasoning, None);
+    assert_eq!(saved.fast_mode, None);
+}
+
+// ── structured variants + composite dropdowns ──
+
+use super::{DropState, PickLevel, enter_level, esc_level, open_option, option_parts, step_option};
+use crate::setup::variants::{Parts, RowShape, cache_row_shape, row_shape};
+
+#[test]
+fn enter_walks_a_composites_slots_and_esc_backs_out() {
+    // Plain row: Enter applies from the list; Esc there cancels.
+    assert_eq!(enter_level(PickLevel::List, 0), (PickLevel::List, true));
+    assert_eq!(esc_level(PickLevel::List), None);
+    // Fusion: list → lead → sidekick → apply.
+    assert_eq!(enter_level(PickLevel::List, 2), (PickLevel::Slot(0), false));
+    assert_eq!(
+        enter_level(PickLevel::Slot(0), 2),
+        (PickLevel::Slot(1), false)
+    );
+    assert_eq!(enter_level(PickLevel::Slot(1), 2), (PickLevel::List, true));
+    // Esc: sidekick → lead → list.
+    assert_eq!(esc_level(PickLevel::Slot(1)), Some(PickLevel::Slot(0)));
+    assert_eq!(esc_level(PickLevel::Slot(0)), Some(PickLevel::List));
+}
+
+fn lead_sidekick(lead: &str, sidekick: &str) -> Parts {
+    Parts::from([
+        ("lead".to_string(), lead.to_string()),
+        ("sidekick".to_string(), sidekick.to_string()),
+    ])
+}
+
+fn fusion_shape() -> RowShape {
+    let opt = |id: &str| gray_plugin::SlotOption {
+        id: id.into(),
+        name: id.to_uppercase(),
+    };
+    let var = |id: &str, effort: &str, fast: bool, p: Parts| gray_plugin::ModelVariant {
+        id: id.into(),
+        effort: Some(effort.into()),
+        fast,
+        parts: p,
+    };
+    RowShape {
+        variants: vec![
+            var("f-opus-a-high", "high", false, lead_sidekick("opus", "a")),
+            var("f-opus-a-max", "max", false, lead_sidekick("opus", "a")),
+            var(
+                "f-opus-a-high-fast",
+                "high",
+                true,
+                lead_sidekick("opus", "a"),
+            ),
+            var("f-opus-b-high", "high", false, lead_sidekick("opus", "b")),
+            // `c` only pairs with sonnet.
+            var("f-sonnet-c-low", "low", false, lead_sidekick("sonnet", "c")),
+        ],
+        slots: vec![
+            gray_plugin::ModelSlot {
+                key: "lead".into(),
+                label: "Lead".into(),
+                options: vec![opt("opus"), opt("sonnet")],
+            },
+            gray_plugin::ModelSlot {
+                key: "sidekick".into(),
+                label: "Sidekick".into(),
+                options: vec![opt("a"), opt("b"), opt("c")],
+            },
+        ],
+    }
+}
+
+#[test]
+fn sidekicks_without_a_variant_for_the_lead_are_unservable_and_skipped() {
+    let shape = fusion_shape();
+    let cur = lead_sidekick("opus", "a");
+    assert_eq!(
+        option_parts(&shape, &cur, 1, "b"),
+        Some(lead_sidekick("opus", "b"))
+    );
+    assert_eq!(
+        option_parts(&shape, &cur, 1, "c"),
+        None,
+        "c never pairs with opus"
+    );
+    // ↓ from `b` cannot land on `c`: stays put.
+    assert_eq!(step_option(&shape, &cur, 1, 1, true), 1);
+    // Switching the lead keeps a servable sidekick, else takes the first
+    // one that pairs with the new lead.
+    assert_eq!(
+        option_parts(&shape, &cur, 0, "sonnet"),
+        Some(lead_sidekick("sonnet", "c"))
+    );
+    // The dropdown opens on the current pick.
+    assert_eq!(open_option(&shape, &cur, 0), 0);
+    assert_eq!(open_option(&shape, &lead_sidekick("sonnet", "c"), 1), 2);
+}
+
+#[test]
+fn variant_rows_take_their_knobs_from_the_catalog() {
+    let id = "picker-test/fusion";
+    let shape = fusion_shape();
+    cache_row_shape(id, shape.variants.clone(), shape.slots.clone());
+    assert!(row_shape(id).is_some_and(|s| s.is_composite()));
+    let mut config = effort_config(id, Some("high"));
+    config.model_parts = lead_sidekick("opus", "a");
+    let saved = SavedConfig::default();
+    let mut efforts = RowEfforts::default();
+    // Standard serving: opus+a offers high and max.
+    assert_eq!(efforts.shown(&config, &saved, id), Some("high"));
+    efforts.step(&config, &saved, id, true);
+    assert_eq!(efforts.shown(&config, &saved, id), Some("max"));
+    // Fast: only high exists, so the shown level clamps into it.
+    efforts.fast = true;
+    assert_eq!(efforts.shown(&config, &saved, id), Some("high"));
+    // opus+b has a single level: no effort knob at all.
+    efforts.fast = false;
+    efforts.parts.insert(id.into(), lead_sidekick("opus", "b"));
+    assert_eq!(efforts.shown(&config, &saved, id), None);
+    // Each lead keeps its own stepped level.
+    let drop = DropState {
+        row: id.into(),
+        slot: 0,
+        sel: 0,
+    };
+    assert_eq!(drop.slot, 0);
+    // The wire id resolves with the composite's parts, fast falling back.
+    let resolved = crate::setup::variants::resolve_variant(
+        &shape.variants,
+        Some("max"),
+        true,
+        &lead_sidekick("opus", "a"),
+    );
+    assert_eq!(resolved.map(|v| v.id.as_str()), Some("f-opus-a-high-fast"));
+    cache_row_shape(id, Vec::new(), Vec::new());
+    assert!(row_shape(id).is_none());
+}
