@@ -1,47 +1,6 @@
 # Changelog
 
-## [Unreleased]
-
-### Fixed
-- **Cache warming covers Claude with a thinking effort on.** Warming was
-  switched off entirely there: the replay's one-token cap could not fit the
-  thinking budget (which is sized from the output cap), and Anthropic keys its
-  prompt cache on `thinking.budget_tokens`, so a capped replay would warm a
-  different entry — the whole thing was disabled instead. A long tool run at
-  any effort then re-billed the whole prompt (~100k ≈ $0.50 a miss). The
-  provider now names the smallest cap that preserves the request's cache key —
-  `Provider::warm_output_cap`: `budget + 1024` natively (re-deriving the same
-  `budget_tokens`), `budget + 1` for a Claude model through an
-  OpenAI-compatible host, 1 everywhere else — and the warmer replays under it,
-  charging the larger capped reply against the expected saving (a `max`-effort
-  refresh still declines when it would cost as much as the miss it prevents).
-- **Registry-installed plugins that speak CLI get `gray <name> …`.** Index
-  and URL installs recorded the executable's sidecar argv but never
-  `cli_argv`, so `gray account whoami` answered "'account' is a sidecar
-  plugin, not a CLI command" until the binary was registered by hand. After
-  an install — and again after every update — the installed executable gets
-  the same `<bin> manifest` probe a native registration runs: answering
-  plugins gain `gray <name> …` forwarding, completion and slash capture,
-  the manifest's `sidecar_args` become the sidecar invocation vector,
-  declared providers land in the `/connect` cache, the row keeps its
-  registry hash so it still updates, and an update that drops CLI support
-  clears the stale forwarding and manifest. The "local command" update-skip
-  now means a registered executable (`cli_argv` with no index hash), so
-  CLI-adopted index rows are no longer frozen out of `gray plugin update`.
-
-### Added
-- **Plugin providers can opt into cache warming.** The provider request
-  policy gains `warm_replay` (wire default false): a plugin-credentialed
-  provider whose transport is a real HTTPS endpoint the host calls
-  directly — like codex-sub's pinned `chatgpt.com/backend-api/codex` —
-  declares it and the warmer replays the last request verbatim during long
-  tool runs, landing on the same `prompt_cache_key` shard. Relay sidecars
-  that spawn per-turn CLI children (devin-sub, claude-sub,
-  antigravity-sub) leave it off, so a host replay can't conjure real
-  children. The flag skips serialization when false, so declarations that
-  don't opt in keep their existing profile binding.
-
-## [0.1.11] - 2026-10-05
+## [0.1.11] - 2026-10-07
 
 ### Changed
 - **Memory is a plugin now.** `gray-memory` carries the whole curated store —
@@ -55,6 +14,20 @@
   `tool/before` and `event/notify` so the snapshot freeze keeps its
   session-pinned bytes. `GRAY_NO_MEMORY` still gates saves. Not installed →
   no memory block, same as `--bare`.
+- **The `/model` picker owns effort, fast mode and reasoning visibility.**
+  `/thinking`, `/effort`, `/reasoning` and `/fast` are gone as commands —
+  effort moves on the arrow keys, fast mode on tab and reasoning visibility on
+  ctrl+r, all inside the picker; the retired names alias to `/model` so typed
+  muscle memory lands there instead of "unknown command". `/connect`'s bespoke
+  model list is deleted: its model step hands off to the shared picker loop,
+  so provider connect gets the same rows, meters, knobs and commit path as
+  `/model`. The price gauge is absolute now — a 5-dot level on blended $/1M
+  bands, shaded green→red, instead of the listed min/max spread that pinned
+  every mid-priced model at the top — and a cache miss compares the
+  effort/variant-resolved wire id, so it reads "after model switch" when an
+  effort change re-bills the prompt exactly like one.
+- **Read-only commands read as reads.** A bash tool card labels a read-only
+  command `Viewed`, `Read`, `Listed` or `Searched` instead of a generic ran.
 
 ### Added
 - **`--bare` (or `GRAY_BARE=1`) runs gray with nothing but itself.** Shaped like
@@ -82,6 +55,30 @@
   chat bridge, a harness) shows the question in its own UI. gray itself still has no question
   tool: nothing asks unless a questions plugin is installed. EOF or no answer within the usual 300s
   resolves empty, as before.
+- **Background work is visible — and it can wake you.** The footer shows
+  running jobs and the next scheduled wake (`1 job · wake in 28m`), `/jobs`
+  opens a picker that can stop a job or delete a wake, headless listing
+  exists, and the bash tool's description tells the model how to pause a run
+  and be woken for it. A background-job wake no longer gives up after 24h.
+  Quitting with jobs still running asks once (a 10-second window), and
+  exiting — including by signal — stops the jobs first.
+- **Model variants are first-class, and a plugin can open the picker on its
+  own row.** Provider models declare named slots and options
+  (`ModelSlot`/`SlotOption`), the `/model` picker folds composite rows and
+  opens straight into slot selection, and effort clamps against the variant
+  row rather than the concrete wire id. A `command/run` answer of
+  `model_picker` drops the user on the command's folded model row — a plugin
+  like devin-sub's `/fusion` opens the picker focused on the model it means.
+- **Plugin providers can opt into cache warming.** The provider request
+  policy gains `warm_replay` (wire default false): a plugin-credentialed
+  provider whose transport is a real HTTPS endpoint the host calls
+  directly — like codex-sub's pinned `chatgpt.com/backend-api/codex` —
+  declares it and the warmer replays the last request verbatim during long
+  tool runs, landing on the same `prompt_cache_key` shard. Relay sidecars
+  that spawn per-turn CLI children (devin-sub, claude-sub,
+  antigravity-sub) leave it off, so a host replay can't conjure real
+  children. The flag skips serialization when false, so declarations that
+  don't opt in keep their existing profile binding.
 
 ### Fixed
 - **A turn that announces a step and then just stops no longer dies.** The model
@@ -93,9 +90,10 @@
   `<|…|>` tokens, or hallucinated `[User]`/`[Assistant]` turns): the model
   believed it called a tool. A tool-free ending like that now gets one
   continuation nudge per run ("take it now, or state that the task is complete");
-  a repeat ending is honored as the answer. Questions to the user, "let me know"
-  deferrals, instructional answers ("you can verify with …"), negated plans and
-  plain summaries still end the turn untouched.
+  a repeat ending is honored as the answer. Questions to the user, a wait on a
+  tool approval, "let me know" deferrals, instructional answers ("you can
+  verify with …"), negated plans and plain summaries still end the turn
+  untouched.
 - **Empty sessions stay out of the resume list.** A session that never sent a message (`(no message yet)`, usually the `just now` row at the top) no longer shows in the `/resume` picker, headless lists, or `--last`. Explicit `resume <id>` still loads one.
 - **The `discord_send` preview reads like the channel does.** The transcript echoed raw markdown (`**bold**` with literal asterisks) while Discord renders it. The row now strips paired markers (`**`, `__`, `` ` ``, `~~`); unpaired `*`/`_` and spoiler bars stay untouched.
 
@@ -106,15 +104,26 @@
   `~/.gray/config.json`. A dismissed or failed `/connect` now restores the session exactly. And an
   auth failure re-reads the key saved for the same endpoint: when another window's `/connect` or
   `gray login` changed it, the session adopts it and says so, and Enter retries with it.
-- **Cache warming runs with a thinking effort on.** Any effort other than `off` turned the
-  long-tool cache warmer off, so a 5-minute tool at `xhigh` re-billed the whole prompt. As in
-  pi's `isReplayable`, only a Claude thinking budget blocks the 1-token replay now (the budget is
-  sized from the output cap and Anthropic keys its cache on it); reasoning efforts on every other
-  model replay unchanged. A model with no dollar prices (a subscription or free tier) is warmed
-  once its prompt reaches 20k tokens and the provider has reported cache activity, and so is a
-  cheap model whose saving is under $0.05. On api.openai.com the replay's cap goes out as
-  `max_completion_tokens`, which its reasoning models require, and a chat replay at an effort
-  leaves out a thinking budget that cannot fit under the cap.
+- **Cache warming runs at any effort — including a Claude thinking effort.**
+  Two gates used to kill the warmer. Any effort other than `off` disabled it
+  outright; and for Claude the replay's one-token cap could not fit the
+  thinking budget (sized from the output cap), and because Anthropic keys its
+  prompt cache on `thinking.budget_tokens` a capped replay would have warmed
+  a different entry — so warming stayed off and a long tool re-billed the
+  whole prompt (~100k ≈ $0.50 a miss). Now reasoning efforts on every other
+  model replay unchanged (pi's `isReplayable` rule), and for Claude the
+  provider names the smallest cap that preserves the request's cache key —
+  `Provider::warm_output_cap`: `budget + 1024` natively (re-deriving the same
+  `budget_tokens`), `budget + 1` through an OpenAI-compatible host, 1
+  everywhere else — and the warmer replays under it, charging the larger
+  capped reply against the expected saving (a `max`-effort refresh still
+  declines when it would cost as much as the miss it prevents). A model with
+  no dollar prices (a subscription or free tier) is warmed once its prompt
+  reaches 20k tokens and the provider has reported cache activity, and so is
+  a cheap model whose saving is under $0.05. On api.openai.com the replay's
+  cap goes out as `max_completion_tokens`, which its reasoning models
+  require, and a chat replay at an effort leaves out a thinking budget that
+  cannot fit under the cap.
 - **The input box follows the transcript, the way codex's does.** The band (status dock, input
   box, footer) was pinned to the screen's last rows, so a short session (a fresh start, a
   dismissed `/resume`) showed the banner at the top, the input box at the bottom and a
@@ -205,6 +214,27 @@
   It is a property of an idle composer, so it now lives only in the idle ghost, which
   paints while the box is genuinely empty and no turn is running. The error path's
   permanent copy of the same line went with it.
+- **A reasoning block keeps its carrier even with no thinking text.** A
+  `ReasoningItem` whose summary deltas were empty was dropped whole, so the
+  encrypted carrier never reached history and a same-model replay lost its
+  cache-warm context. The block now attaches whenever a carrier exists; an
+  empty text renders nothing.
+- **Dialogs hug their content.** `/resume`, `/connect`'s confirm-remove and
+  authorizing dialogs, and the context modal were fixed-height panels that
+  painted dead rows under short content; each now sizes to what it shows.
+- **Registry-installed plugins that speak CLI get `gray <name> …`.** Index
+  and URL installs recorded the executable's sidecar argv but never
+  `cli_argv`, so `gray account whoami` answered "'account' is a sidecar
+  plugin, not a CLI command" until the binary was registered by hand. After
+  an install — and again after every update — the installed executable gets
+  the same `<bin> manifest` probe a native registration runs: answering
+  plugins gain `gray <name> …` forwarding, completion and slash capture,
+  the manifest's `sidecar_args` become the sidecar invocation vector,
+  declared providers land in the `/connect` cache, the row keeps its
+  registry hash so it still updates, and an update that drops CLI support
+  clears the stale forwarding and manifest. The "local command" update-skip
+  now means a registered executable (`cli_argv` with no index hash), so
+  CLI-adopted index rows are no longer frozen out of `gray plugin update`.
 
 ### Changed
 - **The in-repo `plugins/` dir and the `plugins-release` workflow are gone.** Plugins live in
