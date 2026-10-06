@@ -211,19 +211,30 @@ pub async fn install_spec_lines(
     )
     .await?;
     // An index tarball whose executable speaks CLI gets `gray <name> …`
-    // the same way a manual registration does.
-    let cli = adopt_cli(home, &r.name, &r.path).await?;
-    Ok(vec![format!(
-        "installed {} {} at {}{}",
-        r.name,
-        r.version,
-        r.path.display(),
-        if cli {
-            format!(". Run: gray {} --help", r.name)
-        } else {
-            String::new()
-        }
-    )])
+    // the same way a manual registration does. Adoption is best-effort:
+    // the plugin is installed either way.
+    match adopt_cli(home, &r.name, &r.path).await {
+        Ok(true) => Ok(vec![format!(
+            "installed {} {} at {}. Run: gray {} --help",
+            r.name,
+            r.version,
+            r.path.display(),
+            r.name
+        )]),
+        Ok(false) => Ok(vec![format!(
+            "installed {} {} at {}",
+            r.name,
+            r.version,
+            r.path.display()
+        )]),
+        Err(e) => Ok(vec![
+            format!("installed {} {} at {}", r.name, r.version, r.path.display()),
+            format!(
+                "warning: could not set up `gray {}` forwarding: {e:#}",
+                r.name
+            ),
+        ]),
+    }
 }
 
 /// `gray plugin install` — CLI entry: same resolution as the REPL's, printed
@@ -541,10 +552,16 @@ pub async fn update_managed(target: &str) -> anyhow::Result<Vec<gray_pkg::ops::R
     }
     let reports = gray_pkg::ops::update(target).await?;
     // Re-probe each updated plugin: the new version's executable may have
-    // moved, gained, or lost CLI support.
+    // moved, gained, or lost CLI support. Best-effort — the update stands
+    // even when adoption can't run.
     let home = home()?;
     for r in &reports {
-        adopt_cli(&home, &r.name, &r.path).await?;
+        if let Err(e) = adopt_cli(&home, &r.name, &r.path).await {
+            eprintln!(
+                "warning: could not set up `gray {}` forwarding: {e:#}",
+                r.name
+            );
+        }
     }
     Ok(reports)
 }
