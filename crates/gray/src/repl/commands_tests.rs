@@ -604,3 +604,9 @@ fn undo_and_retry_are_in_the_registry() {
     assert!(names.contains(&"undo"), "registry: {names:?}");
     assert!(names.contains(&"retry"), "registry: {names:?}");
 }
+
+#[test]
+fn jobs_command_opens_the_background_work_list() {
+    assert!(matches!(parse_command("/jobs"), ReplCommand::Jobs));
+    assert!(matches!(parse_command("/JOBS"), ReplCommand::Jobs));
+}

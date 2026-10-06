@@ -816,7 +816,7 @@ impl Agent {
                     intent_nudge_sent = true;
                     log::info!(target: "gray_agent", "end turn announced an untaken step; nudging once");
                     self.messages.push(Message::user(
-                        "you ended your turn right after announcing a next step — take it now, or state that the task is complete",
+                        "you ended your turn right after announcing a next step — take it now, or state that the task is complete; if that step waits on the user's answer or approval, say so in one line and stop",
                     ));
                     continue 'turn;
                 }
@@ -1214,7 +1214,7 @@ fn leaked_call_markup(text: &str) -> bool {
 /// scrubbed before the markers are checked.
 fn announced_unfinished_step(text: &str) -> bool {
     let tail = text.trim_end();
-    if tail.is_empty() || tail.ends_with('?') {
+    if tail.is_empty() || tail.ends_with('?') || awaits_user(tail) {
         return false;
     }
     let last_line = tail.lines().next_back().unwrap_or_default();
@@ -1312,6 +1312,61 @@ fn announced_unfinished_step(text: &str) -> bool {
         "trying again",
     ];
     MARKERS.iter().any(|m| scrubbed.contains(m))
+}
+
+/// True when the closing lines hand the turn back to the user: a question
+/// for them, or a step gated on their answer ("say go and I'll …", "once
+/// you confirm"). The announced step is then theirs to trigger, and a nudge
+/// to "take it now" would act on work they never approved. Errs toward
+/// ending the turn: a missed nudge costs one "." from the user, a wrong one
+/// costs unapproved changes.
+fn awaits_user(tail: &str) -> bool {
+    let closing: Vec<&str> = tail
+        .lines()
+        .rev()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .take(8)
+        .collect();
+    let asks = closing.iter().any(|line| {
+        line.trim_end_matches(|c: char| matches!(c, '*' | '_' | '`' | ')' | '"' | '\'' | '’'))
+            .ends_with('?')
+    });
+    if asks {
+        return true;
+    }
+    let lower = closing.join(" ").to_lowercase().replace(['’', '‘'], "'");
+    const GATES: &[&str] = &[
+        "say go",
+        "your go",
+        "the go-ahead",
+        "your go-ahead",
+        "your approval",
+        "your answer",
+        "your call",
+        "your confirmation",
+        "your decision",
+        "your pick",
+        "once you ",
+        "when you approve",
+        "when you confirm",
+        "when you're ready",
+        "if you approve",
+        "if you confirm",
+        "until you ",
+        "wait for you",
+        "waiting for you",
+        "waiting on you",
+        "i'll wait",
+        "i will wait",
+        "awaiting your",
+        "hold off",
+        "before i start",
+        "before i proceed",
+        "before i continue",
+        "before i implement",
+    ];
+    GATES.iter().any(|g| lower.contains(g))
 }
 
 /// True when a tool result is gray's "the job is still going" progress

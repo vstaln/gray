@@ -423,7 +423,7 @@ pub fn format_tool_call_header(
     let dim_style = Style::default().fg(crate::theme::theme().tool_dim);
 
     match name {
-        "bash" => bash_header(args, bullet, action_style, cmd_style, dim_style),
+        "bash" => bash_header(args, cwd, bullet, action_style, cmd_style, dim_style),
         "write" => {
             let path = shorten_path(arg_path(args), cwd);
             let content = arg_content(args);
@@ -606,8 +606,12 @@ pub fn format_tool_call_header(
 /// reads `Waited on cargo-check`, never an empty `Ran`. Commands show
 /// without their setup (`cd … && nice … flock …`, see
 /// [`gray_tools::shell::label`]); a peeled `cd` stays visible, dimmed.
+/// A provably read-only command names what it looked at instead
+/// (`Viewed chart.png`, `Read lib.rs · lines 10–40`, `Searched foo · in
+/// src`, see [`gray_tools::shell::label::read_only`]).
 fn bash_header(
     args: &serde_json::Value,
+    cwd: Option<&Path>,
     bullet: Span<'static>,
     action_style: Style,
     cmd_style: Style,
@@ -656,6 +660,18 @@ fn bash_header(
                 .unwrap_or("")
                 .trim();
             let core = gray_tools::shell::label::core_command(full);
+            let background = args.get("background").and_then(|v| v.as_bool()) == Some(true);
+            if !background && let Some(read) = gray_tools::shell::label::read_only(full) {
+                return read_header(
+                    &read,
+                    core.cwd,
+                    cwd,
+                    bullet,
+                    action_style,
+                    cmd_style,
+                    dim_style,
+                );
+            }
             let cut = truncate_cmd(core.command);
             // A cut command says so: `… | sort |` alone reads as a broken pipe.
             let cmd = if cut.len() < core.command.len() || full.lines().nth(1).is_some() {
@@ -663,7 +679,6 @@ fn bash_header(
             } else {
                 cut.to_string()
             };
-            let background = args.get("background").and_then(|v| v.as_bool()) == Some(true);
             let mut spans = vec![
                 bullet,
                 verb(if background { "Started " } else { "Ran " }),
@@ -680,6 +695,53 @@ fn bash_header(
     }
 }
 
+/// Header for a read-only command: the verb, what it looked at (paths
+/// shortened like the file tools'), then its detail and a peeled `cd`.
+fn read_header(
+    read: &gray_tools::shell::label::ReadOnly,
+    peeled_cd: Option<&str>,
+    cwd: Option<&Path>,
+    bullet: Span<'static>,
+    action_style: Style,
+    cmd_style: Style,
+    dim_style: Style,
+) -> Line<'static> {
+    use gray_tools::shell::label::Look;
+    let verb = match read.look {
+        Look::Viewed => "Viewed ",
+        Look::Read => "Read ",
+        Look::Listed => "Listed ",
+        Look::Searched => "Searched ",
+    };
+    let target = match read.look {
+        Look::Searched => read.targets.join(" "),
+        _ => read
+            .targets
+            .iter()
+            .map(|t| shorten_path(t, cwd))
+            .collect::<Vec<_>>()
+            .join(", "),
+    };
+    let cut = truncate_cmd(&target);
+    let target = if cut.len() < target.len() {
+        format!("{}\u{2026}", cut.trim_end())
+    } else {
+        target
+    };
+    let mut spans = vec![
+        bullet,
+        Span::styled(verb, action_style),
+        Span::styled(target, cmd_style),
+    ];
+    if let Some(detail) = &read.detail {
+        spans.push(Span::styled(format!(" \u{00b7} {detail}"), dim_style));
+    }
+    if let Some(dir) = peeled_cd {
+        spans.push(Span::styled(format!(" \u{00b7} in {dir}"), dim_style));
+    }
+    Line::from(spans)
+}
+
 /// The verb a running `bash` header shimmers instead of its finished one.
 pub(crate) fn live_bash_verb(done: &str) -> Option<&'static str> {
     Some(match done {
@@ -689,6 +751,9 @@ pub(crate) fn live_bash_verb(done: &str) -> Option<&'static str> {
         "Checked " => "Checking ",
         "Stopped " => "Stopping ",
         "Listed " => "Listing ",
+        "Viewed " => "Viewing ",
+        "Read " => "Reading ",
+        "Searched " => "Searching ",
         _ => return None,
     })
 }
@@ -1130,7 +1195,8 @@ pub fn format_tool_result_lines_with_context(
     }
 
     let trimmed = if tool_name == "bash" {
-        strip_shell_fence(&humanize_bash_notices(output.trim()))
+        let output = drop_view_echo(args, output.trim());
+        strip_shell_fence(&humanize_bash_notices(output))
     } else {
         strip_shell_fence(output.trim())
     };
@@ -1166,6 +1232,27 @@ pub fn format_tool_result_lines_with_context(
         rows = code;
     }
     rows
+}
+
+/// A `Viewed` card's header already names the files, so the tool's bare
+/// `Shown: <paths>` line is an echo. Notes on it (`skipped: …`, a capped
+/// count) and attached text after it still render.
+fn drop_view_echo<'a>(args: Option<&serde_json::Value>, output: &'a str) -> &'a str {
+    let viewed = args
+        .and_then(|a| a.get("command"))
+        .and_then(|v| v.as_str())
+        .and_then(gray_tools::shell::label::read_only)
+        .is_some_and(|r| r.look == gray_tools::shell::label::Look::Viewed);
+    let (first, rest) = output.split_once('\n').unwrap_or((output, ""));
+    if viewed
+        && first.starts_with("Shown: ")
+        && !first.contains("; skipped:")
+        && !first.contains("(showing first")
+    {
+        rest.trim_start()
+    } else {
+        output
+    }
 }
 
 mod plain;

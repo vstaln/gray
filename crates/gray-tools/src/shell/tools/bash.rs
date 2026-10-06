@@ -63,6 +63,17 @@ impl BashTool {
     pub fn has_unfinished_jobs(&self, ctx: &ToolContext) -> bool {
         self.jobs.has_unfinished(ctx)
     }
+
+    /// This session's jobs that are running in the background (yielded and
+    /// unfinished), oldest first.
+    pub fn running_jobs(&self, ctx: &ToolContext) -> Vec<gray_core::agent::BackgroundJob> {
+        self.jobs.running(ctx)
+    }
+
+    /// Request cancellation of one of this session's running jobs.
+    pub fn cancel_job(&self, ctx: &ToolContext, id: &str) -> bool {
+        self.jobs.cancel_running(ctx, id)
+    }
 }
 
 /// One registry-owned job collection. Dropping the tool cancels its jobs.
@@ -151,11 +162,20 @@ impl Tool for BashTool {
                 }),
             );
         }
+        // How to stop and come back: the host wakes an idle session when a
+        // job settles, and a `--reminder` cron job delivers into the session
+        // that added it (`GRAY_SESSION_ID`). Cron does not fire on Windows.
+        const WAKE: &str = if cfg!(windows) {
+            ""
+        } else {
+            " To pause until later, end your turn: a finished job wakes you, and \
+             `gray cron add \"in 30m\" \"<note to self>\" --reminder` wakes this session at a time."
+        };
         ToolDef::new(
             "bash",
             format!(
                 "Run a shell command; no default timeout. background:true or yield_ms \
-                 returns a job id; then action status/output/cancel/list with job_id. {VIEW}"
+                 returns a job id; then action status/output/cancel/list with job_id. {VIEW}{WAKE}"
             ),
             json!({
                 "type": "object",

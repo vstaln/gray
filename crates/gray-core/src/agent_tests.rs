@@ -1285,6 +1285,40 @@ async fn clean_and_user_directed_endings_do_not_nudge() {
 }
 
 #[tokio::test]
+async fn endings_waiting_on_the_user_do_not_nudge() {
+    // The real misses: a plan that ends on "Say go … and I'll implement",
+    // and an apology that ends waiting on the user's call. Nudging these
+    // ("take it now") makes the model act on work the user never approved.
+    for text in [
+        "Two questions before I start:\n\n1. **Quit with jobs running?** Confirm, or leave them?\n2. **Verb scope.** Is that set right, or add `git` too?\n\nSay go, with your answers, and I'll implement both.",
+        "Should I switch back and delete the new branch, or keep it? I'll wait for that, your answers to the two questions, and your go.",
+        "Plan: wire the footer, then the picker.\n\nOnce you confirm, I'll start with the footer.",
+        "Want me to open a PR?\nI'll push the branch after that.",
+        "I'll hold off until you approve the design.",
+    ] {
+        let provider = FakeProvider::new(vec![text_end_script(text)]);
+        let mut agent = Agent::new(
+            Box::new(provider),
+            Arc::new(FakeExecutor::new(ToolOutput::ok("unused"))),
+        )
+        .with_tools(vec![tool_def()]);
+
+        agent
+            .run(Message::user("go"), ToolContext::default())
+            .await
+            .expect("run should end cleanly");
+
+        assert!(
+            !agent
+                .messages()
+                .iter()
+                .any(|m| m.text_content().contains("announcing a next step")),
+            "no nudge expected for ending: {text}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn pending_enumeration_endings_nudge() {
     // The real miss: swe-2 ended a turn on "I'm mid-investigation. Two
     // things to pin down: whether …, and how …" — no first-person marker,

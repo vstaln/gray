@@ -682,8 +682,8 @@ fn a_cut_bash_header_ends_in_an_ellipsis() {
     assert!(
         row_text(&format_tool_call_header("bash", &multi, None, None)).ends_with("cd x\u{2026}")
     );
-    let short = serde_json::json!({"command": "ls"});
-    assert!(row_text(&format_tool_call_header("bash", &short, None, None)).ends_with("Ran ls"));
+    let short = serde_json::json!({"command": "make"});
+    assert!(row_text(&format_tool_call_header("bash", &short, None, None)).ends_with("Ran make"));
 }
 
 // --- bash: one tool, five actions; headers say which, jobs go by name. ---
@@ -769,10 +769,13 @@ fn every_verb_has_a_live_form() {
         ("Checked ", "Checking "),
         ("Stopped ", "Stopping "),
         ("Listed ", "Listing "),
+        ("Viewed ", "Viewing "),
+        ("Read ", "Reading "),
+        ("Searched ", "Searching "),
     ] {
         assert_eq!(live_bash_verb(done), Some(live));
     }
-    assert_eq!(live_bash_verb("Read "), None);
+    assert_eq!(live_bash_verb("Edited "), None);
 }
 
 #[test]
@@ -873,4 +876,76 @@ fn an_unknown_tool_renders_its_args_verbatim() {
     ));
     assert!(text.contains("My Channel Send"), "name missing: {text:?}");
     assert!(text.contains("**updated**"), "arg missing: {text:?}");
+}
+
+// --- bash: read-only commands say what they looked at, not "Ran". ---
+
+#[test]
+fn read_only_commands_name_what_they_looked_at() {
+    for (cmd, want) in [
+        (
+            "cat /tmp/charts/g1_products.jpg",
+            "Viewed /tmp/charts/g1_products.jpg",
+        ),
+        (
+            "sed -n '120,180p' crates/gray/src/lib.rs",
+            "Read crates/gray/src/lib.rs \u{00b7} lines 120\u{2013}180",
+        ),
+        (
+            "head -n 5 a.rs b.rs",
+            "Read a.rs, b.rs \u{00b7} first 5 lines",
+        ),
+        ("cd ~/gray && ls crates", "Listed crates \u{00b7} in ~/gray"),
+        (
+            "grep -rn announce crates/gray-core/src",
+            "Searched announce \u{00b7} in crates/gray-core/src",
+        ),
+    ] {
+        let text = header(serde_json::json!({ "command": cmd }));
+        assert!(text.ends_with(want), "{text:?} should end with {want:?}");
+    }
+}
+
+#[test]
+fn reads_shorten_paths_against_the_cwd() {
+    let args = serde_json::json!({"command": "cat /work/repo/src/main.rs"});
+    let text = row_text(&format_tool_call_header(
+        "bash",
+        &args,
+        Some(std::path::Path::new("/work/repo")),
+        None,
+    ));
+    assert!(text.ends_with("Read src/main.rs"), "{text:?}");
+}
+
+#[test]
+fn writes_and_background_runs_keep_their_verbs() {
+    for (args, want) in [
+        (
+            serde_json::json!({"command": "cat a.rs > b.rs"}),
+            "Ran cat a.rs > b.rs",
+        ),
+        (
+            serde_json::json!({"command": "sed -i 's/a/b/' f.rs"}),
+            "Ran sed -i 's/a/b/' f.rs",
+        ),
+        (
+            serde_json::json!({"command": "tail -f app.log", "background": true}),
+            "Started tail -f app.log \u{00b7} in background",
+        ),
+    ] {
+        let text = header(args);
+        assert!(text.ends_with(want), "{text:?} should end with {want:?}");
+    }
+}
+
+#[test]
+fn a_view_drops_the_shown_echo_but_keeps_its_notes() {
+    let args = serde_json::json!({"command": "cat /tmp/a.png"});
+    assert_eq!(body(args.clone(), "Shown: /tmp/a.png"), "");
+    let noted = body(args, "Shown: /tmp/a.png; skipped: /tmp/b.png: no such file");
+    assert!(noted.contains("skipped"), "{noted:?}");
+    // The same line from a non-view command is real output.
+    let echo = body(serde_json::json!({"command": "make"}), "Shown: x");
+    assert!(echo.contains("Shown: x"), "{echo:?}");
 }

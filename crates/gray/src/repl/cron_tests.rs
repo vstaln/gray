@@ -171,3 +171,74 @@ fn picker_hides_the_ticker_row_when_there_are_no_jobs() {
         2
     );
 }
+
+/// Scripted executor: each wait answers the next scripted result (`None` =
+/// the slice timed out); `pending` says whether jobs are still running.
+struct ScriptedWaits {
+    answers: std::sync::Mutex<Vec<Option<()>>>,
+    pending: std::sync::atomic::AtomicBool,
+    waits: std::sync::atomic::AtomicUsize,
+}
+
+impl gray_core::agent::ToolExecutor for ScriptedWaits {
+    fn wait_for_notification(
+        &self,
+        _ctx: &gray_core::agent::ToolContext,
+        _timeout: std::time::Duration,
+    ) -> futures::future::BoxFuture<'static, Option<()>> {
+        self.waits.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let answer = self.answers.lock().unwrap().remove(0);
+        Box::pin(std::future::ready(answer))
+    }
+
+    fn has_pending_background(&self, _ctx: &gray_core::agent::ToolContext) -> bool {
+        self.pending.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    fn execute(
+        &self,
+        _ctx: &gray_core::agent::ToolContext,
+        _name: &str,
+        _args: serde_json::Value,
+    ) -> futures::future::BoxFuture<'static, gray_core::agent::ToolOutput> {
+        unreachable!("the waker never runs tools")
+    }
+}
+
+fn scripted(answers: Vec<Option<()>>, pending: bool) -> std::sync::Arc<ScriptedWaits> {
+    std::sync::Arc::new(ScriptedWaits {
+        answers: std::sync::Mutex::new(answers),
+        pending: std::sync::atomic::AtomicBool::new(pending),
+        waits: std::sync::atomic::AtomicUsize::new(0),
+    })
+}
+
+#[tokio::test]
+async fn a_job_longer_than_one_wait_slice_still_wakes_the_prompt() {
+    // The old waiter gave up after one 24h wait; a longer job never woke.
+    let exec = scripted(vec![None, None, Some(())], true);
+    wait_then_wake(
+        exec.clone(),
+        gray_core::agent::ToolContext::default(),
+        std::time::Duration::from_millis(1),
+    )
+    .await;
+    assert_eq!(exec.waits.load(std::sync::atomic::Ordering::SeqCst), 3);
+    assert!(crate::host::wake_requested());
+}
+
+#[tokio::test]
+async fn the_waiter_stops_once_nothing_is_pending() {
+    let exec = scripted(vec![None, Some(())], false);
+    wait_then_wake(
+        exec.clone(),
+        gray_core::agent::ToolContext::default(),
+        std::time::Duration::from_millis(1),
+    )
+    .await;
+    assert_eq!(
+        exec.waits.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "a timed-out wait with no jobs left ends the waiter"
+    );
+}
