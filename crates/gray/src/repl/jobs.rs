@@ -228,8 +228,10 @@ pub(crate) fn spawn_footer_poller() {
         let mut shown: Option<String> = None;
         let mut wakes: Vec<Wake> = Vec::new();
         let mut wakes_for: Option<String> = None;
-        for tick in 0u64.. {
+        let mut tick = 0u64;
+        loop {
             tokio::time::sleep(Duration::from_secs(1)).await;
+            tick = tick.wrapping_add(1);
             let source = crate::host::background_source();
             let jobs = source
                 .as_ref()
@@ -237,7 +239,7 @@ pub(crate) fn spawn_footer_poller() {
             // The store read takes its file lock: every 5s (or at once on a
             // session switch) is plenty, the countdown runs off the cache.
             let sid = crate::host::live_session();
-            if tick % 5 == 0 || sid != wakes_for {
+            if tick.is_multiple_of(5) || sid != wakes_for {
                 wakes = home
                     .as_deref()
                     .map(|h| load_wakes(h, sid.as_deref()))

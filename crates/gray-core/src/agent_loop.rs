@@ -1332,7 +1332,7 @@ fn awaits_user(tail: &str) -> bool {
         .take(8)
         .collect();
     let asks = closing.iter().any(|line| {
-        line.trim_end_matches(|c: char| matches!(c, '*' | '_' | '`' | ')' | '"' | '\'' | '’'))
+        line.trim_end_matches(['*', '_', '`', ')', '"', '\'', '’'])
             .ends_with('?')
     });
     if asks {
