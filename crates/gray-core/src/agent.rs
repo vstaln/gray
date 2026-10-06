@@ -326,11 +326,15 @@ pub struct PluginCommand {
     pub description: String,
 }
 
-/// Outcome of a plugin `command/run`: text to say, or a prompt to run.
+/// Outcome of a plugin `command/run`: text to say, a prompt to run, or the
+/// host's model picker opened on one of the plugin's model rows.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CommandOutcome {
     Say(String),
     Prompt(String),
+    /// Open the `/model` picker focused on this row id; a composite row
+    /// opens straight into its first slot.
+    ModelPicker(String),
 }
 
 /// Host-side view of a plugin's protocol-v1 hooks (`prompt/context`,

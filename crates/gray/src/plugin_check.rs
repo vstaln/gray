@@ -19,6 +19,7 @@ fn outcome_text(o: &gray_core::agent::CommandOutcome) -> String {
     match o {
         gray_core::agent::CommandOutcome::Say(s) => format!("{} bytes", s.len()),
         gray_core::agent::CommandOutcome::Prompt(s) => format!("prompt {} bytes", s.len()),
+        gray_core::agent::CommandOutcome::ModelPicker(row) => format!("model picker on {row}"),
     }
 }
 

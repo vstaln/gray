@@ -583,17 +583,38 @@ pub(crate) async fn reload_agent(
     *agent = Some(rebuilt);
 }
 
+/// What `/model` was asked for: the picker (optionally focused on a row —
+/// a plugin `model_picker` outcome like `/fusion`), or a direct id.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ModelArg {
+    Picker { focus: Option<String> },
+    Direct(String),
+}
+
+impl From<Option<String>> for ModelArg {
+    fn from(direct: Option<String>) -> Self {
+        match direct {
+            Some(m) => ModelArg::Direct(m),
+            None => ModelArg::Picker { focus: None },
+        }
+    }
+}
+
 /// Handles `/model`: interactive picker (no arg) or direct set (`/model provider/id`).
 /// Switching updates the live agent and persists to ~/.gray/config.json.
 pub(crate) async fn handle_model(
     config: &mut Config,
     cwd: &Path,
-    direct: Option<String>,
+    arg: ModelArg,
     agent: &mut Option<Agent>,
     tui: Option<&crate::composer::SharedTui>,
     session_id: Option<&str>,
     hide_thinking: &mut bool,
 ) {
+    let (direct, focus) = match arg {
+        ModelArg::Direct(m) => (Some(m), None),
+        ModelArg::Picker { focus } => (None, focus),
+    };
     if let Some(m) = direct {
         // Validate against the cached list first; only an id it doesn't
         // know waits on the live fetch (a brand-new model). Plugin
@@ -673,6 +694,7 @@ pub(crate) async fn handle_model(
         if let Some(shared) = tui {
             let mut t = shared.lock().expect("tui lock");
             t.set_model(m.clone());
+            t.set_model_label(crate::setup::composite_label_for(config));
             if config.thinking_effort != prev_effort
                 && let Some(eff) = &config.thinking_effort
             {
@@ -721,27 +743,57 @@ pub(crate) async fn handle_model(
         return;
     }
     let prev_effort = config.thinking_effort.clone();
+    let prev_show = config.show_reasoning;
+    let prev_fast = config.fast_mode;
     let bg = tui.map(|shared| shared.lock().expect("tui lock").snapshot());
-    let result = with_modal(tui, crate::setup::run_model_menu(config, bg.as_ref())).await;
+    let result = with_modal(
+        tui,
+        crate::setup::run_model_menu(config, bg.as_ref(), focus.as_deref()),
+    )
+    .await;
     match result {
         Ok(true) => {
-            // The picker already adopted the new model's remembered effort;
-            // clamp whatever came out so the footer never shows an
-            // unsupported level, and paint the adopted level too.
+            // The picker already committed the row's effort (and any Tab /
+            // ctrl+r toggle); clamp whatever came out so the footer never
+            // shows an unsupported level, and paint the committed state.
             let clamped = super::clamp_thinking_to_model(config);
-            if clamped.is_some() || config.thinking_effort != prev_effort {
+            let show_changed = config.show_reasoning != prev_show;
+            let fast_changed = config.fast_mode != prev_fast;
+            if clamped.is_some() || config.thinking_effort != prev_effort || show_changed {
                 *hide_thinking = config.reasoning_hidden();
             }
             if let Some(shared) = tui {
                 let mut t = shared.lock().expect("tui lock");
                 if let Some(m) = &config.model {
                     t.set_model(m.clone());
-                    t.push_action("Model set to", Some(m));
+                    t.set_model_label(crate::setup::composite_label_for(config));
+                    // Name the effort alongside the model when it has a
+                    // level to choose: the picker set both at once.
+                    let label = match (
+                        &config.thinking_effort,
+                        crate::setup::composite_label_for(config),
+                    ) {
+                        // A composite names its picks (`Fusion · Opus 5.5
+                        // High + SWE-2 High`); fast still shows.
+                        (_, Some(composite)) if config.fast_mode == Some(true) => {
+                            format!("{composite} · fast")
+                        }
+                        (_, Some(composite)) => composite,
+                        (Some(eff), None)
+                            if crate::setup::supported_thinking_levels(m).len() > 1 =>
+                        {
+                            format!("{m} · {}", crate::setup::effort_chip(eff, config))
+                        }
+                        _ => m.clone(),
+                    };
+                    t.push_action("Model set to", Some(&label));
                 }
-                if config.thinking_effort != prev_effort
+                if (config.thinking_effort != prev_effort || fast_changed)
                     && let Some(eff) = &config.thinking_effort
                 {
                     t.set_thinking_effort(crate::setup::effort_chip(eff, config));
+                }
+                if config.thinking_effort != prev_effort || show_changed {
                     t.set_hide_thinking(*hide_thinking);
                 }
                 if let Some((old, new)) = clamped {
@@ -769,6 +821,8 @@ pub(crate) async fn handle_model(
             reload_agent(agent, config, cwd, session_id, tui).await;
         }
         Ok(false) => {
+            // Tab / ctrl+r are pending until Enter: a dismissed picker
+            // changed nothing.
             if let Some(shared) = tui {
                 let mut t = shared.lock().expect("tui lock");
                 t.clear_draft();
@@ -790,7 +844,27 @@ pub(crate) async fn handle_model(
     }
 }
 
-/// Handles `/thinking` / `/effort`: direct set (`/thinking high`), toggle visibility (bare `/thinking`), or picker.
+/// Where `/thinking` (aliases `/effort`, `/reasoning`) goes.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum ThinkingRoute {
+    /// `/thinking <level>`: set the level directly.
+    Set(String),
+    /// Bare, headless: print the level and the model's choices.
+    Status,
+    /// Bare, interactive: the `/model` picker owns effort (←/→ per row).
+    ModelPicker,
+}
+
+pub(crate) fn thinking_route(direct: Option<String>, interactive: bool) -> ThinkingRoute {
+    match direct {
+        Some(eff) => ThinkingRoute::Set(eff),
+        None if interactive => ThinkingRoute::ModelPicker,
+        None => ThinkingRoute::Status,
+    }
+}
+
+/// Handles `/thinking` / `/effort`: direct set (`/thinking high`), a status
+/// line when headless, else the `/model` picker on the live model's row.
 pub(crate) async fn handle_thinking(
     config: &mut Config,
     cwd: &Path,
@@ -800,7 +874,21 @@ pub(crate) async fn handle_thinking(
     hide_thinking: &mut bool,
     session_id: Option<&str>,
 ) {
-    if let Some(eff) = direct {
+    let route = thinking_route(direct, tui.is_some());
+    if route == ThinkingRoute::ModelPicker {
+        handle_model(
+            config,
+            cwd,
+            ModelArg::Picker { focus: None },
+            agent,
+            tui,
+            session_id,
+            hide_thinking,
+        )
+        .await;
+        return;
+    }
+    if let ThinkingRoute::Set(eff) = route {
         let eff_clean = eff.to_lowercase();
         // Validate against what the CURRENT model accepts, not the global
         // catalog — Prime-Agent rejects unknown-for-model levels the same way.
@@ -851,103 +939,20 @@ pub(crate) async fn handle_thinking(
         return;
     }
 
-    if tui.is_none() {
-        // Headless (piped stdout): the picker needs a TTY — print status.
-        // Same provider-driven filter as the modal, so piped output agrees
-        // with what `/thinking` would offer on a TTY.
-        let model = config.model.clone().unwrap_or_default();
-        let levels = crate::setup::supported_thinking_levels(&model)
-            .iter()
-            .map(|(l, _)| *l)
-            .collect::<Vec<_>>()
-            .join(", ");
-        let cur = config
-            .thinking_effort
-            .clone()
-            .unwrap_or_else(|| "default (high)".to_string());
-        println!("thinking effort: {cur} — levels: {levels}; /thinking <level> to set");
-        return;
-    }
-    // One option is not a picker. A model that only accepts `off` (no
-    // reasoning at all) gets the fact as a line, not a modal whose single
-    // row pretends a choice exists.
-    let model_name = config.model.clone().unwrap_or_default();
-    let levels = crate::setup::supported_thinking_levels(&model_name);
-    if levels.len() <= 1 {
-        let msg = format!("{model_name} has no reasoning levels — nothing to pick");
-        if let Some(shared) = tui {
-            let mut t = shared.lock().expect("tui lock");
-            t.push_dim(msg);
-            t.ensure_gap();
-            let _ = t.draw();
-        } else {
-            println!("{msg}");
-        }
-        return;
-    }
-
-    let has_explicit_level = config.thinking_effort.is_some();
-    let bg = tui.map(|shared| shared.lock().expect("tui lock").snapshot());
-    let result = with_modal(tui, crate::setup::run_effort_menu(config, bg.as_ref())).await;
-    match result {
-        Ok(true) => {
-            if let Some(shared) = tui {
-                let mut t = shared.lock().expect("tui lock");
-                if let Some(eff) = &config.thinking_effort {
-                    t.set_thinking_effort(crate::setup::effort_chip(eff, config));
-                    *hide_thinking = config.reasoning_hidden();
-                    t.set_hide_thinking(*hide_thinking);
-                    t.push_action("Thinking effort set to", Some(eff));
-                    t.ensure_gap();
-                }
-                let _ = t.draw();
-            }
-            reload_agent(agent, config, cwd, session_id, tui).await;
-        }
-        Ok(false) => {
-            if !has_explicit_level {
-                // First run, Esc: flip the display setting (effort untouched).
-                let shown = !config.show_reasoning.unwrap_or(true);
-                config.show_reasoning = Some(shown);
-                if let Ok(path) = crate::setup::saved_config_path() {
-                    let mut saved = crate::setup::load_saved_config_at(&path);
-                    saved.show_reasoning = Some(shown);
-                    let _ = crate::setup::save_saved_config_at(&path, &saved);
-                }
-                *hide_thinking = config.reasoning_hidden();
-                let msg = if *hide_thinking {
-                    "reasoning hidden — /thinking to show"
-                } else {
-                    "reasoning shown"
-                };
-                if let Some(shared) = tui {
-                    let mut t = shared.lock().expect("tui lock");
-                    t.set_hide_thinking(*hide_thinking);
-                    t.push_dim(format!("└ {msg}"));
-                    t.ensure_gap();
-                } else {
-                    println!("{msg}");
-                }
-            } else if let Some(shared) = tui {
-                let mut t = shared.lock().expect("tui lock");
-                t.clear_draft();
-                // Dismissed picker leaves the slash card with no feedback:
-                // gap so it doesn't jam the input box.
-                t.ensure_gap();
-                let _ = t.draw();
-            }
-        }
-        Err(e) => {
-            if let Some(shared) = tui {
-                shared
-                    .lock()
-                    .expect("tui lock")
-                    .push_dim(format!("└ error: {e}"));
-            } else {
-                println!("effort error: {e}");
-            }
-        }
-    }
+    // Headless (piped stdout): the picker needs a TTY — print status.
+    // Same provider-driven filter as the picker rows, so piped output
+    // agrees with what `/model` would offer on a TTY.
+    let model = config.model.clone().unwrap_or_default();
+    let levels = crate::setup::supported_thinking_levels(&model)
+        .iter()
+        .map(|(l, _)| *l)
+        .collect::<Vec<_>>()
+        .join(", ");
+    let cur = config
+        .thinking_effort
+        .clone()
+        .unwrap_or_else(|| "default (high)".to_string());
+    println!("thinking effort: {cur} — levels: {levels}; /thinking <level> to set");
 }
 
 /// Handles `/fast [on|off|status]`: prefer the provider's fast-serving
@@ -980,8 +985,7 @@ pub(crate) async fn handle_fast(
     // What the flag would send — the mode is global, but only catalog fast
     // rows change the wire id, so report the honest outcome for this model.
     let model = config.model.clone().unwrap_or_default();
-    let rows = crate::setup::canonical_model_rows(config);
-    let wire = crate::setup::compose_fast_model(&model, config.thinking_effort.as_deref(), &rows);
+    let wire = crate::setup::fast_wire_for(config);
     let detail = if next {
         match &wire {
             Some(id) => format!("{model} → {id}"),

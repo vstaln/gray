@@ -43,6 +43,7 @@ fn auth_map(entries: &[(&str, &str)]) -> BTreeMap<String, catalog::AuthEntry> {
 fn only_rows_holding_a_credential_are_removable() {
     let mut config = crate::config::Config {
         fast_mode: None,
+        model_parts: Default::default(),
         model: Some("openrouter/auto".into()),
         base_url: "https://openrouter.ai/api/v1".into(),
         api_key: None,
@@ -114,6 +115,7 @@ fn confirm_dialog_names_provider_and_both_keys() {
 fn list_footer_advertises_removal_only_for_a_stored_provider() {
     let config = crate::config::Config {
         fast_mode: None,
+        model_parts: Default::default(),
         model: Some("openrouter/auto".into()),
         base_url: "https://openrouter.ai/api/v1".into(),
         api_key: Some("sk-live".into()),
@@ -168,6 +170,7 @@ fn list_footer_advertises_removal_only_for_a_stored_provider() {
 fn config_for(base_url: &str) -> crate::config::Config {
     crate::config::Config {
         fast_mode: None,
+        model_parts: Default::default(),
         model: Some("openrouter/auto".into()),
         base_url: base_url.into(),
         api_key: Some("sk-live".into()),

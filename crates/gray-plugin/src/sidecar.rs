@@ -985,18 +985,7 @@ impl Plugin for SidecarPlugin {
             .request("command/run", Some(params), Duration::from_secs(30))
             .await
             .ok()?;
-        // `{"prompt":...}` wins over `{"text":...}`; empty/missing → None.
-        if let Some(p) = v
-            .get("prompt")
-            .and_then(|t| t.as_str())
-            .filter(|t| !t.is_empty())
-        {
-            return Some(CommandOutcome::Prompt(p.to_string()));
-        }
-        v.get("text")
-            .and_then(|t| t.as_str())
-            .filter(|t| !t.is_empty())
-            .map(|t| CommandOutcome::Say(t.to_string()))
+        command_outcome(&v)
     }
     async fn on_event(&self, e: CoreEvent) {
         // Minimal tagged JSON (see protocol v1 doc comment above) + v1.1 session.
@@ -1096,6 +1085,21 @@ impl Tool for SidecarTool {
             }
         }
     }
+}
+
+/// Parse a `command/run` reply: `{"model_picker": "<row id>"}` wins over
+/// `{"prompt": …}`, which wins over `{"text": …}`; empty/missing → None.
+/// A `model_picker` reply may carry `text` too — a fallback for hosts that
+/// predate the outcome, ignored here.
+pub(crate) fn command_outcome(v: &Value) -> Option<CommandOutcome> {
+    let field = |k: &str| v.get(k).and_then(|t| t.as_str()).filter(|t| !t.is_empty());
+    if let Some(row) = field("model_picker") {
+        return Some(CommandOutcome::ModelPicker(row.to_string()));
+    }
+    if let Some(p) = field("prompt") {
+        return Some(CommandOutcome::Prompt(p.to_string()));
+    }
+    field("text").map(|t| CommandOutcome::Say(t.to_string()))
 }
 
 #[path = "sidecar_tests.rs"]

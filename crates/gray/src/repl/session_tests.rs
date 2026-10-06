@@ -43,6 +43,7 @@ async fn failed_compaction_save_retries_full_history_before_appending() {
     });
     let config = Config {
         fast_mode: None,
+        model_parts: Default::default(),
         temperature: None,
         top_p: None,
         model: None,

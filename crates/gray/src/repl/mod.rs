@@ -350,6 +350,7 @@ pub(crate) fn push_provider_connected(
     let mut t = shared.lock().expect("tui lock");
     if let Some(m) = &config.model {
         t.set_model(m.clone());
+        t.set_model_label(crate::setup::composite_label_for(config));
     }
     // Paint the effort unconditionally: a provider/model switch adopts the
     // target's own remembered level even when no clamp fires.
@@ -770,6 +771,7 @@ pub async fn run_repl_mode(
             })?;
             if let Some(m) = &config.model {
                 t.set_model(m.clone());
+                t.set_model_label(crate::setup::composite_label_for(config));
             }
             // A level this model no longer offers (a step-family `off` saved
             // before family truth won) must not ride into the footer.

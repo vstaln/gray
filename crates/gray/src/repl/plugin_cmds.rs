@@ -169,3 +169,25 @@ pub(crate) async fn handle_plugin_command(raw: &str, tui: Option<&crate::compose
 #[path = "plugin_cmds_tests.rs"]
 #[cfg(test)]
 mod tests;
+
+/// Ask a provider plugin's sidecar to run one of its declared commands
+/// (`command/run`). Provider plugins are not agent hooks, so this spawns
+/// the sidecar for the one request. `None` = the plugin doesn't answer
+/// `cmd` (its login shortcut) or could not be reached.
+pub(crate) async fn provider_command_outcome(
+    provider_id: &str,
+    cmd: &str,
+) -> Option<gray_core::agent::CommandOutcome> {
+    use gray_plugin::Plugin as _;
+    let home = crate::setup::gray_home().ok()?;
+    let installed = crate::providers::ProviderRegistry::load_cached(&home)
+        .installed()
+        .into_iter()
+        .find(|p| p.provider_id() == provider_id)?;
+    let plugin = gray_plugin::sidecar::SidecarPlugin::spawn(installed.argv.clone())
+        .await
+        .ok()?;
+    let outcome = plugin.run_command(cmd, Vec::new()).await;
+    plugin.shutdown(std::time::Duration::from_secs(2)).await;
+    outcome
+}

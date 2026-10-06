@@ -11,8 +11,8 @@ pub use providers::{
     supported_thinking_levels, turn_cost,
 };
 pub(crate) use providers::{
-    ensure_disk_loaded, fetch_plugin_provider_models, load_provider_model_list,
-    save_provider_model_list,
+    cache_model_efforts, ensure_disk_loaded, fetch_plugin_provider_models,
+    load_provider_model_list, save_provider_model_list,
 };
 
 static USER_CONTEXT_WINDOW: std::sync::OnceLock<std::sync::RwLock<Option<usize>>> =

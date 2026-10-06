@@ -169,3 +169,49 @@ fn loopback_hosts_are_recognized_with_and_without_brackets() {
     assert!(!is_loopback_host("0.0.0.0"));
     assert!(!is_loopback_host(""));
 }
+
+#[test]
+fn a_legacy_pair_cache_still_loads_and_objects_keep_their_metadata() {
+    use crate::setup::variants::{CachedModel, CachedRow};
+    let dir = tempfile::TempDir::new().expect("temp home");
+    // A file written by an older gray: pairs only.
+    std::fs::write(
+        dir.path().join("provider_models.json"),
+        br#"{"plugin:devin-subscription":[["swe-2","SWE-2"],["gpt-6-sol","GPT-6 Sol"]]}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        load_provider_model_list_at(dir.path(), "plugin:devin-subscription"),
+        vec![
+            ("swe-2".to_string(), "SWE-2".to_string()),
+            ("gpt-6-sol".to_string(), "GPT-6 Sol".to_string()),
+        ]
+    );
+    // A plugin catalog saves objects; a later bare-pair refresh of the same
+    // id keeps the metadata and takes the new name.
+    let rich = CachedRow::Full(CachedModel {
+        id: "gpt-6-sol".into(),
+        name: "GPT-6 Sol".into(),
+        reasoning_efforts: vec!["off".into(), "high".into()],
+        variants: vec![gray_plugin::ModelVariant {
+            id: "gpt-6-sol-high-priority".into(),
+            effort: Some("high".into()),
+            fast: true,
+            parts: Default::default(),
+        }],
+        slots: vec![],
+        declared: true,
+    });
+    save_provider_model_rows_at(dir.path(), "plugin:devin-subscription", vec![rich]);
+    save_provider_model_list_at(
+        dir.path(),
+        "plugin:devin-subscription",
+        &[("gpt-6-sol".to_string(), "GPT 6 Sol".to_string())],
+    );
+    let rows = load_provider_model_rows_at(dir.path(), "plugin:devin-subscription");
+    let [CachedRow::Full(m)] = rows.as_slice() else {
+        panic!("one object row: {rows:?}");
+    };
+    assert_eq!(m.name, "GPT 6 Sol");
+    assert_eq!(m.variants.len(), 1);
+}

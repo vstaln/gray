@@ -227,23 +227,22 @@ pub async fn build_agent(
     } else {
         None
     };
-    // Fast mode prefers the provider's fast-serving variant of the model
-    // (`-fast`/`-priority` catalog rows) — the wire id composes here while
-    // `config.model` keeps the base for display and the effort picker.
-    let mut wire_model = model.clone();
-    if config.fast_mode == Some(true)
-        && let Some(fast_id) = crate::setup::compose_fast_model(
-            model,
-            config.thinking_effort.as_deref(),
-            &crate::setup::canonical_model_rows(config),
-        )
-    {
-        wire_model = fast_id;
-    }
+    // The wire id composes here while `config.model` keeps the row for
+    // display and the picker: a row with declared variants resolves its
+    // (effort, fast, parts) selection to the concrete id; other rows send
+    // themselves, or their `-fast`/`-priority` sibling in fast mode.
+    let wire_model = crate::setup::wire_model_for(config).unwrap_or_else(|| model.clone());
+    // A declared variant's effort is the row's level: clamp against the row
+    // (whose efforts the catalog declared), not the concrete id.
+    let effort_model = if crate::setup::variants::row_shape(model).is_some() {
+        model
+    } else {
+        &wire_model
+    };
     let reasoning_effort = config
         .thinking_effort
         .as_deref()
-        .map(|effort| crate::setup::clamp_thinking_level(&wire_model, effort).to_string());
+        .map(|effort| crate::setup::clamp_thinking_level(effort_model, effort).to_string());
     let plugin_warm_replay = dynamic
         .as_ref()
         .is_some_and(|p| p.installed().provider.transport.request.warm_replay);

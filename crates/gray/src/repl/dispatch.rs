@@ -63,7 +63,20 @@ pub(crate) async fn dispatch_command(
             handle_model(
                 config,
                 cwd,
-                direct,
+                direct.into(),
+                &mut *agent,
+                tui.as_ref().map(|(s, _)| s),
+                session_state.as_ref().map(|s| s.session_id.as_str()),
+                &mut *hide_thinking,
+            )
+            .await;
+            Flow::Continue
+        }
+        ReplCommand::ModelFocus(row) => {
+            handle_model(
+                config,
+                cwd,
+                super::handlers::ModelArg::Picker { focus: Some(row) },
                 &mut *agent,
                 tui.as_ref().map(|(s, _)| s),
                 session_state.as_ref().map(|s| s.session_id.as_str()),
@@ -400,6 +413,20 @@ pub(crate) async fn dispatch_command(
             handle_feedback(text, config, session_state, tui.as_ref().map(|(s, _)| s));
             Flow::Continue
         }
+        ReplCommand::ProviderCommand { cmd, provider_id } => {
+            *pending_command = Some(
+                match super::plugin_cmds::provider_command_outcome(&provider_id, &cmd).await {
+                    Some(CommandOutcome::ModelPicker(row)) => ReplCommand::ModelFocus(row),
+                    Some(CommandOutcome::Prompt(prompt)) => ReplCommand::Prompt(prompt),
+                    Some(CommandOutcome::Say(text)) => {
+                        say(tui.as_ref().map(|(s, _)| s), &text);
+                        return Ok(Flow::Continue);
+                    }
+                    None => ReplCommand::ProviderLogin(provider_id),
+                },
+            );
+            Flow::Continue
+        }
         cmd @ (ReplCommand::Provider | ReplCommand::ProviderLogin(_)) => {
             let preselect = match cmd {
                 ReplCommand::ProviderLogin(id) => Some(id),
@@ -507,6 +534,11 @@ pub(crate) async fn dispatch_command(
                     // turn-running logic duplicated here).
                     CommandOutcome::Prompt(prompt) => {
                         *pending_command = Some(ReplCommand::Prompt(prompt));
+                    }
+                    // A plugin asks for the model picker on one of its
+                    // rows (`/fusion`): same path as `/model`, focused.
+                    CommandOutcome::ModelPicker(row) => {
+                        *pending_command = Some(ReplCommand::ModelFocus(row));
                     }
                 }
                 handled = true;

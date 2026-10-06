@@ -81,6 +81,14 @@ pub struct SavedConfig {
     /// Prefer fast-serving model variants (`-fast`/`-priority` rows).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fast_mode: Option<bool>,
+    /// Composite-row selection for `model` (slot key → option id); empty
+    /// for non-composite rows.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub model_parts: BTreeMap<String, String>,
+    /// Last composite selection per row, keyed like `effort_memory`
+    /// ([`effort_memory_key`]), so reopening the picker preselects it.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub parts_memory: BTreeMap<String, BTreeMap<String, String>>,
     /// Sampling temperature sent with every chat request (None = provider default).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub temperature: Option<f32>,
@@ -272,6 +280,8 @@ fn partial_saved_config(obj: &serde_json::Map<String, serde_json::Value>) -> Sav
         thinking_effort: opt_field(obj, "thinking_effort"),
         show_reasoning: opt_field(obj, "show_reasoning"),
         fast_mode: opt_field(obj, "fast_mode"),
+        model_parts: opt_field(obj, "model_parts").unwrap_or_default(),
+        parts_memory: opt_field(obj, "parts_memory").unwrap_or_default(),
         temperature: opt_field(obj, "temperature"),
         top_p: opt_field(obj, "top_p"),
         context_window: opt_field(obj, "context_window"),
@@ -626,6 +636,16 @@ impl SavedConfig {
         self.effort_memory
             .insert(key.to_string(), effort.to_string());
         self.thinking_effort = Some(effort.to_string());
+    }
+
+    /// Set the live composite selection (`model_parts`) and, when non-empty,
+    /// remember it under `key` so the row reopens on it. Empty clears the
+    /// live field only — the memory of other rows stays.
+    pub(crate) fn remember_parts(&mut self, key: &str, parts: &BTreeMap<String, String>) {
+        if !parts.is_empty() {
+            self.parts_memory.insert(key.to_string(), parts.clone());
+        }
+        self.model_parts = parts.clone();
     }
 
     /// Only reorder available IDs: history must not resurrect removed models

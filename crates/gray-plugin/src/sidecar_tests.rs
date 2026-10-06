@@ -208,3 +208,23 @@ async fn prompt_context_carries_the_agent_session_id() {
     );
     p.shutdown(std::time::Duration::from_secs(2)).await;
 }
+
+#[test]
+fn a_model_picker_reply_wins_over_prompt_and_text() {
+    use gray_core::agent::CommandOutcome;
+    let parse = |v: serde_json::Value| super::command_outcome(&v);
+    assert_eq!(
+        parse(serde_json::json!({"model_picker": "fusion", "text": "fallback"})),
+        Some(CommandOutcome::ModelPicker("fusion".into()))
+    );
+    assert_eq!(
+        parse(serde_json::json!({"model_picker": "", "prompt": "go", "text": "t"})),
+        Some(CommandOutcome::Prompt("go".into())),
+        "an empty model_picker falls through"
+    );
+    assert_eq!(
+        parse(serde_json::json!({"text": "hi"})),
+        Some(CommandOutcome::Say("hi".into()))
+    );
+    assert_eq!(parse(serde_json::json!({})), None);
+}

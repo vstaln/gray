@@ -666,7 +666,10 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
         );
         let cache_display = format!("{hit_rate:.1}% cache");
 
-        let model_display = crate::setup::friendly_model_name(&tui.model_name);
+        let model_display = tui
+            .model_label
+            .clone()
+            .unwrap_or_else(|| crate::setup::friendly_model_name(&tui.model_name));
         // Unknown/`None` (between turns) resolves the flag live, so the
         // provider's own answer still lands once discovery finishes.
         let show_effort = footer_badge_visible(&tui.model_name, tui.turn_show_effort);
