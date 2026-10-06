@@ -116,14 +116,10 @@ impl ProviderRegistry {
             let Ok(manifest) = serde_json::from_str::<serde_json::Value>(&text) else {
                 continue;
             };
-            let manifest_name = manifest
-                .get("name")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or_default();
-            anyhow::ensure!(
-                manifest_name == name,
-                "cached manifest name '{manifest_name}' does not match lock entry '{name}'"
-            );
+            // The manifest's own `name` may differ from the lock key: an
+            // index install adopts the CLI manifest of a plugin published
+            // under a different registry key (the `-sub` plugins). The
+            // `<key>-manifest.json` filename is what binds it to the entry.
             let raw_providers = manifest
                 .get("providers")
                 .and_then(serde_json::Value::as_array)

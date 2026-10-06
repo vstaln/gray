@@ -22,8 +22,10 @@
   an install — and again after every update — the installed executable gets
   the same `<bin> manifest` probe a native registration runs: answering
   plugins gain `gray <name> …` forwarding, completion and slash capture,
-  keep their registry hash so they still update, and an update that drops
-  CLI support clears the stale forwarding. The "local command" update-skip
+  the manifest's `sidecar_args` become the sidecar invocation vector,
+  declared providers land in the `/connect` cache, the row keeps its
+  registry hash so it still updates, and an update that drops CLI support
+  clears the stale forwarding and manifest. The "local command" update-skip
   now means a registered executable (`cli_argv` with no index hash), so
   CLI-adopted index rows are no longer frozen out of `gray plugin update`.
 

@@ -800,7 +800,20 @@ pub(crate) async fn adopt_cli(home: &Path, name: &str, dir: &Path) -> anyhow::Re
     };
     match manifest {
         Some(manifest) => {
-            entry.cli_argv = Some(vec![exe.expect("a manifest implies an executable")]);
+            let exe = exe.expect("a manifest implies an executable");
+            // Same lock shape register_native writes: `argv` is the sidecar
+            // invocation vector — a CLI binary may serve the wire under a
+            // subcommand (`gray-discord sidecar`); its manifest says which.
+            entry.argv = std::iter::once(exe.clone())
+                .chain(
+                    manifest["sidecar_args"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|v| v.as_str().map(str::to_string)),
+                )
+                .collect();
+            entry.cli_argv = Some(vec![exe]);
             lock.save(&lock_path)?;
             // Same manifest sidecar register_native writes: completion and
             // slash capture read `plugins/<name>-manifest.json`.
@@ -808,12 +821,27 @@ pub(crate) async fn adopt_cli(home: &Path, name: &str, dir: &Path) -> anyhow::Re
             use std::io::Write;
             writeln!(metadata, "{manifest}")?;
             metadata.persist(plugins.join(format!("{name}-manifest.json")))?;
+            // And the same provider-cache rebuild, so a provider the
+            // manifest declares is discoverable immediately.
+            crate::providers::ProviderRegistry::refresh(home)?;
             Ok(true)
         }
         None => {
-            if entry.cli_argv.is_some() && !entry.hash.is_empty() {
-                entry.cli_argv = None;
-                lock.save(&lock_path)?;
+            // An index row whose update dropped CLI support loses its
+            // forwarding and cached manifest; registered executables
+            // (no hash) keep both.
+            if !entry.hash.is_empty() {
+                let mut changed = entry.cli_argv.take().is_some();
+                let manifest_path = plugins.join(format!("{name}-manifest.json"));
+                match std::fs::remove_file(&manifest_path) {
+                    Ok(()) => changed = true,
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(e) => return Err(e.into()),
+                }
+                if changed {
+                    lock.save(&lock_path)?;
+                    crate::providers::ProviderRegistry::refresh(home)?;
+                }
             }
             Ok(false)
         }
@@ -1260,7 +1288,7 @@ done
         let exe = dir.join("gray-demo");
         std::fs::write(
             &exe,
-            "#!/bin/sh\nprintf '%s\\n' '{\"name\":\"demo-sub\",\"version\":\"1.0.0\",\"completion\":[\"run\"]}'\n",
+            "#!/bin/sh\nprintf '%s\\n' '{\"name\":\"demo-sub\",\"version\":\"1.0.0\",\"completion\":[\"run\"],\"sidecar_args\":[\"sidecar\"]}'\n",
         )
         .unwrap();
         std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -1273,18 +1301,27 @@ done
             entry.cli_argv.as_deref(),
             Some([exe.to_string_lossy().into_owned()].as_slice())
         );
+        // `argv` becomes the sidecar invocation vector, like register_native.
+        assert_eq!(
+            entry.argv,
+            vec![exe.to_string_lossy().into_owned(), "sidecar".to_string()]
+        );
         // Every other lock field survives the adoption untouched.
         assert_eq!(entry.hash, "sha256:abc");
         assert_eq!(entry.version, "1.0.0");
         assert_eq!(entry.ecosystem, "gray-native");
         assert_eq!(entry.source, "https://example.invalid/demo.tar.gz");
-        assert!(entry.argv.is_empty());
         let manifest: Value = serde_json::from_slice(
             &std::fs::read(home.join("plugins/demo-manifest.json")).unwrap(),
         )
         .unwrap();
         assert_eq!(manifest["name"], "demo-sub");
         assert_eq!(manifest["completion"], serde_json::json!(["run"]));
+        // The provider-cache rebuild accepts the mismatched manifest name
+        // and lands the entry under the lock key.
+        let cache =
+            crate::providers::ProviderCache::load(&crate::providers::registry::cache_path(home));
+        assert!(cache.plugins.contains_key("demo"));
     }
 
     #[cfg(unix)]
@@ -1318,15 +1355,21 @@ done
         std::fs::write(&exe, "#!/bin/sh\nexit 1\n").unwrap();
         std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
         // The previous version spoke CLI; this one no longer answers
-        // `manifest`, so the stale forwarding must go.
+        // `manifest`, so the stale forwarding and cached manifest must go.
         write_lock(
             home,
             &serde_json::json!({"demo": index_row(Some(vec!["/old/exe".into()]))}),
         );
+        std::fs::write(
+            home.join("plugins/demo-manifest.json"),
+            "{\"name\":\"demo-sub\"}",
+        )
+        .unwrap();
 
         assert!(!adopt_cli(home, "demo", &dir).await.unwrap());
         let entry = &load_lock(home).unwrap().plugins["demo"];
         assert_eq!(entry.cli_argv, None);
         assert_eq!(entry.hash, "sha256:abc");
+        assert!(!home.join("plugins/demo-manifest.json").exists());
     }
 }
