@@ -236,6 +236,14 @@ fn record_install(
     write_lock(&lock)
 }
 
+/// A lock row that belongs to a user-registered executable (a `plugin add`
+/// or a PATH registration): it has a `cli_argv` but no index hash. Index
+/// installs carry the tarball's hash even after adopting a `cli_argv`, so
+/// this is the test that keeps `update` from clobbering user registrations.
+pub fn is_registered_executable(e: &LockEntry) -> bool {
+    e.cli_argv.is_some() && e.hash.is_empty()
+}
+
 /// Index entries gray installs by name: curated gray-native tarballs.
 /// Anything else bails with the honest reason.
 fn supported_index_entry(entry: &crate::index::Entry) -> bool {
@@ -555,10 +563,12 @@ async fn update_inner(target: &str) -> anyhow::Result<Vec<Report>> {
     let mut out = Vec::new();
     for name in &names {
         let installed = &lock.plugins[name];
-        // Local commands (`cli_argv` rows) are user-registered executables,
-        // not index installs — never let a same-named index entry replace one.
-        if installed.cli_argv.is_some() {
-            eprintln!("warning: skipping update of {name} (local command)");
+        // Registered executables (cli_argv with no index hash) are
+        // user-owned, not index installs — never let a same-named index
+        // entry replace one. Index installs that adopted a cli_argv keep
+        // their hash and update normally.
+        if is_registered_executable(installed) {
+            eprintln!("warning: skipping update of {name} (registered executable)");
             continue;
         }
         let entry = match crate::index::lookup(&index, name) {

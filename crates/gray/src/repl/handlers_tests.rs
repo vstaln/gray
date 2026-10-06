@@ -293,28 +293,3 @@ fn undo_cut_reports_a_conversation_it_cannot_rewind() {
     assert_eq!(undo_cut(&[Message::assistant("unprompted")]), None);
     assert_eq!(undo_cut(&[Message::user("only")]), Some(0));
 }
-
-/// Bare `/thinking` (`/effort`, `/reasoning`) opens the `/model` picker —
-/// effort lives on its rows now; with a level it still sets directly, and
-/// piped stdout (no picker) keeps the status line.
-#[test]
-fn bare_effort_routes_to_the_model_picker() {
-    for line in ["/thinking", "/effort", "/reasoning"] {
-        let ReplCommand::Thinking(direct) = parse_command(line) else {
-            panic!("{line} parses as Thinking");
-        };
-        assert_eq!(
-            thinking_route(direct, true),
-            ThinkingRoute::ModelPicker,
-            "{line}"
-        );
-    }
-    let ReplCommand::Thinking(direct) = parse_command("/effort high") else {
-        panic!("/effort high parses as Thinking");
-    };
-    assert_eq!(
-        thinking_route(direct, true),
-        ThinkingRoute::Set("high".to_string())
-    );
-    assert_eq!(thinking_route(None, false), ThinkingRoute::Status);
-}

@@ -263,31 +263,6 @@ pub(crate) async fn dispatch_command(
             .await;
             Flow::Continue
         }
-        ReplCommand::Thinking(level) => {
-            handle_thinking(
-                config,
-                cwd,
-                level,
-                &mut *agent,
-                tui.as_ref().map(|(s, _)| s),
-                &mut *hide_thinking,
-                session_state.as_ref().map(|s| s.session_id.as_str()),
-            )
-            .await;
-            Flow::Continue
-        }
-        ReplCommand::Fast(arg) => {
-            handle_fast(
-                config,
-                cwd,
-                arg,
-                &mut *agent,
-                tui.as_ref().map(|(s, _)| s),
-                session_state.as_ref().map(|s| s.session_id.as_str()),
-            )
-            .await;
-            Flow::Continue
-        }
         ReplCommand::ContextWindow(val) => {
             handle_context_window(config, cwd, agent, val, tui.as_ref().map(|(s, _)| s)).await;
             Flow::Continue

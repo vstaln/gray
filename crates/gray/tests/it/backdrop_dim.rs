@@ -13,7 +13,7 @@ fn draw_bg(w: u16, h: u16) -> ratatui::buffer::Buffer {
         cwd: "/tmp".to_string(),
         model_name: "m".to_string(),
         thinking_effort: "xhigh".to_string(),
-        prompt_text: "/thinking".to_string(),
+        prompt_text: "/model".to_string(),
         used_tokens: 0,
         cache_hit_rate: 0.0,
     };

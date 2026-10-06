@@ -51,7 +51,7 @@ fn backdrop_dims_card_box_and_inserts_gap_before_input() {
     let mut terminal = ratatui::Terminal::new(backend).expect("test terminal");
     let bg = BackgroundSnapshot {
         history_entries: vec![crate::composer::TranscriptEntry::UserPrompt(
-            "/thinking".to_string(),
+            "/model".to_string(),
             Vec::new(),
         )],
         ..Default::default()
@@ -60,9 +60,9 @@ fn backdrop_dims_card_box_and_inserts_gap_before_input() {
         .draw(|frame| render_dimmed_background(frame, &bg))
         .expect("draw");
     let rows = buffer_rows(terminal.backend(), 40, 15);
-    // Prompt card: 3 rows (margin, ' ❯ /thinking', margin)
+    // Prompt card: 3 rows (margin, ' ❯ /model', margin)
     assert!(
-        rows[1].contains("/thinking"),
+        rows[1].contains("/model"),
         "card contains command: {rows:?}"
     );
     // Card background dims with everything else (no preservation:

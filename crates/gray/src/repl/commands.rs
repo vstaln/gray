@@ -14,17 +14,9 @@ pub(crate) const REGISTRY: &[CmdDef] = &[
     CmdDef {
         name: "model",
         desc: "switch model & effort",
-        aliases: &["models"],
-    },
-    CmdDef {
-        name: "thinking",
-        desc: "set reasoning effort (bare: /model picker)",
-        aliases: &["effort", "reasoning"],
-    },
-    CmdDef {
-        name: "fast",
-        desc: "fast model variant",
-        aliases: &[],
+        // Retired `/thinking`, `/effort`, `/reasoning`, `/fast` land on the
+        // picker — effort and fast mode live there now.
+        aliases: &["models", "thinking", "effort", "reasoning", "fast"],
     },
     CmdDef {
         name: "context",
@@ -302,8 +294,6 @@ pub(crate) fn complete_command_args(
     let mut out = match cmd {
         "context" => complete_context_args(arg_text),
         "plugin" | "plugins" => complete_plugin_args(cmd, arg_text, cwd),
-        "thinking" | "effort" | "reasoning" => complete_thinking_args(cmd, arg_text),
-        "fast" => complete_from_table(cmd, arg_text, FAST_ARGS),
         "resume" => complete_resume_args(cmd, arg_text),
         "skill" | "skills" => complete_skill_args(cmd, arg_text, cwd),
         "agentsmd" | "sys" => complete_agentsmd_args(cmd, arg_text),
@@ -327,12 +317,6 @@ fn complete_from_table(cmd: &str, arg_text: &str, table: &[(&str, &str)]) -> Vec
         .filter(|(s, _)| f.is_empty() || s.contains(f.as_str()))
         .map(|(s, d)| (format!("{cmd} {s}"), d.to_string()))
         .collect()
-}
-
-/// Suffixes for `/thinking` (aliases `/effort`, `/reasoning`): global catalog.
-/// Direct sets validate against the per-model [`crate::setup::supported_thinking_levels`].
-fn complete_thinking_args(cmd: &str, arg_text: &str) -> Vec<(String, String)> {
-    complete_from_table(cmd, arg_text, crate::setup::THINKING_LEVELS)
 }
 
 /// Suffixes for `/resume`: session picker flags.
@@ -484,10 +468,6 @@ pub enum ReplCommand {
     Undo,
     /// Drop the last exchange and send it again (`/retry`).
     Retry,
-    /// Set reasoning effort (`/thinking [level]`, `/effort`, `/reasoning`; bare opens the `/model` picker).
-    Thinking(Option<String>),
-    /// Toggle the provider's fast-serving model variant (`/fast [on|off]`; bare toggles).
-    Fast(Option<String>),
     /// Print the command list (`/help`).
     Help,
     /// Open the model picker (`/model`) or set directly (`/model provider/id`).
@@ -571,13 +551,6 @@ pub(crate) fn parse_resume_args(rest: &str) -> ResumeArgs {
     ResumeArgs { target, last, all }
 }
 
-/// `/fast` arg candidates.
-const FAST_ARGS: &[(&str, &str)] = &[
-    ("on", "enable fast/priority model variant"),
-    ("off", "disable fast variant"),
-    ("status", "show current fast-mode state"),
-];
-
 /// Parses a line of input into a [`ReplCommand`]: resolve the first token
 /// to its canonical registry name, then match on canonical only.
 pub fn parse_command(line: &str) -> ReplCommand {
@@ -622,8 +595,6 @@ pub fn parse_command(line: &str) -> ReplCommand {
         Some("compact") => ReplCommand::Compact(opt(rest)),
         Some("undo") => ReplCommand::Undo,
         Some("retry") => ReplCommand::Retry,
-        Some("thinking") => ReplCommand::Thinking(opt(rest)),
-        Some("fast") => ReplCommand::Fast(opt(rest)),
         Some("context") => ReplCommand::ContextWindow(opt(rest)),
         Some("update") => ReplCommand::Update,
         Some("restart") => ReplCommand::Restart,

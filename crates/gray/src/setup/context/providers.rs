@@ -102,7 +102,7 @@ pub(crate) fn cache_model_efforts(model_id: &str, efforts: Vec<String>) {
         // kilo/openrouter list `meta/muse-spark-1.3-contributor` WITH `max`
         // while bare-id providers list the contributor id WITHOUT it (the
         // provider 400-rejects `max`) — last-writer-wins here leaked `max`
-        // into the bare id's `/thinking` rows.
+        // into the bare id's picker rows.
         if let Some((_, suffix)) = model_id.rsplit_once('/') {
             g.entry(suffix.to_string()).or_insert(efforts.clone());
             g.entry(suffix.to_lowercase()).or_insert(efforts);
@@ -613,7 +613,7 @@ async fn plugin_models_rpc(
     };
     // Provider-declared metadata feeds the same caches a live /models
     // payload does — effort levels the plugin advertises become
-    // authoritative for the clamp and /thinking rows. A plugin catalog IS
+    // authoritative for the clamp and picker rows. A plugin catalog IS
     // the declaration: an empty efforts list means "no effort knob" (the
     // tier is baked into the model id, e.g. Devin's `swe-2-max`), not
     // "didn't say" — mark it so the picker reports no levels, the footer

@@ -1380,7 +1380,7 @@ pub(crate) fn should_retry_without_reasoning(
 /// Appends to the classified message so status/cf-ray/request-id survive.
 pub(crate) fn reasoning_conflict_hint(model: &str, snippet: &str) -> String {
     format!(
-        "{snippet} [model '{model}' rejected reasoning params — try /thinking off (or another effort); no setting was changed]"
+        "{snippet} [model '{model}' rejected reasoning params — set effort off in /model; no setting was changed]"
     )
 }
 

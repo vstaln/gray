@@ -933,17 +933,21 @@ impl Tui {
 
     /// Records one per-round provider usage report (the `StepUsage` arm of
     /// the REPL dispatch) and returns the cache miss it paid for, if any.
-    /// `model` is the active model id — a switch re-bills the whole prompt
-    /// and shows up as its own miss label. Pricing comes from the same
-    /// LiteLLM table `/usage` charges against; an unpriced model reports
-    /// tokens with no cost claim.
+    /// `model` is the active model id — it prices the miss. `wire_model` is
+    /// the id actually sent (effort/variant resolved): switching either
+    /// re-bills the whole prompt — on devin-sub an effort change respawns
+    /// the upstream session outright — so identity compares the wire id and
+    /// shows up as its own miss label. Pricing comes from the same LiteLLM
+    /// table `/usage` charges against; an unpriced model reports tokens
+    /// with no cost claim.
     pub fn note_cache_request(
         &mut self,
         usage: &gray_core::event::Usage,
         model: &str,
+        wire_model: &str,
     ) -> Option<crate::cache::CacheMiss> {
         let rate = crate::setup::get_model_rate(model);
-        self.cache.note(usage, model, rate, Instant::now())
+        self.cache.note(usage, wire_model, rate, Instant::now())
     }
 
     /// Time left before the prompt cache goes cold, or `None` when the

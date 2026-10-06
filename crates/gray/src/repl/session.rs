@@ -515,6 +515,7 @@ pub(crate) fn dispatch_agent_event(
     turn_usage: &mut Option<gray_core::event::Usage>,
     cwd: &Path,
     model: &str,
+    wire_model: &str,
     totals: &mut SessionTotals,
     turn_start: std::time::Instant,
     turn_duration_ms: &mut Option<u64>,
@@ -653,7 +654,7 @@ pub(crate) fn dispatch_agent_event(
                 // provider request, so it re-arms the footer warmth timer
                 // and is checked against the previous request for a
                 // re-billed prompt (pi `maybeShowCacheMissNotice`).
-                if let Some(miss) = t.note_cache_request(usage, model)
+                if let Some(miss) = t.note_cache_request(usage, model, wire_model)
                     && let Some(notice) = miss.notice()
                 {
                     // Close the open markdown/thinking runs first, or the

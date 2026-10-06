@@ -27,12 +27,7 @@ fn fresh_session_normalizes_saved_deepseek_effort_before_display() {
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(b"/thinking\n/quit\n")
-        .unwrap();
+    child.stdin.take().unwrap().write_all(b"/quit\n").unwrap();
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
     while child.try_wait().unwrap().is_none() {
         if std::time::Instant::now() > deadline {
@@ -50,10 +45,9 @@ fn fresh_session_normalizes_saved_deepseek_effort_before_display() {
     );
     let stdout = String::from_utf8(output.stdout).unwrap();
     assert!(
-        stdout.contains("thinking effort: max — levels: off, low, medium, high, max"),
+        stdout.contains("Thinking effort clamped from xhigh to max"),
         "{stdout}"
     );
-    assert!(!stdout.contains("thinking effort: xhigh"), "{stdout}");
     let saved: serde_json::Value =
         serde_json::from_slice(&std::fs::read(home.path().join("config.json")).unwrap()).unwrap();
     assert_eq!(saved["thinking_effort"], "max");

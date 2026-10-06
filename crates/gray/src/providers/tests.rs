@@ -98,6 +98,26 @@ fn provider_only_runtime_role_survives_lock_round_trip() {
 }
 
 #[test]
+fn provider_cache_accepts_a_manifest_named_differently_from_the_lock_key() {
+    // Index installs adopt the CLI manifest of a plugin published under a
+    // different registry key (the `-sub` plugins); the `<key>-manifest.json`
+    // filename is what binds the manifest to the lock entry.
+    let home = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(home.path().join("plugins")).unwrap();
+    write_lock(home.path(), lock_entry(vec!["demo-exe".to_string()])).unwrap();
+    std::fs::write(
+        home.path().join("plugins/provider-registry-manifest.json"),
+        r#"{"name":"demo-sub","providers":[{"id":"p","name":"P","transport":{"kind":"openai-responses","base_url":"https://127.0.0.1:1/","authorization":{"kind":"bearer","secret_name":"k"}},"auth_methods":[{"id":"a","kind":"api_key","name":"A","operations":["models"]}]}]}"#,
+    )
+    .unwrap();
+
+    crate::providers::ProviderRegistry::refresh(home.path()).unwrap();
+
+    let cache = crate::providers::ProviderCache::load(&cache_path(home.path()));
+    assert_eq!(cache.plugins["provider-registry"].providers.len(), 1);
+}
+
+#[test]
 fn provider_cache_shrinks_entries_for_removed_provider_plugins() {
     let home = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(home.path().join("plugins")).unwrap();
