@@ -233,8 +233,7 @@ pub use commands::{ReplCommand, ResumeArgs, SysAction, parse_command};
 pub(crate) use format::build_user_message_with_attachments;
 pub use format::{THINKING_STYLE, fmt_usage, format_core_error};
 pub(crate) use handlers::{
-    expand_skill_command, handle_fast, handle_model, handle_sys, handle_thinking, handle_undo,
-    reload_agent,
+    expand_skill_command, handle_model, handle_sys, handle_undo, reload_agent,
 };
 pub(crate) use plugin_cmds::handle_plugin_command;
 pub(crate) use session::{
@@ -371,7 +370,7 @@ pub(crate) fn push_provider_connected(
     // Close the loop: what you got, and where to change it.
     let effort = config.thinking_effort.as_deref().unwrap_or("high");
     t.push_dim(format!(
-        "└ thinking {effort} · /model to switch, /thinking for effort"
+        "└ thinking {effort} · /model to switch or set effort"
     ));
     if let Some((old, new)) = clamped {
         t.push_dim(format!(
@@ -895,9 +894,9 @@ pub async fn run_repl_mode(
         }
     }
 
-    // pi's hideThinkingBlock — toggled with /thinking, session-only.
-    // Reasoning is ON by default — user wants to see thinking (high effort).
-    // Bare /thinking toggles visibility; picker sets level persisted to config.
+    // pi's hideThinkingBlock — session-only, toggled in the /model picker
+    // (ctrl+r). Reasoning is ON by default — user wants to see thinking
+    // (high effort); the picker sets the level persisted to config.
     let mut hide_thinking = config.reasoning_hidden();
     // Wire default: if no effort saved yet, enable reasoning so ThinkingDelta
     // actually streams on openrouter/zen etc. Persist once so future sessions

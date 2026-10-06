@@ -327,6 +327,11 @@ pub(crate) async fn run_prompt_turn(
                 .map(|x| (t.name.clone(), x.to_string()))
         })
         .collect();
+    // The miss identity is the wire id: an effort/variant change resolves
+    // to a different upstream model (on devin-sub a fresh session) and
+    // re-bills the prompt exactly like a model switch.
+    let wire_model = crate::setup::wire_model_for(config)
+        .unwrap_or_else(|| config.model.clone().unwrap_or_default());
     let mut run_result = {
         let mut on_event = |ev: &AgentEvent| {
             dispatch_agent_event(
@@ -337,6 +342,7 @@ pub(crate) async fn run_prompt_turn(
                 &mut turn_usage,
                 cwd,
                 config.model.as_deref().unwrap_or(""),
+                &wire_model,
                 &mut *session_totals,
                 turn_start,
                 &mut turn_duration_ms,
@@ -380,6 +386,7 @@ pub(crate) async fn run_prompt_turn(
                 &mut turn_usage,
                 cwd,
                 config.model.as_deref().unwrap_or(""),
+                &wire_model,
                 &mut *session_totals,
                 turn_start,
                 &mut turn_duration_ms,

@@ -722,7 +722,7 @@ fn reasoning_conflict_error_names_model_and_conflict() {
     );
     assert!(msg.contains("zai/glm-5.2"), "names model: {msg}");
     assert!(msg.contains("reasoning"), "names conflict: {msg}");
-    assert!(msg.contains("/thinking"), "actionable hint: {msg}");
+    assert!(msg.contains("/model"), "actionable hint: {msg}");
 }
 
 #[test]

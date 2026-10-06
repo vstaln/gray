@@ -499,8 +499,8 @@ fn fit_chars_marks_a_cut() {
 // ── picker rendering helpers ──
 
 use super::{
-    METER_W, PRICE_DOTS, PickerKey, PickerToggles, effort_label, list_window, meter_fill,
-    per_million, picker_key, price_level, price_marker, rate_text,
+    METER_W, PickerKey, PickerToggles, effort_label, list_window, meter_fill, per_million,
+    picker_key, price_level, rate_text,
 };
 
 #[test]
@@ -565,21 +565,18 @@ fn prices_read_per_million_tokens() {
 }
 
 #[test]
-fn the_price_marker_sits_on_a_log_scale_between_the_listed_ends() {
-    assert_eq!(price_marker(1e-6, 1e-6, 1e-4, 21), Some(0));
-    assert_eq!(price_marker(1e-4, 1e-6, 1e-4, 21), Some(20));
-    assert_eq!(price_marker(1e-5, 1e-6, 1e-4, 21), Some(10), "log midpoint");
-    assert_eq!(price_marker(1e-3, 1e-6, 1e-4, 21), Some(20), "clamped");
-    assert_eq!(price_marker(2e-6, 2e-6, 2e-6, 21), None, "no spread");
-    assert_eq!(price_marker(1e-6, 1e-6, 1e-4, 0), None);
-}
-
-#[test]
-fn the_price_level_is_a_one_to_dots_gauge_on_the_same_scale() {
-    assert_eq!(price_level(1e-6, 1e-6, 1e-4), Some(1), "cheapest");
-    assert_eq!(price_level(1e-4, 1e-6, 1e-4), Some(PRICE_DOTS), "priciest");
-    assert_eq!(price_level(1e-5, 1e-6, 1e-4), Some(3), "log midpoint");
-    assert_eq!(price_level(2e-6, 2e-6, 2e-6), None, "no spread, no gauge");
+fn the_price_level_is_absolute_bands_on_blended_per_million() {
+    // Free/flashy models sit at the bottom whatever else is listed.
+    assert_eq!(price_level(0.0), 1, "free");
+    assert_eq!(price_level(0.20), 1, "sub-$0.50");
+    assert_eq!(price_level(0.60), 2);
+    assert_eq!(price_level(5.80), 3);
+    assert_eq!(price_level(18.0), 4, "Kimi K3 territory");
+    assert_eq!(price_level(30.0), 5, "frontier");
+    assert_eq!(price_level(60.0), 5, "priciest known");
+    // Band edges belong to the lower level.
+    assert_eq!(price_level(0.5), 1);
+    assert_eq!(price_level(20.0), 4);
 }
 
 #[test]

@@ -354,8 +354,7 @@ pub(crate) fn adopt_connection_effort(config: &mut Config) {
 /// `/connect` writes the live config as rows are picked (base URL, key) and
 /// saves to disk only once a model is chosen. Leaving it any other way must
 /// leave the session as it was: a dismissed pick otherwise stayed live,
-/// paired with the old model, and every later agent rebuild (`/model`,
-/// `/thinking`, `/new`, a resume) sent it until a restart re-read the file.
+/// paired with the old model, and every later agent rebuild (`/model`, `/new`, a resume) sent it until a restart re-read the file.
 pub fn settle_connect_config(
     config: &mut Config,
     before: Config,

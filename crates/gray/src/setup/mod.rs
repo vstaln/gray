@@ -110,7 +110,6 @@ pub(crate) mod variants;
 pub use context_modal::run_context_modal;
 mod connect;
 mod connect_draw;
-mod connect_models;
 mod provider_auth;
 
 pub use connect::{ConnectOutcome, active_connect_id, run_connect_modal, run_connect_modal_for};
@@ -120,7 +119,7 @@ pub(crate) use install_manager::{
 pub use install_manager::{run_plugins_modal, run_skills_modal};
 pub(crate) use model_modal::{
     canonical_model_rows, canonicalize_effort_variant, composite_label_for,
-    decompose_model_variant, effort_chip, fast_wire_for, picker_scope, provider_models_for_config,
+    decompose_model_variant, effort_chip, picker_scope, provider_models_for_config,
     run_model_modal, saved_models_for, validate_direct_model_id, wire_model_for,
 };
 pub(crate) use provider_auth::adopt_connection_effort;

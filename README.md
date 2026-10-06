@@ -93,7 +93,6 @@ Slash commands autocomplete — Enter completes and fires, Tab inserts.
 | `/undo` · `/retry` | drop the last exchange · drop it and ask again (files are git's job) |
 | type during a turn | steers the running turn at its next step |
 | `/context [128k\|1m\|auto]` | inspect or set the window |
-| `/thinking` · `/effort [level]` | set effort level; bare opens `/model` (←→ effort, tab fast mode, ctrl+r reasoning text) |
 | `/usage` | session tokens & cost |
 | `/memory` | view cross-session memory |
 | `/skills [name] [args]` | list or run a skill |

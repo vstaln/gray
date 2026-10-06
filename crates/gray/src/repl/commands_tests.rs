@@ -69,32 +69,6 @@ fn usage_command_and_cost_alias() {
 }
 
 #[test]
-fn thinking_effort_and_reasoning_aliases() {
-    assert!(matches!(
-        parse_command("/thinking"),
-        ReplCommand::Thinking(None)
-    ));
-    assert!(matches!(
-        parse_command("/effort"),
-        ReplCommand::Thinking(None)
-    ));
-    assert!(matches!(
-        parse_command("/reasoning"),
-        ReplCommand::Thinking(None)
-    ));
-    assert!(matches!(
-        parse_command("/reasoning max"),
-        ReplCommand::Thinking(Some(_))
-    ));
-    // `reasoning` resolves through the alias table
-    assert!(
-        super::completion_matches("reasoning")
-            .iter()
-            .any(|(n, _)| *n == "thinking")
-    );
-}
-
-#[test]
 fn empty_prompt_hides_slash_popup_like_codex() {
     // codex `command_under_cursor`: empty text / no leading slash / cursor
     // past the command name → no popup. Deleting `/` must close it, not
@@ -120,8 +94,8 @@ fn empty_prompt_hides_slash_popup_like_codex() {
 #[test]
 fn registry_resolve_canonical_and_aliases() {
     for name in [
-        "connect", "model", "thinking", "context", "resume", "new", "compact", "usage", "feedback",
-        "agentsmd", "skills", "plugin", "help", "quit",
+        "connect", "model", "context", "resume", "new", "compact", "usage", "feedback", "agentsmd",
+        "skills", "plugin", "help", "quit",
     ] {
         let d = super::resolve(name).unwrap_or_else(|| panic!("resolve {name}"));
         assert_eq!(d.name, name);
@@ -136,8 +110,10 @@ fn registry_resolve_canonical_and_aliases() {
         ("key", "connect"),
         ("providers", "connect"),
         ("provider", "connect"),
-        ("effort", "thinking"),
-        ("reasoning", "thinking"),
+        ("thinking", "model"),
+        ("effort", "model"),
+        ("reasoning", "model"),
+        ("fast", "model"),
         ("compress", "compact"),
         ("sys", "agentsmd"),
         ("cost", "usage"),
@@ -164,8 +140,10 @@ fn registry_completion_covers_aliases() {
         ("key", "connect"),
         ("providers", "connect"),
         ("provider", "connect"),
-        ("effort", "thinking"),
-        ("reasoning", "thinking"),
+        ("thinking", "model"),
+        ("effort", "model"),
+        ("reasoning", "model"),
+        ("fast", "model"),
         ("compress", "compact"),
         ("sys", "agentsmd"),
         ("cost", "usage"),
@@ -356,25 +334,6 @@ fn top_level_query_never_surfaces_skills() {
         scoped.iter().any(|(n, _)| n == "skills commit"),
         "skill must complete under /skills : {scoped:?}"
     );
-}
-
-#[test]
-fn thinking_effort_arg_completion() {
-    use super::complete_command_args;
-    use std::path::Path;
-    let cwd = Path::new(".");
-    for cmd in ["thinking", "effort", "reasoning"] {
-        let all = complete_command_args(cmd, "", cwd);
-        for level in ["off", "minimal", "low", "medium", "high", "xhigh", "max"] {
-            assert!(
-                all.iter().any(|(n, _)| n == &format!("{cmd} {level}")),
-                "{cmd} must complete level {level}: {all:?}"
-            );
-        }
-        let f = complete_command_args(cmd, "hi", cwd);
-        assert!(f.iter().any(|(n, _)| n == &format!("{cmd} high")));
-        assert!(f.iter().any(|(n, _)| n == &format!("{cmd} xhigh")));
-    }
 }
 
 #[test]

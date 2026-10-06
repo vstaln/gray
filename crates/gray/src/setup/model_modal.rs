@@ -217,26 +217,6 @@ pub(crate) fn wire_model_for(config: &Config) -> Option<String> {
     Some(model.to_string())
 }
 
-/// What fast mode would send for the live selection — `None` when the
-/// model has no fast variant (declared or catalog-spelled), so callers can
-/// say so instead of claiming a speedup.
-pub(crate) fn fast_wire_for(config: &Config) -> Option<String> {
-    let model = config.model.as_deref()?;
-    let rows = canonical_model_rows(config);
-    if let Some(shape) = super::variants::row_shape(model)
-        && !shape.variants.is_empty()
-    {
-        let parts = selection_parts(&shape, &config.model_parts);
-        if !super::variants::has_variant(&shape.variants, true, &parts) {
-            return None;
-        }
-        let effort = config.thinking_effort.as_deref();
-        return super::variants::resolve_variant(&shape.variants, effort, true, &parts)
-            .map(|v| v.id.clone());
-    }
-    compose_fast_model(model, config.thinking_effort.as_deref(), &rows)
-}
-
 /// Footer / status label for the live selection when it is a composite
 /// row (`Fusion · Opus 5.5 High + SWE-2 High`); `None` otherwise.
 pub(crate) fn composite_label_for(config: &Config) -> Option<String> {
@@ -317,7 +297,7 @@ pub(crate) fn canonical_model_rows(config: &Config) -> Vec<(String, String)> {
 }
 
 /// Adopt a `<base>-<tier>` id as `base` + `tier` effort: a collapsed
-/// family row owns the level through `/thinking`, so a stale variant id
+/// family row owns the level through the picker, so a stale variant id
 /// (`swe-2-max` saved before the collapse) shows the real model, makes
 /// the effort knob honest — the variant IS the level it runs at — and
 /// keeps the upstream call identical (the plugin maps `base`+`tier` back
@@ -817,32 +797,17 @@ fn per_million(rate: f64) -> String {
     format!("${}", s.trim_end_matches('0').trim_end_matches('.'))
 }
 
-/// Where `price` sits between the cheapest (`lo`) and priciest (`hi`)
-/// listed model, as a cell of a `width`-cell gauge. Log scale: prices span
-/// orders of magnitude. `None` when there is no spread to place it on.
-fn price_marker(price: f64, lo: f64, hi: f64, width: usize) -> Option<usize> {
-    // Free models still need a logarithm.
-    const FLOOR: f64 = 1e-9;
-    let (p, lo, hi) = (
-        price.max(FLOOR).ln(),
-        lo.max(FLOOR).ln(),
-        hi.max(FLOOR).ln(),
-    );
-    if width == 0 || hi - lo < 1e-6 {
-        return None;
-    }
-    let t = ((p - lo) / (hi - lo)).clamp(0.0, 1.0);
-    Some((t * (width - 1) as f64).round() as usize)
-}
-
 /// Cells in the price-level gauge.
 const PRICE_DOTS: usize = 5;
 
-/// The model's price level, 1..=PRICE_DOTS, on the same log scale the old
-/// cheaper↔pricier rule used: where `price` sits between the listed ends.
-/// `None` when the list has no spread to place it on.
-fn price_level(price: f64, lo: f64, hi: f64) -> Option<usize> {
-    price_marker(price, lo, hi, PRICE_DOTS).map(|cell| cell + 1)
+/// The model's price level, 1..=PRICE_DOTS, on absolute blended (input +
+/// output) $/1M bands — not the listed spread, which put every mid-priced
+/// model at the top of the gauge (a $18/1M model sat one dot under the
+/// priciest row). A level means the same thing in every provider's list.
+fn price_level(blended_per_million: f64) -> usize {
+    /// Band edges, roughly log-spaced: sub-$0.50 → 1, …, over $20 → 5.
+    const BANDS: [f64; PRICE_DOTS - 1] = [0.5, 2.0, 8.0, 20.0];
+    1 + BANDS.iter().filter(|&&b| blended_per_million > b).count()
 }
 
 /// `in $2 · cached $0.2 · out $10 / 1M`: the model's per-million-token
@@ -900,19 +865,6 @@ fn known_context(model: &str) -> Option<usize> {
     [model, tail]
         .into_iter()
         .find_map(super::context::get_cached_model_context)
-}
-
-/// Blended (input + output) per-token price of every priced model in the
-/// list, as `(cheapest, priciest)` — the price rule's ends.
-fn price_spread(models: &[(String, String)]) -> Option<(f64, f64)> {
-    models
-        .iter()
-        .filter_map(|(id, _)| super::context::get_model_rate(id))
-        .map(|r| r.input + r.output)
-        .fold(None, |acc, p| match acc {
-            None => Some((p, p)),
-            Some((lo, hi)) => Some((lo.min(p), hi.max(p))),
-        })
 }
 
 /// Keep the first `max` chars of `s`, marking a cut with `…`.
@@ -1212,7 +1164,7 @@ impl PickerView<'_> {
 
     /// The wire id Tab's fast mode would send for `model` at its row's
     /// effort — declared fast variants for rows that have them, else the
-    /// catalog-spelled sibling `/fast` and `build_agent` compose.
+    /// catalog-spelled fast sibling and `build_agent` compose.
     fn fast_variant(&self, model: &str) -> Option<String> {
         if let Some(shape) = super::variants::row_shape(model)
             && !shape.variants.is_empty()
@@ -1567,17 +1519,19 @@ fn picker_detail_lines(
         match &rate {
             None => spans.push(Span::styled("—", fg(t.text_faint))),
             Some(r) => {
-                // The gauge keeps the old rule's one real datum: where this
-                // price sits among the listed ones, as a 1..=5 level.
-                let level = price_spread(v.models)
-                    .and_then(|(lo, hi)| price_level(r.input + r.output, lo, hi))
-                    .filter(|_| w >= 2 + 10 + PRICE_DOTS + 2 + 12);
+                // Absolute bands + a per-dot gradient: cheap dots stay
+                // green even when a pricey model fills them.
+                let level = (w >= 2 + 10 + PRICE_DOTS + 2 + 12)
+                    .then(|| price_level((r.input + r.output) * 1_000_000.0));
                 if let Some(level) = level {
-                    let dot = fg(price_gradient(level - 1, PRICE_DOTS));
                     for i in 0..PRICE_DOTS {
                         spans.push(Span::styled(
                             if i < level { "●" } else { "○" },
-                            if i < level { dot } else { fg(t.text_faint) },
+                            if i < level {
+                                fg(price_gradient(i, PRICE_DOTS))
+                            } else {
+                                fg(t.text_faint)
+                            },
                         ));
                     }
                     spans.push(Span::raw("  "));
@@ -1599,6 +1553,67 @@ fn picker_detail_lines(
         lines.push(Line::from(spans));
     }
     lines
+}
+
+/// The footer's four width tiers, widest first: each drops more words off
+/// the key descriptions until only glyphs remain. `live` flags fade keys
+/// that can't act right now instead of removing them, so the line never
+/// jumps; every tier but the last still names ctrl+r.
+fn footer_tiers<'a>(
+    has_fast: bool,
+    has_effort: bool,
+    enter: &'a str,
+    esc: &'a str,
+    reasoning: &'a str,
+) -> [Vec<(&'static str, &'a str, bool)>; 4] {
+    [
+        vec![
+            ("↑↓", "select", true),
+            ("tab", "fast mode", has_fast),
+            ("←→", "effort", has_effort),
+            ("↵", enter, true),
+            ("esc", esc, true),
+            ("ctrl+r", reasoning, true),
+        ],
+        vec![
+            ("↑↓", "select", true),
+            ("tab", "fast", has_fast),
+            ("←→", "effort", has_effort),
+            ("↵", enter, true),
+            ("esc", "", true),
+            ("ctrl+r", "reasoning", true),
+        ],
+        vec![
+            ("↑↓", "", true),
+            ("tab", "fast", has_fast),
+            ("←→", "effort", has_effort),
+            ("↵", "", true),
+            ("esc", "", true),
+            ("^r", "reasoning", true),
+        ],
+        vec![
+            ("↑↓", "", true),
+            ("tab", "fast", has_fast),
+            ("←→", "effort", has_effort),
+            ("↵", "", true),
+            ("esc", "", true),
+        ],
+    ]
+}
+
+/// Display width of one footer tier: segments joined by ` · `.
+fn footer_width(segs: &[(&str, &str, bool)]) -> usize {
+    segs.iter()
+        .map(|(k, d, _)| k.chars().count() + usize::from(!d.is_empty()) + d.chars().count())
+        .sum::<usize>()
+        + 3 * segs.len().saturating_sub(1)
+}
+
+/// Inner width the panel needs for the footer to still name every action:
+/// the second tier with every key live. Panels narrower than this fall to
+/// bare-glyph tiers.
+fn footer_floor_width() -> usize {
+    footer_width(&footer_tiers(true, true, "confirm", "cancel", "show reasoning")[1])
 }
 
 /// The one-line key hint: key bold, what it does dim. A key with nothing
@@ -1645,50 +1660,10 @@ fn picker_footer(v: &PickerView<'_>, sel: usize, w: usize) -> ratatui::text::Lin
     } else {
         "show reasoning"
     };
-    // Widest first; every tier but the last still names ctrl+r.
-    let tiers: [Vec<(&str, &str, bool)>; 4] = [
-        vec![
-            ("↑↓", "select", true),
-            ("tab", "fast mode", has_fast),
-            ("←→", "effort", has_effort),
-            ("↵", enter, true),
-            ("esc", esc, true),
-            ("ctrl+r", reasoning, true),
-        ],
-        vec![
-            ("↑↓", "select", true),
-            ("tab", "fast", has_fast),
-            ("←→", "effort", has_effort),
-            ("↵", enter, true),
-            ("esc", "", true),
-            ("ctrl+r", "reasoning", true),
-        ],
-        vec![
-            ("↑↓", "", true),
-            ("tab", "fast", has_fast),
-            ("←→", "effort", has_effort),
-            ("↵", "", true),
-            ("esc", "", true),
-            ("^r", "reasoning", true),
-        ],
-        vec![
-            ("↑↓", "", true),
-            ("tab", "fast", has_fast),
-            ("←→", "effort", has_effort),
-            ("↵", "", true),
-            ("esc", "", true),
-        ],
-    ];
-    let width = |segs: &[(&str, &str, bool)]| {
-        segs.iter()
-            .map(|(k, d, _)| k.chars().count() + usize::from(!d.is_empty()) + d.chars().count())
-            .sum::<usize>()
-            + 3 * segs.len().saturating_sub(1)
-    };
-    let [first, second, third, last] = tiers;
+    let [first, second, third, last] = footer_tiers(has_fast, has_effort, enter, esc, reasoning);
     let segs = [first, second, third]
         .into_iter()
-        .find(|segs| width(segs) <= w)
+        .find(|segs| footer_width(segs) <= w)
         .unwrap_or(last);
     let mut spans = Vec::new();
     for (i, (key, does, live)) in segs.into_iter().enumerate() {
@@ -1749,7 +1724,21 @@ fn draw_picker(
         .min(avail.saturating_sub(PICKER_CHROME + detail_h))
         .max(1);
     let modal_h = ((PICKER_CHROME + list_h + detail_h) as u16).min(area.height);
-    let modal_w = 92.min(area.width.saturating_sub(4)).max(40).min(area.width);
+    // Width follows the content — the widest row (name column + meter
+    // tail), floored at the footer's widest tier that still names every
+    // key. The fixed 92 left the right half empty on short-name lists.
+    let longest = v
+        .models
+        .iter()
+        .map(|m| row_name(m).chars().count())
+        .max()
+        .unwrap_or(0);
+    let inner_want = (2 + longest + ROW_TAIL).max(footer_floor_width()).max(24);
+    let modal_w = ((inner_want + 6) as u16)
+        .min(92)
+        .min(area.width.saturating_sub(4))
+        .max(40)
+        .min(area.width);
     let pad_x: u16 = if modal_w >= 60 { 3 } else { 2 };
     let x0 = area.x + (area.width - modal_w) / 2;
     let y0 = area.y + (area.height - modal_h) / 3;
@@ -1807,12 +1796,6 @@ fn draw_picker(
     // The name column fits the longest name in the whole list (so it holds
     // still while filtering), leaving the meter and label their fixed cells.
     let list_y = y0 + 5;
-    let longest = v
-        .models
-        .iter()
-        .map(|m| row_name(m).chars().count())
-        .max()
-        .unwrap_or(0);
     let name_w = longest.clamp(8, w.saturating_sub(2 + ROW_TAIL).max(8));
     let row_w = (2 + name_w + ROW_TAIL).min(w);
     let mut safe_sel = 0;
@@ -1888,6 +1871,20 @@ pub fn run_model_modal(
     bg: Option<&BackgroundSnapshot>,
     focus: Option<&str>,
 ) -> anyhow::Result<bool> {
+    let (_session, mut terminal) = super::open_modal()?;
+    model_picker_loop(&mut terminal, config, bg, focus)
+}
+
+/// The picker's body on an already-open modal terminal — `/connect` reuses
+/// it as its model step so both surfaces share rows, meters, effort keys
+/// and the commit path. `config` must already point at the provider being
+/// browsed: its fields are what the picker scopes and commits against.
+pub(crate) fn model_picker_loop(
+    terminal: &mut ratatui::Terminal<ratatui::backend::CrosstermBackend<std::io::Stdout>>,
+    config: &mut Config,
+    bg: Option<&BackgroundSnapshot>,
+    focus: Option<&str>,
+) -> anyhow::Result<bool> {
     use crossterm::event::{Event, KeyEvent, KeyEventKind, poll, read};
     use std::time::Duration;
 
@@ -1913,14 +1910,12 @@ pub fn run_model_modal(
         })
     };
 
-    let (_session, mut terminal) = super::open_modal()?;
-
     let mut filter = String::new();
     let mut sel = 0usize;
     let mut scroll_top = 0usize;
-    // Open on the focused row (`/fusion`) or the live model's row
-    // (`/thinking` lands here to adjust its effort); dropped at the first
-    // keypress so a late refresh never yanks the selection away.
+    // Open on the focused row (`/fusion`) or the live model's row;
+    // dropped at the first keypress so a late refresh never yanks the
+    // selection away.
     let mut place_on_current = true;
     let focus = focus.map(str::to_string);
     // Remembered per-model efforts, read once: rows show them before any

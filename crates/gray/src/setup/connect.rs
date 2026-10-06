@@ -1,4 +1,5 @@
-//! Connect-a-provider modal: shell + event loop (render arms live in `connect_draw`/`connect_models`).
+//! Connect-a-provider modal: shell + event loop (render arms live in `connect_draw`;
+//! the model step is the shared `/model` picker in `model_modal`).
 
 use super::*;
 use anyhow::Context;
@@ -154,22 +155,6 @@ fn spawn_plugin_login(
     (cancel, progress_receiver)
 }
 
-/// Is `item` the connection `config` is already on? Plugin rows compare by
-/// provider id (their declared base_url is a shared placeholder); every
-/// other row by normalized base URL.
-fn same_connection(item: &ConnectItem, config: &Config) -> bool {
-    match &item.auth {
-        ConnectAuth::Plugin { .. } => {
-            !config.provider_id.is_empty() && config.provider_id == item.id
-        }
-        _ => {
-            !config.base_url.is_empty()
-                && normalize_custom_base_url(&item.base_url)
-                    == normalize_custom_base_url(&config.base_url)
-        }
-    }
-}
-
 /// Connect-modal id of the active provider: the plugin provider, else the
 /// catalog entry serving `base_url`. None for custom endpoints.
 pub fn active_connect_id(config: &Config) -> Option<String> {
@@ -209,12 +194,9 @@ fn connect_modal(
             existing_key: Option<String>,
             status_msg: Option<String>,
         },
+        /// Marker: the loop hands this to the shared `/model` picker.
         SelectingModel {
             item: ConnectItem,
-            models: Vec<(String, String)>,
-            filter: String,
-            sel: usize,
-            scroll_top: usize,
         },
         ConfirmingRemove {
             item: ConnectItem,
@@ -287,6 +269,80 @@ fn connect_modal(
                 }
             }
 
+            // The model step is the shared `/model` picker on this
+            // terminal — same rows, meters and commit path. `config`
+            // must already point at the connection being browsed: the
+            // non-plugin arms above set base_url/key at transition; a
+            // plugin item gets its credentials pointed here without a
+            // disk write (the picker's own commit lands first).
+            if let ModalState::SelectingModel { item } = &state {
+                let item = item.clone();
+                let installed = match &item.auth {
+                    ConnectAuth::Plugin { .. } => {
+                        let Some(installed) = providers
+                            .iter()
+                            .find(|p| p.provider_id() == item.id)
+                            .cloned()
+                        else {
+                            anyhow::bail!("selected provider is no longer installed")
+                        };
+                        if config.provider_id != item.id {
+                            config.model = None;
+                        }
+                        config.base_url = installed.provider.transport.base_url.to_string();
+                        config.provider_id = installed.provider_id();
+                        config.credential_source = "plugin".to_string();
+                        config.auth_ref = installed.auth_ref();
+                        config.api_key = None;
+                        Some(installed)
+                    }
+                    _ => {
+                        // The picker runs before `select_api_key_connection`:
+                        // clear a stale plugin identity or `picker_scope`
+                        // would list the previous provider's models.
+                        config.provider_id.clear();
+                        config.credential_source.clear();
+                        config.auth_ref.clear();
+                        None
+                    }
+                };
+                if super::model_modal::model_picker_loop(
+                    &mut terminal,
+                    config,
+                    Some(&bg_snapshot),
+                    None,
+                )? {
+                    let chosen_model = config
+                        .model
+                        .clone()
+                        .unwrap_or_else(|| "default".to_string());
+                    match &installed {
+                        Some(installed) => {
+                            activate_plugin_connection(config, installed, &chosen_model)?;
+                        }
+                        None => {
+                            select_api_key_connection(config)?;
+                            let path = saved_config_path()?;
+                            let _cfg_lock = crate::setup::lock_saved_config_at(&path).ok();
+                            let mut saved = load_saved_config_at(&path);
+                            saved.base_url = Some(config.base_url.clone());
+                            saved.api_key = config.api_key.clone();
+                            saved.model = config.model.clone();
+                            saved.auth_mode = Some(if item.no_auth {
+                                AUTH_MODE_NONE.into()
+                            } else {
+                                AUTH_MODE_API_KEY.into()
+                            });
+                            save_saved_config_at(&path, &saved)?;
+                        }
+                    }
+                    connected_name = Some((item.name.clone(), chosen_model));
+                    return Ok(ConnectOutcome::Connected);
+                }
+                state = ModalState::Selecting;
+                continue;
+            }
+
             terminal.draw(|frame| {
                 let area = frame.area();
                 if area.width < 20 || area.height < 6 {
@@ -330,6 +386,8 @@ fn connect_modal(
                     ModalState::ConfirmingRemove { item } => {
                         super::connect_draw::render_confirm_remove(frame, area, item, &colors)
                     }
+                    // Intercepted above the draw; the shared picker owns it.
+                    ModalState::SelectingModel { .. } => {}
                     ModalState::AuthorizingPlugin {
                         item,
                         verification_uri,
@@ -341,23 +399,6 @@ fn connect_modal(
                         item,
                         verification_uri.as_deref(),
                         status_msg.as_deref(),
-                        &colors,
-                    ),
-                    ModalState::SelectingModel {
-                        item,
-                        models,
-                        filter: m_filter,
-                        sel: m_sel,
-                        scroll_top: m_scroll_top,
-                    } => super::connect_models::render_selecting_model(
-                        frame,
-                        area,
-                        item,
-                        models,
-                        m_filter,
-                        *m_sel,
-                        m_scroll_top,
-                        config,
                         &colors,
                     ),
                 }
@@ -462,17 +503,7 @@ fn connect_modal(
                                     } else if item.no_auth {
                                         config.base_url = item.base_url.clone();
                                         config.api_key = None;
-                                        let models = super::model_modal::cached_models_for(
-                                            &item.base_url,
-                                            None,
-                                        );
-                                        state = ModalState::SelectingModel {
-                                            item: item.clone(),
-                                            models,
-                                            filter: String::new(),
-                                            sel: 0,
-                                            scroll_top: 0,
-                                        };
+                                        state = ModalState::SelectingModel { item: item.clone() };
                                     } else if let ConnectAuth::Plugin { .. } = &item.auth {
                                         let Some(installed) = providers
                                             .iter()
@@ -630,15 +661,7 @@ fn connect_modal(
                                     // auth save and go straight to model picking.
                                     config.base_url = item.base_url.clone();
                                     config.api_key = None;
-                                    let models =
-                                        super::model_modal::cached_models_for(&item.base_url, None);
-                                    state = ModalState::SelectingModel {
-                                        item: item.clone(),
-                                        models,
-                                        filter: String::new(),
-                                        sel: 0,
-                                        scroll_top: 0,
-                                    };
+                                    state = ModalState::SelectingModel { item: item.clone() };
                                 } else {
                                     *status_msg = Some(
                                         "No API key entered — please enter a valid key".into(),
@@ -683,17 +706,7 @@ fn connect_modal(
                                 save_auth_key(&item.id, &final_key)?;
                                 config.base_url = item.base_url.clone();
                                 config.api_key = Some(final_key.clone());
-                                let models = super::model_modal::cached_models_for(
-                                    &item.base_url,
-                                    Some(&final_key),
-                                );
-                                state = ModalState::SelectingModel {
-                                    item: item.clone(),
-                                    models,
-                                    filter: String::new(),
-                                    sel: 0,
-                                    scroll_top: 0,
-                                };
+                                state = ModalState::SelectingModel { item: item.clone() };
                             }
                         }
                         _ => {}
@@ -731,29 +744,19 @@ fn connect_modal(
                                 *status_msg = Some("Credential saved".into())
                             }
                             PluginLoginProgress::Models(models) => {
-                                // Cache under the plugin key: `/model`
-                                // paints from it next open — the
+                                // Cache under the plugin key: the picker
+                                // paints from it on open — the
                                 // placeholder base can never serve a list.
                                 super::context::save_provider_model_list(
                                     &super::catalog::plugin_models_key(&item.id),
                                     &models,
                                 );
-                                next_state = Some(ModalState::SelectingModel {
-                                    item: item.clone(),
-                                    models,
-                                    filter: String::new(),
-                                    sel: 0,
-                                    scroll_top: 0,
-                                });
+                                next_state =
+                                    Some(ModalState::SelectingModel { item: item.clone() });
                             }
                             PluginLoginProgress::ModelsUnavailable(_message) => {
-                                next_state = Some(ModalState::SelectingModel {
-                                    item: item.clone(),
-                                    models: Vec::new(),
-                                    filter: String::new(),
-                                    sel: 0,
-                                    scroll_top: 0,
-                                });
+                                next_state =
+                                    Some(ModalState::SelectingModel { item: item.clone() });
                             }
                             PluginLoginProgress::Cancelled => {
                                 *status_msg = None;
@@ -815,141 +818,8 @@ fn connect_modal(
                     Event::Resize(_, _) => {}
                     _ => {}
                 },
-                ModalState::SelectingModel {
-                    item,
-                    models,
-                    filter: m_filter,
-                    sel: m_sel,
-                    scroll_top: _,
-                } => {
-                    let filtered_models: Vec<&(String, String)> = models
-                        .iter()
-                        .filter(|(m_id, m_name)| {
-                            let f = m_filter.to_lowercase();
-                            f.is_empty()
-                                || m_id.to_lowercase().contains(&f)
-                                || m_name.to_lowercase().contains(&f)
-                        })
-                        .collect();
-
-                    if filtered_models.is_empty() {
-                        *m_sel = 0;
-                    } else if *m_sel >= filtered_models.len() {
-                        *m_sel = filtered_models.len().saturating_sub(1);
-                    }
-
-                    match read()? {
-                        Event::Key(KeyEvent {
-                            code: KeyCode::Char('c'),
-                            modifiers,
-                            kind: KeyEventKind::Press,
-                            ..
-                        }) if modifiers.contains(KeyModifiers::CONTROL) => {
-                            return Ok(ConnectOutcome::Dismissed);
-                        }
-                        Event::Key(KeyEvent {
-                            code,
-                            modifiers,
-                            kind: KeyEventKind::Press,
-                            ..
-                        }) if modifiers.contains(KeyModifiers::CONTROL) => match code {
-                            KeyCode::Char('p') => *m_sel = m_sel.saturating_sub(1),
-                            KeyCode::Char('n') if !filtered_models.is_empty() => {
-                                *m_sel = (*m_sel + 1).min(filtered_models.len() - 1);
-                            }
-                            _ => {}
-                        },
-                        Event::Key(KeyEvent {
-                            code,
-                            kind: KeyEventKind::Press,
-                            ..
-                        }) => match code {
-                            KeyCode::Up => *m_sel = m_sel.saturating_sub(1),
-                            KeyCode::Down => {
-                                if !filtered_models.is_empty() {
-                                    *m_sel = (*m_sel + 1).min(filtered_models.len() - 1);
-                                }
-                            }
-                            KeyCode::PageUp => *m_sel = m_sel.saturating_sub(8),
-                            KeyCode::PageDown => {
-                                if !filtered_models.is_empty() {
-                                    *m_sel = (*m_sel + 8).min(filtered_models.len() - 1);
-                                }
-                            }
-                            KeyCode::Char(ch) => {
-                                m_filter.push(ch);
-                                *m_sel = 0;
-                            }
-                            KeyCode::Backspace => {
-                                m_filter.pop();
-                                *m_sel = 0;
-                            }
-                            KeyCode::Esc => {
-                                state = ModalState::Selecting;
-                            }
-                            KeyCode::Enter => {
-                                let chosen_model =
-                                    if let Some(&(m_id, _)) = filtered_models.get(*m_sel) {
-                                        m_id.clone()
-                                    } else if !m_filter.is_empty() {
-                                        m_filter.trim().to_string()
-                                    } else if same_connection(item, config) {
-                                        // The list fetch failed on the live
-                                        // connection: keep its model rather
-                                        // than stamping a literal "default"
-                                        // over a valid one. A different
-                                        // provider still gets "default" —
-                                        // inheriting the old id would be
-                                        // just as blind.
-                                        config
-                                            .model
-                                            .clone()
-                                            .unwrap_or_else(|| "default".to_string())
-                                    } else {
-                                        "default".to_string()
-                                    };
-
-                                config.model = Some(chosen_model.clone());
-                                if let ConnectAuth::Plugin { .. } = &item.auth {
-                                    let Some(installed) = providers
-                                        .iter()
-                                        .find(|provider| provider.provider_id() == item.id)
-                                        .cloned()
-                                    else {
-                                        anyhow::bail!("selected provider is no longer installed")
-                                    };
-                                    activate_plugin_connection(config, &installed, &chosen_model)?;
-                                    connected_name = Some((item.name.clone(), chosen_model));
-                                    return Ok(ConnectOutcome::Connected);
-                                }
-                                select_api_key_connection(config)?;
-
-                                let path = saved_config_path()?;
-                                let _cfg_lock = crate::setup::lock_saved_config_at(&path).ok();
-                                let mut saved = load_saved_config_at(&path);
-                                saved.base_url = Some(config.base_url.clone());
-                                saved.api_key = config.api_key.clone();
-                                saved.model = config.model.clone();
-                                saved.auth_mode = Some(if item.no_auth {
-                                    AUTH_MODE_NONE.into()
-                                } else {
-                                    AUTH_MODE_API_KEY.into()
-                                });
-                                save_saved_config_at(&path, &saved)?;
-
-                                connected_name = Some((item.name.clone(), chosen_model));
-                                return Ok(ConnectOutcome::Connected);
-                            }
-                            _ => {}
-                        },
-                        Event::Paste(pasted) => {
-                            insert_paste(m_filter, &pasted);
-                            *m_sel = 0;
-                        }
-                        Event::Resize(_, _) => {}
-                        _ => {}
-                    }
-                }
+                // Intercepted above the draw; the picker owns this step.
+                ModalState::SelectingModel { .. } => {}
             }
         }
     })();

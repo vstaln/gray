@@ -92,7 +92,7 @@ fn reasoning_capability_from_models_dev_and_live() {
     // provider's bare id: kilo/openrouter list their qualified
     // `meta/muse-spark-1.3-contributor` WITH `max` while bare-id
     // providers list the contributor id WITHOUT it — the live
-    // `/thinking` picker showed `max` once the background models.dev
+    // picker showed `max` once the background models.dev
     // fetch landed. Bare-first order (the observed poisoning):
     let v3: serde_json::Value = serde_json::json!({
         "testpoisa": {"models": {
