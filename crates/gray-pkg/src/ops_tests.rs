@@ -179,6 +179,20 @@ async fn download_rejects_unknown_algorithm() {
 }
 
 #[test]
+fn registered_executable_means_cli_argv_without_a_hash() {
+    let cli = LockEntry {
+        cli_argv: Some(vec!["/usr/bin/demo".into()]),
+        ..LockEntry::default()
+    };
+    assert!(is_registered_executable(&cli));
+    // An index install that adopted a CLI keeps its hash — and its updates.
+    let mut index_cli = cli.clone();
+    index_cli.hash = "sha256:abc".into();
+    assert!(!is_registered_executable(&index_cli));
+    assert!(!is_registered_executable(&LockEntry::default()));
+}
+
+#[test]
 fn install_key_confines_dotdot_and_backslash() {
     for bad in ["..", ".", "a/b", "a\\b", ""] {
         assert!(validate_install_key(bad).is_err(), "{bad:?}");
@@ -494,13 +508,13 @@ fn registry_lock_times_out_when_held() {
     std::fs::create_dir_all(crate::plugins_dir()).unwrap();
     let holder = std::fs::OpenOptions::new()
         .create(true)
+        .truncate(false)
         .write(true)
         .open(&lock_path)
         .unwrap();
     holder.try_lock().unwrap();
     let err = hold_registry_lock_timeout(std::time::Duration::from_millis(50))
-        .err()
-        .expect("a contended registry lock must fail");
+        .expect_err("a contended registry lock must fail");
     assert!(
         err.to_string().contains("another plugin operation"),
         "{err}"
@@ -542,9 +556,7 @@ fn remove_keeps_files_when_the_registry_write_fails() {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&registry, std::fs::Permissions::from_mode(0o400)).unwrap();
     }
-    let err = remove("demo")
-        .err()
-        .expect("a failed registry write must propagate");
+    let err = remove("demo").expect_err("a failed registry write must propagate");
     assert!(!err.to_string().is_empty());
     // The files are still there: the registry is committed only after it
     // can be written, so a failed remove leaves a re-removable plugin.

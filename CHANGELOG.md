@@ -15,6 +15,17 @@
   OpenAI-compatible host, 1 everywhere else — and the warmer replays under it,
   charging the larger capped reply against the expected saving (a `max`-effort
   refresh still declines when it would cost as much as the miss it prevents).
+- **Registry-installed plugins that speak CLI get `gray <name> …`.** Index
+  and URL installs recorded the executable's sidecar argv but never
+  `cli_argv`, so `gray account whoami` answered "'account' is a sidecar
+  plugin, not a CLI command" until the binary was registered by hand. After
+  an install — and again after every update — the installed executable gets
+  the same `<bin> manifest` probe a native registration runs: answering
+  plugins gain `gray <name> …` forwarding, completion and slash capture,
+  keep their registry hash so they still update, and an update that drops
+  CLI support clears the stale forwarding. The "local command" update-skip
+  now means a registered executable (`cli_argv` with no index hash), so
+  CLI-adopted index rows are no longer frozen out of `gray plugin update`.
 
 ### Added
 - **Plugin providers can opt into cache warming.** The provider request

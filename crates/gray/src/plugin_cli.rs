@@ -210,11 +210,19 @@ pub async fn install_spec_lines(
         gray_pkg::ops::InstallOpts::default(),
     )
     .await?;
+    // An index tarball whose executable speaks CLI gets `gray <name> …`
+    // the same way a manual registration does.
+    let cli = adopt_cli(home, &r.name, &r.path).await?;
     Ok(vec![format!(
-        "installed {} {} at {}",
+        "installed {} {} at {}{}",
         r.name,
         r.version,
-        r.path.display()
+        r.path.display(),
+        if cli {
+            format!(". Run: gray {} --help", r.name)
+        } else {
+            String::new()
+        }
     )])
 }
 
@@ -523,25 +531,37 @@ pub fn set_managed_enabled(name: &str, on: bool) -> anyhow::Result<()> {
     gray_pkg::ops::set_enabled(name, on)
 }
 
-/// `gray plugin update [name|all]` — index-installed entries only; local
-/// command registrations carry no index source and are skipped with a
+/// `gray plugin update [name|all]` — index-installed entries only;
+/// registered executables carry no index source and are skipped with a
 /// warning before any index fetch.
 pub async fn update_managed(target: &str) -> anyhow::Result<Vec<gray_pkg::ops::Report>> {
     if target != "all" && is_local_command(&home()?, target) {
         eprintln!("warning: skipping update of {target} (non-index source)");
         return Ok(Vec::new());
     }
-    gray_pkg::ops::update(target).await
+    let reports = gray_pkg::ops::update(target).await?;
+    // Re-probe each updated plugin: the new version's executable may have
+    // moved, gained, or lost CLI support.
+    let home = home()?;
+    for r in &reports {
+        adopt_cli(&home, &r.name, &r.path).await?;
+    }
+    Ok(reports)
 }
 
-/// A lock row with `cli_argv` is a local command registration, not an
-/// index-installed package. Lock load errors answer false (the index path
+/// A lock row with `cli_argv` and no index hash is a registered executable,
+/// not an index-installed package (index rows keep their hash even after
+/// adopting a `cli_argv`). Lock load errors answer false (the index path
 /// then reports whatever went wrong itself).
 fn is_local_command(home: &Path, name: &str) -> bool {
     migrate_commands_json(home);
     load_lock(home)
         .ok()
-        .and_then(|lock| lock.plugins.get(name).map(|e| e.cli_argv.is_some()))
+        .and_then(|lock| {
+            lock.plugins
+                .get(name)
+                .map(|e| e.cli_argv.is_some() && e.hash.is_empty())
+        })
         .unwrap_or(false)
 }
 
@@ -604,6 +624,19 @@ pub fn forward(home: &Path, name: &str, rest: &[String]) -> anyhow::Result<()> {
     }
 }
 
+/// The CLI probe: `<bin> manifest` answered within the timeout and parsed
+/// as a manifest carrying a string `name`. `None` for wire-only sidecars
+/// (NDJSON on stdin, no argv protocol).
+async fn cli_manifest(binary: &Path) -> Option<Value> {
+    let mut command = tokio::process::Command::new(binary);
+    command.arg("manifest");
+    capture(command, std::time::Duration::from_secs(10))
+        .await
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+        .filter(|m| m["name"].is_string())
+}
+
 /// Register a user-selected native executable; registration runs its manifest.
 /// The executable and widgets remain owned by the separate plugin repository.
 /// When `expected` is `Some`, the manifest name must match it; when `None`,
@@ -624,13 +657,7 @@ pub async fn register_native(
     force: bool,
 ) -> anyhow::Result<String> {
     let binary = std::fs::canonicalize(binary)?;
-    let mut command = tokio::process::Command::new(&binary);
-    command.arg("manifest");
-    let cli_probe = capture(command, std::time::Duration::from_secs(10))
-        .await
-        .ok()
-        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
-        .filter(|m| m["name"].is_string());
+    let cli_probe = cli_manifest(&binary).await;
     let (manifest, wire_only) = match cli_probe {
         Some(m) => (m, false),
         None => {
@@ -742,6 +769,55 @@ pub async fn register_native(
             binary.display()
         )
     })
+}
+
+/// Give an index-installed plugin a `cli_argv` when its installed
+/// executable speaks the CLI protocol (`<bin> manifest` answers). Runs
+/// after index installs and updates so `gray <name> …` and slash capture
+/// work without a manual registration — the lock key is the registry key,
+/// and the manifest's own name may differ (the `-sub` plugins publish
+/// under a shorter key, and the installer does not require equality).
+///
+/// A failed probe is never an install error: it only clears a stale
+/// `cli_argv` on index rows (non-empty hash — an update may have dropped
+/// CLI support). Registered executables (no hash) are left alone either
+/// way. Returns true when the entry now forwards `gray <name> …`.
+pub(crate) async fn adopt_cli(home: &Path, name: &str, dir: &Path) -> anyhow::Result<bool> {
+    validate_name(name)?;
+    let exe = gray_plugin::builder::resolve_argv(dir)
+        .ok()
+        .and_then(|argv| argv.into_iter().next());
+    let manifest = match exe.as_deref() {
+        Some(exe) => cli_manifest(Path::new(exe)).await,
+        None => None,
+    };
+    let plugins = home.join("plugins");
+    let _guard = gray_pkg::ops::hold_registry_lock_in(&plugins)?;
+    let lock_path = gray_plugin::lock::lock_path(home);
+    let mut lock = load_lock(home)?;
+    let Some(entry) = lock.plugins.get_mut(name) else {
+        return Ok(false);
+    };
+    match manifest {
+        Some(manifest) => {
+            entry.cli_argv = Some(vec![exe.expect("a manifest implies an executable")]);
+            lock.save(&lock_path)?;
+            // Same manifest sidecar register_native writes: completion and
+            // slash capture read `plugins/<name>-manifest.json`.
+            let mut metadata = tempfile::NamedTempFile::new_in(&plugins)?;
+            use std::io::Write;
+            writeln!(metadata, "{manifest}")?;
+            metadata.persist(plugins.join(format!("{name}-manifest.json")))?;
+            Ok(true)
+        }
+        None => {
+            if entry.cli_argv.is_some() && !entry.hash.is_empty() {
+                entry.cli_argv = None;
+                lock.save(&lock_path)?;
+            }
+            Ok(false)
+        }
+    }
 }
 
 /// Slash commands use the registered executable without replacing the TUI.
@@ -1131,11 +1207,21 @@ done
         let home = home.path();
         let mut cli = cli_entry(&["/usr/bin/false"]);
         cli.cli_argv = Some(cli.argv.clone());
+        // An index install that adopted a CLI keeps its tarball hash —
+        // it is a managed package and still updates.
+        let mut index_cli = cli_entry(&[]);
+        index_cli.cli_argv = Some(vec!["/usr/bin/index-cli".into()]);
+        index_cli.hash = "sha256:abc".into();
         write_lock(
             home,
-            &serde_json::json!({"cli-one": cli, "sidecar-one": LockEntry::default()}),
+            &serde_json::json!({
+                "cli-one": cli,
+                "index-cli": index_cli,
+                "sidecar-one": LockEntry::default()
+            }),
         );
         assert!(is_local_command(home, "cli-one"));
+        assert!(!is_local_command(home, "index-cli"));
         assert!(!is_local_command(home, "sidecar-one"));
         assert!(!is_local_command(home, "absent"));
         // A not-yet-migrated commands.json row counts too.
@@ -1144,5 +1230,103 @@ done
             &serde_json::json!({"migrated": cli_entry(&["/usr/bin/legacy"])}),
         );
         assert!(is_local_command(home, "migrated"));
+    }
+
+    /// An index-style lock row: tarball hash present, `cli_argv` as
+    /// passed. Mirrors what `record_install` writes.
+    fn index_row(cli_argv: Option<Vec<String>>) -> LockEntry {
+        LockEntry {
+            ecosystem: "gray-native".into(),
+            version: "1.0.0".into(),
+            hash: "sha256:abc".into(),
+            source: "https://example.invalid/demo.tar.gz".into(),
+            argv: vec![],
+            cli_argv,
+            ..Default::default()
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn adopt_cli_gives_an_index_install_gray_forwarding() {
+        use std::os::unix::fs::PermissionsExt;
+        let home = tempfile::tempdir().unwrap();
+        let home = home.path();
+        let dir = home.join("plugins/demo");
+        std::fs::create_dir_all(&dir).unwrap();
+        // The manifest name deliberately differs from the lock key — the
+        // `-sub` plugins publish under a shorter registry key, and the
+        // installer does not require equality.
+        let exe = dir.join("gray-demo");
+        std::fs::write(
+            &exe,
+            "#!/bin/sh\nprintf '%s\\n' '{\"name\":\"demo-sub\",\"version\":\"1.0.0\",\"completion\":[\"run\"]}'\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+        write_lock(home, &serde_json::json!({"demo": index_row(None)}));
+
+        assert!(adopt_cli(home, "demo", &dir).await.unwrap());
+
+        let entry = &load_lock(home).unwrap().plugins["demo"];
+        assert_eq!(
+            entry.cli_argv.as_deref(),
+            Some([exe.to_string_lossy().into_owned()].as_slice())
+        );
+        // Every other lock field survives the adoption untouched.
+        assert_eq!(entry.hash, "sha256:abc");
+        assert_eq!(entry.version, "1.0.0");
+        assert_eq!(entry.ecosystem, "gray-native");
+        assert_eq!(entry.source, "https://example.invalid/demo.tar.gz");
+        assert!(entry.argv.is_empty());
+        let manifest: Value = serde_json::from_slice(
+            &std::fs::read(home.join("plugins/demo-manifest.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(manifest["name"], "demo-sub");
+        assert_eq!(manifest["completion"], serde_json::json!(["run"]));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn adopt_cli_leaves_wire_only_sidecars_alone() {
+        use std::os::unix::fs::PermissionsExt;
+        let home = tempfile::tempdir().unwrap();
+        let home = home.path();
+        let dir = home.join("plugins/demo");
+        std::fs::create_dir_all(&dir).unwrap();
+        let exe = dir.join("gray-demo");
+        // A wire-only sidecar: no `manifest` argv protocol.
+        std::fs::write(&exe, "#!/bin/sh\nexit 1\n").unwrap();
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+        write_lock(home, &serde_json::json!({"demo": index_row(None)}));
+
+        assert!(!adopt_cli(home, "demo", &dir).await.unwrap());
+        assert_eq!(load_lock(home).unwrap().plugins["demo"].cli_argv, None);
+        assert!(!home.join("plugins/demo-manifest.json").exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn adopt_cli_clears_a_stale_cli_argv_when_an_update_drops_cli() {
+        use std::os::unix::fs::PermissionsExt;
+        let home = tempfile::tempdir().unwrap();
+        let home = home.path();
+        let dir = home.join("plugins/demo");
+        std::fs::create_dir_all(&dir).unwrap();
+        let exe = dir.join("gray-demo");
+        std::fs::write(&exe, "#!/bin/sh\nexit 1\n").unwrap();
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+        // The previous version spoke CLI; this one no longer answers
+        // `manifest`, so the stale forwarding must go.
+        write_lock(
+            home,
+            &serde_json::json!({"demo": index_row(Some(vec!["/old/exe".into()]))}),
+        );
+
+        assert!(!adopt_cli(home, "demo", &dir).await.unwrap());
+        let entry = &load_lock(home).unwrap().plugins["demo"];
+        assert_eq!(entry.cli_argv, None);
+        assert_eq!(entry.hash, "sha256:abc");
     }
 }
