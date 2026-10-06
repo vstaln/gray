@@ -103,6 +103,26 @@ fn profile_binding_changes_when_request_policy_changes() {
 }
 
 #[test]
+fn warm_replay_defaults_off_and_only_rebinds_on_opt_in() {
+    let decl = valid_provider_decl();
+    assert!(!decl.transport.request.warm_replay);
+    // Absent/false serializes away so declarations that don't opt in keep
+    // their existing profile binding byte-for-byte across a gray-plugin
+    // upgrade.
+    let request = serde_json::to_value(&decl.transport.request).unwrap();
+    assert!(request.get("warm_replay").is_none(), "{request}");
+    // Opting in is a credential-contract change: it rebinds.
+    let mut opted = valid_provider_decl();
+    opted.transport.request.warm_replay = true;
+    let request = serde_json::to_value(&opted.transport.request).unwrap();
+    assert_eq!(request["warm_replay"], json!(true));
+    assert_ne!(
+        decl.profile_binding("oauth").unwrap(),
+        opted.profile_binding("oauth").unwrap()
+    );
+}
+
+#[test]
 fn duplicate_provider_ids_keep_one_provider_and_report_one_error() {
     let manifest = Manifest::from_result(&json!({
         "name": "provider-fixture",
