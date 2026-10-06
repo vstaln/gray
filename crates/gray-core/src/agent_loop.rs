@@ -706,7 +706,10 @@ impl Agent {
             // (pi renders runs of thinking blocks ahead of prose).
             let mut content: Vec<ContentBlock> = Vec::new();
             let thinking = std::mem::take(&mut thinking_text);
-            if !thinking.is_empty() {
+            // A captured reasoning item attaches even without thinking text:
+            // the encrypted carrier is what replays next turn, not the prose
+            // (a relay may send the item only, never the summary deltas).
+            if !thinking.is_empty() || pending_reasoning.is_some() {
                 content.push(thinking_block(
                     thinking,
                     &pending_reasoning,

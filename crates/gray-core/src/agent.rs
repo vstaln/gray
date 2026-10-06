@@ -883,7 +883,7 @@ pub(crate) fn salvage_partial_text(
     model: &str,
 ) {
     let mut content = Vec::new();
-    if !thinking.is_empty() {
+    if !thinking.is_empty() || pending_reasoning.is_some() {
         content.push(thinking_block(thinking, pending_reasoning, model));
     }
     content.push(ContentBlock::Text { text });

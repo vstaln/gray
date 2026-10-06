@@ -2449,6 +2449,66 @@ async fn reasoning_only_maxtokens_is_not_retried_as_empty() {
     );
 }
 
+/// A reasoning item that arrives with no summary text still attaches its
+/// encrypted carrier to history (claude-sub relays the item alone —
+/// thinking prose is never forwarded). The empty-text block replays the
+/// same: the wire item carries the blob, not the text.
+#[tokio::test]
+async fn reasoning_item_without_summary_attaches_carrier() {
+    struct Modeled {
+        inner: FakeProvider,
+    }
+    #[async_trait]
+    impl Provider for Modeled {
+        fn stream(&self, req: ChatRequest) -> ProviderStream {
+            self.inner.stream(req)
+        }
+        fn model_id(&self) -> &str {
+            "m1"
+        }
+    }
+    let provider = Modeled {
+        inner: FakeProvider::new(vec![vec![
+            StreamEvent::reasoning_item("rs_1", "blob"),
+            StreamEvent::text_delta("visible"),
+            StreamEvent::message_complete(Some(StopReason::EndTurn), None),
+        ]]),
+    };
+    let mut agent = Agent::new(
+        Box::new(provider),
+        Arc::new(FakeExecutor::new(ToolOutput::ok(""))),
+    );
+    agent
+        .run(Message::user("go"), ToolContext::default())
+        .await
+        .unwrap();
+    let last = agent.messages().last().unwrap();
+    let carrier = last.content.iter().find_map(|b| match b {
+        ContentBlock::Thinking {
+            text,
+            encrypted_content,
+            item_id,
+            model,
+        } => Some((
+            text.clone(),
+            encrypted_content.clone(),
+            item_id.clone(),
+            model.clone(),
+        )),
+        _ => None,
+    });
+    assert_eq!(
+        carrier,
+        Some((
+            String::new(),
+            Some("blob".to_string()),
+            Some("rs_1".to_string()),
+            Some("m1".to_string())
+        )),
+        "carrier must attach even without thinking text: {last:?}"
+    );
+}
+
 #[test]
 fn image_budget_is_bounded_and_rewrites_notify_session() {
     let mut agent = Agent::new(
