@@ -148,6 +148,10 @@ pub struct SavedConfig {
     /// Missing = the built-in gray palette. `GRAY_THEME` overrides per run.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub theme: Option<String>,
+    /// Footer layout (`crate::statusline`): segment lists, separator and
+    /// an optional status command. Missing = the stock footer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status_line: Option<crate::statusline::StatusLineConfig>,
     /// Namespaced provider id for a plugin-backed provider connection.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub provider_id: String,
@@ -305,6 +309,7 @@ fn partial_saved_config(obj: &serde_json::Map<String, serde_json::Value>) -> Sav
         gw_auto: opt_field(obj, "gw_auto"),
         lean: opt_field(obj, "lean"),
         theme: opt_field(obj, "theme"),
+        status_line: opt_field(obj, "status_line"),
         provider_id: string_field(obj, "provider_id"),
         credential_source: string_field(obj, "credential_source"),
         auth_ref: string_field(obj, "auth_ref"),

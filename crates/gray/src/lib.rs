@@ -34,6 +34,7 @@ pub mod shell_drain;
 pub mod skills;
 pub mod skills_tool;
 pub mod spill;
+pub mod statusline;
 pub mod sys_editor;
 pub mod system_prompt;
 pub mod term_keys;

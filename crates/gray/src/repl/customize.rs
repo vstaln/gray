@@ -243,6 +243,11 @@ pub(crate) fn handle_reload(tui: Option<&crate::composer::SharedTui>) {
     }
     crate::prompt_templates::invalidate_cache();
     lines.push("✓ prompt templates re-read on next use".to_string());
+    lines.push(if crate::statusline::init_from_saved_config() {
+        "✓ status line reloaded from config.json".to_string()
+    } else {
+        "status line: stock footer".to_string()
+    });
     say(tui, &lines.join("\n"));
     if let Some(shared) = tui {
         let _ = shared.lock().expect("tui lock").draw();

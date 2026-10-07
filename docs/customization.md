@@ -17,7 +17,7 @@ extensions in `examples/extensions/` (~80 of them).
 | Lifecycle hooks | ~32 events, most can mutate | `tool/before`, `prompt/context`, `turn/end` (claimed in manifest `hooks`), `event/notify` (observe only) |
 | Tools | register/override, per-tool prompt snippets, renderers, `setActiveTools` | plugin tools, `tool.override`, live tool sets (1.3) |
 | UI | notify/select/confirm/input/editor, status, widgets, footer/header/title, working indicator, editor text, custom editor, autocomplete, overlays | `host/ask`, `host/say`, one-shot above-editor widget snapshot |
-| Files, no code | themes, `keybindings.json`, prompt templates, `SYSTEM.md`/`APPEND_SYSTEM.md`, project settings | **themes, prompt templates, keybindings (Level 0, below)**; `~/.gray/AGENTS.md` + project `AGENTS.md`/`CLAUDE.md` |
+| Files, no code | themes, `keybindings.json`, prompt templates, `SYSTEM.md`/`APPEND_SYSTEM.md`, project settings | **themes, prompt templates, keybindings, status line (Level 0, below)**; `~/.gray/AGENTS.md` + project `AGENTS.md`/`CLAUDE.md` |
 | Providers/models | `registerProvider`, virtual models | provider plugins; no routing |
 | Session state | `appendEntry`, `sendMessage`, custom message types | plugin-private state |
 | Distribution | pi packages (npm/git) bundling extensions, skills, prompts, themes | plugin index, skills installer |
@@ -53,16 +53,35 @@ Shipped:
   `/hotkeys reload` or `/reload` re-reads the file.
 - **`/reload`.** Re-reads the theme, keybindings and prompt templates
   without restarting.
+- **Status line.** `"status_line"` in `config.json` lays out the footer
+  as two segment lists:
+
+  ```json
+  "status_line": {
+    "left":  ["context", "cache", "timer", "work", "⎇ {branch}"],
+    "right": ["status", "command", "model", "effort"],
+    "separator": " · ",
+    "command": "~/bin/gray-status",
+    "interval_ms": 5000
+  }
+  ```
+
+  Segments: `context`, `cache`, `timer`, `work`, `model`, `effort`,
+  `cwd`, `dir`, `branch`, `command`, `status` (all plugin statuses) and
+  `status:<key>`. `{name}` inside a string is a template; anything else is
+  literal text. Empty segments drop out with their separator. `command`
+  runs through `sh -c` every `interval_ms` (floor 500ms, 3s timeout) with
+  a JSON snapshot on stdin (`cwd`, `workspace.current_dir`, `model.id`,
+  `model.display_name`, `context`, `branch`, …, the Claude Code statusline
+  fields); its first stdout line is the `command` segment. Plugin
+  `host/ui/status` (protocol 2.0, below) feeds `status`. `/reload` picks
+  up edits.
 - **System prompt.** Already covered: `~/.gray/AGENTS.md` is the editable
   system prompt (pi's `SYSTEM.md`), the nearest project `AGENTS.md`/`CLAUDE.md`
   is appended per turn (pi's `APPEND_SYSTEM.md`/context files).
 
 Next:
 
-- **Status line.** `"status_line"` in `config.json`: either a format
-  string over known fields (`{model} {effort} {ctx_pct} {cost} {cwd}
-  {branch}`) or `{"command": "..."}` run on a debounce with session JSON
-  on stdin (Claude Code's statusline contract, so existing scripts work).
 - **Project settings.** `.gray/settings.json` merged over `config.json`
   for an allowlist of keys (model, effort, theme, context limits, lean),
   only for trusted projects.

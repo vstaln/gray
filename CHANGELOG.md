@@ -14,7 +14,12 @@
 - **Keybindings.** `~/.gray/keybindings.json` in pi's format and action
   ids rebinds editor and app keys (`[]` unbinds); `"/cmd": "ctrl+shift+k"`
   binds a slash command. `/hotkeys` lists the live table.
-- **`/reload`** re-reads theme, keybindings and prompt templates.
+- **Configurable footer.** `"status_line"` in `config.json` picks the
+  left/right segments (context, cache, timer, model, effort, cwd, branch,
+  plugin statuses, templates like `"⎇ {branch}"`) and can run a status
+  command with a Claude Code–style JSON snapshot on stdin.
+- **`/reload`** re-reads theme, keybindings, prompt templates and the
+  status line.
 
 ### Changed
 - Ctrl+A / Ctrl+E / Ctrl+U / Ctrl+K act on the current line of a
