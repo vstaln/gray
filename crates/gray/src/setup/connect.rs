@@ -669,38 +669,7 @@ fn connect_modal(
                                 }
                             } else if existing_key.is_some() && item.id != "custom" {
                                 save_auth_key(&item.id, &final_key)?;
-                                let path = saved_config_path()?;
-                                let _cfg_lock = crate::setup::lock_saved_config_at(&path).ok();
-                                let mut saved = load_saved_config_at(&path);
-                                let is_switching =
-                                    saved.base_url.as_deref() != Some(item.base_url.as_str());
-                                config.base_url = item.base_url.clone();
-                                config.api_key = Some(final_key.clone());
-                                saved.base_url = Some(config.base_url.clone());
-                                saved.api_key = config.api_key.clone();
-                                saved.auth_mode = Some(AUTH_MODE_API_KEY.into());
-                                if is_switching {
-                                    let models = super::model_modal::cached_models_for(
-                                        &item.base_url,
-                                        Some(&final_key),
-                                    );
-                                    saved.model = models.first().map(|(id, _)| id.clone());
-                                    config.model = saved.model.clone();
-                                } else if saved.model.is_none() {
-                                    if let Some(m) = &config.model {
-                                        saved.model = Some(m.clone());
-                                    } else {
-                                        let models = super::model_modal::cached_models_for(
-                                            &item.base_url,
-                                            Some(&final_key),
-                                        );
-                                        saved.model = models.first().map(|(id, _)| id.clone());
-                                        config.model = saved.model.clone();
-                                    }
-                                } else {
-                                    config.model = saved.model.clone();
-                                }
-                                save_saved_config_at(&path, &saved)?;
+                                connect_saved_key(config, &item.base_url, &final_key)?;
                                 return Ok(ConnectOutcome::Connected);
                             } else {
                                 save_auth_key(&item.id, &final_key)?;

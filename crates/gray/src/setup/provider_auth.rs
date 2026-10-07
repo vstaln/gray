@@ -13,8 +13,8 @@ use crate::config::Config;
 use crate::providers::registry::{InstalledProvider, ProviderRpc};
 use crate::providers::runtime::ProviderRuntime;
 use crate::setup::catalog::{
-    SavedConfig, load_saved_config_at, lock_saved_config_at, normalize_custom_base_url,
-    save_saved_config_at, saved_config_path,
+    AUTH_MODE_API_KEY, SavedConfig, load_saved_config_at, lock_saved_config_at,
+    normalize_custom_base_url, save_saved_config_at, saved_config_path,
 };
 
 /// UI-safe login progress. No event ever carries a token, transcript, or
@@ -297,15 +297,19 @@ fn clear_plugin_selection(config: &mut Config, saved: &mut SavedConfig, provider
     }
 }
 
-fn api_key_selection_at(config: &mut Config, path: &Path) {
+fn clear_plugin_identity(config: &mut Config, saved: &mut SavedConfig) {
     config.provider_id.clear();
     config.credential_source.clear();
     config.auth_ref.clear();
-    let _lock = lock_saved_config_at(path).ok();
-    let mut saved = load_saved_config_at(path);
     saved.provider_id.clear();
     saved.credential_source.clear();
     saved.auth_ref.clear();
+}
+
+fn api_key_selection_at(config: &mut Config, path: &Path) {
+    let _lock = lock_saved_config_at(path).ok();
+    let mut saved = load_saved_config_at(path);
+    clear_plugin_identity(config, &mut saved);
     let _ = save_saved_config_at(path, &saved);
 }
 
@@ -314,6 +318,54 @@ pub fn select_api_key_connection(config: &mut Config) -> anyhow::Result<()> {
     let path = saved_config_path()?;
     api_key_selection_at(config, &path);
     Ok(())
+}
+
+/// `/connect`'s saved-key shortcut: an API-key row whose key is already
+/// stored connects without the model step. Any plugin identity must go
+/// too, or `picker_scope` keeps serving the old plugin.
+pub(crate) fn connect_saved_key_at(
+    config: &mut Config,
+    base_url: &str,
+    key: &str,
+    path: &Path,
+    first_model: impl FnOnce() -> Option<String>,
+) -> anyhow::Result<()> {
+    let _cfg_lock = lock_saved_config_at(path).ok();
+    let mut saved = load_saved_config_at(path);
+    // A plugin connection's model never belongs to the API-key endpoint,
+    // even when the stored base_url already matches.
+    let is_switching =
+        saved.base_url.as_deref() != Some(base_url) || saved.credential_source == "plugin";
+    config.base_url = base_url.to_string();
+    config.api_key = Some(key.to_string());
+    saved.base_url = Some(config.base_url.clone());
+    saved.api_key = config.api_key.clone();
+    saved.auth_mode = Some(AUTH_MODE_API_KEY.into());
+    clear_plugin_identity(config, &mut saved);
+    if is_switching {
+        saved.model = first_model();
+        config.model = saved.model.clone();
+    } else if saved.model.is_none() {
+        if let Some(m) = &config.model {
+            saved.model = Some(m.clone());
+        } else {
+            saved.model = first_model();
+            config.model = saved.model.clone();
+        }
+    } else {
+        config.model = saved.model.clone();
+    }
+    save_saved_config_at(path, &saved)
+}
+
+/// Saved-key shortcut against the real config path (see
+/// [`connect_saved_key_at`]); the first cached model seeds a switch.
+pub fn connect_saved_key(config: &mut Config, base_url: &str, key: &str) -> anyhow::Result<()> {
+    connect_saved_key_at(config, base_url, key, &saved_config_path()?, || {
+        super::model_modal::cached_models_for(base_url, Some(key))
+            .first()
+            .map(|(id, _)| id.clone())
+    })
 }
 
 /// Effort belongs to a connection+model, not to gray: on a provider or
