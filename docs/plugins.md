@@ -103,15 +103,16 @@ The host replies `{"id": "q1", "result": {"answers": …}}` or
 
 ## Protocol 1.3: dynamic tools + media
 
-A sidecar whose tool set changes while the session runs (an MCP bridge,
-a tool marketplace) claims `"protocol": "1.3"` in `plugin/manifest`.
+A sidecar whose tool set changes while the session runs (a bridge to an
+external tool server, a tool marketplace) claims `"protocol": "1.3"` in
+`plugin/manifest`.
 1.3 implies 1.1 (asking and its TTLs still apply). The manifest `tools`
 array is only a hint and may be `[]`; the live set comes from
 `plugin/tools`:
 
 ```json
 {"id": 7, "method": "plugin/tools", "params": {}}
-{"id": 7, "result": {"tools": [{"name": "mcp__fs__read", "description": "…",
+{"id": 7, "result": {"tools": [{"name": "fs_read", "description": "…",
   "parameters": {"type": "object", "properties": {}}}]}}
 ```
 
@@ -135,7 +136,7 @@ An entry missing `mime` or `data_base64` is dropped with a warning; the
 rest of the reply stands. Media is passed through un-re-encoded, so the
 sidecar keeps each item under the native media cap (8 MiB).
 
-See the `mcp` plugin (~/grayplugins/gray-mcp) for a full 1.3 client.
+For a complete 1.3 sidecar, see [gray-mcp](https://github.com/vstaln/gray-mcp).
 
 ## Semantics
 

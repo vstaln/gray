@@ -3079,7 +3079,7 @@ impl ToolExecutor for LiveExecutor {
 #[tokio::test]
 async fn run_refreshes_tool_defs_from_live_executor() {
     let live = std::sync::Arc::new(Mutex::new(vec![ToolDef::new(
-        "mcp__x__y",
+        "live_a",
         "live",
         serde_json::json!({"type":"object","properties":{}}),
     )]));
@@ -3104,19 +3104,19 @@ async fn run_refreshes_tool_defs_from_live_executor() {
         .run(Message::user("hi"), ToolContext::default())
         .await
         .unwrap();
-    assert_eq!(seen.lock().expect("seen lock")[0], vec!["mcp__x__y"]);
+    assert_eq!(seen.lock().expect("seen lock")[0], vec!["live_a"]);
     assert_eq!(
         agent
             .tool_defs()
             .iter()
             .map(|t| t.name.as_str())
             .collect::<Vec<_>>(),
-        vec!["mcp__x__y"]
+        vec!["live_a"]
     );
 
     // The set changes between turns; the next run picks it up.
     live.lock().expect("live lock").push(ToolDef::new(
-        "mcp__x__z",
+        "live_b",
         "live",
         serde_json::json!({"type":"object","properties":{}}),
     ));
@@ -3124,10 +3124,7 @@ async fn run_refreshes_tool_defs_from_live_executor() {
         .run(Message::user("again"), ToolContext::default())
         .await
         .unwrap();
-    assert_eq!(
-        seen.lock().expect("seen lock")[1],
-        vec!["mcp__x__y", "mcp__x__z"]
-    );
+    assert_eq!(seen.lock().expect("seen lock")[1], vec!["live_a", "live_b"]);
 }
 
 #[tokio::test]

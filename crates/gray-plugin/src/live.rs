@@ -1,11 +1,12 @@
 //! Live tool resolution for protocol-1.3 plugins.
 //!
 //! A static [`Registry`] snapshots every plugin's tools at build time. A
-//! protocol-1.3 sidecar (MCP bridges and the like) changes its tool set
-//! while the session runs, so its tools are not snapshotted: the
-//! `LiveRegistry` wraps the static registry and resolves those plugins'
-//! tools by name at call time, and reports the merged definitions through
-//! [`ToolExecutor::live_defs`] so the agent re-advertises them every turn.
+//! protocol-1.3 sidecar (one bridging an external tool server, say)
+//! changes its tool set while the session runs, so its tools are not
+//! snapshotted: the `LiveRegistry` wraps the static registry and resolves
+//! those plugins' tools by name at call time, and reports the merged
+//! definitions through [`ToolExecutor::live_defs`] so the agent
+//! re-advertises them every turn.
 
 use std::sync::Arc;
 
