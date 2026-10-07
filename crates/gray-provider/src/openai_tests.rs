@@ -2650,6 +2650,93 @@ async fn quota_403_is_single_attempt() {
     assert_eq!(received.len(), 1, "quota 403 must not retry: {events:?}");
 }
 
+/// A plugin-declared Responses provider (the shape a Sign in with ChatGPT
+/// sidecar declares) pointed at `base_url`.
+fn plan_usage_provider(base_url: String) -> OpenAiProvider {
+    let profile = OpenAiProviderProfile {
+        base_url: format!("{base_url}/v1").parse().unwrap(),
+        wire: OpenAiWire::Responses,
+        authorization: OpenAiAuthorization::Bearer {
+            secret_name: "access_token".into(),
+        },
+        headers: Vec::new(),
+        request: OpenAiRequestPolicy {
+            prompt_cache_key: false,
+            store: false,
+            include_reasoning_encrypted: true,
+            previous_response_id: false,
+            tool_choice: None,
+            parallel_tool_calls: None,
+            text_verbosity: None,
+        },
+        follow_redirects: false,
+    };
+    OpenAiProvider::new_with_profile(
+        "gpt-test",
+        None,
+        Some("session-test".into()),
+        profile,
+        std::sync::Arc::new(StaticProviderSource {
+            secrets: gray_core::credential::SecretMap::from_iter([("access_token", "test-access")]),
+            metadata: Default::default(),
+        }),
+    )
+    .unwrap()
+}
+
+#[tokio::test]
+async fn plan_usage_limit_429_is_single_attempt() {
+    // ChatGPT plan usage: the per-app/plan cap answers 429 with its own code.
+    // Retrying cannot succeed until the user raises the cap, so it is terminal
+    // like any other quota exhaustion.
+    use futures::StreamExt;
+    let server = wiremock::MockServer::start().await;
+    let body = r#"{"error": {"message": "You have reached your usage limit for this app.", "type": "usage_limit", "code": "subscription_sharing_usage_limit_exceeded"}}"#;
+    wiremock::Mock::given(wiremock::matchers::any())
+        .respond_with(wiremock::ResponseTemplate::new(429).set_body_string(body))
+        .mount(&server)
+        .await;
+    let provider = plan_usage_provider(server.uri());
+    let events: Vec<_> = provider.stream(empty_chat_req()).collect().await;
+    let received = server.received_requests().await.expect("requests recorded");
+    assert_eq!(received.len(), 1, "usage limit must not retry: {events:?}");
+    assert!(
+        matches!(events.last(), Some(Err(ProviderError::Auth(_)))),
+        "ends with terminal Auth: {events:?}"
+    );
+}
+
+#[tokio::test]
+async fn plan_usage_limit_mid_stream_is_single_attempt() {
+    // The same cap can land after the stream opened, as `response.failed`
+    // carrying the code (and a message that does not name it).
+    use futures::StreamExt;
+    let server = wiremock::MockServer::start().await;
+    let failed = serde_json::json!({
+        "type": "response.failed",
+        "response": {"id": "resp_1", "error": {
+            "code": "subscription_sharing_usage_limit_exceeded",
+            "message": "You have reached your usage limit for this app."
+        }}
+    });
+    wiremock::Mock::given(wiremock::matchers::any())
+        .respond_with(
+            wiremock::ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_string(format!("data: {failed}\n\n")),
+        )
+        .mount(&server)
+        .await;
+    let provider = plan_usage_provider(server.uri());
+    let events: Vec<_> = provider.stream(empty_chat_req()).collect().await;
+    let received = server.received_requests().await.expect("requests recorded");
+    assert_eq!(received.len(), 1, "usage limit must not retry: {events:?}");
+    assert!(
+        matches!(events.last(), Some(Err(ProviderError::Auth(_)))),
+        "ends with terminal Auth: {events:?}"
+    );
+}
+
 #[tokio::test]
 async fn responses_transient_403_then_success_delivers_text() {
     // Same carve-out on the Responses path: first POST 403s, the retry gets
