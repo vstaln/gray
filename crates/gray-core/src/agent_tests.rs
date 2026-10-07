@@ -14,6 +14,8 @@ struct FakeProvider {
     seen_systems: std::sync::Arc<Mutex<Vec<Option<String>>>>,
     /// (system, messages) of every request served so far, in order.
     seen_requests: std::sync::Arc<Mutex<Vec<(Option<String>, Vec<Message>)>>>,
+    /// Tool names advertised in every request served so far, in order.
+    seen_tools: std::sync::Arc<Mutex<Vec<Vec<String>>>>,
 }
 
 impl FakeProvider {
@@ -24,6 +26,7 @@ impl FakeProvider {
             partial_failures: Mutex::new(VecDeque::new()),
             seen_systems: std::sync::Arc::new(Mutex::new(Vec::new())),
             seen_requests: std::sync::Arc::new(Mutex::new(Vec::new())),
+            seen_tools: std::sync::Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -46,6 +49,11 @@ impl FakeProvider {
     fn seen_requests(&self) -> std::sync::Arc<Mutex<Vec<(Option<String>, Vec<Message>)>>> {
         self.seen_requests.clone()
     }
+
+    /// Tool names of every request served so far.
+    fn seen_tools(&self) -> std::sync::Arc<Mutex<Vec<Vec<String>>>> {
+        self.seen_tools.clone()
+    }
 }
 
 #[async_trait]
@@ -59,6 +67,10 @@ impl Provider for FakeProvider {
             .lock()
             .expect("seen lock poisoned")
             .push((req.system.clone(), req.messages.clone()));
+        self.seen_tools
+            .lock()
+            .expect("seen lock poisoned")
+            .push(req.tools.iter().map(|t| t.name.clone()).collect());
         if let Some(err) = self
             .failures
             .lock()
@@ -3042,4 +3054,93 @@ async fn checkpoint_fires_once_per_step_with_consistent_prefix() {
             "snapshot must pair every call with its result"
         );
     }
+}
+
+/// Executor whose tool set is live: `live_defs` answers from a shared
+/// slot the test can rewrite between turns.
+struct LiveExecutor(std::sync::Arc<Mutex<Vec<ToolDef>>>);
+
+#[async_trait]
+impl ToolExecutor for LiveExecutor {
+    fn execute(
+        &self,
+        _ctx: &ToolContext,
+        _name: &str,
+        _args: serde_json::Value,
+    ) -> BoxFuture<'static, ToolOutput> {
+        Box::pin(async { ToolOutput::ok("unused") })
+    }
+
+    fn live_defs(&self) -> Option<Vec<ToolDef>> {
+        Some(self.0.lock().expect("live lock").clone())
+    }
+}
+
+#[tokio::test]
+async fn run_refreshes_tool_defs_from_live_executor() {
+    let live = std::sync::Arc::new(Mutex::new(vec![ToolDef::new(
+        "mcp__x__y",
+        "live",
+        serde_json::json!({"type":"object","properties":{}}),
+    )]));
+    let provider = FakeProvider::new(vec![
+        vec![
+            StreamEvent::text_delta("ok"),
+            StreamEvent::message_complete(Some(StopReason::EndTurn), None),
+        ],
+        vec![
+            StreamEvent::text_delta("ok"),
+            StreamEvent::message_complete(Some(StopReason::EndTurn), None),
+        ],
+    ]);
+    let seen = provider.seen_tools();
+    let mut agent = Agent::new(
+        Box::new(provider),
+        std::sync::Arc::new(LiveExecutor(live.clone())),
+    )
+    .with_tools(vec![ToolDef::new("stale", "stale", serde_json::json!({}))]);
+
+    agent
+        .run(Message::user("hi"), ToolContext::default())
+        .await
+        .unwrap();
+    assert_eq!(seen.lock().expect("seen lock")[0], vec!["mcp__x__y"]);
+    assert_eq!(
+        agent.tool_defs().iter().map(|t| t.name.as_str()).collect::<Vec<_>>(),
+        vec!["mcp__x__y"]
+    );
+
+    // The set changes between turns; the next run picks it up.
+    live.lock().expect("live lock").push(ToolDef::new(
+        "mcp__x__z",
+        "live",
+        serde_json::json!({"type":"object","properties":{}}),
+    ));
+    agent
+        .run(Message::user("again"), ToolContext::default())
+        .await
+        .unwrap();
+    assert_eq!(
+        seen.lock().expect("seen lock")[1],
+        vec!["mcp__x__y", "mcp__x__z"]
+    );
+}
+
+#[tokio::test]
+async fn static_executor_keeps_with_tools_defs() {
+    let provider = FakeProvider::new(vec![vec![
+        StreamEvent::text_delta("ok"),
+        StreamEvent::message_complete(Some(StopReason::EndTurn), None),
+    ]]);
+    let seen = provider.seen_tools();
+    let mut agent = Agent::new(
+        Box::new(provider),
+        std::sync::Arc::new(FakeExecutor::new(ToolOutput::ok("x"))),
+    )
+    .with_tools(vec![tool_def()]);
+    agent
+        .run(Message::user("hi"), ToolContext::default())
+        .await
+        .unwrap();
+    assert_eq!(seen.lock().expect("seen lock")[0], vec![TOOL_NAME]);
 }

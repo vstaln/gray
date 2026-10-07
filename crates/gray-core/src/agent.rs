@@ -229,6 +229,14 @@ pub trait ToolExecutor: Send + Sync {
         Vec::new()
     }
 
+    /// Current tool definitions when the executor's tool set can change
+    /// between turns (protocol-1.3 plugins). `Some(defs)` replaces the
+    /// agent's advertised tools at the start of every run; the default
+    /// `None` keeps the static set from [`Agent::with_tools`].
+    fn live_defs(&self) -> Option<Vec<crate::message::ToolDef>> {
+        None
+    }
+
     /// Bounded wait until at least one background notification is ready (or
     /// `None` when the timeout elapsed with nothing to deliver). The loop
     /// calls this at turn end with unfinished background jobs instead of
@@ -570,6 +578,21 @@ impl Agent {
     pub fn with_tools(mut self, tools: Vec<ToolDef>) -> Self {
         self.tools = tools;
         self
+    }
+
+    /// Replaces the advertised tools in place (post-construction form of
+    /// [`Agent::with_tools`]).
+    pub fn set_tools(&mut self, tools: Vec<ToolDef>) {
+        self.tools = tools;
+    }
+
+    /// Re-reads the tool set from the executor when it is live
+    /// ([`ToolExecutor::live_defs`]); a static executor leaves the
+    /// current defs untouched. Called at the start of every run.
+    pub fn refresh_tools(&mut self) {
+        if let Some(defs) = self.executor.live_defs() {
+            self.tools = defs;
+        }
     }
 
     /// Display-only headlines per tool name (plugin `label` support).
