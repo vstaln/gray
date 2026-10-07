@@ -990,6 +990,23 @@ async fn run_print_inner(
     }
 
     let history_revision = agent.history_revision();
+    // Persist the turn step by step, not only when it ends: a killed
+    // `gray -p` (benchmark timeout, kill -9, power cut) then loses at most
+    // the step in flight instead of the whole transcript. Same contract as
+    // the REPL checkpoint (repl/prompt_turn.rs): stop on any history rewrite
+    // (the end-of-turn path owns the replacement) and on the first failed
+    // append (a partial pass leaves lines on disk, so repair stays
+    // end-of-turn). Print mode persists the redacted copy, so the
+    // checkpoint scrubs every message through the same helper.
+    let checkpointed = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(initial_count));
+    let checkpoint_failed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    agent.set_checkpoint(Some(session_checkpoint(
+        JsonlSessionStore::new(store.root_dir()),
+        session_id.clone(),
+        checkpointed.clone(),
+        checkpoint_failed.clone(),
+        history_revision,
+    )));
     // Headless `-p` has no paste-attach: inline file links still carry vision.
     // Structured input already owns its typed block and never scans arbitrary
     // text for attachment paths.
@@ -1013,9 +1030,14 @@ async fn run_print_inner(
     let stdout = std::io::stdout();
     let mut in_flight: HashMap<String, ActiveToolCall> = HashMap::new();
     let mut render_err: Option<std::io::Error> = None;
+    let mut turn_usage: Option<gray_core::event::Usage> = None;
+    let turn_start = std::time::Instant::now();
     let run_result = {
         let render_cancel = cancel.clone();
         let mut on_event = |ev: &AgentEvent| {
+            if let AgentEvent::TurnEnd { usage, .. } = ev {
+                turn_usage = Some(*usage);
+            }
             if render_err.is_some() {
                 return;
             }
@@ -1044,6 +1066,8 @@ async fn run_print_inner(
             })
     };
     sigint_task.abort();
+    agent.set_checkpoint(None);
+    let turn_duration_ms = turn_start.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
     if run_result.is_ok()
         && let Some(output) = json.as_deref_mut()
     {
@@ -1061,12 +1085,25 @@ async fn run_print_inner(
     // F14: no `?` between run completion and finalization — always attempt
     // session persistence AND shell teardown, then propagate the original
     // error combined with any persistence error.
+    // Whatever the checkpoints wrote must not be appended twice. A failed
+    // checkpoint pass can leave earlier lines on disk, so the only safe
+    // write then is the replacement path a mid-turn rewrite already takes
+    // (a blind append could duplicate them); `prior_count` is unused there.
+    let checkpoint_failed = checkpoint_failed.load(std::sync::atomic::Ordering::Relaxed);
+    let rewritten = agent.history_revision() != history_revision || checkpoint_failed;
+    let persist_from = if checkpoint_failed {
+        0
+    } else {
+        initial_count.max(checkpointed.load(std::sync::atomic::Ordering::Relaxed))
+    };
     let persist_result = append_new_messages(
         &store,
         &session_id,
-        initial_count,
+        persist_from,
         agent.messages(),
-        agent.history_revision() != history_revision,
+        rewritten,
+        turn_usage,
+        Some(turn_duration_ms),
     )
     .await;
 
@@ -1132,16 +1169,55 @@ pub(crate) fn scrub_error_text(s: &str) -> String {
     redact_for_disclosure(s).into_text()
 }
 
+/// The print-mode step-boundary checkpoint: appends every message past the
+/// `done` cursor to the session file (the redacted copy, like
+/// `append_new_messages`), stops writing on a history rewrite — the
+/// end-of-turn path owns the replacement — and on the first failed append,
+/// whose partial pass only a full replacement can safely repair.
+fn session_checkpoint(
+    store: JsonlSessionStore,
+    sid: SessionId,
+    done: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    failed: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    history_revision: u64,
+) -> gray_core::agent::CheckpointHook {
+    let store = std::sync::Arc::new(store);
+    std::sync::Arc::new(move |msgs: &[Message], rev: u64| {
+        use std::sync::atomic::Ordering::Relaxed;
+        let from = done.load(Relaxed);
+        let fresh = if rev == history_revision && !failed.load(Relaxed) && from <= msgs.len() {
+            msgs[from..].to_vec()
+        } else {
+            Vec::new()
+        };
+        let (store, sid, done, failed) = (store.clone(), sid.clone(), done.clone(), failed.clone());
+        Box::pin(async move {
+            for m in &fresh {
+                if store.append(&sid, &redact_message(m)).await.is_err() {
+                    failed.store(true, Relaxed);
+                    return;
+                }
+                done.fetch_add(1, Relaxed);
+            }
+        })
+    })
+}
+
 /// Appends only messages at index `prior_count..` to an existing session
 /// (print-mode `--session`/`-c` continuation in place — never a new file).
 /// When in-loop compaction rewrote history (even if it grew past the cursor),
 /// persists the whole active transcript behind a replacement boundary.
+/// `usage`/`duration_ms` ride the last appended entry, like the REPL's
+/// `persist_turn_messages`: when every message was already checkpointed
+/// nothing is appended and the pair is dropped.
 pub async fn append_new_messages(
     store: &JsonlSessionStore,
     sid: &SessionId,
     prior_count: usize,
     messages: &[Message],
     history_rewritten: bool,
+    usage: Option<gray_core::event::Usage>,
+    duration_ms: Option<u64>,
 ) -> anyhow::Result<()> {
     if history_rewritten || messages.len() < prior_count {
         // Same redaction as the normal path: secrets never land in the file.
@@ -1151,12 +1227,19 @@ pub async fn append_new_messages(
             .await
             .map_err(|e| anyhow::anyhow!("failed to persist compacted session: {e}"));
     }
-    for msg in &messages[prior_count.min(messages.len())..] {
+    let new = &messages[prior_count.min(messages.len())..];
+    for (i, msg) in new.iter().enumerate() {
+        let is_last = i + 1 == new.len();
         // Durable JSONL: persist the redacted copy (secrets/paths never land
         // in the session file); the live turn keeps the raw text.
         let redacted = redact_message(msg);
         store
-            .append(sid, &redacted)
+            .append_with_usage_and_duration(
+                sid,
+                &redacted,
+                if is_last { usage } else { None },
+                if is_last { duration_ms } else { None },
+            )
             .await
             .map_err(|e| anyhow::anyhow!("failed to append message to session: {e}"))?;
     }
