@@ -135,6 +135,8 @@ An entry missing `mime` or `data_base64` is dropped with a warning; the
 rest of the reply stands. Media is passed through un-re-encoded, so the
 sidecar keeps each item under the native media cap (8 MiB).
 
+See the `mcp` plugin (~/grayplugins/gray-mcp) for a full 1.3 client.
+
 ## Semantics
 
 - `blocking: false` resolves empty immediately in v1 (no follow-up

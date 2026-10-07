@@ -7,6 +7,8 @@
   (`plugin/tools`, refreshed on a `host/tools_changed` notification) and
   return images/media from `tool/call`; the model's tool list is rebuilt
   every turn from the live set. Groundwork for the `gray-mcp` plugin.
+- **Plugins: `mcp` plugin (separate crate)** bridges MCP servers into
+  gray and exposes gray as an MCP server via `gray mcp serve`.
 
 ## [0.1.11] - 2026-10-07
 
