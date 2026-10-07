@@ -125,6 +125,46 @@ fn runtime_prompt_states_that_batched_tool_calls_share_one_round() {
 }
 
 #[test]
+fn identity_block_names_the_picked_row_and_provider() {
+    // The bug this guards: a devin-sub row like `step-5-preview` must report
+    // itself as the picker's name, never a confabulated "SWE-2 High".
+    assert_eq!(
+        identity_block("Step Fun 5", "step-5-preview", "Devin Subscription"),
+        "Model: Step Fun 5 (step-5-preview)\nProvider: Devin Subscription"
+    );
+}
+
+#[test]
+fn identity_block_keeps_a_composite_label_verbatim() {
+    assert_eq!(
+        identity_block(
+            "Fusion · Opus 5.5 High + SWE-2 High",
+            "fusion",
+            "Devin Subscription"
+        ),
+        "Model: Fusion · Opus 5.5 High + SWE-2 High (fusion)\nProvider: Devin Subscription"
+    );
+}
+
+#[test]
+fn identity_block_omits_empty_parts() {
+    assert_eq!(
+        identity_block("", "step-5-preview", ""),
+        "Model: step-5-preview"
+    );
+    assert_eq!(identity_block("", "", "Anthropic"), "Provider: Anthropic");
+    assert_eq!(identity_block("", "", ""), "");
+}
+
+#[test]
+fn identity_block_does_not_repeat_a_label_that_is_the_id() {
+    assert_eq!(
+        identity_block("gpt-5-2", "gpt-5-2", "OpenAI"),
+        "Model: gpt-5-2\nProvider: OpenAI"
+    );
+}
+
+#[test]
 fn tool_batching_guidance_is_not_user_editable_text() {
     // It comes from the binary, not the prompt file: it must survive an empty
     // or absent custom prompt and must never be comment-stripped away.

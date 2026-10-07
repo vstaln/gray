@@ -35,6 +35,26 @@ pub struct Entry {
     pub hash: HashSpec,
     #[serde(default)]
     pub scope: String,
+    /// `true` for system-owned (first-party) plugins. Absent on community
+    /// entries.
+    #[serde(default)]
+    pub official: bool,
+    /// `true` for community plugins a maintainer has blessed. The registry
+    /// is open — anyone can publish — so an entry with neither `official`
+    /// nor `verified` is arbitrary third-party code; a matching tarball
+    /// hash proves integrity, never trustworthiness.
+    #[serde(default)]
+    pub verified: bool,
+    /// SPDX license id when the index carries one; informational only.
+    #[serde(default)]
+    pub license: String,
+}
+
+impl Entry {
+    /// Whether the index asserts any trust for this entry.
+    pub fn trusted(&self) -> bool {
+        self.official || self.verified
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

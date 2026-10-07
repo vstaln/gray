@@ -13,25 +13,6 @@ mod clipboard;
 pub(crate) use attach::{sync_attachments, try_attach_clipboard_image, try_attach_image_paste};
 pub(crate) use clipboard::paste_from_system_clipboard;
 
-/// Ctrl-C at the prompt never exits on the first press: it clears the draft.
-/// Only a second press on an already-empty prompt within the window exits
-/// (mirrors the SIGINT policy in `repl`; exit also via /quit or Ctrl-D).
-pub(crate) const CTRL_C_EXIT_WINDOW: std::time::Duration = std::time::Duration::from_secs(5);
-
-pub(crate) fn ctrl_c_should_exit(
-    has_draft: bool,
-    last_empty_press: Option<std::time::Instant>,
-    now: std::time::Instant,
-) -> bool {
-    if has_draft {
-        return false;
-    }
-    match last_empty_press {
-        Some(t) => now.duration_since(t) <= CTRL_C_EXIT_WINDOW,
-        None => false,
-    }
-}
-
 pub(crate) fn handle_paste(tui: &mut Tui, pasted: String) -> bool {
     let pasted = strip_escape_sequences(&clipboard::normalize_paste(&pasted));
     // opencode parity: some terminals surface an image-only (or otherwise
@@ -326,9 +307,6 @@ pub(crate) fn read_line(
     crossterm::execute!(std::io::stdout(), crossterm::cursor::Show)?;
 
     let mut needs_draw = true;
-    // Bare Ctrl-C never quits on first press: an empty-prompt press arms a
-    // 5 s window, a second press inside it exits (read repl Ctrl-C policy).
-    let mut last_ctrl_c_empty: Option<std::time::Instant> = None;
     loop {
         // Phase 1 (locked): resize deadlines, completion recompute, draw.
         // The guard drops at the end of this block, freeing the lock while
@@ -420,6 +398,10 @@ pub(crate) fn read_line(
                 kind: KeyEventKind::Press,
                 ..
             }) if modifiers.contains(KeyModifiers::CONTROL) => {
+                // Ctrl-C clears a draft; on an already-empty prompt a single
+                // press exits (the repl SIGINT task exits the same way —
+                // raw mode keeps this a key event, so it only sees cooked
+                // presses after the TUI has shut down).
                 let has_draft = !tui.textarea.is_empty()
                     || !tui.attachments.is_empty()
                     || !tui.pending_pastes.is_empty();
@@ -429,15 +411,9 @@ pub(crate) fn read_line(
                     tui.pending_pastes.clear();
                     tui.history_idx = None;
                     tui.sel = 0;
-                    last_ctrl_c_empty = None;
                     continue;
                 }
-                let now = std::time::Instant::now();
-                if ctrl_c_should_exit(false, last_ctrl_c_empty, now) {
-                    return Ok(None);
-                }
-                last_ctrl_c_empty = Some(now);
-                continue;
+                return Ok(None);
             }
             Event::Key(KeyEvent {
                 code: KeyCode::Char('d'),

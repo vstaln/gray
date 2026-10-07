@@ -33,18 +33,16 @@ pub(crate) async fn dispatch_command(
                 say(tui.as_ref().map(|(s, _)| s), &warning);
                 return Ok(Flow::Continue);
             }
+            if let Some((shared, stop)) = tui {
+                stop.store(true, std::sync::atomic::Ordering::Relaxed);
+                shared.lock().expect("tui lock").shutdown();
+            }
+            print_exit_hint(session_state);
+            crate::ask::shutdown();
             if let Some(exec) = &exec {
                 super::jobs::stop_all(exec.as_ref(), &ctx).await;
             }
             shutdown_hooks(agent.as_ref()).await;
-            if let Some((shared, stop)) = tui {
-                stop.store(true, std::sync::atomic::Ordering::Relaxed);
-                let mut t = shared.lock().expect("tui lock");
-                t.shutdown();
-                print_exit_hint(session_state);
-            } else {
-                print_exit_hint(session_state);
-            }
             Flow::Break
         }
         ReplCommand::Sys(action) => {

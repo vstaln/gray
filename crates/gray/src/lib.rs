@@ -259,6 +259,26 @@ pub async fn build_agent(
         .unwrap_or(300);
     crate::cache::set_cache_ttl(std::time::Duration::from_secs(cache_ttl_secs));
     let cache_warm = cache_warm_policy(config, &wire_model, plugin_warm_replay, cache_ttl_secs);
+    // The model cannot see its picker row or provider from inside the
+    // loop; name them (Hermes' volatile prompt section) so it reports the
+    // selection the user made — the picked row's label, not the wire id a
+    // variant resolves to. `--bare` keeps its one-line prompt.
+    let identity = if config.bare {
+        String::new()
+    } else {
+        let provider = dynamic
+            .as_ref()
+            .map(|p| p.installed().provider.name.clone())
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| config.provider_id.clone());
+        system_prompt::identity_block(
+            crate::setup::selected_model_label(config)
+                .as_deref()
+                .unwrap_or(""),
+            model,
+            &provider,
+        )
+    };
     let agent = gray_plugin::builder::build_agent(gray_plugin::builder::BuilderOptions {
         model: wire_model.clone(),
         api_key: api_key.to_string(),
@@ -271,9 +291,19 @@ pub async fn build_agent(
             .then(|| crate::setup::context::resolve_model_context_length(model)),
         session_id: session_id.map(str::to_string),
         cwd: cwd.to_path_buf(),
-        // Stored instructions verbatim; no runtime context (cwd etc.).
+        // Stored instructions verbatim; no runtime context (cwd etc.) —
+        // only the identity block above follows them.
         system_prompt: gray_plugin::builder::SystemPrompt::Build(Box::new(
-            move |_registry: &gray_tools::Registry| system_prompt::build_system_prompt(Some(body)),
+            move |_registry: &gray_tools::Registry| {
+                let mut prompt = system_prompt::build_system_prompt(Some(body));
+                if !identity.is_empty() {
+                    if !prompt.is_empty() {
+                        prompt.push_str("\n\n");
+                    }
+                    prompt.push_str(&identity);
+                }
+                prompt
+            },
         )),
         // Sidecars get the host runner so plugin-initiated `host/run`
         // / `host/say` don't fall back to loud `{"error":…}`.
@@ -302,7 +332,11 @@ pub async fn build_agent(
     for w in gray_plugin::builder::take_builder_warnings() {
         profile::queue_profile_warning(w);
     }
-    let agent = agent.with_compaction_budget(config.context_reserve, config.context_keep);
+    let mut agent = agent.with_compaction_budget(config.context_reserve, config.context_keep);
+    // Same rule `cache_warm_policy` applies to warming: on a relay plugin a
+    // prefix rewrite throws away the upstream native session, so the
+    // cold-cache stale-output mask stays off there entirely.
+    agent.set_prefix_rewrite_ok(!config.uses_plugin_credentials() || plugin_warm_replay);
     // Bash bounds an explicitly requested timeout at 3600 s (and has no
     // default), so the agent-level timeout must sit above that (P2B
     // requirement): it is a last-resort stop, never a budget.
@@ -751,6 +785,10 @@ pub enum PluginCmd {
         /// Accept a caution scan verdict (never overrides `dangerous`)
         #[arg(short, long)]
         force: bool,
+        /// Skip the confirmation prompt for unverified registry plugins
+        /// (the warning still prints)
+        #[arg(short = 'y', long)]
+        yes: bool,
     },
     /// Remove an installed plugin
     Remove {

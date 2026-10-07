@@ -217,6 +217,25 @@ pub(crate) fn wire_model_for(config: &Config) -> Option<String> {
     Some(model.to_string())
 }
 
+/// The live selection's picker-visible name: a composite row's "A + B"
+/// label, else the cached provider list's display name, else the friendly
+/// form of the row id. Cache reads only — for surfaces that must name the
+/// selection, like the system prompt's identity block.
+pub(crate) fn selected_model_label(config: &Config) -> Option<String> {
+    let model = config.model.as_deref()?;
+    if let Some(label) = composite_label_for(config) {
+        return Some(label);
+    }
+    Some(
+        load_provider_names(config)
+            .into_iter()
+            .find(|(id, _)| id == model)
+            .map(|(_, name)| name)
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| super::context::friendly_model_name(model)),
+    )
+}
+
 /// Footer / status label for the live selection when it is a composite
 /// row (`Fusion · Opus 5.5 High + SWE-2 High`); `None` otherwise.
 pub(crate) fn composite_label_for(config: &Config) -> Option<String> {

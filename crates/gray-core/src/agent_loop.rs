@@ -170,8 +170,18 @@ impl Agent {
             )));
         }
         if !args.is_object() {
+            let got = match args {
+                serde_json::Value::Null => {
+                    "nothing (empty arguments — output may have been truncated)".to_string()
+                }
+                serde_json::Value::String(s) => {
+                    let head: String = s.chars().take(200).collect();
+                    format!("unparseable text: {head:?}")
+                }
+                other => other.to_string(),
+            };
             return Err(ToolOutput::error(format!(
-                "Invalid arguments for tool '{name}': expected a JSON object. Please provide a valid JSON object."
+                "Invalid arguments for tool '{name}': expected a JSON object, got {got}. Please provide a valid JSON object."
             )));
         }
         let mut effective_args = args.clone();

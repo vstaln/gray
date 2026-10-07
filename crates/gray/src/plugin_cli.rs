@@ -147,6 +147,33 @@ fn metadata(home: &Path, name: &str) -> anyhow::Result<serde_json::Value> {
     )?)?)
 }
 
+/// How the unverified-plugin gate reports and whether it may ask. The
+/// registry is open — anyone can publish — so an index entry carrying
+/// neither `official` nor `verified` is third-party code running with the
+/// user's permissions; a matching tarball hash proves integrity, never
+/// trustworthiness.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TrustGate {
+    /// Warn on stderr, then ask `Install anyway? [y/N]` on a TTY (decline
+    /// aborts). A session that cannot ask proceeds, so pipes and
+    /// automation keep working.
+    Ask,
+    /// Warn on stderr once, never ask (`--yes`).
+    Quiet,
+    /// No stderr, no prompt: the warning becomes an output line so the
+    /// caller's own channel shows it (the REPL's `say`), then proceed.
+    Lines,
+}
+
+/// Best-effort index lookup for the trust gate. `None` when the fetch or
+/// the lookup fails — `ops::install` fetches the index again (a cache hit)
+/// and reports the real error.
+async fn index_entry(name: &str) -> Option<gray_pkg::index::Entry> {
+    let client = gray_pkg::fetch::client().ok()?;
+    let index = gray_pkg::index::fetch_index(&client).await.ok()?;
+    gray_pkg::index::lookup(&index, name).ok().cloned()
+}
+
 /// `gray plugin install <name|url|path>` — one entry point for every
 /// plugin source, tried in order:
 ///   0. a skill spec (`clawhub:`/`github:`/`url:`) → `skills_ops` (skill
@@ -158,10 +185,20 @@ fn metadata(home: &Path, name: &str) -> anyhow::Result<serde_json::Value> {
 ///
 /// Returns the user-facing lines; callers choose how to display them (the
 /// CLI prints, the TUI routes them through `say` — never stdout mid-frame).
+/// Never prompts: callers that can ask use [`install_spec`] instead.
 pub async fn install_spec_lines(
     home: &Path,
     spec: &str,
     force: bool,
+) -> anyhow::Result<Vec<String>> {
+    install_spec_gated(home, spec, force, TrustGate::Lines).await
+}
+
+async fn install_spec_gated(
+    home: &Path,
+    spec: &str,
+    force: bool,
+    gate: TrustGate,
 ) -> anyhow::Result<Vec<String>> {
     migrate_commands_json(home);
     if gray_pkg::skills_ops::is_skill_spec(spec) {
@@ -205,42 +242,85 @@ pub async fn install_spec_lines(
             }
         }
     }
-    let r = gray_pkg::ops::install(
-        gray_pkg::ops::parse_spec(spec),
-        gray_pkg::ops::InstallOpts::default(),
-    )
-    .await?;
+    let parsed = gray_pkg::ops::parse_spec(spec);
+    let mut lines = Vec::new();
+    // Trust gate for index installs: an entry with neither `official` nor
+    // `verified` is arbitrary third-party code. URL installs keep their own
+    // warning in `ops::install_url`; every other spec kind returned above.
+    if let gray_pkg::ops::NameOrUrl::Name(name) = &parsed
+        && let Some(entry) = index_entry(name).await
+        && !entry.trusted()
+    {
+        let warning = format!(
+            "warning: '{name}' is an unverified community plugin — installing runs third-party code with your permissions"
+        );
+        match gate {
+            TrustGate::Lines => {
+                lines.push(warning);
+                lines.push(
+                    "  (unverified — use `gray plugin install --yes <name>` in the CLI to confirm)"
+                        .to_string(),
+                );
+            }
+            TrustGate::Quiet => eprintln!("{warning}"),
+            TrustGate::Ask => {
+                eprintln!("{warning}");
+                // Ask only when the prompt can be seen *and* answered;
+                // piped stdin/stdout proceeds like the scan gate's --force.
+                if interactive() {
+                    let granted = confirm("Install anyway? [y/N] ")?;
+                    anyhow::ensure!(
+                        granted,
+                        "install cancelled: '{name}' is an unverified community plugin"
+                    );
+                }
+            }
+        }
+    }
+    let r = gray_pkg::ops::install(parsed, gray_pkg::ops::InstallOpts::default()).await?;
     // An index tarball whose executable speaks CLI gets `gray <name> …`
     // the same way a manual registration does. Adoption is best-effort:
     // the plugin is installed either way.
     match adopt_cli(home, &r.name, &r.path).await {
-        Ok(true) => Ok(vec![format!(
+        Ok(true) => lines.push(format!(
             "installed {} {} at {}. Run: gray {} --help",
             r.name,
             r.version,
             r.path.display(),
             r.name
-        )]),
-        Ok(false) => Ok(vec![format!(
+        )),
+        Ok(false) => lines.push(format!(
             "installed {} {} at {}",
             r.name,
             r.version,
             r.path.display()
-        )]),
-        Err(e) => Ok(vec![
-            format!("installed {} {} at {}", r.name, r.version, r.path.display()),
-            format!(
+        )),
+        Err(e) => {
+            lines.push(format!(
+                "installed {} {} at {}",
+                r.name,
+                r.version,
+                r.path.display()
+            ));
+            lines.push(format!(
                 "warning: could not set up `gray {}` forwarding: {e:#}",
                 r.name
-            ),
-        ]),
+            ));
+        }
     }
+    Ok(lines)
 }
 
 /// `gray plugin install` — CLI entry: same resolution as the REPL's, printed
-/// to stdout.
-pub async fn install_spec(home: &Path, spec: &str, force: bool) -> anyhow::Result<()> {
-    for line in install_spec_lines(home, spec, force).await? {
+/// to stdout. `yes` skips the unverified-plugin confirmation; the warning
+/// still prints once on stderr.
+pub async fn install_spec(home: &Path, spec: &str, force: bool, yes: bool) -> anyhow::Result<()> {
+    let gate = if yes {
+        TrustGate::Quiet
+    } else {
+        TrustGate::Ask
+    };
+    for line in install_spec_gated(home, spec, force, gate).await? {
         println!("{line}");
     }
     Ok(())

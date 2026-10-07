@@ -70,10 +70,76 @@ impl PendingToolCall {
     /// string payload rather than aborting the run.
     pub(crate) fn parsed_args(&self) -> serde_json::Value {
         if self.arguments.is_empty() {
-            serde_json::Value::Null
-        } else {
-            serde_json::from_str(&self.arguments)
-                .unwrap_or(serde_json::Value::String(self.arguments.clone()))
+            return serde_json::Value::Null;
         }
+        let parsed = serde_json::from_str(&self.arguments)
+            .or_else(|_| serde_json::from_str(&escape_raw_controls(&self.arguments)));
+        match parsed {
+            // Some models double-encode: the arguments are a JSON string
+            // whose content is the real object.
+            Ok(serde_json::Value::String(inner)) => serde_json::from_str(&inner)
+                .ok()
+                .filter(serde_json::Value::is_object)
+                .unwrap_or(serde_json::Value::String(inner)),
+            Ok(v) => v,
+            Err(_) => serde_json::Value::String(self.arguments.clone()),
+        }
+    }
+}
+
+/// Escapes raw control characters inside JSON string literals (models often
+/// emit literal newlines/tabs in a `command` value, which strict JSON rejects).
+fn escape_raw_controls(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let (mut in_str, mut escaped) = (false, false);
+    for c in s.chars() {
+        if in_str && !escaped && (c as u32) < 0x20 {
+            match c {
+                '\n' => out.push_str("\\n"),
+                '\r' => out.push_str("\\r"),
+                '\t' => out.push_str("\\t"),
+                _ => out.push_str(&format!("\\u{:04x}", c as u32)),
+            }
+            continue;
+        }
+        out.push(c);
+        if escaped {
+            escaped = false;
+        } else if in_str && c == '\\' {
+            escaped = true;
+        } else if c == '"' {
+            in_str = !in_str;
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod parse_tests {
+    use super::PendingToolCall;
+
+    fn parse(raw: &str) -> serde_json::Value {
+        PendingToolCall {
+            arguments: raw.into(),
+            ..Default::default()
+        }
+        .parsed_args()
+    }
+
+    #[test]
+    fn raw_newlines_in_strings_are_repaired() {
+        let v = parse("{\"command\": \"printf 'a\\\\n'\nls\tx\"}");
+        assert_eq!(v["command"], "printf 'a\\n'\nls\tx");
+    }
+
+    #[test]
+    fn double_encoded_object_is_unwrapped() {
+        let v = parse(r#""{\"command\":\"ls\"}""#);
+        assert_eq!(v["command"], "ls");
+    }
+
+    #[test]
+    fn garbage_stays_a_string() {
+        assert!(parse("{\"command\": ").is_string());
     }
 }
