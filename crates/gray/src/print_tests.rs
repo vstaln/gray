@@ -10,7 +10,7 @@ async fn append_continues_session_in_place() {
     let before = store.load(&sid).await.unwrap().1.len();
     // Prior history + one new turn: only the new message lands in the file.
     let with_new = vec![Message::user("first"), Message::user("second")];
-    append_new_messages(&store, &sid, before, &with_new, false)
+    append_new_messages(&store, &sid, before, &with_new, false, None, None)
         .await
         .unwrap();
     let (_, entries) = store.load(&sid).await.unwrap();
@@ -30,6 +30,8 @@ async fn append_bogus_session_errors() {
         0,
         &[Message::user("x")],
         false,
+        None,
+        None,
     )
     .await
     .unwrap_err();
@@ -192,7 +194,7 @@ async fn rewritten_history_replaces_session_even_after_growing_past_cursor() {
         let replacement: Vec<_> = (0..final_count)
             .map(|i| Message::user(format!("retained {i}")))
             .collect();
-        append_new_messages(&store, &sid, 2, &replacement, true)
+        append_new_messages(&store, &sid, 2, &replacement, true, None, None)
             .await
             .unwrap();
         let loaded: Vec<_> = store
@@ -205,6 +207,126 @@ async fn rewritten_history_replaces_session_even_after_growing_past_cursor() {
             .collect();
         assert_eq!(loaded, replacement, "final_count={final_count}");
     }
+}
+
+#[tokio::test]
+async fn checkpointed_messages_are_not_appended_twice() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = JsonlSessionStore::new(dir.path());
+    let sid = save_session(&store, "m", dir.path(), &[Message::user("prompt")])
+        .await
+        .unwrap();
+    let initial_count = 1;
+    let done = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(initial_count));
+    let failed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let hook = session_checkpoint(
+        JsonlSessionStore::new(dir.path()),
+        sid.clone(),
+        done.clone(),
+        failed.clone(),
+        0,
+    );
+    // Mid-turn step boundary: everything past the initial history lands now.
+    let msgs = vec![
+        Message::user("prompt"),
+        Message::assistant("step one"),
+        Message::user("tool result"),
+    ];
+    hook(&msgs, 0).await;
+    use std::sync::atomic::Ordering::Relaxed;
+    assert_eq!(done.load(Relaxed), msgs.len());
+    assert!(!failed.load(Relaxed));
+    // The initial message was saved at session create; the checkpoint adds
+    // only the fresh tail, so the file holds exactly msgs.len() entries.
+    assert_eq!(store.load(&sid).await.unwrap().1.len(), msgs.len());
+    // End of turn starts at the checkpointed cursor: only the final
+    // assistant message is appended, carrying the turn's usage/duration.
+    let mut full = msgs.clone();
+    full.push(Message::assistant("final answer"));
+    let usage = gray_core::event::Usage {
+        input_tokens: 5,
+        output_tokens: 2,
+        ..Default::default()
+    };
+    append_new_messages(
+        &store,
+        &sid,
+        initial_count.max(done.load(Relaxed)),
+        &full,
+        false,
+        Some(usage),
+        Some(123),
+    )
+    .await
+    .unwrap();
+    let (_, entries) = store.load(&sid).await.unwrap();
+    let texts: Vec<_> = entries.iter().map(|e| e.message.text_content()).collect();
+    assert_eq!(
+        texts,
+        vec!["prompt", "step one", "tool result", "final answer"]
+    );
+    let last = entries.last().unwrap();
+    assert_eq!(last.usage, Some(usage));
+    assert_eq!(last.duration_ms, Some(123));
+}
+
+#[tokio::test]
+async fn checkpoint_writes_nothing_after_history_rewrite() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = JsonlSessionStore::new(dir.path());
+    let sid = save_session(&store, "m", dir.path(), &[Message::user("prompt")])
+        .await
+        .unwrap();
+    let done = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(1));
+    let failed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let hook = session_checkpoint(
+        JsonlSessionStore::new(dir.path()),
+        sid.clone(),
+        done.clone(),
+        failed.clone(),
+        0,
+    );
+    let msgs = vec![Message::user("prompt"), Message::assistant("step one")];
+    hook(&msgs, 0).await;
+    assert_eq!(store.load(&sid).await.unwrap().1.len(), 2);
+    // Compaction bumped history_revision: a later boundary must not append
+    // the rewritten history — the end-of-turn replacement owns that write.
+    let rewritten = vec![
+        Message::system("summary"),
+        Message::user("prompt"),
+        Message::assistant("step one"),
+    ];
+    hook(&rewritten, 1).await;
+    use std::sync::atomic::Ordering::Relaxed;
+    assert_eq!(done.load(Relaxed), 2, "cursor untouched by the rewrite");
+    assert!(!failed.load(Relaxed));
+    let (_, entries) = store.load(&sid).await.unwrap();
+    assert_eq!(entries.len(), 2, "no post-rewrite checkpoint lines");
+}
+
+#[tokio::test]
+async fn checkpoint_persists_the_redacted_copy() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = JsonlSessionStore::new(dir.path());
+    let sid = save_session(&store, "m", dir.path(), &[]).await.unwrap();
+    let done = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let failed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let hook = session_checkpoint(
+        JsonlSessionStore::new(dir.path()),
+        sid.clone(),
+        done.clone(),
+        failed.clone(),
+        0,
+    );
+    let msgs = vec![Message::user(
+        "read /Users/hunter/src/app/main.rs with ZAI_API_KEY=supersecretvalue12345",
+    )];
+    hook(&msgs, 0).await;
+    let (_, entries) = store.load(&sid).await.unwrap();
+    let text = entries.last().unwrap().message.text_content();
+    assert!(!text.contains("supersecretvalue12345"), "{text}");
+    assert!(!text.contains("/Users/hunter"), "{text}");
+    assert!(text.contains("<redacted>"), "{text}");
 }
 
 #[test]

@@ -84,6 +84,11 @@ pub struct Config {
     pub max_wall_secs: Option<u64>,
     /// `--bare` / `GRAY_BARE=1`: stock prompt + bash only (see `Cli::bare`).
     pub bare: bool,
+    /// On by default; `--lean` / `GRAY_LEAN=1` force on, `GRAY_LEAN=0` or
+    /// persisted `lean: false` opt out: no per-turn injected
+    /// context (skills list, project rules, plugin docs). Tools, plugins
+    /// and compaction stay on.
+    pub lean: bool,
 }
 
 impl std::fmt::Debug for Config {
@@ -228,6 +233,16 @@ impl Config {
         });
 
         let bare = cli.bare || env("GRAY_BARE").is_some_and(|v| v.trim() == "1");
+        // Lean is the default: the stored prompt stays the whole system
+        // prefix unless hooks are wanted back (`lean: false`, GRAY_LEAN=0).
+        let lean_env = env("GRAY_LEAN").map(|v| v.trim().to_string());
+        let lean = if cli.lean || lean_env.as_deref() == Some("1") {
+            true
+        } else if lean_env.as_deref() == Some("0") {
+            false
+        } else {
+            saved.lean.unwrap_or(true)
+        };
 
         let config = Self {
             model,
@@ -250,8 +265,9 @@ impl Config {
             max_cost_micros,
             max_wall_secs,
             bare,
+            lean,
         };
-        log::info!(target: "gray_config", "config resolved: model={:?}, base_url={}, api_key={}, context_window={:?}, bare={}", config.model, scrub_url(&config.base_url), config.api_key.as_deref().map(|_| "set").unwrap_or("unset"), config.context_window, config.bare);
+        log::info!(target: "gray_config", "config resolved: model={:?}, base_url={}, api_key={}, context_window={:?}, bare={}, lean={}", config.model, scrub_url(&config.base_url), config.api_key.as_deref().map(|_| "set").unwrap_or("unset"), config.context_window, config.bare, config.lean);
         Ok(config)
     }
 

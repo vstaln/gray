@@ -61,10 +61,12 @@ the prompt reaches the model — only the text after this note reaches it.
 This file IS the stored system prompt, sent verbatim every turn with no
 runtime context appended. Only what the model can't already know: the
 tools describe themselves and the task says the rest.
-Gray adds only ephemeral per-turn context: the <available_skills> list
+Per turn gray may append ephemeral context: the <available_skills> list
 (fresh skill discovery for the turn's directory) — no skill tool, read
 matches with bash — plus <project_context>, the nearest AGENTS.md /
-CLAUDE.md above the working directory. Edit with `/agentsmd`
+CLAUDE.md above the working directory, and plugin docs. Lean mode — the
+default — skips all of that: this file alone is the system prompt. Opt
+back in with "lean": false or GRAY_LEAN=0. Edit with `/agentsmd`
 (Ctrl-S save & apply, Ctrl-R reset to this default, Ctrl-X cancel).
 -->
 You are Gray, running on the user's machine.
@@ -309,8 +311,9 @@ pub async fn build_agent(
         // / `host/say` don't fall back to loud `{"error":…}`.
         // Bash-only tools; the context-only skills + project-context
         // plugins are always on (every profile, including the default
-        // `tools-minimal`).
-        extra_plugins: if config.bare {
+        // `tools-minimal`). `--lean` skips them: their whole job is
+        // injecting prompt context.
+        extra_plugins: if config.bare || config.lean {
             Vec::new()
         } else {
             vec![
@@ -337,6 +340,10 @@ pub async fn build_agent(
     // prefix rewrite throws away the upstream native session, so the
     // cold-cache stale-output mask stays off there entirely.
     agent.set_prefix_rewrite_ok(!config.uses_plugin_credentials() || plugin_warm_replay);
+    // Installed sidecar plugins inject their own prompt_context docs too —
+    // lean suppresses hook text at the loop, not just the two context-only
+    // builtins skipped above.
+    agent.set_lean_prompt(config.lean);
     // Bash bounds an explicitly requested timeout at 3600 s (and has no
     // default), so the agent-level timeout must sit above that (P2B
     // requirement): it is a last-resort stop, never a budget.
@@ -435,6 +442,14 @@ pub struct Cli {
     /// Model/provider config still loads. Env: GRAY_BARE=1.
     #[arg(long)]
     pub bare: bool,
+
+    /// Lean prompt (the default): keep the stored AGENTS.md and every
+    /// tool/plugin, but skip all per-turn injected context (the skills
+    /// list, project AGENTS.md/CLAUDE.md, plugin docs). Costs close to
+    /// --bare per request without losing the full agent. Opt out with
+    /// GRAY_LEAN=0 or persisted `"lean": false`.
+    #[arg(long)]
+    pub lean: bool,
 
     /// Maximum agent turns per invocation (mini-swe-agent step_limit).
     /// Env: GRAY_MAX_TURNS. Applies to REPL turns this process runs.
