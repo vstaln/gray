@@ -225,6 +225,10 @@ impl SaveLocalDeliver {
                         origin.chat
                     );
                 }
+                if is_hosted(origin) {
+                    post_to_outbox(&self.home, &saved(true), origin)
+                        .map_err(|e| format!("outbox write failed: {e:#}"))?;
+                }
                 Ok(saved(true))
             }
         }
@@ -405,12 +409,68 @@ fn failure_delivery(
         }
         return None;
     }
+    if let Some(origin) = job.origin.as_ref().filter(|o| is_hosted(o))
+        && let Err(e) = post_to_outbox(&deliver.home, &fired, origin)
+    {
+        log::warn!("cron {}: outbox write failed: {e:#}", job.id);
+    }
     Some(fired)
 }
 
 /// `Origin.platform` for a job added from inside a gray session (the bash
 /// tool exports `GRAY_SESSION_ID`): its result comes back into that chat.
 pub const SESSION_PLATFORM: &str = "repl";
+
+/// A chat a host (a chat plugin) delivers to by draining `cron tick --json`.
+/// Not a gray session (`repl`, inbox) and not `local` (`--origin-session`
+/// alone: mirror only, nobody routes it).
+pub fn is_hosted(origin: &crate::cron::store::Origin) -> bool {
+    origin.platform != SESSION_PLATFORM && origin.platform != "local"
+}
+
+/// Spool a hosted delivery as its `cron_delivery` line. Whatever driver fired
+/// the job (gateway, `serve`, a REPL, an in-turn `tick` or `run`), the line
+/// waits on disk until the host's `tick --json` drains it — firing is never
+/// the moment a chat delivery is decided and lost.
+fn post_to_outbox(
+    home: &std::path::Path,
+    fired: &DeliveredFire,
+    origin: &crate::cron::store::Origin,
+) -> anyhow::Result<()> {
+    write_entry(
+        &home.join("cron").join("outbox"),
+        &delivery_json(fired, Some(origin)),
+    )
+}
+
+/// Take every spooled `cron_delivery` line, oldest first. Removed before
+/// returned (at-most-once, like the session inbox).
+// ponytail: no ack — a host post that fails after the drain is lost; add a
+// `cron delivered <file>` ack when posts fail in practice.
+pub fn drain_outbox(home: &std::path::Path) -> Vec<String> {
+    let Ok(rd) = std::fs::read_dir(home.join("cron").join("outbox")) else {
+        return Vec::new();
+    };
+    let mut paths: Vec<PathBuf> = rd
+        .filter_map(Result::ok)
+        .filter(|e| !e.file_name().to_string_lossy().starts_with('.'))
+        .map(|e| e.path())
+        .collect();
+    paths.sort();
+    let mut out = Vec::new();
+    for path in paths {
+        let text = std::fs::read_to_string(&path);
+        if let Err(e) = std::fs::remove_file(&path) {
+            log::warn!("cron outbox: cannot remove {}: {e}", path.display());
+            continue;
+        }
+        match text {
+            Ok(t) if !t.trim().is_empty() => out.push(t.trim().to_string()),
+            _ => log::warn!("cron outbox: dropped unreadable {}", path.display()),
+        }
+    }
+    out
+}
 
 /// `<home>/cron/inbox/<session>`, or `None` when the id could escape the
 /// directory (it comes from an env var and a hand-editable jobs file).
@@ -432,7 +492,6 @@ fn post_to_session_inbox(
 ) -> anyhow::Result<()> {
     let dir = session_inbox(home, session)
         .ok_or_else(|| anyhow::anyhow!("unsafe session id {session:?}"))?;
-    std::fs::create_dir_all(&dir)?;
     let body = if fired.failed {
         format!("(failed) {}", fired.excerpt)
     } else {
@@ -442,6 +501,12 @@ fn post_to_session_inbox(
         "card": format!("\u{23f0} cron: {}", format_fire_chat(fired)),
         "prompt": crate::cron_fire::mirror_message(&fired.name, &body),
     });
+    write_entry(&dir, &entry.to_string())
+}
+
+/// Atomic 0600 drop of one JSON entry into a spool dir (inbox or outbox).
+fn write_entry(dir: &std::path::Path, body: &str) -> anyhow::Result<()> {
+    std::fs::create_dir_all(dir)?;
     // Name sorts by delivery time; the uuid keeps two fires in one ms apart.
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -454,7 +519,7 @@ fn post_to_session_inbox(
     options.write(true).create_new(true);
     #[cfg(unix)]
     std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
-    std::io::Write::write_all(&mut options.open(&tmp)?, entry.to_string().as_bytes())?;
+    std::io::Write::write_all(&mut options.open(&tmp)?, body.as_bytes())?;
     std::fs::rename(&tmp, dir.join(name))?;
     Ok(())
 }
