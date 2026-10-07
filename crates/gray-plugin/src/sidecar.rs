@@ -55,11 +55,10 @@ use gray_core::credential::CredentialMaterial;
 use gray_core::message::ToolDef;
 
 use crate::{
-    DYNAMIC_PROTOCOL,
-    CoreEvent, Manifest, PROVIDER_CREDENTIALS, Plugin, ProviderAuthPoll, ProviderAuthStart,
-    ProviderChatRequest, ProviderChatResult, ProviderModelCatalog, ProviderModelsRequest,
-    ProviderRefreshRequest, ProviderRevokeRequest, ProviderRevokeResult, ProviderRpcError,
-    ToolBefore, manifest_tools,
+    CoreEvent, DYNAMIC_PROTOCOL, Manifest, PROVIDER_CREDENTIALS, Plugin, ProviderAuthPoll,
+    ProviderAuthStart, ProviderChatRequest, ProviderChatResult, ProviderModelCatalog,
+    ProviderModelsRequest, ProviderRefreshRequest, ProviderRevokeRequest, ProviderRevokeResult,
+    ProviderRpcError, ToolBefore, manifest_tools,
 };
 
 /// Plugin→host request handler (`host/run`, `host/say`). Set by the host via
@@ -789,8 +788,12 @@ impl SidecarPlugin {
             if method != HOST_TOOLS_CHANGED || pending.swap(true, Ordering::SeqCst) {
                 return;
             }
-            let (transport, tools, pending, name) =
-                (transport.clone(), tools.clone(), pending.clone(), name.clone());
+            let (transport, tools, pending, name) = (
+                transport.clone(),
+                tools.clone(),
+                pending.clone(),
+                name.clone(),
+            );
             rt.spawn(async move {
                 tokio::time::sleep(TOOLS_CHANGED_DEBOUNCE).await;
                 pending.store(false, Ordering::SeqCst);
@@ -1233,9 +1236,9 @@ fn attach_media(name: &str, out: &mut ToolOutput, reply: &Value) {
     let field = |e: &Value, k: &str| e.get(k).and_then(|s| s.as_str()).map(str::to_string);
     for e in entries("images") {
         match (field(&e, "mime"), field(&e, "data_base64")) {
-            (Some(media_type), Some(data)) => {
-                out.images.push(gray_core::agent::AttachedImage { media_type, data })
-            }
+            (Some(media_type), Some(data)) => out
+                .images
+                .push(gray_core::agent::AttachedImage { media_type, data }),
             _ => log::warn!(target: "gray_plugin", "{name}: dropped malformed image entry"),
         }
     }

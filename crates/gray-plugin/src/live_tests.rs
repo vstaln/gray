@@ -50,7 +50,12 @@ fn setup() -> (LiveRegistry, SharedTools) {
         Arc::new(NamedTool("static_t")),
     ]));
     let static_ = Arc::new(Registry::new(vec![Arc::new(NamedTool("static_t"))]));
-    let reg = LiveRegistry::new(static_, vec![Arc::new(FakePlugin { tools: live.clone() })]);
+    let reg = LiveRegistry::new(
+        static_,
+        vec![Arc::new(FakePlugin {
+            tools: live.clone(),
+        })],
+    );
     (reg, live)
 }
 
@@ -71,10 +76,14 @@ fn live_defs_lists_static_then_live_and_drops_duplicates() {
 #[tokio::test]
 async fn execute_reaches_live_tool_and_static_tool() {
     let (reg, _) = setup();
-    let out = reg.execute(&ToolContext::default(), "live_t", json!({})).await;
+    let out = reg
+        .execute(&ToolContext::default(), "live_t", json!({}))
+        .await;
     assert!(!out.is_error);
     assert_eq!(out.content, "ran live_t");
-    let out = reg.execute(&ToolContext::default(), "static_t", json!({})).await;
+    let out = reg
+        .execute(&ToolContext::default(), "static_t", json!({}))
+        .await;
     assert_eq!(out.content, "ran static_t");
 }
 
@@ -90,7 +99,13 @@ fn live_defs_reflect_plugin_changes_without_rebuild() {
 #[tokio::test]
 async fn unknown_tool_is_an_error() {
     let (reg, _) = setup();
-    let out = reg.execute(&ToolContext::default(), "nope", json!({})).await;
+    let out = reg
+        .execute(&ToolContext::default(), "nope", json!({}))
+        .await;
     assert!(out.is_error, "got: {}", out.content);
-    assert!(out.content.contains("does not exist"), "got: {}", out.content);
+    assert!(
+        out.content.contains("does not exist"),
+        "got: {}",
+        out.content
+    );
 }

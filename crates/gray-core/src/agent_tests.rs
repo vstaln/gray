@@ -3106,7 +3106,11 @@ async fn run_refreshes_tool_defs_from_live_executor() {
         .unwrap();
     assert_eq!(seen.lock().expect("seen lock")[0], vec!["mcp__x__y"]);
     assert_eq!(
-        agent.tool_defs().iter().map(|t| t.name.as_str()).collect::<Vec<_>>(),
+        agent
+            .tool_defs()
+            .iter()
+            .map(|t| t.name.as_str())
+            .collect::<Vec<_>>(),
         vec!["mcp__x__y"]
     );
 
