@@ -65,19 +65,20 @@ fn bare_comes_from_the_flag_or_env() {
 fn lean_defaults_on_with_flag_and_env_overrides() {
     let plain = Cli::parse_from(["gray"]);
     let flag = Cli::parse_from(["gray", "--lean"]);
-    let lean_env = |v: &str| move |k: &str| (k == "GRAY_LEAN").then(|| v.to_string());
+    let env0 = |k: &str| (k == "GRAY_LEAN").then(|| "0".to_string());
+    let env1 = |k: &str| (k == "GRAY_LEAN").then(|| "1".to_string());
     assert!(
-        !Config::resolve_with(&plain, lean_env("0"))
+        !Config::resolve_with(&plain, env0)
             .expect("config resolves")
             .lean
     );
     assert!(
-        Config::resolve_with(&flag, lean_env("0"))
+        Config::resolve_with(&flag, env0)
             .expect("config resolves")
             .lean
     );
     assert!(
-        Config::resolve_with(&plain, lean_env("1"))
+        Config::resolve_with(&plain, env1)
             .expect("config resolves")
             .lean
     );
