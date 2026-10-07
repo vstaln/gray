@@ -84,6 +84,11 @@ pub(crate) const REGISTRY: &[CmdDef] = &[
         aliases: &[],
     },
     CmdDef {
+        name: "theme",
+        desc: "pick a color theme (~/.gray/themes/*.json; /theme new <name>)",
+        aliases: &["themes"],
+    },
+    CmdDef {
         name: "agentsmd",
         desc: "edit system prompt",
         aliases: &["sys"],
@@ -148,6 +153,11 @@ pub(crate) fn resolve(name: &str) -> Option<&'static CmdDef> {
         return Some(d);
     }
     REGISTRY.iter().find(|d| d.aliases.iter().any(|a| *a == n))
+}
+
+/// True when `name` (with or without `/`) is a built-in command or alias.
+pub(crate) fn is_builtin_command(name: &str) -> bool {
+    resolve(name).is_some()
 }
 
 /// `/claude`, `/devin`, ...: one `(command, provider id, provider name)` per
@@ -239,6 +249,28 @@ pub(crate) fn completion_matches_dyn(
             .map(|(a, b)| (a.to_string(), b.to_string()))
             .collect();
         let f = inner.to_lowercase();
+        // Prompt templates: listed after built-ins, name-prefix first.
+        let templates = crate::prompt_templates::discover(cwd);
+        let mut tpl_rows: Vec<(u8, String, String)> = templates
+            .iter()
+            .filter_map(|t| {
+                let n = t.name.to_lowercase();
+                let rank = if n.starts_with(&f) {
+                    0
+                } else if n.contains(&f) || t.description.to_lowercase().contains(&f) {
+                    1
+                } else {
+                    return None;
+                };
+                let desc = match &t.argument_hint {
+                    Some(h) => format!("{} {h}", t.description),
+                    None => t.description.clone(),
+                };
+                Some((rank, t.name.clone(), desc))
+            })
+            .collect();
+        tpl_rows.sort_by_key(|(rank, _, _)| *rank);
+        matches.extend(tpl_rows.into_iter().map(|(_, n, d)| (n, d)));
         let shortcuts = provider_shortcuts();
         matches.extend(
             shortcuts
@@ -265,6 +297,7 @@ pub(crate) fn completion_matches_dyn(
 pub(crate) fn completion_fill(name: &str) -> String {
     if name.contains(' ')
         || resolve(name).is_some()
+        || crate::prompt_templates::is_cached_name(name)
         || provider_shortcuts().iter().any(|(s, _, _)| s == name)
         || crate::plugin_cli::completions(name)
             .iter()
@@ -298,6 +331,7 @@ pub(crate) fn complete_command_args(
         "skill" | "skills" => complete_skill_args(cmd, arg_text, cwd),
         "agentsmd" | "sys" => complete_agentsmd_args(cmd, arg_text),
         "model" | "models" => complete_model_args(cmd, arg_text),
+        "theme" | "themes" => complete_theme_args(cmd, arg_text),
         _ => Vec::new(),
     };
     if arg_text.trim().is_empty()
@@ -341,6 +375,32 @@ fn complete_skill_args(cmd: &str, arg_text: &str, cwd: &std::path::Path) -> Vec<
 }
 
 /// Suffixes for `/agentsmd` (alias `/sys`).
+/// Suffixes for `/theme`: the built-in name, user theme files, and the
+/// `new` / `reload` actions.
+fn complete_theme_args(cmd: &str, arg_text: &str) -> Vec<(String, String)> {
+    let mut rows: Vec<(String, String)> = vec![(
+        crate::theme::BUILTIN_THEME_NAME.to_string(),
+        "built-in palette".to_string(),
+    )];
+    if let Ok(dir) = crate::theme::themes_dir() {
+        for name in crate::theme::list_themes_in(&dir) {
+            if !crate::theme::is_builtin_name(&name) {
+                rows.push((name, "user theme".to_string()));
+            }
+        }
+    }
+    rows.push((
+        "new".into(),
+        "write the current palette to a new theme file".into(),
+    ));
+    rows.push(("reload".into(), "re-read the active theme file".into()));
+    let f = arg_text.trim().to_lowercase();
+    rows.into_iter()
+        .filter(|(n, _)| n.to_lowercase().starts_with(&f))
+        .map(|(n, d)| (format!("{cmd} {n}"), d))
+        .collect()
+}
+
 fn complete_agentsmd_args(cmd: &str, arg_text: &str) -> Vec<(String, String)> {
     const SUBS: &[(&str, &str)] = &[("show", "print prompt file"), ("reset", "restore default")];
     complete_from_table(cmd, arg_text, SUBS)
@@ -500,6 +560,9 @@ pub enum ReplCommand {
     /// transcript at full terminal width, and pressing it again drops it so
     /// the default gray ASCII banner is back. Easter egg, no persisted state.
     Hehe,
+    /// Color theme: bare lists, `<name>` applies and saves, `new <name>`
+    /// writes the current palette as an editable file, `reload` re-reads.
+    Theme(Option<String>),
     /// Unknown slash command (`/word`).
     Unknown(String),
     /// Plugin manager: /plugin <list|install|remove|update|enable|disable|check>.
@@ -606,6 +669,7 @@ pub fn parse_command(line: &str) -> ReplCommand {
         Some("feedback") => ReplCommand::Feedback(opt(rest)),
         Some("help") => ReplCommand::Help,
         Some("hehe") => ReplCommand::Hehe,
+        Some("theme") => ReplCommand::Theme(opt(rest)),
         // Every connect alias accepts optional args like `/key openrouter`
         // (args are advisory; the provider menu always opens).
         Some("connect") => ReplCommand::Provider,

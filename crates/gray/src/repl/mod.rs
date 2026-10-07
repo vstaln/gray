@@ -197,6 +197,7 @@ use crate::{DEFAULT_SYS_PROMPT, build_agent, load_or_create_system_prompt_at};
 pub mod attachments;
 pub mod commands;
 mod cron;
+mod customize;
 mod dispatch;
 pub mod format;
 mod gateway_panel;
@@ -210,7 +211,7 @@ mod session;
 mod status;
 mod user_cmds;
 
-pub(crate) use commands::{REGISTRY, completion_fill, completion_matches_dyn};
+pub(crate) use commands::{REGISTRY, completion_fill, completion_matches_dyn, is_builtin_command};
 pub use commands::{ReplCommand, ResumeArgs, SysAction, parse_command};
 pub(crate) use format::build_user_message_with_attachments;
 pub use format::{THINKING_STYLE, fmt_usage, format_core_error};

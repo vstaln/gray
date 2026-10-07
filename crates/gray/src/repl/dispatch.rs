@@ -102,6 +102,15 @@ pub(crate) async fn dispatch_command(
                     out.push_str(&format!("  /{name:<10} {description}\n"));
                 }
             }
+            let templates = crate::prompt_templates::discover(cwd);
+            if !templates.is_empty() {
+                out.push_str("prompt templates:\n");
+                for t in templates {
+                    if seen.insert(t.name.clone()) {
+                        out.push_str(&format!("  /{:<10} {}\n", t.name, t.description));
+                    }
+                }
+            }
             if let Some((shared, _)) = tui {
                 let mut t = shared.lock().expect("tui lock");
                 t.push_dim(out.trim_end().to_string());
@@ -380,6 +389,10 @@ pub(crate) async fn dispatch_command(
 
         ReplCommand::Copy => {
             handle_copy(agent, tui.as_ref().map(|(s, _)| s));
+            Flow::Continue
+        }
+        ReplCommand::Theme(arg) => {
+            super::customize::handle_theme(arg, tui.as_ref().map(|(s, _)| s));
             Flow::Continue
         }
         ReplCommand::Feedback(text) => {

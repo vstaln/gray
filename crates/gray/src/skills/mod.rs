@@ -218,7 +218,6 @@ fn add_ignore_rules(matcher: &mut IgnoreMatcher, dir: &Path, root_dir: &Path) {
 mod load;
 
 pub(crate) use load::load_skills_from_dir_internal;
-#[cfg(test)]
 pub(crate) use load::parse_frontmatter;
 
 pub fn load_skills_from_dir(dir: &Path, source: &str) -> LoadSkillsResult {

@@ -145,6 +145,12 @@ async fn run() -> anyhow::Result<()> {
         std::process::exit(gray::doctor::run(&config, *online));
     }
     gray::turn_caps::init_process_start();
+    if !config.bare {
+        let saved_theme = gray::setup::saved_config_path()
+            .ok()
+            .and_then(|p| gray::setup::load_saved_config_at(&p).theme);
+        gray::theme::init_from_saved(saved_theme.as_deref());
+    }
     gray::setup::set_user_context_window(config.context_window);
     gray::setup::set_user_reserve_tokens(config.context_reserve);
     gray::setup::set_user_keep_recent_tokens(config.context_keep);

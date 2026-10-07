@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Added
+- **User themes.** `~/.gray/themes/<name>.json` overrides any of the
+  palette's color roles; `/theme <name>` switches and saves, `/theme new
+  <name>` writes the current palette as a starting point, `GRAY_THEME`
+  overrides per run. Gray still ships one built-in palette.
+- **Prompt templates.** `prompts/*.md` files become slash commands with
+  pi's placeholders (`$1`, `$@`, `${1:-default}`, `${@:2}`). Read from
+  `.gray/prompts` and `~/.gray/prompts`, plus pi's `prompts` and Claude
+  Code's `commands` folders. Shown in completion and `/help`.
+
 ## [0.1.12] - 2026-10-07
 
 ### Added

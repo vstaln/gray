@@ -269,6 +269,17 @@ pub(crate) fn expand_skill_command(
             ReplCommand::Prompt(expanded)
         }
     };
+    // Prompt templates (`~/.gray/prompts/<name>.md`, …): an unclaimed
+    // `/name args` whose name matches a template sends its filled body.
+    // Built-ins and provider shortcuts never reach here (parsed earlier).
+    if let ReplCommand::Unknown(raw) = &cmd {
+        let body = raw.trim().trim_start_matches('/');
+        let (name, rest) = body.split_once(char::is_whitespace).unwrap_or((body, ""));
+        if let Some(t) = crate::prompt_templates::find(cwd, name) {
+            return to_prompt(crate::prompt_templates::expand(&t, rest));
+        }
+        return cmd;
+    }
     let ReplCommand::Skill(payload) = cmd else {
         return cmd;
     };

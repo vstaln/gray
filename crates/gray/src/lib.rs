@@ -21,6 +21,7 @@ pub mod plugin_cli;
 pub mod print;
 mod print_meter;
 pub mod profile;
+pub mod prompt_templates;
 pub mod providers;
 pub mod repl;
 pub mod resume;
