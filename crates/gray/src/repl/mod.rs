@@ -16,26 +16,12 @@ use std::sync::Mutex as StdMutex;
 
 /// Static slash-command table driving both `/help` and the autocomplete panel.
 /// True while an agent turn is in flight: `Some(token)` cancels on first
-/// Ctrl-C (token consumed, turn handler reports it, REPL stays alive); a
-/// second press with no token in flight exits. At the prompt (no token)
-/// the first press clears the draft (or arms exit when already empty) and
-/// only a second press within 5 s exits — otherwise exit via /quit (or
-/// Ctrl-D on an empty line). Single mutex = no TOCTOU between flag and token.
+/// Ctrl-C (token consumed, turn handler reports it, REPL stays alive). With
+/// no token in flight a single press exits — at the prompt the composer's
+/// own Ctrl-C key does the same on an empty draft (a draft press clears it
+/// first); /quit and Ctrl-D exit too. Single mutex = no TOCTOU between
+/// flag and token.
 static TURN_STATE: StdMutex<Option<tokio_util::sync::CancellationToken>> = StdMutex::new(None);
-
-/// Window for a second Ctrl-C/SIGINT to confirm exit (both the global
-/// signal policy below and the prompt `read_line` key handler agree on 5 s).
-pub(crate) const CTRL_C_EXIT_WINDOW_MS: u64 = 5_000;
-
-/// Pure repeat check shared by the signal policy and (via the same window)
-/// the prompt handler: true only for a second press inside the window.
-pub(crate) fn sigint_should_exit(last_ms: u64, now_ms: u64) -> bool {
-    now_ms.wrapping_sub(last_ms) <= CTRL_C_EXIT_WINDOW_MS
-}
-
-/// Last at-prompt SIGINT (millis since epoch) for the two-press exit.
-/// Mid-turn presses consume the turn token instead and never touch this.
-static LAST_PROMPT_SIGINT_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// True from the moment a turn starts until its last message is persisted.
 /// The exit path waits on it: a second Ctrl-C can land while an interrupted
@@ -77,13 +63,6 @@ async fn drain_in_flight_turn(limit: std::time::Duration) -> bool {
     true
 }
 
-fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis().min(u128::from(u64::MAX)) as u64)
-        .unwrap_or(0)
-}
-
 /// The trailing text a signal exit prints after clearing the band: the same
 /// resume hint `/quit` leaves, or nothing when no session was ever minted.
 fn signal_exit_text(session_id: Option<&str>, styled: bool) -> String {
@@ -95,13 +74,21 @@ fn signal_exit_text(session_id: Option<&str>, styled: bool) -> String {
 
 /// Leaves the way `/quit` does, from a signal task that can't reach the
 /// loop: clear the composer band (retrying its lock briefly — a wedged loop
-/// holding it must not block the exit), then print the resume hint.
+/// holding it must not block the exit), then print the resume hint. A press
+/// that lands after a normal exit already printed skips all of it — the
+/// hint is never shown twice.
 fn exit_from_signal(code: i32, clear_band: bool) -> ! {
     use std::io::IsTerminal as _;
     // `process::exit` skips the job workers' kill-on-drop: stop them first,
     // before the band lock below — a worker that paints on its way out
     // must not wait on a lock this thread holds until exit.
     jobs::stop_all_blocking();
+    if session::exit_hint_printed() {
+        // A normal exit already shut the band down and printed the hint:
+        // nothing left but to leave.
+        let _ = std::io::stdout().flush();
+        std::process::exit(code);
+    }
     // Bound outside the lock loop: the guard borrows it and must live until
     // process::exit.
     let shared = clear_band.then(crate::host::registered_tui).flatten();
@@ -135,26 +122,29 @@ fn exit_from_signal(code: i32, clear_band: bool) -> ! {
         let _ = crossterm::terminal::disable_raw_mode();
         let _ = write!(std::io::stdout(), "\x1b[?25h\r\n");
     }
-    // write!, never println!: a hung-up tty must not panic here — that would
-    // kill the task and leave the process alive.
-    let _ = write!(
-        std::io::stdout(),
-        "{}",
-        signal_exit_text(
-            session::exit_session().as_deref(),
-            std::io::stdout().is_terminal()
-        )
-    );
+    if session::claim_exit_hint() {
+        // write!, never println!: a hung-up tty must not panic here — that
+        // would kill the task and leave the process alive.
+        let _ = write!(
+            std::io::stdout(),
+            "{}",
+            signal_exit_text(
+                session::exit_session().as_deref(),
+                std::io::stdout().is_terminal()
+            )
+        );
+    }
     let _ = std::io::stdout().flush();
     std::process::exit(code);
 }
 
 /// Installs the single global Ctrl-C policy:
 /// - during a turn: cancel the turn (first press), the turn handler reports
-///   it and the REPL stays alive; a second press with no token exits.
-/// - at the prompt: first press only arms exit (the `read_line` key handler
-///   clears the draft instead of quitting); a second press within 5 s exits
-///   cleanly, otherwise exit via /quit (or Ctrl-D on an empty line).
+///   it and the REPL stays alive; a press after the token was consumed exits.
+/// - otherwise: exit on the first press. Raw mode routes Ctrl-C to the
+///   `read_line` key handler instead, so a SIGINT landing here means the
+///   prompt is in cooked mode — mid-teardown or after the REPL returned —
+///   and leaving right away is what the press asked for.
 async fn spawn_ctrl_c_policy() {
     loop {
         if tokio::signal::ctrl_c().await.is_err() {
@@ -164,20 +154,12 @@ async fn spawn_ctrl_c_policy() {
         if let Some(t) = token {
             t.cancel(); // first press mid-turn: cancel, stay alive
         } else {
-            let now = now_ms();
-            let last = LAST_PROMPT_SIGINT_MS.load(std::sync::atomic::Ordering::Relaxed);
-            if sigint_should_exit(last, now) && last != 0 {
-                // Second press within the window: exit cleanly. An
-                // interrupted turn may still be persisting — let it land
-                // first, or the turn is lost instead of saved.
-                drain_in_flight_turn(TURN_DRAIN_TIMEOUT).await;
-                // Say something — a bare exit(0) mid-turn looks like a crash:
-                // the resume hint, same as /quit.
-                exit_from_signal(0, true);
-            }
-            // First press at the prompt: arm exit, stay alive (the prompt
-            // key handler clears the draft; exit via second press or /quit).
-            LAST_PROMPT_SIGINT_MS.store(now, std::sync::atomic::Ordering::Relaxed);
+            // An interrupted turn may still be persisting — let it land
+            // first, or the turn is lost instead of saved.
+            drain_in_flight_turn(TURN_DRAIN_TIMEOUT).await;
+            // Say something — a bare exit(0) mid-turn looks like a crash:
+            // the resume hint, same as /quit (never printed twice).
+            exit_from_signal(0, true);
         }
     }
 }
@@ -472,11 +454,15 @@ async fn shutdown_shell_tasks(
 }
 
 /// Graceful sidecar teardown (`plugin/shutdown`); best-effort, never fails.
+/// Hooks run concurrently under one cap: a wedged sidecar can't hold the
+/// exit past it.
 async fn shutdown_hooks(agent: Option<&gray_core::agent::Agent>) {
     let hooks: Vec<Arc<dyn PluginHooks>> = agent.map(|a| a.hooks().to_vec()).unwrap_or_default();
-    for h in &hooks {
-        h.shutdown().await;
-    }
+    let _ = tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        futures::future::join_all(hooks.iter().map(|h| h.shutdown())),
+    )
+    .await;
 }
 
 /// Restores the inline viewport after an alternate-screen modal (model/provider/etc).
@@ -1022,10 +1008,10 @@ pub async fn run_repl_mode(
                             }
                             stop.store(true, std::sync::atomic::Ordering::Relaxed);
                             shared.lock().expect("tui lock").shutdown();
+                            print_exit_hint(&session_state);
                             crate::ask::shutdown();
                             shutdown_hooks(agent.as_ref()).await;
                             shutdown_shell_tasks(agent.as_ref(), &session_state, &cwd).await;
-                            print_exit_hint(&session_state);
                             break;
                         }
                     };

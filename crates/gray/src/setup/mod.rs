@@ -120,7 +120,8 @@ pub use install_manager::{run_plugins_modal, run_skills_modal};
 pub(crate) use model_modal::{
     canonical_model_rows, canonicalize_effort_variant, composite_label_for,
     decompose_model_variant, effort_chip, picker_scope, provider_models_for_config,
-    run_model_modal, saved_models_for, validate_direct_model_id, wire_model_for,
+    run_model_modal, saved_models_for, selected_model_label, validate_direct_model_id,
+    wire_model_for,
 };
 pub(crate) use provider_auth::adopt_connection_effort;
 pub use provider_auth::{

@@ -3,10 +3,26 @@
 use super::*;
 
 /// The session the resume hint names, mirrored out of the REPL loop because
-/// the double-Ctrl-C and SIGHUP/SIGTERM exits run in signal tasks that can't
+/// the Ctrl-C and SIGHUP/SIGTERM exits run in signal tasks that can't
 /// see `session_state`. Synced at the loop top and wherever a turn mints a
 /// session (`ensure_session_state`).
 static EXIT_SESSION: StdMutex<Option<String>> = StdMutex::new(None);
+
+/// Set by the first exit path that prints the resume hint: every later path
+/// (a signal exit racing a normal teardown) sees it and skips — the hint is
+/// printed at most once per process.
+static EXIT_HINT_PRINTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// True exactly once per process — the caller that gets true prints the hint.
+pub(crate) fn claim_exit_hint() -> bool {
+    !EXIT_HINT_PRINTED.swap(true, std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Whether the resume hint was already printed (a normal exit path got there
+/// first — the band is already down, so a signal exit can leave directly).
+pub(crate) fn exit_hint_printed() -> bool {
+    EXIT_HINT_PRINTED.load(std::sync::atomic::Ordering::Relaxed)
+}
 
 pub(crate) fn remember_exit_session(id: Option<&str>) {
     *EXIT_SESSION.lock().unwrap_or_else(|e| e.into_inner()) = id.map(str::to_string);
@@ -28,7 +44,9 @@ pub(crate) fn exit_hint_line(session_id: &str, styled: bool) -> String {
 }
 
 pub(crate) fn print_exit_hint(session_state: &Option<SessionState>) {
-    if let Some(state) = session_state {
+    if let Some(state) = session_state
+        && claim_exit_hint()
+    {
         use std::io::IsTerminal as _;
         println!(
             "{}",

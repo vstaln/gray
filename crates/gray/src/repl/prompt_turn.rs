@@ -229,8 +229,11 @@ pub(crate) async fn run_prompt_turn(
     // the whole prefix whatever it holds, so masking every stale tool output
     // now is free — the rewrite costs no extra miss, and the shorter prompt
     // is what gets cached from here on. Warm cache: leave it alone, the
-    // loop's batched mask waits for a full batch instead.
-    if let Some(s) = &tui_stream
+    // loop's batched mask waits for a full batch instead. Relay providers
+    // (`prefix_rewrite_ok` off) never mask here: the rewritten prefix would
+    // throw away the upstream native session.
+    if agent.prefix_rewrite_ok()
+        && let Some(s) = &tui_stream
         && s.lock().expect("tui lock").cache_is_cold()
     {
         agent.mask_stale_tool_output();

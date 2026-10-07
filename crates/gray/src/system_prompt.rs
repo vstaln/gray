@@ -55,6 +55,30 @@ pub fn build_runtime_prompt(custom_prompt: Option<String>, cwd: &Path) -> String
     prompt
 }
 
+/// The model's own identity block, appended after the user's file at build
+/// time (Hermes' volatile prompt section carries the same two lines). The
+/// model cannot see its picker row or provider from inside the loop, and
+/// without them it confabulates a name from provider branding — a stale
+/// "SWE-2 High" when the user picked something else. `label` is the
+/// picker-visible name (a composite row's "A + B" label, or the catalog's
+/// display name); the raw row `id` rides beside it when the label adds
+/// something. `provider` is the connection's display name; either line is
+/// skipped when empty so a missing value never renders as a lie.
+pub fn identity_block(model_label: &str, model_id: &str, provider: &str) -> String {
+    let mut lines = Vec::new();
+    if !model_id.is_empty() {
+        lines.push(if model_label.is_empty() || model_label == model_id {
+            format!("Model: {model_id}")
+        } else {
+            format!("Model: {model_label} ({model_id})")
+        });
+    }
+    if !provider.is_empty() {
+        lines.push(format!("Provider: {provider}"));
+    }
+    lines.join("\n")
+}
+
 /// Static harness facts the model cannot infer, and that decide how many rounds a
 /// task costs. The concurrency machinery is otherwise invisible: the model issues
 /// one call per round, each round re-bills the whole conversation, and the

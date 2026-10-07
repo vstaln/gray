@@ -1,19 +1,3 @@
-use super::*;
-
-#[test]
-fn sigint_second_press_within_window_exits() {
-    // First press (no prior) never exits — verified by last==0 guard at
-    // the call site; pure helper: far apart → false, close → true.
-    assert!(!sigint_should_exit(
-        1_000,
-        1_000 + CTRL_C_EXIT_WINDOW_MS + 1
-    ));
-    assert!(sigint_should_exit(1_000, 1_000 + 1_000));
-    assert!(sigint_should_exit(1_000, 1_000 + CTRL_C_EXIT_WINDOW_MS));
-    // Clock skew backwards → wrapping_sub is huge → false.
-    assert!(!sigint_should_exit(2_000, 1_000));
-}
-
 #[test]
 fn totals_sum_durations_and_skip_untimed() {
     let entry = |id: u64, duration_ms: Option<u64>| crate::session_store::SessionEntry {

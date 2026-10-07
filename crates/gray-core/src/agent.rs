@@ -469,6 +469,11 @@ pub struct Agent {
     pub(crate) masked_prefix: usize,
     /// Prompt-cache warming during long tool runs; `None` = off.
     pub(crate) cache_warm: Option<crate::cache_warm::CacheWarmPolicy>,
+    /// Whether the host may rewrite already-sent history (the cold-cache
+    /// stale-output mask shortens old tool results). Relay providers spawn
+    /// a per-turn child off a native session: rewriting the prefix there
+    /// throws the session away, so masking stays off even on a cold cache.
+    pub(crate) prefix_rewrite_ok: bool,
 }
 
 /// Lends a shared provider to a `Box` decorator ([`Agent::map_provider`]).
@@ -514,6 +519,7 @@ impl Agent {
             contaminated: std::collections::BTreeSet::new(),
             masked_prefix: 0,
             cache_warm: None,
+            prefix_rewrite_ok: true,
         }
     }
 
@@ -535,6 +541,18 @@ impl Agent {
 
     pub fn history_revision(&self) -> u64 {
         self.history_revision
+    }
+
+    /// Whether the host may rewrite already-sent history (the cold-cache
+    /// stale-output mask). Relay providers that resume a native session per
+    /// turn get `false`: rewriting the prefix would throw it away.
+    pub fn prefix_rewrite_ok(&self) -> bool {
+        self.prefix_rewrite_ok
+    }
+
+    /// See [`Agent::prefix_rewrite_ok`]. Set by the host at build time.
+    pub fn set_prefix_rewrite_ok(&mut self, ok: bool) {
+        self.prefix_rewrite_ok = ok;
     }
 
     /// Install the mid-turn steer hook (see [`Agent::steer`]). Set per turn by

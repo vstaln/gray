@@ -7,6 +7,7 @@ use gray::print::run_print_mode_with_session;
 use gray::repl::run_repl_mode;
 use gray_core::input::{InputEnvelope, InputError, MAX_INPUT_BYTES};
 use std::io::Read;
+use std::io::Write as _;
 use std::path::Path;
 
 fn read_structured_input(path: &Path) -> Result<Vec<u8>, InputError> {
@@ -227,6 +228,12 @@ async fn run() -> anyhow::Result<()> {
             gray::update::startup_check().await;
         }
         run_repl_mode(&mut config, cli.continue_last, session_arg).await?;
+        // Tokio's runtime drop can block on lingering spawn_blocking work
+        // (the provider model fetch): leave directly, like the signal exit.
+        let _ = std::io::stdout().flush();
+        let _ = std::io::stderr().flush();
+        log::logger().flush();
+        std::process::exit(0);
     }
     Ok(())
 }
@@ -311,7 +318,12 @@ async fn run_resume_subcommand(
     // it was accepted and then discarded. To send a first message on resume,
     // pipe it in or type it after the REPL opens.
     run_repl_mode(config, false, Some(target_id.as_str())).await?;
-    Ok(())
+    // Same as the REPL call above: never let runtime drop block on
+    // lingering blocking tasks.
+    let _ = std::io::stdout().flush();
+    let _ = std::io::stderr().flush();
+    log::logger().flush();
+    std::process::exit(0);
 }
 
 async fn run_plugin(cmd: gray::PluginCmd) -> anyhow::Result<()> {
