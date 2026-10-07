@@ -309,8 +309,9 @@ pub async fn build_agent(
         // / `host/say` don't fall back to loud `{"error":…}`.
         // Bash-only tools; the context-only skills + project-context
         // plugins are always on (every profile, including the default
-        // `tools-minimal`).
-        extra_plugins: if config.bare {
+        // `tools-minimal`). `--lean` skips them: their whole job is
+        // injecting prompt context.
+        extra_plugins: if config.bare || config.lean {
             Vec::new()
         } else {
             vec![
@@ -337,6 +338,10 @@ pub async fn build_agent(
     // prefix rewrite throws away the upstream native session, so the
     // cold-cache stale-output mask stays off there entirely.
     agent.set_prefix_rewrite_ok(!config.uses_plugin_credentials() || plugin_warm_replay);
+    // Installed sidecar plugins inject their own prompt_context docs too —
+    // lean suppresses hook text at the loop, not just the two context-only
+    // builtins skipped above.
+    agent.set_lean_prompt(config.lean);
     // Bash bounds an explicitly requested timeout at 3600 s (and has no
     // default), so the agent-level timeout must sit above that (P2B
     // requirement): it is a last-resort stop, never a budget.
@@ -435,6 +440,14 @@ pub struct Cli {
     /// Model/provider config still loads. Env: GRAY_BARE=1.
     #[arg(long)]
     pub bare: bool,
+
+    /// Lean prompt: keep the stored AGENTS.md and every tool/plugin, but
+    /// skip all per-turn injected context (the skills list, project
+    /// AGENTS.md/CLAUDE.md, plugin docs). Costs close to --bare per request
+    /// without losing the full agent. Env: GRAY_LEAN=1; persisted `lean`
+    /// config key turns it on permanently.
+    #[arg(long)]
+    pub lean: bool,
 
     /// Maximum agent turns per invocation (mini-swe-agent step_limit).
     /// Env: GRAY_MAX_TURNS. Applies to REPL turns this process runs.

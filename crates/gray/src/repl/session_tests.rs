@@ -62,6 +62,7 @@ async fn failed_compaction_save_retries_full_history_before_appending() {
         max_cost_micros: None,
         max_wall_secs: None,
         bare: false,
+        lean: false,
     };
     // No provider request is made: these tests exercise persistence only.
     struct NoRequests;

@@ -23,6 +23,7 @@ fn config() -> Config {
         max_cost_micros: None,
         max_wall_secs: None,
         bare: false,
+        lean: false,
     }
 }
 

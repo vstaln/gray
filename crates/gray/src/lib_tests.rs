@@ -310,6 +310,7 @@ fn warm_config(base_url: &str, effort: Option<&str>, plugin: bool) -> Config {
         max_cost_micros: None,
         max_wall_secs: None,
         bare: false,
+        lean: false,
     }
 }
 
