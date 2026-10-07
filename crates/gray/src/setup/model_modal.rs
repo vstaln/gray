@@ -424,6 +424,25 @@ enum Row {
     Opt(usize),
 }
 
+/// `list` with the `head` ids lifted to the front in `head` order; every
+/// other entry keeps its place. The fresh picker's recommended head is a
+/// reorder of the list, never a filter — unknown rows still follow the
+/// divider.
+fn head_first<'a>(list: &[&'a (String, String)], head: &[String]) -> Vec<&'a (String, String)> {
+    let mut out = Vec::with_capacity(list.len());
+    for h in head {
+        if let Some(entry) = list.iter().find(|(id, _)| id == h) {
+            out.push(*entry);
+        }
+    }
+    out.extend(
+        list.iter()
+            .copied()
+            .filter(|(id, _)| !head.iter().any(|h| h == id)),
+    );
+    out
+}
+
 /// Selection may never rest on the divider: after any move, step once more
 /// in the direction of travel. The divider always has models on both sides
 /// (it only renders when `0 < sep < len`), so one step suffices.
@@ -998,6 +1017,9 @@ fn detail_rows(models: &[(String, String)]) -> usize {
 /// between its arrows, gap, the effort label (`Minimal` is the widest).
 const ROW_TAIL: usize = 2 + 1 + 1 + 2 + METER_W + 2 + 1 + 7;
 
+/// How many recommended ids head the fresh picker list.
+const RECOMMENDED_HEAD: usize = 5;
+
 /// The effort meter's cell pair: filled/hollow hexagons — the family
 /// /context already uses for used vs free cells — on a Nerd Font, plain
 /// squares everywhere else.
@@ -1155,6 +1177,9 @@ struct PickerView<'a> {
     efforts: &'a RowEfforts,
     toggles: PickerToggles,
     drop: Option<&'a DropState>,
+    /// The sole divider marks the recommended head, not recents — it draws
+    /// an `all models` label instead of a bare rule.
+    all_head: bool,
 }
 
 impl PickerView<'_> {
@@ -1848,6 +1873,10 @@ fn draw_picker(
         }
         for (off, row) in v.rows[top..top + shown].iter().enumerate() {
             let line = match row {
+                Row::Divider if v.all_head => Line::from(Span::styled(
+                    format!("  ─ all models {}", "─".repeat(row_w.saturating_sub(15))),
+                    fg(t.text_faint),
+                )),
                 Row::Divider => Line::from(Span::styled(
                     format!("  {}", "─".repeat(row_w.saturating_sub(2))),
                     fg(t.text_faint),
@@ -1949,6 +1978,10 @@ pub(crate) fn model_picker_loop(
     let mut toggles = PickerToggles::from_config(config);
     // The open composite dropdown, if any.
     let mut drop: Option<DropState> = None;
+    // The website's curated ids for this provider if the fetch ever landed;
+    // `recommended_ids` falls back to its own ranking otherwise.
+    let curated = crate::setup::active_connect_id(config)
+        .and_then(|id| super::context::curated_recommended(&id));
 
     let bg_snapshot = bg
         .cloned()
@@ -1967,7 +2000,7 @@ pub(crate) fn model_picker_loop(
                 }
             }
             let f = filter.to_lowercase();
-            let filtered_models: Vec<&(String, String)> = models
+            let mut filtered_models: Vec<&(String, String)> = models
                 .iter()
                 .filter(|(m_id, m_name)| {
                     f.is_empty()
@@ -1981,7 +2014,26 @@ pub(crate) fn model_picker_loop(
                 &recent_ids,
                 filtered_models.iter().map(|(id, _)| id.as_str()),
             );
-            let div = (sep > 0 && sep < filtered_models.len()).then_some(sep);
+            // The fresh list (no recents, no filter) leads with the
+            // recommended head and a labeled divider; the remainder keeps
+            // the list's own order. Any recents or a filter leave the
+            // layout untouched.
+            let mut all_head = false;
+            let mut div_at = sep;
+            if sep == 0 && f.is_empty() {
+                let head = super::recommend::recommended_ids(
+                    &models,
+                    curated.as_deref(),
+                    super::context::model_meta,
+                    RECOMMENDED_HEAD,
+                );
+                filtered_models = head_first(&filtered_models, &head);
+                if !head.is_empty() && head.len() < filtered_models.len() {
+                    div_at = head.len();
+                    all_head = true;
+                }
+            }
+            let div = (div_at > 0 && div_at < filtered_models.len()).then_some(div_at);
             let mut rows: Vec<Row> = Vec::with_capacity(filtered_models.len() + 1);
             for i in 0..filtered_models.len() {
                 if div == Some(i) {
@@ -2050,6 +2102,7 @@ pub(crate) fn model_picker_loop(
                 efforts: &efforts,
                 toggles,
                 drop: drop.as_ref(),
+                all_head,
             };
             terminal
                 .draw(|frame| draw_picker(frame, &bg_snapshot, &view, draw_sel, &mut scroll_top))?;

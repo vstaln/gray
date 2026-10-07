@@ -63,8 +63,7 @@ gray                 # drops you at the prompt
 
 | | |
 |---|---|
-| `/provider` | pick a provider — API key, free tier, or local |
-| `/key anthropic` | paste a key (input hidden), stored in `~/.gray/auth.json` |
+| `/connect` | pick a provider and paste a key — keys already in your environment are detected |
 | `/model` | searchable model picker |
 | `gray -p "fix the failing test"` | one-shot, non-interactive (`--json` for machine-readable events) |
 | `gray doctor` | check this machine's setup (`--online` also pings the provider) |
@@ -88,7 +87,7 @@ Slash commands autocomplete — Enter completes and fires, Tab inserts.
 | | |
 |---|---|
 | `/new` · `/resume [id\|--last\|--all]` | fresh conversation, or reopen one |
-| `/model` · `/provider` · `/key` | switch without leaving the chat |
+| `/model` · `/connect` | switch without leaving the chat |
 | `/compact [instructions]` | summarize context (also automatic) |
 | `/undo` · `/retry` | drop the last exchange · drop it and ask again (files are git's job) |
 | type during a turn | steers the running turn at its next step |
@@ -132,7 +131,7 @@ Gray runs the model's shell commands with **your privileges, no approval prompt,
 | var | meaning |
 |---|---|
 | `GRAY_HOME` | config root (default `~/.gray`) |
-| `GRAY_API_KEY` / `OPENAI_API_KEY` | API key — env beats stored keys |
+| `GRAY_API_KEY` · `OPENAI_API_KEY` | API key — `GRAY_API_KEY` beats stored keys; `OPENAI_API_KEY` is a fallback only when nothing is stored (never paired with the default OpenRouter endpoint) |
 | `GRAY_MODEL` · `GRAY_BASE_URL` | defaults before `config.json` |
 | `GRAY_CONTEXT_WINDOW` | `128k`, `1m`, `auto` |
 | `GRAY_EXEC_PREFIX` | run shell commands through this program |

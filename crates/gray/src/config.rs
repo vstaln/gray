@@ -13,6 +13,31 @@ fn nonempty(s: Option<&str>) -> Option<String> {
         .map(ToString::to_string)
 }
 
+/// API-key precedence: `--api-key` > `GRAY_API_KEY` > the stored key >
+/// `OPENAI_API_KEY`. `OPENAI_API_KEY` is only a legacy fallback for the
+/// OpenAI endpoint: an OpenAI Bearer against the default OpenRouter base
+/// is just a bad key, so the env var is ignored there — letting the
+/// connect flow's `(found OPENAI_API_KEY)` row offer it properly.
+fn resolve_api_key(
+    cli: &Cli,
+    base_url: &str,
+    env: &mut impl FnMut(&str) -> Option<String>,
+    saved_key: Option<String>,
+) -> Option<String> {
+    nonempty(cli.api_key.as_deref())
+        .or_else(|| nonempty(env("GRAY_API_KEY").as_deref()))
+        .or(saved_key)
+        .or_else(|| {
+            let default_base = crate::setup::normalize_custom_base_url(base_url)
+                == crate::setup::normalize_custom_base_url(DEFAULT_BASE_URL);
+            if default_base {
+                None
+            } else {
+                nonempty(env("OPENAI_API_KEY").as_deref())
+            }
+        })
+}
+
 /// scheme://host/path without userinfo, query, or fragment (for logs).
 fn scrub_url(url: &str) -> String {
     let after_scheme = url.split_once("://").map(|(_, r)| r).unwrap_or(url);
@@ -148,10 +173,7 @@ impl Config {
             .or(saved.base_url)
             .unwrap_or_else(|| DEFAULT_BASE_URL.to_string());
 
-        let api_key = nonempty(cli.api_key.as_deref())
-            .or_else(|| nonempty(env("GRAY_API_KEY").as_deref()))
-            .or_else(|| nonempty(env("OPENAI_API_KEY").as_deref()))
-            .or(saved.api_key); // optional: validated on first use
+        let api_key = resolve_api_key(cli, &base_url, &mut env, saved.api_key); // optional: validated on first use
 
         let thinking_effort =
             nonempty(env("GRAY_THINKING_EFFORT").as_deref()).or(saved.thinking_effort);

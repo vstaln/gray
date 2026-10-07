@@ -614,18 +614,127 @@ pub(crate) fn load_connect_auth() -> BTreeMap<String, AuthEntry> {
         .unwrap_or_default()
 }
 
+/// Connect rows with a known env-var key and the page that issues one.
+/// `detected_env_key` reads the vars; [`key_url`] feeds the key screen hint.
+const ENV_KEY_TABLE: &[(&str, &[&str], &str)] = &[
+    (
+        "openai",
+        &["OPENAI_API_KEY"],
+        "https://platform.openai.com/api-keys",
+    ),
+    (
+        "anthropic",
+        &["ANTHROPIC_API_KEY"],
+        "https://console.anthropic.com/settings/keys",
+    ),
+    (
+        "google",
+        &[
+            "GEMINI_API_KEY",
+            "GOOGLE_API_KEY",
+            "GOOGLE_GENERATIVE_AI_API_KEY",
+        ],
+        "https://aistudio.google.com/apikey",
+    ),
+    (
+        "openrouter",
+        &["OPENROUTER_API_KEY"],
+        "https://openrouter.ai/keys",
+    ),
+    (
+        "deepseek",
+        &["DEEPSEEK_API_KEY"],
+        "https://platform.deepseek.com/api_keys",
+    ),
+    ("groq", &["GROQ_API_KEY"], "https://console.groq.com/keys"),
+    (
+        "mistral",
+        &["MISTRAL_API_KEY"],
+        "https://console.mistral.ai/api-keys",
+    ),
+    ("xai", &["XAI_API_KEY"], "https://console.x.ai"),
+];
+
+/// First non-empty env var of the connect row's candidates, as
+/// `(variable, value)`. `env` is injected so tests never see the real world.
+pub fn detected_env_key(
+    id: &str,
+    env: impl Fn(&str) -> Option<String>,
+) -> Option<(&'static str, String)> {
+    let (_, vars, _) = ENV_KEY_TABLE.iter().find(|(k, ..)| *k == id)?;
+    vars.iter()
+        .find_map(|var| env(var).filter(|v| !v.trim().is_empty()).map(|v| (*var, v)))
+}
+
+/// The "get a key" page for the connect row, when the table knows one.
+pub fn key_url(id: &str) -> Option<&'static str> {
+    ENV_KEY_TABLE
+        .iter()
+        .find(|(k, ..)| *k == id)
+        .map(|(.., url)| *url)
+}
+
+/// A connect row's ambient credential or runtime: an env key, or a locally
+/// running service (Ollama). `note` is the replacement sublabel; `env`
+/// carries the `(variable, value)` pair so the key screen can offer it
+/// without a paste.
+pub(crate) struct Detected {
+    pub note: String,
+    pub env: Option<(&'static str, String)>,
+}
+
+/// Modal-open detection snapshot: env keys for the table's rows, plus
+/// Ollama when its local API answered the caller's probe.
+pub(crate) fn detect_connect_candidates(
+    ollama_running: bool,
+    env: impl Fn(&str) -> Option<String>,
+) -> BTreeMap<String, Detected> {
+    let mut found = BTreeMap::new();
+    for (id, ..) in ENV_KEY_TABLE {
+        if let Some((var, value)) = detected_env_key(id, &env) {
+            found.insert(
+                id.to_string(),
+                Detected {
+                    note: format!("(found {var})"),
+                    env: Some((var, value)),
+                },
+            );
+        }
+    }
+    if ollama_running {
+        found.insert(
+            "ollama".to_string(),
+            Detected {
+                note: "(running locally)".to_string(),
+                env: None,
+            },
+        );
+    }
+    found
+}
+
+/// Connect-modal order: connected first, then env-detected/locally-running
+/// rows, then the popular block (plugin rows ride along), Custom — the
+/// separator's anchor — and the rest of the catalog.
 pub(crate) fn sort_connect_items(
     items: &mut [ConnectItem],
     config: &crate::config::Config,
     auth: &BTreeMap<String, AuthEntry>,
+    detected: &BTreeMap<String, Detected>,
 ) {
     items.sort_by_key(|item| {
         if item.is_connected(config, auth) {
             0
-        } else if item.id == "custom" {
+        } else if detected.contains_key(&item.id) {
             1
-        } else {
+        } else if item.id == "custom" {
+            3
+        } else if matches!(item.auth, ConnectAuth::Plugin { .. })
+            || POPULAR_DEFS.iter().any(|(id, ..)| *id == item.id)
+        {
             2
+        } else {
+            4
         }
     });
 }
@@ -732,9 +841,94 @@ pub fn effort_memory_key(provider_id: &str, base_url: &str, model: &str) -> Stri
     }
 }
 
+/// The popular block, in display order: `(connect id, name, sublabel,
+/// fallback base_url, no_auth)`. The catalog's own base_url wins when the
+/// id is listed there.
+pub(crate) const POPULAR_DEFS: &[(&str, &str, &str, &str, bool)] = &[
+    (
+        "openai",
+        "OpenAI",
+        "(API key)",
+        "https://api.openai.com/v1",
+        false,
+    ),
+    (
+        "anthropic",
+        "Anthropic",
+        "(API key)",
+        "https://api.anthropic.com/v1",
+        false,
+    ),
+    (
+        "google",
+        "Google",
+        "(Gemini API key)",
+        "https://generativelanguage.googleapis.com/v1beta/openai",
+        false,
+    ),
+    (
+        "openrouter",
+        "OpenRouter",
+        "(Access 300+ models)",
+        "https://openrouter.ai/api/v1",
+        false,
+    ),
+    (
+        "commandcode",
+        "CommandCode",
+        "(API key)",
+        "https://api.commandcode.ai/provider/v1",
+        false,
+    ),
+    (
+        "deepseek",
+        "DeepSeek",
+        "",
+        "https://api.deepseek.com",
+        false,
+    ),
+    (
+        "groq",
+        "Groq",
+        "(Fast inference)",
+        "https://api.groq.com/openai/v1",
+        false,
+    ),
+    (
+        "ollama",
+        "Ollama",
+        "(Local http://localhost:11434)",
+        "http://localhost:11434/v1",
+        true,
+    ),
+    (
+        "github-copilot",
+        "GitHub Copilot",
+        "",
+        "https://api.githubcopilot.com",
+        false,
+    ),
+    (
+        "xai",
+        "xAI (Grok)",
+        "(Grok login or API key)",
+        "https://api.x.ai/v1",
+        false,
+    ),
+    (
+        "mistral",
+        "Mistral",
+        "(API key)",
+        "https://api.mistral.ai/v1",
+        false,
+    ),
+];
+
 /// Builds the full list of providers for the connect modal:
-/// Default order: Custom, then popular, followed by all catalog providers.
-/// The modal stably promotes connected providers above Custom.
+/// plugin providers, then Custom, the popular block, and all catalog
+/// providers. The modal's sort promotes connected and env-detected rows
+/// above that order and moves Custom under the popular block — the row the
+/// separator is drawn under.
 pub fn build_connect_items(catalog: &Catalog, providers: &[InstalledProvider]) -> Vec<ConnectItem> {
     let mut items = Vec::new();
     for installed in providers {
@@ -755,85 +949,6 @@ pub fn build_connect_items(catalog: &Catalog, providers: &[InstalledProvider]) -
             },
         });
     }
-    let popular_defs = [
-        (
-            "openai",
-            "OpenAI",
-            "(API key)",
-            "https://api.openai.com/v1",
-            false,
-        ),
-        (
-            "anthropic",
-            "Anthropic",
-            "(API key)",
-            "https://api.anthropic.com/v1",
-            false,
-        ),
-        (
-            "google",
-            "Google",
-            "(Gemini API key)",
-            "https://generativelanguage.googleapis.com/v1beta/openai",
-            false,
-        ),
-        (
-            "openrouter",
-            "OpenRouter",
-            "(Access 300+ models)",
-            "https://openrouter.ai/api/v1",
-            false,
-        ),
-        (
-            "commandcode",
-            "CommandCode",
-            "(API key)",
-            "https://api.commandcode.ai/provider/v1",
-            false,
-        ),
-        (
-            "deepseek",
-            "DeepSeek",
-            "",
-            "https://api.deepseek.com",
-            false,
-        ),
-        (
-            "groq",
-            "Groq",
-            "(Fast inference)",
-            "https://api.groq.com/openai/v1",
-            false,
-        ),
-        (
-            "ollama",
-            "Ollama",
-            "(Local http://localhost:11434)",
-            "http://localhost:11434/v1",
-            true,
-        ),
-        (
-            "github-copilot",
-            "GitHub Copilot",
-            "",
-            "https://api.githubcopilot.com",
-            false,
-        ),
-        (
-            "xai",
-            "xAI (Grok)",
-            "(Grok login or API key)",
-            "https://api.x.ai/v1",
-            false,
-        ),
-        (
-            "mistral",
-            "Mistral",
-            "(API key)",
-            "https://api.mistral.ai/v1",
-            false,
-        ),
-    ];
 
     let mut popular_ids = std::collections::HashSet::new();
 
@@ -848,7 +963,7 @@ pub fn build_connect_items(catalog: &Catalog, providers: &[InstalledProvider]) -
         auth: ConnectAuth::ApiKey,
     });
 
-    for (id, name, sublabel, base_url, no_auth) in popular_defs {
+    for &(id, name, sublabel, base_url, no_auth) in POPULAR_DEFS {
         popular_ids.insert(id.to_string());
         let url = catalog.get(id).map_or(base_url, |p| p.base_url.as_str());
         items.push(ConnectItem {

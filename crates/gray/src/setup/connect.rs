@@ -192,6 +192,10 @@ fn connect_modal(
             item: ConnectItem,
             key_buf: String,
             existing_key: Option<String>,
+            /// The env var `existing_key` came from: an env key is offered
+            /// like a stored one, but never takes the saved-key shortcut —
+            /// it has not been proven (or saved) yet.
+            env_var: Option<&'static str>,
             status_msg: Option<String>,
         },
         /// Marker: the loop hands this to the shared `/model` picker.
@@ -234,6 +238,12 @@ fn connect_modal(
         .cloned()
         .unwrap_or_else(BackgroundSnapshot::default_initial);
 
+    // Detection is a modal-open snapshot — an env scan plus one localhost
+    // probe. The item list rebuilds on every loop pass, far too often to
+    // re-run either of those.
+    let detected =
+        catalog::detect_connect_candidates(context::ollama_running(), |k| std::env::var(k).ok());
+
     let result = (|| -> anyhow::Result<ConnectOutcome> {
         loop {
             let auth = catalog::load_connect_auth();
@@ -241,7 +251,16 @@ fn connect_modal(
                 crate::providers::ProviderRegistry::load_cached(&crate::setup::gray_home()?)
                     .installed();
             let mut all_items = build_connect_items(&catalog, &providers);
-            catalog::sort_connect_items(&mut all_items, config, &auth);
+            catalog::sort_connect_items(&mut all_items, config, &auth, &detected);
+            // Detected rows say where the credential/runtime was found;
+            // connected rows keep their own label.
+            for item in &mut all_items {
+                if !item.is_connected(config, &auth)
+                    && let Some(d) = detected.get(&item.id)
+                {
+                    item.sublabel = d.note.clone();
+                }
+            }
             if let Some(id) = preselect.take()
                 && let Some(item) = all_items.iter().find(|item| item.id == id)
             {
@@ -261,6 +280,7 @@ fn connect_modal(
                         item: item.clone(),
                         key_buf: String::new(),
                         existing_key: load_auth_keys().get(&item.id).cloned(),
+                        env_var: None,
                         status_msg: Some(format!(
                             "{} rejected the saved key — paste a new one",
                             item.name
@@ -373,6 +393,7 @@ fn connect_modal(
                         item,
                         key_buf,
                         existing_key,
+                        env_var,
                         status_msg,
                     } => super::connect_draw::render_entering_key(
                         frame,
@@ -380,6 +401,7 @@ fn connect_modal(
                         item,
                         key_buf,
                         existing_key,
+                        *env_var,
                         status_msg,
                         &colors,
                     ),
@@ -522,7 +544,7 @@ fn connect_modal(
                                             progress,
                                         };
                                     } else {
-                                        let existing =
+                                        let stored =
                                             load_auth_keys().get(&item.id).cloned().or_else(|| {
                                                 if config.base_url == item.base_url {
                                                     config.api_key.clone()
@@ -530,10 +552,24 @@ fn connect_modal(
                                                     None
                                                 }
                                             });
+                                        // No stored key: a detected env key
+                                        // is offered pre-filled, tagged by
+                                        // its variable so it still goes
+                                        // through validation + the model
+                                        // step like a freshly typed key.
+                                        let (existing_key, env_var) = match stored {
+                                            Some(key) => (Some(key), None),
+                                            None => detected
+                                                .get(&item.id)
+                                                .and_then(|d| d.env.clone())
+                                                .map(|(var, value)| (Some(value), Some(var)))
+                                                .unwrap_or((None, None)),
+                                        };
                                         state = ModalState::EnteringKey {
                                             item: item.clone(),
                                             key_buf: String::new(),
-                                            existing_key: existing,
+                                            existing_key,
+                                            env_var,
                                             status_msg: None,
                                         };
                                     }
@@ -605,6 +641,7 @@ fn connect_modal(
                                     item,
                                     key_buf: String::new(),
                                     existing_key: existing,
+                                    env_var: None,
                                     status_msg: None,
                                 };
                             }
@@ -622,6 +659,7 @@ fn connect_modal(
                     item,
                     key_buf,
                     existing_key,
+                    env_var,
                     status_msg,
                 } => match read()? {
                     Event::Key(KeyEvent {
@@ -667,15 +705,51 @@ fn connect_modal(
                                         "No API key entered — please enter a valid key".into(),
                                     );
                                 }
-                            } else if existing_key.is_some() && item.id != "custom" {
-                                save_auth_key(&item.id, &final_key)?;
-                                connect_saved_key(config, &item.base_url, &final_key)?;
-                                return Ok(ConnectOutcome::Connected);
-                            } else {
-                                save_auth_key(&item.id, &final_key)?;
-                                config.base_url = item.base_url.clone();
-                                config.api_key = Some(final_key.clone());
-                                state = ModalState::SelectingModel { item: item.clone() };
+                                continue;
+                            }
+                            // Prove the key before saving it: an explicit
+                            // rejection stays on this screen, and anything
+                            // inconclusive proceeds — an offline user or an
+                            // odd provider must not be blocked.
+                            *status_msg = Some("Checking key…".into());
+                            terminal.draw(|frame| {
+                                let area = frame.area();
+                                if area.width >= 20 && area.height >= 6 {
+                                    render_dimmed_background(frame, &bg_snapshot);
+                                    super::connect_draw::render_entering_key(
+                                        frame,
+                                        area,
+                                        item,
+                                        key_buf,
+                                        existing_key,
+                                        *env_var,
+                                        status_msg,
+                                        &colors,
+                                    );
+                                }
+                            })?;
+                            match context::verify_api_key(&item.base_url, &final_key) {
+                                context::KeyCheck::Rejected(status) => {
+                                    *status_msg = Some(format!(
+                                        "{} rejected this key (HTTP {status}) — paste a new one",
+                                        item.name
+                                    ));
+                                    key_buf.clear();
+                                }
+                                context::KeyCheck::Valid | context::KeyCheck::Unknown => {
+                                    if existing_key.is_some()
+                                        && item.id != "custom"
+                                        && env_var.is_none()
+                                    {
+                                        save_auth_key(&item.id, &final_key)?;
+                                        connect_saved_key(config, &item.base_url, &final_key)?;
+                                        return Ok(ConnectOutcome::Connected);
+                                    }
+                                    save_auth_key(&item.id, &final_key)?;
+                                    config.base_url = item.base_url.clone();
+                                    config.api_key = Some(final_key);
+                                    state = ModalState::SelectingModel { item: item.clone() };
+                                }
                             }
                         }
                         _ => {}

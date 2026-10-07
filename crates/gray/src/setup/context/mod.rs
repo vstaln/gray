@@ -1,18 +1,19 @@
 mod providers;
 
 pub use providers::{
-    ModelRate, cache_model_context, cache_model_context_if_absent, cache_model_reasoning,
-    cache_models_dev_if_absent, cached_model_ids, clamp_thinking_level, context_source,
-    fetch_litellm_context_windows, fetch_live_provider_models, fetch_models_dev_context,
-    fetch_openrouter_rates, format_cost, friendly_model_name, get_cached_model_context,
-    get_model_rate, load_models_cache_to_memory, model_supports_reasoning,
+    KeyCheck, ModelMeta, ModelRate, cache_model_context, cache_model_context_if_absent,
+    cache_model_meta, cache_model_reasoning, cache_models_dev_if_absent, cached_model_ids,
+    clamp_thinking_level, context_source, curated_recommended, fetch_litellm_context_windows,
+    fetch_live_provider_models, fetch_models_dev_context, fetch_openrouter_rates,
+    fetch_recommended_models, format_cost, friendly_model_name, get_cached_model_context,
+    get_model_rate, load_models_cache_to_memory, model_meta, model_supports_reasoning,
     parse_litellm_context_json, parse_models_dev_json, parse_openrouter_models_json,
     save_models_cache_to_disk, set_active_model_provider, supported_efforts,
-    supported_thinking_levels, turn_cost,
+    supported_thinking_levels, turn_cost, verify_api_key,
 };
 pub(crate) use providers::{
     cache_model_efforts, ensure_disk_loaded, fetch_plugin_provider_models,
-    load_provider_model_list, save_provider_model_list,
+    load_provider_model_list, ollama_running, save_provider_model_list,
 };
 
 static USER_CONTEXT_WINDOW: std::sync::OnceLock<std::sync::RwLock<Option<usize>>> =
