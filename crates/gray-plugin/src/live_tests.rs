@@ -24,8 +24,10 @@ impl Tool for NamedTool {
     }
 }
 
+type SharedTools = Arc<RwLock<Vec<Arc<dyn Tool>>>>;
+
 struct FakePlugin {
-    tools: Arc<RwLock<Vec<Arc<dyn Tool>>>>,
+    tools: SharedTools,
 }
 
 #[async_trait]
@@ -42,8 +44,8 @@ impl Plugin for FakePlugin {
     }
 }
 
-fn setup() -> (LiveRegistry, Arc<RwLock<Vec<Arc<dyn Tool>>>>) {
-    let live: Arc<RwLock<Vec<Arc<dyn Tool>>>> = Arc::new(RwLock::new(vec![
+fn setup() -> (LiveRegistry, SharedTools) {
+    let live: SharedTools = Arc::new(RwLock::new(vec![
         Arc::new(NamedTool("live_t")),
         Arc::new(NamedTool("static_t")),
     ]));
