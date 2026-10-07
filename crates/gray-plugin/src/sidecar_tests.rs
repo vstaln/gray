@@ -238,12 +238,18 @@ async fn idless_host_frames_reach_the_notify_handler() {
     p.set_notify_handler(Arc::new(move |m, v| {
         let _ = tx.send((m, v));
     }));
+    let out = p.tools()[0]
+        .execute(&ToolContext::default(), serde_json::json!({}))
+        .await;
+    assert!(!out.is_error, "got: {}", out.content);
+    assert_eq!(out.content, "pong");
     let got = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
         .await
         .expect("notification within 5s")
         .expect("channel open");
     assert_eq!(got.0, "host/tools_changed");
     assert_eq!(got.1["reason"], "test");
+    p.shutdown(std::time::Duration::from_secs(2)).await;
 }
 
 #[tokio::test]
@@ -274,6 +280,31 @@ async fn dynamic_plugin_refreshes_tools_on_tools_changed() {
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
     assert_eq!(names(&p), vec!["dyn_a", "dyn_b"]);
+    p.shutdown(std::time::Duration::from_secs(2)).await;
+}
+
+#[tokio::test]
+async fn tools_changed_during_initial_refresh_is_not_lost() {
+    // The fixture answers the first `plugin/tools` with [early_a] and
+    // immediately emits `host/tools_changed` — inside spawn's initial
+    // refresh window. The handler is installed before that refresh, so
+    // the notification must still land and trigger a second refresh.
+    let p = SidecarPlugin::spawn(vec!["testdata/early_tools_changed_plugin.sh".into()])
+        .await
+        .unwrap();
+    assert!(p.is_dynamic());
+    let names = |p: &SidecarPlugin| {
+        p.tools()
+            .iter()
+            .map(|t| t.def().name.clone())
+            .collect::<Vec<_>>()
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while names(&p).len() < 2 && std::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert_eq!(names(&p), vec!["early_a", "early_b"]);
+    p.shutdown(std::time::Duration::from_secs(2)).await;
 }
 
 #[tokio::test]

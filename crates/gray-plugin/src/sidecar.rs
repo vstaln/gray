@@ -747,10 +747,13 @@ impl SidecarPlugin {
             session_id: std::sync::Mutex::new(String::new()),
         };
         if dynamic {
+            // Install the handler first: a `host/tools_changed` arriving
+            // during or right after the initial `plugin/tools` reply would
+            // otherwise be dropped, freezing the tools at their first set.
+            plugin.install_tools_changed_handler();
             if let Err(e) = plugin.refresh_tools().await {
                 log::warn!(target: "gray_plugin", "{}: plugin/tools failed at spawn: {e}", plugin.manifest.name);
             }
-            plugin.install_tools_changed_handler();
         }
         Ok(plugin)
     }
