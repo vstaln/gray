@@ -11,6 +11,31 @@ pub(crate) struct SessionTotals {
     pub(crate) cost: f64,
     pub(crate) total_duration_ms: u64,
     pub(crate) timed_turns: usize,
+    /// Prompt tokens served from cache (`cache_read`, `cached` fallback).
+    pub(crate) cache_read: usize,
+    /// Prompt tokens written into cache.
+    pub(crate) cache_write: usize,
+    /// Dollars not spent vs. the same turns fully uncached; goes negative
+    /// while cache-write premiums outrun read savings.
+    pub(crate) saved: f64,
+    /// Extra paid for cache writes over plain input pricing.
+    pub(crate) write_premium: f64,
+    /// Any turn reported cache activity — gates the panel's cache rows; a
+    /// provider that never caches hides them all.
+    pub(crate) cache_reported: bool,
+    /// Cache misses this process observed (StepUsage path; never restored).
+    pub(crate) misses: MissTally,
+}
+
+/// Session cache-miss counters, bucketed by the cause the tracker observed.
+#[derive(Debug, Default)]
+pub(crate) struct MissTally {
+    pub(crate) count: usize,
+    pub(crate) tokens: usize,
+    pub(crate) cost: f64,
+    pub(crate) idle: usize,
+    pub(crate) model_switch: usize,
+    pub(crate) other: usize,
 }
 
 impl SessionTotals {
@@ -23,12 +48,44 @@ impl SessionTotals {
         self.turns += 1;
         self.input += usage.input_tokens;
         self.output += usage.output_tokens;
+        // Legacy reports fill only `cached_tokens`; it counts as a read.
+        let read = usage.cache_read_input_tokens.max(usage.cached_tokens);
+        let write = usage.cache_write_input_tokens;
+        self.cache_read += read;
+        self.cache_write += write;
+        self.cache_reported |= read + write > 0;
         if let Some(c) = crate::setup::turn_cost(usage, model) {
             self.cost += c;
+        }
+        if let Some(rate) = crate::setup::get_model_rate(model)
+            && rate.has_cache_prices
+        {
+            if let (Some(full), Some(actual)) = (
+                crate::setup::uncached_cost(usage, model),
+                crate::setup::turn_cost(usage, model),
+            ) {
+                self.saved += full - actual;
+            }
+            self.write_premium += write as f64 * (rate.cache_write - rate.input);
         }
         if let Some(ms) = duration_ms {
             self.total_duration_ms += ms;
             self.timed_turns += 1;
+        }
+    }
+
+    /// Tallies one cache miss from the StepUsage tracker. Process-local by
+    /// design: misses are a this-run observation, never persisted/restored.
+    pub(crate) fn note_miss(&mut self, m: &crate::cache::CacheMiss) {
+        self.misses.count += 1;
+        self.misses.tokens += m.missed_tokens;
+        self.misses.cost += m.missed_cost;
+        if m.model_changed {
+            self.misses.model_switch += 1;
+        } else if m.idle >= crate::cache::CACHE_TTL {
+            self.misses.idle += 1;
+        } else {
+            self.misses.other += 1;
         }
     }
 
@@ -38,6 +95,9 @@ impl SessionTotals {
         entries: &[crate::session_store::SessionEntry],
         model: &str,
     ) -> Self {
+        // A startup resume rebuilds here before the spawned catalog fetches
+        // prime the rate table — without this a resumed `/usage` prices $0.
+        crate::setup::context::warm_rates_from_disk_cache();
         let mut t = SessionTotals::default();
         for e in entries.iter().filter(|e| e.usage.is_some()) {
             let u = e.usage.as_ref().expect("filtered");
@@ -158,8 +218,9 @@ fn copy_to_clipboard(text: &str) -> bool {
     false
 }
 
-/// Handles `/usage` / `/cost`: session totals plus the active model's rate.
-/// TUI renders like `/model` — `✓` action header + dim detail lines.
+/// Handles `/usage` / `/cost`: the cache-aware session panel — `✓` action
+/// header plus the label/value rows [`usage_panel`] builds (same rows as
+/// the headless plain render, styles stripped).
 pub(crate) fn handle_usage(
     totals: &SessionTotals,
     config: &Config,
@@ -173,71 +234,34 @@ pub(crate) fn handle_usage(
         return;
     }
     let model = config.model.as_deref().unwrap_or("no model");
-    let header = format!(
-        "{model} · {} turn{}",
-        totals.turns,
-        if totals.turns == 1 { "" } else { "s" }
-    );
-    let body = format!(
-        "{} in · {} out · {} total",
-        crate::repl::fmt_usage(totals.input),
-        crate::repl::fmt_usage(totals.output),
-        crate::repl::fmt_usage(totals.input + totals.output),
-    );
-    let time_line = if totals.total_duration_ms > 0 && totals.timed_turns > 0 {
-        let avg = totals.total_duration_ms / totals.timed_turns as u64;
-        Some(format!(
-            "{} total · {} avg",
-            crate::repl::format::fmt_duration_ms(totals.total_duration_ms),
-            crate::repl::format::fmt_duration_ms(avg),
-        ))
-    } else {
-        None
-    };
-    // What compression saved, over every result metered on this machine. Only
-    // shown when something actually happened: an empty counter is noise on a
-    // panel the user opens to see tokens and cost.
-    let squeeze_line = {
-        let totals = gray_core::spill::totals();
-        (totals.events > 0).then(|| {
-            format!(
-                "tool output: {} never sent ({:.0}% of {} produced) · ≈{} tokens",
-                gray_core::spill::fmt_bytes(totals.saved() as usize),
-                totals.saved_pct(),
-                gray_core::spill::fmt_bytes(totals.raw_bytes as usize),
-                totals.saved() / 4,
-            )
-        })
-    };
-    let cost_line = match crate::setup::get_model_rate(config.model.as_deref().unwrap_or("")) {
-        Some(r) => format!(
-            "{} @ ${:.2}/${:.2} per 1M in/out",
-            crate::setup::format_cost(totals.cost),
-            r.input * 1_000_000.0,
-            r.output * 1_000_000.0
-        ),
-        None => "unpriced (no rate yet — pricing tables lag new models)".to_string(),
-    };
+    let rate = crate::setup::get_model_rate(config.model.as_deref().unwrap_or(""));
+    use usage_panel::{PanelInput, Warmth};
     if let Some(shared) = tui {
         let mut t = shared.lock().expect("tui lock");
-        t.push_action("Session usage", Some(&header));
-        t.push_dim(body);
-        if let Some(time) = &time_line {
-            t.push_dim(time.clone());
-        }
-        t.push_dim(cost_line);
-        if let Some(squeeze) = squeeze_line {
-            t.push_dim(squeeze);
-        }
+        let warmth = match t.cache_remaining() {
+            Some(left) => Warmth::Warm(left),
+            None if t.cache_is_cold() => Warmth::Cold,
+            None => Warmth::Unknown,
+        };
+        let input = PanelInput {
+            totals,
+            model,
+            rate,
+            warmth,
+        };
+        t.push_action("Session usage", Some(&usage_panel::usage_header(&input)));
+        t.push_styled_lines_with_hyperlinks(usage_panel::usage_rows(&input), &[], 0);
         t.ensure_gap();
     } else {
-        println!("✓ Session usage — {header}\n  {body}");
-        if let Some(time) = &time_line {
-            println!("  {time}");
-        }
-        println!("  {cost_line}");
-        if let Some(squeeze) = squeeze_line {
-            println!("  {squeeze}");
+        let input = PanelInput {
+            totals,
+            model,
+            rate,
+            warmth: Warmth::Unknown,
+        };
+        println!("✓ Session usage — {}", usage_panel::usage_header(&input));
+        for line in usage_panel::usage_plain(&input) {
+            println!("{line}");
         }
     }
 }

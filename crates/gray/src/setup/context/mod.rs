@@ -8,11 +8,11 @@ pub use providers::{
     get_model_rate, load_models_cache_to_memory, model_supports_reasoning,
     parse_litellm_context_json, parse_models_dev_json, parse_openrouter_models_json,
     save_models_cache_to_disk, set_active_model_provider, supported_efforts,
-    supported_thinking_levels, turn_cost,
+    supported_thinking_levels, turn_cost, uncached_cost,
 };
 pub(crate) use providers::{
     cache_model_efforts, ensure_disk_loaded, fetch_plugin_provider_models,
-    load_provider_model_list, save_provider_model_list,
+    load_provider_model_list, save_provider_model_list, warm_rates_from_disk_cache,
 };
 
 static USER_CONTEXT_WINDOW: std::sync::OnceLock<std::sync::RwLock<Option<usize>>> =
