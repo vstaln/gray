@@ -169,7 +169,8 @@ impl Tool for BashTool {
             ""
         } else {
             " To pause until later, end your turn: a finished job wakes you, and \
-             `gray cron add \"in 30m\" \"<note to self>\" --reminder` wakes this session at a time."
+             `gray cron add \"in 30m\" \"<note to self>\" --reminder` wakes this session (or posts back to this \
+             chat) at a time; don't run `cron serve`/`tick` to wait for it."
         };
         ToolDef::new(
             "bash",
