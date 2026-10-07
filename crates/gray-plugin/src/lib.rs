@@ -11,11 +11,14 @@ use gray_core::message::ToolDef;
 pub mod builder;
 pub mod capabilities;
 pub mod host;
+mod live;
 pub mod lock;
 pub mod profile;
 mod provider;
 pub mod scan;
 pub mod sidecar;
+
+pub use live::LiveRegistry;
 
 pub use sidecar::{
     ASK_HANDLER_TTL, ASK_TTL, HOST_ASK, HOST_RUN, HOST_SAY, HOST_TTL, HostHandler, SidecarPlugin,
