@@ -86,8 +86,8 @@ fn entity_inside_link_text_decodes_and_keeps_link() {
     let joined = lines.join("\n");
     assert!(joined.contains("a < b"), "link text decoded: {lines:#?}");
     assert!(
-        joined.contains("https://example.com"),
-        "link url survives: {lines:#?}"
+        !joined.contains("https://example.com"),
+        "link url hidden behind the label: {lines:#?}"
     );
     assert!(!joined.contains("&lt;"), "no literal entity: {lines:#?}");
 }

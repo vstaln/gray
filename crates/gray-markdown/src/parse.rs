@@ -941,11 +941,12 @@ impl<'a, 'b, 'syn> MarkdownParser<'a, 'b, 'syn> {
                 // and therefore may not be a sub-slice of tag_str. The rfind on the strict
                 // prefix guarantees we find the *structural* `](` closer even when the link
                 // text, title, or the dest literal itself contains the byte sequence `](`.
-                // A `file://` destination is already reachable through the
-                // stored LinkTarget (terminal OSC 8 hyperlink), so printing it
-                // inline is noise: the label alone renders and stays styled
-                // as a link. Web URLs keep the visible `label (url)` form.
-                let hide_dest = dest_url.starts_with("file://");
+                // The destination is already reachable through the stored
+                // LinkTarget (terminal OSC 8 hyperlink), so printing it inline
+                // is noise: `[label](url)` renders as just the underlined,
+                // clickable label. Images keep the visible `alt (url)` form
+                // since there is no picture to click.
+                let hide_dest = !tag_str.starts_with("![");
                 let url_rel_opt = find_substring(tag_str, dest_url, true, true);
                 if !hide_dest && let Some(r) = &url_rel_opt {
                     let url_range = (r.start + range.start)..(r.end + range.start);
@@ -994,7 +995,7 @@ impl<'a, 'b, 'syn> MarkdownParser<'a, 'b, 'syn> {
                         to: "".to_string(),
                         force: false,
                     });
-                    // Hide the entire file destination (including any title).
+                    // Hide the entire destination (including any title).
                     // Start after the label so its source range still maps to
                     // the visible text and the terminal keeps the real target.
                     self.buffers.transforms.push(Transform {

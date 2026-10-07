@@ -280,10 +280,9 @@ fn streaming_byte_by_byte_matches_full_render() {
 
 /// A link whose source bytes straddle the frozen/tail boundary in the
 /// streaming renderer must still produce a `HyperlinkTarget` pointing
-/// at the right rendered line and columns.  In pretty mode,
-/// `[my link](url)` renders as `my link (url)`, so the renderer
-/// produces 2 targets: one parser-produced over the link text, and
-/// one from the url_scan pass over the `(url)` suffix.
+/// at the right rendered line and columns.  `[my link](url)` renders
+/// as just `my link` (the URL rides on the hyperlink), so the renderer
+/// produces exactly one parser-produced target over the link text.
 #[test]
 fn streaming_link_across_chunk_boundaries_resolves_correctly() {
     let part1 = "Para one.\n\nSee [my ";
@@ -291,10 +290,8 @@ fn streaming_link_across_chunk_boundaries_resolves_correctly() {
     let full_text = format!("{part1}{part2}");
 
     let (full, _) = render_markdown_ratatui_full(&full_text, test_style::STYLE, true, None);
-    // Both code paths now run url_scan, so the full-render output
-    // contains the parser-produced link-text hyperlink and the
-    // url_scan-produced URL-suffix hyperlink.
-    assert_eq!(full.hyperlinks.len(), 2);
+    // The URL is hidden, so only the link-text hyperlink remains.
+    assert_eq!(full.hyperlinks.len(), 1);
     let expected = parser_link_text(&full, "my link");
 
     let mut renderer = StreamingMarkdownRenderer::new(test_style::STYLE, true);
@@ -305,8 +302,8 @@ fn streaming_link_across_chunk_boundaries_resolves_correctly() {
 
     assert_eq!(
         view.hyperlinks.len(),
-        2,
-        "expected 2 hyperlinks (parser link text + URL in pretty-mode suffix)"
+        1,
+        "expected 1 hyperlink (parser link text; URL hidden)"
     );
     let got = view
         .hyperlinks
@@ -326,7 +323,7 @@ fn dest_url_containing_bracket_paren_with_streaming_split() {
     let text = "[t](<u](v>) end\n";
     let (full, _) = render_markdown_ratatui_full(text, test_style::STYLE, true, None);
     let line0 = line_to_string(&full.lines[0]);
-    assert!(line0.contains("t (<u](v>)") || line0.contains("t ( <u](v> )"));
+    assert_eq!(line0.trim(), "t end");
     let link = full
         .hyperlinks
         .iter()
@@ -644,7 +641,7 @@ fn file_links_stream_like_full_render_and_leave_code_literal() {
 }
 
 #[test]
-fn file_link_title_is_hidden_without_changing_web_links() {
+fn link_destinations_and_titles_are_hidden() {
     let text =
         "[report](file:///tmp/report.md \"private title\") and [web](https://example.com).\n";
     let (out, _) = render_markdown_ratatui_full(text, test_style::STYLE, true, None);
@@ -654,10 +651,21 @@ fn file_link_title_is_hidden_without_changing_web_links() {
         .map(line_to_string)
         .collect::<Vec<_>>()
         .join("\n");
-    assert_eq!(visible.trim(), "report and web (https://example.com).");
+    assert_eq!(visible.trim(), "report and web.");
     assert_eq!(
         parser_link_text(&out, "report").url,
         "file:///tmp/report.md"
     );
     assert_eq!(parser_link_text(&out, "web").url, "https://example.com");
+}
+
+#[test]
+fn image_keeps_visible_destination() {
+    let text = "see ![logo](https://example.com/logo.png) here\n";
+    let (out, _) = render_markdown_ratatui_full(text, test_style::STYLE, true, None);
+    let visible = line_to_string(&out.lines[0]);
+    assert!(
+        visible.contains("https://example.com/logo.png"),
+        "image URL stays visible: {visible:?}"
+    );
 }
