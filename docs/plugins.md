@@ -99,6 +99,44 @@ The host replies `{"id": "q1", "result": {"answers": …}}` or
 - Host handler TTL (`ASK_HANDLER_TTL`): 300s per `host/ask` task.
 - Host outer TTL (`ASK_TTL`): 330s on `tool/call`/`tool/before` for
   protocol-1.1 sidecars; everything else keeps `HOST_TTL` 30s.
+- `plugin/tools` (protocol 1.3): `HOST_TTL` 30s per refresh.
+
+## Protocol 1.3: dynamic tools + media
+
+A sidecar whose tool set changes while the session runs (a bridge to an
+external tool server, a tool marketplace) claims `"protocol": "1.3"` in
+`plugin/manifest`.
+1.3 implies 1.1 (asking and its TTLs still apply). The manifest `tools`
+array is only a hint and may be `[]`; the live set comes from
+`plugin/tools`:
+
+```json
+{"id": 7, "method": "plugin/tools", "params": {}}
+{"id": 7, "result": {"tools": [{"name": "fs_read", "description": "…",
+  "parameters": {"type": "object", "properties": {}}}]}}
+```
+
+The host asks once at spawn and again after every
+`{"method": "host/tools_changed", "params": {}}` the sidecar emits (a
+notification: no `id`, no reply; bursts are debounced 200 ms into one
+refresh). Tool entries use the manifest tool shape. The model's tool list
+is rebuilt at the start of every turn from the current set; builtin names
+(`bash`, `read`, …) can never be shadowed by a live tool.
+
+A 1.3 `tool/call` reply may carry media next to `content`:
+
+```json
+{"id": 3, "result": {"content": "here",
+  "images": [{"mime": "image/png", "data_base64": "iVBOR…"}],
+  "media": [{"mime": "application/pdf", "data_base64": "JVBER…",
+             "fallback": "text a model without PDF input sees"}]}}
+```
+
+An entry missing `mime` or `data_base64` is dropped with a warning; the
+rest of the reply stands. Media is passed through un-re-encoded, so the
+sidecar keeps each item under the native media cap (8 MiB).
+
+For a complete 1.3 sidecar, see [gray-mcp](https://github.com/vstaln/gray-mcp).
 
 ## Semantics
 

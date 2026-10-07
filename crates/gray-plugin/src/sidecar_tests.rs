@@ -228,3 +228,125 @@ fn a_model_picker_reply_wins_over_prompt_and_text() {
     );
     assert_eq!(parse(serde_json::json!({})), None);
 }
+
+#[tokio::test]
+async fn idless_host_frames_reach_the_notify_handler() {
+    let p = SidecarPlugin::spawn(vec!["testdata/notify_plugin.sh".into()])
+        .await
+        .unwrap();
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(String, Value)>();
+    p.set_notify_handler(Arc::new(move |m, v| {
+        let _ = tx.send((m, v));
+    }));
+    let out = p.tools()[0]
+        .execute(&ToolContext::default(), serde_json::json!({}))
+        .await;
+    assert!(!out.is_error, "got: {}", out.content);
+    assert_eq!(out.content, "pong");
+    let got = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+        .await
+        .expect("notification within 5s")
+        .expect("channel open");
+    assert_eq!(got.0, "host/tools_changed");
+    assert_eq!(got.1["reason"], "test");
+    p.shutdown(std::time::Duration::from_secs(2)).await;
+}
+
+#[tokio::test]
+async fn dynamic_plugin_refreshes_tools_on_tools_changed() {
+    let dir = tempfile::tempdir().unwrap();
+    let flag = dir.path().join("flag");
+    let p = SidecarPlugin::spawn(vec![
+        "testdata/dynamic_tools_plugin.sh".into(),
+        flag.to_string_lossy().into_owned(),
+    ])
+    .await
+    .unwrap();
+    assert!(p.is_dynamic());
+    let names = |p: &SidecarPlugin| {
+        p.tools()
+            .iter()
+            .map(|t| t.def().name.clone())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(names(&p), vec!["dyn_a"]);
+    let t = p.tools()[0].clone();
+    let out = t
+        .execute(&ToolContext::default(), serde_json::json!({}))
+        .await;
+    assert!(!out.is_error, "got: {}", out.content);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while names(&p).len() < 2 && std::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert_eq!(names(&p), vec!["dyn_a", "dyn_b"]);
+    p.shutdown(std::time::Duration::from_secs(2)).await;
+}
+
+#[tokio::test]
+async fn tools_changed_during_initial_refresh_is_not_lost() {
+    // The fixture answers the first `plugin/tools` with [early_a] and
+    // immediately emits `host/tools_changed` — inside spawn's initial
+    // refresh window. The handler is installed before that refresh, so
+    // the notification must still land and trigger a second refresh.
+    let p = SidecarPlugin::spawn(vec!["testdata/early_tools_changed_plugin.sh".into()])
+        .await
+        .unwrap();
+    assert!(p.is_dynamic());
+    let names = |p: &SidecarPlugin| {
+        p.tools()
+            .iter()
+            .map(|t| t.def().name.clone())
+            .collect::<Vec<_>>()
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while names(&p).len() < 2 && std::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert_eq!(names(&p), vec!["early_a", "early_b"]);
+    p.shutdown(std::time::Duration::from_secs(2)).await;
+}
+
+#[tokio::test]
+async fn dropping_a_dynamic_plugin_frees_its_transport() {
+    let dir = tempfile::tempdir().unwrap();
+    let flag = dir.path().join("flag");
+    let p = SidecarPlugin::spawn(vec![
+        "testdata/dynamic_tools_plugin.sh".into(),
+        flag.to_string_lossy().into_owned(),
+    ])
+    .await
+    .unwrap();
+    assert!(p.is_dynamic());
+    let weak = Arc::downgrade(&p.transport);
+    drop(p);
+    assert!(
+        weak.upgrade().is_none(),
+        "dynamic SidecarPlugin leaked its Transport (notify-handler cycle)"
+    );
+}
+
+#[tokio::test]
+async fn tool_call_reply_images_and_media_are_attached() {
+    let p = SidecarPlugin::spawn(vec!["testdata/media_plugin.sh".into()])
+        .await
+        .unwrap();
+    let t = p.tools()[0].clone();
+    assert_eq!(t.def().name, "shot");
+    let out = t
+        .execute(&ToolContext::default(), serde_json::json!({}))
+        .await;
+    assert!(!out.is_error, "got: {}", out.content);
+    assert_eq!(out.content, "here");
+    assert_eq!(out.images.len(), 1, "malformed image must be dropped");
+    assert_eq!(out.images[0].media_type, "image/png");
+    assert_eq!(out.images[0].data, "iVBORw0KGgo=");
+    assert_eq!(out.media.len(), 1);
+    assert_eq!(out.media[0].media_type, "application/pdf");
+    assert_eq!(
+        out.media[0].fallback,
+        vec![gray_core::message::ContentBlock::Text {
+            text: "pdf text".into()
+        }]
+    );
+}

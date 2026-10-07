@@ -124,8 +124,8 @@ pub(crate) use model_modal::{
 };
 pub(crate) use provider_auth::adopt_connection_effort;
 pub use provider_auth::{
-    PluginLoginProgress, activate_plugin_connection, adopt_saved_key, forget_plugin_connection,
-    run_plugin_login, select_api_key_connection,
+    PluginLoginProgress, activate_plugin_connection, adopt_saved_key, connect_saved_key,
+    forget_plugin_connection, run_plugin_login, select_api_key_connection,
 };
 
 use crate::{config::Config, tui::print_wrapped};

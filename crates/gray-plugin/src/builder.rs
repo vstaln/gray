@@ -94,6 +94,27 @@ impl Plugin for ToolsSearchPlugin {
 // Registry assembly (moved from `gray::profile`; same later-wins semantics)
 // ---------------------------------------------------------------------------
 
+/// A plugin whose tool set is live (protocol 1.3): its tools are resolved
+/// per call by [`LiveRegistry`] rather than snapshotted into the registry.
+fn is_live_plugin(p: &dyn Plugin) -> bool {
+    p.manifest().protocol.as_deref() == Some("1.3")
+}
+
+/// The plugins `from_plugins` left out of the static registry, in order.
+pub fn dynamic_plugins(plugins: &[Arc<dyn Plugin>]) -> Vec<Arc<dyn Plugin>> {
+    plugins
+        .iter()
+        .filter(|p| {
+            is_live_plugin(p.as_ref())
+                && !matches!(
+                    p.manifest().name.as_str(),
+                    "tools-minimal" | "tools-basic" | "tools-search"
+                )
+        })
+        .cloned()
+        .collect()
+}
+
 /// Collects tools from plugins in order; on name conflict the owner wins
 /// (later manifests win, mirroring `merge_manifests`). Returns the registry
 /// plus the manifests in registration order — manifests travel with the
@@ -141,6 +162,12 @@ pub fn from_plugins(plugins: &[Arc<dyn Plugin>]) -> (Registry, Vec<Manifest>) {
     let mut tools: Vec<Arc<dyn Tool>> = Vec::new();
     for p in plugins {
         let owner_name = p.manifest().name;
+        // Protocol-1.3 plugins change their tool set while the session
+        // runs; `LiveRegistry` resolves those per call instead of
+        // snapshotting them here. Builtins never qualify.
+        if is_live_plugin(p.as_ref()) && !is_builtin_plugin(&owner_name) {
+            continue;
+        }
         let may_override = p
             .capabilities()
             .iter()
@@ -755,6 +782,7 @@ pub async fn build_agent(opts: BuilderOptions) -> anyhow::Result<Agent> {
         p.set_session_id(session_id.as_deref().unwrap_or(""));
     }
     let (registry, manifests) = from_plugins(&plugins);
+    let dynamic = dynamic_plugins(&plugins);
     let ledger = current_file_ledger();
     let system = match system_prompt {
         SystemPrompt::Literal(s) => s,
@@ -820,9 +848,17 @@ pub async fn build_agent(opts: BuilderOptions) -> anyhow::Result<Agent> {
                 .map(|s| (t.name.clone(), s.to_string()))
         })
         .collect();
+    // Live (protocol-1.3) plugin tools are resolved per call and merged
+    // into the advertised defs by the agent's per-turn refresh.
+    let registry = Arc::new(registry);
+    let base: Arc<dyn ToolExecutor> = if dynamic.is_empty() {
+        registry
+    } else {
+        Arc::new(crate::LiveRegistry::new(registry, dynamic))
+    };
     let executor: Arc<dyn ToolExecutor> = match wrap_executor {
-        Some(wrap) => wrap(Arc::new(registry)),
-        None => Arc::new(registry),
+        Some(wrap) => wrap(base),
+        None => base,
     };
     let hooks = PluginHookAdapter::for_plugins(&plugins, &cwd.to_string_lossy());
     Ok(Agent::new(provider, executor)

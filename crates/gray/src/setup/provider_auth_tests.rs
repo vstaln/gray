@@ -168,6 +168,111 @@ fn a_dismissed_connect_leaves_the_session_as_it_was() {
     assert_eq!(config.api_key.as_deref(), Some("sk-picked"));
 }
 
+fn plugin_saved(base_url: &str) -> SavedConfig {
+    SavedConfig {
+        base_url: Some(base_url.into()),
+        provider_id: "devin-sub:devin-subscription".into(),
+        credential_source: "plugin".into(),
+        auth_ref: "plugin:devin-sub:devin-subscription:login".into(),
+        model: Some("swe-2".into()),
+        auth_mode: Some("oauth".into()),
+        ..SavedConfig::default()
+    }
+}
+
+fn plugin_config(saved: &SavedConfig) -> Config {
+    let mut config = key_config(saved.base_url.as_deref().unwrap_or_default(), None);
+    config.provider_id = saved.provider_id.clone();
+    config.credential_source = saved.credential_source.clone();
+    config.auth_ref = saved.auth_ref.clone();
+    config.model = saved.model.clone();
+    config
+}
+
+#[test]
+fn saved_key_connect_drops_the_plugin_identity() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.json");
+    save_saved_config_at(&path, &plugin_saved("https://plugin.placeholder/v1")).unwrap();
+    let mut config = plugin_config(&plugin_saved("https://plugin.placeholder/v1"));
+    connect_saved_key_at(
+        &mut config,
+        "https://api.stepfun.ai/step_plan/v1",
+        "k",
+        &path,
+        || Some("step-5-preview".into()),
+    )
+    .unwrap();
+    assert!(!config.uses_plugin_credentials());
+    assert!(config.provider_id.is_empty());
+    assert!(config.credential_source.is_empty());
+    assert!(config.auth_ref.is_empty());
+    assert_eq!(config.base_url, "https://api.stepfun.ai/step_plan/v1");
+    assert_eq!(config.api_key.as_deref(), Some("k"));
+    assert_eq!(config.model.as_deref(), Some("step-5-preview"));
+    let saved = load_saved_config_at(&path);
+    assert!(saved.provider_id.is_empty());
+    assert!(saved.credential_source.is_empty());
+    assert!(saved.auth_ref.is_empty());
+    assert_eq!(
+        saved.base_url.as_deref(),
+        Some("https://api.stepfun.ai/step_plan/v1")
+    );
+    assert_eq!(saved.model.as_deref(), Some("step-5-preview"));
+    assert_eq!(saved.auth_mode.as_deref(), Some(AUTH_MODE_API_KEY));
+}
+
+#[test]
+fn saved_key_connect_from_a_plugin_on_the_same_url_still_switches() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.json");
+    // The stored base_url already matches the row's, but the connection is
+    // a plugin one: its model never belongs to the API-key endpoint.
+    save_saved_config_at(&path, &plugin_saved("https://api.stepfun.ai/step_plan/v1")).unwrap();
+    let mut config = plugin_config(&plugin_saved("https://api.stepfun.ai/step_plan/v1"));
+    connect_saved_key_at(
+        &mut config,
+        "https://api.stepfun.ai/step_plan/v1",
+        "k",
+        &path,
+        || Some("step-5-preview".into()),
+    )
+    .unwrap();
+    assert_eq!(config.model.as_deref(), Some("step-5-preview"));
+    assert_eq!(
+        load_saved_config_at(&path).model.as_deref(),
+        Some("step-5-preview")
+    );
+}
+
+#[test]
+fn saved_key_reconnect_keeps_the_saved_model() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.json");
+    save_saved_config_at(
+        &path,
+        &SavedConfig {
+            base_url: Some("https://api.stepfun.ai/step_plan/v1".into()),
+            api_key: Some("old-key".into()),
+            auth_mode: Some(AUTH_MODE_API_KEY.into()),
+            model: Some("m1".into()),
+            ..SavedConfig::default()
+        },
+    )
+    .unwrap();
+    let mut config = key_config("https://api.stepfun.ai/step_plan/v1", Some("old-key"));
+    connect_saved_key_at(
+        &mut config,
+        "https://api.stepfun.ai/step_plan/v1",
+        "k",
+        &path,
+        || panic!("a reconnect must reuse the saved model"),
+    )
+    .unwrap();
+    assert_eq!(config.model.as_deref(), Some("m1"));
+    assert_eq!(load_saved_config_at(&path).model.as_deref(), Some("m1"));
+}
+
 #[test]
 fn only_a_changed_key_for_the_same_endpoint_is_adopted() {
     let url = "https://api.commandcode.ai/provider/v1";

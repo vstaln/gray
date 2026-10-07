@@ -40,7 +40,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
 use std::sync::{
     Arc,
-    atomic::{AtomicU64, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
 };
 
 use async_trait::async_trait;
@@ -55,10 +55,10 @@ use gray_core::credential::CredentialMaterial;
 use gray_core::message::ToolDef;
 
 use crate::{
-    CoreEvent, Manifest, PROVIDER_CREDENTIALS, Plugin, ProviderAuthPoll, ProviderAuthStart,
-    ProviderChatRequest, ProviderChatResult, ProviderModelCatalog, ProviderModelsRequest,
-    ProviderRefreshRequest, ProviderRevokeRequest, ProviderRevokeResult, ProviderRpcError,
-    ToolBefore, manifest_tools,
+    CoreEvent, DYNAMIC_PROTOCOL, Manifest, PROVIDER_CREDENTIALS, Plugin, ProviderAuthPoll,
+    ProviderAuthStart, ProviderChatRequest, ProviderChatResult, ProviderModelCatalog,
+    ProviderModelsRequest, ProviderRefreshRequest, ProviderRevokeRequest, ProviderRevokeResult,
+    ProviderRpcError, ToolBefore, manifest_tools,
 };
 
 /// Plugin→host request handler (`host/run`, `host/say`). Set by the host via
@@ -75,6 +75,13 @@ pub type HostHandler = Arc<
         > + Send
         + Sync,
 >;
+
+/// Plugin→host **notification** handler (id-less `host/*` frames such as
+/// `host/tools_changed`). Fire-and-forget: no reply is written, the
+/// capability gate does not apply (a notification carries no privilege),
+/// and the handler must not block. Set via
+/// [`SidecarPlugin::set_notify_handler`]; unset = frames are dropped.
+pub type NotifyHandler = Arc<dyn Fn(String, serde_json::Value) + Send + Sync>;
 
 /// Host-side methods a sidecar may call (requests, unlike `event/notify`:
 /// they carry a sidecar-originated **string** `id` and expect a
@@ -94,6 +101,11 @@ pub const HOST_ASK: &str = "host/ask";
 /// the handler task and the outer `tool/call`/`tool/before` wait use
 /// [`ASK_TTL`] when the requesting sidecar's manifest claims `host/ask`.
 pub const HOST_TTL: Duration = Duration::from_secs(30);
+/// Plugin→host notification (protocol 1.3): "my `plugin/tools` answer
+/// changed, re-ask". Id-less, so routed via [`NotifyHandler`].
+pub const HOST_TOOLS_CHANGED: &str = "host/tools_changed";
+/// Burst window for `host/tools_changed` before one `plugin/tools` refresh.
+pub const TOOLS_CHANGED_DEBOUNCE: Duration = Duration::from_millis(200);
 /// Outer deadline for `tool/call`/`tool/before` on sidecars that claim
 /// `host/ask` (300s human answer + 30s transport slack). The sidecar must
 /// enforce a SHORTER inner TTL (the reference plugins use 300s) so it
@@ -183,6 +195,9 @@ struct Transport {
     /// Plugin→host handler (`host/run`/`host/say`). `Arc` so respawned
     /// readers keep the same slot; `None` = reply `{"error":...}`.
     host_handler: Arc<Mutex<Option<HostHandler>>>,
+    /// Plugin→host notification sink (id-less `host/*` frames). Shared
+    /// across respawns like `host_handler`; `None` = dropped.
+    notify: Arc<std::sync::Mutex<Option<NotifyHandler>>>,
     /// Bound on concurrent plugin→host handler tasks (shared across
     /// respawns so a respawn storm can't multiply it).
     host_slots: Arc<tokio::sync::Semaphore>,
@@ -194,7 +209,11 @@ struct Transport {
 
 pub struct SidecarPlugin {
     manifest: Manifest,
-    tools: Vec<Arc<dyn Tool>>,
+    /// Current tool set. Static for protocol <= 1.2 (manifest `tools`);
+    /// for [`DYNAMIC_PROTOCOL`] sidecars it is replaced wholesale by
+    /// [`SidecarPlugin::refresh_tools`] (`plugin/tools`), which the
+    /// debounced `host/tools_changed` handler runs off-turn.
+    tools: Arc<std::sync::RwLock<Vec<Arc<dyn Tool>>>>,
     transport: Arc<Transport>,
     /// Pinned boot cwd (captured at spawn from the process cwd). Used for
     /// the `session.cwd` of every wire point without a `ToolContext`
@@ -305,6 +324,7 @@ fn spawn_reader(
     stdin: Arc<Mutex<ChildStdin>>,
     pending: Arc<Mutex<Pending>>,
     host_handler: Arc<Mutex<Option<HostHandler>>>,
+    notify: Arc<std::sync::Mutex<Option<NotifyHandler>>>,
     host_slots: Arc<tokio::sync::Semaphore>,
     grants: Arc<std::sync::Mutex<BTreeSet<String>>>,
     // Plugin name, for the capability error the sidecar can act on.
@@ -429,6 +449,20 @@ fn spawn_reader(
                 });
                 continue;
             }
+            // Plugin→host notification: no id + host/ method. Routed to
+            // the notify handler (protocol 1.3 `host/tools_changed`);
+            // never answered, never gated.
+            if v.get("id").is_none()
+                && let Some(method) = v.get("method").and_then(|m| m.as_str())
+                && method.starts_with("host/")
+            {
+                let handler = notify.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                if let Some(h) = handler {
+                    let params = v.get("params").cloned().unwrap_or(Value::Null);
+                    h(method.to_string(), params);
+                }
+                continue;
+            }
             let Some(id) = v.get("id").and_then(|i| i.as_u64()) else {
                 continue;
             };
@@ -462,6 +496,7 @@ impl Transport {
         }));
         let stdin = Arc::new(Mutex::new(stdin));
         let host_handler = Arc::new(Mutex::new(None));
+        let notify = Arc::new(std::sync::Mutex::new(None));
         let host_slots = Arc::new(tokio::sync::Semaphore::new(MAX_HOST_TASKS));
         let grants: Arc<std::sync::Mutex<BTreeSet<String>>> =
             Arc::new(std::sync::Mutex::new(BTreeSet::new()));
@@ -470,6 +505,7 @@ impl Transport {
             stdin.clone(),
             pending.clone(),
             host_handler.clone(),
+            notify.clone(),
             host_slots.clone(),
             grants.clone(),
             Self::name_of(&argv),
@@ -482,6 +518,7 @@ impl Transport {
             next_id: AtomicU64::new(1),
             argv,
             host_handler,
+            notify,
             host_slots,
             grants,
         })
@@ -507,6 +544,7 @@ impl Transport {
                     self.stdin.clone(),
                     self.pending.clone(),
                     self.host_handler.clone(),
+                    self.notify.clone(),
                     self.host_slots.clone(),
                     self.grants.clone(),
                     Self::name_of(&self.argv),
@@ -649,6 +687,31 @@ impl Transport {
     }
 }
 
+/// Manifest/`plugin/tools` `tools` array → wire tools bound to `transport`.
+fn build_tools(transport: &Arc<Transport>, tools: &Value, asks: bool) -> Vec<Arc<dyn Tool>> {
+    manifest_tools(&json!({"tools": tools}))
+        .into_iter()
+        .map(|entry| Arc::new(SidecarTool::new(entry, transport.clone(), asks)) as Arc<dyn Tool>)
+        .collect()
+}
+
+/// `plugin/tools` round trip that swaps the shared snapshot; shared by
+/// [`SidecarPlugin::refresh_tools`] and the debounce task (which has no
+/// `&SidecarPlugin`).
+async fn refresh_tools_into(
+    transport: &Arc<Transport>,
+    tools: &std::sync::RwLock<Vec<Arc<dyn Tool>>>,
+    asks: bool,
+) -> anyhow::Result<usize> {
+    let r = transport
+        .request("plugin/tools", Some(json!({})), HOST_TTL)
+        .await?;
+    let new = build_tools(transport, r.get("tools").unwrap_or(&Value::Null), asks);
+    let n = new.len();
+    *tools.write().unwrap_or_else(|e| e.into_inner()) = new;
+    Ok(n)
+}
+
 impl SidecarPlugin {
     pub async fn spawn(argv: Vec<String>) -> anyhow::Result<Self> {
         let (child, stdin, stdout) = spawn_child(&argv)?;
@@ -665,22 +728,97 @@ impl SidecarPlugin {
             );
         }
         manifest.name = name;
-        let asks = manifest.protocol.as_deref() == Some("1.1");
-        let mut tools: Vec<Arc<dyn Tool>> = Vec::new();
-        for entry in manifest_tools(&result) {
-            tools.push(Arc::new(SidecarTool::new(entry, transport.clone(), asks)));
-        }
+        let dynamic = manifest.protocol.as_deref() == Some(DYNAMIC_PROTOCOL);
+        let asks = manifest.protocol.as_deref() == Some("1.1") || dynamic;
+        let tools = Arc::new(std::sync::RwLock::new(build_tools(
+            &transport,
+            result.get("tools").unwrap_or(&Value::Null),
+            asks,
+        )));
         let cwd = std::env::current_dir()
             .map(|p| p.to_string_lossy().into_owned())
             .unwrap_or_else(|_| ".".to_string());
-        Ok(Self {
+        let plugin = Self {
             manifest,
             tools,
             transport,
             cwd,
             asks,
             session_id: std::sync::Mutex::new(String::new()),
-        })
+        };
+        if dynamic {
+            // Install the handler first: a `host/tools_changed` arriving
+            // during or right after the initial `plugin/tools` reply would
+            // otherwise be dropped, freezing the tools at their first set.
+            plugin.install_tools_changed_handler();
+            if let Err(e) = plugin.refresh_tools().await {
+                log::warn!(target: "gray_plugin", "{}: plugin/tools failed at spawn: {e}", plugin.manifest.name);
+            }
+        }
+        Ok(plugin)
+    }
+
+    /// True for [`DYNAMIC_PROTOCOL`] sidecars (live tool set).
+    pub fn is_dynamic(&self) -> bool {
+        self.manifest.protocol.as_deref() == Some(DYNAMIC_PROTOCOL)
+    }
+
+    /// Re-ask the sidecar for its tool set (`plugin/tools`) and replace the
+    /// current snapshot. Returns the new tool count. Protocol 1.3 only;
+    /// older sidecars never receive the request (they would hang on it).
+    pub async fn refresh_tools(&self) -> anyhow::Result<usize> {
+        if !self.is_dynamic() {
+            return Ok(self.tools.read().unwrap_or_else(|e| e.into_inner()).len());
+        }
+        refresh_tools_into(&self.transport, &self.tools, self.asks).await
+    }
+
+    /// `host/tools_changed` → debounced (200 ms) `refresh_tools`. The
+    /// sidecar may fire a burst (one per server coming up); one refresh
+    /// per burst is enough, and it runs off-turn so a slow sidecar never
+    /// blocks the agent. The handles are `Arc`s so the task outlives
+    /// nothing it should not.
+    fn install_tools_changed_handler(&self) {
+        let Ok(rt) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        // The handler lives inside `Transport` (`transport.notify`), and
+        // the tools hold an `Arc<Transport>` each. Strong captures here
+        // would cycle Transport → notify → handler → Transport and never
+        // free the child on drop, so everything captured is `Weak` and
+        // upgraded only around `refresh_tools_into`.
+        let transport = Arc::downgrade(&self.transport);
+        let tools = Arc::downgrade(&self.tools);
+        let asks = self.asks;
+        let name = self.manifest.name.clone();
+        let pending = Arc::new(AtomicBool::new(false));
+        self.set_notify_handler(Arc::new(move |method, _params| {
+            if method != HOST_TOOLS_CHANGED {
+                return;
+            }
+            if transport.upgrade().is_none() || tools.upgrade().is_none() {
+                return;
+            }
+            if pending.swap(true, Ordering::SeqCst) {
+                return;
+            }
+            let (transport, tools, pending, name) = (
+                transport.clone(),
+                tools.clone(),
+                pending.clone(),
+                name.clone(),
+            );
+            rt.spawn(async move {
+                tokio::time::sleep(TOOLS_CHANGED_DEBOUNCE).await;
+                pending.store(false, Ordering::SeqCst);
+                let (Some(transport), Some(tools)) = (transport.upgrade(), tools.upgrade()) else {
+                    return;
+                };
+                if let Err(e) = refresh_tools_into(&transport, &tools, asks).await {
+                    log::warn!(target: "gray_plugin", "{name}: plugin/tools refresh failed: {e}");
+                }
+            });
+        }));
     }
 
     /// The pinned agent session id (`""` before the builder sets it).
@@ -872,6 +1010,14 @@ impl SidecarPlugin {
     pub async fn set_host_handler(&self, handler: HostHandler) {
         *self.transport.host_handler.lock().await = Some(handler);
     }
+    /// Install the id-less `host/*` notification sink (see [`NotifyHandler`]).
+    pub fn set_notify_handler(&self, handler: NotifyHandler) {
+        *self
+            .transport
+            .notify
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(handler);
+    }
     /// v1 request methods are gated on the manifest's `hooks`/`commands`:
     /// pre-v1 sidecars ignore unknown lines and would never reply, so
     /// sending them anything new would hang every turn to the full timeout.
@@ -933,7 +1079,7 @@ impl Plugin for SidecarPlugin {
         self.manifest.clone()
     }
     fn tools(&self) -> Vec<Arc<dyn Tool>> {
-        self.tools.clone()
+        self.tools.read().unwrap_or_else(|e| e.into_inner()).clone()
     }
     fn set_session_id(&self, id: &str) {
         *self.session_id.lock().expect("session_id") = id.to_string();
@@ -1063,7 +1209,11 @@ impl Tool for SidecarTool {
                 let content = v.get("content").and_then(|c| c.as_str());
                 match (is_error, content) {
                     (true, c) => gray_core::tool_out::fail(c.unwrap_or_default().to_string()),
-                    (false, Some(c)) => gray_core::tool_out::finish(c.to_string()),
+                    (false, Some(c)) => {
+                        let mut out = gray_core::tool_out::finish(c.to_string());
+                        attach_media(&name, &mut out, &v);
+                        out
+                    }
                     // No empty-success fallback: a reply without content is a
                     // protocol error, not a tool that returned nothing.
                     (false, None) => ToolOutput::error(format!(
@@ -1083,6 +1233,46 @@ impl Tool for SidecarTool {
                 };
                 ToolOutput::error(format!("plugin {kind}: {name}"))
             }
+        }
+    }
+}
+
+/// Protocol 1.3: a `tool/call` reply may carry `images` (`[{mime,
+/// data_base64}]`) and `media` (`[{mime, data_base64, fallback?}]`) next
+/// to `content`. Data stays base64 (that is what `AttachedImage::data`
+/// holds); an entry missing either field is dropped with a warning rather
+/// than failing the whole result.
+fn attach_media(name: &str, out: &mut ToolOutput, reply: &Value) {
+    let entries = |key: &str| {
+        reply
+            .get(key)
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default()
+    };
+    let field = |e: &Value, k: &str| e.get(k).and_then(|s| s.as_str()).map(str::to_string);
+    for e in entries("images") {
+        match (field(&e, "mime"), field(&e, "data_base64")) {
+            (Some(media_type), Some(data)) => out
+                .images
+                .push(gray_core::agent::AttachedImage { media_type, data }),
+            _ => log::warn!(target: "gray_plugin", "{name}: dropped malformed image entry"),
+        }
+    }
+    for e in entries("media") {
+        match (field(&e, "mime"), field(&e, "data_base64")) {
+            (Some(media_type), Some(data)) => {
+                let fallback = field(&e, "fallback")
+                    .filter(|f| !f.is_empty())
+                    .map(|f| vec![gray_core::message::ContentBlock::Text { text: f }])
+                    .unwrap_or_default();
+                out.media.push(gray_core::agent::AttachedMedia {
+                    media_type,
+                    data,
+                    fallback,
+                })
+            }
+            _ => log::warn!(target: "gray_plugin", "{name}: dropped malformed media entry"),
         }
     }
 }

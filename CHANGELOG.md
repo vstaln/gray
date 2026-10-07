@@ -1,5 +1,14 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- **Plugin protocol 1.3.** Sidecars can publish tools at runtime
+  (`plugin/tools`, refreshed on a `host/tools_changed` notification) and
+  return images/media from `tool/call`; the model's tool list is rebuilt
+  every turn from the live set. First user:
+  [gray-mcp](https://github.com/vstaln/gray-mcp).
+
 ## [0.1.11] - 2026-10-07
 
 ### Changed

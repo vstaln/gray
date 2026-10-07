@@ -239,6 +239,9 @@ impl Agent {
         // The session id rides the per-run context; compaction cites it in
         // elided-output stubs.
         self.session_id = ctx.session_id.clone();
+        // Live executors (plugin tool sets) may have changed since the
+        // last turn; pick up the current defs before the first request.
+        self.refresh_tools();
         log::info!(target: "gray_agent", "agent run start ({} messages)", self.messages.len());
         let mut events = Vec::new();
         // Loop backstop: 6 identical consecutive tool calls → LoopDetected.
