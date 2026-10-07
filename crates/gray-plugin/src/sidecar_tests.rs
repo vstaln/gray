@@ -275,3 +275,28 @@ async fn dynamic_plugin_refreshes_tools_on_tools_changed() {
     }
     assert_eq!(names(&p), vec!["dyn_a", "dyn_b"]);
 }
+
+#[tokio::test]
+async fn tool_call_reply_images_and_media_are_attached() {
+    let p = SidecarPlugin::spawn(vec!["testdata/media_plugin.sh".into()])
+        .await
+        .unwrap();
+    let t = p.tools()[0].clone();
+    assert_eq!(t.def().name, "shot");
+    let out = t
+        .execute(&ToolContext::default(), serde_json::json!({}))
+        .await;
+    assert!(!out.is_error, "got: {}", out.content);
+    assert_eq!(out.content, "here");
+    assert_eq!(out.images.len(), 1, "malformed image must be dropped");
+    assert_eq!(out.images[0].media_type, "image/png");
+    assert_eq!(out.images[0].data, "iVBORw0KGgo=");
+    assert_eq!(out.media.len(), 1);
+    assert_eq!(out.media[0].media_type, "application/pdf");
+    assert_eq!(
+        out.media[0].fallback,
+        vec![gray_core::message::ContentBlock::Text {
+            text: "pdf text".into()
+        }]
+    );
+}

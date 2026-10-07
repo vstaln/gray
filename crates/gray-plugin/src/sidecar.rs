@@ -1189,7 +1189,11 @@ impl Tool for SidecarTool {
                 let content = v.get("content").and_then(|c| c.as_str());
                 match (is_error, content) {
                     (true, c) => gray_core::tool_out::fail(c.unwrap_or_default().to_string()),
-                    (false, Some(c)) => gray_core::tool_out::finish(c.to_string()),
+                    (false, Some(c)) => {
+                        let mut out = gray_core::tool_out::finish(c.to_string());
+                        attach_media(&name, &mut out, &v);
+                        out
+                    }
                     // No empty-success fallback: a reply without content is a
                     // protocol error, not a tool that returned nothing.
                     (false, None) => ToolOutput::error(format!(
@@ -1209,6 +1213,46 @@ impl Tool for SidecarTool {
                 };
                 ToolOutput::error(format!("plugin {kind}: {name}"))
             }
+        }
+    }
+}
+
+/// Protocol 1.3: a `tool/call` reply may carry `images` (`[{mime,
+/// data_base64}]`) and `media` (`[{mime, data_base64, fallback?}]`) next
+/// to `content`. Data stays base64 (that is what `AttachedImage::data`
+/// holds); an entry missing either field is dropped with a warning rather
+/// than failing the whole result.
+fn attach_media(name: &str, out: &mut ToolOutput, reply: &Value) {
+    let entries = |key: &str| {
+        reply
+            .get(key)
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default()
+    };
+    let field = |e: &Value, k: &str| e.get(k).and_then(|s| s.as_str()).map(str::to_string);
+    for e in entries("images") {
+        match (field(&e, "mime"), field(&e, "data_base64")) {
+            (Some(media_type), Some(data)) => {
+                out.images.push(gray_core::agent::AttachedImage { media_type, data })
+            }
+            _ => log::warn!(target: "gray_plugin", "{name}: dropped malformed image entry"),
+        }
+    }
+    for e in entries("media") {
+        match (field(&e, "mime"), field(&e, "data_base64")) {
+            (Some(media_type), Some(data)) => {
+                let fallback = field(&e, "fallback")
+                    .filter(|f| !f.is_empty())
+                    .map(|f| vec![gray_core::message::ContentBlock::Text { text: f }])
+                    .unwrap_or_default();
+                out.media.push(gray_core::agent::AttachedMedia {
+                    media_type,
+                    data,
+                    fallback,
+                })
+            }
+            _ => log::warn!(target: "gray_plugin", "{name}: dropped malformed media entry"),
         }
     }
 }
