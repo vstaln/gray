@@ -1427,6 +1427,16 @@ pub fn turn_cost(usage: &gray_core::event::Usage, model: &str) -> Option<f64> {
     Some(input_cost + usage.output_tokens as f64 * output)
 }
 
+/// The same turn with caching off: every input token at the plain input
+/// rate (same [`rate_at_context`] tier selection as [`turn_cost`]) plus
+/// output. The `Saved` row's counterfactual — `turn_cost` subtracted from
+/// this is what prompt caching kept off the bill. `None` when unpriced.
+pub fn uncached_cost(usage: &gray_core::event::Usage, model: &str) -> Option<f64> {
+    let r = get_model_rate(model)?;
+    let (input, output, ..) = rate_at_context(&r, usage.input_tokens);
+    Some(usage.input_tokens as f64 * input + usage.output_tokens as f64 * output)
+}
+
 /// The rate in force for a prompt of `context` tokens — the base rate, or
 /// the largest tier strictly below it (opencode `getUsage`: tiers apply on
 /// `context > tier.size`; models.dev only ships `type: "context"` tiers).
@@ -2096,6 +2106,34 @@ pub(crate) fn ensure_disk_loaded() {
     ONCE.call_once(|| {
         let _ = load_models_cache_to_memory();
     });
+}
+
+/// Disk-only rate priming for callers that price before the spawned catalog
+/// fetches land — a startup resume rebuilds session totals ahead of them and
+/// would otherwise price every turn $0. Applies `~/.gray/cache/` bodies
+/// through the same parsers the fetch tasks run (merge semantics keep
+/// re-application idempotent); never touches the network.
+pub(crate) fn warm_rates_from_disk_cache() {
+    let Some(dir) = crate::setup::catalog::gray_home()
+        .ok()
+        .map(|h| h.join("cache"))
+    else {
+        return;
+    };
+    for (name, apply) in [
+        (
+            "models.dev.json",
+            parse_models_dev_json as fn(&serde_json::Value) -> usize,
+        ),
+        ("litellm.json", parse_litellm_context_json as _),
+        ("openrouter.json", parse_openrouter_models_json as _),
+    ] {
+        if let Ok(s) = std::fs::read(dir.join(name))
+            && let Ok(v) = serde_json::from_slice::<serde_json::Value>(&s)
+        {
+            apply(&v);
+        }
+    }
 }
 
 #[path = "providers_tests.rs"]
