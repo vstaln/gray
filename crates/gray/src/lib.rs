@@ -64,9 +64,9 @@ tools describe themselves and the task says the rest.
 Per turn gray may append ephemeral context: the <available_skills> list
 (fresh skill discovery for the turn's directory) — no skill tool, read
 matches with bash — plus <project_context>, the nearest AGENTS.md /
-CLAUDE.md above the working directory, and plugin docs. --lean
-(GRAY_LEAN=1, or "lean": true in config) skips all of that: this file
-alone is the system prompt. Edit with `/agentsmd`
+CLAUDE.md above the working directory, and plugin docs. Lean mode — the
+default — skips all of that: this file alone is the system prompt. Opt
+back in with "lean": false or GRAY_LEAN=0. Edit with `/agentsmd`
 (Ctrl-S save & apply, Ctrl-R reset to this default, Ctrl-X cancel).
 -->
 You are Gray, running on the user's machine.
@@ -443,11 +443,11 @@ pub struct Cli {
     #[arg(long)]
     pub bare: bool,
 
-    /// Lean prompt: keep the stored AGENTS.md and every tool/plugin, but
-    /// skip all per-turn injected context (the skills list, project
-    /// AGENTS.md/CLAUDE.md, plugin docs). Costs close to --bare per request
-    /// without losing the full agent. Env: GRAY_LEAN=1; persisted `lean`
-    /// config key turns it on permanently.
+    /// Lean prompt (the default): keep the stored AGENTS.md and every
+    /// tool/plugin, but skip all per-turn injected context (the skills
+    /// list, project AGENTS.md/CLAUDE.md, plugin docs). Costs close to
+    /// --bare per request without losing the full agent. Opt out with
+    /// GRAY_LEAN=0 or persisted `"lean": false`.
     #[arg(long)]
     pub lean: bool,
 

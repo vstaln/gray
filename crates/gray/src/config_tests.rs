@@ -57,3 +57,33 @@ fn bare_comes_from_the_flag_or_env() {
         .expect("config resolves");
     assert!(env.bare);
 }
+
+/// Lean is the default: `--lean` / `GRAY_LEAN=1` force on, `GRAY_LEAN=0`
+/// opts out, the flag wins over an opting-out env, and nothing set means
+/// on (a saved `lean: false` would still opt out — uninjectable here).
+#[test]
+fn lean_defaults_on_with_flag_and_env_overrides() {
+    let plain = Cli::parse_from(["gray"]);
+    let flag = Cli::parse_from(["gray", "--lean"]);
+    let lean_env = |v: &str| move |k: &str| (k == "GRAY_LEAN").then(|| v.to_string());
+    assert!(
+        !Config::resolve_with(&plain, lean_env("0"))
+            .expect("config resolves")
+            .lean
+    );
+    assert!(
+        Config::resolve_with(&flag, lean_env("0"))
+            .expect("config resolves")
+            .lean
+    );
+    assert!(
+        Config::resolve_with(&plain, lean_env("1"))
+            .expect("config resolves")
+            .lean
+    );
+    assert!(
+        Config::resolve_with(&plain, |_| None)
+            .expect("config resolves")
+            .lean
+    );
+}
