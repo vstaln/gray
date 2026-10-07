@@ -87,6 +87,7 @@ fn ask_rows_shape() {
 
 static ASK_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+#[allow(clippy::await_holding_lock)] // serial guard must cover the whole test (global ask service)
 #[tokio::test]
 async fn handle_ask_empty_and_nonblocking_resolve_empty() {
     let _guard = ASK_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -101,6 +102,7 @@ async fn handle_ask_empty_and_nonblocking_resolve_empty() {
     crate::ask::shutdown();
 }
 
+#[allow(clippy::await_holding_lock)] // serial guard must cover the whole test (global ask service)
 #[tokio::test]
 async fn handle_ask_rejects_bad_shape() {
     let _guard = ASK_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -110,6 +112,7 @@ async fn handle_ask_rejects_bad_shape() {
     crate::ask::shutdown();
 }
 
+#[allow(clippy::await_holding_lock)] // serial guard must cover the whole test (global ask service)
 #[tokio::test]
 async fn handle_ask_without_service_errors_loudly() {
     let _guard = ASK_LOCK.lock().unwrap_or_else(|e| e.into_inner());

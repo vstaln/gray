@@ -51,7 +51,7 @@ fn first_request_is_never_a_miss_and_warms_the_cache() {
         None
     );
     let left = tr.remaining(t(base, 60)).expect("warm");
-    assert_eq!(left, CACHE_TTL - Duration::from_secs(60));
+    assert_eq!(left, cache_ttl() - Duration::from_secs(60));
 }
 
 #[test]
@@ -59,16 +59,16 @@ fn cold_is_the_ttl_crossed_on_a_reported_cache_only() {
     let base = Instant::now();
     let mut tr = CacheTracker::default();
     // No request seen yet: nothing was cached, so nothing is known to be lost.
-    assert!(!tr.is_cold(t(base, CACHE_TTL.as_secs() * 10)));
+    assert!(!tr.is_cold(t(base, cache_ttl().as_secs() * 10)));
     tr.note(&usage(100_000, 500, 90_000, 10_000), "m", None, t(base, 0));
-    assert!(!tr.is_cold(t(base, CACHE_TTL.as_secs() - 1)));
-    assert!(tr.is_cold(t(base, CACHE_TTL.as_secs())));
+    assert!(!tr.is_cold(t(base, cache_ttl().as_secs() - 1)));
+    assert!(tr.is_cold(t(base, cache_ttl().as_secs())));
     // A provider that never reports caching: `remaining` is `None` too, but
     // no warm cache is known to have expired — do not claim a free rewrite.
     let mut opaque_tr = CacheTracker::default();
     opaque_tr.note(&opaque(100_000, 500), "m", None, t(base, 0));
     assert_eq!(opaque_tr.remaining(t(base, 1)), None);
-    assert!(!opaque_tr.is_cold(t(base, CACHE_TTL.as_secs())));
+    assert!(!opaque_tr.is_cold(t(base, cache_ttl().as_secs())));
 }
 
 #[test]
@@ -78,9 +78,9 @@ fn a_paused_turn_answers_cold_on_the_idle_gap_it_started_after() {
     tr.note(&usage(100_000, 500, 90_000, 10_000), "m", None, t(base, 0));
     // The turn began long after the TTL: the pause freezes the clock there,
     // so the answer must be cold even though wall time keeps running.
-    tr.pause(t(base, CACHE_TTL.as_secs() + 30));
-    assert!(tr.is_cold(t(base, CACHE_TTL.as_secs() + 30)));
-    assert!(tr.is_cold(t(base, CACHE_TTL.as_secs() + 3_600)));
+    tr.pause(t(base, cache_ttl().as_secs() + 30));
+    assert!(tr.is_cold(t(base, cache_ttl().as_secs() + 30)));
+    assert!(tr.is_cold(t(base, cache_ttl().as_secs() + 3_600)));
     // A turn that began while the cache was still warm is not cold, however
     // long it runs — the in-turn requests keep refreshing the prefix.
     tr.rearm(t(base, 30));
@@ -94,9 +94,9 @@ fn warmth_expires_at_the_ttl() {
     let base = Instant::now();
     let mut tr = CacheTracker::default();
     tr.note(&usage(100_000, 500, 90_000, 10_000), "m", None, t(base, 0));
-    assert!(tr.remaining(t(base, CACHE_TTL.as_secs() - 1)).is_some());
-    assert_eq!(tr.remaining(t(base, CACHE_TTL.as_secs())), None);
-    assert_eq!(tr.remaining(t(base, CACHE_TTL.as_secs() * 3)), None);
+    assert!(tr.remaining(t(base, cache_ttl().as_secs() - 1)).is_some());
+    assert_eq!(tr.remaining(t(base, cache_ttl().as_secs())), None);
+    assert_eq!(tr.remaining(t(base, cache_ttl().as_secs() * 3)), None);
 }
 
 #[test]
@@ -110,14 +110,14 @@ fn active_turn_freezes_then_rearms_the_countdown() {
     tr.pause(t(base, 120));
     assert_eq!(
         tr.remaining(t(base, 360)),
-        Some(CACHE_TTL - Duration::from_secs(60))
+        Some(cache_ttl() - Duration::from_secs(60))
     );
 
     tr.rearm(t(base, 360));
-    assert_eq!(tr.remaining(t(base, 360)), Some(CACHE_TTL));
+    assert_eq!(tr.remaining(t(base, 360)), Some(cache_ttl()));
     assert_eq!(
         tr.remaining(t(base, 361)),
-        Some(CACHE_TTL - Duration::from_secs(1))
+        Some(cache_ttl() - Duration::from_secs(1))
     );
 }
 
@@ -131,7 +131,7 @@ fn aborted_turn_releases_the_pause_without_rearming() {
     tr.resume(t(base, 360));
     assert_eq!(
         tr.remaining(t(base, 361)),
-        Some(CACHE_TTL - Duration::from_secs(61))
+        Some(cache_ttl() - Duration::from_secs(61))
     );
 }
 
@@ -148,13 +148,13 @@ fn usage_during_an_active_turn_rearms_and_freezes_a_fresh_timer() {
         None,
         t(base, 20),
     );
-    assert_eq!(tr.remaining(t(base, 80)), Some(CACHE_TTL));
+    assert_eq!(tr.remaining(t(base, 80)), Some(cache_ttl()));
 
     tr.rearm(t(base, 80));
-    assert_eq!(tr.remaining(t(base, 80)), Some(CACHE_TTL));
+    assert_eq!(tr.remaining(t(base, 80)), Some(cache_ttl()));
     assert_eq!(
         tr.remaining(t(base, 81)),
-        Some(CACHE_TTL - Duration::from_secs(1))
+        Some(cache_ttl() - Duration::from_secs(1))
     );
 }
 
@@ -194,13 +194,13 @@ fn reset_during_an_active_turn_keeps_the_next_timer_paused() {
     tr.reset();
 
     tr.note(&usage(60_000, 100, 50_000, 10_000), "m", None, t(base, 20));
-    assert_eq!(tr.remaining(t(base, 80)), Some(CACHE_TTL));
+    assert_eq!(tr.remaining(t(base, 80)), Some(cache_ttl()));
 
     tr.rearm(t(base, 80));
-    assert_eq!(tr.remaining(t(base, 80)), Some(CACHE_TTL));
+    assert_eq!(tr.remaining(t(base, 80)), Some(cache_ttl()));
     assert_eq!(
         tr.remaining(t(base, 81)),
-        Some(CACHE_TTL - Duration::from_secs(1))
+        Some(cache_ttl() - Duration::from_secs(1))
     );
 }
 

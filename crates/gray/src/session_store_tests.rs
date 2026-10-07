@@ -1094,7 +1094,7 @@ fn random_message(rng: &mut Rng, i: usize) -> Message {
             3 => content.push(ContentBlock::ToolResult {
                 id: format!("call-{i}-{k}"),
                 content: format!("out {i} \"quoted\" }}{{"),
-                is_error: i % 3 == 0,
+                is_error: i.is_multiple_of(3),
             }),
             _ => content.push(ContentBlock::Image {
                 media_type: "image/png".to_string(),
@@ -1118,7 +1118,7 @@ async fn random_session_log_replays_exactly_what_was_appended() {
         let store = JsonlSessionStore::new(dir.path());
         let id = store
             .create(SessionMeta::new(
-                SessionId::new(&format!("r{seed}")),
+                SessionId::new(format!("r{seed}")),
                 1,
                 "/tmp",
                 "m",

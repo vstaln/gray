@@ -168,11 +168,14 @@ pub use gray_plugin::builder::{
 /// `plugin_warm_replay` is the manifest opt-in (`request.warm_replay`) of
 /// the connected plugin provider: a verbatim host replay is only safe for
 /// transports the host calls directly (a real HTTPS endpoint), not for
-/// relay sidecars that spawn per-turn CLI children.
+/// relay sidecars that spawn per-turn CLI children. `cache_ttl_secs` is the
+/// provider's declared cache lifetime (`request.cache_ttl_secs`, or the
+/// 5-minute default).
 fn cache_warm_policy(
     config: &Config,
     model: &str,
     plugin_warm_replay: bool,
+    cache_ttl_secs: u64,
 ) -> Option<gray_core::cache_warm::CacheWarmPolicy> {
     // Every built-in provider path caches prefixes (native Anthropic plus
     // all OpenAI-compatible base URLs — direct OpenAI, routers, local
@@ -186,7 +189,7 @@ fn cache_warm_policy(
     }
     let model = model.to_string();
     Some(gray_core::cache_warm::CacheWarmPolicy {
-        ttl: std::time::Duration::from_secs(5 * 60),
+        ttl: std::time::Duration::from_secs(cache_ttl_secs),
         prices: std::sync::Arc::new(move || {
             let r = crate::setup::get_model_rate(&model)?;
             r.has_cache_prices.then_some(gray_core::cache_warm::Prices {
@@ -246,7 +249,16 @@ pub async fn build_agent(
     let plugin_warm_replay = dynamic
         .as_ref()
         .is_some_and(|p| p.installed().provider.transport.request.warm_replay);
-    let cache_warm = cache_warm_policy(config, &wire_model, plugin_warm_replay);
+    // A plugin can declare its real cache lifetime (e.g. a relay to a CLI
+    // whose cache lives an hour): the tracker's cold-cache detection, the
+    // footer warmth timer and miss notices all read it. Reset on every
+    // build so a provider switch can't inherit a stale TTL.
+    let cache_ttl_secs = dynamic
+        .as_ref()
+        .and_then(|p| p.installed().provider.transport.request.cache_ttl_secs)
+        .unwrap_or(300);
+    crate::cache::set_cache_ttl(std::time::Duration::from_secs(cache_ttl_secs));
+    let cache_warm = cache_warm_policy(config, &wire_model, plugin_warm_replay, cache_ttl_secs);
     let agent = gray_plugin::builder::build_agent(gray_plugin::builder::BuilderOptions {
         model: wire_model.clone(),
         api_key: api_key.to_string(),

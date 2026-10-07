@@ -188,7 +188,7 @@ fn first_gray_in_skips_a_gray_the_shell_could_not_run() {
         Some(real.join("gray")),
         "only a runnable launcher counts"
     );
-    assert_eq!(first_gray_in(&[data.clone()]), None);
+    assert_eq!(first_gray_in(std::slice::from_ref(&data)), None);
 }
 
 #[test]
