@@ -228,3 +228,20 @@ fn a_model_picker_reply_wins_over_prompt_and_text() {
     );
     assert_eq!(parse(serde_json::json!({})), None);
 }
+
+#[tokio::test]
+async fn idless_host_frames_reach_the_notify_handler() {
+    let p = SidecarPlugin::spawn(vec!["testdata/notify_plugin.sh".into()])
+        .await
+        .unwrap();
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(String, Value)>();
+    p.set_notify_handler(Arc::new(move |m, v| {
+        let _ = tx.send((m, v));
+    }));
+    let got = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+        .await
+        .expect("notification within 5s")
+        .expect("channel open");
+    assert_eq!(got.0, "host/tools_changed");
+    assert_eq!(got.1["reason"], "test");
+}

@@ -76,6 +76,13 @@ pub type HostHandler = Arc<
         + Sync,
 >;
 
+/// Plugin→host **notification** handler (id-less `host/*` frames such as
+/// `host/tools_changed`). Fire-and-forget: no reply is written, the
+/// capability gate does not apply (a notification carries no privilege),
+/// and the handler must not block. Set via
+/// [`SidecarPlugin::set_notify_handler`]; unset = frames are dropped.
+pub type NotifyHandler = Arc<dyn Fn(String, serde_json::Value) + Send + Sync>;
+
 /// Host-side methods a sidecar may call (requests, unlike `event/notify`:
 /// they carry a sidecar-originated **string** `id` and expect a
 /// `{"id","result"}` reply). Host→sidecar ids stay numeric — the two
@@ -183,6 +190,9 @@ struct Transport {
     /// Plugin→host handler (`host/run`/`host/say`). `Arc` so respawned
     /// readers keep the same slot; `None` = reply `{"error":...}`.
     host_handler: Arc<Mutex<Option<HostHandler>>>,
+    /// Plugin→host notification sink (id-less `host/*` frames). Shared
+    /// across respawns like `host_handler`; `None` = dropped.
+    notify: Arc<std::sync::Mutex<Option<NotifyHandler>>>,
     /// Bound on concurrent plugin→host handler tasks (shared across
     /// respawns so a respawn storm can't multiply it).
     host_slots: Arc<tokio::sync::Semaphore>,
@@ -305,6 +315,7 @@ fn spawn_reader(
     stdin: Arc<Mutex<ChildStdin>>,
     pending: Arc<Mutex<Pending>>,
     host_handler: Arc<Mutex<Option<HostHandler>>>,
+    notify: Arc<std::sync::Mutex<Option<NotifyHandler>>>,
     host_slots: Arc<tokio::sync::Semaphore>,
     grants: Arc<std::sync::Mutex<BTreeSet<String>>>,
     // Plugin name, for the capability error the sidecar can act on.
@@ -429,6 +440,20 @@ fn spawn_reader(
                 });
                 continue;
             }
+            // Plugin→host notification: no id + host/ method. Routed to
+            // the notify handler (protocol 1.3 `host/tools_changed`);
+            // never answered, never gated.
+            if v.get("id").is_none()
+                && let Some(method) = v.get("method").and_then(|m| m.as_str())
+                && method.starts_with("host/")
+            {
+                let handler = notify.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                if let Some(h) = handler {
+                    let params = v.get("params").cloned().unwrap_or(Value::Null);
+                    h(method.to_string(), params);
+                }
+                continue;
+            }
             let Some(id) = v.get("id").and_then(|i| i.as_u64()) else {
                 continue;
             };
@@ -462,6 +487,7 @@ impl Transport {
         }));
         let stdin = Arc::new(Mutex::new(stdin));
         let host_handler = Arc::new(Mutex::new(None));
+        let notify = Arc::new(std::sync::Mutex::new(None));
         let host_slots = Arc::new(tokio::sync::Semaphore::new(MAX_HOST_TASKS));
         let grants: Arc<std::sync::Mutex<BTreeSet<String>>> =
             Arc::new(std::sync::Mutex::new(BTreeSet::new()));
@@ -470,6 +496,7 @@ impl Transport {
             stdin.clone(),
             pending.clone(),
             host_handler.clone(),
+            notify.clone(),
             host_slots.clone(),
             grants.clone(),
             Self::name_of(&argv),
@@ -482,6 +509,7 @@ impl Transport {
             next_id: AtomicU64::new(1),
             argv,
             host_handler,
+            notify,
             host_slots,
             grants,
         })
@@ -507,6 +535,7 @@ impl Transport {
                     self.stdin.clone(),
                     self.pending.clone(),
                     self.host_handler.clone(),
+                    self.notify.clone(),
                     self.host_slots.clone(),
                     self.grants.clone(),
                     Self::name_of(&self.argv),
@@ -871,6 +900,14 @@ impl SidecarPlugin {
 
     pub async fn set_host_handler(&self, handler: HostHandler) {
         *self.transport.host_handler.lock().await = Some(handler);
+    }
+    /// Install the id-less `host/*` notification sink (see [`NotifyHandler`]).
+    pub fn set_notify_handler(&self, handler: NotifyHandler) {
+        *self
+            .transport
+            .notify
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(handler);
     }
     /// v1 request methods are gated on the manifest's `hooks`/`commands`:
     /// pre-v1 sidecars ignore unknown lines and would never reply, so
