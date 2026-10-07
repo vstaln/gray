@@ -597,15 +597,16 @@ mod tests {
 
     #[tokio::test]
     async fn action_wait_rejected_outside_output_status() {
-        // wait_ms on run/list/cancel fails loudly — never silently ignored.
-        // `wait` left the surface entirely: rejected on run AND management.
+        // wait_ms on list/cancel fails loudly — never silently ignored. (On a
+        // plain run it is a schema echo with nothing to drop: see
+        // `run_ignores_echoed_wait_ms`.) `wait` left the surface entirely:
+        // rejected on run AND management.
         let tool = BashTool::default();
         let ctx = ToolContext::default();
         let id = "bash-wait-rejected-elsewhere";
         let (job, _tx) = entry(false, false, true);
         tool.jobs.0.lock().unwrap().insert(id.into(), job);
         for args in [
-            json!({"command": "echo hi", "wait_ms": 1000}),
             json!({"command": "echo hi", "wait": true}),
             json!({"action": "list", "wait_ms": 1000}),
             json!({"action": "cancel", "job_id": id, "wait_ms": 1000}),

@@ -1052,19 +1052,27 @@ async fn output_accepts_long_blocking_wait() {
 }
 
 #[tokio::test]
-async fn run_still_rejects_wait_ms() {
-    // The ceiling raise must not leak wait_ms onto the run surface.
+async fn run_ignores_echoed_wait_ms() {
+    // GPT-6 models fill every schema property on every call; this is the
+    // exact argument object gpt-6-sol sent. A plain run already waits for
+    // exit, so wait_ms adds nothing to drop (like job_id): the run must go
+    // through instead of failing the same way on every retry.
     let tool = BashTool::default();
     let s = sess("runwait");
     let ctx = ctx_for(&s);
     let out = tool
-        .execute(&ctx, json!({"command": "echo hi", "wait_ms": 5000}))
+        .execute(
+            &ctx,
+            json!({"action": "run", "background": false, "command": "echo hi", "job_id": "",
+                   "timeout": 10, "wait_ms": 1000, "yield_ms": 1000}),
+        )
         .await;
     assert!(
-        out.content.contains("wait_ms is only valid"),
-        "run+wait_ms must fail loudly, got: {}",
+        !out.is_error,
+        "echoed wait_ms must not fail the run: {}",
         out.content
     );
+    assert!(out.content.contains("hi"), "{}", out.content);
 }
 
 #[cfg(unix)]

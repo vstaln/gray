@@ -205,9 +205,6 @@ impl Tool for BashTool {
             Some(Value::String(s)) => s.as_str(),
             _ => return fail("action must be a string".into()),
         };
-        if args.get("wait_ms").is_some_and(|v| !v.is_null()) && action == "run" {
-            return fail("wait_ms is only valid for action:output/status".into());
-        }
         if action != "run" {
             if !jobs_enabled() {
                 return fail(
@@ -221,7 +218,10 @@ impl Tool for BashTool {
             return self.jobs.action(ctx, action, &args).await;
         }
         // job_id on a plain run carries no extra intent (nothing is dropped),
-        // and real models echo it back from the schema: ignore it. The
+        // and real models echo it back from the schema: ignore it. wait_ms
+        // likewise: a plain run already waits for exit, and GPT-6 models fill
+        // every schema property on every call (wait_ms included), so failing
+        // it only repeats the same rejection until the turn gives up. The
         // removed-API family below would silently lose intent, so it still
         // fails loudly — with removal as the first instruction, never a
         // suggestion that re-triggers the same failure.
