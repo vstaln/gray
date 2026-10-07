@@ -308,6 +308,25 @@ async fn tools_changed_during_initial_refresh_is_not_lost() {
 }
 
 #[tokio::test]
+async fn dropping_a_dynamic_plugin_frees_its_transport() {
+    let dir = tempfile::tempdir().unwrap();
+    let flag = dir.path().join("flag");
+    let p = SidecarPlugin::spawn(vec![
+        "testdata/dynamic_tools_plugin.sh".into(),
+        flag.to_string_lossy().into_owned(),
+    ])
+    .await
+    .unwrap();
+    assert!(p.is_dynamic());
+    let weak = Arc::downgrade(&p.transport);
+    drop(p);
+    assert!(
+        weak.upgrade().is_none(),
+        "dynamic SidecarPlugin leaked its Transport (notify-handler cycle)"
+    );
+}
+
+#[tokio::test]
 async fn tool_call_reply_images_and_media_are_attached() {
     let p = SidecarPlugin::spawn(vec!["testdata/media_plugin.sh".into()])
         .await

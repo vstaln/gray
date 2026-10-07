@@ -782,13 +782,24 @@ impl SidecarPlugin {
         let Ok(rt) = tokio::runtime::Handle::try_current() else {
             return;
         };
-        let transport = self.transport.clone();
-        let tools = self.tools.clone();
+        // The handler lives inside `Transport` (`transport.notify`), and
+        // the tools hold an `Arc<Transport>` each. Strong captures here
+        // would cycle Transport → notify → handler → Transport and never
+        // free the child on drop, so everything captured is `Weak` and
+        // upgraded only around `refresh_tools_into`.
+        let transport = Arc::downgrade(&self.transport);
+        let tools = Arc::downgrade(&self.tools);
         let asks = self.asks;
         let name = self.manifest.name.clone();
         let pending = Arc::new(AtomicBool::new(false));
         self.set_notify_handler(Arc::new(move |method, _params| {
-            if method != HOST_TOOLS_CHANGED || pending.swap(true, Ordering::SeqCst) {
+            if method != HOST_TOOLS_CHANGED {
+                return;
+            }
+            if transport.upgrade().is_none() || tools.upgrade().is_none() {
+                return;
+            }
+            if pending.swap(true, Ordering::SeqCst) {
                 return;
             }
             let (transport, tools, pending, name) = (
@@ -800,6 +811,9 @@ impl SidecarPlugin {
             rt.spawn(async move {
                 tokio::time::sleep(TOOLS_CHANGED_DEBOUNCE).await;
                 pending.store(false, Ordering::SeqCst);
+                let (Some(transport), Some(tools)) = (transport.upgrade(), tools.upgrade()) else {
+                    return;
+                };
                 if let Err(e) = refresh_tools_into(&transport, &tools, asks).await {
                     log::warn!(target: "gray_plugin", "{name}: plugin/tools refresh failed: {e}");
                 }
