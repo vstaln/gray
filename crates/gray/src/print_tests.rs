@@ -236,7 +236,9 @@ async fn checkpointed_messages_are_not_appended_twice() {
     use std::sync::atomic::Ordering::Relaxed;
     assert_eq!(done.load(Relaxed), msgs.len());
     assert!(!failed.load(Relaxed));
-    assert_eq!(store.load(&sid).await.unwrap().1.len(), 1 + msgs.len());
+    // The initial message was saved at session create; the checkpoint adds
+    // only the fresh tail, so the file holds exactly msgs.len() entries.
+    assert_eq!(store.load(&sid).await.unwrap().1.len(), msgs.len());
     // End of turn starts at the checkpointed cursor: only the final
     // assistant message is appended, carrying the turn's usage/duration.
     let mut full = msgs.clone();
