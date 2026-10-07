@@ -345,8 +345,8 @@ async fn run_plugin_inner(cmd: gray::PluginCmd) -> anyhow::Result<()> {
             }
             Ok(())
         }
-        PluginCmd::Install { spec, force } => {
-            gray::plugin_cli::install_spec(&gray::plugin_cli::home()?, &spec, force).await
+        PluginCmd::Install { spec, force, yes } => {
+            gray::plugin_cli::install_spec(&gray::plugin_cli::home()?, &spec, force, yes).await
         }
         PluginCmd::Remove { name } => {
             gray::plugin_cli::remove_managed(&name)?;

@@ -751,6 +751,10 @@ pub enum PluginCmd {
         /// Accept a caution scan verdict (never overrides `dangerous`)
         #[arg(short, long)]
         force: bool,
+        /// Skip the confirmation prompt for unverified registry plugins
+        /// (the warning still prints)
+        #[arg(short = 'y', long)]
+        yes: bool,
     },
     /// Remove an installed plugin
     Remove {
