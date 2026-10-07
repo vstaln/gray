@@ -78,9 +78,10 @@ gray cron remove <id>
 ```
 
 A schedule is `every 1h`, `30m`, `in 10m`, an RFC3339 timestamp, or a cron
-expression. `add` runs validation inline; the supervised gateway daemon fires
-the jobs. Delivery is a file by default; `--deliver origin` appends back to a
-chat session.
+expression. `add` runs validation inline; whatever ticks this home (the
+gateway, a REPL, or a chat host such as Discord) fires the jobs, so never start
+`cron serve` or `cron tick` yourself to make one fire. Delivery is a file by
+default; `--deliver origin` sends it back to the chat it was added from.
 
 ## Other subcommands
 

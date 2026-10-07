@@ -643,6 +643,8 @@ async fn run_cron(cmd: gray::CronCmd, config: &gray::config::Config) -> anyhow::
             } else {
                 None
             };
+            // Hosted chats are ticked by their host (`cron tick --json`).
+            let chat_bound = origin.as_ref().is_some_and(gray::cron_serve::is_hosted);
             let id = store.add_full(
                 &name,
                 &schedule,
@@ -666,7 +668,7 @@ async fn run_cron(cmd: gray::CronCmd, config: &gray::config::Config) -> anyhow::
             }
             let stamp = store.last_tick()?;
             if let Some(warn) =
-                gray::cron_status::add_warning(stamp.as_ref(), gray::cron::now_secs())
+                gray::cron_status::add_warning(stamp.as_ref(), gray::cron::now_secs(), chat_bound)
             {
                 println!("{warn}");
             }
@@ -729,19 +731,18 @@ async fn run_cron(cmd: gray::CronCmd, config: &gray::config::Config) -> anyhow::
                 config: config.clone(),
                 follow_switches: false,
             };
-            let deliver = gray::cron_serve::SaveLocalDeliver { home };
+            let deliver = gray::cron_serve::SaveLocalDeliver { home: home.clone() };
             let rep = gray::cron_serve::tick_once(&store, &runner, &deliver, "cli").await?;
-            // `--json`: one line per chat-bound delivery, for a host that
-            // routes them (a chat plugin). Core renders the frame; the
+            // `--json`: one line per spooled chat delivery, for the host that
+            // routes them (a chat plugin) — including fires by any other
+            // driver since its last tick. Core renders the frame; the
             // platform only carries the bytes.
-            for saved in rep.delivered.iter().filter(|d| d.to_chat) {
-                if json {
-                    let origin = store.get(&saved.id).ok().flatten().and_then(|j| j.origin);
-                    println!(
-                        "{}",
-                        gray::cron_serve::delivery_json(saved, origin.as_ref())
-                    );
-                } else {
+            if json {
+                for line in gray::cron_serve::drain_outbox(&home) {
+                    println!("{line}");
+                }
+            } else {
+                for saved in rep.delivered.iter().filter(|d| d.to_chat) {
                     println!("{}", gray::cron_serve::format_fire_chat(saved));
                 }
             }

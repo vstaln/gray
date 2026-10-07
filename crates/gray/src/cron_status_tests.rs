@@ -74,9 +74,18 @@ fn stale_ticker_warns_and_overdue_line_joins_it() {
 #[test]
 fn add_warning_only_when_nothing_is_ticking() {
     let now = 10_000;
-    assert!(add_warning(Some(&stamp(now - 5, "repl")), now).is_none());
-    let stale = add_warning(Some(&stamp(now - 3600, "cli")), now).expect("stale warns");
+    assert!(add_warning(Some(&stamp(now - 5, "repl")), now, false).is_none());
+    let stale = add_warning(Some(&stamp(now - 3600, "cli")), now, false).expect("stale warns");
     assert!(stale.contains("1h ago"), "{stale}");
-    let never = add_warning(None, now).expect("never warns");
+    let never = add_warning(None, now, false).expect("never warns");
     assert!(never.contains("will not fire"), "{never}");
+}
+
+#[test]
+fn add_warning_never_sends_a_chat_bound_job_to_start_a_driver() {
+    // The fresh-conversation race: the host only ticks homes that already
+    // have `cron/`, so the first add there never sees a tick stamp.
+    let hint = add_warning(None, 10_000, true).expect("chat-bound hint");
+    assert!(hint.contains("host's next tick"), "{hint}");
+    assert!(!hint.contains("cron serve"), "{hint}");
 }
