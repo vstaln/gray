@@ -11,6 +11,14 @@
   pi's placeholders (`$1`, `$@`, `${1:-default}`, `${@:2}`). Read from
   `.gray/prompts` and `~/.gray/prompts`, plus pi's `prompts` and Claude
   Code's `commands` folders. Shown in completion and `/help`.
+- **Keybindings.** `~/.gray/keybindings.json` in pi's format and action
+  ids rebinds editor and app keys (`[]` unbinds); `"/cmd": "ctrl+shift+k"`
+  binds a slash command. `/hotkeys` lists the live table.
+- **`/reload`** re-reads theme, keybindings and prompt templates.
+
+### Changed
+- Ctrl+A / Ctrl+E / Ctrl+U / Ctrl+K act on the current line of a
+  multi-line draft instead of the whole draft.
 
 ## [0.1.12] - 2026-10-07
 

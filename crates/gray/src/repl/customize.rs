@@ -1,4 +1,5 @@
-//! `/theme`: user color themes on top of the built-in gray palette.
+//! `/theme`, `/hotkeys` and `/reload`: user themes, keybindings and the
+//! file-based customizations they share a reload path with.
 
 use std::path::Path;
 
@@ -143,6 +144,125 @@ pub(crate) fn handle_theme(arg: Option<String>, tui: Option<&crate::composer::Sh
     if let Some(shared) = tui {
         let _ = shared.lock().expect("tui lock").draw();
     }
+}
+
+/// `/hotkeys` core against an explicit gray home (test seam). Returns the
+/// text to show and, for `reload`, the keymap to activate.
+pub(crate) fn keys_command(
+    arg: Option<&str>,
+    gray_home: &Path,
+    active: &crate::keymap::Keymap,
+) -> (String, Option<crate::keymap::Keymap>) {
+    let arg = arg.map(str::trim).unwrap_or("");
+    match arg {
+        "" | "list" => (render_keymap(active, gray_home), None),
+        "reload" => {
+            let km = crate::keymap::load_in(gray_home);
+            let msg = with_warnings(
+                format!(
+                    "✓ reloaded keybindings ({} override{})",
+                    km.overridden.len(),
+                    if km.overridden.len() == 1 { "" } else { "s" }
+                ),
+                &km.warnings,
+            );
+            (msg, Some(km))
+        }
+        other => (format!("usage: /hotkeys [reload] (got `{other}`)"), None),
+    }
+}
+
+fn render_keymap(km: &crate::keymap::Keymap, gray_home: &Path) -> String {
+    let path = crate::keymap::path_in(gray_home);
+    let mut out = String::from("keybindings:");
+    for &a in crate::keymap::ALL {
+        let keys: Vec<String> = km.keys_for(a).iter().map(|c| c.display()).collect();
+        let keys = if keys.is_empty() {
+            "—".to_string()
+        } else {
+            keys.join(", ")
+        };
+        let mark = if km.overridden.iter().any(|o| o == a.id()) {
+            "*"
+        } else {
+            " "
+        };
+        out.push_str(&format!(
+            "\n {mark} {:<22} {:<30} {}",
+            keys,
+            a.id(),
+            a.describe()
+        ));
+    }
+    if !km.commands().is_empty() {
+        out.push_str("\ncommands:");
+        for (chord, cmd) in km.commands() {
+            out.push_str(&format!("\n * {:<22} {cmd}", chord.display()));
+        }
+    }
+    out.push_str(&format!(
+        "\n\n* = set in {} (pi's ids and key syntax; `\"/cmd\": \"ctrl+x\"` binds a command; /hotkeys reload applies edits)",
+        path.display()
+    ));
+    with_warnings(out, &km.warnings)
+}
+
+pub(crate) fn handle_keys(arg: Option<String>, tui: Option<&crate::composer::SharedTui>) {
+    let home = match crate::setup::gray_home() {
+        Ok(h) => h,
+        Err(e) => {
+            say(tui, &format!("could not resolve gray home: {e}"));
+            return;
+        }
+    };
+    let (msg, km) = keys_command(arg.as_deref(), &home, &crate::keymap::active());
+    if let Some(km) = km {
+        crate::keymap::set_active(km);
+    }
+    say(tui, &msg);
+}
+
+/// `/reload`: re-reads every file-based customization in place — the
+/// active theme, `keybindings.json`, and prompt templates. Plugins keep
+/// running (`/plugin` manages those).
+pub(crate) fn handle_reload(tui: Option<&crate::composer::SharedTui>) {
+    let mut lines = Vec::new();
+    match theme::active_theme_name() {
+        Some(_) => handle_theme_quiet(Some("reload"), &mut lines),
+        None => lines.push("theme: built-in gray".to_string()),
+    }
+    match crate::setup::gray_home() {
+        Ok(home) => {
+            let (msg, km) = keys_command(Some("reload"), &home, &crate::keymap::active());
+            if let Some(km) = km {
+                crate::keymap::set_active(km);
+            }
+            lines.push(msg);
+        }
+        Err(e) => lines.push(format!("keybindings not reloaded: {e}")),
+    }
+    crate::prompt_templates::invalidate_cache();
+    lines.push("✓ prompt templates re-read on next use".to_string());
+    say(tui, &lines.join("\n"));
+    if let Some(shared) = tui {
+        let _ = shared.lock().expect("tui lock").draw();
+    }
+}
+
+fn handle_theme_quiet(arg: Option<&str>, lines: &mut Vec<String>) {
+    let (dir, config_path) = match (theme::themes_dir(), crate::setup::saved_config_path()) {
+        (Ok(d), Ok(c)) => (d, c),
+        (Err(e), _) | (_, Err(e)) => {
+            lines.push(format!("theme not reloaded: {e}"));
+            return;
+        }
+    };
+    let active = theme::active_theme_name();
+    let outcome = theme_command(arg, active.as_deref(), &dir, &config_path);
+    if let Some((t, name)) = outcome.apply {
+        theme::set_theme(t, name.as_deref());
+    }
+    lines.push(outcome.message);
 }
 
 #[path = "customize_tests.rs"]

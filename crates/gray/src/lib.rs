@@ -14,6 +14,7 @@ pub mod doctor;
 pub mod feedback;
 pub mod gateway;
 pub mod host;
+pub mod keymap;
 pub mod logging;
 pub(crate) mod mascot;
 pub mod plugin_check;

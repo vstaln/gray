@@ -1099,10 +1099,6 @@ impl Tui {
         draw::draw(self)
     }
 
-    pub(crate) fn sync_attachments(&mut self) {
-        input::sync_attachments(self)
-    }
-
     pub fn handle_paste(&mut self, pasted: String) -> bool {
         input::handle_paste(self, pasted)
     }

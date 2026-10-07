@@ -281,6 +281,13 @@ pub fn discover(cwd: &Path) -> Vec<PromptTemplate> {
     list
 }
 
+/// Forgets the discovery cache so the next lookup re-reads the disk.
+pub fn invalidate_cache() {
+    if let Ok(mut guard) = CACHE.lock() {
+        *guard = None;
+    }
+}
+
 /// Whether the last discovery (any cwd) saw a template called `name`. The
 /// completion popup's fill step has no cwd; the rows it fills came from
 /// that same discovery moments earlier.

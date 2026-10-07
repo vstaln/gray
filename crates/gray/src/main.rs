@@ -150,6 +150,11 @@ async fn run() -> anyhow::Result<()> {
             .ok()
             .and_then(|p| gray::setup::load_saved_config_at(&p).theme);
         gray::theme::init_from_saved(saved_theme.as_deref());
+        if let Ok(home) = gray::setup::gray_home() {
+            for w in gray::keymap::load_into_active(&home) {
+                eprintln!("gray: keybindings.json: {w}");
+            }
+        }
     }
     gray::setup::set_user_context_window(config.context_window);
     gray::setup::set_user_reserve_tokens(config.context_reserve);

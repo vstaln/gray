@@ -395,6 +395,14 @@ pub(crate) async fn dispatch_command(
             super::customize::handle_theme(arg, tui.as_ref().map(|(s, _)| s));
             Flow::Continue
         }
+        ReplCommand::Keys(arg) => {
+            super::customize::handle_keys(arg, tui.as_ref().map(|(s, _)| s));
+            Flow::Continue
+        }
+        ReplCommand::Reload => {
+            super::customize::handle_reload(tui.as_ref().map(|(s, _)| s));
+            Flow::Continue
+        }
         ReplCommand::Feedback(text) => {
             handle_feedback(text, config, session_state, tui.as_ref().map(|(s, _)| s));
             Flow::Continue

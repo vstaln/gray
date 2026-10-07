@@ -89,6 +89,16 @@ pub(crate) const REGISTRY: &[CmdDef] = &[
         aliases: &["themes"],
     },
     CmdDef {
+        name: "hotkeys",
+        desc: "show keybindings (~/.gray/keybindings.json; /hotkeys reload)",
+        aliases: &["keybindings", "bindings"],
+    },
+    CmdDef {
+        name: "reload",
+        desc: "re-read theme, keybindings and prompt templates",
+        aliases: &[],
+    },
+    CmdDef {
         name: "agentsmd",
         desc: "edit system prompt",
         aliases: &["sys"],
@@ -332,6 +342,9 @@ pub(crate) fn complete_command_args(
         "agentsmd" | "sys" => complete_agentsmd_args(cmd, arg_text),
         "model" | "models" => complete_model_args(cmd, arg_text),
         "theme" | "themes" => complete_theme_args(cmd, arg_text),
+        "hotkeys" | "keybindings" | "bindings" => {
+            complete_from_table(cmd, arg_text, &[("reload", "re-read keybindings.json")])
+        }
         _ => Vec::new(),
     };
     if arg_text.trim().is_empty()
@@ -374,7 +387,6 @@ fn complete_skill_args(cmd: &str, arg_text: &str, cwd: &std::path::Path) -> Vec<
         .collect()
 }
 
-/// Suffixes for `/agentsmd` (alias `/sys`).
 /// Suffixes for `/theme`: the built-in name, user theme files, and the
 /// `new` / `reload` actions.
 fn complete_theme_args(cmd: &str, arg_text: &str) -> Vec<(String, String)> {
@@ -401,6 +413,7 @@ fn complete_theme_args(cmd: &str, arg_text: &str) -> Vec<(String, String)> {
         .collect()
 }
 
+/// Suffixes for `/agentsmd` (alias `/sys`).
 fn complete_agentsmd_args(cmd: &str, arg_text: &str) -> Vec<(String, String)> {
     const SUBS: &[(&str, &str)] = &[("show", "print prompt file"), ("reset", "restore default")];
     complete_from_table(cmd, arg_text, SUBS)
@@ -563,6 +576,10 @@ pub enum ReplCommand {
     /// Color theme: bare lists, `<name>` applies and saves, `new <name>`
     /// writes the current palette as an editable file, `reload` re-reads.
     Theme(Option<String>),
+    /// Keybindings: bare lists, `reload` re-reads `keybindings.json`.
+    Keys(Option<String>),
+    /// Re-read file customizations (theme, keybindings, templates).
+    Reload,
     /// Unknown slash command (`/word`).
     Unknown(String),
     /// Plugin manager: /plugin <list|install|remove|update|enable|disable|check>.
@@ -670,6 +687,8 @@ pub fn parse_command(line: &str) -> ReplCommand {
         Some("help") => ReplCommand::Help,
         Some("hehe") => ReplCommand::Hehe,
         Some("theme") => ReplCommand::Theme(opt(rest)),
+        Some("hotkeys") => ReplCommand::Keys(opt(rest)),
+        Some("reload") => ReplCommand::Reload,
         // Every connect alias accepts optional args like `/key openrouter`
         // (args are advisory; the provider menu always opens).
         Some("connect") => ReplCommand::Provider,

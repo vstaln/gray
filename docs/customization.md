@@ -17,7 +17,7 @@ extensions in `examples/extensions/` (~80 of them).
 | Lifecycle hooks | ~32 events, most can mutate | `tool/before`, `prompt/context`, `turn/end` (claimed in manifest `hooks`), `event/notify` (observe only) |
 | Tools | register/override, per-tool prompt snippets, renderers, `setActiveTools` | plugin tools, `tool.override`, live tool sets (1.3) |
 | UI | notify/select/confirm/input/editor, status, widgets, footer/header/title, working indicator, editor text, custom editor, autocomplete, overlays | `host/ask`, `host/say`, one-shot above-editor widget snapshot |
-| Files, no code | themes, `keybindings.json`, prompt templates, `SYSTEM.md`/`APPEND_SYSTEM.md`, project settings | **themes, prompt templates (Level 0, below)**; `~/.gray/AGENTS.md` + project `AGENTS.md`/`CLAUDE.md` |
+| Files, no code | themes, `keybindings.json`, prompt templates, `SYSTEM.md`/`APPEND_SYSTEM.md`, project settings | **themes, prompt templates, keybindings (Level 0, below)**; `~/.gray/AGENTS.md` + project `AGENTS.md`/`CLAUDE.md` |
 | Providers/models | `registerProvider`, virtual models | provider plugins; no routing |
 | Session state | `appendEntry`, `sendMessage`, custom message types | plugin-private state |
 | Distribution | pi packages (npm/git) bundling extensions, skills, prompts, themes | plugin index, skills installer |
@@ -42,17 +42,23 @@ Shipped:
   the git root), then `~/.gray/prompts`, `~/.pi/agent/prompts`,
   `~/.claude/commands`. First name wins; built-ins always win; a template
   shadows a plugin command of the same name.
+- **Keybindings.** `~/.gray/keybindings.json` uses pi's file format and
+  ids (`tui.editor.cursorWordLeft`, `tui.input.submit`, `app.interrupt`,
+  `app.exit`, …), so a pi `keybindings.json` mostly works as is: a value
+  (string or list) replaces that action's defaults, `[]` unbinds, pi ids
+  gray doesn't implement are skipped quietly. Gray adds slash-command
+  bindings: `"/compact": "ctrl+shift+k"`. Ctrl+C always keeps clearing /
+  cancelling. Every editor and mid-turn key goes through one table
+  (`crates/gray/src/keymap.rs`); `/hotkeys` lists the live bindings,
+  `/hotkeys reload` or `/reload` re-reads the file.
+- **`/reload`.** Re-reads the theme, keybindings and prompt templates
+  without restarting.
 - **System prompt.** Already covered: `~/.gray/AGENTS.md` is the editable
   system prompt (pi's `SYSTEM.md`), the nearest project `AGENTS.md`/`CLAUDE.md`
   is appended per turn (pi's `APPEND_SYSTEM.md`/context files).
 
 Next:
 
-- **Keybindings.** `~/.gray/keybindings.json`: key → action id
-  (`editor.submit`, `app.interrupt`, `app.model_picker`, …) plus two
-  open-ended actions, `command:/name args` and `insert:text`. Needs the
-  scattered `KeyCode` matches in `composer/input` and `repl/key_watcher`
-  routed through one action table first; that refactor is the real cost.
 - **Status line.** `"status_line"` in `config.json`: either a format
   string over known fields (`{model} {effort} {ctx_pct} {cost} {cwd}
   {branch}`) or `{"command": "..."}` run on a debounce with session JSON
