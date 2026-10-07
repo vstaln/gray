@@ -138,6 +138,12 @@ pub struct SavedConfig {
     /// `status`/`stop` still work so a running one stays inspectable.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub gw_auto: Option<bool>,
+    /// Lean prompt (`Some(true)` = on): no per-turn injected context — the
+    /// skills list, project rules and plugin docs stay out of the system
+    /// prompt. Tools, plugins and compaction keep working; missing/`false`
+    /// reads as off. `--lean` / `GRAY_LEAN=1` override per run.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lean: Option<bool>,
     /// Namespaced provider id for a plugin-backed provider connection.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub provider_id: String,
@@ -293,6 +299,7 @@ fn partial_saved_config(obj: &serde_json::Map<String, serde_json::Value>) -> Sav
         memory_auto: opt_field(obj, "memory_auto"),
         cron_auto: opt_field(obj, "cron_auto"),
         gw_auto: opt_field(obj, "gw_auto"),
+        lean: opt_field(obj, "lean"),
         provider_id: string_field(obj, "provider_id"),
         credential_source: string_field(obj, "credential_source"),
         auth_ref: string_field(obj, "auth_ref"),

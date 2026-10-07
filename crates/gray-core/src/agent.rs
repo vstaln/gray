@@ -469,6 +469,10 @@ pub struct Agent {
     pub(crate) masked_prefix: usize,
     /// Prompt-cache warming during long tool runs; `None` = off.
     pub(crate) cache_warm: Option<crate::cache_warm::CacheWarmPolicy>,
+    /// Lean prompt: plugin `prompt_context` hooks contribute nothing, so a
+    /// turn's system prefix stays the stored prompt alone (no skills list,
+    /// project rules, or plugin docs injected per turn).
+    pub(crate) lean_prompt: bool,
 }
 
 /// Lends a shared provider to a `Box` decorator ([`Agent::map_provider`]).
@@ -514,6 +518,7 @@ impl Agent {
             contaminated: std::collections::BTreeSet::new(),
             masked_prefix: 0,
             cache_warm: None,
+            lean_prompt: false,
         }
     }
 
@@ -535,6 +540,13 @@ impl Agent {
 
     pub fn history_revision(&self) -> u64 {
         self.history_revision
+    }
+
+    /// Lean prompt: no plugin `prompt_context` text is appended to the
+    /// system prompt per turn (the skills list, project rules and sidecar
+    /// docs stay out). Set by the host at build time.
+    pub fn set_lean_prompt(&mut self, lean: bool) {
+        self.lean_prompt = lean;
     }
 
     /// Install the mid-turn steer hook (see [`Agent::steer`]). Set per turn by

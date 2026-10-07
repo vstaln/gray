@@ -291,6 +291,13 @@ impl Agent {
             hook(&self.messages, self.history_revision()).await;
         }
         for hook in &self.hooks {
+            // Lean prompt: hooks that only inject context are skipped —
+            // the system prefix stays the stored prompt alone, so lean
+            // turns cost close to `--bare` per request without losing
+            // tools, plugins or compaction.
+            if self.lean_prompt {
+                break;
+            }
             if let Some(text) = hook.prompt_context().await
                 && !text.trim().is_empty()
             {
