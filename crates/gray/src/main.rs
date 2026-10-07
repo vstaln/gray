@@ -643,6 +643,8 @@ async fn run_cron(cmd: gray::CronCmd, config: &gray::config::Config) -> anyhow::
             } else {
                 None
             };
+            // Hosted chats are ticked by their host (`cron tick --json`).
+            let chat_bound = origin.as_ref().is_some_and(gray::cron_serve::is_hosted);
             let id = store.add_full(
                 &name,
                 &schedule,
@@ -666,7 +668,7 @@ async fn run_cron(cmd: gray::CronCmd, config: &gray::config::Config) -> anyhow::
             }
             let stamp = store.last_tick()?;
             if let Some(warn) =
-                gray::cron_status::add_warning(stamp.as_ref(), gray::cron::now_secs())
+                gray::cron_status::add_warning(stamp.as_ref(), gray::cron::now_secs(), chat_bound)
             {
                 println!("{warn}");
             }

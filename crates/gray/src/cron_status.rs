@@ -61,7 +61,16 @@ pub fn ticker_line(health: &CronHealth, now: i64) -> String {
 
 /// Warning for `cron add`: the job is stored, but will anything ever fire it?
 /// `None` when a ticker is live (a REPL session or `serve` is running).
-pub fn add_warning(last_tick: Option<&TickStamp>, now: i64) -> Option<String> {
+/// A chat-bound job (a host such as the Discord plugin set
+/// `GRAY_CRON_ORIGIN`) is the host's to tick: telling the model to start a
+/// driver itself only gets the delivery fired where nobody posts it.
+pub fn add_warning(last_tick: Option<&TickStamp>, now: i64, chat_bound: bool) -> Option<String> {
+    if chat_bound {
+        return Some(
+            "delivers back to this conversation on the host's next tick (~60s); nothing further to do"
+                .to_string(),
+        );
+    }
     let detail = match last_tick {
         None => "no cron ticker has ever run".to_string(),
         Some(t) => {
