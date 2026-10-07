@@ -330,13 +330,20 @@ fn cache_warm_covers_openai_compatible_hosts() {
             cache_warm_policy(
                 &warm_config(host, Some("off"), false),
                 "openai/gpt-5",
-                false
+                false,
+                5 * 60
             )
             .is_some(),
             "warms on {host}"
         );
         assert!(
-            cache_warm_policy(&warm_config(host, None, false), "openai/gpt-5", false).is_some(),
+            cache_warm_policy(
+                &warm_config(host, None, false),
+                "openai/gpt-5",
+                false,
+                5 * 60
+            )
+            .is_some(),
             "warms on {host} without effort"
         );
     }
@@ -347,7 +354,13 @@ fn cache_warm_stays_off_for_plugin_creds_but_covers_claude_thinking() {
     let url = "https://api.openai.com/v1";
     // Relay-style plugin creds (no warm_replay opt-in) keep warming off.
     assert!(
-        cache_warm_policy(&warm_config(url, Some("off"), true), "openai/gpt-5", false).is_none()
+        cache_warm_policy(
+            &warm_config(url, Some("off"), true),
+            "openai/gpt-5",
+            false,
+            5 * 60
+        )
+        .is_none()
     );
     if std::env::var_os("GRAY_NO_CACHE_WARM").is_some() {
         return;
@@ -356,7 +369,13 @@ fn cache_warm_stays_off_for_plugin_creds_but_covers_claude_thinking() {
     // is a real HTTPS endpoint the host calls directly, e.g. codex-sub)
     // warms like any built-in path.
     assert!(
-        cache_warm_policy(&warm_config(url, Some("off"), true), "openai/gpt-5", true).is_some()
+        cache_warm_policy(
+            &warm_config(url, Some("off"), true),
+            "openai/gpt-5",
+            true,
+            5 * 60
+        )
+        .is_some()
     );
     // A Claude thinking budget is sized from the output cap, so the
     // replay carries a budget-preserving cap instead of 1 token: natively
@@ -366,7 +385,8 @@ fn cache_warm_stays_off_for_plugin_creds_but_covers_claude_thinking() {
         cache_warm_policy(
             &warm_config("https://api.anthropic.com/v1", Some("high"), false),
             "claude-sonnet-4-5",
-            false
+            false,
+            5 * 60
         )
         .is_some()
     );
@@ -374,7 +394,8 @@ fn cache_warm_stays_off_for_plugin_creds_but_covers_claude_thinking() {
         cache_warm_policy(
             &warm_config("https://openrouter.ai/api/v1", Some("max"), false),
             "anthropic/claude-opus-4.5",
-            false
+            false,
+            5 * 60
         )
         .is_some()
     );
@@ -400,7 +421,8 @@ fn cache_warm_runs_with_reasoning_effort_off_claude() {
         ),
     ] {
         assert!(
-            cache_warm_policy(&warm_config(url, Some(effort), false), model, false).is_some(),
+            cache_warm_policy(&warm_config(url, Some(effort), false), model, false, 5 * 60)
+                .is_some(),
             "warms {model} at {effort}"
         );
     }

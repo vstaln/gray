@@ -89,6 +89,7 @@ fn provider() -> ProviderDecl {
                 tool_choice: Some("auto".into()),
                 parallel_tool_calls: Some(true),
                 text_verbosity: Some("low".into()),
+                cache_ttl_secs: None,
             },
             headers: vec![ProviderHeaderDecl {
                 name: "originator".into(),

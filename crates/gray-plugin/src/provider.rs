@@ -62,6 +62,11 @@ pub struct ProviderRequestPolicyDecl {
     pub parallel_tool_calls: Option<bool>,
     #[serde(default)]
     pub text_verbosity: Option<String>,
+    /// Idle lifetime of this provider's prompt cache, in seconds. The host
+    /// uses it for cold-cache detection, the warmth timer and cache-miss
+    /// notices. `None` = the 5-minute default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_ttl_secs: Option<u64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

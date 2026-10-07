@@ -33,10 +33,24 @@ use gray_core::event::Usage;
 
 use crate::setup::ModelRate;
 
-/// Idle TTL of a warm prompt cache: Anthropic's default `cache_control`
-/// expiry (5 minutes); OpenAI's automatic prefix cache is in the same
-/// ballpark. Past this, the next request re-bills the whole prompt.
-pub const CACHE_TTL: Duration = Duration::from_secs(5 * 60);
+/// Idle TTL of a warm prompt cache, in seconds. Anthropic's default
+/// `cache_control` expiry (5 minutes) is the default; OpenAI's automatic
+/// prefix cache is in the same ballpark. A plugin provider can declare its
+/// real lifetime (`request.cache_ttl_secs`) — `build_agent` sets it on
+/// every build so a provider switch resets to the default. Past it, the
+/// next request re-bills the whole prompt.
+static CACHE_TTL_SECS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(300);
+
+/// The connected provider's prompt-cache idle lifetime (see
+/// [`CACHE_TTL_SECS`]).
+pub fn cache_ttl() -> Duration {
+    Duration::from_secs(CACHE_TTL_SECS.load(std::sync::atomic::Ordering::Relaxed))
+}
+
+/// Sets the prompt-cache idle lifetime; `build_agent` calls it per build.
+pub fn set_cache_ttl(d: Duration) {
+    CACHE_TTL_SECS.store(d.as_secs(), std::sync::atomic::Ordering::Relaxed);
+}
 
 /// Per-request misses at or below this are cache breakpoint granularity
 /// noise (a few tokens of re-tokenized tail), not a real miss.
@@ -75,7 +89,7 @@ impl CacheMiss {
         }
         let label = if self.model_changed {
             "Cache miss after model switch".to_string()
-        } else if self.idle >= CACHE_TTL {
+        } else if self.idle >= cache_ttl() {
             format!("Cache miss after {}m idle", self.idle.as_secs() / 60)
         } else {
             "Cache miss".to_string()
@@ -199,7 +213,7 @@ impl CacheTracker {
         // warmth nor make the footer repaint a lower value.
         let observed_at = self.paused_at.unwrap_or(now);
         let age = observed_at.saturating_duration_since(last.at);
-        (age < CACHE_TTL).then(|| CACHE_TTL - age)
+        (age < cache_ttl()).then(|| cache_ttl() - age)
     }
 
     /// True when the warm cache this process last saw has since expired, so
@@ -221,7 +235,7 @@ impl CacheTracker {
         self.paused_at
             .unwrap_or(now)
             .saturating_duration_since(last.at)
-            >= CACHE_TTL
+            >= cache_ttl()
     }
 
     /// Freezes the countdown for an active turn. Idempotent because setup
