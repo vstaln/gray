@@ -171,7 +171,9 @@ impl Agent {
         }
         if !args.is_object() {
             let got = match args {
-                serde_json::Value::Null => "nothing (empty arguments — output may have been truncated)".to_string(),
+                serde_json::Value::Null => {
+                    "nothing (empty arguments — output may have been truncated)".to_string()
+                }
                 serde_json::Value::String(s) => {
                     let head: String = s.chars().take(200).collect();
                     format!("unparseable text: {head:?}")

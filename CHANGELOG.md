@@ -2,12 +2,37 @@
 
 ## [Unreleased]
 
+## [0.1.12] - 2026-10-07
+
 ### Added
 - **Plugin protocol 1.3.** Sidecars can publish tools at runtime
   (`plugin/tools`, refreshed on a `host/tools_changed` notification) and
   return images/media from `tool/call`; the model's tool list is rebuilt
   every turn from the live set. First user:
   [gray-mcp](https://github.com/vstaln/gray-mcp).
+- **The system prompt names the picked model.** A `Model: <label> (<id>)` /
+  `Provider: <name>` block is appended after the stored instructions, so the
+  agent reports the picker row the user chose — composite rows get their
+  `Fusion · A + B` label, not the wire id a variant resolves to. `--bare`
+  keeps its one-line prompt.
+- **`gray plugin install` warns on unverified registry entries.** Plugins the
+  index hasn't verified prompt for confirmation before installing;
+  `--yes`/`--force` skips for scripts.
+
+### Changed
+- **Provider-declared cache TTL is honored.** A plugin can declare its real
+  cache lifetime (`transport.request.cache_ttl_secs`); the cold-cache
+  tracker, footer warmth timer and miss notices read it instead of the
+  5-minute default. Relay providers also get `prefix_rewrite_ok = false`, so
+  the cold-cache stale-output mask can't rewrite a prefix that would throw
+  away the resumed native session.
+- **Tool-call args parse tolerantly.** Raw control characters inside JSON
+  string literals are escaped before parsing, and double-encoded arguments
+  (a JSON string containing the real object) are unwrapped — models that
+  emit either now produce usable calls instead of a string payload.
+- **The resume hint prints once.** The Ctrl-C and SIGHUP/SIGTERM exits share
+  a `claim_exit_hint` flag with normal teardown — a signal racing `/quit`
+  no longer prints the hint twice.
 
 ## [0.1.11] - 2026-10-07
 
