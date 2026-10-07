@@ -61,10 +61,12 @@ the prompt reaches the model — only the text after this note reaches it.
 This file IS the stored system prompt, sent verbatim every turn with no
 runtime context appended. Only what the model can't already know: the
 tools describe themselves and the task says the rest.
-Gray adds only ephemeral per-turn context: the <available_skills> list
+Per turn gray may append ephemeral context: the <available_skills> list
 (fresh skill discovery for the turn's directory) — no skill tool, read
 matches with bash — plus <project_context>, the nearest AGENTS.md /
-CLAUDE.md above the working directory. Edit with `/agentsmd`
+CLAUDE.md above the working directory, and plugin docs. --lean
+(GRAY_LEAN=1, or "lean": true in config) skips all of that: this file
+alone is the system prompt. Edit with `/agentsmd`
 (Ctrl-S save & apply, Ctrl-R reset to this default, Ctrl-X cancel).
 -->
 You are Gray, running on the user's machine.
