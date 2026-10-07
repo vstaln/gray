@@ -337,7 +337,7 @@ async fn profile_mismatch_does_not_delete_credential() {
 }
 
 #[tokio::test]
-async fn expired_credential_fails_closed() {
+async fn expired_credential_without_refresh_fails_closed() {
     struct Unreachable;
     #[async_trait::async_trait]
     impl ProviderRpc for Unreachable {
@@ -398,7 +398,9 @@ async fn expired_credential_fails_closed() {
             .unwrap(),
         )
         .unwrap();
-    let source = shared_plugin_source(installed(), store.clone(), Arc::new(Unreachable));
+    let mut no_refresh = installed();
+    no_refresh.auth_method.operations = vec!["models".into()];
+    let source = shared_plugin_source(no_refresh, store.clone(), Arc::new(Unreachable));
     let error = source.acquire().await.unwrap_err();
     assert!(matches!(error, CredentialError::ReauthRequired(_)));
     assert!(
@@ -406,6 +408,122 @@ async fn expired_credential_fails_closed() {
             .read_plugin("plugin:example-sub:example:example-login")
             .unwrap()
             .is_none()
+    );
+}
+
+#[tokio::test]
+async fn expired_credential_refreshes_when_supported() {
+    // Short-lived access tokens (an hour for ChatGPT plan usage) are routinely
+    // expired when gray comes back from sleep; the refresh token outlives
+    // them, so the rotation must still run instead of forcing a new login.
+    let dir = tempfile::tempdir().unwrap();
+    let store = CredentialStore::new(dir.path().join("auth.json"));
+    store
+        .put_plugin(
+            CredentialEnvelope::new(
+                "example-sub",
+                "example",
+                "example-login",
+                "sha256:test",
+                material(Some(1), "old-refresh"),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let rpc = Arc::new(FakeRefresh {
+        calls: calls.clone(),
+        next: material(Some(expires_in(3600)), "new-refresh"),
+    });
+    let source = shared_plugin_source(installed(), store.clone(), rpc);
+    let lease = source.acquire().await.unwrap();
+    assert_eq!(lease.secrets.get("refresh_token"), Some("new-refresh"));
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    let saved = store
+        .read_plugin("plugin:example-sub:example:example-login")
+        .unwrap()
+        .expect("rotated entry persisted");
+    assert_eq!(
+        saved.credential.secrets.get("refresh_token"),
+        Some("new-refresh")
+    );
+}
+
+#[tokio::test]
+async fn expired_credential_survives_transient_refresh_failure() {
+    struct Offline;
+    #[async_trait::async_trait]
+    impl ProviderRpc for Offline {
+        async fn auth_start(
+            &self,
+            _provider: &str,
+            _auth_method: &str,
+        ) -> Result<ProviderAuthStart, ProviderRpcError> {
+            unimplemented!()
+        }
+        async fn auth_poll(
+            &self,
+            _operation_id: &str,
+        ) -> Result<ProviderAuthPoll, ProviderRpcError> {
+            unimplemented!()
+        }
+        async fn auth_cancel(&self, _operation_id: &str) -> Result<(), ProviderRpcError> {
+            unimplemented!()
+        }
+        async fn refresh(
+            &self,
+            _request: ProviderRefreshRequest,
+        ) -> Result<CredentialMaterial, ProviderRpcError> {
+            Err(ProviderRpcError::Unavailable("network down".into()))
+        }
+        async fn revoke(
+            &self,
+            _request: ProviderRevokeRequest,
+        ) -> Result<ProviderRevokeResult, ProviderRpcError> {
+            unimplemented!()
+        }
+        async fn models(
+            &self,
+            _request: ProviderModelsRequest,
+        ) -> Result<ProviderModelCatalog, ProviderRpcError> {
+            unimplemented!()
+        }
+        async fn chat(
+            &self,
+            _request: ProviderChatRequest,
+        ) -> Result<ProviderChatResult, ProviderRpcError> {
+            unimplemented!()
+        }
+        async fn shutdown(&self) {}
+    }
+
+    // Offline at wake-up: the expired token is unusable, but the refresh
+    // token may still be good, so the entry stays for the next attempt.
+    let dir = tempfile::tempdir().unwrap();
+    let store = CredentialStore::new(dir.path().join("auth.json"));
+    store
+        .put_plugin(
+            CredentialEnvelope::new(
+                "example-sub",
+                "example",
+                "example-login",
+                "sha256:test",
+                material(Some(1), "still-good"),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    let source = shared_plugin_source(installed(), store.clone(), Arc::new(Offline));
+    let error = source.acquire().await.unwrap_err();
+    assert!(
+        matches!(error, CredentialError::Unavailable(_)),
+        "{error:?}"
+    );
+    assert!(
+        store
+            .read_plugin("plugin:example-sub:example:example-login")
+            .unwrap()
+            .is_some()
     );
 }
 
