@@ -35,19 +35,6 @@ fn ensure_gateway_on_with(enabled: bool) -> anyhow::Result<()> {
     anyhow::bail!("gateway is off — `gray gateway on` to enable")
 }
 
-#[cfg(test)]
-mod toggle_tests {
-    use super::ensure_gateway_on_with;
-
-    #[test]
-    fn gateway_switch_off_refuses_run_and_start() {
-        assert!(ensure_gateway_on_with(true).is_ok());
-        let err = ensure_gateway_on_with(false).unwrap_err().to_string();
-        assert!(err.contains("gateway is off"), "{err}");
-        assert!(err.contains("gray gateway on"), "{err}");
-    }
-}
-
 /// Dispatch `gray gateway <cmd>`.
 /// Hermes' `gateway setup`: pick a platform, install its app when missing,
 /// hand the terminal to the app's own wizard.
@@ -254,4 +241,17 @@ fn report(home: &Path) -> (bool, Vec<String>) {
     }
     lines.push(format!("  service: {}", service::describe(&sup)));
     (running, lines)
+}
+
+#[cfg(test)]
+mod toggle_tests {
+    use super::ensure_gateway_on_with;
+
+    #[test]
+    fn gateway_switch_off_refuses_run_and_start() {
+        assert!(ensure_gateway_on_with(true).is_ok());
+        let err = ensure_gateway_on_with(false).unwrap_err().to_string();
+        assert!(err.contains("gateway is off"), "{err}");
+        assert!(err.contains("gray gateway on"), "{err}");
+    }
 }

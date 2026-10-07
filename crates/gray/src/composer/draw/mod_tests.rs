@@ -80,7 +80,7 @@ fn multiline_input_is_not_clipped_by_the_viewport_cap() {
     let desired = desired_viewport_h(0, 0, 0, box_rows, 0, 0, cap);
     // The viewport must be tall enough for the whole box, not a couple of rows.
     assert!(
-        desired >= box_rows + 1,
+        desired > box_rows,
         "viewport {desired} cannot hold a {box_rows}-row input box"
     );
     assert!(desired <= cap);
@@ -212,14 +212,15 @@ fn latched_viewport_floor_covers_the_measured_frame_when_the_estimate_shortcuts_
     for status_h in 0..=3u16 {
         let floor = latched_viewport_floor(status_h, 0, 0, 3, 0, viewport_cap(40));
         assert!(
-            floor >= status_h + 3 + 1,
+            floor > status_h + 3,
             "status_h={status_h}: floor {floor} cannot hold dock {status_h} + box 3 + footer"
         );
     }
     // A short-cut live-row reserve (estimate 0, frame measures 2) keeps
     // the input box and footer inside the viewport too.
     let floor = latched_viewport_floor(0, 0, 2, 3, 0, viewport_cap(40));
-    assert!(floor >= 0 + 2 + 3 + 1);
+    // 0 status + 2 live + 3 box, plus the footer row.
+    assert!(floor > 2 + 3);
     // The floor never exceeds the screen cap.
     assert_eq!(latched_viewport_floor(3, 0, 0, 30, 0, 10), 10);
 }
@@ -248,7 +249,7 @@ fn chrome_row_paints_the_whole_composer_band() {
 #[test]
 fn the_text_area_and_footer_are_never_trimmed_away() {
     // 30-row screen, 3-row dock, 2-row box, 1-row footer: 24 rows of band.
-    assert_eq!(band_budget(30, 3 + 2 + 0 + 1), 24);
+    assert_eq!(band_budget(30, 3 + 2 + 1), 24);
     // A 4-row box (a two-line draft) eats the band above it, never the reverse.
     assert_eq!(band_budget(30, 3 + 4 + 1), 22);
     // Short screen: the budget floors at zero instead of going negative.

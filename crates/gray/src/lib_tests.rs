@@ -201,7 +201,7 @@ const SKILL_MD: &str = include_str!("../gray-skill.md");
 fn flags_named_in(md: &str) -> Vec<String> {
     md.split_whitespace()
         .map(|t| t.trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '-'))
-        .filter(|t| t.len() > 1 && t.starts_with('-') && t.trim_matches('-').len() > 0)
+        .filter(|t| t.len() > 1 && t.starts_with('-') && !t.trim_matches('-').is_empty())
         .map(str::to_string)
         .collect()
 }

@@ -324,8 +324,7 @@ fn a_corrupt_auth_store_is_refused_not_overwritten() {
 
     // A save must fail and leave the original bytes untouched.
     let err = crate::setup::catalog::save_auth_key_at(&path, "openrouter", "sk-new")
-        .err()
-        .expect("a corrupt store must not be written over");
+        .expect_err("a corrupt store must not be written over");
     assert!(err.to_string().contains("not valid JSON"), "{err}");
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "{not json at all");
 

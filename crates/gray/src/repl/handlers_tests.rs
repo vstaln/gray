@@ -242,7 +242,7 @@ fn subsystem_toggle_parses_bare_switch_words_only() {
     // Both subsystems share the parser.
     for sub in [Subsystem::Cron, Subsystem::Gateway] {
         assert!(parse_on_off("off").is_some());
-        assert_eq!(sub.label().is_empty(), false);
+        assert!(!sub.label().is_empty());
     }
 }
 

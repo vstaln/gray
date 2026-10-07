@@ -44,7 +44,7 @@ fn bash_live(command: &str, running: bool) -> LiveTool {
 fn live_rows_mark_running_cards() {
     let tool = bash_live("cargo test", true);
     let original = tool.header.clone();
-    let rows = live_tool_rows(&[tool.clone()], Duration::ZERO);
+    let rows = live_tool_rows(std::slice::from_ref(&tool), Duration::ZERO);
     assert_eq!(row_text(&rows[0]), "⬡ Running cargo test");
     assert_eq!(row_text(&tool.header), row_text(&original));
     assert_eq!(rows[0].spans.last(), original.spans.last());
@@ -56,7 +56,7 @@ fn live_rows_mark_running_cards() {
     );
     let preparing = bash_live("cargo test", false);
     assert_eq!(
-        live_tool_rows(&[preparing.clone()], Duration::ZERO)[0],
+        live_tool_rows(std::slice::from_ref(&preparing), Duration::ZERO)[0],
         preparing.header
     );
 }
