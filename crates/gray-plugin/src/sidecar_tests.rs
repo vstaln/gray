@@ -245,3 +245,33 @@ async fn idless_host_frames_reach_the_notify_handler() {
     assert_eq!(got.0, "host/tools_changed");
     assert_eq!(got.1["reason"], "test");
 }
+
+#[tokio::test]
+async fn dynamic_plugin_refreshes_tools_on_tools_changed() {
+    let dir = tempfile::tempdir().unwrap();
+    let flag = dir.path().join("flag");
+    let p = SidecarPlugin::spawn(vec![
+        "testdata/dynamic_tools_plugin.sh".into(),
+        flag.to_string_lossy().into_owned(),
+    ])
+    .await
+    .unwrap();
+    assert!(p.is_dynamic());
+    let names = |p: &SidecarPlugin| {
+        p.tools()
+            .iter()
+            .map(|t| t.def().name.clone())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(names(&p), vec!["dyn_a"]);
+    let t = p.tools()[0].clone();
+    let out = t
+        .execute(&ToolContext::default(), serde_json::json!({}))
+        .await;
+    assert!(!out.is_error, "got: {}", out.content);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while names(&p).len() < 2 && std::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert_eq!(names(&p), vec!["dyn_a", "dyn_b"]);
+}

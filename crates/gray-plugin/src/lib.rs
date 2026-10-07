@@ -25,6 +25,13 @@ pub use capabilities::{
     CapabilitySpec, HOST_ASK as CAP_HOST_ASK, HOST_SAY as CAP_HOST_SAY, HOST_TURN, TOOL_OVERRIDE,
     WIDGET_OVERRIDE,
 };
+/// Protocol version for sidecars with a **live** tool set: the manifest's
+/// `tools` may be empty, the host asks `plugin/tools` after the manifest
+/// and again whenever the sidecar sends the id-less `host/tools_changed`
+/// notification. A 1.3 sidecar gets everything 1.1 (lifecycle, `host/ask`
+/// budget) and 1.2 (providers) already get.
+pub const DYNAMIC_PROTOCOL: &str = "1.3";
+
 pub use provider::{
     AuthMethodDecl, ModelSlot, ModelVariant, PROVIDER_CREDENTIALS, PROVIDER_PROTOCOL,
     ProviderAuthPoll, ProviderAuthStart, ProviderAuthorizationDecl, ProviderChatRequest,
@@ -146,7 +153,7 @@ impl Manifest {
         let mut provider_errors = Vec::new();
         let protocol = v.get("protocol").and_then(|s| s.as_str()).unwrap_or("1.0");
         if let Some(raw_providers) = v.get("providers") {
-            if protocol == PROVIDER_PROTOCOL {
+            if protocol == PROVIDER_PROTOCOL || protocol == DYNAMIC_PROTOCOL {
                 match raw_providers.as_array() {
                     Some(raw_providers) => {
                         let mut ids = std::collections::BTreeSet::new();
@@ -171,7 +178,7 @@ impl Manifest {
                 .is_some_and(|providers| !providers.is_empty())
             {
                 provider_errors.push(ProviderValidationError {
-                    message: "providers require protocol 1.2".into(),
+                    message: "providers require protocol 1.2 or later".into(),
                 });
             }
         }

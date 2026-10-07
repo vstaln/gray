@@ -40,7 +40,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
 use std::sync::{
     Arc,
-    atomic::{AtomicU64, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
 };
 
 use async_trait::async_trait;
@@ -55,6 +55,7 @@ use gray_core::credential::CredentialMaterial;
 use gray_core::message::ToolDef;
 
 use crate::{
+    DYNAMIC_PROTOCOL,
     CoreEvent, Manifest, PROVIDER_CREDENTIALS, Plugin, ProviderAuthPoll, ProviderAuthStart,
     ProviderChatRequest, ProviderChatResult, ProviderModelCatalog, ProviderModelsRequest,
     ProviderRefreshRequest, ProviderRevokeRequest, ProviderRevokeResult, ProviderRpcError,
@@ -101,6 +102,11 @@ pub const HOST_ASK: &str = "host/ask";
 /// the handler task and the outer `tool/call`/`tool/before` wait use
 /// [`ASK_TTL`] when the requesting sidecar's manifest claims `host/ask`.
 pub const HOST_TTL: Duration = Duration::from_secs(30);
+/// Plugin→host notification (protocol 1.3): "my `plugin/tools` answer
+/// changed, re-ask". Id-less, so routed via [`NotifyHandler`].
+pub const HOST_TOOLS_CHANGED: &str = "host/tools_changed";
+/// Burst window for `host/tools_changed` before one `plugin/tools` refresh.
+pub const TOOLS_CHANGED_DEBOUNCE: Duration = Duration::from_millis(200);
 /// Outer deadline for `tool/call`/`tool/before` on sidecars that claim
 /// `host/ask` (300s human answer + 30s transport slack). The sidecar must
 /// enforce a SHORTER inner TTL (the reference plugins use 300s) so it
@@ -204,7 +210,11 @@ struct Transport {
 
 pub struct SidecarPlugin {
     manifest: Manifest,
-    tools: Vec<Arc<dyn Tool>>,
+    /// Current tool set. Static for protocol <= 1.2 (manifest `tools`);
+    /// for [`DYNAMIC_PROTOCOL`] sidecars it is replaced wholesale by
+    /// [`SidecarPlugin::refresh_tools`] (`plugin/tools`), which the
+    /// debounced `host/tools_changed` handler runs off-turn.
+    tools: Arc<std::sync::RwLock<Vec<Arc<dyn Tool>>>>,
     transport: Arc<Transport>,
     /// Pinned boot cwd (captured at spawn from the process cwd). Used for
     /// the `session.cwd` of every wire point without a `ToolContext`
@@ -678,6 +688,31 @@ impl Transport {
     }
 }
 
+/// Manifest/`plugin/tools` `tools` array → wire tools bound to `transport`.
+fn build_tools(transport: &Arc<Transport>, tools: &Value, asks: bool) -> Vec<Arc<dyn Tool>> {
+    manifest_tools(&json!({"tools": tools}))
+        .into_iter()
+        .map(|entry| Arc::new(SidecarTool::new(entry, transport.clone(), asks)) as Arc<dyn Tool>)
+        .collect()
+}
+
+/// `plugin/tools` round trip that swaps the shared snapshot; shared by
+/// [`SidecarPlugin::refresh_tools`] and the debounce task (which has no
+/// `&SidecarPlugin`).
+async fn refresh_tools_into(
+    transport: &Arc<Transport>,
+    tools: &std::sync::RwLock<Vec<Arc<dyn Tool>>>,
+    asks: bool,
+) -> anyhow::Result<usize> {
+    let r = transport
+        .request("plugin/tools", Some(json!({})), HOST_TTL)
+        .await?;
+    let new = build_tools(transport, r.get("tools").unwrap_or(&Value::Null), asks);
+    let n = new.len();
+    *tools.write().unwrap_or_else(|e| e.into_inner()) = new;
+    Ok(n)
+}
+
 impl SidecarPlugin {
     pub async fn spawn(argv: Vec<String>) -> anyhow::Result<Self> {
         let (child, stdin, stdout) = spawn_child(&argv)?;
@@ -694,22 +729,76 @@ impl SidecarPlugin {
             );
         }
         manifest.name = name;
-        let asks = manifest.protocol.as_deref() == Some("1.1");
-        let mut tools: Vec<Arc<dyn Tool>> = Vec::new();
-        for entry in manifest_tools(&result) {
-            tools.push(Arc::new(SidecarTool::new(entry, transport.clone(), asks)));
-        }
+        let dynamic = manifest.protocol.as_deref() == Some(DYNAMIC_PROTOCOL);
+        let asks = manifest.protocol.as_deref() == Some("1.1") || dynamic;
+        let tools = Arc::new(std::sync::RwLock::new(build_tools(
+            &transport,
+            result.get("tools").unwrap_or(&Value::Null),
+            asks,
+        )));
         let cwd = std::env::current_dir()
             .map(|p| p.to_string_lossy().into_owned())
             .unwrap_or_else(|_| ".".to_string());
-        Ok(Self {
+        let plugin = Self {
             manifest,
             tools,
             transport,
             cwd,
             asks,
             session_id: std::sync::Mutex::new(String::new()),
-        })
+        };
+        if dynamic {
+            if let Err(e) = plugin.refresh_tools().await {
+                log::warn!(target: "gray_plugin", "{}: plugin/tools failed at spawn: {e}", plugin.manifest.name);
+            }
+            plugin.install_tools_changed_handler();
+        }
+        Ok(plugin)
+    }
+
+    /// True for [`DYNAMIC_PROTOCOL`] sidecars (live tool set).
+    pub fn is_dynamic(&self) -> bool {
+        self.manifest.protocol.as_deref() == Some(DYNAMIC_PROTOCOL)
+    }
+
+    /// Re-ask the sidecar for its tool set (`plugin/tools`) and replace the
+    /// current snapshot. Returns the new tool count. Protocol 1.3 only;
+    /// older sidecars never receive the request (they would hang on it).
+    pub async fn refresh_tools(&self) -> anyhow::Result<usize> {
+        if !self.is_dynamic() {
+            return Ok(self.tools.read().unwrap_or_else(|e| e.into_inner()).len());
+        }
+        refresh_tools_into(&self.transport, &self.tools, self.asks).await
+    }
+
+    /// `host/tools_changed` → debounced (200 ms) `refresh_tools`. The
+    /// sidecar may fire a burst (one per server coming up); one refresh
+    /// per burst is enough, and it runs off-turn so a slow sidecar never
+    /// blocks the agent. The handles are `Arc`s so the task outlives
+    /// nothing it should not.
+    fn install_tools_changed_handler(&self) {
+        let Ok(rt) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let transport = self.transport.clone();
+        let tools = self.tools.clone();
+        let asks = self.asks;
+        let name = self.manifest.name.clone();
+        let pending = Arc::new(AtomicBool::new(false));
+        self.set_notify_handler(Arc::new(move |method, _params| {
+            if method != HOST_TOOLS_CHANGED || pending.swap(true, Ordering::SeqCst) {
+                return;
+            }
+            let (transport, tools, pending, name) =
+                (transport.clone(), tools.clone(), pending.clone(), name.clone());
+            rt.spawn(async move {
+                tokio::time::sleep(TOOLS_CHANGED_DEBOUNCE).await;
+                pending.store(false, Ordering::SeqCst);
+                if let Err(e) = refresh_tools_into(&transport, &tools, asks).await {
+                    log::warn!(target: "gray_plugin", "{name}: plugin/tools refresh failed: {e}");
+                }
+            });
+        }));
     }
 
     /// The pinned agent session id (`""` before the builder sets it).
@@ -970,7 +1059,7 @@ impl Plugin for SidecarPlugin {
         self.manifest.clone()
     }
     fn tools(&self) -> Vec<Arc<dyn Tool>> {
-        self.tools.clone()
+        self.tools.read().unwrap_or_else(|e| e.into_inner()).clone()
     }
     fn set_session_id(&self, id: &str) {
         *self.session_id.lock().expect("session_id") = id.to_string();
