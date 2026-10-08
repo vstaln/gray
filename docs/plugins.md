@@ -177,3 +177,85 @@ A sidecar that does not answer `<bin> manifest` is probed over the sidecar
 wire instead, and the install asks for the `provider.credentials` capability.
 Declined consent hides the provider row; grant it later with
 `gray plugin capabilities <name> --all`. Removal: `gray plugin remove <name>`.
+
+## Port candidates (hermes + pi)
+
+Consolidated 2026-10-08 from `customization.md` (pi parity plan), the
+pi example catalog (`reference/pi-mono/packages/coding-agent/examples/extensions/`,
+79 examples) and the hermes plugin dir (`~/.hermes/hermes-agent/plugins/`,
+18 plugins).
+
+### The genuine count
+
+- **pi:** 79 example extensions. ~13 are toys/demos/test fixtures
+  (snake, tic-tac-toe, space-invaders, doom-overlay, pirate,
+  rainbow-editor, hello, overlay-test, overlay-qa-tests, rpc-demo,
+  working-message-test, qna, mac-system-theme on this Linux box).
+  ~9 already have a gray equivalent (protected-paths + project-trust →
+  gray-permissions/trust; question + questionnaire → gray-questions;
+  subagent → gray-subagents; custom-footer + working-indicator +
+  minimal-mode → Level-0 status_line/lean; reload-runtime → `/reload`).
+  **9 are the named protocol-2.0 drivers** below; the remaining ~48 are
+  meant to run *unmodified* through gray-pi-compat, not be ported one
+  by one.
+- **hermes:** 18 plugins. 4 already covered or partially covered
+  (memory → gray-memory; platforms → gray-discord-plugin, discord only;
+  model-providers → the `gray-*-sub` provider sidecars; cron_providers →
+  core `gray cron`). **14 genuine candidates** below.
+
+Genuinely new port units: **23 named** (9 pi drivers + 14 hermes),
+plus ~48 pi extensions absorbed wholesale by pi-compat.
+
+### pi — protocol-2.0 drivers (port in this order, per customization.md)
+
+1. `permission-gate` — confirm dangerous bash commands (partly covered
+   by gray-permissions; port for the prompt UX)
+2. `plan-mode/` — read-only exploration mode with `/plan`
+3. `todo` — todo tool + `/todos` with custom rendering + persistence
+4. `custom-compaction` — custom summarize-everything compaction
+5. `input-transform` — rewrite submitted input
+6. `status-line` — live turn progress in the footer
+7. `handoff` — `/handoff <goal>` into a fresh focused session
+8. `git-checkpoint` — stash checkpoint per turn, restore on fork
+9. `notify` — OSC 777 desktop notification when the agent settles
+
+### pi — absorbed by gray-pi-compat (no individual port)
+
+Real value once protocol 2.0 + the compat sidecar exist:
+auto-commit-on-exit, bash-spawn-hook, bookmark, border-status-editor,
+built-in-tool-renderer, claude-rules, commands, confirm-destructive,
+custom-header, custom-provider-anthropic, custom-provider-gitlab-duo,
+debug-provider, dirty-repo-guard, dynamic-resources, dynamic-tools,
+entry-renderer, event-bus, file-trigger, github-issue-autocomplete,
+git-merge-and-resolve, gondolin, hidden-thinking-label, inline-bash,
+input-transform-streaming, interactive-shell, jev-router,
+message-renderer, modal-editor, model-status, preset,
+prompt-customizer, provider-payload, sandbox, send-user-message,
+session-name, shutdown-command, ssh, structured-output, summarize,
+system-prompt-header, timed-confirm, titlebar-spinner, tool-override,
+tools, trigger-compact, truncated-tool, widget-placement, with-deps. (48)
+
+### hermes — 14 candidates
+
+| plugin | what it is | note |
+|---|---|---|
+| `browser` | browser automation tool | high value, big surface |
+| `web` | web search/fetch tools | overlaps graysearch? check first |
+| `image_gen` | image generation (openrouter etc.) | straight tool port |
+| `video_gen` | video generation | straight tool port |
+| `spotify` | 7 playback/queue/search tools, PKCE OAuth | self-contained |
+| `kanban` | kanban board tool | self-contained |
+| `disk-cleanup` | auto-clean ephemeral session files via hooks | needs lifecycle hooks |
+| `security-guidance` | appends warnings to dangerous file writes | maps to `tool/after` |
+| `observability` | turn tracing/telemetry | design first |
+| `context_engine` | pluggable context engine provider | needs provider iface |
+| `dashboard_auth` | auth for a web dashboard | only with a dashboard |
+| `google_meet` | join/transcribe/speak in Meet calls | heavy, v1 transcribe-only |
+| `teams_pipeline` | Teams transcript-first meeting summaries | heavy, Graph-backed |
+| `hermes-achievements` | achievement system | novelty, low |
+
+Not candidates: `memory` (gray-memory), `platforms`
+(gray-discord-plugin covers the pattern; other platforms = new sidecars
+of the same shape), `model-providers` (gray `*-sub` sidecars cover
+subscriptions; generic profiles would be provider-plugin work),
+`cron_providers` (core `gray cron` exists).
