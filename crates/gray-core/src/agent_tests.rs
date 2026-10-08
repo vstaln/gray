@@ -3152,3 +3152,230 @@ async fn static_executor_keeps_with_tools_defs() {
         .unwrap();
     assert_eq!(seen.lock().expect("seen lock")[0], vec![TOOL_NAME]);
 }
+
+/// Protocol 2.0 `input/submit` stub: records the text it was shown and
+/// returns a scripted verdict, like a sidecar's `{text}`/`{handled}`
+/// reply.
+struct InputHook {
+    verdict: InputSubmit,
+    seen: std::sync::Arc<Mutex<Vec<String>>>,
+}
+
+#[async_trait]
+impl PluginHooks for InputHook {
+    async fn input_submit(&self, text: &str) -> InputSubmit {
+        self.seen
+            .lock()
+            .expect("seen lock poisoned")
+            .push(text.to_string());
+        self.verdict.clone()
+    }
+}
+
+#[tokio::test]
+async fn input_submit_rewrite_replaces_user_text() {
+    let provider = FakeProvider::new(vec![end_script()]);
+    let seen = provider.seen_requests();
+    let hook_seen = std::sync::Arc::new(Mutex::new(Vec::new()));
+    let mut agent = Agent::new(
+        Box::new(provider),
+        Arc::new(FakeExecutor::new(ToolOutput::ok("unused"))),
+    )
+    .with_hooks(vec![Arc::new(InputHook {
+        verdict: InputSubmit::Rewrite("REWRITTEN".to_string()),
+        seen: hook_seen.clone(),
+    })]);
+
+    agent
+        .run(Message::user("original"), ToolContext::default())
+        .await
+        .unwrap();
+
+    assert_eq!(agent.messages()[0].text_content(), "REWRITTEN");
+    let seen = seen.lock().expect("seen lock poisoned");
+    assert_eq!(seen[0].1[0].text_content(), "REWRITTEN");
+    assert_eq!(*hook_seen.lock().unwrap(), vec!["original"]);
+}
+
+#[tokio::test]
+async fn input_submit_handled_swallows_the_turn() {
+    let provider = FakeProvider::new(vec![end_script()]);
+    let seen = provider.seen_requests();
+    let mut agent = Agent::new(
+        Box::new(provider),
+        Arc::new(FakeExecutor::new(ToolOutput::ok("unused"))),
+    )
+    .with_hooks(vec![Arc::new(InputHook {
+        verdict: InputSubmit::Handled,
+        seen: std::sync::Arc::new(Mutex::new(Vec::new())),
+    })]);
+
+    let events = agent
+        .run(Message::user("handled elsewhere"), ToolContext::default())
+        .await
+        .unwrap();
+
+    assert!(events.is_empty(), "swallowed input emits no events");
+    assert!(agent.messages().is_empty(), "swallowed input never lands");
+    assert!(seen.lock().unwrap().is_empty(), "no request is ever sent");
+}
+
+#[tokio::test]
+async fn input_submit_hooks_chain_on_each_prior_rewrite() {
+    let hook_seen = std::sync::Arc::new(Mutex::new(Vec::new()));
+    let provider = FakeProvider::new(vec![end_script()]);
+    let mut agent = Agent::new(
+        Box::new(provider),
+        Arc::new(FakeExecutor::new(ToolOutput::ok("unused"))),
+    )
+    .with_hooks(vec![
+        Arc::new(InputHook {
+            verdict: InputSubmit::Rewrite("SECOND".to_string()),
+            seen: hook_seen.clone(),
+        }),
+        Arc::new(InputHook {
+            verdict: InputSubmit::Pass,
+            seen: hook_seen.clone(),
+        }),
+    ]);
+
+    agent
+        .run(Message::user("first"), ToolContext::default())
+        .await
+        .unwrap();
+
+    assert_eq!(agent.messages()[0].text_content(), "SECOND");
+    assert_eq!(*hook_seen.lock().unwrap(), vec!["first", "SECOND"]);
+}
+
+/// Protocol 2.0 `agent/before_start` stub: returns text like a sidecar's
+/// `{"result":{"text":"…"}}` reply.
+struct BeforeStartHook {
+    text: Option<String>,
+}
+
+#[async_trait]
+impl PluginHooks for BeforeStartHook {
+    async fn agent_before_start(&self) -> Option<String> {
+        self.text.clone()
+    }
+}
+
+#[tokio::test]
+async fn agent_before_start_text_lands_in_history_for_the_request() {
+    let provider = FakeProvider::new(vec![end_script()]);
+    let seen = provider.seen_requests();
+    let mut agent = Agent::new(
+        Box::new(provider),
+        Arc::new(FakeExecutor::new(ToolOutput::ok("unused"))),
+    )
+    .with_hooks(vec![Arc::new(BeforeStartHook {
+        text: Some("[PLAN MODE ACTIVE]".to_string()),
+    })]);
+
+    agent
+        .run(Message::user("go"), ToolContext::default())
+        .await
+        .unwrap();
+
+    let seen = seen.lock().expect("seen lock poisoned");
+    let msgs = &seen[0].1;
+    assert_eq!(msgs[0].text_content(), "go");
+    assert_eq!(
+        msgs[1].text_content(),
+        "[PLAN MODE ACTIVE]",
+        "hook text rides after the user's message for this turn"
+    );
+}
+
+/// Protocol 2.0 `context/build` stub: drops messages whose text contains
+/// the marker — a sidecar filtering stale context out of the request.
+struct DropMarkedHook;
+
+#[async_trait]
+impl PluginHooks for DropMarkedHook {
+    async fn context_build(&self, messages: &[Message]) -> Option<Vec<Message>> {
+        Some(
+            messages
+                .iter()
+                .filter(|m| !m.text_content().contains("STALE-MARKER"))
+                .cloned()
+                .collect(),
+        )
+    }
+}
+
+#[tokio::test]
+async fn context_build_filters_outbound_but_history_is_untouched() {
+    let provider = FakeProvider::new(vec![end_script()]);
+    let seen = provider.seen_requests();
+    let mut agent = Agent::new(
+        Box::new(provider),
+        Arc::new(FakeExecutor::new(ToolOutput::ok("unused"))),
+    )
+    .with_messages(vec![
+        Message::user("keep me"),
+        Message::assistant("STALE-MARKER old reply"),
+    ])
+    .with_hooks(vec![Arc::new(DropMarkedHook)]);
+
+    agent
+        .run(Message::user("go"), ToolContext::default())
+        .await
+        .unwrap();
+
+    let seen = seen.lock().expect("seen lock poisoned");
+    let msgs = &seen[0].1;
+    assert!(msgs.iter().any(|m| m.text_content() == "keep me"));
+    assert!(
+        !msgs.iter().any(|m| m.text_content().contains("STALE-MARKER")),
+        "filtered message absent from the request"
+    );
+    assert!(
+        agent
+            .messages()
+            .iter()
+            .any(|m| m.text_content() == "STALE-MARKER old reply"),
+        "the persisted transcript keeps what the wire dropped"
+    );
+}
+
+/// Protocol 2.0 `tool/after` stub: appends a note to every tool result,
+/// like a sidecar annotating dangerous-pattern file writes.
+struct AnnotateToolHook;
+
+#[async_trait]
+impl PluginHooks for AnnotateToolHook {
+    async fn tool_after(&self, _name: &str, output: &ToolOutput) -> Option<ToolOutput> {
+        let mut out = output.clone();
+        out.content.push_str(" [hook note]");
+        Some(out)
+    }
+}
+
+#[tokio::test]
+async fn tool_after_replacement_lands_in_history() {
+    let provider = FakeProvider::new(vec![tool_script("c1"), end_script()]);
+    let mut agent = Agent::new(
+        Box::new(provider),
+        Arc::new(FakeExecutor::new(ToolOutput::ok("RAW"))),
+    )
+    .with_tools(vec![tool_def()])
+    .with_hooks(vec![Arc::new(AnnotateToolHook)]);
+
+    agent
+        .run(Message::user("go"), ToolContext::default())
+        .await
+        .unwrap();
+
+    let results: Vec<String> = agent
+        .messages()
+        .iter()
+        .flat_map(|m| m.content.iter())
+        .filter_map(|b| match b {
+            crate::message::ContentBlock::ToolResult { content, .. } => Some(content.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(results, vec!["RAW [hook note]"]);
+}

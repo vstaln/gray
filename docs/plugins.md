@@ -78,7 +78,22 @@ and a plugin directory containing a `plugin.sh` is spawned as-is.
 
 Host→sidecar is NDJSON over stdio: `plugin/manifest`, `tool/call`,
 `tool/before`, `command/run`, `prompt/context`, `event/notify` (no reply),
-`plugin/shutdown` (clean exit). Sidecar→host asking is one method:
+`plugin/shutdown` (clean exit).
+
+Protocol 2.0 adds mutating events, each claims-gated by `hooks` like the
+v1 methods (unclaimed = no IPC, pre-2.0 sidecars are never sent them):
+
+- `input/submit` — `{"text","session"}` → `{text}` rewrite,
+  `{handled: true}` swallow (no turn, nothing recorded), else pass.
+- `agent/before_start` — `{"session"}` → `{text}` appended to history as a
+  user message before the turn's first request (skipped under `--lean`).
+- `context/build` — `{"messages","session"}` → `{"messages":[...]}`
+  replaces the outbound list for that request only; the persisted
+  transcript is never touched. Hooks chain in claim order.
+- `tool/after` — `{"name","content","is_error","session"}` →
+  `{content?, is_error?}` replaces the tool result before observers and
+  history see it (pi `tool_result`; e.g. hermes `security-guidance`
+  warnings on dangerous writes). Sidecar→host asking is one method:
 
 ```json
 {"id": "q1", "method": "host/ask",

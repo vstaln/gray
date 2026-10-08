@@ -6,7 +6,7 @@ use serde_json::Value;
 use gray_core::agent::ToolOutput;
 use gray_core::agent::{PluginCommand, PluginHooks};
 use gray_core::event::Usage;
-use gray_core::message::ToolDef;
+use gray_core::message::{Message, ToolDef};
 
 pub mod builder;
 pub mod capabilities;
@@ -211,7 +211,7 @@ impl Manifest {
 /// Canonical `tool/before` verdict + `command/run` outcome: single source of
 /// truth lives in [`gray_core::agent`] (core owns it so the agent loop never
 /// depends on this crate); re-exported here so sidecar call sites keep one import.
-pub use gray_core::agent::{CommandOutcome, ToolBefore};
+pub use gray_core::agent::{CommandOutcome, InputSubmit, ToolBefore};
 
 #[async_trait]
 pub trait Plugin: Send + Sync {
@@ -246,6 +246,30 @@ pub trait Plugin: Send + Sync {
     /// `command/run` hook (`params: {"name":"/x","argv"}` → `result: {"text"}` or `{"prompt"}`).
     /// Default `None` = command unclaimed (pre-v1 behavior).
     async fn run_command(&self, _name: &str, _argv: Vec<String>) -> Option<CommandOutcome> {
+        None
+    }
+    /// `input/submit` hook (protocol 2.0): `params: {"text","session"}` →
+    /// `{text}` rewrite | `{handled: true}` swallow | anything else passes.
+    /// Default pass (pre-2.0 behavior).
+    async fn input_submit(&self, _text: &str) -> InputSubmit {
+        InputSubmit::Pass
+    }
+    /// `agent/before_start` hook (protocol 2.0): `params: {"session"}` →
+    /// `{text}` appended to history as a user message before the first
+    /// request. Default `None` = inject nothing.
+    async fn agent_before_start(&self) -> Option<String> {
+        None
+    }
+    /// `context/build` hook (protocol 2.0): `params: {"messages","session"}`
+    /// → `{"messages": [...]}` replacement list for this request only;
+    /// history is never touched. Default `None` = keep the list.
+    async fn context_build(&self, _messages: &[Message]) -> Option<Vec<Message>> {
+        None
+    }
+    /// `tool/after` hook (protocol 2.0): `params: {"name","content",
+    /// "is_error","session"}` → `{content?, is_error?}` replacement fields.
+    /// Default `None` = keep the executor output.
+    async fn tool_after(&self, _name: &str, _output: &ToolOutput) -> Option<ToolOutput> {
         None
     }
     /// Lifecycle teardown: host is going away (`session_end`/`host_exit`/`reload`
@@ -343,6 +367,18 @@ impl PluginHooks for PluginHookAdapter {
         self.plugin
             .on_event(CoreEvent::TurnEnd { usage: *usage })
             .await;
+    }
+    async fn input_submit(&self, text: &str) -> InputSubmit {
+        self.plugin.input_submit(text).await
+    }
+    async fn agent_before_start(&self) -> Option<String> {
+        self.plugin.agent_before_start().await
+    }
+    async fn context_build(&self, messages: &[Message]) -> Option<Vec<Message>> {
+        self.plugin.context_build(messages).await
+    }
+    async fn tool_after(&self, name: &str, output: &ToolOutput) -> Option<ToolOutput> {
+        self.plugin.tool_after(name, output).await
     }
     async fn shutdown(&self) {
         self.plugin.shutdown().await;

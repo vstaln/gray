@@ -99,12 +99,12 @@ notifications. Each maps to the pi event an ported extension expects.
 
 | gray method | pi event | reply |
 |---|---|---|
-| `input/submit` | `input` | `{text}` rewrite, `{handled:true}` swallow, or nothing |
-| `agent/before_start` | `before_agent_start` | system prompt append/replace, injected messages |
-| `context/build` | `context` | replacement message list for this model call |
+| `input/submit` **(shipped)** | `input` | `{text}` rewrite, `{handled:true}` swallow, or nothing |
+| `agent/before_start` **(shipped)** | `before_agent_start` | injected user message (`{text}`); system-prompt patch not wired yet |
+| `context/build` **(shipped)** | `context` | replacement message list for this model call |
 | `provider/before_request` | `before_provider_request` | headers/body patch |
 | `tool/before` (exists) | `tool_call` | allow/deny/patch args |
-| `tool/after` | `tool_result` | replacement result content |
+| `tool/after` **(shipped)** | `tool_result` | replacement result content |
 | `compact/before` | `session_before_compact` | custom summary, or cancel |
 | `session/before_switch`, `/before_fork` | same | cancel |
 | `model/select` | `model_select` | observe |

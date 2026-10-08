@@ -8,7 +8,8 @@
 use futures::StreamExt as _;
 
 use crate::agent::{
-    Agent, ToolBefore, ToolContext, ToolOutput, salvage_partial_text, thinking_block,
+    Agent, InputSubmit, ToolBefore, ToolContext, ToolOutput, salvage_partial_text,
+    thinking_block,
 };
 use crate::agent_compact::needs_pre_turn_compact;
 use crate::agent_tools::{PendingToolCall, answer_pending_tools};
@@ -221,6 +222,9 @@ impl Agent {
         if is_blank_input(&input) {
             return Ok(vec![]);
         }
+        let Some(input) = self.apply_input_hooks(input).await else {
+            return Ok(vec![]);
+        };
         self.messages.push(input);
         self.run_inner(ctx, None).await
     }
@@ -237,8 +241,54 @@ impl Agent {
         if is_blank_input(&input) {
             return Ok(vec![]);
         }
+        let Some(input) = self.apply_input_hooks(input).await else {
+            return Ok(vec![]);
+        };
         self.messages.push(input);
         self.run_inner(ctx, Some(on_event)).await
+    }
+
+    /// `tool/after` (protocol 2.0): claimed hooks may replace a tool
+    /// result before `post_tool` observers and history see it (pi
+    /// `tool_result`). Hooks chain in order.
+    async fn apply_tool_after(&self, name: &str, output: &ToolOutput) -> ToolOutput {
+        let mut output = output.clone();
+        for hook in &self.hooks {
+            if let Some(replacement) = hook.tool_after(name, &output).await {
+                output = replacement;
+            }
+        }
+        output
+    }
+
+    /// `input/submit` (protocol 2.0): hooks get the submitted text in
+    /// order, each seeing the previous rewrite. `Handled` swallows the
+    /// input entirely (no turn, nothing recorded). Only plain-text user
+    /// input goes through the hook — a rewrite would silently drop any
+    /// non-text blocks (images, structured input).
+    async fn apply_input_hooks(&self, input: Message) -> Option<Message> {
+        if input.role != Role::User
+            || !input
+                .content
+                .iter()
+                .all(|b| matches!(b, ContentBlock::Text { .. }))
+        {
+            return Some(input);
+        }
+        let mut text = input.text_content();
+        for hook in &self.hooks {
+            match hook.input_submit(&text).await {
+                InputSubmit::Pass => {}
+                InputSubmit::Handled => return None,
+                InputSubmit::Rewrite(t) => text = t,
+            }
+        }
+        // A rewrite to blank is a swallow: history must not grow a
+        // message the model can never have intended.
+        if text.trim().is_empty() {
+            return None;
+        }
+        Some(Message::user(text))
     }
 
     async fn run_inner(
@@ -331,6 +381,15 @@ impl Agent {
                 self.messages.push(note);
             }
         }
+        // `agent/before_start` (protocol 2.0): per-turn context a plugin
+        // wants in history as a user message (pi `before_agent_start`).
+        if !self.lean_prompt {
+            for hook in &self.hooks {
+                if let Some(text) = hook.agent_before_start().await {
+                    self.messages.push(Message::user(text));
+                }
+            }
+        }
         // Capture before pre-turn compaction so its request uses this same prefix.
         self.turn_system = Some(self.system.clone());
 
@@ -414,6 +473,14 @@ impl Agent {
                 request_messages.push(Message::user(
                     "Continue the pending user request using the retained context and summary.",
                 ));
+            }
+            // `context/build` (protocol 2.0): claimed hooks may replace the
+            // outbound list per request (pi `context`); `self.messages` —
+            // the persisted transcript — is never touched by it.
+            for hook in &self.hooks {
+                if let Some(msgs) = hook.context_build(&request_messages).await {
+                    request_messages = msgs;
+                }
             }
             let req = ChatRequest {
                 system: (!self.system_text().is_empty()).then(|| self.system_text().to_string()),
@@ -1045,8 +1112,9 @@ impl Agent {
                         }
                         match by_idx.get(&idx) {
                             Some(Some(output)) => {
+                                let output = self.apply_tool_after(name, output).await;
                                 for hook in &self.hooks {
-                                    hook.post_tool(name, output).await;
+                                    hook.post_tool(name, &output).await;
                                 }
                                 emit!(AgentEvent::tool_result(
                                     id.clone(),
@@ -1131,6 +1199,7 @@ impl Agent {
                             Ok(report) => report,
                             Err(_) => ToolOutput::error("cancelled by user"),
                         };
+                        let report = self.apply_tool_after(name, &report).await;
                         for hook in &self.hooks {
                             hook.post_tool(name, &report).await;
                         }
@@ -1154,6 +1223,7 @@ impl Agent {
                         return Err(CoreError::Cancelled);
                     },
                 };
+                let output = self.apply_tool_after(name, &output).await;
                 for hook in &self.hooks {
                     hook.post_tool(name, &output).await;
                 }

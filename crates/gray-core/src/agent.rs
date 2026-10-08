@@ -326,6 +326,36 @@ impl ToolBefore {
     }
 }
 
+/// Verdict of an `input/submit` plugin hook (protocol 2.0) for one
+/// submitted user message.
+#[derive(Debug, Clone, PartialEq)]
+pub enum InputSubmit {
+    /// Deliver the input to the agent unchanged.
+    Pass,
+    /// Deliver it with the text replaced (pi `input` event returning
+    /// `{text}`).
+    Rewrite(String),
+    /// The plugin handled the input itself: no turn runs and nothing is
+    /// recorded (pi `input` event returning `{handled: true}`).
+    Handled,
+}
+
+impl InputSubmit {
+    /// Parse an `input/submit` result. Lenient on purpose: unlike
+    /// `tool/before` there is no security boundary here, and a malformed
+    /// reply must never eat the user's input — anything unrecognized
+    /// passes through untouched.
+    pub fn from_result(v: &serde_json::Value) -> Self {
+        if v.get("handled").and_then(|h| h.as_bool()) == Some(true) {
+            return Self::Handled;
+        }
+        if let Some(text) = v.get("text").and_then(|t| t.as_str()) {
+            return Self::Rewrite(text.to_string());
+        }
+        Self::Pass
+    }
+}
+
 /// A slash command (`/x`) claimed by a plugin for `/help` + REPL routing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PluginCommand {
@@ -345,8 +375,9 @@ pub enum CommandOutcome {
     ModelPicker(String),
 }
 
-/// Host-side view of a plugin's protocol-v1 hooks (`prompt/context`,
-/// `tool/before`, `command/run`). All methods are no-ops by default, so an
+/// Host-side view of a plugin's hooks: protocol-v1 (`prompt/context`,
+/// `tool/before`, `command/run`) plus the 2.0 mutating events
+/// (`input/submit`, `agent/before_start`, `context/build`, `tool/after`). All methods are no-ops by default, so an
 /// agent without plugins behaves exactly as before. The sidecar transport
 /// behind these (Task 1) maps each method to its wire request.
 #[async_trait]
@@ -365,6 +396,29 @@ pub trait PluginHooks: Send + Sync {
     }
     /// Runs `command/run`; `None` means "not handled".
     async fn run_command(&self, _name: &str, _argv: Vec<String>) -> Option<CommandOutcome> {
+        None
+    }
+    /// `input/submit` verdict (protocol 2.0), consulted before the
+    /// submitted user message reaches history. Default passes it through.
+    async fn input_submit(&self, _text: &str) -> InputSubmit {
+        InputSubmit::Pass
+    }
+    /// `agent/before_start` (protocol 2.0): text a hook wants appended to
+    /// history as a user message before the turn's first request
+    /// (pi `before_agent_start` returning a context message).
+    async fn agent_before_start(&self) -> Option<String> {
+        None
+    }
+    /// `context/build` (protocol 2.0): a replacement outbound message list
+    /// for this request (pi `context`). Hooks chain — each sees the
+    /// previous hook's output. `None` keeps the list unchanged.
+    async fn context_build(&self, _messages: &[Message]) -> Option<Vec<Message>> {
+        None
+    }
+    /// `tool/after` (protocol 2.0): a replacement tool result. Hooks chain
+    /// like `context/build`; `None` keeps the executor output. The final
+    /// output is what `post_tool` observers and history see.
+    async fn tool_after(&self, _name: &str, _output: &ToolOutput) -> Option<ToolOutput> {
         None
     }
     async fn pre_tool(&self, _name: &str, _args: &serde_json::Value) {}

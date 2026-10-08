@@ -12,6 +12,13 @@
 //!   is the agent's session id, `""` anonymous), reply `{"text"}`.
 //! - `tool/before` (request): params `{"name","args"}`, reply allow/deny/modify.
 //! - `command/run` (request): params `{"name":"/x","argv"}`, reply `{"text"}`.
+//! - Protocol 2.0 mutating events (requests, each claims-gated by `hooks`):
+//!   `input/submit` params `{"text","session"}` → `{text}` rewrite or
+//!   `{handled: true}` swallow; `agent/before_start` params `{"session"}` →
+//!   `{text}` appended to history as a user message; `context/build` params
+//!   `{"messages","session"}` → `{"messages":[...]}` replacement outbound
+//!   list for that request only; `tool/after` params `{"name","content",
+//!   "is_error","session"}` → `{content?, is_error?}` result replacement.
 //! - `event/notify` (notification): NO `id`, NO reply expected. Params carry a
 //!   minimal tagged event `{"type", ...}` where type is one of
 //!   `pre_tool` | `post_tool` | `turn_end` with only the fields
@@ -50,9 +57,9 @@ use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::sync::{Mutex, oneshot};
 use tokio::time::{Duration, timeout};
 
-use gray_core::agent::{CommandOutcome, Tool, ToolContext, ToolOutput};
+use gray_core::agent::{CommandOutcome, InputSubmit, Tool, ToolContext, ToolOutput};
 use gray_core::credential::CredentialMaterial;
-use gray_core::message::ToolDef;
+use gray_core::message::{Message, ToolDef};
 
 use crate::{
     CoreEvent, DYNAMIC_PROTOCOL, Manifest, PROVIDER_CREDENTIALS, Plugin, ProviderAuthPoll,
@@ -1116,6 +1123,91 @@ impl Plugin for SidecarPlugin {
                 ToolBefore::Deny("plugin policy unavailable; tool not executed".to_string())
             }
         }
+    }
+    async fn input_submit(&self, text: &str) -> InputSubmit {
+        if !self.claims("input/submit") {
+            return InputSubmit::Pass;
+        }
+        let params = json!({"text": text, "session": session_json(&self.pinned_sid(), &self.cwd)});
+        let ttl = if self.asks { ASK_TTL } else { HOST_TTL };
+        match self.transport.request("input/submit", Some(params), ttl).await {
+            Ok(v) => InputSubmit::from_result(&v),
+            // A failed rewrite hook must never eat the input: pass it
+            // through untouched.
+            Err(e) => {
+                log::warn!(target: "gray_plugin", "sidecar input/submit failed: {e}");
+                InputSubmit::Pass
+            }
+        }
+    }
+    async fn agent_before_start(&self) -> Option<String> {
+        if !self.claims("agent/before_start") {
+            return None;
+        }
+        let params = json!({"session": session_json(&self.pinned_sid(), &self.cwd)});
+        let ttl = if self.asks { ASK_TTL } else { HOST_TTL };
+        let v = self
+            .transport
+            .request("agent/before_start", Some(params), ttl)
+            .await
+            .ok()?;
+        v.get("text")
+            .and_then(|t| t.as_str())
+            .filter(|t| !t.is_empty())
+            .map(|t| t.to_string())
+    }
+    async fn context_build(&self, messages: &[Message]) -> Option<Vec<Message>> {
+        if !self.claims("context/build") {
+            return None;
+        }
+        let params = json!({"messages": messages, "session": session_json(&self.pinned_sid(), &self.cwd)});
+        let ttl = if self.asks { ASK_TTL } else { HOST_TTL };
+        match self
+            .transport
+            .request("context/build", Some(params), ttl)
+            .await
+        {
+            Ok(v) => match v.get("messages") {
+                Some(m) => match serde_json::from_value::<Vec<Message>>(m.clone()) {
+                    Ok(msgs) => Some(msgs),
+                    Err(e) => {
+                        log::warn!(target: "gray_plugin", "sidecar context/build reply unparseable: {e}");
+                        None
+                    }
+                },
+                // No `messages` key = keep the list unchanged.
+                None => None,
+            },
+            Err(e) => {
+                log::warn!(target: "gray_plugin", "sidecar context/build failed: {e}");
+                None
+            }
+        }
+    }
+    async fn tool_after(&self, name: &str, output: &ToolOutput) -> Option<ToolOutput> {
+        if !self.claims("tool/after") {
+            return None;
+        }
+        let params = json!({"name": name, "content": output.content, "is_error": output.is_error, "session": session_json(&self.pinned_sid(), &self.cwd)});
+        let ttl = if self.asks { ASK_TTL } else { HOST_TTL };
+        let v = self
+            .transport
+            .request("tool/after", Some(params), ttl)
+            .await
+            .ok()?;
+        let content = v.get("content").and_then(|c| c.as_str());
+        let is_error = v.get("is_error").and_then(|e| e.as_bool());
+        if content.is_none() && is_error.is_none() {
+            return None;
+        }
+        let mut out = output.clone();
+        if let Some(c) = content {
+            out.content = c.to_string();
+        }
+        if let Some(e) = is_error {
+            out.is_error = e;
+        }
+        Some(out)
     }
     async fn run_command(&self, name: &str, argv: Vec<String>) -> Option<CommandOutcome> {
         // `subcommands` (cron, …) forward argv over the same
