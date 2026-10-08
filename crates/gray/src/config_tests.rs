@@ -159,3 +159,25 @@ fn gray_api_key_beats_the_saved_key() {
     );
     assert_eq!(key.as_deref(), Some("sk-gray"));
 }
+
+#[test]
+fn desktop_bus_replaces_only_a_dead_bus() {
+    let home = tempfile::tempdir().unwrap();
+    let sock = home.path().join("bus");
+    std::fs::write(&sock, "").unwrap();
+    let dir = home.path().join(".dbus/session-bus");
+    std::fs::create_dir_all(&dir).unwrap();
+    let addr = format!("unix:path={},guid=abc", sock.display());
+    std::fs::write(
+        dir.join("m-0"),
+        format!("# comment\nDBUS_SESSION_BUS_ADDRESS='{addr}'\nDBUS_SESSION_BUS_PID=1\n"),
+    )
+    .unwrap();
+    let dead = "unix:path=/nonexistent/gray-bus";
+    assert_eq!(desktop_bus(Some(dead), home.path()), Some(addr.clone()));
+    assert_eq!(desktop_bus(None, home.path()), Some(addr.clone()));
+    assert_eq!(desktop_bus(Some(&addr), home.path()), None);
+    // The recorded bus is dead too: keep what we have.
+    std::fs::remove_file(&sock).unwrap();
+    assert_eq!(desktop_bus(Some(dead), home.path()), None);
+}

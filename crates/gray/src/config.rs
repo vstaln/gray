@@ -53,6 +53,31 @@ fn scrub_url(url: &str) -> String {
     }
 }
 
+/// The desktop's session bus, when ours is missing or dead. A user service
+/// started at login before the desktop (turnstile/runit) gets no live bus, so
+/// keyring-backed tools (`gh`, secret-tool) fail in its turns. dbus-launch
+/// records the desktop bus under `~/.dbus/session-bus/`; take the newest.
+fn desktop_bus(current: Option<&str>, home: &std::path::Path) -> Option<String> {
+    // Only `unix:path=` can be checked; any other address is trusted.
+    let live = |addr: &str| {
+        addr.strip_prefix("unix:path=")
+            .is_none_or(|p| std::path::Path::new(p.split(',').next().unwrap_or(p)).exists())
+    };
+    if current.is_some_and(live) {
+        return None;
+    }
+    let newest = std::fs::read_dir(home.join(".dbus/session-bus"))
+        .ok()?
+        .flatten()
+        .max_by_key(|e| e.metadata().and_then(|m| m.modified()).ok())?;
+    std::fs::read_to_string(newest.path())
+        .ok()?
+        .lines()
+        .find_map(|l| l.strip_prefix("DBUS_SESSION_BUS_ADDRESS="))
+        .map(|a| a.trim_matches('\'').to_string())
+        .filter(|a| a != current.unwrap_or_default() && live(a))
+}
+
 /// Resolved application configuration.
 ///
 /// `Debug` is redacted by hand: the config carries the plaintext API key.
@@ -149,6 +174,15 @@ impl Config {
                 std::env::set_var("GRAY_NO_JOBS", "1");
                 std::env::set_var("GRAY_NO_AUTO_COMPACT", "1");
             }
+        }
+        if let Some(home) = std::env::var_os("HOME").filter(|s| !s.is_empty())
+            && let Some(bus) = desktop_bus(
+                std::env::var("DBUS_SESSION_BUS_ADDRESS").ok().as_deref(),
+                std::path::Path::new(&home),
+            )
+        {
+            // Same set-once rule: tools spawned later inherit the bus.
+            unsafe { std::env::set_var("DBUS_SESSION_BUS_ADDRESS", bus) };
         }
         Ok(config)
     }
