@@ -82,7 +82,7 @@ pub fn identity_block(model_label: &str, model_id: &str, provider: &str) -> Stri
 /// Static harness facts the model cannot infer, and that decide how many rounds a
 /// task costs. The concurrency machinery is otherwise invisible: the model issues
 /// one call per round, each round re-bills the whole conversation, and the
-/// parallel lane plus bash's background hand-off never engage. Kept in the binary so
+/// parallel lane plus the async bash job API never engage. Kept in the binary so
 /// it is never comment-stripped and never lands in the user's editable file, and
 /// appended after the runtime directory so the user's verbatim text stays ahead
 /// of it. Every claim is true whether or not the parallel lane is enabled:
@@ -94,9 +94,10 @@ the build and the tests, probing two hypotheses — therefore cost one round bet
 them instead of one round each, and every round re-reads the whole conversation. \
 Issue independent calls together in one turn, and only chain calls across turns when \
 the later one actually depends on the earlier one. Same-turn calls may also run \
-concurrently, which changes latency, not cost. A bash command still running at its \
-timeout is not killed: it keeps running as a background job and its completion notice \
-wakes you in a later turn, so keep working or end your turn instead of polling.";
+concurrently, which changes latency, not cost. For genuinely long work, bash with \
+background:true or yield_ms returns a job id immediately and its completion notice \
+arrives in a later turn, so use those for long work only and keep working instead \
+of polling.";
 
 #[path = "system_prompt_tests.rs"]
 #[cfg(test)]

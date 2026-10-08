@@ -152,16 +152,13 @@ async fn spew_is_bounded_but_logged_whole() {
 }
 
 #[tokio::test]
-async fn timeout_hands_off_with_partial_output_instead_of_killing() {
-    // Exits on its own after ~5 s; the call must return at ~1 s with the
-    // output so far, the command still running as a job (never killed), and
-    // none of the old promotion/task-id wording.
-    let ctx = ToolContext::default();
-    let tool = BashTool::default();
+async fn timeout_kills_instead_of_promoting() {
+    // Exits on its own after ~5 s; the tool must return at ~1 s having
+    // killed it — partial output kept, no promotion text.
     let t0 = Instant::now();
-    let out = tool
+    let out = BashTool::default()
         .execute(
-            &ctx,
+            &ToolContext::default(),
             json!({"command": "echo tick 1; sleep 5", "timeout": 1}),
         )
         .await;
@@ -169,8 +166,7 @@ async fn timeout_hands_off_with_partial_output_instead_of_killing() {
     assert!(dt < Duration::from_secs(10), "returned in {dt:?}");
     assert!(!out.is_error, "{}", out.content);
     let head = first_line(&out).to_string();
-    assert!(head.starts_with("still running"), "{head}");
-    assert!(head.contains("yielded after 1s"), "{head}");
+    assert!(head.starts_with("timed out after 1s"), "{head}");
     assert!(
         out.content.contains("tick 1"),
         "partial output kept: {}",
@@ -178,10 +174,9 @@ async fn timeout_hands_off_with_partial_output_instead_of_killing() {
     );
     assert!(
         !out.content.contains("promoted") && !out.content.contains("shell_output("),
-        "{}",
+        "never promotes: {}",
         out.content
     );
-    assert!(tool.has_unfinished_jobs(&ctx), "still running as a job");
 }
 
 #[tokio::test]

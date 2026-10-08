@@ -116,7 +116,7 @@ CLI: `gray resume`, `gray cron`, `gray gateway`, `gray plugin`, `gray memory`, `
 
 The command crosses as text, so quoting, globs and heredocs reach the far shell untouched. Paths don't cross: remote commands start in that account's home.
 
-**Background jobs** — `bash` takes only `command` and `timeout` (default 120s, max 3600). A command still running at its timeout is not killed: it keeps running as a background job, and the call returns its log, pgid, output so far and a stop command (`kill -- -<pgid>`). The model waits by ending its turn: a finished job wakes the session with its exit status and log path. `/jobs` lists and stops them. Bare mode (`GRAY_NO_JOBS`) is plain mini-swe-agent: a timeout kills.
+**Background jobs** — `bash` takes `"background": true` (or `"yield_ms": 1000`) and returns a job id; `action: list|status|output|cancel` manages them. Up to 32 concurrent per session, completion notices arrive between model steps.
 
 ## Safety
 

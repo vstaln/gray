@@ -8,19 +8,40 @@ use tokio::process::Child;
 
 // budgets and limits
 
-/// How long one bash call blocks before the command moves to a background
-/// job, when the model passes no `timeout`. Reaching it NEVER kills: the
-/// command keeps running as a job, the call returns its log and pgid, and
-/// the session is woken when it finishes. (A killing 30s, then 120s,
-/// default once cut real builds short, and the agent read the kill as a
-/// failed command.) `GRAY_BASH_TIMEOUT_SECS` overrides it per process.
-pub const DEFAULT_TIMEOUT_SECS: u64 = 120;
+/// Default bash timeout: **none**. Commands run until they exit; a runaway
+/// command is stopped by the user (cancel) or by passing an explicit
+/// `timeout`. (Was 30s, then 120s — both killed real builds and test suites,
+/// and the agent read the kill as a failed command, not a short budget.) So the
+/// blocking lane stays unbounded; its safety valve is the silent-handoff bound
+/// in [`MAX_BLOCKING_SILENCE_SECS`], never a timeout.
+pub const DEFAULT_TIMEOUT_SECS: Option<u64> = None;
+/// Silent threshold for the *blocking* bash lane: a command that produces no
+/// new output for this long (having set no explicit `timeout`) is handed to
+/// the background lane and the call returns immediately, instead of blocking
+/// forever. NOT a kill and NOT the reverted 30s/120s default — a chatty build
+/// never trips it (every output chunk resets the clock), and the command keeps
+/// running so the agent can inspect, await, or cancel it. Overridable in tests
+/// via `GRAY_SHELL_STALL_SECS`.
+pub const MAX_BLOCKING_SILENCE_SECS: u64 = 600;
+/// Duration-based auto-yield for the *blocking* bash lane: a command still
+/// running after this long (with no explicit `timeout` and no explicit
+/// `yield_ms`) moves to the background lane and the call returns immediately,
+/// whether or not it is producing output. Output-based `yield_ms` is opt-in
+/// and nothing ever waits past 10s; this is the default-on mirror (OpenClaw's
+/// `yieldMs` default-on pattern): the agent keeps working while a build or
+/// test suite runs instead of idling on a blocking call. `GRAY_BASH_YIELD_MS`
+/// overrides the window; `0` disables. Only engages when the jobs lane is
+/// enabled (`GRAY_NO_JOBS` unset) — there is nowhere to hand the child off.
+pub const DEFAULT_AUTO_YIELD_MS: u64 = 30_000;
 /// Cap for an explicitly requested `timeout` (one hour).
 pub const MAX_TIMEOUT_SECS: u64 = 3600;
-/// Slack added to a bare leading `sleep N` when no `timeout` was passed, so
-/// an in-band wait (`sleep 300 && tail log`) blocks as written instead of
-/// itself turning into a background job.
-pub const SLEEP_SLACK_SECS: u64 = 30;
+pub const MIN_YIELD_MS: u64 = 100;
+pub const MAX_YIELD_MS: u64 = 10_000;
+/// Ceiling for `action:output`/`action:status` `wait_ms`: one bounded
+/// blocking wait replaces N `sleep`-poll turns. Ten minutes covers the
+/// longest observed suite waits (~600s); still far under the agent-level
+/// timeout, which sits above the 3600s command cap.
+pub const MAX_ACTION_WAIT_MS: u64 = 600_000;
 pub const VIEW_BUDGET_LINES: usize = 2000;
 pub const VIEW_HEAD_FRACTION: f32 = 0.25; // head 25%, tail 75%
 pub const MEM_HEAD_BYTES: usize = 6 * 1024;

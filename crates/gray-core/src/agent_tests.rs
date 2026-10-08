@@ -111,7 +111,6 @@ struct FakeExecutor {
     default_output: ToolOutput,
     on_execute: Option<std::sync::Arc<dyn Fn() + Send + Sync>>,
     delay: Option<std::time::Duration>,
-    jobs_note: Option<String>,
 }
 
 impl FakeExecutor {
@@ -123,14 +122,7 @@ impl FakeExecutor {
             default_output,
             on_execute: None,
             delay: None,
-            jobs_note: None,
         }
-    }
-
-    /// This session has jobs: every turn opens by re-listing them.
-    fn with_jobs_note(mut self, note: &str) -> Self {
-        self.jobs_note = Some(note.to_string());
-        self
     }
 
     fn with_output(mut self, name: &str, output: ToolOutput) -> Self {
@@ -172,10 +164,6 @@ impl ToolExecutor for FakeExecutor {
             }
             output
         })
-    }
-
-    fn running_jobs_note(&self, _ctx: &ToolContext) -> Option<String> {
-        self.jobs_note.clone()
     }
 }
 
@@ -473,16 +461,16 @@ async fn loop_guard_lets_the_model_recover() {
 
 #[tokio::test]
 async fn loop_guard_exempts_job_polls() {
-    // A repeated command that gray answers with "still running as a job" is
-    // real work moving, so the signature streak must not accumulate. Real
-    // transcript case: pebble's 58/59 run was aborted after three identical
-    // calls while a test job ran.
+    // A repeated command that gray answers with the live status of the job it
+    // already started is a deliberate wait — the elapsed time moves — so the
+    // signature streak must not accumulate. Real transcript case: pebble's
+    // 58/59 run was aborted after three identical polls of a running test job.
     let mut scripts: Vec<Vec<StreamEvent>> =
         (0..10).map(|i| tool_script(&format!("c{i}"))).collect();
     scripts.push(end_script());
     let provider = FakeProvider::new(scripts);
     let executor = FakeExecutor::new(ToolOutput::ok(
-        "still running · job j1 · yielded after 120s · pgid 4242 · log /tmp/j1.log\nNot killed.",
+        "job j1 · running · elapsed 50s · log /tmp/j1.log",
     ));
     let mut agent = Agent::new(Box::new(provider), Arc::new(executor)).with_tools(vec![tool_def()]);
 
@@ -495,41 +483,6 @@ async fn loop_guard_exempts_job_polls() {
         events
             .iter()
             .any(|e| matches!(e, AgentEvent::TurnEnd { .. }))
-    );
-}
-
-#[tokio::test]
-async fn running_jobs_are_relisted_at_turn_start() {
-    // A job outlives the timeout notice that introduced it — and any later
-    // compaction — so each turn opens by naming what still runs, with its
-    // log and stop command, right in the request the provider sees.
-    let provider = FakeProvider::new(vec![end_script()]);
-    let seen = provider.seen_requests();
-    let executor = FakeExecutor::new(ToolOutput::ok("unused")).with_jobs_note(
-        "background job cargo-check still going (2m) \u{b7} log /tmp/j.log \u{b7} stop: `kill -- -42`",
-    );
-    let mut agent = Agent::new(Box::new(provider), Arc::new(executor));
-
-    agent
-        .run(Message::user("go"), ToolContext::default())
-        .await
-        .expect("turn completes");
-
-    let requests = seen.lock().expect("seen lock");
-    let first = &requests[0].1;
-    assert!(
-        first.iter().any(|m| {
-            m.role == Role::User
-                && m.text_content()
-                    .contains("[Background jobs still running]\nbackground job cargo-check")
-        }),
-        "the first request lists the running job: {first:?}"
-    );
-    // And it rides the transcript, so compaction cannot silently drop it.
-    assert!(
-        agent.messages().iter().any(|m| m.role == Role::User
-            && m.text_content().contains("[Background jobs still running]")),
-        "the note is part of history"
     );
 }
 
@@ -3375,9 +3328,7 @@ async fn context_build_filters_outbound_but_history_is_untouched() {
     let msgs = &seen[0].1;
     assert!(msgs.iter().any(|m| m.text_content() == "keep me"));
     assert!(
-        !msgs
-            .iter()
-            .any(|m| m.text_content().contains("STALE-MARKER")),
+        !msgs.iter().any(|m| m.text_content().contains("STALE-MARKER")),
         "filtered message absent from the request"
     );
     assert!(

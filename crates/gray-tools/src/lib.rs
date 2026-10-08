@@ -350,16 +350,6 @@ impl ToolExecutor for Registry {
             .collect()
     }
 
-    fn running_jobs_note(&self, ctx: &ToolContext) -> Option<String> {
-        let notes: Vec<String> = self
-            .tools
-            .iter()
-            .filter_map(|tool| tool.as_any().downcast_ref::<BashTool>())
-            .filter_map(|bash| bash.running_jobs_note(ctx))
-            .collect();
-        (!notes.is_empty()).then(|| notes.join("\n"))
-    }
-
     fn cancel_background(&self, ctx: &ToolContext, id: &str) -> bool {
         self.tools.iter().any(|tool| {
             tool.as_any()

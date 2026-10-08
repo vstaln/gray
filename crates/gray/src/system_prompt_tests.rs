@@ -107,8 +107,8 @@ fn runtime_prompt_states_that_batched_tool_calls_share_one_round() {
         "guidance must say same-turn calls may run concurrently: {p}"
     );
     assert!(
-        p.contains("background job") && p.contains("not killed") && !p.contains("yield_ms"),
-        "guidance must say a timed-out command keeps running and wakes the model: {p}"
+        p.contains("background") && p.contains("yield_ms"),
+        "guidance must point long work at the async bash job API: {p}"
     );
     // Static text: identical inputs rebuild identical bytes, or the prefix
     // cache rebills on every turn.
