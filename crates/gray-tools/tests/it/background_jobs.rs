@@ -121,12 +121,11 @@ async fn timed_out_commands_keep_running_and_other_work_proceeds() {
     assert_eq!(listed, ids, "oldest first, for /jobs");
 
     // Other work runs normally, and names the running jobs at the end.
+    // `release` must NOT be touched here: on a slow runner a job can observe
+    // it and exit before the still-going listing is snapshotted, which made
+    // the assertion below flaky on the macOS/Windows runners.
     let other = reg
-        .execute(
-            &ctx,
-            "bash",
-            json!({"command": "echo independent; touch release"}),
-        )
+        .execute(&ctx, "bash", json!({"command": "echo independent"}))
         .await;
     assert!(other.content.starts_with("exit 0"), "{}", other.content);
     assert!(other.content.contains("independent"));
@@ -140,6 +139,7 @@ async fn timed_out_commands_keep_running_and_other_work_proceeds() {
         );
     }
 
+    std::fs::write(dir.path().join("release"), "").unwrap();
     let got = notices(&reg, &ctx, 3).await;
     for (n, id) in ids.iter().enumerate() {
         let notice = got
