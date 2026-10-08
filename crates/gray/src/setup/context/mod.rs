@@ -13,8 +13,7 @@ pub use providers::{
 };
 pub(crate) use providers::{
     cache_model_efforts, ensure_disk_loaded, fetch_plugin_provider_models,
-    load_provider_model_list, ollama_running, save_provider_model_list,
-    warm_rates_from_disk_cache,
+    load_provider_model_list, ollama_running, save_provider_model_list, warm_rates_from_disk_cache,
 };
 
 static USER_CONTEXT_WINDOW: std::sync::OnceLock<std::sync::RwLock<Option<usize>>> =
