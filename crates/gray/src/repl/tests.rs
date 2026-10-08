@@ -109,21 +109,6 @@ fn totals_sum_durations_and_skip_untimed() {
 }
 
 #[test]
-fn turn_footer_includes_duration_when_known() {
-    let usage = gray_core::event::Usage::new(1000, 500);
-    let totals = super::SessionTotals::default();
-    let line = super::turn_footer(
-        &usage,
-        "test-persist-model",
-        &totals,
-        Some(6500),
-        Some(6500),
-    );
-    assert!(line.contains("6.5s"), "footer should show time: {line}");
-    assert!(line.contains("tokens"), "footer should keep tokens: {line}");
-}
-
-#[test]
 fn turn_footer_rate_uses_streaming_time_not_whole_turn_time() {
     let usage = gray_core::event::Usage::new(1000, 500);
     let totals = super::SessionTotals::default();

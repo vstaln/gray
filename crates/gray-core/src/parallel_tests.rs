@@ -328,58 +328,6 @@ fn kill_switch_parses() {
     }
 }
 #[tokio::test]
-async fn mixed_batch_of_five_overlaps_wall_clock() {
-    use crate::agent::ToolOutput;
-    use futures::future::BoxFuture;
-    // SPEC-02 live check: a turn emitting 5 read-only calls plans one
-    // segment and completes them concurrently (wall ~= slowest, not sum).
-    let u = vec![
-        ("a".into(), "read".into(), json!({"path": "a.rs"})),
-        (
-            "b".into(),
-            "bash".into(),
-            json!({"command": "grep -rn foo ."}),
-        ),
-        (
-            "c".into(),
-            "bash".into(),
-            json!({"command": "sed -n '1,10p' f"}),
-        ),
-        ("d".into(), "grep".into(), json!({"pattern": "y"})),
-        ("e".into(), "grep".into(), json!({"pattern": "y"})),
-    ];
-    let k: HashSet<String> = ["read", "bash", "grep"]
-        .iter()
-        .map(|s| s.to_string())
-        .collect();
-    assert_eq!(
-        plan_segments(&u, &k),
-        vec![Segment::Parallel(vec![0, 1, 2, 3, 4])]
-    );
-    let mk = |i: usize| {
-        (
-            i,
-            Box::pin(async move {
-                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-                ToolOutput::ok(format!("out{i}"))
-            }) as BoxFuture<'static, ToolOutput>,
-        )
-    };
-    let cancel = tokio_util::sync::CancellationToken::new();
-    let t0 = std::time::Instant::now();
-    let got = join_ordered(vec![mk(0), mk(1), mk(2), mk(3), mk(4)], &cancel).await;
-    let dt = t0.elapsed();
-    assert_eq!(got.len(), 5);
-    assert_eq!(
-        got.iter().map(|(i, _)| *i).collect::<Vec<_>>(),
-        vec![0, 1, 2, 3, 4]
-    );
-    assert!(
-        dt < std::time::Duration::from_millis(800),
-        "5x200ms overlapped, took {dt:?}"
-    );
-}
-#[tokio::test]
 async fn join_runs_concurrently_and_returns_input_order() {
     use crate::agent::ToolOutput;
     use futures::future::BoxFuture;

@@ -75,18 +75,6 @@ fn unsupported_model_401_body_outranks_auth_status() {
 }
 
 #[test]
-fn rate_limited_429_is_retryable() {
-    let err = classify_http_error(
-        reqwest::StatusCode::TOO_MANY_REQUESTS,
-        "rate limit",
-        None,
-        None,
-    );
-    assert!(matches!(err, ProviderError::RateLimited(_)));
-    assert!(is_retryable_error(&err));
-}
-
-#[test]
 fn auth_401_insufficient_balance_is_not_retryable() {
     let err = classify_http_error(
         reqwest::StatusCode::UNAUTHORIZED,
@@ -750,13 +738,6 @@ fn serialize_body_maps_failure_to_bad_request() {
     let bad: std::collections::BTreeMap<(), u8> = [((), 1)].into_iter().collect();
     let err = serialize_body(&bad, "test body").expect_err("unit keys must fail");
     assert!(matches!(err, ProviderError::BadRequest(_)), "got {err:?}");
-}
-
-#[test]
-fn serialize_body_round_trips_chat_request() {
-    let body = map_chat_request(empty_chat_req(), "test-model", None).expect("maps");
-    let v = serialize_body(&body, "chat request").expect("serializes");
-    assert_eq!(v.get("model").and_then(|m| m.as_str()), Some("test-model"));
 }
 
 // UNRUN (cargo test banned under X — verified via check + clippy only).

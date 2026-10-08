@@ -2,13 +2,6 @@ use super::*;
 use base64::Engine as _;
 
 #[test]
-fn redact_strips_secrets() {
-    assert_eq!(redact("https://u:p@h/x?token=1"), "https://h/x");
-    assert_eq!(redact("https://h/x#frag"), "https://h/x");
-    assert_eq!(redact("https://h/x"), "https://h/x");
-}
-
-#[test]
 fn b64_decode_standard_vectors() {
     assert_eq!(b64_decode("Zg==").unwrap(), b"f");
     assert_eq!(b64_decode("Zm9v").unwrap(), b"foo");

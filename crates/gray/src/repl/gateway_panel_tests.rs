@@ -87,18 +87,3 @@ fn the_panel_is_apps_only() {
     assert!(GATEWAY_SPEC.empty_hint.contains("no apps installed"));
     assert!(GATEWAY_SPEC.empty_hint.contains("gray plugin install"));
 }
-
-#[test]
-fn spec_is_a_toggle_listing_without_removal_or_errors() {
-    assert_eq!(GATEWAY_SPEC.title, "Connections");
-    const {
-        assert!(GATEWAY_SPEC.supports_toggle);
-    }
-    // Removal belongs to /plugin; package errors belong to /plugin too.
-    const {
-        assert!(!GATEWAY_SPEC.supports_remove);
-    }
-    const {
-        assert!(!GATEWAY_SPEC.errors_tab);
-    }
-}

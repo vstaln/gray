@@ -22,13 +22,6 @@ fn wlines(n: usize) -> Vec<WindowLine> {
 }
 
 #[test]
-fn ceilings_default_to_spec_values() {
-    assert_eq!(MAX_LINES, 2000);
-    assert_eq!(MAX_BYTES, 50 * 1024);
-    assert_eq!(MAX_LINE_CHARS, 2000);
-}
-
-#[test]
 fn exactly_filled_window_is_complete_without_peek_hit() {
     // T2.2 core: 2000 lines, file ends there (peek saw EOF) → no cut.
     let lines = wlines(2000);

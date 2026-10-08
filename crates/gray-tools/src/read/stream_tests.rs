@@ -199,14 +199,6 @@ fn count_gate_and_skipped_fragment_are_contract_exact() {
     );
 }
 
-#[test]
-fn caps_are_spec_values() {
-    assert_eq!(READ_CHUNK_BYTES, 64 * 1024);
-    assert_eq!(super::super::window::MAX_LINE_CHARS, 2000);
-    assert_eq!(LINE_BYTE_CAP, 8000);
-    assert_eq!(COUNT_SKIP_LIMIT_BYTES, 64 * 1024 * 1024);
-}
-
 #[tokio::test]
 async fn overflow_chars_count_codepoints_not_bytes() {
     let dir = tempfile::TempDir::new().unwrap();

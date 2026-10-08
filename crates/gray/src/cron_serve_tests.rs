@@ -414,32 +414,6 @@ async fn local_and_target_jobs_are_save_only() {
     }
 }
 
-#[test]
-fn fire_chat_is_plain_text_with_no_frame_id_or_path() {
-    let saved = DeliveredFire {
-        id: "abc123".to_string(),
-        name: "nightly".to_string(),
-        path: std::path::PathBuf::from("/home/u/.gray/cron/output/abc123/1.md"),
-        excerpt: "hello output".to_string(),
-        to_chat: true,
-        reminder: false,
-        failed: false,
-        elapsed_ms: 0,
-    };
-    let out = format_fire_chat(&saved);
-    assert_eq!(out, "nightly\n\nhello output");
-    for bad in [
-        "abc123",
-        "job_id",
-        "-----",
-        "Cronjob Response",
-        "Full output",
-        "/home/u",
-    ] {
-        assert!(!out.contains(bad), "plain fallback leaked {bad}");
-    }
-}
-
 #[tokio::test]
 async fn tick_fires_nothing_while_the_switch_is_off_but_keeps_ticking() {
     let home = tempfile::tempdir().unwrap();

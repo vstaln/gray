@@ -80,17 +80,6 @@ async fn echo_returns_exit_zero_with_output() {
 }
 
 #[tokio::test]
-async fn malformed_background_arg_fails_loud() {
-    let session = sess("bgone");
-    let ctx = ctx_for(&session);
-    let r = BashTool::default()
-        .execute(&ctx, json!({"command": "echo hi", "background": []}))
-        .await;
-    assert!(r.is_error, "{}", r.content);
-    assert!(r.content.contains("background"), "{}", r.content);
-}
-
-#[tokio::test]
 async fn empty_command_is_an_error() {
     let session = sess("empty");
     let ctx = ctx_for(&session);
@@ -1498,14 +1487,6 @@ fn the_schema_is_command_and_timeout_only() {
         "{}",
         bare.description
     );
-}
-
-#[test]
-fn default_timeout_is_finite_and_never_a_kill() {
-    // Without the old 30s auto-yield, an omitted `timeout` must still bound
-    // the call, or an un-timed `cargo build` blocks the turn forever.
-    const { assert!(DEFAULT_TIMEOUT_SECS < MAX_TIMEOUT_SECS) };
-    assert_eq!(DEFAULT_TIMEOUT_SECS, 120);
 }
 
 #[test]

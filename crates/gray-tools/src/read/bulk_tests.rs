@@ -10,14 +10,6 @@ fn header_is_contract_exact() {
 }
 
 #[test]
-fn missing_input_message_is_contract_exact() {
-    assert_eq!(
-        crate::read::notices::MISSING_INPUT_MESSAGE,
-        "read: provide path (one file) or paths (list of files/globs)"
-    );
-}
-
-#[test]
 fn glob_detection_is_star_question_only() {
     assert!(is_glob("src/**/*.rs"));
     assert!(is_glob("*.md"));

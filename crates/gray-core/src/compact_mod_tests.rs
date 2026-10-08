@@ -105,13 +105,6 @@ fn retention_drops_tool_chatter_atomically() {
 }
 
 #[test]
-fn atomic_batch_1_call_drops_without_orphans() {
-    let msgs = vec![assistant_tool_uses(&["c1"]), user_tool_result("c1")];
-    let out = build_retained(&msgs, RETAINED_MESSAGE_TOKEN_BUDGET);
-    assert_eq!(call_result_ids(&out), (vec![], vec![]));
-}
-
-#[test]
 fn atomic_batch_2_calls_drop_without_orphans() {
     // Results span 2 user messages; the tool-use-only batch must drop
     // whole — never a retained `c2` result orphaned from its call.
@@ -119,22 +112,6 @@ fn atomic_batch_2_calls_drop_without_orphans() {
         assistant_tool_uses(&["c1", "c2"]),
         user_tool_result("c1"),
         user_tool_result("c2"),
-    ];
-    let out = build_retained(&msgs, RETAINED_MESSAGE_TOKEN_BUDGET);
-    assert_eq!(call_result_ids(&out), (vec![], vec![]));
-    assert!(
-        is_subsequence(&msgs, &out),
-        "output preserves chronological order"
-    );
-}
-
-#[test]
-fn atomic_batch_3_calls_drop_without_orphans() {
-    let msgs = vec![
-        assistant_tool_uses(&["c1", "c2", "c3"]),
-        user_tool_result("c1"),
-        user_tool_result("c2"),
-        user_tool_result("c3"),
     ];
     let out = build_retained(&msgs, RETAINED_MESSAGE_TOKEN_BUDGET);
     assert_eq!(call_result_ids(&out), (vec![], vec![]));

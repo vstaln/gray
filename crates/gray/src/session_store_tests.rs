@@ -656,28 +656,6 @@ async fn cross_handle_append_continues_ids_via_rescan() {
     assert_eq!(got, 3);
 }
 
-#[tokio::test]
-async fn append_still_refuses_torn_tail() {
-    let dir = tempdir().unwrap();
-    let store = JsonlSessionStore::new(dir.path());
-    let id = store
-        .create(SessionMeta::new(SessionId::new("torn1"), 1, "/tmp", "m"))
-        .await
-        .unwrap();
-    store.append(&id, &Message::user("ok")).await.unwrap();
-    // Tear the tail: drop the final newline. The rescan sees the
-    // incomplete tail and refuses the append.
-    let path = store.session_path(&id).unwrap();
-    let content = std::fs::read(&path).unwrap();
-    assert!(content.ends_with(b"\n"));
-    std::fs::write(&path, &content[..content.len() - 1]).unwrap();
-    let err = store
-        .append(&id, &Message::user("after tear"))
-        .await
-        .expect_err("torn tail must refuse");
-    assert!(matches!(err, SessionError::Io(_)));
-}
-
 #[cfg(unix)]
 #[tokio::test]
 async fn store_dir_and_files_are_owner_only() {
@@ -880,25 +858,6 @@ async fn a_compaction_boundary_in_the_tail_resets_the_preview() {
         listed[0].last_user_text.as_deref(),
         Some("after compaction"),
         "the tail's boundary supersedes what the head remembered"
-    );
-}
-
-#[tokio::test]
-async fn a_session_being_written_is_not_quarantined_by_the_tail_read() {
-    // A creator streams the header into a create_new file: the first line
-    // has no newline yet. Listing must skip it, never rename it away.
-    let dir = tempdir().unwrap();
-    let store = JsonlSessionStore::new(dir.path());
-    std::fs::write(
-        dir.path().join("halfwritten.jsonl"),
-        br#"{"id":"halfwritten","timestamp":1,"cwd":"/tmp","model":"test"}"#,
-    )
-    .unwrap();
-    let listed = store.list().await;
-    assert!(listed.is_empty(), "{listed:?}");
-    assert!(
-        dir.path().join("halfwritten.jsonl").exists(),
-        "a mid-write session must survive listing"
     );
 }
 

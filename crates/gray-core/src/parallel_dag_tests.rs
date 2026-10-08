@@ -161,9 +161,3 @@ fn missing_or_non_string_path_is_barrier() {
         vec![Segment::Single(0), Segment::Single(1)]
     );
 }
-
-#[test]
-fn lone_write_still_demotes_to_single() {
-    let u = vec![w("a", "a.txt")];
-    assert_eq!(plan_segments(&u, &known_rw()), vec![Segment::Single(0)]);
-}

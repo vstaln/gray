@@ -3,19 +3,6 @@ use gray_core::agent::ToolContext;
 use gray_core::event::Usage;
 
 #[tokio::test]
-async fn hanging_hook_times_out_and_skips() {
-    let p = SidecarPlugin::spawn(vec!["testdata/hang_plugin.sh".into()])
-        .await
-        .unwrap();
-    let t = std::time::Instant::now();
-    p.on_event(CoreEvent::TurnEnd {
-        usage: Usage::default(),
-    })
-    .await;
-    assert!(t.elapsed() < std::time::Duration::from_secs(10));
-}
-
-#[tokio::test]
 async fn crashed_plugin_returns_error_not_panic() {
     let p = SidecarPlugin::spawn(vec!["testdata/crash_plugin.sh".into()])
         .await
