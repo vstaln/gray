@@ -1654,9 +1654,9 @@ impl PluginHooks for CtxHook {
 }
 
 #[tokio::test]
-async fn prompt_context_replies_concatenate_onto_system() {
+async fn prompt_context_replies_concatenate_into_context_note() {
     let provider = FakeProvider::new(vec![end_script()]);
-    let seen = provider.seen_systems();
+    let seen = provider.seen_requests();
     let mut agent = Agent::new(
         Box::new(provider),
         Arc::new(FakeExecutor::new(ToolOutput::ok("unused"))),
@@ -1679,17 +1679,23 @@ async fn prompt_context_replies_concatenate_onto_system() {
 
     let seen = seen.lock().expect("seen lock poisoned");
     assert_eq!(seen.len(), 1, "one turn → one request, got {seen:?}");
-    let system = seen[0].as_deref().unwrap_or("");
-    assert!(
-        system.contains("BASE-SYSTEM"),
-        "base prompt preserved, got: {system}"
+    let (system, messages) = &seen[0];
+    assert_eq!(
+        system.as_deref(),
+        Some("BASE-SYSTEM"),
+        "hook text must not perturb the system prefix"
     );
-    let (a, b) = (system.find("PLUGIN-CTX-AAA"), system.find("PLUGIN-CTX-BBB"));
+    let note = messages
+        .iter()
+        .find(|m| m.text_content().contains("[Context update]"))
+        .expect("hook replies land as a context note in history");
+    let note = note.text_content();
+    let (a, b) = (note.find("PLUGIN-CTX-AAA"), note.find("PLUGIN-CTX-BBB"));
     assert!(
         a.is_some() && b.is_some(),
-        "both hook replies present, got: {system}"
+        "both hook replies present, got: {note}"
     );
-    assert!(a.unwrap() < b.unwrap(), "hook order kept, got: {system}");
+    assert!(a.unwrap() < b.unwrap(), "hook order kept, got: {note}");
 }
 
 /// Counting `prompt/context` hook: proves the turn fetches once.
@@ -1711,7 +1717,7 @@ async fn prompt_context_fetched_once_per_turn() {
     // Prefix-cache invariant: hook context is turn-scoped, so a
     // multi-round turn reuses one fetch across all its requests.
     let provider = FakeProvider::new(vec![tool_script("c1"), end_script()]);
-    let seen = provider.seen_systems();
+    let seen = provider.seen_requests();
     let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let mut agent = Agent::new(
         Box::new(provider),
@@ -1736,11 +1742,12 @@ async fn prompt_context_fetched_once_per_turn() {
     );
     let seen = seen.lock().expect("seen lock poisoned");
     assert_eq!(seen.len(), 2, "two rounds → two requests, got {seen:?}");
-    for system in seen.iter() {
-        let system = system.as_deref().unwrap_or("");
+    for (system, messages) in seen.iter() {
         assert!(
-            system.contains("STABLE-CTX"),
-            "every request carries hook context, got: {system}"
+            messages
+                .iter()
+                .any(|m| m.text_content().contains("STABLE-CTX")),
+            "every request carries the context note in history (system: {system:?})"
         );
     }
 }
@@ -2641,9 +2648,9 @@ impl PluginHooks for StaticHook {
 
 /// arXiv:2601.06007 ("Don't Break the Cache"): provider prefix caching pays
 /// only when the request prefix is byte-stable — every round of a turn must
-/// send the identical system prompt (base + hook context appended at the
-/// very end, where volatile content belongs) and a strictly prefix-extending
-/// message list (append-only history between compactions).
+/// send the identical system prompt (the base prompt alone; hook context
+/// rides a deduped transcript note) and a strictly prefix-extending message
+/// list (append-only history between compactions).
 #[tokio::test]
 async fn request_prefix_is_byte_stable_across_tool_rounds() {
     let provider = FakeProvider::new(vec![tool_script("c1"), tool_script("c2"), end_script()]);
@@ -2666,8 +2673,8 @@ async fn request_prefix_is_byte_stable_across_tool_rounds() {
     for (i, w) in seen.windows(2).enumerate() {
         assert_eq!(
             w[0].0.as_deref(),
-            Some("base system prompt\n\nHOOK-CTX"),
-            "request {i}: hook context rides at the very end of the system prompt"
+            Some("base system prompt"),
+            "request {i}: the system prompt carries no per-turn hook text"
         );
         assert_eq!(
             w[0].0, w[1].0,

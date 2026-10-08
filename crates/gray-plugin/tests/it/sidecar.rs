@@ -139,17 +139,17 @@ async fn echo_reference_plugin_manifest_and_command_round_trip() {
 }
 
 /// Scripted provider: one event list per expected request, recording every
-/// `ChatRequest.system` so e2e tests can assert on prompt wiring.
+/// `ChatRequest` so e2e tests can assert on prompt wiring.
 struct ScriptedProvider {
     scripted: std::sync::Mutex<std::collections::VecDeque<Vec<StreamEvent>>>,
-    seen_systems: Arc<std::sync::Mutex<Vec<Option<String>>>>,
+    seen_requests: Arc<std::sync::Mutex<Vec<ChatRequest>>>,
 }
 
 impl ScriptedProvider {
     fn new(scripts: Vec<Vec<StreamEvent>>) -> Self {
         Self {
             scripted: std::sync::Mutex::new(scripts.into()),
-            seen_systems: Arc::new(std::sync::Mutex::new(Vec::new())),
+            seen_requests: Arc::new(std::sync::Mutex::new(Vec::new())),
         }
     }
 }
@@ -157,10 +157,7 @@ impl ScriptedProvider {
 #[async_trait::async_trait]
 impl Provider for ScriptedProvider {
     fn stream(&self, req: ChatRequest) -> ProviderStream {
-        self.seen_systems
-            .lock()
-            .expect("seen lock")
-            .push(req.system.clone());
+        self.seen_requests.lock().expect("seen lock").push(req);
         let script = self
             .scripted
             .lock()
@@ -211,10 +208,10 @@ fn end_script(text: &str) -> Vec<StreamEvent> {
 }
 
 #[tokio::test]
-async fn e2e_sidecar_prompt_context_lands_in_system() {
+async fn e2e_sidecar_prompt_context_lands_as_context_note() {
     let hooks = e2e_hooks("/tmp").await;
     let provider = ScriptedProvider::new(vec![end_script("done")]);
-    let seen = provider.seen_systems.clone();
+    let seen = provider.seen_requests.clone();
     let mut agent = Agent::new(
         Box::new(provider),
         Arc::new(RecordingExecutor {
@@ -230,14 +227,18 @@ async fn e2e_sidecar_prompt_context_lands_in_system() {
         .unwrap();
     let seen = seen.lock().expect("seen lock");
     assert_eq!(seen.len(), 1, "one turn → one request, got {seen:?}");
-    let system = seen[0].as_deref().unwrap_or("");
-    assert!(
-        system.contains("BASE-SYSTEM"),
-        "base prompt preserved, got: {system}"
+    let req = &seen[0];
+    assert_eq!(
+        req.system.as_deref(),
+        Some("BASE-SYSTEM"),
+        "hook text must not perturb the system prefix"
     );
     assert!(
-        system.contains("CTX"),
-        "sidecar prompt/context text present, got: {system}"
+        req.messages
+            .iter()
+            .any(|m| m.text_content() == "[Context update]\nCTX"),
+        "sidecar prompt/context text rides a context note in history: {:?}",
+        req.messages
     );
 }
 

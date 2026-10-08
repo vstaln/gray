@@ -417,7 +417,10 @@ pub struct Agent {
     pub(crate) provider: Arc<dyn Provider>,
     pub(crate) executor: std::sync::Arc<dyn ToolExecutor>,
     pub(crate) system: String,
-    /// Effective prefix captured once per turn, including plugin context.
+    /// Effective prefix captured once per turn. Plugin `prompt/context`
+    /// text deliberately stays out: it rides a deduped transcript note so
+    /// this prefix can stay byte-stable across turns (relay sidecars match
+    /// their pooled session on it).
     pub(crate) turn_system: Option<String>,
     pub(crate) tools: Vec<ToolDef>,
     /// Display-only headlines per tool name, consulted by transcript
@@ -560,9 +563,9 @@ impl Agent {
         self.prefix_rewrite_ok = ok;
     }
 
-    /// Lean prompt: no plugin `prompt_context` text is appended to the
-    /// system prompt per turn (the skills list, project rules and sidecar
-    /// docs stay out). Set by the host at build time.
+    /// Lean prompt: no plugin `prompt_context` text is injected per turn
+    /// (the skills list, project rules and sidecar docs stay out). Set by
+    /// the host at build time.
     pub fn set_lean_prompt(&mut self, lean: bool) {
         self.lean_prompt = lean;
     }

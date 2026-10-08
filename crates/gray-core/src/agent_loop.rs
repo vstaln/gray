@@ -293,9 +293,8 @@ impl Agent {
         let mut intent_nudge_sent = false;
 
         // Protocol v1 `prompt/context`: fetched once per turn, not per round,
-        // so the system prefix stays byte-stable across a turn's requests
-        // (provider prefix caching survives multi-round turns) and sidecar
-        // hooks pay one call per turn instead of one per tool round.
+        // so the fetched text stays byte-stable across a turn's requests and
+        // sidecar hooks pay one call per turn instead of one per tool round.
         let mut hook_context = String::new();
         if let Some(hook) = self.checkpoint.clone() {
             hook(&self.messages, self.history_revision()).await;
@@ -318,15 +317,22 @@ impl Agent {
             }
         }
 
-        // Capture before pre-turn compaction so its request uses this same prefix.
-        let mut system = self.system.clone();
+        // The hook text rides a transcript note, not `system`: relay
+        // sidecars match their pooled native session on `instructions`
+        // byte-for-byte and provider prefix caches key on the same head,
+        // so per-turn text there (rules re-reads, ledger tails, subagent
+        // notices) forced a session respawn — a full re-bill — whenever it
+        // drifted. As a user message it lands in the absorbed prefix once,
+        // then re-sends only when the text actually changed (or compaction
+        // dropped the earlier copy).
         if !hook_context.is_empty() {
-            if !system.is_empty() {
-                system.push_str("\n\n");
+            let note = Message::user(format!("[Context update]\n{hook_context}"));
+            if !self.messages.contains(&note) {
+                self.messages.push(note);
             }
-            system.push_str(&hook_context);
         }
-        self.turn_system = Some(system);
+        // Capture before pre-turn compaction so its request uses this same prefix.
+        self.turn_system = Some(self.system.clone());
 
         'turn: loop {
             // Cancellation is honored between turns, never mid-stream: a
