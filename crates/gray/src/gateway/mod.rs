@@ -9,13 +9,35 @@
 //! are plugin-template territory (`gateway/inbound` + `gateway/deliver` on
 //! the plugin wire); the daemon stays provider-agnostic.
 
+pub mod activity;
+pub mod brain;
+pub mod cli;
+pub mod deliver;
+pub mod event;
+pub mod heartbeat;
 pub mod lifecycle;
+pub mod outbox;
 pub mod pid;
 pub mod service;
+pub mod sessions;
+pub mod settings;
 pub mod socket;
 pub mod state;
+pub mod turn;
 
 mod run;
+
+/// `~/.gray/gateway/`: the always-on state (events, outbox, sessions,
+/// activity, running turns). See `docs/always-on/DESIGN.md`.
+pub fn state_dir(home: &Path) -> std::path::PathBuf {
+    home.join("gateway")
+}
+
+/// The estop: while this file exists, autonomous wakes (heartbeat, `wake`)
+/// wait; user messages still run.
+pub fn paused(dir: &Path) -> bool {
+    dir.join("PAUSED").exists()
+}
 
 use std::path::Path;
 
@@ -87,6 +109,9 @@ pub async fn run_cli(cmd: crate::GatewayCmd, config: &crate::config::Config) -> 
     if let GatewayCmd::Lifecycle(cmd) = cmd {
         return lifecycle_cli(cmd);
     }
+    if let GatewayCmd::Agent(cmd) = cmd {
+        return cli::run(cmd).await;
+    }
     if let GatewayCmd::Setup { platform } = cmd {
         return setup_platform(platform).await;
     }
@@ -155,7 +180,9 @@ pub async fn run_cli(cmd: crate::GatewayCmd, config: &crate::config::Config) -> 
             println!("{}", service::uninstall()?);
             Ok(())
         }
-        GatewayCmd::Lifecycle(_) | GatewayCmd::Setup { .. } => unreachable!("handled above"),
+        GatewayCmd::Lifecycle(_) | GatewayCmd::Setup { .. } | GatewayCmd::Agent(_) => {
+            unreachable!("handled above")
+        }
     }
 }
 
