@@ -93,7 +93,7 @@ pub use context::{
     parse_openrouter_models_json, resolve_model_context_length, save_models_cache_to_disk,
     set_active_model_provider, set_user_context_window, set_user_keep_recent_tokens,
     set_user_reserve_tokens, supported_efforts, supported_thinking_levels, turn_cost,
-    user_keep_for, user_keep_recent_tokens, user_reserve_tokens_for,
+    uncached_cost, user_keep_for, user_keep_recent_tokens, user_reserve_tokens_for,
 };
 
 pub mod ui;
