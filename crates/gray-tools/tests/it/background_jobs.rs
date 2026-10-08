@@ -221,9 +221,6 @@ async fn removed_arguments_and_their_aliases_fail_loudly_and_never_spawn() {
         json!({"command": "touch BAD", "background": true}),
         json!({"command": "touch BAD", "run_in_background": "true"}),
         json!({"command": "touch BAD", "detach": true}),
-        json!({"command": "touch BAD", "yield_time_ms": "10000"}),
-        json!({"command": "touch BAD", "yield_ms": 100}),
-        json!({"command": "touch BAD", "wait_ms": 100}),
         json!({"action": "list"}),
         json!({"action": "output", "job_id": "x"}),
         json!({"command": "touch BAD", "task_id": "t"}),
@@ -231,6 +228,19 @@ async fn removed_arguments_and_their_aliases_fail_loudly_and_never_spawn() {
         let out = reg.execute(&ctx, "bash", args.clone()).await;
         assert!(out.is_error, "{args}: {}", out.content);
         assert!(out.content.contains("remove it"), "{args}: {}", out.content);
+    }
+    // Schema-echoed wait/yield windows on a plain run carry no intent —
+    // the call blocks to exit or timeout anyway — so they drop instead of
+    // failing (gpt-6 fills every property; rejecting them looped the turn).
+    for args in [
+        json!({"command": "echo fine", "yield_time_ms": "10000"}),
+        json!({"command": "echo fine", "yield_ms": 100}),
+        json!({"command": "echo fine", "wait_ms": 100}),
+        json!({"action":"run","background":false,"command":"echo fine","job_id":"","timeout":10,"wait_ms":1000,"yield_ms":1000}),
+    ] {
+        let out = reg.execute(&ctx, "bash", args.clone()).await;
+        assert!(!out.is_error, "{args}: {}", out.content);
+        assert!(out.content.contains("fine"), "{args}: {}", out.content);
     }
     let tool = BashTool::default();
     for args in [

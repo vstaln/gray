@@ -339,12 +339,17 @@ fn tool_def(jobs: bool) -> ToolDef {
 /// (`background:false`, `action:"run"`, null) are let through, and so is a
 /// stray `job_id` on a plain run: it never meant anything without an action
 /// (which does fail), and rejecting it looped real sessions (2026-09-17).
+///
+/// Wait/yield windows are different: schema-filling models (the gpt-6
+/// family fills every property it has ever seen on a tool) echo
+/// `wait_ms`/`yield_ms` onto a plain `command` run, where they carry no
+/// intent — the call already blocks until exit or timeout. Rejecting the
+/// echo made the model resend the identical call until the turn died, so
+/// on a run they drop. Bare (no `command`) they still fail loudly.
 fn removed_arg(args: &Value) -> Option<ToolOutput> {
     const REMOVED: &[&str] = &[
         "action",
         "background",
-        "yield_ms",
-        "wait_ms",
         "wait",
         "task_id",
         "from_offset",
@@ -356,13 +361,20 @@ fn removed_arg(args: &Value) -> Option<ToolOutput> {
         "is_background",
         "detach",
         "bg",
-        "yield_time_ms",
     ];
-    let key = REMOVED.iter().find(|key| match args.get(**key) {
-        None | Some(Value::Null) | Some(Value::Bool(false)) => false,
-        Some(Value::String(s)) if **key == "action" && s == "run" => false,
-        Some(_) => true,
-    })?;
+    const WAIT_ECHO: &[&str] = &["wait_ms", "yield_ms", "yield_time_ms"];
+    let is_run = args
+        .get("command")
+        .and_then(Value::as_str)
+        .is_some_and(|c| !c.trim().is_empty());
+    let key = REMOVED
+        .iter()
+        .chain(WAIT_ECHO.iter().filter(|_| !is_run))
+        .find(|key| match args.get(**key) {
+            None | Some(Value::Null) | Some(Value::Bool(false)) => false,
+            Some(Value::String(s)) if **key == "action" && s == "run" => false,
+            Some(_) => true,
+        })?;
     let how = if jobs_enabled() {
         "bash takes only `command` and `timeout`. A command still running at its timeout keeps \
          running as a background job: end your turn to be woken when it finishes, `tail` its log \

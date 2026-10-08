@@ -1397,8 +1397,6 @@ async fn removed_arguments_fail_loudly_and_never_spawn() {
     for args in [
         json!({"command": "touch BAD", "background": true}),
         json!({"command": "touch BAD", "background": "true"}),
-        json!({"command": "touch BAD", "yield_ms": 1000}),
-        json!({"command": "touch BAD", "wait_ms": 5000}),
         json!({"command": "touch BAD", "wait": 5}),
         json!({"command": "touch BAD", "action": "output", "job_id": "x"}),
         json!({"action": "list"}),
@@ -1407,6 +1405,10 @@ async fn removed_arguments_fail_loudly_and_never_spawn() {
         json!({"command": "touch BAD", "from_offset": 3}),
         json!({"command": "touch BAD", "notify_on": "exit"}),
         json!({"command": "touch BAD", "run_in_background": true}),
+        // Wait/yield windows still fail when nothing is being run: there
+        // the window is the whole call, so the pointer text is worth it.
+        json!({"wait_ms": 5000}),
+        json!({"yield_ms": 1000}),
     ] {
         let out = tool.execute(&ctx, args.clone()).await;
         assert!(out.is_error, "{args}: {}", out.content);
@@ -1432,6 +1434,14 @@ async fn removed_arguments_fail_loudly_and_never_spawn() {
         json!({"command": "echo fine", "action": "run"}),
         json!({"command": "echo fine", "yield_ms": null}),
         json!({"command": "echo fine", "job_id": "bash-bogus"}),
+        // Echoed wait/yield windows on a run drop silently: the call blocks
+        // to exit or timeout anyway, and rejecting them looped schema-filling
+        // models to death (gpt-6 fills every property on every call).
+        json!({"command": "echo fine", "wait_ms": 5000}),
+        json!({"command": "echo fine", "yield_ms": 1000}),
+        json!({"command": "echo fine", "yield_time_ms": 10000}),
+        // The exact full-schema blob gpt-6-sol sent.
+        json!({"action":"run","background":false,"command":"echo fine","job_id":"","timeout":10,"wait_ms":1000,"yield_ms":1000}),
     ] {
         let out = tool.execute(&ctx, args.clone()).await;
         assert!(!out.is_error, "{args}: {}", out.content);
