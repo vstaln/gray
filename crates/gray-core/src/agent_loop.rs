@@ -8,8 +8,7 @@
 use futures::StreamExt as _;
 
 use crate::agent::{
-    Agent, InputSubmit, ToolBefore, ToolContext, ToolOutput, salvage_partial_text,
-    thinking_block,
+    Agent, InputSubmit, ToolBefore, ToolContext, ToolOutput, salvage_partial_text, thinking_block,
 };
 use crate::agent_compact::needs_pre_turn_compact;
 use crate::agent_tools::{PendingToolCall, answer_pending_tools};
@@ -137,6 +136,19 @@ impl Agent {
             )));
         }
         any
+    }
+
+    /// Put this session's still-running background jobs in front of the
+    /// model: at the start of a turn, and again after a compaction may have
+    /// summarized away the notice that introduced them. Appended to the
+    /// transcript (never a per-request extra) so the history stays strictly
+    /// append-only for the prefix cache and subscription relays.
+    fn surface_running_jobs(&mut self, ctx: &ToolContext) {
+        if let Some(note) = self.executor.running_jobs_note(ctx) {
+            self.messages.push(Message::user(format!(
+                "[Background jobs still running]\n{note}\nEnd your turn to be woken when one finishes; `tail` a log to peek."
+            )));
+        }
     }
 
     /// Best-effort `turn_end` fan-out: hook failures must never fail the turn
@@ -310,6 +322,8 @@ impl Agent {
         // A turn whose every round is a job-progress notice clears the streak
         // below, so it would otherwise bill forever on a no-timeout job.
         let mut poll_rounds: usize = 0;
+        // Running jobs are shown once per turn, and again after compaction.
+        let mut jobs_note_due = true;
         // Forward each event to the optional streaming sink, then collect it.
         macro_rules! emit {
             ($ev:expr) => {{
@@ -403,6 +417,9 @@ impl Agent {
             }
 
             self.collect_background_notifications(&ctx);
+            if std::mem::take(&mut jobs_note_due) {
+                self.surface_running_jobs(&ctx);
+            }
 
             // Mid-turn steer: text the user typed while this turn was running
             // joins it here, at the boundary between two model requests, so it
@@ -451,6 +468,7 @@ impl Agent {
                                 before.1,
                                 self.messages.len()
                             ));
+                            jobs_note_due = true;
                             continue;
                         }
                         Ok(false) => break,
@@ -460,6 +478,11 @@ impl Agent {
                         }
                     }
                 }
+            }
+            // A compaction just above may have summarized away the notice
+            // that introduced a running job: name it again before the request.
+            if std::mem::take(&mut jobs_note_due) {
+                self.surface_running_jobs(&ctx);
             }
             // CCRM scrub (arXiv:2605.08563): contaminated partials stay in
             // `self.messages` (and so in the persisted transcript) but never
@@ -718,6 +741,7 @@ impl Agent {
                                             before.1,
                                             self.messages.len()
                                         ));
+                                        jobs_note_due = true;
                                         continue 'turn;
                                     }
                                     _ => {
@@ -1468,10 +1492,9 @@ fn awaits_user(tail: &str) -> bool {
     GATES.iter().any(|g| lower.contains(g))
 }
 
-/// True when a tool result is gray's "the job is still going" progress
-/// notice — the yield notice or a status/output poll of a live job. Both
-/// carry a moving `elapsed`, so a repeated call answered with one of these
-/// is a deliberate wait, never a stall.
+/// True when a tool result is gray's "the job is still going" notice: a
+/// command that reached its timeout and moved to a background job. A
+/// repeated call answered with one is real work moving, never a stall.
 fn is_job_progress(content: &str) -> bool {
-    content.contains("· running · elapsed ") || content.contains("still running · job ")
+    content.starts_with("still running · job ")
 }

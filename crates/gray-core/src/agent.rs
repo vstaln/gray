@@ -263,6 +263,14 @@ pub trait ToolExecutor: Send + Sync {
         Vec::new()
     }
 
+    /// What the MODEL should know about this session's still-running jobs
+    /// (one line each: id, elapsed, log, stop command), or `None` when none
+    /// run. The loop shows it at the start of every turn and after every
+    /// compaction, so a job outlives any context the model loses.
+    fn running_jobs_note(&self, _ctx: &ToolContext) -> Option<String> {
+        None
+    }
+
     /// Ask one of this session's running jobs to stop; `false` when no such
     /// job is running. The job's finish still arrives as a notification.
     fn cancel_background(&self, _ctx: &ToolContext, _id: &str) -> bool {

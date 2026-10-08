@@ -1,5 +1,9 @@
-//! Shell execution: ordinary blocking calls and session-owned background jobs.
-//! Both modes share timeout, cancellation, redaction, bounded output and reaping.
+//! Shell execution, mini-swe-agent shaped: the model sends `command` and an
+//! optional `timeout`, nothing else. A call blocks until the command exits or
+//! the timeout passes; past the timeout the command is NOT killed, it moves
+//! to a session-owned background job and the call returns its log, pgid and
+//! stop command. Time passes only inside commands (`sleep`) or between turns
+//! (a finished job wakes the session), so there is no wait primitive to misuse.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -13,8 +17,8 @@ use serde_json::{Value, json};
 use tokio::task::JoinHandle;
 
 use crate::shell::contract::{
-    DEFAULT_TIMEOUT_SECS, INLINE_BUDGET_BYTES, MAX_TIMEOUT_SECS, MAX_YIELD_MS, MEM_HEAD_BYTES,
-    MEM_TAIL_BYTES, MIN_YIELD_MS, PUMP_DRAIN_TIMEOUT, PumpSummary, VIEW_BUDGET_LINES, View,
+    DEFAULT_TIMEOUT_SECS, INLINE_BUDGET_BYTES, MAX_TIMEOUT_SECS, MEM_HEAD_BYTES, MEM_TAIL_BYTES,
+    PUMP_DRAIN_TIMEOUT, PumpSummary, SLEEP_SLACK_SECS, VIEW_BUDGET_LINES, View,
 };
 use crate::shell::exit::exit_report;
 use crate::shell::fence::fence;
@@ -33,7 +37,7 @@ use gray_core::squeeze::squeeze;
 /// on its way back in and its middle is elided with a fresh hint. A round trip
 /// is the expensive part here, not the bytes.
 const READ_CHUNK: u64 = 4 * 1024;
-use crate::{fail, finish, get_opt_bool, get_opt_u64, get_str, resolve_path};
+use crate::{fail, finish, get_opt_u64, get_str, resolve_path};
 
 mod jobs;
 mod read_dedup;
@@ -64,10 +68,15 @@ impl BashTool {
         self.jobs.has_unfinished(ctx)
     }
 
-    /// This session's jobs that are running in the background (yielded and
-    /// unfinished), oldest first.
+    /// This session's jobs that are running in the background, oldest first.
     pub fn running_jobs(&self, ctx: &ToolContext) -> Vec<gray_core::agent::BackgroundJob> {
         self.jobs.running(ctx)
+    }
+
+    /// One line per still-running job of this session (id, elapsed, log,
+    /// stop command), for the loop to show the model each turn.
+    pub fn running_jobs_note(&self, ctx: &ToolContext) -> Option<String> {
+        self.jobs.footer(ctx, &self.jobs.live_ids(ctx))
     }
 
     /// Request cancellation of one of this session's running jobs.
@@ -146,51 +155,7 @@ impl Tool for BashTool {
     }
 
     fn def(&self) -> ToolDef {
-        // Only what the model can't infer: shell basics it already knows.
-        const VIEW: &str =
-            "`cat` bare image, video, PDF or audio paths (as the whole command) to view them.";
-        if !jobs_enabled() {
-            return ToolDef::new(
-                "bash",
-                format!("Run a shell command; no default timeout. {VIEW}"),
-                json!({
-                    "type": "object",
-                    "properties": {
-                        "command": {"type": "string"},
-                        "timeout": {"type": "integer", "description": "Seconds; omitted = no limit (max 3600)"}
-                    }
-                }),
-            );
-        }
-        // How to stop and come back: the host wakes an idle session when a
-        // job settles, and a `--reminder` cron job delivers into the session
-        // that added it (`GRAY_SESSION_ID`). Cron does not fire on Windows.
-        const WAKE: &str = if cfg!(windows) {
-            ""
-        } else {
-            " To pause until later, end your turn: a finished job wakes you, and \
-             `gray cron add \"in 30m\" \"<note to self>\" --reminder` wakes this session (or posts back to this \
-             chat) at a time; don't run `cron serve`/`tick` to wait for it."
-        };
-        ToolDef::new(
-            "bash",
-            format!(
-                "Run a shell command; no default timeout. background:true or yield_ms \
-                 returns a job id; then action status/output/cancel/list with job_id. {VIEW}{WAKE}"
-            ),
-            json!({
-                "type": "object",
-                "properties": {
-                    "command": {"type": "string", "description": "Shell command to run (run action only — omit for job actions)"},
-                    "action": {"type": "string", "enum": ["run", "list", "status", "output", "cancel"]},
-                    "job_id": {"type": "string"},
-                    "background": {"type": "boolean"},
-                    "timeout": {"type": "integer", "description": "Seconds; omitted = no limit (max 3600)"},
-                    "yield_ms": {"type": "integer", "description": "Return a job id if still running after this (100-10000)"},
-                    "wait_ms": {"type": "integer", "description": "output/status: wait up to this for exit (max 600000)"}
-                }
-            }),
-        )
+        tool_def(jobs_enabled())
     }
 
     fn drain_notifications(&self, ctx: &ToolContext) -> Vec<String> {
@@ -201,45 +166,8 @@ impl Tool for BashTool {
         if !args.is_object() {
             return fail("bash arguments must be an object".into());
         }
-        let action = match args.get("action") {
-            None => "run",
-            Some(Value::String(s)) => s.as_str(),
-            _ => return fail("action must be a string".into()),
-        };
-        if args.get("wait_ms").is_some_and(|v| !v.is_null()) && action == "run" {
-            return fail("wait_ms is only valid for action:output/status".into());
-        }
-        if action != "run" {
-            if !jobs_enabled() {
-                return fail(
-                    "managed jobs are disabled here (GRAY_NO_JOBS=1): drop `action`, `job_id` and \
-                     `background` and just run the command."
-                        .into(),
-                );
-            }
-            // `wait` left the run surface (rejected loudly on the run path
-            // below); the async wait path takes `wait_ms` on output/status.
-            return self.jobs.action(ctx, action, &args).await;
-        }
-        // job_id on a plain run carries no extra intent (nothing is dropped),
-        // and real models echo it back from the schema: ignore it. The
-        // removed-API family below would silently lose intent, so it still
-        // fails loudly — with removal as the first instruction, never a
-        // suggestion that re-triggers the same failure.
-        // `wait` left the run surface with the async wait path: it only rides
-        // output/status as `wait_ms` now, so a run carrying it fails loudly
-        // instead of silently dropping the intent.
-        if args.get("wait").is_some_and(|v| !v.is_null()) {
-            return fail(
-                "`wait` is not a run argument; remove it. To await a job use action:output/status with wait_ms; for background work use background:true or yield_ms".into(),
-            );
-        }
-        for key in ["task_id", "from_offset", "notify_on", "run_in_background"] {
-            if args.get(key).is_some_and(|v| !v.is_null()) {
-                return fail(format!(
-                    "`{key}` is not a run argument; remove it. For background work use background:true or yield_ms; job_id only pairs with action:status/output/cancel"
-                ));
-            }
+        if let Some(out) = removed_arg(&args) {
+            return out;
         }
         let command = match get_str(&args, "command") {
             Ok(c) if !c.trim().is_empty() => c,
@@ -249,16 +177,13 @@ impl Tool for BashTool {
         if let Some(out) = self.noop_steer(ctx, &command) {
             return out;
         }
-        let secs = match get_opt_u64(&args, "timeout") {
+        // The advertised stop for one of this session's jobs is carried
+        // out here, on the right machine; anything else runs as written.
+        if let Some(out) = self.jobs.intercept_stop(ctx, &command).await {
+            return out;
+        }
+        let explicit = match get_opt_u64(&args, "timeout") {
             Ok(v) => v.map(|s| s.clamp(1, MAX_TIMEOUT_SECS)),
-            Err(e) => return e,
-        };
-        let background = match get_opt_bool(&args, "background") {
-            Ok(v) => v.unwrap_or(false),
-            Err(e) => return e,
-        };
-        let window = match get_opt_u64(&args, "yield_ms") {
-            Ok(v) => v.map(|ms| Duration::from_millis(ms.clamp(MIN_YIELD_MS, MAX_YIELD_MS))),
             Err(e) => return e,
         };
         if ctx.cancel.is_cancelled() {
@@ -271,26 +196,23 @@ impl Tool for BashTool {
         if let Some(out) = search_command(&command, &cwd, &ctx.cancel).await {
             return out;
         }
-        if background || window.is_some() {
-            return self
-                .jobs
-                .start(
-                    ctx,
-                    command,
-                    secs,
-                    cwd,
-                    if background {
-                        Duration::ZERO
-                    } else {
-                        window.unwrap()
-                    },
-                )
-                .await;
-        }
+        // With the jobs lane, every call is bounded: an omitted `timeout` is
+        // the default (stretched past a leading `sleep N`), and reaching it
+        // hands the command to a job instead of killing it. Bare mode
+        // (`GRAY_NO_JOBS`) is plain mini-swe-agent: explicit timeouts kill,
+        // none means unbounded.
+        let detach = jobs_enabled();
+        let secs = if detach {
+            Some(explicit.unwrap_or_else(|| block_bound(&command)))
+        } else {
+            explicit
+        };
+        // Jobs already running before this call get a footer line on its
+        // result; the job this call may create is described by its own notice.
+        let running_before = self.jobs.live_ids(ctx);
         // Read dedup: a `cat`/`sed`/`head`/`tail` of a file already shown
         // whole and unchanged since answers with a stub instead of the bytes
-        // (once — see `read_dedup`). Inline lane only: a backgrounded read
-        // neither stubs nor records, so job semantics stay as they were.
+        // (once — see `read_dedup`).
         let dedup = self
             .ledger
             .as_deref()
@@ -333,17 +255,7 @@ impl Tool for BashTool {
             spawned,
             #[cfg(not(windows))]
             guard,
-            Some(&self.jobs),
-            stall_bound(),
-            // Auto-yield only when the jobs lane exists to receive the handoff
-            // and the caller set no explicit timeout: an explicit timeout is
-            // the caller saying "block me until this is done or N seconds".
-            if jobs_enabled() && secs.is_none() {
-                auto_yield_window()
-            } else {
-                Duration::ZERO
-            },
-            None,
+            detach.then_some(&*self.jobs),
         )
         .await;
         // Whether it succeeded, failed or was killed: a `cd` that ran is a `cd`
@@ -351,7 +263,7 @@ impl Tool for BashTool {
         self.adopt_reported_cwd(ctx, &cwd_report);
         // Arm the next dedup from what this run actually showed. A settled,
         // complete result is the only thing worth citing: a timeout, a
-        // cancellation, a silent hand-off or a truncated pump drain all
+        // cancellation, a background hand-off or a truncated pump drain all
         // prefix the body with a note instead of a header, and their log is
         // part of an unfinished read.
         if let Some((ledger, read)) = &dedup
@@ -365,8 +277,190 @@ impl Tool for BashTool {
             out.content.push('\n');
             out.content.push_str(&note);
         }
+        if let Some(footer) = self.jobs.footer(ctx, &running_before) {
+            out.content.push('\n');
+            out.content.push_str(&footer);
+        }
         out
     }
+}
+
+/// The bash schema: `command` + `timeout` either way; the description says
+/// what reaching the timeout means (a background job, or a kill in bare mode).
+fn tool_def(jobs: bool) -> ToolDef {
+    // Only what the model can't infer: shell basics are free.
+    const VIEW: &str =
+        "`cat` bare image, video, PDF or audio paths (as the whole command) to view them.";
+    if !jobs {
+        return ToolDef::new(
+            "bash",
+            format!("Run a shell command; no default timeout. {VIEW}"),
+            json!({
+                "type": "object",
+                "properties": {
+                    "command": {"type": "string"},
+                    "timeout": {"type": "integer", "description": "Seconds; omitted = no limit (max 3600)"}
+                }
+            }),
+        );
+    }
+    // A `--reminder` cron job delivers into the session that added it
+    // (`GRAY_SESSION_ID`). Cron does not fire on Windows.
+    const CRON: &str = if cfg!(windows) {
+        ""
+    } else {
+        " To come back at a time instead, `gray cron add \"in 30m\" \"<note to self>\" --reminder` \
+         wakes this session (or posts back to this chat); don't run `cron serve`/`tick` to wait for it."
+    };
+    let default = default_timeout();
+    ToolDef::new(
+        "bash",
+        format!(
+            "Run a shell command. It blocks until the command exits or `timeout` passes; then it is \
+             NOT killed but keeps running as a background job, and you get its log and a stop command. \
+             To wait for it, end your turn: a finished job wakes you, no polling needed. Peek with \
+             `tail <log>`. If a command sleeps, pass a `timeout` longer than the sleep. For a hard \
+             limit, write `timeout N cmd` yourself. {VIEW}{CRON}"
+        ),
+        json!({
+            "type": "object",
+            "properties": {
+                "command": {"type": "string"},
+                "timeout": {"type": "integer", "description": format!("Seconds to block before it moves to the background (default {default}, max {MAX_TIMEOUT_SECS}); never kills")}
+            }
+        }),
+    )
+}
+
+/// Arguments the bash tool used to take (job actions, explicit
+/// backgrounding, yield/wait windows) and aliases other harnesses use for
+/// them. Each fails loudly with what to do instead; silently ignoring one
+/// would drop the caller's intent. Values that carry no intent
+/// (`background:false`, `action:"run"`, null) are let through, and so is a
+/// stray `job_id` on a plain run: it never meant anything without an action
+/// (which does fail), and rejecting it looped real sessions (2026-09-17).
+fn removed_arg(args: &Value) -> Option<ToolOutput> {
+    const REMOVED: &[&str] = &[
+        "action",
+        "background",
+        "yield_ms",
+        "wait_ms",
+        "wait",
+        "task_id",
+        "from_offset",
+        "notify_on",
+        // Other harnesses' spellings. The registry only renames an alias onto
+        // a name the schema still has, so these must be listed themselves or
+        // they would pass through and be silently ignored.
+        "run_in_background",
+        "is_background",
+        "detach",
+        "bg",
+        "yield_time_ms",
+    ];
+    let key = REMOVED.iter().find(|key| match args.get(**key) {
+        None | Some(Value::Null) | Some(Value::Bool(false)) => false,
+        Some(Value::String(s)) if **key == "action" && s == "run" => false,
+        Some(_) => true,
+    })?;
+    let how = if jobs_enabled() {
+        "bash takes only `command` and `timeout`. A command still running at its timeout keeps \
+         running as a background job: end your turn to be woken when it finishes, `tail` its log \
+         to peek, and stop it with the `kill -- -<pgid>` its notice gave you"
+    } else {
+        "bash takes only `command` and `timeout`; to run something in the background, write \
+         `nohup cmd > log 2>&1 &` yourself"
+    };
+    Some(fail(format!(
+        "`{key}` is not a bash argument; remove it. {how}."
+    )))
+}
+
+/// How long a call without `timeout` blocks before handing off: the default,
+/// or long enough for a leading `sleep N` (plus slack) so an in-band wait
+/// like `sleep 300 && tail log` runs as written instead of becoming a job.
+fn block_bound(command: &str) -> u64 {
+    let default = default_timeout();
+    match leading_sleep(command) {
+        Some(n) => default
+            .max(n.saturating_add(SLEEP_SLACK_SECS))
+            .min(MAX_TIMEOUT_SECS),
+        None => default,
+    }
+}
+
+/// `command` past any leading `cd DIR &&` / `cd DIR;` / `cd DIR` + newline
+/// steps (DIR one word, optionally quoted without spaces-in-quotes tricks).
+fn skip_leading_cds(mut command: &str) -> &str {
+    loop {
+        let Some(after) = command.strip_prefix("cd") else {
+            return command;
+        };
+        if !after.starts_with([' ', '\t']) {
+            return command;
+        }
+        let after = after.trim_start_matches([' ', '\t']);
+        let end = after
+            .find([' ', '\t', ';', '\n', '&', '|'])
+            .unwrap_or(after.len());
+        if end == 0 || after[..end].contains(['$', '`', '(']) {
+            return command;
+        }
+        let tail = after[end..].trim_start_matches([' ', '\t']);
+        let next = if let Some(t) = tail.strip_prefix("&&") {
+            t
+        } else if let Some(t) = tail.strip_prefix(';').or_else(|| tail.strip_prefix('\n')) {
+            t
+        } else {
+            return command;
+        };
+        command = next.trim_start();
+    }
+}
+
+/// The default block window, overridable per process via
+/// `GRAY_BASH_TIMEOUT_SECS` (tests use short ones).
+fn default_timeout() -> u64 {
+    std::env::var("GRAY_BASH_TIMEOUT_SECS")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .filter(|&s| s > 0)
+        .map(|s| s.min(MAX_TIMEOUT_SECS))
+        .unwrap_or(DEFAULT_TIMEOUT_SECS)
+}
+
+/// Seconds of a command whose first real step is a foreground `sleep N`
+/// (`N`, `Ns`, `Nm`, `Nh`, fractions rounded up) followed by nothing, `;`,
+/// `&&`, `||` or a newline. Leading `cd DIR &&`/`cd DIR;` steps are skipped
+/// (`cd repo && sleep 300 && tail log` is the same wait). `sleep 5 &`
+/// backgrounds the sleep, so it does not count.
+fn leading_sleep(command: &str) -> Option<u64> {
+    let rest = skip_leading_cds(command.trim_start()).strip_prefix("sleep")?;
+    if !rest.starts_with([' ', '\t']) {
+        return None;
+    }
+    let rest = rest.trim_start_matches([' ', '\t']);
+    let end = rest
+        .find(|c: char| !(c.is_ascii_digit() || c == '.' || matches!(c, 's' | 'm' | 'h')))
+        .unwrap_or(rest.len());
+    let (num, after) = rest.split_at(end);
+    let after = after.trim_start_matches([' ', '\t']);
+    let ends_sleep = after.is_empty()
+        || after.starts_with(';')
+        || after.starts_with('\n')
+        || after.starts_with("&&")
+        || after.starts_with("||");
+    if !ends_sleep {
+        return None;
+    }
+    let (digits, unit) = match num.as_bytes().last()? {
+        b's' => (&num[..num.len() - 1], 1.0),
+        b'm' => (&num[..num.len() - 1], 60.0),
+        b'h' => (&num[..num.len() - 1], 3600.0),
+        _ => (num, 1.0),
+    };
+    let secs: f64 = digits.parse().ok()?;
+    (secs.is_finite() && secs >= 0.0).then(|| (secs * unit).ceil().min(u64::MAX as f64) as u64)
 }
 
 /// Ask the shell to report its final directory to `$GRAY_CWD_REPORT`.
@@ -401,11 +495,9 @@ fn with_cwd_report(command: &str) -> String {
     )
 }
 
-/// `GRAY_NO_JOBS=1` drops the managed-job surface: no `action`, `job_id`,
-/// `background`, `yield_ms` or `wait_ms` in the schema, and those actions are
-/// refused. The DeepSWE runs touched jobs in 153 of 6,915 bash calls while
-/// paying for five extra schema properties (and the prose about them) on
-/// every one. `timeout` stays: it is the anti-hang knob, not a jobs feature.
+/// `GRAY_NO_JOBS=1` (bare mode) drops the background lane entirely: an
+/// explicit `timeout` kills the process group, as in mini-swe-agent, and no
+/// `timeout` means no limit. The schema is the same two fields either way.
 fn jobs_enabled() -> bool {
     std::env::var_os("GRAY_NO_JOBS").is_none()
 }
@@ -587,28 +679,26 @@ fn search_words(command: &str) -> Option<Vec<String>> {
 
 impl BashTool {
     /// Whole-command no-ops (`true`, `:`) are how a model stalls for a
-    /// background job it does not know how to await — jobs report on their
-    /// own between turns, so steer the stall instead of spawning a shell
-    /// that does nothing and prints nothing.
+    /// background job it does not know how to await. Jobs report on their own
+    /// between turns, so say that instead of spawning a shell that does
+    /// nothing and prints nothing.
     fn noop_steer(&self, ctx: &ToolContext, command: &str) -> Option<ToolOutput> {
         let trimmed = command.trim();
         if !matches!(trimmed, "true" | ":") {
             return None;
         }
         let live = self.jobs.live_ids(ctx);
-        let mut note = format!("`{trimmed}` is a no-op — nothing ran and nothing was waited on.");
-        if live.is_empty() {
-            note.push_str(
-                " To end the turn just end it; to collect a finished job use \
-                 action:output with job_id.",
-            );
-        } else {
-            note.push_str(&format!(
-                " Live jobs: {}. Collect one with action:output + job_id \
-                 (wait_ms blocks until it settles), or end the turn — \
-                 completions are reported automatically.",
-                live.join(", ")
-            ));
+        let mut note = format!("`{trimmed}` is a no-op: nothing ran and nothing was waited on.");
+        match self.jobs.footer(ctx, &live) {
+            None => {
+                note.push_str(" No background jobs are running; if you are done, end your turn.")
+            }
+            Some(footer) => {
+                note.push_str(
+                    " To wait for a background job, end your turn: you are woken when it finishes.\n",
+                );
+                note.push_str(&footer);
+            }
         }
         Some(ToolOutput::ok(note))
     }
@@ -804,65 +894,38 @@ async fn wait_or_pend(secs: Option<u64>, start: Instant) {
     }
 }
 
-/// Auto-yield arm: resolves once the command has been running for `window`
-/// since `start`. Disabled (`enabled` false / zero window) is `pending()`
-/// forever, so the `select!` arm never fires. Wall-clock based, unlike the
-/// silence arm: output resets nothing on purpose — a build that streams
-/// progress for an hour still yields at the window so the model can do
-/// other work while it runs.
-async fn yield_arm(enabled: bool, start: Instant, window: Duration) {
-    if !enabled || window.is_zero() {
-        std::future::pending::<()>().await;
-    }
-    tokio::time::sleep_until(tokio::time::Instant::from_std(start + window)).await
-}
-
-/// Auto-yield window for the blocking lane (ms), overridable per-process via
-/// `GRAY_BASH_YIELD_MS`; `0` disables. Default [`DEFAULT_AUTO_YIELD_MS`].
-fn auto_yield_window() -> Duration {
-    std::env::var("GRAY_BASH_YIELD_MS")
-        .ok()
-        .and_then(|v| v.trim().parse::<u64>().ok())
-        .map(Duration::from_millis)
-        .unwrap_or(Duration::from_millis(
-            crate::shell::contract::DEFAULT_AUTO_YIELD_MS,
-        ))
-}
-
-/// A still-running command handed back by [`settle_command`] on a silent
-/// stall or an auto-yield: the live child, its armed group guard, and its
-/// already-draining pump, so [`run_command`] can register it as a background
-/// job. Never a kill. `silenced` distinguishes the two (stuck vs merely slow)
-/// for the notice the agent reads.
+/// A still-running command handed back by [`settle_command`] when its
+/// timeout passed on the jobs lane: the live child, its armed group guard,
+/// and its already-draining pump, so [`run_command`] can register it as a
+/// background job. Never a kill.
 struct Handoff {
     spawned: crate::shell::contract::Spawned,
     #[cfg(not(windows))]
     guard: crate::shell::kill::GroupGuard,
     pump: tokio::task::JoinHandle<crate::shell::contract::PumpSummary>,
-    silenced: bool,
 }
 
 enum Settled {
     /// The command exited, timed out, was cancelled, or failed to wait.
     Done(ToolOutput),
-    /// A silent blocking command was handed off; it keeps running. Boxed:
+    /// A command that reached its timeout was handed off; it keeps running. Boxed:
     /// the handoff carries the live child, guard, pump and clock (~300 B)
     /// and would otherwise blow up every `Settled` on the stack.
     Stalled(Box<Handoff>),
 }
 
-/// The shared wait-and-render for one spawned command (exit, explicit timeout,
-/// or cancel). When `handoff` is set and no explicit `timeout` was requested, a
-/// command silent longer than `bound` stops the wait early and returns the
-/// running child, its armed group guard and its already-draining pump as
-/// [`Settled::Stalled`] — it is never killed here.
+/// The shared wait-and-render for one spawned command: exit, timeout or
+/// cancel. With `handoff` set (the jobs lane), reaching the timeout stops the
+/// wait and returns the running child, its armed group guard and its
+/// already-draining pump as [`Settled::Stalled`]; it is never killed here.
+/// Without it (bare mode), the timeout kills the process group.
 ///
 /// A distinct function from [`run_command`] on purpose: the background
-/// continuation calls it with `handoff=false`, so it is not a recursive
-/// `async fn` and its future stays `Send` for `tokio::spawn`.
-// one lane carries a live child + its group guard + pump + liveness clock
-// + silence bound + registry handle; bundling them into structs is speculative
-// and would thrash this Send-sensitive call path, so the count stands.
+/// continuation calls it with `handoff=false` and no timeout, so it is not a
+/// recursive `async fn` and its future stays `Send` for `tokio::spawn`.
+// one lane carries a live child + its group guard + pump + clock; bundling
+// them into structs is speculative and would thrash this Send-sensitive call
+// path, so the count stands.
 #[allow(clippy::too_many_arguments)]
 async fn settle_command(
     command: &str,
@@ -873,12 +936,6 @@ async fn settle_command(
     mut spawned: crate::shell::contract::Spawned,
     #[cfg(not(windows))] mut guard: crate::shell::kill::GroupGuard,
     pump: tokio::task::JoinHandle<crate::shell::contract::PumpSummary>,
-    last: std::sync::Arc<std::sync::atomic::AtomicU64>,
-    bound: Duration,
-    // Auto-yield window for the blocking lane (0 disables). Still-running
-    // past this (without an explicit `timeout`) hands off like the silence
-    // path — independent of output, so a chatty build yields too.
-    auto_yield: Duration,
     handoff: bool,
 ) -> Settled {
     #[cfg(not(windows))]
@@ -886,20 +943,10 @@ async fn settle_command(
     #[cfg(windows)]
     let target = &spawned.job;
     let child = &mut spawned.child;
-    let stall_on = handoff && secs.is_none() && !bound.is_zero();
-    // Duration-based auto-yield: a command still running after `auto_yield`
-    // hands off to the background lane even while producing output. Silence
-    // (`bound`) covers the hung case; this covers the merely slow one. Both
-    // share the same `Settled::Stalled` handoff — the child keeps running and
-    // the agent keeps working. Armed only on the blocking lane (handoff),
-    // without an explicit `timeout`, when the window is non-zero.
-    let auto_yield_on = handoff && secs.is_none() && !auto_yield.is_zero();
     enum Cause {
         Exit,
         Timeout,
         Cancel,
-        Stall,
-        Yield,
     }
     let mut exited: Option<std::process::ExitStatus> = None;
     let cause = tokio::select! {
@@ -920,27 +967,21 @@ async fn settle_command(
             }
         }
         _ = ctx.cancel.cancelled() => Cause::Cancel,
-        _ = stall_arm(stall_on, last.clone(), bound) => Cause::Stall,
-        _ = yield_arm(auto_yield_on, start, auto_yield) => Cause::Yield,
     };
-    if matches!(cause, Cause::Stall | Cause::Yield) {
+    if handoff && matches!(cause, Cause::Timeout) {
         // Hand the running child back to run_command, which registers it.
         return Settled::Stalled(Box::new(Handoff {
             spawned,
             #[cfg(not(windows))]
             guard,
             pump,
-            silenced: matches!(cause, Cause::Stall),
         }));
     }
     // Unix escalates SIGTERM -> SIGKILL; Windows terminates the owned job.
     // Failed termination is a harness error, never a successful timeout.
     let first_line: Option<String> = match cause {
         Cause::Exit => None,
-        // Stall and yield return above; they never reach this render path.
-        Cause::Stall | Cause::Yield => {
-            std::unreachable!("stall/yield return before the render path")
-        }
+        // Bare mode only: the jobs lane handed the timeout off above.
         Cause::Timeout => {
             // Reap while Unix escalation polls: macOS can return EPERM
             // when only an unreaped zombie remains in the process group.
@@ -1023,16 +1064,15 @@ async fn settle_command(
     ))
 }
 
-/// Blocking + managed-background entry point for one command. Starts the
-/// output pump (or reuses a handed-off command's), runs [`settle_command`]
-/// with `handoff` gated on the blocking lane, and on a silent stall hands the
-/// running child to the background lane: registers the job and spawns the
-/// continuation (a fresh [`settle_command`] with `handoff=false`, so it never
-/// re-hands-off), returning a "still running" notice. The child keeps running
-/// and is never killed.
-// one lane carries a live child + its group guard + pump + liveness clock
-// + silence bound + registry handle; bundling them into structs is speculative
-// and would thrash this Send-sensitive call path, so the count stands.
+/// Entry point for one spawned command. Starts the output pump, runs
+/// [`settle_command`], and when the command reaches its timeout on the jobs
+/// lane (`adopt`), registers it as a background job and spawns the
+/// continuation (a fresh [`settle_command`] with `handoff=false` and no
+/// timeout, so it runs until exit or cancel), returning a "still running"
+/// notice with its log, pgid and stop command. Never kills on timeout there.
+// one lane carries a live child + its group guard + pump + registry handle;
+// bundling them into structs is speculative and would thrash this
+// Send-sensitive call path, so the count stands.
 #[allow(clippy::too_many_arguments)]
 async fn run_command(
     command: String,
@@ -1042,37 +1082,20 @@ async fn run_command(
     ctx: ToolContext,
     spawned: crate::shell::contract::Spawned,
     #[cfg(not(windows))] guard: crate::shell::kill::GroupGuard,
-    // Blocking lane only. When `Some`, a command silent longer than `bound`
-    // (with no explicit `timeout`) is registered here as a background job and
-    // the wait continues in a detached worker — never killed. `None` for the
-    // managed background/job lane, whose own call never blocks.
+    // Jobs lane: where a command that reaches its timeout is registered.
+    // `None` (bare mode) makes the timeout a kill.
     adopt: Option<&jobs::Jobs>,
-    // Silent threshold before a stuck blocking command is handed to the
-    // background lane (0 disables). Only armed for `adopt` + no `timeout`.
-    bound: Duration,
-    // Auto-yield window: a blocking command still running after this long is
-    // handed to the background lane even while producing output (0 disables).
-    // Only armed for `adopt` + no `timeout` + jobs enabled.
-    auto_yield: Duration,
-    // Continuation of a handed-off command: reuse the running pump instead of
-    // starting a new one (stdout/stderr are already taken).
-    reuse_pump: Option<tokio::task::JoinHandle<crate::shell::contract::PumpSummary>>,
 ) -> ToolOutput {
     let mut spawned = spawned;
     let last = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(now_grindmill()));
-    let pump = match reuse_pump {
-        // Continuation: the original pump already owns the child's pipes, so
-        // reuse it and do not take stdout/stderr again.
-        Some(p) => p,
-        None => {
-            let child = &mut spawned.child;
-            Pump::start(
-                child.stdout.take(),
-                child.stderr.take(),
-                log_path.clone(),
-                last.clone(),
-            )
-        }
+    let pump = {
+        let child = &mut spawned.child;
+        Pump::start(
+            child.stdout.take(),
+            child.stderr.take(),
+            log_path.clone(),
+            last,
+        )
     };
     match settle_command(
         &command,
@@ -1084,9 +1107,6 @@ async fn run_command(
         #[cfg(not(windows))]
         guard,
         pump,
-        last,
-        bound,
-        auto_yield,
         adopt.is_some(),
     )
     .await
@@ -1098,60 +1118,39 @@ async fn run_command(
                 #[cfg(not(windows))]
                 guard,
                 pump,
-                silenced: bound_elapsed,
             } = *hoff;
-            let jobs = adopt.expect("a stall is only armed for the blocking lane");
-            let (id, tx, worker_ctx) = jobs.register(&ctx, &command, log_path.clone(), start);
-            // With GRAY_NO_JOBS=1 the follow-up actions are not in the schema
-            // and are refused, so the notice must not advertise them.
-            let await_hint = if jobs_enabled() {
-                format!(
-                    ", or await it here with bash action: output/status job_id:{id} and wait_ms \
-                     (e.g. 30000), or cancel it"
-                )
-            } else {
-                String::new()
-            };
-            // Silence-handoff (bound elapsed, no output) and auto-yield
-            // (window elapsed, output irrelevant) read differently: the first
-            // hints the command may be stuck, the second is routine duration
-            // backgrounding — never imply stuckness for a command that may
-            // simply be a long build.
-            let notice = if !bound_elapsed {
-                ToolOutput::ok(format!(
-                    "still running \u{b7} job {id} \u{b7} yielded after {} (duration limit, not a stall) \u{b7} log {}\nMoved to a background job; it keeps running. Continue other work now (its finish is reported between model rounds or the next turn){await_hint}.",
-                    auto_yield.as_secs(),
-                    log_path.display()
-                ))
-            } else {
-                ToolOutput::ok(format!(
-                    "still running \u{b7} job {id} \u{b7} silent: no new output for {}s \u{b7} log {}\nNot killed \u{2014} moved to a background job so it keeps running. Continue other work (its finish is reported between model rounds or the next turn){await_hint}. Inspect the log to see why it went silent.",
-                    bound.as_secs(),
-                    log_path.display()
-                ))
-            };
-            // A fresh liveness clock feeds the job's own (inert) stall arm.
-            let last = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(now_grindmill()));
+            let jobs = adopt.expect("a handoff is only armed on the jobs lane");
+            // The stop command has to take the whole tree: a bare `kill
+            // <pgid>` would hit only the `sh` wrapper and leave cargo running.
+            #[cfg(not(windows))]
+            let (handle, stop) = (
+                format!("pgid {}", spawned.pgid),
+                format!("kill -- -{}", spawned.pgid),
+            );
+            #[cfg(windows)]
+            let (handle, stop) = (
+                format!("pid {}", spawned.pid),
+                format!("taskkill /T /F /PID {}", spawned.pid),
+            );
+            let (id, tx, worker_ctx) =
+                jobs.register(&ctx, &command, log_path.clone(), start, stop.clone());
+            let notice = handoff_notice(&id, secs.unwrap_or_default(), &handle, &stop, &log_path);
             tokio::spawn(async move {
                 let out = match settle_command(
                     &command,
                     &log_path,
-                    secs,
+                    None,
                     start,
                     &worker_ctx,
                     spawned,
                     #[cfg(not(windows))]
                     guard,
                     pump,
-                    last,
-                    Duration::ZERO,
-                    Duration::ZERO,
                     false,
                 )
                 .await
                 {
                     Settled::Done(out) => out,
-                    // handoff=false keeps the job lane's stall arm inert.
                     Settled::Stalled(_) => {
                         std::unreachable!("handoff=false never returns Stalled")
                     }
@@ -1162,49 +1161,37 @@ async fn run_command(
         }
     }
 }
-/// Poll granularity for the stall arm: fine enough to hand off promptly,
-/// coarse enough that a 600s bound costs a few hundred cheap wakeups at most.
-const STALL_CHECK_MS: u64 = 500;
 
-/// The blocking lane's stall arm: resolves once `last` has not advanced for
-/// `bound` (a silent command still stamps `last` at spawn, so the gap is
-/// measured from the last output chunk). When `enabled` is false it is
-/// `pending()` forever, so the `select!` arm never fires \u{2014} this is how the
-/// background job's own `run_command` (which must never re-hand-off) keeps the
-/// arm inert.
-async fn stall_arm(
-    enabled: bool,
-    last: std::sync::Arc<std::sync::atomic::AtomicU64>,
-    bound: Duration,
-) {
-    if !enabled || bound.is_zero() {
-        std::future::pending::<()>().await;
+/// The whole UX of a command that outlived its timeout: what it is, that it
+/// was not killed, how to wait (end the turn), peek (`tail`) and stop it, and
+/// what it printed so far (mini-swe-agent shows partial output on timeout;
+/// here the command also keeps going). The first line keeps the
+/// `still running · job ` shape the loop guard and transcript renderer key on.
+fn handoff_notice(id: &str, secs: u64, handle: &str, stop: &str, log: &Path) -> ToolOutput {
+    let quoted = shell_quote_path(log);
+    let mut text = format!(
+        "still running \u{b7} job {id} \u{b7} yielded after {secs}s \u{b7} {handle} \u{b7} log {}\n\
+         Not killed: it keeps running in the background. To wait, end your turn; you are woken when it \
+         finishes (no polling needed). Peek: `tail {quoted}`. Stop: `{stop}`.",
+        log.display()
+    );
+    let summary = truncated_summary_from_disk(log);
+    if summary.total_bytes > 0 {
+        let view = build_view(log, &summary);
+        text.push_str("\nPartial output (snapshot):\n");
+        text.push_str(&fence(&squeeze_view(&view.body)));
     }
-    let bound_ms = u64::try_from(bound.as_millis()).unwrap_or(u64::MAX);
-    loop {
-        let gap = now_grindmill().saturating_sub(last.load(std::sync::atomic::Ordering::Relaxed));
-        if gap >= bound_ms {
-            return;
-        }
-        // Wake to re-check at the earlier of the remaining gap or a coarse
-        // interval, so a command that resumes output is noticed cheaply.
-        let remaining = bound_ms.saturating_sub(gap);
-        tokio::time::sleep(Duration::from_millis(remaining.min(STALL_CHECK_MS))).await;
-    }
+    ToolOutput::ok(text)
 }
 
-/// Silent threshold for the blocking lane (seconds), overridable per-process in
-/// tests via `GRAY_SHELL_STALL_SECS`. Never a kill: past this a stuck command
-/// is handed to the background lane and the agent decides.
-fn stall_bound() -> Duration {
-    std::env::var("GRAY_SHELL_STALL_SECS")
-        .ok()
-        .and_then(|v| v.trim().parse::<u64>().ok())
-        .filter(|&s| s > 0)
-        .map(Duration::from_secs)
-        .unwrap_or(Duration::from_secs(
-            crate::shell::contract::MAX_BLOCKING_SILENCE_SECS,
-        ))
+/// Single-quote a path for a shell command the model will copy. Forward
+/// slashes for Git Bash, which treats backslashes as escapes.
+fn shell_quote_path(path: &Path) -> String {
+    let raw = path
+        .to_string_lossy()
+        .replace('\\', "/")
+        .replace('\'', "'\"'\"'");
+    format!("'{raw}'")
 }
 
 fn gray_home() -> PathBuf {
