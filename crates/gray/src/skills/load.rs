@@ -8,6 +8,8 @@ use super::*;
 pub(crate) struct SkillFrontmatter {
     name: Option<String>,
     pub(crate) description: Option<String>,
+    /// `argument-hint:` (prompt templates; skills ignore it).
+    pub(crate) argument_hint: Option<String>,
     disable_model_invocation: bool,
     args: Vec<String>,
 }
@@ -119,6 +121,7 @@ fn parse_yaml_like(s: &str) -> SkillFrontmatter {
         match key {
             "name" => fm.name = Some(val),
             "description" => fm.description = Some(val),
+            "argument-hint" | "argument_hint" => fm.argument_hint = Some(val),
             "disable-model-invocation" | "disable_model_invocation" => {
                 fm.disable_model_invocation = val == "true" || val == "True" || val == "TRUE"
             }

@@ -143,6 +143,7 @@ pub(crate) fn footer_badge_visible(model: &str, snapshot: Option<bool>) -> bool 
 }
 
 pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
+    tui.status_line_seen = crate::statusline::version();
     // Inside `Tui::atomic` the repaint is coalesced: the outermost batch
     // draws once, in the same synchronized update as its scrollback inserts.
     if tui.batch_depth > 0 {
@@ -688,99 +689,82 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
         } else {
             tui.thinking_effort.clone()
         };
-        let right_parts = if model_display.is_empty() {
-            if effort_display.is_empty() {
-                Vec::new()
-            } else {
-                vec![Span::styled(
-                    effort_display.clone(),
-                    Style::default().fg(crate::theme::theme().tool_dim),
-                )]
-            }
-        } else if effort_display.is_empty() {
-            vec![Span::styled(
-                model_display.clone(),
-                Style::default().fg(crate::theme::theme().text_muted),
-            )]
-        } else {
-            vec![
-                Span::styled(
-                    model_display.clone(),
-                    Style::default().fg(crate::theme::theme().text_muted),
-                ),
-                Span::styled(
-                    " \u{b7} ",
-                    Style::default().fg(crate::theme::theme().text_faint),
-                ),
-                Span::styled(
-                    effort_display.clone(),
-                    Style::default().fg(crate::theme::theme().tool_dim),
-                ),
-            ]
-        };
-        let right_len = if model_display.is_empty() {
-            display_width(&effort_display)
-        } else if effort_display.is_empty() {
-            display_width(&model_display)
-        } else {
-            display_width(&model_display) + 3 + display_width(&effort_display)
-        };
-        let timer_len = cache_timer
-            .as_ref()
-            .map(|(text, _)| 3 + display_width(text))
-            .unwrap_or(0);
-        let work_len = tui
-            .background_work
-            .as_deref()
-            .map(|text| 3 + display_width(text))
-            .unwrap_or(0);
-        let left_len = 1
-            + display_width(&ctx_display)
-            + 3
-            + display_width(&cache_display)
-            + timer_len
-            + work_len;
-        let pad_len = w.saturating_sub(left_len + right_len);
-
         let cache_color = if hit_rate > 0.0 {
             crate::theme::theme().cache_hit
         } else {
             crate::theme::theme().text_faint
         };
-
-        let mut footer_spans = vec![
-            Span::raw(" "),
-            Span::styled(
-                ctx_display,
-                Style::default().fg(crate::theme::theme().tool_dim),
-            ),
-            Span::styled(
-                " \u{b7} ",
-                Style::default().fg(crate::theme::theme().text_faint),
-            ),
-            Span::styled(cache_display, Style::default().fg(cache_color)),
-        ];
-        if let Some((timer_text, timer_color)) = cache_timer {
-            footer_spans.push(Span::styled(
-                " \u{b7} ",
-                Style::default().fg(crate::theme::theme().text_faint),
-            ));
-            footer_spans.push(Span::styled(timer_text, Style::default().fg(timer_color)));
+        // The footer is two configurable segment lists (`statusline`);
+        // the stock layout is `context · cache · timer · work` on the left
+        // and `model · effort` on the right. Empty segments vanish with
+        // their separator.
+        let line_cfg = crate::statusline::config();
+        let sep = line_cfg.separator();
+        let muted = crate::theme::theme().text_muted;
+        let builtin = |name: &str| -> Option<crate::statusline::Seg> {
+            use crate::statusline::Seg;
+            let t = crate::theme::theme();
+            Some(match name {
+                "context" => Seg::new(ctx_display.clone(), t.tool_dim),
+                "cache" => Seg::new(cache_display.clone(), cache_color),
+                "timer" => cache_timer
+                    .as_ref()
+                    .map(|(text, color)| Seg::new(text.clone(), *color))
+                    .unwrap_or_else(|| Seg::new("", muted)),
+                "work" => Seg::new(tui.background_work.clone().unwrap_or_default(), t.accent),
+                "model" => Seg::new(model_display.clone(), muted),
+                "effort" => Seg::new(effort_display.clone(), t.tool_dim),
+                "cwd" => Seg::new(crate::statusline::short_cwd(&tui.cwd), muted),
+                "dir" => Seg::new(
+                    std::path::Path::new(&tui.cwd)
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_default(),
+                    muted,
+                ),
+                "branch" => Seg::new(
+                    crate::statusline::git_branch(std::path::Path::new(&tui.cwd)),
+                    t.tool_dim,
+                ),
+                "command" => Seg::new(crate::statusline::command_output(), muted),
+                "status" => Seg::new(crate::statusline::all_statuses(&sep), muted),
+                other => match other.strip_prefix("status:") {
+                    Some(key) => {
+                        Seg::new(crate::statusline::status(key).unwrap_or_default(), muted)
+                    }
+                    None => return None,
+                },
+            })
+        };
+        let sep_color = crate::theme::theme().text_faint;
+        let left_segs =
+            crate::statusline::compose(&line_cfg.left(), &builtin, &sep, sep_color, muted);
+        let right_segs =
+            crate::statusline::compose(&line_cfg.right(), &builtin, &sep, sep_color, muted);
+        if line_cfg.command.is_some() {
+            crate::statusline::publish_facts(serde_json::json!({
+                "cwd": tui.cwd,
+                "workspace": { "current_dir": tui.cwd },
+                "model": { "id": tui.model_name, "display_name": model_display },
+                "effort": tui.thinking_effort,
+                "context": { "used_tokens": used_tokens, "max": max_label },
+                "cache_hit_rate": hit_rate,
+                "branch": crate::statusline::git_branch(std::path::Path::new(&tui.cwd)),
+                "version": env!("CARGO_PKG_VERSION"),
+            }));
         }
-        // Pending background work (running jobs, scheduled wakes): what the
-        // session will wake up for, so an idle prompt never looks finished.
-        if let Some(work) = &tui.background_work {
-            footer_spans.push(Span::styled(
-                " \u{b7} ",
-                Style::default().fg(crate::theme::theme().text_faint),
-            ));
-            footer_spans.push(Span::styled(
-                work.clone(),
-                Style::default().fg(crate::theme::theme().accent),
-            ));
-        }
+        let seg_width = |segs: &[crate::statusline::Seg]| -> usize {
+            segs.iter().map(|s| display_width(&s.text)).sum()
+        };
+        let left_len = 1 + seg_width(&left_segs);
+        let right_len = seg_width(&right_segs);
+        let pad_len = w.saturating_sub(left_len + right_len);
+        let to_span =
+            |s: crate::statusline::Seg| Span::styled(s.text, Style::default().fg(s.color));
+        let mut footer_spans = vec![Span::raw(" ")];
+        footer_spans.extend(left_segs.into_iter().map(to_span));
         footer_spans.push(Span::raw(" ".repeat(pad_len)));
-        footer_spans.extend(right_parts);
+        footer_spans.extend(right_segs.into_iter().map(to_span));
         // Transparent footer: text only, no full-bleed band. Painted on the
         // row `footer_paint_row` clamps into the frame — never skipped.
         if let Some(footer_y) = footer_paint_row(footer_y, area) {

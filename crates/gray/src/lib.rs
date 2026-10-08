@@ -14,6 +14,7 @@ pub mod doctor;
 pub mod feedback;
 pub mod gateway;
 pub mod host;
+pub mod keymap;
 pub mod logging;
 pub(crate) mod mascot;
 pub mod plugin_check;
@@ -21,6 +22,7 @@ pub mod plugin_cli;
 pub mod print;
 mod print_meter;
 pub mod profile;
+pub mod prompt_templates;
 pub mod providers;
 pub mod repl;
 pub mod resume;
@@ -32,6 +34,7 @@ pub mod shell_drain;
 pub mod skills;
 pub mod skills_tool;
 pub mod spill;
+pub mod statusline;
 pub mod sys_editor;
 pub mod system_prompt;
 pub mod term_keys;
@@ -753,6 +756,9 @@ pub enum GatewayCmd {
     /// Restart/shutdown notices for a chat adapter's daemon (JSON answers)
     #[command(subcommand)]
     Lifecycle(LifecycleCmd),
+    /// The always-on agent: send, wake, activity, pause/resume, inbox
+    #[command(flatten)]
+    Agent(crate::gateway::cli::AgentCmd),
 }
 
 /// `gray gateway lifecycle ...`: the platform-agnostic restart record an

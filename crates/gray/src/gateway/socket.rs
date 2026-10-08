@@ -2,7 +2,9 @@
 //!
 //! Wire contract (hermes v1, ported): ONE request per connection — one JSON
 //! line in, one JSON line out, then the server closes. Read verbs are
-//! `identify`/`status` plus read-only `metrics`/`logs_tail`. Answers are
+//! `identify`/`status` plus read-only `metrics`/`logs_tail`; chat adapters
+//! drain the outbox with `pull {platform, limit}` → `{intents}` then
+//! `ack {ids}` → `{acked}`. Answers are
 //! `{"ok": true, "protocol": 1, "result": {...}}`; misses are
 //! `{"ok": false, "error": ..., "supported_verbs": [...]}`. A connectable
 //! socket with a well-formed `identify` answer IS liveness — the pid file is
@@ -15,7 +17,8 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 pub const PROTOCOL: u32 = 1;
-pub const SUPPORTED_VERBS: [&str; 4] = ["identify", "status", "metrics", "logs_tail"];
+pub const SUPPORTED_VERBS: [&str; 6] =
+    ["identify", "status", "metrics", "logs_tail", "pull", "ack"];
 /// `logs_tail` shape: last lines of `logs/gray.log`, newest last.
 pub const LOGS_TAIL_LINES: usize = 200;
 /// Byte cap on the tail read; the tail is kept, the head is dropped.
@@ -153,6 +156,33 @@ pub fn handle_request_line(home: &Path, raw: &[u8], now: i64) -> Vec<u8> {
                 serde_json::json!({
                     "ok": true, "protocol": PROTOCOL,
                     "result": { "lines": lines, "total_lines_available": total },
+                })
+            }
+            Some("pull") => match req.get("platform").and_then(|v| v.as_str()) {
+                Some(platform) => {
+                    let limit = req
+                        .get("limit")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(20)
+                        .clamp(1, 100);
+                    let dir = super::state_dir(home);
+                    let intents = super::outbox::pull(&dir, platform, now, limit as usize);
+                    serde_json::json!({
+                        "ok": true, "protocol": PROTOCOL, "result": { "intents": intents },
+                    })
+                }
+                None => serde_json::json!({
+                    "ok": false, "protocol": PROTOCOL, "error": "pull needs a platform",
+                }),
+            },
+            Some("ack") => {
+                let ids: Vec<String> = req
+                    .get("ids")
+                    .and_then(|v| serde_json::from_value(v.clone()).ok())
+                    .unwrap_or_default();
+                let acked = super::outbox::ack(&super::state_dir(home), &ids);
+                serde_json::json!({
+                    "ok": true, "protocol": PROTOCOL, "result": { "acked": acked },
                 })
             }
             other => serde_json::json!({

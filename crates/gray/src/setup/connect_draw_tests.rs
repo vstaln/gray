@@ -36,24 +36,28 @@ fn auth() -> BTreeMap<String, catalog::AuthEntry> {
 }
 
 #[test]
-fn connected_then_custom_then_stable_remainder() {
+fn connected_then_popular_then_custom_then_stable_remainder() {
     let mut items = build_connect_items(&load_catalog().unwrap(), &[]);
-    let default = items.clone();
-    catalog::sort_connect_items(&mut items, &config(), &BTreeMap::new());
+    let len = items.len();
+    // Nothing connected or detected: the popular block leads the list —
+    // the cursor's row 0 is OpenAI — Custom tails it, then the catalog.
+    catalog::sort_connect_items(&mut items, &config(), &BTreeMap::new(), &BTreeMap::new());
+    let ids: Vec<&str> = items.iter().map(|i| i.id.as_str()).collect();
+    assert_eq!(&ids[..4], ["openai", "anthropic", "google", "openrouter"]);
     assert_eq!(
-        items.iter().map(|i| &i.id).collect::<Vec<_>>(),
-        default.iter().map(|i| &i.id).collect::<Vec<_>>()
+        ids.iter().position(|id| *id == "custom"),
+        Some(catalog::POPULAR_DEFS.len())
     );
-    catalog::sort_connect_items(&mut items, &config(), &auth());
+    catalog::sort_connect_items(&mut items, &config(), &auth(), &BTreeMap::new());
     assert_eq!(
         items
             .iter()
             .take(4)
             .map(|i| i.id.as_str())
             .collect::<Vec<_>>(),
-        ["openrouter", "commandcode", "custom", "openai"]
+        ["openrouter", "commandcode", "openai", "anthropic"]
     );
-    assert_eq!(items.len(), default.len());
+    assert_eq!(items.len(), len);
 }
 
 #[test]
@@ -72,14 +76,14 @@ fn oauth_and_active_keyless_provider_are_connected() {
         }),
     );
     let mut items = build_connect_items(&load_catalog().unwrap(), &[]);
-    catalog::sort_connect_items(&mut items, &config, &auth);
+    catalog::sort_connect_items(&mut items, &config, &auth, &BTreeMap::new());
     assert_eq!(
         items
             .iter()
             .take(5)
             .map(|i| i.id.as_str())
             .collect::<Vec<_>>(),
-        ["openrouter", "commandcode", "ollama", "xai", "custom"]
+        ["openrouter", "commandcode", "ollama", "xai", "openai"]
     );
 }
 
@@ -88,7 +92,7 @@ fn provider_selection_stays_visible_through_separator_scroll_and_filter() {
     let config = config();
     let auth = auth();
     let mut items = build_connect_items(&load_catalog().unwrap(), &[]);
-    catalog::sort_connect_items(&mut items, &config, &auth);
+    catalog::sort_connect_items(&mut items, &config, &auth, &BTreeMap::new());
     let colors = ConnectColors {
         box_bg: Color::Black,
         input_bg: Color::Black,
@@ -154,7 +158,7 @@ fn separator_is_after_custom_not_after_first_connected_provider() {
     let config = config();
     let auth = auth();
     let mut items = build_connect_items(&load_catalog().unwrap(), &[]);
-    catalog::sort_connect_items(&mut items, &config, &auth);
+    catalog::sort_connect_items(&mut items, &config, &auth, &BTreeMap::new());
     let colors = ConnectColors {
         box_bg: Color::Black,
         input_bg: Color::Black,
@@ -162,6 +166,9 @@ fn separator_is_after_custom_not_after_first_connected_provider() {
         text_dim: Color::DarkGray,
     };
     let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap();
+    // The list window is shorter than the row above Custom: only a
+    // selection past Custom scrolls the separator into view.
+    let sel = items.iter().position(|i| i.id == "custom").unwrap() + 1;
     terminal
         .draw(|frame| {
             render_selecting(
@@ -169,7 +176,7 @@ fn separator_is_after_custom_not_after_first_connected_provider() {
                 frame.area(),
                 &items,
                 "",
-                0,
+                sel,
                 &mut 0,
                 &config,
                 &auth,
@@ -182,10 +189,84 @@ fn separator_is_after_custom_not_after_first_connected_provider() {
         .map(|y| (0..80).map(|x| buf[(x, y)].symbol()).collect())
         .collect();
     let custom = rows.iter().position(|r| r.contains("Custom")).unwrap();
-    assert!(rows[custom - 2].contains("OpenRouter"));
-    assert!(rows[custom - 1].contains("CommandCode"));
+    // The popular block ends with xAI and Mistral; Custom tails it and the
+    // separator keeps sitting directly under Custom.
+    assert!(rows[custom - 2].contains("xAI"));
+    assert!(rows[custom - 1].contains("Mistral"));
     assert!(rows[custom + 1].contains("────"));
-    assert!(rows[custom + 2].contains("OpenAI"));
+    assert!(!rows[custom + 2].contains("OpenAI"));
+}
+
+/// The key screen fits its longest lines: at 80 columns the full key URL,
+/// the full rejection status, and the env-var provenance are all readable.
+#[test]
+fn key_screen_shows_full_url_and_rejection_at_eighty_columns() {
+    let item = ConnectItem {
+        id: "anthropic".into(),
+        name: "Anthropic".into(),
+        sublabel: String::new(),
+        base_url: "https://api.anthropic.com".into(),
+        no_auth: false,
+        auth: ConnectAuth::ApiKey,
+    };
+    let colors = ConnectColors {
+        box_bg: Color::Black,
+        input_bg: Color::Black,
+        accent_peach: Color::Yellow,
+        text_dim: Color::DarkGray,
+    };
+    for width in [80u16, 100] {
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, 24)).unwrap();
+        terminal
+            .draw(|frame| {
+                render_entering_key(
+                    frame,
+                    frame.area(),
+                    &item,
+                    "",
+                    &Some("sk-ant-fake-test".to_string()),
+                    Some("ANTHROPIC_API_KEY"),
+                    &Some(
+                        "Anthropic rejected this key (HTTP 401) \u{2014} paste a new one"
+                            .to_string(),
+                    ),
+                    &colors,
+                )
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        let rows: Vec<String> = (0..24)
+            .map(|y| (0..width).map(|x| buf[(x, y)].symbol()).collect::<String>())
+            .collect();
+        let text = rows.join("\n");
+        assert!(
+            text.contains("Get a key: https://console.anthropic.com/settings/keys"),
+            "{width}: {text}"
+        );
+        assert!(
+            text.contains("Anthropic rejected this key (HTTP 401) \u{2014} paste a new one"),
+            "{width}: {text}"
+        );
+        assert!(
+            text.contains("(from $ANTHROPIC_API_KEY)"),
+            "{width}: {text}"
+        );
+        // Status, provenance and the URL are three distinct rows.
+        let row_of = |needle: &str| {
+            rows.iter()
+                .position(|r| r.contains(needle))
+                .unwrap_or_else(|| panic!("{width}: {needle:?} missing\n{text}"))
+        };
+        let (status, env, url) = (
+            row_of("rejected this key"),
+            row_of("(from $ANTHROPIC_API_KEY)"),
+            row_of("Get a key:"),
+        );
+        assert!(status < env && env < url, "{width}: {status} {env} {url}");
+        // The footer sits below every hint row — no overlap.
+        assert!(row_of("update") > url, "{width}: {text}");
+    }
 }
 
 #[test]

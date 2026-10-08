@@ -215,3 +215,69 @@ fn a_legacy_pair_cache_still_loads_and_objects_keep_their_metadata() {
     assert_eq!(m.name, "GPT 6 Sol");
     assert_eq!(m.variants.len(), 1);
 }
+
+// ── connect-modal key check ──
+// UNRUN (cargo test banned under X — verified via check + clippy only).
+
+#[test]
+fn key_check_request_picks_each_providers_probe() {
+    // OpenRouter's /models is public, so it validates nothing — the probe
+    // is its /key endpoint under Bearer.
+    let (url, style, r400) = key_check_request("https://openrouter.ai/api/v1/");
+    assert_eq!(url, "https://openrouter.ai/api/v1/key");
+    assert_eq!(style, AuthStyle::Bearer);
+    assert!(!r400);
+    // Anthropic is the x-api-key exception, on its exact host only.
+    let (url, style, r400) = key_check_request("https://api.anthropic.com");
+    assert_eq!(url, "https://api.anthropic.com/models");
+    assert_eq!(style, AuthStyle::Anthropic);
+    assert!(!r400);
+    // A lookalike host stays Bearer, and trailing slashes are trimmed.
+    let (url, style, r400) = key_check_request("https://api.anthropic.com.evil.example/v1//");
+    assert_eq!(url, "https://api.anthropic.com.evil.example/v1/models");
+    assert_eq!(style, AuthStyle::Bearer);
+    assert!(!r400);
+    let (url, style, r400) = key_check_request("http://127.0.0.1:9999/v1");
+    assert_eq!(url, "http://127.0.0.1:9999/v1/models");
+    assert_eq!(style, AuthStyle::Bearer);
+    assert!(!r400);
+}
+
+#[test]
+fn key_check_marks_400_as_rejection_only_on_measured_hosts() {
+    // Google and xAI answer a bad Bearer with 400, not 401.
+    for base in [
+        "https://generativelanguage.googleapis.com/v1beta/openai",
+        "https://api.x.ai/v1",
+    ] {
+        let (_, _, r400) = key_check_request(base);
+        assert!(r400, "{base}");
+        assert_eq!(classify_key_status(400, r400), KeyCheck::Rejected(400));
+    }
+    // Everywhere else 400 stays inconclusive.
+    let (_, _, r400) = key_check_request("https://api.openai.com/v1");
+    assert!(!r400);
+    assert_eq!(classify_key_status(400, r400), KeyCheck::Unknown);
+}
+
+#[test]
+fn key_check_status_only_an_auth_refusal_rejects() {
+    assert_eq!(classify_key_status(200, false), KeyCheck::Valid);
+    assert_eq!(classify_key_status(204, false), KeyCheck::Valid);
+    assert_eq!(classify_key_status(401, false), KeyCheck::Rejected(401));
+    assert_eq!(classify_key_status(403, false), KeyCheck::Rejected(403));
+    // Everything inconclusive — 5xx, redirects, odd statuses — is Unknown,
+    // never a block.
+    for s in [301, 404, 418, 500, 503] {
+        assert_eq!(
+            classify_key_status(s, false),
+            KeyCheck::Unknown,
+            "status {s}"
+        );
+        assert_eq!(
+            classify_key_status(s, true),
+            KeyCheck::Unknown,
+            "status {s}"
+        );
+    }
+}

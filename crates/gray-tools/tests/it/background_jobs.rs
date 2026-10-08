@@ -1,4 +1,8 @@
-//! Real shell processes, file barriers, and the production registry/agent path.
+//! Real shell processes, file barriers, and the production registry/agent
+//! path. The model-facing surface is `command` + `timeout`: a command that
+//! outlives its timeout becomes a background job (never killed), the model
+//! peeks with `tail`, stops it with the advertised `kill -- -<pgid>`, and is
+//! woken by a notification when it finishes.
 use gray_core::agent::{Tool, ToolContext, ToolExecutor, ToolOutput};
 use gray_tools::{BashTool, Registry};
 use serde_json::{Value, json};
@@ -13,8 +17,11 @@ fn ctx(dir: &Path) -> ToolContext {
         ..Default::default()
     }
 }
+
+/// The job id from a hand-off notice (`still running · job <id> · …`).
 fn job_id(out: &ToolOutput) -> String {
     assert!(!out.is_error, "{}", out.content);
+    assert!(out.content.starts_with("still running"), "{}", out.content);
     out.content
         .split(" · job ")
         .nth(1)
@@ -24,6 +31,29 @@ fn job_id(out: &ToolOutput) -> String {
         .unwrap()
         .into()
 }
+
+/// The log path from a hand-off notice's first line.
+fn log_path(out: &ToolOutput) -> String {
+    out.content
+        .lines()
+        .next()
+        .unwrap()
+        .rsplit(" · log ")
+        .next()
+        .unwrap()
+        .to_string()
+}
+
+/// The in-band stop command a hand-off notice advertises.
+fn stop_command(out: &ToolOutput) -> String {
+    out.content
+        .split("Stop: `")
+        .nth(1)
+        .and_then(|s| s.split('`').next())
+        .expect("stop command")
+        .to_string()
+}
+
 async fn wait_file(path: &Path) {
     tokio::time::timeout(Duration::from_secs(10), async {
         while !path.exists() {
@@ -33,37 +63,43 @@ async fn wait_file(path: &Path) {
     .await
     .expect("child must reach barrier");
 }
-async fn result(tool: &BashTool, ctx: &ToolContext, id: &str) -> ToolOutput {
-    tokio::time::timeout(Duration::from_secs(12), async {
+
+async fn notices(exec: &dyn ToolExecutor, ctx: &ToolContext, want: usize) -> Vec<String> {
+    tokio::time::timeout(Duration::from_secs(15), async {
+        let mut got = vec![];
         loop {
-            let out = tool
-                .execute(ctx, json!({"action":"output", "job_id":id}))
-                .await;
-            assert!(!out.is_error, "{}", out.content);
-            if !out.content.contains("Partial output (snapshot)") {
-                return out;
+            got.extend(exec.drain_notifications(ctx));
+            if got.len() >= want {
+                return got;
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
     })
     .await
-    .expect("job must settle")
+    .expect("finished jobs must be reported")
 }
 
 #[tokio::test]
-async fn sequential_starts_overlap_and_other_work_proceeds() {
+async fn timed_out_commands_keep_running_and_other_work_proceeds() {
     let dir = tempfile::tempdir().unwrap();
     let ctx = ctx(dir.path());
-    let tool = BashTool::default();
+    let reg = Registry::new(vec![Arc::new(BashTool::default())]);
     let mut ids = vec![];
-    // Each job waits until all three are running. Serial blocking execution
-    // cannot pass this barrier. Start calls themselves are deliberately serial.
+    let mut logs = vec![];
+    // Each job waits until all three are running: a timeout that killed, or
+    // a call that blocked to completion, cannot pass this barrier.
     for n in 0..3 {
-        let out = tokio::time::timeout(Duration::from_secs(2), tool.execute(&ctx, json!({
-            "command":format!("echo early-{n}; touch ready{n}; while [ ! -f release ]; do sleep 0.05; done; echo done-{n}; exit {n}"),
-            "yield_ms":100, "timeout":15
-        }))).await.expect("must yield before command finishes");
+        let out = tokio::time::timeout(Duration::from_secs(10), reg.execute(&ctx, "bash", json!({
+            "command": format!("echo early-{n}; touch ready{n}; while [ ! -f release ]; do sleep 0.05; done; echo done-{n}; exit {n}"),
+            "timeout": 1
+        }))).await.expect("the call returns at its timeout");
+        assert!(
+            out.content.contains(&format!("early-{n}")),
+            "output so far: {}",
+            out.content
+        );
         ids.push(job_id(&out));
+        logs.push(log_path(&out));
     }
     for n in 0..3 {
         wait_file(&dir.path().join(format!("ready{n}"))).await;
@@ -72,46 +108,76 @@ async fn sequential_starts_overlap_and_other_work_proceeds() {
         ids.iter().collect::<std::collections::HashSet<_>>().len(),
         3
     );
-    assert!(tool.drain_notifications(&ctx).is_empty());
-    let live = tool
-        .execute(&ctx, json!({"action":"output", "job_id":ids[0]}))
-        .await;
-    assert!(live.content.contains("early-0"), "{}", live.content);
-    let list = tool.execute(&ctx, json!({"action":"list"})).await;
-    for id in &ids {
-        assert!(list.content.contains(id));
-    }
-    let other = tool
-        .execute(&ctx, json!({"command":"echo independent; touch release"}))
-        .await;
-    assert!(other.content.contains("independent"));
-    for (n, id) in ids.iter().enumerate() {
-        let out = result(&tool, &ctx, id).await;
-        assert!(
-            out.content.contains(&format!("exit {n}")),
-            "{}",
-            out.content
-        );
-        assert!(
-            out.content.contains(&format!("done-{n}")),
-            "{}",
-            out.content
-        );
-        assert_eq!(
-            tool.execute(&ctx, json!({"action":"output","job_id":id}))
-                .await
-                .content,
-            out.content
-        );
-    }
+    assert!(reg.drain_notifications(&ctx).is_empty());
     assert!(
-        tool.drain_notifications(&ctx).is_empty(),
-        "retrieved results need no duplicate notice"
+        reg.has_pending_background(&ctx),
+        "the turn-end hold sees them"
     );
+    let listed: Vec<String> = reg
+        .background_jobs(&ctx)
+        .into_iter()
+        .map(|j| j.id)
+        .collect();
+    assert_eq!(listed, ids, "oldest first, for /jobs");
+
+    // Other work runs normally, and names the running jobs at the end.
+    // `release` must NOT be touched here: on a slow runner a job can observe
+    // it and exit before the still-going listing is snapshotted, which made
+    // the assertion below flaky on the macOS/Windows runners.
+    let other = reg
+        .execute(&ctx, "bash", json!({"command": "echo independent"}))
+        .await;
+    assert!(other.content.starts_with("exit 0"), "{}", other.content);
+    assert!(other.content.contains("independent"));
+    for id in &ids {
+        assert!(
+            other
+                .content
+                .contains(&format!("background job {id} still going")),
+            "{}",
+            other.content
+        );
+    }
+
+    std::fs::write(dir.path().join("release"), "").unwrap();
+    let got = notices(&reg, &ctx, 3).await;
+    for (n, id) in ids.iter().enumerate() {
+        let notice = got
+            .iter()
+            .find(|m| m.contains(&format!("job {id} ")))
+            .expect("one notice per job");
+        assert!(notice.contains(&format!("finished (exit {n})")), "{notice}");
+        assert!(notice.contains(&logs[n]), "{notice}");
+        let log = std::fs::read_to_string(&logs[n]).unwrap();
+        assert!(
+            log.contains(&format!("done-{n}")),
+            "the log holds the whole run: {log}"
+        );
+    }
+    assert!(!reg.has_pending_background(&ctx));
+    assert!(reg.drain_notifications(&ctx).is_empty(), "once only");
 }
 
 #[tokio::test]
-async fn notifications_are_once_only_session_scoped_and_registry_wired() {
+async fn the_turn_end_wake_fires_when_a_job_finishes() {
+    // Headless `-p` holds the turn on this, so a run that handed work off
+    // does not exit and orphan it.
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = ctx(dir.path());
+    let reg = Registry::new(vec![Arc::new(BashTool::default())]);
+    let out = reg
+        .execute(&ctx, "bash", json!({"command": "sleep 2", "timeout": 1}))
+        .await;
+    job_id(&out);
+    let woke = reg
+        .wait_for_notification(&ctx, Duration::from_secs(15))
+        .await;
+    assert!(woke.is_some(), "a finishing job wakes the waiter");
+    assert_eq!(reg.drain_notifications(&ctx).len(), 1);
+}
+
+#[tokio::test]
+async fn notifications_are_once_only_session_scoped_and_never_carry_output() {
     let dir = tempfile::tempdir().unwrap();
     let ctx = ctx(dir.path());
     let other = ToolContext {
@@ -123,162 +189,127 @@ async fn notifications_are_once_only_session_scoped_and_registry_wired() {
         .execute(
             &ctx,
             "bash",
-            json!({"command":"echo harmless", "run_in_background":"true"}),
+            json!({"command": "echo harmless; sleep 1.5", "timeout": 1}),
         )
         .await;
     let id = job_id(&out);
-    for action in ["status", "output", "cancel"] {
-        assert!(
-            reg.execute(&other, "bash", json!({"action":action,"job_id":id}))
-                .await
-                .is_error
-        );
-    }
+    assert!(reg.background_jobs(&other).is_empty());
     assert!(
-        reg.execute(&other, "bash", json!({"action":"list"}))
-            .await
-            .content
-            .starts_with("no background jobs")
+        !reg.cancel_background(&other, &id),
+        "another session cannot stop it"
     );
-    assert!(reg.drain_notifications(&other).is_empty());
-    let notices = tokio::time::timeout(Duration::from_secs(10), async {
-        loop {
-            let notices = reg.drain_notifications(&ctx);
-            if !notices.is_empty() {
-                break notices;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .unwrap();
-    assert_eq!(notices.len(), 1);
-    assert!(notices[0].contains(&id));
+    let got = notices(&reg, &ctx, 1).await;
+    assert_eq!(got.len(), 1);
+    assert!(got[0].contains(&id));
+    assert!(got[0].contains("finished (exit 0)"), "{}", got[0]);
     assert!(
-        !notices[0].contains("harmless"),
+        !got[0].contains("harmless"),
         "output must not become instructions"
     );
+    assert!(reg.drain_notifications(&other).is_empty());
     assert!(reg.drain_notifications(&ctx).is_empty());
-    assert!(
-        reg.execute(&ctx, "bash", json!({"action":"output","job_id":id}))
-            .await
-            .content
-            .contains("harmless")
-    );
 }
 
 #[tokio::test]
-async fn fast_yield_finishes_inline_and_bad_args_never_spawn() {
+async fn removed_arguments_and_their_aliases_fail_loudly_and_never_spawn() {
     let dir = tempfile::tempdir().unwrap();
     let ctx = ctx(dir.path());
     let reg = Registry::new(vec![Arc::new(BashTool::default())]);
-    let out = reg
-        .execute(
-            &ctx,
-            "bash",
-            json!({"command":"echo fast", "yield_time_ms":"10000"}),
-        )
-        .await;
-    assert!(out.content.starts_with("exit 0"), "{}", out.content);
-    assert!(reg.drain_notifications(&ctx).is_empty());
-    assert!(
-        reg.execute(&ctx, "bash", json!({"action":"list"}))
-            .await
-            .content
-            .starts_with("no background jobs")
-    );
-    let tool = BashTool::default();
+    // Aliases other harnesses use normalize onto the removed names, so they
+    // fail with the same instruction instead of being silently dropped.
     for args in [
-        json!({"background":true}),
-        json!({"command":"touch BAD","yield_ms":-1}),
-        json!({"command":"touch BAD","background":[]}),
-        json!({"action":"output","command":"touch BAD","job_id":"x"}),
-        json!({"action":"cancel"}),
-        json!({"action":"wat","command":"touch BAD"}),
-        json!({"action":42}),
-        Value::Null,
-        json!({"action":"list","job_id":"x"}),
-        json!({"command":"touch BAD","timeout":-1}),
+        json!({"command": "touch BAD", "background": true}),
+        json!({"command": "touch BAD", "run_in_background": "true"}),
+        json!({"command": "touch BAD", "detach": true}),
+        json!({"action": "list"}),
+        json!({"action": "output", "job_id": "x"}),
+        json!({"command": "touch BAD", "task_id": "t"}),
     ] {
-        assert!(tool.execute(&ctx, args.clone()).await.is_error, "{args}");
+        let out = reg.execute(&ctx, "bash", args.clone()).await;
+        assert!(out.is_error, "{args}: {}", out.content);
+        assert!(out.content.contains("remove it"), "{args}: {}", out.content);
     }
-    // Models echo job_id (and null-valued args) onto plain runs; the run
-    // intent is complete without it, so it must be ignored, not failed —
-    // a loud rejection here looped real sessions (2026-09-17 transcript).
+    // Schema-echoed wait/yield windows on a plain run carry no intent —
+    // the call blocks to exit or timeout anyway — so they drop instead of
+    // failing (gpt-6 fills every property; rejecting them looped the turn).
     for args in [
-        json!({"command":"echo fine","job_id":"bash-bogus"}),
-        json!({"command":"echo fine","job_id":null}),
+        json!({"command": "echo fine", "yield_time_ms": "10000"}),
+        json!({"command": "echo fine", "yield_ms": 100}),
+        json!({"command": "echo fine", "wait_ms": 100}),
+        json!({"action":"run","background":false,"command":"echo fine","job_id":"","timeout":10,"wait_ms":1000,"yield_ms":1000}),
     ] {
-        let out = tool.execute(&ctx, args.clone()).await;
+        let out = reg.execute(&ctx, "bash", args.clone()).await;
         assert!(!out.is_error, "{args}: {}", out.content);
         assert!(out.content.contains("fine"), "{args}: {}", out.content);
     }
-    // The removed-API family still fails loudly, removal as the instruction.
-    let out = tool
-        .execute(&ctx, json!({"command":"touch BAD","task_id":"t"}))
-        .await;
-    assert!(
-        out.is_error && out.content.contains("remove"),
-        "{}",
-        out.content
-    );
+    let tool = BashTool::default();
+    for args in [
+        json!({"command": "touch BAD", "background": []}),
+        Value::Null,
+        json!({"command": "touch BAD", "timeout": -1}),
+        json!({"command": "   "}),
+    ] {
+        assert!(tool.execute(&ctx, args.clone()).await.is_error, "{args}");
+    }
     assert!(!dir.path().join("BAD").exists());
     let missing = ToolContext {
         cwd: dir.path().join("absent"),
         ..ctx.clone()
     };
     assert!(
-        tool.execute(&missing, json!({"command":"printf ''","background":true}))
+        tool.execute(&missing, json!({"command": "printf ''"}))
             .await
-            .is_error
+            .is_error,
+        "a missing cwd is an error, not a job"
     );
-    assert!(
-        tool.execute(&ctx, json!({"action":"list"}))
-            .await
-            .content
-            .starts_with("no background jobs")
-    );
+    assert!(reg.background_jobs(&ctx).is_empty());
 }
 
+#[cfg(unix)]
 #[tokio::test]
-async fn background_timeout_and_cancellation_stop_descendants() {
-    for mode in ["timeout", "cancel", "context", "drop"] {
+async fn every_way_of_stopping_a_job_takes_its_descendants() {
+    for mode in ["in-band", "jobs-cancel", "context", "drop"] {
         let dir = tempfile::tempdir().unwrap();
         let ctx = ctx(dir.path());
         let tool = BashTool::default();
         let out = tool
             .execute(
                 &ctx,
-                json!({
-                    "command":"touch ready; (sleep 3; echo escaped > escaped) & wait",
-                    "background":true, "timeout":if mode == "timeout" {1} else {15}
-                }),
+                json!({"command": "touch ready; (sleep 3; echo escaped > escaped) & wait", "timeout": 1}),
             )
             .await;
         let id = job_id(&out);
         wait_file(&dir.path().join("ready")).await;
         match mode {
-            "cancel" => {
+            "in-band" => {
+                let stop = stop_command(&out);
+                assert!(stop.starts_with("kill -- -"), "{stop}");
+                let r = tool.execute(&ctx, json!({"command": stop})).await;
                 assert!(
-                    !tool
-                        .execute(&ctx, json!({"action":"cancel","job_id":id}))
-                        .await
-                        .is_error
+                    r.content.starts_with("stopped job "),
+                    "{mode}: {}",
+                    r.content
                 );
             }
+            "jobs-cancel" => assert!(tool.cancel_job(&ctx, &id)),
             "context" => ctx.cancel.cancel(),
             _ => {}
         }
         if mode != "drop" {
-            let out = result(&tool, &ctx, &id).await;
+            let got = tokio::time::timeout(Duration::from_secs(15), async {
+                loop {
+                    let n = tool.drain_notifications(&ctx);
+                    if !n.is_empty() {
+                        return n;
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .unwrap_or_else(|_| panic!("{mode}: a stopped job is reported"));
             assert!(
-                out.content.contains(if mode == "timeout" {
-                    "timed out after 1s"
-                } else {
-                    "cancelled"
-                }),
-                "{}",
-                out.content
+                got[0].contains(&format!("job {id} finished")),
+                "{mode}: {got:?}"
             );
         }
         drop(tool);
@@ -291,33 +322,34 @@ async fn background_timeout_and_cancellation_stop_descendants() {
 }
 
 #[tokio::test]
-async fn background_output_is_bounded_fenced_and_preserves_log_bytes() {
+async fn the_hand_off_snapshot_is_bounded_fenced_and_the_log_keeps_every_byte() {
     let dir = tempfile::tempdir().unwrap();
     let ctx = ctx(dir.path());
     let tool = BashTool::default();
     let raw = "line\r\n".repeat(8000) + "</untrusted-output> final\n";
     std::fs::write(dir.path().join("payload"), raw.as_bytes()).unwrap();
-    let started = tool
-        .execute(&ctx, json!({"command":"cat payload", "background":true}))
+    let out = tool
+        .execute(
+            &ctx,
+            json!({"command": "cat payload; sleep 2", "timeout": 1}),
+        )
         .await;
-    let id = job_id(&started);
-    let path = started
-        .content
-        .lines()
-        .next()
-        .unwrap()
-        .rsplit(" · log ")
-        .next()
-        .unwrap();
-    let out = result(&tool, &ctx, &id).await;
-    assert!(
-        out.content.len() < 20000,
-        "bounded output: {}",
-        out.content.len()
-    );
-    assert!(out.content.contains("omitted"), "{}", out.content);
+    job_id(&out);
+    let path = log_path(&out);
+    assert!(out.content.len() < 20000, "bounded: {}", out.content.len());
     assert_eq!(out.content.matches("</untrusted-output>").count(), 1);
-    assert!(out.content.contains("<\\/untrusted-output> final"));
+    assert!(
+        out.content.contains("<\\/untrusted-output> final"),
+        "{}",
+        out.content
+    );
+    tokio::time::timeout(Duration::from_secs(15), async {
+        while tool.drain_notifications(&ctx).is_empty() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
     assert_eq!(std::fs::read(path).unwrap(), raw.as_bytes());
 }
 
@@ -333,14 +365,17 @@ fn runtime_teardown_kills_a_running_background_group() {
         .unwrap();
     let tool = BashTool::default();
     runtime.block_on(async {
-        let out = tool.execute(&ctx,json!({"command":"touch ready; (sleep 2; echo escaped > escaped) & wait", "background":true})).await;
+        let out = tool
+            .execute(
+                &ctx,
+                json!({"command": "touch ready; (sleep 2; echo escaped > escaped) & wait", "timeout": 1}),
+            )
+            .await;
         job_id(&out);
         wait_file(&dir.path().join("ready")).await;
     });
     // Keep the tool alive: cleanup must not depend on Jobs::drop being polled.
     drop(runtime);
-    // The child sleeps 2s; give the group kill a wide margin before
-    // asserting it never got to write (a loaded runner needs the slack).
     std::thread::sleep(Duration::from_millis(4000));
     assert!(!dir.path().join("escaped").exists());
     drop(tool);
@@ -356,52 +391,11 @@ async fn job_ids_are_named_after_the_command() {
         let out = tool
             .execute(
                 &ctx,
-                json!({"command": "cd . && nice -n 5 sleep 0.2", "background": true, "timeout": 10}),
+                json!({"command": "cd . && nice -n 5 sleep 1.5", "timeout": 1}),
             )
             .await;
         ids.push(job_id(&out));
     }
     // Readable, and a repeat gets a counter instead of a clash.
     assert_eq!(ids, ["sleep", "sleep-2"]);
-    for id in &ids {
-        let out = result(&tool, &ctx, id).await;
-        assert!(
-            out.content.starts_with(&format!("job {id}\n")),
-            "{}",
-            out.content
-        );
-    }
-}
-
-#[tokio::test]
-async fn an_unknown_job_names_the_jobs_that_exist() {
-    let dir = tempfile::tempdir().unwrap();
-    let ctx = ctx(dir.path());
-    let tool = BashTool::default();
-    let none = tool
-        .execute(&ctx, json!({"action": "output", "job_id": "cargo-check"}))
-        .await;
-    assert!(none.is_error);
-    assert!(
-        none.content.contains("no background jobs in this session"),
-        "{}",
-        none.content
-    );
-    let started = tool
-        .execute(
-            &ctx,
-            json!({"command": "sleep 0.2", "background": true, "timeout": 10}),
-        )
-        .await;
-    let id = job_id(&started);
-    let typo = tool
-        .execute(&ctx, json!({"action": "status", "job_id": "slep"}))
-        .await;
-    assert!(typo.is_error);
-    assert!(
-        typo.content.contains(&format!("jobs here: {id}")),
-        "{}",
-        typo.content
-    );
-    result(&tool, &ctx, &id).await;
 }

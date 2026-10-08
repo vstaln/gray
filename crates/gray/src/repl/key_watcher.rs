@@ -77,34 +77,59 @@ pub(crate) fn spawn_key_watcher_with_typing(
                         ));
                     }
                 }
-                Event::Key(KeyEvent {
-                    code,
-                    modifiers,
-                    kind,
-                    ..
-                }) => {
-                    if kind == KeyEventKind::Release {
+                Event::Key(ev) => {
+                    if ev.kind == KeyEventKind::Release {
                         continue;
                     }
-                    // Ctrl+C always cancels turn
-                    if code == KeyCode::Char('c') && modifiers.contains(KeyModifiers::CONTROL) {
+                    // Ctrl+C always cancels the turn, whatever the keymap.
+                    if matches!(ev.code, KeyCode::Char('c') | KeyCode::Char('C'))
+                        && ev.modifiers.contains(KeyModifiers::CONTROL)
+                    {
                         watch_cancel.cancel();
                         return;
                     }
-                    // Esc: dismiss popup if open; else if the draft is a
-                    // slash command, cancel the turn and run it locally
-                    // (echoed as a sent message, never fed to the AI);
-                    // else plain cancel.
-                    if code == KeyCode::Esc {
-                        if let Some(shared) = watcher_tui.as_ref()
-                            && let Some(mut t) = try_lock_tui(shared)
-                        {
-                            if !t.matches.is_empty() {
-                                t.matches.clear();
-                                t.sel = 0;
-                                let _ = t.draw();
-                                continue;
+                    let bindings = crate::keymap::resolve_event(&ev);
+                    let interrupts = bindings.contains(&crate::keymap::Binding::Action(
+                        crate::keymap::Action::Interrupt,
+                    ));
+                    let Some(shared) = watcher_tui.as_ref() else {
+                        if interrupts {
+                            watch_cancel.cancel();
+                            return;
+                        }
+                        continue;
+                    };
+                    // Interrupt never waits on a busy renderer: a contended
+                    // lock still cancels, it just skips the popup/slash step.
+                    let mut t = if interrupts {
+                        match try_lock_tui(shared) {
+                            Some(t) => t,
+                            None => {
+                                watch_cancel.cancel();
+                                return;
                             }
+                        }
+                    } else {
+                        lock_tui(shared)
+                    };
+                    if !interrupts && !t.is_task_running {
+                        continue;
+                    }
+                    use crate::composer::input::keys::{KeyOutcome, dispatch_bindings};
+                    match dispatch_bindings(&mut t, &ev, &bindings) {
+                        KeyOutcome::Edited => {
+                            sync_matches(&mut t, &cwd_for_watcher);
+                            let _ = t.draw();
+                        }
+                        KeyOutcome::Ignored | KeyOutcome::Exit => {}
+                        KeyOutcome::Clear => {
+                            watch_cancel.cancel();
+                            return;
+                        }
+                        KeyOutcome::Interrupt => {
+                            // A slash-command draft: cancel the turn and run
+                            // it locally (echoed as a sent message, never fed
+                            // to the AI); else plain cancel.
                             let mut text = t.textarea.text().to_string();
                             for (ph, full) in &t.pending_pastes {
                                 text = text.replace(ph, full);
@@ -113,389 +138,42 @@ pub(crate) fn spawn_key_watcher_with_typing(
                             if text.starts_with('/') && !text.contains('\n') {
                                 t.push_user_prompt(&text, &[], false);
                                 t.local_command = Some(text);
-                                t.textarea.set_text("");
-                                t.attachments.clear();
-                                t.pending_pastes.clear();
-                                t.history_idx = None;
-                                t.sel = 0;
-                                t.matches.clear();
+                                crate::composer::input::clear_draft(&mut t);
                                 let _ = t.draw();
-                                watch_cancel.cancel();
-                                return;
                             }
+                            watch_cancel.cancel();
+                            return;
                         }
-                        watch_cancel.cancel();
-                        return;
-                    }
-                    // When a turn is running, allow typing and queue on Enter
-                    let Some(shared) = watcher_tui.as_ref() else {
-                        continue;
-                    };
-                    let mut t = lock_tui(shared);
-                    if !t.is_task_running {
-                        continue;
-                    }
-                    if modifiers.contains(KeyModifiers::CONTROL)
-                        && matches!(code, KeyCode::Char('v') | KeyCode::Char('V'))
-                    {
-                        // opencode `prompt.paste`: image first, then clipboard text.
-                        t.paste_from_clipboard();
-                        // sync matches after clipboard attach may insert placeholder
-                        let cur_text = t.textarea.text().to_string();
-                        t.matches =
-                            crate::repl::completion_matches_dyn(&cur_text, &cwd_for_watcher);
-                        if t.sel >= t.matches.len() {
-                            t.sel = t.matches.len().saturating_sub(1);
-                        }
-                        let _ = t.draw();
-                        continue;
-                    }
-                    // Helper to sync matches after text change
-                    let sync_matches = |t: &mut crate::composer::Tui| {
-                        let cur_text = t.textarea.text().to_string();
-                        t.matches =
-                            crate::repl::completion_matches_dyn(&cur_text, &cwd_for_watcher);
-                        if t.sel >= t.matches.len() {
-                            t.sel = t.matches.len().saturating_sub(1);
-                        }
-                    };
-                    // Ctrl editing keys (must check before generic Char handling)
-                    if modifiers.contains(KeyModifiers::CONTROL) {
-                        match code {
-                            KeyCode::Char('p') => {
-                                if !t.matches.is_empty() {
-                                    t.sel = t.sel.saturating_sub(1);
-                                    let _ = t.draw();
-                                } else {
-                                    // treat as Up history? ignore during task running
-                                    let _ = t.draw();
-                                }
-                                continue;
-                            }
-                            KeyCode::Char('n') => {
-                                if !t.matches.is_empty() {
-                                    t.sel = (t.sel + 1).min(t.matches.len().saturating_sub(1));
-                                    let _ = t.draw();
-                                }
-                                continue;
-                            }
-                            KeyCode::Char('u') => {
-                                t.textarea.set_text("");
-                                t.history_idx = None;
-                                sync_matches(&mut t);
-                                let _ = t.draw();
-                                continue;
-                            }
-                            KeyCode::Char('a') => {
-                                t.textarea.set_cursor(0);
-                                let _ = t.draw();
-                                continue;
-                            }
-                            KeyCode::Char('e') => {
-                                t.textarea.move_to_end();
-                                let _ = t.draw();
-                                continue;
-                            }
-                            KeyCode::Char('k') => {
-                                let cur = t.textarea.cursor();
-                                t.textarea.replace_range(cur..usize::MAX, "");
-                                sync_matches(&mut t);
-                                let _ = t.draw();
-                                continue;
-                            }
-                            KeyCode::Char('w') | KeyCode::Backspace => {
-                                // input.rs parity: word-delete regardless of an
-                                // open popup (popup keys are handled above).
-                                t.textarea.delete_word_backward();
-                                t.sync_attachments();
-                                sync_matches(&mut t);
-                                let _ = t.draw();
-                                continue;
-                            }
-                            KeyCode::Delete => {
-                                t.textarea.delete_word_forward();
-                                t.sync_attachments();
-                                sync_matches(&mut t);
-                                let _ = t.draw();
-                                continue;
-                            }
-                            KeyCode::Left => {
-                                if !t.matches.is_empty() {
-                                    t.sel = t.sel.saturating_sub(1);
-                                    let _ = t.draw();
-                                } else {
-                                    t.textarea.move_word_left();
-                                    let _ = t.draw();
-                                }
-                                continue;
-                            }
-                            KeyCode::Right => {
-                                if !t.matches.is_empty() {
-                                    t.sel = (t.sel + 1).min(t.matches.len().saturating_sub(1));
-                                    let _ = t.draw();
-                                } else {
-                                    t.textarea.move_word_right();
-                                    let _ = t.draw();
-                                }
-                                continue;
-                            }
-                            _ => {}
-                        }
-                    }
-                    // Alt editing keys
-                    if modifiers.contains(KeyModifiers::ALT) {
-                        match code {
-                            KeyCode::Backspace => {
-                                t.textarea.delete_word_backward();
-                                t.sync_attachments();
-                                sync_matches(&mut t);
-                                let _ = t.draw();
-                                continue;
-                            }
-                            KeyCode::Delete => {
-                                t.textarea.delete_word_forward();
-                                t.sync_attachments();
-                                sync_matches(&mut t);
-                                let _ = t.draw();
-                                continue;
-                            }
-                            KeyCode::Char('d') => {
-                                t.textarea.delete_word_forward();
-                                sync_matches(&mut t);
-                                let _ = t.draw();
-                                continue;
-                            }
-                            KeyCode::Char('b') | KeyCode::Left => {
-                                t.textarea.move_word_left();
-                                let _ = t.draw();
-                                continue;
-                            }
-                            KeyCode::Char('f') | KeyCode::Right => {
-                                t.textarea.move_word_right();
-                                let _ = t.draw();
-                                continue;
-                            }
-                            _ => {}
-                        }
-                    }
-                    // Popup navigation when >1 match (a lone match leaves
-                    // Up/Down free for history recall / cursor movement)
-                    if t.matches.len() > 1 {
-                        match code {
-                            KeyCode::Up => {
-                                t.sel = t.sel.saturating_sub(1);
-                                let _ = t.draw();
-                                continue;
-                            }
-                            KeyCode::Down => {
-                                t.sel = (t.sel + 1).min(t.matches.len().saturating_sub(1));
-                                let _ = t.draw();
-                                continue;
-                            }
-                            KeyCode::Tab => {
-                                if let Some((name, _)) = t.matches.get(t.sel).cloned() {
-                                    t.textarea.set_text(&format!("/{name} "));
-                                    t.textarea.move_to_end();
-                                    sync_matches(&mut t);
-                                }
-                                let _ = t.draw();
-                                continue;
-                            }
-                            KeyCode::Enter => {
-                                let cur_text = t.textarea.text().to_string();
-                                if let Some((name, _)) = t.matches.get(t.sel).cloned()
-                                    && cur_text != format!("/{name}")
-                                    && cur_text != format!("/{name} ")
-                                {
-                                    t.textarea.set_text(&format!("/{name} "));
-                                    t.textarea.move_to_end();
-                                    sync_matches(&mut t);
-                                    let _ = t.draw();
-                                    continue;
-                                }
-                                // if already completed, fall through to queue logic below
-                            }
-                            KeyCode::Esc => {
-                                t.matches.clear();
-                                t.sel = 0;
-                                let _ = t.draw();
-                                continue;
-                            }
-                            _ => {}
-                        }
-                    }
-                    match code {
-                        KeyCode::Left => {
-                            t.textarea.move_left();
-                            let _ = t.draw();
-                        }
-                        KeyCode::Right => {
-                            t.textarea.move_right();
-                            let _ = t.draw();
-                        }
-                        KeyCode::Up => {
-                            if t.matches.len() > 1 {
-                                t.sel = t.sel.saturating_sub(1);
-                                let _ = t.draw();
-                            } else {
-                                // Idle parity (input.rs): recall history when
-                                // at the top of a single-line draft, so old
-                                // prompts stay reachable mid-turn.
-                                let has_multiline = t.textarea.text().contains('\n');
-                                let at_top = t.textarea.cursor() == 0 || !has_multiline;
-                                if at_top && !t.history.is_empty() {
-                                    if t.history_idx.is_none() {
-                                        let cur = t.textarea.text().to_string();
-                                        let len = t.history.len();
-                                        t.draft = cur;
-                                        t.history_idx = Some(len);
-                                    }
-                                    // Locals, not a held `history_idx` borrow:
-                                    // `t` is a lock guard, so the borrow
-                                    // checker won't split its fields.
-                                    let prev = match t.history_idx {
-                                        Some(idx) if idx > 0 => {
-                                            Some((idx - 1, t.history[idx - 1].clone()))
-                                        }
-                                        _ => None,
-                                    };
-                                    if let Some((prev_idx, h)) = prev {
-                                        t.history_idx = Some(prev_idx);
-                                        t.textarea.set_text(&h);
-                                        t.textarea.move_to_end();
-                                    }
-                                    sync_matches(&mut t);
-                                } else {
-                                    t.textarea.move_up();
-                                }
-                                let _ = t.draw();
-                            }
-                        }
-                        KeyCode::Down => {
-                            if t.matches.len() > 1 {
-                                t.sel = (t.sel + 1).min(t.matches.len().saturating_sub(1));
-                                let _ = t.draw();
-                            } else if t.history_idx.is_some() {
-                                // Idle parity: walk back down toward the draft.
-                                let idx = t.history_idx.unwrap();
-                                if idx + 1 >= t.history.len() {
-                                    let draft = t.draft.clone();
-                                    t.textarea.set_text(&draft);
-                                    t.textarea.move_to_end();
-                                    t.history_idx = None;
-                                } else {
-                                    t.history_idx = Some(idx + 1);
-                                    let h = t.history[idx + 1].clone();
-                                    t.textarea.set_text(&h);
-                                    t.textarea.move_to_end();
-                                }
-                                sync_matches(&mut t);
-                                let _ = t.draw();
-                            } else {
-                                t.textarea.move_down();
-                                let _ = t.draw();
-                            }
-                        }
-                        KeyCode::Tab => {
-                            if !t.matches.is_empty() {
-                                if let Some((name, _)) = t.matches.get(t.sel).cloned() {
-                                    t.textarea.set_text(&format!("/{name} "));
-                                    t.textarea.move_to_end();
-                                    sync_matches(&mut t);
-                                }
-                                let _ = t.draw();
-                            }
-                        }
-                        KeyCode::Enter => {
-                            let is_newline = modifiers.contains(KeyModifiers::SHIFT)
-                                || modifiers.contains(KeyModifiers::ALT);
-                            if is_newline {
-                                t.textarea.insert_str("\n");
-                                sync_matches(&mut t);
-                                let _ = t.draw();
-                                continue;
-                            }
-                            // if popup open and selection not yet applied, complete first
-                            if !t.matches.is_empty()
-                                && let Some((name, _)) = t.matches.get(t.sel).cloned()
-                            {
-                                let cur_text = t.textarea.text().to_string();
-                                if cur_text != format!("/{name}") && cur_text != format!("/{name} ")
-                                {
-                                    t.textarea.set_text(&format!("/{name} "));
-                                    t.textarea.move_to_end();
-                                    sync_matches(&mut t);
-                                    let _ = t.draw();
-                                    continue;
-                                }
-                            }
-                            let mut text = t.textarea.text().to_string();
-                            for (ph, full) in &t.pending_pastes {
-                                text = text.replace(ph, full);
-                            }
-                            text = text.trim().to_string();
-                            let attached_with_ph: Vec<(String, std::path::PathBuf)> =
-                                std::mem::take(&mut t.attachments);
-                            let attached: Vec<std::path::PathBuf> =
-                                attached_with_ph.into_iter().map(|(_, p)| p).collect();
-                            // clear pending pastes already handled
-                            if text.is_empty() && attached.is_empty() {
-                                continue;
-                            }
-                            // queue it — fleeting, not transcript (becomes real prompt when dequeued)
-                            t.queued_inputs.push_back((text.clone(), attached.clone()));
-                            t.textarea.set_text("");
-                            t.pending_pastes.clear();
+                        KeyOutcome::Command(cmd) => {
+                            t.queued_inputs.push_back((cmd, Vec::new()));
                             t.matches.clear();
                             t.sel = 0;
                             let _ = t.draw();
                         }
-                        KeyCode::Char(c) => {
-                            t.textarea.insert_str(&c.to_string());
-                            sync_matches(&mut t);
+                        KeyOutcome::Submit => {
+                            let mut text = t.textarea.text().to_string();
+                            for (ph, full) in &t.pending_pastes {
+                                text = text.replace(ph, full);
+                            }
+                            let text = text.trim().to_string();
+                            if text.is_empty() && t.attachments.is_empty() {
+                                continue;
+                            }
+                            let attached: Vec<std::path::PathBuf> =
+                                std::mem::take(&mut t.attachments)
+                                    .into_iter()
+                                    .map(|(_, p)| p)
+                                    .collect();
+                            // Queued — fleeting, not transcript (becomes a
+                            // real prompt when dequeued).
+                            t.queued_inputs.push_back((text, attached));
+                            t.textarea.set_text("");
+                            t.pending_pastes.clear();
+                            t.history_idx = None;
+                            t.matches.clear();
+                            t.sel = 0;
                             let _ = t.draw();
                         }
-                        KeyCode::Backspace => {
-                            if modifiers.contains(KeyModifiers::ALT)
-                                || modifiers.contains(KeyModifiers::CONTROL)
-                            {
-                                t.textarea.delete_word_backward();
-                            } else {
-                                t.textarea.delete_backward();
-                            }
-                            t.sync_attachments();
-                            sync_matches(&mut t);
-                            let _ = t.draw();
-                        }
-                        KeyCode::Delete => {
-                            if modifiers.contains(KeyModifiers::ALT)
-                                || modifiers.contains(KeyModifiers::CONTROL)
-                            {
-                                t.textarea.delete_word_forward();
-                            } else {
-                                t.textarea.delete_forward();
-                            }
-                            t.sync_attachments();
-                            sync_matches(&mut t);
-                            let _ = t.draw();
-                        }
-                        KeyCode::Esc => {
-                            if !t.matches.is_empty() {
-                                t.matches.clear();
-                                t.sel = 0;
-                                let _ = t.draw();
-                            } else {
-                                t.textarea.set_text("");
-                                t.attachments.clear();
-                                t.pending_pastes.clear();
-                                t.history_idx = None;
-                                t.sel = 0;
-                                t.matches.clear();
-                                sync_matches(&mut t);
-                                let _ = t.draw();
-                            }
-                        }
-                        _ => {}
                     }
                 }
                 Event::Paste(data) => {
@@ -507,17 +185,22 @@ pub(crate) fn spawn_key_watcher_with_typing(
                         continue;
                     }
                     t.handle_paste(data);
-                    let cur_text = t.textarea.text().to_string();
-                    t.matches = crate::repl::completion_matches_dyn(&cur_text, &cwd_for_watcher);
-                    if t.sel >= t.matches.len() {
-                        t.sel = t.matches.len().saturating_sub(1);
-                    }
+                    sync_matches(&mut t, &cwd_for_watcher);
                     let _ = t.draw();
                 }
                 _ => {}
             }
         }
     })
+}
+
+/// Refreshes the completion popup after the draft changed.
+fn sync_matches(t: &mut crate::composer::Tui, cwd: &std::path::Path) {
+    let cur_text = t.textarea.text().to_string();
+    t.matches = crate::repl::completion_matches_dyn(&cur_text, cwd);
+    if t.sel >= t.matches.len() {
+        t.sel = t.matches.len().saturating_sub(1);
+    }
 }
 
 #[path = "key_watcher_tests.rs"]

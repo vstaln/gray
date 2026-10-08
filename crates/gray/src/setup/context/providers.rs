@@ -130,6 +130,78 @@ fn model_efforts(model_id: &str) -> Option<Vec<String>> {
     None
 }
 
+/// Capability/shape facts the recommended-model ranking needs, keyed like
+/// the reasoning cache (exact id + lowercase + `provider/` tail). models.dev
+/// is the authoritative source; live `/models` payloads gap-fill fields it
+/// never spoke for. `None` fields = no source has spoken for that fact.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ModelMeta {
+    pub tool_call: Option<bool>,
+    /// Output is text-only (`modalities.output == ["text"]`).
+    pub text_only: Option<bool>,
+    /// `YYYY-MM-DD`; lexicographic order is chronological.
+    pub release_date: Option<String>,
+    pub family: Option<String>,
+}
+
+static MODEL_META: std::sync::OnceLock<
+    std::sync::RwLock<std::collections::HashMap<String, ModelMeta>>,
+> = std::sync::OnceLock::new();
+
+fn model_meta_cell() -> &'static std::sync::RwLock<std::collections::HashMap<String, ModelMeta>> {
+    MODEL_META.get_or_init(|| std::sync::RwLock::new(std::collections::HashMap::new()))
+}
+
+/// models.dev write: its statement replaces whatever is cached (it is the
+/// authoritative source, and it speaks for every field on every model).
+pub fn cache_model_meta(model_id: &str, meta: ModelMeta) {
+    if let Ok(mut g) = model_meta_cell().write() {
+        g.insert(model_id.to_string(), meta);
+    }
+}
+
+/// Live-payload write: fills only fields no source has spoken for —
+/// models.dev values always win regardless of arrival order.
+pub(crate) fn cache_model_meta_gap_fill(model_id: &str, meta: ModelMeta) {
+    if let Ok(mut g) = model_meta_cell().write() {
+        let entry = g.entry(model_id.to_string()).or_default();
+        if entry.tool_call.is_none() {
+            entry.tool_call = meta.tool_call;
+        }
+        if entry.text_only.is_none() {
+            entry.text_only = meta.text_only;
+        }
+        if entry.release_date.is_none() {
+            entry.release_date = meta.release_date;
+        }
+        if entry.family.is_none() {
+            entry.family = meta.family;
+        }
+    }
+}
+
+/// What any source has said about `model_id`, resolved like the context
+/// cache: exact, lowercase, then `provider/` tail.
+pub fn model_meta(model_id: &str) -> Option<ModelMeta> {
+    let g = model_meta_cell().read().ok()?;
+    if let Some(m) = g.get(model_id).cloned() {
+        return Some(m);
+    }
+    let lower = model_id.to_lowercase();
+    if let Some(m) = g.get(&lower).cloned() {
+        return Some(m);
+    }
+    if let Some((_, suffix)) = model_id.rsplit_once('/') {
+        if let Some(m) = g.get(suffix).cloned() {
+            return Some(m);
+        }
+        if let Some(m) = g.get(&suffix.to_lowercase()).cloned() {
+            return Some(m);
+        }
+    }
+    None
+}
+
 /// `Some(true/false)` when a provider source advertised reasoning support,
 /// `None` when no source has spoken for this model.
 pub fn model_supports_reasoning(model_id: &str) -> Option<bool> {
@@ -505,6 +577,29 @@ async fn fetch_models_async(base: String, key: Option<String>) -> Vec<(String, S
                         {
                             cache_model_reasoning(id_str, r);
                         }
+                        // OpenRouter-shaped items carry the facts the
+                        // recommended-model ranking needs; gap-fill only,
+                        // models.dev stays authoritative.
+                        let tool_call = item
+                            .get("supported_parameters")
+                            .and_then(|v| v.as_array())
+                            .map(|a| a.iter().any(|p| p.as_str() == Some("tools")));
+                        let text_only = item
+                            .get("architecture")
+                            .and_then(|a| a.get("output_modalities"))
+                            .and_then(|v| v.as_array())
+                            .map(|o| o.len() == 1 && o[0].as_str() == Some("text"));
+                        if tool_call.is_some() || text_only.is_some() {
+                            cache_model_meta_gap_fill(
+                                id_str,
+                                ModelMeta {
+                                    tool_call,
+                                    text_only,
+                                    release_date: None,
+                                    family: None,
+                                },
+                            );
+                        }
                         models.push((id_str.to_string(), name));
                     }
                 }
@@ -656,6 +751,145 @@ async fn plugin_models_rpc(
         );
     }
     models
+}
+
+/// Verdict of the connect-modal key check. `Rejected` is the provider's own
+/// answer (an auth refusal); `Unknown` is every inconclusive probe — offline,
+/// timeout, odd provider — and must never block connecting.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KeyCheck {
+    Valid,
+    Rejected(u16),
+    Unknown,
+}
+
+/// How the check authenticates: a Bearer header everywhere except Anthropic,
+/// whose API wants `x-api-key` + `anthropic-version` instead.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum AuthStyle {
+    Bearer,
+    Anthropic,
+}
+
+/// Hosts that answer a bad key with 400 instead of 401 — measured: Google
+/// (`generativelanguage.googleapis.com`) and xAI (`api.x.ai`) both reject a
+/// fake Bearer on `/models` with 400.
+const BAD_KEY_IS_400: &[&str] = &["generativelanguage.googleapis.com", "api.x.ai"];
+
+/// The (url, auth, reject-400) probe for `base_url`: OpenRouter's `/key`
+/// (its `/models` is public and validates nothing), Anthropic's `/models`
+/// under its native headers, everything else's `/models` under Bearer. The
+/// flag marks hosts whose 400 means "bad key" rather than "bad request".
+pub(crate) fn key_check_request(base_url: &str) -> (String, AuthStyle, bool) {
+    let trimmed = base_url.trim().trim_end_matches('/');
+    if trimmed.contains("openrouter.ai") {
+        return (
+            "https://openrouter.ai/api/v1/key".to_string(),
+            AuthStyle::Bearer,
+            false,
+        );
+    }
+    let host = reqwest::Url::parse(trimmed)
+        .ok()
+        .and_then(|u| u.host_str().map(str::to_string))
+        .unwrap_or_default();
+    let style = if host == "api.anthropic.com" {
+        AuthStyle::Anthropic
+    } else {
+        AuthStyle::Bearer
+    };
+    (
+        format!("{trimmed}/models"),
+        style,
+        BAD_KEY_IS_400.contains(&host.as_str()),
+    )
+}
+
+/// HTTP status → verdict: only an explicit auth refusal is a rejection —
+/// 401/403 anywhere, 400 on the hosts that use it for auth — anything else
+/// (5xx, redirects, odd 2xx-adjacent) stays inconclusive.
+pub(crate) fn classify_key_status(status: u16, reject_400: bool) -> KeyCheck {
+    match status {
+        200..=299 => KeyCheck::Valid,
+        401 | 403 => KeyCheck::Rejected(status),
+        400 if reject_400 => KeyCheck::Rejected(status),
+        _ => KeyCheck::Unknown,
+    }
+}
+
+async fn key_check_async(url: String, style: AuthStyle, reject_400: bool, key: String) -> KeyCheck {
+    let Ok(client) = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .user_agent(concat!("gray/", env!("CARGO_PKG_VERSION")))
+        .build()
+    else {
+        return KeyCheck::Unknown;
+    };
+    let req = match style {
+        AuthStyle::Bearer => client.get(&url).bearer_auth(key),
+        AuthStyle::Anthropic => client
+            .get(&url)
+            .header("x-api-key", key)
+            .header("anthropic-version", "2023-06-01"),
+    };
+    // The body is never read: providers may echo key fragments back.
+    match req.send().await {
+        Ok(resp) => classify_key_status(resp.status().as_u16(), reject_400),
+        Err(_) => KeyCheck::Unknown,
+    }
+}
+
+/// Ask the provider whether `key` works — the connect modal's pre-save check.
+/// Blocking with a hard 5s cap on its own short-lived runtime, the same
+/// discipline as [`fetch_live_provider_models`].
+pub fn verify_api_key(base_url: &str, key: &str) -> KeyCheck {
+    let (url, style, reject_400) = key_check_request(base_url);
+    let key = key.to_string();
+    std::thread::scope(|s| {
+        s.spawn(move || {
+            match tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(rt) => rt.block_on(key_check_async(url, style, reject_400, key)),
+                Err(_) => KeyCheck::Unknown,
+            }
+        })
+        .join()
+        .unwrap_or(KeyCheck::Unknown)
+    })
+}
+
+/// Local Ollama probe for the connect list's `(running locally)` badge —
+/// one ~300ms ask of `/api/tags`, taken once when the modal opens (the item
+/// list rebuilds every loop pass, far too often for a probe).
+pub(crate) fn ollama_running() -> bool {
+    std::thread::scope(|s| {
+        s.spawn(|| {
+            match tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(rt) => rt.block_on(async {
+                    let Ok(client) = reqwest::Client::builder()
+                        .timeout(std::time::Duration::from_millis(300))
+                        .build()
+                    else {
+                        return false;
+                    };
+                    client
+                        .get("http://localhost:11434/api/tags")
+                        .send()
+                        .await
+                        .map(|r| r.status().is_success())
+                        .unwrap_or(false)
+                }),
+                Err(_) => false,
+            }
+        })
+        .join()
+        .unwrap_or(false)
+    })
 }
 
 static MODEL_CONTEXT_CACHE: std::sync::OnceLock<
@@ -1275,6 +1509,15 @@ pub struct ModelsDevEntry {
     reasoning_options: Option<Vec<ModelsDevOption>>,
     /// USD per 1M tokens (opencode `model.cost`), with optional context tiers.
     cost: Option<ModelsDevCost>,
+    /// Recommended-ranking facts: tool support, output shape, freshness.
+    tool_call: Field,
+    modalities: Option<ModelsDevModalities>,
+    release_date: Field,
+    family: Field,
+}
+#[derive(serde::Deserialize)]
+pub struct ModelsDevModalities {
+    output: Field,
 }
 #[derive(serde::Deserialize)]
 pub struct ModelsDevCost {
@@ -1452,6 +1695,34 @@ fn apply_models_dev(providers: ModelsDev) -> usize {
             if let Some(r) = entry.reasoning.as_ref().and_then(|v| v.as_bool()) {
                 cache_model_reasoning(key, r);
             }
+            // Capability/shape facts for the recommended-model ranking;
+            // text-only means output is exactly `["text"]` (an image-output
+            // model like nano-banana must not be recommended).
+            let meta = ModelMeta {
+                tool_call: entry.tool_call.as_ref().and_then(|v| v.as_bool()),
+                text_only: entry
+                    .modalities
+                    .as_ref()
+                    .and_then(|m| m.output.as_ref())
+                    .and_then(|v| v.as_array())
+                    .map(|o| o.len() == 1 && o[0].as_str() == Some("text")),
+                release_date: entry
+                    .release_date
+                    .as_ref()
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string),
+                family: entry
+                    .family
+                    .as_ref()
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string),
+            };
+            if meta != ModelMeta::default() {
+                cache_model_meta(key, meta.clone());
+                if let Some((_, suffix)) = key.rsplit_once('/') {
+                    cache_model_meta(suffix, meta);
+                }
+            }
             // models.dev `reasoning_options` effort values — the automatic
             // per-model source opencode derives variants from
             // (`reasoningVariants`, transform.ts). `null` means `none`.
@@ -1619,6 +1890,49 @@ fn apply_openrouter(list: OpenRouter) -> usize {
 pub async fn fetch_openrouter_rates() -> usize {
     const URL: &str = "https://openrouter.ai/api/v1/models";
     load_catalog("openrouter.json", URL, apply_openrouter).await
+}
+
+/// The website's curated connect-id → model-id ranking
+/// (`{"version":1,"providers":{"openrouter":[...]}}`; unknown fields
+/// ignored). Keys are connect ids, the same ids the picker looks up.
+#[derive(serde::Deserialize)]
+struct RecommendedModels {
+    providers: Option<std::collections::BTreeMap<String, Vec<String>>>,
+}
+
+static RECOMMENDED_MODELS: std::sync::OnceLock<
+    std::sync::RwLock<std::collections::BTreeMap<String, Vec<String>>>,
+> = std::sync::OnceLock::new();
+
+fn recommended_cell() -> &'static std::sync::RwLock<std::collections::BTreeMap<String, Vec<String>>>
+{
+    RECOMMENDED_MODELS.get_or_init(|| std::sync::RwLock::new(std::collections::BTreeMap::new()))
+}
+
+/// Curated model ids for a connect id (e.g. `openrouter`), best first.
+/// `None` when the website never published a list — the picker's automatic
+/// ranking takes over.
+pub fn curated_recommended(connect_id: &str) -> Option<Vec<String>> {
+    recommended_cell().read().ok()?.get(connect_id).cloned()
+}
+
+fn apply_recommended(list: RecommendedModels) -> usize {
+    let providers = list.providers.unwrap_or_default();
+    let n = providers.values().map(Vec::len).sum();
+    if let Ok(mut g) = recommended_cell().write() {
+        *g = providers;
+    }
+    n
+}
+
+/// Fetches the curated recommended-model table in the background. Same
+/// fire-and-forget contract as [`fetch_models_dev_context`] (24h disk TTL,
+/// stale fallback). A 404 or offline day reads as no curation — returns 0
+/// and the automatic ranking covers it.
+pub async fn fetch_recommended_models() -> usize {
+    let url = std::env::var("GRAY_RECOMMENDED_URL")
+        .unwrap_or_else(|_| "https://gray.alignment.id/models/recommended.json".to_string());
+    load_catalog("recommended.json", &url, apply_recommended).await
 }
 
 /// Catalogs change a few times a day at most; a day-old copy is plenty.

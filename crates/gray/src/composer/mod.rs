@@ -406,6 +406,9 @@ pub struct Tui {
     live_tools: Vec<LiveTool>,
     plugin_widget: plugin_widget::Widget,
     pub(crate) ask_modal: Option<AskModal>,
+    /// Last `statusline::version()` painted; a change (plugin status,
+    /// status command output, `/reload`) repaints the footer.
+    status_line_seen: u64,
 }
 
 /// Inline `host/ask` modal rows, rendered by `draw` above the input box
@@ -606,6 +609,7 @@ impl Tui {
             viewport_h: MIN_VIEWPORT_H,
             live_tools: Vec::new(),
             plugin_widget: plugin_widget::Widget::new(std::env::current_dir().unwrap_or_default()),
+            status_line_seen: crate::statusline::version(),
             ask_modal: None,
         })
     }
@@ -1099,10 +1103,6 @@ impl Tui {
         draw::draw(self)
     }
 
-    pub(crate) fn sync_attachments(&mut self) {
-        input::sync_attachments(self)
-    }
-
     pub fn handle_paste(&mut self, pasted: String) -> bool {
         input::handle_paste(self, pasted)
     }
@@ -1394,11 +1394,13 @@ impl Tui {
         // the 100ms ticker must keep painting while it runs — the same
         // reason the status dock and its shimmer tick.
         let cache_ticking = self.cache_remaining().is_some();
+        let footer_changed = crate::statusline::version() != self.status_line_seen;
         if self.status.is_none()
             && self.live_tools.is_empty()
             && !self.plugin_widget.active()
             && !widget_changed
             && !cache_ticking
+            && !footer_changed
         {
             return;
         }

@@ -495,22 +495,77 @@ pub(crate) fn render_entering_url(
     );
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn render_entering_key(
     frame: &mut Frame,
     area: Rect,
     item: &ConnectItem,
     key_buf: &str,
     existing_key: &Option<String>,
+    env_var: Option<&'static str>,
     status_msg: &Option<String>,
     colors: &ConnectColors,
 ) {
-    let inner = centered_dialog(frame, area, 64, 10, 40, 8, colors);
+    // Compose the dim hint rows first — the box sizes to the widest line.
+    let provider_line = format!("Provider: {}", item.name);
+    let provenance = env_var.map(|var| format!(" (from ${var})"));
+    let get_a_key = catalog::key_url(&item.id).map(|url| format!(" Get a key: {url}"));
+    let action_label = if existing_key.is_some() {
+        "update"
+    } else {
+        "submit"
+    };
+    let note = " (Key stored securely in ~/.gray/auth.json)";
+    let status_line = status_msg
+        .as_ref()
+        .map(|msg| format!(" \u{2022} {msg}"))
+        .unwrap_or_else(|| note.to_string());
+    let input_width = if key_buf.is_empty() {
+        existing_key.as_ref().map_or(
+            if item.id == "custom" {
+                " Paste or type API key (Enter to skip)...".chars().count()
+            } else {
+                " Paste or type API key...".chars().count()
+            },
+            |k| {
+                mask_key_pretty(k).chars().count()
+                    + "  \u{00b7} Enter to keep, paste to replace".chars().count()
+                    + 1
+            },
+        )
+    } else {
+        key_buf.chars().count() + 1
+    };
+    let longest = [
+        "API Key Configuration".chars().count() + "esc".chars().count(),
+        provider_line.chars().count(),
+        input_width,
+        status_line.chars().count(),
+        provenance.as_ref().map_or(0, |s| s.chars().count()),
+        get_a_key.as_ref().map_or(0, |s| s.chars().count()),
+        "enter ".chars().count() + action_label.chars().count(),
+    ]
+    .into_iter()
+    .max()
+    .unwrap_or(0) as u16;
+    // Width follows the longest line (never narrower than the old fixed
+    // box); one hint row fits inside the old height, a second grows it.
+    let hint_rows = u16::from(provenance.is_some()) + u16::from(get_a_key.is_some());
+    let inner = centered_dialog(
+        frame,
+        area,
+        (longest + 6).max(64),
+        10 + hint_rows.saturating_sub(1),
+        40,
+        8,
+        colors,
+    );
 
     // Header (with esc at top right)
     render_header_esc(frame, inner, "API Key Configuration", colors);
     frame.render_widget(
         Paragraph::new(Line::from(vec![Span::styled(
-            format!("Provider: {}", item.name),
+            provider_line,
             Style::default().fg(colors.text_dim).bg(colors.box_bg),
         )])),
         Rect::new(inner.x, inner.y + 1, inner.width, 1),
@@ -563,20 +618,28 @@ pub(crate) fn render_entering_key(
     render_input_row(frame, inner, input_content, colors);
 
     // Status or note
-    render_note_or_status(
-        frame,
-        inner,
-        status_msg,
-        " (Key stored securely in ~/.gray/auth.json)",
-        colors,
-    );
+    render_note_or_status(frame, inner, status_msg, note, colors);
+
+    // Provenance and the get-a-key URL each take their own dim row under
+    // the status — sharing a line truncated the URL at narrower widths.
+    let footer_y = inner.y + inner.height.saturating_sub(1);
+    for (i, hint) in [provenance, get_a_key].into_iter().flatten().enumerate() {
+        let hint_y = inner.y + 6 + i as u16;
+        if hint_y >= footer_y {
+            break; // Tiny terminal: the footer owns the last row.
+        }
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                hint,
+                Style::default()
+                    .fg(crate::theme::theme().text_dim)
+                    .bg(colors.box_bg),
+            ))),
+            Rect::new(inner.x, hint_y, inner.width, 1),
+        );
+    }
 
     // Footer buttons (enter update / submit - no brackets)
-    let action_label = if existing_key.is_some() {
-        "update"
-    } else {
-        "submit"
-    };
     render_footer(
         frame,
         inner,

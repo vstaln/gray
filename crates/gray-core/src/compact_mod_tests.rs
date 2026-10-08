@@ -511,9 +511,18 @@ async fn compaction_preserves_last_live_hook_context() {
         let requests = seen.lock().unwrap();
         let live = &requests[i * 2];
         let compact = &requests[i * 2 + 1];
-        assert_eq!(live.system, Some(format!("S\n\nCTX-{i}")));
+        assert_eq!(live.system, Some("S".to_string()));
         assert_eq!(compact.system, live.system);
         assert_eq!(compact.tools, live.tools);
+        // Per-turn hook text rides a transcript note, never the system
+        // prefix — a drifting `system` would force relay sessions to
+        // respawn (full re-bill) on every turn.
+        assert!(
+            live.messages
+                .iter()
+                .any(|m| m.text_content() == format!("[Context update]\nCTX-{i}")),
+            "turn {i}: fresh hook text lands as a context note"
+        );
     }
     assert_eq!(hook.0.load(std::sync::atomic::Ordering::SeqCst), 2);
 }

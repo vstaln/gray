@@ -803,3 +803,38 @@ async fn a_session_origin_fire_goes_to_that_sessions_inbox_once() {
     // A session id that could leave the inbox directory is never a path.
     assert!(!session_inbox_pending(home.path(), "../sess-1"));
 }
+
+#[tokio::test]
+async fn hosted_delivery_survives_a_non_host_driver() {
+    // The Discord incident: an in-turn `cron serve`/`tick` (or the gateway)
+    // fired a channel-bound job and its delivery died on that process's
+    // stdout. Now it waits in the outbox for the host's `tick --json`.
+    let home = tempfile::tempdir().unwrap();
+    let origin = serde_json::json!({"platform": "discord", "chat": "c1", "route": "chan-9"});
+    let mut hosted = one_due("d1", serde_json::json!("origin"));
+    hosted[0]["origin"] = origin;
+    let mut local = one_due("l1", serde_json::json!("origin"));
+    local[0]["origin"] = serde_json::json!({"platform": "local", "chat": "c2"});
+    hosted.as_array_mut().unwrap().push(local[0].clone());
+    let store = due_store(&home, hosted);
+    let runner = StubRunner {
+        text: "time to stretch".to_string(),
+        fail: false,
+        seen: Default::default(),
+    };
+    let deliver = SaveLocalDeliver {
+        home: home.path().to_path_buf(),
+    };
+    let rep = tick_once(&store, &runner, &deliver, "gateway")
+        .await
+        .unwrap();
+    assert_eq!(rep.fired, 2);
+    let lines = drain_outbox(home.path());
+    assert_eq!(lines.len(), 1, "only the hosted job spools: {lines:?}");
+    let v: serde_json::Value = serde_json::from_str(&lines[0]).unwrap();
+    assert_eq!(v["type"], "cron_delivery");
+    assert_eq!(v["job_id"], "d1");
+    assert_eq!(v["route"], "chan-9");
+    assert_eq!(v["final_text"], "time to stretch");
+    assert!(drain_outbox(home.path()).is_empty(), "drained exactly once");
+}

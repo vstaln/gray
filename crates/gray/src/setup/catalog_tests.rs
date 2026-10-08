@@ -472,3 +472,134 @@ fn effort_memory_round_trips_and_survives_partial_parse() {
         Some("low")
     );
 }
+
+// ── env-key detection + connect ordering ──
+// UNRUN (cargo test banned under X — verified via check + clippy only).
+
+#[test]
+fn env_key_detection_picks_the_first_non_empty_candidate() {
+    let env = |k: &str| match k {
+        "GOOGLE_API_KEY" => Some("".to_string()),
+        "GOOGLE_GENERATIVE_AI_API_KEY" => Some("gk".to_string()),
+        _ => None,
+    };
+    assert_eq!(
+        detected_env_key("google", env),
+        Some(("GOOGLE_GENERATIVE_AI_API_KEY", "gk".to_string()))
+    );
+    assert_eq!(detected_env_key("openai", env), None);
+    assert_eq!(detected_env_key("not-a-provider", env), None);
+}
+
+#[test]
+fn detect_candidates_reports_notes_and_ollama() {
+    let env = |k: &str| (k == "ANTHROPIC_API_KEY").then(|| "ak".to_string());
+    let found = detect_connect_candidates(true, env);
+    assert_eq!(found["anthropic"].note, "(found ANTHROPIC_API_KEY)");
+    assert_eq!(found["ollama"].note, "(running locally)");
+    assert!(found["ollama"].env.is_none());
+    assert!(!found.contains_key("openai"));
+}
+
+fn sort_item(id: &str) -> ConnectItem {
+    ConnectItem {
+        id: id.to_string(),
+        name: id.to_string(),
+        sublabel: String::new(),
+        base_url: format!("https://{id}.example/v1"),
+        no_auth: false,
+        auth: ConnectAuth::ApiKey,
+    }
+}
+
+#[test]
+fn connect_sort_is_connected_detected_popular_custom_rest() {
+    let config = crate::config::Config {
+        model: None,
+        base_url: "https://nowhere.example/v1".to_string(),
+        api_key: None,
+        provider_id: String::new(),
+        credential_source: String::new(),
+        auth_ref: String::new(),
+        thinking_effort: None,
+        show_reasoning: None,
+        fast_mode: None,
+        model_parts: Default::default(),
+        temperature: None,
+        top_p: None,
+        context_window: None,
+        context_reserve: None,
+        context_keep: None,
+        exec_prefix: None,
+        max_turns: None,
+        max_cost_micros: None,
+        max_wall_secs: None,
+        bare: false,
+        lean: true,
+    };
+    // xai holds a stored key: the connected row, wherever it started.
+    let mut auth = BTreeMap::new();
+    auth.insert("xai".to_string(), AuthEntry::Key("k".to_string()));
+    // anthropic is env-detected.
+    let detected = detect_connect_candidates(false, |k| {
+        (k == "ANTHROPIC_API_KEY").then(|| "ak".to_string())
+    });
+    let mut items = vec![
+        sort_item("zzz-rest"),
+        sort_item("custom"),
+        sort_item("openai"),
+        sort_item("anthropic"),
+        sort_item("xai"),
+    ];
+    sort_connect_items(&mut items, &config, &auth, &detected);
+    let ids: Vec<&str> = items.iter().map(|i| i.id.as_str()).collect();
+    assert_eq!(
+        ids,
+        ["xai", "anthropic", "openai", "custom", "zzz-rest"],
+        "connected > detected > popular > custom > rest"
+    );
+}
+
+#[test]
+fn connect_sort_with_nothing_known_lands_on_openai() {
+    let config = crate::config::Config {
+        model: None,
+        base_url: "https://nowhere.example/v1".to_string(),
+        api_key: None,
+        provider_id: String::new(),
+        credential_source: String::new(),
+        auth_ref: String::new(),
+        thinking_effort: None,
+        show_reasoning: None,
+        fast_mode: None,
+        model_parts: Default::default(),
+        temperature: None,
+        top_p: None,
+        context_window: None,
+        context_reserve: None,
+        context_keep: None,
+        exec_prefix: None,
+        max_turns: None,
+        max_cost_micros: None,
+        max_wall_secs: None,
+        bare: false,
+        lean: true,
+    };
+    let catalog = load_catalog().expect("catalog");
+    let mut items = build_connect_items(&catalog, &[]);
+    let auth = BTreeMap::new();
+    let detected = detect_connect_candidates(false, |_| None);
+    sort_connect_items(&mut items, &config, &auth, &detected);
+    assert_eq!(items[0].id, "openai", "the cursor's row 0 is OpenAI");
+    let custom_pos = items.iter().position(|i| i.id == "custom").unwrap();
+    assert!(
+        items[..custom_pos]
+            .iter()
+            .all(|i| POPULAR_DEFS.iter().any(|(id, ..)| *id == i.id)),
+        "only the popular block sits above Custom: {:?}",
+        items[..custom_pos]
+            .iter()
+            .map(|i| i.id.as_str())
+            .collect::<Vec<_>>()
+    );
+}

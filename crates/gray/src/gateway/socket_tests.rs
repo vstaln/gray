@@ -137,12 +137,12 @@ fn logs_tail_returns_last_lines_capped() {
 }
 
 #[test]
-fn unknown_verbs_still_list_all_four() {
+fn unknown_verbs_still_list_every_verb() {
     let home = tempfile::tempdir().unwrap();
     let line = handle_request_line(home.path(), br#"{"verb":"nope"}"#, 1000);
     let answer: serde_json::Value = serde_json::from_slice(&line).unwrap();
     assert_eq!(answer["ok"], serde_json::json!(false));
-    for verb in ["identify", "status", "metrics", "logs_tail"] {
+    for verb in SUPPORTED_VERBS {
         assert!(
             answer["supported_verbs"].to_string().contains(verb),
             "{answer}"
@@ -169,4 +169,31 @@ fn logs_tail_reports_the_real_total_after_the_byte_cap() {
     assert_eq!(total, 800, "the total must count the whole file");
     assert!(kept.len() <= super::LOGS_TAIL_LINES);
     assert!(!kept.is_empty());
+}
+
+#[test]
+fn pull_then_ack_drains_a_platform() {
+    let home = tempfile::tempdir().unwrap();
+    let dir = super::super::state_dir(home.path());
+    let route = crate::cron::store::Origin {
+        platform: "discord".into(),
+        chat: "42".into(),
+        thread: None,
+        route: Some("42".into()),
+    };
+    let i = super::super::outbox::Intent::new(
+        "main",
+        super::super::event::Kind::User,
+        Some(route),
+        "hi",
+    );
+    super::super::outbox::enqueue(&dir, &i).unwrap();
+    let ask = |raw: &[u8]| -> serde_json::Value {
+        serde_json::from_slice(&handle_request_line(home.path(), raw, 1000)).unwrap()
+    };
+    let pulled = ask(br#"{"verb":"pull","platform":"discord"}"#);
+    assert_eq!(pulled["result"]["intents"][0]["text"], "hi", "{pulled}");
+    assert_eq!(ask(br#"{"verb":"pull"}"#)["ok"], false);
+    let acked = ask(format!(r#"{{"verb":"ack","ids":["{}"]}}"#, i.id).as_bytes());
+    assert_eq!(acked["result"]["acked"], 1, "{acked}");
 }

@@ -139,7 +139,7 @@ fn list_footer_advertises_removal_only_for_a_stored_provider() {
     };
     let auth = auth_map(&[("openrouter", "sk-or")]);
     let mut items = build_connect_items(&load_catalog().unwrap(), &[]);
-    catalog::sort_connect_items(&mut items, &config, &auth);
+    catalog::sort_connect_items(&mut items, &config, &auth, &BTreeMap::new());
     let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap();
     let mut scroll = 0usize;
     // Highlight the first connected provider: the binding is advertised.
@@ -273,7 +273,7 @@ fn list_footer_hides_removal_for_a_provider_with_nothing_stored() {
     let config = config_for("https://openrouter.ai/api/v1");
     let auth = BTreeMap::new();
     let mut items = build_connect_items(&load_catalog().unwrap(), &[]);
-    catalog::sort_connect_items(&mut items, &config, &auth);
+    catalog::sort_connect_items(&mut items, &config, &auth, &BTreeMap::new());
     let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap();
     let mut scroll = 0usize;
     terminal

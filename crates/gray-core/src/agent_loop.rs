@@ -8,7 +8,7 @@
 use futures::StreamExt as _;
 
 use crate::agent::{
-    Agent, ToolBefore, ToolContext, ToolOutput, salvage_partial_text, thinking_block,
+    Agent, InputSubmit, ToolBefore, ToolContext, ToolOutput, salvage_partial_text, thinking_block,
 };
 use crate::agent_compact::needs_pre_turn_compact;
 use crate::agent_tools::{PendingToolCall, answer_pending_tools};
@@ -138,6 +138,19 @@ impl Agent {
         any
     }
 
+    /// Put this session's still-running background jobs in front of the
+    /// model: at the start of a turn, and again after a compaction may have
+    /// summarized away the notice that introduced them. Appended to the
+    /// transcript (never a per-request extra) so the history stays strictly
+    /// append-only for the prefix cache and subscription relays.
+    fn surface_running_jobs(&mut self, ctx: &ToolContext) {
+        if let Some(note) = self.executor.running_jobs_note(ctx) {
+            self.messages.push(Message::user(format!(
+                "[Background jobs still running]\n{note}\nEnd your turn to be woken when one finishes; `tail` a log to peek."
+            )));
+        }
+    }
+
     /// Best-effort `turn_end` fan-out: hook failures must never fail the turn
     /// (hooks are infallible by signature, same as `tool_before`).
     async fn emit_turn_end(&self, usage: &Usage) {
@@ -221,6 +234,9 @@ impl Agent {
         if is_blank_input(&input) {
             return Ok(vec![]);
         }
+        let Some(input) = self.apply_input_hooks(input).await else {
+            return Ok(vec![]);
+        };
         self.messages.push(input);
         self.run_inner(ctx, None).await
     }
@@ -237,8 +253,54 @@ impl Agent {
         if is_blank_input(&input) {
             return Ok(vec![]);
         }
+        let Some(input) = self.apply_input_hooks(input).await else {
+            return Ok(vec![]);
+        };
         self.messages.push(input);
         self.run_inner(ctx, Some(on_event)).await
+    }
+
+    /// `tool/after` (protocol 2.0): claimed hooks may replace a tool
+    /// result before `post_tool` observers and history see it (pi
+    /// `tool_result`). Hooks chain in order.
+    async fn apply_tool_after(&self, name: &str, output: &ToolOutput) -> ToolOutput {
+        let mut output = output.clone();
+        for hook in &self.hooks {
+            if let Some(replacement) = hook.tool_after(name, &output).await {
+                output = replacement;
+            }
+        }
+        output
+    }
+
+    /// `input/submit` (protocol 2.0): hooks get the submitted text in
+    /// order, each seeing the previous rewrite. `Handled` swallows the
+    /// input entirely (no turn, nothing recorded). Only plain-text user
+    /// input goes through the hook — a rewrite would silently drop any
+    /// non-text blocks (images, structured input).
+    async fn apply_input_hooks(&self, input: Message) -> Option<Message> {
+        if input.role != Role::User
+            || !input
+                .content
+                .iter()
+                .all(|b| matches!(b, ContentBlock::Text { .. }))
+        {
+            return Some(input);
+        }
+        let mut text = input.text_content();
+        for hook in &self.hooks {
+            match hook.input_submit(&text).await {
+                InputSubmit::Pass => {}
+                InputSubmit::Handled => return None,
+                InputSubmit::Rewrite(t) => text = t,
+            }
+        }
+        // A rewrite to blank is a swallow: history must not grow a
+        // message the model can never have intended.
+        if text.trim().is_empty() {
+            return None;
+        }
+        Some(Message::user(text))
     }
 
     async fn run_inner(
@@ -260,6 +322,8 @@ impl Agent {
         // A turn whose every round is a job-progress notice clears the streak
         // below, so it would otherwise bill forever on a no-timeout job.
         let mut poll_rounds: usize = 0;
+        // Running jobs are shown once per turn, and again after compaction.
+        let mut jobs_note_due = true;
         // Forward each event to the optional streaming sink, then collect it.
         macro_rules! emit {
             ($ev:expr) => {{
@@ -293,9 +357,8 @@ impl Agent {
         let mut intent_nudge_sent = false;
 
         // Protocol v1 `prompt/context`: fetched once per turn, not per round,
-        // so the system prefix stays byte-stable across a turn's requests
-        // (provider prefix caching survives multi-round turns) and sidecar
-        // hooks pay one call per turn instead of one per tool round.
+        // so the fetched text stays byte-stable across a turn's requests and
+        // sidecar hooks pay one call per turn instead of one per tool round.
         let mut hook_context = String::new();
         if let Some(hook) = self.checkpoint.clone() {
             hook(&self.messages, self.history_revision()).await;
@@ -318,15 +381,31 @@ impl Agent {
             }
         }
 
-        // Capture before pre-turn compaction so its request uses this same prefix.
-        let mut system = self.system.clone();
+        // The hook text rides a transcript note, not `system`: relay
+        // sidecars match their pooled native session on `instructions`
+        // byte-for-byte and provider prefix caches key on the same head,
+        // so per-turn text there (rules re-reads, ledger tails, subagent
+        // notices) forced a session respawn — a full re-bill — whenever it
+        // drifted. As a user message it lands in the absorbed prefix once,
+        // then re-sends only when the text actually changed (or compaction
+        // dropped the earlier copy).
         if !hook_context.is_empty() {
-            if !system.is_empty() {
-                system.push_str("\n\n");
+            let note = Message::user(format!("[Context update]\n{hook_context}"));
+            if !self.messages.contains(&note) {
+                self.messages.push(note);
             }
-            system.push_str(&hook_context);
         }
-        self.turn_system = Some(system);
+        // `agent/before_start` (protocol 2.0): per-turn context a plugin
+        // wants in history as a user message (pi `before_agent_start`).
+        if !self.lean_prompt {
+            for hook in &self.hooks {
+                if let Some(text) = hook.agent_before_start().await {
+                    self.messages.push(Message::user(text));
+                }
+            }
+        }
+        // Capture before pre-turn compaction so its request uses this same prefix.
+        self.turn_system = Some(self.system.clone());
 
         'turn: loop {
             // Cancellation is honored between turns, never mid-stream: a
@@ -338,6 +417,9 @@ impl Agent {
             }
 
             self.collect_background_notifications(&ctx);
+            if std::mem::take(&mut jobs_note_due) {
+                self.surface_running_jobs(&ctx);
+            }
 
             // Mid-turn steer: text the user typed while this turn was running
             // joins it here, at the boundary between two model requests, so it
@@ -386,6 +468,7 @@ impl Agent {
                                 before.1,
                                 self.messages.len()
                             ));
+                            jobs_note_due = true;
                             continue;
                         }
                         Ok(false) => break,
@@ -395,6 +478,11 @@ impl Agent {
                         }
                     }
                 }
+            }
+            // A compaction just above may have summarized away the notice
+            // that introduced a running job: name it again before the request.
+            if std::mem::take(&mut jobs_note_due) {
+                self.surface_running_jobs(&ctx);
             }
             // CCRM scrub (arXiv:2605.08563): contaminated partials stay in
             // `self.messages` (and so in the persisted transcript) but never
@@ -408,6 +496,14 @@ impl Agent {
                 request_messages.push(Message::user(
                     "Continue the pending user request using the retained context and summary.",
                 ));
+            }
+            // `context/build` (protocol 2.0): claimed hooks may replace the
+            // outbound list per request (pi `context`); `self.messages` —
+            // the persisted transcript — is never touched by it.
+            for hook in &self.hooks {
+                if let Some(msgs) = hook.context_build(&request_messages).await {
+                    request_messages = msgs;
+                }
             }
             let req = ChatRequest {
                 system: (!self.system_text().is_empty()).then(|| self.system_text().to_string()),
@@ -645,6 +741,7 @@ impl Agent {
                                             before.1,
                                             self.messages.len()
                                         ));
+                                        jobs_note_due = true;
                                         continue 'turn;
                                     }
                                     _ => {
@@ -1039,8 +1136,9 @@ impl Agent {
                         }
                         match by_idx.get(&idx) {
                             Some(Some(output)) => {
+                                let output = self.apply_tool_after(name, output).await;
                                 for hook in &self.hooks {
-                                    hook.post_tool(name, output).await;
+                                    hook.post_tool(name, &output).await;
                                 }
                                 emit!(AgentEvent::tool_result(
                                     id.clone(),
@@ -1125,6 +1223,7 @@ impl Agent {
                             Ok(report) => report,
                             Err(_) => ToolOutput::error("cancelled by user"),
                         };
+                        let report = self.apply_tool_after(name, &report).await;
                         for hook in &self.hooks {
                             hook.post_tool(name, &report).await;
                         }
@@ -1148,6 +1247,7 @@ impl Agent {
                         return Err(CoreError::Cancelled);
                     },
                 };
+                let output = self.apply_tool_after(name, &output).await;
                 for hook in &self.hooks {
                     hook.post_tool(name, &output).await;
                 }
@@ -1392,10 +1492,9 @@ fn awaits_user(tail: &str) -> bool {
     GATES.iter().any(|g| lower.contains(g))
 }
 
-/// True when a tool result is gray's "the job is still going" progress
-/// notice — the yield notice or a status/output poll of a live job. Both
-/// carry a moving `elapsed`, so a repeated call answered with one of these
-/// is a deliberate wait, never a stall.
+/// True when a tool result is gray's "the job is still going" notice: a
+/// command that reached its timeout and moved to a background job. A
+/// repeated call answered with one is real work moving, never a stall.
 fn is_job_progress(content: &str) -> bool {
-    content.contains("· running · elapsed ") || content.contains("still running · job ")
+    content.starts_with("still running · job ")
 }

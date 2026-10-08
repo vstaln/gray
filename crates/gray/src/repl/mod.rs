@@ -197,6 +197,7 @@ use crate::{DEFAULT_SYS_PROMPT, build_agent, load_or_create_system_prompt_at};
 pub mod attachments;
 pub mod commands;
 mod cron;
+mod customize;
 mod dispatch;
 pub mod format;
 mod gateway_panel;
@@ -210,7 +211,7 @@ mod session;
 mod status;
 mod user_cmds;
 
-pub(crate) use commands::{REGISTRY, completion_fill, completion_matches_dyn};
+pub(crate) use commands::{REGISTRY, completion_fill, completion_matches_dyn, is_builtin_command};
 pub use commands::{ReplCommand, ResumeArgs, SysAction, parse_command};
 pub(crate) use format::build_user_message_with_attachments;
 pub use format::{THINKING_STYLE, fmt_usage, format_core_error};
@@ -548,6 +549,7 @@ pub async fn run_repl_mode(
         crate::setup::fetch_live_provider_models(&base, key.as_deref());
     });
     tokio::spawn(crate::setup::fetch_models_dev_context());
+    tokio::spawn(crate::setup::fetch_recommended_models());
     if crate::setup::get_user_context_window().is_none() {
         tokio::spawn(crate::setup::fetch_litellm_context_windows());
         tokio::spawn(crate::setup::fetch_openrouter_rates());
@@ -572,9 +574,12 @@ pub async fn run_repl_mode(
     // Piped first-run skips onboarding like `-p` (never blocks on a picker).
     if unconfigured && interactive {
         let ready = crate::setup::run_onboarding(config).await?;
+        // A completed connect changes what "unconfigured" means: without
+        // this refresh the first message reopened the picker it just left.
+        unconfigured = config.model.is_none();
         if !ready {
             print!(
-                "\r\x1b[2mrunning without a provider — send a message to set one up (or /provider)\x1b[0m\r\n"
+                "\r\x1b[2mrunning without a provider — send a message to set one up (or /connect)\x1b[0m\r\n"
             );
         }
         print!("\r\n");
