@@ -63,6 +63,10 @@ impl ToolExecutor for LiveRegistry {
         self.static_.cancel_background(ctx, id)
     }
 
+    fn running_jobs_note(&self, ctx: &ToolContext) -> Option<String> {
+        self.static_.running_jobs_note(ctx)
+    }
+
     /// Static defs first, then live ones; a live tool that collides with a
     /// static name is dropped (the static registry owns it, and `execute`
     /// routes that name there).

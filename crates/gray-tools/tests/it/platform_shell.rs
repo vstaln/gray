@@ -54,9 +54,10 @@ async fn stopped_tree_cannot_write_later(cancel: bool) {
             token.cancel();
         }
     });
+    let tool = BashTool::default();
     let out = tokio::time::timeout(
         Duration::from_secs(12),
-        BashTool::default().execute(
+        tool.execute(
             &ctx,
             json!({
                 // Parent waits for a background subshell and its sleep child.
@@ -77,17 +78,38 @@ async fn stopped_tree_cannot_write_later(cancel: bool) {
     );
     assert!(
         out.content
-            .starts_with(if cancel { "cancelled" } else { "timed out" }),
+            .starts_with(if cancel { "cancelled" } else { "still running" }),
         "{}",
         out.content
     );
+    if !cancel {
+        // A timeout never kills: the model stops the job with the command
+        // the notice advertises (`kill -- -<pgid>`, `taskkill /T` on Windows).
+        let stop = out
+            .content
+            .split("Stop: `")
+            .nth(1)
+            .and_then(|s| s.split('`').next())
+            .expect("the notice advertises a stop command")
+            .to_string();
+        let stopped = tool.execute(&ctx, json!({"command": stop})).await;
+        assert!(
+            stopped.content.starts_with("stopped job "),
+            "{}",
+            stopped.content
+        );
+    }
     // Observe the side effect after the fixture's deadline even if the tool
     // returned quickly. Otherwise a root-only kill could look successful.
     tokio::time::sleep(Duration::from_secs(5)).await;
     assert!(
         !dir.path().join("escaped.txt").exists(),
         "descendant survived {} and wrote after termination: {}",
-        if cancel { "cancellation" } else { "timeout" },
+        if cancel {
+            "cancellation"
+        } else {
+            "the advertised stop"
+        },
         out.content
     );
 }

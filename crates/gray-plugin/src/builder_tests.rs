@@ -108,14 +108,23 @@ async fn minimal_profile_keeps_background_jobs_between_calls() {
         session_id: Some("builder-background".into()),
         ..Default::default()
     };
+    // A command that outlives its timeout becomes a job of this registry,
+    // and the job's finish is reported on a later drain: the registry must
+    // keep one BashTool across calls for that to work.
     let started = reg
         .execute(
             &ctx,
             "bash",
-            json!({"command":"echo ready", "background":true}),
+            json!({"command":"echo ready; sleep 1.5", "timeout":1}),
         )
         .await;
     assert!(!started.is_error, "{}", started.content);
+    assert!(
+        started.content.starts_with("still running"),
+        "{}",
+        started.content
+    );
+    assert!(started.content.contains("ready"), "{}", started.content);
     let id = started
         .content
         .split(" · job ")
@@ -123,19 +132,24 @@ async fn minimal_profile_keeps_background_jobs_between_calls() {
         .unwrap()
         .split(" · ")
         .next()
-        .unwrap();
-    tokio::time::timeout(std::time::Duration::from_secs(10), async {
-        while reg.drain_notifications(&ctx).is_empty() {
+        .unwrap()
+        .to_string();
+    assert_eq!(reg.background_jobs(&ctx).len(), 1);
+    let notices = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            let n = reg.drain_notifications(&ctx);
+            if !n.is_empty() {
+                return n;
+            }
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
     })
     .await
     .unwrap();
-    let result = reg
-        .execute(&ctx, "bash", json!({"action":"output", "job_id":id}))
-        .await;
-    assert!(result.content.contains("ready"), "{}", result.content);
-    assert!(result.content.contains("exit 0"), "{}", result.content);
+    assert!(
+        notices[0].contains(&format!("job {id} finished (exit 0)")),
+        "{notices:?}"
+    );
 }
 
 #[test]
