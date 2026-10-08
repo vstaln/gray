@@ -20,7 +20,7 @@ Every product we studied converges on the opposite shape:
   and delivery. Channels are thin adapters. All of the owner's DMs land in one rolling
   **main session** (OpenClaw `agent:<id>:main`, Dots "carry context across every
   channel", Muse "one persistent conversation").
-* **Wakes are events.** User messages, heartbeats, cron fires, finished background work,
+* **Wakes are events.** User messages, cron fires, finished background work,
   external triggers and restart recovery all enter the same queue and become turns in
   some session (openhuman's single trigger funnel, OpenClaw announces, nanobot's file
   trigger inbox).
@@ -40,7 +40,7 @@ Every product we studied converges on the opposite shape:
 
 ```
  adapters (discord, telegram, cli, web…)          wake sources
-   │  send / subscribe / ack  (gateway.sock)        heartbeat · cron · triggers/ ·
+   │  send / subscribe / ack  (gateway.sock)        cron · triggers/ ·
    ▼                                                task done · recovery · gray gateway wake
  ┌──────────────────────────── gray gateway run ─────────────────────────────┐
  │ events/  →  router (session key → gray session)  →  lanes (1 turn/session, │
@@ -67,15 +67,14 @@ State lives under `~/.gray/gateway/` as atomic JSON files, the same style as `cr
 | `outbox/<ts>-<uuid>.json` | delivery intents not yet acked by an adapter |
 | `activity.jsonl` | append-only audit: event, turn start/end, delivered, suppressed (+ why) |
 | `PAUSED` | estop sentinel: autonomous wakes stop, user messages still run |
-| `~/.gray/HEARTBEAT.md` | the owner-editable checklist the heartbeat follows |
 
 ## Pieces
 
 1. **Events.** `{id, origin, session_key, text, route?, sender?, created_at}`.
-   `origin` is provenance (zeroclaw `TurnOrigin`): `user | heartbeat | cron | trigger |
+   `origin` is provenance (zeroclaw `TurnOrigin`): `user | cron | trigger |
    task | recovery | system`. Every turn knows why it exists; the prompt envelope tells
    the model, and the delivery policy differs by origin.
-2. **Router.** Session keys: `main` (owner DMs from any channel, the CLI, heartbeats,
+2. **Router.** Session keys: `main` (owner DMs from any channel, the CLI,
    announcements), `chat:<platform>:<chat>[:<thread>]` (groups and non-owners),
    `job:<id>` (isolated work). The owner is configured per platform
    (`gateway.owners: ["discord:<user id>"]`); with no owner configured, everything is
@@ -97,12 +96,8 @@ State lives under `~/.gray/gateway/` as atomic JSON files, the same style as `cr
    a subscribed adapter for that platform gets them pushed and acks; unacked intents are
    retried with backoff, survive restarts, and die after 8 attempts with an activity
    entry.
-6. **Heartbeat.** A system wake every `heartbeat.every` (default 30m) inside
-   `heartbeat.active_hours` (default 08:00–22:00 local). Deterministic skips before any
-   model call: paused, main lane busy, `HEARTBEAT.md` has nothing but headings/comments
-   and there are no pending notices. The prompt is short and quiet by default (OpenClaw):
-   follow HEARTBEAT.md, do not invent or repeat old work, reply `NO_REPLY` if nothing
-   needs the owner.
+6. **Heartbeat: removed.** A timed self-wake cost ~25k input tokens per run for mostly
+   `NO_REPLY`. Recurring checks are `gray cron` jobs.
 7. **Cron joins the event loop.** The gateway no longer blocks on a fire. Jobs keep their
    store and claim semantics; a fired job's result becomes a delivery (chat-bound jobs)
    or an event into its session (`deliver: main`). Fires run concurrently under the same
@@ -117,7 +112,7 @@ State lives under `~/.gray/gateway/` as atomic JSON files, the same style as `cr
    simply retried.
 10. **Activity + control.** `gray gateway activity` tails the log; `gray gateway send`
     talks to the main session from a terminal; `pause`/`resume` flip the estop;
-    `heartbeat now` forces a wake; socket verbs `send`, `subscribe`, `ack`, `wake`,
+    socket verbs `send`, `subscribe`, `ack`, `wake`,
     `activity` next to the existing `identify`/`status`.
 
 ## Later (not in the first cut)

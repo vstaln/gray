@@ -1,7 +1,7 @@
 //! `gray gateway run`: the foreground daemon the supervisor executes.
 //!
 //! Three things run here: the control socket, the brain (events → turns →
-//! outbox, plus the heartbeat; see `brain.rs`), and the 60s cron ticker on
+//! outbox; see `brain.rs`), and the 60s cron ticker on
 //! its own thread. Shutdown is deliberate (hermes drain doctrine): a stop
 //! signal interrupts turns in flight (their admission records resume them
 //! on the next start), gives an in-flight cron fire a bounded drain window,
@@ -88,7 +88,7 @@ pub async fn run_foreground(config: &Config) -> anyhow::Result<()> {
     );
 
     // Cron runs on its own thread (its agent future is not `Send`), so a
-    // ten-minute job no longer freezes the event loop, heartbeats or the
+    // ten-minute job no longer freezes the event loop or the
     // socket. It drains on the same stop signal.
     let (cron_stop_tx, cron_stop_rx) = tokio::sync::watch::channel(false);
     let cron_thread = {
@@ -105,7 +105,6 @@ pub async fn run_foreground(config: &Config) -> anyhow::Result<()> {
         home: home.clone(),
     });
     let mut brain = crate::gateway::brain::Brain::new(&home, runner);
-    crate::gateway::heartbeat::ensure_template(&home);
     brain.recover();
     let mut done = brain.take_done();
     let mut poll = tokio::time::interval(Duration::from_secs(POLL_SECS));
@@ -154,7 +153,7 @@ pub async fn run_foreground(config: &Config) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Seconds between brain polls (trigger files, heartbeat gate, waiting
+/// Seconds between brain polls (trigger files, waiting
 /// events written by other processes). Socket requests nudge it at once.
 const POLL_SECS: u64 = 2;
 

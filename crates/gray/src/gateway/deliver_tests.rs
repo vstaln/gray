@@ -15,10 +15,10 @@ fn user_silence_is_strict_autonomous_is_forgiving() {
     assert!(is_silent("  ", Kind::User));
     assert!(!is_silent("NO_REPLY, nothing to add", Kind::User));
     assert!(!is_silent("all good\nNO_REPLY", Kind::User));
-    assert!(is_silent("all good\n**NO_REPLY**", Kind::Heartbeat));
+    assert!(is_silent("all good\n**NO_REPLY**", Kind::Trigger));
     assert!(is_silent("`[SILENT]`\nchecked CI", Kind::Trigger));
-    assert!(!is_silent("CI failed on main", Kind::Heartbeat));
-    assert!(is_silent("Checked everything.\nHEARTBEAT_OK", Kind::Heartbeat));
+    assert!(!is_silent("CI failed on main", Kind::Trigger));
+    assert!(is_silent("Checked everything.\nHEARTBEAT_OK", Kind::Trigger));
 }
 
 #[test]
@@ -34,7 +34,7 @@ fn replies_fall_back_to_last_route_then_owner_then_local() {
             dir.path(),
             s,
             "main",
-            Kind::Heartbeat,
+            Kind::Trigger,
             r,
             last,
             "hi",
@@ -52,7 +52,7 @@ fn replies_fall_back_to_last_route_then_owner_then_local() {
         dir.path(),
         &s,
         "main",
-        Kind::Heartbeat,
+        Kind::Trigger,
         None,
         None,
         "NO_REPLY",

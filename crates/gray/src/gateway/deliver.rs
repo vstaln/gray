@@ -44,7 +44,7 @@ pub enum Decision {
 /// Decide and act: silent → `Suppressed("silent")` (logged); otherwise
 /// enqueue for `route`, falling back to the session's `last_route`, then
 /// `settings.owners[0]`, then the `local` inbox.
-// ponytail: no quiet hours / hourly cap; add when heartbeat output gets noisy.
+// ponytail: no quiet hours / hourly cap; add when autonomous output gets noisy.
 pub fn decide(
     dir: &Path,
     settings: &Settings,

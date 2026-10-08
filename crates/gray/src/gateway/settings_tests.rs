@@ -6,8 +6,7 @@ fn defaults_survive_a_partial_file() {
     std::fs::write(dir.path().join("config.json"), r#"{"max_turns": 3}"#).unwrap();
     let s = Settings::load(dir.path());
     assert_eq!(s.max_turns, 3);
-    assert!(s.heartbeat.enabled);
-    assert_eq!(s.heartbeat.every_mins, 30);
+    assert_eq!(s.turn_timeout_secs, 1800);
 }
 
 #[test]

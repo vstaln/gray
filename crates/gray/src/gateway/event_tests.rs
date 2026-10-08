@@ -4,7 +4,7 @@ use super::*;
 fn admit_then_pending_round_trips_in_order() {
     let dir = tempfile::tempdir().unwrap();
     let a = Event::new(Kind::User, MAIN, "first", None);
-    let b = Event::new(Kind::Heartbeat, MAIN, "second", None);
+    let b = Event::new(Kind::Trigger, MAIN, "second", None);
     admit(dir.path(), &a).unwrap();
     std::thread::sleep(std::time::Duration::from_millis(2));
     admit(dir.path(), &b).unwrap();

@@ -1,8 +1,7 @@
 //! `~/.gray/gateway/config.json`: how the always-on gateway behaves.
 //!
 //! Every field has a default, so a missing or partial file is a working
-//! configuration: heartbeat on but idle until `HEARTBEAT.md` has content,
-//! no owner (every chat is its own session), two concurrent turns.
+//! configuration: no owner (every chat is its own session), two concurrent turns.
 
 use std::path::Path;
 
@@ -14,7 +13,6 @@ pub struct Settings {
     /// Owner surfaces; the first is where autonomous output goes when the
     /// session has no route of its own yet.
     pub owners: Vec<Route>,
-    pub heartbeat: Heartbeat,
     /// Turns running at once across all sessions.
     pub max_turns: usize,
     /// Wall clock for one turn before it is killed.
@@ -23,30 +21,10 @@ pub struct Settings {
     pub workdir: Option<std::path::PathBuf>,
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(default)]
-pub struct Heartbeat {
-    pub enabled: bool,
-    pub every_mins: u64,
-    /// `HH:MM-HH:MM` local; outside it the heartbeat does not wake.
-    pub active_hours: Option<String>,
-}
-
-impl Default for Heartbeat {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            every_mins: 30,
-            active_hours: Some("08:00-22:00".to_string()),
-        }
-    }
-}
-
 impl Default for Settings {
     fn default() -> Self {
         Self {
             owners: Vec::new(),
-            heartbeat: Heartbeat::default(),
             max_turns: 2,
             turn_timeout_secs: 1800,
             workdir: None,

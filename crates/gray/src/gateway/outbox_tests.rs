@@ -30,7 +30,7 @@ fn an_unacked_intent_comes_back_then_dies() {
     let dir = tempfile::tempdir().unwrap();
     enqueue(
         dir.path(),
-        &Intent::new("main", Kind::Heartbeat, Some(discord()), "x"),
+        &Intent::new("main", Kind::Trigger, Some(discord()), "x"),
     )
     .unwrap();
     let mut now = 0;

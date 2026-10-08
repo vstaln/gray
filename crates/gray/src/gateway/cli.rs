@@ -1,4 +1,4 @@
-//! `gray gateway send|wake|activity|pause|resume|heartbeat|inbox`: talk to
+//! `gray gateway send|wake|activity|pause|resume|inbox`: talk to
 //! and steer the always-on agent from a shell.
 
 #[derive(clap::Subcommand, Debug, Clone)]
@@ -23,12 +23,10 @@ pub enum AgentCmd {
         #[arg(short = 'n', long, default_value_t = 30)]
         lines: usize,
     },
-    /// Stop autonomous wakes (heartbeat, wake); user messages still run
+    /// Stop autonomous wakes (wake, triggers); user messages still run
     Pause,
     /// Undo `pause`
     Resume,
-    /// Run a heartbeat now (still skipped when paused or busy)
-    Heartbeat,
     /// Print and clear replies that had no chat to go to
     Inbox,
 }
@@ -67,16 +65,11 @@ pub async fn run(cmd: AgentCmd) -> anyhow::Result<()> {
         }
         AgentCmd::Pause => {
             std::fs::write(dir.join("PAUSED"), "")?;
-            println!("paused: heartbeat and wake turns wait; messages still run");
+            println!("paused: wake and trigger turns wait; messages still run");
         }
         AgentCmd::Resume => {
             let _ = std::fs::remove_file(dir.join("PAUSED"));
             println!("resumed");
-        }
-        AgentCmd::Heartbeat => {
-            std::fs::write(dir.join("heartbeat.force"), "")?;
-            println!("heartbeat requested; see `gray gateway activity`");
-            warn_if_down(&home);
         }
         AgentCmd::Inbox => {
             let got = outbox::pull(&dir, LOCAL, crate::cron::now_secs(), 100);
@@ -178,8 +171,8 @@ mod tests {
             i
         };
         assert!(answered(&[reply(Kind::User, 10)], &[], 10));
-        // A heartbeat landing in the inbox, or an older reply, is not the answer.
-        assert!(!answered(&[reply(Kind::Heartbeat, 10)], &[], 10));
+        // An autonomous turn landing in the inbox, or an older reply, is not the answer.
+        assert!(!answered(&[reply(Kind::Trigger, 10)], &[], 10));
         assert!(!answered(&[reply(Kind::User, 9)], &[], 10));
         let row =
             |at| serde_json::json!({"at": at, "what": "suppressed", "key": "main", "kind": "user"});

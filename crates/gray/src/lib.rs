@@ -756,7 +756,7 @@ pub enum GatewayCmd {
     /// Restart/shutdown notices for a chat adapter's daemon (JSON answers)
     #[command(subcommand)]
     Lifecycle(LifecycleCmd),
-    /// The always-on agent: send, wake, activity, pause/resume, heartbeat, inbox
+    /// The always-on agent: send, wake, activity, pause/resume, inbox
     #[command(flatten)]
     Agent(crate::gateway::cli::AgentCmd),
 }

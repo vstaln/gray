@@ -16,8 +16,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use super::deliver;
-use super::event::{self, Event, Kind, MAIN};
-use super::heartbeat;
+use super::event::{self, Event, Kind};
 use super::sessions::Sessions;
 use super::settings::Settings;
 use super::turn::{TurnOutcome, TurnRequest, TurnRunner};
@@ -55,8 +54,6 @@ pub struct Brain {
     busy: HashMap<String, (String, tokio::task::JoinHandle<()>)>,
     done_tx: tokio::sync::mpsc::UnboundedSender<Done>,
     done_rx: Option<tokio::sync::mpsc::UnboundedReceiver<Done>>,
-    /// Last heartbeat skip reason, so a skip is logged once, not every poll.
-    last_skip: Option<&'static str>,
 }
 
 impl Brain {
@@ -75,7 +72,6 @@ impl Brain {
             busy: HashMap::new(),
             done_tx,
             done_rx: Some(done_rx),
-            last_skip: None,
         }
     }
 
@@ -139,59 +135,11 @@ impl Brain {
         }
     }
 
-    /// One pass: maybe beat, start every turn that can start. Cheap enough
+    /// One pass: start every turn that can start. Cheap enough
     /// to run on every poll.
     pub fn step(&mut self, now: i64) {
         self.settings = Settings::load(&self.dir);
-        self.maybe_heartbeat(now);
         self.dispatch(now);
-    }
-
-    fn maybe_heartbeat(&mut self, now: i64) {
-        let force_file = self.dir.join("heartbeat.force");
-        let force = force_file.exists();
-        let main_pending = event::pending(&self.dir)
-            .iter()
-            .any(|(_, e)| e.key == MAIN && e.kind == Kind::Heartbeat);
-        let main_busy = self.busy.contains_key(MAIN) || main_pending;
-        let gate = heartbeat::gate(
-            &self.home,
-            &self.dir,
-            &self.settings,
-            now,
-            main_busy,
-            super::paused(&self.dir),
-            force,
-        );
-        if force {
-            let _ = std::fs::remove_file(&force_file);
-        }
-        match gate {
-            heartbeat::Gate::NotDue => {}
-            heartbeat::Gate::Skip(reason) => {
-                if self.last_skip != Some(reason) || force {
-                    super::activity::log(
-                        &self.dir,
-                        "heartbeat_skip",
-                        serde_json::json!({"reason": reason, "forced": force}),
-                    );
-                    self.last_skip = Some(reason);
-                }
-            }
-            heartbeat::Gate::Run(prompt) => {
-                self.last_skip = None;
-                heartbeat::mark_ran(&self.dir, now);
-                let ev = Event::new(Kind::Heartbeat, MAIN, &prompt, None);
-                match event::admit(&self.dir, &ev) {
-                    Ok(_) => super::activity::log(
-                        &self.dir,
-                        "heartbeat",
-                        serde_json::json!({"forced": force}),
-                    ),
-                    Err(e) => log::warn!("gateway: cannot admit heartbeat: {e:#}"),
-                }
-            }
-        }
     }
 
     /// Start a turn for every free key with waiting events, oldest key first,
@@ -245,7 +193,7 @@ impl Brain {
         // A reply goes back where the newest message came from; autonomous
         // turns use the key's last route (decided at delivery).
         let route = events.iter().rev().find_map(|e| e.route.clone());
-        // The CLI inbox is not a place to send heartbeat output back to.
+        // The CLI inbox is not a place to send autonomous output back to.
         if let Some(r) = route
             .as_ref()
             .filter(|r| r.platform != super::outbox::LOCAL)
@@ -254,8 +202,8 @@ impl Brain {
         }
         let request = TurnRequest {
             key: key.to_string(),
-            // Autonomous turns start fresh: a heartbeat every 30 min outlives
-            // the prompt cache, so resuming would re-bill the whole transcript.
+            // Autonomous turns start fresh: they usually outlive the prompt
+            // cache, so resuming would re-bill the whole transcript.
             session_id: (!kind.autonomous())
                 .then(|| self.sessions.session_id(key))
                 .flatten(),
@@ -379,7 +327,7 @@ pub fn turn_kind(events: &[Event]) -> Kind {
 
 /// The text the model sees. A lone user message is passed as typed;
 /// anything else is labelled with why it
-/// woke the agent, so the model never mistakes a heartbeat or a trigger
+/// woke the agent, so the model never mistakes a trigger
 /// for the owner speaking.
 pub fn compose_prompt(events: &[Event], now: i64) -> String {
     let interrupted = events.iter().any(|e| e.attempt > 0);
@@ -413,8 +361,6 @@ pub fn compose_prompt(events: &[Event], now: i64) -> String {
     for e in events {
         parts.push(match e.kind {
             Kind::User => e.text.clone(),
-            // The heartbeat event already is a complete prompt.
-            Kind::Heartbeat => e.text.clone(),
             Kind::Trigger => format!(
                 "[gateway · trigger · {when}] Not a message from the owner: an external \
                  trigger fired. Act on it if it needs action. If the owner does not need to \

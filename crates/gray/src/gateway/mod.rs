@@ -14,7 +14,6 @@ pub mod brain;
 pub mod cli;
 pub mod deliver;
 pub mod event;
-pub mod heartbeat;
 pub mod lifecycle;
 pub mod outbox;
 pub mod pid;
@@ -33,7 +32,7 @@ pub fn state_dir(home: &Path) -> std::path::PathBuf {
     home.join("gateway")
 }
 
-/// The estop: while this file exists, autonomous wakes (heartbeat, `wake`)
+/// The estop: while this file exists, autonomous wakes (`wake`, triggers)
 /// wait; user messages still run.
 pub fn paused(dir: &Path) -> bool {
     dir.join("PAUSED").exists()

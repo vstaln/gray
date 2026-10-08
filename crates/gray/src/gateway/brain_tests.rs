@@ -1,4 +1,5 @@
 use super::*;
+use super::event::MAIN;
 use crate::gateway::turn::StubRunner;
 
 fn stub(reply: &'static str) -> Arc<dyn TurnRunner> {
@@ -20,15 +21,6 @@ fn discord(chat: &str) -> Route {
     }
 }
 
-fn quiet_heartbeat(home: &Path) {
-    let dir = crate::gateway::state_dir(home);
-    std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(
-        dir.join("config.json"),
-        r#"{"heartbeat":{"enabled":false},"max_turns":2}"#,
-    )
-    .unwrap();
-}
 
 async fn drain(brain: &mut Brain, rx: &mut tokio::sync::mpsc::UnboundedReceiver<Done>) {
     while brain.busy_keys() > 0 {
@@ -43,7 +35,6 @@ async fn drain(brain: &mut Brain, rx: &mut tokio::sync::mpsc::UnboundedReceiver<
 #[tokio::test]
 async fn a_user_message_becomes_one_turn_and_one_reply() {
     let home = tempfile::tempdir().unwrap();
-    quiet_heartbeat(home.path());
     let mut brain = Brain::new(home.path(), stub("echo"));
     let mut rx = brain.take_done();
     let ev = Event::new(Kind::User, "chat:discord:42", "hi", Some(discord("42")));
@@ -71,7 +62,6 @@ async fn a_user_message_becomes_one_turn_and_one_reply() {
 #[tokio::test]
 async fn waiting_events_for_one_key_batch_and_the_cap_holds() {
     let home = tempfile::tempdir().unwrap();
-    quiet_heartbeat(home.path());
     let mut brain = Brain::new(home.path(), stub("ok"));
     let mut rx = brain.take_done();
     for (key, text) in [
@@ -106,7 +96,6 @@ async fn waiting_events_for_one_key_batch_and_the_cap_holds() {
 #[tokio::test]
 async fn paused_holds_autonomous_events_but_not_the_owner() {
     let home = tempfile::tempdir().unwrap();
-    quiet_heartbeat(home.path());
     let mut brain = Brain::new(home.path(), stub("ok"));
     let mut rx = brain.take_done();
     std::fs::write(brain.dir.join("PAUSED"), "").unwrap();
@@ -131,7 +120,6 @@ async fn paused_holds_autonomous_events_but_not_the_owner() {
 #[tokio::test]
 async fn a_failed_user_turn_tells_the_user() {
     let home = tempfile::tempdir().unwrap();
-    quiet_heartbeat(home.path());
     let runner: Arc<dyn TurnRunner> = Arc::new(StubRunner {
         reply: Arc::new(|_| TurnOutcome {
             session_id: None,
@@ -152,7 +140,6 @@ async fn a_failed_user_turn_tells_the_user() {
 #[test]
 fn recovery_readmits_then_gives_up_and_says_so() {
     let home = tempfile::tempdir().unwrap();
-    quiet_heartbeat(home.path());
     let rt = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap();
@@ -193,7 +180,7 @@ fn prompts_say_why_the_agent_woke() {
     again.attempt = 1;
     assert!(compose_prompt(&[again], 0).contains("cut short by a restart"));
     assert_eq!(
-        turn_kind(&[Event::new(Kind::Heartbeat, MAIN, "x", None), user]),
+        turn_kind(&[Event::new(Kind::Trigger, MAIN, "x", None), user]),
         Kind::User
     );
 }
@@ -201,7 +188,6 @@ fn prompts_say_why_the_agent_woke() {
 #[tokio::test]
 async fn autonomous_turns_neither_resume_nor_replace_the_session() {
     let home = tempfile::tempdir().unwrap();
-    quiet_heartbeat(home.path());
     let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
     let log = seen.clone();
     let runner: Arc<dyn TurnRunner> = Arc::new(StubRunner {
@@ -216,7 +202,7 @@ async fn autonomous_turns_neither_resume_nor_replace_the_session() {
     });
     let mut brain = Brain::new(home.path(), runner);
     let mut rx = brain.take_done();
-    for (i, kind) in [Kind::User, Kind::Heartbeat, Kind::User]
+    for (i, kind) in [Kind::User, Kind::Trigger, Kind::User]
         .into_iter()
         .enumerate()
     {

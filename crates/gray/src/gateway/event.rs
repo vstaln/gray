@@ -1,6 +1,6 @@
 //! Events: everything that can wake the agent, spooled to disk before it runs.
 //!
-//! A `gateway send`, a heartbeat, a `gateway wake` and a turn cut short
+//! A `gateway send`, a `gateway wake` and a turn cut short
 //! by a restart are all the same thing here: an
 //! [`Event`] for a session key, admitted as one file under `events/` so a
 //! crash between "accepted" and "answered" loses nothing.
@@ -15,7 +15,6 @@ use crate::cron::store::Origin as Route;
 #[serde(rename_all = "lowercase")]
 pub enum Kind {
     User,
-    Heartbeat,
     Trigger,
     System,
 }
@@ -24,7 +23,6 @@ impl Kind {
     pub fn as_str(self) -> &'static str {
         match self {
             Kind::User => "user",
-            Kind::Heartbeat => "heartbeat",
             Kind::Trigger => "trigger",
             Kind::System => "system",
         }
@@ -36,7 +34,7 @@ impl Kind {
     }
 }
 
-/// The session every owner surface, the CLI and the heartbeat share.
+/// The session every owner surface, and the CLI share.
 pub const MAIN: &str = "main";
 
 /// Biggest event text we keep (argv-safe once several are batched).
