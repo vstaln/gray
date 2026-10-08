@@ -18,7 +18,10 @@ fn user_silence_is_strict_autonomous_is_forgiving() {
     assert!(is_silent("all good\n**NO_REPLY**", Kind::Trigger));
     assert!(is_silent("`[SILENT]`\nchecked CI", Kind::Trigger));
     assert!(!is_silent("CI failed on main", Kind::Trigger));
-    assert!(is_silent("Checked everything.\nHEARTBEAT_OK", Kind::Trigger));
+    assert!(is_silent(
+        "Checked everything.\nHEARTBEAT_OK",
+        Kind::Trigger
+    ));
 }
 
 #[test]
@@ -30,15 +33,7 @@ fn replies_fall_back_to_last_route_then_owner_then_local() {
         Decision::Suppressed(r) => format!("suppressed:{r}"),
     };
     let go = |s: &Settings, r: Option<Route>, last: Option<Route>| {
-        platform(decide(
-            dir.path(),
-            s,
-            "main",
-            Kind::Trigger,
-            r,
-            last,
-            "hi",
-        ))
+        platform(decide(dir.path(), s, "main", Kind::Trigger, r, last, "hi"))
     };
     assert_eq!(go(&s, None, None), "local");
     s.owners.push(route("discord"));

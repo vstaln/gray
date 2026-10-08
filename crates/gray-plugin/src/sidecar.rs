@@ -1130,7 +1130,11 @@ impl Plugin for SidecarPlugin {
         }
         let params = json!({"text": text, "session": session_json(&self.pinned_sid(), &self.cwd)});
         let ttl = if self.asks { ASK_TTL } else { HOST_TTL };
-        match self.transport.request("input/submit", Some(params), ttl).await {
+        match self
+            .transport
+            .request("input/submit", Some(params), ttl)
+            .await
+        {
             Ok(v) => InputSubmit::from_result(&v),
             // A failed rewrite hook must never eat the input: pass it
             // through untouched.
@@ -1160,7 +1164,8 @@ impl Plugin for SidecarPlugin {
         if !self.claims("context/build") {
             return None;
         }
-        let params = json!({"messages": messages, "session": session_json(&self.pinned_sid(), &self.cwd)});
+        let params =
+            json!({"messages": messages, "session": session_json(&self.pinned_sid(), &self.cwd)});
         let ttl = if self.asks { ASK_TTL } else { HOST_TTL };
         match self
             .transport

@@ -1,5 +1,5 @@
-use super::*;
 use super::event::MAIN;
+use super::*;
 use crate::gateway::turn::StubRunner;
 
 fn stub(reply: &'static str) -> Arc<dyn TurnRunner> {
@@ -20,7 +20,6 @@ fn discord(chat: &str) -> Route {
         route: Some(chat.into()),
     }
 }
-
 
 async fn drain(brain: &mut Brain, rx: &mut tokio::sync::mpsc::UnboundedReceiver<Done>) {
     while brain.busy_keys() > 0 {
