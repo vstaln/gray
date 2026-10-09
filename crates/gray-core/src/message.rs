@@ -191,17 +191,31 @@ fn canonical_json(value: &serde_json::Value) -> String {
     }
 }
 
+fn is_false(b: &bool) -> bool {
+    !*b
+}
+
 /// A conversation turn message.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Message {
     pub role: Role,
     pub content: Vec<ContentBlock>,
+    /// True when gray wrote this user-role turn itself — job notices, stall
+    /// nudges, context updates — rather than the human typing a prompt.
+    /// Injected entries replay as prompt cards but never enter Up/Down input
+    /// recall. Old transcripts omit the flag and default to real input.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub injected: bool,
 }
 
 impl Message {
     /// Creates a new message with the given role and content blocks.
     pub fn new(role: Role, content: Vec<ContentBlock>) -> Self {
-        Self { role, content }
+        Self {
+            role,
+            content,
+            injected: false,
+        }
     }
 
     /// Helper to create a user message containing a single text block.
@@ -209,6 +223,17 @@ impl Message {
         Self {
             role: Role::User,
             content: vec![ContentBlock::text(text)],
+            injected: false,
+        }
+    }
+
+    /// Helper to create an injected user message — a note gray appends to the
+    /// transcript on the user's behalf (background job notices, continuation
+    /// nudges, context updates). Skipped by Up/Down input recall.
+    pub fn user_injected(text: impl Into<String>) -> Self {
+        Self {
+            injected: true,
+            ..Self::user(text)
         }
     }
 
@@ -217,6 +242,7 @@ impl Message {
         Self {
             role: Role::Assistant,
             content: vec![ContentBlock::text(text)],
+            injected: false,
         }
     }
 
@@ -225,6 +251,7 @@ impl Message {
         Self {
             role: Role::System,
             content: vec![ContentBlock::text(text)],
+            injected: false,
         }
     }
 
@@ -233,6 +260,7 @@ impl Message {
         Self {
             role: Role::User,
             content: vec![input.into_content_block()],
+            injected: false,
         }
     }
 

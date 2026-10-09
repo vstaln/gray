@@ -177,7 +177,8 @@ pub(crate) async fn dispatch_command(
                     timestamp,
                     cwd.to_path_buf(),
                     config.model.clone().unwrap_or_else(|| "unset".into()),
-                );
+                )
+                .with_origin(crate::session_store::session_origin_from_env());
                 if let Err(e) = store.create(meta).await {
                     log::warn!(target: "gray_session", "session create failed: {e}");
                 }
@@ -407,9 +408,15 @@ pub(crate) async fn dispatch_command(
             handle_feedback(text, config, session_state, tui.as_ref().map(|(s, _)| s));
             Flow::Continue
         }
-        ReplCommand::ProviderCommand { cmd, provider_id } => {
+        ReplCommand::ProviderCommand {
+            cmd,
+            argv,
+            provider_id,
+        } => {
             *pending_command = Some(
-                match super::plugin_cmds::provider_command_outcome(&provider_id, &cmd).await {
+                match super::plugin_cmds::provider_command_outcome(&provider_id, &cmd, argv)
+                    .await
+                {
                     Some(CommandOutcome::ModelPicker(row)) => ReplCommand::ModelFocus(row),
                     Some(CommandOutcome::Prompt(prompt)) => ReplCommand::Prompt(prompt),
                     Some(CommandOutcome::Say(text)) => {

@@ -73,6 +73,7 @@ fn unanswered_tool_calls_get_a_synthetic_result() {
         Message::user("go"),
         Message {
             role: Role::Assistant,
+            injected: false,
             content: vec![
                 ContentBlock::Text {
                     text: "checking...".into(),
@@ -113,6 +114,7 @@ fn a_turn_that_already_answered_is_left_untouched() {
         Message::user("go"),
         Message {
             role: Role::Assistant,
+            injected: false,
             content: vec![ContentBlock::ToolUse {
                 id: "c1".into(),
                 name: "lookup".into(),
@@ -121,6 +123,7 @@ fn a_turn_that_already_answered_is_left_untouched() {
         },
         Message {
             role: Role::User,
+            injected: false,
             content: vec![ContentBlock::ToolResult {
                 id: "c1".into(),
                 content: "ok".into(),
@@ -171,6 +174,7 @@ fn synthetic_results_do_not_hide_earlier_turns() {
         Message::user("second"),
         Message {
             role: Role::Assistant,
+            injected: false,
             content: vec![
                 ContentBlock::Text {
                     text: "second partial".into(),

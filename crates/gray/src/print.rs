@@ -964,12 +964,15 @@ async fn run_print_inner(
     }
     if resume_target.is_none() {
         store
-            .create(SessionMeta::new(
-                session_id.clone(),
-                now_millis(),
-                cwd.clone(),
-                config.model.as_deref().unwrap_or("unset"),
-            ))
+            .create(
+                SessionMeta::new(
+                    session_id.clone(),
+                    now_millis(),
+                    cwd.clone(),
+                    config.model.as_deref().unwrap_or("unset"),
+                )
+                .with_origin(crate::session_store::session_origin_from_env()),
+            )
             .await?;
         // Fresh id — always free; held so `gray -r` can't double-open the
         // session while this turn writes it. Pathological failure degrades
@@ -1261,7 +1264,8 @@ pub async fn save_session(
         timestamp,
         cwd.to_path_buf(),
         model.to_string(),
-    );
+    )
+    .with_origin(crate::session_store::session_origin_from_env());
     store.create(meta).await?;
 
     for msg in messages {

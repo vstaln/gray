@@ -294,6 +294,7 @@ fn trimmable_history() -> Vec<Message> {
         .into_iter()
         .map(|id| Message {
             role: Role::User,
+            injected: false,
             content: vec![ContentBlock::ToolResult {
                 id: id.to_string(),
                 content: "x".repeat(10_000),

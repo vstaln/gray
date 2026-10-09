@@ -890,6 +890,12 @@ impl Tui {
         self.pending_pastes.clear();
     }
     pub fn set_usage(&mut self, usage: gray_core::event::Usage) {
+        // An unmetered round (the provider reported nothing) carries no
+        // signal: keep the previous gauge and live estimate rather than
+        // zeroing the footer for the rest of the run.
+        if !usage.any() {
+            return;
+        }
         self.latest_usage = Some(usage);
         self.cumulative_usage = Some(usage);
         // Turn-level TPS numerator: every round bills its full output, so

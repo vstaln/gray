@@ -426,7 +426,7 @@ fn confirm(prompt: &str) -> anyhow::Result<bool> {
 /// Nothing declared → no hash and no grant (an undeclared capability is
 /// not a capability). A session that cannot prompt grants nothing but
 /// still records the hash, so the plugin runs ungranted rather than
-/// grandfathered, and `gray plugin capabilities <name>` can grant later.
+/// grandfathered, and `gray plugin capabilities <name> --all` grants later.
 fn consent_capabilities(name: &str, declared: &[String]) -> (Vec<String>, Option<String>) {
     if declared.is_empty() {
         return (Vec::new(), None);
@@ -441,7 +441,7 @@ fn consent_capabilities(name: &str, declared: &[String]) -> (Vec<String>, Option
     }
     if !interactive() {
         println!(
-            "  not granted (non-interactive session). Grant later: gray plugin capabilities {name}"
+            "  not granted (non-interactive session). Grant later: gray plugin capabilities {name} --all"
         );
         return (Vec::new(), Some(hash));
     }
@@ -525,6 +525,43 @@ pub fn print_capabilities(only: Option<&str>) -> anyhow::Result<()> {
         }
         println!("no plugins installed");
     }
+    Ok(())
+}
+
+/// `gray plugin capabilities <name> --all` — the grant path the consent
+/// hints name: record every capability the cached manifest declares as
+/// granted and stamp the consent hash, then rebuild the provider cache so
+/// a provider plugin's declarations unhide immediately. Same shape the
+/// interactive prompt writes; nothing unknown to this build is minted.
+pub fn grant_all_capabilities(name: &str) -> anyhow::Result<()> {
+    let home = home()?;
+    migrate_commands_json(&home);
+    let declared = gray_plugin::capabilities::parse_declared(
+        &metadata(&home, name)
+            .context("no cached manifest — is the plugin installed?")?
+            .get("capabilities")
+            .and_then(Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().map(str::to_string))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default(),
+    );
+    anyhow::ensure!(
+        !declared.is_empty(),
+        "'{name}' declares no capabilities — nothing to grant"
+    );
+    let mut lock = load_lock(&home)?;
+    let entry = lock
+        .plugins
+        .get_mut(name)
+        .with_context(|| format!("no plugin named '{name}'"))?;
+    entry.granted_capabilities = declared.clone();
+    entry.capabilities_hash = Some(gray_plugin::capabilities::consent_hash(&declared));
+    lock.save(&gray_plugin::lock::lock_path(&home))?;
+    crate::providers::ProviderRegistry::refresh(&home)?;
+    println!("{name}: granted {}", declared.join(", "));
     Ok(())
 }
 

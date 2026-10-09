@@ -1,10 +1,11 @@
-//! Prompt-cache warming during long tool runs (pi `cache-warmer.ts`,
-//! `"streaming"` mode).
+//! Prompt-cache warming across a whole round (pi `cache-warmer.ts`,
+//! `"streaming"` mode) — stream and tool phase alike.
 //!
 //! A provider's prompt cache entry expires a fixed time after its last use.
-//! When a tool runs past that, the next request re-bills the whole prompt as
-//! a cache write. While a round's tools run, this re-sends the round's exact
-//! request with a capped output shortly before the entry expires — one token,
+//! When a tool or the model's own generation runs past that, the next
+//! request re-bills the whole prompt as a cache write. While the round is
+//! live — stream and tool phase — this re-sends the round's exact request
+//! with a capped output shortly before the entry expires — one token,
 //! or the smallest cap that preserves the request's cache key (the provider's
 //! `warm_output_cap`, e.g. Anthropic's thinking budget) — as long as the
 //! expected saving clears a floor (or, past pi, the prompt is big enough that
@@ -103,9 +104,12 @@ pub fn worth_refreshing(
     }
 }
 
-/// Keeps the cache entry `req` wrote warm until aborted. `sent` is when the
-/// real request went out; `spent` collects each refresh's usage.
-/// `cache_reported` is whether that request's usage showed cache activity.
+/// Keeps the cache entry `req` wrote warm until aborted — it is spawned
+/// when the real request goes out, so a stream that runs past the TTL is
+/// covered the same as a long tool phase. `sent` is when the real request
+/// went out; `spent` collects each refresh's usage. `prompt_tokens` is an
+/// estimate (the request has not reported yet); `cache_reported` is whether
+/// some earlier request showed cache activity.
 pub(crate) async fn keep_warm(
     provider: Arc<dyn Provider>,
     mut req: ChatRequest,

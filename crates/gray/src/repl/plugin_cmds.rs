@@ -177,6 +177,7 @@ mod tests;
 pub(crate) async fn provider_command_outcome(
     provider_id: &str,
     cmd: &str,
+    argv: Vec<String>,
 ) -> Option<gray_core::agent::CommandOutcome> {
     use gray_plugin::Plugin as _;
     let home = crate::setup::gray_home().ok()?;
@@ -187,7 +188,7 @@ pub(crate) async fn provider_command_outcome(
     let plugin = gray_plugin::sidecar::SidecarPlugin::spawn(installed.argv.clone())
         .await
         .ok()?;
-    let outcome = plugin.run_command(cmd, Vec::new()).await;
+    let outcome = plugin.run_command(cmd, argv).await;
     plugin.shutdown(std::time::Duration::from_secs(2)).await;
     outcome
 }

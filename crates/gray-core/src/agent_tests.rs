@@ -1279,12 +1279,16 @@ async fn announced_step_ending_nudges_and_continues() {
 }
 
 #[tokio::test]
-async fn announced_step_nudge_fires_once_per_run() {
-    // intent ending -> nudge -> intent ending again: the repeat is the
-    // model's answer to the nudge and must be honored, not nudged forever.
+async fn announced_step_nudge_repeats_then_stops_at_cap() {
+    // intent ending -> nudge -> intent ending -> nudge … : real sessions
+    // stall twice in one run (announce, nudge, announce again), so repeats
+    // are pushed — but only up to the cap, then the ending is honored.
     let provider = FakeProvider::new(vec![
         text_end_script("Let me check the logs."),
         text_end_script("I'll look at the config next."),
+        text_end_script("Let me run the tests."),
+        text_end_script("I'll review the diff next."),
+        text_end_script("Let me check one more thing."),
     ]);
     let mut agent = Agent::new(
         Box::new(provider),
@@ -1305,9 +1309,89 @@ async fn announced_step_nudge_fires_once_per_run() {
     let nudges = agent
         .messages()
         .iter()
-        .filter(|m| m.text_content().contains("announcing a next step"))
+        .filter(|m| m.text_content().contains("a next step"))
         .count();
-    assert_eq!(nudges, 1, "announced-step nudge must fire once per run");
+    assert_eq!(nudges, 3, "announced-step nudge is capped per run");
+}
+
+#[tokio::test]
+async fn announced_step_nudge_streak_resets_on_real_work() {
+    // mini-swe-agent's consecutive semantics: stall -> nudge -> real call ->
+    // stall x4 -> cap. The counter resets on a productive round, so a run
+    // that works between stalls earns fresh nudges (1 + 3 = 4 total).
+    let provider = FakeProvider::new(vec![
+        text_end_script("Let me check the logs."),
+        vec![
+            StreamEvent::tool_call_delta(0, Some("c1".to_string()), Some("bash".to_string()), r#"{"command":"ls"}"#),
+            StreamEvent::message_complete(Some(StopReason::ToolUse), Some(Usage::new(10, 5))),
+        ],
+        text_end_script("I'll look at the config next."),
+        text_end_script("Let me run the tests."),
+        text_end_script("I'll review the diff next."),
+        text_end_script("Let me check one more thing."),
+    ]);
+    let mut agent = Agent::new(
+        Box::new(provider),
+        Arc::new(FakeExecutor::new(ToolOutput::ok("ok"))),
+    )
+    .with_tools(vec![tool_def()]);
+
+    let events = agent
+        .run(Message::user("go"), ToolContext::default())
+        .await
+        .expect("stalls after real work still terminate at the cap");
+
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::TurnEnd { .. }))
+    );
+    let nudges = agent
+        .messages()
+        .iter()
+        .filter(|m| m.text_content().contains("a next step"))
+        .count();
+    assert_eq!(nudges, 4, "productive round resets the streak: 1 + 3");
+}
+
+#[tokio::test]
+async fn announced_step_nudge_streak_ignores_placeholder_calls() {
+    // stall -> nudge -> `echo "x"` -> stall…: a placeholder round is not a
+    // clean step, so the streak keeps growing and the cap still bounds the
+    // alternation (3 nudges, then the ending is honored).
+    let provider = FakeProvider::new(vec![
+        text_end_script("Let me check the logs."),
+        vec![
+            StreamEvent::tool_call_delta(0, Some("c1".to_string()), Some("bash".to_string()), r#"{"command":"echo hi"}"#),
+            StreamEvent::message_complete(Some(StopReason::ToolUse), Some(Usage::new(10, 5))),
+        ],
+        text_end_script("I'll look at the config next."),
+        text_end_script("Let me run the tests."),
+        text_end_script("I'll review the diff next."),
+        text_end_script("Let me check one more thing."),
+    ]);
+    let mut agent = Agent::new(
+        Box::new(provider),
+        Arc::new(FakeExecutor::new(ToolOutput::ok("ok"))),
+    )
+    .with_tools(vec![tool_def()]);
+
+    let events = agent
+        .run(Message::user("go"), ToolContext::default())
+        .await
+        .expect("placeholder alternation must terminate");
+
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::TurnEnd { .. }))
+    );
+    let nudges = agent
+        .messages()
+        .iter()
+        .filter(|m| m.text_content().contains("a next step"))
+        .count();
+    assert_eq!(nudges, 3, "placeholder calls do not reset the streak");
 }
 
 #[tokio::test]
@@ -2589,6 +2673,7 @@ fn image_budget_is_bounded_and_rewrites_notify_session() {
     let before = agent.history_revision();
     agent.set_messages(vec![Message {
         role: Role::User,
+        injected: false,
         content: vec![ContentBlock::image(
             "image/png",
             "a".repeat(5 * 1024 * 1024),
@@ -2874,6 +2959,7 @@ fn big_tool_round(id: &str, bytes: usize) -> Vec<Message> {
     vec![
         Message {
             role: Role::Assistant,
+            injected: false,
             content: vec![ContentBlock::tool_use(
                 id,
                 TOOL_NAME,
@@ -2882,6 +2968,7 @@ fn big_tool_round(id: &str, bytes: usize) -> Vec<Message> {
         },
         Message {
             role: Role::User,
+            injected: false,
             content: vec![ContentBlock::tool_result(id, "y".repeat(bytes), false)],
         },
     ]

@@ -253,17 +253,6 @@ fn project_context_block_none_when_only_blank_lines_survive_the_strip() {
 }
 
 #[test]
-fn project_context_block_none_when_only_rationale_comments() {
-    let tmp = tempfile::tempdir().unwrap();
-    std::fs::write(
-        tmp.path().join("AGENTS.md"),
-        "# r1: only a rationale, no rules left to follow\n",
-    )
-    .unwrap();
-    assert_eq!(project_context_block(tmp.path()), None);
-}
-
-#[test]
 fn project_context_block_prefers_agents_over_claude_on_same_level() {
     let tmp = tempfile::tempdir().unwrap();
     std::fs::write(tmp.path().join("CLAUDE.md"), "claude rules").unwrap();

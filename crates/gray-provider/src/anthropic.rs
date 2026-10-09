@@ -408,6 +408,11 @@ pub(crate) struct Decoder {
     usage: Usage,
     stop: Option<StopReason>,
     blocks: BTreeMap<usize, Block>,
+    /// The content block that most recently emitted visible text. A message
+    /// can carry several `text` blocks (thinking between them, a resumed
+    /// tool turn); deltas from a new block need a boundary the reader can
+    /// see, or `…now.` and `Sorry…` glue into one word.
+    last_text: Option<usize>,
     pub(crate) finished: bool,
 }
 
@@ -466,9 +471,16 @@ impl Decoder {
                         .to_string()
                 };
                 match delta.get("type").and_then(Value::as_str).unwrap_or("") {
-                    "text_delta" => out.push_back(Ok(StreamEvent::TextDelta {
-                        delta: text("text"),
-                    })),
+                    "text_delta" => {
+                        let mut t = text("text");
+                        if !t.is_empty() {
+                            if self.last_text.is_some_and(|prev| prev != index) {
+                                t.insert_str(0, "\n\n");
+                            }
+                            self.last_text = Some(index);
+                        }
+                        out.push_back(Ok(StreamEvent::TextDelta { delta: t }));
+                    }
                     "thinking_delta" => {
                         let t = text("thinking");
                         if let Some(b) = self.blocks.get_mut(&index) {

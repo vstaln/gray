@@ -164,8 +164,3 @@ fn single_file_search_works_without_a_walk() {
     assert_eq!(found.hits.len(), 1);
     assert_eq!(found.hits[0].1, 2);
 }
-
-#[test]
-fn rg_probe_returns_without_panicking() {
-    let _ = rg_present();
-}

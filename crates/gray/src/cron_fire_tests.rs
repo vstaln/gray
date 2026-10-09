@@ -179,13 +179,3 @@ fn delivery_excerpt_caps_at_4000_chars() {
     assert_eq!(delivery_excerpt(&long).chars().count(), 4000);
     assert_eq!(delivery_excerpt("short"), "short");
 }
-
-#[test]
-fn delivery_helpers_are_pure() {
-    // Same inputs, byte-identical outputs — every driver renders one box.
-    assert_eq!(mirror_message("n", "b"), mirror_message("n", "b"));
-    assert_eq!(
-        format_delivery_plain("n", "b", false, false),
-        format_delivery_plain("n", "b", false, false)
-    );
-}

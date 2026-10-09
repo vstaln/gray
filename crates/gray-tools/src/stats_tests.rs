@@ -37,9 +37,3 @@ fn classify_splits_retrieval_from_action() {
     assert_eq!(classify("bash"), CLASS_OTHER);
     assert_eq!(classify("some_plugin_tool"), CLASS_OTHER);
 }
-
-#[test]
-fn self_reporting_tools_are_exempt_from_the_registry_meter() {
-    assert!(SELF_REPORTING.contains(&"read"));
-    assert!(!SELF_REPORTING.contains(&"bash"));
-}

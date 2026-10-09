@@ -568,34 +568,56 @@ pub fn format_tool_call_header(
                     Span::styled(path, path_style),
                 ])
             } else {
-                let args_preview = if let Some(obj) = args.as_object() {
-                    obj.iter()
-                        .filter(|(k, _)| *k != "label")
-                        .take(2)
-                        .map(|(k, v)| {
-                            let val_str = if let Some(s) = v.as_str() {
-                                truncate_cmd(s).to_string()
-                            } else if let Some(arr) = v.as_array() {
-                                format!("[{} items]", arr.len())
-                            } else if v.is_object() {
-                                "{...}".to_string()
+                // No declared preview and no path: surface the first
+                // string-valued arg as the quoted preview (search-ish
+                // tools key on one), and flag the remaining scalars —
+                // `all=true` renders `all`, so `recall {all, limit:10}`
+                // reads `Recall all limit=10`, not a raw `k=v` dump.
+                let obj_args: Vec<(&String, &serde_json::Value)> = args
+                    .as_object()
+                    .map(|obj| obj.iter().filter(|(k, _)| *k != "label").collect())
+                    .unwrap_or_default();
+                let headline_idx = obj_args
+                    .iter()
+                    .position(|(_, v)| v.as_str().map(str::trim).is_some_and(|s| !s.is_empty()));
+                let mut spans = vec![bullet, Span::styled(headline.clone(), action_style)];
+                if let Some(i) = headline_idx {
+                    let text = obj_args[i].1.as_str().unwrap().trim();
+                    let cut = truncate_cmd(text);
+                    let shown = if cut.len() < text.len() {
+                        format!("{}\u{2026}", cut.trim_end())
+                    } else {
+                        cut.to_string()
+                    };
+                    spans.push(Span::raw(" "));
+                    spans.push(Span::styled(format!("\"{shown}\""), cmd_style));
+                }
+                let flags: Vec<String> = obj_args
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| Some(*i) != headline_idx)
+                    .take(3)
+                    .map(|(_, (k, v))| match v {
+                        serde_json::Value::Bool(true) => (*k).clone(),
+                        serde_json::Value::String(s) => {
+                            let s = s.trim();
+                            let cut = truncate_cmd(s);
+                            if s.contains(char::is_whitespace) {
+                                format!("{k}=\"{}\"", cut.trim_end())
                             } else {
-                                v.to_string()
-                            };
-                            format!("{k}={val_str}")
-                        })
-                        .collect::<Vec<_>>()
-                        .join(" ")
-                } else {
-                    String::new()
-                };
-                let preview_truncated = truncate_cmd(&args_preview);
-                Line::from(vec![
-                    bullet,
-                    Span::styled(headline, action_style),
-                    Span::raw(" "),
-                    Span::styled(preview_truncated.to_string(), dim_style),
-                ])
+                                format!("{k}={cut}")
+                            }
+                        }
+                        serde_json::Value::Array(a) => format!("{k}=[{} items]", a.len()),
+                        serde_json::Value::Object(_) => format!("{k}={{...}}"),
+                        other => format!("{k}={other}"),
+                    })
+                    .collect();
+                if !flags.is_empty() {
+                    spans.push(Span::raw(" "));
+                    spans.push(Span::styled(flags.join(" "), dim_style));
+                }
+                Line::from(spans)
             }
         }
     }

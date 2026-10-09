@@ -21,6 +21,13 @@ const MAX_EMPTY_RETRIES: u8 = 2;
 /// Truncated-turn (`MaxTokens`) continuations before keeping the partial.
 const MAX_CONTINUATIONS: u8 = 2;
 
+/// Announced-step nudges per run. Models that stall once often stall again on
+/// the very next round (swe-2's announce-then-end loop, 2026-10); a single
+/// nudge leaves the user typing "." to revive a still-open task. The cap keeps
+/// the push bounded, and every nudge names the exit ("say so in one line and
+/// stop") so a model that truly means to end is never trapped.
+const MAX_INTENT_NUDGES: u8 = 3;
+
 /// Whole-turn retries after the provider's own in-request budget (5 attempts
 /// with backoff) is exhausted on a retryable failure — the log shows bursts of
 /// 503s outlasting exactly that budget, ending a turn the user is waiting on.
@@ -131,7 +138,7 @@ impl Agent {
         let notices = self.executor.drain_notifications(ctx);
         let any = !notices.is_empty();
         for notice in notices {
-            self.messages.push(Message::user(format!(
+            self.messages.push(Message::user_injected(format!(
                 "[Background task notification]\n{notice}"
             )));
         }
@@ -145,7 +152,7 @@ impl Agent {
     /// append-only for the prefix cache and subscription relays.
     fn surface_running_jobs(&mut self, ctx: &ToolContext) {
         if let Some(note) = self.executor.running_jobs_note(ctx) {
-            self.messages.push(Message::user(format!(
+            self.messages.push(Message::user_injected(format!(
                 "[Background jobs still running]\n{note}\nEnd your turn to be woken when one finishes; `tail` a log to peek."
             )));
         }
@@ -351,10 +358,11 @@ impl Agent {
         let mut turn_retries: u8 = 0;
         // Post-tool empty nudge fires once per run; silent-retry budget unchanged.
         let mut empty_nudge_sent = false;
-        // An ending that announces a step the model never ran ("Let me check
-        // …" then EndTurn, no tool call) gets one nudge per run; a repeat is
-        // respected — the model may have reconsidered mid-sentence.
-        let mut intent_nudge_sent = false;
+        // Consecutive announced-step endings get bounded nudges; a round with
+        // real calls resets the streak — mini-swe-agent's consecutive-format-
+        // error counter, so long runs survive scattered stalls while a model
+        // announce-looping without working still terminates.
+        let mut intent_nudges: u8 = 0;
 
         // Protocol v1 `prompt/context`: fetched once per turn, not per round,
         // so the fetched text stays byte-stable across a turn's requests and
@@ -390,7 +398,7 @@ impl Agent {
         // then re-sends only when the text actually changed (or compaction
         // dropped the earlier copy).
         if !hook_context.is_empty() {
-            let note = Message::user(format!("[Context update]\n{hook_context}"));
+            let note = Message::user_injected(format!("[Context update]\n{hook_context}"));
             if !self.messages.contains(&note) {
                 self.messages.push(note);
             }
@@ -400,7 +408,7 @@ impl Agent {
         if !self.lean_prompt {
             for hook in &self.hooks {
                 if let Some(text) = hook.agent_before_start().await {
-                    self.messages.push(Message::user(text));
+                    self.messages.push(Message::user_injected(text));
                 }
             }
         }
@@ -493,7 +501,7 @@ impl Agent {
                 .last()
                 .is_some_and(|message| message.role == Role::Assistant)
             {
-                request_messages.push(Message::user(
+                request_messages.push(Message::user_injected(
                     "Continue the pending user request using the retained context and summary.",
                 ));
             }
@@ -515,6 +523,30 @@ impl Agent {
             // tools run (pi cache warming). Only cloned when warming is on.
             let warm_req = self.cache_warm.is_some().then(|| req.clone());
             let request_sent = tokio::time::Instant::now();
+            // Warming spans the whole round — stream AND tool phase (pi
+            // "streaming" mode): a generation that runs past the provider's
+            // cache TTL would let the entry die mid-turn and re-bill the
+            // next request. Dropping the guard on any exit aborts the task.
+            let warm_spent = std::sync::Arc::new(std::sync::Mutex::new(Usage::default()));
+            let warm_guard = match (&self.cache_warm, warm_req) {
+                (Some(policy), Some(req)) => {
+                    Some(crate::cache_warm::WarmGuard(tokio::spawn(
+                        crate::cache_warm::keep_warm(
+                            self.provider.clone(),
+                            req,
+                            policy.clone(),
+                            // The request's own prompt size is unknown until
+                            // its usage lands; the transcript estimate is the
+                            // same value within one round's growth.
+                            self.estimate_tokens(),
+                            self.warm_cache_reported,
+                            request_sent,
+                            warm_spent.clone(),
+                        ),
+                    )))
+                }
+                _ => None,
+            };
 
             // Accumulate streamed deltas: text chunks in order, tool calls
             // keyed by their stream index (id/name arrive once, arguments
@@ -781,15 +813,7 @@ impl Agent {
             // its sidebar/footer read the last assistant message's usage,
             // never a sum). A round with no usage signal keeps the previous
             // gauge. Billing stays cumulative below.
-            if usage.input_tokens != 0
-                || usage.output_tokens != 0
-                || usage.cached_tokens != 0
-                || usage.non_cached_input_tokens != 0
-                || usage.cache_read_input_tokens != 0
-                || usage.cache_write_input_tokens != 0
-                || usage.reasoning_tokens != 0
-                || usage.total_tokens != 0
-            {
+            if usage.any() {
                 total_usage = usage;
                 total_usage.normalize();
             }
@@ -867,12 +891,18 @@ impl Agent {
             }
             let assistant = Message {
                 role: Role::Assistant,
+                injected: false,
                 content,
             };
             self.messages.push(assistant.clone());
             // This round's report covers system + tools + history through the
             // assistant message just pushed (pi `estimateContextTokens`).
             self.record_context_usage(&usage);
+            self.warm_cache_reported = self.warm_cache_reported
+                || usage.cache_read_input_tokens
+                    + usage.cached_tokens
+                    + usage.cache_write_input_tokens
+                    > 0;
 
             let tool_uses: Vec<(String, String, serde_json::Value)> = assistant
                 .content
@@ -893,7 +923,7 @@ impl Agent {
                 && continuations < MAX_CONTINUATIONS
             {
                 continuations += 1;
-                self.messages.push(Message::user(
+                self.messages.push(Message::user_injected(
                     "previous response truncated — continue exactly where you left off",
                 ));
                 continue 'turn;
@@ -919,7 +949,7 @@ impl Agent {
                 if tail_had_results && !empty_nudge_sent {
                     empty_nudge_sent = true;
                     self.messages.push(Message::assistant("(empty)"));
-                    self.messages.push(Message::user(
+                    self.messages.push(Message::user_injected(
                         "executed tool calls but returned empty — process results and continue",
                     ));
                     continue 'turn;
@@ -932,10 +962,10 @@ impl Agent {
                 // never ran looks like the run died mid-thought: the footer
                 // prints and the user has to type "." to revive it. Nudge
                 // once so the step happens or the model says it's done.
-                if announced_step && !intent_nudge_sent {
-                    intent_nudge_sent = true;
-                    log::info!(target: "gray_agent", "end turn announced an untaken step; nudging once");
-                    self.messages.push(Message::user(
+                if announced_step && intent_nudges < MAX_INTENT_NUDGES {
+                    intent_nudges += 1;
+                    log::info!(target: "gray_agent", "end turn announced an untaken step; nudging {intent_nudges}/{MAX_INTENT_NUDGES}");
+                    self.messages.push(Message::user_injected(
                         "you ended your turn right after announcing a next step — take it now, or state that the task is complete; if that step waits on the user's answer or approval, say so in one line and stop",
                     ));
                     continue 'turn;
@@ -950,10 +980,22 @@ impl Agent {
                 } else {
                     0.0
                 };
+                // A stream-phase refresh (long generation, no tools after)
+                // bills its usage here — the post-tools drain never ran.
+                if let Ok(spent) = warm_spent.lock() {
+                    billed.accumulate(&spent);
+                }
                 log::info!(target: "gray_agent", "agent run end: session={} stop={stop_reason:?}, usage in={} out={} cached={} hit={:.0}%, {} messages", ctx.session_id.as_deref().unwrap_or("-"), total_usage.input_tokens, total_usage.output_tokens, total_usage.cached_tokens, hit, self.messages.len());
                 emit!(AgentEvent::turn_end(stop_reason, billed));
                 self.emit_turn_end(&billed).await;
                 return Ok(events);
+            }
+
+            // mini-swe-agent's streak semantics: a round with real calls
+            // clears the stall-nudge counter; placeholder-only rounds
+            // (`echo "working on it"`) do not.
+            if tool_uses.iter().any(|(_, n, a)| productive_call(n, a)) {
+                intent_nudges = 0;
             }
 
             // Loop backstop: no nudge text, just stop if the identical call
@@ -1000,24 +1042,6 @@ impl Agent {
                     .enumerate()
                     .map(|(i, _)| crate::parallel::Segment::Single(i))
                     .collect()
-            };
-            let warm_spent = std::sync::Arc::new(std::sync::Mutex::new(Usage::default()));
-            let warm_guard = match (&self.cache_warm, warm_req) {
-                (Some(policy), Some(req)) => Some(crate::cache_warm::WarmGuard(tokio::spawn(
-                    crate::cache_warm::keep_warm(
-                        self.provider.clone(),
-                        req,
-                        policy.clone(),
-                        total_usage.input_tokens,
-                        total_usage.cache_read_input_tokens
-                            + total_usage.cached_tokens
-                            + total_usage.cache_write_input_tokens
-                            > 0,
-                        request_sent,
-                        warm_spent.clone(),
-                    ),
-                ))),
-                _ => None,
             };
             for segment in segments {
                 // Parallel run over `tool_uses` indices. Pre-pass (loop
@@ -1126,6 +1150,7 @@ impl Agent {
                             ));
                             self.messages.push(Message {
                                 role: Role::User,
+                                injected: false,
                                 content: vec![ContentBlock::ToolResult {
                                     id: id.clone(),
                                     content: err.content,
@@ -1147,6 +1172,7 @@ impl Agent {
                                 ));
                                 self.messages.push(Message {
                                     role: Role::User,
+                                    injected: false,
                                     content: output.message_blocks(id),
                                 });
                             }
@@ -1187,6 +1213,7 @@ impl Agent {
                         ));
                         self.messages.push(Message {
                             role: Role::User,
+                            injected: false,
                             content: vec![ContentBlock::ToolResult {
                                 id: id.clone(),
                                 content: err.content,
@@ -1234,6 +1261,7 @@ impl Agent {
                         ));
                         self.messages.push(Message {
                             role: Role::User,
+                            injected: false,
                             content: vec![ContentBlock::ToolResult {
                                 id: id.clone(),
                                 content: report.content,
@@ -1259,6 +1287,7 @@ impl Agent {
                 ));
                 self.messages.push(Message {
                     role: Role::User,
+                    injected: false,
                     content: output.message_blocks(id),
                 });
             }
@@ -1299,6 +1328,27 @@ impl Agent {
             }
         }
     }
+}
+
+/// Whether a call counts as real work for stall-streak purposes
+/// (mini-swe-agent's clean step): anything that is not bash, or a bash
+/// command that is not a whole-command no-op — `true`, `:` or a command
+/// starting `echo`/`printf`, the shapes `BashTool::noop_steer` refuses to
+/// run. Deliberately first-word only: `echo x > f` or `echo x | wc` do real
+/// work but count as non-productive here — a missed reset only keeps the
+/// streak alive, the bounded direction.
+fn productive_call(name: &str, args: &serde_json::Value) -> bool {
+    if name != "bash" {
+        return true;
+    }
+    let cmd = args
+        .get("command")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("")
+        .trim();
+    !matches!(cmd, "true" | ":" | "echo" | "printf")
+        && !cmd.starts_with("echo ")
+        && !cmd.starts_with("printf ")
 }
 
 /// True when a text-only ending carries raw tool-call/template markup the

@@ -527,8 +527,10 @@ pub enum ReplCommand {
     ProviderLogin(String),
     /// A command a provider plugin declares (`/devin`, `/fusion`): its
     /// sidecar's `command/run` answers first; no answer = login shortcut.
+    /// `argv` is the words after the command name (`/devin tools all`).
     ProviderCommand {
         cmd: String,
+        argv: Vec<String>,
         provider_id: String,
     },
     /// Start a fresh conversation (`/new` or `/clear [prompt]`).
@@ -716,9 +718,15 @@ pub fn parse_command(line: &str) -> ReplCommand {
             {
                 // The plugin answers its own commands first (`/fusion` opens
                 // the model picker); unanswered ones are its login shortcut.
-                ReplCommand::ProviderCommand {
-                    cmd: format!("/{name}"),
-                    provider_id: id,
+                // Args ride along so `/devin tools all` reaches command/run;
+                // unparseable quoting degrades to the unknown-command path.
+                match super::split_plugin_command(t) {
+                    Some((cmd, argv)) => ReplCommand::ProviderCommand {
+                        cmd,
+                        argv,
+                        provider_id: id,
+                    },
+                    None => ReplCommand::Unknown(t.to_string()),
                 }
             } else {
                 ReplCommand::Unknown(t.to_string())

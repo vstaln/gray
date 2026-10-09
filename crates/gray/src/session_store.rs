@@ -336,6 +336,12 @@ pub struct SessionMeta {
     pub cwd: PathBuf,
     /// Model name or identifier used for the session.
     pub model: String,
+    /// Who minted the session — `None` for a user-facing session, a tag like
+    /// `"subagent"` for an auxiliary one. Auxiliary sessions stay loadable
+    /// (steer/`--session` still resolve them) but never appear in resume
+    /// pickers or win the per-cwd remembered pointer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
 }
 
 impl SessionMeta {
@@ -351,8 +357,39 @@ impl SessionMeta {
             timestamp,
             cwd: cwd.into(),
             model: model.into(),
+            origin: None,
         }
     }
+
+    /// Marks the session's producer (see [`session_origin_from_env`]).
+    pub fn with_origin(mut self, origin: Option<String>) -> Self {
+        self.origin = origin;
+        self
+    }
+}
+
+/// An origin tag is `[a-z0-9_-]` ≤32 chars: anything else reads as absent
+/// rather than letting env junk onto a header line.
+fn sanitize_origin_tag(raw: &str) -> Option<String> {
+    let t = raw.trim().to_ascii_lowercase();
+    (!t.is_empty()
+        && t.len() <= 32
+        && t.bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_'))
+    .then_some(t)
+}
+
+/// Session origin for this process, if one was declared: `GRAY_SESSION_ORIGIN`
+/// wins (any producer can name itself), then the legacy `GRAY_SUBAGENTS_ACTIVE`
+/// marker the subagent supervisor already exports maps to `"subagent"`.
+pub fn session_origin_from_env() -> Option<String> {
+    if let Some(v) = std::env::var("GRAY_SESSION_ORIGIN")
+        .ok()
+        .and_then(|s| sanitize_origin_tag(&s))
+    {
+        return Some(v);
+    }
+    (std::env::var("GRAY_SUBAGENTS_ACTIVE").as_deref() == Ok("1")).then(|| "subagent".to_string())
 }
 
 fn is_false(b: &bool) -> bool {
@@ -404,6 +441,11 @@ pub struct SessionSummary {
     /// [`started_at`](Self::started_at) for a session that has no entries yet.
     #[serde(default)]
     pub last_message_at: u64,
+    /// Producer tag from the header (`None` = user-facing). Resume pickers
+    /// and remembered-pointer paths hide marked sessions; explicit
+    /// `resume <id>` / `--session` still load them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
 }
 
 /// Errors that can occur during session storage operations.
@@ -480,6 +522,8 @@ struct Header {
     timestamp: u64,
     cwd: PathBuf,
     model: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    origin: Option<String>,
 }
 
 /// A JSONL file-backed session store.
@@ -987,6 +1031,7 @@ impl JsonlSessionStore {
             timestamp: meta.timestamp,
             cwd: meta.cwd,
             model: meta.model,
+            origin: meta.origin,
         };
 
         let json = serde_json::to_string(&header)?;
@@ -1006,7 +1051,11 @@ impl JsonlSessionStore {
                 file.flush().await?;
                 file.sync_all().await?;
                 tighten_file_mode(&path);
-                self.remember(&id, &header.cwd).await;
+                // Auxiliary sessions (subagent runs etc.) must not become the
+                // cwd's remembered session — `-c` would land on agent noise.
+                if header.origin.is_none() {
+                    self.remember(&id, &header.cwd).await;
+                }
                 Ok(id)
             }
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
@@ -1576,8 +1625,11 @@ impl JsonlSessionStore {
             timestamp: header.timestamp,
             cwd: header.cwd.clone(),
             model: header.model,
+            origin: header.origin,
         };
-        self.remember(id, &meta.cwd).await;
+        if meta.origin.is_none() {
+            self.remember(id, &meta.cwd).await;
+        }
 
         // Compaction boundary: replay only the active transcript after the
         // last marker. Old files carry no markers and load whole.
@@ -1740,6 +1792,7 @@ impl JsonlSessionStore {
                 cwd: header.cwd,
                 first_user_text,
                 last_user_text,
+                origin: header.origin,
             });
         }
 

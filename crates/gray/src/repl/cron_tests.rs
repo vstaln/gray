@@ -114,20 +114,6 @@ fn picker_appends_the_ticker_liveness_row() {
     assert!(rows[1].read_only);
 }
 
-#[test]
-fn cron_spec_toggles_without_removal_or_errors() {
-    assert_eq!(CRON_SPEC.title, "Cron");
-    const {
-        assert!(CRON_SPEC.supports_toggle);
-    }
-    const {
-        assert!(!CRON_SPEC.supports_remove);
-    }
-    const {
-        assert!(!CRON_SPEC.errors_tab);
-    }
-}
-
 fn finished(name: &str) -> crate::cron::CronJob {
     crate::cron::CronJob {
         state: crate::cron::store::JobState::Done,

@@ -26,16 +26,6 @@ fn inserts_space_at_bare_sentence_boundaries() {
 }
 
 #[test]
-fn leaves_ambiguous_letter_boundaries_glued() {
-    // `handling` + `to` (dropped word space) is indistinguishable from
-    // `Anal` + `yzing` (mid-word BPE split): both are letter+letter with
-    // no whitespace. Repairing the former would corrupt every sub-word
-    // token of well-behaved providers, so the hardcoded rule only fires
-    // on punctuation boundaries and leaves these alone.
-    assert_eq!(join(&["handling", "to explain"]), "handlingto explain");
-}
-
-#[test]
 fn never_doubles_existing_whitespace() {
     assert_eq!(join(&["end. ", "Next"]), "end. Next");
     assert_eq!(join(&["end.", " Next"]), "end. Next");

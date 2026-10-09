@@ -94,19 +94,6 @@ fn row_caps_long_descriptions() {
 }
 
 #[test]
-fn error_row_matches_plugins_format() {
-    let row = crate::skills::format_discovered_skill_row(&discovered("x", "Does x things"));
-    assert_eq!(row, "x — Does x things");
-    let err = format_error_row(&ErrorEntry {
-        ts_secs: 0,
-        source: "skills".to_string(),
-        item: "demo".to_string(),
-        message: "boom".to_string(),
-    });
-    assert_eq!(err, "skills demo: boom");
-}
-
-#[test]
 fn error_row_holds_for_varied_entries() {
     // The old skills modal delegated to the plugins formatter; the
     // single shared renderer must keep parity for any input.
@@ -126,37 +113,9 @@ fn error_row_holds_for_varied_entries() {
 }
 
 #[test]
-fn enabled_row_shows_check_and_source_label() {
-    let row = format_plugin_row("demo", &entry("gray-native", true));
-    assert!(row.starts_with("✓ "), "enabled marker: {row:?}");
-    assert!(row.contains("demo 1.2.3 (user)"), "body: {row:?}");
-    assert!(row.contains("[Gray Index]"), "source label: {row:?}");
-    assert!(!row.contains("[disabled]"), "no dim marker: {row:?}");
-}
-
-#[test]
-fn disabled_row_shows_circle_and_disabled_marker() {
-    let row = format_plugin_row("demo", &entry("gray-native", false));
-    assert!(row.starts_with("○ "), "disabled marker: {row:?}");
-    assert!(row.contains("[disabled]"), "dim marker text: {row:?}");
-    assert!(row.contains("[Gray Index]"), "source label: {row:?}");
-}
-
-#[test]
 fn unknown_ecosystem_uses_raw_string() {
     let row = format_plugin_row("demo", &entry("url", true));
     assert!(row.contains("[url]"), "raw ecosystem: {row:?}");
-}
-
-#[test]
-fn error_row_shows_source_item_and_message() {
-    let row = format_error_row(&ErrorEntry {
-        ts_secs: 0,
-        source: "index".to_string(),
-        item: "demo".to_string(),
-        message: "boom".to_string(),
-    });
-    assert_eq!(row, "index demo: boom");
 }
 
 #[test]

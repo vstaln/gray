@@ -353,8 +353,17 @@ async fn run_plugin_inner(cmd: gray::PluginCmd) -> anyhow::Result<()> {
     use gray::PluginCmd;
     match cmd {
         PluginCmd::Check { dir } => gray::plugin_check::check_plugin_dir(&dir).await,
-        PluginCmd::Capabilities { name } => {
-            gray::plugin_cli::print_capabilities(name.as_deref())?;
+        PluginCmd::Capabilities { name, all } => {
+            if all {
+                let name = name.as_deref().ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "--all needs a plugin name: gray plugin capabilities <name> --all"
+                    )
+                })?;
+                gray::plugin_cli::grant_all_capabilities(name)?;
+            } else {
+                gray::plugin_cli::print_capabilities(name.as_deref())?;
+            }
             Ok(())
         }
         PluginCmd::List => {

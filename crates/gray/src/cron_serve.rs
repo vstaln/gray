@@ -216,7 +216,7 @@ impl SaveLocalDeliver {
                     crate::session_store::JsonlSessionStore::new(self.home.join("sessions"));
                 let sid = crate::session_store::SessionId::new(origin.chat.clone());
                 if let Err(e) = sessions
-                    .append(&sid, &gray_core::message::Message::user(note))
+                    .append(&sid, &gray_core::message::Message::user_injected(note))
                     .await
                 {
                     log::warn!(

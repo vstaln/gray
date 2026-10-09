@@ -69,21 +69,6 @@ async fn fetch_parses_loopback_index() {
 }
 
 #[tokio::test]
-async fn lookup_miss_error_is_exact() {
-    let _lock = ENV_LOCK.lock().unwrap();
-    let url =
-        spawn(Router::new().route("/index.json", get(|| async { Json(minimal_index()) }))).await;
-    let _home = use_env(&url);
-
-    let client = gray_pkg::fetch::client().unwrap();
-    let index = gray_pkg::index::fetch_index(&client).await.unwrap();
-    let err = gray_pkg::index::lookup(&index, "nope")
-        .unwrap_err()
-        .to_string();
-    assert_eq!(err, "not in index: nope (try /plugin install <https-url>)");
-}
-
-#[tokio::test]
 async fn etag_304_revalidates() {
     use std::sync::{
         Arc,

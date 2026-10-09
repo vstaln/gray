@@ -14,6 +14,7 @@ fn summary(
         first_user_text: first.map(str::to_string),
         last_user_text: last.map(str::to_string),
         last_message_at,
+        origin: None,
     }
 }
 
@@ -196,6 +197,7 @@ fn aged(id: &str, started: u64, last_active: u64) -> SessionSummary {
         first_user_text: Some(format!("opened {id}")),
         last_user_text: Some(format!("left off on {id}")),
         last_message_at: last_active,
+        origin: None,
     }
 }
 
@@ -307,6 +309,92 @@ async fn empty_sessions_exist_on_disk_but_hide_from_resume() {
         "empty-hide-1",
         "hiding is a listing rule, not a delete: explicit ids still resolve"
     );
+}
+
+#[tokio::test]
+async fn auxiliary_sessions_exist_on_disk_but_hide_from_resume() {
+    // A subagent child session has real content — `is_empty` would never
+    // catch it — but its `origin` tag keeps it out of every resume surface
+    // while `--session <id>` (steer) and `resume <id>` still load it.
+    let dir = tempfile::tempdir().unwrap();
+    let store = JsonlSessionStore::new(dir.path());
+    let cwd = std::env::current_dir().unwrap();
+    let child = crate::session_store::SessionMeta::new(
+        SessionId::new("child-aux-1"),
+        now_millis(),
+        cwd.clone(),
+        "test-model",
+    )
+    .with_origin(Some("subagent".to_string()));
+    store.create(child).await.unwrap();
+    store
+        .append(
+            &SessionId::new("child-aux-1"),
+            &Message::user("the delegated task"),
+        )
+        .await
+        .unwrap();
+    let summaries = store.list().await;
+    assert_eq!(summaries.len(), 1, "the store keeps the aux session");
+    assert_eq!(summaries[0].origin.as_deref(), Some("subagent"));
+    assert!(
+        !session_matches(&summaries[0], "", None),
+        "aux sessions never match the picker, even unfiltered"
+    );
+    assert!(
+        !session_matches(&summaries[0], "delegated", None),
+        "aux sessions never match by content search either"
+    );
+    assert!(latest_summary(&summaries, None).is_none());
+    assert_eq!(
+        resolve_prefix(&store, "child-aux-1", false)
+            .await
+            .unwrap()
+            .as_str(),
+        "child-aux-1",
+        "hiding is a listing rule, not a delete: explicit ids still resolve"
+    );
+}
+
+#[tokio::test]
+async fn auxiliary_sessions_dont_bury_the_real_latest() {
+    // -c/--last must land on the user's session even when a subagent child
+    // was active more recently in the same cwd.
+    let dir = tempfile::tempdir().unwrap();
+    let store = JsonlSessionStore::new(dir.path());
+    let cwd = std::env::current_dir().unwrap();
+    store
+        .create(crate::session_store::SessionMeta::new(
+            SessionId::new("user-real"),
+            now_millis() - 60_000,
+            cwd.clone(),
+            "test-model",
+        ))
+        .await
+        .unwrap();
+    store
+        .append(&SessionId::new("user-real"), &Message::user("my thread"))
+        .await
+        .unwrap();
+    store
+        .create(
+            crate::session_store::SessionMeta::new(
+                SessionId::new("child-newer"),
+                now_millis(),
+                cwd,
+                "test-model",
+            )
+            .with_origin(Some("subagent".to_string())),
+        )
+        .await
+        .unwrap();
+    store
+        .append(&SessionId::new("child-newer"), &Message::user("agent work"))
+        .await
+        .unwrap();
+    let summaries = store.list().await;
+    let latest = latest_summary(&summaries, None).expect("a visible session");
+    assert_eq!(latest.id.as_str(), "user-real");
 }
 
 #[test]

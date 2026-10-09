@@ -18,7 +18,7 @@ use crate::message::Message;
 /// Trims `summary`; byte-stable (see `summary_message_envelope_is_byte_stable`).
 pub fn summary_message(summary: &str) -> Message {
     let s = summary.trim();
-    Message::user(format!(
+    Message::user_injected(format!(
         "The conversation history before this point was compacted into the following summary:\n\n<summary>\n{s}\n</summary>"
     ))
 }

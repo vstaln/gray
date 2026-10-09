@@ -532,8 +532,15 @@ pub struct Agent {
     /// `agent_loop::mask_stale_tool_output`) and reset by every history
     /// rewrite, which invalidates the index.
     pub(crate) masked_prefix: usize,
-    /// Prompt-cache warming during long tool runs; `None` = off.
+    /// Prompt-cache warming during long rounds; `None` = off.
     pub(crate) cache_warm: Option<crate::cache_warm::CacheWarmPolicy>,
+    /// Sticky: some request this session reported cache activity. Feeds
+    /// `worth_refreshing`'s no-prices path — a provider that never reports
+    /// caching gains nothing from a replay. The warmer needs the flag
+    /// before the in-flight request reports, so it persists across rounds
+    /// and survives `history_rewritten` (it describes the provider, not
+    /// one cache entry).
+    pub(crate) warm_cache_reported: bool,
     /// Whether the host may rewrite already-sent history (the cold-cache
     /// stale-output mask shortens old tool results). Relay providers spawn
     /// a per-turn child off a native session: rewriting the prefix there
@@ -588,13 +595,15 @@ impl Agent {
             contaminated: std::collections::BTreeSet::new(),
             masked_prefix: 0,
             cache_warm: None,
+            warm_cache_reported: false,
             prefix_rewrite_ok: true,
             lean_prompt: false,
         }
     }
 
-    /// Keep the provider's prompt cache warm while long tools run (pi cache
-    /// warming, streaming mode). `None` turns it off.
+    /// Keep the provider's prompt cache warm through long rounds — the
+    /// stream and its tool phase alike (pi cache warming, streaming mode).
+    /// `None` turns it off.
     pub fn with_cache_warm(mut self, policy: Option<crate::cache_warm::CacheWarmPolicy>) -> Self {
         self.cache_warm = policy;
         self
@@ -893,6 +902,7 @@ impl Agent {
             });
             self.messages.push(Message {
                 role: Role::Assistant,
+                injected: false,
                 content,
             });
         }
@@ -1011,6 +1021,7 @@ pub(crate) fn salvage_partial_text(
     content.push(ContentBlock::Text { text });
     messages.push(Message {
         role: Role::Assistant,
+        injected: false,
         content,
     });
 }

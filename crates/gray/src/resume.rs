@@ -98,6 +98,13 @@ fn is_empty_session(s: &SessionSummary) -> bool {
     !(has(&s.first_user_text) || has(&s.last_user_text))
 }
 
+/// An auxiliary session was minted by a non-interactive producer (subagent
+/// runs carry `origin: "subagent"` from the supervisor's env): real work,
+/// still loadable by id, but noise in pickers and `-c`/`--last` selection.
+fn is_auxiliary_session(s: &SessionSummary) -> bool {
+    s.origin.is_some()
+}
+
 /// Picker filter: cwd scope plus case-insensitive query over id, cwd, and user
 /// text (both ends — the preview shows the latest, a remembered opener still
 /// identifies the session). Shared by the draw loop and the Down/Enter handlers.
@@ -107,7 +114,7 @@ fn session_matches(s: &SessionSummary, query: &str, cwd_filter: Option<&Path>) -
     {
         return false;
     }
-    if is_empty_session(s) {
+    if is_empty_session(s) || is_auxiliary_session(s) {
         return false;
     }
     if query.is_empty() {
@@ -139,7 +146,7 @@ pub fn latest_summary<'a>(
     summaries
         .iter()
         .filter(|s| cwd_filter.is_none_or(|cwd| paths_match(&s.cwd, cwd)))
-        .filter(|s| !is_empty_session(s))
+        .filter(|s| !is_empty_session(s) && !is_auxiliary_session(s))
         .max_by_key(|s| s.last_message_at)
 }
 
@@ -155,7 +162,7 @@ pub async fn recent_summaries(store: &JsonlSessionStore, all: bool) -> Vec<Sessi
         .await
         .into_iter()
         .filter(|s| filt.is_none_or(|c| paths_match(&s.cwd, c)))
-        .filter(|s| !is_empty_session(s))
+        .filter(|s| !is_empty_session(s) && !is_auxiliary_session(s))
         .collect();
     // Newest activity first, like the picker: the printed age then reads
     // monotonically instead of jumping around.
@@ -368,7 +375,7 @@ pub async fn run_resume_picker(
     // `list()` already orders by last activity; sort again so the picker's
     // order does not depend on that internal detail.
     let mut summaries = store.list().await;
-    summaries.retain(|s| !is_empty_session(s));
+    summaries.retain(|s| !is_empty_session(s) && !is_auxiliary_session(s));
     summaries.sort_by_key(|s| s.last_message_at);
     summaries.reverse();
     if summaries.is_empty() {

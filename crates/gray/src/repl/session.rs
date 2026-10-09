@@ -411,7 +411,8 @@ pub(crate) async fn ensure_session_state(
             timestamp,
             cwd.to_path_buf(),
             config.model.clone().unwrap_or_else(|| "unset".into()),
-        );
+        )
+        .with_origin(crate::session_store::session_origin_from_env());
         if let Err(e) = store.create(meta).await {
             log::warn!(target: "gray_session", "session create failed: {e}");
         }
@@ -964,7 +965,8 @@ async fn remint_missing_session(state: &SessionState) -> bool {
         crate::print::now_millis(),
         cwd,
         "reminted",
-    );
+    )
+    .with_origin(crate::session_store::session_origin_from_env());
     match state.store.create(meta).await {
         Ok(_) => true,
         Err(crate::session_store::SessionError::AlreadyExists(_)) => true,

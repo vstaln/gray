@@ -1,0 +1,204 @@
+GRAY BASH TOOL — mini-swe-agent-style simplification brief
+==========================================================
+Date: 2026-10-08. Repo: ~/gray (branch feat/onboarding-flow).
+Read first: crates/gray-tools/src/shell/tools/bash.rs (1769 lines as of 17:00 —
+includes uncommitted WIP, see WORKING-TREE WARNING at the end),
+crates/gray-tools/src/shell/tools/bash/jobs.rs (895),
+crates/gray/src/repl/jobs.rs, crates/gray/src/repl/mod.rs:953
+(completion-wake), crates/gray-tools/tests/it/background_jobs.rs,
+crates/gray-tools/src/shell/tools/bash_tests.rs, crates/gray/src/repl/jobs_tests.rs.
+
+GOAL
+----
+Make the model-facing bash surface as unambiguous as mini-swe-agent's:
+every call is either a synchronous command or an instant state read.
+Time passes ONLY inside commands (sleep) or between turns (job wake).
+There is no "wait" primitive to misuse.
+
+MOTIVATING FAILURE
+------------------
+A long cargo check auto-backgrounded ("yielded after 30s duration
+limit"). The agent then burned four junk calls to stall — `true`,
+`echo stub`, a no-op function def — because it treated "I need to wait"
+as "emit a tool call", instead of using output+wait_ms or ending the
+turn. Three coexisting wait paths (yield_ms, wait_ms, end-turn-yield)
+plus an implicit auto-yield made the wrong choice easy.
+
+TARGET SURFACE
+--------------
+Model-facing params: `command`, `timeout` (seconds, cap 3600). That's it.
+REMOVE from the model surface: `action` enum, `job_id`, `background`,
+`yield_ms`, `wait_ms`, and the auto-background duration limit
+(DEFAULT_AUTO_YIELD_MS = 30s in shell/contract.rs, GRAY_BASH_YIELD_MS).
+
+REQUIRED: a DEFAULT timeout. Today the 30s auto-yield is the only thing
+that stops an un-timed `cargo build` from blocking the turn forever.
+Removing it without a default re-creates that hang. So:
+  - `timeout` omitted → default T (DECIDE: suggest 120s), then detach.
+  - `timeout` given  → block up to that long, then detach.
+  - `timeout` never kills. State this in the tool description; a model
+    that wants a hard kill writes `timeout 30 cmd` in-band.
+
+SEMANTICS
+---------
+- Command runs synchronously until exit or timeout.
+- On timeout: do NOT kill (mini kills + returns partial output — gray
+  goes better). Detach the child into the EXISTING jobs registry and
+  return a notice: "still running as job <id>; log at <path>; pgid <n>.
+  End your turn to be woken when it finishes; `kill -- -<pgid>` to
+  cancel; tail <log> to peek."
+  NOTE the `-- -<pgid>`: it signals the whole process GROUP. A bare
+  `kill <pgid>` hits only the `sh` wrapper and leaves cargo/rustc running.
+- `sleep N && tail log` in-band polling works as a blocking command AS
+  LONG AS N < timeout. With the default T, `sleep 300` would itself
+  detach — the original bug (a) again. Fix without compromise: the tool
+  description and the detach notice both say "if you sleep, pass a
+  `timeout` larger than the sleep". Optionally: if the command is a bare
+  `sleep N`/`sleep N && …` with no `timeout`, use N+10s as the bound.
+- Instant peeks: the model peeks via `tail`/`kill -0` on the log/pgid —
+  remove the output/status/cancel/list actions from the TOOL schema.
+  The registry stays as internal machinery.
+- SECOND auto-detach path, must be handled too: the silence bound
+  (`stall_bound()` in bash.rs, MAX_BLOCKING_SILENCE_SECS = 600s,
+  GRAY_SHELL_STALL_SECS). A command silent that long is also handed to
+  a job. Fold it into the timeout rule (silence only matters if it
+  exceeds the timeout — i.e. delete it) or keep it and give it the SAME
+  notice text. Do not leave a second, differently-worded detach.
+- Replacing `action:list`: without it, a model that lost the job id
+  (compaction, resume) can't find its log. Surface the running jobs
+  (id, log path, pgid, elapsed) to the model each turn while any exist —
+  `background_jobs()` (gray-tools/src/lib.rs:345) already returns them;
+  today only /jobs and repl/jobs.rs use it, nothing model-facing.
+
+KEEP INTERNAL (not model-visible)
+---------------------------------
+- Jobs registry, output bounds, reaping, cancellation bookkeeping.
+- `wait_any_job` turn-end hold: load-bearing for headless `-p` (a
+  headless run that detached work must hold the turn instead of exiting
+  and orphaning the child). Job-settles-wakes-session in the REPL
+  (repl/mod.rs:953 region) stays too.
+- `gray cron add "in 30m" --reminder` wake path (unrelated, stays).
+
+KNOWN ISSUES / COSTS TO HANDLE
+------------------------------
+1. Log peeks bypass bounded/redacted output. NICE-TO-HAVE, not a
+   blocker: the model can already `cat` any file, so `tail log` opens no
+   new leak, and streaming redaction at write time misses secrets split
+   across chunk boundaries. If done, redact line-buffered, not per chunk.
+2. Busy-poll footgun: a model can loop `tail` without sleep, burning
+   turns. Mitigate via the tool description ONLY: state that ending the
+   turn is always sufficient because completion wakes the session;
+   polling is never required. (Same footgun exists upstream in mini.)
+3. Breaking change: old prompts/sessions emitting `background`,
+   `yield_ms`, `wait_ms`, `action`, `job_id` must FAIL LOUDLY with a
+   pointer: "unknown arg — long commands auto-detach on timeout; end
+   your turn to be woken." Never silently ignore.
+4. The detach notice is the whole UX — include job id, log path, pgid,
+   and the one-line wait rule. See WAKE const (~bash.rs:168-179) for the
+   wording to replace.
+5. Interactive visibility: while a command blocks, the TUI already shows
+   the tool running; the detach notice must render cleanly in the REPL
+   transcript and in headless output.
+6. Discord/always-on contexts: a detached job + ended turn must still
+   deliver the wake observation into the correct session (existing
+   machinery — verify the gateway/headless path, not just REPL).
+   ALSO verify the claude-sub (MCP) path: sessions on the Claude
+   subscription run bash through claude-sub's MCP bridge; check the
+   job-finished wake actually reaches those sessions.
+
+TESTS / VERIFICATION
+--------------------
+- HARD RULE (AGENTS.md): NEVER `cargo test` while X is running —
+  amdgpu page-flip storm kills Xorg. Use `nice -n 19 ionice -c3
+  flock /tmp/cargo.lock cargo check -p <crate>` / `cargo build -p <crate>`
+  only. Full tests in TTY (Ctrl+Alt+F3) or CI.
+- Rewrite bash_tests.rs / jobs_tests.rs / it/background_jobs.rs for the
+  new surface: timeout→detach→notice, pgid advertised, in-band
+  `kill -- -<pgid>` kills the whole tree, default timeout applies when
+  omitted, `sleep N` with timeout>N stays foreground, turn-end hold
+  unchanged, loud failure on removed args, running jobs listed to the
+  model each turn.
+- Update the tool description string and WAKE text; check
+  crates/gray/src/repl/dispatch.rs and docs/plugins.md wording if they
+  mention background jobs.
+
+CONTEXT: this is part of the pi-parity/plugin work in
+docs/customization.md — keep the diff focused; do NOT touch the
+protocol-2.0 events work (input/submit, agent/before_start,
+context/build, tool/after — committed as 281436e6).
+
+ADDENDUM — details that were underexplained
+===========================================
+
+WHAT MINI-SWE-AGENT ACTUALLY DOES (the reference)
+-------------------------------------------------
+~/gray/reference/SWE-agent/mini-swe-agent — the WHOLE agent is
+src/minisweagent/agents/default.py (~190 lines): a synchronous
+`while True: step()` loop. step = one model call → env.execute() →
+append observation. environments/local.py: every command is a blocking
+subprocess with timeout=30s default; on timeout it SIGKILLs the process
+group and returns partial output as an error observation. There are no
+background jobs, no job ids, no wait calls, no wake mechanism.
+Submission is a magic string: a command whose stdout's first line is
+`COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT` raises Submitted → an
+`role:"exit"` message ends the loop. Waiting exists ONLY as in-band
+commands the model writes itself (`nohup … &`, `sleep 5; tail log`).
+Because there is exactly one way to spend time, the wait-path fumble
+below is structurally impossible there.
+
+THE FAILURE, PRECISELY
+----------------------
+Sequence: (1) foreground cargo check hit the 30s duration limit and was
+auto-backgrounded into job `python3`. (2) The agent issued `sleep 60` as
+a foreground command to stall — which ALSO auto-backgrounded into a
+second useless job. (3) Then `true`, a no-op shell function def,
+`echo collecting`, `echo stub`, `bash -c 'echo placeholder'` — junk
+calls emitted to "pass the round". (4) Finally did the right thing:
+action:output job_id:python3 wait_ms:5000.
+Two distinct bugs:
+  a. Auto-yield silently converts an in-band `sleep` — the mini-style
+     wait — into another managed job. In-band waiting is currently
+     BROKEN, not just undocumented.
+  b. Three overlapping wait paths (yield_ms, wait_ms on output/status,
+     end-turn-wake) plus auto-yield mean "how do I wait" has four
+     answers, three of which are wrong in any given moment.
+
+WHY THE REGISTRY STAYS (economics)
+----------------------------------
+Wake-on-finish costs zero tokens; an in-band poll loop costs a full
+billed model call per iteration (~60 calls for a 30-min build at 30s
+cadence). Mini accepts the billed-poll cost because episodes are short
+batch runs. Gray is always-on with real builds — the free wake is what
+makes the simpler surface affordable. Removing the registry would be
+the compromise; keeping it internal removes only the ambiguity.
+
+REJECTED ALTERNATIVE (so nobody re-adds it)
+-------------------------------------------
+"Keep output/status/cancel as instant peeks for the model" — rejected:
+every extra read path re-opens the "peek vs wait vs end-turn" decision.
+Peeking is `tail <log>` in-band; one way to read state, one way to
+wait (end turn). Do not reintroduce a model-visible jobs API.
+
+EDGE CASE TO DECIDE
+-------------------
+Two args worth keeping-or-dropping: `background:true` (explicit intent
+to detach NOW rather than hit the timeout — e.g. dev servers that never
+exit). Options: keep it (one extra boolean, honest intent) or drop it
+entirely (strict mini; model writes `nohup … &` itself for daemons).
+Leaning drop: a never-exiting command hits the 3600s cap or the model
+backgrounds it via `&` in-band — same outcome, zero params. Decide and
+document the choice.
+
+WORKING-TREE WARNING (added 17:00 review)
+=========================================
+bash.rs (+272) and bash_tests.rs (+81) carry UNCOMMITTED WIP written
+after this brief (16:26–16:40), most likely by a Devin session open in
+~/gray. It goes the OPPOSITE direction: a ~250-line shell parser that
+REFUSES "stall" commands (`echo` literals, `jobs`/`wait`, function defs,
+`bash -c`, nohup/env wrappers) and refuses a bare `sleep N` while a job
+is running — i.e. it blocks the in-band wait this brief keeps.
+Under this brief the junk-call problem is solved by removing the extra
+wait paths, so that parser is not needed. Before implementing: confirm
+with the user, then `git stash push -- <those two files>` (do not
+discard). Leave the other dirty files (print.rs, session_store.rs,
+resume.rs, repl/*, gray-provider/*) out of this diff.

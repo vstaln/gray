@@ -837,10 +837,14 @@ pub enum PluginCmd {
         /// Plugin directory (executable, plugin.sh, or single executable)
         dir: String,
     },
-    /// Show declared vs granted plugin capabilities
+    /// Show declared vs granted plugin capabilities (`--all` grants)
     Capabilities {
         /// Plugin name (default: every installed plugin)
         name: Option<String>,
+        /// Grant every capability the plugin declares — the consent
+        /// prompt's non-interactive equivalent
+        #[arg(long)]
+        all: bool,
     },
 }
 

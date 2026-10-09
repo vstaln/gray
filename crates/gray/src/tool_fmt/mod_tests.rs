@@ -613,6 +613,27 @@ fn plugin_preview_path_missing_falls_back_to_generic_dump() {
 }
 
 #[test]
+fn unknown_tool_surfaces_first_string_arg_and_flags_the_rest() {
+    // `recall` with only filters set reads like the CLI, not a JSON dump.
+    let args = serde_json::json!({"all": true, "limit": 10});
+    let text = row_text(&format_tool_call_header("recall", &args, None, None));
+    assert!(text.contains("recall"), "headline missing: {text:?}");
+    assert!(text.contains("all"), "flag missing: {text:?}");
+    assert!(text.contains("limit=10"), "scalar missing: {text:?}");
+    assert!(!text.contains("all=true"), "raw bool leaked: {text:?}");
+
+    // A search-shaped call leads with the query string.
+    let args = serde_json::json!({"query": "wifi password", "all": true, "limit": 5});
+    let text = row_text(&format_tool_call_header("recall", &args, None, None));
+    assert!(
+        text.contains("\"wifi password\""),
+        "query preview missing: {text:?}"
+    );
+    assert!(text.contains("all"), "flag missing: {text:?}");
+    assert!(text.contains("limit=5"), "scalar missing: {text:?}");
+}
+
+#[test]
 fn preview_at_walks_object_keys_only() {
     let args = serde_json::json!({"document": {"title": "  Hi  "}});
     assert_eq!(preview_at(&args, "document.title").as_deref(), Some("Hi"));

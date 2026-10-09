@@ -333,15 +333,25 @@ impl Tui {
                             _ => {}
                         }
                     }
+                    let typed = !entry.message.injected
+                        && entry
+                            .message
+                            .content
+                            .iter()
+                            .any(|b| matches!(b, gray_core::ContentBlock::Text { .. }));
                     if !user_text.is_empty() {
                         self.push_user_prompt(&user_text, &[], true);
                         // Feed composer input history so Up/Down recall works
-                        // for prompts from the resumed session.
-                        self.history.push(user_text.clone());
-                        if self.history.len() > 100 {
-                            self.history.remove(0);
+                        // for prompts from the resumed session. Injected notes
+                        // (job notices, nudges) and component events stay out —
+                        // recall is for text the user actually typed.
+                        if typed {
+                            self.history.push(user_text.clone());
+                            if self.history.len() > 100 {
+                                self.history.remove(0);
+                            }
+                            self.history_idx = None;
                         }
-                        self.history_idx = None;
                     }
                 }
                 gray_core::Role::Assistant => {

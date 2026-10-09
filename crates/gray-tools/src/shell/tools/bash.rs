@@ -690,13 +690,20 @@ fn search_words(command: &str) -> Option<Vec<String>> {
 }
 
 impl BashTool {
-    /// Whole-command no-ops (`true`, `:`) are how a model stalls for a
-    /// background job it does not know how to await. Jobs report on their own
-    /// between turns, so say that instead of spawning a shell that does
-    /// nothing and prints nothing.
+    /// Whole-command no-ops (`true`, `:`, a lone `echo`/`printf`) are how a
+    /// model stalls for a background job or placeholders work it announced
+    /// but never calls (`echo "switching tools"`). `search_words` yields None
+    /// on any pipe, redirect, separator or substitution, so `echo x > f`,
+    /// `echo x | wc` and `echo a; real-work` still reach the shell — only a
+    /// command whose sole effect is stdout is steered. Jobs report on their
+    /// own between turns, so say that instead of spawning a shell that does
+    /// nothing.
     fn noop_steer(&self, ctx: &ToolContext, command: &str) -> Option<ToolOutput> {
         let trimmed = command.trim();
-        if !matches!(trimmed, "true" | ":") {
+        let noop = matches!(trimmed, "true" | ":")
+            || search_words(trimmed)
+                .is_some_and(|w| matches!(w.first().map(String::as_str), Some("echo" | "printf")));
+        if !noop {
             return None;
         }
         let live = self.jobs.live_ids(ctx);

@@ -125,7 +125,7 @@ async fn timed_out_commands_keep_running_and_other_work_proceeds() {
     // it and exit before the still-going listing is snapshotted, which made
     // the assertion below flaky on the macOS/Windows runners.
     let other = reg
-        .execute(&ctx, "bash", json!({"command": "echo independent"}))
+        .execute(&ctx, "bash", json!({"command": "echo independent | cat"}))
         .await;
     assert!(other.content.starts_with("exit 0"), "{}", other.content);
     assert!(other.content.contains("independent"));
@@ -233,10 +233,10 @@ async fn removed_arguments_and_their_aliases_fail_loudly_and_never_spawn() {
     // the call blocks to exit or timeout anyway — so they drop instead of
     // failing (gpt-6 fills every property; rejecting them looped the turn).
     for args in [
-        json!({"command": "echo fine", "yield_time_ms": "10000"}),
-        json!({"command": "echo fine", "yield_ms": 100}),
-        json!({"command": "echo fine", "wait_ms": 100}),
-        json!({"action":"run","background":false,"command":"echo fine","job_id":"","timeout":10,"wait_ms":1000,"yield_ms":1000}),
+        json!({"command": "echo fine | cat", "yield_time_ms": "10000"}),
+        json!({"command": "echo fine | cat", "yield_ms": 100}),
+        json!({"command": "echo fine | cat", "wait_ms": 100}),
+        json!({"action":"run","background":false,"command":"echo fine | cat","job_id":"","timeout":10,"wait_ms":1000,"yield_ms":1000}),
     ] {
         let out = reg.execute(&ctx, "bash", args.clone()).await;
         assert!(!out.is_error, "{args}: {}", out.content);
@@ -257,7 +257,7 @@ async fn removed_arguments_and_their_aliases_fail_loudly_and_never_spawn() {
         ..ctx.clone()
     };
     assert!(
-        tool.execute(&missing, json!({"command": "printf ''"}))
+        tool.execute(&missing, json!({"command": "printf '' | cat"}))
             .await
             .is_error,
         "a missing cwd is an error, not a job"

@@ -94,7 +94,7 @@ pub(crate) async fn run_compaction_call(
             "\n\n<user-instructions>\nThe user provided these instructions for this summary. Follow them with high priority:\n{instructions}\n</user-instructions>"
         ));
     }
-    messages.push(Message::user(trigger));
+    messages.push(Message::user_injected(trigger));
     // Reuse the captured live prefix, including hook context, without re-fetching it.
     // Before the first turn, system_text() falls back to the configured base prompt.
     let system = agent.system_text();
