@@ -100,7 +100,7 @@ pub(crate) fn footer_label(jobs: usize, wakes: &[Wake], now: i64) -> Option<Stri
 fn job_row(job: &BackgroundJob) -> String {
     let state = if job.stopping { "stopping" } else { "running" };
     format!(
-        "\u{2699} {} \u{2014} {state} {}",
+        "job {} \u{2014} {state} {}",
         job.id,
         age(job.elapsed.as_secs())
     )
@@ -108,7 +108,7 @@ fn job_row(job: &BackgroundJob) -> String {
 
 fn wake_row(wake: &Wake, now: i64) -> String {
     format!(
-        "\u{23f0} {} ({}) \u{2014} {}",
+        "wake {} ({}) \u{2014} {}",
         wake.name,
         &wake.id[..8.min(wake.id.len())],
         in_or_now(wake.at - now)

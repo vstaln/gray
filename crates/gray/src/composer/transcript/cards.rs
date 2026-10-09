@@ -29,7 +29,7 @@ pub(crate) fn format_tool_box_lines(
     let mut box_lines: Vec<Line<'static>> = Vec::new();
     box_lines.push(margin_row());
 
-    let wrapped_header = wrap_styled_line(header, max_w);
+    let wrapped_header = header_rows(header, max_w);
     for mut l in wrapped_header {
         l.style = l.style.patch(bg_style);
         l.spans
@@ -85,4 +85,47 @@ pub(crate) fn format_tool_box_lines(
     }
     box_lines.push(margin_row());
     box_lines
+}
+
+/// Header rows for a card. The `· in <dir>` / `· in background` detail
+/// always gets its own row under the verb, so the path never shares the
+/// command's row. Other ` · ` details stay inline and only break onto their
+/// own row when the header is too wide for the box.
+pub(crate) fn header_rows(header: Line<'static>, max_w: usize) -> Vec<Line<'static>> {
+    const SEP: &str = " \u{00b7} ";
+    let in_detail = header
+        .spans
+        .iter()
+        .position(|s| s.content.starts_with(" \u{00b7} in "))
+        .filter(|&i| i > 0);
+    let cut = match in_detail {
+        Some(i) => Some(i),
+        None if header.width() <= max_w => return vec![header],
+        None => header
+            .spans
+            .iter()
+            .position(|s| s.content.starts_with(SEP))
+            .filter(|&i| i > 0),
+    };
+    let Some(cut) = cut else {
+        return wrap_styled_line(header, max_w);
+    };
+    let mut head = header.clone();
+    let mut tail_spans = head.spans.split_off(cut);
+    // The detail sits under the verb, past the `⬢ ` bullet.
+    let indent = "  ";
+    let first = &tail_spans[0];
+    tail_spans[0] = Span::styled(
+        first.content.trim_start_matches(SEP).to_string(),
+        first.style,
+    );
+    let mut rows = wrap_styled_line(head, max_w);
+    // Further ` · ` parts after the first ride the same detail row.
+    let tail_w = max_w.saturating_sub(indent.len()).max(1);
+    let tail = Line::from(tail_spans).style(header.style);
+    for mut row in wrap_styled_line(tail, tail_w) {
+        row.spans.insert(0, Span::raw(indent));
+        rows.push(row);
+    }
+    rows
 }

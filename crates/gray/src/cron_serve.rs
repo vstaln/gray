@@ -497,9 +497,16 @@ fn post_to_session_inbox(
     } else {
         fired.excerpt.clone()
     };
+    // `card` stays for REPLs that predate the structured fields; current
+    // ones paint the box from `name`/`body`/`status` (see [`CronCard`]).
     let entry = serde_json::json!({
-        "card": format!("\u{23f0} cron: {}", format_fire_chat(fired)),
+        "card": format!("cron: {}", format_fire_chat(fired)),
         "prompt": crate::cron_fire::mirror_message(&fired.name, &body),
+        "name": fired.name,
+        "body": fired.excerpt,
+        "status": if fired.failed { "failed" } else { "ok" },
+        "reminder": fired.reminder,
+        "elapsed_ms": fired.elapsed_ms,
     });
     write_entry(&dir, &entry.to_string())
 }
@@ -537,7 +544,27 @@ pub fn session_inbox_pending(home: &std::path::Path, session: &str) -> bool {
 /// `(card, prompt)`. Each file is removed before it is returned, so one
 /// delivery starts at most one turn even if two readers race; an entry that
 /// cannot be removed or parsed is skipped (and logged), never redelivered.
-pub fn drain_session_inbox(home: &std::path::Path, session: &str) -> Vec<(String, String)> {
+/// What a delivery card shows: the job, how it ended, and its final answer
+/// (never the transcript — that stays in `cron/output`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct CronCard {
+    pub name: String,
+    pub body: String,
+    pub failed: bool,
+    pub reminder: bool,
+    pub elapsed_ms: u64,
+}
+
+/// One drained session-inbox entry. `cron` is `None` for entries written
+/// before the structured fields existed; those paint `card` as text.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SessionDelivery {
+    pub card: String,
+    pub prompt: String,
+    pub cron: Option<CronCard>,
+}
+
+pub fn drain_session_inbox(home: &std::path::Path, session: &str) -> Vec<SessionDelivery> {
     let Some(dir) = session_inbox(home, session) else {
         return Vec::new();
     };
@@ -562,7 +589,18 @@ pub fn drain_session_inbox(home: &std::path::Path, session: &str) -> Vec<(String
             .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
             .and_then(|v| {
                 let field = |k: &str| v.get(k)?.as_str().map(str::to_string);
-                Some((field("card")?, field("prompt")?))
+                let cron = field("name").map(|name| CronCard {
+                    name,
+                    body: field("body").unwrap_or_default(),
+                    failed: field("status").as_deref() == Some("failed"),
+                    reminder: v.get("reminder").and_then(|r| r.as_bool()).unwrap_or(false),
+                    elapsed_ms: v.get("elapsed_ms").and_then(|e| e.as_u64()).unwrap_or(0),
+                });
+                Some(SessionDelivery {
+                    card: field("card")?,
+                    prompt: field("prompt")?,
+                    cron,
+                })
             });
         match parsed {
             Some(entry) => out.push(entry),

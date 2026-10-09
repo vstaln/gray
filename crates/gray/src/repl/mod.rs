@@ -407,6 +407,16 @@ struct ReplRunner {
 #[async_trait::async_trait(?Send)]
 impl crate::cron_serve::AsyncRunner for ReplRunner {
     async fn run(&self, prompt: String, cwd: std::path::PathBuf) -> anyhow::Result<String> {
+        Ok(self.run_full(prompt, cwd).await?.transcript)
+    }
+
+    /// Without this the trait default hands the whole transcript out as the
+    /// final text, and `[tool:bash]` / `[result:…]` markup reaches the card.
+    async fn run_full(
+        &self,
+        prompt: String,
+        cwd: std::path::PathBuf,
+    ) -> anyhow::Result<crate::cron_serve::FireOutput> {
         // The ticker thread holds a startup snapshot; a /model switch since
         // then lives in the saved config — follow it so cron fires ask the
         // same provider the session uses.
@@ -422,7 +432,10 @@ impl crate::cron_serve::AsyncRunner for ReplRunner {
             .run(gray_core::message::Message::user(prompt), ctx)
             .await
             .map_err(|e| anyhow::anyhow!(crate::repl::format_core_error(&e, &config.base_url)))?;
-        Ok(crate::cron_fire::transcript_text(&events))
+        Ok(crate::cron_serve::FireOutput {
+            transcript: crate::cron_fire::transcript_text(&events),
+            final_text: crate::cron_fire::final_assistant_text(&events),
+        })
     }
 }
 
@@ -955,7 +968,30 @@ pub async fn run_repl_mode(
             bg_wake = cron::arm_background_wake(agent.as_ref(), sid.as_deref(), &cwd);
             if let Some((cards, prompt)) = cron::idle_wake(agent.as_ref(), sid.as_deref(), &cwd) {
                 for card in &cards {
-                    say(tui.as_ref().map(|(s, _)| s), card);
+                    match (card, tui.as_ref()) {
+                        (cron::WakeCard::Cron(c), Some((shared, _))) => {
+                            let mut t = shared.lock().expect("tui lock");
+                            let (header, body) = cron::cron_card_lines(c, t.width());
+                            t.push_tool_box(header, body);
+                        }
+                        (cron::WakeCard::Job(j), Some((shared, _))) => {
+                            let (header, body) = cron::job_card_lines(j);
+                            shared.lock().expect("tui lock").push_tool_box(header, body);
+                        }
+                        (cron::WakeCard::Job(j), None) => println!(
+                            "background job {} finished ({}) after {} \u{b7} log {}",
+                            j.id, j.outcome, j.elapsed, j.log
+                        ),
+                        (cron::WakeCard::Cron(c), None) => println!(
+                            "cron: {}",
+                            crate::cron_fire::format_delivery_plain(
+                                &c.name, &c.body, c.reminder, c.failed
+                            )
+                        ),
+                        (cron::WakeCard::Text(text), _) => {
+                            say(tui.as_ref().map(|(s, _)| s), text);
+                        }
+                    }
                 }
                 if let Some(msg) =
                     crate::turn_caps::check_caps(config, session_totals.turns, session_totals.cost)

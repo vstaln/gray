@@ -764,11 +764,15 @@ async fn a_session_origin_fire_goes_to_that_sessions_inbox_once() {
     let got = drain_session_inbox(home.path(), "sess-1");
     assert_eq!(got.len(), 1, "{got:?}");
     assert!(
-        got[0].0.contains("toilets: a history"),
+        got[0].card.contains("toilets: a history"),
         "card: {}",
-        got[0].0
+        got[0].card
     );
-    assert_eq!(got[0].1, "[Cron delivery: s3]\ntoilets: a history");
+    assert_eq!(got[0].prompt, "[Cron delivery: s3]\ntoilets: a history");
+    let card = got[0].cron.as_ref().expect("structured card");
+    assert_eq!(card.name, "s3");
+    assert_eq!(card.body, "toilets: a history");
+    assert!(!card.failed && !card.reminder);
     assert!(
         drain_session_inbox(home.path(), "sess-1").is_empty(),
         "delivered once"
