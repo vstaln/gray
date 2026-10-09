@@ -341,21 +341,10 @@ pub(crate) fn push_provider_connected(
         t.set_thinking_effort(eff.clone());
         t.set_hide_thinking(config.reasoning_hidden());
     }
-    let model_str = config.model.as_deref().unwrap_or("default");
-    let prov_name = crate::setup::load_catalog()
-        .ok()
-        .and_then(|c| {
-            c.values()
-                .find(|p| p.base_url == config.base_url)
-                .map(|p| p.name.clone())
-        })
-        .unwrap_or_else(|| "provider".to_string());
-    t.push_dim(format!("└ connected to {prov_name} · {model_str}"));
-    // Close the loop: what you got, and where to change it.
-    let effort = config.thinking_effort.as_deref().unwrap_or("high");
-    t.push_dim(format!(
-        "└ thinking {effort} · /model to switch or set effort"
-    ));
+    // One receipt row, same shape as `/model`'s `✓ Model set to …`.
+    let prov_name = connected_provider_name(config);
+    let detail = model_receipt_label(config);
+    t.push_action(&format!("Connected to {prov_name}"), detail.as_deref());
     if let Some((old, new)) = clamped {
         t.push_dim(format!(
             "└ thinking effort clamped from {old} to {new} (not supported by this model)"
@@ -363,6 +352,53 @@ pub(crate) fn push_provider_connected(
     }
     t.ensure_gap();
     let _ = t.draw();
+}
+
+/// The model half of a `✓ Model set to` / `✓ Connected to` receipt: the
+/// composite label when the model has variants (`Fusion · Opus 5.5 High +
+/// SWE-2 High`), else the id plus its effort when it has a level to choose.
+pub(crate) fn model_receipt_label(config: &Config) -> Option<String> {
+    let m = config.model.as_ref()?;
+    Some(
+        match (&config.thinking_effort, crate::setup::composite_label_for(config)) {
+            (_, Some(composite)) if config.fast_mode == Some(true) => {
+                format!("{composite} · fast")
+            }
+            (_, Some(composite)) => composite,
+            (Some(eff), None) if crate::setup::supported_thinking_levels(m).len() > 1 => {
+                format!("{m} · {}", crate::setup::effort_chip(eff, config))
+            }
+            _ => m.clone(),
+        },
+    )
+}
+
+/// Display name of the live connection. Plugin (subscription) connections
+/// carry a placeholder `base_url` no catalog row matches, so they resolve
+/// through the installed provider; API-key ones through the catalog. The
+/// endpoint host is the last resort, never a bare "provider".
+fn connected_provider_name(config: &Config) -> String {
+    if let Ok(home) = crate::setup::gray_home()
+        && let Some(installed) = crate::providers::resolve_provider_connection(config, &home)
+        && !installed.provider.name.trim().is_empty()
+    {
+        return installed.provider.name.clone();
+    }
+    if let Some(name) = crate::setup::load_catalog().ok().and_then(|c| {
+        c.values()
+            .find(|p| p.base_url == config.base_url)
+            .map(|p| p.name.clone())
+    }) {
+        return name;
+    }
+    endpoint_host(&config.base_url).unwrap_or_else(|| "provider".to_string())
+}
+
+/// `api.example.com` from `https://api.example.com/v1`.
+fn endpoint_host(base_url: &str) -> Option<String> {
+    let rest = base_url.split_once("://").map_or(base_url, |(_, r)| r);
+    let host = rest.split(['/', '?', '#']).next()?.trim();
+    (!host.is_empty()).then(|| host.to_string())
 }
 
 /// Split a `/name argv…` line into (`/name`, argv words) for plugin

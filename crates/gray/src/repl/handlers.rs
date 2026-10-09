@@ -812,23 +812,7 @@ pub(crate) async fn handle_model(
                     t.set_model_label(crate::setup::composite_label_for(config));
                     // Name the effort alongside the model when it has a
                     // level to choose: the picker set both at once.
-                    let label = match (
-                        &config.thinking_effort,
-                        crate::setup::composite_label_for(config),
-                    ) {
-                        // A composite names its picks (`Fusion · Opus 5.5
-                        // High + SWE-2 High`); fast still shows.
-                        (_, Some(composite)) if config.fast_mode == Some(true) => {
-                            format!("{composite} · fast")
-                        }
-                        (_, Some(composite)) => composite,
-                        (Some(eff), None)
-                            if crate::setup::supported_thinking_levels(m).len() > 1 =>
-                        {
-                            format!("{m} · {}", crate::setup::effort_chip(eff, config))
-                        }
-                        _ => m.clone(),
-                    };
+                    let label = super::model_receipt_label(config).unwrap_or_else(|| m.clone());
                     t.push_action("Model set to", Some(&label));
                 }
                 if (config.thinking_effort != prev_effort || fast_changed)
