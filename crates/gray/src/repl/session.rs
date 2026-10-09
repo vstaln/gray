@@ -673,16 +673,18 @@ pub(crate) fn dispatch_agent_event(
                 // provider request, so it re-arms the footer warmth timer
                 // and is checked against the previous request for a
                 // re-billed prompt (pi `maybeShowCacheMissNotice`).
-                if let Some(miss) = t.note_cache_request(usage, model, wire_model)
-                    && let Some(notice) = miss.notice()
-                {
-                    // Close the open markdown/thinking runs first, or the
-                    // row glues onto the streamed tail above it.
-                    t.flush_markdown();
-                    t.end_thinking();
-                    t.mark_stream_round_boundary();
-                    t.ensure_gap();
-                    t.push_warning(&notice);
+                if let Some(miss) = t.note_cache_request(usage, model, wire_model) {
+                    // Every miss feeds the `/usage` tally, warned or not.
+                    totals.note_miss(&miss);
+                    if let Some(notice) = miss.notice() {
+                        // Close the open markdown/thinking runs first, or the
+                        // row glues onto the streamed tail above it.
+                        t.flush_markdown();
+                        t.end_thinking();
+                        t.mark_stream_round_boundary();
+                        t.ensure_gap();
+                        t.push_warning(&notice);
+                    }
                 }
             }
             // Compaction accounting (arXiv:2512.22087 / 2601.16746): the

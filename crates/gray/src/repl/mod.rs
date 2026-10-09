@@ -209,6 +209,7 @@ mod plugin_cmds;
 mod prompt_turn;
 mod session;
 mod status;
+mod usage_panel;
 mod user_cmds;
 
 pub(crate) use commands::{REGISTRY, completion_fill, completion_matches_dyn, is_builtin_command};
