@@ -751,6 +751,25 @@ impl Agent {
     }
 
     /// Sets the initial conversation messages (useful for resumed sessions).
+    /// Takes over `donor`'s tool surface: executor, advertised tools,
+    /// display labels/previews, plugin hooks and the history-rewrite hook.
+    /// Everything model-side (provider, system prompt, context window,
+    /// cache policy, compaction budget) stays this agent's, and the
+    /// transcript is the caller's to carry (`with_messages`).
+    ///
+    /// A model switch only changes the provider, so it builds a plugin-free
+    /// agent for the new model and moves the running plugins across instead
+    /// of respawning every sidecar (one slow MCP server alone cost ~3s).
+    pub fn with_tool_surface_of(mut self, donor: Agent) -> Self {
+        self.executor = donor.executor;
+        self.tools = donor.tools;
+        self.tool_labels = donor.tool_labels;
+        self.tool_previews = donor.tool_previews;
+        self.hooks = donor.hooks;
+        self.history_rewrite_hook = donor.history_rewrite_hook;
+        self
+    }
+
     pub fn with_messages(mut self, messages: Vec<Message>) -> Self {
         self.messages = messages;
         self.history_rewritten();
@@ -1033,3 +1052,7 @@ mod agent_tests;
 #[path = "agent_repair_tests.rs"]
 #[cfg(test)]
 mod repair_tests;
+
+#[path = "agent_surface_tests.rs"]
+#[cfg(test)]
+mod surface_tests;

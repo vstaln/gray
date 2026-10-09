@@ -443,7 +443,7 @@ pub(crate) async fn dispatch_command(
                 Ok(crate::setup::ConnectOutcome::Connected) => {
                     *unconfigured = false;
                     push_provider_connected(config, tui, Some(&mut *hide_thinking));
-                    reload_agent(
+                    super::handlers::switch_agent_model(
                         &mut *agent,
                         config,
                         cwd,

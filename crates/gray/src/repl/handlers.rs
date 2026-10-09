@@ -579,6 +579,7 @@ pub(crate) async fn reload_agent(
     session_id: Option<&str>,
     tui: Option<&crate::composer::SharedTui>,
 ) {
+    let started = std::time::Instant::now();
     let old = agent.take();
     let mut rebuilt = match build_agent(config, cwd, session_id).await {
         Ok(a) => a,
@@ -592,6 +593,37 @@ pub(crate) async fn reload_agent(
         rebuilt = rebuilt.with_messages(old.messages().to_vec());
     }
     *agent = Some(rebuilt);
+    log::debug!(target: "gray_timing", "reload_agent elapsed_ms={}", started.elapsed().as_millis());
+}
+
+/// Rebuilds the agent for a model or provider switch without restarting
+/// plugins: a fresh model-side agent takes over the running one's tool
+/// surface and transcript. Respawning every sidecar made each switch wait
+/// on the slowest plugin (an MCP server's startup alone held it ~3s). With
+/// no agent yet there is nothing to keep, so it falls back to a full build.
+pub(crate) async fn switch_agent_model(
+    agent: &mut Option<Agent>,
+    config: &Config,
+    cwd: &Path,
+    session_id: Option<&str>,
+    tui: Option<&crate::composer::SharedTui>,
+) {
+    let Some(old) = agent.take() else {
+        reload_agent(agent, config, cwd, session_id, tui).await;
+        return;
+    };
+    let started = std::time::Instant::now();
+    match crate::build_model_agent(config, cwd, session_id).await {
+        Ok(fresh) => {
+            let messages = old.messages().to_vec();
+            *agent = Some(fresh.with_tool_surface_of(old).with_messages(messages));
+            log::debug!(target: "gray_timing", "switch_agent_model elapsed_ms={}", started.elapsed().as_millis());
+        }
+        Err(e) => {
+            say(tui, &format!("{e}"));
+            *agent = Some(old);
+        }
+    }
 }
 
 /// What `/model` was asked for: the picker (optionally focused on a row —
@@ -737,7 +769,7 @@ pub(crate) async fn handle_model(
                 crate::setup::fetch_live_provider_models(&base, key.as_deref());
             });
         }
-        reload_agent(agent, config, cwd, session_id, tui).await;
+        switch_agent_model(agent, config, cwd, session_id, tui).await;
         return;
     }
 
@@ -829,7 +861,7 @@ pub(crate) async fn handle_model(
                     crate::setup::fetch_live_provider_models(&base, key.as_deref());
                 });
             }
-            reload_agent(agent, config, cwd, session_id, tui).await;
+            switch_agent_model(agent, config, cwd, session_id, tui).await;
         }
         Ok(false) => {
             // Tab / ctrl+r are pending until Enter: a dismissed picker

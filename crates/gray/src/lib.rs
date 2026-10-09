@@ -212,6 +212,27 @@ pub async fn build_agent(
     cwd: &Path,
     session_id: Option<&str>,
 ) -> anyhow::Result<gray_core::agent::Agent> {
+    build_agent_with(config, cwd, session_id, true).await
+}
+
+/// The model side of [`build_agent`] alone: provider, system prompt and
+/// model policies, with no sidecar spawned. A model switch pairs it with
+/// [`gray_core::agent::Agent::with_tool_surface_of`] to keep the plugins
+/// already running; respawning all of them cost seconds per switch.
+pub async fn build_model_agent(
+    config: &Config,
+    cwd: &Path,
+    session_id: Option<&str>,
+) -> anyhow::Result<gray_core::agent::Agent> {
+    build_agent_with(config, cwd, session_id, false).await
+}
+
+async fn build_agent_with(
+    config: &Config,
+    cwd: &Path,
+    session_id: Option<&str>,
+    spawn_plugins: bool,
+) -> anyhow::Result<gray_core::agent::Agent> {
     let Some(model) = &config.model else {
         anyhow::bail!(
             "no model configured yet — run /connect to set up your provider & key (or /model provider/id; /help for all commands)"
@@ -229,12 +250,14 @@ pub async fn build_agent(
     // Plugin-backed connections own their credential through the provider
     // sidecar; a failure here must stop the build, not silently fall back
     // to an unrelated API key.
+    let build_started = std::time::Instant::now();
     let dynamic = if config.uses_plugin_credentials() {
         let home = setup::gray_home()?;
         Some(crate::providers::connect_dynamic_provider(config, &home).await?)
     } else {
         None
     };
+    log::debug!(target: "gray_timing", "build_agent provider_connect elapsed_ms={}", build_started.elapsed().as_millis());
     // The wire id composes here while `config.model` keeps the row for
     // display and the picker: a row with declared variants resolves its
     // (effort, fast, parts) selection to the concrete id; other rows send
@@ -316,7 +339,7 @@ pub async fn build_agent(
         // plugins are always on (every profile, including the default
         // `tools-minimal`). `--lean` skips them: their whole job is
         // injecting prompt context.
-        extra_plugins: if config.bare || config.lean {
+        extra_plugins: if config.bare || config.lean || !spawn_plugins {
             Vec::new()
         } else {
             vec![
@@ -324,7 +347,9 @@ pub async fn build_agent(
                 Arc::new(crate::skills_tool::ProjectContextPlugin),
             ]
         },
-        bare: config.bare,
+        // No plugins means the builder's bare set: one in-process shell
+        // tool the caller discards along with the rest of the tool surface.
+        bare: config.bare || !spawn_plugins,
         host_handler: Some(host::default_handler(cwd.to_path_buf())),
         profile_path: "gray.yml".to_string(),
         abort_on_spawn_failure: true,
@@ -335,6 +360,7 @@ pub async fn build_agent(
             .map(|provider| provider.credential_source()),
     })
     .await?;
+    log::debug!(target: "gray_timing", "build_agent plugins+agent elapsed_ms={}", build_started.elapsed().as_millis());
     for w in gray_plugin::builder::take_builder_warnings() {
         profile::queue_profile_warning(w);
     }

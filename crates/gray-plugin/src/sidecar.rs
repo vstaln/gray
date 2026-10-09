@@ -721,6 +721,15 @@ async fn refresh_tools_into(
 
 impl SidecarPlugin {
     pub async fn spawn(argv: Vec<String>) -> anyhow::Result<Self> {
+        let started = std::time::Instant::now();
+        let spawned = Self::spawn_inner(argv).await;
+        if let Ok(p) = &spawned {
+            log::debug!(target: "gray_timing", "sidecar spawn name={} elapsed_ms={}", p.manifest.name, started.elapsed().as_millis());
+        }
+        spawned
+    }
+
+    async fn spawn_inner(argv: Vec<String>) -> anyhow::Result<Self> {
         let (child, stdin, stdout) = spawn_child(&argv)?;
         let transport = Transport::new(child, stdin, stdout, argv.clone());
         let result = transport
