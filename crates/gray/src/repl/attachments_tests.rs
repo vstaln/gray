@@ -21,7 +21,9 @@ fn kind_map_covers_media() {
 }
 
 #[test]
-fn normalize_caps_long_side() {
+fn normalize_keeps_long_side() {
+    // Resolution passes through untouched — only the provider's 5MB byte
+    // cap may still shrink an image.
     let img = image::RgbaImage::from_pixel(3000, 100, image::Rgba([9, 9, 9, 255]));
     let mut buf = Vec::new();
     image::DynamicImage::ImageRgba8(img)
@@ -30,7 +32,7 @@ fn normalize_caps_long_side() {
     let (mime, out) = normalize_image_bytes(&buf).unwrap();
     assert_eq!(mime, "image/png");
     let back = image::load_from_memory(&out).unwrap();
-    assert!(back.width().max(back.height()) <= MAX_IMAGE_SIDE);
+    assert_eq!((back.width(), back.height()), (3000, 100));
 }
 
 #[test]

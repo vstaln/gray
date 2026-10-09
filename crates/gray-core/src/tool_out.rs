@@ -1,7 +1,7 @@
 //! Shared tool-output policy: truncation caps and arg-validation helpers.
 //!
 //! Truncation policy (applied to every tool output): results are capped at
-//! 2000 lines / 50 KiB, keeping head + tail with a `[truncated ...]`
+//! 2000 lines / 12 KiB, keeping head + tail with a `[truncated ...]`
 //! annotation; error outputs are additionally hard-capped at 2 KiB.
 //! (Moved from `gray-tools` so non-core tool crates share
 //! the policy without depending on the whole builtin toolset.)
@@ -20,12 +20,14 @@ use crate::spill::{self, MeterEvent};
 
 /// Maximum number of lines kept in a successful tool output.
 pub const MAX_LINES: usize = 2000;
-/// Maximum size in bytes of a successful tool output.
-pub const MAX_BYTES: usize = 50 * 1024;
+/// Maximum size in bytes of a successful tool output. Sized to the bash
+/// tool's inline-view budget: every later request re-reads this, and the
+/// spill store keeps the original a `gray spill` call away.
+pub const MAX_BYTES: usize = 12 * 1024;
 /// Hard cap for error outputs (applied after the general truncation).
 pub const MAX_ERROR_BYTES: usize = 2048;
 
-/// Truncates a successful output: 2000-line / 50 KiB cap, head + tail kept,
+/// Truncates a successful output: 2000-line / 12 KiB cap, head + tail kept,
 /// with a `[truncated N lines / M bytes]` annotation in the middle.
 pub fn truncate_output(text: &str) -> String {
     let mut notes: Vec<String> = Vec::new();

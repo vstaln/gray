@@ -522,8 +522,8 @@ fn session_key(ctx: &ToolContext) -> String {
 
 /// `cat PATH...` of media returns images, video, PDFs and audio as model
 /// parts instead of the binary garbage a shell would stream: every model
-/// already reaches for `cat`. It shares the 2000px cap with `read` and pasted
-/// attachments.
+/// already reaches for `cat`. It shares the 5MB byte cap with `read` and
+/// pasted attachments.
 ///
 /// The command is claimed before the shell ever runs, so anything the shell
 /// would interpret (flags, pipes, redirects, globs, quotes, `$`) falls through
@@ -1433,14 +1433,27 @@ fn not_found_subject(line: &str) -> Option<String> {
         .next()
         .filter(|t| !t.is_empty())
     {
-        return Some(tok.to_string());
+        return Some(clean_tool_name(tok));
     }
-    // `bash: line 1: rg: command not found` names it before, behind the
-    // literal word "command".
-    line[..idx]
-        .rsplit(|c: char| c == ':' || c.is_whitespace())
-        .find(|t| !t.is_empty() && *t != "command")
-        .map(str::to_string)
+    // `bash: line 1: rg: command not found` names it before, in the last
+    // colon-delimited field ahead of the phrase (minus the word "command"
+    // for the bash/dash wording).
+    let before = line[..idx].trim_end();
+    let before = before.strip_suffix("command").unwrap_or(before);
+    before
+        .rsplit(':')
+        .map(str::trim)
+        .find(|t| !t.is_empty())
+        .map(clean_tool_name)
+        .filter(|t| !t.is_empty())
+}
+
+/// Shell noise that rides a captured name — a literal `\n` fragment, a
+/// trailing colon — is punctuation, not part of the binary name.
+fn clean_tool_name(tok: &str) -> String {
+    let tok = tok.replace("\\n", " ").replace("\n", " ");
+    tok.trim_matches(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '+')))
+        .to_string()
 }
 
 fn small_log_on_disk(log_path: &std::path::Path, summary: &PumpSummary) -> bool {

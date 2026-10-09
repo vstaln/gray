@@ -52,7 +52,7 @@ pub(crate) fn sync_attachments(tui: &mut Tui) {
 }
 
 /// Max attachable file size. `repl::attachments` only caps outputs
-/// (`MAX_IMAGE_SIDE` / `MAX_BASE64_BYTES`), with no input-file cap, so this
+/// (`MAX_BASE64_BYTES`), with no input-file cap, so this
 /// local sane cap refuses multi-GB drops before ffmpeg/image decode OOMs.
 pub(crate) const MAX_ATTACH_FILE_BYTES: u64 = 100 * 1024 * 1024;
 

@@ -53,7 +53,7 @@ pub(crate) fn block_tokens(b: &ContentBlock) -> usize {
 
 /// Token price of one `Image` block from its base64 length.
 ///
-/// Bounded heuristic for normalized images (maximum side 2000px in gray-tools).
+/// Bounded heuristic for normalized images (native resolution; gray-tools caps only at the 5MB byte limit).
 /// Encoded file length is not a vision token count: cap at 4096 to avoid
 /// treating a several-MB screenshot as hundreds of thousands of text tokens.
 /// Provider-reported usage remains authoritative after the request.
@@ -165,6 +165,32 @@ fn stub_large_tool_results(group: &mut [Message], session_id: Option<&str>) {
     }
 }
 
+/// Kept groups counted from the newest that still carry real image bytes;
+/// media in anything older is replaced with a citation stub.
+const RECENT_IMAGE_GROUPS: usize = 2;
+/// Media under this base64 size is cheap enough to keep wherever it lands.
+const IMAGE_STUB_MIN_BYTES: usize = 8 * 1024;
+
+/// Replace `Image`/`Media` blocks at/over [`IMAGE_STUB_MIN_BYTES`] with a
+/// text citation stub. The block's position and the surrounding text stay,
+/// so the model still knows an image was there and can re-view the file.
+fn stub_large_media(group: &mut [Message]) {
+    for m in group.iter_mut() {
+        for b in m.content.iter_mut() {
+            let (media_type, bytes) = match b {
+                ContentBlock::Image { media_type, data }
+                | ContentBlock::Media {
+                    media_type, data, ..
+                } if data.len() >= IMAGE_STUB_MIN_BYTES => (media_type.clone(), data.len()),
+                _ => continue,
+            };
+            *b = ContentBlock::text(format!(
+                "[{media_type} elided from context ({bytes} bytes). The original survives in the session transcript and source file]"
+            ));
+        }
+    }
+}
+
 /// Build the retained history: group atomically → retention filter →
 /// newest-first budget walk → chronological order. Mirrors codex v2's
 /// `build_v2_compacted_history` minus the summary append (Task 5); images are
@@ -218,6 +244,12 @@ pub(crate) fn build_retained_with_session(
         }
         // Untruncatable boundary group (no retainable text/image): dropped,
         // walk continues with `remaining` untouched.
+    }
+    // Images stop earning their pixel price a few groups back: the newest
+    // `RECENT_IMAGE_GROUPS` kept groups keep them, everything older gets a
+    // citation stub (the transcript on disk still holds the bytes).
+    for group in kept_reversed.iter_mut().skip(RECENT_IMAGE_GROUPS) {
+        stub_large_media(group);
     }
     kept_reversed.into_iter().rev().flatten().collect()
 }
@@ -443,13 +475,9 @@ pub(crate) fn anchor_message(messages: &[Message]) -> Option<Message> {
     // transcript it is the anchor pinned by the previous compaction (the
     // envelope at index 1 is the tell), so re-pinning reuses the ORIGINAL
     // intent rather than promoting the old summary to the fixed segment.
-    match messages.get(1) {
-        Some(second) if is_summary_message(second) => Some(first.clone()),
-        _ => Some(first.clone()),
-    }
-}
-
-/// True when `m` is a compaction summary envelope (see [`summary_message`]).
-pub(crate) fn is_summary_message(m: &Message) -> bool {
-    m.role == Role::User && m.text_content().starts_with(SUMMARY_ENVELOPE_PREFIX)
+    // Media is scrubbed either way: the pinned message rides every later
+    // request, and a several-hundred-KB image is an intent stub, not pixels.
+    let mut anchor = first.clone();
+    stub_large_media(std::slice::from_mut(&mut anchor));
+    Some(anchor)
 }

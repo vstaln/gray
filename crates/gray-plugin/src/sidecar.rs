@@ -1173,8 +1173,13 @@ impl Plugin for SidecarPlugin {
         if !self.claims("context/build") {
             return None;
         }
+        // Media payloads are the frame-size failure mode (`sidecar request
+        // frame too large`): a plugin needs to know an image exists, not its
+        // bytes. Stub media for the wire, then graft the originals back into
+        // whatever list the plugin returns so the model keeps the pixels.
+        let (wire, media) = scrub_media_for_frame(messages);
         let params =
-            json!({"messages": messages, "session": session_json(&self.pinned_sid(), &self.cwd)});
+            json!({"messages": wire, "session": session_json(&self.pinned_sid(), &self.cwd)});
         let ttl = if self.asks { ASK_TTL } else { HOST_TTL };
         match self
             .transport
@@ -1183,7 +1188,7 @@ impl Plugin for SidecarPlugin {
         {
             Ok(v) => match v.get("messages") {
                 Some(m) => match serde_json::from_value::<Vec<Message>>(m.clone()) {
-                    Ok(msgs) => Some(msgs),
+                    Ok(msgs) => Some(restore_media(msgs, &media)),
                     Err(e) => {
                         log::warn!(target: "gray_plugin", "sidecar context/build reply unparseable: {e}");
                         None
@@ -1198,6 +1203,7 @@ impl Plugin for SidecarPlugin {
             }
         }
     }
+
     async fn tool_after(&self, name: &str, output: &ToolOutput) -> Option<ToolOutput> {
         if !self.claims("tool/after") {
             return None;
@@ -1266,6 +1272,68 @@ impl Plugin for SidecarPlugin {
     async fn shutdown(&self) {
         self.shutdown(Duration::from_secs(2)).await;
     }
+}
+
+/// `context/build` wire scrub: `Image`/`Media` blocks become text stubs and
+/// the originals are collected per message index for [`restore_media`].
+/// Frames past `MAX_FRAME` were almost always base64 media; a stub keeps
+/// the shape so the plugin still knows media was there.
+fn scrub_media_for_frame(
+    messages: &[Message],
+) -> (
+    Vec<Message>,
+    Vec<Vec<(usize, gray_core::message::ContentBlock)>>,
+) {
+    let mut pulled_all = Vec::with_capacity(messages.len());
+    let wire = messages
+        .iter()
+        .map(|m| {
+            let mut m = m.clone();
+            let mut pulled = Vec::new();
+            for (i, b) in m.content.iter_mut().enumerate() {
+                if matches!(
+                    b,
+                    gray_core::message::ContentBlock::Image { .. }
+                        | gray_core::message::ContentBlock::Media { .. }
+                ) {
+                    pulled.push((i, b.clone()));
+                    *b = gray_core::message::ContentBlock::Text {
+                        text: "[media omitted from context/build payload]".to_string(),
+                    };
+                }
+            }
+            pulled_all.push(pulled);
+            m
+        })
+        .collect();
+    (wire, pulled_all)
+}
+
+/// Graft the media blocks [`scrub_media_for_frame`] pulled back onto the
+/// plugin's reply. Only same-length replies are graftable — a plugin that
+/// restructures the list keeps its own shape (the stubs are plain text and
+/// stay truthful either way).
+fn restore_media(
+    mut msgs: Vec<Message>,
+    media: &[Vec<(usize, gray_core::message::ContentBlock)>],
+) -> Vec<Message> {
+    if msgs.len() != media.len() {
+        return msgs;
+    }
+    for (m, pulled) in msgs.iter_mut().zip(media.iter()) {
+        for (idx, block) in pulled {
+            let pos = (*idx).min(m.content.len());
+            if matches!(
+                m.content.get(pos),
+                Some(gray_core::message::ContentBlock::Text { .. })
+            ) {
+                m.content[pos] = block.clone();
+            } else {
+                m.content.insert(pos, block.clone());
+            }
+        }
+    }
+    msgs
 }
 
 struct SidecarTool {

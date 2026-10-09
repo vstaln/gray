@@ -189,6 +189,14 @@ fn cache_warm_policy(
     // `keep_warm` still sends zero refreshes unless the model has cache
     // prices.
     let cacheable = !config.uses_plugin_credentials() || plugin_warm_replay;
+    if !cacheable {
+        // Silent until now: sessions on CLI-relay plugins (claude-sub,
+        // devin-sub, …) looked "warmed" to the user but no mid-round
+        // refresh ever ran — a tool call longer than the provider's TTL
+        // still re-bills the whole prompt.
+        log::info!(target: "gray_agent",
+            "cache warm disabled: provider is plugin-credentialed without request.warm_replay");
+    }
     if config.bare || !cacheable || std::env::var_os("GRAY_NO_CACHE_WARM").is_some() {
         return None;
     }
@@ -307,6 +315,7 @@ async fn build_agent_with(
             &provider,
         )
     };
+    let config_bare = config.bare;
     let agent = gray_plugin::builder::build_agent(gray_plugin::builder::BuilderOptions {
         model: wire_model.clone(),
         api_key: api_key.to_string(),
@@ -319,8 +328,8 @@ async fn build_agent_with(
             .then(|| crate::setup::context::resolve_model_context_length(model)),
         session_id: session_id.map(str::to_string),
         cwd: cwd.to_path_buf(),
-        // Stored instructions verbatim; no runtime context (cwd etc.) —
-        // only the identity block above follows them.
+        // Stored instructions verbatim plus the identity block and the
+        // static harness facts — no runtime context (cwd etc.).
         system_prompt: gray_plugin::builder::SystemPrompt::Build(Box::new(
             move |_registry: &gray_tools::Registry| {
                 let mut prompt = system_prompt::build_system_prompt(Some(body));
@@ -329,6 +338,15 @@ async fn build_agent_with(
                         prompt.push_str("\n\n");
                     }
                     prompt.push_str(&identity);
+                }
+                // Static harness facts (batching, cache-TTL backgrounding):
+                // the one thing the model cannot infer that decides how many
+                // rounds a task costs. `--bare` keeps its one-line prompt.
+                if !config_bare {
+                    prompt.push_str("\n\n");
+                    prompt.push_str(&system_prompt::harness_facts(Some(
+                        std::time::Duration::from_secs(cache_ttl_secs),
+                    )));
                 }
                 prompt
             },

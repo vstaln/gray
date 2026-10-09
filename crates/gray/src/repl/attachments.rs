@@ -6,9 +6,9 @@
 
 use std::path::{Path, PathBuf};
 
-// Image downscale lives in gray-tools (the `read` tool attaches vision
+// Image normalization lives in gray-tools (the `read` tool attaches vision
 // blocks too); re-exported so existing users keep working.
-pub use gray_tools::images::{MAX_BASE64_BYTES, MAX_IMAGE_SIDE, MediaError, normalize_image_bytes};
+pub use gray_tools::images::{MAX_BASE64_BYTES, MediaError, normalize_image_bytes};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AttachmentKind {

@@ -98,6 +98,26 @@ concurrently, which changes latency, not cost. A bash command still running at i
 timeout is not killed: it keeps running as a background job and its completion notice \
 wakes you in a later turn, so keep working or end your turn instead of polling.";
 
+/// The batching guidance plus one provider-shaped fact the model cannot
+/// infer: when the connected provider's prompt-cache TTL is short enough
+/// that a single blocking tool call can outlive it, a long foreground
+/// command re-bills the whole conversation — backgrounding avoids that.
+/// `None` (or a TTL over 20min) adds nothing: the default text already
+/// covers backgrounding for latency.
+pub fn harness_facts(cache_ttl: Option<std::time::Duration>) -> String {
+    let mut out = TOOL_BATCHING_GUIDANCE.to_string();
+    if let Some(ttl) = cache_ttl.filter(|t| *t <= std::time::Duration::from_secs(20 * 60)) {
+        let mins = ttl.as_secs().div_ceil(60).max(1);
+        out.push_str(&format!(
+            " This provider's prompt cache expires about {mins} minute{s} after the last \
+             upstream request; a tool call that blocks longer than that re-bills the \
+             whole conversation, so prefer backgrounding commands expected to run past it.",
+            s = if mins == 1 { "" } else { "s" }
+        ));
+    }
+    out
+}
+
 #[path = "system_prompt_tests.rs"]
 #[cfg(test)]
 mod tests;

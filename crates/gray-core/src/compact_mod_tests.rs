@@ -317,7 +317,7 @@ async fn compaction_call_reuses_system_tools_and_appends_trigger() {
     assert_eq!(req.system, Some("S".to_string()));
     assert_eq!(req.tools, tools);
     let mut expected = history.clone();
-    expected.push(Message::user(COMPACTION_TRIGGER));
+    expected.push(Message::user_injected(COMPACTION_TRIGGER));
     assert_eq!(req.messages, expected);
     assert_eq!(
         history,
@@ -563,6 +563,85 @@ fn tool_only_round_with_large_output_survives_as_citation() {
         "citation names the elided size: {stub}"
     );
     assert_eq!(out.last().unwrap(), &Message::user("done?"));
+}
+
+#[test]
+fn anchor_stubs_large_media_but_keeps_the_words() {
+    let mut m = Message::user("what does this diagram show?");
+    m.content.push(ContentBlock::Image {
+        media_type: "image/png".to_string(),
+        data: "A".repeat(IMAGE_STUB_MIN_BYTES + 1),
+    });
+    let anchor = anchor_message(&[m]).expect("user turn anchors");
+    assert_eq!(anchor.content.len(), 2);
+    match &anchor.content[0] {
+        ContentBlock::Text { text } => assert_eq!(text, "what does this diagram show?"),
+        b => panic!("text block must survive, got {b:?}"),
+    }
+    match &anchor.content[1] {
+        ContentBlock::Text { text } => {
+            assert!(text.contains("elided from context"), "{text}");
+            assert!(text.contains("image/png"), "{text}");
+        }
+        b => panic!("media must become a citation stub, got {b:?}"),
+    }
+}
+
+#[test]
+fn anchor_leaves_small_media_alone() {
+    let mut m = Message::user("look");
+    m.content.push(ContentBlock::Image {
+        media_type: "image/png".to_string(),
+        data: "tiny".to_string(),
+    });
+    let anchor = anchor_message(&[m]).expect("user turn anchors");
+    match &anchor.content[1] {
+        ContentBlock::Image { data, .. } => assert_eq!(data, "tiny"),
+        b => panic!("small media must pass through, got {b:?}"),
+    }
+}
+
+#[test]
+fn media_older_than_two_kept_groups_becomes_a_stub() {
+    let big = || "B".repeat(IMAGE_STUB_MIN_BYTES + 1);
+    let mut old_pic = Message::user("old picture");
+    old_pic.content.push(ContentBlock::Image {
+        media_type: "image/png".to_string(),
+        data: big(),
+    });
+    let mut recent_pic = Message::user("recent picture");
+    recent_pic.content.push(ContentBlock::Image {
+        media_type: "image/png".to_string(),
+        data: big(),
+    });
+    // Four retained groups, oldest first: old_pic | big round | big round |
+    // recent_pic. The middle rounds must be large enough to survive the
+    // retention filter (small tool results are droppable and would leave
+    // only two groups, defeating the point of the test).
+    let mut msgs = vec![old_pic];
+    msgs.extend(big_tool_group("c1", ARC_STUB_MIN_BYTES + 100));
+    msgs.extend(big_tool_group("c2", ARC_STUB_MIN_BYTES + 100));
+    msgs.push(recent_pic);
+    let out = build_retained_with_session(&msgs, RETAINED_MESSAGE_TOKEN_BUDGET, Some("sess1"));
+    let has_raw_image = |m: &Message| {
+        m.content
+            .iter()
+            .any(|b| matches!(b, ContentBlock::Image { .. }))
+    };
+    let stubbed = |m: &Message| {
+        m.content.iter().any(|b| match b {
+            ContentBlock::Text { text } => text.contains("elided from context"),
+            _ => false,
+        })
+    };
+    // Oldest picture: stubbed. Newest picture group: pixels kept.
+    assert!(stubbed(&out[0]), "old media must be stubbed: {:?}", out[0]);
+    assert!(!has_raw_image(&out[0]));
+    let last = out.last().unwrap();
+    assert!(
+        has_raw_image(last),
+        "newest media keeps its pixels: {last:?}"
+    );
 }
 
 #[test]
