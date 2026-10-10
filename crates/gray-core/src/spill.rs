@@ -267,6 +267,14 @@ pub fn now_millis() -> u64 {
         .unwrap_or(0)
 }
 
+/// Unix seconds, for cron timestamps and staleness windows.
+pub fn now_secs() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
 fn write_private(path: &Path, bytes: &[u8]) -> Option<()> {
     use std::io::Write;
     let mut opts = std::fs::OpenOptions::new();
@@ -296,7 +304,11 @@ fn restrict_dir(dir: &Path) {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700));
+        // GC-8: best-effort, but a silent failure leaves raw output readable by
+        // other users on a shared box, so say so.
+        if let Err(err) = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)) {
+            log::warn!(target: "gray_spill", "spill dir not restricted to owner: {err}");
+        }
     }
     #[cfg(not(unix))]
     {

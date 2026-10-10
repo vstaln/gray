@@ -373,10 +373,16 @@ fn redact_token(token: &str, next: Option<&str>, kinds: &mut BTreeSet<String>) -
         return TokenOutcome::keep_and_arm(CredentialArm::IfShaped);
     }
 
-    let lowered = token.to_ascii_lowercase();
+    // Prefixes are checked on the unwrapped token and on any `NAME=value` value,
+    // so markdown wrapping (`key=`sk-…``) cannot hide a secret-shaped value.
+    let lowered = unwrap_token(token).to_ascii_lowercase();
+    let value_lowered = token
+        .split_once(['=', ':'])
+        .map(|(_, value)| unwrap_token(value).to_ascii_lowercase())
+        .unwrap_or_default();
     if SECRET_VALUE_PREFIXES
         .iter()
-        .any(|prefix| lowered.starts_with(prefix))
+        .any(|prefix| lowered.starts_with(prefix) || value_lowered.starts_with(prefix))
         || looks_like_aws_access_key(token)
     {
         kinds.insert(REDACTION_SECRET.to_string());
@@ -394,8 +400,10 @@ fn redact_token(token: &str, next: Option<&str>, kinds: &mut BTreeSet<String>) -
 /// Strip the punctuation a token picks up from surrounding prose.
 fn unwrap_token(token: &str) -> &str {
     token
-        .trim_start_matches(['(', '[', '"', '\'', '<'])
-        .trim_end_matches([',', '.', ';', ':', ')', ']', '"', '\'', '>', '!', '?'])
+        .trim_start_matches(['(', '[', '"', '\'', '<', '`', '*'])
+        .trim_end_matches([
+            ',', '.', ';', ':', ')', ']', '"', '\'', '>', '!', '?', '`', '*',
+        ])
 }
 
 /// Whether a token is an HTTP authorization scheme keyword (and nothing else),

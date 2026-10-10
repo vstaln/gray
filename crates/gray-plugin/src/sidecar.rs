@@ -293,10 +293,35 @@ fn spawn_child(argv: &[String]) -> anyhow::Result<(Child, ChildStdin, ChildStdou
             .args(args)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
+            .stderr(sidecar_stderr(prog))
             .kill_on_drop(true)
             .spawn()
     })?;
     finish_spawn(child)
+}
+
+/// Append a sidecar's stderr to `~/.gray/logs/sidecar-stderr.log` instead of
+/// inheriting the terminal, so the reason a policy sidecar exits (the
+/// `gray-narrow: <error>` line, a panic message) survives. Best effort: if
+/// the file can't be opened the old behaviour (inherit) applies.
+fn sidecar_stderr(prog: &str) -> std::process::Stdio {
+    use std::io::Write;
+    let Some(home) = std::env::var_os("HOME") else {
+        return std::process::Stdio::inherit();
+    };
+    let dir = std::path::Path::new(&home).join(".gray").join("logs");
+    let _ = std::fs::create_dir_all(&dir);
+    match std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(dir.join("sidecar-stderr.log"))
+    {
+        Ok(mut f) => {
+            let _ = writeln!(f, "--- spawn {prog} (gray pid {})", std::process::id());
+            std::process::Stdio::from(f)
+        }
+        Err(_) => std::process::Stdio::inherit(),
+    }
 }
 
 fn finish_spawn(mut child: Child) -> anyhow::Result<(Child, ChildStdin, ChildStdout)> {
@@ -721,6 +746,15 @@ async fn refresh_tools_into(
 
 impl SidecarPlugin {
     pub async fn spawn(argv: Vec<String>) -> anyhow::Result<Self> {
+        let started = std::time::Instant::now();
+        let spawned = Self::spawn_inner(argv).await;
+        if let Ok(p) = &spawned {
+            log::debug!(target: "gray_timing", "sidecar spawn name={} elapsed_ms={}", p.manifest.name, started.elapsed().as_millis());
+        }
+        spawned
+    }
+
+    async fn spawn_inner(argv: Vec<String>) -> anyhow::Result<Self> {
         let (child, stdin, stdout) = spawn_child(&argv)?;
         let transport = Transport::new(child, stdin, stdout, argv.clone());
         let result = transport
@@ -758,9 +792,29 @@ impl SidecarPlugin {
             // during or right after the initial `plugin/tools` reply would
             // otherwise be dropped, freezing the tools at their first set.
             plugin.install_tools_changed_handler();
-            if let Err(e) = plugin.refresh_tools().await {
-                log::warn!(target: "gray_plugin", "{}: plugin/tools failed at spawn: {e}", plugin.manifest.name);
-            }
+            // The first `plugin/tools` refresh runs off the spawn path: a
+            // sidecar whose upstream takes seconds (MCP servers coming up,
+            // a cold relay) otherwise stalls every agent build and reload
+            // by up to HOST_TTL each — one 30 s plugin serialized the whole
+            // spawn loop. The executor re-reads `live_defs` at every run
+            // start, so tools that land late still reach the agent on its
+            // next turn — the same end state the spawn wait produced, minus
+            // the wait.
+            // Weak captures, same discipline as the tools_changed handler:
+            // a plugin dropped mid-refresh frees its Transport instead of
+            // being kept alive by the detached task.
+            let transport = Arc::downgrade(&plugin.transport);
+            let tools = Arc::downgrade(&plugin.tools);
+            let asks = plugin.asks;
+            let name = plugin.manifest.name.clone();
+            tokio::spawn(async move {
+                let (Some(transport), Some(tools)) = (transport.upgrade(), tools.upgrade()) else {
+                    return;
+                };
+                if let Err(e) = refresh_tools_into(&transport, &tools, asks).await {
+                    log::warn!(target: "gray_plugin", "{name}: plugin/tools refresh after spawn failed: {e}");
+                }
+            });
         }
         Ok(plugin)
     }
@@ -1001,6 +1055,22 @@ impl SidecarPlugin {
             .map_err(|_| ProviderRpcError::Protocol("invalid provider model catalog".into()))
     }
 
+    /// `provider/usage` — subscription quota windows (5h/weekly/monthly
+    /// buckets). Longer TTL than the other probes: a sidecar may need to
+    /// spawn a native child to answer (~15s cold for `claude`).
+    pub async fn provider_usage(
+        &self,
+        request: &crate::ProviderUsageRequest,
+    ) -> Result<crate::ProviderUsageLimits, ProviderRpcError> {
+        let params = serde_json::to_value(request)
+            .map_err(|_| ProviderRpcError::Protocol("invalid provider usage request".into()))?;
+        let value = self
+            .provider_rpc("provider/usage", params, Duration::from_secs(60))
+            .await?;
+        serde_json::from_value(value)
+            .map_err(|_| ProviderRpcError::Protocol("invalid provider usage result".into()))
+    }
+
     pub async fn provider_chat(
         &self,
         request: &ProviderChatRequest,
@@ -1008,7 +1078,7 @@ impl SidecarPlugin {
         let params = serde_json::to_value(request)
             .map_err(|_| ProviderRpcError::Protocol("invalid provider chat request".into()))?;
         let value = self
-            .provider_rpc("provider/chat", params, Duration::from_secs(10))
+            .provider_rpc("provider/chat", params, Duration::from_secs(30))
             .await?;
         serde_json::from_value(value)
             .map_err(|_| ProviderRpcError::Protocol("invalid provider chat result".into()))
@@ -1112,11 +1182,21 @@ impl Plugin for SidecarPlugin {
         }
         let params = json!({"name": name, "args": args, "session": session_json(&self.pinned_sid(), &self.cwd)});
         let ttl = if self.asks { ASK_TTL } else { HOST_TTL };
-        match self
+        let mut res = self
             .transport
-            .request("tool/before", Some(params), ttl)
-            .await
-        {
+            .request("tool/before", Some(params.clone()), ttl)
+            .await;
+        // The child can die (or be respawned by a concurrent call) after
+        // taking the request. A policy check is safe to ask again, and the
+        // next request respawns the child, so retry that one error once
+        // instead of failing the tool closed on a transient restart.
+        if matches!(&res, Err(e) if e.to_string().contains("closed stdout")) {
+            res = self
+                .transport
+                .request("tool/before", Some(params), ttl)
+                .await;
+        }
+        match res {
             Ok(v) => ToolBefore::from_result(&v),
             Err(e) => {
                 log::warn!(target: "gray_plugin", "sidecar tool/before failed: {e}");
@@ -1164,8 +1244,13 @@ impl Plugin for SidecarPlugin {
         if !self.claims("context/build") {
             return None;
         }
+        // Media payloads are the frame-size failure mode (`sidecar request
+        // frame too large`): a plugin needs to know an image exists, not its
+        // bytes. Stub media for the wire, then graft the originals back into
+        // whatever list the plugin returns so the model keeps the pixels.
+        let (wire, media) = scrub_media_for_frame(messages);
         let params =
-            json!({"messages": messages, "session": session_json(&self.pinned_sid(), &self.cwd)});
+            json!({"messages": wire, "session": session_json(&self.pinned_sid(), &self.cwd)});
         let ttl = if self.asks { ASK_TTL } else { HOST_TTL };
         match self
             .transport
@@ -1174,7 +1259,7 @@ impl Plugin for SidecarPlugin {
         {
             Ok(v) => match v.get("messages") {
                 Some(m) => match serde_json::from_value::<Vec<Message>>(m.clone()) {
-                    Ok(msgs) => Some(msgs),
+                    Ok(msgs) => Some(restore_media(msgs, &media)),
                     Err(e) => {
                         log::warn!(target: "gray_plugin", "sidecar context/build reply unparseable: {e}");
                         None
@@ -1189,6 +1274,7 @@ impl Plugin for SidecarPlugin {
             }
         }
     }
+
     async fn tool_after(&self, name: &str, output: &ToolOutput) -> Option<ToolOutput> {
         if !self.claims("tool/after") {
             return None;
@@ -1257,6 +1343,68 @@ impl Plugin for SidecarPlugin {
     async fn shutdown(&self) {
         self.shutdown(Duration::from_secs(2)).await;
     }
+}
+
+/// `context/build` wire scrub: `Image`/`Media` blocks become text stubs and
+/// the originals are collected per message index for [`restore_media`].
+/// Frames past `MAX_FRAME` were almost always base64 media; a stub keeps
+/// the shape so the plugin still knows media was there.
+fn scrub_media_for_frame(
+    messages: &[Message],
+) -> (
+    Vec<Message>,
+    Vec<Vec<(usize, gray_core::message::ContentBlock)>>,
+) {
+    let mut pulled_all = Vec::with_capacity(messages.len());
+    let wire = messages
+        .iter()
+        .map(|m| {
+            let mut m = m.clone();
+            let mut pulled = Vec::new();
+            for (i, b) in m.content.iter_mut().enumerate() {
+                if matches!(
+                    b,
+                    gray_core::message::ContentBlock::Image { .. }
+                        | gray_core::message::ContentBlock::Media { .. }
+                ) {
+                    pulled.push((i, b.clone()));
+                    *b = gray_core::message::ContentBlock::Text {
+                        text: "[media omitted from context/build payload]".to_string(),
+                    };
+                }
+            }
+            pulled_all.push(pulled);
+            m
+        })
+        .collect();
+    (wire, pulled_all)
+}
+
+/// Graft the media blocks [`scrub_media_for_frame`] pulled back onto the
+/// plugin's reply. Only same-length replies are graftable — a plugin that
+/// restructures the list keeps its own shape (the stubs are plain text and
+/// stay truthful either way).
+fn restore_media(
+    mut msgs: Vec<Message>,
+    media: &[Vec<(usize, gray_core::message::ContentBlock)>],
+) -> Vec<Message> {
+    if msgs.len() != media.len() {
+        return msgs;
+    }
+    for (m, pulled) in msgs.iter_mut().zip(media.iter()) {
+        for (idx, block) in pulled {
+            let pos = (*idx).min(m.content.len());
+            if matches!(
+                m.content.get(pos),
+                Some(gray_core::message::ContentBlock::Text { .. })
+            ) {
+                m.content[pos] = block.clone();
+            } else {
+                m.content.insert(pos, block.clone());
+            }
+        }
+    }
+    msgs
 }
 
 struct SidecarTool {
@@ -1374,12 +1522,15 @@ fn attach_media(name: &str, out: &mut ToolOutput, reply: &Value) {
     }
 }
 
-/// Parse a `command/run` reply: `{"model_picker": "<row id>"}` wins over
-/// `{"prompt": …}`, which wins over `{"text": …}`; empty/missing → None.
-/// A `model_picker` reply may carry `text` too — a fallback for hosts that
-/// predate the outcome, ignored here.
+/// Parse a `command/run` reply: `{"agent_picker": "<plugin>"}` wins over
+/// `{"model_picker": "<row id>"}` wins over `{"prompt": …}`, which wins
+/// over `{"text": …}`; empty/missing → None. A picker reply may carry
+/// `text` too — a fallback for hosts that predate the outcome, ignored here.
 pub(crate) fn command_outcome(v: &Value) -> Option<CommandOutcome> {
     let field = |k: &str| v.get(k).and_then(|t| t.as_str()).filter(|t| !t.is_empty());
+    if let Some(plugin) = field("agent_picker") {
+        return Some(CommandOutcome::AgentPicker(plugin.to_string()));
+    }
     if let Some(row) = field("model_picker") {
         return Some(CommandOutcome::ModelPicker(row.to_string()));
     }

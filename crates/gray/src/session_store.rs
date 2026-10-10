@@ -54,9 +54,10 @@
 //!   disclosure path and must never be confused with resumable storage.
 
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
 
-use gray_core::{Message, Role};
+use crate::print::now_millis;
+
+use gray_core::{ContentBlock, Message, Role};
 use serde::{Deserialize, Serialize};
 
 /// On-disk session format version this build reads/writes.
@@ -336,6 +337,12 @@ pub struct SessionMeta {
     pub cwd: PathBuf,
     /// Model name or identifier used for the session.
     pub model: String,
+    /// Who minted the session — `None` for a user-facing session, a tag like
+    /// `"subagent"` for an auxiliary one. Auxiliary sessions stay loadable
+    /// (steer/`--session` still resolve them) but never appear in resume
+    /// pickers or win the per-cwd remembered pointer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
 }
 
 impl SessionMeta {
@@ -351,8 +358,45 @@ impl SessionMeta {
             timestamp,
             cwd: cwd.into(),
             model: model.into(),
+            origin: None,
         }
     }
+
+    /// Marks the session's producer (see [`session_origin_from_env`]).
+    pub fn with_origin(mut self, origin: Option<String>) -> Self {
+        self.origin = origin;
+        self
+    }
+}
+
+/// An origin tag is `[a-z0-9_-]` ≤32 chars: anything else reads as absent
+/// rather than letting env junk onto a header line.
+fn sanitize_origin_tag(raw: &str) -> Option<String> {
+    let t = raw.trim().to_ascii_lowercase();
+    (!t.is_empty()
+        && t.len() <= 32
+        && t.bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_'))
+    .then_some(t)
+}
+
+/// Session origin for this process, if one was declared: `GRAY_SESSION_ORIGIN`
+/// wins (any producer can name itself), then the legacy `GRAY_SUBAGENTS_ACTIVE`
+/// marker the subagent supervisor already exports maps to `"subagent"`.
+pub fn session_origin_from_env() -> Option<String> {
+    if let Some(v) = std::env::var("GRAY_SESSION_ORIGIN")
+        .ok()
+        .and_then(|s| sanitize_origin_tag(&s))
+    {
+        return Some(v);
+    }
+    (std::env::var("GRAY_SUBAGENTS_ACTIVE").as_deref() == Ok("1")).then(|| "subagent".to_string())
+}
+
+/// Origin for non-interactive `-p` runs: the declared env origin if any,
+/// else `"print"`, so scripted one-shots stay out of the resume picker.
+pub fn print_session_origin() -> Option<String> {
+    session_origin_from_env().or_else(|| Some("print".to_string()))
 }
 
 fn is_false(b: &bool) -> bool {
@@ -383,9 +427,39 @@ pub struct SessionEntry {
     pub duration_ms: Option<u64>,
 }
 
+/// What the last entry of a session was — enough to tell a finished
+/// conversation from one cut off mid-task.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionEnd {
+    /// Assistant text reply: the turn completed.
+    #[default]
+    Done,
+    /// Assistant requested a tool and never got the result.
+    ToolUse,
+    /// A tool result landed and the assistant never answered it.
+    ToolResult,
+    /// The user's message was never answered.
+    UserUnanswered,
+}
+
 /// Summary overview of a session for listing operations.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionSummary {
+    /// How the session's last entry ended (see [`SessionEnd`]). Drives the
+    /// resume picker's done / interrupted markers.
+    #[serde(default)]
+    pub last_end: SessionEnd,
+    /// `last_message_at` of the moment the user dismissed this session's
+    /// "interrupted" flag (`<id>.dismissed`). It only silences that exact
+    /// state: new activity changes `last_message_at`, so a session cut off
+    /// again later is flagged again.
+    #[serde(default)]
+    pub dismissed_at: Option<u64>,
+    /// Display title (`<id>.title`), set by the user. Replaces the
+    /// first-message preview in the sessions picker; `None` = untitled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
     /// Unique identifier of the session.
     pub id: SessionId,
     /// Unix timestamp in milliseconds when the session started.
@@ -404,6 +478,11 @@ pub struct SessionSummary {
     /// [`started_at`](Self::started_at) for a session that has no entries yet.
     #[serde(default)]
     pub last_message_at: u64,
+    /// Producer tag from the header (`None` = user-facing). Resume pickers
+    /// and remembered-pointer paths hide marked sessions; explicit
+    /// `resume <id>` / `--session` still load them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
 }
 
 /// Errors that can occur during session storage operations.
@@ -480,6 +559,8 @@ struct Header {
     timestamp: u64,
     cwd: PathBuf,
     model: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    origin: Option<String>,
 }
 
 /// A JSONL file-backed session store.
@@ -987,6 +1068,7 @@ impl JsonlSessionStore {
             timestamp: meta.timestamp,
             cwd: meta.cwd,
             model: meta.model,
+            origin: meta.origin,
         };
 
         let json = serde_json::to_string(&header)?;
@@ -1006,7 +1088,11 @@ impl JsonlSessionStore {
                 file.flush().await?;
                 file.sync_all().await?;
                 tighten_file_mode(&path);
-                self.remember(&id, &header.cwd).await;
+                // Auxiliary sessions (subagent runs etc.) must not become the
+                // cwd's remembered session — `-c` would land on agent noise.
+                if header.origin.is_none() {
+                    self.remember(&id, &header.cwd).await;
+                }
                 Ok(id)
             }
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
@@ -1576,8 +1662,11 @@ impl JsonlSessionStore {
             timestamp: header.timestamp,
             cwd: header.cwd.clone(),
             model: header.model,
+            origin: header.origin,
         };
-        self.remember(id, &meta.cwd).await;
+        if meta.origin.is_none() {
+            self.remember(id, &meta.cwd).await;
+        }
 
         // Compaction boundary: replay only the active transcript after the
         // last marker. Old files carry no markers and load whole.
@@ -1704,6 +1793,7 @@ impl JsonlSessionStore {
             let mut last_message_at = header.timestamp;
             let mut first_user_text = None;
             let mut last_user_text = None;
+            let mut last_end = SessionEnd::Done;
             // Head first, then tail. `in_tail` means "this line came from
             // the tail slice", not "a boundary was seen": a post-boundary
             // turn inside the head is still the session's first turn, while
@@ -1721,6 +1811,23 @@ impl JsonlSessionStore {
                         last_user_text = None;
                         continue;
                     }
+                    let blocks = &entry.message.content;
+                    let has_block = |f: fn(&ContentBlock) -> bool| blocks.iter().any(f);
+                    last_end = match entry.message.role {
+                        Role::Assistant
+                            if has_block(|b| matches!(b, ContentBlock::ToolUse { .. })) =>
+                        {
+                            SessionEnd::ToolUse
+                        }
+                        Role::Assistant => SessionEnd::Done,
+                        Role::User
+                            if has_block(|b| matches!(b, ContentBlock::ToolResult { .. })) =>
+                        {
+                            SessionEnd::ToolResult
+                        }
+                        Role::User => SessionEnd::UserUnanswered,
+                        Role::System => last_end,
+                    };
                     if entry.message.role == Role::User {
                         let text = entry.message.text_content();
                         if !text.is_empty() {
@@ -1740,6 +1847,14 @@ impl JsonlSessionStore {
                 cwd: header.cwd,
                 first_user_text,
                 last_user_text,
+                last_end,
+                dismissed_at: if last_end == SessionEnd::Done {
+                    None
+                } else {
+                    read_dismissal(&self.root_dir, stem)
+                },
+                title: read_title(&self.root_dir, stem),
+                origin: header.origin,
             });
         }
 
@@ -1769,10 +1884,17 @@ impl JsonlSessionStore {
         }
         let path = self.session_path(id)?;
         match tokio::fs::remove_file(&path).await {
-            Ok(()) => Ok(()),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(e) => Err(SessionError::Io(e)),
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(SessionError::Io(e)),
         }
+        // Sidecars belong to the session, so drop them with it. Best effort:
+        // a sidecar that was never written is not an error.
+        for ext in ["dismissed", "title", "autotitle"] {
+            let sidecar = self.root_dir.join(format!("{}.{ext}", id.as_str()));
+            let _ = tokio::fs::remove_file(&sidecar).await;
+        }
+        Ok(())
     }
 
     /// Deletes every session whose header timestamp predates `cutoff_ms`.
@@ -1798,6 +1920,120 @@ impl JsonlSessionStore {
 /// Returns the default session directory (`~/.gray/sessions`), or `None` if `$HOME` is not set.
 pub fn default_root() -> Option<PathBuf> {
     gray_core::paths::gray_home().map(|home| home.join("sessions"))
+}
+
+/// Reads `<root>/<id>.dismissed`: the `last_message_at` the user dismissed.
+fn read_dismissal(root: &Path, id: &str) -> Option<u64> {
+    std::fs::read_to_string(root.join(format!("{id}.dismissed")))
+        .ok()?
+        .trim()
+        .parse()
+        .ok()
+}
+
+/// Records that the user chose to leave `id` as it is, so the picker and the
+/// startup hint stop calling it interrupted until it sees new activity.
+pub fn write_dismissal(root: &Path, id: &SessionId, last_message_at: u64) -> std::io::Result<()> {
+    if !valid_session_id(id.as_str()) {
+        return Err(std::io::Error::other("invalid session id"));
+    }
+    std::fs::write(
+        root.join(format!("{}.dismissed", id.as_str())),
+        last_message_at.to_string(),
+    )
+}
+
+/// Longest stored title, in characters.
+const MAX_TITLE_CHARS: usize = 80;
+
+/// One line, whitespace collapsed, capped; `None` when nothing is left.
+pub(crate) fn clean_title(raw: &str) -> Option<String> {
+    let one: String = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+    let t: String = one.chars().take(MAX_TITLE_CHARS).collect();
+    (!t.is_empty()).then_some(t)
+}
+
+/// Reads `<root>/<id>.title`.
+fn read_title(root: &Path, id: &str) -> Option<String> {
+    clean_title(&std::fs::read_to_string(root.join(format!("{id}.title"))).ok()?)
+}
+
+/// Why a transcript's opening message marks it as gray-made, for sessions
+/// written before origins were recorded: background-task notifications and
+/// subagent or worker prompts. `None` for a user's own opener.
+pub(crate) fn opener_tag(first: &str) -> Option<&'static str> {
+    let first = first.trim_start();
+    let head: String = first.chars().take(160).collect();
+    if first.starts_with("[Background task notification]") {
+        Some("background")
+    } else if head.contains("subagent of a parent Gray") {
+        Some("subagent")
+    } else if head.starts_with("You are") && head.contains(" worker") {
+        Some("worker")
+    } else {
+        None
+    }
+}
+
+/// Claims a session for auto-naming: creates `<id>.autotitle` before the
+/// model is asked, so a session is asked at most once, across restarts too.
+/// `false` when it is already claimed or already has a title.
+pub fn claim_auto_title(root: &Path, id: &SessionId) -> bool {
+    if !valid_session_id(id.as_str()) || read_title(root, id.as_str()).is_some() {
+        return false;
+    }
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(root.join(format!("{}.autotitle", id.as_str())))
+        .is_ok()
+}
+
+/// Stores a model-proposed title, but only when the session has none. The
+/// title file is created exclusively, so a manual rename that landed first is
+/// never overwritten. Returns whether a title was written.
+pub fn set_auto_title(root: &Path, id: &SessionId, proposed: &str) -> std::io::Result<bool> {
+    use std::io::Write as _;
+    if !valid_session_id(id.as_str()) {
+        return Err(std::io::Error::other("invalid session id"));
+    }
+    let Some(title) = clean_title(proposed) else {
+        return Ok(false);
+    };
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(root.join(format!("{}.title", id.as_str())))
+    {
+        Ok(mut file) => {
+            file.write_all(title.as_bytes())?;
+            Ok(true)
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
+        Err(e) => Err(e),
+    }
+}
+
+/// Sets (or, for blank text, clears) the display title of `id`. Returns the
+/// stored title. The session transcript itself is never touched.
+pub fn write_title(root: &Path, id: &SessionId, title: &str) -> std::io::Result<Option<String>> {
+    if !valid_session_id(id.as_str()) {
+        return Err(std::io::Error::other("invalid session id"));
+    }
+    let path = root.join(format!("{}.title", id.as_str()));
+    match clean_title(title) {
+        Some(t) => {
+            std::fs::write(&path, &t)?;
+            Ok(Some(t))
+        }
+        None => {
+            match std::fs::remove_file(&path) {
+                Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e),
+                _ => {}
+            }
+            Ok(None)
+        }
+    }
 }
 
 /// Held open-locks this process owns, keyed by `<id>.open` path. The OS
@@ -1874,14 +2110,6 @@ fn read_open_holder(path: &Path) -> Option<u32> {
         .ok()
         .map(|h| h.pid)
         .or_else(|| content.parse::<u32>().ok())
-}
-
-/// Helper function to return current time in milliseconds since Unix epoch.
-fn now_millis() -> u64 {
-    SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
 }
 
 #[path = "session_store_tests.rs"]

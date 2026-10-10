@@ -177,7 +177,8 @@ pub(crate) async fn dispatch_command(
                     timestamp,
                     cwd.to_path_buf(),
                     config.model.clone().unwrap_or_else(|| "unset".into()),
-                );
+                )
+                .with_origin(crate::session_store::session_origin_from_env());
                 if let Err(e) = store.create(meta).await {
                     log::warn!(target: "gray_session", "session create failed: {e}");
                 }
@@ -407,16 +408,22 @@ pub(crate) async fn dispatch_command(
             handle_feedback(text, config, session_state, tui.as_ref().map(|(s, _)| s));
             Flow::Continue
         }
-        ReplCommand::ProviderCommand { cmd, provider_id } => {
+        ReplCommand::ProviderCommand {
+            cmd,
+            argv,
+            provider_id,
+        } => {
             *pending_command = Some(
-                match super::plugin_cmds::provider_command_outcome(&provider_id, &cmd).await {
+                match super::plugin_cmds::provider_command_outcome(&provider_id, &cmd, argv).await {
                     Some(CommandOutcome::ModelPicker(row)) => ReplCommand::ModelFocus(row),
                     Some(CommandOutcome::Prompt(prompt)) => ReplCommand::Prompt(prompt),
+                    Some(CommandOutcome::AgentPicker(_)) | None => {
+                        ReplCommand::ProviderLogin(provider_id)
+                    }
                     Some(CommandOutcome::Say(text)) => {
                         say(tui.as_ref().map(|(s, _)| s), &text);
                         return Ok(Flow::Continue);
                     }
-                    None => ReplCommand::ProviderLogin(provider_id),
                 },
             );
             Flow::Continue
@@ -436,7 +443,7 @@ pub(crate) async fn dispatch_command(
                 Ok(crate::setup::ConnectOutcome::Connected) => {
                     *unconfigured = false;
                     push_provider_connected(config, tui, Some(&mut *hide_thinking));
-                    reload_agent(
+                    super::handlers::switch_agent_model(
                         &mut *agent,
                         config,
                         cwd,
@@ -470,10 +477,12 @@ pub(crate) async fn dispatch_command(
                 }
                 Err(e) => {
                     if let Some((shared, _)) = tui {
-                        shared
-                            .lock()
-                            .expect("tui lock")
-                            .push_dim(format!("└ error: {e}"));
+                        super::cron::push_notice(
+                            &mut shared.lock().expect("tui lock"),
+                            "Provider error",
+                            &e.to_string(),
+                            true,
+                        );
                     } else {
                         println!("provider error: {e}");
                     }
@@ -533,6 +542,70 @@ pub(crate) async fn dispatch_command(
                     // rows (`/fusion`): same path as `/model`, focused.
                     CommandOutcome::ModelPicker(row) => {
                         *pending_command = Some(ReplCommand::ModelFocus(row));
+                    }
+                    // A plugin asks for the interactive agents panel
+                    // (bare `/subagents`): rows/actions ride that
+                    // plugin's CLI; Enter on a finished run resumes
+                    // straight into its child session via `handle_resume`.
+                    CommandOutcome::AgentPicker(plugin) => {
+                        let bg = tui
+                            .as_ref()
+                            .map(|(s, _)| s.lock().expect("tui lock").snapshot());
+                        let action = with_modal_sync(tui.as_ref().map(|(s, _)| s), || {
+                            super::agents_panel::run_agents_picker(&plugin, bg.as_ref())
+                        });
+                        match action {
+                            Ok(Some(super::agents_panel::PanelAction::Resume {
+                                session: sid,
+                                name,
+                            })) => {
+                                handle_resume(
+                                    config,
+                                    cwd,
+                                    ResumeArgs {
+                                        target: Some(sid.clone()),
+                                        last: false,
+                                        all: true,
+                                        dismiss: false,
+                                    },
+                                    &mut *agent,
+                                    &mut *session_state,
+                                    &mut *session_totals,
+                                    tui.as_ref().map(|(s, _)| s),
+                                    &mut *hide_thinking,
+                                )
+                                .await;
+                                // The resume receipt names the session file;
+                                // this says the part that isn't obvious —
+                                // you're inside the subagent now, and your
+                                // prompts keep it going.
+                                let inside = session_state
+                                    .as_ref()
+                                    .is_some_and(|s| s.session_id.as_str() == sid);
+                                if inside {
+                                    say(
+                                        tui.as_ref().map(|(s, _)| s),
+                                        &format!(
+                                            "⬢ inside {name} — prompts continue this agent's session"
+                                        ),
+                                    );
+                                }
+                            }
+                            Ok(Some(super::agents_panel::PanelAction::Say(text))) => {
+                                say(tui.as_ref().map(|(s, _)| s), &text);
+                            }
+                            Ok(None) => {
+                                if let Some((shared, _)) = tui {
+                                    shared.lock().expect("tui lock").ensure_gap();
+                                }
+                            }
+                            Err(e) => {
+                                say(
+                                    tui.as_ref().map(|(s, _)| s),
+                                    &format!("agents panel error: {e}"),
+                                );
+                            }
+                        }
                     }
                 }
                 handled = true;

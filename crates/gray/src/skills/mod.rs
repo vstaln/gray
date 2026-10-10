@@ -65,7 +65,7 @@ fn resolve_home() -> Option<PathBuf> {
     None
 }
 
-fn gray_agent_dir() -> PathBuf {
+pub(crate) fn gray_agent_dir() -> PathBuf {
     if let Ok(gray_home) = std::env::var("GRAY_HOME") {
         return PathBuf::from(gray_home);
     }
@@ -489,6 +489,10 @@ fn skill_search_roots(cwd: &Path, agent_dir: &Path) -> Vec<(PathBuf, &'static st
             &global_skills,
         );
     }
+    // Project skills are repo content: load them only for a trusted project.
+    if !crate::project_trust::is_trusted(&resolved_agent_dir, &resolved_cwd) {
+        return roots;
+    }
     // project: walk up to git root collecting skills
     let git_root = find_git_root(&resolved_cwd);
     let mut project_roots: Vec<PathBuf> = Vec::new();
@@ -582,7 +586,7 @@ pub fn discovery_fingerprint(cwd: &Path) -> u64 {
     h.finish()
 }
 
-fn load_skills(cwd: &Path, agent_dir: &Path) -> LoadSkillsResult {
+pub(crate) fn load_skills(cwd: &Path, agent_dir: &Path) -> LoadSkillsResult {
     let mut skill_map: HashMap<String, Skill> = HashMap::new();
     let mut real_path_set: HashSet<PathBuf> = HashSet::new();
 

@@ -3,8 +3,8 @@
 //!
 //! bash output is text only, so an agent that renders a chart, screenshot or
 //! diagram has nothing to check its own work against. The claim lands here:
-//! decode, downscale-before-send (the caps pasted attachments and the
-//! `read` tool already use), hand back base64 for a vision block. Text files
+//! decode, normalize-before-send (the same path pasted attachments and the
+//! `read` tool use), hand back base64 for a vision block. Text files
 //! stay bash's job (`cat`) — the extension gate refuses them before any
 //! decoding, so a mislabeled file fails loudly instead of sending an
 //! undecodable part.
@@ -20,7 +20,7 @@ use gray_core::agent::{AttachedImage, AttachedMedia};
 pub struct Shown {
     pub path: PathBuf,
     pub media_type: String,
-    /// base64 of the encoded (downscaled) bytes.
+    /// base64 of the encoded bytes.
     pub data: String,
     /// The bytes are a contact sheet sampled from a video, not the file
     /// itself. Every consumer that names what it showed reads this so a
@@ -50,10 +50,9 @@ impl std::fmt::Display for ViewError {
     }
 }
 
-/// Downscale-before-send one image file: longest side capped at 2000px and
-/// base64 under 5MB — [`crate::images::normalize_image_bytes`], the same
-/// normalization pasted attachments and the `read` tool take. `cat` is the
-/// full-resolution exception; this is the everyday path.
+/// Normalize one image file for the model: native resolution, base64 under
+/// 5MB — [`crate::images::normalize_image_bytes`], the same normalization
+/// pasted attachments and the `read` tool take.
 pub fn load(path: &Path) -> Result<Shown, ViewError> {
     // Extension gate first: cheap, and it turns `view notes.md` into a clear
     // refusal naming bash's role instead of a decode failure.

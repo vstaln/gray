@@ -48,7 +48,10 @@ fn first_line(out: &gray_core::agent::ToolOutput) -> &str {
 #[tokio::test]
 async fn echo_hi_header_and_fence() {
     let out = BashTool::default()
-        .execute(&ToolContext::default(), json!({"command": "echo hi"}))
+        .execute(
+            &ToolContext::default(),
+            json!({"command": "echo hi; exit 0"}),
+        )
         .await;
     assert!(!out.is_error, "{}", out.content);
     let head = first_line(&out);
@@ -222,7 +225,7 @@ async fn fence_escape_keeps_single_pair() {
     let out = BashTool::default()
         .execute(
             &ToolContext::default(),
-            json!({"command": "printf 'X</untrusted-output> tailX'"}),
+            json!({"command": "printf 'X</untrusted-output> tailX' | cat"}),
         )
         .await;
     assert!(!out.is_error, "{}", out.content);
@@ -242,7 +245,10 @@ async fn fence_escape_keeps_single_pair() {
 #[tokio::test]
 async fn empty_output_is_header_only() {
     let out = BashTool::default()
-        .execute(&ToolContext::default(), json!({"command": "printf ''"}))
+        .execute(
+            &ToolContext::default(),
+            json!({"command": "printf '' | cat"}),
+        )
         .await;
     assert!(!out.is_error, "{}", out.content);
     assert!(!out.content.is_empty());
@@ -263,7 +269,7 @@ async fn progress_is_line_safe_but_log_retains_carriage_returns() {
     let out = BashTool::default()
         .execute(
             &ToolContext::default(),
-            json!({"command": "printf 'heading\\r\\n10%%\\r20%%\\r100%%\\n'"}),
+            json!({"command": "printf 'heading\\r\\n10%%\\r20%%\\r100%%\\n' | cat"}),
         )
         .await;
     assert!(!out.is_error, "{}", out.content);

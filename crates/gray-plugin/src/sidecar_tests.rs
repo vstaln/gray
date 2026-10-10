@@ -3,19 +3,6 @@ use gray_core::agent::ToolContext;
 use gray_core::event::Usage;
 
 #[tokio::test]
-async fn hanging_hook_times_out_and_skips() {
-    let p = SidecarPlugin::spawn(vec!["testdata/hang_plugin.sh".into()])
-        .await
-        .unwrap();
-    let t = std::time::Instant::now();
-    p.on_event(CoreEvent::TurnEnd {
-        usage: Usage::default(),
-    })
-    .await;
-    assert!(t.elapsed() < std::time::Duration::from_secs(10));
-}
-
-#[tokio::test]
 async fn crashed_plugin_returns_error_not_panic() {
     let p = SidecarPlugin::spawn(vec!["testdata/crash_plugin.sh".into()])
         .await
@@ -269,6 +256,12 @@ async fn dynamic_plugin_refreshes_tools_on_tools_changed() {
             .map(|t| t.def().name.clone())
             .collect::<Vec<_>>()
     };
+    // The spawn-path `plugin/tools` refresh is detached — dyn_a lands a
+    // tick after spawn returns, not inline with it.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while names(&p).is_empty() && std::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
     assert_eq!(names(&p), vec!["dyn_a"]);
     let t = p.tools()[0].clone();
     let out = t

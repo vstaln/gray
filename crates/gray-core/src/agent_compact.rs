@@ -7,7 +7,7 @@
 //! retained tail.
 
 use crate::agent::Agent;
-use crate::compact::{RETAINED_MESSAGE_TOKEN_BUDGET, run_compaction_call};
+use crate::compact::{RETAINED_MESSAGE_TOKEN_BUDGET, SUMMARY_ENVELOPE_PREFIX, run_compaction_call};
 use crate::error::CoreError;
 use crate::message::Message;
 
@@ -18,8 +18,8 @@ use crate::message::Message;
 /// Trims `summary`; byte-stable (see `summary_message_envelope_is_byte_stable`).
 pub fn summary_message(summary: &str) -> Message {
     let s = summary.trim();
-    Message::user(format!(
-        "The conversation history before this point was compacted into the following summary:\n\n<summary>\n{s}\n</summary>"
+    Message::user_injected(format!(
+        "{SUMMARY_ENVELOPE_PREFIX}\n\n<summary>\n{s}\n</summary>"
     ))
 }
 

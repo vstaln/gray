@@ -2275,7 +2275,7 @@ impl OpenAiProvider {
             credential_source
                 .acquire()
                 .await
-                .map_err(|_| ProviderError::Auth("provider credential unavailable".into()))
+                .map_err(|e| ProviderError::Auth(format!("provider credential unavailable: {e:#}")))
                 .and_then(|lease| {
                     let url = match lease.metadata.get("relay_url") {
                         Some(relay) => relay.parse::<Url>().map_err(|e| {
@@ -2363,6 +2363,10 @@ enum StreamState {
         // closes SSE without `response.completed` after text has still
         // produced a usable text turn; unconfirmed tool calls stay fatal.
         saw_output_text: bool,
+        // (output_index, content_index) of the part that most recently
+        // yielded visible text; a delta on a different part is a new text
+        // block and needs a paragraph break or the two blocks glue.
+        last_text_part: Option<(u64, u64)>,
         // Re-POST context for mid-stream resume (Responses only): a
         // retryable transport failure rebuilds ResponsesInit from these
         // with `previous_response_id = last_response_id`.
@@ -2695,6 +2699,11 @@ fn stream_unfold_step(
                                 stream_attempt,
                                 last_response_id,
                                 saw_output_text: false,
+                                // A resumed stream re-opens on the part that
+                                // was mid-flight: seeding None keeps its next
+                                // delta glued, which is the right side of the
+                                // seam — a mid-part split is the real replay.
+                                last_text_part: None,
                                 trail: EventTrail::default(),
                             };
                         }
@@ -3153,6 +3162,7 @@ fn stream_unfold_step(
                     mut pending_events,
                     mut completed,
                     mut saw_output_text,
+                    mut last_text_part,
                     client,
                     url,
                     api_key,
@@ -3178,6 +3188,7 @@ fn stream_unfold_step(
                                 stream_attempt,
                                 last_response_id,
                                 saw_output_text,
+                                last_text_part,
                                 trail,
                             },
                         ));
@@ -3204,6 +3215,7 @@ fn stream_unfold_step(
                                     stream_attempt,
                                     last_response_id,
                                     saw_output_text,
+                                    last_text_part,
                                     trail,
                                 };
                                 continue;
@@ -3244,9 +3256,26 @@ fn stream_unfold_step(
                                         && !delta.is_empty()
                                     {
                                         saw_output_text = true;
-                                        pending_events.push_back(StreamEvent::TextDelta {
-                                            delta: delta.to_string(),
-                                        });
+                                        // A delta on a new output item or
+                                        // content part opens a new visible
+                                        // block; without a boundary the two
+                                        // blocks' text glues into one word.
+                                        let part = (
+                                            value
+                                                .get("output_index")
+                                                .and_then(|v| v.as_u64())
+                                                .unwrap_or(0),
+                                            value
+                                                .get("content_index")
+                                                .and_then(|v| v.as_u64())
+                                                .unwrap_or(0),
+                                        );
+                                        let mut delta = delta.to_string();
+                                        if last_text_part.is_some_and(|p| p != part) {
+                                            delta.insert_str(0, "\n\n");
+                                        }
+                                        last_text_part = Some(part);
+                                        pending_events.push_back(StreamEvent::TextDelta { delta });
                                     }
                                 }
                                 "response.reasoning_text.delta"
@@ -3551,6 +3580,7 @@ fn stream_unfold_step(
                                 stream_attempt,
                                 last_response_id,
                                 saw_output_text,
+                                last_text_part,
                                 trail,
                             };
                         }
@@ -3623,6 +3653,7 @@ fn stream_unfold_step(
                                     pending_events,
                                     completed,
                                     saw_output_text,
+                                    last_text_part,
                                     client,
                                     url,
                                     api_key,

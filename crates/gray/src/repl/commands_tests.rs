@@ -53,6 +53,7 @@ fn usage_command_and_cost_alias() {
     assert!(matches!(parse_command("/copy"), ReplCommand::Copy));
     assert!(matches!(parse_command("/doctor"), ReplCommand::Unknown(_)));
     assert!(matches!(parse_command("/cost"), ReplCommand::Usage));
+    assert!(matches!(parse_command("/session"), ReplCommand::Unknown(_)));
     use std::path::Path;
     let cwd = Path::new(".");
     assert!(
@@ -94,8 +95,8 @@ fn empty_prompt_hides_slash_popup_like_codex() {
 #[test]
 fn registry_resolve_canonical_and_aliases() {
     for name in [
-        "connect", "model", "context", "resume", "new", "compact", "usage", "feedback", "agentsmd",
-        "skills", "plugin", "help", "quit",
+        "connect", "model", "context", "sessions", "new", "compact", "usage", "feedback",
+        "agentsmd", "skills", "plugin", "help", "quit",
     ] {
         let d = super::resolve(name).unwrap_or_else(|| panic!("resolve {name}"));
         assert_eq!(d.name, name);
@@ -312,6 +313,7 @@ fn temp_skill_cwd(name: &str) -> tempfile::TempDir {
 
 #[test]
 fn top_level_query_never_surfaces_skills() {
+    crate::project_trust::assume_trusted_for_test();
     use super::completion_matches_dyn;
     let dir = temp_skill_cwd("commit");
     let cwd = dir.path();
@@ -408,6 +410,7 @@ fn model_completes_cached_ids() {
 
 #[test]
 fn skill_singular_is_alias_for_skills_space() {
+    crate::project_trust::assume_trusted_for_test();
     use super::super::handlers::expand_skill_command;
     use super::completion_matches_dyn;
     let dir = temp_skill_cwd("commit");
@@ -568,4 +571,37 @@ fn undo_and_retry_are_in_the_registry() {
 fn jobs_command_opens_the_background_work_list() {
     assert!(matches!(parse_command("/jobs"), ReplCommand::Jobs));
     assert!(matches!(parse_command("/JOBS"), ReplCommand::Jobs));
+}
+
+#[test]
+fn resume_dismiss_parses_alone_and_with_all() {
+    let a = super::parse_resume_args("dismiss");
+    assert!(a.dismiss && !a.all && a.target.is_none());
+    let b = super::parse_resume_args("dismiss all");
+    assert!(b.dismiss && b.all);
+    assert!(!super::parse_resume_args("--last").dismiss);
+}
+
+#[test]
+fn sessions_is_canonical_and_resume_stays_an_alias() {
+    assert_eq!(super::resolve("/sessions").unwrap().name, "sessions");
+    assert_eq!(super::resolve("/resume").unwrap().name, "sessions");
+    for line in ["/sessions --last", "/resume --last"] {
+        match super::parse_command(line) {
+            super::ReplCommand::Resume(a) => assert!(a.last, "{line}"),
+            _ => panic!("{line} did not parse as the sessions command"),
+        }
+    }
+    // The alias completes the same suffixes under the name that was typed.
+    let cwd = std::path::Path::new("/tmp");
+    assert!(
+        super::complete_command_args("sessions", "", cwd)
+            .iter()
+            .any(|(n, _)| n == "sessions dismiss")
+    );
+    assert!(
+        super::complete_command_args("resume", "", cwd)
+            .iter()
+            .any(|(n, _)| n == "resume dismiss")
+    );
 }

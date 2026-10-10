@@ -64,7 +64,7 @@ async fn echo_returns_exit_zero_with_output() {
     let session = sess("echo");
     let ctx = ctx_for(&session);
     let r = BashTool::default()
-        .execute(&ctx, json!({"command": "echo hello"}))
+        .execute(&ctx, json!({"command": "echo hello | cat"}))
         .await;
     assert!(!r.is_error, "{}", r.content);
     let head = r.content.lines().next().unwrap_or("");
@@ -321,9 +321,9 @@ async fn cat_shows_every_image_it_names() {
 }
 
 #[tokio::test]
-async fn cat_caps_at_the_shared_2000px() {
-    // One way to see a picture means one resolution rule: the 2000px cap the
-    // `read` tool and pasted attachments already use.
+async fn cat_keeps_native_resolution() {
+    // No resolution cap anywhere: images pass through at native size; only
+    // the 5MB provider byte limit can still shrink them.
     use base64::Engine as _;
     use image::ImageDecoder;
     use std::io::Cursor;
@@ -343,7 +343,11 @@ async fn cat_caps_at_the_shared_2000px() {
         .into_decoder()
         .unwrap()
         .dimensions();
-    assert!(w <= 2000 && h < 100, "cat caps at 2000px, got {w}x{h}");
+    assert_eq!(
+        (w, h),
+        (2400, 100),
+        "cat passes native resolution, got {w}x{h}"
+    );
 }
 
 /// A real 2-frame clip, so the contact sheet has something to decode.
@@ -646,7 +650,9 @@ async fn the_cwd_report_never_leaks_into_the_output() {
     // what the command produced.
     let tool = BashTool::default();
     let ctx = ctx_for(&sess("leak"));
-    let r = tool.execute(&ctx, json!({"command": "echo hello"})).await;
+    let r = tool
+        .execute(&ctx, json!({"command": "echo hello | cat"}))
+        .await;
     assert!(!r.is_error, "{}", r.content);
     // The only output is what the command produced: no sentinel, no path.
     assert!(!r.content.contains("GRAY_CWD_REPORT"), "{}", r.content);
@@ -776,7 +782,9 @@ async fn the_cwd_report_does_not_mask_the_commands_exit_code() {
     );
 
     // And a success still reports success.
-    let r = tool.execute(&ctx, json!({"command": "printf ''"})).await;
+    let r = tool
+        .execute(&ctx, json!({"command": "printf '' | cat"}))
+        .await;
     assert!(
         r.content.lines().next().unwrap_or("").contains("exit 0"),
         "{}",
@@ -1322,7 +1330,9 @@ async fn running_jobs_ride_along_on_later_results() {
     let (out, pgid, log) = run_lane(&tool, &ctx, "sleep 60", Some(1), true).await;
     assert!(out.content.starts_with("still running"), "{}", out.content);
     let id = tool.running_jobs(&ctx)[0].id.clone();
-    let later = tool.execute(&ctx, json!({"command": "echo hi"})).await;
+    let later = tool
+        .execute(&ctx, json!({"command": "echo hi | cat"}))
+        .await;
     assert!(
         later.content.starts_with("exit 0"),
         "the result itself leads: {}",
@@ -1337,7 +1347,9 @@ async fn running_jobs_ride_along_on_later_results() {
     assert!(tail.contains(&format!("stop: `kill -- -{pgid}`")), "{tail}");
     // Another session never sees it.
     let other = ctx_for(&sess("footer-other"));
-    let theirs = tool.execute(&other, json!({"command": "echo hi"})).await;
+    let theirs = tool
+        .execute(&other, json!({"command": "echo hi | cat"}))
+        .await;
     assert!(
         !theirs.content.contains("background job"),
         "{}",
@@ -1355,7 +1367,9 @@ async fn running_jobs_ride_along_on_later_results() {
     tool.cancel_job(&ctx, &id);
     assert!(wait_group_gone(pgid).await);
     wait_notices(&tool, &ctx).await;
-    let after = tool.execute(&ctx, json!({"command": "echo hi"})).await;
+    let after = tool
+        .execute(&ctx, json!({"command": "echo hi | cat"}))
+        .await;
     assert!(
         !after.content.contains("background job"),
         "finished jobs drop off: {}",
@@ -1366,7 +1380,16 @@ async fn running_jobs_ride_along_on_later_results() {
 #[tokio::test]
 async fn bare_noop_commands_are_steered_not_spawned() {
     let ctx = ToolContext::default();
-    for cmd in ["true", ":", " true "] {
+    for cmd in [
+        "true",
+        ":",
+        " true ",
+        // A lone print is a placeholder too: the model "announces" work
+        // (echo "switching tools") and the real calls never arrive.
+        "echo hi",
+        "echo \"switching to harness tools\"",
+        "printf 'done\\n'",
+    ] {
         let out = BashTool::default()
             .execute(&ctx, json!({"command": cmd}))
             .await;
@@ -1378,11 +1401,25 @@ async fn bare_noop_commands_are_steered_not_spawned() {
             out.content
         );
     }
-    // A compound that merely contains `true` still reaches the shell.
-    let out = BashTool::default()
-        .execute(&ctx, json!({"command": "true && echo ran"}))
-        .await;
-    assert!(out.content.contains("ran"), "{}", out.content);
+    // A compound that merely contains a no-op still reaches the shell.
+    for cmd in [
+        "true && echo ran",
+        "echo ran > /tmp/gray-noop-test-out",
+        "echo a; echo b",
+        "echo x | wc -c",
+        "echo $((40 + 2))",
+        "env echo ran",
+    ] {
+        let out = BashTool::default()
+            .execute(&ctx, json!({"command": cmd}))
+            .await;
+        assert!(out.content.contains("exit 0"), "{cmd}: {}", out.content);
+    }
+    assert_eq!(
+        std::fs::read_to_string("/tmp/gray-noop-test-out").unwrap(),
+        "ran\n"
+    );
+    std::fs::remove_file("/tmp/gray-noop-test-out").ok();
 }
 
 #[tokio::test]
@@ -1430,18 +1467,18 @@ async fn removed_arguments_fail_loudly_and_never_spawn() {
     // Values that carry no intent, and a stray job_id, are not worth a
     // failed call (rejecting job_id looped real sessions, 2026-09-17).
     for args in [
-        json!({"command": "echo fine", "background": false}),
-        json!({"command": "echo fine", "action": "run"}),
-        json!({"command": "echo fine", "yield_ms": null}),
-        json!({"command": "echo fine", "job_id": "bash-bogus"}),
+        json!({"command": "echo fine | cat", "background": false}),
+        json!({"command": "echo fine | cat", "action": "run"}),
+        json!({"command": "echo fine | cat", "yield_ms": null}),
+        json!({"command": "echo fine | cat", "job_id": "bash-bogus"}),
         // Echoed wait/yield windows on a run drop silently: the call blocks
         // to exit or timeout anyway, and rejecting them looped schema-filling
         // models to death (gpt-6 fills every property on every call).
-        json!({"command": "echo fine", "wait_ms": 5000}),
-        json!({"command": "echo fine", "yield_ms": 1000}),
-        json!({"command": "echo fine", "yield_time_ms": 10000}),
+        json!({"command": "echo fine | cat", "wait_ms": 5000}),
+        json!({"command": "echo fine | cat", "yield_ms": 1000}),
+        json!({"command": "echo fine | cat", "yield_time_ms": 10000}),
         // The exact full-schema blob gpt-6-sol sent.
-        json!({"action":"run","background":false,"command":"echo fine","job_id":"","timeout":10,"wait_ms":1000,"yield_ms":1000}),
+        json!({"action":"run","background":false,"command":"echo fine | cat","job_id":"","timeout":10,"wait_ms":1000,"yield_ms":1000}),
     ] {
         let out = tool.execute(&ctx, args.clone()).await;
         assert!(!out.is_error, "{args}: {}", out.content);

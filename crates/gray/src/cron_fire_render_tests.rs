@@ -46,6 +46,38 @@ fn final_assistant_text_reads_the_event_stream() {
 }
 
 #[test]
+fn final_assistant_text_starts_over_at_a_message_boundary() {
+    use gray_core::event::AgentEvent;
+    // A mid-turn note ends the streamed message; what follows is a new
+    // message, and a delivery carries only that final one.
+    let events = vec![
+        AgentEvent::TextDelta {
+            delta: "Time to eat.".into(),
+        },
+        AgentEvent::MessageBoundary,
+        AgentEvent::TextDelta {
+            delta: "Task complete.".into(),
+        },
+    ];
+    assert_eq!(final_assistant_text(&events), "Task complete.");
+}
+
+#[test]
+fn transcript_separates_messages_at_a_boundary() {
+    use gray_core::event::AgentEvent;
+    let events = vec![
+        AgentEvent::TextDelta {
+            delta: "Time to eat.".into(),
+        },
+        AgentEvent::MessageBoundary,
+        AgentEvent::TextDelta {
+            delta: "Task complete.".into(),
+        },
+    ];
+    assert_eq!(transcript_text(&events), "Time to eat.\n\nTask complete.");
+}
+
+#[test]
 fn untrusted_blocks_are_balanced_after_a_length_cap() {
     let cut = close_untrusted("<untrusted-output>\nabc".to_string());
     assert!(cut.ends_with("</untrusted-output>"));

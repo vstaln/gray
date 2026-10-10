@@ -64,6 +64,18 @@ impl Usage {
         }
     }
 
+    /// Any counter non-zero — a real report, not an unmetered round.
+    pub fn any(&self) -> bool {
+        self.input_tokens != 0
+            || self.output_tokens != 0
+            || self.cached_tokens != 0
+            || self.non_cached_input_tokens != 0
+            || self.cache_read_input_tokens != 0
+            || self.cache_write_input_tokens != 0
+            || self.reasoning_tokens != 0
+            || self.total_tokens != 0
+    }
+
     /// One `request usage` log line per provider request, so per-request
     /// context and billing survive runs killed before the final accounting.
     pub fn log_request(&self, kind: &str) {
@@ -240,6 +252,11 @@ pub enum AgentEvent {
         #[serde(default)]
         details: String,
     },
+    /// A mid-turn injected note (a loop nudge, a finished-job follow-up)
+    /// ended the assistant message that was streaming: text deltas after
+    /// this boundary belong to a NEW message and render in their own block.
+    /// Truncation continuations resume mid-sentence and never emit it.
+    MessageBoundary,
     /// Turn finished with a stop reason and token usage.
     TurnEnd {
         stop_reason: StopReason,

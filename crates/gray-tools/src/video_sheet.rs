@@ -82,7 +82,7 @@ fn duration_secs(path: &Path) -> Option<f64> {
 }
 
 /// `frames` stills of `path` tiled into one JPEG. The returned bytes go
-/// through the caller's image normalizer, so the 2000px / 5MB caps and the
+/// through the caller's image normalizer, so the 5MB byte cap and the
 /// PNG re-encode behave exactly as they do for a screenshot.
 pub fn video_sheet(path: &Path, frames: usize) -> Result<Vec<u8>, MediaError> {
     let frames = frames.clamp(1, MAX_FRAMES);

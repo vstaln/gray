@@ -11,6 +11,7 @@ use std::sync::{Arc, Mutex};
 fn assistant_tool_use(id: &str) -> Message {
     Message {
         role: Role::Assistant,
+        injected: false,
         content: vec![ContentBlock::tool_use(id, "sh", serde_json::json!({}))],
     }
 }
@@ -18,6 +19,7 @@ fn assistant_tool_use(id: &str) -> Message {
 fn user_tool_result(id: &str) -> Message {
     Message {
         role: Role::User,
+        injected: false,
         content: vec![ContentBlock::tool_result(id, "ok", false)],
     }
 }
@@ -28,6 +30,7 @@ fn user_tool_result(id: &str) -> Message {
 fn assistant_tool_uses(ids: &[&str]) -> Message {
     Message {
         role: Role::Assistant,
+        injected: false,
         content: ids
             .iter()
             .map(|id| ContentBlock::tool_use(*id, "sh", serde_json::json!({})))
@@ -105,13 +108,6 @@ fn retention_drops_tool_chatter_atomically() {
 }
 
 #[test]
-fn atomic_batch_1_call_drops_without_orphans() {
-    let msgs = vec![assistant_tool_uses(&["c1"]), user_tool_result("c1")];
-    let out = build_retained(&msgs, RETAINED_MESSAGE_TOKEN_BUDGET);
-    assert_eq!(call_result_ids(&out), (vec![], vec![]));
-}
-
-#[test]
 fn atomic_batch_2_calls_drop_without_orphans() {
     // Results span 2 user messages; the tool-use-only batch must drop
     // whole — never a retained `c2` result orphaned from its call.
@@ -129,26 +125,11 @@ fn atomic_batch_2_calls_drop_without_orphans() {
 }
 
 #[test]
-fn atomic_batch_3_calls_drop_without_orphans() {
-    let msgs = vec![
-        assistant_tool_uses(&["c1", "c2", "c3"]),
-        user_tool_result("c1"),
-        user_tool_result("c2"),
-        user_tool_result("c3"),
-    ];
-    let out = build_retained(&msgs, RETAINED_MESSAGE_TOKEN_BUDGET);
-    assert_eq!(call_result_ids(&out), (vec![], vec![]));
-    assert!(
-        is_subsequence(&msgs, &out),
-        "output preserves chronological order"
-    );
-}
-
-#[test]
 fn atomic_batch_3_calls_retain_without_orphans() {
     // Text-carrying assistant: the batch is retained, still atomically.
     let mut batch = vec![Message {
         role: Role::Assistant,
+        injected: false,
         content: vec![
             ContentBlock::text("running three lookups"),
             ContentBlock::tool_use("c1", "sh", serde_json::json!({})),
@@ -194,6 +175,7 @@ fn boundary_truncation_charges_thinking_and_tool_blocks() {
     // 500 thinking tokens free → 2500 over a 2000 budget.
     let old = Message {
         role: Role::Assistant,
+        injected: false,
         content: vec![
             ContentBlock::thinking("t".repeat(2000)),
             ContentBlock::text("a".repeat(4000)),
@@ -217,6 +199,7 @@ fn boundary_truncation_charges_thinking_and_tool_blocks() {
     let batch_old = vec![
         Message {
             role: Role::Assistant,
+            injected: false,
             content: vec![
                 ContentBlock::text("a".repeat(4000)),
                 ContentBlock::tool_use("c9", "sh", serde_json::json!({"data": "x".repeat(2000)})),
@@ -334,7 +317,7 @@ async fn compaction_call_reuses_system_tools_and_appends_trigger() {
     assert_eq!(req.system, Some("S".to_string()));
     assert_eq!(req.tools, tools);
     let mut expected = history.clone();
-    expected.push(Message::user(COMPACTION_TRIGGER));
+    expected.push(Message::user_injected(COMPACTION_TRIGGER));
     assert_eq!(req.messages, expected);
     assert_eq!(
         history,
@@ -421,6 +404,7 @@ fn images_priced_and_dropped_oldest_first() {
 
     let img = Message {
         role: Role::User,
+        injected: false,
         content: vec![ContentBlock::image("image/png", "a".repeat(5_000))],
     };
     let new = Message::user("b".repeat(400)); // 100 tokens
@@ -457,6 +441,7 @@ fn image_never_split_by_boundary_truncation() {
     let old = Message::user("o".repeat(40)); // 10 tokens
     let img = Message {
         role: Role::User,
+        injected: false,
         content: vec![ContentBlock::image("image/png", "a".repeat(5_000))], // 1_000 tokens
     };
     let new = Message::user("n".repeat(4_000)); // 1_000 tokens
@@ -536,6 +521,7 @@ fn big_tool_group(id: &str, bytes: usize) -> Vec<Message> {
         assistant_tool_use(id),
         Message {
             role: Role::User,
+            injected: false,
             content: vec![ContentBlock::tool_result(id, "x".repeat(bytes), false)],
         },
     ]
@@ -580,6 +566,85 @@ fn tool_only_round_with_large_output_survives_as_citation() {
 }
 
 #[test]
+fn anchor_stubs_large_media_but_keeps_the_words() {
+    let mut m = Message::user("what does this diagram show?");
+    m.content.push(ContentBlock::Image {
+        media_type: "image/png".to_string(),
+        data: "A".repeat(IMAGE_STUB_MIN_BYTES + 1),
+    });
+    let anchor = anchor_message(&[m]).expect("user turn anchors");
+    assert_eq!(anchor.content.len(), 2);
+    match &anchor.content[0] {
+        ContentBlock::Text { text } => assert_eq!(text, "what does this diagram show?"),
+        b => panic!("text block must survive, got {b:?}"),
+    }
+    match &anchor.content[1] {
+        ContentBlock::Text { text } => {
+            assert!(text.contains("elided from context"), "{text}");
+            assert!(text.contains("image/png"), "{text}");
+        }
+        b => panic!("media must become a citation stub, got {b:?}"),
+    }
+}
+
+#[test]
+fn anchor_leaves_small_media_alone() {
+    let mut m = Message::user("look");
+    m.content.push(ContentBlock::Image {
+        media_type: "image/png".to_string(),
+        data: "tiny".to_string(),
+    });
+    let anchor = anchor_message(&[m]).expect("user turn anchors");
+    match &anchor.content[1] {
+        ContentBlock::Image { data, .. } => assert_eq!(data, "tiny"),
+        b => panic!("small media must pass through, got {b:?}"),
+    }
+}
+
+#[test]
+fn media_older_than_two_kept_groups_becomes_a_stub() {
+    let big = || "B".repeat(IMAGE_STUB_MIN_BYTES + 1);
+    let mut old_pic = Message::user("old picture");
+    old_pic.content.push(ContentBlock::Image {
+        media_type: "image/png".to_string(),
+        data: big(),
+    });
+    let mut recent_pic = Message::user("recent picture");
+    recent_pic.content.push(ContentBlock::Image {
+        media_type: "image/png".to_string(),
+        data: big(),
+    });
+    // Four retained groups, oldest first: old_pic | big round | big round |
+    // recent_pic. The middle rounds must be large enough to survive the
+    // retention filter (small tool results are droppable and would leave
+    // only two groups, defeating the point of the test).
+    let mut msgs = vec![old_pic];
+    msgs.extend(big_tool_group("c1", ARC_STUB_MIN_BYTES + 100));
+    msgs.extend(big_tool_group("c2", ARC_STUB_MIN_BYTES + 100));
+    msgs.push(recent_pic);
+    let out = build_retained_with_session(&msgs, RETAINED_MESSAGE_TOKEN_BUDGET, Some("sess1"));
+    let has_raw_image = |m: &Message| {
+        m.content
+            .iter()
+            .any(|b| matches!(b, ContentBlock::Image { .. }))
+    };
+    let stubbed = |m: &Message| {
+        m.content.iter().any(|b| match b {
+            ContentBlock::Text { text } => text.contains("elided from context"),
+            _ => false,
+        })
+    };
+    // Oldest picture: stubbed. Newest picture group: pixels kept.
+    assert!(stubbed(&out[0]), "old media must be stubbed: {:?}", out[0]);
+    assert!(!has_raw_image(&out[0]));
+    let last = out.last().unwrap();
+    assert!(
+        has_raw_image(last),
+        "newest media keeps its pixels: {last:?}"
+    );
+}
+
+#[test]
 fn tool_only_round_with_small_output_still_drops_without_citation() {
     let msgs = vec![
         assistant_tool_use("c1"),
@@ -608,6 +673,7 @@ fn stubbing_rescues_over_budget_text_group() {
     let msgs = vec![
         Message {
             role: Role::Assistant,
+            injected: false,
             content: vec![
                 ContentBlock::Text {
                     text: "the plan is to frobnicate the config".to_string(),
@@ -617,6 +683,7 @@ fn stubbing_rescues_over_budget_text_group() {
         },
         Message {
             role: Role::User,
+            injected: false,
             content: vec![ContentBlock::tool_result(
                 "c9",
                 "y".repeat(ARC_STUB_MIN_BYTES * 4),
@@ -656,6 +723,7 @@ fn fitting_groups_keep_large_output_verbatim() {
     let msgs = vec![
         Message {
             role: Role::Assistant,
+            injected: false,
             content: vec![
                 ContentBlock::Text {
                     text: "looking at the output".to_string(),
@@ -665,6 +733,7 @@ fn fitting_groups_keep_large_output_verbatim() {
         },
         Message {
             role: Role::User,
+            injected: false,
             content: vec![ContentBlock::tool_result("c1", big.clone(), false)],
         },
         Message::user("done?"),

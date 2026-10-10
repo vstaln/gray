@@ -12,6 +12,7 @@ fn turn() -> ChatRequest {
             Message::user("hi"),
             Message {
                 role: Role::Assistant,
+                injected: false,
                 content: vec![
                     ContentBlock::Thinking {
                         text: "display only".into(),
@@ -28,6 +29,7 @@ fn turn() -> ChatRequest {
             },
             Message {
                 role: Role::User,
+                injected: false,
                 content: vec![ContentBlock::ToolResult {
                     id: "c1".into(),
                     content: "out".into(),
@@ -88,6 +90,7 @@ fn a_stray_tool_result_becomes_text() {
     let req = ChatRequest {
         messages: vec![Message {
             role: Role::User,
+            injected: false,
             content: vec![ContentBlock::ToolResult {
                 id: "ghost".into(),
                 content: "x".into(),
@@ -189,6 +192,39 @@ fn decoder_maps_the_event_stream() {
     assert_eq!(u.cache_read_input_tokens, 900);
     assert_eq!(u.cache_write_input_tokens, 90);
     assert_eq!(u.output_tokens, 42);
+}
+
+#[test]
+fn separate_text_blocks_in_one_message_get_a_blank_line() {
+    // One assistant message, [text][thinking][text]: the second text block
+    // must not glue onto the first (`…now.Sorry…`).
+    let events = vec![
+        json!({"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}}),
+        json!({"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "one"}}),
+        json!({"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": " two"}}),
+        json!({"type": "content_block_stop", "index": 0}),
+        json!({"type": "content_block_start", "index": 1, "content_block": {"type": "thinking", "thinking": ""}}),
+        json!({"type": "content_block_delta", "index": 1, "delta": {"type": "thinking_delta", "thinking": "hmm"}}),
+        json!({"type": "content_block_stop", "index": 1}),
+        json!({"type": "content_block_start", "index": 2, "content_block": {"type": "text", "text": ""}}),
+        json!({"type": "content_block_delta", "index": 2, "delta": {"type": "text_delta", "text": "three"}}),
+        json!({"type": "content_block_delta", "index": 2, "delta": {"type": "text_delta", "text": " four"}}),
+        json!({"type": "content_block_stop", "index": 2}),
+        json!({"type": "message_stop"}),
+    ];
+    let mut d = Decoder::default();
+    let mut out = VecDeque::new();
+    for e in events {
+        d.feed(&e.to_string(), &mut out);
+    }
+    let text: String = out
+        .into_iter()
+        .filter_map(|e| match e.unwrap() {
+            StreamEvent::TextDelta { delta } => Some(delta),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(text, "one two\n\nthree four");
 }
 
 #[tokio::test]

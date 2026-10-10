@@ -111,10 +111,12 @@ pub(crate) async fn run_prompt_turn(
                 }
                 Err(e) => {
                     if let Some((shared, _)) = tui {
-                        shared
-                            .lock()
-                            .expect("tui lock")
-                            .push_dim(format!("└ provider error: {e}"));
+                        super::cron::push_notice(
+                            &mut shared.lock().expect("tui lock"),
+                            "Provider error",
+                            &e.to_string(),
+                            true,
+                        );
                     } else {
                         println!("provider error: {e}");
                     }
@@ -253,11 +255,25 @@ pub(crate) async fn run_prompt_turn(
     let watcher_stopped = watch_stop.clone();
     let watcher_tui = tui_stream.clone();
     let cwd_for_watcher = cwd.to_path_buf();
+    let turn_locals = tui_stream.as_ref().map(|shared| {
+        let mut local_config = config.clone();
+        local_config.api_key = None;
+        key_watcher::TurnLocalCommands {
+            tui: shared.clone(),
+            cwd: cwd.to_path_buf(),
+            session_id: ctx.session_id.clone(),
+            config: local_config,
+            totals: session_totals.clone(),
+            executor: Some(agent.executor_handle()),
+            hooks: agent.hooks().to_vec(),
+        }
+    });
     let key_watcher = key_watcher::spawn_key_watcher_with_typing(
         watch_cancel,
         watcher_stopped,
         watcher_tui,
         cwd_for_watcher,
+        turn_locals,
     );
 
     let mut pending_tools: HashMap<String, (String, Option<serde_json::Value>)> = HashMap::new();
@@ -453,6 +469,9 @@ pub(crate) async fn run_prompt_turn(
                 turn_duration_ms,
             )
             .await;
+            if let Some(state) = &*session_state {
+                crate::auto_title::maybe_start(state, &*agent, initial_count);
+            }
         }
         Err(CoreError::Cancelled) => {
             *resumable = true;
@@ -527,7 +546,7 @@ pub(crate) async fn run_prompt_turn(
                 auth_relogin = crate::setup::active_connect_id(config);
             }
             const RELOADED: &str =
-                "└ the API key saved for this provider changed on disk; reloaded it";
+                "the API key saved for this provider changed on disk; reloaded it";
             if interactive {
                 if let Some((shared, _)) = tui {
                     let mut t = shared.lock().expect("tui lock");
@@ -537,7 +556,7 @@ pub(crate) async fn run_prompt_turn(
                     // property of the idle composer (see the interrupt arm).
                     t.push_error(&msg);
                     if reloaded {
-                        t.push_dim(RELOADED.to_string());
+                        super::cron::push_notice(&mut t, "API key reloaded", RELOADED, false);
                     }
                 }
             } else {

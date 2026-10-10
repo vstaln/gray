@@ -629,7 +629,7 @@ pub fn format_tool_call_header(
 /// without their setup (`cd … && nice … flock …`, see
 /// [`gray_tools::shell::label`]); a peeled `cd` stays visible, dimmed.
 /// A provably read-only command names what it looked at instead
-/// (`Viewed chart.png`, `Read lib.rs · lines 10–40`, `Searched foo · in
+/// (`Viewed chart.png`, `Read lib.rs · lines 10–40`, `Searched foo ·
 /// src`, see [`gray_tools::shell::label::read_only`]).
 fn bash_header(
     args: &serde_json::Value,
@@ -706,8 +706,8 @@ fn bash_header(
                 verb(if background { "Started " } else { "Ran " }),
                 Span::styled(cmd, cmd_style),
             ];
-            if let Some(dir) = core.cwd {
-                spans.push(Span::styled(format!(" \u{00b7} in {dir}"), dim_style));
+            if let Some(dir) = core.cwd.filter(|d| !d.trim().is_empty()) {
+                spans.push(Span::styled(format!(" \u{00b7} {dir}"), dim_style));
             }
             if background {
                 spans.push(Span::styled(" \u{00b7} in background", dim_style));
@@ -758,8 +758,8 @@ fn read_header(
     if let Some(detail) = &read.detail {
         spans.push(Span::styled(format!(" \u{00b7} {detail}"), dim_style));
     }
-    if let Some(dir) = peeled_cd {
-        spans.push(Span::styled(format!(" \u{00b7} in {dir}"), dim_style));
+    if let Some(dir) = peeled_cd.filter(|d| !d.trim().is_empty()) {
+        spans.push(Span::styled(format!(" \u{00b7} {dir}"), dim_style));
     }
     Line::from(spans)
 }

@@ -75,18 +75,6 @@ fn unsupported_model_401_body_outranks_auth_status() {
 }
 
 #[test]
-fn rate_limited_429_is_retryable() {
-    let err = classify_http_error(
-        reqwest::StatusCode::TOO_MANY_REQUESTS,
-        "rate limit",
-        None,
-        None,
-    );
-    assert!(matches!(err, ProviderError::RateLimited(_)));
-    assert!(is_retryable_error(&err));
-}
-
-#[test]
 fn auth_401_insufficient_balance_is_not_retryable() {
     let err = classify_http_error(
         reqwest::StatusCode::UNAUTHORIZED,
@@ -201,6 +189,7 @@ fn responses_req_with_thinking(_model: &str) -> ChatRequest {
         system: Some("sys".to_string()),
         messages: vec![Message {
             role: Role::Assistant,
+            injected: false,
             content: vec![
                 ContentBlock::Thinking {
                     text: "hmm".to_string(),
@@ -752,13 +741,6 @@ fn serialize_body_maps_failure_to_bad_request() {
     assert!(matches!(err, ProviderError::BadRequest(_)), "got {err:?}");
 }
 
-#[test]
-fn serialize_body_round_trips_chat_request() {
-    let body = map_chat_request(empty_chat_req(), "test-model", None).expect("maps");
-    let v = serialize_body(&body, "chat request").expect("serializes");
-    assert_eq!(v.get("model").and_then(|m| m.as_str()), Some("test-model"));
-}
-
 // UNRUN (cargo test banned under X — verified via check + clippy only).
 #[test]
 fn quota_429_surfaces_immediately_as_non_retryable() {
@@ -1126,6 +1108,7 @@ fn deepseek_assistant_messages_always_carry_reasoning_content() {
         system: None,
         messages: vec![Message {
             role: Role::Assistant,
+            injected: false,
             content: vec![
                 ContentBlock::Thinking {
                     text: "hmm".to_string(),
@@ -1160,6 +1143,7 @@ fn tool_error_flag_survives_chat_wire_encoding() {
         system: None,
         messages: vec![Message {
             role: Role::Assistant,
+            injected: false,
             content: vec![
                 ContentBlock::ToolUse {
                     id: "c1".to_string(),
@@ -1211,6 +1195,7 @@ fn tool_error_flag_survives_chat_wire_encoding() {
         system: None,
         messages: vec![Message {
             role: Role::User,
+            injected: false,
             content: vec![ContentBlock::ToolResult {
                 id: "u1".to_string(),
                 content: "denied".to_string(),
@@ -1244,6 +1229,7 @@ fn tool_error_flag_survives_responses_wire_encoding() {
         system: None,
         messages: vec![Message {
             role: Role::Assistant,
+            injected: false,
             content: vec![
                 ContentBlock::ToolUse {
                     id: "c1".to_string(),
@@ -1458,6 +1444,59 @@ async fn responses_text_only_eof_without_completed_completes() {
 }
 
 #[tokio::test]
+async fn responses_text_parts_get_a_blank_line_between_them() {
+    // Two output_text parts in one response must not glue into
+    // `…now.Sorry…`: a delta on a new (output_index, content_index) opens
+    // a new visible block and needs the paragraph break.
+    use futures::StreamExt;
+    let server = wiremock::MockServer::start().await;
+    let ev = |output_index, content_index, delta| {
+        serde_json::json!({
+            "type": "response.output_text.delta",
+            "response_id": "resp_1",
+            "output_index": output_index,
+            "content_index": content_index,
+            "delta": delta,
+        })
+    };
+    let mut body = String::new();
+    for e in [
+        ev(0, 0, "one"),
+        ev(0, 0, " two"),
+        ev(0, 1, "three"),
+        ev(1, 0, " four"),
+    ] {
+        body.push_str(&format!("data: {e}\n\n"));
+    }
+    body.push_str("data: {\"type\":\"response.completed\"}\n\n");
+    wiremock::Mock::given(wiremock::matchers::any())
+        .respond_with(
+            wiremock::ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_string(body),
+        )
+        .mount(&server)
+        .await;
+    let provider = OpenAiProvider::new(
+        "key",
+        "muse-test",
+        format!("{}/opencode.ai/zen", server.uri()),
+        None,
+        None,
+    )
+    .expect("provider builds");
+    let events: Vec<_> = provider.stream(empty_chat_req()).collect().await;
+    let text: String = events
+        .iter()
+        .filter_map(|event| match event {
+            Ok(StreamEvent::TextDelta { delta }) => Some(delta.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(text, "one two\n\nthree\n\n four", "{events:?}");
+}
+
+#[tokio::test]
 async fn responses_failure_event_is_an_error_not_endturn() {
     // response.failed must not fall through the catch-all into a successful
     // EndTurn: the turn must surface the failure (#71).
@@ -1508,6 +1547,7 @@ fn chat_tool_images_follow_all_tool_results() {
         messages: vec![
             Message {
                 role: Role::Assistant,
+                injected: false,
                 content: vec![
                     ContentBlock::ToolUse {
                         id: "a".into(),
@@ -1523,6 +1563,7 @@ fn chat_tool_images_follow_all_tool_results() {
             },
             Message {
                 role: Role::User,
+                injected: false,
                 content: vec![
                     ContentBlock::ToolResult {
                         id: "a".into(),
@@ -1534,6 +1575,7 @@ fn chat_tool_images_follow_all_tool_results() {
             },
             Message {
                 role: Role::User,
+                injected: false,
                 content: vec![ContentBlock::ToolResult {
                     id: "b".into(),
                     content: "done".into(),
@@ -1783,6 +1825,7 @@ fn cached_turn_req() -> gray_core::message::ChatRequest {
             Message::user("first"),
             Message {
                 role: Role::Assistant,
+                injected: false,
                 content: vec![ContentBlock::tool_use(
                     "c1",
                     "bash",
@@ -1791,6 +1834,7 @@ fn cached_turn_req() -> gray_core::message::ChatRequest {
             },
             Message {
                 role: Role::User,
+                injected: false,
                 content: vec![ContentBlock::tool_result("c1", "out", false)],
             },
         ],

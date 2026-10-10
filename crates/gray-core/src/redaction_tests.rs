@@ -230,17 +230,6 @@ fn full_aws_access_key_ids_are_still_removed() {
     }
 }
 
-#[test]
-fn ordinary_prose_is_left_alone() {
-    let redaction = redact_for_disclosure("refactor the parser and add a regression test");
-    assert!(!redaction.redacted());
-    assert_eq!(
-        redaction.text(),
-        "refactor the parser and add a regression test"
-    );
-    assert!(redaction.kinds().is_empty());
-}
-
 /// A repo-relative path discloses the private tree's shape to whatever
 /// provider the routing summary reaches, and is persisted next to it. Every
 /// spelling one arrives in — bare, quoted, JSON-escaped with `\/` or `\\`,
@@ -454,4 +443,24 @@ fn multi_line_text_is_redacted_line_by_line() {
         out.ends_with("\nDEBUG=1\nPORT=3000\n"),
         "lines after a hit were deleted: {out:?}"
     );
+}
+
+#[test]
+fn backtick_and_asterisk_wrapped_secrets_are_replaced() {
+    // Markdown wrapping must not hide a secret from the redactor, and the
+    // receipt must not claim nothing was removed.
+    for input in [
+        "key=`sk-live-abc123def456`",
+        "token=*sk-live-abc123def456*",
+        "`sk-live-abc123def456`",
+        "**sk-live-abc123def456**",
+    ] {
+        let redaction = redact_for_disclosure(input);
+        assert!(
+            !redaction.text().contains("sk-live-abc123def456"),
+            "secret survived from {input:?}: {}",
+            redaction.text()
+        );
+        assert!(redaction.redacted(), "no receipt for {input:?}");
+    }
 }

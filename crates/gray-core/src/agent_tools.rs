@@ -13,6 +13,7 @@ use crate::message::{ContentBlock, Message, Role};
 pub(crate) fn push_synthetic(agent: &mut Agent, id: &str, reason: &str) {
     agent.messages.push(Message {
         role: Role::User,
+        injected: false,
         content: vec![ContentBlock::ToolResult {
             id: id.to_string(),
             content: format!("[{reason}]"),

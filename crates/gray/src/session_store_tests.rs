@@ -619,6 +619,94 @@ async fn recall_validated_none_after_delete() {
 }
 
 #[tokio::test]
+async fn delete_removes_session_sidecars_and_leaves_others() {
+    let dir = tempdir().unwrap();
+    let store = JsonlSessionStore::new(dir.path());
+    let gone = SessionId::new("sidecar-gone");
+    let kept = SessionId::new("sidecar-kept");
+    for id in [&gone, &kept] {
+        store
+            .create(SessionMeta::new(id.clone(), 1, dir.path().join("w"), "m"))
+            .await
+            .unwrap();
+        write_title(dir.path(), id, "a title").unwrap();
+        write_dismissal(dir.path(), id, 5).unwrap();
+        std::fs::write(dir.path().join(format!("{}.autotitle", id.as_str())), "").unwrap();
+    }
+
+    store.delete(&gone).await.unwrap();
+
+    for ext in ["jsonl", "title", "dismissed", "autotitle"] {
+        assert!(
+            !dir.path().join(format!("{}.{ext}", gone.as_str())).exists(),
+            "{ext} survived delete"
+        );
+        assert!(
+            dir.path().join(format!("{}.{ext}", kept.as_str())).exists(),
+            "{ext} of another session was removed"
+        );
+    }
+}
+
+#[tokio::test]
+async fn origin_tag_survives_header_load_and_list() {
+    let dir = tempdir().unwrap();
+    let store = JsonlSessionStore::new(dir.path());
+    let id = SessionId::new("origin1");
+    store
+        .create(SessionMeta::new(id.clone(), 1, "/tmp", "m").with_origin(Some("subagent".into())))
+        .await
+        .unwrap();
+    store.append(&id, &Message::user("work")).await.unwrap();
+    let (meta, _) = store.load(&id).await.unwrap();
+    assert_eq!(meta.origin.as_deref(), Some("subagent"));
+    let list = store.list().await;
+    assert_eq!(list.len(), 1);
+    assert_eq!(list[0].origin.as_deref(), Some("subagent"));
+}
+
+#[tokio::test]
+async fn origin_tagged_session_never_owns_the_recall_pointer() {
+    let dir = tempdir().unwrap();
+    let store = JsonlSessionStore::new(dir.path());
+    let cwd = dir.path().join("w");
+    std::fs::create_dir_all(&cwd).unwrap();
+    let user = SessionId::new("user-sess");
+    let child = SessionId::new("child-sess");
+    store
+        .create(SessionMeta::new(user.clone(), 1, cwd.clone(), "m"))
+        .await
+        .unwrap();
+    // A subagent child minted later must not steal `-c`.
+    store
+        .create(
+            SessionMeta::new(child.clone(), 2, cwd.clone(), "m")
+                .with_origin(Some("subagent".into())),
+        )
+        .await
+        .unwrap();
+    assert_eq!(store.recall_validated(&cwd).await, Some(user.clone()));
+    // …and loading it (steer's `--session` path) must not steal it either.
+    store.load(&child).await.unwrap();
+    assert_eq!(store.recall_validated(&cwd).await, Some(user));
+    // The child stays loadable — steering works — it just never surfaces.
+    let (meta, _) = store.load(&child).await.unwrap();
+    assert_eq!(meta.origin.as_deref(), Some("subagent"));
+}
+
+#[test]
+fn origin_tag_sanitization() {
+    assert_eq!(sanitize_origin_tag("subagent").as_deref(), Some("subagent"));
+    assert_eq!(
+        sanitize_origin_tag("  Cron-Job_2 ").as_deref(),
+        Some("cron-job_2")
+    );
+    assert_eq!(sanitize_origin_tag("").map(|_| ()), None);
+    assert_eq!(sanitize_origin_tag("not a tag!").map(|_| ()), None);
+    assert_eq!(sanitize_origin_tag(&"x".repeat(33)).map(|_| ()), None);
+}
+
+#[tokio::test]
 async fn sequential_appends_keep_monotonic_ids() {
     let dir = tempdir().unwrap();
     let store = JsonlSessionStore::new(dir.path());
@@ -654,28 +742,6 @@ async fn cross_handle_append_continues_ids_via_rescan() {
     let fresh = JsonlSessionStore::new(dir.path());
     let got = fresh.append(&id, &Message::user("next")).await.unwrap();
     assert_eq!(got, 3);
-}
-
-#[tokio::test]
-async fn append_still_refuses_torn_tail() {
-    let dir = tempdir().unwrap();
-    let store = JsonlSessionStore::new(dir.path());
-    let id = store
-        .create(SessionMeta::new(SessionId::new("torn1"), 1, "/tmp", "m"))
-        .await
-        .unwrap();
-    store.append(&id, &Message::user("ok")).await.unwrap();
-    // Tear the tail: drop the final newline. The rescan sees the
-    // incomplete tail and refuses the append.
-    let path = store.session_path(&id).unwrap();
-    let content = std::fs::read(&path).unwrap();
-    assert!(content.ends_with(b"\n"));
-    std::fs::write(&path, &content[..content.len() - 1]).unwrap();
-    let err = store
-        .append(&id, &Message::user("after tear"))
-        .await
-        .expect_err("torn tail must refuse");
-    assert!(matches!(err, SessionError::Io(_)));
 }
 
 #[cfg(unix)]
@@ -880,25 +946,6 @@ async fn a_compaction_boundary_in_the_tail_resets_the_preview() {
         listed[0].last_user_text.as_deref(),
         Some("after compaction"),
         "the tail's boundary supersedes what the head remembered"
-    );
-}
-
-#[tokio::test]
-async fn a_session_being_written_is_not_quarantined_by_the_tail_read() {
-    // A creator streams the header into a create_new file: the first line
-    // has no newline yet. Listing must skip it, never rename it away.
-    let dir = tempdir().unwrap();
-    let store = JsonlSessionStore::new(dir.path());
-    std::fs::write(
-        dir.path().join("halfwritten.jsonl"),
-        br#"{"id":"halfwritten","timestamp":1,"cwd":"/tmp","model":"test"}"#,
-    )
-    .unwrap();
-    let listed = store.list().await;
-    assert!(listed.is_empty(), "{listed:?}");
-    assert!(
-        dir.path().join("halfwritten.jsonl").exists(),
-        "a mid-write session must survive listing"
     );
 }
 

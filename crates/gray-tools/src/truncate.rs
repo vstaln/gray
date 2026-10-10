@@ -1,7 +1,7 @@
-//! Truncation utilities — limits tool output to 2000 lines / 50 KiB. Keeps the *first* N lines/bytes.
+//! Truncation utilities — limits tool output to 2000 lines / 12 KiB (same budget as `tool_out`). Keeps the *first* N lines/bytes.
 
 pub const DEFAULT_MAX_LINES: usize = 2000;
-pub const DEFAULT_MAX_BYTES: usize = 50 * 1024;
+pub const DEFAULT_MAX_BYTES: usize = 12 * 1024;
 
 #[derive(Debug, Clone)]
 pub struct TruncationResult {

@@ -2,6 +2,7 @@
 
 pub mod ask;
 pub mod auth;
+pub mod auto_title;
 pub mod cache;
 pub mod compact;
 pub mod composer;
@@ -10,7 +11,6 @@ pub mod cron;
 pub mod cron_fire;
 pub mod cron_serve;
 pub mod cron_status;
-pub mod doctor;
 pub mod feedback;
 pub mod gateway;
 pub mod host;
@@ -22,6 +22,7 @@ pub mod plugin_cli;
 pub mod print;
 mod print_meter;
 pub mod profile;
+pub mod project_trust;
 pub mod prompt_templates;
 pub mod providers;
 pub mod repl;
@@ -189,6 +190,14 @@ fn cache_warm_policy(
     // `keep_warm` still sends zero refreshes unless the model has cache
     // prices.
     let cacheable = !config.uses_plugin_credentials() || plugin_warm_replay;
+    if !cacheable {
+        // Silent until now: sessions on CLI-relay plugins (claude-sub,
+        // devin-sub, …) looked "warmed" to the user but no mid-round
+        // refresh ever ran — a tool call longer than the provider's TTL
+        // still re-bills the whole prompt.
+        log::info!(target: "gray_agent",
+            "cache warm disabled: provider is plugin-credentialed without request.warm_replay");
+    }
     if config.bare || !cacheable || std::env::var_os("GRAY_NO_CACHE_WARM").is_some() {
         return None;
     }
@@ -212,6 +221,27 @@ pub async fn build_agent(
     cwd: &Path,
     session_id: Option<&str>,
 ) -> anyhow::Result<gray_core::agent::Agent> {
+    build_agent_with(config, cwd, session_id, true).await
+}
+
+/// The model side of [`build_agent`] alone: provider, system prompt and
+/// model policies, with no sidecar spawned. A model switch pairs it with
+/// [`gray_core::agent::Agent::with_tool_surface_of`] to keep the plugins
+/// already running; respawning all of them cost seconds per switch.
+pub async fn build_model_agent(
+    config: &Config,
+    cwd: &Path,
+    session_id: Option<&str>,
+) -> anyhow::Result<gray_core::agent::Agent> {
+    build_agent_with(config, cwd, session_id, false).await
+}
+
+async fn build_agent_with(
+    config: &Config,
+    cwd: &Path,
+    session_id: Option<&str>,
+    spawn_plugins: bool,
+) -> anyhow::Result<gray_core::agent::Agent> {
     let Some(model) = &config.model else {
         anyhow::bail!(
             "no model configured yet — run /connect to set up your provider & key (or /model provider/id; /help for all commands)"
@@ -229,12 +259,14 @@ pub async fn build_agent(
     // Plugin-backed connections own their credential through the provider
     // sidecar; a failure here must stop the build, not silently fall back
     // to an unrelated API key.
+    let build_started = std::time::Instant::now();
     let dynamic = if config.uses_plugin_credentials() {
         let home = setup::gray_home()?;
         Some(crate::providers::connect_dynamic_provider(config, &home).await?)
     } else {
         None
     };
+    log::debug!(target: "gray_timing", "build_agent provider_connect elapsed_ms={}", build_started.elapsed().as_millis());
     // The wire id composes here while `config.model` keeps the row for
     // display and the picker: a row with declared variants resolves its
     // (effort, fast, parts) selection to the concrete id; other rows send
@@ -284,6 +316,7 @@ pub async fn build_agent(
             &provider,
         )
     };
+    let config_bare = config.bare;
     let agent = gray_plugin::builder::build_agent(gray_plugin::builder::BuilderOptions {
         model: wire_model.clone(),
         api_key: api_key.to_string(),
@@ -296,8 +329,8 @@ pub async fn build_agent(
             .then(|| crate::setup::context::resolve_model_context_length(model)),
         session_id: session_id.map(str::to_string),
         cwd: cwd.to_path_buf(),
-        // Stored instructions verbatim; no runtime context (cwd etc.) —
-        // only the identity block above follows them.
+        // Stored instructions verbatim plus the identity block and the
+        // static harness facts — no runtime context (cwd etc.).
         system_prompt: gray_plugin::builder::SystemPrompt::Build(Box::new(
             move |_registry: &gray_tools::Registry| {
                 let mut prompt = system_prompt::build_system_prompt(Some(body));
@@ -306,6 +339,15 @@ pub async fn build_agent(
                         prompt.push_str("\n\n");
                     }
                     prompt.push_str(&identity);
+                }
+                // Static harness facts (batching, cache-TTL backgrounding):
+                // the one thing the model cannot infer that decides how many
+                // rounds a task costs. `--bare` keeps its one-line prompt.
+                if !config_bare {
+                    prompt.push_str("\n\n");
+                    prompt.push_str(&system_prompt::harness_facts(Some(
+                        std::time::Duration::from_secs(cache_ttl_secs),
+                    )));
                 }
                 prompt
             },
@@ -316,7 +358,7 @@ pub async fn build_agent(
         // plugins are always on (every profile, including the default
         // `tools-minimal`). `--lean` skips them: their whole job is
         // injecting prompt context.
-        extra_plugins: if config.bare || config.lean {
+        extra_plugins: if config.bare || config.lean || !spawn_plugins {
             Vec::new()
         } else {
             vec![
@@ -324,7 +366,9 @@ pub async fn build_agent(
                 Arc::new(crate::skills_tool::ProjectContextPlugin),
             ]
         },
-        bare: config.bare,
+        // No plugins means the builder's bare set: one in-process shell
+        // tool the caller discards along with the rest of the tool surface.
+        bare: config.bare || !spawn_plugins,
         host_handler: Some(host::default_handler(cwd.to_path_buf())),
         profile_path: "gray.yml".to_string(),
         abort_on_spawn_failure: true,
@@ -335,6 +379,7 @@ pub async fn build_agent(
             .map(|provider| provider.credential_source()),
     })
     .await?;
+    log::debug!(target: "gray_timing", "build_agent plugins+agent elapsed_ms={}", build_started.elapsed().as_millis());
     for w in gray_plugin::builder::take_builder_warnings() {
         profile::queue_profile_warning(w);
     }
@@ -552,6 +597,17 @@ pub enum Commands {
         #[command(subcommand)]
         cmd: GatewayCmd,
     },
+    /// Trust this project's own prompts, skills and AGENTS.md (or `--revoke`)
+    ///
+    /// Project-level content is ignored until trusted: a cloned repo can carry
+    /// instructions the model follows with unsandboxed tools.
+    Trust {
+        /// Project directory (default: current directory)
+        dir: Option<std::path::PathBuf>,
+        /// Stop trusting the project
+        #[arg(long)]
+        revoke: bool,
+    },
     /// Update gray to the latest release
     #[command(visible_alias = "upgrade")]
     Update,
@@ -559,12 +615,6 @@ pub enum Commands {
     Cron {
         #[command(subcommand)]
         cmd: CronCmd,
-    },
-    /// Diagnose this setup (pass --online to also reach the provider)
-    Doctor {
-        /// Also make one request to the provider (no tokens, just /models)
-        #[arg(long)]
-        online: bool,
     },
     /// Session store maintenance
     Sessions {
@@ -699,6 +749,12 @@ pub enum CronCmd {
     },
     /// Resume a suspended job (id or name; recomputes next run)
     Resume {
+        /// Job id or name
+        id: String,
+    },
+    /// Start a job a model requested (id or name). Run it from your own
+    /// terminal; a gray session cannot approve its own jobs.
+    Approve {
         /// Job id or name
         id: String,
     },
@@ -837,10 +893,14 @@ pub enum PluginCmd {
         /// Plugin directory (executable, plugin.sh, or single executable)
         dir: String,
     },
-    /// Show declared vs granted plugin capabilities
+    /// Show declared vs granted plugin capabilities (`--all` grants)
     Capabilities {
         /// Plugin name (default: every installed plugin)
         name: Option<String>,
+        /// Grant every capability the plugin declares — the consent
+        /// prompt's non-interactive equivalent
+        #[arg(long)]
+        all: bool,
     },
 }
 

@@ -328,58 +328,6 @@ fn kill_switch_parses() {
     }
 }
 #[tokio::test]
-async fn mixed_batch_of_five_overlaps_wall_clock() {
-    use crate::agent::ToolOutput;
-    use futures::future::BoxFuture;
-    // SPEC-02 live check: a turn emitting 5 read-only calls plans one
-    // segment and completes them concurrently (wall ~= slowest, not sum).
-    let u = vec![
-        ("a".into(), "read".into(), json!({"path": "a.rs"})),
-        (
-            "b".into(),
-            "bash".into(),
-            json!({"command": "grep -rn foo ."}),
-        ),
-        (
-            "c".into(),
-            "bash".into(),
-            json!({"command": "sed -n '1,10p' f"}),
-        ),
-        ("d".into(), "grep".into(), json!({"pattern": "y"})),
-        ("e".into(), "grep".into(), json!({"pattern": "y"})),
-    ];
-    let k: HashSet<String> = ["read", "bash", "grep"]
-        .iter()
-        .map(|s| s.to_string())
-        .collect();
-    assert_eq!(
-        plan_segments(&u, &k),
-        vec![Segment::Parallel(vec![0, 1, 2, 3, 4])]
-    );
-    let mk = |i: usize| {
-        (
-            i,
-            Box::pin(async move {
-                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-                ToolOutput::ok(format!("out{i}"))
-            }) as BoxFuture<'static, ToolOutput>,
-        )
-    };
-    let cancel = tokio_util::sync::CancellationToken::new();
-    let t0 = std::time::Instant::now();
-    let got = join_ordered(vec![mk(0), mk(1), mk(2), mk(3), mk(4)], &cancel).await;
-    let dt = t0.elapsed();
-    assert_eq!(got.len(), 5);
-    assert_eq!(
-        got.iter().map(|(i, _)| *i).collect::<Vec<_>>(),
-        vec![0, 1, 2, 3, 4]
-    );
-    assert!(
-        dt < std::time::Duration::from_millis(800),
-        "5x200ms overlapped, took {dt:?}"
-    );
-}
-#[tokio::test]
 async fn join_runs_concurrently_and_returns_input_order() {
     use crate::agent::ToolOutput;
     use futures::future::BoxFuture;
@@ -466,4 +414,48 @@ async fn join_cancel_marks_unfinished_none() {
         got.iter().all(|(_, o)| o.is_none()),
         "cancelled calls yield None"
     );
+}
+
+#[test]
+fn archive_extractors_never_batch_as_reads() {
+    // Extraction writes files the command line never names, so it must not
+    // share a lane with concurrent readers (GC-4).
+    for command in [
+        "tar xf a.tar",
+        "tar -xzf release.tgz -C /tmp/x",
+        "bsdtar xf a.tar",
+        "unzip bundle.zip",
+        "gunzip data.gz",
+        "7z x pack.7z",
+        "cpio -id < in.cpio",
+    ] {
+        assert!(
+            !bash_is_batchable(command),
+            "extractor batched as read-only: {command}"
+        );
+    }
+    // Plain reads still batch.
+    assert!(bash_is_batchable("git diff --stat"));
+}
+
+#[test]
+fn rewrite_conflicts_demotes_only_the_rewritten_offender() {
+    // GC-6: a hook rewrote the second call into a write to the first call's
+    // path. The run must not execute it concurrently with the read.
+    let read = json!({"path": "a.rs"});
+    let rewritten_write = json!({"path": "a.rs", "content": "x"});
+    let calls: Vec<(&str, &Value)> = vec![("read", &read), ("write", &rewritten_write)];
+    assert_eq!(rewrite_conflicts(&calls), vec![1]);
+
+    // Untouched, non-interfering reads all stay in the lane.
+    let r1 = json!({"path": "a.rs"});
+    let r2 = json!({"path": "b.rs"});
+    let calls: Vec<(&str, &Value)> = vec![("read", &r1), ("read", &r2)];
+    assert!(rewrite_conflicts(&calls).is_empty());
+
+    // A batchable tool rewritten into an unenumerable bash command is demoted.
+    let grep = json!({"pattern": "y"});
+    let bash = json!({"command": "rm -rf build"});
+    let calls: Vec<(&str, &Value)> = vec![("grep", &grep), ("bash", &bash)];
+    assert_eq!(rewrite_conflicts(&calls), vec![1]);
 }

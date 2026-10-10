@@ -35,6 +35,19 @@ pub(crate) fn exit_session() -> Option<String> {
         .clone()
 }
 
+/// Which session is live and the shell line that reattaches to it. The
+/// Ctrl+C exit hint's contents, shown by `/sessions` before the picker.
+pub(crate) fn current_session_line(session_state: &Option<SessionState>) -> String {
+    match session_state.as_ref() {
+        Some(s) => format!(
+            "session {} · {}",
+            s.session_id,
+            exit_hint_line(s.session_id.as_str(), false)
+        ),
+        None => "no session yet — the first turn creates one".into(),
+    }
+}
+
 pub(crate) fn exit_hint_line(session_id: &str, styled: bool) -> String {
     if styled {
         format!("\x1b[2mTo resume: gray -r {session_id}\x1b[0m")
@@ -68,6 +81,30 @@ pub(crate) async fn handle_resume(
     tui: Option<&crate::composer::SharedTui>,
     hide_thinking: &mut bool,
 ) {
+    if args.dismiss {
+        let scope = if args.all { None } else { Some(cwd) };
+        let n = crate::resume::dismiss_interrupted(scope).await;
+        let msg = match (n, args.all) {
+            (0, _) => "no interrupted sessions to dismiss".to_string(),
+            (n, false) => format!("dismissed {n} interrupted session{}", plural(n)),
+            (n, true) => format!(
+                "dismissed {n} interrupted session{} in every directory",
+                plural(n)
+            ),
+        };
+        if let Some(shared) = &tui {
+            shared
+                .lock()
+                .expect("tui lock")
+                .push_dim(format!("\u{2514} {msg}"));
+        } else {
+            println!("{msg}");
+        }
+        return;
+    }
+    if args.target.is_none() {
+        say(tui, &current_session_line(session_state));
+    }
     let bg = tui.as_ref().map(|s| s.lock().expect("tui lock").snapshot());
     // Recall-first resolution for cwd-scoped `--last` (`--all` keeps the
     // list scan for the global latest). A validated pointer skips the scan;
@@ -100,10 +137,12 @@ pub(crate) async fn handle_resume(
                     Err(e) => {
                         let msg = format!("no session matching '{raw}': {e}");
                         if let Some(shared) = &tui {
-                            shared
-                                .lock()
-                                .expect("tui lock")
-                                .push_dim(format!("└ {msg}"));
+                            super::cron::push_notice(
+                                &mut shared.lock().expect("tui lock"),
+                                "Resume failed",
+                                &msg,
+                                true,
+                            );
                         } else {
                             println!("{msg}");
                         }
@@ -128,13 +167,15 @@ pub(crate) async fn handle_resume(
                 let msg = if args.all {
                     "no saved sessions"
                 } else {
-                    "no saved sessions in this directory (try /resume --all or --all)"
+                    "no saved sessions in this directory (try /sessions --all or --all)"
                 };
                 if let Some(shared) = &tui {
-                    shared
-                        .lock()
-                        .expect("tui lock")
-                        .push_dim(format!("└ {msg}"));
+                    super::cron::push_notice(
+                        &mut shared.lock().expect("tui lock"),
+                        "Sessions",
+                        msg,
+                        false,
+                    );
                 } else {
                     println!("{msg}");
                 }
@@ -149,7 +190,7 @@ pub(crate) async fn handle_resume(
         let store = JsonlSessionStore::new(root);
         let summaries = crate::resume::recent_summaries(&store, args.all).await;
         if summaries.is_empty() {
-            println!("no saved sessions in this directory (try /resume --all or --all)");
+            println!("no saved sessions in this directory (try /sessions --all or --all)");
         } else {
             for s in &summaries {
                 println!("{}", crate::resume::format_summary_row(s));
@@ -170,10 +211,12 @@ pub(crate) async fn handle_resume(
             }
             Err(e) => {
                 if let Some(shared) = &tui {
-                    shared
-                        .lock()
-                        .expect("tui lock")
-                        .push_dim(format!("└ resume picker error: {e}"));
+                    super::cron::push_notice(
+                        &mut shared.lock().expect("tui lock"),
+                        "Resume picker failed",
+                        &e.to_string(),
+                        true,
+                    );
                 } else {
                     println!("resume picker error: {e}");
                 }
@@ -305,10 +348,12 @@ pub(crate) async fn handle_resume(
                 Err(e) => {
                     let msg = format!("could not resume (no provider): {e}");
                     if let Some(shared) = &tui {
-                        shared
-                            .lock()
-                            .expect("tui lock")
-                            .push_dim(format!("└ {msg}"));
+                        super::cron::push_notice(
+                            &mut shared.lock().expect("tui lock"),
+                            "Resume failed",
+                            &msg,
+                            true,
+                        );
                     } else {
                         println!("{msg}");
                     }
@@ -318,10 +363,12 @@ pub(crate) async fn handle_resume(
         Err(e) => {
             let msg = format!("could not resume session {}: {e}", sid.as_str());
             if let Some(shared) = &tui {
-                shared
-                    .lock()
-                    .expect("tui lock")
-                    .push_dim(format!("└ {msg}"));
+                super::cron::push_notice(
+                    &mut shared.lock().expect("tui lock"),
+                    "Resume failed",
+                    &msg,
+                    true,
+                );
             } else {
                 println!("{msg}");
             }
@@ -411,7 +458,8 @@ pub(crate) async fn ensure_session_state(
             timestamp,
             cwd.to_path_buf(),
             config.model.clone().unwrap_or_else(|| "unset".into()),
-        );
+        )
+        .with_origin(crate::session_store::session_origin_from_env());
         if let Err(e) = store.create(meta).await {
             log::warn!(target: "gray_session", "session create failed: {e}");
         }
@@ -553,7 +601,8 @@ pub(crate) fn dispatch_agent_event(
         | AgentEvent::ToolResult { .. }
         | AgentEvent::StepUsage { .. }
         | AgentEvent::Compacted { .. }
-        | AgentEvent::StreamError { .. } => stream_clock.open_span(),
+        | AgentEvent::StreamError { .. }
+        | AgentEvent::MessageBoundary => stream_clock.open_span(),
         AgentEvent::TurnEnd { .. } => stream_clock.close_span(),
         _ => stream_clock.tick(),
     }
@@ -718,8 +767,17 @@ pub(crate) fn dispatch_agent_event(
                 if !details.is_empty() && t.last_retry_detail.as_deref() != Some(details.as_str()) {
                     t.last_retry_detail = Some(details.clone());
                     let trunc = crate::repl::format::truncate_chars(details, 200);
-                    t.push_dim(format!("└ {trunc}"));
+                    super::cron::push_notice(&mut t, "Reconnecting", trunc, false);
                 }
+            }
+            // A mid-turn injected note (nudge / finished-job follow-up)
+            // ended the message that was streaming: close the markdown
+            // block so the next deltas open their own paragraph — without
+            // this the reply glues onto the previous message verbatim.
+            AgentEvent::MessageBoundary => {
+                t.flush_markdown();
+                t.end_thinking();
+                t.mark_stream_round_boundary();
             }
             AgentEvent::TurnEnd { usage, .. } => {
                 *turn_usage = Some(*usage);
@@ -819,7 +877,7 @@ pub(crate) fn dispatch_agent_event(
                 if details.is_empty() {
                     eprintln!("\n\x1b[2m⚠ {message}\x1b[0m");
                 } else {
-                    eprintln!("\n\x1b[2m⚠ {message}\n└ {details}\x1b[0m");
+                    eprintln!("\n\x1b[2m⚠ {message}\n  {details}\x1b[0m");
                 }
             }
             AgentEvent::Compacted {
@@ -835,6 +893,11 @@ pub(crate) fn dispatch_agent_event(
                     messages_before,
                     messages_after
                 );
+            }
+            // Two messages, two paragraphs — the composer's markdown
+            // flush, written here as a plain blank line.
+            AgentEvent::MessageBoundary => {
+                print!("\n\n");
             }
             AgentEvent::TurnEnd { usage, .. } => {
                 *turn_usage = Some(*usage);
@@ -966,7 +1029,8 @@ async fn remint_missing_session(state: &SessionState) -> bool {
         crate::print::now_millis(),
         cwd,
         "reminted",
-    );
+    )
+    .with_origin(crate::session_store::session_origin_from_env());
     match state.store.create(meta).await {
         Ok(_) => true,
         Err(crate::session_store::SessionError::AlreadyExists(_)) => true,
@@ -1041,13 +1105,16 @@ pub(crate) async fn maybe_threshold_compact(
                         .finish_compaction(&compaction_id, Some("Working"))
                 })
                 .unwrap_or_default();
-            let notice = format!(
-                "Context compacted · {} ({}/{} tokens)",
-                crate::composer::fmt_elapsed_compact(elapsed.as_secs()),
+            let detail = format!(
+                "{}/{} tokens",
                 crate::setup::format_context_length(tokens),
                 crate::setup::format_context_length(window)
             );
-            say(tui, &notice);
+            super::status::push_compaction_card(
+                tui,
+                &crate::composer::fmt_elapsed_compact(elapsed.as_secs()),
+                &detail,
+            );
             // History just shrank: the gauge still holds the pre-compact
             // StepUsage (stale-high until the next turn's first StepUsage).
             // Reseed from the post-compact estimate so the footer, /context,
@@ -1109,12 +1176,10 @@ pub(crate) async fn maybe_overflow_compact(
                         .finish_compaction(&compaction_id, Some("Working"))
                 })
                 .unwrap_or_default();
-            say(
+            super::status::push_compaction_card(
                 tui,
-                &format!(
-                    "context overflow — Context compacted · {}",
-                    crate::composer::fmt_elapsed_compact(elapsed.as_secs())
-                ),
+                &crate::composer::fmt_elapsed_compact(elapsed.as_secs()),
+                "after context overflow",
             );
             // See threshold path: reseed the gauge to the compacted size.
             persist_compaction_tail(agent, config, session_state, cwd, tui).await;
@@ -1147,3 +1212,7 @@ pub(crate) async fn maybe_overflow_compact(
 #[path = "session_tests.rs"]
 #[cfg(test)]
 mod tests;
+
+fn plural(n: usize) -> &'static str {
+    if n == 1 { "" } else { "s" }
+}

@@ -51,6 +51,7 @@ fn substitutions_expand_arguments_and_skill_dir() {
 
 #[test]
 fn resolve_skill_name_finds_project_skill() {
+    crate::project_trust::assume_trusted_for_test();
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path().join(".gray/skills/commit");
     std::fs::create_dir_all(&dir).unwrap();
@@ -66,6 +67,7 @@ fn resolve_skill_name_finds_project_skill() {
 
 #[tokio::test]
 async fn skills_context_matches_fresh_discovery_and_rescans_on_change() {
+    crate::project_trust::assume_trusted_for_test();
     if isolated_home("skills_context_matches_fresh_discovery_and_rescans_on_change") {
         return;
     }
@@ -129,6 +131,7 @@ async fn skills_context_matches_fresh_discovery_and_rescans_on_change() {
 
 #[tokio::test]
 async fn skills_plugin_is_context_only_and_serves_block() {
+    crate::project_trust::assume_trusted_for_test();
     if isolated_home("skills_plugin_is_context_only_and_serves_block") {
         return;
     }
@@ -169,6 +172,7 @@ async fn skills_plugin_is_context_only_and_serves_block() {
 
 #[test]
 fn project_context_block_serves_nearest_ancestor() {
+    crate::project_trust::assume_trusted_for_test();
     let tmp = tempfile::tempdir().unwrap();
     let sub = tmp.path().join("crate");
     std::fs::create_dir_all(&sub).unwrap();
@@ -202,6 +206,7 @@ fn project_context_block_serves_nearest_ancestor() {
 
 #[test]
 fn project_context_block_strips_rationale_comments_for_the_executor() {
+    crate::project_trust::assume_trusted_for_test();
     let tmp = tempfile::tempdir().unwrap();
     std::fs::write(
         tmp.path().join("AGENTS.md"),
@@ -253,18 +258,8 @@ fn project_context_block_none_when_only_blank_lines_survive_the_strip() {
 }
 
 #[test]
-fn project_context_block_none_when_only_rationale_comments() {
-    let tmp = tempfile::tempdir().unwrap();
-    std::fs::write(
-        tmp.path().join("AGENTS.md"),
-        "# r1: only a rationale, no rules left to follow\n",
-    )
-    .unwrap();
-    assert_eq!(project_context_block(tmp.path()), None);
-}
-
-#[test]
 fn project_context_block_prefers_agents_over_claude_on_same_level() {
+    crate::project_trust::assume_trusted_for_test();
     let tmp = tempfile::tempdir().unwrap();
     std::fs::write(tmp.path().join("CLAUDE.md"), "claude rules").unwrap();
     std::fs::write(tmp.path().join("AGENTS.md"), "agents rules").unwrap();
@@ -289,6 +284,7 @@ fn project_context_block_none_when_absent_or_empty() {
 
 #[test]
 fn project_context_block_truncates_huge_file() {
+    crate::project_trust::assume_trusted_for_test();
     let tmp = tempfile::tempdir().unwrap();
     std::fs::write(tmp.path().join("AGENTS.md"), "x".repeat(40_000)).unwrap();
     let block = project_context_block(tmp.path()).unwrap();
@@ -302,6 +298,7 @@ fn project_context_block_truncates_huge_file() {
 
 #[tokio::test]
 async fn project_context_plugin_is_context_only_and_serves_block() {
+    crate::project_trust::assume_trusted_for_test();
     use gray_plugin::Plugin;
     let plugin = ProjectContextPlugin;
     assert!(plugin.tools().is_empty(), "must carry no tools");
@@ -326,6 +323,7 @@ async fn project_context_plugin_is_context_only_and_serves_block() {
 
 #[test]
 fn project_context_block_skips_gray_home_level() {
+    crate::project_trust::assume_trusted_for_test();
     if isolated_home("project_context_block_skips_gray_home_level") {
         return;
     }

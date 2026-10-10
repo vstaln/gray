@@ -21,6 +21,12 @@ const MAX_EMPTY_RETRIES: u8 = 2;
 /// Truncated-turn (`MaxTokens`) continuations before keeping the partial.
 const MAX_CONTINUATIONS: u8 = 2;
 
+/// Leaked-tool-call-markup nudges per run. Gray never guesses intent from the
+/// model's prose (an earlier "announced a next step" heuristic injected
+/// user-looking messages and pushed models into unapproved work); it only
+/// reacts to a call that visibly failed to materialize.
+const MAX_LEAK_NUDGES: u8 = 3;
+
 /// Whole-turn retries after the provider's own in-request budget (5 attempts
 /// with backoff) is exhausted on a retryable failure — the log shows bursts of
 /// 503s outlasting exactly that budget, ending a turn the user is waiting on.
@@ -131,7 +137,7 @@ impl Agent {
         let notices = self.executor.drain_notifications(ctx);
         let any = !notices.is_empty();
         for notice in notices {
-            self.messages.push(Message::user(format!(
+            self.messages.push(Message::user_injected(format!(
                 "[Background task notification]\n{notice}"
             )));
         }
@@ -145,7 +151,7 @@ impl Agent {
     /// append-only for the prefix cache and subscription relays.
     fn surface_running_jobs(&mut self, ctx: &ToolContext) {
         if let Some(note) = self.executor.running_jobs_note(ctx) {
-            self.messages.push(Message::user(format!(
+            self.messages.push(Message::user_injected(format!(
                 "[Background jobs still running]\n{note}\nEnd your turn to be woken when one finishes; `tail` a log to peek."
             )));
         }
@@ -351,10 +357,9 @@ impl Agent {
         let mut turn_retries: u8 = 0;
         // Post-tool empty nudge fires once per run; silent-retry budget unchanged.
         let mut empty_nudge_sent = false;
-        // An ending that announces a step the model never ran ("Let me check
-        // …" then EndTurn, no tool call) gets one nudge per run; a repeat is
-        // respected — the model may have reconsidered mid-sentence.
-        let mut intent_nudge_sent = false;
+        // Consecutive leaked-markup endings get bounded nudges; a round with
+        // real calls resets the streak.
+        let mut leak_nudges: u8 = 0;
 
         // Protocol v1 `prompt/context`: fetched once per turn, not per round,
         // so the fetched text stays byte-stable across a turn's requests and
@@ -390,7 +395,7 @@ impl Agent {
         // then re-sends only when the text actually changed (or compaction
         // dropped the earlier copy).
         if !hook_context.is_empty() {
-            let note = Message::user(format!("[Context update]\n{hook_context}"));
+            let note = Message::user_injected(format!("[Context update]\n{hook_context}"));
             if !self.messages.contains(&note) {
                 self.messages.push(note);
             }
@@ -400,7 +405,7 @@ impl Agent {
         if !self.lean_prompt {
             for hook in &self.hooks {
                 if let Some(text) = hook.agent_before_start().await {
-                    self.messages.push(Message::user(text));
+                    self.messages.push(Message::user_injected(text));
                 }
             }
         }
@@ -493,7 +498,7 @@ impl Agent {
                 .last()
                 .is_some_and(|message| message.role == Role::Assistant)
             {
-                request_messages.push(Message::user(
+                request_messages.push(Message::user_injected(
                     "Continue the pending user request using the retained context and summary.",
                 ));
             }
@@ -513,14 +518,62 @@ impl Agent {
             };
             // The exact request, kept for a cache refresh while this round's
             // tools run (pi cache warming). Only cloned when warming is on.
+            // GC-3: `req` is already the scrubbed, hook-processed outbound list,
+            // so the refresh replays exactly what the main call sent, never a
+            // raw transcript. Keep it that way: build warm requests only from `req`.
             let warm_req = self.cache_warm.is_some().then(|| req.clone());
             let request_sent = tokio::time::Instant::now();
+            // Warming spans the whole round — stream AND tool phase (pi
+            // "streaming" mode): a generation that runs past the provider's
+            // cache TTL would let the entry die mid-turn and re-bill the
+            // next request. Dropping the guard on any exit aborts the task.
+            let warm_spent = std::sync::Arc::new(std::sync::Mutex::new(Usage::default()));
+            // The request's own prompt size is unknown until its usage lands,
+            // so the warmer starts on the transcript estimate and is handed
+            // the provider's report as soon as the round has one.
+            let warm_hint =
+                std::sync::Arc::new(std::sync::Mutex::new(crate::cache_warm::WarmHint {
+                    prompt_tokens: self.estimate_tokens(),
+                    cache_reported: self.warm_cache_reported,
+                }));
+            let warm_guard = match (&self.cache_warm, warm_req) {
+                (Some(policy), Some(req)) => Some(crate::cache_warm::WarmGuard(tokio::spawn(
+                    crate::cache_warm::keep_warm(
+                        self.provider.clone(),
+                        req,
+                        policy.clone(),
+                        warm_hint.clone(),
+                        request_sent,
+                        warm_spent.clone(),
+                    ),
+                ))),
+                _ => None,
+            };
 
             // Accumulate streamed deltas: text chunks in order, tool calls
             // keyed by their stream index (id/name arrive once, arguments
             // may be split across many deltas).
             let mut text_parts: Vec<String> = Vec::new();
             let mut thinking_text = String::new();
+            // Leaked pipe specials are stripped before anything reaches the
+            // UI or history; a token split across deltas is held back until
+            // it resolves, and the hold is drained whenever the stream ends.
+            let mut text_strip = SpecialStrip::default();
+            let mut thinking_strip = SpecialStrip::default();
+            macro_rules! drain_held {
+                () => {{
+                    let held = thinking_strip.flush();
+                    if !held.is_empty() {
+                        emit!(AgentEvent::thinking_delta(held.clone()));
+                        append_thinking_chunk(&mut thinking_text, &held);
+                    }
+                    let held = text_strip.flush();
+                    if !held.is_empty() {
+                        emit!(AgentEvent::text_delta(held.clone()));
+                        text_parts.push(held);
+                    }
+                }};
+            }
             // (item_id, encrypted_content) of the latest Responses
             // reasoning item — attached to the Thinking block at finalize so
             // the next turn can replay it verbatim (cache warmth).
@@ -532,6 +585,7 @@ impl Agent {
                     let next_event = tokio::select! {
                         ev = stream.next() => ev,
                         _ = ctx.cancel.cancelled() => {
+                            drain_held!();
                             if !text_parts.is_empty() {
                                 salvage_partial_text(
                                     &mut self.messages,
@@ -558,12 +612,18 @@ impl Agent {
                     }
                     match next_event {
                         Some(Ok(StreamEvent::TextDelta { delta })) => {
-                            emit!(AgentEvent::text_delta(delta.clone()));
-                            text_parts.push(delta);
+                            let delta = text_strip.push(&delta);
+                            if !delta.is_empty() {
+                                emit!(AgentEvent::text_delta(delta.clone()));
+                                text_parts.push(delta);
+                            }
                         }
                         Some(Ok(StreamEvent::ThinkingDelta { delta })) => {
-                            emit!(AgentEvent::thinking_delta(delta.clone()));
-                            append_thinking_chunk(&mut thinking_text, &delta);
+                            let delta = thinking_strip.push(&delta);
+                            if !delta.is_empty() {
+                                emit!(AgentEvent::thinking_delta(delta.clone()));
+                                append_thinking_chunk(&mut thinking_text, &delta);
+                            }
                         }
                         Some(Ok(StreamEvent::ReasoningItem {
                             item_id,
@@ -667,6 +727,7 @@ impl Agent {
                             }
                         }
                         Some(Ok(StreamEvent::MessageComplete { stop_reason, usage })) => {
+                            drain_held!();
                             break (
                                 stop_reason.unwrap_or(StopReason::EndTurn),
                                 usage.unwrap_or_default(),
@@ -713,6 +774,7 @@ impl Agent {
                             // Mid-stream failure after deltas already reached the
                             // user's screen: salvage the partial assistant text
                             // into history so the transcript matches what was seen.
+                            drain_held!();
                             if !text_parts.is_empty() {
                                 salvage_partial_text(
                                     &mut self.messages,
@@ -760,6 +822,7 @@ impl Agent {
                             // treat that as success. Text-only partial output
                             // is salvaged (marked interrupted); pending tool
                             // calls are NOT executed from a truncated stream.
+                            drain_held!();
                             if !text_parts.is_empty() {
                                 salvage_partial_text(
                                     &mut self.messages,
@@ -781,15 +844,7 @@ impl Agent {
             // its sidebar/footer read the last assistant message's usage,
             // never a sum). A round with no usage signal keeps the previous
             // gauge. Billing stays cumulative below.
-            if usage.input_tokens != 0
-                || usage.output_tokens != 0
-                || usage.cached_tokens != 0
-                || usage.non_cached_input_tokens != 0
-                || usage.cache_read_input_tokens != 0
-                || usage.cache_write_input_tokens != 0
-                || usage.reasoning_tokens != 0
-                || usage.total_tokens != 0
-            {
+            if usage.any() {
                 total_usage = usage;
                 total_usage.normalize();
             }
@@ -837,11 +892,10 @@ impl Agent {
             let text_is_empty = text.is_empty();
             // Evaluated before `text` moves into the content block; used only
             // on the no-tool end path below. A leaked tool-call envelope
-            // (funnel fence / native markup the provider left as text) counts
-            // as an announced step: the model tried to call, the call never
-            // materialized.
-            let announced_step = matches!(stop_reason, StopReason::EndTurn | StopReason::ToolUse)
-                && (announced_unfinished_step(&text) || leaked_call_markup(&text));
+            // (funnel fence / native markup the provider left as text) means
+            // the model tried to call and the call never materialized.
+            let leaked_markup = matches!(stop_reason, StopReason::EndTurn | StopReason::ToolUse)
+                && (leaked_call_markup(&text) || text_strip.leaked());
             if !text.is_empty() {
                 content.push(ContentBlock::Text { text });
             }
@@ -867,12 +921,22 @@ impl Agent {
             }
             let assistant = Message {
                 role: Role::Assistant,
+                injected: false,
                 content,
             };
             self.messages.push(assistant.clone());
             // This round's report covers system + tools + history through the
             // assistant message just pushed (pi `estimateContextTokens`).
             self.record_context_usage(&usage);
+            self.warm_cache_reported = self.warm_cache_reported
+                || usage.cache_read_input_tokens
+                    + usage.cached_tokens
+                    + usage.cache_write_input_tokens
+                    > 0;
+            if let (true, Ok(mut hint)) = (usage.input_tokens > 0, warm_hint.lock()) {
+                hint.prompt_tokens = usage.input_tokens;
+                hint.cache_reported = self.warm_cache_reported;
+            }
 
             let tool_uses: Vec<(String, String, serde_json::Value)> = assistant
                 .content
@@ -893,9 +957,12 @@ impl Agent {
                 && continuations < MAX_CONTINUATIONS
             {
                 continuations += 1;
-                self.messages.push(Message::user(
+                self.messages.push(Message::user_injected(
                     "previous response truncated — continue exactly where you left off",
                 ));
+                // Still one message resuming mid-sentence: no
+                // `MessageBoundary`, or the stitched tail would start its
+                // own block and the seam would show.
                 continue 'turn;
             }
 
@@ -919,30 +986,34 @@ impl Agent {
                 if tail_had_results && !empty_nudge_sent {
                     empty_nudge_sent = true;
                     self.messages.push(Message::assistant("(empty)"));
-                    self.messages.push(Message::user(
+                    self.messages.push(Message::user_injected(
                         "executed tool calls but returned empty — process results and continue",
                     ));
+                    emit!(AgentEvent::MessageBoundary);
                     continue 'turn;
                 }
                 self.messages.push(Message::assistant("(empty)"));
             }
 
             if tool_uses.is_empty() {
-                // A text-only ending whose tail commits to a step the model
-                // never ran looks like the run died mid-thought: the footer
-                // prints and the user has to type "." to revive it. Nudge
-                // once so the step happens or the model says it's done.
-                if announced_step && !intent_nudge_sent {
-                    intent_nudge_sent = true;
-                    log::info!(target: "gray_agent", "end turn announced an untaken step; nudging once");
-                    self.messages.push(Message::user(
-                        "you ended your turn right after announcing a next step — take it now, or state that the task is complete; if that step waits on the user's answer or approval, say so in one line and stop",
+                // A text-only ending that is really a tool call the provider
+                // left as raw markup: nothing ran, so ask for a real call.
+                // Ordinary text endings are never second-guessed.
+                if leaked_markup && leak_nudges < MAX_LEAK_NUDGES {
+                    leak_nudges += 1;
+                    log::info!(target: "gray_agent", "end turn leaked tool-call markup; nudging {leak_nudges}/{MAX_LEAK_NUDGES}");
+                    self.messages.push(Message::user_injected(
+                        "your last message contained raw tool-call markup instead of a real tool call, so nothing ran — send the call again, or reply without it",
                     ));
+                    // The reply is a new message, not a tail on the leaked
+                    // prose — without the boundary it glues on verbatim.
+                    emit!(AgentEvent::MessageBoundary);
                     continue 'turn;
                 }
                 // A job that finished during inference gets a follow-up now;
                 // unfinished jobs never hold this turn open.
                 if self.collect_background_notifications(&ctx) {
+                    emit!(AgentEvent::MessageBoundary);
                     continue 'turn;
                 }
                 let hit = if total_usage.input_tokens > 0 {
@@ -950,10 +1021,22 @@ impl Agent {
                 } else {
                     0.0
                 };
+                // A stream-phase refresh (long generation, no tools after)
+                // bills its usage here — the post-tools drain never ran.
+                if let Ok(spent) = warm_spent.lock() {
+                    billed.accumulate(&spent);
+                }
                 log::info!(target: "gray_agent", "agent run end: session={} stop={stop_reason:?}, usage in={} out={} cached={} hit={:.0}%, {} messages", ctx.session_id.as_deref().unwrap_or("-"), total_usage.input_tokens, total_usage.output_tokens, total_usage.cached_tokens, hit, self.messages.len());
                 emit!(AgentEvent::turn_end(stop_reason, billed));
                 self.emit_turn_end(&billed).await;
                 return Ok(events);
+            }
+
+            // mini-swe-agent's streak semantics: a round with real calls
+            // clears the stall-nudge counter; placeholder-only rounds
+            // (`echo "working on it"`) do not.
+            if tool_uses.iter().any(|(_, n, a)| productive_call(n, a)) {
+                leak_nudges = 0;
             }
 
             // Loop backstop: no nudge text, just stop if the identical call
@@ -1000,24 +1083,6 @@ impl Agent {
                     .enumerate()
                     .map(|(i, _)| crate::parallel::Segment::Single(i))
                     .collect()
-            };
-            let warm_spent = std::sync::Arc::new(std::sync::Mutex::new(Usage::default()));
-            let warm_guard = match (&self.cache_warm, warm_req) {
-                (Some(policy), Some(req)) => Some(crate::cache_warm::WarmGuard(tokio::spawn(
-                    crate::cache_warm::keep_warm(
-                        self.provider.clone(),
-                        req,
-                        policy.clone(),
-                        total_usage.input_tokens,
-                        total_usage.cache_read_input_tokens
-                            + total_usage.cached_tokens
-                            + total_usage.cache_write_input_tokens
-                            > 0,
-                        request_sent,
-                        warm_spent.clone(),
-                    ),
-                ))),
-                _ => None,
             };
             for segment in segments {
                 // Parallel run over `tool_uses` indices. Pre-pass (loop
@@ -1069,6 +1134,32 @@ impl Agent {
                         answer_pending_tools(self, &tool_uses, run_end, "cancelled by user");
                         self.emit_turn_end(&billed).await;
                         return Err(CoreError::Cancelled);
+                    }
+                    // GC-6: a `tool_before` rewrite can turn a screened call into
+                    // one that must not share the lane. Re-screen what will
+                    // actually execute and fail the offending calls closed
+                    // through the preflight-error path: hooks already ran once.
+                    let demoted = {
+                        let calls: Vec<(&str, &serde_json::Value)> =
+                            ready.iter().map(|(_, n, a)| (n.as_str(), a)).collect();
+                        crate::parallel::rewrite_conflicts(&calls)
+                    };
+                    if !demoted.is_empty() {
+                        let mut keep = Vec::with_capacity(ready.len());
+                        for (pos, item) in ready.drain(..).enumerate() {
+                            if demoted.contains(&pos) {
+                                inline_errors.insert(
+                                    item.0,
+                                    ToolOutput::error(format!(
+                                        "Tool '{}' was rewritten by a hook into a form that cannot run in parallel; not executed.",
+                                        item.1
+                                    )),
+                                );
+                            } else {
+                                keep.push(item);
+                            }
+                        }
+                        ready = keep;
                     }
                     // `tool_call_end` is the "args complete, executing" signal
                     // (the REPL flips the card to running and the status off
@@ -1126,6 +1217,7 @@ impl Agent {
                             ));
                             self.messages.push(Message {
                                 role: Role::User,
+                                injected: false,
                                 content: vec![ContentBlock::ToolResult {
                                     id: id.clone(),
                                     content: err.content,
@@ -1147,6 +1239,7 @@ impl Agent {
                                 ));
                                 self.messages.push(Message {
                                     role: Role::User,
+                                    injected: false,
                                     content: output.message_blocks(id),
                                 });
                             }
@@ -1187,6 +1280,7 @@ impl Agent {
                         ));
                         self.messages.push(Message {
                             role: Role::User,
+                            injected: false,
                             content: vec![ContentBlock::ToolResult {
                                 id: id.clone(),
                                 content: err.content,
@@ -1234,6 +1328,7 @@ impl Agent {
                         ));
                         self.messages.push(Message {
                             role: Role::User,
+                            injected: false,
                             content: vec![ContentBlock::ToolResult {
                                 id: id.clone(),
                                 content: report.content,
@@ -1259,6 +1354,7 @@ impl Agent {
                 ));
                 self.messages.push(Message {
                     role: Role::User,
+                    injected: false,
                     content: output.message_blocks(id),
                 });
             }
@@ -1297,8 +1393,36 @@ impl Agent {
             } else {
                 poll_rounds = 0;
             }
+
+            // Tool calls ran, so the next round's answer is a new assistant
+            // message, not a tail on this round's text. Without the boundary
+            // its first delta glues onto the paragraph still open in the
+            // streaming renderer (`contain.I haven't`). The MaxTokens stitch
+            // continue path above deliberately never reaches this emit.
+            emit!(AgentEvent::MessageBoundary);
         }
     }
+}
+
+/// Whether a call counts as real work for stall-streak purposes
+/// (mini-swe-agent's clean step): anything that is not bash, or a bash
+/// command that is not a whole-command no-op — `true`, `:` or a command
+/// starting `echo`/`printf`, the shapes `BashTool::noop_steer` refuses to
+/// run. Deliberately first-word only: `echo x > f` or `echo x | wc` do real
+/// work but count as non-productive here — a missed reset only keeps the
+/// streak alive, the bounded direction.
+fn productive_call(name: &str, args: &serde_json::Value) -> bool {
+    if name != "bash" {
+        return true;
+    }
+    let cmd = args
+        .get("command")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("")
+        .trim();
+    !matches!(cmd, "true" | ":" | "echo" | "printf")
+        && !cmd.starts_with("echo ")
+        && !cmd.starts_with("printf ")
 }
 
 /// True when a text-only ending carries raw tool-call/template markup the
@@ -1313,183 +1437,116 @@ fn leaked_call_markup(text: &str) -> bool {
     {
         return true;
     }
-    // `<|close|>` / `<|sep|>`-family specials, built without literal pipes
-    // so this file's own diff never carries the raw markup.
-    const TOKENS: &[&str] = &[
-        "<\x7cclose\x7c>",
-        "<\x7csep\x7c>",
-        "<\x7ccall\x7c>",
-        "<\x7ctools\x7c>",
-        "<\x7cargument\x7c>",
-        "<\x7cstart\x7c>",
-        "<\x7cend\x7c>",
-    ];
-    TOKENS.iter().filter(|t| text.contains(**t)).count() >= 2
+    let prose = outside_fences(text);
+    LEAKED_SPECIALS
+        .iter()
+        .filter(|t| prose.contains(**t))
+        .count()
+        >= 2
 }
 
-/// True when a round-ending text's tail commits to an action the model then
-/// never performed: "Let me check the logs", "Two things to pin down: …",
-/// "— searching for images …". Only the last line (truncated to 400 chars)
-/// is read: intent stated earlier in a message and then resolved ("Let me
-/// check. It was X.") is stale, and a trailing `?` means the turn was handed
-/// to the user on purpose. User-directed, instructional and negated
-/// readings ("let me know if…", "you can verify with …", "I won't …") are
-/// scrubbed before the markers are checked.
-fn announced_unfinished_step(text: &str) -> bool {
-    let tail = text.trim_end();
-    if tail.is_empty() || tail.ends_with('?') || awaits_user(tail) {
-        return false;
+/// `text` with column-0 fenced code blocks removed. Specials quoted inside
+/// code are documentation, not leaked markup (GC-1).
+fn outside_fences(text: &str) -> String {
+    let mut out = String::new();
+    let mut in_fence = false;
+    for line in text.split_inclusive('\n') {
+        if line.starts_with("```") {
+            in_fence = !in_fence;
+        } else if !in_fence {
+            out.push_str(line);
+        }
     }
-    let last_line = tail.lines().next_back().unwrap_or_default();
-    let window: String = last_line
-        .chars()
-        .rev()
-        .take(400)
-        .collect::<Vec<_>>()
-        .into_iter()
-        .rev()
-        .collect();
-    let lower = window.to_lowercase().replace(['’', '‘'], "'");
-    let scrubbed = lower
-        .replace("let me know", "")
-        .replace("i'll let you", "")
-        .replace("i won't", "")
-        .replace("i will not", "")
-        .replace("i can't", "")
-        .replace("i cannot", "")
-        .replace("i couldn't", "")
-        .replace("i could not", "")
-        .replace("i'll skip", "")
-        .replace("i'll leave", "")
-        .replace("i'll stop", "")
-        .replace("let's not", "")
-        .replace("let's skip", "")
-        // Instructions handed to the user are answers, not commitments the
-        // model still owes ("run X to verify", "you can check …").
-        .replace("you can ", "")
-        .replace("you could ", "")
-        .replace("you may ", "")
-        .replace("you might ", "")
-        .replace("you should ", "")
-        .replace("feel free", "")
-        .replace("here's how to ", "")
-        .replace("here is how to ", "")
-        .replace("here's how", "")
-        .replace("here is how", "")
-        .replace("how to ", "");
-    const MARKERS: &[&str] = &[
-        "let me",
-        "i'll",
-        "i will ",
-        "i'm going to ",
-        "i am going to ",
-        "i need to ",
-        "i have to ",
-        "i'm about to ",
-        "let's ",
-        "time to ",
-        "next step",
-        // Still-mid-task declarations and pending-work enumerations —
-        // the phrasing swe-2/other models actually die on.
-        "i'm mid-",
-        "i am mid-",
-        "i'm still ",
-        "i am still ",
-        "still working",
-        "still checking",
-        "still digging",
-        "still investigating",
-        "still need",
-        "still have to",
-        "still left",
-        "left to ",
-        "left:",
-        "remaining:",
-        "remains to",
-        "to do:",
-        "todo:",
-        "next:",
-        "up next",
-        "then i'll",
-        "we need to",
-        "we have to",
-        "we should ",
-        "we'll",
-        "to pin down",
-        "to figure out",
-        "to work out",
-        "to nail down",
-        "to determine",
-        "to investigate",
-        "to dig into",
-        "to look into",
-        "to double-check",
-        "to track down",
-        "to confirm",
-        "to verify",
-        "to check",
-        "to test",
-        "to try",
-        "to retry",
-        "retrying",
-        "trying again",
-    ];
-    MARKERS.iter().any(|m| scrubbed.contains(m))
+    out
 }
 
-/// True when the closing lines hand the turn back to the user: a question
-/// for them, or a step gated on their answer ("say go and I'll …", "once
-/// you confirm"). The announced step is then theirs to trigger, and a nudge
-/// to "take it now" would act on work they never approved. Errs toward
-/// ending the turn: a missed nudge costs one "." from the user, a wrong one
-/// costs unapproved changes.
-fn awaits_user(tail: &str) -> bool {
-    let closing: Vec<&str> = tail
-        .lines()
-        .rev()
-        .map(str::trim)
-        .filter(|l| !l.is_empty())
-        .take(8)
-        .collect();
-    let asks = closing.iter().any(|line| {
-        line.trim_end_matches(['*', '_', '`', ')', '"', '\'', '’'])
-            .ends_with('?')
-    });
-    if asks {
-        return true;
+/// `<|open|>` / `<|close|>` / `<|sep|>`-family specials, built without
+/// literal pipes so this file's own diff never carries the raw markup.
+const LEAKED_SPECIALS: &[&str] = &[
+    "<\x7copen\x7c>",
+    "<\x7cclose\x7c>",
+    "<\x7csep\x7c>",
+    "<\x7ccall\x7c>",
+    "<\x7ctools\x7c>",
+    "<\x7cargument\x7c>",
+    "<\x7cstart\x7c>",
+    "<\x7cend\x7c>",
+];
+
+/// Streaming filter that drops [`LEAKED_SPECIALS`] from deltas. A trailing
+/// fragment that could still grow into a special (`<`, `<|clo`) is held
+/// until the next delta or [`flush`](Self::flush); anything else, a lone
+/// `<` included, passes through untouched. `seen` records which specials
+/// were dropped so the leaked-markup nudge still fires.
+///
+/// Specials inside a column-0 fenced code block pass through: quoting the
+/// markup in code is not a leak (GC-1). Fence state advances only over
+/// characters that were emitted, so a held fragment is re-read intact.
+#[derive(Default)]
+struct SpecialStrip {
+    hold: String,
+    seen: u16,
+    in_fence: bool,
+    /// False at the start of a line; true once the line has real content.
+    mid_line: bool,
+    /// Backticks read at the start of the current line (fence needs three).
+    ticks: u8,
+}
+
+impl SpecialStrip {
+    fn push(&mut self, delta: &str) -> String {
+        let text = format!("{}{delta}", std::mem::take(&mut self.hold));
+        let mut out = String::with_capacity(text.len());
+        let mut i = 0;
+        while i < text.len() {
+            let tail = &text[i..];
+            if !self.in_fence && tail.starts_with('<') {
+                if let Some(k) = LEAKED_SPECIALS.iter().position(|t| tail.starts_with(t)) {
+                    self.seen |= 1 << k;
+                    self.mid_line = true;
+                    i += LEAKED_SPECIALS[k].len();
+                    continue;
+                }
+                if LEAKED_SPECIALS.iter().any(|t| t.starts_with(tail)) {
+                    self.hold = tail.to_owned();
+                    return out;
+                }
+            }
+            let ch = tail.chars().next().unwrap_or_default();
+            out.push(ch);
+            self.track_fence(ch);
+            i += ch.len_utf8();
+        }
+        out
     }
-    let lower = closing.join(" ").to_lowercase().replace(['’', '‘'], "'");
-    const GATES: &[&str] = &[
-        "say go",
-        "your go",
-        "the go-ahead",
-        "your go-ahead",
-        "your approval",
-        "your answer",
-        "your call",
-        "your confirmation",
-        "your decision",
-        "your pick",
-        "once you ",
-        "when you approve",
-        "when you confirm",
-        "when you're ready",
-        "if you approve",
-        "if you confirm",
-        "until you ",
-        "wait for you",
-        "waiting for you",
-        "waiting on you",
-        "i'll wait",
-        "i will wait",
-        "awaiting your",
-        "hold off",
-        "before i start",
-        "before i proceed",
-        "before i continue",
-        "before i implement",
-    ];
-    GATES.iter().any(|g| lower.contains(g))
+
+    fn track_fence(&mut self, ch: char) {
+        if ch == '\n' {
+            self.mid_line = false;
+            self.ticks = 0;
+        } else if !self.mid_line {
+            if ch == '`' {
+                self.ticks += 1;
+                if self.ticks == 3 {
+                    self.in_fence = !self.in_fence;
+                    self.mid_line = true;
+                    self.ticks = 0;
+                }
+            } else {
+                self.mid_line = true;
+                self.ticks = 0;
+            }
+        }
+    }
+
+    fn flush(&mut self) -> String {
+        std::mem::take(&mut self.hold)
+    }
+
+    /// Same threshold as [`leaked_call_markup`]: two distinct specials.
+    fn leaked(&self) -> bool {
+        self.seen.count_ones() >= 2
+    }
 }
 
 /// True when a tool result is gray's "the job is still going" notice: a
@@ -1497,4 +1554,59 @@ fn awaits_user(tail: &str) -> bool {
 /// repeated call answered with one is real work moving, never a stall.
 fn is_job_progress(content: &str) -> bool {
     content.starts_with("still running · job ")
+}
+
+#[cfg(test)]
+mod leak_strip_tests {
+    use super::*;
+
+    const OPEN: &str = "<\x7copen\x7c>";
+    const CLOSE: &str = "<\x7cclose\x7c>";
+
+    fn run_stream(parts: &[&str]) -> (String, bool) {
+        let mut strip = SpecialStrip::default();
+        let mut out = String::new();
+        for p in parts {
+            out.push_str(&strip.push(p));
+        }
+        out.push_str(&strip.flush());
+        (out, strip.leaked())
+    }
+
+    #[test]
+    fn specials_in_prose_are_dropped_and_counted() {
+        let (out, leaked) = run_stream(&[&format!("a {OPEN} b {CLOSE} c")]);
+        assert_eq!(out, "a  b  c");
+        assert!(leaked);
+    }
+
+    #[test]
+    fn specials_quoted_in_a_fence_pass_through_and_do_not_count() {
+        let text = format!("here:\n```\n{OPEN} and {CLOSE}\n```\nthat's all");
+        let (out, leaked) = run_stream(&[&text]);
+        assert_eq!(out, text);
+        assert!(!leaked);
+        assert!(!leaked_call_markup(&text));
+    }
+
+    #[test]
+    fn fence_state_survives_deltas_split_mid_fence_and_mid_special() {
+        // The fence opener and a special are both split across deltas.
+        let (out, leaked) = run_stream(&["``", "`\n", &OPEN[..3], &OPEN[3..], "\n```\n", OPEN]);
+        assert_eq!(out, format!("```\n{OPEN}\n```\n{}", ""));
+        // Only the special outside the fence was dropped, so one distinct
+        // special is not a leak on its own.
+        assert!(!leaked);
+    }
+
+    #[test]
+    fn a_partial_special_at_stream_end_is_flushed_as_text() {
+        let (out, _) = run_stream(&["x <|cl"]);
+        assert_eq!(out, "x <|cl");
+    }
+
+    #[test]
+    fn leaked_call_markup_still_fires_for_prose_specials() {
+        assert!(leaked_call_markup(&format!("{OPEN} do it {CLOSE}")));
+    }
 }

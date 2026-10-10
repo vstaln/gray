@@ -3,7 +3,7 @@
 use super::*;
 
 /// Running token + cost totals for the current process session (reset on `/new`).
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub(crate) struct SessionTotals {
     pub(crate) turns: usize,
     pub(crate) input: usize,
@@ -28,7 +28,7 @@ pub(crate) struct SessionTotals {
 }
 
 /// Session cache-miss counters, bucketed by the cause the tracker observed.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub(crate) struct MissTally {
     pub(crate) count: usize,
     pub(crate) tokens: usize,
@@ -226,7 +226,36 @@ pub(crate) fn handle_usage(
     config: &Config,
     tui: Option<&crate::composer::SharedTui>,
 ) {
+    handle_usage_inner(totals, config, tui, true)
+}
+
+/// Mid-turn `/usage`: session totals only. Subscription probes can spawn
+/// sidecars, so they stay on the idle path rather than freezing the turn's
+/// key watcher behind a provider RPC.
+pub(crate) fn handle_turn_usage(
+    totals: &SessionTotals,
+    config: &Config,
+    tui: Option<&crate::composer::SharedTui>,
+) {
     if totals.turns == 0 {
+        say(tui, "usage appears after the current turn");
+        return;
+    }
+    handle_usage_inner(totals, config, tui, false)
+}
+
+fn handle_usage_inner(
+    totals: &SessionTotals,
+    config: &Config,
+    tui: Option<&crate::composer::SharedTui>,
+    include_subscriptions: bool,
+) {
+    // Probe subscriptions before the session-usage early-out: a fresh
+    // session still has quota windows worth showing.
+    let subs = include_subscriptions
+        .then(collect_subscription_usage)
+        .unwrap_or_default();
+    if totals.turns == 0 && subs.is_empty() {
         say(
             tui,
             "no turns yet this session — usage appears after the first turn",
@@ -237,33 +266,179 @@ pub(crate) fn handle_usage(
     let rate = crate::setup::get_model_rate(config.model.as_deref().unwrap_or(""));
     use usage_panel::{PanelInput, Warmth};
     if let Some(shared) = tui {
+        if include_subscriptions {
+            // Two slides, Claude Code's shape: subscription quota first,
+            // session tokens second. `r` inside the modal re-probes via
+            // this closure — warmth reads live off the composer, totals
+            // off the caller's counters.
+            let bg = shared.lock().expect("tui lock").snapshot();
+            let mut rebuild = || {
+                let warmth = {
+                    let t = shared.lock().expect("tui lock");
+                    match t.cache_remaining() {
+                        Some(left) => Warmth::Warm(left),
+                        None if t.cache_is_cold() => Warmth::Cold,
+                        None => Warmth::Unknown,
+                    }
+                };
+                let input = PanelInput {
+                    totals,
+                    model,
+                    rate: rate.clone(),
+                    warmth,
+                };
+                usage_panel::usage_pages(&input, &collect_subscription_usage())
+            };
+            let opened =
+                super::with_modal_sync(tui, || usage_panel::run_usage_modal(&mut rebuild, &bg));
+            if opened.is_ok() {
+                return;
+            }
+            // No drawable terminal: the same pages land as transcript
+            // cards instead of silently dropping the panel.
+            for p in rebuild() {
+                let mut t = shared.lock().expect("tui lock");
+                t.push_action(&p.title, None);
+                t.push_styled_lines_with_hyperlinks(p.lines, &[], 0);
+                t.ensure_gap();
+            }
+            return;
+        }
         let mut t = shared.lock().expect("tui lock");
-        let warmth = match t.cache_remaining() {
-            Some(left) => Warmth::Warm(left),
-            None if t.cache_is_cold() => Warmth::Cold,
-            None => Warmth::Unknown,
-        };
-        let input = PanelInput {
-            totals,
-            model,
-            rate,
-            warmth,
-        };
-        t.push_action("Session usage", Some(&usage_panel::usage_header(&input)));
-        t.push_styled_lines_with_hyperlinks(usage_panel::usage_rows(&input), &[], 0);
+        if totals.turns > 0 {
+            let warmth = match t.cache_remaining() {
+                Some(left) => Warmth::Warm(left),
+                None if t.cache_is_cold() => Warmth::Cold,
+                None => Warmth::Unknown,
+            };
+            let input = PanelInput {
+                totals,
+                model,
+                rate,
+                warmth,
+            };
+            t.push_action("Session usage", Some(&usage_panel::usage_header(&input)));
+            t.push_styled_lines_with_hyperlinks(usage_panel::usage_rows(&input), &[], 0);
+        }
         t.ensure_gap();
     } else {
-        let input = PanelInput {
-            totals,
-            model,
-            rate,
-            warmth: Warmth::Unknown,
-        };
-        println!("✓ Session usage — {}", usage_panel::usage_header(&input));
-        for line in usage_panel::usage_plain(&input) {
-            println!("{line}");
+        if totals.turns > 0 {
+            let input = PanelInput {
+                totals,
+                model,
+                rate,
+                warmth: Warmth::Unknown,
+            };
+            println!("✓ Session usage — {}", usage_panel::usage_header(&input));
+            for line in usage_panel::usage_plain(&input) {
+                println!("{line}");
+            }
+        }
+        for (title, limits) in subs {
+            println!(
+                "✓ {}{}",
+                title,
+                limits
+                    .plan
+                    .as_deref()
+                    .map(|p| format!(" — {p}"))
+                    .unwrap_or_default()
+            );
+            for line in usage_panel::subscription_plain(&limits) {
+                println!("{line}");
+            }
         }
     }
+}
+
+/// `/usage` subscription section: each installed plugin provider with an
+/// auth-store row gets a `provider/usage` call on its own thread + tokio
+/// runtime (the [`plugin_models_rpc`] spawn discipline — probing sidecars
+/// parallel, never holding the TUI lock). Errors, `Protocol` rejections and
+/// `available: false` drop out silently: a connected-but-unreadable
+/// subscription simply has no windows to draw.
+fn collect_subscription_usage() -> Vec<(String, gray_plugin::ProviderUsageLimits)> {
+    use std::collections::BTreeSet;
+    let Ok(home) = crate::setup::gray_home() else {
+        return Vec::new();
+    };
+    let connected: BTreeSet<String> = crate::setup::catalog::auth_store_path()
+        .ok()
+        .and_then(|p| crate::auth::CredentialStore::new(p).load().ok())
+        .map(|rows| rows.into_keys().collect())
+        .unwrap_or_default();
+    let installed = crate::providers::ProviderRegistry::load_cached(&home)
+        .installed()
+        .into_iter()
+        .filter(|i| connected.contains(&i.auth_ref()))
+        .collect::<Vec<_>>();
+    std::thread::scope(|s| {
+        let handles: Vec<_> = installed
+            .into_iter()
+            .map(|i| {
+                let i = i.clone();
+                s.spawn(move || (i.clone(), plugin_usage_rpc(&i)))
+            })
+            .collect();
+        handles
+            .into_iter()
+            .filter_map(|h| h.join().ok())
+            .filter_map(|(i, limits)| {
+                limits.map(|l| {
+                    (
+                        l.title.clone().unwrap_or_else(|| i.provider.name.clone()),
+                        l,
+                    )
+                })
+            })
+            .collect()
+    })
+}
+
+/// One `provider/usage` RPC on an own-runtime sidecar (`plugin_models_rpc`
+/// discipline): spawn, ask, drop — the runtime's Drop kills the sidecar.
+fn plugin_usage_rpc(
+    installed: &crate::providers::InstalledProvider,
+) -> Option<gray_plugin::ProviderUsageLimits> {
+    use crate::providers::registry::ProviderRpc;
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .ok()?;
+    rt.block_on(async {
+        let runtime = crate::providers::ProviderRuntime::start(installed.clone())
+            .await
+            .ok()?;
+        let credential = crate::setup::catalog::auth_store_path()
+            .ok()
+            .and_then(|path| {
+                crate::auth::CredentialStore::new(path)
+                    .read_plugin(&installed.auth_ref())
+                    .ok()
+                    .flatten()
+            })
+            .or_else(|| {
+                gray_core::credential::CredentialEnvelope::new(
+                    installed.plugin.clone(),
+                    installed.provider.id.clone(),
+                    installed.auth_method.id.clone(),
+                    installed.profile_binding.clone(),
+                    gray_core::credential::CredentialMaterial::empty(),
+                )
+                .ok()
+            })?;
+        let limits = runtime
+            .rpc()
+            .usage(gray_plugin::ProviderUsageRequest {
+                provider: installed.provider.id.clone(),
+                auth_method: installed.auth_method.id.clone(),
+                profile_binding: installed.profile_binding.clone(),
+                credential,
+            })
+            .await
+            .ok()?;
+        limits.available.then_some(limits)
+    })
 }
 
 pub(crate) async fn handle_context_window(
@@ -279,9 +454,7 @@ pub(crate) async fn handle_context_window(
             if ok {
                 t.push_action("Context updated", Some(&msg));
             } else {
-                for line in msg.lines() {
-                    t.push_dim(format!("└ {line}"));
-                }
+                super::cron::push_notice(&mut t, "Context update failed", &msg, true);
             }
             t.ensure_gap();
             let _ = t.draw();
@@ -578,6 +751,40 @@ pub(crate) async fn handle_context_window(
 }
 
 /// Handles the `/compact` / `/compress` command family.
+/// `⬢ Context compacted · 9s` box, the same card as the cron and job boxes,
+/// with the detail as one dim body row. Pure so the layout is testable.
+pub(super) fn compaction_card(
+    elapsed: &str,
+    detail: &str,
+) -> (
+    ratatui::text::Line<'static>,
+    Vec<ratatui::text::Line<'static>>,
+) {
+    use ratatui::style::Style;
+    use ratatui::text::{Line, Span};
+    let dim = Style::default().fg(crate::theme::theme().tool_dim);
+    let mut spans = super::cron::card_header_spans("Context compacted", String::new(), false);
+    spans.push(Span::styled(format!(" \u{b7} {elapsed}"), dim));
+    let body = vec![Line::from(Span::styled(format!("  {detail}"), dim))];
+    (Line::from(spans), body)
+}
+
+/// Pushes the compaction card through the composer, or prints it plainly
+/// when no TUI owns the terminal.
+pub(super) fn push_compaction_card(
+    tui: Option<&crate::composer::SharedTui>,
+    elapsed: &str,
+    detail: &str,
+) {
+    match tui {
+        Some(shared) => {
+            let (header, body) = compaction_card(elapsed, detail);
+            shared.lock().expect("tui lock").push_tool_box(header, body);
+        }
+        None => println!("Context compacted · {elapsed} · {detail}\n"),
+    }
+}
+
 pub(crate) async fn handle_compact(
     config: &Config,
     cwd: &Path,
@@ -604,10 +811,12 @@ pub(crate) async fn handle_compact(
     let messages = ag.messages().to_vec();
     if messages.is_empty() {
         if let Some(shared) = tui {
-            shared
-                .lock()
-                .expect("tui lock")
-                .push_dim("└ nothing to compact (conversation is empty)".to_string());
+            super::cron::push_notice(
+                &mut shared.lock().expect("tui lock"),
+                "Nothing to compact",
+                "conversation is empty",
+                false,
+            );
         } else {
             println!("nothing to compact (conversation is empty)");
         }
@@ -635,6 +844,7 @@ pub(crate) async fn handle_compact(
             watch_stop.clone(),
             Some(shared.clone()),
             cwd.to_path_buf(),
+            None,
         )
     });
 
@@ -687,11 +897,11 @@ pub(crate) async fn handle_compact(
 
             if let Some(shared) = tui {
                 let mut tui = shared.lock().expect("tui lock");
-                tui.ensure_gap();
-                tui.push_dim(format!(
-                    "└ Context compacted · {elapsed_str} ({msg_count} messages -> summary)"
-                ));
-                tui.ensure_gap();
+                let (header, body) = compaction_card(
+                    &elapsed_str,
+                    &format!("{msg_count} messages \u{2192} summary"),
+                );
+                tui.push_tool_box(header, body);
                 tui.push_compaction_summary(&summary);
                 tui.ensure_gap();
             } else {
@@ -701,23 +911,45 @@ pub(crate) async fn handle_compact(
         }
         Ok(None) => {
             if let Some(shared) = tui {
-                shared
-                    .lock()
-                    .expect("tui lock")
-                    .push_dim("└ nothing to compact (conversation is empty)".to_string());
+                super::cron::push_notice(
+                    &mut shared.lock().expect("tui lock"),
+                    "Nothing to compact",
+                    "conversation is empty",
+                    false,
+                );
             } else {
                 println!("nothing to compact (conversation is empty)");
             }
         }
         Err(e) => {
             if let Some(shared) = tui {
-                shared
-                    .lock()
-                    .expect("tui lock")
-                    .push_dim(format!("└ compaction failed: {e}"));
+                super::cron::push_notice(
+                    &mut shared.lock().expect("tui lock"),
+                    "Compaction failed",
+                    &e.to_string(),
+                    true,
+                );
             } else {
                 println!("compaction failed: {e}");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod compaction_card_tests {
+    use super::compaction_card;
+
+    fn text(line: &ratatui::text::Line<'_>) -> String {
+        line.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    #[test]
+    fn compaction_card_is_a_bullet_header_with_one_detail_row() {
+        let (header, body) = compaction_card("9s", "282.7k/256k tokens");
+        assert_eq!(text(&header), "\u{2b22} Context compacted \u{b7} 9s");
+        assert_eq!(body.len(), 1);
+        assert_eq!(text(&body[0]), "  282.7k/256k tokens");
+        assert!(!text(&header).contains('└'));
     }
 }

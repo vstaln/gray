@@ -235,7 +235,8 @@ pub(crate) fn needs_seam(transcript: &[Line<'static>]) -> bool {
 }
 
 /// Queued follow-up inputs held while a turn is in flight (codex
-/// `PendingInputPreview` parity, minimal): header + `↳` dim-italic rows.
+/// `PendingInputPreview` parity, minimal): header + `↳` dim-italic rows,
+/// then one blank row so the queue never glues onto the live tool card.
 /// One row per queued message, first line only, truncated to `w`.
 pub(crate) fn queued_preview_lines(
     queued: &std::collections::VecDeque<(String, Vec<std::path::PathBuf>)>,
@@ -275,6 +276,9 @@ pub(crate) fn queued_preview_lines(
             dim_italic,
         )]));
     }
+    // The separator belongs to the queued block's measured height: a command
+    // preview stays visually distinct from the running tool below it.
+    lines.push(Line::default());
     lines
 }
 

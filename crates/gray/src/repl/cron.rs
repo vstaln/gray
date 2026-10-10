@@ -73,6 +73,9 @@ pub(crate) fn items(
                 crate::cron::store::JobState::Active => ("\u{25cb}", " [disabled]", false, false),
                 crate::cron::store::JobState::Paused => ("\u{25cb}", " [paused]", false, true),
                 crate::cron::store::JobState::Done => ("\u{b7}", " [done]", false, false),
+                crate::cron::store::JobState::AwaitingApproval => {
+                    ("?", " [awaiting approval]", false, false)
+                }
             };
             let next = j
                 .next_run_at
@@ -154,6 +157,205 @@ fn idle_ctx(cwd: &Path, sid: &str) -> gray_core::agent::ToolContext {
     }
 }
 
+/// One thing the idle wake paints before its turn.
+#[derive(Debug, Clone, PartialEq)]
+pub(super) enum WakeCard {
+    /// A cron delivery: painted as a box (see [`cron_card_lines`]).
+    Cron(crate::cron_serve::CronCard),
+    /// A finished background job: painted as a box (see [`job_card_lines`]).
+    Job(JobCard),
+    /// A one-line notice (legacy inbox entries, unparsed notices).
+    Text(String),
+}
+
+/// The parts of a background-job notice worth showing the user.
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct JobCard {
+    pub id: String,
+    /// `exit 0`, `exit 2`, `killed`, ...
+    pub outcome: String,
+    pub elapsed: String,
+    pub log: String,
+}
+
+/// Parses `Background job {id} finished ({outcome}) after {t} · log {path}`
+/// (see `gray-tools` `bash/jobs.rs`). The trailing "Read its output…" line
+/// is for the model only, so it is dropped.
+pub(super) fn parse_job_notice(notice: &str) -> Option<JobCard> {
+    let head = notice.lines().next()?;
+    let rest = head.strip_prefix("Background job ")?;
+    let (id, rest) = rest.split_once(" finished (")?;
+    let (outcome, rest) = rest.split_once(") after ")?;
+    let (elapsed, log) = rest.split_once(" \u{b7} log ")?;
+    Some(JobCard {
+        id: id.to_string(),
+        outcome: outcome.to_string(),
+        elapsed: elapsed.to_string(),
+        log: log.trim().to_string(),
+    })
+}
+
+/// `⬢ <verb><title>` in the same type as tool-call headers.
+pub(super) fn card_header_spans(
+    verb: &str,
+    title: String,
+    failed: bool,
+) -> Vec<ratatui::text::Span<'static>> {
+    use ratatui::style::{Modifier, Style};
+    use ratatui::text::Span;
+    let th = crate::theme::theme();
+    let bullet = if failed {
+        th.error_soft
+    } else {
+        th.tool_accent
+    };
+    vec![
+        Span::styled(
+            "\u{2b22} ",
+            Style::default().fg(bullet).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            verb.to_string(),
+            Style::default()
+                .fg(th.text_body)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            title,
+            Style::default()
+                .fg(th.tool_command)
+                .add_modifier(Modifier::BOLD),
+        ),
+    ]
+}
+
+/// Header + dim body rows of a notice card: `⬢ <verb>`, then `detail` one row
+/// per line. Every command notice shares this shape (see `push_notice`).
+pub(super) fn notice_card(
+    verb: &str,
+    detail: &str,
+    failed: bool,
+) -> (
+    ratatui::text::Line<'static>,
+    Vec<ratatui::text::Line<'static>>,
+) {
+    use ratatui::style::Style;
+    use ratatui::text::{Line, Span};
+    let dim = Style::default().fg(crate::theme::theme().tool_dim);
+    let header = Line::from(card_header_spans(verb, String::new(), failed));
+    let body = detail
+        .lines()
+        .map(|row| Line::from(Span::styled(format!("  {row}"), dim)))
+        .collect();
+    (header, body)
+}
+
+/// Pushes a notice card onto the transcript (see `notice_card`).
+pub(super) fn push_notice(t: &mut crate::composer::Tui, verb: &str, detail: &str, failed: bool) {
+    let (header, body) = notice_card(verb, detail, failed);
+    t.push_tool_box(header, body);
+}
+
+/// Header + body rows of a background-job box:
+/// `⬢ Background job bwrap-5 · exit 0 · 4m26s`, then the log path.
+pub(super) fn job_card_lines(
+    card: &JobCard,
+) -> (
+    ratatui::text::Line<'static>,
+    Vec<ratatui::text::Line<'static>>,
+) {
+    use ratatui::style::{Modifier, Style};
+    use ratatui::text::{Line, Span};
+    let th = crate::theme::theme();
+    let ok = card.outcome == "exit 0";
+    let dim = Style::default().fg(th.tool_dim);
+    let mut spans = card_header_spans("Background job ", card.id.clone(), !ok);
+    spans.push(Span::styled(" \u{b7} ", dim));
+    spans.push(if ok {
+        Span::styled(card.outcome.clone(), dim)
+    } else {
+        Span::styled(
+            card.outcome.clone(),
+            Style::default()
+                .fg(th.error_soft)
+                .add_modifier(Modifier::BOLD),
+        )
+    });
+    spans.push(Span::styled(format!(" \u{b7} {}", card.elapsed), dim));
+    let log = match std::env::var("HOME") {
+        Ok(home) if !home.is_empty() => card
+            .log
+            .strip_prefix(home.as_str())
+            .map_or_else(|| card.log.clone(), |rest| format!("~{rest}")),
+        _ => card.log.clone(),
+    };
+    let body = vec![Line::from(vec![
+        Span::styled("  log ", dim),
+        Span::styled(log, Style::default().fg(th.tool_path)),
+    ])];
+    (Line::from(spans), body)
+}
+
+/// Header + body rows of a cron delivery box: `⬢ Cron name · done · 18s`, then
+/// the final answer as markdown. A reminder is the user's own words, so its
+/// header is just "Reminder" and its body is verbatim.
+pub(super) fn cron_card_lines(
+    card: &crate::cron_serve::CronCard,
+    width: usize,
+) -> (
+    ratatui::text::Line<'static>,
+    Vec<ratatui::text::Line<'static>>,
+) {
+    use ratatui::style::{Modifier, Style};
+    use ratatui::text::{Line, Span};
+    let th = crate::theme::theme();
+    let mut spans = if card.reminder && !card.failed {
+        card_header_spans("Reminder", String::new(), false)
+    } else {
+        card_header_spans("Cron ", card.name.clone(), card.failed)
+    };
+    let dim = Style::default().fg(th.tool_dim);
+    if card.failed {
+        spans.push(Span::styled(" \u{b7} ", dim));
+        spans.push(Span::styled(
+            "failed",
+            Style::default()
+                .fg(th.error_soft)
+                .add_modifier(Modifier::BOLD),
+        ));
+    } else if !card.reminder {
+        spans.push(Span::styled(" \u{b7} done", dim));
+    }
+    if card.elapsed_ms > 0 {
+        spans.push(Span::styled(
+            format!(
+                " \u{b7} {}",
+                super::format::fmt_duration_ms(card.elapsed_ms)
+            ),
+            dim,
+        ));
+    }
+    let header = Line::from(spans);
+    let text = card.body.trim();
+    let body = if card.reminder || card.failed {
+        text.lines()
+            .map(|l| Line::from(vec![Span::raw("  "), Span::raw(l.to_string())]))
+            .collect()
+    } else {
+        let (rows, _) = crate::composer::transcript::render_markdown_lines(
+            text,
+            Some(width.saturating_sub(4).max(10)),
+        );
+        rows.into_iter()
+            .map(|mut l| {
+                l.spans.insert(0, Span::raw("  "));
+                l
+            })
+            .collect()
+    };
+    (header, body)
+}
+
 /// What the idle REPL owes the model, as `(cards, prompt)`: cron deliveries
 /// waiting in this session's inbox, then background-job notices nobody has
 /// drained since the last turn. The cards paint first; the prompt (user-role,
@@ -162,24 +364,25 @@ pub(super) fn idle_wake(
     agent: Option<&gray_core::agent::Agent>,
     sid: Option<&str>,
     cwd: &Path,
-) -> Option<(Vec<String>, String)> {
+) -> Option<(Vec<WakeCard>, String)> {
     let sid = sid?;
     let mut cards = Vec::new();
     let mut prompts = Vec::new();
     if let Ok(home) = crate::setup::gray_home() {
-        for (card, prompt) in crate::cron_serve::drain_session_inbox(&home, sid) {
-            cards.push(card);
-            prompts.push(prompt);
+        for d in crate::cron_serve::drain_session_inbox(&home, sid) {
+            cards.push(match d.cron {
+                Some(c) => WakeCard::Cron(c),
+                None => WakeCard::Text(d.card),
+            });
+            prompts.push(d.prompt);
         }
     }
     if let Some(agent) = agent {
         for notice in agent.drain_background_notifications(&idle_ctx(cwd, sid)) {
-            cards.push(format!(
-                "\u{2699} {}",
-                notice
-                    .split_once(". ")
-                    .map_or(notice.as_str(), |(head, _)| head)
-            ));
+            cards.push(match parse_job_notice(&notice) {
+                Some(job) => WakeCard::Job(job),
+                None => WakeCard::Text(notice.lines().next().unwrap_or_default().to_string()),
+            });
             // Same framing the agent loop gives a notice it drains mid-run.
             prompts.push(format!("[Background task notification]\n{notice}"));
         }
@@ -227,3 +430,26 @@ async fn wait_then_wake(
 #[path = "cron_tests.rs"]
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod notice_card_tests {
+    use super::notice_card;
+
+    fn text(line: &ratatui::text::Line<'_>) -> String {
+        line.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    #[test]
+    fn notice_is_a_bullet_header_with_one_dim_row() {
+        let (header, body) = notice_card("Nothing to compact", "conversation is empty", false);
+        assert_eq!(text(&header), "\u{2b22} Nothing to compact");
+        assert_eq!(body.len(), 1);
+        assert_eq!(text(&body[0]), "  conversation is empty");
+    }
+
+    #[test]
+    fn multi_line_detail_is_one_body_row_each() {
+        let (_, body) = notice_card("Context update failed", "a\nb", true);
+        assert_eq!(body.iter().map(text).collect::<Vec<_>>(), ["  a", "  b"]);
+    }
+}

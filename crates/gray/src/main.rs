@@ -138,12 +138,6 @@ async fn run() -> anyhow::Result<()> {
     };
 
     let mut config = Config::resolve(&cli)?;
-    if let Some(gray::Commands::Doctor { online }) = &cli.command {
-        // Exit code is the report: non-zero on a failed check, so a setup
-        // script or CI can gate on it. `Config::resolve` already ran, so the
-        // key/model/exec_prefix checks see the same values a session would.
-        std::process::exit(gray::doctor::run(&config, *online));
-    }
     gray::turn_caps::init_process_start();
     if !config.bare {
         let saved_theme = gray::setup::saved_config_path()
@@ -162,9 +156,6 @@ async fn run() -> anyhow::Result<()> {
     gray::setup::set_user_keep_recent_tokens(config.context_keep);
     if let Some(cmd) = cli.command {
         match cmd {
-            gray::Commands::Doctor { .. } => {
-                unreachable!("handled right after config resolution")
-            }
             gray::Commands::Resume {
                 session_id,
                 last,
@@ -183,6 +174,9 @@ async fn run() -> anyhow::Result<()> {
             }
             gray::Commands::Gateway { cmd } => {
                 return gray::gateway::run_cli(cmd, &config).await;
+            }
+            gray::Commands::Trust { dir, revoke } => {
+                return gray::project_trust::run_cli(dir, revoke);
             }
             gray::Commands::Sessions { cmd } => {
                 return run_sessions(cmd).await;
@@ -353,8 +347,17 @@ async fn run_plugin_inner(cmd: gray::PluginCmd) -> anyhow::Result<()> {
     use gray::PluginCmd;
     match cmd {
         PluginCmd::Check { dir } => gray::plugin_check::check_plugin_dir(&dir).await,
-        PluginCmd::Capabilities { name } => {
-            gray::plugin_cli::print_capabilities(name.as_deref())?;
+        PluginCmd::Capabilities { name, all } => {
+            if all {
+                let name = name.as_deref().ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "--all needs a plugin name: gray plugin capabilities <name> --all"
+                    )
+                })?;
+                gray::plugin_cli::grant_all_capabilities(name)?;
+            } else {
+                gray::plugin_cli::print_capabilities(name.as_deref())?;
+            }
             Ok(())
         }
         PluginCmd::List => {
@@ -493,6 +496,12 @@ fn origin_from_env() -> Option<gray::cron::store::Origin> {
     })
 }
 
+/// True inside a gray session's bash tool (`GRAY_SESSION_ID` is exported
+/// there): the caller is the model, not the user at a terminal.
+fn in_gray_session() -> bool {
+    std::env::var("GRAY_SESSION_ID").is_ok_and(|s| !s.trim().is_empty())
+}
+
 /// The gray session running this command (`GRAY_SESSION_ID`, exported to
 /// every bash-tool child), as a [`gray::cron_serve::SESSION_PLATFORM`] origin.
 fn session_origin_from_env() -> Option<gray::cron::store::Origin> {
@@ -569,7 +578,11 @@ async fn run_cron(cmd: gray::CronCmd, config: &gray::config::Config) -> anyhow::
                     j.id,
                     j.name,
                     fmt_schedule(&j.schedule),
-                    fmt_ts_opt(j.next_run_at),
+                    if j.state == gray::cron::store::JobState::AwaitingApproval {
+                        "awaiting approval".to_string()
+                    } else {
+                        fmt_ts_opt(j.next_run_at)
+                    },
                     fmt_status(j.last_status)
                 );
             }
@@ -657,22 +670,45 @@ async fn run_cron(cmd: gray::CronCmd, config: &gray::config::Config) -> anyhow::
             };
             // Hosted chats are ticked by their host (`cron tick --json`).
             let chat_bound = origin.as_ref().is_some_and(gray::cron_serve::is_hosted);
-            let id = store.add_full(
-                &name,
-                &schedule,
-                &prompt,
-                deliver_kind,
-                origin,
-                workdir,
-                skill_names,
-                script,
-                reminder,
-            )?;
-            let next = store
-                .get(&id)?
-                .map(|j| fmt_ts_opt(j.next_run_at))
-                .unwrap_or_else(|| "-".to_string());
-            println!("added {id} next {next}");
+            // A job a gray session's bash tool creates is the model asking for
+            // it: it waits for the user's `gray cron approve`.
+            let model_requested = in_gray_session();
+            let id = if model_requested {
+                store.add_awaiting_approval(
+                    &name,
+                    &schedule,
+                    &prompt,
+                    deliver_kind,
+                    origin,
+                    workdir,
+                    skill_names,
+                    script,
+                    reminder,
+                )?
+            } else {
+                store.add_full(
+                    &name,
+                    &schedule,
+                    &prompt,
+                    deliver_kind,
+                    origin,
+                    workdir,
+                    skill_names,
+                    script,
+                    reminder,
+                )?
+            };
+            if model_requested {
+                println!(
+                    "added {id} awaiting approval; the user runs `gray cron approve {id}` to start it"
+                );
+            } else {
+                let next = store
+                    .get(&id)?
+                    .map(|j| fmt_ts_opt(j.next_run_at))
+                    .unwrap_or_else(|| "-".to_string());
+                println!("added {id} next {next}");
+            }
             if cfg!(windows) {
                 println!(
                     "Stored only: cron execution is not supported on native Windows. Use a supported execution host."
@@ -781,6 +817,19 @@ async fn run_cron(cmd: gray::CronCmd, config: &gray::config::Config) -> anyhow::
         CronCmd::Pause { id } => {
             if cron_store()?.set_paused(&id, true)? {
                 println!("paused {id}");
+                Ok(())
+            } else {
+                anyhow::bail!("unknown cron job {id:?}");
+            }
+        }
+        CronCmd::Approve { id } => {
+            if in_gray_session() {
+                anyhow::bail!(
+                    "approval is the user's: run `gray cron approve` from your own terminal, not from a gray session"
+                );
+            }
+            if cron_store()?.approve(&id)? {
+                println!("approved {id}");
                 Ok(())
             } else {
                 anyhow::bail!("unknown cron job {id:?}");

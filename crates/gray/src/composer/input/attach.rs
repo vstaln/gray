@@ -52,7 +52,7 @@ pub(crate) fn sync_attachments(tui: &mut Tui) {
 }
 
 /// Max attachable file size. `repl::attachments` only caps outputs
-/// (`MAX_IMAGE_SIDE` / `MAX_BASE64_BYTES`), with no input-file cap, so this
+/// (`MAX_BASE64_BYTES`), with no input-file cap, so this
 /// local sane cap refuses multi-GB drops before ffmpeg/image decode OOMs.
 pub(crate) const MAX_ATTACH_FILE_BYTES: u64 = 100 * 1024 * 1024;
 
@@ -64,10 +64,16 @@ fn decoded_paste_path(raw: &str) -> String {
         .trim()
         .trim_matches(|c| c == '"' || c == '\'' || c == '`');
     if let Some(stripped) = s.strip_prefix("file://") {
-        let s = stripped.strip_prefix("localhost").unwrap_or(stripped);
-        percent_encoding::percent_decode_str(s)
-            .decode_utf8_lossy()
-            .into_owned()
+        url::Url::parse(s)
+            .ok()
+            .and_then(|u| u.to_file_path().ok())
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| {
+                stripped
+                    .strip_prefix("localhost")
+                    .unwrap_or(stripped)
+                    .to_string()
+            })
     } else {
         s.to_string()
     }

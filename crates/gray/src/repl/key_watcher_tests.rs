@@ -1,4 +1,4 @@
-use super::{lock_tui, try_lock_tui};
+use super::{is_turn_local_command, lock_tui, try_lock_tui};
 
 #[test]
 fn try_lock_recovers_poisoned_mutex() {
@@ -73,4 +73,51 @@ fn consumed_paste_and_keys_preserve_order_under_contention() {
         reader.join().unwrap();
     });
     assert_eq!(*state.lock().unwrap(), "apasted wordsb");
+}
+
+#[test]
+fn turn_local_commands_are_read_only() {
+    for cmd in [
+        "/usage",
+        "/cost",
+        "/jobs",
+        "/cron",
+        "/cron nightly",
+        "/help",
+        "/subagents",
+        "/subagents status",
+        "/subagents status --all",
+        "/subagents view e2e",
+        "/subagents open e2e",
+        "/subagents list",
+        "/subagents menu",
+        "/subagents entries",
+        "/subagents manifest",
+        "/subagents e2e",
+    ] {
+        assert!(is_turn_local_command(cmd), "{cmd}");
+    }
+}
+
+#[test]
+fn mutating_or_agent_commands_still_queue() {
+    for cmd in [
+        "/subagents run do work",
+        "/subagents steer e2e hello",
+        "/subagents chat e2e hello",
+        "/subagents stop e2e",
+        "/subagents stop all",
+        "/subagents settings",
+        "/subagents setup",
+        "/subagents widget --demo",
+        "/model",
+        "/compact",
+        "/cron on",
+        "/cron off",
+        "/cron enable",
+        "/cron disable",
+        "normal follow-up",
+    ] {
+        assert!(!is_turn_local_command(cmd), "{cmd}");
+    }
 }

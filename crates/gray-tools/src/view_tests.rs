@@ -55,7 +55,7 @@ fn load_fails_loudly_on_a_text_file_named_png() {
 }
 
 #[test]
-fn load_downscales_past_the_2000px_cap() {
+fn load_keeps_native_resolution() {
     use base64::Engine as _;
     use image::ImageDecoder;
     let dir = tempfile::tempdir().unwrap();
@@ -70,7 +70,7 @@ fn load_downscales_past_the_2000px_cap() {
         .into_decoder()
         .unwrap();
     let (w, _h) = decoded.dimensions();
-    assert!(w <= 2000, "longest side must be capped, got {w}");
+    assert_eq!(w, 2400, "native resolution passes through, got {w}");
 }
 
 #[test]

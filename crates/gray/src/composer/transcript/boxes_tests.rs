@@ -94,3 +94,48 @@ fn a_turn_error_reads_as_an_error_not_as_prose() {
     );
     assert!(error_lines("  \n").is_empty());
 }
+
+#[test]
+fn long_header_breaks_before_its_in_detail() {
+    use ratatui::text::{Line, Span};
+    let header = Line::from(vec![
+        Span::raw("\u{2b22} "),
+        Span::raw("Searched "),
+        Span::raw("build the intuition\\|totally normal\\|sees that"),
+        Span::raw(" \u{00b7} in /home/u/content/videos/attention-explained/SCRIPT-FINAL.txt"),
+    ]);
+    let text = |l: &Line<'_>| {
+        l.spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect::<String>()
+    };
+    let rows = super::cards::header_rows(header.clone(), 70);
+    let got: Vec<String> = rows.iter().map(text).collect();
+    assert_eq!(
+        got,
+        vec![
+            "\u{2b22} Searched build the intuition\\|totally normal\\|sees that".to_string(),
+            "  in /home/u/content/videos/attention-explained/SCRIPT-FINAL.txt".to_string(),
+        ]
+    );
+    // Even when it fits, `in <dir>` takes its own row.
+    let rows = super::cards::header_rows(header, 200);
+    assert_eq!(rows.len(), 2);
+    assert_eq!(
+        text(&rows[1]),
+        "  in /home/u/content/videos/attention-explained/SCRIPT-FINAL.txt"
+    );
+}
+
+#[test]
+fn other_header_details_stay_inline_when_they_fit() {
+    use ratatui::text::{Line, Span};
+    let header = Line::from(vec![
+        Span::raw("\u{2b22} "),
+        Span::raw("Background job bwrap-5"),
+        Span::raw(" \u{00b7} exit 0"),
+    ]);
+    let rows = super::cards::header_rows(header, 80);
+    assert_eq!(rows.len(), 1);
+}

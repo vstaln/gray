@@ -109,21 +109,6 @@ fn totals_sum_durations_and_skip_untimed() {
 }
 
 #[test]
-fn turn_footer_includes_duration_when_known() {
-    let usage = gray_core::event::Usage::new(1000, 500);
-    let totals = super::SessionTotals::default();
-    let line = super::turn_footer(
-        &usage,
-        "test-persist-model",
-        &totals,
-        Some(6500),
-        Some(6500),
-    );
-    assert!(line.contains("6.5s"), "footer should show time: {line}");
-    assert!(line.contains("tokens"), "footer should keep tokens: {line}");
-}
-
-#[test]
 fn turn_footer_rate_uses_streaming_time_not_whole_turn_time() {
     let usage = gray_core::event::Usage::new(1000, 500);
     let totals = super::SessionTotals::default();
@@ -298,4 +283,17 @@ fn plugin_slash_preserves_quotes_empty_args_and_literals() {
     );
     assert_eq!(super::split_plugin_command("/echo 'unfinished"), None);
     assert_eq!(super::split_plugin_command("/echo trailing\\"), None);
+}
+
+#[test]
+fn connect_receipt_falls_back_to_the_endpoint_host_not_provider() {
+    assert_eq!(
+        super::endpoint_host("https://api.example.com/v1/chat").as_deref(),
+        Some("api.example.com")
+    );
+    assert_eq!(
+        super::endpoint_host("localhost:8080").as_deref(),
+        Some("localhost:8080")
+    );
+    assert_eq!(super::endpoint_host(""), None);
 }

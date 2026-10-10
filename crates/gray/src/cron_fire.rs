@@ -167,7 +167,9 @@ pub fn final_assistant_text(events: &[gray_core::event::AgentEvent]) -> String {
     use gray_core::event::AgentEvent;
     final_text_of(events.iter().filter_map(|ev| match ev {
         AgentEvent::TextDelta { delta } => Some(Piece::Text(delta)),
-        AgentEvent::ToolCallStart { .. } | AgentEvent::ToolResult { .. } => Some(Piece::Boundary),
+        AgentEvent::ToolCallStart { .. }
+        | AgentEvent::ToolResult { .. }
+        | AgentEvent::MessageBoundary => Some(Piece::Boundary),
         _ => None,
     }))
 }
@@ -234,6 +236,7 @@ pub fn transcript_text(events: &[gray_core::event::AgentEvent]) -> String {
                 let s = close_untrusted(output.chars().take(2000).collect::<String>());
                 text.push_str(&format!("[{tag}:{s}]\n"));
             }
+            AgentEvent::MessageBoundary => text.push_str("\n\n"),
             _ => {}
         }
     }

@@ -414,32 +414,6 @@ async fn local_and_target_jobs_are_save_only() {
     }
 }
 
-#[test]
-fn fire_chat_is_plain_text_with_no_frame_id_or_path() {
-    let saved = DeliveredFire {
-        id: "abc123".to_string(),
-        name: "nightly".to_string(),
-        path: std::path::PathBuf::from("/home/u/.gray/cron/output/abc123/1.md"),
-        excerpt: "hello output".to_string(),
-        to_chat: true,
-        reminder: false,
-        failed: false,
-        elapsed_ms: 0,
-    };
-    let out = format_fire_chat(&saved);
-    assert_eq!(out, "nightly\n\nhello output");
-    for bad in [
-        "abc123",
-        "job_id",
-        "-----",
-        "Cronjob Response",
-        "Full output",
-        "/home/u",
-    ] {
-        assert!(!out.contains(bad), "plain fallback leaked {bad}");
-    }
-}
-
 #[tokio::test]
 async fn tick_fires_nothing_while_the_switch_is_off_but_keeps_ticking() {
     let home = tempfile::tempdir().unwrap();
@@ -790,11 +764,15 @@ async fn a_session_origin_fire_goes_to_that_sessions_inbox_once() {
     let got = drain_session_inbox(home.path(), "sess-1");
     assert_eq!(got.len(), 1, "{got:?}");
     assert!(
-        got[0].0.contains("toilets: a history"),
+        got[0].card.contains("toilets: a history"),
         "card: {}",
-        got[0].0
+        got[0].card
     );
-    assert_eq!(got[0].1, "[Cron delivery: s3]\ntoilets: a history");
+    assert_eq!(got[0].prompt, "[Cron delivery: s3]\ntoilets: a history");
+    let card = got[0].cron.as_ref().expect("structured card");
+    assert_eq!(card.name, "s3");
+    assert_eq!(card.body, "toilets: a history");
+    assert!(!card.failed && !card.reminder);
     assert!(
         drain_session_inbox(home.path(), "sess-1").is_empty(),
         "delivered once"

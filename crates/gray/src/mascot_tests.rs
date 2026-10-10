@@ -6,41 +6,6 @@ use ratatui::widgets::{Paragraph, Widget};
 use crate::composer::build_welcome_lines;
 use crate::text_width::display_width;
 
-/// Luminance ramp used only by the preview test to eyeball the layout.
-fn luminance_art(lines: &[Line<'static>]) -> String {
-    let mut out = String::new();
-    for line in lines {
-        for span in &line.spans {
-            let mut cell = String::new();
-            for ch in span.content.chars() {
-                if ch == ' ' {
-                    cell.push(' ');
-                    continue;
-                }
-                let style = span.style;
-                let lum = |c: Option<ratatui::style::Color>| match c {
-                    Some(ratatui::style::Color::Rgb(r, g, b)) => {
-                        (0.299 * r as f32 + 0.587 * g as f32 + 0.114 * b as f32) / 255.0
-                    }
-                    _ => 1.0,
-                };
-                let top = lum(style.fg);
-                let bot = lum(style.bg);
-                let v = top.min(bot);
-                cell.push(match v {
-                    x if x < 0.15 => '#',
-                    x if x < 0.45 => '+',
-                    x if x < 0.75 => '.',
-                    _ => ' ',
-                });
-            }
-            out.push_str(&cell);
-        }
-        out.push('\n');
-    }
-    out
-}
-
 #[test]
 fn grid_fits_terminal_and_keeps_aspect() {
     let grid: MascotGrid = decode_grid(120, 40).expect("asset decodes");
@@ -164,12 +129,4 @@ fn hehe_toggle_drops_the_mascot_entry() {
         !crate::composer::transcript::drop_mascot_entry(&mut entries),
         "a third /hehe has nothing left to drop"
     );
-}
-
-#[test]
-fn preview_layout_for_humans() {
-    // Not an assertion: `cargo test -p gray preview_layout_for_humans -- --nocapture`
-    // prints an ASCII luminance approximation of what a 120x40 terminal shows.
-    let lines = build_welcome_lines(120);
-    eprint!("{}", luminance_art(&lines));
 }

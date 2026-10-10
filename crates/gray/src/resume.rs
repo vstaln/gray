@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use crate::session_store::{JsonlSessionStore, SessionId, SessionSummary};
+use crate::session_store::{JsonlSessionStore, SessionEnd, SessionId, SessionSummary};
 
 use crate::print::now_millis;
 
@@ -57,8 +57,9 @@ fn cwd_display(cwd: &Path, width: usize) -> String {
 /// empty, then to the empty-session placeholder.
 fn preview_text(s: &SessionSummary, width: usize) -> String {
     let raw = s
-        .last_user_text
+        .title
         .as_deref()
+        .or(s.last_user_text.as_deref())
         .or(s.first_user_text.as_deref())
         .unwrap_or("(no message yet)");
     let one_line = raw.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -98,16 +99,133 @@ fn is_empty_session(s: &SessionSummary) -> bool {
     !(has(&s.first_user_text) || has(&s.last_user_text))
 }
 
+/// An auxiliary session was minted by a non-interactive producer (subagent
+/// runs carry `origin: "subagent"` from the supervisor's env): real work,
+/// still loadable by id, but noise in pickers and `-c`/`--last` selection.
+fn is_auxiliary_session(s: &SessionSummary) -> bool {
+    s.origin.is_some() || system_tag(s).is_some()
+}
+
+/// Why a session reads as gray-made, for the picker's right-hand tag: the
+/// header `origin`, or a recognisable opener from before origins existed
+/// (background-task notifications, subagent / worker prompts).
+fn system_tag(s: &SessionSummary) -> Option<String> {
+    if let Some(o) = &s.origin {
+        return Some(o.clone());
+    }
+    crate::session_store::opener_tag(s.first_user_text.as_deref()?).map(str::to_string)
+}
+
+/// Shorter than this between first and last entry reads as a one-shot, not
+/// work worth flagging as cut off.
+const MIN_INTERRUPTED_SPAN_MS: u64 = 60_000;
+
+/// Where a session stands, for the picker's marker column.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SessionState {
+    /// Finished: the last entry is an assistant reply.
+    Done,
+    /// Cut off mid-task: nobody holds it and the last entry never got its reply.
+    Interrupted,
+    /// Open in a live process right now.
+    Running,
+}
+
+fn session_state(s: &SessionSummary, running: &std::collections::HashSet<String>) -> SessionState {
+    if running.contains(s.id.as_str()) {
+        SessionState::Running
+    } else if s.last_end != SessionEnd::Done
+        && s.dismissed_at != Some(s.last_message_at)
+        && s.last_message_at.saturating_sub(s.started_at) >= MIN_INTERRUPTED_SPAN_MS
+    {
+        SessionState::Interrupted
+    } else {
+        SessionState::Done
+    }
+}
+
+/// How an interrupted session was cut off, for the interrupted view.
+fn end_label(e: SessionEnd) -> &'static str {
+    match e {
+        SessionEnd::ToolUse => "tool call",
+        SessionEnd::ToolResult => "tool result",
+        SessionEnd::UserUnanswered => "you, unanswered",
+        SessionEnd::Done => "",
+    }
+}
+
+/// Picker status filter, cycled with shift-tab.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StateFilter {
+    All,
+    Interrupted,
+    Running,
+}
+
+impl StateFilter {
+    fn next(self) -> Self {
+        match self {
+            Self::All => Self::Interrupted,
+            Self::Interrupted => Self::Running,
+            Self::Running => Self::All,
+        }
+    }
+    fn label(self) -> &'static str {
+        match self {
+            Self::All => "All",
+            Self::Interrupted => "Interrupted",
+            Self::Running => "Running",
+        }
+    }
+}
+
+/// Rows the picker shows: scope + search + status filter, with interrupted
+/// then running sessions floated above finished ones (stable, so each group
+/// keeps newest-activity order).
+fn visible_sessions<'a>(
+    summaries: &'a [SessionSummary],
+    query: &str,
+    cwd_filter: Option<&Path>,
+    show_system: bool,
+    filter: StateFilter,
+    running: &std::collections::HashSet<String>,
+) -> Vec<&'a SessionSummary> {
+    let mut out: Vec<&SessionSummary> = summaries
+        .iter()
+        .filter(|s| session_matches_with(s, query, cwd_filter, show_system))
+        .filter(|s| {
+            let st = session_state(s, running);
+            match filter {
+                StateFilter::All => true,
+                StateFilter::Interrupted => st == SessionState::Interrupted,
+                StateFilter::Running => st == SessionState::Running,
+            }
+        })
+        .collect();
+    out.sort_by_key(|s| match session_state(s, running) {
+        SessionState::Interrupted => 0,
+        SessionState::Running => 1,
+        SessionState::Done => 2,
+    });
+    out
+}
+
 /// Picker filter: cwd scope plus case-insensitive query over id, cwd, and user
 /// text (both ends — the preview shows the latest, a remembered opener still
-/// identifies the session). Shared by the draw loop and the Down/Enter handlers.
-fn session_matches(s: &SessionSummary, query: &str, cwd_filter: Option<&Path>) -> bool {
+/// identifies the session). Gray-made sessions are kept only when
+/// `show_hidden`. Empty sessions never show.
+fn session_matches_with(
+    s: &SessionSummary,
+    query: &str,
+    cwd_filter: Option<&Path>,
+    show_hidden: bool,
+) -> bool {
     if let Some(f) = cwd_filter
         && !paths_match(&s.cwd, f)
     {
         return false;
     }
-    if is_empty_session(s) {
+    if is_empty_session(s) || (!show_hidden && is_auxiliary_session(s)) {
         return false;
     }
     if query.is_empty() {
@@ -115,6 +233,7 @@ fn session_matches(s: &SessionSummary, query: &str, cwd_filter: Option<&Path>) -
     }
     let q = query.to_lowercase();
     s.id.as_str().to_lowercase().contains(&q)
+        || s.title.as_deref().unwrap_or("").to_lowercase().contains(&q)
         || s.cwd.display().to_string().to_lowercase().contains(&q)
         || s.first_user_text
             .as_deref()
@@ -139,7 +258,7 @@ pub fn latest_summary<'a>(
     summaries
         .iter()
         .filter(|s| cwd_filter.is_none_or(|cwd| paths_match(&s.cwd, cwd)))
-        .filter(|s| !is_empty_session(s))
+        .filter(|s| !is_empty_session(s) && !is_auxiliary_session(s))
         .max_by_key(|s| s.last_message_at)
 }
 
@@ -155,7 +274,7 @@ pub async fn recent_summaries(store: &JsonlSessionStore, all: bool) -> Vec<Sessi
         .await
         .into_iter()
         .filter(|s| filt.is_none_or(|c| paths_match(&s.cwd, c)))
-        .filter(|s| !is_empty_session(s))
+        .filter(|s| !is_empty_session(s) && !is_auxiliary_session(s))
         .collect();
     // Newest activity first, like the picker: the printed age then reads
     // monotonically instead of jumping around.
@@ -358,6 +477,78 @@ pub fn locked_session_card(id: &SessionId, pid: Option<u32>) -> String {
     out
 }
 
+/// User sessions in `cwd` (any directory when `None`) that read as cut off.
+fn interrupted_sessions<'a>(
+    summaries: &'a [SessionSummary],
+    running: &std::collections::HashSet<String>,
+    cwd: Option<&Path>,
+) -> Vec<&'a SessionSummary> {
+    summaries
+        .iter()
+        .filter(|s| cwd.is_none_or(|c| s.cwd == c))
+        .filter(|s| !is_empty_session(s) && system_tag(s).is_none())
+        .filter(|s| session_state(s, running) == SessionState::Interrupted)
+        .collect()
+}
+
+/// Startup nudge: how many user sessions in `cwd` were cut off, and how to
+/// clear them. `None` when there are none, so a clean directory starts with
+/// no extra line.
+pub(crate) fn interrupted_hint(
+    summaries: &[SessionSummary],
+    running: &std::collections::HashSet<String>,
+    cwd: &std::path::Path,
+    home: Option<&std::path::Path>,
+) -> Option<String> {
+    let n = interrupted_sessions(summaries, running, Some(cwd)).len();
+    if n == 0 {
+        return None;
+    }
+    let shown = match home.and_then(|h| cwd.strip_prefix(h).ok()) {
+        Some(rest) if rest.as_os_str().is_empty() => "~".to_string(),
+        Some(rest) => format!("~/{}", rest.display()),
+        None => cwd.display().to_string(),
+    };
+    let noun = if n == 1 { "session" } else { "sessions" };
+    Some(format!(
+        "\u{26a0} {n} interrupted {noun} in {shown} \u{b7} /sessions to pick up \u{b7} /sessions dismiss to clear"
+    ))
+}
+
+/// `/sessions dismiss`: marks every interrupted user session in `cwd` (all
+/// directories when `None`) as left alone on purpose. Returns how many.
+pub(crate) async fn dismiss_interrupted(cwd: Option<&Path>) -> usize {
+    let Some(root) = crate::session_store::default_root() else {
+        return 0;
+    };
+    let store = JsonlSessionStore::new(root.clone());
+    let summaries = store.list().await;
+    let mut running = std::collections::HashSet::new();
+    for s in &summaries {
+        if store.open_lock_held(&s.id).await {
+            running.insert(s.id.as_str().to_string());
+        }
+    }
+    interrupted_sessions(&summaries, &running, cwd)
+        .into_iter()
+        .filter(|s| crate::session_store::write_dismissal(&root, &s.id, s.last_message_at).is_ok())
+        .count()
+}
+
+/// Reads the store and builds [`interrupted_hint`] for the startup screen.
+pub(crate) async fn startup_interrupted_hint(cwd: &std::path::Path) -> Option<String> {
+    let store = JsonlSessionStore::new(crate::session_store::default_root()?);
+    let summaries = store.list().await;
+    let mut running = std::collections::HashSet::new();
+    for s in summaries.iter().filter(|s| s.cwd == cwd) {
+        if store.open_lock_held(&s.id).await {
+            running.insert(s.id.as_str().to_string());
+        }
+    }
+    let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+    interrupted_hint(&summaries, &running, cwd, home.as_deref())
+}
+
 pub async fn run_resume_picker(
     show_all: bool,
     bg: Option<&crate::setup::BackgroundSnapshot>,
@@ -374,12 +565,20 @@ pub async fn run_resume_picker(
     if summaries.is_empty() {
         anyhow::bail!("no saved sessions");
     }
-    run_picker_sync(summaries, show_all, bg)
+    // Which sessions a live process holds right now (`<id>.open` flock).
+    let mut running = std::collections::HashSet::new();
+    for s in &summaries {
+        if store.open_lock_held(&s.id).await {
+            running.insert(s.id.as_str().to_string());
+        }
+    }
+    run_picker_sync(summaries, show_all, running, bg)
 }
 
 fn run_picker_sync(
-    summaries: Vec<SessionSummary>,
+    mut summaries: Vec<SessionSummary>,
     mut show_all: bool,
+    running: std::collections::HashSet<String>,
     bg: Option<&crate::setup::BackgroundSnapshot>,
 ) -> anyhow::Result<Option<SessionId>> {
     use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, poll, read};
@@ -401,16 +600,24 @@ fn run_picker_sync(
     let text_dim = crate::theme::theme().text_dim;
 
     let mut query = String::new();
+    let mut show_hidden = false;
+    let mut state_filter = StateFilter::All;
     let mut sel: usize = 0;
     let mut scroll_top: usize = 0;
+    // `ctrl-r`: the row being renamed and the title typed so far.
+    let mut rename: Option<(SessionId, String)> = None;
 
     let result: anyhow::Result<Option<SessionId>> = (|| {
         loop {
             let cwd_filter: Option<&Path> = if show_all { None } else { Some(&cwd) };
-            let filtered: Vec<&SessionSummary> = summaries
-                .iter()
-                .filter(|s| session_matches(s, &query, cwd_filter))
-                .collect();
+            let filtered = visible_sessions(
+                &summaries,
+                &query,
+                cwd_filter,
+                show_hidden,
+                state_filter,
+                &running,
+            );
 
             if sel >= filtered.len() && !filtered.is_empty() {
                 sel = filtered.len() - 1;
@@ -452,9 +659,9 @@ fn run_picker_sync(
                 );
 
                 let title = if show_all {
-                    "Resume session — all"
+                    "Sessions — all"
                 } else {
-                    "Resume session"
+                    "Sessions"
                 };
                 let esc_str = "esc";
                 let pad_len = (inner.width as usize)
@@ -468,7 +675,10 @@ fn run_picker_sync(
                             .bg(box_bg),
                     ),
                     Span::styled(" ".repeat(pad_len), Style::default().bg(box_bg)),
-                    Span::styled("tab: all/cwd  ", Style::default().fg(text_dim).bg(box_bg)),
+                    Span::styled(
+                        "tab: all/cwd  shift-tab: status  ctrl-g: system  ",
+                        Style::default().fg(text_dim).bg(box_bg),
+                    ),
                     Span::styled(esc_str, Style::default().fg(text_dim).bg(box_bg)),
                 ]);
                 frame.render_widget(
@@ -476,7 +686,25 @@ fn run_picker_sync(
                     Rect::new(inner.x, inner.y, inner.width, 1),
                 );
 
-                let search_line = if query.is_empty() {
+                let search_line = if let Some((_, text)) = &rename {
+                    Line::from(vec![
+                        Span::styled(
+                            "Rename: ",
+                            Style::default()
+                                .fg(accent_peach)
+                                .add_modifier(Modifier::BOLD)
+                                .bg(box_bg),
+                        ),
+                        Span::styled(
+                            text.clone(),
+                            Style::default()
+                                .fg(Color::White)
+                                .add_modifier(Modifier::BOLD)
+                                .bg(box_bg),
+                        ),
+                        Span::styled("▎", Style::default().fg(accent_peach).bg(box_bg)),
+                    ])
+                } else if query.is_empty() {
                     Line::from(vec![
                         Span::styled(
                             "Search: ",
@@ -516,24 +744,33 @@ fn run_picker_sync(
                     Rect::new(inner.x, inner.y + 1, inner.width, 1),
                 );
 
-                let filter_line = if show_all {
-                    Line::from(Span::styled(
+                let mut filter_spans = if show_all {
+                    vec![Span::styled(
                         "Showing all sessions",
                         Style::default().fg(text_dim).bg(box_bg),
-                    ))
+                    )]
                 } else {
-                    Line::from(vec![
+                    vec![
                         Span::styled("Filtered to ", Style::default().fg(text_dim).bg(box_bg)),
                         Span::styled(
                             cwd_display(&cwd, 40),
                             Style::default().fg(Color::White).bg(box_bg),
                         ),
-                        Span::styled(
-                            "  (tab to show all)",
-                            Style::default().fg(text_dim).bg(box_bg),
-                        ),
-                    ])
+                    ]
                 };
+                if state_filter != StateFilter::All {
+                    filter_spans.push(Span::styled(
+                        format!("  ·  {} ({})", state_filter.label(), filtered.len()),
+                        Style::default().fg(accent_peach).bg(box_bg),
+                    ));
+                }
+                if show_hidden {
+                    filter_spans.push(Span::styled(
+                        "  ·  + system",
+                        Style::default().fg(text_dim).bg(box_bg),
+                    ));
+                }
+                let filter_line = Line::from(filter_spans);
                 frame.render_widget(
                     Paragraph::new(filter_line),
                     Rect::new(inner.x, inner.y + 2, inner.width, 1),
@@ -541,9 +778,14 @@ fn run_picker_sync(
 
                 let date_w = 9usize;
                 let cwd_w = 14usize;
-                let id_w = 8usize;
+                let id_w = if state_filter == StateFilter::Interrupted {
+                    15usize
+                } else {
+                    10usize
+                };
+                // marker column: 1 glyph + 1 space
                 let prev_w = (inner.width as usize)
-                    .saturating_sub(1 + date_w + 2 + cwd_w + 2 + id_w + 2)
+                    .saturating_sub(1 + 2 + date_w + 2 + cwd_w + 2 + id_w + 2)
                     .max(12);
 
                 let list_y = inner.y + 4;
@@ -552,6 +794,10 @@ fn run_picker_sync(
                 if filtered.is_empty() {
                     let msg = if summaries.is_empty() {
                         "No saved sessions yet"
+                    } else if state_filter == StateFilter::Interrupted {
+                        "No interrupted sessions — shift-tab to change the filter"
+                    } else if state_filter == StateFilter::Running {
+                        "No sessions running right now — shift-tab to change the filter"
                     } else if query.is_empty() {
                         "No sessions in this directory — press Tab to show all"
                     } else {
@@ -583,33 +829,47 @@ fn run_picker_sync(
                         let date = format_relative(s.last_message_at);
                         let cwd_s = cwd_display(&s.cwd, cwd_w);
                         let prev = preview_text(s, prev_w);
-                        let sid = short_id(&s.id);
-                        let content = format!(
+                        let st = session_state(s, &running);
+                        let (marker, marker_fg) = match st {
+                            SessionState::Interrupted => ("\u{26a0}", accent_peach),
+                            SessionState::Running => ("\u{25cf}", Color::Green),
+                            SessionState::Done => (" ", Color::White),
+                        };
+                        let right = match system_tag(s) {
+                            Some(tag) if show_hidden => tag,
+                            _ if state_filter == StateFilter::Interrupted => {
+                                end_label(s.last_end).to_string()
+                            }
+                            _ => short_id(&s.id),
+                        };
+                        let rest = format!(
                             " {:>date_w$}  {:cwd_w$}  {:prev_w$}  {:>id_w$}",
                             date,
                             cwd_s,
                             prev,
-                            sid,
+                            right,
                             date_w = date_w,
                             cwd_w = cwd_w,
                             prev_w = prev_w,
                             id_w = id_w
                         );
-                        let fill = (inner.width as usize).saturating_sub(content.chars().count());
-                        let row_str = format!("{}{}", content, " ".repeat(fill));
+                        let used = 1 + rest.chars().count();
+                        let fill = (inner.width as usize).saturating_sub(used);
                         let line = if is_sel {
                             Line::from(Span::styled(
-                                row_str,
+                                format!(" {marker}{rest}{}", " ".repeat(fill)),
                                 Style::default()
                                     .fg(crate::theme::theme().on_selection)
                                     .bg(accent_peach)
                                     .add_modifier(Modifier::BOLD),
                             ))
                         } else {
-                            Line::from(Span::styled(
-                                row_str,
-                                Style::default().fg(Color::White).bg(box_bg),
-                            ))
+                            let base = Style::default().fg(Color::White).bg(box_bg);
+                            Line::from(vec![
+                                Span::styled(" ", base),
+                                Span::styled(marker, Style::default().fg(marker_fg).bg(box_bg)),
+                                Span::styled(format!("{rest}{}", " ".repeat(fill)), base),
+                            ])
                         };
                         frame.render_widget(
                             Paragraph::new(line),
@@ -618,40 +878,33 @@ fn run_picker_sync(
                     }
                 }
 
-                let footer = Line::from(vec![
-                    Span::styled(
-                        "↑↓ ",
+                let hints: &[(&str, &str)] = if rename.is_some() {
+                    &[("enter", "save"), ("esc", "cancel")]
+                } else {
+                    &[
+                        ("↑↓", "navigate"),
+                        ("enter", "resume"),
+                        ("ctrl-r", "rename"),
+                        ("ctrl-d", "dismiss"),
+                        ("esc", "cancel"),
+                    ]
+                };
+                let mut footer_spans = Vec::new();
+                for (n, (key, label)) in hints.iter().enumerate() {
+                    let gap = if n + 1 < hints.len() { "  " } else { "" };
+                    footer_spans.push(Span::styled(
+                        format!("{key} "),
                         Style::default()
                             .fg(Color::White)
                             .add_modifier(Modifier::BOLD)
                             .bg(box_bg),
-                    ),
-                    Span::styled("navigate  ", Style::default().fg(text_dim).bg(box_bg)),
-                    Span::styled(
-                        "enter ",
-                        Style::default()
-                            .fg(Color::White)
-                            .add_modifier(Modifier::BOLD)
-                            .bg(box_bg),
-                    ),
-                    Span::styled("resume  ", Style::default().fg(text_dim).bg(box_bg)),
-                    Span::styled(
-                        "tab ",
-                        Style::default()
-                            .fg(Color::White)
-                            .add_modifier(Modifier::BOLD)
-                            .bg(box_bg),
-                    ),
-                    Span::styled("toggle  ", Style::default().fg(text_dim).bg(box_bg)),
-                    Span::styled(
-                        "esc ",
-                        Style::default()
-                            .fg(Color::White)
-                            .add_modifier(Modifier::BOLD)
-                            .bg(box_bg),
-                    ),
-                    Span::styled("cancel", Style::default().fg(text_dim).bg(box_bg)),
-                ]);
+                    ));
+                    footer_spans.push(Span::styled(
+                        format!("{label}{gap}"),
+                        Style::default().fg(text_dim).bg(box_bg),
+                    ));
+                }
+                let footer = Line::from(footer_spans);
                 frame.render_widget(
                     Paragraph::new(footer),
                     Rect::new(inner.x, inner.y + inner.height - 1, inner.width, 1),
@@ -675,6 +928,37 @@ fn run_picker_sync(
                     modifiers,
                     kind: KeyEventKind::Press,
                     ..
+                }) if rename.is_some() => match code {
+                    KeyCode::Esc => rename = None,
+                    KeyCode::Enter => {
+                        if let Some((id, text)) = rename.take()
+                            && let Some(root) = crate::session_store::default_root()
+                            && let Ok(stored) = crate::session_store::write_title(&root, &id, &text)
+                            && let Some(s) = summaries.iter_mut().find(|s| s.id == id)
+                        {
+                            s.title = stored;
+                        }
+                    }
+                    KeyCode::Backspace => {
+                        if let Some((_, text)) = rename.as_mut() {
+                            text.pop();
+                        }
+                    }
+                    KeyCode::Char(ch)
+                        if !modifiers.contains(KeyModifiers::CONTROL)
+                            && !modifiers.contains(KeyModifiers::ALT) =>
+                    {
+                        if let Some((_, text)) = rename.as_mut() {
+                            text.push(ch);
+                        }
+                    }
+                    _ => {}
+                },
+                Event::Key(KeyEvent {
+                    code,
+                    modifiers,
+                    kind: KeyEventKind::Press,
+                    ..
                 }) => match code {
                     KeyCode::Esc => {
                         if !query.is_empty() {
@@ -689,23 +973,79 @@ fn run_picker_sync(
                         sel = 0;
                         scroll_top = 0;
                     }
+                    KeyCode::BackTab => {
+                        state_filter = state_filter.next();
+                        sel = 0;
+                        scroll_top = 0;
+                    }
+                    KeyCode::Char('g') if modifiers.contains(KeyModifiers::CONTROL) => {
+                        show_hidden = !show_hidden;
+                        sel = 0;
+                        scroll_top = 0;
+                    }
+                    // Rename the highlighted session (prefilled with its title).
+                    KeyCode::Char('r') if modifiers.contains(KeyModifiers::CONTROL) => {
+                        let cwd_filter: Option<&Path> = if show_all { None } else { Some(&cwd) };
+                        rename = visible_sessions(
+                            &summaries,
+                            &query,
+                            cwd_filter,
+                            show_hidden,
+                            state_filter,
+                            &running,
+                        )
+                        .get(sel)
+                        .map(|s| (s.id.clone(), s.title.clone().unwrap_or_default()));
+                    }
+                    // Leave an interrupted session as it is on purpose: stop
+                    // flagging it (until it sees new activity).
+                    KeyCode::Char('d') if modifiers.contains(KeyModifiers::CONTROL) => {
+                        let cwd_filter: Option<&Path> = if show_all { None } else { Some(&cwd) };
+                        let target = visible_sessions(
+                            &summaries,
+                            &query,
+                            cwd_filter,
+                            show_hidden,
+                            state_filter,
+                            &running,
+                        )
+                        .get(sel)
+                        .filter(|s| session_state(s, &running) == SessionState::Interrupted)
+                        .map(|s| (s.id.clone(), s.last_message_at));
+                        if let (Some((id, at)), Some(root)) =
+                            (target, crate::session_store::default_root())
+                            && crate::session_store::write_dismissal(&root, &id, at).is_ok()
+                            && let Some(s) = summaries.iter_mut().find(|s| s.id == id)
+                        {
+                            s.dismissed_at = Some(at);
+                        }
+                    }
                     KeyCode::Up => sel = sel.saturating_sub(1),
                     KeyCode::Down => {
                         let cwd_filter: Option<&Path> = if show_all { None } else { Some(&cwd) };
-                        let count = summaries
-                            .iter()
-                            .filter(|s| session_matches(s, &query, cwd_filter))
-                            .count();
+                        let count = visible_sessions(
+                            &summaries,
+                            &query,
+                            cwd_filter,
+                            show_hidden,
+                            state_filter,
+                            &running,
+                        )
+                        .len();
                         if count > 0 {
                             sel = (sel + 1).min(count - 1);
                         }
                     }
                     KeyCode::Enter => {
                         let cwd_filter: Option<&Path> = if show_all { None } else { Some(&cwd) };
-                        let filtered: Vec<&SessionSummary> = summaries
-                            .iter()
-                            .filter(|s| session_matches(s, &query, cwd_filter))
-                            .collect();
+                        let filtered = visible_sessions(
+                            &summaries,
+                            &query,
+                            cwd_filter,
+                            show_hidden,
+                            state_filter,
+                            &running,
+                        );
                         if let Some(s) = filtered.get(sel) {
                             return Ok(Some(s.id.clone()));
                         }

@@ -579,6 +579,7 @@ pub(crate) async fn reload_agent(
     session_id: Option<&str>,
     tui: Option<&crate::composer::SharedTui>,
 ) {
+    let started = std::time::Instant::now();
     let old = agent.take();
     let mut rebuilt = match build_agent(config, cwd, session_id).await {
         Ok(a) => a,
@@ -592,6 +593,37 @@ pub(crate) async fn reload_agent(
         rebuilt = rebuilt.with_messages(old.messages().to_vec());
     }
     *agent = Some(rebuilt);
+    log::debug!(target: "gray_timing", "reload_agent elapsed_ms={}", started.elapsed().as_millis());
+}
+
+/// Rebuilds the agent for a model or provider switch without restarting
+/// plugins: a fresh model-side agent takes over the running one's tool
+/// surface and transcript. Respawning every sidecar made each switch wait
+/// on the slowest plugin (an MCP server's startup alone held it ~3s). With
+/// no agent yet there is nothing to keep, so it falls back to a full build.
+pub(crate) async fn switch_agent_model(
+    agent: &mut Option<Agent>,
+    config: &Config,
+    cwd: &Path,
+    session_id: Option<&str>,
+    tui: Option<&crate::composer::SharedTui>,
+) {
+    let Some(old) = agent.take() else {
+        reload_agent(agent, config, cwd, session_id, tui).await;
+        return;
+    };
+    let started = std::time::Instant::now();
+    match crate::build_model_agent(config, cwd, session_id).await {
+        Ok(fresh) => {
+            let messages = old.messages().to_vec();
+            *agent = Some(fresh.with_tool_surface_of(old).with_messages(messages));
+            log::debug!(target: "gray_timing", "switch_agent_model elapsed_ms={}", started.elapsed().as_millis());
+        }
+        Err(e) => {
+            say(tui, &format!("{e}"));
+            *agent = Some(old);
+        }
+    }
 }
 
 /// What `/model` was asked for: the picker (optionally focused on a row —
@@ -714,9 +746,12 @@ pub(crate) async fn handle_model(
             }
             t.push_action("Model set to", Some(&m));
             if let Some((old, new)) = clamped {
-                t.push_dim(format!(
-                    "└ thinking effort clamped from {old} to {new} (not supported by this model)"
-                ));
+                super::cron::push_notice(
+                    &mut t,
+                    "Thinking effort clamped",
+                    &format!("from {old} to {new} (not supported by this model)"),
+                    false,
+                );
             }
             t.ensure_gap();
             let _ = t.draw();
@@ -737,7 +772,7 @@ pub(crate) async fn handle_model(
                 crate::setup::fetch_live_provider_models(&base, key.as_deref());
             });
         }
-        reload_agent(agent, config, cwd, session_id, tui).await;
+        switch_agent_model(agent, config, cwd, session_id, tui).await;
         return;
     }
 
@@ -780,23 +815,7 @@ pub(crate) async fn handle_model(
                     t.set_model_label(crate::setup::composite_label_for(config));
                     // Name the effort alongside the model when it has a
                     // level to choose: the picker set both at once.
-                    let label = match (
-                        &config.thinking_effort,
-                        crate::setup::composite_label_for(config),
-                    ) {
-                        // A composite names its picks (`Fusion · Opus 5.5
-                        // High + SWE-2 High`); fast still shows.
-                        (_, Some(composite)) if config.fast_mode == Some(true) => {
-                            format!("{composite} · fast")
-                        }
-                        (_, Some(composite)) => composite,
-                        (Some(eff), None)
-                            if crate::setup::supported_thinking_levels(m).len() > 1 =>
-                        {
-                            format!("{m} · {}", crate::setup::effort_chip(eff, config))
-                        }
-                        _ => m.clone(),
-                    };
+                    let label = super::model_receipt_label(config).unwrap_or_else(|| m.clone());
                     t.push_action("Model set to", Some(&label));
                 }
                 if (config.thinking_effort != prev_effort || fast_changed)
@@ -808,9 +827,12 @@ pub(crate) async fn handle_model(
                     t.set_hide_thinking(*hide_thinking);
                 }
                 if let Some((old, new)) = clamped {
-                    t.push_dim(format!(
-                        "└ thinking effort clamped from {old} to {new} (not supported by this model)"
-                    ));
+                    super::cron::push_notice(
+                        &mut t,
+                        "Thinking effort clamped",
+                        &format!("from {old} to {new} (not supported by this model)"),
+                        false,
+                    );
                 }
                 t.ensure_gap();
                 let _ = t.draw();
@@ -829,7 +851,7 @@ pub(crate) async fn handle_model(
                     crate::setup::fetch_live_provider_models(&base, key.as_deref());
                 });
             }
-            reload_agent(agent, config, cwd, session_id, tui).await;
+            switch_agent_model(agent, config, cwd, session_id, tui).await;
         }
         Ok(false) => {
             // Tab / ctrl+r are pending until Enter: a dismissed picker
@@ -846,7 +868,7 @@ pub(crate) async fn handle_model(
         Err(e) => {
             if let Some(shared) = tui {
                 let mut t = shared.lock().expect("tui lock");
-                t.push_dim(format!("└ error: {e}"));
+                super::cron::push_notice(&mut t, "Model error", &e.to_string(), true);
                 t.ensure_gap();
             } else {
                 println!("model error: {e}");

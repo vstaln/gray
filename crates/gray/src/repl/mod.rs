@@ -194,6 +194,7 @@ async fn spawn_hangup_policy() {}
 use crate::config::Config;
 use crate::{DEFAULT_SYS_PROMPT, build_agent, load_or_create_system_prompt_at};
 
+pub mod agents_panel;
 pub mod attachments;
 pub mod commands;
 mod cron;
@@ -254,7 +255,7 @@ pub(crate) fn say(tui: Option<&crate::composer::SharedTui>, msg: &str) {
         let mut t = t.lock().expect("tui lock");
         // No gap above: command cards skip their trailing gap so this hugs them.
         for line in msg.split('\n') {
-            t.push_dim(format!("└ {line}"));
+            t.push_dim(format!("  {line}"));
         }
         // Breathing room below command output before the next prompt.
         t.ensure_gap();
@@ -341,28 +342,70 @@ pub(crate) fn push_provider_connected(
         t.set_thinking_effort(eff.clone());
         t.set_hide_thinking(config.reasoning_hidden());
     }
-    let model_str = config.model.as_deref().unwrap_or("default");
-    let prov_name = crate::setup::load_catalog()
-        .ok()
-        .and_then(|c| {
-            c.values()
-                .find(|p| p.base_url == config.base_url)
-                .map(|p| p.name.clone())
-        })
-        .unwrap_or_else(|| "provider".to_string());
-    t.push_dim(format!("└ connected to {prov_name} · {model_str}"));
-    // Close the loop: what you got, and where to change it.
-    let effort = config.thinking_effort.as_deref().unwrap_or("high");
-    t.push_dim(format!(
-        "└ thinking {effort} · /model to switch or set effort"
-    ));
+    // One receipt row, same shape as `/model`'s `✓ Model set to …`.
+    let prov_name = connected_provider_name(config);
+    let detail = model_receipt_label(config);
+    t.push_action(&format!("Connected to {prov_name}"), detail.as_deref());
     if let Some((old, new)) = clamped {
-        t.push_dim(format!(
-            "└ thinking effort clamped from {old} to {new} (not supported by this model)"
-        ));
+        cron::push_notice(
+            &mut t,
+            "Thinking effort clamped",
+            &format!("from {old} to {new} (not supported by this model)"),
+            false,
+        );
     }
     t.ensure_gap();
     let _ = t.draw();
+}
+
+/// The model half of a `✓ Model set to` / `✓ Connected to` receipt: the
+/// composite label when the model has variants (`Fusion · Opus 5.5 High +
+/// SWE-2 High`), else the id plus its effort when it has a level to choose.
+pub(crate) fn model_receipt_label(config: &Config) -> Option<String> {
+    let m = config.model.as_ref()?;
+    Some(
+        match (
+            &config.thinking_effort,
+            crate::setup::composite_label_for(config),
+        ) {
+            (_, Some(composite)) if config.fast_mode == Some(true) => {
+                format!("{composite} · fast")
+            }
+            (_, Some(composite)) => composite,
+            (Some(eff), None) if crate::setup::supported_thinking_levels(m).len() > 1 => {
+                format!("{m} · {}", crate::setup::effort_chip(eff, config))
+            }
+            _ => m.clone(),
+        },
+    )
+}
+
+/// Display name of the live connection. Plugin (subscription) connections
+/// carry a placeholder `base_url` no catalog row matches, so they resolve
+/// through the installed provider; API-key ones through the catalog. The
+/// endpoint host is the last resort, never a bare "provider".
+fn connected_provider_name(config: &Config) -> String {
+    if let Ok(home) = crate::setup::gray_home()
+        && let Some(installed) = crate::providers::resolve_provider_connection(config, &home)
+        && !installed.provider.name.trim().is_empty()
+    {
+        return installed.provider.name.clone();
+    }
+    if let Some(name) = crate::setup::load_catalog().ok().and_then(|c| {
+        c.values()
+            .find(|p| p.base_url == config.base_url)
+            .map(|p| p.name.clone())
+    }) {
+        return name;
+    }
+    endpoint_host(&config.base_url).unwrap_or_else(|| "provider".to_string())
+}
+
+/// `api.example.com` from `https://api.example.com/v1`.
+fn endpoint_host(base_url: &str) -> Option<String> {
+    let rest = base_url.split_once("://").map_or(base_url, |(_, r)| r);
+    let host = rest.split(['/', '?', '#']).next()?.trim();
+    (!host.is_empty()).then(|| host.to_string())
 }
 
 /// Split a `/name argv…` line into (`/name`, argv words) for plugin
@@ -407,6 +450,16 @@ struct ReplRunner {
 #[async_trait::async_trait(?Send)]
 impl crate::cron_serve::AsyncRunner for ReplRunner {
     async fn run(&self, prompt: String, cwd: std::path::PathBuf) -> anyhow::Result<String> {
+        Ok(self.run_full(prompt, cwd).await?.transcript)
+    }
+
+    /// Without this the trait default hands the whole transcript out as the
+    /// final text, and `[tool:bash]` / `[result:…]` markup reaches the card.
+    async fn run_full(
+        &self,
+        prompt: String,
+        cwd: std::path::PathBuf,
+    ) -> anyhow::Result<crate::cron_serve::FireOutput> {
         // The ticker thread holds a startup snapshot; a /model switch since
         // then lives in the saved config — follow it so cron fires ask the
         // same provider the session uses.
@@ -422,7 +475,10 @@ impl crate::cron_serve::AsyncRunner for ReplRunner {
             .run(gray_core::message::Message::user(prompt), ctx)
             .await
             .map_err(|e| anyhow::anyhow!(crate::repl::format_core_error(&e, &config.base_url)))?;
-        Ok(crate::cron_fire::transcript_text(&events))
+        Ok(crate::cron_serve::FireOutput {
+            transcript: crate::cron_fire::transcript_text(&events),
+            final_text: crate::cron_fire::final_assistant_text(&events),
+        })
     }
 }
 
@@ -745,6 +801,12 @@ pub async fn run_repl_mode(
     // fails. Probe upfront and map init failure to a clean error — a panic
     // here exits 101 via the panic hook in main.rs (kept as-is for real
     // bugs); a clean error exits non-zero with a readable message instead.
+    // Resuming already shows its own line; otherwise nudge toward cut-off work.
+    let startup_hint = if interactive && resumed_session_info.is_none() {
+        crate::resume::startup_interrupted_hint(&cwd).await
+    } else {
+        None
+    };
     let tui: TuiOpt = if interactive {
         use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
         if crossterm::terminal::size().is_err() {
@@ -780,6 +842,10 @@ pub async fn run_repl_mode(
                     sid.as_str(),
                     entries.len()
                 ));
+                t.ensure_gap();
+            }
+            if let Some(h) = &startup_hint {
+                t.push_dim(h.clone());
                 t.ensure_gap();
             }
             t
@@ -955,7 +1021,30 @@ pub async fn run_repl_mode(
             bg_wake = cron::arm_background_wake(agent.as_ref(), sid.as_deref(), &cwd);
             if let Some((cards, prompt)) = cron::idle_wake(agent.as_ref(), sid.as_deref(), &cwd) {
                 for card in &cards {
-                    say(tui.as_ref().map(|(s, _)| s), card);
+                    match (card, tui.as_ref()) {
+                        (cron::WakeCard::Cron(c), Some((shared, _))) => {
+                            let mut t = shared.lock().expect("tui lock");
+                            let (header, body) = cron::cron_card_lines(c, t.width());
+                            t.push_tool_box(header, body);
+                        }
+                        (cron::WakeCard::Job(j), Some((shared, _))) => {
+                            let (header, body) = cron::job_card_lines(j);
+                            shared.lock().expect("tui lock").push_tool_box(header, body);
+                        }
+                        (cron::WakeCard::Job(j), None) => println!(
+                            "background job {} finished ({}) after {} \u{b7} log {}",
+                            j.id, j.outcome, j.elapsed, j.log
+                        ),
+                        (cron::WakeCard::Cron(c), None) => println!(
+                            "cron: {}",
+                            crate::cron_fire::format_delivery_plain(
+                                &c.name, &c.body, c.reminder, c.failed
+                            )
+                        ),
+                        (cron::WakeCard::Text(text), _) => {
+                            say(tui.as_ref().map(|(s, _)| s), text);
+                        }
+                    }
                 }
                 if let Some(msg) =
                     crate::turn_caps::check_caps(config, session_totals.turns, session_totals.cost)

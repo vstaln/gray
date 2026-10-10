@@ -114,20 +114,6 @@ fn picker_appends_the_ticker_liveness_row() {
     assert!(rows[1].read_only);
 }
 
-#[test]
-fn cron_spec_toggles_without_removal_or_errors() {
-    assert_eq!(CRON_SPEC.title, "Cron");
-    const {
-        assert!(CRON_SPEC.supports_toggle);
-    }
-    const {
-        assert!(!CRON_SPEC.supports_remove);
-    }
-    const {
-        assert!(!CRON_SPEC.errors_tab);
-    }
-}
-
 fn finished(name: &str) -> crate::cron::CronJob {
     crate::cron::CronJob {
         state: crate::cron::store::JobState::Done,
@@ -241,4 +227,76 @@ async fn the_waiter_stops_once_nothing_is_pending() {
         1,
         "a timed-out wait with no jobs left ends the waiter"
     );
+}
+
+fn card_text(line: &ratatui::text::Line<'_>) -> String {
+    line.spans.iter().map(|s| s.content.as_ref()).collect()
+}
+
+#[test]
+fn cron_card_header_names_job_status_and_time() {
+    let card = crate::cron_serve::CronCard {
+        name: "sandbox-probe".into(),
+        body: "Done \u{2014} wrote `~/.gray/sandbox-probe.txt`.".into(),
+        failed: false,
+        reminder: false,
+        elapsed_ms: 18_400,
+    };
+    let (header, body) = cron_card_lines(&card, 80);
+    assert_eq!(
+        card_text(&header),
+        "\u{2b22} Cron sandbox-probe \u{b7} done \u{b7} 18.4s"
+    );
+    let joined: String = body.iter().map(card_text).collect::<Vec<_>>().join("\n");
+    assert!(joined.contains("sandbox-probe.txt"), "{joined}");
+    assert!(!joined.contains("[tool:"), "{joined}");
+    assert!(
+        body.iter().all(|l| card_text(l).starts_with("  ")),
+        "{joined}"
+    );
+}
+
+#[test]
+fn cron_card_reminder_and_failure_headers() {
+    let reminder = crate::cron_serve::CronCard {
+        name: "clean-my-room".into(),
+        body: "clean my room".into(),
+        failed: false,
+        reminder: true,
+        elapsed_ms: 0,
+    };
+    let (header, body) = cron_card_lines(&reminder, 80);
+    assert_eq!(card_text(&header), "\u{2b22} Reminder");
+    assert_eq!(card_text(&body[0]), "  clean my room");
+
+    let failed = crate::cron_serve::CronCard {
+        name: "nightly".into(),
+        body: "provider timed out".into(),
+        failed: true,
+        reminder: false,
+        elapsed_ms: 2_000,
+    };
+    let (header, _) = cron_card_lines(&failed, 80);
+    assert_eq!(
+        card_text(&header),
+        "\u{2b22} Cron nightly \u{b7} failed \u{b7} 2s"
+    );
+}
+
+#[test]
+fn job_notice_becomes_a_card_without_the_model_hint() {
+    let notice = "Background job bwrap-5 finished (exit 0) after 4m26s \u{b7} log /tmp/x/bash-9.log\nRead its output with `tail` (or `grep`) on that log.";
+    let job = parse_job_notice(notice).expect("parses");
+    assert_eq!(job.id, "bwrap-5");
+    assert_eq!(job.outcome, "exit 0");
+    assert_eq!(job.elapsed, "4m26s");
+    assert_eq!(job.log, "/tmp/x/bash-9.log");
+    let (header, body) = job_card_lines(&job);
+    assert_eq!(
+        card_text(&header),
+        "\u{2b22} Background job bwrap-5 \u{b7} exit 0 \u{b7} 4m26s"
+    );
+    assert_eq!(body.len(), 1);
+    assert_eq!(card_text(&body[0]), "  log /tmp/x/bash-9.log");
+    assert!(parse_job_notice("something else").is_none());
 }

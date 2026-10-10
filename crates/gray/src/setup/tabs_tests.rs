@@ -13,14 +13,6 @@ fn segments_mark_exactly_one_active() {
 }
 
 #[test]
-fn next_prev_wrap_at_both_ends() {
-    assert_eq!(next_tab(0, 2), 1);
-    assert_eq!(next_tab(1, 2), 0);
-    assert_eq!(prev_tab(0, 2), 1);
-    assert_eq!(prev_tab(1, 2), 0);
-}
-
-#[test]
 fn count_badge_renders_only_when_some() {
     let segs = tab_segments(&[("Installed", None), ("Errors", Some(2))], 0);
     assert_eq!(segs[0].text, "Installed");

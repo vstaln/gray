@@ -727,7 +727,7 @@ fn a_run_header_shows_the_command_without_its_setup() {
         serde_json::json!({"command": "cd ~/wt/provider-chat && CARGO_BUILD_BUILD_DIR=target nice -n 19 ionice -c3 flock /tmp/l cargo check -p gray-provider --tests"}),
     );
     assert!(
-        text.ends_with("Ran cargo check -p gray-provider --tests \u{00b7} in ~/wt/provider-chat"),
+        text.ends_with("Ran cargo check -p gray-provider --tests \u{00b7} ~/wt/provider-chat"),
         "{text:?}"
     );
     // Setup that could do work is never hidden.
@@ -916,10 +916,10 @@ fn read_only_commands_name_what_they_looked_at() {
             "head -n 5 a.rs b.rs",
             "Read a.rs, b.rs \u{00b7} first 5 lines",
         ),
-        ("cd ~/gray && ls crates", "Listed crates \u{00b7} in ~/gray"),
+        ("cd ~/gray && ls crates", "Listed crates \u{00b7} ~/gray"),
         (
             "grep -rn announce crates/gray-core/src",
-            "Searched announce \u{00b7} in crates/gray-core/src",
+            "Searched announce \u{00b7} crates/gray-core/src",
         ),
     ] {
         let text = header(serde_json::json!({ "command": cmd }));

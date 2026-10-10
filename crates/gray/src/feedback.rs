@@ -68,15 +68,17 @@ pub fn build_body(
 /// Prefilled "new issue" URL. The body is capped so the URL stays openable;
 /// the local file always keeps the full text.
 pub fn issue_url(title: &str, body: &str) -> String {
+    // The model may have echoed a key into the report. Scrub before the text
+    // leaves the machine in a URL; the local file keeps what the user typed.
+    let home = crate::setup::gray_home().unwrap_or_default();
+    let body = crate::cron_fire::redact_secrets(body, &home);
     let short = if body.chars().count() > MAX_URL_BODY_CHARS {
         let cut: String = body.chars().take(MAX_URL_BODY_CHARS).collect();
         format!("{cut}\n… [truncated for URL — full text in local file]")
     } else {
         body.to_string()
     };
-    let enc = |s: &str| {
-        percent_encoding::utf8_percent_encode(s, percent_encoding::NON_ALPHANUMERIC).to_string()
-    };
+    let enc = |s: &str| url::form_urlencoded::byte_serialize(s.as_bytes()).collect::<String>();
     format!(
         "{ISSUES_NEW_URL}?template=bug_report.yml&title={}&body={}",
         enc(title),

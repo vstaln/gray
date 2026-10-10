@@ -103,7 +103,9 @@ async fn baseline_tool_bench() {
         finds.push(t.elapsed().as_secs_f64() * 1000.0);
 
         let t = Instant::now();
-        let out = bash.execute(&ctx, json!({"command": "echo hi"})).await;
+        let out = bash
+            .execute(&ctx, json!({"command": "echo hi | cat"}))
+            .await;
         assert!(!out.content.is_empty());
         bashes.push(t.elapsed().as_secs_f64() * 1000.0);
     }

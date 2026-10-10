@@ -381,6 +381,10 @@ pub enum CommandOutcome {
     /// Open the `/model` picker focused on this row id; a composite row
     /// opens straight into its first slot.
     ModelPicker(String),
+    /// Open the interactive agents panel fed by this plugin's CLI
+    /// (`<plugin> entries` rows; `open`/`view`/`stop`/`chat` verbs drive
+    /// the actions). Carries the plugin name the panel should query.
+    AgentPicker(String),
 }
 
 /// Host-side view of a plugin's hooks: protocol-v1 (`prompt/context`,
@@ -532,8 +536,15 @@ pub struct Agent {
     /// `agent_loop::mask_stale_tool_output`) and reset by every history
     /// rewrite, which invalidates the index.
     pub(crate) masked_prefix: usize,
-    /// Prompt-cache warming during long tool runs; `None` = off.
+    /// Prompt-cache warming during long rounds; `None` = off.
     pub(crate) cache_warm: Option<crate::cache_warm::CacheWarmPolicy>,
+    /// Sticky: some request this session reported cache activity. Feeds
+    /// `worth_refreshing`'s no-prices path — a provider that never reports
+    /// caching gains nothing from a replay. The warmer needs the flag
+    /// before the in-flight request reports, so it persists across rounds
+    /// and survives `history_rewritten` (it describes the provider, not
+    /// one cache entry).
+    pub(crate) warm_cache_reported: bool,
     /// Whether the host may rewrite already-sent history (the cold-cache
     /// stale-output mask shortens old tool results). Relay providers spawn
     /// a per-turn child off a native session: rewriting the prefix there
@@ -588,13 +599,15 @@ impl Agent {
             contaminated: std::collections::BTreeSet::new(),
             masked_prefix: 0,
             cache_warm: None,
+            warm_cache_reported: false,
             prefix_rewrite_ok: true,
             lean_prompt: false,
         }
     }
 
-    /// Keep the provider's prompt cache warm while long tools run (pi cache
-    /// warming, streaming mode). `None` turns it off.
+    /// Keep the provider's prompt cache warm through long rounds — the
+    /// stream and its tool phase alike (pi cache warming, streaming mode).
+    /// `None` turns it off.
     pub fn with_cache_warm(mut self, policy: Option<crate::cache_warm::CacheWarmPolicy>) -> Self {
         self.cache_warm = policy;
         self
@@ -607,6 +620,12 @@ impl Agent {
     ) -> Self {
         self.provider = Arc::from(wrap(Box::new(SharedProvider(self.provider.clone()))));
         self
+    }
+
+    /// The provider behind this agent, policy wrappers included, for a
+    /// one-off side request that must stay out of the transcript.
+    pub fn provider_handle(&self) -> Arc<dyn Provider> {
+        self.provider.clone()
     }
 
     pub fn history_revision(&self) -> u64 {
@@ -742,6 +761,25 @@ impl Agent {
     }
 
     /// Sets the initial conversation messages (useful for resumed sessions).
+    /// Takes over `donor`'s tool surface: executor, advertised tools,
+    /// display labels/previews, plugin hooks and the history-rewrite hook.
+    /// Everything model-side (provider, system prompt, context window,
+    /// cache policy, compaction budget) stays this agent's, and the
+    /// transcript is the caller's to carry (`with_messages`).
+    ///
+    /// A model switch only changes the provider, so it builds a plugin-free
+    /// agent for the new model and moves the running plugins across instead
+    /// of respawning every sidecar (one slow MCP server alone cost ~3s).
+    pub fn with_tool_surface_of(mut self, donor: Agent) -> Self {
+        self.executor = donor.executor;
+        self.tools = donor.tools;
+        self.tool_labels = donor.tool_labels;
+        self.tool_previews = donor.tool_previews;
+        self.hooks = donor.hooks;
+        self.history_rewrite_hook = donor.history_rewrite_hook;
+        self
+    }
+
     pub fn with_messages(mut self, messages: Vec<Message>) -> Self {
         self.messages = messages;
         self.history_rewritten();
@@ -893,6 +931,7 @@ impl Agent {
             });
             self.messages.push(Message {
                 role: Role::Assistant,
+                injected: false,
                 content,
             });
         }
@@ -1011,6 +1050,7 @@ pub(crate) fn salvage_partial_text(
     content.push(ContentBlock::Text { text });
     messages.push(Message {
         role: Role::Assistant,
+        injected: false,
         content,
     });
 }
@@ -1022,3 +1062,7 @@ mod agent_tests;
 #[path = "agent_repair_tests.rs"]
 #[cfg(test)]
 mod repair_tests;
+
+#[path = "agent_surface_tests.rs"]
+#[cfg(test)]
+mod surface_tests;

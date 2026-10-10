@@ -41,7 +41,8 @@ pub use provider::{
     ProviderChatResult, ProviderDecl, ProviderHeaderDecl, ProviderHeaderSourceDecl, ProviderModel,
     ProviderModelCatalog, ProviderModelsRequest, ProviderRefreshRequest, ProviderRequestPolicyDecl,
     ProviderRevokeRequest, ProviderRevokeResult, ProviderRpcError, ProviderRpcFailure,
-    ProviderTransportDecl, ProviderValidationError, SlotOption,
+    ProviderTransportDecl, ProviderUsageLimits, ProviderUsageRequest, ProviderUsageWindow,
+    ProviderValidationError, SlotOption,
 };
 
 #[derive(Debug, Clone)]
@@ -344,6 +345,7 @@ impl PluginHooks for PluginHookAdapter {
             CommandOutcome::Say(s) if s.is_empty() => None,
             CommandOutcome::Prompt(s) if s.is_empty() => None,
             CommandOutcome::ModelPicker(s) if s.is_empty() => None,
+            CommandOutcome::AgentPicker(s) if s.is_empty() => None,
             o => Some(o),
         }
     }
