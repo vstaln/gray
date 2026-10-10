@@ -71,8 +71,7 @@ fn spawn_raw(argv: &[String], args: &[&str]) -> Option<String> {
         let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
         let msg = err
             .lines()
-            .filter(|l| !l.trim().is_empty())
-            .next_back()
+            .rfind(|l| !l.trim().is_empty())
             .unwrap_or("plugin command failed");
         return Some(msg.to_string());
     }
