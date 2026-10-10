@@ -1248,9 +1248,10 @@ impl Plugin for SidecarPlugin {
         // frame too large`): a plugin needs to know an image exists, not its
         // bytes. Stub media for the wire, then graft the originals back into
         // whatever list the plugin returns so the model keeps the pixels.
-        let (wire, media) = scrub_media_for_frame(messages);
-        let params =
-            json!({"messages": wire, "session": session_json(&self.pinned_sid(), &self.cwd)});
+        let (mut wire, media) = scrub_media_for_frame(messages);
+        let session = session_json(&self.pinned_sid(), &self.cwd);
+        let text = scrub_text_for_frame(&mut wire, &session);
+        let params = json!({"messages": wire, "session": session});
         let ttl = if self.asks { ASK_TTL } else { HOST_TTL };
         match self
             .transport
@@ -1259,7 +1260,7 @@ impl Plugin for SidecarPlugin {
         {
             Ok(v) => match v.get("messages") {
                 Some(m) => match serde_json::from_value::<Vec<Message>>(m.clone()) {
-                    Ok(msgs) => Some(restore_media(msgs, &media)),
+                    Ok(msgs) => Some(restore_media(restore_text(msgs, &text), &media)),
                     Err(e) => {
                         log::warn!(target: "gray_plugin", "sidecar context/build reply unparseable: {e}");
                         None
@@ -1401,6 +1402,91 @@ fn restore_media(
                 m.content[pos] = block.clone();
             } else {
                 m.content.insert(pos, block.clone());
+            }
+        }
+    }
+    msgs
+}
+
+/// Smallest payload worth stubbing — smaller blocks cost bookkeeping
+/// without buying back meaningful frame room.
+const MIN_STUB_BYTES: usize = 256;
+
+fn serialized_len<T: serde::Serialize + ?Sized>(v: &T) -> usize {
+    serde_json::to_string(v).map(|s| s.len()).unwrap_or(0)
+}
+
+/// The largest payload still in `wire` worth stubbing: (message index,
+/// block index). `Text`, tool-result output, and tool-call args carry the
+/// bulk once media is pulled.
+fn largest_scrubbable(wire: &[Message]) -> Option<(usize, usize)> {
+    let mut best: Option<(usize, usize, usize)> = None;
+    for (mi, m) in wire.iter().enumerate() {
+        for (bi, b) in m.content.iter().enumerate() {
+            let size = match b {
+                gray_core::message::ContentBlock::Text { text } => text.len(),
+                gray_core::message::ContentBlock::ToolResult { content, .. } => content.len(),
+                gray_core::message::ContentBlock::ToolUse { args, .. } => serialized_len(args),
+                _ => 0,
+            };
+            if size >= MIN_STUB_BYTES && best.is_none_or(|(.., n)| size > n) {
+                best = Some((mi, bi, size));
+            }
+        }
+    }
+    best.map(|(mi, bi, _)| (mi, bi))
+}
+
+/// `context/build` wire scrub, part two: media stripping alone still
+/// leaves long sessions over `MAX_FRAME`, which failed the request
+/// outright — every context/build plugin silently went dead once the
+/// conversation grew past ~256 KiB, exactly when context engineering
+/// matters. Stub the largest remaining payloads until the frame fits;
+/// [`restore_text`] grafts the originals back onto the reply. Per-message
+/// pull list like [`scrub_media_for_frame`], plus the stub text so restore
+/// only reverts a stub the plugin passed through untouched.
+fn scrub_text_for_frame(
+    wire: &mut Vec<Message>,
+    session: &Value,
+) -> Vec<Vec<(usize, gray_core::message::ContentBlock, String)>> {
+    let mut pulled: Vec<Vec<(usize, gray_core::message::ContentBlock, String)>> =
+        wire.iter().map(|_| Vec::new()).collect();
+    let mut frame_len = serialized_len(&json!({"messages": &*wire, "session": session}));
+    // 128 covers the `{"id","method","params":` envelope around params.
+    while frame_len + 128 > MAX_FRAME {
+        let Some((mi, bi)) = largest_scrubbable(wire) else {
+            break;
+        };
+        let original = wire[mi].content[bi].clone();
+        let stub = format!(
+            "[{} bytes elided — context/build frame cap]",
+            serialized_len(&original)
+        );
+        let stub_block = gray_core::message::ContentBlock::Text { text: stub.clone() };
+        let saved = serialized_len(&original).saturating_sub(serialized_len(&stub_block));
+        wire[mi].content[bi] = stub_block;
+        pulled[mi].push((bi, original, stub));
+        frame_len = frame_len.saturating_sub(saved);
+    }
+    pulled
+}
+
+/// Graft [`scrub_text_for_frame`]'s pulled payloads back onto the plugin's
+/// reply. Same-length replies restore a stub only when the plugin passed
+/// it through untouched — an edit the plugin authored always wins.
+fn restore_text(
+    mut msgs: Vec<Message>,
+    pulled: &[Vec<(usize, gray_core::message::ContentBlock, String)>],
+) -> Vec<Message> {
+    if msgs.len() != pulled.len() {
+        return msgs;
+    }
+    for (m, stubs) in msgs.iter_mut().zip(pulled.iter()) {
+        for (idx, original, stub) in stubs {
+            if let Some(gray_core::message::ContentBlock::Text { text }) = m.content.get(*idx)
+                && text == stub
+            {
+                m.content[*idx] = original.clone();
             }
         }
     }

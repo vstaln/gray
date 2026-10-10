@@ -343,3 +343,80 @@ async fn tool_call_reply_images_and_media_are_attached() {
         }]
     );
 }
+
+#[test]
+fn context_build_text_scrub_fits_frame_and_restores() {
+    // A long session pushed context/build past MAX_FRAME and disabled
+    // every claiming plugin for the rest of it. The scrub must fit the
+    // frame and restore must return the originals on a pass-through reply.
+    let big_a = "a".repeat(300 * 1024);
+    let big_b = "b".repeat(300 * 1024);
+    let mut wire = vec![
+        Message::user(big_a.clone()),
+        Message::new(
+            gray_core::message::Role::Assistant,
+            vec![gray_core::message::ContentBlock::ToolResult {
+                id: "t1".into(),
+                content: big_b.clone(),
+                is_error: false,
+            }],
+        ),
+        Message::user("small"),
+    ];
+    let session = serde_json::json!({"id": "s", "cwd": "/tmp"});
+    let pulled = scrub_text_for_frame(&mut wire, &session);
+    let frame_len = serialized_len(&serde_json::json!({"messages": &wire, "session": &session}));
+    assert!(
+        frame_len + 128 <= MAX_FRAME,
+        "frame still over cap: {frame_len}"
+    );
+    // Largest-first: both oversized blocks stubbed, the small one untouched.
+    assert_eq!(pulled[0].len(), 1);
+    assert_eq!(pulled[1].len(), 1);
+    assert!(pulled[2].is_empty());
+    let stub0 = &pulled[0][0].2;
+    assert!(stub0.contains("bytes elided"), "stub: {stub0}");
+
+    // Pass-through reply: originals come back byte-for-byte.
+    let restored = restore_text(wire.clone(), &pulled);
+    assert_eq!(
+        restored[0].content[0],
+        gray_core::message::ContentBlock::Text { text: big_a }
+    );
+    assert_eq!(
+        restored[1].content[0],
+        gray_core::message::ContentBlock::ToolResult {
+            id: "t1".into(),
+            content: big_b,
+            is_error: false
+        }
+    );
+
+    // A plugin-edited stub keeps the plugin's version — the edit wins.
+    let mut edited = wire.clone();
+    if let gray_core::message::ContentBlock::Text { text } = &mut edited[0].content[0] {
+        *text = "plugin rewrote this".into();
+    }
+    let kept = restore_text(edited, &pulled);
+    assert_eq!(
+        kept[0].content[0],
+        gray_core::message::ContentBlock::Text {
+            text: "plugin rewrote this".into()
+        }
+    );
+    // Restructured replies (different length) skip grafting entirely.
+    let short = vec![Message::user("x")];
+    assert_eq!(restore_text(short, &pulled).len(), 1);
+}
+
+#[test]
+fn context_build_text_scrub_leaves_small_payloads_alone() {
+    let mut wire = vec![Message::user("hi")];
+    let session = serde_json::json!({"id": "s", "cwd": "/tmp"});
+    let pulled = scrub_text_for_frame(&mut wire, &session);
+    assert!(pulled.iter().all(|v| v.is_empty()));
+    assert_eq!(
+        wire[0].content[0],
+        gray_core::message::ContentBlock::Text { text: "hi".into() }
+    );
+}
