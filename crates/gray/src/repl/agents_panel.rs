@@ -72,7 +72,7 @@ fn spawn_raw(argv: &[String], args: &[&str]) -> Option<String> {
         let msg = err
             .lines()
             .filter(|l| !l.trim().is_empty())
-            .last()
+            .next_back()
             .unwrap_or("plugin command failed");
         return Some(msg.to_string());
     }
@@ -483,12 +483,14 @@ fn run_agents_panel(
                         }
                     }
                     KeyCode::Backspace => {
-                        chat_buf.as_mut().map(|b| {
+                        if let Some(b) = chat_buf.as_mut() {
                             b.pop();
-                        });
+                        }
                     }
                     KeyCode::Char(c) if !modifiers.contains(KeyModifiers::CONTROL) => {
-                        chat_buf.as_mut().map(|b| b.push(c));
+                        if let Some(b) = chat_buf.as_mut() {
+                            b.push(c)
+                        }
                     }
                     _ => {}
                 }
