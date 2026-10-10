@@ -80,6 +80,27 @@ Host→sidecar is NDJSON over stdio: `plugin/manifest`, `tool/call`,
 `tool/before`, `command/run`, `prompt/context`, `event/notify` (no reply),
 `plugin/shutdown` (clean exit).
 
+### Contract rules every sidecar must follow
+
+- **Requests carry an `id` and must get exactly one reply**
+  (`{"id": …, "result": …}` or `{"id": …, "error": …}`) — even unknown
+  methods, which answer `{"error": {"code": -32601, …}}`. A request that
+  goes unanswered stalls the host for the full TTL.
+- **Notifications carry no `id` and produce no output.** `event/notify`
+  and `plugin/shutdown` are notifications: replying emits a stray
+  `{"id": null, …}` line the host can misroute. `plugin/shutdown` means
+  exit promptly (within ~5s; the host escalates to SIGKILL). stdin EOF is
+  the same contract — exit, or a host crash strands the sidecar.
+- **stdout is wire-only.** Anything that isn't an NDJSON reply or an
+  outbound request corrupts the stream; diagnostics go to stderr.
+- **`argv[0] manifest` prints the same JSON `plugin/manifest` returns.**
+  The installer probes it before registering and `gray plugin check`
+  diffs it against the wire answer.
+
+The full sidecar-author contract (message shapes, lifecycle, error
+forms) lives in `PLUGIN-CONTRACT.md` at the root of the plugin source
+tree (`grayplugins/`).
+
 Protocol 2.0 adds mutating events, each claims-gated by `hooks` like the
 v1 methods (unclaimed = no IPC, pre-2.0 sidecars are never sent them):
 
