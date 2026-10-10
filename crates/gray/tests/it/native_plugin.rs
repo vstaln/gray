@@ -94,6 +94,19 @@ fn conflicting_widget_registration_does_not_publish_partial_command() {
     assert!(!temp.path().join("plugins/two-manifest.json").exists());
 }
 #[test]
+fn reinstall_without_widget_retires_the_owned_slot() {
+    let temp = tempfile::tempdir().unwrap();
+    let bin = fixture(temp.path(), "sample", true);
+    assert!(install(temp.path(), &bin, "sample").status.success());
+    let widgets = temp.path().join("plugins/widgets.json");
+    assert!(widgets.exists());
+
+    let bin = fixture(temp.path(), "sample", false);
+    assert!(install(temp.path(), &bin, "sample").status.success());
+    assert!(!widgets.exists());
+}
+
+#[test]
 fn disabled_plugin_is_unavailable_in_help_commands_and_widget() {
     let temp = tempfile::tempdir().unwrap();
     let bin = fixture(temp.path(), "sample", true);

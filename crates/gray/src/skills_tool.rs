@@ -109,6 +109,10 @@ pub fn project_context_block(cwd: &Path) -> Option<String> {
     let gray_home = crate::setup::gray_home()
         .ok()
         .and_then(|p| p.canonicalize().ok());
+    // AGENTS.md and CLAUDE.md in a repo are instructions: serve them only once trusted.
+    if !crate::project_trust::is_trusted(&crate::skills::gray_agent_dir(), cwd) {
+        return None;
+    }
     let path = find_project_rules(cwd, gray_home.as_deref())?;
     let body = std::fs::read_to_string(&path).ok()?;
     let body = strip_rationale_comments(body.trim());

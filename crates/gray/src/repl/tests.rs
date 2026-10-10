@@ -291,6 +291,9 @@ fn connect_receipt_falls_back_to_the_endpoint_host_not_provider() {
         super::endpoint_host("https://api.example.com/v1/chat").as_deref(),
         Some("api.example.com")
     );
-    assert_eq!(super::endpoint_host("localhost:8080").as_deref(), Some("localhost:8080"));
+    assert_eq!(
+        super::endpoint_host("localhost:8080").as_deref(),
+        Some("localhost:8080")
+    );
     assert_eq!(super::endpoint_host(""), None);
 }

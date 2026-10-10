@@ -252,6 +252,11 @@ pub enum AgentEvent {
         #[serde(default)]
         details: String,
     },
+    /// A mid-turn injected note (a loop nudge, a finished-job follow-up)
+    /// ended the assistant message that was streaming: text deltas after
+    /// this boundary belong to a NEW message and render in their own block.
+    /// Truncation continuations resume mid-sentence and never emit it.
+    MessageBoundary,
     /// Turn finished with a stop reason and token usage.
     TurnEnd {
         stop_reason: StopReason,

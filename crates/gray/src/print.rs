@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 use std::io::{ErrorKind, Write};
 use std::path::Path;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use crate::session_store::{JsonlSessionStore, SessionId, SessionMeta};
 use gray_core::agent::ToolContext;
@@ -17,12 +17,7 @@ use crate::build_agent;
 use crate::config::Config;
 
 /// Wall-clock milliseconds since the Unix epoch (0 on a pre-epoch clock).
-pub(crate) fn now_millis() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
-}
+pub(crate) use gray_core::spill::now_millis;
 
 /// Tracking state for active tool call during streaming.
 #[derive(Debug, Clone, Default)]
@@ -182,8 +177,14 @@ pub fn render_event_with_context<W: Write>(
             if details.is_empty() {
                 writeln!(w, "\n\x1b[2m⚠ {message}\x1b[0m")?;
             } else {
-                writeln!(w, "\n\x1b[2m⚠ {message}\n└ {details}\x1b[0m")?;
+                writeln!(w, "\n\x1b[2m⚠ {message}\n  {details}\x1b[0m")?;
             }
+            w.flush()
+        }
+        // A mid-turn note split the stream into two messages: keep the
+        // paragraph break the composer would paint.
+        AgentEvent::MessageBoundary => {
+            write!(w, "\n\n")?;
             w.flush()
         }
         AgentEvent::TurnEnd { usage, .. } => {
@@ -339,6 +340,13 @@ async fn run_print_mode_json_message(
                 if let Some(pid) = pid {
                     row["lockHolderPid"] = (*pid).into();
                 }
+            }
+            // The canned message names the failure class, not the cause:
+            // carry the scrubbed error chain so operators and supervisors
+            // can see why the turn actually died.
+            let detail = scrub_error_text(&format!("{error:#}"));
+            if !detail.is_empty() && row["message"] != detail {
+                row["detail"] = detail.into();
             }
             row
         }
@@ -615,6 +623,7 @@ impl JsonOutput {
         // closes the prose before it: the closing row carries everything.
         let mut rows = match event {
             AgentEvent::ToolCallStart { .. }
+            | AgentEvent::MessageBoundary
             | AgentEvent::StepUsage { .. }
             | AgentEvent::TurnEnd { .. } => self.take_text(true),
             _ => Vec::new(),
@@ -971,7 +980,7 @@ async fn run_print_inner(
                     cwd.clone(),
                     config.model.as_deref().unwrap_or("unset"),
                 )
-                .with_origin(crate::session_store::session_origin_from_env()),
+                .with_origin(crate::session_store::print_session_origin()),
             )
             .await?;
         // Fresh id — always free; held so `gray -r` can't double-open the
@@ -1265,7 +1274,7 @@ pub async fn save_session(
         cwd.to_path_buf(),
         model.to_string(),
     )
-    .with_origin(crate::session_store::session_origin_from_env());
+    .with_origin(crate::session_store::print_session_origin());
     store.create(meta).await?;
 
     for msg in messages {

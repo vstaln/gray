@@ -317,7 +317,7 @@ async fn compaction_call_reuses_system_tools_and_appends_trigger() {
     assert_eq!(req.system, Some("S".to_string()));
     assert_eq!(req.tools, tools);
     let mut expected = history.clone();
-    expected.push(Message::user(COMPACTION_TRIGGER));
+    expected.push(Message::user_injected(COMPACTION_TRIGGER));
     assert_eq!(req.messages, expected);
     assert_eq!(
         history,

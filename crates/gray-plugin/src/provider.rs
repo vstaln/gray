@@ -248,6 +248,83 @@ impl fmt::Debug for ProviderModelsRequest {
     }
 }
 
+/// `provider/usage` request: subscription-quota probe (Claude's `get_usage`,
+/// Devin's plan info, …). Same envelope as `provider/models` — subscription
+/// plugins that keep their own login answer to an empty credential.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct ProviderUsageRequest {
+    pub provider: String,
+    pub auth_method: String,
+    #[serde(default)]
+    pub profile_binding: String,
+    pub credential: CredentialEnvelope,
+}
+
+impl fmt::Debug for ProviderUsageRequest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ProviderUsageRequest")
+            .field("provider", &self.provider)
+            .field("auth_method", &self.auth_method)
+            .field("profile_binding", &self.profile_binding)
+            .finish()
+    }
+}
+
+/// One subscription window the provider reports (`five_hour`, `seven_day`,
+/// a monthly credit bucket, …).
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct ProviderUsageWindow {
+    /// Stable provider id for the window (`five_hour`, `seven_day`,
+    /// `iguana_necktie`, `monthly_acu`, …).
+    pub id: String,
+    /// Display label: "Session", "Weekly", "Weekly · Opus", "Monthly".
+    pub label: String,
+    /// Bucket class: session | weekly | monthly | credits | other.
+    #[serde(default)]
+    pub kind: String,
+    /// Window length in minutes when the provider declares one.
+    #[serde(default)]
+    pub duration_mins: Option<u64>,
+    /// 0–100 fill of the window.
+    #[serde(default)]
+    pub used_percent: Option<f64>,
+    /// Absolute usage + cap for unit-metered windows (dollars, ACUs).
+    #[serde(default)]
+    pub used: Option<f64>,
+    #[serde(default)]
+    pub limit: Option<f64>,
+    /// Unit for `used`/`limit` ("USD", "ACU", "credits").
+    #[serde(default)]
+    pub unit: Option<String>,
+    /// ISO-8601 reset instant.
+    #[serde(default)]
+    pub resets_at: Option<String>,
+}
+
+/// The `provider/usage` result: what a `/usage` panel can draw for one
+/// connected subscription.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct ProviderUsageLimits {
+    /// False when the plugin cannot read subscription usage for this
+    /// login — API-key plans have no windows to show.
+    #[serde(default)]
+    pub available: bool,
+    /// Plan/tier name when known ("Pro", "Max", "Devin Max").
+    #[serde(default)]
+    pub plan: Option<String>,
+    /// Display title for the section row ("Claude", "Devin").
+    #[serde(default)]
+    pub title: Option<String>,
+    /// RFC-3339 instant the data was fetched.
+    #[serde(default)]
+    pub checked_at: Option<String>,
+    /// Freeform caveat ("hourly-aggregated, up to 1h stale").
+    #[serde(default)]
+    pub note: Option<String>,
+    #[serde(default)]
+    pub windows: Vec<ProviderUsageWindow>,
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 pub struct ProviderChatRequest {
     pub provider: String,

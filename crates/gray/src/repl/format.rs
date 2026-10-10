@@ -137,6 +137,46 @@ fn display_provider_detail(detail: &str) -> String {
     }
 }
 
+/// Rewrites a `HH:MM UTC` clock time into the user's local zone (`HH:MM TZ`).
+/// Anything that doesn't match is returned untouched.
+fn localize_utc_time(raw: &str) -> String {
+    use chrono::Offset;
+    let offset = chrono::Local::now().offset().fix();
+    match localize_utc_time_with(raw, chrono::Utc::now(), offset) {
+        Some(t) => {
+            let secs = offset.local_minus_utc();
+            let (sign, abs) = if secs < 0 { ('-', -secs) } else { ('+', secs) };
+            let (h, m) = (abs / 3600, abs % 3600 / 60);
+            if secs == 0 {
+                format!("{t} UTC")
+            } else if m == 0 {
+                format!("{t} UTC{sign}{h}")
+            } else {
+                format!("{t} UTC{sign}{h}:{m:02}")
+            }
+        }
+        None => raw.to_string(),
+    }
+}
+
+/// Pure core of [`localize_utc_time`]: `HH:MM UTC` -> local `HH:MM` using
+/// `offset`. Returns `None` if `raw` isn't that shape.
+fn localize_utc_time_with(
+    raw: &str,
+    now: chrono::DateTime<chrono::Utc>,
+    offset: chrono::FixedOffset,
+) -> Option<String> {
+    use chrono::{Duration, Timelike};
+    let t = raw.trim().strip_suffix("UTC")?.trim();
+    let (h, m) = t.split_once(':')?;
+    let (h, m): (u32, u32) = (h.parse().ok()?, m.parse().ok()?);
+    let mut at = now.with_hour(h)?.with_minute(m)?.with_second(0)?;
+    if at < now {
+        at += Duration::days(1);
+    }
+    Some(at.with_timezone(&offset).format("%H:%M").to_string())
+}
+
 fn format_model_limit(detail: &str) -> Option<String> {
     let cleaned = display_provider_detail(detail);
     let lower = cleaned.to_lowercase();
@@ -166,7 +206,10 @@ fn format_model_limit(detail: &str) -> Option<String> {
     let explanation = if let Some(captures) = reset.captures(&cleaned) {
         let duration = captures[1].trim();
         match captures.get(2) {
-            Some(time) => format!("Resets in {duration} ({}).", time.as_str().trim()),
+            Some(time) => format!(
+                "Resets in {duration} ({}).",
+                localize_utc_time(time.as_str().trim())
+            ),
             None => format!("Resets in {duration}."),
         }
     } else if let Some(reset) = regex::Regex::new(r"(?i)\bresets ([^.\n]+)")

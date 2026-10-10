@@ -2275,9 +2275,7 @@ impl OpenAiProvider {
             credential_source
                 .acquire()
                 .await
-                .map_err(|e| {
-                    ProviderError::Auth(format!("provider credential unavailable: {e:#}"))
-                })
+                .map_err(|e| ProviderError::Auth(format!("provider credential unavailable: {e:#}")))
                 .and_then(|lease| {
                     let url = match lease.metadata.get("relay_url") {
                         Some(relay) => relay.parse::<Url>().map_err(|e| {

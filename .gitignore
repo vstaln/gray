@@ -87,3 +87,6 @@ __pycache__/
 # agent memory strays (never commit)
 /CLAUDE.md
 /GEMINI.md
+
+# cloned research/reference repos (never commit)
+/research/

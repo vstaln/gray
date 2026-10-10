@@ -381,6 +381,10 @@ pub enum CommandOutcome {
     /// Open the `/model` picker focused on this row id; a composite row
     /// opens straight into its first slot.
     ModelPicker(String),
+    /// Open the interactive agents panel fed by this plugin's CLI
+    /// (`<plugin> entries` rows; `open`/`view`/`stop`/`chat` verbs drive
+    /// the actions). Carries the plugin name the panel should query.
+    AgentPicker(String),
 }
 
 /// Host-side view of a plugin's hooks: protocol-v1 (`prompt/context`,
@@ -616,6 +620,12 @@ impl Agent {
     ) -> Self {
         self.provider = Arc::from(wrap(Box::new(SharedProvider(self.provider.clone()))));
         self
+    }
+
+    /// The provider behind this agent, policy wrappers included, for a
+    /// one-off side request that must stay out of the transcript.
+    pub fn provider_handle(&self) -> Arc<dyn Provider> {
+        self.provider.clone()
     }
 
     pub fn history_revision(&self) -> u64 {

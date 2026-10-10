@@ -104,7 +104,12 @@ fn long_header_breaks_before_its_in_detail() {
         Span::raw("build the intuition\\|totally normal\\|sees that"),
         Span::raw(" \u{00b7} in /home/u/content/videos/attention-explained/SCRIPT-FINAL.txt"),
     ]);
-    let text = |l: &Line<'_>| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>();
+    let text = |l: &Line<'_>| {
+        l.spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect::<String>()
+    };
     let rows = super::cards::header_rows(header.clone(), 70);
     let got: Vec<String> = rows.iter().map(text).collect();
     assert_eq!(
@@ -117,7 +122,10 @@ fn long_header_breaks_before_its_in_detail() {
     // Even when it fits, `in <dir>` takes its own row.
     let rows = super::cards::header_rows(header, 200);
     assert_eq!(rows.len(), 2);
-    assert_eq!(text(&rows[1]), "  in /home/u/content/videos/attention-explained/SCRIPT-FINAL.txt");
+    assert_eq!(
+        text(&rows[1]),
+        "  in /home/u/content/videos/attention-explained/SCRIPT-FINAL.txt"
+    );
 }
 
 #[test]

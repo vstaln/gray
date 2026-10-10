@@ -746,9 +746,12 @@ pub(crate) async fn handle_model(
             }
             t.push_action("Model set to", Some(&m));
             if let Some((old, new)) = clamped {
-                t.push_dim(format!(
-                    "└ thinking effort clamped from {old} to {new} (not supported by this model)"
-                ));
+                super::cron::push_notice(
+                    &mut t,
+                    "Thinking effort clamped",
+                    &format!("from {old} to {new} (not supported by this model)"),
+                    false,
+                );
             }
             t.ensure_gap();
             let _ = t.draw();
@@ -824,9 +827,12 @@ pub(crate) async fn handle_model(
                     t.set_hide_thinking(*hide_thinking);
                 }
                 if let Some((old, new)) = clamped {
-                    t.push_dim(format!(
-                        "└ thinking effort clamped from {old} to {new} (not supported by this model)"
-                    ));
+                    super::cron::push_notice(
+                        &mut t,
+                        "Thinking effort clamped",
+                        &format!("from {old} to {new} (not supported by this model)"),
+                        false,
+                    );
                 }
                 t.ensure_gap();
                 let _ = t.draw();
@@ -862,7 +868,7 @@ pub(crate) async fn handle_model(
         Err(e) => {
             if let Some(shared) = tui {
                 let mut t = shared.lock().expect("tui lock");
-                t.push_dim(format!("└ error: {e}"));
+                super::cron::push_notice(&mut t, "Model error", &e.to_string(), true);
                 t.ensure_gap();
             } else {
                 println!("model error: {e}");

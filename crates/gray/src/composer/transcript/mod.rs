@@ -18,8 +18,8 @@ mod margins;
 mod rows;
 
 pub(crate) use crate::tui::strip_ansi;
-pub(crate) use cards::format_tool_box_lines;
 pub(crate) use boxes::render_markdown_lines;
+pub(crate) use cards::format_tool_box_lines;
 pub(crate) use rows::{
     GUTTER, format_user_prompt_lines, left_pad, prose_width, thinking_paint_text,
     thinking_replay_lines, thinking_run_rows, thinking_style, transcript_row_is_blank,

@@ -663,7 +663,7 @@ pub(crate) fn render_authorizing_plugin(
 ) {
     // External-login providers never produce a browser URL: show the
     // terminal-first status, not a "waiting for URL" line that reads broken.
-    let status = status_msg.unwrap_or("Checking your terminal login (no browser)");
+    let status = status_msg.unwrap_or("Checking your terminal login");
     let uri = verification_uri.unwrap_or("");
 
     // Size the dialog to its content: title, status, optional URI row,

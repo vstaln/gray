@@ -66,10 +66,17 @@ pub fn extract_inline_image_paths(text: &str, cwd: &Path) -> Vec<PathBuf> {
         }
         // Strip file:// (+localhost) + percent-decode; raw paths pass through
         // untouched so literal % in real filenames is never corrupted.
-        let decoded: std::borrow::Cow<'_, str> = if let Some(stripped) = tok.strip_prefix("file://")
-        {
-            let s = stripped.strip_prefix("localhost").unwrap_or(stripped);
-            percent_encoding::percent_decode_str(s).decode_utf8_lossy()
+        let decoded: std::borrow::Cow<'_, str> = if tok.starts_with("file://") {
+            match url::Url::parse(tok)
+                .ok()
+                .and_then(|u| u.to_file_path().ok())
+            {
+                Some(p) => std::borrow::Cow::Owned(p.display().to_string()),
+                None => {
+                    let s = tok.strip_prefix("file://").unwrap_or(tok);
+                    std::borrow::Cow::Borrowed(s.strip_prefix("localhost").unwrap_or(s))
+                }
+            }
         } else {
             std::borrow::Cow::Borrowed(tok)
         };

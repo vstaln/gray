@@ -261,7 +261,7 @@ pub enum Look {
 
 /// A command recognised as read-only: its verb, what it looked at (files,
 /// a directory, or a search pattern), and an optional detail
-/// (`lines 10–40`, `in src`).
+/// (`lines 10–40`, `src`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReadOnly {
     pub look: Look,
@@ -611,7 +611,7 @@ fn sed_read(args: &[String]) -> Option<ReadOnly> {
 }
 
 /// `grep`/`rg`/`ag`: the pattern (first positional, or `-e`'s value) is the
-/// target; the remaining positionals become `in <paths>`.
+/// target; the remaining positionals become `<paths>`.
 fn search(program: &str, args: &[String]) -> Option<ReadOnly> {
     if args.iter().any(|a| a.starts_with("--pre")) {
         return None;
@@ -669,7 +669,7 @@ fn search(program: &str, args: &[String]) -> Option<ReadOnly> {
     Some(ReadOnly {
         look: Look::Searched,
         targets: vec![pattern],
-        detail: (!pos.is_empty()).then(|| format!("in {}", pos.join(" "))),
+        detail: (!pos.is_empty()).then(|| pos.join(" ")),
     })
 }
 
@@ -706,7 +706,7 @@ fn find_read(args: &[String]) -> Option<ReadOnly> {
         Some(p) => ReadOnly {
             look: Look::Searched,
             targets: vec![p],
-            detail: Some(format!("in {}", paths.join(" "))),
+            detail: Some(paths.join(" ")),
         },
         None => ReadOnly {
             look: Look::Listed,
@@ -761,7 +761,7 @@ fn fd_read(args: &[String]) -> Option<ReadOnly> {
     Some(ReadOnly {
         look: Look::Searched,
         targets: vec![pattern],
-        detail: (!pos.is_empty()).then(|| format!("in {}", pos.join(" "))),
+        detail: (!pos.is_empty()).then(|| pos.join(" ")),
     })
 }
 

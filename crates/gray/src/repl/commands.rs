@@ -24,9 +24,9 @@ pub(crate) const REGISTRY: &[CmdDef] = &[
         aliases: &[],
     },
     CmdDef {
-        name: "resume",
-        desc: "resume conversation",
-        aliases: &[],
+        name: "sessions",
+        desc: "browse, resume & manage past sessions",
+        aliases: &["resume"],
     },
     CmdDef {
         name: "new",
@@ -337,7 +337,7 @@ pub(crate) fn complete_command_args(
     let mut out = match cmd {
         "context" => complete_context_args(arg_text),
         "plugin" | "plugins" => complete_plugin_args(cmd, arg_text, cwd),
-        "resume" => complete_resume_args(cmd, arg_text),
+        "sessions" | "resume" => complete_resume_args(cmd, arg_text),
         "skill" | "skills" => complete_skill_args(cmd, arg_text, cwd),
         "agentsmd" | "sys" => complete_agentsmd_args(cmd, arg_text),
         "model" | "models" => complete_model_args(cmd, arg_text),
@@ -366,11 +366,13 @@ fn complete_from_table(cmd: &str, arg_text: &str, table: &[(&str, &str)]) -> Vec
         .collect()
 }
 
-/// Suffixes for `/resume`: session picker flags.
+/// Suffixes for `/sessions` (alias `/resume`): session picker flags.
 fn complete_resume_args(cmd: &str, arg_text: &str) -> Vec<(String, String)> {
     const FLAGS: &[(&str, &str)] = &[
         ("--last", "resume most recent session"),
         ("--all", "include other directories"),
+        ("all", "every directory"),
+        ("dismiss", "stop flagging interrupted sessions here"),
     ];
     complete_from_table(cmd, arg_text, FLAGS)
 }
@@ -535,7 +537,7 @@ pub enum ReplCommand {
     },
     /// Start a fresh conversation (`/new` or `/clear [prompt]`).
     New(Option<String>),
-    /// Resume a previous session (`/resume [id|--last|--all]`).
+    /// Resume a previous session (`/sessions [id|--last|--all]`, alias `/resume`).
     Resume(ResumeArgs),
     /// Compress conversation context window (`/compact` or `/compress [instructions]`).
     Compact(Option<String>),
@@ -600,6 +602,9 @@ pub struct ResumeArgs {
     pub target: Option<String>,
     pub last: bool,
     pub all: bool,
+    /// `/sessions dismiss`: stop flagging this directory's interrupted
+    /// sessions (every directory with `all`) instead of opening one.
+    pub dismiss: bool,
 }
 
 /// What to do when the user types `/agentsmd`.
@@ -618,10 +623,12 @@ pub(crate) fn parse_resume_args(rest: &str) -> ResumeArgs {
     let mut target: Option<String> = None;
     let mut last = false;
     let mut all = false;
+    let mut dismiss = false;
     for tok in tokens {
         match tok {
+            "dismiss" => dismiss = true,
+            "all" | "--all" => all = true,
             "--last" => last = true,
-            "--all" => all = true,
             s if s.starts_with("--") => {}
             s => {
                 if target.is_none() {
@@ -630,7 +637,12 @@ pub(crate) fn parse_resume_args(rest: &str) -> ResumeArgs {
             }
         }
     }
-    ResumeArgs { target, last, all }
+    ResumeArgs {
+        target,
+        last,
+        all,
+        dismiss,
+    }
 }
 
 /// Parses a line of input into a [`ReplCommand`]: resolve the first token
@@ -658,11 +670,12 @@ pub fn parse_command(line: &str) -> ReplCommand {
     };
     match canon {
         Some("quit") => ReplCommand::Quit,
-        Some("resume") => ReplCommand::Resume(if rest.is_empty() {
+        Some("sessions") => ReplCommand::Resume(if rest.is_empty() {
             ResumeArgs {
                 target: None,
                 last: false,
                 all: false,
+                dismiss: false,
             }
         } else {
             parse_resume_args(rest)

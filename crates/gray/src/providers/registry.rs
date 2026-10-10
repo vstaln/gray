@@ -9,7 +9,7 @@ use gray_plugin::{
     AuthMethodDecl, Plugin, ProviderAuthPoll, ProviderAuthStart, ProviderChatRequest,
     ProviderChatResult, ProviderDecl, ProviderModelCatalog, ProviderModelsRequest,
     ProviderRefreshRequest, ProviderRevokeRequest, ProviderRevokeResult, ProviderRpcError,
-    SidecarPlugin,
+    ProviderUsageLimits, ProviderUsageRequest, SidecarPlugin,
 };
 use serde::{Deserialize, Serialize};
 
@@ -305,6 +305,18 @@ pub trait ProviderRpc: Send + Sync {
         &self,
         request: ProviderChatRequest,
     ) -> Result<ProviderChatResult, ProviderRpcError>;
+    /// `provider/usage`: subscription quota windows for `/usage`. Plugins
+    /// that cannot read them answer `Unavailable`/`Protocol` — the caller
+    /// skips them silently. Default impl keeps test doubles and any
+    /// non-subscription provider compiling unchanged.
+    async fn usage(
+        &self,
+        _request: ProviderUsageRequest,
+    ) -> Result<ProviderUsageLimits, ProviderRpcError> {
+        Err(ProviderRpcError::Protocol(
+            "provider/usage unsupported".into(),
+        ))
+    }
     async fn shutdown(&self);
 }
 

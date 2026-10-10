@@ -25,7 +25,7 @@ pub struct DynamicProvider {
     installed: InstalledProvider,
     profile: OpenAiProviderProfile,
     source: Arc<dyn CredentialSource>,
-    _runtime: ProviderRuntime,
+    _runtime: Arc<ProviderRuntime>,
 }
 
 impl DynamicProvider {
@@ -62,7 +62,7 @@ pub async fn connect_dynamic_provider(
         )
     })?;
     let profile = profile_for_provider(&installed)?;
-    let runtime = ProviderRuntime::start(installed.clone()).await?;
+    let runtime = shared_runtime(installed.clone()).await?;
     let store = CredentialStore::new(home.join("auth.json"));
     let source: Arc<dyn CredentialSource> = shared_plugin_source_with_model(
         installed.clone(),
@@ -76,6 +76,40 @@ pub async fn connect_dynamic_provider(
         source,
         _runtime: runtime,
     })
+}
+
+/// The provider sidecar of the live connection. A model switch on the same
+/// provider and auth method reuses it: each fresh spawn waited for its
+/// manifest before the switch returned, and handed the new model a cold
+/// process whose first chat could stall.
+static LIVE_RUNTIME: std::sync::Mutex<Option<Arc<ProviderRuntime>>> = std::sync::Mutex::new(None);
+
+async fn shared_runtime(installed: InstalledProvider) -> anyhow::Result<Arc<ProviderRuntime>> {
+    let live = LIVE_RUNTIME
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+    if let Some(live) = live
+        && same_connection(live.installed(), &installed)
+    {
+        log::debug!(target: "gray_timing", "provider sidecar reused plugin={}", installed.plugin);
+        return Ok(live);
+    }
+    let started = std::time::Instant::now();
+    let fresh = Arc::new(ProviderRuntime::start(installed).await?);
+    log::debug!(target: "gray_timing", "provider sidecar start elapsed_ms={}", started.elapsed().as_millis());
+    // Replacing the slot drops the previous runtime, which kills its child.
+    *LIVE_RUNTIME.lock().unwrap_or_else(|e| e.into_inner()) = Some(fresh.clone());
+    Ok(fresh)
+}
+
+/// Same sidecar identity: the process would answer the same provider.
+fn same_connection(a: &InstalledProvider, b: &InstalledProvider) -> bool {
+    a.plugin == b.plugin
+        && a.provider.id == b.provider.id
+        && a.auth_method.id == b.auth_method.id
+        && a.profile_binding == b.profile_binding
+        && a.argv == b.argv
 }
 
 pub fn profile_for_provider(

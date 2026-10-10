@@ -1,6 +1,10 @@
 use super::*;
 use gray_core::message::Message;
 
+fn session_matches(s: &SessionSummary, q: &str, cwd: Option<&std::path::Path>) -> bool {
+    session_matches_with(s, q, cwd, false)
+}
+
 fn summary(
     first: Option<&str>,
     last: Option<&str>,
@@ -8,12 +12,15 @@ fn summary(
     last_message_at: u64,
 ) -> SessionSummary {
     SessionSummary {
+        title: None,
         id: SessionId::new("30e3f464-aaaa-bbbb-cccc-d60f2104dcd9"),
         started_at,
         cwd: std::path::PathBuf::from("/tmp"),
         first_user_text: first.map(str::to_string),
         last_user_text: last.map(str::to_string),
         last_message_at,
+        last_end: SessionEnd::Done,
+        dismissed_at: None,
         origin: None,
     }
 }
@@ -191,12 +198,15 @@ async fn resumed_line_bogus_errors() {
 
 fn aged(id: &str, started: u64, last_active: u64) -> SessionSummary {
     SessionSummary {
+        title: None,
         id: SessionId::new(id),
         started_at: started,
         cwd: std::path::PathBuf::from("/tmp"),
         first_user_text: Some(format!("opened {id}")),
         last_user_text: Some(format!("left off on {id}")),
         last_message_at: last_active,
+        last_end: SessionEnd::Done,
+        dismissed_at: None,
         origin: None,
     }
 }
@@ -272,7 +282,7 @@ fn last_and_headless_lists_skip_empty_sessions() {
     // Same skip the headless list applies (mirror its filter chain).
     let listed: Vec<&SessionSummary> = summaries
         .iter()
-        .filter(|s| super::session_matches(s, "", None))
+        .filter(|s| session_matches(s, "", None))
         .collect();
     assert_eq!(listed.len(), 1);
     assert_eq!(listed[0].last_user_text.as_deref(), Some("real followup"));
@@ -403,4 +413,167 @@ fn short_id_keeps_uuid_prefix_and_full_names() {
     assert_eq!(short_id(&uuid_id), "30e3f464");
     let name = SessionId::new("chiral-xenon-pulsar");
     assert_eq!(short_id(&name), "chiral-xenon-pulsar");
+}
+
+// ── session state markers ──
+
+fn ended(id: &str, end: SessionEnd, span_ms: u64) -> SessionSummary {
+    let mut s = aged(id, 1_000, 1_000 + span_ms);
+    s.last_end = end;
+    s
+}
+
+#[test]
+fn unfinished_long_session_is_interrupted_and_finished_one_is_done() {
+    let none = std::collections::HashSet::new();
+    let cut = ended("a", SessionEnd::ToolResult, 600_000);
+    let done = ended("b", SessionEnd::Done, 600_000);
+    assert_eq!(session_state(&cut, &none), SessionState::Interrupted);
+    assert_eq!(session_state(&done, &none), SessionState::Done);
+}
+
+#[test]
+fn one_shot_sessions_are_not_flagged_interrupted() {
+    let none = std::collections::HashSet::new();
+    let quick = ended("a", SessionEnd::UserUnanswered, 2_000);
+    assert_eq!(session_state(&quick, &none), SessionState::Done);
+}
+
+#[test]
+fn held_session_is_running_even_if_unfinished() {
+    let running: std::collections::HashSet<String> = ["a".to_string()].into();
+    let s = ended("a", SessionEnd::ToolUse, 600_000);
+    assert_eq!(session_state(&s, &running), SessionState::Running);
+}
+
+#[test]
+fn interrupted_float_above_done_and_filters_narrow() {
+    let none = std::collections::HashSet::new();
+    let list = vec![
+        ended("done-new", SessionEnd::Done, 600_000),
+        ended("cut-old", SessionEnd::ToolResult, 600_000),
+    ];
+    let all = visible_sessions(&list, "", None, false, StateFilter::All, &none);
+    assert_eq!(all[0].id.as_str(), "cut-old");
+    let cut = visible_sessions(&list, "", None, false, StateFilter::Interrupted, &none);
+    assert_eq!(cut.len(), 1);
+    let run = visible_sessions(&list, "", None, false, StateFilter::Running, &none);
+    assert!(run.is_empty());
+}
+
+#[test]
+fn gray_made_openers_are_tagged_and_hidden_until_system_is_shown() {
+    let mut bg = aged("bg", 1_000, 2_000);
+    bg.first_user_text = Some("[Background task notification] done".into());
+    let mut sub = aged("sub", 1_000, 2_000);
+    sub.first_user_text =
+        Some("You are the 'worker' subagent of a parent Gray session. Do X".into());
+    let mut tagged = aged("p", 1_000, 2_000);
+    tagged.origin = Some("print".into());
+    let mine = aged("mine", 1_000, 2_000);
+    assert_eq!(system_tag(&bg).as_deref(), Some("background"));
+    assert_eq!(system_tag(&sub).as_deref(), Some("subagent"));
+    assert_eq!(system_tag(&tagged).as_deref(), Some("print"));
+    assert_eq!(system_tag(&mine), None);
+    let list = vec![bg, sub, tagged, mine];
+    let none = std::collections::HashSet::new();
+    assert_eq!(
+        visible_sessions(&list, "", None, false, StateFilter::All, &none).len(),
+        1
+    );
+    assert_eq!(
+        visible_sessions(&list, "", None, true, StateFilter::All, &none).len(),
+        4
+    );
+}
+
+#[test]
+fn startup_hint_counts_only_this_dirs_user_sessions_and_pluralises() {
+    let none = std::collections::HashSet::new();
+    let home = std::path::Path::new("/home/u");
+    let cwd = std::path::Path::new("/home/u/gray");
+    let mk = |id: &str, dir: &str, end| {
+        let mut s = ended(id, end, 600_000);
+        s.cwd = dir.into();
+        s
+    };
+    let mut sys = mk("sys", "/home/u/gray", SessionEnd::ToolUse);
+    sys.origin = Some("subagent".into());
+    let list = vec![
+        mk("a", "/home/u/gray", SessionEnd::ToolResult),
+        mk("b", "/home/u/gray", SessionEnd::ToolUse),
+        mk("c", "/home/u/gray", SessionEnd::Done),
+        mk("d", "/home/u/other", SessionEnd::ToolUse),
+        sys,
+    ];
+    let h = interrupted_hint(&list, &none, cwd, Some(home)).unwrap();
+    assert!(h.contains("2 interrupted sessions in ~/gray"), "{h}");
+    assert!(h.contains("/sessions to pick up"), "{h}");
+    assert!(h.contains("/sessions dismiss to clear"), "{h}");
+    let one = interrupted_hint(&list[..1], &none, cwd, Some(home)).unwrap();
+    assert!(one.contains("1 interrupted session in"), "{one}");
+    assert_eq!(interrupted_hint(&list[2..3], &none, cwd, Some(home)), None);
+}
+
+#[test]
+fn dismissal_silences_only_that_exact_state() {
+    let none = std::collections::HashSet::new();
+    let mut s = ended("a", SessionEnd::ToolResult, 600_000);
+    assert_eq!(session_state(&s, &none), SessionState::Interrupted);
+    s.dismissed_at = Some(s.last_message_at);
+    assert_eq!(session_state(&s, &none), SessionState::Done);
+    // The session ran again and was cut off again: flagged again.
+    s.last_message_at += 5_000;
+    assert_eq!(session_state(&s, &none), SessionState::Interrupted);
+}
+
+#[test]
+fn dismissal_round_trips_through_the_sidecar_file() {
+    let dir = std::env::temp_dir().join(format!("gray-dismiss-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let id = SessionId::new("calm-lunar-ember");
+    crate::session_store::write_dismissal(&dir, &id, 4242).unwrap();
+    let raw = std::fs::read_to_string(dir.join("calm-lunar-ember.dismissed")).unwrap();
+    assert_eq!(raw, "4242");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ── titles ──
+
+#[test]
+fn a_title_replaces_the_preview_and_is_searchable() {
+    let mut s = aged("tectonic-nickel-cyclone", 1, 2);
+    assert!(preview_text(&s, 60).starts_with("left off on"));
+    s.title = Some("Resume picker work".into());
+    assert_eq!(preview_text(&s, 60), "Resume picker work");
+    assert!(session_matches_with(&s, "picker", None, false));
+    assert!(!session_matches_with(&s, "nonsense", None, false));
+}
+
+#[test]
+fn write_title_stores_a_clean_one_liner_and_blank_clears_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let id = SessionId::new("tectonic-nickel-cyclone");
+    let stored =
+        crate::session_store::write_title(dir.path(), &id, "  fix   the\n picker  ").unwrap();
+    assert_eq!(stored.as_deref(), Some("fix the picker"));
+    assert!(dir.path().join("tectonic-nickel-cyclone.title").exists());
+    let long = "x".repeat(300);
+    let stored = crate::session_store::write_title(dir.path(), &id, &long).unwrap();
+    assert_eq!(stored.unwrap().chars().count(), 80);
+    assert_eq!(
+        crate::session_store::write_title(dir.path(), &id, "   ").unwrap(),
+        None
+    );
+    assert!(!dir.path().join("tectonic-nickel-cyclone.title").exists());
+    // Clearing a title that was never set is fine.
+    assert!(crate::session_store::write_title(dir.path(), &id, "").is_ok());
+}
+
+#[test]
+fn write_title_rejects_a_path_like_id() {
+    let dir = tempfile::tempdir().unwrap();
+    assert!(
+        crate::session_store::write_title(dir.path(), &SessionId::new("../evil"), "x").is_err()
+    );
 }

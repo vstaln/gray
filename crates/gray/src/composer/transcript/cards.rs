@@ -87,7 +87,7 @@ pub(crate) fn format_tool_box_lines(
     box_lines
 }
 
-/// Header rows for a card. The `· in <dir>` / `· in background` detail
+/// Header rows for a card. The `· in background` detail
 /// always gets its own row under the verb, so the path never shares the
 /// command's row. Other ` · ` details stay inline and only break onto their
 /// own row when the header is too wide for the box.

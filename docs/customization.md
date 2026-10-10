@@ -172,5 +172,3 @@ shows which examples still fail.
 - Virtual/router models: a plugin picks model + effort per request.
 - Gray packages: one manifest bundling plugins, skills, prompts, themes,
   keybindings; `gray install github:owner/repo`.
-- `gray doctor` lists every loaded customization, its source and any
-  shadowing (template vs plugin command, plugin tool vs built-in).

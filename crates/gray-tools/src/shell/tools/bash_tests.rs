@@ -646,7 +646,9 @@ async fn the_cwd_report_never_leaks_into_the_output() {
     // what the command produced.
     let tool = BashTool::default();
     let ctx = ctx_for(&sess("leak"));
-    let r = tool.execute(&ctx, json!({"command": "echo hello | cat"})).await;
+    let r = tool
+        .execute(&ctx, json!({"command": "echo hello | cat"}))
+        .await;
     assert!(!r.is_error, "{}", r.content);
     // The only output is what the command produced: no sentinel, no path.
     assert!(!r.content.contains("GRAY_CWD_REPORT"), "{}", r.content);
@@ -776,7 +778,9 @@ async fn the_cwd_report_does_not_mask_the_commands_exit_code() {
     );
 
     // And a success still reports success.
-    let r = tool.execute(&ctx, json!({"command": "printf '' | cat"})).await;
+    let r = tool
+        .execute(&ctx, json!({"command": "printf '' | cat"}))
+        .await;
     assert!(
         r.content.lines().next().unwrap_or("").contains("exit 0"),
         "{}",
@@ -1322,7 +1326,9 @@ async fn running_jobs_ride_along_on_later_results() {
     let (out, pgid, log) = run_lane(&tool, &ctx, "sleep 60", Some(1), true).await;
     assert!(out.content.starts_with("still running"), "{}", out.content);
     let id = tool.running_jobs(&ctx)[0].id.clone();
-    let later = tool.execute(&ctx, json!({"command": "echo hi | cat"})).await;
+    let later = tool
+        .execute(&ctx, json!({"command": "echo hi | cat"}))
+        .await;
     assert!(
         later.content.starts_with("exit 0"),
         "the result itself leads: {}",
@@ -1337,7 +1343,9 @@ async fn running_jobs_ride_along_on_later_results() {
     assert!(tail.contains(&format!("stop: `kill -- -{pgid}`")), "{tail}");
     // Another session never sees it.
     let other = ctx_for(&sess("footer-other"));
-    let theirs = tool.execute(&other, json!({"command": "echo hi | cat"})).await;
+    let theirs = tool
+        .execute(&other, json!({"command": "echo hi | cat"}))
+        .await;
     assert!(
         !theirs.content.contains("background job"),
         "{}",
@@ -1355,7 +1363,9 @@ async fn running_jobs_ride_along_on_later_results() {
     tool.cancel_job(&ctx, &id);
     assert!(wait_group_gone(pgid).await);
     wait_notices(&tool, &ctx).await;
-    let after = tool.execute(&ctx, json!({"command": "echo hi | cat"})).await;
+    let after = tool
+        .execute(&ctx, json!({"command": "echo hi | cat"}))
+        .await;
     assert!(
         !after.content.contains("background job"),
         "finished jobs drop off: {}",

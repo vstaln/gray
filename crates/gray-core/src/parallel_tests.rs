@@ -415,3 +415,47 @@ async fn join_cancel_marks_unfinished_none() {
         "cancelled calls yield None"
     );
 }
+
+#[test]
+fn archive_extractors_never_batch_as_reads() {
+    // Extraction writes files the command line never names, so it must not
+    // share a lane with concurrent readers (GC-4).
+    for command in [
+        "tar xf a.tar",
+        "tar -xzf release.tgz -C /tmp/x",
+        "bsdtar xf a.tar",
+        "unzip bundle.zip",
+        "gunzip data.gz",
+        "7z x pack.7z",
+        "cpio -id < in.cpio",
+    ] {
+        assert!(
+            !bash_is_batchable(command),
+            "extractor batched as read-only: {command}"
+        );
+    }
+    // Plain reads still batch.
+    assert!(bash_is_batchable("git diff --stat"));
+}
+
+#[test]
+fn rewrite_conflicts_demotes_only_the_rewritten_offender() {
+    // GC-6: a hook rewrote the second call into a write to the first call's
+    // path. The run must not execute it concurrently with the read.
+    let read = json!({"path": "a.rs"});
+    let rewritten_write = json!({"path": "a.rs", "content": "x"});
+    let calls: Vec<(&str, &Value)> = vec![("read", &read), ("write", &rewritten_write)];
+    assert_eq!(rewrite_conflicts(&calls), vec![1]);
+
+    // Untouched, non-interfering reads all stay in the lane.
+    let r1 = json!({"path": "a.rs"});
+    let r2 = json!({"path": "b.rs"});
+    let calls: Vec<(&str, &Value)> = vec![("read", &r1), ("read", &r2)];
+    assert!(rewrite_conflicts(&calls).is_empty());
+
+    // A batchable tool rewritten into an unenumerable bash command is demoted.
+    let grep = json!({"pattern": "y"});
+    let bash = json!({"command": "rm -rf build"});
+    let calls: Vec<(&str, &Value)> = vec![("grep", &grep), ("bash", &bash)];
+    assert_eq!(rewrite_conflicts(&calls), vec![1]);
+}

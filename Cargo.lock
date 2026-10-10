@@ -1077,7 +1077,6 @@ dependencies = [
  "image",
  "libc",
  "log",
- "percent-encoding",
  "ratatui",
  "regex",
  "reqwest",
@@ -1090,6 +1089,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "unicode-width 0.2.0",
+ "url",
  "uuid",
  "windows-sys 0.61.2",
 ]

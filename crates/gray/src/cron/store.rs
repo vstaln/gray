@@ -27,7 +27,7 @@ const JOB_ID_HEX_LEN: usize = 12;
 pub const TICKER_STALE_SECS: i64 = 300;
 
 pub fn now_secs() -> i64 {
-    chrono::Utc::now().timestamp()
+    gray_core::spill::now_secs()
 }
 
 /// Who holds a job while it fires: `at` is epoch seconds, `by` is
@@ -111,6 +111,11 @@ pub enum JobState {
     Active,
     Paused,
     Done,
+    /// Requested by a model (a gray session's bash tool) and not yet approved
+    /// by the user. Every gate that requires `Active` skips it, and `set_paused`
+    /// refuses it, so pause/resume cannot start it without `approve`.
+    #[serde(rename = "awaiting_approval")]
+    AwaitingApproval,
 }
 
 /// Outcome of the last fire. `delivery_failed` (send broke, run was fine) is
@@ -450,6 +455,63 @@ impl CronStore {
         script: Option<PathBuf>,
         reminder: bool,
     ) -> anyhow::Result<String> {
+        self.insert_job(
+            name,
+            schedule,
+            prompt,
+            deliver,
+            origin,
+            workdir,
+            skills,
+            script,
+            reminder,
+            JobState::Active,
+        )
+    }
+
+    /// [`Self::add_full`] for a job a model requested: stored as
+    /// `AwaitingApproval`, so nothing fires it until `approve` runs.
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_awaiting_approval(
+        &self,
+        name: &str,
+        schedule: &str,
+        prompt: &str,
+        deliver: Deliver,
+        origin: Option<Origin>,
+        workdir: Option<PathBuf>,
+        skills: Vec<String>,
+        script: Option<PathBuf>,
+        reminder: bool,
+    ) -> anyhow::Result<String> {
+        self.insert_job(
+            name,
+            schedule,
+            prompt,
+            deliver,
+            origin,
+            workdir,
+            skills,
+            script,
+            reminder,
+            JobState::AwaitingApproval,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn insert_job(
+        &self,
+        name: &str,
+        schedule: &str,
+        prompt: &str,
+        deliver: Deliver,
+        origin: Option<Origin>,
+        workdir: Option<PathBuf>,
+        skills: Vec<String>,
+        script: Option<PathBuf>,
+        reminder: bool,
+        state: JobState,
+    ) -> anyhow::Result<String> {
         validate_new_job(name, prompt, workdir.as_deref(), &skills, script.as_deref())?;
         let sched = parse_schedule(schedule)?;
         let now = now_secs();
@@ -464,9 +526,12 @@ impl CronStore {
             prompt: prompt.to_string(),
             schedule: sched,
             enabled: true,
-            state: JobState::Active,
+            state,
             created_at: now,
-            next_run_at: next_run(now, &parse_schedule(schedule)?),
+            next_run_at: match state {
+                JobState::Active => next_run(now, &parse_schedule(schedule)?),
+                _ => None,
+            },
             last_run_at: None,
             last_status: None,
             last_error: None,
@@ -644,12 +709,45 @@ impl CronStore {
             else {
                 return Ok(false);
             };
+            if job.state == JobState::AwaitingApproval {
+                anyhow::bail!(
+                    "job {:?} is awaiting approval; the user runs `gray cron approve {}`",
+                    job.name,
+                    job.id
+                );
+            }
             if paused {
                 job.state = JobState::Paused;
             } else {
                 job.state = JobState::Active;
                 job.next_run_at = next_run(now_secs(), &job.schedule);
             }
+            self.save_jobs(&mut raw, &jobs)?;
+            Ok(true)
+        })
+    }
+
+    /// Start a job the model requested: `AwaitingApproval` becomes `Active` and
+    /// its first run is computed from now. `Ok(false)` when the job is unknown.
+    /// An error when it is not awaiting approval, so a second approve says so.
+    pub fn approve(&self, id_or_name: &str) -> anyhow::Result<bool> {
+        with_jobs_lock(&self.lock_path(), || {
+            let mut raw = self.load_raw()?;
+            let mut jobs = Self::parse_jobs(&raw);
+            let Some(job) = jobs
+                .iter_mut()
+                .find(|j| j.id == id_or_name || j.name == id_or_name)
+            else {
+                return Ok(false);
+            };
+            if job.state != JobState::AwaitingApproval {
+                anyhow::bail!("job {:?} is not awaiting approval", job.id);
+            }
+            let Some(next) = next_run(now_secs(), &job.schedule) else {
+                anyhow::bail!("job {:?} has no future run to approve", job.id);
+            };
+            job.state = JobState::Active;
+            job.next_run_at = Some(next);
             self.save_jobs(&mut raw, &jobs)?;
             Ok(true)
         })

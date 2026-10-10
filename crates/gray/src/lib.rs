@@ -2,6 +2,7 @@
 
 pub mod ask;
 pub mod auth;
+pub mod auto_title;
 pub mod cache;
 pub mod compact;
 pub mod composer;
@@ -10,7 +11,6 @@ pub mod cron;
 pub mod cron_fire;
 pub mod cron_serve;
 pub mod cron_status;
-pub mod doctor;
 pub mod feedback;
 pub mod gateway;
 pub mod host;
@@ -22,6 +22,7 @@ pub mod plugin_cli;
 pub mod print;
 mod print_meter;
 pub mod profile;
+pub mod project_trust;
 pub mod prompt_templates;
 pub mod providers;
 pub mod repl;
@@ -578,6 +579,17 @@ pub enum Commands {
         #[command(subcommand)]
         cmd: GatewayCmd,
     },
+    /// Trust this project's own prompts, skills and AGENTS.md (or `--revoke`)
+    ///
+    /// Project-level content is ignored until trusted: a cloned repo can carry
+    /// instructions the model follows with unsandboxed tools.
+    Trust {
+        /// Project directory (default: current directory)
+        dir: Option<std::path::PathBuf>,
+        /// Stop trusting the project
+        #[arg(long)]
+        revoke: bool,
+    },
     /// Update gray to the latest release
     #[command(visible_alias = "upgrade")]
     Update,
@@ -585,12 +597,6 @@ pub enum Commands {
     Cron {
         #[command(subcommand)]
         cmd: CronCmd,
-    },
-    /// Diagnose this setup (pass --online to also reach the provider)
-    Doctor {
-        /// Also make one request to the provider (no tokens, just /models)
-        #[arg(long)]
-        online: bool,
     },
     /// Session store maintenance
     Sessions {
@@ -725,6 +731,12 @@ pub enum CronCmd {
     },
     /// Resume a suspended job (id or name; recomputes next run)
     Resume {
+        /// Job id or name
+        id: String,
+    },
+    /// Start a job a model requested (id or name). Run it from your own
+    /// terminal; a gray session cannot approve its own jobs.
+    Approve {
         /// Job id or name
         id: String,
     },

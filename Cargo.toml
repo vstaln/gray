@@ -9,16 +9,6 @@ members = [
     "crates/gray-plugin",
     "crates/gray-pkg",
 ]
-# Minimal core: no gateway member. Chat returns as a plugin, not a crate.
-default-members = [
-    "crates/gray",
-    "crates/gray-core",
-    "crates/gray-provider",
-    "crates/gray-tools",
-    "crates/gray-plugin",
-    "crates/gray-markdown",
-]
-
 [workspace.package]
 version = "0.2.0"
 edition = "2024"

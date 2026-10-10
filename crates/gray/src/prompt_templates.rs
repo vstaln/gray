@@ -270,11 +270,15 @@ pub fn discover(cwd: &Path) -> Vec<PromptTemplate> {
     }
     let gray_home = crate::setup::gray_home().ok();
     let home = gray_core::paths::user_home();
-    let list: Vec<PromptTemplate> =
-        discover_in(&search_dirs(cwd, gray_home.as_deref(), home.as_deref()))
-            .into_iter()
-            .filter(|t| !crate::repl::is_builtin_command(&t.name))
-            .collect();
+    let mut dirs = search_dirs(cwd, gray_home.as_deref(), home.as_deref());
+    // Project templates are repo content: skip them until the project is trusted.
+    if !crate::project_trust::is_trusted(&crate::skills::gray_agent_dir(), cwd) {
+        dirs.retain(|(_, source)| *source != "project");
+    }
+    let list: Vec<PromptTemplate> = discover_in(&dirs)
+        .into_iter()
+        .filter(|t| !crate::repl::is_builtin_command(&t.name))
+        .collect();
     if let Ok(mut guard) = CACHE.lock() {
         *guard = Some((cwd.to_path_buf(), Instant::now(), list.clone()));
     }

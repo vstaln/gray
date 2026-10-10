@@ -35,7 +35,7 @@ curl -fsSL https://gray.alignment.id/install.sh | sh && gray
 | **Always on** | The agent schedules its own work with `gray cron add`. `gray gateway install` runs it as a user service, so jobs fire with your terminal closed. |
 | **One binary, no runtime** | Static builds for Linux, macOS and Windows. `gray update` self-updates. |
 | **Bash is the tool** | Read, search, edit, run — all through one `bash` tool, with background jobs for long work. Point `exec_prefix` at a container or SSH box to run it somewhere else. |
-| **Sessions that survive** | JSONL transcripts with branching. `-c` reopens the latest, `/resume` picks any, `/undo` and `/retry` rewind. Context auto-compacts before the limit. |
+| **Sessions that survive** | JSONL transcripts with branching. `-c` reopens the latest, `/sessions` (alias `/resume`) picks any, `/undo` and `/retry` rewind. Context auto-compacts before the limit. |
 | **Remembers you** | Cross-session memory of your preferences and project decisions (`gray memory`). |
 | **Your setup already works** | Reads project `AGENTS.md` / `CLAUDE.md`, and `SKILL.md` skills from `~/.gray`, `~/.claude`, `~/.agents`, opencode and pi — no porting. Extend further with stdio plugins. |
 
@@ -66,7 +66,6 @@ gray                 # drops you at the prompt
 | `/connect` | pick a provider and paste a key — keys already in your environment are detected |
 | `/model` | searchable model picker |
 | `gray -p "fix the failing test"` | one-shot, non-interactive (`--json` for machine-readable events) |
-| `gray doctor` | check this machine's setup (`--online` also pings the provider) |
 
 An account at [gray.alignment.id](https://gray.alignment.id/account) is optional — it lives in the [gray-account](https://github.com/vstaln/gray-account) plugin (`gray account login` / `whoami` / `logout`), and nothing in gray is gated on it.
 
@@ -86,7 +85,7 @@ Slash commands autocomplete — Enter completes and fires, Tab inserts.
 
 | | |
 |---|---|
-| `/new` · `/resume [id\|--last\|--all]` | fresh conversation, or reopen one |
+| `/new` · `/sessions [id\|--last\|--all]` | fresh conversation, or reopen one |
 | `/model` · `/connect` | switch without leaving the chat |
 | `/compact [instructions]` | summarize context (also automatic) |
 | `/undo` · `/retry` | drop the last exchange · drop it and ask again (files are git's job) |
@@ -99,7 +98,7 @@ Slash commands autocomplete — Enter completes and fires, Tab inserts.
 | `/agentsmd` | edit the system prompt |
 | `/feedback <text>` | save feedback + open a prefilled GitHub issue |
 
-CLI: `gray resume`, `gray cron`, `gray gateway`, `gray plugin`, `gray memory`, `gray sessions prune`, `gray update`, `gray doctor`. Flags: `-p`, `-c`, `--session <ID>`, `--context-window`, `--json`, `--bare`. `--json` exits `0` success, `1` turn failed, `3` provider/network failure (retryable); error records carry a `code` and a `hint`.
+CLI: `gray resume`, `gray cron`, `gray gateway`, `gray plugin`, `gray memory`, `gray sessions prune`, `gray update`. Flags: `-p`, `-c`, `--session <ID>`, `--context-window`, `--json`, `--bare`. `--json` exits `0` success, `1` turn failed, `3` provider/network failure (retryable); error records carry a `code` and a `hint`.
 
 ## Extend
 

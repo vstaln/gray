@@ -66,7 +66,10 @@ fn model_switch_keeps_plugin_surface_and_new_model_side() {
     assert!(Arc::ptr_eq(&fresh.executor_handle(), &executor));
     let names: Vec<_> = fresh.tool_defs().iter().map(|t| t.name.as_str()).collect();
     assert_eq!(names, ["bash", "web_fetch"]);
-    assert_eq!(fresh.tool_labels.get("bash").map(String::as_str), Some("Ran"));
+    assert_eq!(
+        fresh.tool_labels.get("bash").map(String::as_str),
+        Some("Ran")
+    );
     assert_eq!(fresh.hooks().len(), 1);
     // The donor's rewrite hook is the one `with_messages` fires.
     assert_eq!(rewrites.load(Ordering::SeqCst), 1);

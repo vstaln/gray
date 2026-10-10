@@ -87,10 +87,12 @@ pub(crate) async fn handle_plugin_command(raw: &str, tui: Option<&crate::compose
             }
             Err(e) => {
                 if let Some(shared) = tui {
-                    shared
-                        .lock()
-                        .expect("tui lock")
-                        .push_dim(format!("└ error: {e}"));
+                    super::cron::push_notice(
+                        &mut shared.lock().expect("tui lock"),
+                        "Plugin error",
+                        &e.to_string(),
+                        true,
+                    );
                 }
             }
         }

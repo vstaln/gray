@@ -197,3 +197,18 @@ fn pull_then_ack_drains_a_platform() {
     let acked = ask(format!(r#"{{"verb":"ack","ids":["{}"]}}"#, i.id).as_bytes());
     assert_eq!(acked["result"]["acked"], 1, "{acked}");
 }
+
+#[test]
+fn identify_and_status_never_carry_the_process_argv() {
+    // argv holds the turn's `-p <prompt>` text; it must not leave the process.
+    let home = tempfile::tempdir().unwrap();
+    for req in [
+        br#"{"id":1,"verb":"identify","protocol":1}"#.as_slice(),
+        br#"{"id":2,"verb":"status","protocol":1}"#.as_slice(),
+    ] {
+        let line = handle_request_line(home.path(), req, 1000);
+        let answer: serde_json::Value = serde_json::from_slice(&line).unwrap();
+        assert_eq!(answer["ok"], serde_json::json!(true), "{answer}");
+        assert!(answer["result"].get("argv").is_none(), "{answer}");
+    }
+}

@@ -48,7 +48,10 @@ fn first_line(out: &gray_core::agent::ToolOutput) -> &str {
 #[tokio::test]
 async fn echo_hi_header_and_fence() {
     let out = BashTool::default()
-        .execute(&ToolContext::default(), json!({"command": "echo hi; exit 0"}))
+        .execute(
+            &ToolContext::default(),
+            json!({"command": "echo hi; exit 0"}),
+        )
         .await;
     assert!(!out.is_error, "{}", out.content);
     let head = first_line(&out);
@@ -242,7 +245,10 @@ async fn fence_escape_keeps_single_pair() {
 #[tokio::test]
 async fn empty_output_is_header_only() {
     let out = BashTool::default()
-        .execute(&ToolContext::default(), json!({"command": "printf '' | cat"}))
+        .execute(
+            &ToolContext::default(),
+            json!({"command": "printf '' | cat"}),
+        )
         .await;
     assert!(!out.is_error, "{}", out.content);
     assert!(!out.content.is_empty());
