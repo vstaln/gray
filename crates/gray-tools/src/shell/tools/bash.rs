@@ -256,6 +256,7 @@ impl Tool for BashTool {
             #[cfg(not(windows))]
             guard,
             detach.then_some(&*self.jobs),
+            cwd_report.clone(),
         )
         .await;
         // Whether it succeeded, failed or was killed: a `cd` that ran is a `cd`
@@ -1104,6 +1105,10 @@ async fn run_command(
     // Jobs lane: where a command that reaches its timeout is registered.
     // `None` (bare mode) makes the timeout a kill.
     adopt: Option<&jobs::Jobs>,
+    // The cwd scratch file this command still owes: a stalled run hands the
+    // shell to a background job whose trailing printf writes the report
+    // *after* adopt_reported_cwd already ran — the job waiter deletes it.
+    cwd_report: PathBuf,
 ) -> ToolOutput {
     let mut spawned = spawned;
     let last = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(now_grindmill()));
@@ -1174,6 +1179,7 @@ async fn run_command(
                         std::unreachable!("handoff=false never returns Stalled")
                     }
                 };
+                let _ = std::fs::remove_file(&cwd_report);
                 let _ = tx.send(Some(out));
             });
             notice
