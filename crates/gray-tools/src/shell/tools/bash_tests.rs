@@ -1379,7 +1379,11 @@ async fn running_jobs_ride_along_on_later_results() {
 
 #[tokio::test]
 async fn bare_noop_commands_are_steered_not_spawned() {
-    let ctx = ToolContext::default();
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = ToolContext {
+        cwd: dir.path().into(),
+        ..ToolContext::default()
+    };
     for cmd in [
         "true",
         ":",
@@ -1404,7 +1408,7 @@ async fn bare_noop_commands_are_steered_not_spawned() {
     // A compound that merely contains a no-op still reaches the shell.
     for cmd in [
         "true && echo ran",
-        "echo ran > /tmp/gray-noop-test-out",
+        "echo ran > gray-noop-test-out",
         "echo a; echo b",
         "echo x | wc -c",
         "echo $((40 + 2))",
@@ -1415,11 +1419,9 @@ async fn bare_noop_commands_are_steered_not_spawned() {
             .await;
         assert!(out.content.contains("exit 0"), "{cmd}: {}", out.content);
     }
-    assert_eq!(
-        std::fs::read_to_string("/tmp/gray-noop-test-out").unwrap(),
-        "ran\n"
-    );
-    std::fs::remove_file("/tmp/gray-noop-test-out").ok();
+    let out_file = ctx.cwd.join("gray-noop-test-out");
+    assert_eq!(std::fs::read_to_string(&out_file).unwrap(), "ran\n");
+    std::fs::remove_file(&out_file).ok();
 }
 
 #[tokio::test]
