@@ -42,6 +42,7 @@ impl Report {
 /// Run every check; `Err` (with per-check lines already printed) when any fail.
 pub async fn check_plugin_dir(dir: &str) -> anyhow::Result<()> {
     let argv = resolve_argv(Path::new(dir))?;
+    let argv0 = argv.first().cloned().unwrap_or_default();
     let plugin =
         match tokio::time::timeout(Duration::from_secs(35), SidecarPlugin::spawn(argv)).await {
             Ok(Ok(p)) => p,
@@ -67,6 +68,65 @@ pub async fn check_plugin_dir(dir: &str) -> anyhow::Result<()> {
             m.protocol
         ),
     }];
+
+    // argv `manifest` probe — the install/check convention: prints the same
+    // manifest the wire answers with.
+    let probe = tokio::time::timeout(
+        Duration::from_secs(10),
+        tokio::process::Command::new(&argv0)
+            .arg("manifest")
+            .stdin(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .output(),
+    )
+    .await;
+    reports.push(match probe {
+        Ok(Ok(o)) if o.status.success() => {
+            match serde_json::from_slice::<serde_json::Value>(&o.stdout) {
+                Ok(v) => {
+                    let name_ok = v.get("name").and_then(|n| n.as_str()) == Some(m.name.as_str());
+                    let proto_ok = v.get("protocol").is_some();
+                    Report {
+                        name: "argv-manifest",
+                        pass: name_ok && proto_ok,
+                        detail: format!(
+                            "argv manifest {} wire (name={}, protocol present={})",
+                            if name_ok && proto_ok {
+                                "agrees with"
+                            } else {
+                                "disagrees with"
+                            },
+                            name_ok,
+                            proto_ok
+                        ),
+                    }
+                }
+                Err(e) => Report {
+                    name: "argv-manifest",
+                    pass: false,
+                    detail: format!("manifest arg printed non-JSON: {e}"),
+                },
+            }
+        }
+        Ok(Ok(o)) => Report {
+            name: "argv-manifest",
+            pass: false,
+            detail: format!(
+                "manifest arg exited {:?} — install probe would fail",
+                o.status.code()
+            ),
+        },
+        Ok(Err(e)) => Report {
+            name: "argv-manifest",
+            pass: false,
+            detail: format!("manifest arg spawn failed: {e}"),
+        },
+        Err(_) => Report {
+            name: "argv-manifest",
+            pass: false,
+            detail: "manifest arg timed out".to_string(),
+        },
+    });
 
     // tool/call round-trip on the first tool (skipped when there are none).
     if let Some(tool) = plugin.tools().first().cloned() {
@@ -147,14 +207,12 @@ pub async fn check_plugin_dir(dir: &str) -> anyhow::Result<()> {
         });
     }
 
-    // command/run on the first claimed command (skipped when there are none).
-    if let Some(cmd) = m.commands.first().cloned() {
+    // command/run on every claimed command (skipped when there are none).
+    for cmd in m.commands.iter() {
         let t = std::time::Instant::now();
-        let outcome = tokio::time::timeout(
-            Duration::from_secs(15),
-            plugin.run_command(&cmd, Vec::new()),
-        )
-        .await;
+        let outcome =
+            tokio::time::timeout(Duration::from_secs(15), plugin.run_command(cmd, Vec::new()))
+                .await;
         reports.push(match outcome {
             Ok(Some(o)) => Report {
                 name: "command/run",

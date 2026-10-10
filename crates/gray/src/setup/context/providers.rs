@@ -1030,8 +1030,8 @@ pub(crate) fn save_provider_model_rows_at(
         return;
     }
     let path = home.join("provider_models.json");
-    let mut map = read_model_list_map(&path);
-    let old = map.remove(&base).unwrap_or_default();
+    let mut map = read_model_entries(&path);
+    let old = map.remove(&base).map(CacheEntry::rows).unwrap_or_default();
     let rows = rows
         .into_iter()
         .map(|row| match row {
@@ -1044,7 +1044,13 @@ pub(crate) fn save_provider_model_rows_at(
             full => full,
         })
         .collect();
-    map.insert(base, rows);
+    map.insert(
+        base,
+        CacheEntry::Stamped {
+            fetched_at: unix_now(),
+            rows,
+        },
+    );
     let Ok(s) = serde_json::to_string(&map) else {
         return;
     };
@@ -1060,14 +1066,74 @@ pub(crate) fn save_provider_model_rows_at(
     let _ = std::fs::rename(&tmp, path);
 }
 
-/// The whole cache file; missing or corrupt reads as empty.
+/// Cached model lists age out after a month: provider catalogs churn and an
+/// expired base key would paint a stale list forever (nothing else evicts).
+const PROVIDER_MODELS_TTL_SECS: u64 = 30 * 24 * 3600;
+
+/// One `provider_models.json` entry: the timestamped object current writes
+/// produce, or the legacy bare row array (age unknown — kept as-is; the
+/// next successful refresh rewrites it stamped).
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(untagged)]
+enum CacheEntry {
+    Stamped {
+        fetched_at: u64,
+        rows: Vec<crate::setup::variants::CachedRow>,
+    },
+    Rows(Vec<crate::setup::variants::CachedRow>),
+}
+
+impl CacheEntry {
+    fn rows(self) -> Vec<crate::setup::variants::CachedRow> {
+        match self {
+            CacheEntry::Stamped { rows, .. } | CacheEntry::Rows(rows) => rows,
+        }
+    }
+
+    /// Expired stamped entries are dead keys: dropping them makes the caller
+    /// fall back to a live fetch, and the next save removes them from disk.
+    fn fresh(self) -> Option<Self> {
+        match &self {
+            CacheEntry::Stamped { fetched_at, .. }
+                if unix_now().saturating_sub(*fetched_at) > PROVIDER_MODELS_TTL_SECS =>
+            {
+                None
+            }
+            _ => Some(self),
+        }
+    }
+}
+
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or_default()
+}
+
+/// The raw cache map with expired entries already dropped; missing or
+/// corrupt reads as empty.
+fn read_model_entries(path: &std::path::Path) -> std::collections::BTreeMap<String, CacheEntry> {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|s| {
+            serde_json::from_str::<std::collections::BTreeMap<String, CacheEntry>>(&s).ok()
+        })
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|(k, e)| e.fresh().map(|e| (k, e)))
+        .collect()
+}
+
+/// The whole cache file as plain row lists; missing or corrupt reads as
+/// empty.
 fn read_model_list_map(
     path: &std::path::Path,
 ) -> std::collections::BTreeMap<String, Vec<crate::setup::variants::CachedRow>> {
-    std::fs::read_to_string(path)
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default()
+    read_model_entries(path)
+        .into_iter()
+        .map(|(k, e)| (k, e.rows()))
+        .collect()
 }
 
 /// Best-effort load of one provider's cached rows (pairs and objects).

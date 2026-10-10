@@ -1085,10 +1085,18 @@ async fn run_lane(
     command: &str,
     secs: Option<u64>,
     jobs_lane: bool,
-) -> (ToolOutput, i32, PathBuf) {
+) -> (ToolOutput, i32, PathBuf, PathBuf) {
     let dir = tempfile::tempdir().unwrap().keep();
     let log = dir.join("bash-lane.log");
-    let spawned = spawn(command, Path::new("/"), ctx.session_id.as_deref(), None).expect("spawn");
+    // Exported like production: the command itself can write the report.
+    let report = dir.join("cwd-report.txt");
+    let spawned = spawn(
+        command,
+        Path::new("/"),
+        ctx.session_id.as_deref(),
+        Some(&report),
+    )
+    .expect("spawn");
     let pgid = spawned.pgid;
     let out = run_command(
         command.to_string(),
@@ -1099,9 +1107,42 @@ async fn run_lane(
         spawned,
         crate::shell::kill::GroupGuard::new(pgid),
         jobs_lane.then_some(&*tool.jobs),
+        report.clone(),
     )
     .await;
-    (out, pgid, log)
+    (out, pgid, log, report)
+}
+
+#[cfg(unix)]
+async fn wait_for_jobs(tool: &BashTool, ctx: &ToolContext) {
+    for _ in 0..100 {
+        if tool.jobs.running(ctx).is_empty() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    panic!("job never settled");
+}
+
+/// The /tmp/gray-cwd-*.txt leak: a stalled command's trailing printf writes
+/// the report AFTER the foreground path already cleaned up — the job waiter
+/// owns its deletion now.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_stalled_commands_late_cwd_report_is_deleted_when_the_job_settles() {
+    let tool = BashTool::default();
+    let ctx = ctx_for(&sess("cwd-report-job"));
+    let (out, _pgid, _log, report) = run_lane(
+        &tool,
+        &ctx,
+        "sleep 2; printf done > \"$GRAY_CWD_REPORT\"",
+        Some(1),
+        true,
+    )
+    .await;
+    assert!(out.content.starts_with("still running"), "{}", out.content);
+    wait_for_jobs(&tool, &ctx).await;
+    assert!(!report.exists(), "cwd report leaked: {report:?}");
 }
 
 #[cfg(unix)]
@@ -1129,7 +1170,7 @@ async fn bare_timeout_kills_and_says_how_to_rerun() {
     let tool = BashTool::default();
     let ctx = ctx_for(&sess("bare-timeout"));
     let t0 = Instant::now();
-    let (r, pgid, _) = run_lane(&tool, &ctx, "echo out; sleep 30", Some(1), false).await;
+    let (r, pgid, _, _) = run_lane(&tool, &ctx, "echo out; sleep 30", Some(1), false).await;
     assert!(t0.elapsed() < Duration::from_secs(15), "a kill, not a wait");
     assert!(!r.is_error, "killed command stays a result: {}", r.content);
     assert!(r.content.starts_with("timed out after 1s"), "{}", r.content);
@@ -1155,7 +1196,8 @@ async fn timeout_hands_off_to_a_job_never_kills() {
     let tool = BashTool::default();
     let ctx = ctx_for(&sess("handoff"));
     let t0 = Instant::now();
-    let (out, pgid, log) = run_lane(&tool, &ctx, "echo early; sleep 60", Some(1), true).await;
+    let (out, pgid, log, _report) =
+        run_lane(&tool, &ctx, "echo early; sleep 60", Some(1), true).await;
     assert!(
         t0.elapsed() < Duration::from_secs(15),
         "the call returns at its timeout"
@@ -1272,7 +1314,7 @@ async fn the_advertised_stop_command_kills_the_whole_tree_in_band() {
 async fn a_finished_job_reports_its_exit_and_log_never_its_output() {
     let tool = BashTool::default();
     let ctx = ctx_for(&sess("notice"));
-    let (out, _, log) = run_lane(
+    let (out, _, log, _report) = run_lane(
         &tool,
         &ctx,
         "echo IGNORE-PREVIOUS-INSTRUCTIONS; sleep 1.5; exit 3",
@@ -1327,7 +1369,7 @@ async fn running_jobs_ride_along_on_later_results() {
     // the original notice (compaction, a long detour) can still find it.
     let tool = BashTool::default();
     let ctx = ctx_for(&sess("footer"));
-    let (out, pgid, log) = run_lane(&tool, &ctx, "sleep 60", Some(1), true).await;
+    let (out, pgid, log, _report) = run_lane(&tool, &ctx, "sleep 60", Some(1), true).await;
     assert!(out.content.starts_with("still running"), "{}", out.content);
     let id = tool.running_jobs(&ctx)[0].id.clone();
     let later = tool

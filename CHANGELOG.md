@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-10
+
 ### Added
 - **User themes.** `~/.gray/themes/<name>.json` overrides any of the
   palette's color roles; `/theme <name>` switches and saves, `/theme new
@@ -21,9 +23,59 @@
 - **`/reload`** re-reads theme, keybindings, prompt templates and the
   status line.
 
+### Added
+- **Always-on gateway.** An optional agent brain runs in the gateway
+  daemon with outbox delivery; the heartbeat is gone — cron fires reach
+  chat-bound sessions through a spool any driver can deliver.
+- **Plugin protocol 2.0/1.3.** Four mutating hooks (`input/submit`,
+  `agent/before_start`, `context/build`, `tool/after`) plus live tool
+  sets that refresh on `host/tools_changed` instead of only at spawn.
+- **`provider/usage`.** Subscription providers can report quota windows
+  (Claude's five-hour/weekly buckets, Devin's ACU monthly window) into
+  `/usage`.
+- **Agents panel.** A plugin's `agent_picker` outcome opens an
+  interactive `/subagents`-style picker — browse runs, view transcripts,
+  chat into a run, resume a finished one's session. Read-only mode works
+  mid-turn.
+- **Project trust** for per-directory consent, **auto-titled sessions**,
+  and tool-style cards for cron/reminder/background-job wakes.
+- **Provider command argv, subscription tool policy, stream-phase cache
+  warming** (0.2.0 line): provider plugins declare `command/run` argv,
+  subscription auth carries a per-provider tool policy, and cache warmth
+  spans streaming, not just the request gap.
+
 ### Changed
 - Ctrl+A / Ctrl+E / Ctrl+U / Ctrl+K act on the current line of a
   multi-line draft instead of the whole draft.
+- **Bash tool is mini-swe-agent shaped** — `command` + `timeout` only;
+  detached background jobs ride the supervisor instead of tool flags.
+- **`/model` keeps running plugins.** A switch rebuilds only the model
+  side and adopts the live tool surface; the same provider's sidecar is
+  reused. First switch ~1.7 s cold, ~100 ms after — was ~15 s of serial
+  sidecar respawns.
+- **`gray plugin check` deepened**: probes `argv[0] manifest` for wire
+  parity and exercises every claimed command, not just the first.
+- **`provider_models.json` entries are stamped** (`{fetched_at, rows}`);
+  keys older than 30 days drop on read. Bare-array entries still load.
+- **Lower token burn per turn**: batched hint text, media stubs on the
+  wire, and a scrubbed request payload.
+
+### Fixed
+- **A slow `plugin/tools` answer no longer stalls every spawn.** The
+  first fetch is detached (sidecars announce via `host/tools_changed`),
+  so one 30 s plugin can't serialize the whole spawn loop.
+- **`context/build` past the 256 KiB frame cap** now elides the largest
+  text/tool payloads into restorable stubs instead of failing the
+  request — claiming plugins (cacheopt, pi-ext) used to go silently dead
+  for the rest of any long session.
+- **Assistant text around tool rounds is paragraph-separated** — a new
+  `MessageBoundary` event ends the streaming block so the next round's
+  reply never glues onto the previous sentence (`contain.I`).
+- The credential-acquire error on plugin providers is carried instead of
+  dropped; the `/connect` receipt names the real provider and matches
+  `/model`.
+- Windows test suite: file:// URL assertions are unix-gated and the
+  no-op steering test writes into a tempdir, not `/tmp`.
 
 ## [0.1.12] - 2026-10-07
 
