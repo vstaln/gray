@@ -1113,9 +1113,7 @@ fn unix_now() -> u64 {
 
 /// The raw cache map with expired entries already dropped; missing or
 /// corrupt reads as empty.
-fn read_model_entries(
-    path: &std::path::Path,
-) -> std::collections::BTreeMap<String, CacheEntry> {
+fn read_model_entries(path: &std::path::Path) -> std::collections::BTreeMap<String, CacheEntry> {
     std::fs::read_to_string(path)
         .ok()
         .and_then(|s| {

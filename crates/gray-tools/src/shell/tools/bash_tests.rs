@@ -1090,8 +1090,13 @@ async fn run_lane(
     let log = dir.join("bash-lane.log");
     // Exported like production: the command itself can write the report.
     let report = dir.join("cwd-report.txt");
-    let spawned =
-        spawn(command, Path::new("/"), ctx.session_id.as_deref(), Some(&report)).expect("spawn");
+    let spawned = spawn(
+        command,
+        Path::new("/"),
+        ctx.session_id.as_deref(),
+        Some(&report),
+    )
+    .expect("spawn");
     let pgid = spawned.pgid;
     let out = run_command(
         command.to_string(),
@@ -1191,7 +1196,8 @@ async fn timeout_hands_off_to_a_job_never_kills() {
     let tool = BashTool::default();
     let ctx = ctx_for(&sess("handoff"));
     let t0 = Instant::now();
-    let (out, pgid, log, _report) = run_lane(&tool, &ctx, "echo early; sleep 60", Some(1), true).await;
+    let (out, pgid, log, _report) =
+        run_lane(&tool, &ctx, "echo early; sleep 60", Some(1), true).await;
     assert!(
         t0.elapsed() < Duration::from_secs(15),
         "the call returns at its timeout"
