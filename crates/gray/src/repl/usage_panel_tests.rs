@@ -187,7 +187,7 @@ fn misses_none_shows_only_with_cache_activity() {
     let mut t = SessionTotals::default();
     t.add(&cached_usage(1_000, 100, 800, 100), MODEL, None);
     let text = usage_plain(&input_for(&t, Warmth::Unknown)).join("\n");
-    assert!(text.contains("Misses   none"), "{text}");
+    assert!(text.contains("Misses    none"), "{text}");
 }
 
 #[test]
@@ -214,4 +214,67 @@ fn negative_saved_flips_to_write_premium_note() {
     assert!(t.saved < 0.0, "saved should go negative: {}", t.saved);
     let text = usage_plain(&input_for(&t, Warmth::Unknown)).join("\n");
     assert!(text.contains("cache writes not yet paid back"), "{text}");
+}
+
+#[test]
+fn subscription_rows_render_windows_and_note() {
+    let limits = gray_plugin::ProviderUsageLimits {
+        available: true,
+        plan: Some("pro".into()),
+        title: Some("Claude".into()),
+        windows: vec![
+            gray_plugin::ProviderUsageWindow {
+                id: "five_hour".into(),
+                label: "Session".into(),
+                kind: "session".into(),
+                used_percent: Some(85.0),
+                resets_at: Some("2099-01-01T00:00:00Z".into()),
+                ..Default::default()
+            },
+            gray_plugin::ProviderUsageWindow {
+                id: "weekly_acu".into(),
+                label: "Weekly ACU".into(),
+                kind: "weekly".into(),
+                limit: Some(100.0),
+                unit: Some("ACU".into()),
+                ..Default::default()
+            },
+            gray_plugin::ProviderUsageWindow {
+                id: "overage".into(),
+                label: "Monthly overage".into(),
+                kind: "monthly".into(),
+                used: Some(100.1),
+                limit: Some(100.0),
+                unit: Some("USD".into()),
+                ..Default::default()
+            },
+        ],
+        note: Some("weekly split: Code 93%".into()),
+        ..Default::default()
+    };
+    let text = subscription_plain(&limits).join("\n");
+    assert!(text.contains("Session"), "{text}");
+    assert!(text.contains("85%"), "{text}");
+    assert!(text.contains("resets"), "{text}");
+    // A cap with no counter draws the hollow scale track + `cap N`.
+    assert!(text.contains("cap 100 ACU"), "{text}");
+    assert!(text.contains("\u{2591}".repeat(10).as_str()), "{text}");
+    assert!(text.contains("100.10/100 USD"), "{text}");
+    assert!(text.contains("weekly split: Code 93%"), "{text}");
+}
+
+#[test]
+fn subscription_rows_skip_empty_windows() {
+    let limits = gray_plugin::ProviderUsageLimits {
+        available: true,
+        windows: vec![gray_plugin::ProviderUsageWindow {
+            id: "x".into(),
+            label: "Empty".into(),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    // A label-only window still draws its row (it is data: the label).
+    let text = subscription_plain(&limits).join("\n");
+    assert!(text.contains("Empty"), "{text}");
 }

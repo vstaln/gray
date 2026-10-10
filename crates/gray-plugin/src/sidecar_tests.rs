@@ -256,6 +256,12 @@ async fn dynamic_plugin_refreshes_tools_on_tools_changed() {
             .map(|t| t.def().name.clone())
             .collect::<Vec<_>>()
     };
+    // The spawn-path `plugin/tools` refresh is detached — dyn_a lands a
+    // tick after spawn returns, not inline with it.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while names(&p).is_empty() && std::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
     assert_eq!(names(&p), vec!["dyn_a"]);
     let t = p.tools()[0].clone();
     let out = t

@@ -194,7 +194,8 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
     let queued_est: u16 = if n == 0 {
         0
     } else {
-        1 + n.min(3) as u16 + u16::from(n > 3)
+        // Header + previews + overflow row + one separator row below it.
+        1 + n.min(3) as u16 + u16::from(n > 3) + 1
     };
     let panel_est: u16 = tui.matches.len().min(PANEL_ROWS) as u16;
     // Inline `host/ask` modal (sidecar plugin questions): measured rows.

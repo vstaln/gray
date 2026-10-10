@@ -104,18 +104,27 @@ pub fn worth_refreshing(
     }
 }
 
+/// What the warmer knows about the prompt it is protecting. It starts as an
+/// estimate when the request goes out and is overwritten by the provider's
+/// report once the round's usage lands, so a refresh is judged on real
+/// numbers rather than the spawn-time guess.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct WarmHint {
+    pub(crate) prompt_tokens: usize,
+    pub(crate) cache_reported: bool,
+}
+
 /// Keeps the cache entry `req` wrote warm until aborted — it is spawned
 /// when the real request goes out, so a stream that runs past the TTL is
 /// covered the same as a long tool phase. `sent` is when the real request
-/// went out; `spent` collects each refresh's usage. `prompt_tokens` is an
-/// estimate (the request has not reported yet); `cache_reported` is whether
-/// some earlier request showed cache activity.
+/// went out; `spent` collects each refresh's usage. `hint` carries the prompt
+/// size and whether the provider has shown cache activity, and is updated
+/// by the caller as the round reports.
 pub(crate) async fn keep_warm(
     provider: Arc<dyn Provider>,
     mut req: ChatRequest,
     policy: CacheWarmPolicy,
-    prompt_tokens: usize,
-    cache_reported: bool,
+    hint: Arc<Mutex<WarmHint>>,
     sent: Instant,
     spent: Arc<Mutex<Usage>>,
 ) {
@@ -140,6 +149,12 @@ pub(crate) async fn keep_warm(
             log::debug!(target: "gray_agent", "cache warm: refresh deadline missed");
             return;
         }
+        // Read at refresh time: the round's own usage has usually landed by
+        // now and is exact, where the spawn-time values were a guess.
+        let WarmHint {
+            prompt_tokens,
+            cache_reported,
+        } = hint.lock().map(|h| *h).unwrap_or_default();
         if !worth_refreshing(
             (policy.prices)().as_ref(),
             prompt_tokens,

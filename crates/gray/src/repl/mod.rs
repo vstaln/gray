@@ -194,6 +194,7 @@ async fn spawn_hangup_policy() {}
 use crate::config::Config;
 use crate::{DEFAULT_SYS_PROMPT, build_agent, load_or_create_system_prompt_at};
 
+pub mod agents_panel;
 pub mod attachments;
 pub mod commands;
 mod cron;
@@ -254,7 +255,7 @@ pub(crate) fn say(tui: Option<&crate::composer::SharedTui>, msg: &str) {
         let mut t = t.lock().expect("tui lock");
         // No gap above: command cards skip their trailing gap so this hugs them.
         for line in msg.split('\n') {
-            t.push_dim(format!("└ {line}"));
+            t.push_dim(format!("  {line}"));
         }
         // Breathing room below command output before the next prompt.
         t.ensure_gap();
@@ -346,9 +347,12 @@ pub(crate) fn push_provider_connected(
     let detail = model_receipt_label(config);
     t.push_action(&format!("Connected to {prov_name}"), detail.as_deref());
     if let Some((old, new)) = clamped {
-        t.push_dim(format!(
-            "└ thinking effort clamped from {old} to {new} (not supported by this model)"
-        ));
+        cron::push_notice(
+            &mut t,
+            "Thinking effort clamped",
+            &format!("from {old} to {new} (not supported by this model)"),
+            false,
+        );
     }
     t.ensure_gap();
     let _ = t.draw();
@@ -360,7 +364,10 @@ pub(crate) fn push_provider_connected(
 pub(crate) fn model_receipt_label(config: &Config) -> Option<String> {
     let m = config.model.as_ref()?;
     Some(
-        match (&config.thinking_effort, crate::setup::composite_label_for(config)) {
+        match (
+            &config.thinking_effort,
+            crate::setup::composite_label_for(config),
+        ) {
             (_, Some(composite)) if config.fast_mode == Some(true) => {
                 format!("{composite} · fast")
             }
@@ -794,6 +801,12 @@ pub async fn run_repl_mode(
     // fails. Probe upfront and map init failure to a clean error — a panic
     // here exits 101 via the panic hook in main.rs (kept as-is for real
     // bugs); a clean error exits non-zero with a readable message instead.
+    // Resuming already shows its own line; otherwise nudge toward cut-off work.
+    let startup_hint = if interactive && resumed_session_info.is_none() {
+        crate::resume::startup_interrupted_hint(&cwd).await
+    } else {
+        None
+    };
     let tui: TuiOpt = if interactive {
         use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
         if crossterm::terminal::size().is_err() {
@@ -829,6 +842,10 @@ pub async fn run_repl_mode(
                     sid.as_str(),
                     entries.len()
                 ));
+                t.ensure_gap();
+            }
+            if let Some(h) = &startup_hint {
+                t.push_dim(h.clone());
                 t.ensure_gap();
             }
             t

@@ -2114,6 +2114,13 @@ pub(crate) fn ensure_disk_loaded() {
 /// through the same parsers the fetch tasks run (merge semantics keep
 /// re-application idempotent); never touches the network.
 pub(crate) fn warm_rates_from_disk_cache() {
+    // Unit tests share these process-global tables. Reading the developer's
+    // real `~/.gray/cache` would make results depend on whatever models.dev
+    // last served (e.g. gateway rows adding `xhigh` to a model), and on test
+    // order. Tests seed the tables themselves.
+    if cfg!(test) {
+        return;
+    }
     let Some(dir) = crate::setup::catalog::gray_home()
         .ok()
         .map(|h| h.join("cache"))

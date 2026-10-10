@@ -111,7 +111,8 @@ fn queued_preview_renders_header_and_entries() {
     q.push_back(("hello".to_string(), vec![]));
     q.push_back(("second\nline".to_string(), vec![]));
     let lines = queued_preview_lines(&q, 80);
-    assert_eq!(lines.len(), 3); // header + 2 entries
+    assert_eq!(lines.len(), 4); // header + 2 entries + separator
+    assert!(lines.last().is_some_and(|line| line.spans.is_empty()));
     let text: String = lines
         .iter()
         .map(|l| {

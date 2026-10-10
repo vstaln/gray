@@ -51,7 +51,6 @@ pub fn identify_payload(home: &Path) -> serde_json::Value {
         "version": env!("CARGO_PKG_VERSION"),
         "supervisor": super::service::supervisor_kind(),
         "uptime_secs": crate::cron::now_secs().saturating_sub(started_at),
-        "argv": std::env::args().collect::<Vec<_>>(),
     })
 }
 
@@ -333,8 +332,12 @@ pub fn query_within(home: &Path, verb: &str, timeout: Duration) -> Option<serde_
 
 #[cfg(unix)]
 fn unix_query_within(home: &Path, verb: &str, timeout: Duration) -> Option<serde_json::Value> {
+    use std::os::unix::fs::FileTypeExt;
     let path = sock_path(home);
-    if !path.exists() {
+    // Only a real socket counts. `symlink_metadata` does not follow links, so a
+    // symlink or plain file planted at this path is refused before connect.
+    let is_socket = std::fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_socket());
+    if !is_socket {
         return None;
     }
     let mut sock = std::os::unix::net::UnixStream::connect(&path).ok()?;

@@ -271,8 +271,10 @@ async fn a_late_timer_skips_the_refresh() {
         provider,
         ChatRequest::default(),
         policy(Some(sonnet())),
-        100_000,
-        true,
+        Arc::new(Mutex::new(WarmHint {
+            prompt_tokens: 100_000,
+            cache_reported: true,
+        })),
         sent,
         Arc::new(Mutex::new(Usage::default())),
     )

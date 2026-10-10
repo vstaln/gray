@@ -19,6 +19,31 @@ untrusted, and use a container or VM when isolation is required.
 Plugins are sidecar processes running with your user privileges — only
 install plugins you trust. Plugin manifests are not an OS sandbox; a `tool/before` deny blocks the call.
 Audit a plugin with `gray plugin check <dir>` before installing.
+`gray plugin check` runs the plugin's `tool/call` path, so checking untrusted
+code executes it. Audit the source first.
+
+## Project content trust
+
+A repo can ship instructions the model follows with unsandboxed tools:
+`.claude/commands/*.md`, `.gray/prompts`, `.pi/prompts`, `SKILL.md` files, and
+the `AGENTS.md` / `CLAUDE.md` rules gray serves as `<project_context>`. None of
+that loads for a project until you trust it:
+
+    gray trust            # the current project (its git root, or the cwd)
+    gray trust --revoke   # stop trusting it
+
+The list is `trusted_projects.json` in your gray home. It is never read from
+inside the project, so a repo cannot trust itself. Until trusted, gray ignores
+project-level content silently; the user-level prompts and skills still load.
+
+## Raw tool output on disk
+
+Full tool output is spilled to a local store (`gray spill cat` reads it back)
+before redaction. Redaction applies to what goes into the model's context,
+logs, and receipts, not to the spill store. Files are owner-only (0700 dir),
+and the store is capped by count, not age. Treat it like the session
+transcripts beside it: it can contain secrets a command printed. Delete it
+when you no longer need it.
 
 ## Update trust model
 

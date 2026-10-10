@@ -128,11 +128,15 @@ pub fn bash_is_batchable(command: &str) -> bool {
 /// below) plus same-family obvious mutators: `rmdir`, `unlink`, `ln`,
 /// `install` (also catches `pip`/`apt`/`gem install`), `dd`, `shred`,
 /// `truncate`, `chgrp`, `pkill`/`killall`, `shutdown`/`reboot`/`poweroff`/
-/// `halt`, `npx`, `scp`/`rsync`/`sftp`, `find -delete`.
+/// `halt`, `npx`, `scp`/`rsync`/`sftp`, `find -delete`, archive extractors
+/// (`tar`, `unzip`, …).
 const MUTATOR_WORDS: &[&str] = &[
     "rm", "mv", "cp", "mkdir", "touch", "rmdir", "unlink", "ln", "install", "dd", "shred",
     "truncate", "chmod", "chown", "chgrp", "sudo", "tee", "kill", "pkill", "killall", "shutdown",
     "reboot", "poweroff", "halt", "npx", "scp", "rsync", "sftp", "-delete",
+    // Archive extractors write arbitrary files at paths the command line
+    // never names, so they must not batch with concurrent readers.
+    "tar", "bsdtar", "unzip", "gunzip", "7z", "cpio",
 ];
 
 /// `sed` is a read-only stream filter unless it edits in place: `-i` in any
@@ -609,6 +613,28 @@ pub fn plan_segments(
         }
     }
     flush(&mut run, &mut out);
+    out
+}
+
+/// GC-6: `tool_before` rewrites run after [`plan_segments`] screened the
+/// model-sent arguments. Re-screen a run on the arguments that will actually
+/// execute. Returns the positions (into `calls`) that must not share the lane:
+/// calls with no enumerable touch set, and calls whose touch set interferes
+/// with an earlier kept call. Pure; the caller fails those calls closed.
+pub fn rewrite_conflicts(calls: &[(&str, &Value)]) -> Vec<usize> {
+    let mut kept: Vec<Touch> = Vec::new();
+    let mut out = Vec::new();
+    for (pos, (name, args)) in calls.iter().enumerate() {
+        let touch = if is_batchable(name) && args.is_object() {
+            classify_call(name, args)
+        } else {
+            None
+        };
+        match touch {
+            Some(t) if kept.iter().all(|u| !touches_interfere(u, &t)) => kept.push(t),
+            _ => out.push(pos),
+        }
+    }
     out
 }
 

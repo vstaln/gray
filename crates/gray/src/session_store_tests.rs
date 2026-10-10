@@ -619,6 +619,36 @@ async fn recall_validated_none_after_delete() {
 }
 
 #[tokio::test]
+async fn delete_removes_session_sidecars_and_leaves_others() {
+    let dir = tempdir().unwrap();
+    let store = JsonlSessionStore::new(dir.path());
+    let gone = SessionId::new("sidecar-gone");
+    let kept = SessionId::new("sidecar-kept");
+    for id in [&gone, &kept] {
+        store
+            .create(SessionMeta::new(id.clone(), 1, dir.path().join("w"), "m"))
+            .await
+            .unwrap();
+        write_title(dir.path(), id, "a title").unwrap();
+        write_dismissal(dir.path(), id, 5).unwrap();
+        std::fs::write(dir.path().join(format!("{}.autotitle", id.as_str())), "").unwrap();
+    }
+
+    store.delete(&gone).await.unwrap();
+
+    for ext in ["jsonl", "title", "dismissed", "autotitle"] {
+        assert!(
+            !dir.path().join(format!("{}.{ext}", gone.as_str())).exists(),
+            "{ext} survived delete"
+        );
+        assert!(
+            dir.path().join(format!("{}.{ext}", kept.as_str())).exists(),
+            "{ext} of another session was removed"
+        );
+    }
+}
+
+#[tokio::test]
 async fn origin_tag_survives_header_load_and_list() {
     let dir = tempdir().unwrap();
     let store = JsonlSessionStore::new(dir.path());

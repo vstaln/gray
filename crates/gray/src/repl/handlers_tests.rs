@@ -14,8 +14,12 @@ fn temp_skill_cwd_for_handlers_test(name: &str) -> tempfile::TempDir {
 
 #[test]
 fn skill_paste_is_what_the_model_gets() {
+    crate::project_trust::assume_trusted_for_test();
     // The visible paste and the model turn must be the same string:
     // what you see in chat is what the model gets.
+    // The paste contract is not the trust gate; trust is granted explicitly
+    // so this fixture never depends on the real trust list.
+    crate::project_trust::assume_trusted_for_test();
     let dir = temp_skill_cwd_for_handlers_test("paste-me");
     let cwd = dir.path();
     let out = expand_skill_command(parse_command("/skills paste-me"), cwd, None, false);
@@ -134,6 +138,7 @@ fn skills_auto_toggle_persists_and_on_clears_disabled_set() {
 
 #[test]
 fn skills_named_on_off_still_invoke_instead_of_toggling_global() {
+    crate::project_trust::assume_trusted_for_test();
     // A skill literally named `on`/`enable` stays invokable: the global
     // branch yields to an exact discovery hit.
     let dir = temp_skill_cwd_for_handlers_test("on");

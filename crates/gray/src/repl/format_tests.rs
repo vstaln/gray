@@ -31,9 +31,15 @@ fn nested_devin_limit_is_actionable_without_retry_logs() {
         serde_json::json!({"error": {"message": message}})
     );
     let out = format_core_error(&CoreError::ServerError(detail), "https://127.0.0.1:1/");
-    assert_eq!(
-        out,
-        "✗ Model limit reached\n  Resets in 6 hours 9 minutes (21:01 UTC).\n  Run /model to switch to another model."
+    // The clock time is rendered in the machine's local zone, so only the
+    // surrounding text is stable across environments.
+    assert!(
+        out.starts_with("✗ Model limit reached\n  Resets in 6 hours 9 minutes ("),
+        "{out}"
+    );
+    assert!(
+        out.ends_with(").\n  Run /model to switch to another model."),
+        "{out}"
     );
 }
 
@@ -191,4 +197,16 @@ fn typed_taxonomy_arms_never_fall_through_to_agent_error() {
         assert!(out.contains(want), "missing {want}: {out}");
         assert!(!out.contains("agent error"), "fell through: {out}");
     }
+}
+
+#[test]
+fn localize_utc_time_converts_to_offset() {
+    use chrono::{FixedOffset, TimeZone, Utc};
+    let now = Utc.with_ymd_and_hms(2026, 10, 10, 7, 45, 0).unwrap();
+    let wib = FixedOffset::east_opt(7 * 3600).unwrap();
+    assert_eq!(
+        super::localize_utc_time_with("08:01 UTC", now, wib).as_deref(),
+        Some("15:01")
+    );
+    assert_eq!(super::localize_utc_time_with("tomorrow", now, wib), None);
 }

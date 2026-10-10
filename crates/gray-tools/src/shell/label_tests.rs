@@ -185,7 +185,7 @@ fn listings_and_searches() {
         Some((
             Look::Searched,
             strs(&["fn main"]),
-            Some("in crates/gray/src".into())
+            Some("crates/gray/src".into())
         ))
     );
     assert_eq!(
@@ -194,12 +194,12 @@ fn listings_and_searches() {
     );
     assert_eq!(
         look("find crates -name '*.rs'"),
-        Some((Look::Searched, strs(&["*.rs"]), Some("in crates".into())))
+        Some((Look::Searched, strs(&["*.rs"]), Some("crates".into())))
     );
     assert_eq!(look("find src -type d").map(|l| l.0), Some(Look::Listed));
     assert_eq!(
         look("fd label crates"),
-        Some((Look::Searched, strs(&["label"]), Some("in crates".into())))
+        Some((Look::Searched, strs(&["label"]), Some("crates".into())))
     );
 }
 

@@ -64,7 +64,7 @@ fn shell_label_basename() {
 fn url_is_prefilled_and_encoded() {
     let u = issue_url("a b", "c&d");
     assert!(u.starts_with(ISSUES_NEW_URL));
-    assert!(u.contains("title=a%20b"), "{u}");
+    assert!(u.contains("title=a+b"), "{u}");
     assert!(u.contains("body=c%26d"), "{u}");
 }
 

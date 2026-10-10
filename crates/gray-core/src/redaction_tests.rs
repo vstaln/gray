@@ -444,3 +444,23 @@ fn multi_line_text_is_redacted_line_by_line() {
         "lines after a hit were deleted: {out:?}"
     );
 }
+
+#[test]
+fn backtick_and_asterisk_wrapped_secrets_are_replaced() {
+    // Markdown wrapping must not hide a secret from the redactor, and the
+    // receipt must not claim nothing was removed.
+    for input in [
+        "key=`sk-live-abc123def456`",
+        "token=*sk-live-abc123def456*",
+        "`sk-live-abc123def456`",
+        "**sk-live-abc123def456**",
+    ] {
+        let redaction = redact_for_disclosure(input);
+        assert!(
+            !redaction.text().contains("sk-live-abc123def456"),
+            "secret survived from {input:?}: {}",
+            redaction.text()
+        );
+        assert!(redaction.redacted(), "no receipt for {input:?}");
+    }
+}

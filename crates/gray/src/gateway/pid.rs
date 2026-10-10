@@ -86,8 +86,11 @@ fn windows_process(pid: u32) -> Option<(bool, Option<u64>)> {
         if handle.is_null() {
             return (GetLastError() == ERROR_ACCESS_DENIED).then_some((true, None));
         }
+        // A failed query proves nothing about liveness: treat it as gone, so a
+        // stale record is cleaned up instead of pinning the claim forever.
         let mut code = 0;
-        let alive = GetExitCodeProcess(handle, &mut code) == 0 || code == 259;
+        let queried = GetExitCodeProcess(handle, &mut code) != 0;
+        let alive = queried && code == 259; // STILL_ACTIVE
         let mut creation: FILETIME = std::mem::zeroed();
         let mut exit: FILETIME = std::mem::zeroed();
         let mut kernel: FILETIME = std::mem::zeroed();
@@ -153,12 +156,16 @@ fn hold_claim_lock(home: &Path) -> Option<std::fs::File> {
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    let f = std::fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .open(&path)
-        .ok()?;
+    // The lock names the gateway's pid and start time: keep it owner-only
+    // whatever the umask is.
+    let mut opts = std::fs::OpenOptions::new();
+    opts.create(true).truncate(false).write(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    let f = opts.open(&path).ok()?;
     let deadline = std::time::Instant::now() + CLAIM_LOCK_TIMEOUT;
     loop {
         match f.try_lock() {

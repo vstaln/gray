@@ -878,6 +878,19 @@ pub async fn register_native(
         },
     );
     lock.save(&gray_plugin::lock::lock_path(home))?;
+    if !(manifest["widget"].as_bool() == Some(true) && !wire_only) {
+        // Reinstalling a plugin that dropped its widget (or became wire-only,
+        // where `binary widget` cannot run) must retire the old slot too.
+        let widgets = home.join("plugins/widgets.json");
+        if let Ok(raw) = std::fs::read(&widgets)
+            && serde_json::from_slice::<serde_json::Value>(&raw)
+                .ok()
+                .and_then(|v| v["name"].as_str().map(str::to_string))
+                == Some(name.clone())
+        {
+            let _ = std::fs::remove_file(&widgets);
+        }
+    }
     let mut metadata = tempfile::NamedTempFile::new_in(home.join("plugins"))?;
     use std::io::Write;
     writeln!(metadata, "{}", manifest)?;
@@ -1292,9 +1305,16 @@ done
         )
         .unwrap();
         std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::create_dir_all(home.path().join("plugins")).unwrap();
+        std::fs::write(
+            home.path().join("plugins/widgets.json"),
+            r#"{"name":"wiretest","argv":["old","widget"]}"#,
+        )
+        .unwrap();
         register_native(home.path(), None, &exe, false)
             .await
             .unwrap();
+        assert!(!home.path().join("plugins/widgets.json").exists());
         let lock = load_lock(home.path()).unwrap();
         let entry = &lock.plugins["wiretest"];
         // register_native canonicalizes (macOS: /var → /private/var).

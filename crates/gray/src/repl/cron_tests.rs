@@ -243,11 +243,17 @@ fn cron_card_header_names_job_status_and_time() {
         elapsed_ms: 18_400,
     };
     let (header, body) = cron_card_lines(&card, 80);
-    assert_eq!(card_text(&header), "\u{2b22} Cron sandbox-probe \u{b7} done \u{b7} 18.4s");
+    assert_eq!(
+        card_text(&header),
+        "\u{2b22} Cron sandbox-probe \u{b7} done \u{b7} 18.4s"
+    );
     let joined: String = body.iter().map(card_text).collect::<Vec<_>>().join("\n");
     assert!(joined.contains("sandbox-probe.txt"), "{joined}");
     assert!(!joined.contains("[tool:"), "{joined}");
-    assert!(body.iter().all(|l| card_text(l).starts_with("  ")), "{joined}");
+    assert!(
+        body.iter().all(|l| card_text(l).starts_with("  ")),
+        "{joined}"
+    );
 }
 
 #[test]
@@ -271,7 +277,10 @@ fn cron_card_reminder_and_failure_headers() {
         elapsed_ms: 2_000,
     };
     let (header, _) = cron_card_lines(&failed, 80);
-    assert_eq!(card_text(&header), "\u{2b22} Cron nightly \u{b7} failed \u{b7} 2s");
+    assert_eq!(
+        card_text(&header),
+        "\u{2b22} Cron nightly \u{b7} failed \u{b7} 2s"
+    );
 }
 
 #[test]

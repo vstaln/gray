@@ -73,6 +73,9 @@ pub(crate) fn items(
                 crate::cron::store::JobState::Active => ("\u{25cb}", " [disabled]", false, false),
                 crate::cron::store::JobState::Paused => ("\u{25cb}", " [paused]", false, true),
                 crate::cron::store::JobState::Done => ("\u{b7}", " [done]", false, false),
+                crate::cron::store::JobState::AwaitingApproval => {
+                    ("?", " [awaiting approval]", false, false)
+                }
             };
             let next = j
                 .next_run_at
@@ -193,7 +196,7 @@ pub(super) fn parse_job_notice(notice: &str) -> Option<JobCard> {
 }
 
 /// `⬢ <verb><title>` in the same type as tool-call headers.
-fn card_header_spans(
+pub(super) fn card_header_spans(
     verb: &str,
     title: String,
     failed: bool,
@@ -201,7 +204,11 @@ fn card_header_spans(
     use ratatui::style::{Modifier, Style};
     use ratatui::text::Span;
     let th = crate::theme::theme();
-    let bullet = if failed { th.error_soft } else { th.tool_accent };
+    let bullet = if failed {
+        th.error_soft
+    } else {
+        th.tool_accent
+    };
     vec![
         Span::styled(
             "\u{2b22} ",
@@ -209,13 +216,44 @@ fn card_header_spans(
         ),
         Span::styled(
             verb.to_string(),
-            Style::default().fg(th.text_body).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(th.text_body)
+                .add_modifier(Modifier::BOLD),
         ),
         Span::styled(
             title,
-            Style::default().fg(th.tool_command).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(th.tool_command)
+                .add_modifier(Modifier::BOLD),
         ),
     ]
+}
+
+/// Header + dim body rows of a notice card: `⬢ <verb>`, then `detail` one row
+/// per line. Every command notice shares this shape (see `push_notice`).
+pub(super) fn notice_card(
+    verb: &str,
+    detail: &str,
+    failed: bool,
+) -> (
+    ratatui::text::Line<'static>,
+    Vec<ratatui::text::Line<'static>>,
+) {
+    use ratatui::style::Style;
+    use ratatui::text::{Line, Span};
+    let dim = Style::default().fg(crate::theme::theme().tool_dim);
+    let header = Line::from(card_header_spans(verb, String::new(), failed));
+    let body = detail
+        .lines()
+        .map(|row| Line::from(Span::styled(format!("  {row}"), dim)))
+        .collect();
+    (header, body)
+}
+
+/// Pushes a notice card onto the transcript (see `notice_card`).
+pub(super) fn push_notice(t: &mut crate::composer::Tui, verb: &str, detail: &str, failed: bool) {
+    let (header, body) = notice_card(verb, detail, failed);
+    t.push_tool_box(header, body);
 }
 
 /// Header + body rows of a background-job box:
@@ -238,7 +276,9 @@ pub(super) fn job_card_lines(
     } else {
         Span::styled(
             card.outcome.clone(),
-            Style::default().fg(th.error_soft).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(th.error_soft)
+                .add_modifier(Modifier::BOLD),
         )
     });
     spans.push(Span::styled(format!(" \u{b7} {}", card.elapsed), dim));
@@ -279,14 +319,19 @@ pub(super) fn cron_card_lines(
         spans.push(Span::styled(" \u{b7} ", dim));
         spans.push(Span::styled(
             "failed",
-            Style::default().fg(th.error_soft).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(th.error_soft)
+                .add_modifier(Modifier::BOLD),
         ));
     } else if !card.reminder {
         spans.push(Span::styled(" \u{b7} done", dim));
     }
     if card.elapsed_ms > 0 {
         spans.push(Span::styled(
-            format!(" \u{b7} {}", super::format::fmt_duration_ms(card.elapsed_ms)),
+            format!(
+                " \u{b7} {}",
+                super::format::fmt_duration_ms(card.elapsed_ms)
+            ),
             dim,
         ));
     }
@@ -385,3 +430,26 @@ async fn wait_then_wake(
 #[path = "cron_tests.rs"]
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod notice_card_tests {
+    use super::notice_card;
+
+    fn text(line: &ratatui::text::Line<'_>) -> String {
+        line.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    #[test]
+    fn notice_is_a_bullet_header_with_one_dim_row() {
+        let (header, body) = notice_card("Nothing to compact", "conversation is empty", false);
+        assert_eq!(text(&header), "\u{2b22} Nothing to compact");
+        assert_eq!(body.len(), 1);
+        assert_eq!(text(&body[0]), "  conversation is empty");
+    }
+
+    #[test]
+    fn multi_line_detail_is_one_body_row_each() {
+        let (_, body) = notice_card("Context update failed", "a\nb", true);
+        assert_eq!(body.iter().map(text).collect::<Vec<_>>(), ["  a", "  b"]);
+    }
+}

@@ -474,10 +474,6 @@ fn write_last_check(now_secs: u64) {
     }
 }
 
-fn now_secs() -> u64 {
-    chrono::Utc::now().timestamp().try_into().unwrap_or(0)
-}
-
 /// Auto self-update is stable-channel only: beta redeploys on every push to
 /// main, so GRAY_AUTO_UPDATE=1 on beta would be a per-commit curl|sh
 /// subscription. Manual `gray update` stays unconditional.
@@ -500,7 +496,7 @@ pub async fn startup_check() {
     if cfg!(debug_assertions) || current == "0.0.0" {
         return;
     }
-    let now = now_secs();
+    let now = gray_core::spill::now_secs() as u64;
     if !update_check_due(read_last_check(), now) {
         return;
     }
