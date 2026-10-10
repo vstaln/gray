@@ -173,7 +173,7 @@ pub(crate) async fn handle_resume(
                     super::cron::push_notice(
                         &mut shared.lock().expect("tui lock"),
                         "Sessions",
-                        &msg,
+                        msg,
                         false,
                     );
                 } else {
@@ -767,7 +767,7 @@ pub(crate) fn dispatch_agent_event(
                 if !details.is_empty() && t.last_retry_detail.as_deref() != Some(details.as_str()) {
                     t.last_retry_detail = Some(details.clone());
                     let trunc = crate::repl::format::truncate_chars(details, 200);
-                    super::cron::push_notice(&mut t, "Reconnecting", &trunc, false);
+                    super::cron::push_notice(&mut t, "Reconnecting", trunc, false);
                 }
             }
             // A mid-turn injected note (nudge / finished-job follow-up)
