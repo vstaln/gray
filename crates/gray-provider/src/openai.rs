@@ -1419,8 +1419,11 @@ fn error_body_message(body: &str) -> Option<String> {
 // exhausted balance burns the full request body against zero quota (and
 // the 429 floor would stall the turn for nothing). Narrow phrases only —
 // bare "billing"/"plan" also appear in legit rate-limit upsell copy.
-const QUOTA_EXHAUSTED_HINTS: [&str; 10] = [
+const QUOTA_EXHAUSTED_HINTS: [&str; 11] = [
     "insufficient_quota",
+    // ChatGPT plan usage (Sign in with ChatGPT): the plan's or this app's
+    // cap is spent; only the user raising it in ChatGPT settings helps.
+    "subscription_sharing_usage_limit_exceeded",
     "insufficient quota",
     "insufficient credits",
     "insufficient balance",
@@ -2082,11 +2085,32 @@ fn process_dynamic_event(
                 .and_then(|v| v.as_str())
                 .or_else(|| value.get("message").and_then(|v| v.as_str()))
                 .unwrap_or("provider stream failed");
-            return Err(ProviderError::Stream(detail.to_string()));
+            return Err(stream_failure(&value, detail.to_string()));
         }
         _ => {}
     }
     Ok(false)
+}
+
+/// A `response.failed`/`error` event as an error. Quota exhaustion is
+/// terminal exactly like its HTTP twin in [`classify_http_error`] (the code
+/// may arrive only here, after the stream opened); anything else stays a
+/// retryable stream failure.
+fn stream_failure(event: &Value, detail: String) -> ProviderError {
+    let code = event
+        .get("response")
+        .and_then(|r| r.get("error"))
+        .or_else(|| event.get("error"))
+        .unwrap_or(event)
+        .get("code")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_lowercase();
+    if QUOTA_EXHAUSTED_HINTS.iter().any(|h| code.contains(h)) {
+        ProviderError::Auth(detail)
+    } else {
+        ProviderError::Stream(detail)
+    }
 }
 
 async fn dynamic_step(
@@ -3514,9 +3538,10 @@ fn stream_unfold_step(
                                         })
                                         .unwrap_or_else(|| typ.to_string());
                                     return Some((
-                                        Err(ProviderError::Stream(format!(
-                                            "responses stream failed: {detail}"
-                                        ))),
+                                        Err(stream_failure(
+                                            &value,
+                                            format!("responses stream failed: {detail}"),
+                                        )),
                                         StreamState::Done,
                                     ));
                                 }

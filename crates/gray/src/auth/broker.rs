@@ -169,12 +169,10 @@ impl gray_core::credential::CredentialSource for PluginCredentialSource {
                 metadata: stored.credential.metadata.clone(),
             });
         }
-        if valid_lease(&stored, 0).is_none() {
-            self.store
-                .remove(&auth_ref)
-                .map_err(|e| CredentialError::Store(e.to_string()))?;
-            return Err(CredentialError::ReauthRequired(identity));
-        }
+        // An expired access token is still renewable while the refresh token
+        // lives (hour-long tokens are routinely dead after a laptop sleeps):
+        // only a method that cannot refresh fails closed on expiry. A dead
+        // refresh token comes back as a terminal rotation error instead.
         if !self
             .installed
             .auth_method
@@ -182,6 +180,11 @@ impl gray_core::credential::CredentialSource for PluginCredentialSource {
             .iter()
             .any(|operation| operation == "refresh")
         {
+            if valid_lease(&stored, 0).is_none() {
+                self.store
+                    .remove(&auth_ref)
+                    .map_err(|e| CredentialError::Store(e.to_string()))?;
+            }
             return Err(CredentialError::ReauthRequired(identity));
         }
 
