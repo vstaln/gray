@@ -100,7 +100,7 @@ pub(crate) fn wrap_line(chars: &[char], content_w: usize, cursor: Option<usize>)
             .position(|&(_, end)| c <= end)
             .unwrap_or(rows.len() - 1);
         let (s, e) = rows[row];
-        (row, c.clamp(s, e) - s)
+        (row, crate::text_width::chars_width(&chars[s..c.clamp(s, e)]))
     });
     (rows, at)
 }

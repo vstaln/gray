@@ -16,7 +16,7 @@ fn transcript_ends_blank_matches_ensure_gap() {
 #[test]
 fn desired_viewport_exact_fit() {
     let box_rows = build_input_box("", 0, 80, None, None, &[]).lines.len() as u16;
-    assert_eq!(box_rows, 2, "prompt + bottom pad");
+    assert_eq!(box_rows, 3, "top pad + prompt + bottom pad");
 
     assert_eq!(
         desired_viewport_h(0, 0, 0, box_rows, 0, 0, 1, viewport_cap(40)),
@@ -25,17 +25,17 @@ fn desired_viewport_exact_fit() {
 
     assert_eq!(
         desired_viewport_h(0, 0, 0, box_rows, 6, 0, 1, viewport_cap(40)),
-        9
+        10
     );
 
     assert_eq!(
         desired_viewport_h(2, 0, 0, box_rows, 0, 0, 1, viewport_cap(40)),
-        5
+        6
     );
 
     assert_eq!(
         desired_viewport_h(3, 0, 0, box_rows, 6, 0, 1, viewport_cap(40)),
-        12
+        13
     );
 
     assert_eq!(desired_viewport_h(0, 0, 0, 0, 15, 0, 1, 23), 16);
