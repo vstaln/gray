@@ -51,6 +51,19 @@ pub(crate) struct InputBox {
 
 pub(crate) type InputCell = (char, Style);
 
+fn marker_kind_label(marker_text: &str) -> &'static str {
+    match marker_text
+        .get(1..marker_text.find(':').unwrap_or(1))
+        .unwrap_or_default()
+    {
+        "image" => "Image",
+        "video" => "Video",
+        "audio" => "Audio",
+        "pdf" => "PDF",
+        _ => "File",
+    }
+}
+
 pub(crate) fn chip_cells(
     chips: &[(&str, &str)],
     pill: Style,
@@ -126,52 +139,6 @@ fn styled_runs(cells: &[InputCell]) -> Vec<Span<'static>> {
     spans
 }
 
-fn restyle_attachment_markers(cells: &mut [InputCell]) {
-    let t = crate::theme::theme();
-    let pill = Style::default().fg(t.text_bright).bg(t.input_bg);
-    let label = Style::default().fg(t.text_muted).bg(t.surface_bg);
-    let n = cells.len();
-    let mut i = 0;
-    while i < n {
-        if cells[i].0 != '[' {
-            i += 1;
-            continue;
-        }
-        let matched = crate::repl::attachments::MARKER_PREFIXES.iter().find(|p| {
-            p.chars()
-                .enumerate()
-                .all(|(k, c)| cells.get(i + 1 + k).is_some_and(|cell| cell.0 == c))
-        });
-        let Some(prefix) = matched else {
-            i += 1;
-            continue;
-        };
-        let klen = prefix.len() - 2;
-        let name_start = i + 1 + prefix.len();
-        let mut j = name_start;
-        while j < n && cells[j].0 != ']' && cells[j].0 != '\n' {
-            j += 1;
-        }
-        if j < n && cells[j].0 == ']' && j > name_start {
-            cells[i].0 = ' ';
-            for (k, c) in prefix[..klen].to_uppercase().chars().enumerate() {
-                cells[i + 1 + k].0 = c;
-            }
-            cells[i + klen + 1].0 = ' ';
-            cells[j].0 = ' ';
-            for cell in &mut cells[i..i + klen + 2] {
-                cell.1 = pill;
-            }
-            for cell in &mut cells[i + klen + 2..=j] {
-                cell.1 = label;
-            }
-            i = j + 1;
-        } else {
-            i += 1;
-        }
-    }
-}
-
 pub(crate) fn build_input_box(
     text: &str,
     cursor: usize,
@@ -189,6 +156,8 @@ pub(crate) fn build_input_box(
 
     let mut box_lines: Vec<Line<'static>> = Vec::new();
 
+    box_lines.push(Line::from(""));
+
     let arrow_span = Span::styled(
         " ❯ ",
         Style::default()
@@ -205,20 +174,50 @@ pub(crate) fn build_input_box(
     let line_count = text.split('\n').count();
     for (i, raw_line) in text.split('\n').enumerate() {
         let mut cells: Vec<InputCell> = Vec::new();
+        let mut vis_of_char: Vec<usize> = Vec::new();
         if i == 0 && text.is_empty() && chips.is_empty() {
             if let Some(hint) = ghost {
                 cells.extend(hint.chars().map(|c| (c, ghost_style)));
             }
+            vis_of_char.push(0);
         } else {
-            cells.extend(raw_line.chars().map(|c| (c, draft_style)));
-            restyle_attachment_markers(&mut cells);
+            // attachment markers render as chips at their position in the
+            // draft — vis_of_char maps raw char indices to cell indices so
+            // the caret lands right of a chip anywhere inside or past it
+            let markers = crate::repl::attachments::attachment_markers(raw_line);
+            let t = crate::theme::theme();
+            let pill = Style::default().fg(t.text_bright).bg(t.input_bg);
+            let label = Style::default().fg(t.text_muted).bg(t.surface_bg);
+            let gap = Style::default().bg(t.surface_bg);
+            let mut m = 0usize;
+            for (byte_i, ch) in raw_line.char_indices() {
+                while m < markers.len() && byte_i >= markers[m].0.end {
+                    m += 1;
+                }
+                if m < markers.len() && byte_i == markers[m].0.start {
+                    vis_of_char.push(cells.len());
+                    let (range, name) = &markers[m];
+                    let kind = marker_kind_label(&raw_line[range.clone()]);
+                    cells.extend(chip_cells(&[(kind, name.as_str())], pill, label, gap));
+                    continue;
+                }
+                let in_marker = m < markers.len()
+                    && byte_i > markers[m].0.start
+                    && byte_i < markers[m].0.end;
+                vis_of_char.push(cells.len());
+                if !in_marker {
+                    cells.push((ch, draft_style));
+                }
+            }
+            vis_of_char.push(cells.len());
         }
         if i + 1 == line_count {
             cells.extend_from_slice(chips);
         }
 
         let chars: Vec<char> = cells.iter().map(|c| c.0).collect();
-        let at_here = (i == cur_line).then_some(cur_char);
+        let at_here = (i == cur_line)
+            .then(|| vis_of_char.get(cur_char).copied().unwrap_or(cells.len()));
         let (rows, at) = wrap_line(&chars, content_w, at_here);
         let first_row = box_lines.len();
         for (r, &(s, e)) in rows.iter().enumerate() {
@@ -340,7 +339,6 @@ fn home_rows(home: HomeRows, w: usize) -> Vec<Line<'static>> {
         .map(crate::composer::stats_spans)
         .unwrap_or_default();
     if !model.is_empty() || !stats.is_empty() {
-        rows.push(Line::default());
         rows.extend(left_right_rows(w, model, stats));
     }
     if home.notice.is_some() && !rows.is_empty() {

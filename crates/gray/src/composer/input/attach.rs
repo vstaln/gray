@@ -3,10 +3,8 @@ use super::*;
 pub(crate) fn attach_image(tui: &mut Tui, path: PathBuf) {
     let marker = crate::repl::attachments::attachment_marker(&path);
     tui.attachments.push(path);
-    let cur = tui.textarea.cursor();
     tui.textarea.move_to_end();
     tui.textarea.insert_element(&marker);
-    tui.textarea.set_cursor(cur);
     let _ = tui.draw();
 }
 
