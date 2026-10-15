@@ -672,7 +672,7 @@ async fn compact_result(
     .map_err(|e| CmdError::unavailable(format!("compaction failed: {e:#}")))?;
     let Some(summary) = summary else {
         return Ok(CommandResult::text(
-            "nothing to compact (conversation is empty)",
+            "nothing to compact (conversation already fits in context)",
         ));
     };
     let store = JsonlSessionStore::new(home.join("sessions"));

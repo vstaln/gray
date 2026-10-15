@@ -736,6 +736,7 @@ pub(crate) async fn handle_compact(
     custom_instructions: Option<String>,
     agent: &mut Option<Agent>,
     session_state: &mut Option<SessionState>,
+    pending_history: &mut std::sync::Arc<Vec<Message>>,
     tui: Option<&crate::composer::SharedTui>,
 ) {
     if agent.is_none() {
@@ -751,6 +752,10 @@ pub(crate) async fn handle_compact(
     let Some(ag) = agent.as_mut() else {
         return;
     };
+
+    if ag.messages().is_empty() && !pending_history.is_empty() {
+        ag.set_messages(super::take_pending_history(pending_history));
+    }
 
     let messages = ag.messages().to_vec();
     if messages.is_empty() {
@@ -847,11 +852,11 @@ pub(crate) async fn handle_compact(
                 super::cron::push_notice(
                     &mut shared.lock().expect("tui lock"),
                     "Nothing to compact",
-                    "conversation is empty",
+                    "conversation already fits in context",
                     false,
                 );
             } else {
-                println!("nothing to compact (conversation is empty)");
+                println!("nothing to compact (conversation already fits in context)");
             }
         }
         Err(e) => {

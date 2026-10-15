@@ -271,6 +271,7 @@ pub(crate) async fn dispatch_command(
                 instructions,
                 &mut *agent,
                 &mut *session_state,
+                pending_history,
                 tui.as_ref().map(|(s, _)| s),
             )
             .await;
