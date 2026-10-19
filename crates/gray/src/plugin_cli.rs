@@ -1556,11 +1556,18 @@ fn scan_lock_completions(
         let Some(commands) = m["commands"].as_array() else {
             continue;
         };
+        let own_commands: std::collections::HashSet<&str> = commands
+            .iter()
+            .filter_map(|v| v.as_str())
+            .map(|c| c.trim_start_matches('/'))
+            .collect();
         let args: Vec<String> = m["completion"]
             .as_array()
             .map(|args| {
                 args.iter()
-                    .filter_map(|v| v.as_str().map(str::to_string))
+                    .filter_map(|v| v.as_str())
+                    .filter(|a| !own_commands.contains(a))
+                    .map(str::to_string)
                     .collect()
             })
             .unwrap_or_default();
@@ -2316,5 +2323,25 @@ done
                 .is_empty()
         );
         assert_eq!(cache.builds, 3);
+    }
+
+    #[test]
+    fn completion_args_shadowed_by_own_commands_are_dropped() {
+        let home = tempfile::tempdir().unwrap();
+        let home = home.path();
+        let mut cli = cli_entry(&["/usr/bin/acct"]);
+        cli.cli_argv = Some(cli.argv.clone());
+        write_lock(home, &serde_json::json!({"acct": cli}));
+        std::fs::write(
+            home.join("plugins/acct-manifest.json"),
+            r#"{"name":"acct","commands":["/login","/marketplace"],"completion":["login","new"]}"#,
+        )
+        .unwrap();
+        let mut cache = CompletionCache::default();
+        let table = completion_table(home, None, &mut cache).unwrap();
+        assert_eq!(table.rows.len(), 2);
+        for row in &table.rows {
+            assert_eq!(row.args, vec!["new".to_string()]);
+        }
     }
 }
