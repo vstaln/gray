@@ -178,6 +178,23 @@ pub fn resolve_argv(dir: &Path) -> anyhow::Result<Vec<String>> {
     if is_exec(&script) {
         return Ok(vec![script.to_string_lossy().into_owned()]);
     }
+    let triple = if cfg!(windows) {
+        "x86_64-pc-windows-msvc"
+    } else if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+        "aarch64-apple-darwin"
+    } else if cfg!(target_os = "macos") {
+        "x86_64-apple-darwin"
+    } else if cfg!(target_arch = "aarch64") {
+        "aarch64-unknown-linux-musl"
+    } else {
+        "x86_64-unknown-linux-musl"
+    };
+    let leg_dir = dir.join(triple);
+    if leg_dir.is_dir()
+        && let Ok(argv) = resolve_argv(&leg_dir)
+    {
+        return Ok(argv);
+    }
     let mut execs = Vec::new();
     for entry in std::fs::read_dir(dir)? {
         let path = entry?.path();
