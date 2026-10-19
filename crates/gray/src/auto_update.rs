@@ -151,8 +151,14 @@ async fn self_step() -> SelfOutcome {
     }
 }
 
+fn env_opted_out() -> bool {
+    std::env::var("GRAY_NO_UPDATE_CHECK").as_deref() == Ok("1")
+        || std::env::var("GRAY_AUTO_UPDATE").as_deref() == Ok("0")
+        || crate::config::offline()
+}
+
 pub(crate) async fn maybe_run(bare: bool) -> Option<Outcome> {
-    if bare || cfg!(debug_assertions) || env!("CARGO_PKG_VERSION") == "0.0.0" {
+    if bare || env_opted_out() || cfg!(debug_assertions) || env!("CARGO_PKG_VERSION") == "0.0.0" {
         return None;
     }
     if !crate::setup::auto_update_enabled() {

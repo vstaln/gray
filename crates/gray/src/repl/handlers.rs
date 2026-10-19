@@ -498,8 +498,6 @@ pub(crate) async fn reload_agent(
     if let Some(old) = old {
         rebuilt = rebuilt.with_messages(old.messages().to_vec());
     }
-    gray_plugin::refresh_dynamic_tools().await;
-    rebuilt.refresh_tools();
     *agent = Some(rebuilt);
     log::debug!(target: "gray_timing", "reload_agent elapsed_ms={}", started.elapsed().as_millis());
     true
@@ -521,10 +519,6 @@ pub(crate) async fn switch_agent_model(
         Ok(fresh) => {
             let messages = old.messages().to_vec();
             *agent = Some(fresh.with_tool_surface_of(old).with_messages(messages));
-            gray_plugin::refresh_dynamic_tools().await;
-            if let Some(a) = agent.as_mut() {
-                a.refresh_tools();
-            }
             log::debug!(target: "gray_timing", "switch_agent_model elapsed_ms={}", started.elapsed().as_millis());
         }
         Err(e) => {

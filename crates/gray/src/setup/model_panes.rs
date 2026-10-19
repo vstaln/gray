@@ -17,9 +17,9 @@ use super::catalog::{
     plugin_models_key, save_saved_config_at, saved_config_path, sort_connect_items,
 };
 use super::model_modal::{
-    PickerToggles, commit_row_effort, compose_fast_model, fit_chars, initial_effort_in,
-    known_context, merge_models, meter_spans, model_picker_loop, rate_text, row_levels,
-    saved_models_for, selection_parts,
+    PickerToggles, commit_row_effort, compose_fast_model, fetch_models_live, fit_chars,
+    initial_effort_in, known_context, merge_models, meter_spans, model_picker_loop,
+    model_refresh_due, rate_text, row_levels, saved_models_for, selection_parts,
 };
 use super::provider_auth::activate_plugin_connection;
 use super::ui::{BackgroundSnapshot, render_dimmed_background};
@@ -70,7 +70,7 @@ impl PaneProvider {
     }
 }
 
-fn build_rail(config: &Config) -> (Vec<PaneProvider>, BTreeMap<String, String>) {
+fn build_rail(config: &Config, ollama: bool) -> (Vec<PaneProvider>, BTreeMap<String, String>) {
     let catalog = catalog::load_catalog().unwrap_or_default();
     let providers = crate::setup::catalog::gray_home()
         .map(|home| ProviderRegistry::load_cached(&home).installed())
@@ -78,8 +78,7 @@ fn build_rail(config: &Config) -> (Vec<PaneProvider>, BTreeMap<String, String>) 
     let customs = load_custom_endpoints();
     let mut items = build_connect_items(&catalog, &providers, &customs);
     let auth = load_connect_auth();
-    let detected =
-        detect_connect_candidates(super::context::ollama_running(), |k| std::env::var(k).ok());
+    let detected = detect_connect_candidates(ollama, |k| std::env::var(k).ok());
     sort_connect_items(&mut items, config, &auth, &detected);
     let keys = load_auth_keys();
 
@@ -701,8 +700,15 @@ pub(crate) fn run_model_panes(
         .cloned()
         .unwrap_or_else(BackgroundSnapshot::default_initial);
 
+    let opened = std::time::Instant::now();
+    let (ollama_tx, ollama_rx) = std::sync::mpsc::channel::<bool>();
+    let mut ollama = super::context::ollama_last_seen().unwrap_or(false);
+    std::thread::spawn(move || {
+        let _ = ollama_tx.send(super::context::ollama_running());
+    });
+    let mut first_draw = true;
     let mut before = config.clone();
-    let (mut rail, mut keys) = build_rail(config);
+    let (mut rail, mut keys) = build_rail(config, ollama);
     let mut model_cache: HashMap<String, Vec<(String, String)>> = HashMap::new();
     let mut efforts = PaneEfforts::default();
     let mut toggles = PickerToggles::from_config(config);
@@ -732,10 +738,7 @@ pub(crate) fn run_model_panes(
         let list_key = p.list_key.clone();
         let tx = tx.clone();
         std::thread::spawn(move || {
-            let live = match installed {
-                Some(inst) => super::context::fetch_plugin_provider_models(inst),
-                None => super::context::fetch_live_provider_models(&base, key.as_deref()),
-            };
+            let live = fetch_models_live(&list_key, installed, &base, key.as_deref());
             let _ = tx.send((list_key, live));
         });
     };
@@ -748,6 +751,17 @@ pub(crate) fn run_model_panes(
             })
             .unwrap_or_default();
         loop {
+            if let Ok(up) = ollama_rx.try_recv()
+                && up != ollama
+            {
+                ollama = up;
+                let keep = rail.get(rail_sel).map(|p| p.item.id.clone());
+                (rail, keys) = build_rail(config, ollama);
+                rail_sel = keep
+                    .and_then(|id| rail.iter().position(|p| p.item.id == id))
+                    .unwrap_or(rail_sel)
+                    .min(rail.len().saturating_sub(1));
+            }
             while let Ok((list_key, live)) = refresh_rx.try_recv() {
                 if !live.is_empty()
                     && let Some(p) = rail.iter().find(|p| p.list_key == list_key)
@@ -762,7 +776,7 @@ pub(crate) fn run_model_panes(
                 let id = p.item.id.clone();
                 let name = super::connect::forget_provider(&p.item, config)?;
                 before = config.clone();
-                (rail, keys) = build_rail(config);
+                (rail, keys) = build_rail(config, ollama);
                 rail_sel = rail
                     .iter()
                     .position(|q| q.item.id == id)
@@ -775,14 +789,15 @@ pub(crate) fn run_model_panes(
             }
             let provider = rail.get(rail_sel);
             let adoptable = provider.is_some_and(|p| p.adoptable(&keys));
-            if let Some(p) = provider
-                && adoptable
-            {
-                kick(p, p.key(&keys, config), &mut fetching, &refresh_tx);
-            }
             let all_models = provider
                 .map(|p| models_for(p, &mut model_cache).to_vec())
                 .unwrap_or_default();
+            if let Some(p) = provider
+                && adoptable
+                && (all_models.is_empty() || model_refresh_due(&p.list_key))
+            {
+                kick(p, p.key(&keys, config), &mut fetching, &refresh_tx);
+            }
             let models: Vec<(String, String)> = if filter.is_empty() {
                 all_models
             } else {
@@ -851,6 +866,9 @@ pub(crate) fn run_model_panes(
                     },
                 )
             })?;
+            if std::mem::take(&mut first_draw) {
+                log::debug!(target: "gray_timing", "model_panes first_draw elapsed_ms={}", opened.elapsed().as_millis());
+            }
 
             if !poll(std::time::Duration::from_millis(200))? {
                 continue;

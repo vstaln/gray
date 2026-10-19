@@ -690,7 +690,16 @@ impl SidecarPlugin {
         let transport = Transport::new(child, stdin, stdout, argv.clone());
         let result = transport
             .request("plugin/manifest", None, Duration::from_secs(30))
-            .await?;
+            .await
+            .map_err(|e| {
+                let prog = Path::new(&argv[0])
+                    .file_name()
+                    .map(|f| f.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| argv[0].clone());
+                e.context(format!(
+                    "{prog} gave no manifest (stderr: ~/.gray/logs/sidecar-stderr.log)"
+                ))
+            })?;
         let mut manifest = Manifest::from_result(&result);
         let name = manifest.name.trim().to_string();
         if name.is_empty() {
@@ -1632,6 +1641,8 @@ fn dynamic_refreshers() -> std::sync::MutexGuard<'static, Vec<DynRefresher>> {
 }
 
 pub async fn refresh_dynamic_tools() {
+    static GATE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    let _gate = GATE.lock().await;
     let fns: Vec<DynRefresher> = dynamic_refreshers().clone();
     let mut set = tokio::task::JoinSet::new();
     for (i, f) in fns.iter().enumerate() {

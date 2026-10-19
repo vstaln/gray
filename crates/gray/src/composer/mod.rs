@@ -1483,7 +1483,12 @@ impl Tui {
                 Paragraph::new(welcome_lines_at(w, progress, Some(elapsed))),
                 area,
             );
-            let row = ratatui::layout::Rect::new(0, area.height.saturating_sub(1), area.width, 1);
+            let row = ratatui::layout::Rect::new(
+                area.x,
+                area.y + area.height.saturating_sub(1),
+                area.width,
+                1,
+            );
             frame.render_widget(
                 Paragraph::new(Line::styled(
                     "enter to skip · /intro disable to disable",

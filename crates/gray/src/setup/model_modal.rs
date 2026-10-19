@@ -814,6 +814,45 @@ pub(super) fn cached_models_for(base_url: &str, api_key: Option<&str>) -> Vec<(S
     cached
 }
 
+const MODEL_REFRESH_TTL: std::time::Duration = std::time::Duration::from_secs(300);
+
+static MODEL_REFRESHED: std::sync::Mutex<Vec<(String, std::time::Instant)>> =
+    std::sync::Mutex::new(Vec::new());
+
+pub(crate) fn model_refresh_due(list_key: &str) -> bool {
+    let seen = MODEL_REFRESHED.lock().unwrap_or_else(|e| e.into_inner());
+    !seen
+        .iter()
+        .any(|(k, at)| k == list_key && at.elapsed() < MODEL_REFRESH_TTL)
+}
+
+fn note_model_refreshed(list_key: &str) {
+    let mut seen = MODEL_REFRESHED.lock().unwrap_or_else(|e| e.into_inner());
+    let now = std::time::Instant::now();
+    match seen.iter_mut().find(|(k, _)| k == list_key) {
+        Some(entry) => entry.1 = now,
+        None => seen.push((list_key.to_string(), now)),
+    }
+}
+
+pub(crate) fn fetch_models_live(
+    list_key: &str,
+    plugin: Option<crate::providers::InstalledProvider>,
+    base_url: &str,
+    api_key: Option<&str>,
+) -> Vec<(String, String)> {
+    let started = std::time::Instant::now();
+    let live = match plugin {
+        Some(installed) => super::context::fetch_plugin_provider_models(installed),
+        None => super::context::fetch_live_provider_models(base_url, api_key),
+    };
+    if !live.is_empty() {
+        note_model_refreshed(list_key);
+    }
+    log::debug!(target: "gray_timing", "model list refresh list_key={list_key} rows={} elapsed_ms={}", live.len(), started.elapsed().as_millis());
+    live
+}
+
 pub(crate) fn merge_models(base_url: &str, live: Vec<(String, String)>) -> Vec<(String, String)> {
     let mut models = live;
     if let Ok(path) = saved_config_path() {
@@ -1706,19 +1745,17 @@ pub(crate) fn model_picker_loop(
     let (mut current_id, mut recent_ids) = recent_head_for(&config.base_url);
     let (refresh_tx, refresh_rx) = std::sync::mpsc::channel::<Vec<(String, String)>>();
 
-    let _refresh = {
+    let _refresh = (models.is_empty() || model_refresh_due(&list_key)).then(|| {
         let plugin = plugin.clone();
+        let list_key = list_key.clone();
         let base_url = config.base_url.clone();
         let api_key = config.api_key.clone();
         let tx = refresh_tx;
         std::thread::spawn(move || {
-            let live = match plugin {
-                Some(installed) => super::context::fetch_plugin_provider_models(installed),
-                None => super::context::fetch_live_provider_models(&base_url, api_key.as_deref()),
-            };
+            let live = fetch_models_live(&list_key, plugin, &base_url, api_key.as_deref());
             let _ = tx.send(live);
         })
-    };
+    });
 
     let mut filter = String::new();
     let mut sel = 0usize;
@@ -1746,7 +1783,7 @@ pub(crate) fn model_picker_loop(
         .unwrap_or_else(BackgroundSnapshot::default_initial);
 
     let result = (|| -> anyhow::Result<bool> {
-        let mut refreshing = true;
+        let mut refreshing = _refresh.is_some();
         loop {
             if refreshing && let Ok(live) = refresh_rx.try_recv() {
                 refreshing = false;

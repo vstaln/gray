@@ -1,6 +1,6 @@
 use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 fn base_url() -> String {
     std::env::var("GRAY_CDN_URL")
@@ -121,41 +121,56 @@ fn confirm() -> bool {
     yes
 }
 
-fn run_pinned_installer(pin: &str, base: &str) -> anyhow::Result<()> {
+fn run_step(cmd: &mut Command, quiet: bool, what: &str) -> anyhow::Result<()> {
+    if !quiet {
+        anyhow::ensure!(cmd.status()?.success(), "{what} failed");
+        return Ok(());
+    }
+    let out = cmd.stdin(Stdio::null()).output()?;
+    if !out.status.success() {
+        let err = String::from_utf8_lossy(&out.stderr);
+        let tail = err.trim().lines().last().unwrap_or("");
+        anyhow::bail!("{what} failed: {tail}");
+    }
+    Ok(())
+}
+
+fn run_pinned_installer(pin: &str, base: &str, quiet: bool) -> anyhow::Result<()> {
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("install.sh");
-    let dl = Command::new("sh")
-        .arg("-c")
-        .arg(format!(
+    run_step(
+        Command::new("sh").arg("-c").arg(format!(
             "curl -fsSL {} > {}",
             shell_escape(&format!("{base}/../install.sh")),
             shell_escape(&file.to_string_lossy())
-        ))
-        .status()?;
-    anyhow::ensure!(dl.success(), "installer download failed");
+        )),
+        quiet,
+        "installer download",
+    )?;
     let bytes = std::fs::read(&file)?;
     let actual = sha256_hex(&bytes);
     anyhow::ensure!(
         actual == pin,
         "installer checksum mismatch (expected {pin}, got {actual}) — refusing to run"
     );
-    let status = Command::new("sh").arg(&file).status()?;
-    anyhow::ensure!(status.success(), "installer failed");
-    Ok(())
+    run_step(Command::new("sh").arg(&file), quiet, "installer")
 }
 
 fn run_installer() -> anyhow::Result<()> {
+    run_installer_with(false)
+}
+
+fn run_installer_with(quiet: bool) -> anyhow::Result<()> {
     anyhow::ensure!(!cfg!(windows), WINDOWS_UNSUPPORTED);
 
     if let Some(pin) = installer_pin() {
-        return run_pinned_installer(&pin, &base_url());
+        return run_pinned_installer(&pin, &base_url(), quiet);
     }
-    let status = Command::new("sh")
-        .arg("-c")
-        .arg(install_command())
-        .status()?;
-    anyhow::ensure!(status.success(), "installer failed");
-    Ok(())
+    run_step(
+        Command::new("sh").arg("-c").arg(install_command()),
+        quiet,
+        "installer",
+    )
 }
 
 fn shell_escape(s: &str) -> String {
@@ -424,7 +439,7 @@ pub async fn update_now() -> anyhow::Result<()> {
 
 pub(crate) fn install_unlocked() -> anyhow::Result<()> {
     anyhow::ensure!(!cfg!(windows), WINDOWS_UNSUPPORTED);
-    run_installer()
+    run_installer_with(true)
 }
 
 pub(crate) fn install() -> anyhow::Result<()> {

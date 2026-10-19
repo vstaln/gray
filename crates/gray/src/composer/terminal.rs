@@ -56,6 +56,11 @@ where
     scrollback: Scrollback,
     vacated_above: u16,
     covered: u16,
+    /// Rows at the screen top that are not history of their own: copies of
+    /// rows already in scrollback, or blanks, slid in when the transcript was
+    /// pulled down over vacated rows. They are deleted, never scrolled, so
+    /// scrollback does not get them twice.
+    ghost_top: u16,
     tail: VecDeque<Vec<Cell>>,
 }
 
@@ -101,6 +106,7 @@ where
             scrollback,
             vacated_above: 0,
             covered: 0,
+            ghost_top: 0,
             tail: VecDeque::new(),
         };
         term.set_viewport_area(viewport_area);
@@ -122,6 +128,7 @@ where
         let screen_shrank = screen_size.height < self.last_known_screen_size.height;
         if screen_size != self.last_known_screen_size {
             self.covered = 0;
+            self.ghost_top = 0;
             self.tail.clear();
         }
         self.last_known_screen_size = screen_size;
@@ -158,7 +165,8 @@ where
             .min(repaintable.saturating_sub(self.covered));
         self.covered += hide;
         if rest > hide && !screen_shrank {
-            self.scroll_history_up(old.y, rest - hide)?;
+            let ghosts = self.delete_ghost_rows(old.y, rest - hide)?;
+            self.scroll_history_up(old.y, rest - hide - ghosts)?;
         }
         let drop = area.y.saturating_sub(old.y);
         let uncover = self.covered.min(drop);
@@ -184,7 +192,48 @@ where
             let rows: Vec<&[Cell]> = rows.iter().map(Vec::as_slice).collect();
             self.draw_rows(old.y, &rows)?;
         }
+        self.pull_history_down()
+    }
+
+    /// Close the vacated rows a grounded shrink left between the transcript
+    /// and the band: slide the transcript down onto the band and refill the
+    /// rows that open at the screen top from the tail. Those rows are already
+    /// in scrollback (or unknown, and left blank), so they become ghost rows.
+    fn pull_history_down(&mut self) -> io::Result<()> {
+        let top = self.viewport_area.top();
+        let n = self.vacated_above;
+        if self.scrollback != Scrollback::Regions || n == 0 || self.covered > 0 || top < 2 {
+            return Ok(());
+        }
+        write!(self.backend, "\x1b[1;{top}r")?;
+        self.backend.set_cursor_position(Position::new(0, 0))?;
+        write!(self.backend, "\x1b[{n}L\x1b[r")?;
+        let visible = usize::from(top - n);
+        let above = self.tail.len().saturating_sub(visible).min(usize::from(n));
+        if self.tail.len() >= visible && above > 0 {
+            let end = self.tail.len() - visible;
+            let rows: Vec<Vec<Cell>> = self.tail.range(end - above..end).cloned().collect();
+            let rows: Vec<&[Cell]> = rows.iter().map(Vec::as_slice).collect();
+            self.draw_rows(n - above as u16, &rows)?;
+        }
+        self.vacated_above = 0;
+        self.ghost_top = (self.ghost_top + n).min(top);
         Ok(())
+    }
+
+    /// Delete up to `n` ghost rows from the top of the history region above
+    /// `top`, shifting the rest up without feeding scrollback. Returns how
+    /// many were deleted.
+    fn delete_ghost_rows(&mut self, top: u16, n: u16) -> io::Result<u16> {
+        let g = self.ghost_top.min(n).min(top);
+        if g == 0 || self.scrollback != Scrollback::Regions || top < 2 {
+            return Ok(0);
+        }
+        write!(self.backend, "\x1b[1;{top}r")?;
+        self.backend.set_cursor_position(Position::new(0, 0))?;
+        write!(self.backend, "\x1b[{g}M\x1b[r")?;
+        self.ghost_top -= g;
+        Ok(g)
     }
 
     pub fn clear_after_position(&mut self, position: Position) -> io::Result<()> {
@@ -210,6 +259,7 @@ where
         self.last_known_screen_size = screen_size;
         self.vacated_above = 0;
         self.covered = 0;
+        self.ghost_top = 0;
         self.tail.clear();
         self.set_viewport_area(Rect::new(0, 0, screen_size.width, 0));
         self.buffers[1 - self.current].reset();
@@ -348,6 +398,13 @@ where
                 self.set_viewport_area(area);
             }
             let top = area.top();
+            let ghosts = usize::from(
+                self.delete_ghost_rows(top, rows.len().min(usize::from(u16::MAX)) as u16)?,
+            );
+            if ghosts > 0 {
+                self.draw_rows(top - ghosts as u16, &rows[..ghosts])?;
+                rows = &rows[ghosts..];
+            }
             if !rows.is_empty() && top > 1 {
                 for chunk in rows.chunks(usize::from(top)) {
                     let n = chunk.len() as u16;
@@ -369,6 +426,7 @@ where
     }
 
     fn insert_full_screen(&mut self, mut rows: &[&[Cell]]) -> io::Result<()> {
+        self.ghost_top = 0;
         let screen_h = self.last_known_screen_size.height;
         let mut area = self.viewport_area;
         self.clear_after_position(Position::new(0, area.top()))?;

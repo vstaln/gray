@@ -315,7 +315,7 @@ async fn build_agent_with(
         None
     };
     let config_bare = config.bare;
-    let mut agent = gray_plugin::builder::build_agent(gray_plugin::builder::BuilderOptions {
+    let agent = gray_plugin::builder::build_agent(gray_plugin::builder::BuilderOptions {
         model: wire_model.clone(),
         api_key: api_key.to_string(),
         base_url: config.base_url.clone(),
@@ -366,8 +366,7 @@ async fn build_agent_with(
         prebooted_plugins,
     })
     .await?;
-    gray_plugin::refresh_dynamic_tools().await;
-    agent.refresh_tools();
+    tokio::spawn(gray_plugin::refresh_dynamic_tools());
     log::debug!(target: "gray_timing", "build_agent plugins+agent elapsed_ms={}", build_started.elapsed().as_millis());
     for w in gray_plugin::builder::take_builder_warnings() {
         profile::queue_profile_warning(w);

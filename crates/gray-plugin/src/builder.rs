@@ -569,8 +569,9 @@ async fn spawn_lock_plugin(
             Some(Arc::new(p) as Arc<dyn Plugin>)
         }
         Err(e) => {
+            log::warn!(target: "gray_plugin", "lock plugin {name:?} failed to spawn: {e:#}");
             push_builder_warning(format!(
-                "lock plugin {name:?} failed to spawn ({e:#}); ignoring"
+                "plugin {name:?} failed to start — /plugins to see why"
             ));
             outcomes.push(SpawnOutcome {
                 name: name.to_string(),

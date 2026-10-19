@@ -144,6 +144,18 @@ impl Screen {
                 self.rows[self.y][x..].fill(' ');
             }
             'G' => self.x = (at_least_1(0) - 1).min(self.w - 1),
+            'L' if (self.top..=self.bottom).contains(&self.y) => {
+                for _ in 0..at_least_1(0) {
+                    self.rows.remove(self.bottom);
+                    self.rows.insert(self.y, vec![' '; self.w]);
+                }
+            }
+            'M' if (self.top..=self.bottom).contains(&self.y) => {
+                for _ in 0..at_least_1(0) {
+                    self.rows.remove(self.y);
+                    self.rows.insert(self.bottom, vec![' '; self.w]);
+                }
+            }
             'S' => self.scroll_up(at_least_1(0)),
             'T' => self.scroll_down(at_least_1(0)),
 
@@ -205,8 +217,19 @@ impl Screen {
     }
 
     fn transcript(&self, band_top: u16) -> Vec<String> {
+        self.transcript_past(0, band_top)
+    }
+
+    /// Scrollback plus the rows above the band, minus the ghost rows at the
+    /// top that repeat the end of scrollback.
+    fn transcript_past(&self, ghosts: u16, band_top: u16) -> Vec<String> {
         let mut all = self.scrollback.clone();
-        all.extend(self.lines().into_iter().take(usize::from(band_top)));
+        all.extend(
+            self.lines()
+                .into_iter()
+                .take(usize::from(band_top))
+                .skip(usize::from(ghosts)),
+        );
         all
     }
 }
@@ -315,16 +338,16 @@ fn a_shrunk_grounded_band_returns_to_the_bottom() {
     band(&mut term, 4);
     assert_eq!(term.viewport_area, Rect::new(0, 6, W, 4));
 
-    // A modal/popup grows the band; when it closes the band drops back
-    // to the screen bottom and the vacated rows open above it.
+    // A modal/popup grows the band, scrolling r14..r17 into scrollback; when
+    // it closes the band drops back to the screen bottom and the transcript
+    // comes back down onto it, with no blank rows in between.
     band(&mut term, 8);
     assert_eq!(term.viewport_area, Rect::new(0, 2, W, 8));
     band(&mut term, 4);
     assert_eq!(term.viewport_area, Rect::new(0, 6, W, 4));
 
     let screen = Screen::replay(&tape, W, 10);
-    assert_eq!(screen.lines()[..2], rows(18..20)[..]);
-    assert!(screen.lines()[2..6].iter().all(String::is_empty));
+    assert_eq!(screen.lines()[..6], rows(14..20)[..]);
     assert_eq!(screen.lines()[6..], band_rows(4)[..]);
 }
 
@@ -439,12 +462,13 @@ fn a_grounded_shrink_drops_the_band_back_to_the_bottom() {
     insert(&mut term, &["r0", "r1", "r2", "r3"]);
     band(&mut term, 6);
     band(&mut term, 4);
-    // the band was pinned to the screen bottom, so it stays pinned:
-    // it drops back down and the vacated rows open above it
+    // the band was pinned to the screen bottom, so it stays pinned: it
+    // drops back down and the transcript follows it, leaving the vacated
+    // rows at the screen top instead of between the transcript and band
     assert_eq!(term.viewport_area, Rect::new(0, 6, W, 4));
     let screen = Screen::replay(&tape, W, 10);
-    assert_eq!(screen.lines()[..4], rows(0..4)[..]);
-    assert!(screen.lines()[4..6].iter().all(String::is_empty));
+    assert!(screen.lines()[..2].iter().all(String::is_empty));
+    assert_eq!(screen.lines()[2..6], rows(0..4)[..]);
     assert_eq!(screen.lines()[6..], band_rows(4)[..]);
     assert!(screen.scrollback.is_empty());
 }
@@ -586,8 +610,7 @@ fn a_popup_on_a_full_screen_regrounds_the_band() {
     assert_eq!(term.viewport_area, Rect::new(0, 6, W, 4));
     let screen = Screen::replay(&tape, W, 10);
     assert_eq!(screen.scrollback, rows(0..2));
-    assert_eq!(screen.lines()[..4], rows(2..6)[..]);
-    assert!(screen.lines()[4..6].iter().all(String::is_empty));
+    assert_eq!(screen.lines()[..6], rows(0..6)[..]);
     assert_eq!(screen.lines()[6..], band_rows(4)[..]);
 
     insert(&mut term, &["r6", "r7", "r8"]);
@@ -653,7 +676,7 @@ fn a_busy_turn_does_not_tear_the_transcript() {
     }
 
     let screen = Screen::replay(&tape, W, 24);
-    let got = screen.transcript(20);
+    let got = screen.transcript_past(term.ghost_top, 20);
     assert_eq!(trimmed(&got), expected.as_slice());
     assert_eq!(screen.lines()[20..24], band_rows(4)[..]);
 }
@@ -688,7 +711,7 @@ fn a_removed_live_tool_does_not_tear_the_box_below_it() {
         }
 
         let screen = Screen::replay(&tape, W, 24);
-        let got = screen.transcript(20);
+        let got = screen.transcript_past(term.ghost_top, 20);
         assert_eq!(trimmed(&got), expected.as_slice(), "{scrollback:?}");
         assert_eq!(screen.lines()[20..24], band_rows(4)[..], "{scrollback:?}");
     }

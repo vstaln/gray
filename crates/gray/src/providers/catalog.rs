@@ -95,6 +95,14 @@ async fn shared_runtime(installed: InstalledProvider) -> anyhow::Result<Arc<Prov
     Ok(fresh)
 }
 
+pub(crate) fn live_runtime_for(installed: &InstalledProvider) -> Option<Arc<ProviderRuntime>> {
+    LIVE_RUNTIME
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+        .filter(|live| same_connection(live.installed(), installed))
+}
+
 fn same_connection(a: &InstalledProvider, b: &InstalledProvider) -> bool {
     a.plugin == b.plugin
         && a.provider.id == b.provider.id

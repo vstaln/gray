@@ -546,8 +546,12 @@ async fn plugin_models_rpc(
     installed: &crate::providers::InstalledProvider,
 ) -> Vec<(String, String)> {
     use crate::providers::registry::ProviderRpc;
-    let Ok(runtime) = crate::providers::ProviderRuntime::start(installed.clone()).await else {
-        return Vec::new();
+    let runtime = match crate::providers::catalog::live_runtime_for(installed) {
+        Some(live) => live,
+        None => match crate::providers::ProviderRuntime::start(installed.clone()).await {
+            Ok(fresh) => std::sync::Arc::new(fresh),
+            Err(_) => return Vec::new(),
+        },
     };
     let credential = crate::setup::catalog::auth_store_path()
         .ok()
@@ -713,7 +717,19 @@ pub fn verify_api_key(base_url: &str, key: &str) -> KeyCheck {
     })
 }
 
+static OLLAMA_SEEN: std::sync::Mutex<Option<bool>> = std::sync::Mutex::new(None);
+
+pub(crate) fn ollama_last_seen() -> Option<bool> {
+    *OLLAMA_SEEN.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 pub(crate) fn ollama_running() -> bool {
+    let up = probe_ollama();
+    *OLLAMA_SEEN.lock().unwrap_or_else(|e| e.into_inner()) = Some(up);
+    up
+}
+
+fn probe_ollama() -> bool {
     std::thread::scope(|s| {
         s.spawn(|| {
             match tokio::runtime::Builder::new_current_thread()

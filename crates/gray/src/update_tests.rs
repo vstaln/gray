@@ -444,8 +444,12 @@ fn a_pin_mismatch_leaves_no_scratch_dir() {
     fs::write(cdn.join("install.sh"), "#!/bin/sh\nexit 0\n").unwrap();
     let temp_root = std::env::temp_dir();
 
-    let err = run_pinned_installer(&"0".repeat(64), &format!("file://{}/dl", cdn.display()))
-        .expect_err("a wrong pin must refuse to run the script");
+    let err = run_pinned_installer(
+        &"0".repeat(64),
+        &format!("file://{}/dl", cdn.display()),
+        false,
+    )
+    .expect_err("a wrong pin must refuse to run the script");
     assert!(format!("{err}").contains("checksum mismatch"), "{err}");
 
     let leftovers: Vec<_> = fs::read_dir(&temp_root)
