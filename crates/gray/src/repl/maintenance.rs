@@ -358,6 +358,9 @@ pub(crate) fn with_terminal<T>(
 ) -> T {
     let was_raw = crossterm::terminal::is_raw_mode_enabled().unwrap_or(false);
     let _ = crossterm::terminal::disable_raw_mode();
+    if let Some(shared) = shared {
+        shared.lock().expect("tui lock").release_for_child();
+    }
     let out = f();
     if was_raw {
         let _ = crossterm::terminal::enable_raw_mode();

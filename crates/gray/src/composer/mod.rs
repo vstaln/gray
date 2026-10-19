@@ -1404,6 +1404,21 @@ impl Tui {
         Ok(())
     }
 
+    /// Hand the real terminal to a scrolling child process: reset the
+    /// viewport's DECSTBM margins and park the cursor on a fresh last row so
+    /// the child appends ordinary scroll text instead of writing trapped
+    /// inside the viewport's scroll strip. The band scrolls up into history;
+    /// `reanchor_viewport` repaints it when the child exits.
+    pub(crate) fn release_for_child(&mut self) {
+        use std::io::Write as _;
+        let mut out = std::io::stdout();
+        let rows = crossterm::terminal::size().map(|(_, r)| r).unwrap_or(24);
+        let _ = out.write_all(b"\x1b[r");
+        let _ = crossterm::execute!(out, crossterm::cursor::MoveTo(0, rows.saturating_sub(1)));
+        let _ = out.write_all(b"\n");
+        let _ = out.flush();
+    }
+
     pub(crate) fn set_modal_open(&mut self, open: bool) {
         if open {
             let _ = self.hide_background();
