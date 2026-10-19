@@ -976,7 +976,7 @@ impl Tui {
                 true,
             ),
         )
-        .finish_into_output(Some(gray_markdown::get_syntect()));
+        .finish_tail_into_output(Some(gray_markdown::get_syntect()));
         if output.lines.len() > self.committed_markdown_lines {
             if self.committed_markdown_lines == 0 {
                 self.ensure_gap();

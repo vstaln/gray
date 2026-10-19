@@ -76,12 +76,9 @@ impl StreamingMarkdownRenderer {
     }
 
     pub fn set_max_table_width(&mut self, width: Option<usize>) {
-        if self.max_table_width != width {
-            self.max_table_width = width;
-
-            self.frozen = FrozenState::default();
-            self.output.clear();
-        }
+        // Frozen lines were already emitted to the terminal and can never be
+        // re-rendered; only the tail below them may pick up a new width.
+        self.max_table_width = width;
     }
 
     pub fn render(&mut self, syntect: Option<&Syntect>) {
@@ -225,6 +222,20 @@ impl StreamingMarkdownRenderer {
 
     pub fn finish_into_output(mut self, syntect: Option<&Syntect>) -> MarkdownRenderOutput {
         self.finish(syntect);
+        self.output
+    }
+
+    /// Finalize like `finish` but keep the frozen prefix verbatim instead of
+    /// re-parsing the whole source. Callers that already emitted the frozen
+    /// lines to a terminal can slice `output.lines` by the emitted count —
+    /// the prefix is guaranteed identical to what `view()` returned.
+    pub fn finish_tail_into_output(mut self, syntect: Option<&Syntect>) -> MarkdownRenderOutput {
+        self.rerender_tail(syntect);
+        self.frozen = FrozenState {
+            lines_len: self.output.lines.len(),
+            source_bytes: self.source.len(),
+            next_link_id: self.frozen.next_link_id,
+        };
         self.output
     }
 }
