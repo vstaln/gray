@@ -31,7 +31,7 @@ pub fn list() -> Vec<GraySession> {
     };
     for e in rd.flatten() {
         let p = e.path();
-        if p.extension().map(|x| x == "jsonl").unwrap_or(false) == false {
+        if !p.extension().map(|x| x == "jsonl").unwrap_or(false) {
             continue;
         }
         let Ok(text) = std::fs::read_to_string(&p) else {

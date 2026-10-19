@@ -1239,7 +1239,7 @@ impl GrayApp {
                 let model = self
                     .store
                     .state
-                    .setting("default_model.gray", &provider::default_model("gray"));
+                    .setting("default_model.gray", provider::default_model("gray"));
                 self.store.append(Event::ThreadConfigured {
                     id: tid.clone(),
                     provider: "gray".into(),
