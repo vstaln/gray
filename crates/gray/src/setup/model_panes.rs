@@ -12,7 +12,7 @@ use crate::providers::{InstalledProvider, ProviderRegistry};
 use crate::quality_of_life::providers::detect_connect_candidates;
 
 use super::catalog::{
-    self, AUTH_MODE_API_KEY, AUTH_MODE_NONE, ConnectAuth, ConnectItem, SavedConfig,
+    self, AUTH_MODE_API_KEY, AUTH_MODE_NONE, AuthEntry, ConnectAuth, ConnectItem, SavedConfig,
     build_connect_items, load_auth_keys, load_connect_auth, load_custom_endpoints,
     load_saved_config_at, lock_saved_config_at, normalize_custom_base_url, plugin_models_key,
     save_saved_config_at, saved_config_path, sort_connect_items,
@@ -148,10 +148,19 @@ fn build_rail(
         .unwrap_or_default();
     let customs = load_custom_endpoints();
     let mut items = build_connect_items(&catalog, &providers, &customs);
-    let auth = load_connect_auth();
+    let mut auth = load_connect_auth();
+    let registry_token = catalog::load_registry_token();
+    if let Some(token) = registry_token.clone() {
+        auth.entry(catalog::GRAY_PORTAL_ID.to_string())
+            .or_insert(AuthEntry::Key(token));
+    }
     let detected = detect_connect_candidates(ollama, |k| std::env::var(k).ok());
     sort_connect_items(&mut items, config, &auth, &detected);
-    let keys = load_auth_keys();
+    let mut keys = load_auth_keys();
+    if let Some(token) = registry_token {
+        keys.entry(catalog::GRAY_PORTAL_ID.to_string())
+            .or_insert(token);
+    }
 
     let mut rail: Vec<PaneProvider> = items
         .into_iter()
@@ -206,6 +215,7 @@ fn build_rail(
 enum RailRow {
     Provider(usize),
     Group(GroupId),
+    Spacer,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -306,8 +316,11 @@ fn rail_rows(rail: &[PaneProvider], groups: &GroupStates) -> Vec<RailRow> {
     let mut rows = Vec::new();
     let mut members: [Vec<usize>; 3] = Default::default();
     let mut custom_row = None;
+    let mut portal_row = None;
     for (i, p) in rail.iter().enumerate() {
-        if p.item.id == "custom" {
+        if p.item.id == catalog::GRAY_PORTAL_ID {
+            portal_row = Some(i);
+        } else if p.item.id == "custom" {
             custom_row = Some(i);
         } else {
             match place(p) {
@@ -327,6 +340,10 @@ fn rail_rows(rail: &[PaneProvider], groups: &GroupStates) -> Vec<RailRow> {
         if groups.get(g) {
             rows.extend(members[g.index()].iter().map(|&i| RailRow::Provider(i)));
         }
+    }
+    if let Some(i) = portal_row {
+        rows.insert(0, RailRow::Spacer);
+        rows.insert(0, RailRow::Provider(i));
     }
     rows
 }
@@ -354,7 +371,7 @@ fn rail_rows_for(rail: &[PaneProvider], groups: &GroupStates, filter: &str) -> V
                 out.extend(header.take());
                 out.push(r);
             }
-            RailRow::Provider(_) => {}
+            RailRow::Provider(_) | RailRow::Spacer => {}
         }
     }
     out
@@ -389,6 +406,21 @@ fn row_provider<'a>(
     match rows.get(sel) {
         Some(RailRow::Provider(i)) => rail.get(*i),
         _ => None,
+    }
+}
+
+/// Move the rail cursor one row, skipping spacer rows.
+fn rail_step(rows: &[RailRow], sel: usize, up: bool) -> usize {
+    let mut s = sel;
+    loop {
+        s = if up {
+            s.saturating_sub(1)
+        } else {
+            (s + 1).min(rows.len().saturating_sub(1))
+        };
+        if !matches!(rows.get(s), Some(RailRow::Spacer)) || s == 0 || s + 1 >= rows.len() {
+            return s;
+        }
     }
 }
 
@@ -1313,11 +1345,7 @@ pub(crate) fn run_model_panes(
             let last_model = models.len().saturating_sub(1);
             if let Some(up) = crate::keymap::select_move(&key) {
                 if shift || focus == Focus::Rail {
-                    rail_sel = if up {
-                        rail_sel.saturating_sub(1)
-                    } else {
-                        (rail_sel + 1).min(rows.len().saturating_sub(1))
-                    };
+                    rail_sel = rail_step(&rows, rail_sel, up);
                     place_current = true;
                     model_top = 0;
                 } else if up {
@@ -1374,11 +1402,7 @@ pub(crate) fn run_model_panes(
                     }
                 },
                 KeyCode::Up | KeyCode::Down if shift => {
-                    rail_sel = if key.code == KeyCode::Up {
-                        rail_sel.saturating_sub(1)
-                    } else {
-                        (rail_sel + 1).min(rows.len().saturating_sub(1))
-                    };
+                    rail_sel = rail_step(&rows, rail_sel, key.code == KeyCode::Up);
                     place_current = true;
                     model_top = 0;
                 }
@@ -1402,7 +1426,7 @@ pub(crate) fn run_model_panes(
                             rail_sel = parent;
                         }
                     }
-                    None => {}
+                    _ => {}
                 },
                 KeyCode::Right
                     if focus == Focus::Rail

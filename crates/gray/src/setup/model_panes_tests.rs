@@ -1,11 +1,11 @@
 use super::{
     GroupId, GroupStates, PaneEfforts, PaneProvider, RailRow, active_rail_index, enclosing_group,
     list_height, match_range, provider_is_active, rail_filter_hits, rail_rows, rail_rows_for,
-    scoped_config,
+    rail_step, scoped_config,
 };
 use crate::config::Config;
 use crate::setup::SavedConfig;
-use crate::setup::catalog::{ConnectAuth, ConnectItem, plugin_models_key};
+use crate::setup::catalog::{ConnectAuth, ConnectItem, GRAY_PORTAL_ID, plugin_models_key};
 use std::collections::BTreeMap;
 
 const BASE_A: &str = "http://127.0.0.1:1/v1";
@@ -387,4 +387,74 @@ fn rail_filter_narrows_to_matching_providers_or_leaves_rail_alone() {
         rail_rows(&rail, &groups)
     );
     assert_eq!(rail_rows_for(&rail, &groups, ""), rail_rows(&rail, &groups));
+}
+
+#[test]
+fn portal_row_pins_to_top_with_spacer() {
+    let rail = vec![
+        row(item("a", BASE_A, ConnectAuth::None)),
+        row(item(
+            GRAY_PORTAL_ID,
+            "https://portal/v1",
+            ConnectAuth::ApiKey,
+        )),
+        row(item("b", BASE_B, ConnectAuth::None)),
+    ];
+    let rows = rail_rows(&rail, &GroupStates::default());
+    assert_eq!(
+        rows,
+        vec![
+            RailRow::Provider(1),
+            RailRow::Spacer,
+            RailRow::Provider(0),
+            RailRow::Provider(2),
+        ]
+    );
+}
+
+#[test]
+fn portal_stays_first_with_groups_expanded() {
+    let rail = vec![
+        row(item("keyed", BASE_A, ConnectAuth::ApiKey)),
+        row(item(
+            GRAY_PORTAL_ID,
+            "https://portal/v1",
+            ConnectAuth::ApiKey,
+        )),
+    ];
+    let mut groups = GroupStates::default();
+    groups.set(GroupId::ApiKey, true);
+    let rows = rail_rows(&rail, &groups);
+    assert_eq!(rows[0], RailRow::Provider(1));
+    assert_eq!(rows[1], RailRow::Spacer);
+    assert_eq!(rows[2], RailRow::Group(GroupId::ApiKey));
+    assert_eq!(rows[3], RailRow::Provider(0));
+}
+
+#[test]
+fn rail_step_skips_spacers_and_clamps() {
+    let rows = vec![
+        RailRow::Provider(0),
+        RailRow::Spacer,
+        RailRow::Provider(1),
+        RailRow::Provider(2),
+    ];
+    assert_eq!(rail_step(&rows, 0, false), 2);
+    assert_eq!(rail_step(&rows, 2, true), 0);
+    assert_eq!(rail_step(&rows, 3, false), 3);
+    assert_eq!(rail_step(&rows, 0, true), 0);
+}
+
+#[test]
+fn provider_filter_drops_spacer_row() {
+    let rail = vec![
+        row(item(
+            GRAY_PORTAL_ID,
+            "https://portal/v1",
+            ConnectAuth::ApiKey,
+        )),
+        row(item("openrouter", BASE_A, ConnectAuth::None)),
+    ];
+    let rows = rail_rows_for(&rail, &GroupStates::default(), "openrouter");
+    assert_eq!(rows, vec![RailRow::Provider(1)]);
 }

@@ -773,6 +773,27 @@ pub fn effort_memory_key(provider_id: &str, base_url: &str, model: &str) -> Stri
     }
 }
 
+pub const GRAY_PORTAL_ID: &str = "gray-portal";
+
+/// OpenAI-compatible endpoint for models hosted by the Gray registry.
+pub(crate) fn gray_portal_base_url() -> String {
+    std::env::var("GRAY_PORTAL_BASE_URL")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or_else(|| "https://api-gray.alignment.id/api/portal/v1".to_string())
+}
+
+/// The account token written by `gray login` — doubles as the portal key.
+pub(crate) fn load_registry_token() -> Option<String> {
+    let path = gray_home().ok()?.join("registry-token.json");
+    let raw = std::fs::read_to_string(path).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    v.get("token")
+        .and_then(|t| t.as_str())
+        .filter(|t| !t.is_empty())
+        .map(str::to_string)
+}
+
 pub fn build_connect_items(
     catalog: &Catalog,
     providers: &[InstalledProvider],
@@ -818,6 +839,15 @@ pub fn build_connect_items(
         name: "Custom".to_string(),
         sublabel: "(any OpenAI-compatible base URL)".to_string(),
         base_url: String::new(),
+        no_auth: false,
+        auth: ConnectAuth::ApiKey,
+    });
+
+    items.push(ConnectItem {
+        id: GRAY_PORTAL_ID.to_string(),
+        name: "Gray portal".to_string(),
+        sublabel: "(models hosted by Gray)".to_string(),
+        base_url: gray_portal_base_url(),
         no_auth: false,
         auth: ConnectAuth::ApiKey,
     });
