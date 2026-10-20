@@ -14,7 +14,7 @@ mod url_scan;
 
 pub use buffers::MarkdownBuffers;
 pub use checkpoint::{Checkpoint, CheckpointKind};
-pub use colors::{ColorLevel, adapt_color, adapt_style, detect_color_level};
+pub use colors::{ColorLevel, adapt_color, adapt_ratatui_color, adapt_style, detect_color_level};
 pub use output::{HyperlinkTarget, MarkdownRenderOutput};
 pub use parse::{MarkdownParser, ParsedMarkdown, decode_html_entities_text};
 pub use streaming::StreamingMarkdownRenderer;

@@ -475,7 +475,7 @@ fn commit_pick(
 }
 
 fn delegate_pick(
-    terminal: &mut ratatui::Terminal<ratatui::backend::CrosstermBackend<std::io::Stdout>>,
+    terminal: &mut super::ModalTerminal,
     config: &mut Config,
     bg: &BackgroundSnapshot,
     p: &PaneProvider,

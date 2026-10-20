@@ -212,6 +212,7 @@ pub(crate) fn print_mascot() -> bool {
     let Some(grid) = decode_grid(cols, rows) else {
         return false;
     };
+    let color = gray_markdown::detect_color_level() != gray_markdown::ColorLevel::None;
     let pad = (cols as usize).saturating_sub(grid.cols) / 2;
     let mut out = std::io::stdout().lock();
     for row in 0..grid.rows {
@@ -220,18 +221,27 @@ pub(crate) fn print_mascot() -> bool {
             line.push_str(&" ".repeat(pad));
         }
         for (top, bot, n) in grid.runs(row) {
-            line.push_str(&format!(
-                "\x1b[38;2;{};{};{}m\x1b[48;2;{};{};{}m{}",
-                top.0,
-                top.1,
-                top.2,
-                bot.0,
-                bot.1,
-                bot.2,
-                BLOCK.to_string().repeat(n)
-            ));
+            if color {
+                let fg = gray_markdown::adapt_ratatui_color(ratatui::style::Color::Rgb(
+                    top.0, top.1, top.2,
+                ));
+                let bg = gray_markdown::adapt_ratatui_color(ratatui::style::Color::Rgb(
+                    bot.0, bot.1, bot.2,
+                ));
+                line.push_str(&format!(
+                    "{}{}{}",
+                    crate::tui::sgr_fg(fg),
+                    crate::tui::sgr_bg(bg),
+                    BLOCK.to_string().repeat(n)
+                ));
+            } else {
+                line.push_str(&BLOCK.to_string().repeat(n));
+            }
         }
-        line.push_str("\x1b[0m\r\n");
+        if color {
+            line.push_str("\x1b[0m");
+        }
+        line.push_str("\r\n");
         let _ = out.write_all(line.as_bytes());
     }
     let _ = out.flush();
@@ -242,7 +252,8 @@ fn print_ascii_mascot(term_cols: u16, term_rows: u16) -> bool {
     let Some(grid) = decode_ascii_grid(term_cols, term_rows) else {
         return false;
     };
-    let color = crate::tui::ansi_supported();
+    let color = crate::tui::ansi_supported()
+        && gray_markdown::detect_color_level() != gray_markdown::ColorLevel::None;
     let pad = (term_cols as usize).saturating_sub(grid.cols) / 2;
     let mut out = std::io::stdout().lock();
     for row in 0..grid.rows {
@@ -252,11 +263,12 @@ fn print_ascii_mascot(term_cols: u16, term_rows: u16) -> bool {
         }
         for (rgb, ch, n) in grid.ascii_runs(row) {
             if color {
+                let fg = gray_markdown::adapt_ratatui_color(ratatui::style::Color::Rgb(
+                    rgb.0, rgb.1, rgb.2,
+                ));
                 line.push_str(&format!(
-                    "\x1b[38;2;{};{};{}m{}",
-                    rgb.0,
-                    rgb.1,
-                    rgb.2,
+                    "{}{}",
+                    crate::tui::sgr_fg(fg),
                     ch.to_string().repeat(n)
                 ));
             } else {

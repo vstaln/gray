@@ -5,17 +5,16 @@ fn line_to_ansi(l: &Line<'_>) -> String {
     for span in &l.spans {
         let mut style_prefix = String::new();
         if let Some(fg) = span.style.fg {
-            match fg {
-                Color::Rgb(r, g, b) => style_prefix.push_str(&format!("\x1b[38;2;{r};{g};{b}m")),
-                Color::Red => style_prefix.push_str("\x1b[31m"),
-                Color::Green => style_prefix.push_str("\x1b[32m"),
-                _ => {}
+            let fg = gray_markdown::adapt_ratatui_color(fg);
+            if fg != Color::Reset {
+                style_prefix.push_str(&crate::tui::sgr_fg(fg));
             }
         }
-        if let Some(bg) = span.style.bg
-            && let Color::Rgb(r, g, b) = bg
-        {
-            style_prefix.push_str(&format!("\x1b[48;2;{r};{g};{b}m"));
+        if let Some(bg) = span.style.bg {
+            let bg = gray_markdown::adapt_ratatui_color(bg);
+            if bg != Color::Reset {
+                style_prefix.push_str(&crate::tui::sgr_bg(bg));
+            }
         }
         if span.style.add_modifier.contains(Modifier::BOLD) {
             style_prefix.push_str("\x1b[1m");

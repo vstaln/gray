@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 use std::io::{self, Write};
 
-use ratatui::backend::{Backend, ClearType};
+use ratatui::backend::{Backend, ClearType, WindowSize};
 use ratatui::buffer::{Buffer, Cell};
 use ratatui::layout::{Position, Rect, Size};
 use ratatui::widgets::Widget;
@@ -531,6 +531,100 @@ fn glyph_width(symbol: &str) -> usize {
         .map(|(_, rest)| rest.split('\x1b').next().unwrap_or(rest))
         .unwrap_or(symbol);
     crate::text_width::display_width(glyph)
+}
+
+/// Wraps a [`Backend`] and downgrades every drawn cell's colors to the
+/// terminal's detected level (`gray_markdown::detect_color_level`). The TUI
+/// authors its chrome in 24-bit RGB; this is the single point where frames
+/// are quantized to xterm-256 or ANSI-16 — or flattened to `Reset` under
+/// `NO_COLOR`. Byte-level writes (scroll-region setup, kitty transmits)
+/// pass through untouched.
+pub(crate) struct LeveledBackend<B> {
+    inner: B,
+}
+
+impl<B> LeveledBackend<B> {
+    pub(crate) fn new(inner: B) -> Self {
+        Self { inner }
+    }
+}
+
+impl<B: Write> Write for LeveledBackend<B> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.inner.write(buf)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Write::flush(&mut self.inner)
+    }
+}
+
+impl<B: Backend> Backend for LeveledBackend<B> {
+    fn draw<'a, I>(&mut self, content: I) -> io::Result<()>
+    where
+        I: Iterator<Item = (u16, u16, &'a Cell)>,
+    {
+        if gray_markdown::detect_color_level() == gray_markdown::ColorLevel::TrueColor {
+            return self.inner.draw(content);
+        }
+        let owned: Vec<(u16, u16, Cell)> = content
+            .map(|(x, y, cell)| (x, y, leveled_cell(cell)))
+            .collect();
+        self.inner.draw(owned.iter().map(|(x, y, c)| (*x, *y, c)))
+    }
+
+    fn append_lines(&mut self, n: u16) -> io::Result<()> {
+        self.inner.append_lines(n)
+    }
+
+    fn hide_cursor(&mut self) -> io::Result<()> {
+        self.inner.hide_cursor()
+    }
+
+    fn show_cursor(&mut self) -> io::Result<()> {
+        self.inner.show_cursor()
+    }
+
+    fn get_cursor_position(&mut self) -> io::Result<Position> {
+        self.inner.get_cursor_position()
+    }
+
+    fn set_cursor_position<P: Into<Position>>(&mut self, position: P) -> io::Result<()> {
+        self.inner.set_cursor_position(position)
+    }
+
+    fn clear(&mut self) -> io::Result<()> {
+        self.inner.clear()
+    }
+
+    fn clear_region(&mut self, clear_type: ClearType) -> io::Result<()> {
+        self.inner.clear_region(clear_type)
+    }
+
+    fn size(&self) -> io::Result<Size> {
+        self.inner.size()
+    }
+
+    fn window_size(&mut self) -> io::Result<WindowSize> {
+        self.inner.window_size()
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Backend::flush(&mut self.inner)
+    }
+}
+
+/// Clone a cell with fg/bg/underline colors downgraded to the detected
+/// terminal color level.
+fn leveled_cell(cell: &Cell) -> Cell {
+    let fg = gray_markdown::adapt_ratatui_color(cell.fg);
+    let bg = gray_markdown::adapt_ratatui_color(cell.bg);
+    let underline = gray_markdown::adapt_ratatui_color(cell.underline_color);
+    let mut out = cell.clone();
+    out.set_fg(fg);
+    out.set_bg(bg);
+    out.underline_color = underline;
+    out
 }
 
 #[path = "terminal_tests.rs"]
