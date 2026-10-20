@@ -1054,7 +1054,13 @@ impl Tui {
             let rest = std::mem::take(&mut self.pending);
             self.append_thinking_text(&rest, false);
         }
-        self.commit_markdown_tail();
+        // Do NOT commit the markdown tail here: finishing the renderer
+        // mid-stream freezes the still-growing paragraph into history and the
+        // rest of the reply continues in a fresh renderer as a second block —
+        // a word torn across the seam plus a gap row. The live tail stays in
+        // `markdown_renderer` and `stream_tail_rows` re-wraps it at the new
+        // width on the next draw.
+        self.drain_reveal();
     }
 
     pub(crate) fn repaint_for_palette(&mut self) {

@@ -383,9 +383,14 @@ pub(crate) fn run_plugins_manager(bg: Option<&BackgroundSnapshot>) -> anyhow::Re
                         .saturating_sub(list_h.saturating_sub(1))
                         .min(filtered.len().saturating_sub(list_h));
                     if filtered.is_empty() {
+                        let empty_msg = if query.is_empty() {
+                            "  no plugins installed — gray plugin install <name>"
+                        } else {
+                            "  no match"
+                        };
                         frame.render_widget(
                             Paragraph::new(Line::from(Span::styled(
-                                "  no match",
+                                empty_msg,
                                 Style::default().fg(th.text_dim),
                             ))),
                             at(list_y),

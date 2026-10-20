@@ -288,8 +288,8 @@ pub fn run_context_modal(
                         window,
                         format_context_length(max)
                     ),
-                    format!("Reserve: {} ({})", format_context_length(reserve), reserve),
-                    format!("Keep: {} ({})", format_context_length(keep), keep),
+                    format!("Reserve: {}", format_context_length(reserve)),
+                    format!("Keep: {}", format_context_length(keep)),
                 ];
                 for (i, text) in set_rows.iter().enumerate() {
                     if set_y + i as u16 >= inner.y + inner.height - 2 {
