@@ -160,10 +160,10 @@ where
         let repaintable = u16::try_from(self.tail.len())
             .unwrap_or(u16::MAX)
             .min(history_end);
-        // The covered band can sit over ghost rows — copies of scrollback
-        // rows pulled down over vacated space. Ghosts are deleted, never
-        // reinserted, so they must not count toward `covered`: marking a
-        // scrollback row covered repaints it on uncover and prints it twice.
+        // The covered band can sit over ghost rows — blanked rows pulled
+        // down over vacated space. Ghosts are deleted, never reinserted, so
+        // they must not count toward `covered`: marking a ghost row covered
+        // repaints scrollback content on uncover and prints it twice.
         let ghosts_covered = self.ghost_top.saturating_sub(area.y).min(rest);
         let hide = rest
             .saturating_sub(ghosts_covered)
@@ -202,9 +202,9 @@ where
     }
 
     /// Close the vacated rows a grounded shrink left between the transcript
-    /// and the band: slide the transcript down onto the band and refill the
-    /// rows that open at the screen top from the tail. Those rows are already
-    /// in scrollback (or unknown, and left blank), so they become ghost rows.
+    /// and the band: slide the transcript down onto the band and mark the
+    /// rows that open at the screen top as blank ghost rows (non-transcript
+    /// space; deleted on the next grow or reclaim, never real history).
     fn pull_history_down(&mut self) -> io::Result<()> {
         let top = self.viewport_area.top();
         let n = self.vacated_above;
@@ -214,14 +214,9 @@ where
         write!(self.backend, "\x1b[1;{top}r")?;
         self.backend.set_cursor_position(Position::new(0, 0))?;
         write!(self.backend, "\x1b[{n}L\x1b[r")?;
-        let visible = usize::from(top - n);
-        let above = self.tail.len().saturating_sub(visible).min(usize::from(n));
-        if self.tail.len() >= visible && above > 0 {
-            let end = self.tail.len() - visible;
-            let rows: Vec<Vec<Cell>> = self.tail.range(end - above..end).cloned().collect();
-            let rows: Vec<&[Cell]> = rows.iter().map(Vec::as_slice).collect();
-            self.draw_rows(n - above as u16, &rows)?;
-        }
+        // The rows that open at the top stay blank. Filling them with tail
+        // rows repaints content that is already at the end of scrollback —
+        // the scrollback/screen seam then shows the same paragraph twice.
         self.vacated_above = 0;
         self.ghost_top = (self.ghost_top + n).min(top);
         Ok(())

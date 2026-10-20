@@ -340,14 +340,16 @@ fn a_shrunk_grounded_band_returns_to_the_bottom() {
 
     // A modal/popup grows the band, scrolling r14..r17 into scrollback; when
     // it closes the band drops back to the screen bottom and the transcript
-    // comes back down onto it, with no blank rows in between.
+    // comes back down onto it; the rows that open at the top stay blank
+    // rather than reprinting the end of scrollback.
     band(&mut term, 8);
     assert_eq!(term.viewport_area, Rect::new(0, 2, W, 8));
     band(&mut term, 4);
     assert_eq!(term.viewport_area, Rect::new(0, 6, W, 4));
 
     let screen = Screen::replay(&tape, W, 10);
-    assert_eq!(screen.lines()[..6], rows(14..20)[..]);
+    assert!(screen.lines()[..4].iter().all(String::is_empty));
+    assert_eq!(screen.lines()[4..6], rows(18..20)[..]);
     assert_eq!(screen.lines()[6..], band_rows(4)[..]);
 }
 
@@ -610,7 +612,8 @@ fn a_popup_on_a_full_screen_regrounds_the_band() {
     assert_eq!(term.viewport_area, Rect::new(0, 6, W, 4));
     let screen = Screen::replay(&tape, W, 10);
     assert_eq!(screen.scrollback, rows(0..2));
-    assert_eq!(screen.lines()[..6], rows(0..6)[..]);
+    assert!(screen.lines()[..2].iter().all(String::is_empty));
+    assert_eq!(screen.lines()[2..6], rows(2..6)[..]);
     assert_eq!(screen.lines()[6..], band_rows(4)[..]);
 
     insert(&mut term, &["r6", "r7", "r8"]);
