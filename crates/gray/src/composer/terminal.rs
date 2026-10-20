@@ -160,7 +160,13 @@ where
         let repaintable = u16::try_from(self.tail.len())
             .unwrap_or(u16::MAX)
             .min(history_end);
+        // The covered band can sit over ghost rows — copies of scrollback
+        // rows pulled down over vacated space. Ghosts are deleted, never
+        // reinserted, so they must not count toward `covered`: marking a
+        // scrollback row covered repaints it on uncover and prints it twice.
+        let ghosts_covered = self.ghost_top.saturating_sub(area.y).min(rest);
         let hide = rest
+            .saturating_sub(ghosts_covered)
             .min(overlay.saturating_sub(self.covered))
             .min(repaintable.saturating_sub(self.covered));
         self.covered += hide;
@@ -219,6 +225,23 @@ where
         self.vacated_above = 0;
         self.ghost_top = (self.ghost_top + n).min(top);
         Ok(())
+    }
+
+    /// Blank up to `n` ghost rows in place. Used when a whole-screen scroll
+    /// would push them into scrollback a second time and the [1, top)
+    /// region cannot isolate them (band top at row 1): a ghost becomes an
+    /// empty line rather than a duplicate of a scrollback row. The rows
+    /// stay ghost-marked — an emptied copy is still not real history.
+    fn blank_ghost_rows(&mut self, n: u16) -> io::Result<u16> {
+        let g = self.ghost_top.min(n);
+        if g == 0 || self.scrollback != Scrollback::Regions {
+            return Ok(0);
+        }
+        for y in 0..g {
+            self.backend.set_cursor_position(Position::new(0, y))?;
+            self.backend.clear_region(ClearType::CurrentLine)?;
+        }
+        Ok(g)
     }
 
     /// Delete up to `n` ghost rows from the top of the history region above
@@ -426,6 +449,7 @@ where
     }
 
     fn insert_full_screen(&mut self, mut rows: &[&[Cell]]) -> io::Result<()> {
+        self.blank_ghost_rows(u16::MAX)?;
         self.ghost_top = 0;
         let screen_h = self.last_known_screen_size.height;
         let mut area = self.viewport_area;
@@ -457,8 +481,9 @@ where
             return self.scroll_region_up(top, n);
         }
 
+        let ghosts = self.blank_ghost_rows(n)?;
         self.clear_after_position(Position::new(0, top))?;
-        self.scroll_screen_up(n)
+        self.scroll_screen_up(n - ghosts)
     }
 
     fn scroll_region_up(&mut self, top: u16, n: u16) -> io::Result<()> {

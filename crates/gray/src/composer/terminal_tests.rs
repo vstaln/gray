@@ -716,3 +716,200 @@ fn a_removed_live_tool_does_not_tear_the_box_below_it() {
         assert_eq!(screen.lines()[20..24], band_rows(4)[..], "{scrollback:?}");
     }
 }
+
+#[test]
+fn fuzz_band_ops_never_duplicate_transcript() {
+    // enumerate short op sequences: band height changes + inserts, checking
+    // that scrollback + visible transcript never duplicates a row.
+    let mut failures = Vec::new();
+    // pseudo-random deterministic sequence generator
+    let mut seed: u64 = 0x9e3779b97f4a7c15;
+    let mut next = move || {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        seed
+    };
+    for trial in 0..4000 {
+        let h = 8 + (next() % 9) as u16; // screen 8..16
+        let (mut term, tape) = term(h, 0, Scrollback::Regions);
+        let mut expected: Vec<String> = Vec::new();
+        let mut n = 0usize;
+        let steps = 6 + (next() % 10) as usize;
+        for _ in 0..steps {
+            match next() % 3 {
+                0 => {
+                    let k = 1 + (next() % 4) as usize;
+                    let chunk = rows(n..n + k);
+                    let refs: Vec<&str> = chunk.iter().map(String::as_str).collect();
+                    insert(&mut term, &refs);
+                    expected.extend(chunk);
+                    n += k;
+                }
+                _ => {
+                    let bh = 1 + (next() % (h as u64 - 1)) as u16;
+                    band(&mut term, bh);
+                }
+            }
+        }
+        band(&mut term, 4);
+        let screen = Screen::replay(&tape, W, h);
+        let got = screen.transcript_past(term.ghost_top, term.viewport_area.top());
+        let got_t = trimmed(&got);
+        let want_t = trimmed(&expected);
+        if got_t != want_t {
+            failures.push(format!(
+                "trial {trial} h={h}: got {got_t:?} want {want_t:?}"
+            ));
+            if failures.len() > 3 {
+                break;
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+fn settle(term: &mut Term, height: u16, overlay: u16) {
+    let screen = term.last_known_screen_size;
+    term.set_viewport_height(height, overlay, screen).unwrap();
+}
+
+fn band_o(term: &mut Term, height: u16, overlay: u16) {
+    settle(term, height, overlay);
+    term.draw(|frame| {
+        let area = frame.area();
+        for i in 0..area.height {
+            let label = if i + 2 == area.height {
+                "\u{276f}".to_string()
+            } else {
+                format!("band{i}")
+            };
+            frame
+                .buffer
+                .set_string(area.x, area.y + i, label, Style::default());
+        }
+    })
+    .unwrap();
+}
+
+fn covered_rows(term: &Term) -> Vec<String> {
+    let n = usize::from(term.covered);
+    term.tail
+        .range(term.tail.len() - n..)
+        .map(|row| {
+            row.iter()
+                .map(|c| c.symbol())
+                .collect::<String>()
+                .trim_end()
+                .to_string()
+        })
+        .collect()
+}
+
+#[test]
+fn fuzz_band_ops_with_overlay_never_duplicate_transcript() {
+    let mut seed: u64 = 0xdeadbeefcafe1234;
+    let mut next = move || {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        seed
+    };
+    let mut failures = Vec::new();
+    for trial in 0..6000 {
+        let h = 8 + (next() % 9) as u16;
+        let (mut term, tape) = term(h, 0, Scrollback::Regions);
+        let mut expected: Vec<String> = Vec::new();
+        let mut ops: Vec<String> = Vec::new();
+        let mut n = 0usize;
+        let steps = 6 + (next() % 12) as usize;
+        for _ in 0..steps {
+            match next() % 4 {
+                0 => {
+                    let k = 1 + (next() % 4) as usize;
+                    let chunk = rows(n..n + k);
+                    let refs: Vec<&str> = chunk.iter().map(String::as_str).collect();
+                    insert(&mut term, &refs);
+                    expected.extend(chunk);
+                    ops.push(format!("i{n}..{}", n + k));
+                    n += k;
+                }
+                1 => {
+                    // settle without a repaint — covered rows could stay visible
+                    let bh = 1 + (next() % (h as u64 - 1)) as u16;
+                    let ov = (next() % 4) as u16;
+                    ops.push(format!("s{bh}o{ov}"));
+                    settle(&mut term, bh, ov);
+                }
+                _ => {
+                    let bh = 1 + (next() % (h as u64 - 1)) as u16;
+                    let ov = (next() % 4) as u16;
+                    ops.push(format!("b{bh}o{ov}"));
+                    band_o(&mut term, bh, ov);
+                }
+            }
+        }
+        band(&mut term, 4);
+        let screen = Screen::replay(&tape, W, h);
+        let got: Vec<String> = screen
+            .transcript_past(term.ghost_top, term.viewport_area.top())
+            .into_iter()
+            .chain(covered_rows(&term))
+            .filter(|row| !row.is_empty())
+            .collect();
+        let got_t = trimmed(&got);
+        let want_t = trimmed(&expected);
+        if got_t != want_t {
+            failures.push(format!(
+                "trial {trial} h={h} ghost={} ops={}: got {got_t:?} want {want_t:?}",
+                term.ghost_top,
+                ops.join(" ")
+            ));
+            if failures.len() > 4 {
+                break;
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
+fn covered_ghost_rows_do_not_print_twice() {
+    // A band shrinking over ghost rows, then growing with overlay, used to
+    // mark scrollback copies `covered`; the next insert repainted them and
+    // the paragraph printed twice. h=11, band fills most of the screen.
+    let (mut term, tape) = term(11, 0, Scrollback::Regions);
+    let r0 = rows(0..1);
+    insert(
+        &mut term,
+        &r0.iter().map(String::as_str).collect::<Vec<_>>(),
+    );
+    band_o(&mut term, 10, 3);
+    let r1_5 = rows(1..5);
+    insert(
+        &mut term,
+        &r1_5.iter().map(String::as_str).collect::<Vec<_>>(),
+    );
+    band_o(&mut term, 4, 1);
+    band_o(&mut term, 10, 3);
+    let r5 = rows(5..6);
+    insert(
+        &mut term,
+        &r5.iter().map(String::as_str).collect::<Vec<_>>(),
+    );
+    band(&mut term, 4);
+
+    let screen = Screen::replay(&tape, W, 11);
+    let transcript: Vec<String> = screen
+        .transcript_past(term.ghost_top, term.viewport_area.top())
+        .into_iter()
+        .chain(covered_rows(&term))
+        .filter(|row| !row.is_empty())
+        .collect();
+    assert_eq!(
+        trimmed(&transcript),
+        trimmed(&rows(0..6)),
+        "scrollback: {:?}",
+        screen.scrollback
+    );
+}
