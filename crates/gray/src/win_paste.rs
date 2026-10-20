@@ -11,18 +11,23 @@
 //! model (`keys` inline on actions) are handled. Changes are idempotent and a
 //! one-time `settings.json.gray-backup` is kept next to the file.
 
+#[cfg(any(target_os = "windows", test))]
 use std::path::{Path, PathBuf};
 
+#[cfg(any(target_os = "windows", test))]
 const UNBOUND_ID: &str = "User.gray.unboundCtrlV";
+#[cfg(any(target_os = "windows", test))]
 const PASTE_KEY: &str = "ctrl+v";
 
 /// Ids WT uses for the built-in clipboard paste — safe to repoint because
 /// gray's own paste handler covers text and images once the key gets through.
+#[cfg(any(target_os = "windows", test))]
 fn is_default_paste_id(id: &serde_json::Value) -> bool {
     id.is_null() || id.as_str() == Some("Terminal.PasteFromClipboard")
 }
 
 /// `keys` may be a string or an array of strings; true when `key` is one.
+#[cfg(any(target_os = "windows", test))]
 fn keys_include(keys: &serde_json::Value, key: &str) -> bool {
     match keys {
         serde_json::Value::String(s) => s == key,
@@ -33,6 +38,7 @@ fn keys_include(keys: &serde_json::Value, key: &str) -> bool {
 
 /// Removes `key` from a `keys` value. Returns false when nothing remains —
 /// the caller should then drop the whole entry.
+#[cfg(any(target_os = "windows", test))]
 fn strip_key(keys: &mut serde_json::Value, key: &str) -> bool {
     match keys {
         serde_json::Value::String(s) => s != key,
@@ -44,6 +50,7 @@ fn strip_key(keys: &mut serde_json::Value, key: &str) -> bool {
     }
 }
 
+#[cfg(any(target_os = "windows", test))]
 fn wt_settings_paths() -> Vec<PathBuf> {
     let Some(local) = std::env::var_os("LOCALAPPDATA") else {
         return Vec::new();
@@ -62,6 +69,7 @@ fn wt_settings_paths() -> Vec<PathBuf> {
 }
 
 /// Rewrites `obj` so `ctrl+v` reaches the app. Returns true when modified.
+#[cfg(any(target_os = "windows", test))]
 fn ensure_unbound(obj: &mut serde_json::Map<String, serde_json::Value>) -> bool {
     if obj.contains_key("keybindings") {
         ensure_unbound_split(obj)
@@ -72,6 +80,7 @@ fn ensure_unbound(obj: &mut serde_json::Map<String, serde_json::Value>) -> bool 
 
 /// Modern model: `actions` holds commands with `id`s, `keybindings` maps
 /// ids → keys. Last entry wins for duplicate keys.
+#[cfg(any(target_os = "windows", test))]
 fn ensure_unbound_split(obj: &mut serde_json::Map<String, serde_json::Value>) -> bool {
     let mut changed = false;
 
@@ -145,6 +154,7 @@ fn ensure_unbound_split(obj: &mut serde_json::Map<String, serde_json::Value>) ->
 }
 
 /// Legacy model: `actions` entries carry `keys` inline.
+#[cfg(any(target_os = "windows", test))]
 fn ensure_unbound_legacy(obj: &mut serde_json::Map<String, serde_json::Value>) -> bool {
     let mut changed = false;
     let Some(serde_json::Value::Array(actions)) = obj.get_mut("actions") else {
@@ -197,6 +207,7 @@ fn ensure_unbound_legacy(obj: &mut serde_json::Map<String, serde_json::Value>) -
     changed
 }
 
+#[cfg(any(target_os = "windows", test))]
 fn update_settings_file(path: &Path) -> std::io::Result<()> {
     let body = std::fs::read_to_string(path)?;
     let mut value: serde_json::Value = match serde_json::from_str(&body) {

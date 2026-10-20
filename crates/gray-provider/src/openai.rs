@@ -1802,9 +1802,7 @@ async fn send_json_once(
         .fold(base, |b, (name, value)| b.header(name, value));
         let req = base.header("Content-Type", "application/json").json(body);
         match req.send().await {
-            Err(err)
-                if send_attempt < MAX_SEND_ATTEMPTS && send_stage_retryable(&err) =>
-            {
+            Err(err) if send_attempt < MAX_SEND_ATTEMPTS && send_stage_retryable(&err) => {
                 log::warn!(target: "gray_provider", "send failed before a response ({err}); retrying on a fresh connection {send_attempt}/{MAX_SEND_ATTEMPTS}");
             }
             result => {
@@ -2095,9 +2093,7 @@ async fn send_dynamic_json_once(
             .header(ACCEPT, "text/event-stream")
             .json(body);
         match send.send().await {
-            Err(err)
-                if send_attempt < MAX_SEND_ATTEMPTS && send_stage_retryable(&err) =>
-            {
+            Err(err) if send_attempt < MAX_SEND_ATTEMPTS && send_stage_retryable(&err) => {
                 log::warn!(target: "gray_provider", "dynamic send failed before a response ({err}); retrying on a fresh connection {send_attempt}/{MAX_SEND_ATTEMPTS}");
             }
             Err(err) => return Err(map_send_error(err)),

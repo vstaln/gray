@@ -526,7 +526,7 @@ fn connect_modal(
                             modifiers,
                             kind: KeyEventKind::Press,
                             ..
-                        }) if modifiers.contains(KeyModifiers::CONTROL) => {},
+                        }) if modifiers.contains(KeyModifiers::CONTROL) => {}
 
                         Event::Key(KeyEvent {
                             code: KeyCode::Enter,

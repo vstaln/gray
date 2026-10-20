@@ -397,7 +397,7 @@ pub fn run_context_modal(
                     modifiers,
                     kind: KeyEventKind::Press,
                     ..
-                }) if modifiers.contains(KeyModifiers::CONTROL) => {},
+                }) if modifiers.contains(KeyModifiers::CONTROL) => {}
                 Event::Key(KeyEvent {
                     code,
                     kind: KeyEventKind::Press,

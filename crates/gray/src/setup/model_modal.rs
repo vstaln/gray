@@ -668,9 +668,7 @@ fn picker_key(
     modifiers: crossterm::event::KeyModifiers,
 ) -> Option<PickerKey> {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-    if let Some(up) =
-        crate::keymap::select_move(&KeyEvent::new(code, modifiers))
-    {
+    if let Some(up) = crate::keymap::select_move(&KeyEvent::new(code, modifiers)) {
         return Some(if up { PickerKey::Up } else { PickerKey::Down });
     }
     if modifiers.contains(KeyModifiers::CONTROL) {

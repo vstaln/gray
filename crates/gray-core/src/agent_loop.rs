@@ -64,11 +64,7 @@ fn retry_budget() -> std::time::Duration {
     std::time::Duration::from_secs(3600)
 }
 
-fn retry_give_up(
-    detail: &str,
-    retries: u8,
-    waited: Option<std::time::Duration>,
-) -> CoreError {
+fn retry_give_up(detail: &str, retries: u8, waited: Option<std::time::Duration>) -> CoreError {
     let span = waited
         .map(|d| format!(" over ~{}s", d.as_secs()))
         .unwrap_or_default();
@@ -848,7 +844,11 @@ impl Agent {
                                         self.contaminated.insert(self.messages.len() - 1);
                                     }
                                     self.emit_turn_end(&billed).await;
-                                    return Err(retry_give_up(&e.to_string(), turn_retries, Some(waited)));
+                                    return Err(retry_give_up(
+                                        &e.to_string(),
+                                        turn_retries,
+                                        Some(waited),
+                                    ));
                                 }
                                 turn_retries += 1;
                                 last_retry_err = Some(e.to_string());
@@ -1066,7 +1066,11 @@ impl Agent {
                                         self.contaminated.insert(self.messages.len() - 1);
                                     }
                                     self.emit_turn_end(&billed).await;
-                                    return Err(retry_give_up(&e.to_string(), turn_retries, Some(waited)));
+                                    return Err(retry_give_up(
+                                        &e.to_string(),
+                                        turn_retries,
+                                        Some(waited),
+                                    ));
                                 }
                                 turn_retries += 1;
                                 last_retry_err = Some(e.to_string());

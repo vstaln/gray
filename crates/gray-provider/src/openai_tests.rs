@@ -3171,14 +3171,9 @@ async fn static_wire_retries_a_send_dropped_before_any_response() {
         socket.flush().await.unwrap();
     });
 
-    let provider = OpenAiProvider::new(
-        "key",
-        "test-model",
-        format!("http://{addr}/v1"),
-        None,
-        None,
-    )
-    .expect("provider builds");
+    let provider =
+        OpenAiProvider::new("key", "test-model", format!("http://{addr}/v1"), None, None)
+            .expect("provider builds");
     let events: Vec<_> = provider.stream(empty_chat_req()).collect().await;
     server.abort();
 
@@ -3306,7 +3301,10 @@ async fn first_error_with(source: FailingProviderSource) -> ProviderError {
     let mut stream = provider.stream(request);
     match stream.next().await {
         Some(Err(error)) => error,
-        other => panic!("expected an acquire error, got {:?}", other.map(|r| r.is_ok())),
+        other => panic!(
+            "expected an acquire error, got {:?}",
+            other.map(|r| r.is_ok())
+        ),
     }
 }
 
@@ -3320,7 +3318,10 @@ async fn unreachable_credential_source_is_retryable() {
         )
     }))
     .await;
-    assert!(matches!(error.class(), ProviderError::Connection(_)), "{error}");
+    assert!(
+        matches!(error.class(), ProviderError::Connection(_)),
+        "{error}"
+    );
     assert!(error.retryable(), "{error}");
 }
 

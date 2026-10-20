@@ -1551,12 +1551,9 @@ impl JsonlSessionStore {
         let mut file = options.open(&open_path)?;
         tighten_file_mode(&open_path);
 
-        let mut held = OPEN_LOCKS.lock().expect("open-lock registry poisoned");
-        if let Some(inner) = held.get(&open_path).and_then(std::sync::Weak::upgrade) {
+        if let Some(inner) = take_registered_open_lock(&open_path) {
             return Ok(SessionOpenGuard { _inner: inner });
         }
-        held.remove(&open_path);
-        drop(held);
 
         match file.try_lock() {
             Ok(()) => {}
@@ -2731,6 +2728,15 @@ struct OpenLockInner {
 #[derive(Debug)]
 pub struct SessionOpenGuard {
     _inner: std::sync::Arc<OpenLockInner>,
+}
+
+fn take_registered_open_lock(open_path: &Path) -> Option<std::sync::Arc<OpenLockInner>> {
+    let mut held = OPEN_LOCKS.lock().expect("open-lock registry poisoned");
+    if let Some(inner) = held.get(open_path).and_then(std::sync::Weak::upgrade) {
+        return Some(inner);
+    }
+    held.remove(open_path);
+    None
 }
 
 #[derive(Debug, Serialize, Deserialize)]

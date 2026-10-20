@@ -1201,9 +1201,7 @@ fn run_agents_panel(
                 }
                 continue;
             }
-            if let Some(up) =
-                crate::keymap::select_move(&KeyEvent::new(code, modifiers))
-            {
+            if let Some(up) = crate::keymap::select_move(&KeyEvent::new(code, modifiers)) {
                 if up {
                     sel = sel.checked_sub(1).unwrap_or(rows.len().saturating_sub(1));
                 } else if !rows.is_empty() {
