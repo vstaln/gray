@@ -136,6 +136,50 @@ fn pad_backdrop_line(
     line
 }
 
+/// Draft text must not bleed through modal backdrops, but the `❯` prompt
+/// arrow is constant chrome — keep it (dimmed, in place) so the input box
+/// still reads as a box. Everything else becomes width-preserving blanks.
+fn scrub_composer_line(
+    l: &ratatui::text::Line<'static>,
+    bg: ratatui::style::Color,
+) -> ratatui::text::Line<'static> {
+    use ratatui::style::{Modifier, Style};
+    use ratatui::text::{Line, Span};
+    use unicode_width::UnicodeWidthStr;
+
+    let arrow = crate::tui::arrow_glyph();
+    let dim_fg = dim_color(crate::theme::theme().text_faint);
+    let blank = |w: usize| Span::styled(" ".repeat(w), Style::default().bg(bg));
+    let mut spans: Vec<Span<'static>> = Vec::with_capacity(l.spans.len());
+    for s in &l.spans {
+        if let Some(idx) = s.content.find(arrow) {
+            let pre_w = s.content[..idx].width();
+            let post_w = s.content[idx + arrow.len()..].width();
+            if pre_w > 0 {
+                spans.push(blank(pre_w));
+            }
+            spans.push(Span::styled(
+                arrow,
+                Style::default()
+                    .fg(dim_fg)
+                    .add_modifier(Modifier::DIM)
+                    .bg(bg),
+            ));
+            if post_w > 0 {
+                spans.push(blank(post_w));
+            }
+        } else {
+            let w = s.content.width();
+            if w > 0 {
+                spans.push(blank(w));
+            }
+        }
+    }
+    let mut line = Line::from(spans);
+    line.style = l.style;
+    line
+}
+
 pub fn render_dimmed_background(frame: &mut ratatui::Frame, bg: &BackgroundSnapshot) {
     use ratatui::layout::Rect;
     use ratatui::style::{Modifier, Style};
@@ -309,11 +353,11 @@ pub fn render_dimmed_background(frame: &mut ratatui::Frame, bg: &BackgroundSnaps
         for l in tail {
             full_screen_lines.push(pad_backdrop_line(dim_line(l), w));
         }
-        // The composer's text is intentionally not painted: a dimmed `❯` or
-        // draft peeking out beside a centered modal reads as a stray glyph on
-        // the modal's rows. Keep the band's blank silhouette instead.
-        for l in band {
-            let mut line = Line::from("").style(l.style);
+        // The composer's text is intentionally not painted: a dimmed draft
+        // peeking out beside a centered modal reads as stray glyphs on the
+        // modal's rows. Keep the box's silhouette and the `❯` chrome.
+        for l in &band {
+            let mut line = scrub_composer_line(l, backdrop_bg());
             if line.style.bg.is_none() {
                 line.style = line.style.bg(backdrop_bg());
             }
@@ -362,10 +406,10 @@ pub fn render_dimmed_background(frame: &mut ratatui::Frame, bg: &BackgroundSnaps
     if needs_gap {
         full_screen_lines.push(pad_backdrop_line(Line::from(""), w));
     }
-    // Same as the home band above: keep the composer box's silhouette but
-    // drop its text so a dimmed prompt can't peek out beside the modal.
-    for l in bottom_box_lines {
-        let mut line = Line::from("").style(l.style);
+    // Same as the home band above: keep the composer box's silhouette and
+    // the `❯` chrome, but drop its text so a draft can't peek beside a modal.
+    for l in &bottom_box_lines {
+        let mut line = scrub_composer_line(l, backdrop_bg());
         if line.style.bg.is_none() {
             line.style = line.style.bg(backdrop_bg());
         }
