@@ -219,12 +219,28 @@ pub(crate) fn live_tool_overflow(len: usize) -> usize {
 mod text_area;
 pub(crate) use text_area::TextArea;
 
+/// Reverse-history-search state: while set, the composer textarea previews
+/// the currently matched history entry and the query is drawn on a
+/// dedicated `search:` line above the box.
+pub(crate) struct HistSearch {
+    pub query: String,
+    pub saved: String,
+    pub saved_cursor: usize,
+    pub idx: Option<usize>,
+}
+
 pub struct Tui {
     pub(crate) terminal: Term,
     background: Option<background::Background>,
     background_closed: bool,
     pub(crate) textarea: TextArea,
     pub(crate) matches: Vec<(String, String)>,
+    /// Text the completion popup was dismissed for: sync_completion keeps
+    /// the popup closed while the draft still equals it, and re-arms as
+    /// soon as the text changes.
+    pub(crate) muted_text: Option<String>,
+    /// Active ctrl-r reverse-history-search state (None when not searching).
+    pub(crate) search: Option<HistSearch>,
     pub(crate) sel: usize,
     status: Option<(Instant, String)>,
 
@@ -858,6 +874,8 @@ impl Tui {
             background_closed: false,
             textarea: TextArea::new(),
             matches: Vec::new(),
+            muted_text: None,
+            search: None,
             sel: 0,
             status: None,
             gap_owed: false,
@@ -1223,6 +1241,8 @@ impl Tui {
     pub(crate) fn clear_draft(&mut self) {
         self.textarea.set_text("");
         self.matches.clear();
+        self.muted_text = None;
+        self.search = None;
         self.sel = 0;
         self.history_idx = None;
         self.draft.clear();

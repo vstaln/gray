@@ -102,6 +102,25 @@ pub(crate) fn clear_draft(tui: &mut Tui) {
     tui.history_idx = None;
     tui.sel = 0;
     tui.matches.clear();
+    tui.muted_text = None;
+    tui.search = None;
+}
+
+/// Recompute the slash-completion popup from the draft. While a history
+/// search is live the popup stays closed, and `muted_text` keeps it closed
+/// for the exact draft it was dismissed on (esc) until the text changes.
+pub(crate) fn sync_completion(tui: &mut Tui, cwd: &Path) {
+    let cur_text = tui.textarea.text().to_string();
+    if tui.search.is_some() || tui.muted_text.as_deref() == Some(cur_text.as_str()) {
+        tui.matches.clear();
+        tui.sel = 0;
+        return;
+    }
+    tui.muted_text = None;
+    tui.matches = crate::repl::completion_matches_dyn(&cur_text, cwd);
+    if tui.sel >= tui.matches.len() {
+        tui.sel = tui.matches.len().saturating_sub(1);
+    }
 }
 
 pub(crate) use crate::term_keys::KeyboardEnhancementGuard;
@@ -219,12 +238,8 @@ pub(crate) fn read_line(
             }
 
             if needs_draw {
-                let cur_text = tui.textarea.text().to_string();
-                tui.matches =
-                    crate::repl::completion_matches_dyn(&cur_text, std::path::Path::new(&tui.cwd));
-                if tui.sel >= tui.matches.len() {
-                    tui.sel = tui.matches.len().saturating_sub(1);
-                }
+                let cwd = std::path::PathBuf::from(&tui.cwd);
+                sync_completion(tui, &cwd);
                 tui.draw()?;
                 needs_draw = false;
             }

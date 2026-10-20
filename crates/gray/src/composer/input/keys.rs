@@ -76,6 +76,7 @@ fn apply(tui: &mut Tui, a: Action) -> Option<KeyOutcome> {
             }
             tui.matches.clear();
             tui.sel = 0;
+            tui.muted_text = Some(tui.textarea.text().to_string());
             edited
         }
         Action::Tab => {

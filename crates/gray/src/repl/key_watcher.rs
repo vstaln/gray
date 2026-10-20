@@ -444,11 +444,7 @@ pub(crate) fn spawn_key_watcher_with_typing(
 }
 
 fn sync_matches(t: &mut crate::composer::Tui, cwd: &std::path::Path) {
-    let cur_text = t.textarea.text().to_string();
-    t.matches = crate::repl::completion_matches_dyn(&cur_text, cwd);
-    if t.sel >= t.matches.len() {
-        t.sel = t.matches.len().saturating_sub(1);
-    }
+    crate::composer::input::sync_completion(t, cwd);
 }
 
 #[path = "key_watcher_tests.rs"]
