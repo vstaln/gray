@@ -44,9 +44,7 @@ impl ConsentExecutor {
 fn describe(name: &str, args: &serde_json::Value) -> String {
     let detail = match name {
         "bash" | "shell" => args.get("command"),
-        "read" | "write" | "edit" | "ls" => {
-            args.get("path").or_else(|| args.get("file_path"))
-        }
+        "read" | "write" | "edit" | "ls" => args.get("path").or_else(|| args.get("file_path")),
         "grep" | "find" | "search" => args.get("pattern").or_else(|| args.get("path")),
         "web_search" => args.get("query"),
         "web_fetch" => args.get("url"),
