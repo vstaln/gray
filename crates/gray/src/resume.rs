@@ -984,6 +984,21 @@ fn run_picker_sync(
             ) {
                 dirty = true;
             }
+            if takeover.is_none()
+                && rename.is_none()
+                && let Event::Key(key) = event
+                && key.kind == KeyEventKind::Press
+                && let Some(up) = crate::keymap::select_move(&key)
+            {
+                if !filtered.is_empty() {
+                    sel = if up {
+                        sel.saturating_sub(1)
+                    } else {
+                        (sel + 1).min(filtered.len() - 1)
+                    };
+                }
+                continue;
+            }
             match event {
                 Event::Key(KeyEvent {
                     code: KeyCode::Char('c'),
@@ -1092,12 +1107,6 @@ fn run_picker_sync(
                             && let Some(s) = summaries.iter_mut().find(|s| s.id == id)
                         {
                             s.dismissed_at = Some(at);
-                        }
-                    }
-                    KeyCode::Up => sel = sel.saturating_sub(1),
-                    KeyCode::Down => {
-                        if !filtered.is_empty() {
-                            sel = (sel + 1).min(filtered.len() - 1);
                         }
                     }
                     KeyCode::Enter => {

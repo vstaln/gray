@@ -697,13 +697,19 @@ fn run_ask_modal(
             let n = state.questions.len();
             let i = state.idx;
             let multi = state.multi();
+            if let Some(up) = crate::keymap::select_move(&key) {
+                state.cursor[i] = if up {
+                    state.cursor[i].saturating_sub(1)
+                } else {
+                    (state.cursor[i] + 1).min(state.options_len() - 1)
+                };
+                if !multi {
+                    state.committed[i] = false;
+                }
+                draw_ask_modal(tui, state);
+                continue;
+            }
             match key.code {
-                KeyCode::Up if multi => {
-                    state.cursor[i] = state.cursor[i].saturating_sub(1);
-                }
-                KeyCode::Down if multi => {
-                    state.cursor[i] = (state.cursor[i] + 1).min(state.options_len() - 1);
-                }
                 KeyCode::Char(' ') if multi && !state.notes_open[i] => {
                     let c = state.cursor[i];
                     state.checked[i][c] = !state.checked[i][c];
@@ -718,14 +724,6 @@ fn run_ask_modal(
                     let d = c.to_digit(10).unwrap_or(1) as usize - 1;
                     state.cursor[i] = d;
                     state.checked[i][d] = !state.checked[i][d];
-                }
-                KeyCode::Up => {
-                    state.cursor[i] = state.cursor[i].saturating_sub(1);
-                    state.committed[i] = false;
-                }
-                KeyCode::Down => {
-                    state.cursor[i] = (state.cursor[i] + 1).min(state.options_len() - 1);
-                    state.committed[i] = false;
                 }
                 KeyCode::Char(' ') => {
                     state.committed[i] = true;

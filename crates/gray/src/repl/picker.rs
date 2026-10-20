@@ -263,32 +263,31 @@ pub(crate) fn run_list_picker<T>(
         if !poll(Duration::from_millis(100))? {
             continue;
         }
-        match read()? {
+        let ev = read()?;
+        if let Event::Key(key) = ev
+            && key.kind == KeyEventKind::Press
+            && let Some(up) = crate::keymap::select_move(&key)
+        {
+            let next = if up {
+                sel.saturating_sub(1)
+            } else {
+                (sel + 1).min(filtered.len().saturating_sub(1))
+            };
+            if next != sel {
+                sel = next;
+                highlight(picker, &filtered, sel);
+            }
+            continue;
+        }
+        match ev {
             Event::Key(KeyEvent {
-                code,
+                code: KeyCode::Char('c'),
                 modifiers,
                 kind: KeyEventKind::Press,
                 ..
-            }) if modifiers.contains(KeyModifiers::CONTROL) => match code {
-                KeyCode::Char('c') => {
-                    return Ok(None);
-                }
-                KeyCode::Char('p') => {
-                    let next = sel.saturating_sub(1);
-                    if next != sel {
-                        sel = next;
-                        highlight(picker, &filtered, sel);
-                    }
-                }
-                KeyCode::Char('n') => {
-                    let next = (sel + 1).min(filtered.len().saturating_sub(1));
-                    if next != sel {
-                        sel = next;
-                        highlight(picker, &filtered, sel);
-                    }
-                }
-                _ => {}
-            },
+            }) if modifiers.contains(KeyModifiers::CONTROL) => {
+                return Ok(None);
+            }
             Event::Key(KeyEvent {
                 code,
                 modifiers,
@@ -297,8 +296,6 @@ pub(crate) fn run_list_picker<T>(
             }) => {
                 let last = filtered.len().saturating_sub(1);
                 let next = match code {
-                    KeyCode::Up => Some(sel.saturating_sub(1)),
-                    KeyCode::Down => Some((sel + 1).min(last)),
                     KeyCode::PageUp => Some(sel.saturating_sub(list_h)),
                     KeyCode::PageDown => Some((sel + list_h).min(last)),
                     KeyCode::Home => Some(0),

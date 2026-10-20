@@ -1185,6 +1185,22 @@ pub(crate) fn run_model_panes(
                 continue;
             }
             let last_model = models.len().saturating_sub(1);
+            if let Some(up) = crate::keymap::select_move(&key) {
+                if shift || focus == Focus::Rail {
+                    rail_sel = if up {
+                        rail_sel.saturating_sub(1)
+                    } else {
+                        (rail_sel + 1).min(rows.len().saturating_sub(1))
+                    };
+                    place_current = true;
+                    model_top = 0;
+                } else if up {
+                    model_sel = model_sel.saturating_sub(1);
+                } else {
+                    model_sel = (model_sel + 1).min(last_model);
+                }
+                continue;
+            }
             match key.code {
                 KeyCode::Esc if !filter.is_empty() => {
                     filter.clear();
@@ -1228,7 +1244,7 @@ pub(crate) fn run_model_panes(
                         return Ok(PanesOutcome::Picked);
                     }
                 },
-                KeyCode::Up | KeyCode::Down if shift || focus == Focus::Rail => {
+                KeyCode::Up | KeyCode::Down if shift => {
                     rail_sel = if key.code == KeyCode::Up {
                         rail_sel.saturating_sub(1)
                     } else {
@@ -1237,8 +1253,6 @@ pub(crate) fn run_model_panes(
                     place_current = true;
                     model_top = 0;
                 }
-                KeyCode::Up => model_sel = model_sel.saturating_sub(1),
-                KeyCode::Down => model_sel = (model_sel + 1).min(last_model),
                 KeyCode::PageUp => model_sel = model_sel.saturating_sub(list_h.max(1)),
                 KeyCode::PageDown => model_sel = (model_sel + list_h.max(1)).min(last_model),
                 KeyCode::Left | KeyCode::Right if focus == Focus::Models => {

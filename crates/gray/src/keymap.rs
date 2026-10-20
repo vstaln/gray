@@ -500,6 +500,17 @@ pub fn resolve_event(ev: &KeyEvent) -> Vec<Binding> {
     }
 }
 
+/// Direction `ev` should move a list selection, when it resolves to
+/// tui.select.up/down: `Some(true)` = up, `Some(false)` = down. Every list
+/// picker routes through this so rebindings apply everywhere.
+pub fn select_move(ev: &KeyEvent) -> Option<bool> {
+    resolve_event(ev).into_iter().find_map(|b| match b {
+        Binding::Action(Action::SelectUp) => Some(true),
+        Binding::Action(Action::SelectDown) => Some(false),
+        _ => None,
+    })
+}
+
 thread_local! {
     static DEFAULTS: Keymap = Keymap::defaults();
 }

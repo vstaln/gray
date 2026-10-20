@@ -499,7 +499,21 @@ fn connect_modal(
                         sel = filtered.len().saturating_sub(1);
                     }
 
-                    match read()? {
+                    let ev = read()?;
+                    if let Event::Key(key) = ev
+                        && key.kind == KeyEventKind::Press
+                        && let Some(up) = crate::keymap::select_move(&key)
+                    {
+                        if !filtered.is_empty() {
+                            sel = if up {
+                                sel.saturating_sub(1)
+                            } else {
+                                (sel + 1).min(filtered.len() - 1)
+                            };
+                        }
+                        continue;
+                    }
+                    match ev {
                         Event::Key(KeyEvent {
                             code: KeyCode::Char('c'),
                             modifiers,
@@ -509,17 +523,10 @@ fn connect_modal(
                             return Ok(ConnectOutcome::Dismissed);
                         }
                         Event::Key(KeyEvent {
-                            code,
                             modifiers,
                             kind: KeyEventKind::Press,
                             ..
-                        }) if modifiers.contains(KeyModifiers::CONTROL) => match code {
-                            KeyCode::Char('p') => sel = sel.saturating_sub(1),
-                            KeyCode::Char('n') if !filtered.is_empty() => {
-                                sel = (sel + 1).min(filtered.len() - 1);
-                            }
-                            _ => {}
-                        },
+                        }) if modifiers.contains(KeyModifiers::CONTROL) => {},
 
                         Event::Key(KeyEvent {
                             code: KeyCode::Enter,
@@ -538,12 +545,6 @@ fn connect_modal(
                             kind: KeyEventKind::Press,
                             ..
                         }) => match code {
-                            KeyCode::Up => sel = sel.saturating_sub(1),
-                            KeyCode::Down => {
-                                if !filtered.is_empty() {
-                                    sel = (sel + 1).min(filtered.len() - 1);
-                                }
-                            }
                             KeyCode::PageUp => sel = sel.saturating_sub(8),
                             KeyCode::PageDown => {
                                 if !filtered.is_empty() {

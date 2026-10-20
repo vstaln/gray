@@ -498,7 +498,21 @@ pub(crate) fn run_plugins_manager(bg: Option<&BackgroundSnapshot>) -> anyhow::Re
             if !poll(Duration::from_millis(100))? {
                 continue;
             }
-            match read()? {
+            let ev = read()?;
+            if !detail
+                && let Event::Key(key) = ev
+                && key.kind == KeyEventKind::Press
+                && let Some(up) = crate::keymap::select_move(&key)
+            {
+                let last = filtered.len().saturating_sub(1);
+                sel = if up {
+                    sel.saturating_sub(1)
+                } else {
+                    (sel + 1).min(last)
+                };
+                continue;
+            }
+            match ev {
                 Event::Key(KeyEvent {
                     code,
                     modifiers,
@@ -595,14 +609,6 @@ pub(crate) fn run_plugins_manager(bg: Option<&BackgroundSnapshot>) -> anyhow::Re
                                     Err(e) => op_msg = Some(format!("toggle {name} failed: {e}")),
                                 }
                             }
-                        }
-                        KeyCode::Up | KeyCode::Down => {
-                            let last = filtered.len().saturating_sub(1);
-                            sel = if code == KeyCode::Up {
-                                sel.saturating_sub(1)
-                            } else {
-                                (sel + 1).min(last)
-                            };
                         }
                         KeyCode::PageUp | KeyCode::PageDown => {
                             let last = filtered.len().saturating_sub(1);
