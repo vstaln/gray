@@ -19,9 +19,9 @@ pub(crate) const MIN_VIEWPORT_H: u16 = 4;
 
 mod plugin_widget;
 mod terminal;
-pub(crate) use terminal::CustomTerminal;
+pub(crate) use terminal::{CustomTerminal, LeveledBackend};
 
-type Term = CustomTerminal<CrosstermBackend<Stdout>>;
+type Term = CustomTerminal<LeveledBackend<CrosstermBackend<Stdout>>>;
 
 pub(crate) mod draw;
 pub(crate) mod input;
@@ -813,19 +813,20 @@ impl Tui {
 
         let (cols, rows) = crossterm::terminal::size().unwrap_or((80, 24));
 
-        let mut terminal =
-            match CustomTerminal::with_options(CrosstermBackend::new(std::io::stdout())) {
-                Ok(terminal) => terminal,
-                Err(e) => {
-                    let _ = crossterm::terminal::disable_raw_mode();
-                    let _ = crossterm::execute!(
-                        std::io::stdout(),
-                        crossterm::event::DisableBracketedPaste,
-                        crossterm::cursor::Show,
-                    );
-                    return Err(e.into());
-                }
-            };
+        let mut terminal = match CustomTerminal::with_options(LeveledBackend::new(
+            CrosstermBackend::new(std::io::stdout()),
+        )) {
+            Ok(terminal) => terminal,
+            Err(e) => {
+                let _ = crossterm::terminal::disable_raw_mode();
+                let _ = crossterm::execute!(
+                    std::io::stdout(),
+                    crossterm::event::DisableBracketedPaste,
+                    crossterm::cursor::Show,
+                );
+                return Err(e.into());
+            }
+        };
 
         let welcome_lines = build_welcome_lines(cols as usize);
         let welcome_h = welcome_lines.len() as u16;
@@ -955,7 +956,7 @@ impl Tui {
     pub(crate) fn test_tui(cols: u16, rows: u16) -> Self {
         Self::base(
             CustomTerminal::at_row(
-                CrosstermBackend::new(std::io::stdout()),
+                LeveledBackend::new(CrosstermBackend::new(std::io::stdout())),
                 ratatui::layout::Size::new(cols, rows),
                 0,
                 terminal::Scrollback::Regions,

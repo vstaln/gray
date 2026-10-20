@@ -12,10 +12,11 @@ impl TuiSession {
     }
 }
 
-pub(crate) fn open_modal() -> std::io::Result<(
-    TuiSession,
-    ratatui::Terminal<ratatui::backend::CrosstermBackend<std::io::Stdout>>,
-)> {
+pub(crate) type ModalTerminal = ratatui::Terminal<
+    crate::composer::LeveledBackend<ratatui::backend::CrosstermBackend<std::io::Stdout>>,
+>;
+
+pub(crate) fn open_modal() -> std::io::Result<(TuiSession, ModalTerminal)> {
     let session = TuiSession::acquire()?;
     let mut stdout = std::io::stdout();
     crossterm::execute!(
@@ -24,7 +25,9 @@ pub(crate) fn open_modal() -> std::io::Result<(
         crossterm::terminal::Clear(crossterm::terminal::ClearType::All),
         crossterm::cursor::Hide
     )?;
-    let terminal = ratatui::Terminal::new(ratatui::backend::CrosstermBackend::new(stdout))?;
+    let terminal = ratatui::Terminal::new(crate::composer::LeveledBackend::new(
+        ratatui::backend::CrosstermBackend::new(stdout),
+    ))?;
     drain_queued_events();
     Ok((session, terminal))
 }

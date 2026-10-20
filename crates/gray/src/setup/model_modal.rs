@@ -1733,7 +1733,7 @@ pub fn run_model_modal(
 }
 
 pub(crate) fn model_picker_loop(
-    terminal: &mut ratatui::Terminal<ratatui::backend::CrosstermBackend<std::io::Stdout>>,
+    terminal: &mut super::ModalTerminal,
     config: &mut Config,
     bg: Option<&BackgroundSnapshot>,
     focus: Option<&str>,

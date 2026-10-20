@@ -512,6 +512,12 @@ pub async fn run_repl_mode(
 
     use std::io::IsTerminal;
     let interactive = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
+    if interactive && std::env::var("TERM").is_ok_and(|t| t.trim() == "dumb") {
+        eprintln!(
+            "gray: the interactive TUI cannot run on TERM=dumb — use `gray -p \"...\"` or a real terminal"
+        );
+        std::process::exit(2);
+    }
     if interactive {
         gray_plugin::builder::set_autostart(true);
     }
