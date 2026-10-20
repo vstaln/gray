@@ -54,6 +54,15 @@ fn cwd_display(cwd: &Path, width: usize) -> String {
     }
 }
 
+fn fit_col(text: &str, width: usize) -> String {
+    if text.chars().count() <= width {
+        return text.to_string();
+    }
+    let mut t: String = text.chars().take(width.saturating_sub(1)).collect();
+    t.push('\u{2026}');
+    t
+}
+
 fn preview_text(s: &SessionSummary, width: usize) -> String {
     let raw = s
         .title
@@ -886,6 +895,7 @@ fn run_picker_sync(
                             }
                             _ => short_id(&s.id),
                         };
+                        let right = fit_col(&right, id_w);
                         let rest = format!(
                             " {:>date_w$}  {:cwd_w$}  {:prev_w$}  {:>id_w$}",
                             date,
