@@ -106,6 +106,62 @@ pub(crate) fn clear_draft(tui: &mut Tui) {
     tui.search = None;
 }
 
+/// A lone ctrl-c/ctrl-d on an empty composer used to quit outright. Arm
+/// instead: show a "<key> again to quit" hint and exit only on a second
+/// press of the same key inside this window; a later press re-arms.
+const QUIT_ARM_WINDOW: Duration = Duration::from_millis(1500);
+
+type QuitArm = Option<(std::time::Instant, crate::keymap::Chord)>;
+
+/// True when `ev` is a fresh press of the armed quit key inside the
+/// window. Held-key Repeat events never count as the second press.
+fn quit_armed(arm: QuitArm, ev: &crossterm::event::KeyEvent) -> bool {
+    if ev.kind != crossterm::event::KeyEventKind::Press {
+        return false;
+    }
+    match arm {
+        Some((at, chord)) if at.elapsed() < QUIT_ARM_WINDOW => {
+            crate::keymap::Chord::from_event(ev) == Some(chord)
+        }
+        _ => false,
+    }
+}
+
+/// First (or stale-window) press of a quit key on the empty composer:
+/// arm it and show the "<key> again to quit" hint for the pressed key.
+fn arm_quit(tui: &mut Tui, arm: &mut QuitArm, ev: &crossterm::event::KeyEvent) {
+    *arm = match ev.kind {
+        crossterm::event::KeyEventKind::Press => {
+            crate::keymap::Chord::from_event(ev).map(|c| (std::time::Instant::now(), c))
+        }
+        _ => None,
+    };
+    let label = crate::keymap::Chord::from_event(ev)
+        .map(|c| c.display().replace('+', "-"))
+        .unwrap_or_else(|| "same key".to_string());
+    let hint = format!("{label} again to quit");
+    if !tail_line_is(tui, &hint) {
+        tui.push_dim(hint);
+    }
+}
+
+/// Newest transcript entry already reads `text`, so stacking another
+/// identical hint line would add nothing.
+fn tail_line_is(tui: &Tui, text: &str) -> bool {
+    match tui.history_entries.last() {
+        Some(crate::composer::TranscriptEntry::StyledLines { lines, .. }) => {
+            lines.len() == 1
+                && lines[0]
+                    .spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+                    == text
+        }
+        _ => false,
+    }
+}
+
 /// Recompute the slash-completion popup from the draft. While a history
 /// search is live the popup stays closed, and `muted_text` keeps it closed
 /// for the exact draft it was dismissed on (esc) until the text changes.
@@ -211,6 +267,7 @@ pub(crate) fn read_line(
 
     watch_dead_stdin();
     let mut needs_draw = true;
+    let mut quit_arm: QuitArm = None;
     loop {
         if stdin_gone() {
             return Ok(None);
@@ -300,17 +357,32 @@ pub(crate) fn read_line(
                 handle_paste(tui, data);
             }
             Event::Key(ev) if ev.kind != KeyEventKind::Release => match keys::dispatch(tui, &ev) {
-                KeyOutcome::Edited | KeyOutcome::Ignored => {}
+                KeyOutcome::Edited | KeyOutcome::Ignored => {
+                    quit_arm = None;
+                }
                 KeyOutcome::Clear => {
                     if has_draft(tui) {
+                        quit_arm = None;
                         clear_draft(tui);
                         continue;
                     }
-                    return Ok(None);
+                    if quit_armed(quit_arm, &ev) {
+                        return Ok(None);
+                    }
+                    arm_quit(tui, &mut quit_arm, &ev);
                 }
-                KeyOutcome::Exit => return Ok(None),
-                KeyOutcome::Interrupt => clear_draft(tui),
+                KeyOutcome::Exit => {
+                    if quit_armed(quit_arm, &ev) {
+                        return Ok(None);
+                    }
+                    arm_quit(tui, &mut quit_arm, &ev);
+                }
+                KeyOutcome::Interrupt => {
+                    quit_arm = None;
+                    clear_draft(tui);
+                }
                 KeyOutcome::Command(cmd) => {
+                    quit_arm = None;
                     tui.matches.clear();
                     tui.sel = 0;
                     if tui.is_task_running {
@@ -322,6 +394,7 @@ pub(crate) fn read_line(
                     return Ok(Some((cmd, Vec::new())));
                 }
                 KeyOutcome::Submit => {
+                    quit_arm = None;
                     let mut text = tui.textarea.text().to_string();
                     for (ph, full) in &tui.pending_pastes {
                         text = text.replace(ph, full);
