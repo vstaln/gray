@@ -296,6 +296,7 @@ pub(crate) fn read_line(
                 needs_draw = false;
             }
             Event::Paste(data) => {
+                tui.search = None;
                 handle_paste(tui, data);
             }
             Event::Key(ev) if ev.kind != KeyEventKind::Release => match keys::dispatch(tui, &ev) {

@@ -415,6 +415,7 @@ pub(crate) fn spawn_key_watcher_with_typing(
                             let attached: Vec<std::path::PathBuf> =
                                 std::mem::take(&mut t.attachments);
 
+                            crate::prompt_history::record(&mut t.history, &text);
                             t.queued_inputs.push_back((text, attached));
                             t.textarea.set_text("");
                             t.pending_pastes.clear();
