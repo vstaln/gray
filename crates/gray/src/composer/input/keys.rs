@@ -192,7 +192,34 @@ fn apply(tui: &mut Tui, a: Action) -> Option<KeyOutcome> {
             };
             t.textarea.replace_range(cur..end, "");
         }),
+        Action::Yank => yank_killed(tui),
     }
+}
+
+/// ctrl-y: restore the draft last wiped by esc/ctrl-c (one-slot kill ring).
+/// Empty composer restores the draft as it was; otherwise the killed text
+/// is inserted at the cursor instead of clobbering the current draft.
+fn yank_killed(tui: &mut Tui) -> Option<KeyOutcome> {
+    let killed = tui.killed_draft.take()?;
+    tui.hint = None;
+    tui.history_idx = None;
+    if tui.textarea.is_empty() {
+        tui.textarea.set_text(&killed.text);
+        tui.textarea.move_to_end();
+        tui.pending_pastes = killed.pending_pastes;
+        tui.attachments = killed.attachments;
+    } else {
+        tui.textarea.insert_str(&killed.text);
+        tui.pending_pastes.extend(killed.pending_pastes);
+        for path in killed.attachments {
+            if !tui.attachments.contains(&path) {
+                tui.attachments.push(path);
+            }
+        }
+    }
+    super::attach::sync_attachment_markers(tui);
+    tui.sel = 0;
+    Some(KeyOutcome::Edited)
 }
 
 fn edit(tui: &mut Tui, f: impl FnOnce(&mut Tui)) -> Option<KeyOutcome> {

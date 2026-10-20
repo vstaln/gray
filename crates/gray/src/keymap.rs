@@ -33,6 +33,7 @@ pub enum Action {
     DeleteWordForward,
     DeleteToLineStart,
     DeleteToLineEnd,
+    Yank,
 }
 
 pub const ALL: &[Action] = &[
@@ -63,6 +64,7 @@ pub const ALL: &[Action] = &[
     Action::DeleteWordForward,
     Action::DeleteToLineStart,
     Action::DeleteToLineEnd,
+    Action::Yank,
 ];
 
 impl Action {
@@ -95,6 +97,7 @@ impl Action {
             Action::DeleteWordForward => "tui.editor.deleteWordForward",
             Action::DeleteToLineStart => "tui.editor.deleteToLineStart",
             Action::DeleteToLineEnd => "tui.editor.deleteToLineEnd",
+            Action::Yank => "tui.editor.yank",
         }
     }
 
@@ -131,6 +134,7 @@ impl Action {
             Action::DeleteWordForward => "Delete word forward",
             Action::DeleteToLineStart => "Delete to line start",
             Action::DeleteToLineEnd => "Delete to line end",
+            Action::Yank => "Yank back the last cleared draft",
         }
     }
 
@@ -162,6 +166,7 @@ impl Action {
             Action::DeleteWordForward => &["alt+d", "alt+delete", "ctrl+delete"],
             Action::DeleteToLineStart => &["ctrl+u"],
             Action::DeleteToLineEnd => &["ctrl+k"],
+            Action::Yank => &["ctrl+y"],
         }
     }
 }
