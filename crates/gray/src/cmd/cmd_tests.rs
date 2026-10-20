@@ -106,7 +106,13 @@ fn list_shape_matches_contract() {
     let model = by_name("models");
     assert_eq!(model["surface"], "interactive");
     assert_eq!(model["scope"], "conversation");
-    assert!(model["aliases"].as_array().unwrap().is_empty());
+    assert!(
+        model["aliases"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|a| a == "connect")
+    );
     assert_eq!(model["args"][0]["name"], "args");
     assert_eq!(model["args"][0]["required"], false);
     assert_eq!(by_name("help")["surface"], "text");

@@ -1,6 +1,7 @@
 use super::{
     GroupId, GroupStates, PaneEfforts, PaneProvider, RailRow, active_rail_index, enclosing_group,
-    list_height, match_range, provider_is_active, rail_rows, scoped_config,
+    list_height, match_range, provider_is_active, rail_filter_hits, rail_rows, rail_rows_for,
+    scoped_config,
 };
 use crate::config::Config;
 use crate::setup::SavedConfig;
@@ -314,4 +315,43 @@ fn rail_rows_detected_and_keyless_stay_flat() {
     rail[0].detected = true;
     let rows = rail_rows(&rail, &GroupStates::default());
     assert_eq!(rows, vec![RailRow::Provider(0), RailRow::Provider(1)]);
+}
+
+#[test]
+fn rail_filter_narrows_to_matching_providers_or_leaves_rail_alone() {
+    let mut groq = row(item(
+        "groq",
+        "https://api.groq.com/openai/v1",
+        ConnectAuth::ApiKey,
+    ));
+    groq.item.name = "Groq".into();
+    let mut xai = row(item("xai", "https://api.x.ai/v1", ConnectAuth::ApiKey));
+    xai.item.name = "xAI (Grok)".into();
+    let mut oai = row(item(
+        "openai",
+        "https://api.openai.com/v1",
+        ConnectAuth::ApiKey,
+    ));
+    oai.item.name = "OpenAI".into();
+    oai.connected = true;
+    let rail = vec![oai, groq, xai];
+    let groups = GroupStates::default();
+    // "gro" names Groq + xAI (Grok): the closed API-key group opens to show just them.
+    let rows = rail_rows_for(&rail, &groups, "gro");
+    assert_eq!(
+        rows,
+        vec![
+            RailRow::Group(GroupId::ApiKey),
+            RailRow::Provider(1),
+            RailRow::Provider(2)
+        ]
+    );
+    assert!(rail_filter_hits(&rail, "GRO"));
+    // A model-ish filter names no provider: rail unchanged, models get filtered.
+    assert!(!rail_filter_hits(&rail, "gpt-5"));
+    assert_eq!(
+        rail_rows_for(&rail, &groups, "gpt-5"),
+        rail_rows(&rail, &groups)
+    );
+    assert_eq!(rail_rows_for(&rail, &groups, ""), rail_rows(&rail, &groups));
 }

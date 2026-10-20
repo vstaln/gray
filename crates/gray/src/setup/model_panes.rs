@@ -232,6 +232,35 @@ fn rail_rows(rail: &[PaneProvider], groups: &GroupStates) -> Vec<RailRow> {
     rows
 }
 
+/// True when the typed filter names at least one provider: the rail then
+/// narrows to those providers. Otherwise the filter applies to models only.
+fn rail_filter_hits(rail: &[PaneProvider], filter: &str) -> bool {
+    let f = filter.trim().to_lowercase();
+    !f.is_empty() && rail.iter().any(|p| p.item.name.to_lowercase().contains(&f))
+}
+
+/// `rail_rows`, narrowed to providers whose name matches the filter (groups
+/// forced open, empty groups dropped) when the filter names any provider.
+fn rail_rows_for(rail: &[PaneProvider], groups: &GroupStates, filter: &str) -> Vec<RailRow> {
+    if !rail_filter_hits(rail, filter) {
+        return rail_rows(rail, groups);
+    }
+    let f = filter.trim().to_lowercase();
+    let mut out = Vec::new();
+    let mut header = None;
+    for r in rail_rows(rail, &GroupStates([true; 3])) {
+        match r {
+            RailRow::Group(_) => header = Some(r),
+            RailRow::Provider(i) if rail[i].item.name.to_lowercase().contains(&f) => {
+                out.extend(header.take());
+                out.push(r);
+            }
+            RailRow::Provider(_) => {}
+        }
+    }
+    out
+}
+
 fn group_count(rail: &[PaneProvider], g: GroupId) -> usize {
     rail.iter()
         .filter(|p| matches!(place(p), Place::Group(id) if id == g))
@@ -654,7 +683,16 @@ fn draw(frame: &mut Frame, bg: &BackgroundSnapshot, v: &PaneView) {
         let y = list_y + (r - v.rail_top) as u16;
         let RailRow::Provider(i) = *kind else {
             let RailRow::Group(g) = *kind else { continue };
-            let icon = if v.groups.get(g) { " ▾ " } else { " ▸ " };
+            // A provider-name filter force-opens groups: show what's on screen.
+            let shown = v.rows[r + 1..]
+                .iter()
+                .take_while(|x| matches!(x, RailRow::Provider(_)))
+                .count();
+            let icon = if v.groups.get(g) || shown > 0 {
+                " ▾ "
+            } else {
+                " ▸ "
+            };
             let text = if lit {
                 bold(t.on_selection)
             } else if on {
@@ -662,7 +700,12 @@ fn draw(frame: &mut Frame, bg: &BackgroundSnapshot, v: &PaneView) {
             } else {
                 bold(t.text_body)
             };
-            let count = format!(" {}", group_count(v.rail, g));
+            let total = group_count(v.rail, g);
+            let count = if shown > 0 && shown < total {
+                format!(" {shown}/{total}")
+            } else {
+                format!(" {total}")
+            };
             frame.render_widget(
                 Paragraph::new(Line::from(vec![
                     Span::styled(icon, fg(if lit { t.on_selection } else { t.accent })),
@@ -949,6 +992,7 @@ pub(crate) fn run_model_panes(
     let mut model_sel = 0usize;
     let mut model_top = 0usize;
     let mut filter = String::new();
+    let mut filter_moved = false;
     let mut place_current = true;
     let mut confirm_remove = false;
     let mut do_remove = false;
@@ -1022,6 +1066,23 @@ pub(crate) fn run_model_panes(
                 notice = Some(format!("Removed {name}"));
                 removed = Some(name);
             }
+            let sel_provider = match rows.get(rail_sel) {
+                Some(RailRow::Provider(i)) => Some(*i),
+                _ => None,
+            };
+            let rail_filtered = rail_filter_hits(&rail, &filter);
+            rows = rail_rows_for(&rail, &groups, &filter);
+            rail_sel = if std::mem::take(&mut filter_moved) && rail_filtered {
+                rows.iter()
+                    .position(|r| matches!(r, RailRow::Provider(_)))
+                    .unwrap_or(0)
+            } else {
+                sel_provider
+                    .and_then(|i| rows.iter().position(|r| *r == RailRow::Provider(i)))
+                    .unwrap_or(rail_sel)
+            }
+            .min(rows.len().saturating_sub(1));
+            rail_top = rail_top.min(rail_sel);
             let provider = row_provider(&rail, &rows, rail_sel);
             let adoptable = provider.is_some_and(|p| p.adoptable(&keys));
             let all_models = provider
@@ -1033,7 +1094,7 @@ pub(crate) fn run_model_panes(
             {
                 kick(p, p.key(&keys, config), &mut fetching, &refresh_tx);
             }
-            let models: Vec<(String, String)> = if filter.is_empty() {
+            let models: Vec<(String, String)> = if filter.is_empty() || rail_filtered {
                 all_models
             } else {
                 let f = filter.to_lowercase();
@@ -1125,7 +1186,10 @@ pub(crate) fn run_model_panes(
             }
             let last_model = models.len().saturating_sub(1);
             match key.code {
-                KeyCode::Esc if !filter.is_empty() => filter.clear(),
+                KeyCode::Esc if !filter.is_empty() => {
+                    filter.clear();
+                    filter_moved = true;
+                }
                 KeyCode::Esc if focus == Focus::Models => focus = Focus::Rail,
                 KeyCode::Esc => return Ok(PanesOutcome::Dismissed),
                 KeyCode::Char('c') if ctrl => return Ok(PanesOutcome::Dismissed),
@@ -1214,10 +1278,12 @@ pub(crate) fn run_model_panes(
                 }
                 KeyCode::Backspace => {
                     filter.pop();
+                    filter_moved = true;
                     place_current = true;
                 }
                 KeyCode::Char(c) if !ctrl => {
                     filter.push(c);
+                    filter_moved = true;
                     place_current = true;
                 }
                 _ => {}
