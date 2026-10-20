@@ -294,7 +294,15 @@ fn connect_modal(
             if let Some(id) = preselect.take()
                 && let Some(item) = all_items.iter().find(|item| item.id == id)
             {
-                if let Some(installed) = providers.iter().find(|p| p.provider_id() == id) {
+                if item.id == "custom" {
+                    state = ModalState::EnteringBaseUrl {
+                        url_buf: String::new(),
+                        status_msg: None,
+                        suggestions: context::probe_local_endpoints(),
+                        sel: 0,
+                        probe_failed: false,
+                    };
+                } else if let Some(installed) = providers.iter().find(|p| p.provider_id() == id) {
                     let (cancel, progress) = spawn_plugin_login(installed.clone());
                     state = ModalState::AuthorizingPlugin {
                         item: item.clone(),

@@ -44,6 +44,7 @@ struct PaneProvider {
     connected: bool,
     removable: bool,
     installed: Option<InstalledProvider>,
+    detected: bool,
 }
 
 impl PaneProvider {
@@ -84,7 +85,6 @@ fn build_rail(config: &Config, ollama: bool) -> (Vec<PaneProvider>, BTreeMap<Str
 
     let rail = items
         .into_iter()
-        .filter(|item| item.id != "custom")
         .map(|item| {
             let installed = match &item.auth {
                 ConnectAuth::Plugin { .. } => providers
@@ -97,6 +97,7 @@ fn build_rail(config: &Config, ollama: bool) -> (Vec<PaneProvider>, BTreeMap<Str
                 connected: item.is_connected(config, &auth),
                 removable: super::connect::is_removable(&item, config, &auth),
                 list_key: PaneProvider::list_key(&item),
+                detected: detected.contains_key(&item.id),
                 installed,
                 item,
             }
@@ -105,9 +106,175 @@ fn build_rail(config: &Config, ollama: bool) -> (Vec<PaneProvider>, BTreeMap<Str
     (rail, keys)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RailRow {
+    Provider(usize),
+    Group(GroupId),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GroupId {
+    Logins,
+    OAuth,
+    ApiKey,
+}
+
+impl GroupId {
+    const ALL: [GroupId; 3] = [GroupId::Logins, GroupId::OAuth, GroupId::ApiKey];
+
+    fn index(self) -> usize {
+        match self {
+            GroupId::Logins => 0,
+            GroupId::OAuth => 1,
+            GroupId::ApiKey => 2,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            GroupId::Logins => "Logins",
+            GroupId::OAuth => "OAuth",
+            GroupId::ApiKey => "API keys",
+        }
+    }
+}
+
+/// Collapse state per rail group: the login/oauth sections stay open (they're
+/// short and show what's set up); the API-key catalog starts closed.
+struct GroupStates([bool; 3]);
+
+impl Default for GroupStates {
+    fn default() -> Self {
+        GroupStates([true, true, false])
+    }
+}
+
+impl GroupStates {
+    fn get(&self, g: GroupId) -> bool {
+        self.0[g.index()]
+    }
+
+    fn set(&mut self, g: GroupId, open: bool) {
+        self.0[g.index()] = open;
+    }
+
+    fn toggle(&mut self, g: GroupId) {
+        let i = g.index();
+        self.0[i] = !self.0[i];
+    }
+}
+
+enum Place {
+    Flat,
+    Group(GroupId),
+}
+
+/// Where a provider lives on the rail: ready-to-use key/no-auth entries stay
+/// flat up top; plugin logins and unused API-key catalog entries fold into
+/// labeled groups so the sections don't mix.
+fn place(p: &PaneProvider) -> Place {
+    match &p.item.auth {
+        ConnectAuth::Plugin { .. } => {
+            let oauth = p
+                .installed
+                .as_ref()
+                .is_some_and(|i| i.auth_method.kind == "oauth");
+            Place::Group(if oauth {
+                GroupId::OAuth
+            } else {
+                GroupId::Logins
+            })
+        }
+        ConnectAuth::ApiKey => {
+            if p.item.id == "custom"
+                || p.connected
+                || p.detected
+                || p.item.id.starts_with("custom:")
+            {
+                Place::Flat
+            } else {
+                Place::Group(GroupId::ApiKey)
+            }
+        }
+        ConnectAuth::None => Place::Flat,
+    }
+}
+
+/// Display rows for the rail: usable providers first, the "+ Custom endpoint"
+/// toggle after them, then the collapsible groups. Closed groups collapse to
+/// just their header.
+fn rail_rows(rail: &[PaneProvider], groups: &GroupStates) -> Vec<RailRow> {
+    let mut rows = Vec::new();
+    let mut members: [Vec<usize>; 3] = Default::default();
+    let mut custom_row = None;
+    for (i, p) in rail.iter().enumerate() {
+        if p.item.id == "custom" {
+            custom_row = Some(i);
+        } else {
+            match place(p) {
+                Place::Flat => rows.push(RailRow::Provider(i)),
+                Place::Group(g) => members[g.index()].push(i),
+            }
+        }
+    }
+    if let Some(i) = custom_row {
+        rows.push(RailRow::Provider(i));
+    }
+    for g in GroupId::ALL {
+        if members[g.index()].is_empty() {
+            continue;
+        }
+        rows.push(RailRow::Group(g));
+        if groups.get(g) {
+            rows.extend(members[g.index()].iter().map(|&i| RailRow::Provider(i)));
+        }
+    }
+    rows
+}
+
+fn group_count(rail: &[PaneProvider], g: GroupId) -> usize {
+    rail.iter()
+        .filter(|p| matches!(place(p), Place::Group(id) if id == g))
+        .count()
+}
+
+/// Index of the group header that owns `sel`, if `sel` sits inside an open
+/// group.
+fn enclosing_group(rows: &[RailRow], sel: usize) -> Option<usize> {
+    let mut parent = None;
+    for (i, r) in rows.iter().enumerate() {
+        if i == sel {
+            return parent;
+        }
+        if matches!(r, RailRow::Group(_)) {
+            parent = Some(i);
+        }
+    }
+    None
+}
+
+fn row_provider<'a>(
+    rail: &'a [PaneProvider],
+    rows: &[RailRow],
+    sel: usize,
+) -> Option<&'a PaneProvider> {
+    match rows.get(sel) {
+        Some(RailRow::Provider(i)) => rail.get(*i),
+        _ => None,
+    }
+}
+
 fn active_rail_index(rail: &[PaneProvider], config: &Config) -> usize {
     rail.iter()
         .position(|p| provider_is_active(p, config))
+        .unwrap_or(0)
+}
+
+/// Row (not provider) index holding the currently-active provider.
+fn active_row_index(rail: &[PaneProvider], rows: &[RailRow], config: &Config) -> usize {
+    let target = active_rail_index(rail, config);
+    rows.iter()
+        .position(|r| *r == RailRow::Provider(target))
         .unwrap_or(0)
 }
 
@@ -313,6 +480,8 @@ const RAIL_W: u16 = 22;
 
 struct PaneView<'a> {
     rail: &'a [PaneProvider],
+    rows: &'a [RailRow],
+    groups: &'a GroupStates,
     rail_sel: usize,
     rail_top: usize,
     scoped: &'a Config,
@@ -332,7 +501,7 @@ struct PaneView<'a> {
 
 impl PaneView<'_> {
     fn provider(&self) -> Option<&PaneProvider> {
-        self.rail.get(self.rail_sel)
+        row_provider(self.rail, self.rows, self.rail_sel)
     }
 
     fn highlighted(&self) -> Option<&(String, String)> {
@@ -441,7 +610,7 @@ fn draw(frame: &mut Frame, bg: &BackgroundSnapshot, v: &PaneView) {
             }),
         ));
     }
-    if !v.adoptable {
+    if !v.adoptable && provider.is_some() {
         head.push(Span::styled(" · not connected", fg(t.text_faint)));
     } else if let Some((id, name)) = highlighted {
         head.push(Span::styled(
@@ -474,9 +643,38 @@ fn draw(frame: &mut Frame, bg: &BackgroundSnapshot, v: &PaneView) {
         row(inner.x, inner.y, inner.width),
     );
 
-    for (r, p) in v.rail.iter().enumerate().skip(v.rail_top).take(list_h) {
+    for (r, kind) in v.rows.iter().enumerate().skip(v.rail_top).take(list_h) {
         let on = r == v.rail_sel;
         let lit = on && v.focus == Focus::Rail;
+        let bar = match (lit, on) {
+            (true, _) => fill(t.accent),
+            (_, true) => fill(t.bezel_lo),
+            _ => Style::default(),
+        };
+        let y = list_y + (r - v.rail_top) as u16;
+        let RailRow::Provider(i) = *kind else {
+            let RailRow::Group(g) = *kind else { continue };
+            let icon = if v.groups.get(g) { " ▾ " } else { " ▸ " };
+            let text = if lit {
+                bold(t.on_selection)
+            } else if on {
+                bold(t.text_bright)
+            } else {
+                bold(t.text_body)
+            };
+            let count = format!(" {}", group_count(v.rail, g));
+            frame.render_widget(
+                Paragraph::new(Line::from(vec![
+                    Span::styled(icon, fg(if lit { t.on_selection } else { t.accent })),
+                    Span::styled(g.label(), text),
+                    Span::styled(count, fg(if lit { t.on_selection } else { t.text_faint })),
+                ]))
+                .style(bar),
+                row(inner.x, y, rail_w),
+            );
+            continue;
+        };
+        let p = &v.rail[i];
         let text = if lit {
             bold(t.on_selection)
         } else if on {
@@ -488,28 +686,58 @@ fn draw(frame: &mut Frame, bg: &BackgroundSnapshot, v: &PaneView) {
                 t.text_faint
             })
         };
-        let bar = match (lit, on) {
-            (true, _) => fill(t.accent),
-            (_, true) => fill(t.bezel_lo),
-            _ => Style::default(),
-        };
+        let in_group = enclosing_group(v.rows, r).is_some();
         let mark = Span::styled(
-            if p.connected { " ✓ " } else { "   " },
-            fg(if lit { t.on_selection } else { t.success }),
+            if p.item.id == "custom" {
+                " + "
+            } else if p.connected {
+                " ✓ "
+            } else {
+                "   "
+            },
+            fg(if lit {
+                t.on_selection
+            } else if p.item.id == "custom" {
+                t.accent
+            } else {
+                t.success
+            }),
         );
-        let name = fit_chars(&p.item.name, rail_w.saturating_sub(4) as usize);
+        let name = if p.item.id == "custom" {
+            "Custom endpoint".to_string()
+        } else {
+            fit_chars(
+                &p.item.name,
+                rail_w.saturating_sub(if in_group { 6 } else { 4 }) as usize,
+            )
+        };
+        let mut spans = vec![mark];
+        if in_group {
+            spans.push(Span::raw(" "));
+        }
+        spans.push(Span::styled(name, text));
         frame.render_widget(
-            Paragraph::new(Line::from(vec![mark, Span::styled(name, text)])).style(bar),
-            row(inner.x, list_y + (r - v.rail_top) as u16, rail_w),
+            Paragraph::new(Line::from(spans)).style(bar),
+            row(inner.x, y, rail_w),
         );
     }
 
     if let Some(p) = provider {
         if v.models.is_empty() {
-            let msg = match (v.adoptable, v.filter.is_empty()) {
-                (false, _) => " no models yet",
-                (true, true) => " fetching models…",
-                (true, false) => " no matches",
+            let group_row = matches!(
+                v.rows.get(v.rail_sel),
+                Some(RailRow::Group(g)) if v.groups.get(*g)
+            );
+            let msg = if group_row {
+                " ← to collapse"
+            } else if matches!(v.rows.get(v.rail_sel), Some(RailRow::Group(_))) {
+                " enter/→ to expand"
+            } else {
+                match (v.adoptable, v.filter.is_empty()) {
+                    (false, _) => " no models yet",
+                    (true, true) => " fetching models…",
+                    (true, false) => " no matches",
+                }
             };
             frame.render_widget(
                 Paragraph::new(Span::styled(msg, fg(t.text_faint))),
@@ -709,11 +937,13 @@ pub(crate) fn run_model_panes(
     let mut first_draw = true;
     let mut before = config.clone();
     let (mut rail, mut keys) = build_rail(config, ollama);
+    let mut groups = GroupStates::default();
+    let mut rows = rail_rows(&rail, &groups);
     let mut model_cache: HashMap<String, Vec<(String, String)>> = HashMap::new();
     let mut efforts = PaneEfforts::default();
     let mut toggles = PickerToggles::from_config(config);
     let mut focus = Focus::Rail;
-    let mut rail_sel = active_rail_index(&rail, config);
+    let mut rail_sel = active_row_index(&rail, &rows, config);
     let mut rail_top = 0usize;
     let mut model_sel = 0usize;
     let mut model_top = 0usize;
@@ -755,12 +985,14 @@ pub(crate) fn run_model_panes(
                 && up != ollama
             {
                 ollama = up;
-                let keep = rail.get(rail_sel).map(|p| p.item.id.clone());
+                let keep = row_provider(&rail, &rows, rail_sel).map(|p| p.item.id.clone());
                 (rail, keys) = build_rail(config, ollama);
+                rows = rail_rows(&rail, &groups);
                 rail_sel = keep
                     .and_then(|id| rail.iter().position(|p| p.item.id == id))
+                    .and_then(|i| rows.iter().position(|r| *r == RailRow::Provider(i)))
                     .unwrap_or(rail_sel)
-                    .min(rail.len().saturating_sub(1));
+                    .min(rows.len().saturating_sub(1));
             }
             while let Ok((list_key, live)) = refresh_rx.try_recv() {
                 if !live.is_empty()
@@ -771,23 +1003,25 @@ pub(crate) fn run_model_panes(
             }
 
             if std::mem::take(&mut do_remove)
-                && let Some(p) = rail.get(rail_sel)
+                && let Some(p) = row_provider(&rail, &rows, rail_sel)
             {
                 let id = p.item.id.clone();
                 let name = super::connect::forget_provider(&p.item, config)?;
                 before = config.clone();
                 (rail, keys) = build_rail(config, ollama);
+                rows = rail_rows(&rail, &groups);
                 rail_sel = rail
                     .iter()
                     .position(|q| q.item.id == id)
+                    .and_then(|i| rows.iter().position(|r| *r == RailRow::Provider(i)))
                     .unwrap_or(rail_sel)
-                    .min(rail.len().saturating_sub(1));
+                    .min(rows.len().saturating_sub(1));
                 place_current = true;
                 model_top = 0;
                 notice = Some(format!("Removed {name}"));
                 removed = Some(name);
             }
-            let provider = rail.get(rail_sel);
+            let provider = row_provider(&rail, &rows, rail_sel);
             let adoptable = provider.is_some_and(|p| p.adoptable(&keys));
             let all_models = provider
                 .map(|p| models_for(p, &mut model_cache).to_vec())
@@ -848,6 +1082,8 @@ pub(crate) fn run_model_panes(
                     &bg_snapshot,
                     &PaneView {
                         rail: &rail,
+                        rows: &rows,
+                        groups: &groups,
                         rail_sel,
                         rail_top,
                         scoped: &scoped,
@@ -898,6 +1134,10 @@ pub(crate) fn run_model_panes(
                     confirm_remove = provider.is_some_and(|p| p.removable);
                 }
                 KeyCode::Enter => match focus {
+                    Focus::Rail if let Some(RailRow::Group(g)) = rows.get(rail_sel).copied() => {
+                        groups.toggle(g);
+                        rows = rail_rows(&rail, &groups);
+                    }
                     _ if !adoptable => {
                         if let Some(p) = provider {
                             return Ok(PanesOutcome::Connect(p.item.id.clone()));
@@ -927,7 +1167,7 @@ pub(crate) fn run_model_panes(
                     rail_sel = if key.code == KeyCode::Up {
                         rail_sel.saturating_sub(1)
                     } else {
-                        (rail_sel + 1).min(rail.len().saturating_sub(1))
+                        (rail_sel + 1).min(rows.len().saturating_sub(1))
                     };
                     place_current = true;
                     model_top = 0;
@@ -943,6 +1183,25 @@ pub(crate) fn run_model_panes(
                     if !moved && !forward {
                         focus = Focus::Rail;
                     }
+                }
+                KeyCode::Left if focus == Focus::Rail => match rows.get(rail_sel).copied() {
+                    Some(RailRow::Group(g)) => {
+                        groups.set(g, false);
+                        rows = rail_rows(&rail, &groups);
+                    }
+                    Some(RailRow::Provider(_)) => {
+                        if let Some(parent) = enclosing_group(&rows, rail_sel) {
+                            rail_sel = parent;
+                        }
+                    }
+                    None => {}
+                },
+                KeyCode::Right
+                    if focus == Focus::Rail
+                        && let Some(RailRow::Group(g)) = rows.get(rail_sel).copied() =>
+                {
+                    groups.set(g, true);
+                    rows = rail_rows(&rail, &groups);
                 }
                 KeyCode::Right => focus = Focus::Models,
                 KeyCode::Tab => toggles.toggle_fast(fast_supported),

@@ -1,6 +1,6 @@
 use super::{
-    PaneEfforts, PaneProvider, active_rail_index, list_height, match_range, provider_is_active,
-    scoped_config,
+    GroupId, GroupStates, PaneEfforts, PaneProvider, RailRow, active_rail_index, enclosing_group,
+    list_height, match_range, provider_is_active, rail_rows, scoped_config,
 };
 use crate::config::Config;
 use crate::setup::SavedConfig;
@@ -55,6 +55,7 @@ fn row(item: ConnectItem) -> PaneProvider {
         connected: false,
         removable: false,
         installed: None,
+        detected: false,
         item,
     }
 }
@@ -216,4 +217,101 @@ fn step_reports_whether_the_level_moved() {
     assert!(downs > 0);
     assert!(!efforts.step(&sa, &saved, &a, STEP_MODEL, false));
     assert!(efforts.step(&sa, &saved, &a, STEP_MODEL, true));
+}
+
+#[test]
+fn rail_rows_flat_then_custom_then_groups() {
+    let mut rail = vec![
+        row(item(
+            "openai",
+            "https://api.openai.com/v1",
+            ConnectAuth::ApiKey,
+        )),
+        row(item("custom", "", ConnectAuth::ApiKey)),
+        row(item("devin", "http://x", plugin_auth())),
+        row(item(
+            "mistral",
+            "https://api.mistral.ai/v1",
+            ConnectAuth::ApiKey,
+        )),
+    ];
+    rail[0].connected = true; // connected API key stays flat
+    let rows = rail_rows(&rail, &GroupStates::default());
+    assert_eq!(
+        rows,
+        vec![
+            RailRow::Provider(0),
+            RailRow::Provider(1), // + Custom endpoint after the flat section
+            RailRow::Group(GroupId::Logins),
+            RailRow::Provider(2), // devin (login, open by default)
+            RailRow::Group(GroupId::ApiKey),
+        ]
+    );
+    // API-key group starts closed: mistral hidden behind the header.
+    assert!(!rows.contains(&RailRow::Provider(3)));
+}
+
+#[test]
+fn rail_rows_open_api_key_group_reveals_members() {
+    let rail = vec![
+        row(item(
+            "openai",
+            "https://api.openai.com/v1",
+            ConnectAuth::ApiKey,
+        )),
+        row(item(
+            "mistral",
+            "https://api.mistral.ai/v1",
+            ConnectAuth::ApiKey,
+        )),
+    ];
+    let mut groups = GroupStates::default();
+    groups.set(GroupId::ApiKey, true);
+    let rows = rail_rows(&rail, &groups);
+    assert_eq!(
+        rows,
+        vec![
+            RailRow::Group(GroupId::ApiKey),
+            RailRow::Provider(0),
+            RailRow::Provider(1),
+        ]
+    );
+    assert_eq!(enclosing_group(&rows, 2), Some(0));
+}
+
+#[test]
+fn rail_rows_logins_holds_connected_and_new_logins() {
+    let mut rail = vec![
+        row(item("devin", "http://x", plugin_auth())),
+        row(item("claude", "http://y", plugin_auth())),
+    ];
+    rail[0].connected = true; // connected logins stay inside the group
+    let rows = rail_rows(&rail, &GroupStates::default());
+    assert_eq!(
+        rows,
+        vec![
+            RailRow::Group(GroupId::Logins),
+            RailRow::Provider(0),
+            RailRow::Provider(1),
+        ]
+    );
+}
+
+#[test]
+fn rail_rows_detected_and_keyless_stay_flat() {
+    let mut rail = vec![
+        row(item(
+            "openai",
+            "https://api.openai.com/v1",
+            ConnectAuth::ApiKey,
+        )),
+        row(item(
+            "ollama",
+            "http://localhost:11434/v1",
+            ConnectAuth::None,
+        )),
+    ];
+    rail[0].detected = true;
+    let rows = rail_rows(&rail, &GroupStates::default());
+    assert_eq!(rows, vec![RailRow::Provider(0), RailRow::Provider(1)]);
 }

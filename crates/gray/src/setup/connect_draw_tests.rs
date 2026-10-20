@@ -43,19 +43,19 @@ fn connected_then_popular_then_custom_then_stable_remainder() {
 
     catalog::sort_connect_items(&mut items, &config(), &BTreeMap::new(), &BTreeMap::new());
     let ids: Vec<&str> = items.iter().map(|i| i.id.as_str()).collect();
-    assert_eq!(&ids[..4], ["openai", "anthropic", "google", "openrouter"]);
     assert_eq!(
-        ids.iter().position(|id| *id == "custom"),
-        Some(catalog::POPULAR_DEFS.len())
+        &ids[..5],
+        ["custom", "openai", "anthropic", "google", "openrouter"]
     );
+    assert_eq!(ids.iter().position(|id| *id == "custom"), Some(0));
     catalog::sort_connect_items(&mut items, &config(), &auth(), &BTreeMap::new());
     assert_eq!(
         items
             .iter()
-            .take(4)
+            .take(5)
             .map(|i| i.id.as_str())
             .collect::<Vec<_>>(),
-        ["openrouter", "commandcode", "openai", "anthropic"]
+        ["custom", "openrouter", "commandcode", "openai", "anthropic"]
     );
     assert_eq!(items.len(), len);
 }
@@ -83,7 +83,7 @@ fn oauth_and_active_keyless_provider_are_connected() {
             .take(5)
             .map(|i| i.id.as_str())
             .collect::<Vec<_>>(),
-        ["openrouter", "commandcode", "ollama", "xai", "openai"]
+        ["custom", "openrouter", "commandcode", "ollama", "xai"]
     );
 }
 
@@ -188,10 +188,10 @@ fn separator_is_after_custom_not_after_first_connected_provider() {
         .collect();
     let custom = rows.iter().position(|r| r.contains("Custom")).unwrap();
 
-    assert!(rows[custom - 2].contains("xAI"));
-    assert!(rows[custom - 1].contains("Mistral"));
     assert!(rows[custom + 1].contains("────"));
-    assert!(!rows[custom + 2].contains("OpenAI"));
+    assert!(rows[custom + 2].contains("OpenRouter"));
+    assert!(rows[custom + 3].contains("CommandCode"));
+    assert!(rows[custom + 4].contains("OpenAI"));
 }
 
 #[test]
