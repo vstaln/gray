@@ -73,7 +73,6 @@ fn save_to(path: &Path, history: &[String]) {
     }
     if std::fs::rename(&tmp, path).is_err() {
         let _ = std::fs::remove_file(&tmp);
-        return;
     }
     #[cfg(unix)]
     {
