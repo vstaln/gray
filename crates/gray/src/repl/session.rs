@@ -770,7 +770,8 @@ pub(crate) fn dispatch_agent_event(
                 if !details.is_empty() && t.last_retry_detail.as_deref() != Some(details.as_str()) {
                     t.last_retry_detail = Some(details.clone());
                     let trunc = crate::repl::format::truncate_chars(details, 200);
-                    super::notice::push_notice(&mut t, "Reconnecting", trunc, false);
+                    // A failed request, not a success: ⚠, not push_action's ✓.
+                    t.push_warning(&format!("Request failed, retrying — {trunc}"));
                 }
             }
 
