@@ -245,8 +245,21 @@ impl PluginCredentialSource {
             model: self.model.clone().unwrap_or_default(),
         };
         let result = self.rpc.chat(request).await.map_err(|e| match e {
+            // The sidecar itself answered `unavailable`: it has no usable
+            // login ("run agy once and complete the Google sign-in"). The
+            // stored row is stale — prompt for reauth, carrying its hint.
+            gray_plugin::ProviderRpcError::Rpc(failure) if failure.code == "unavailable" => {
+                CredentialError::ReauthRequired(if failure.message.is_empty() {
+                    identity.clone()
+                } else {
+                    failure.message
+                })
+            }
+            // The request never got an answer (sidecar died mid-call, timed
+            // out, was respawned): a transport failure, not a login
+            // problem — surfaced as Unavailable so the turn retries.
             gray_plugin::ProviderRpcError::Unavailable(message) => {
-                CredentialError::ReauthRequired(message)
+                CredentialError::Unavailable(format!("{identity}: {message}"))
             }
             other => self.map_error(other),
         })?;

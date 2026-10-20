@@ -2515,7 +2515,16 @@ impl OpenAiProvider {
             credential_source
                 .acquire()
                 .await
-                .map_err(|e| ProviderError::Auth(format!("provider credential unavailable: {e:#}")))
+                .map_err(|e| match e {
+                    // The credential source is unreachable (sidecar died
+                    // mid-request, timed out, refresh endpoint offline):
+                    // transient, so the turn retries instead of telling
+                    // the user to sign in again.
+                    gray_core::credential::CredentialError::Unavailable(_) => {
+                        ProviderError::Connection(format!("provider credential unavailable: {e:#}"))
+                    }
+                    _ => ProviderError::Auth(format!("provider credential unavailable: {e:#}")),
+                })
                 .and_then(|lease| {
                     let url = match lease.metadata.get("relay_url") {
                         Some(relay) => relay.parse::<Url>().map_err(|e| {

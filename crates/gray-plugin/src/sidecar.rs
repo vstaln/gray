@@ -375,7 +375,17 @@ fn spawn_reader(
             };
             let tx = pending.lock().await.map.remove(&id);
             if let Some(tx) = tx {
-                let _ = tx.send(v.get("result").cloned().unwrap_or(Value::Null));
+                // A top-level JSON-RPC `error` reply (how provider sidecars
+                // report "not logged in" and similar) is handed on as
+                // `{"error": …}` — the shape `provider_rpc` and host-style
+                // replies already check — instead of collapsing to null,
+                // which turned every sidecar error into "invalid result".
+                let payload = match (v.get("result"), v.get("error")) {
+                    (Some(result), _) => result.clone(),
+                    (None, Some(error)) if !error.is_null() => json!({"error": error}),
+                    _ => Value::Null,
+                };
+                let _ = tx.send(payload);
             }
         }
         let mut p = pending.lock().await;
