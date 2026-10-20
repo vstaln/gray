@@ -22,7 +22,12 @@ fn backdrop_mirrors_live_layout_with_multiline_prompt() {
         .expect("draw");
     let rows = buffer_rows(terminal.backend(), 40, 10);
 
-    assert!(rows[1].contains("❯"), "prompt box starts at top: {rows:?}");
+    // The band's rows keep their height and dimmed fill, but composer text is
+    // deliberately not painted so a stray `❯` can't peek out beside a modal.
+    assert!(
+        rows[1].trim().is_empty(),
+        "prompt band keeps its silhouette, not its text: {rows:?}"
+    );
     assert!(
         rows[6].contains("cache"),
         "footer follows the box: {rows:?}"
@@ -73,7 +78,12 @@ fn backdrop_dims_card_box_and_inserts_gap_before_input() {
     );
 
     assert!(
-        rows[5].contains("❯"),
-        "input box arrow follows gap row: {rows:?}"
+        rows[5].trim().is_empty(),
+        "input box row keeps its silhouette, not its arrow: {rows:?}"
+    );
+    assert_eq!(
+        terminal.backend().buffer()[(0, 5)].bg,
+        ratatui::style::Color::Rgb(8, 8, 8),
+        "input box row still dims to composer gray"
     );
 }

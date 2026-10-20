@@ -298,7 +298,6 @@ pub fn render_dimmed_background(frame: &mut ratatui::Frame, bg: &BackgroundSnaps
         let ibox =
             crate::composer::draw::build_input_box(&bg.prompt_text, 0, w, None, Some(home), &chips);
         let band = ibox.lines;
-        let bx = ibox.x;
         let transcript_avail_h = h.saturating_sub(band.len() + 1);
         let tail: &[Line<'static>] = if transcript.len() <= transcript_avail_h {
             &transcript
@@ -310,10 +309,14 @@ pub fn render_dimmed_background(frame: &mut ratatui::Frame, bg: &BackgroundSnaps
         for l in tail {
             full_screen_lines.push(pad_backdrop_line(dim_line(l), w));
         }
-        let left_pad = Span::styled(" ".repeat(bx), Style::default().bg(backdrop_bg()));
+        // The composer's text is intentionally not painted: a dimmed `❯` or
+        // draft peeking out beside a centered modal reads as a stray glyph on
+        // the modal's rows. Keep the band's blank silhouette instead.
         for l in band {
-            let mut line = dim_line(&l);
-            line.spans.insert(0, left_pad.clone());
+            let mut line = Line::from("").style(l.style);
+            if line.style.bg.is_none() {
+                line.style = line.style.bg(backdrop_bg());
+            }
             full_screen_lines.push(pad_backdrop_line(line, w));
         }
         while full_screen_lines.len() + 1 < h {
@@ -359,8 +362,14 @@ pub fn render_dimmed_background(frame: &mut ratatui::Frame, bg: &BackgroundSnaps
     if needs_gap {
         full_screen_lines.push(pad_backdrop_line(Line::from(""), w));
     }
+    // Same as the home band above: keep the composer box's silhouette but
+    // drop its text so a dimmed prompt can't peek out beside the modal.
     for l in bottom_box_lines {
-        full_screen_lines.push(pad_backdrop_line(l, w));
+        let mut line = Line::from("").style(l.style);
+        if line.style.bg.is_none() {
+            line.style = line.style.bg(backdrop_bg());
+        }
+        full_screen_lines.push(pad_backdrop_line(line, w));
     }
     full_screen_lines.push(pad_backdrop_line(footer_line, w));
 
