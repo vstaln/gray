@@ -1239,18 +1239,33 @@ impl Tui {
         self.home_session = line;
     }
 
+    /// The centered home layout holds only while the transcript is empty
+    /// of conversation. Local slash commands retract their echo
+    /// (`retract_slash_echo`) right after submit, so a bare trailing echo
+    /// is still home. Once a slash echo has output after it — a plugin
+    /// command like `/cloud` printing its receipt — the session has started
+    /// talking: drop to the chat layout instead of stacking transcript rows
+    /// above a still-centered home composer.
     pub(crate) fn is_home(&self) -> bool {
-        !self.left_home
-            && self.history_entries.iter().all(|e| match e {
-                TranscriptEntry::Welcome
-                | TranscriptEntry::Gap(_)
-                | TranscriptEntry::Mascot
-                | TranscriptEntry::StyledLines { .. } => true,
-                TranscriptEntry::UserPrompt(text, _) => text.starts_with('/'),
-                TranscriptEntry::ToolBox { .. }
-                | TranscriptEntry::ToolBoxLines { .. }
-                | TranscriptEntry::ThinkingRun(_) => false,
-            })
+        if self.left_home {
+            return false;
+        }
+        let entries = &self.history_entries;
+        entries.iter().enumerate().all(|(i, e)| match e {
+            TranscriptEntry::Welcome
+            | TranscriptEntry::Gap(_)
+            | TranscriptEntry::Mascot
+            | TranscriptEntry::StyledLines { .. } => true,
+            TranscriptEntry::UserPrompt(text, _) => {
+                text.starts_with('/')
+                    && entries[i + 1..]
+                        .iter()
+                        .all(|later| matches!(later, TranscriptEntry::Gap(_)))
+            }
+            TranscriptEntry::ToolBox { .. }
+            | TranscriptEntry::ToolBoxLines { .. }
+            | TranscriptEntry::ThinkingRun(_) => false,
+        })
     }
 
     pub fn set_model_label(&mut self, label: Option<String>) {
