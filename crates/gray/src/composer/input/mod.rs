@@ -96,6 +96,14 @@ pub(crate) fn has_draft(tui: &Tui) -> bool {
 }
 
 pub(crate) fn clear_draft(tui: &mut Tui) {
+    if has_draft(tui) {
+        tui.killed_draft = Some(super::KilledDraft {
+            text: tui.textarea.text().to_string(),
+            pending_pastes: std::mem::take(&mut tui.pending_pastes),
+            attachments: std::mem::take(&mut tui.attachments),
+        });
+        tui.set_hint("draft cleared — ctrl-y to yank back");
+    }
     tui.textarea.set_text("");
     tui.attachments.clear();
     tui.pending_pastes.clear();

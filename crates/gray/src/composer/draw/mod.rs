@@ -211,7 +211,8 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
     let footer_h: u16 = u16::from(!home_mode);
 
     let needs_seam = needs_seam(&tui.transcript);
-    let status_h: u16 = status_dock_h(tui.status.is_some(), needs_seam);
+    let dock_live = tui.status.is_some() || tui.hint_active().is_some();
+    let status_h: u16 = status_dock_h(dock_live, needs_seam);
 
     let seam_h: u16 = u16::from(needs_seam);
     let n = tui.queued_inputs.len() + tui.queued_sends.len();
@@ -245,7 +246,7 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
         .saturating_add(u16::from(tui.live_tool_overflow() > 0));
     let stream_tail: Vec<Line<'static>> = tui.stream_tail_rows(w);
 
-    let tail_gap = tail_gap_h(tui.status.is_some(), &stream_tail);
+    let tail_gap = tail_gap_h(dock_live, &stream_tail);
     let tail_est = stream_tail.len() as u16 + tail_gap;
 
     let chips = attachment_cells(&tui.attachments, &text);
@@ -503,6 +504,16 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
             ));
             frame.render_widget(
                 Paragraph::new(Line::from(spans)),
+                Rect::new(area.x, status_y + seam_h + tail_h, area.width, 1),
+            );
+        } else if let Some((shown, hint)) = &tui.hint
+            && shown.elapsed() < super::HINT_TTL
+        {
+            frame.render_widget(
+                Paragraph::new(Line::from(Span::styled(
+                    format!(" {hint}"),
+                    Style::default().fg(crate::theme::theme().tool_dim),
+                ))),
                 Rect::new(area.x, status_y + seam_h + tail_h, area.width, 1),
             );
         }

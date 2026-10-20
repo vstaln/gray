@@ -229,6 +229,18 @@ pub(crate) struct HistSearch {
     pub idx: Option<usize>,
 }
 
+/// How long a transient composer hint stays on screen.
+pub(crate) const HINT_TTL: Duration = Duration::from_secs(4);
+
+/// One-slot kill ring: the draft (with its paste payloads and attachments)
+/// last wiped by esc/ctrl-c, restored into the composer by ctrl-y.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct KilledDraft {
+    pub(crate) text: String,
+    pub(crate) pending_pastes: Vec<(String, String)>,
+    pub(crate) attachments: Vec<PathBuf>,
+}
+
 pub struct Tui {
     pub(crate) terminal: Term,
     background: Option<background::Background>,
@@ -284,6 +296,12 @@ pub struct Tui {
     pub(crate) history: Vec<String>,
     pub(crate) history_idx: Option<usize>,
     pub(crate) draft: String,
+
+    /// One-slot kill ring for ctrl-y (see KilledDraft).
+    pub(crate) killed_draft: Option<KilledDraft>,
+
+    /// Short-lived composer hint drawn in the status dock slot while fresh.
+    pub(crate) hint: Option<(Instant, String)>,
 
     pub(crate) attachments: Vec<PathBuf>,
     pub(crate) pending_pastes: Vec<(String, String)>,
@@ -907,6 +925,8 @@ impl Tui {
             history: Vec::new(),
             history_idx: None,
             draft: String::new(),
+            killed_draft: None,
+            hint: None,
             attachments: Vec::new(),
             pending_pastes: Vec::new(),
             model_name: String::new(),
@@ -1258,6 +1278,24 @@ impl Tui {
         self.attachments.clear();
         self.pending_pastes.clear();
     }
+
+    pub(crate) fn set_hint(&mut self, text: &str) {
+        self.hint = Some((Instant::now(), text.to_string()));
+    }
+
+    /// The hint while it is still fresh; None once HINT_TTL has elapsed.
+    pub(crate) fn hint_active(&self) -> Option<&str> {
+        match &self.hint {
+            Some((shown, text)) if shown.elapsed() < HINT_TTL => Some(text.as_str()),
+            _ => None,
+        }
+    }
+
+    /// A stored hint that has outlived HINT_TTL and should be dropped.
+    pub(crate) fn hint_expired(&self) -> bool {
+        self.hint.is_some() && self.hint_active().is_none()
+    }
+
     pub fn set_usage(&mut self, usage: gray_core::event::Usage) {
         if !usage.any() {
             return;
@@ -1798,6 +1836,12 @@ impl Tui {
         }
         let widget_changed = self.plugin_widget.refresh();
 
+        let hint_cleared = if self.hint_expired() {
+            self.hint = None;
+            true
+        } else {
+            false
+        };
         let cache_ticking = self.cache_remaining().is_some();
         let footer_changed = crate::statusline::version() != self.status_line_seen;
         if self.intro_started.is_none() {
@@ -1810,6 +1854,7 @@ impl Tui {
             && !widget_changed
             && !cache_ticking
             && !footer_changed
+            && !hint_cleared
         {
             return;
         }
