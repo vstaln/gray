@@ -684,28 +684,28 @@ fn connect_modal(
                                 }
                             }
                             KeyCode::Enter => {
-                                let chosen = if url_buf.trim().is_empty() {
-                                    filtered.get(*sel).map(|s| s.url.to_string())
-                                } else {
-                                    Some(url_buf.trim().to_string())
-                                };
-                                let normalized = chosen
-                                    .as_deref()
-                                    .map(normalize_custom_base_url)
-                                    .unwrap_or_default();
+                                if url_buf.trim().is_empty() {
+                                    *status_msg = Some(
+                                        "Enter a base URL (e.g. http://localhost:11434/v1)".into(),
+                                    );
+                                    *probe_failed = false;
+                                    continue;
+                                }
+                                let normalized = normalize_custom_base_url(url_buf.trim());
                                 let valid = normalized.starts_with("http://")
                                     || normalized.starts_with("https://");
-                                if normalized.is_empty() || !valid {
+                                if !valid {
                                     *status_msg =
                                         Some("Enter a valid base URL (e.g. https://…/v1)".into());
                                     continue;
                                 }
 
+                                let mut back = false;
                                 let proceed = if *probe_failed {
                                     *probe_failed = false;
                                     true
                                 } else {
-                                    *status_msg = Some("Checking endpoint…".into());
+                                    *status_msg = Some("Checking endpoint… (esc to cancel)".into());
                                     terminal.draw(|frame| {
                                         let area = frame.area();
                                         if area.width >= 20 && area.height >= 6 {
@@ -716,10 +716,47 @@ fn connect_modal(
                                             );
                                         }
                                     })?;
-                                    match context::probe_custom_endpoint(&normalized) {
-                                        context::EndpointProbe::Up { .. }
-                                        | context::EndpointProbe::Auth => true,
-                                        context::EndpointProbe::Down => {
+                                    // Probe on a detached thread so esc can
+                                    // cancel the wait instead of blocking the
+                                    // modal for the full connect timeout.
+                                    let probe_rx =
+                                        context::probe_custom_endpoint_detached(&normalized);
+                                    let (probed, b) = loop {
+                                        if let Ok(p) = probe_rx.try_recv() {
+                                            break (Some(p), false);
+                                        }
+                                        if poll(std::time::Duration::from_millis(50))? {
+                                            match read()? {
+                                                Event::Key(KeyEvent {
+                                                    code: KeyCode::Esc,
+                                                    kind: KeyEventKind::Press,
+                                                    ..
+                                                }) => break (None, false),
+                                                Event::Key(KeyEvent {
+                                                    code: KeyCode::Char('c'),
+                                                    modifiers,
+                                                    kind: KeyEventKind::Press,
+                                                    ..
+                                                }) if modifiers.contains(KeyModifiers::CONTROL) => {
+                                                    break (None, true);
+                                                }
+                                                _ => {}
+                                            }
+                                        }
+                                    };
+                                    back = b;
+                                    match probed {
+                                        None => {
+                                            if !back {
+                                                *status_msg = Some("Check cancelled.".into());
+                                            }
+                                            false
+                                        }
+                                        Some(
+                                            context::EndpointProbe::Up { .. }
+                                            | context::EndpointProbe::Auth,
+                                        ) => true,
+                                        Some(context::EndpointProbe::Down) => {
                                             *status_msg = Some(
                                                 "No answer — Enter again to connect anyway".into(),
                                             );
@@ -728,6 +765,10 @@ fn connect_modal(
                                         }
                                     }
                                 };
+                                if back {
+                                    state = ModalState::Selecting;
+                                    continue;
+                                }
                                 if proceed {
                                     let key_id = catalog::custom_key_id(&normalized);
                                     let existing =
