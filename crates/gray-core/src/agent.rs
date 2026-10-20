@@ -531,7 +531,7 @@ pub struct Agent {
 
     pub(crate) soft_elide_rearm: usize,
 
-    context_usage: Option<(usize, usize)>,
+    pub(crate) context_usage: Option<(usize, usize)>,
     history_revision: u64,
     history_rewrite_hook: Option<Arc<dyn Fn() + Send + Sync>>,
 

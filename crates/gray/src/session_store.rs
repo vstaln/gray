@@ -999,6 +999,47 @@ impl std::fmt::Display for SessionId {
 
 pub type SessionEntryId = u64;
 
+type CarriedMeta = (u64, Option<gray_core::event::Usage>, Option<u64>);
+
+/// What survives a history rewrite: a tool round by its call id (soft
+/// elision rewrites the result body, not the id), anything else by content.
+fn carry_key(m: &Message) -> Option<String> {
+    let id = m.content.iter().find_map(|b| match b {
+        ContentBlock::ToolUse { id, .. } | ContentBlock::ToolResult { id, .. } => Some(id),
+        _ => None,
+    });
+    match id {
+        Some(id) => Some(format!("{:?}:{id}", m.role)),
+        None => serde_json::to_string(m).ok(),
+    }
+}
+
+/// Timestamp/usage/duration of the active entries (after the last
+/// boundary), so a replacement re-states kept messages as they were rather
+/// than stamping the whole transcript with the rewrite time.
+fn carried_meta(
+    text: &str,
+) -> std::collections::HashMap<String, std::collections::VecDeque<CarriedMeta>> {
+    let entries: Vec<SessionEntry> = text
+        .lines()
+        .skip(1)
+        .filter_map(|l| serde_json::from_str(l).ok())
+        .collect();
+    let start = entries
+        .iter()
+        .rposition(|e| e.compaction_boundary)
+        .map_or(0, |i| i + 1);
+    let mut map: std::collections::HashMap<_, std::collections::VecDeque<_>> = Default::default();
+    for e in &entries[start..] {
+        if let Some(k) = carry_key(&e.message) {
+            map.entry(k)
+                .or_default()
+                .push_back((e.timestamp, e.usage, e.duration_ms));
+        }
+    }
+    map
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionMeta {
     pub id: SessionId,
@@ -2047,6 +2088,10 @@ impl JsonlSessionStore {
         let path = self.session_path(id)?;
 
         let (mut next_id, mut parent_id) = Self::next_ids_for_append(id, &path).await?;
+        let mut carried = match Self::read_session_text(&path).await? {
+            Some((text, _)) => carried_meta(&text),
+            None => Default::default(),
+        };
 
         let mut out = String::new();
 
@@ -2061,14 +2106,18 @@ impl JsonlSessionStore {
             msgs.push((false, msg.clone()));
         }
         for (boundary, msg) in msgs {
+            let (timestamp, usage, duration_ms) = carry_key(&msg)
+                .and_then(|k| carried.get_mut(&k)?.pop_front())
+                .filter(|_| !boundary)
+                .unwrap_or((now_millis(), None, None));
             let entry = SessionEntry {
                 compaction_boundary: boundary,
                 entry_id: next_id,
                 parent_id,
-                timestamp: now_millis(),
+                timestamp,
                 message: msg,
-                usage: None,
-                duration_ms: None,
+                usage,
+                duration_ms,
             };
             let json = serde_json::to_string(&entry)?;
             out.push_str(&json);

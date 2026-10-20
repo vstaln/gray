@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 cd "$(dirname "$0")/.."
-tar cz crates Cargo.toml Cargo.lock | ssh maid 'tar xz -C gray'
+tar cz crates Cargo.toml Cargo.lock | ssh maid 'rm -rf gray/crates && tar xz -C gray'
 ssh maid 'cd gray && "$HOME/.cargo/bin/cargo" build --release -p gray'
 src="/tmp/gray-maid.$$"
 scp -q maid:gray/target/release/gray "$src"

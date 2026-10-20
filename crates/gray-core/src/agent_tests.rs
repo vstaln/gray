@@ -3567,3 +3567,43 @@ async fn malformed_calls_block_runs_salvageable_elements() {
     assert!(output.contains("ran 1/"), "got {output}");
     assert!(output.contains("dropped"), "got {output}");
 }
+
+#[test]
+fn soft_elide_keeps_the_measured_anchor_over_thinking_blobs() {
+    let mut history = vec![Message {
+        role: Role::Assistant,
+        injected: false,
+        content: vec![ContentBlock::Thinking {
+            text: String::new(),
+            encrypted_content: Some("e".repeat(400_000)),
+            item_id: None,
+            model: None,
+        }],
+    }];
+    for i in 0..30 {
+        let id = format!("c{i}");
+        history.push(Message {
+            role: Role::Assistant,
+            injected: false,
+            content: vec![ContentBlock::tool_use(&id, TOOL_NAME, serde_json::json!({}))],
+        });
+        history.push(Message {
+            role: Role::User,
+            injected: false,
+            content: vec![ContentBlock::tool_result(&id, "z".repeat(8_192), false)],
+        });
+    }
+    let mut agent = Agent::new(
+        Box::new(FakeProvider::new(vec![])),
+        Arc::new(FakeExecutor::new(ToolOutput::ok("unused"))),
+    )
+    .with_context_window(Some(100_000))
+    .with_messages(history);
+    agent.record_context_usage(&Usage::new(70_000, 0));
+    assert!(agent.soft_elide() > 0);
+    assert!(
+        agent.estimate_tokens() < 70_000,
+        "measured 70k minus stubbed results, not a char/4 recount of the blob: {}",
+        agent.estimate_tokens()
+    );
+}

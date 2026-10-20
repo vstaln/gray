@@ -631,7 +631,7 @@ pub(crate) async fn dispatch_command(
                                     super::maintenance::with_terminal(shared, || {
                                         let mut child = std::process::Command::new(prog);
                                         child.args(rest);
-                                        if let Ok(exe) = std::env::current_exe() {
+                                        if let Ok(exe) = crate::exe_watch::on_disk_exe() {
                                             child.env("GRAY_EXE", exe);
                                         }
                                         child.status()

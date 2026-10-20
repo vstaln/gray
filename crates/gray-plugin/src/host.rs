@@ -9,8 +9,14 @@ use gray_tools::shell::pump::Pump;
 use serde_json::{Value, json};
 
 pub async fn run_prompt_child(cwd: &Path, prompt: &str) -> Value {
+    // After `gray update` the running image reads as "<path> (deleted)";
+    // the child must exec the replacement at <path>.
     let exe = match std::env::current_exe() {
-        Ok(p) => p,
+        Ok(p) => p
+            .to_str()
+            .and_then(|s| s.strip_suffix(" (deleted)"))
+            .map(std::path::PathBuf::from)
+            .unwrap_or(p),
         Err(e) => return json!({"error": format!("host/run: current_exe: {e}")}),
     };
     let mut child = match tokio::process::Command::new(exe)

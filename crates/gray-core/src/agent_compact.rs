@@ -178,13 +178,20 @@ impl Agent {
         let keep = self
             .compact_keep
             .unwrap_or_else(|| crate::compact::soft_elide_keep_budget(window));
+        let measured = self.estimate_tokens();
+        let raw_before = est_tokens(&self.messages);
         let elided = crate::compact::elide_stale_tool_results(
             &mut self.messages,
             keep,
             self.session_id.as_deref(),
         );
         if elided > 0 {
+            let saved = raw_before.saturating_sub(est_tokens(&self.messages));
             self.history_rewritten();
+            // Keep the provider-measured anchor minus what was stubbed: a
+            // char/4 re-estimate counts opaque thinking blobs and overshot
+            // a measured 154k as 236k.
+            self.context_usage = Some((measured.saturating_sub(saved), self.messages.len()));
             self.soft_elide_rearm = self
                 .estimate_tokens()
                 .saturating_add(crate::compact::soft_elide_rearm_step(window));

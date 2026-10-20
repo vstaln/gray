@@ -1536,3 +1536,51 @@ async fn scan_reports_held_open_locks_as_running() {
     assert!(running.contains(held.as_str()));
     assert!(!running.contains("scan-free"));
 }
+
+#[tokio::test]
+async fn compaction_replacement_keeps_kept_entries_metadata() {
+    let dir = tempdir().unwrap();
+    let store = JsonlSessionStore::new(dir.path());
+    let id = store
+        .create(SessionMeta::new(SessionId::new("carry"), 1, "/tmp", "m"))
+        .await
+        .unwrap();
+    let usage = gray_core::event::Usage {
+        input_tokens: 7,
+        ..Default::default()
+    };
+    let call = Message {
+        role: Role::User,
+        content: vec![ContentBlock::ToolResult {
+            id: "t1".into(),
+            content: "long output".into(),
+            is_error: false,
+        }],
+        injected: false,
+    };
+    store
+        .append_with_usage_and_duration(&id, &Message::user("hi"), Some(usage), Some(5))
+        .await
+        .unwrap();
+    store.append(&id, &call).await.unwrap();
+    let (_, before) = store.load(&id).await.unwrap();
+
+    let mut elided = call.clone();
+    if let ContentBlock::ToolResult { content, .. } = &mut elided.content[0] {
+        *content = "[elided]".into();
+    }
+    store
+        .append_compaction_replacement(&id, &[Message::user("hi"), elided])
+        .await
+        .unwrap();
+    let (_, after) = store.load(&id).await.unwrap();
+    assert_eq!(after.len(), 2);
+    assert_eq!(after[0].timestamp, before[0].timestamp);
+    assert_eq!(after[0].usage, Some(usage));
+    assert_eq!(after[0].duration_ms, Some(5));
+    assert_eq!(after[1].timestamp, before[1].timestamp);
+    assert!(matches!(
+        &after[1].message.content[0],
+        ContentBlock::ToolResult { content, .. } if content == "[elided]"
+    ));
+}
