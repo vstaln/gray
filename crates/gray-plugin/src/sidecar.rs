@@ -187,7 +187,8 @@ fn spawn_child(argv: &[String]) -> anyhow::Result<(Child, ChildStdin, ChildStdou
                 .stdout(std::process::Stdio::piped())
                 .kill_on_drop(true)
                 .spawn()
-        })?;
+        })
+        .map_err(|e| anyhow::anyhow!(crate::friendly_spawn_error(&e)))?;
         return finish_spawn(child);
     }
     let child = spawn_retrying_etxtbsy(|| {
@@ -198,7 +199,8 @@ fn spawn_child(argv: &[String]) -> anyhow::Result<(Child, ChildStdin, ChildStdou
             .stderr(sidecar_stderr(prog))
             .kill_on_drop(true)
             .spawn()
-    })?;
+    })
+    .map_err(|e| anyhow::anyhow!(crate::friendly_spawn_error(&e)))?;
     finish_spawn(child)
 }
 

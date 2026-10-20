@@ -156,7 +156,10 @@ pub(crate) async fn restart_with(tui: &TuiOpt, resume: bool) {
         let _ = crossterm::terminal::enable_raw_mode();
         super::say(
             shared,
-            &format!("restart failed to spawn ({e}) — still on the old build"),
+            &format!(
+                "restart failed to spawn ({}) — still on the old build",
+                gray_plugin::friendly_spawn_error(&e)
+            ),
         );
     }
 }
@@ -231,14 +234,20 @@ async fn restart_gateway() -> GatewayRestart {
             ));
         }
         Err(e) => {
-            return GatewayRestart::Failed(format!("could not stop the running gateway: {e}"));
+            return GatewayRestart::Failed(format!(
+                "could not stop the running gateway: {}",
+                gray_plugin::friendly_spawn_error(&e)
+            ));
         }
     }
     match relaunch(&home, rec.pid) {
         Ok(line) => GatewayRestart::Restarted(line),
         Err(e) => GatewayRestart::Failed(format!(
-            "stopped the gateway (pid {}) but could not start it again: {e} — `gray gateway run` when you are back",
-            rec.pid
+            "stopped the gateway (pid {}) but could not start it again: {} — `gray gateway run` when you are back",
+            rec.pid,
+            e.downcast_ref::<std::io::Error>()
+                .map(gray_plugin::friendly_spawn_error)
+                .unwrap_or_else(|| format!("{e:#}"))
         )),
     }
 }

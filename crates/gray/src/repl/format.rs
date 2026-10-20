@@ -123,6 +123,10 @@ fn display_provider_detail(detail: &str) -> String {
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ");
+    let text = regex::Regex::new(r"\s*\(os error \d+\)")
+        .unwrap()
+        .replace_all(&text, "")
+        .into_owned();
     let short = truncate_chars(&text, 280);
     if short.len() < text.len() {
         format!("{short}…")

@@ -350,6 +350,27 @@ pub fn merge_manifests(manifests: Vec<Manifest>) -> HashMap<String, String> {
     owner
 }
 
+/// Short human phrasing for a failed plugin spawn — raw io messages like
+/// "No such file or directory (os error 2)" say little about what to do next.
+pub fn friendly_spawn_error(e: &std::io::Error) -> String {
+    match e.kind() {
+        std::io::ErrorKind::NotFound => {
+            "binary missing — plugin removed? reinstall or `gray plugin remove`".to_string()
+        }
+        std::io::ErrorKind::PermissionDenied => "not executable".to_string(),
+        _ => e.to_string(),
+    }
+}
+
+/// Short human phrasing for a process exit status — users know "killed",
+/// not "signal 15".
+pub fn friendly_exit_status(status: &str) -> String {
+    match status {
+        "signal 15" | "signal 9" => "killed".to_string(),
+        _ => status.to_string(),
+    }
+}
+
 pub struct PluginHookAdapter {
     plugin: Arc<dyn Plugin>,
     cwd: String,
