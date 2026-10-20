@@ -700,7 +700,7 @@
  },
  "minimax": {
   "name": "MiniMax (minimax.io)",
-  "base_url": "https://api.minimax.io/anthropic/v1",
+  "base_url": "https://api.minimax.io/v1",
   "env_key": [
    "MINIMAX_API_KEY"
   ],
@@ -708,7 +708,7 @@
  },
  "minimax-cn": {
   "name": "MiniMax (minimaxi.com)",
-  "base_url": "https://api.minimaxi.com/anthropic/v1",
+  "base_url": "https://api.minimaxi.com/v1",
   "env_key": [
    "MINIMAX_API_KEY"
   ],
@@ -716,7 +716,7 @@
  },
  "minimax-cn-coding-plan": {
   "name": "MiniMax Token Plan (minimaxi.com)",
-  "base_url": "https://api.minimaxi.com/anthropic/v1",
+  "base_url": "https://api.minimaxi.com/v1",
   "env_key": [
    "MINIMAX_API_KEY"
   ],
@@ -724,7 +724,7 @@
  },
  "minimax-coding-plan": {
   "name": "MiniMax Token Plan (minimax.io)",
-  "base_url": "https://api.minimax.io/anthropic/v1",
+  "base_url": "https://api.minimax.io/v1",
   "env_key": [
    "MINIMAX_API_KEY"
   ],

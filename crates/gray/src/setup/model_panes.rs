@@ -880,7 +880,8 @@ fn draw(frame: &mut Frame, bg: &BackgroundSnapshot, v: &PaneView) {
             .sum::<usize>()
             + 1
     };
-    for drop in ["^r", "⇧↑↓", "tab", "del", "←→"] {
+    // ^r is the only way to hide/show thinking — keep it visible longest.
+    for drop in ["⇧↑↓", "tab", "del", "^r", "←→"] {
         if keys_w(&keys) <= inner.width as usize {
             break;
         }
