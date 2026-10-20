@@ -220,8 +220,9 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
     } else {
         1 + n.min(3) as u16 + u16::from(n > 3) + 1
     };
+    let search_h: u16 = u16::from(tui.search.is_some());
     let panel_est: u16 = if tui.matches.is_empty() {
-        0
+        search_h
     } else {
         tui.matches.len().min(PANEL_ROWS) as u16 + 1
     };
@@ -463,7 +464,7 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
         let panel_gap: u16 = if visible_count > 0 {
             visible_count as u16 + 1
         } else {
-            0
+            search_h
         };
         let panel_h: u16 = 0;
         let box_rows = box_h;
@@ -585,6 +586,36 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
                 Paragraph::new(ibox.lines.clone()),
                 Rect::new(box_x, box_y, area.right() - box_x, rendered_box_h),
             );
+        }
+
+        if let Some(search) = &tui.search {
+            let q = search.query.clone();
+            let no_match = search.idx.is_none();
+            let mut spans = vec![Span::styled(
+                " search: ".to_string(),
+                Style::default()
+                    .fg(crate::theme::theme().accent)
+                    .add_modifier(Modifier::BOLD),
+            )];
+            spans.push(Span::styled(
+                q,
+                Style::default().fg(crate::theme::theme().text_body),
+            ));
+            if no_match {
+                spans.push(Span::styled(
+                    "  (no match)".to_string(),
+                    Style::default()
+                        .fg(crate::theme::theme().text_muted)
+                        .add_modifier(Modifier::ITALIC),
+                ));
+            }
+            let y = box_y.saturating_sub(1);
+            if y < area.bottom() {
+                frame.render_widget(
+                    chrome_row(Line::from(spans)),
+                    Rect::new(area.x, y, area.width, 1),
+                );
+            }
         }
 
         if visible_count > 0 {
@@ -973,9 +1004,19 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
             }
         }
 
-        let cur_x = (area.x + ibox.x as u16 + 3 + ibox.cur_col as u16)
-            .min(area.x + area.width.saturating_sub(1));
-        let cur_y = (box_y + ibox.cur_row as u16).min(area.y + area.height.saturating_sub(1));
+        let (cur_x, cur_y) = if let Some(search) = &tui.search {
+            let x = area.x + 9 + display_width(&search.query) as u16;
+            (
+                x.min(area.x + area.width.saturating_sub(1)),
+                box_y.saturating_sub(1),
+            )
+        } else {
+            (
+                (area.x + ibox.x as u16 + 3 + ibox.cur_col as u16)
+                    .min(area.x + area.width.saturating_sub(1)),
+                (box_y + ibox.cur_row as u16).min(area.y + area.height.saturating_sub(1)),
+            )
+        };
         frame.set_cursor_position(Position::new(cur_x, cur_y));
     });
     let background_result = if res.is_ok() {

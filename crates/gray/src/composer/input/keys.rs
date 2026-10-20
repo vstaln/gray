@@ -26,6 +26,11 @@ pub(crate) fn dispatch(tui: &mut Tui, ev: &KeyEvent) -> KeyOutcome {
 }
 
 pub(crate) fn dispatch_bindings(tui: &mut Tui, ev: &KeyEvent, bindings: &[Binding]) -> KeyOutcome {
+    if tui.search.is_some()
+        && let Some(out) = dispatch_in_search(tui, ev, bindings)
+    {
+        return out;
+    }
     for b in bindings {
         match b {
             Binding::Command(cmd) => return KeyOutcome::Command(cmd.clone()),
@@ -76,6 +81,7 @@ fn apply(tui: &mut Tui, a: Action) -> Option<KeyOutcome> {
             }
             tui.matches.clear();
             tui.sel = 0;
+            tui.muted_text = Some(tui.textarea.text().to_string());
             edited
         }
         Action::Tab => {
@@ -111,6 +117,10 @@ fn apply(tui: &mut Tui, a: Action) -> Option<KeyOutcome> {
         }
         Action::HistoryNext => {
             history_next(tui);
+            edited
+        }
+        Action::HistorySearch => {
+            enter_search(tui);
             edited
         }
         Action::CursorUp => {
@@ -230,6 +240,165 @@ fn history_next(tui: &mut Tui) {
         tui.textarea.set_text(&h);
     }
     tui.textarea.move_to_end();
+}
+
+/// ctrl-r entry point: stash the draft, preview the newest history entry
+/// (empty query matches everything), and hand the textarea over to the
+/// match preview until the search is accepted or cancelled.
+fn enter_search(tui: &mut Tui) {
+    if tui.search.is_some() {
+        return;
+    }
+    let saved = tui.textarea.text().to_string();
+    let saved_cursor = tui.textarea.cursor();
+    tui.search = Some(super::super::HistSearch {
+        query: String::new(),
+        saved,
+        saved_cursor,
+        idx: None,
+    });
+    tui.matches.clear();
+    tui.sel = 0;
+    tui.history_idx = None;
+    search_newest(tui);
+}
+
+/// Exit search keeping the previewed match (or the stashed draft when no
+/// history entry matched).
+fn accept_search(tui: &mut Tui) {
+    tui.search = None;
+}
+
+/// Exit search restoring the draft exactly as it was before ctrl-r.
+fn cancel_search(tui: &mut Tui) {
+    let Some(s) = tui.search.take() else {
+        return;
+    };
+    tui.textarea.set_text(&s.saved);
+    tui.textarea.set_cursor(s.saved_cursor);
+}
+
+/// Show `history[idx]` as the match preview, or the stashed draft on None.
+fn set_match(tui: &mut Tui, idx: Option<usize>) {
+    let Some(s) = &mut tui.search else {
+        return;
+    };
+    s.idx = idx;
+    let preview = idx
+        .map(|i| tui.history[i].clone())
+        .unwrap_or_else(|| s.saved.clone());
+    tui.textarea.set_text(&preview);
+    tui.textarea.move_to_end();
+}
+
+fn search_newest(tui: &mut Tui) {
+    let Some(s) = &tui.search else {
+        return;
+    };
+    let q = s.query.clone();
+    let idx = tui.history.iter().rposition(|h| h.contains(&q));
+    set_match(tui, idx);
+}
+
+fn search_older(tui: &mut Tui) {
+    let Some(s) = &tui.search else {
+        return;
+    };
+    let q = s.query.clone();
+    let start = s.idx.unwrap_or(tui.history.len());
+    if let Some(i) = tui.history[..start].iter().rposition(|h| h.contains(&q)) {
+        set_match(tui, Some(i));
+    }
+}
+
+fn search_newer(tui: &mut Tui) {
+    let Some(s) = &tui.search else {
+        return;
+    };
+    let Some(cur) = s.idx else {
+        return;
+    };
+    let q = s.query.clone();
+    let idx = tui.history[cur + 1..]
+        .iter()
+        .position(|h| h.contains(&q))
+        .map(|o| cur + 1 + o);
+    if let Some(i) = idx {
+        set_match(tui, Some(i));
+    }
+}
+
+/// Key handling while a history search is live. `Some(outcome)` means the
+/// key was consumed by the search; `None` means "accept the match and let
+/// the key fall through to normal editing" (readline-style).
+fn dispatch_in_search(tui: &mut Tui, ev: &KeyEvent, bindings: &[Binding]) -> Option<KeyOutcome> {
+    // The first binding decides: bindings arrive ordered (custom commands,
+    // then actions in keymap order), exactly like normal dispatch.
+    if let Some(b) = bindings.first() {
+        match b {
+            Binding::Command(_) => {
+                accept_search(tui);
+                return None;
+            }
+            Binding::Action(a) => match a {
+                Action::SelectCancel | Action::Interrupt | Action::Clear => {
+                    cancel_search(tui);
+                    return Some(KeyOutcome::Edited);
+                }
+                Action::Submit | Action::NewLine => {
+                    accept_search(tui);
+                    return Some(KeyOutcome::Edited);
+                }
+                Action::HistorySearch
+                | Action::SelectUp
+                | Action::HistoryPrevious
+                | Action::CursorUp => {
+                    search_older(tui);
+                    return Some(KeyOutcome::Edited);
+                }
+                Action::SelectDown | Action::HistoryNext | Action::CursorDown => {
+                    search_newer(tui);
+                    return Some(KeyOutcome::Edited);
+                }
+                Action::DeleteCharBackward => {
+                    if let Some(s) = &mut tui.search {
+                        s.query.pop();
+                    }
+                    search_newest(tui);
+                    return Some(KeyOutcome::Edited);
+                }
+                Action::DeleteWordBackward => {
+                    if let Some(s) = &mut tui.search {
+                        let q = &mut s.query;
+                        while q.chars().last().is_some_and(|c| c.is_whitespace()) {
+                            q.pop();
+                        }
+                        while q.chars().last().is_some_and(|c| !c.is_whitespace()) {
+                            q.pop();
+                        }
+                    }
+                    search_newest(tui);
+                    return Some(KeyOutcome::Edited);
+                }
+                _ => {
+                    accept_search(tui);
+                    return None;
+                }
+            },
+        }
+    }
+    if let KeyCode::Char(c) = ev.code
+        && !ev
+            .modifiers
+            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER)
+        && let Some(s) = &mut tui.search
+    {
+        s.query.push(c);
+        search_newest(tui);
+        return Some(KeyOutcome::Edited);
+    }
+    accept_search(tui);
+    None
 }
 
 pub(crate) fn line_start(text: &str, cur: usize) -> usize {

@@ -415,6 +415,7 @@ pub(crate) fn spawn_key_watcher_with_typing(
                             let attached: Vec<std::path::PathBuf> =
                                 std::mem::take(&mut t.attachments);
 
+                            crate::prompt_history::record(&mut t.history, &text);
                             t.queued_inputs.push_back((text, attached));
                             t.textarea.set_text("");
                             t.pending_pastes.clear();
@@ -433,6 +434,7 @@ pub(crate) fn spawn_key_watcher_with_typing(
                     if !t.is_task_running {
                         continue;
                     }
+                    t.search = None;
                     t.handle_paste(data);
                     sync_matches(&mut t, &cwd_for_watcher);
                     let _ = t.draw();
@@ -444,11 +446,7 @@ pub(crate) fn spawn_key_watcher_with_typing(
 }
 
 fn sync_matches(t: &mut crate::composer::Tui, cwd: &std::path::Path) {
-    let cur_text = t.textarea.text().to_string();
-    t.matches = crate::repl::completion_matches_dyn(&cur_text, cwd);
-    if t.sel >= t.matches.len() {
-        t.sel = t.matches.len().saturating_sub(1);
-    }
+    crate::composer::input::sync_completion(t, cwd);
 }
 
 #[path = "key_watcher_tests.rs"]

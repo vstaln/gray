@@ -667,19 +667,20 @@ fn picker_key(
     code: crossterm::event::KeyCode,
     modifiers: crossterm::event::KeyModifiers,
 ) -> Option<PickerKey> {
-    use crossterm::event::{KeyCode, KeyModifiers};
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    if let Some(up) =
+        crate::keymap::select_move(&KeyEvent::new(code, modifiers))
+    {
+        return Some(if up { PickerKey::Up } else { PickerKey::Down });
+    }
     if modifiers.contains(KeyModifiers::CONTROL) {
         return match code {
             KeyCode::Char('c') => Some(PickerKey::Cancel),
-            KeyCode::Char('p') => Some(PickerKey::Up),
-            KeyCode::Char('n') => Some(PickerKey::Down),
             KeyCode::Char('r') => Some(PickerKey::ToggleReasoning),
             _ => None,
         };
     }
     Some(match code {
-        KeyCode::Up => PickerKey::Up,
-        KeyCode::Down => PickerKey::Down,
         KeyCode::PageUp => PickerKey::PageUp,
         KeyCode::PageDown => PickerKey::PageDown,
         KeyCode::Left => PickerKey::EffortDown,

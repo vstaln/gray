@@ -18,6 +18,7 @@ pub enum Action {
     Submit,
     HistoryPrevious,
     HistoryNext,
+    HistorySearch,
     CursorUp,
     CursorDown,
     CursorLeft,
@@ -47,6 +48,7 @@ pub const ALL: &[Action] = &[
     Action::Submit,
     Action::HistoryPrevious,
     Action::HistoryNext,
+    Action::HistorySearch,
     Action::CursorUp,
     Action::CursorDown,
     Action::CursorLeft,
@@ -78,6 +80,7 @@ impl Action {
             Action::Submit => "tui.input.submit",
             Action::HistoryPrevious => "tui.editor.historyPrevious",
             Action::HistoryNext => "tui.editor.historyNext",
+            Action::HistorySearch => "tui.editor.historySearch",
             Action::CursorUp => "tui.editor.cursorUp",
             Action::CursorDown => "tui.editor.cursorDown",
             Action::CursorLeft => "tui.editor.cursorLeft",
@@ -113,6 +116,7 @@ impl Action {
             Action::Submit => "Send (queues while a turn runs)",
             Action::HistoryPrevious => "Previous prompt from history",
             Action::HistoryNext => "Next prompt from history",
+            Action::HistorySearch => "Reverse-search prompt history",
             Action::CursorUp => "Cursor up, history at the top",
             Action::CursorDown => "Cursor down, history at the bottom",
             Action::CursorLeft => "Cursor left",
@@ -140,9 +144,10 @@ impl Action {
             Action::Exit => &["ctrl+d"],
             Action::Interrupt => &["escape"],
             Action::PasteClipboard => &["ctrl+v", "ctrl+shift+v", "shift+insert", "alt+v"],
-            Action::NewLine => &["shift+enter", "alt+enter", "ctrl+j", "ctrl+m"],
+            Action::NewLine => &["shift+enter", "alt+enter", "ctrl+j"],
             Action::Submit => &["enter"],
             Action::HistoryPrevious | Action::HistoryNext => &[],
+            Action::HistorySearch => &["ctrl+r"],
             Action::CursorUp => &["up"],
             Action::CursorDown => &["down"],
             Action::CursorLeft => &["left", "ctrl+b"],
@@ -498,6 +503,17 @@ pub fn resolve_event(ev: &KeyEvent) -> Vec<Binding> {
         },
         Err(_) => DEFAULTS.with(|d| d.resolve(&chord)),
     }
+}
+
+/// Direction `ev` should move a list selection, when it resolves to
+/// tui.select.up/down: `Some(true)` = up, `Some(false)` = down. Every list
+/// picker routes through this so rebindings apply everywhere.
+pub fn select_move(ev: &KeyEvent) -> Option<bool> {
+    resolve_event(ev).into_iter().find_map(|b| match b {
+        Binding::Action(Action::SelectUp) => Some(true),
+        Binding::Action(Action::SelectDown) => Some(false),
+        _ => None,
+    })
 }
 
 thread_local! {
