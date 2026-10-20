@@ -57,6 +57,7 @@ fn row(item: ConnectItem) -> PaneProvider {
         removable: false,
         installed: None,
         detected: false,
+        install: None,
         item,
     }
 }
@@ -296,6 +297,38 @@ fn rail_rows_logins_holds_connected_and_new_logins() {
             RailRow::Provider(1),
         ]
     );
+}
+
+#[test]
+fn rail_rows_logins_lists_installable_provider_plugins() {
+    let mut rail = vec![row(item(
+        "devin:devin-subscription",
+        "http://x",
+        plugin_auth(),
+    ))];
+    let mut installable = row(item("plugin:claude", "", ConnectAuth::None));
+    installable.item.name = "Claude".into();
+    installable.install = Some("claude".into());
+    rail.push(installable);
+    let rows = rail_rows(&rail, &GroupStates::default());
+    assert_eq!(
+        rows,
+        vec![
+            RailRow::Group(GroupId::Logins),
+            RailRow::Provider(0),
+            RailRow::Provider(1),
+        ]
+    );
+    // The rail filter names them too.
+    let filtered = rail_rows_for(&rail, &GroupStates::default(), "clau");
+    assert_eq!(
+        filtered,
+        vec![RailRow::Group(GroupId::Logins), RailRow::Provider(1)]
+    );
+    // Installable rows are never adoptable, even with a stray stored key.
+    let mut keys = BTreeMap::new();
+    keys.insert("plugin:claude".to_string(), "sk-x".to_string());
+    assert!(!rail[1].adoptable(&keys));
 }
 
 #[test]

@@ -717,6 +717,62 @@ async fn finish_model_pick(
     switch_agent_model(agent, config, cwd, session_id, tui).await;
 }
 
+/// `/models` installable-login path: install the provider plugin exactly the
+/// way `/plugin install` does, grant `provider.credentials` (the capability
+/// the row exists for), then hand the new provider id to the sign-in flow.
+/// Returns the provider id to preselect, or None when the flow should stop.
+async fn install_login_plugin(
+    name: &str,
+    tui: Option<&crate::composer::SharedTui>,
+) -> Option<String> {
+    super::say(tui, &format!("installing {name}…"));
+    let home = match crate::plugin_cli::home() {
+        Ok(home) => home,
+        Err(e) => {
+            super::say(tui, &format!("install failed: {e:#}"));
+            return None;
+        }
+    };
+    let lines = match crate::plugin_cli::install_spec_lines(&home, name, false).await {
+        Ok(lines) => lines,
+        Err(e) => {
+            super::say(tui, &format!("install failed: {e:#}"));
+            return None;
+        }
+    };
+    let granted = crate::plugin_cli::grant_capability(
+        &home,
+        name,
+        crate::providers::registry::PROVIDER_CAPABILITY,
+    )
+    .unwrap_or(false);
+    for line in lines {
+        if granted && line.contains("Grant later: gray plugin capabilities") {
+            continue;
+        }
+        super::say(tui, &line);
+    }
+    if granted {
+        super::say(tui, &format!("{name}: granted provider.credentials"));
+    }
+    let provider = crate::setup::gray_home()
+        .ok()
+        .map(|home| crate::providers::ProviderRegistry::load_cached(&home).installed())
+        .unwrap_or_default()
+        .into_iter()
+        .find(|p| p.plugin == name);
+    match provider {
+        Some(installed) => Some(installed.provider_id()),
+        None => {
+            super::say(
+                tui,
+                &format!("installed {name}, but no sign-in provider appeared — check /plugins"),
+            );
+            None
+        }
+    }
+}
+
 pub(crate) async fn handle_model_panes(
     config: &mut Config,
     cwd: &Path,
@@ -766,6 +822,9 @@ pub(crate) async fn handle_model_panes(
             }
             if let crate::setup::PanesOutcome::Connect(id) = outcome {
                 return Some(id);
+            }
+            if let crate::setup::PanesOutcome::Install(name) = outcome {
+                return install_login_plugin(&name, tui).await;
             }
         }
         Err(e) => {
