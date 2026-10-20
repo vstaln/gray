@@ -3333,3 +3333,34 @@ async fn login_required_credential_stays_an_auth_failure() {
     assert!(matches!(error.class(), ProviderError::Auth(_)), "{error}");
     assert!(!error.retryable(), "{error}");
 }
+
+#[tokio::test]
+async fn refused_connection_gets_a_friendly_message_with_raw_detail() {
+    let client = reqwest::Client::new();
+    let err = client.get("http://127.0.0.1:1/x").send().await.unwrap_err();
+    assert!(err.is_connect(), "{err}");
+    let msg = friendly_send_error(&err);
+    assert!(
+        msg.starts_with("nothing is listening at 127.0.0.1:1"),
+        "{msg}"
+    );
+    assert!(msg.contains("is the server running?"), "{msg}");
+    let second = msg.lines().nth(1).unwrap_or("");
+    assert!(second.contains("error sending request"), "{second}");
+}
+
+#[tokio::test]
+async fn dns_failure_gets_a_friendly_message() {
+    let client = reqwest::Client::new();
+    let err = client
+        .get("http://definitely-not-a-real-host.invalid/x")
+        .send()
+        .await
+        .unwrap_err();
+    let msg = friendly_send_error(&err);
+    assert!(
+        msg.contains("can't resolve definitely-not-a-real-host.invalid")
+            || msg.contains("can't connect"),
+        "{msg}"
+    );
+}

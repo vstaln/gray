@@ -921,6 +921,32 @@ async fn run_print_inner(
     crate::setup::set_user_reserve_tokens(config.context_reserve);
     crate::setup::set_user_keep_recent_tokens(config.context_keep);
 
+    // Flag-based connects (--base-url/--model) never passed /models, so probe
+    // the endpoint once (async, cheap) — it fills the context cache so the
+    // endpoint's real context_length drives compaction instead of the 256k
+    // fallback. Cached on disk for later runs.
+    let custom_base = crate::setup::normalize_custom_base_url(&config.base_url)
+        != crate::setup::normalize_custom_base_url(crate::config::DEFAULT_BASE_URL);
+    if !crate::config::offline()
+        && custom_base
+        && config.context_window.is_none()
+        && !config.uses_plugin_credentials()
+        && !config.bare
+        && {
+            crate::setup::context::ensure_disk_loaded();
+            config
+                .model
+                .as_deref()
+                .is_some_and(|m| crate::setup::get_cached_model_context(m).is_none())
+        }
+    {
+        let base = config.base_url.clone();
+        let key = config.api_key.clone();
+        tokio::task::spawn_blocking(move || {
+            crate::setup::fetch_live_provider_models(&base, key.as_deref());
+        });
+    }
+
     let steering = json.is_some() && steer_enabled();
     match json.as_deref() {
         Some(output) if crate::ask::json_enabled() || steering => {

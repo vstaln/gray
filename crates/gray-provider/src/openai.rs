@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, HashSet, VecDeque};
+use std::error::Error as _;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -1843,9 +1844,9 @@ async fn send_json_once(
         }
         Err(e) => Err((
             if e.is_connect() {
-                ProviderError::Connection(e.to_string())
+                ProviderError::Connection(friendly_send_error(&e))
             } else if e.is_timeout() {
-                ProviderError::Timeout(e.to_string())
+                ProviderError::Timeout(friendly_send_error(&e))
             } else {
                 ProviderError::Stream(e.to_string())
             },
@@ -2129,11 +2130,67 @@ async fn send_dynamic_json_once(
     Ok(response)
 }
 
+/// Short human message for a transport-level send failure, with a hint for
+/// the likely cause. The raw reqwest text is kept on a second line.
+pub(crate) fn friendly_send_error(err: &reqwest::Error) -> String {
+    let raw = err.to_string();
+    let Some(url) = err.url() else {
+        return raw;
+    };
+    let host = url.host_str().unwrap_or("");
+    let hostport = url
+        .port_or_known_default()
+        .map_or_else(|| host.to_string(), |port| format!("{host}:{port}"));
+
+    let mut refused = false;
+    let mut dns = false;
+    let mut src = err.source();
+    while let Some(cause) = src {
+        if cause
+            .downcast_ref::<std::io::Error>()
+            .is_some_and(|io| io.kind() == std::io::ErrorKind::ConnectionRefused)
+        {
+            refused = true;
+        }
+        let text = cause.to_string().to_lowercase();
+        if text.contains("connection refused")
+            || text.contains("os error 111")
+            || text.contains("os error 61")
+            || text.contains("os error 10061")
+        {
+            refused = true;
+        }
+        if text.contains("dns")
+            || text.contains("failed to lookup")
+            || text.contains("no such host")
+            || text.contains("name or service not known")
+            || text.contains("nodename nor servname")
+            || text.contains("temporary failure in name resolution")
+        {
+            dns = true;
+        }
+        src = cause.source();
+    }
+
+    let friendly = if refused {
+        format!("nothing is listening at {hostport} — is the server running?")
+    } else if dns {
+        format!("can't resolve {host} — check the address")
+    } else if err.is_timeout() {
+        format!("{hostport} didn't answer in time — is the server reachable?")
+    } else if err.is_connect() {
+        format!("can't connect to {hostport} — is the server reachable?")
+    } else {
+        return raw;
+    };
+    format!("{friendly}\n{raw}")
+}
+
 fn map_send_error(error: reqwest::Error) -> ProviderError {
     if error.is_connect() {
-        ProviderError::Connection(error.to_string())
+        ProviderError::Connection(friendly_send_error(&error))
     } else if error.is_timeout() {
-        ProviderError::Timeout(error.to_string())
+        ProviderError::Timeout(friendly_send_error(&error))
     } else {
         ProviderError::Stream(error.to_string())
     }

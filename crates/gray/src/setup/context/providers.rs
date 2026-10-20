@@ -329,21 +329,23 @@ fn count_models_json(json: &serde_json::Value) -> usize {
     }
 }
 
-pub fn probe_custom_endpoint(base_url: &str) -> EndpointProbe {
+/// Probe an endpoint on a detached thread, reporting over a channel —
+/// callers can keep reading keys (e.g. esc to cancel) while the check is in
+/// flight.
+pub fn probe_custom_endpoint_detached(base_url: &str) -> std::sync::mpsc::Receiver<EndpointProbe> {
+    let (tx, rx) = std::sync::mpsc::channel();
     let base = base_url.to_string();
-    std::thread::scope(|s| {
-        s.spawn(move || {
-            match tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-            {
-                Ok(rt) => rt.block_on(probe_endpoint_async(base)),
-                Err(_) => EndpointProbe::Down,
-            }
-        })
-        .join()
-        .unwrap_or(EndpointProbe::Down)
-    })
+    std::thread::spawn(move || {
+        let probe = match tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+        {
+            Ok(rt) => rt.block_on(probe_endpoint_async(base)),
+            Err(_) => EndpointProbe::Down,
+        };
+        let _ = tx.send(probe);
+    });
+    rx
 }
 
 pub struct LocalEndpointSuggestion {

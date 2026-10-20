@@ -45,6 +45,38 @@ fn turn_retry_delay() -> std::time::Duration {
     std::time::Duration::ZERO
 }
 
+// Wall-clock ceiling for one stretch of consecutive retrying: provider-side
+// reconnect attempts plus whole-turn retries share this budget. Quota/reset
+// hints ("usage limit reached, resets in ~4m") keep their own long waits and
+// are exempt — the clock is cleared while a hinted wait is in play.
+#[cfg(not(test))]
+fn retry_budget() -> std::time::Duration {
+    std::env::var("GRAY_RETRY_BUDGET_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .map_or(
+            std::time::Duration::from_secs(60),
+            std::time::Duration::from_millis,
+        )
+}
+#[cfg(test)]
+fn retry_budget() -> std::time::Duration {
+    std::time::Duration::from_secs(3600)
+}
+
+fn retry_give_up(
+    detail: &str,
+    retries: u8,
+    waited: Option<std::time::Duration>,
+) -> CoreError {
+    let span = waited
+        .map(|d| format!(" over ~{}s", d.as_secs()))
+        .unwrap_or_default();
+    CoreError::Provider(format!(
+        "still failing after {retries} retries{span}: {detail} — try again, check the endpoint, or /models to switch provider"
+    ))
+}
+
 const QUOTA_WINDOW_HINTS: [&str; 6] = [
     "quota",
     "usage limit",
@@ -105,8 +137,15 @@ fn provider_reset_hint(e: &ProviderError) -> Option<std::time::Duration> {
     reset_hint_from_text(&e.to_string())
 }
 
-fn turn_retry_detail(e: &ProviderError, attempt: u8) -> String {
-    let mut detail = format!("{e} · retry {attempt}/{MAX_TURN_RETRIES}");
+fn turn_retry_detail(e: &ProviderError, attempt: u8, already_shown: bool) -> String {
+    // The provider's own reconnect notice already printed this error; don't
+    // repeat the same body on the whole-turn retry line.
+    let what = if already_shown {
+        "same error".to_string()
+    } else {
+        e.to_string()
+    };
+    let mut detail = format!("{what} · retry {attempt}/{MAX_TURN_RETRIES}");
     if attempt >= 2 && silent_stall(e) {
         detail.push_str(
             " — provider is holding the request but sending nothing; try /model to another route",
@@ -459,6 +498,11 @@ impl Agent {
 
         let mut turn_retries: u8 = 0;
 
+        // When consecutive retrying began; cleared as soon as the stream makes
+        // real progress again. Bounds total retry time (retry_budget()).
+        let mut retry_clock: Option<tokio::time::Instant> = None;
+        let mut last_retry_err: Option<String> = None;
+
         let mut empty_nudge_sent = false;
 
         let mut leak_nudges: u8 = 0;
@@ -722,7 +766,46 @@ impl Agent {
                             self.emit_turn_end(&billed).await;
                             return Err(CoreError::Cancelled);
                         }
+                        _ = async {
+                            match retry_clock {
+                                Some(start) => {
+                                    tokio::time::sleep_until(start + retry_budget()).await
+                                }
+                                None => std::future::pending::<()>().await,
+                            }
+                        } => {
+                            drain_held!();
+                            if !text_parts.is_empty() {
+                                salvage_partial_text(
+                                    &mut self.messages,
+                                    thinking_text.clone(),
+                                    text_parts.concat(),
+                                    &pending_reasoning,
+                                    self.provider.model_id(),
+                                );
+                                self.contaminated.insert(self.messages.len() - 1);
+                            }
+                            self.emit_turn_end(&billed).await;
+                            return Err(retry_give_up(
+                                last_retry_err.as_deref().unwrap_or("provider unreachable"),
+                                turn_retries,
+                                Some(retry_budget()),
+                            ));
+                        }
                     };
+
+                    // Real progress resets the retry clock; only consecutive
+                    // retrying counts against the budget.
+                    if matches!(
+                        next_event,
+                        Some(Ok(StreamEvent::TextDelta { .. }
+                            | StreamEvent::ThinkingDelta { .. }
+                            | StreamEvent::ToolCallDelta { .. }
+                            | StreamEvent::ReasoningItem { .. }
+                            | StreamEvent::MessageComplete { .. }))
+                    ) {
+                        retry_clock = None;
+                    }
 
                     const MAX_EVENTS: usize = 500_000;
                     if events.len() >= MAX_EVENTS {
@@ -737,18 +820,59 @@ impl Agent {
                             if !ctx.cancel.is_cancelled()
                                 && let Some(delay) = turn_retry_wait(&e, turn_retries)
                             {
+                                let reset_wait = provider_reset_hint(&e).is_some();
+                                if reset_wait {
+                                    // Reset-hint waits (quota windows) keep
+                                    // their own long budget; the consecutive-
+                                    // retry clock stays disarmed.
+                                    retry_clock = None;
+                                }
+                                let waited = if reset_wait {
+                                    std::time::Duration::ZERO
+                                } else {
+                                    retry_clock
+                                        .get_or_insert_with(tokio::time::Instant::now)
+                                        .elapsed()
+                                };
+                                let remaining = retry_budget().saturating_sub(waited);
+                                if !reset_wait && remaining.is_zero() {
+                                    drain_held!();
+                                    if !text_parts.is_empty() {
+                                        salvage_partial_text(
+                                            &mut self.messages,
+                                            thinking_text.clone(),
+                                            text_parts.concat(),
+                                            &pending_reasoning,
+                                            self.provider.model_id(),
+                                        );
+                                        self.contaminated.insert(self.messages.len() - 1);
+                                    }
+                                    self.emit_turn_end(&billed).await;
+                                    return Err(retry_give_up(&e.to_string(), turn_retries, Some(waited)));
+                                }
                                 turn_retries += 1;
+                                last_retry_err = Some(e.to_string());
+                                let wait = if reset_wait {
+                                    delay
+                                } else {
+                                    delay.min(remaining)
+                                };
                                 log::warn!(
                                     target: "gray_agent",
-                                    "provider stream dropped; whole-turn retry {turn_retries}/{MAX_TURN_RETRIES} in {delay:?}: {e}"
+                                    "provider stream dropped; whole-turn retry {turn_retries}/{MAX_TURN_RETRIES} in {wait:?}: {e}"
+                                );
+                                let already_shown = matches!(
+                                    events.last(),
+                                    Some(AgentEvent::StreamError { details, .. })
+                                        if *details == e.to_string().chars().take(200).collect::<String>()
                                 );
                                 emit!(AgentEvent::stream_error(
                                     format!("Retrying turn... {turn_retries}/{MAX_TURN_RETRIES}"),
-                                    turn_retry_detail(&e, turn_retries)
+                                    turn_retry_detail(&e, turn_retries, already_shown)
                                 ));
-                                if !delay.is_zero() {
+                                if !wait.is_zero() {
                                     tokio::select! {
-                                        _ = tokio::time::sleep(delay) => {}
+                                        _ = tokio::time::sleep(wait) => {}
                                         _ = ctx.cancel.cancelled() => {}
                                     }
                                 }
@@ -771,7 +895,11 @@ impl Agent {
                                 self.contaminated.insert(self.messages.len() - 1);
                             }
                             self.emit_turn_end(&billed).await;
-                            return Err(CoreError::from(e));
+                            return Err(if turn_retries >= MAX_TURN_RETRIES {
+                                retry_give_up(&e.to_string(), turn_retries, None)
+                            } else {
+                                CoreError::from(e)
+                            });
                         }
                         Some(Ok(StreamEvent::TextDelta { delta })) => {
                             let delta = text_strip.push(&delta);
@@ -898,24 +1026,71 @@ impl Agent {
                         }
 
                         Some(Ok(StreamEvent::StreamError { message, details })) => {
+                            retry_clock.get_or_insert_with(tokio::time::Instant::now);
+                            last_retry_err = Some(if details.is_empty() {
+                                message.clone()
+                            } else {
+                                details.clone()
+                            });
                             emit!(AgentEvent::stream_error(message.clone(), details.clone()));
                         }
                         Some(Err(e)) => {
                             if !ctx.cancel.is_cancelled()
                                 && let Some(delay) = turn_retry_wait(&e, turn_retries)
                             {
+                                let reset_wait = provider_reset_hint(&e).is_some();
+                                if reset_wait {
+                                    // Reset-hint waits (quota windows) keep
+                                    // their own long budget; the consecutive-
+                                    // retry clock stays disarmed.
+                                    retry_clock = None;
+                                }
+                                let waited = if reset_wait {
+                                    std::time::Duration::ZERO
+                                } else {
+                                    retry_clock
+                                        .get_or_insert_with(tokio::time::Instant::now)
+                                        .elapsed()
+                                };
+                                let remaining = retry_budget().saturating_sub(waited);
+                                if !reset_wait && remaining.is_zero() {
+                                    drain_held!();
+                                    if !text_parts.is_empty() {
+                                        salvage_partial_text(
+                                            &mut self.messages,
+                                            thinking_text.clone(),
+                                            text_parts.concat(),
+                                            &pending_reasoning,
+                                            self.provider.model_id(),
+                                        );
+                                        self.contaminated.insert(self.messages.len() - 1);
+                                    }
+                                    self.emit_turn_end(&billed).await;
+                                    return Err(retry_give_up(&e.to_string(), turn_retries, Some(waited)));
+                                }
                                 turn_retries += 1;
+                                last_retry_err = Some(e.to_string());
+                                let wait = if reset_wait {
+                                    delay
+                                } else {
+                                    delay.min(remaining)
+                                };
                                 log::warn!(
                                     target: "gray_agent",
-                                    "turn failed retryably; whole-turn retry {turn_retries}/{MAX_TURN_RETRIES} in {delay:?}: {e}"
+                                    "turn failed retryably; whole-turn retry {turn_retries}/{MAX_TURN_RETRIES} in {wait:?}: {e}"
+                                );
+                                let already_shown = matches!(
+                                    events.last(),
+                                    Some(AgentEvent::StreamError { details, .. })
+                                        if *details == e.to_string().chars().take(200).collect::<String>()
                                 );
                                 emit!(AgentEvent::stream_error(
                                     format!("Retrying turn... {turn_retries}/{MAX_TURN_RETRIES}"),
-                                    turn_retry_detail(&e, turn_retries)
+                                    turn_retry_detail(&e, turn_retries, already_shown)
                                 ));
-                                if !delay.is_zero() {
+                                if !wait.is_zero() {
                                     tokio::select! {
-                                        _ = tokio::time::sleep(delay) => {}
+                                        _ = tokio::time::sleep(wait) => {}
                                         _ = ctx.cancel.cancelled() => {}
                                     }
                                 }
@@ -954,13 +1129,21 @@ impl Agent {
                                         continue 'turn;
                                     }
                                     _ => {
-                                        let err = CoreError::from(e);
+                                        let err = if turn_retries >= MAX_TURN_RETRIES {
+                                            retry_give_up(&e.to_string(), turn_retries, None)
+                                        } else {
+                                            CoreError::from(e)
+                                        };
                                         self.emit_turn_end(&billed).await;
                                         return Err(err);
                                     }
                                 }
                             }
-                            let err = CoreError::from(e);
+                            let err = if turn_retries >= MAX_TURN_RETRIES {
+                                retry_give_up(&e.to_string(), turn_retries, None)
+                            } else {
+                                CoreError::from(e)
+                            };
                             self.emit_turn_end(&billed).await;
                             return Err(err);
                         }
@@ -969,6 +1152,8 @@ impl Agent {
             };
 
             turn_retries = 0;
+            retry_clock = None;
+            last_retry_err = None;
             if usage.any() {
                 total_usage = usage;
                 total_usage.normalize();
@@ -1973,6 +2158,30 @@ mod turn_retry_tests {
     }
 
     #[test]
+    fn turn_retry_detail_dedupes_already_shown_error() {
+        let e = ProviderError::ServerError("status 500: boom".into());
+        let fresh = turn_retry_detail(&e, 1, false);
+        assert!(fresh.contains("status 500"), "{fresh}");
+        let dup = turn_retry_detail(&e, 1, true);
+        assert!(dup.contains("same error"), "{dup}");
+        assert!(!dup.contains("status 500"), "{dup}");
+        assert!(dup.contains("retry 1/"), "{dup}");
+    }
+
+    #[test]
+    fn retry_give_up_says_what_failed_and_what_to_try() {
+        let e = ProviderError::ServerError("status 500: boom".into());
+        let err = retry_give_up(&e.to_string(), 4, Some(std::time::Duration::from_secs(62)));
+        let msg = err.to_string();
+        assert!(msg.contains("status 500"), "{msg}");
+        assert!(msg.contains("4 retries"), "{msg}");
+        assert!(msg.contains("~62s"), "{msg}");
+        assert!(msg.contains("/models"), "{msg}");
+        let err = retry_give_up(&e.to_string(), 8, None);
+        assert!(err.to_string().contains("8 retries"), "{err}");
+    }
+
+    #[test]
     fn rate_limited_retries_with_no_hint() {
         assert!(turn_retry_wait(&ProviderError::RateLimited("429".into()), 0).is_some());
     }
@@ -2086,14 +2295,14 @@ mod turn_retry_tests {
     #[test]
     fn silent_stall_retry_detail_carries_attempt_and_hint() {
         let e = ProviderError::Stream("stream stalled: no output for 300s".into());
-        let first = turn_retry_detail(&e, 1);
+        let first = turn_retry_detail(&e, 1, false);
         assert!(first.contains("retry 1/8"));
         assert!(!first.contains("/model"));
-        let second = turn_retry_detail(&e, 2);
+        let second = turn_retry_detail(&e, 2, false);
         assert!(second.contains("retry 2/8"));
         assert!(second.contains("/model"));
         let other = ProviderError::RateLimited("429".into());
-        assert!(!turn_retry_detail(&other, 3).contains("/model"));
+        assert!(!turn_retry_detail(&other, 3, false).contains("/model"));
     }
 
     #[test]
