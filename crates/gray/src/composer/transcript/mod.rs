@@ -432,6 +432,10 @@ impl Tui {
             let _ = self.draw();
             return;
         }
+        if self.home_reveal.is_some() {
+            // Band fade-in after the intro: frame cadence until it lands.
+            let _ = self.draw();
+        }
         if self.reveal_buf.is_empty() {
             return;
         }
