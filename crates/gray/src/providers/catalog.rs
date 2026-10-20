@@ -2,9 +2,13 @@ use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::anyhow;
+use async_trait::async_trait;
 use gray_core::credential::CredentialSource;
 use gray_plugin::{
-    ProviderHeaderDecl, ProviderHeaderSourceDecl, ProviderModel, ProviderModelsRequest,
+    ProviderAuthPoll, ProviderAuthStart, ProviderChatRequest, ProviderChatResult,
+    ProviderHeaderDecl, ProviderHeaderSourceDecl, ProviderModel, ProviderModelCatalog,
+    ProviderModelsRequest, ProviderRefreshRequest, ProviderRevokeRequest, ProviderRevokeResult,
+    ProviderRpcError, ProviderUsageLimits, ProviderUsageRequest,
 };
 use gray_provider::{
     OpenAiAuthorization, OpenAiHeader, OpenAiHeaderSource, OpenAiProviderProfile,
@@ -21,7 +25,6 @@ pub struct DynamicProvider {
     installed: InstalledProvider,
     profile: OpenAiProviderProfile,
     source: Arc<dyn CredentialSource>,
-    _runtime: Arc<ProviderRuntime>,
 }
 
 impl DynamicProvider {
@@ -56,22 +59,107 @@ pub async fn connect_dynamic_provider(
         )
     })?;
     let profile = profile_for_provider(&installed)?;
-    let runtime = shared_runtime(installed.clone()).await?;
+    let runtime: Arc<dyn ProviderRpc> = Arc::new(LazyProviderRpc::new(installed.clone()));
     let store = CredentialStore::new(
         crate::providers::registry::plugin_home(home, &installed.plugin).join("auth.json"),
     );
     let source: Arc<dyn CredentialSource> = shared_plugin_source_with_model(
         installed.clone(),
         store,
-        Arc::clone(&runtime.rpc()) as Arc<dyn ProviderRpc>,
+        Arc::clone(&runtime),
         crate::setup::wire_model_for(config).or_else(|| config.model.clone()),
     );
     Ok(DynamicProvider {
         installed,
         profile,
         source,
-        _runtime: runtime,
     })
+}
+
+/// Provider sidecar started on first RPC use, not at connection time: a
+/// cached credential (the common `gray -p` case) never pays the spawn cost,
+/// and a failed sidecar surfaces as a credential error only when an RPC is
+/// actually required.
+struct LazyProviderRpc {
+    installed: InstalledProvider,
+    runtime: tokio::sync::OnceCell<Arc<ProviderRuntime>>,
+}
+
+impl LazyProviderRpc {
+    fn new(installed: InstalledProvider) -> Self {
+        Self {
+            installed,
+            runtime: tokio::sync::OnceCell::new(),
+        }
+    }
+
+    async fn rpc(&self) -> Result<Arc<dyn ProviderRpc>, ProviderRpcError> {
+        self.runtime
+            .get_or_try_init(|| shared_runtime(self.installed.clone()))
+            .await
+            .map(|runtime| runtime.rpc() as Arc<dyn ProviderRpc>)
+            .map_err(|error| ProviderRpcError::Unavailable(format!("{error:#}")))
+    }
+}
+
+#[async_trait]
+impl ProviderRpc for LazyProviderRpc {
+    async fn auth_start(
+        &self,
+        provider: &str,
+        auth_method: &str,
+    ) -> Result<ProviderAuthStart, ProviderRpcError> {
+        self.rpc().await?.auth_start(provider, auth_method).await
+    }
+
+    async fn auth_poll(&self, operation_id: &str) -> Result<ProviderAuthPoll, ProviderRpcError> {
+        self.rpc().await?.auth_poll(operation_id).await
+    }
+
+    async fn auth_cancel(&self, operation_id: &str) -> Result<(), ProviderRpcError> {
+        self.rpc().await?.auth_cancel(operation_id).await
+    }
+
+    async fn refresh(
+        &self,
+        request: ProviderRefreshRequest,
+    ) -> Result<gray_core::credential::CredentialMaterial, ProviderRpcError> {
+        self.rpc().await?.refresh(request).await
+    }
+
+    async fn revoke(
+        &self,
+        request: ProviderRevokeRequest,
+    ) -> Result<ProviderRevokeResult, ProviderRpcError> {
+        self.rpc().await?.revoke(request).await
+    }
+
+    async fn models(
+        &self,
+        request: ProviderModelsRequest,
+    ) -> Result<ProviderModelCatalog, ProviderRpcError> {
+        self.rpc().await?.models(request).await
+    }
+
+    async fn chat(
+        &self,
+        request: ProviderChatRequest,
+    ) -> Result<ProviderChatResult, ProviderRpcError> {
+        self.rpc().await?.chat(request).await
+    }
+
+    async fn usage(
+        &self,
+        request: ProviderUsageRequest,
+    ) -> Result<ProviderUsageLimits, ProviderRpcError> {
+        self.rpc().await?.usage(request).await
+    }
+
+    async fn shutdown(&self) {
+        if let Some(runtime) = self.runtime.get() {
+            runtime.rpc().shutdown().await;
+        }
+    }
 }
 
 static LIVE_RUNTIME: std::sync::Mutex<Option<Arc<ProviderRuntime>>> = std::sync::Mutex::new(None);
