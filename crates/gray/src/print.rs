@@ -40,6 +40,18 @@ fn sgr(open: &str, text: impl std::fmt::Display) -> String {
     }
 }
 
+/// Status chrome (token footer, retries, compaction): dimmed inline on a
+/// terminal; on stderr when stdout is piped so `$(gray -p …)` is the answer only.
+fn meta<W: Write>(w: &mut W, text: String) -> std::io::Result<()> {
+    use std::io::IsTerminal as _;
+    if std::io::stdout().is_terminal() {
+        writeln!(w, "\n{}", sgr("\x1b[2m", text))
+    } else {
+        eprintln!("{text}");
+        Ok(())
+    }
+}
+
 pub fn render_event_with_context<W: Write>(
     w: &mut W,
     event: &AgentEvent,
@@ -161,19 +173,15 @@ pub fn render_event_with_context<W: Write>(
             messages_after,
             reason,
         } => {
-            writeln!(
+            meta(
                 w,
-                "\n{}",
-                sgr(
-                    "\x1b[2m",
-                    format!(
-                        "\u{21bb} compacted {} \u{2192} {} tok ({} \u{2192} {} messages){}",
-                        crate::repl::fmt_usage(*tokens_before),
-                        crate::repl::fmt_usage(*tokens_after),
-                        messages_before,
-                        messages_after,
-                        crate::compact::compact_reason_note(*reason),
-                    )
+                format!(
+                    "\u{21bb} compacted {} \u{2192} {} tok ({} \u{2192} {} messages){}",
+                    crate::repl::fmt_usage(*tokens_before),
+                    crate::repl::fmt_usage(*tokens_after),
+                    messages_before,
+                    messages_after,
+                    crate::compact::compact_reason_note(*reason),
                 ),
             )?;
             w.flush()
@@ -183,13 +191,9 @@ pub fn render_event_with_context<W: Write>(
             let message = scrub_error_text(message);
             let details = scrub_error_text(details);
             if details.is_empty() {
-                writeln!(w, "\n{}", sgr("\x1b[2m", format!("⚠ {message}")))?;
+                meta(w, format!("⚠ {message}"))?;
             } else {
-                writeln!(
-                    w,
-                    "\n{}",
-                    sgr("\x1b[2m", format!("⚠ {message}\n  {details}"))
-                )?;
+                meta(w, format!("⚠ {message}\n  {details}"))?;
             }
             w.flush()
         }
@@ -201,17 +205,13 @@ pub fn render_event_with_context<W: Write>(
         AgentEvent::Steered { .. } | AgentEvent::Retract => Ok(()),
         AgentEvent::TurnEnd { usage, .. } => {
             if usage.total() > 0 {
-                writeln!(
+                meta(
                     w,
-                    "\n{}",
-                    sgr(
-                        "\x1b[2m",
-                        format!(
-                            "{} {} tok",
-                            crate::tui::glyph("\u{2b22}", "#"),
-                            crate::repl::fmt_usage(usage.total())
-                        )
-                    )
+                    format!(
+                        "{} {} tok",
+                        crate::tui::glyph("\u{2b22}", "#"),
+                        crate::repl::fmt_usage(usage.total())
+                    ),
                 )?;
             }
             w.flush()

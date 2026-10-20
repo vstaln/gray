@@ -913,7 +913,10 @@ fn connect_modal(
                                 *status_msg = None;
                                 next_state = Some(ModalState::Selecting);
                             }
-                            PluginLoginProgress::Failed(message) => *status_msg = Some(message),
+                            PluginLoginProgress::Failed(message) => {
+                                *status_msg =
+                                    Some(format!("{}{message}", super::connect_draw::LOGIN_FAILED))
+                            }
                         }
                     }
                     if let Some(next_state) = next_state.take() {

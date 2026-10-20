@@ -313,3 +313,53 @@ fn plugin_login_status_does_not_overwrite_title() {
         .count();
     assert_eq!(box_rows, 7);
 }
+
+#[test]
+fn failed_plugin_login_wraps_the_full_fix_and_stops_spinning() {
+    let item = ConnectItem {
+        id: "devin-subscription".into(),
+        name: "Devin subscription".into(),
+        sublabel: String::new(),
+        base_url: String::new(),
+        no_auth: false,
+        auth: ConnectAuth::ApiKey,
+    };
+    let colors = ConnectColors {
+        box_bg: Color::Black,
+        input_bg: Color::Black,
+        accent_peach: Color::Yellow,
+        text_dim: Color::DarkGray,
+    };
+    let msg = format!(
+        "{}provider login required: `devin` not found on PATH. Install the Devin CLI, \
+         then run `devin auth login` once to sign in.",
+        super::LOGIN_FAILED
+    );
+    for w in [60u16, 100] {
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(w, 24)).unwrap();
+        terminal
+            .draw(|frame| {
+                render_authorizing_plugin(
+                    frame,
+                    frame.area(),
+                    &item,
+                    None,
+                    Some(&msg),
+                    std::time::Duration::ZERO,
+                    &colors,
+                )
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        let text: String = (0..24)
+            .map(|y| (0..w).map(|x| buf[(x, y)].symbol()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join(" ");
+        let squashed: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(squashed.contains("auth login"), "w={w}: {squashed}");
+        assert!(squashed.contains("✗ provider login required"), "w={w}: {squashed}");
+        assert!(!squashed.contains('⠋'), "spinner on a failure, w={w}");
+        assert!(squashed.contains("esc cancel"), "w={w}: {squashed}");
+    }
+}
