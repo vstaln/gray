@@ -1650,7 +1650,7 @@ fn draw_picker(
     if v.filtered.is_empty() {
         let line = if v.filter.is_empty() {
             Line::from(Span::styled(
-                "  No models listed — press Enter to continue",
+                "  No models listed — type a model id, then Enter",
                 fg(t.text_dim),
             ))
         } else {
@@ -2084,7 +2084,9 @@ pub(crate) fn model_picker_loop(
                         validate_direct_model_id(filter.trim(), &models)
                             .unwrap_or_else(|_| filter.trim().to_string())
                     } else {
-                        "default".to_string()
+                        // Nothing listed and nothing typed: don't save a fake
+                        // "default" model id — wait for the user to type one.
+                        continue;
                     };
                     commit_selection(
                         config,
