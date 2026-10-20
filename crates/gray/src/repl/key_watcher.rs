@@ -434,6 +434,7 @@ pub(crate) fn spawn_key_watcher_with_typing(
                     if !t.is_task_running {
                         continue;
                     }
+                    t.search = None;
                     t.handle_paste(data);
                     sync_matches(&mut t, &cwd_for_watcher);
                     let _ = t.draw();

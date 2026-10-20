@@ -331,12 +331,7 @@ pub(crate) fn read_line(
                     if trimmed.is_empty() && tui.attachments.is_empty() && !tui.allow_empty_submit {
                         continue;
                     }
-                    if !trimmed.is_empty() {
-                        tui.history.push(trimmed.clone());
-                        if tui.history.len() > 100 {
-                            tui.history.remove(0);
-                        }
-                    }
+                    crate::prompt_history::record(&mut tui.history, &trimmed);
                     tui.history_idx = None;
                     tui.draft.clear();
                     attach::sync_attachment_markers(tui);

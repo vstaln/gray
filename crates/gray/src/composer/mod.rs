@@ -847,14 +847,16 @@ impl Tui {
                 .render(buf.area, buf);
         });
 
-        Ok(Self::base(
+        let mut tui = Self::base(
             terminal,
             cols,
             rows,
             welcome_lines,
             vec![TranscriptEntry::Welcome],
             intro,
-        ))
+        );
+        tui.history = crate::prompt_history::load();
+        Ok(tui)
     }
 
     fn base(

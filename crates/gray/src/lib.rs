@@ -24,6 +24,7 @@ pub mod print;
 mod print_meter;
 pub mod profile;
 pub mod project_trust;
+pub mod prompt_history;
 pub mod prompt_templates;
 pub mod providers;
 pub mod quality_of_life;
