@@ -25,6 +25,21 @@ pub struct ActiveToolCall {
     pub preview: Option<String>,
 }
 
+/// Wrap `text` in an SGR style only when stdout is a terminal and NO_COLOR is
+/// unset — piped `gray -p` output must stay plain text.
+fn sgr(open: &str, text: impl std::fmt::Display) -> String {
+    static ANSI: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    let on = *ANSI.get_or_init(|| {
+        use std::io::IsTerminal as _;
+        std::io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none()
+    });
+    if on {
+        format!("{open}{text}\x1b[0m")
+    } else {
+        text.to_string()
+    }
+}
+
 pub fn render_event_with_context<W: Write>(
     w: &mut W,
     event: &AgentEvent,
@@ -40,7 +55,7 @@ pub fn render_event_with_context<W: Write>(
             w.flush()
         }
         AgentEvent::ThinkingDelta { delta } => {
-            write!(w, "\x1b[2m\x1b[3m{delta}\x1b[0m")?;
+            write!(w, "{}", sgr("\x1b[2m\x1b[3m", delta))?;
             w.flush()
         }
         AgentEvent::ToolCallStart { id, name } => {
@@ -148,12 +163,18 @@ pub fn render_event_with_context<W: Write>(
         } => {
             writeln!(
                 w,
-                "\n\x1b[2m\u{21bb} compacted {} \u{2192} {} tok ({} \u{2192} {} messages){}\x1b[0m",
-                crate::repl::fmt_usage(*tokens_before),
-                crate::repl::fmt_usage(*tokens_after),
-                messages_before,
-                messages_after,
-                crate::compact::compact_reason_note(*reason),
+                "\n{}",
+                sgr(
+                    "\x1b[2m",
+                    format!(
+                        "\u{21bb} compacted {} \u{2192} {} tok ({} \u{2192} {} messages){}",
+                        crate::repl::fmt_usage(*tokens_before),
+                        crate::repl::fmt_usage(*tokens_after),
+                        messages_before,
+                        messages_after,
+                        crate::compact::compact_reason_note(*reason),
+                    )
+                ),
             )?;
             w.flush()
         }
@@ -162,9 +183,13 @@ pub fn render_event_with_context<W: Write>(
             let message = scrub_error_text(message);
             let details = scrub_error_text(details);
             if details.is_empty() {
-                writeln!(w, "\n\x1b[2m⚠ {message}\x1b[0m")?;
+                writeln!(w, "\n{}", sgr("\x1b[2m", format!("⚠ {message}")))?;
             } else {
-                writeln!(w, "\n\x1b[2m⚠ {message}\n  {details}\x1b[0m")?;
+                writeln!(
+                    w,
+                    "\n{}",
+                    sgr("\x1b[2m", format!("⚠ {message}\n  {details}"))
+                )?;
             }
             w.flush()
         }
@@ -178,9 +203,15 @@ pub fn render_event_with_context<W: Write>(
             if usage.total() > 0 {
                 writeln!(
                     w,
-                    "\n\x1b[2m{} {} tok\x1b[0m",
-                    crate::tui::glyph("\u{2b22}", "#"),
-                    crate::repl::fmt_usage(usage.total())
+                    "\n{}",
+                    sgr(
+                        "\x1b[2m",
+                        format!(
+                            "{} {} tok",
+                            crate::tui::glyph("\u{2b22}", "#"),
+                            crate::repl::fmt_usage(usage.total())
+                        )
+                    )
                 )?;
             }
             w.flush()

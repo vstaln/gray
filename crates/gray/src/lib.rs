@@ -893,6 +893,7 @@ pub enum PluginCmd {
         #[arg(
             value_name = "SPEC",
             num_args = 1..,
+            required = true,
             help = "Plugin names from the index, https URLs, or local dirs/files"
         )]
         specs: Vec<String>,

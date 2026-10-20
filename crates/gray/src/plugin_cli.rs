@@ -1016,7 +1016,7 @@ fn command_suggestion(
             let s = strsim::jaro_winkler(typed, &n);
             (n, s)
         })
-        .filter(|(_, s)| *s >= 0.87)
+        .filter(|(n, s)| *s >= 0.87 && n != typed)
         .collect();
     scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
     let mut it = scored.into_iter().take(3).map(|(n, _)| format!("'{n}'"));
@@ -1060,11 +1060,12 @@ async fn index_owner_hint(name: &str) -> Option<String> {
     index
         .plugins
         .iter()
-        .find(|(_, e)| {
+        .find(|(owner, e)| {
             e.trusted()
-                && e.commands
-                    .iter()
-                    .any(|c| c.trim_start_matches('/') == name)
+                && (owner.as_str() == name
+                    || e.commands
+                        .iter()
+                        .any(|c| c.trim_start_matches('/') == name))
         })
         .map(|(owner, _)| {
             format!(
@@ -2604,5 +2605,10 @@ done
         let got = command_suggestion(home, &lock, &commands, "pulgins").unwrap();
         assert!(got.contains("plugin"), "{got}");
         assert!(command_suggestion(home, &lock, &commands, "zzzzzz").is_none());
+        let got = command_suggestion(home, &lock, &commands, "gateway");
+        assert!(
+            got.as_deref().is_none_or(|g| !g.contains("'gateway'")),
+            "never suggest the typed name: {got:?}"
+        );
     }
 }
