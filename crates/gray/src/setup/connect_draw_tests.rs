@@ -358,7 +358,10 @@ fn failed_plugin_login_wraps_the_full_fix_and_stops_spinning() {
             .join(" ");
         let squashed: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
         assert!(squashed.contains("auth login"), "w={w}: {squashed}");
-        assert!(squashed.contains("✗ provider login required"), "w={w}: {squashed}");
+        assert!(
+            squashed.contains("✗ provider login required"),
+            "w={w}: {squashed}"
+        );
         assert!(!squashed.contains('⠋'), "spinner on a failure, w={w}");
         assert!(squashed.contains("esc cancel"), "w={w}: {squashed}");
     }
