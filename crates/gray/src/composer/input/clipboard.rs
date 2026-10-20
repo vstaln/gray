@@ -81,7 +81,7 @@ pub(crate) fn read_system_clipboard_text() -> Option<String> {
     read_system_clipboard_text_with_paths(&paths.to_string_lossy())
 }
 
-const CLIPBOARD_CMD_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(2000);
+const CLIPBOARD_CMD_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(4000);
 
 pub(crate) fn output_with_timeout(
     full: &std::path::Path,

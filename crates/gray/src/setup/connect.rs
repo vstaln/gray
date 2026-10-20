@@ -243,6 +243,7 @@ fn connect_modal(
             item: ConnectItem,
             verification_uri: Option<String>,
             status_msg: Option<String>,
+            started: std::time::Instant,
             cancel: tokio_util::sync::CancellationToken,
             progress: tokio::sync::mpsc::UnboundedReceiver<PluginLoginProgress>,
         },
@@ -299,6 +300,7 @@ fn connect_modal(
                         item: item.clone(),
                         verification_uri: None,
                         status_msg: None,
+                        started: std::time::Instant::now(),
                         cancel,
                         progress,
                     };
@@ -450,6 +452,7 @@ fn connect_modal(
                         item,
                         verification_uri,
                         status_msg,
+                        started,
                         ..
                     } => super::connect_draw::render_authorizing_plugin(
                         frame,
@@ -457,6 +460,7 @@ fn connect_modal(
                         item,
                         verification_uri.as_deref(),
                         status_msg.as_deref(),
+                        started.elapsed(),
                         &colors,
                     ),
                 }
@@ -575,6 +579,7 @@ fn connect_modal(
                                             item: item.clone(),
                                             verification_uri: None,
                                             status_msg: None,
+                                            started: std::time::Instant::now(),
                                             cancel,
                                             progress,
                                         };
@@ -867,6 +872,7 @@ fn connect_modal(
                     status_msg,
                     cancel,
                     progress,
+                    ..
                 } => {
                     let mut next_state: Option<ModalState> = None;
                     while let Ok(progress) = progress.try_recv() {
@@ -883,10 +889,10 @@ fn connect_modal(
                             PluginLoginProgress::CredentialSaved => {
                                 *status_msg = Some("Credential saved".into())
                             }
-                            PluginLoginProgress::Models(models) => {
-                                super::context::save_provider_model_list(
+                            PluginLoginProgress::Models(rows) => {
+                                super::context::save_provider_model_rows(
                                     &super::catalog::plugin_models_key(&item.id),
-                                    &models,
+                                    rows,
                                 );
                                 next_state =
                                     Some(ModalState::SelectingModel { item: item.clone() });

@@ -131,11 +131,13 @@ pub(crate) use model_modal::{
 };
 pub(crate) use model_panes::{PanesOutcome, run_model_panes};
 pub(crate) use plugins_modal::run_plugins_manager;
-pub use provider_auth::{
-    PluginLoginProgress, activate_plugin_connection, adopt_saved_key, connect_saved_key,
-    forget_plugin_connection, run_plugin_login, select_api_key_connection,
+pub(crate) use provider_auth::{
+    PluginLoginProgress, adopt_connection_effort, apply_connection_effort, run_plugin_login,
 };
-pub(crate) use provider_auth::{adopt_connection_effort, apply_connection_effort};
+pub use provider_auth::{
+    activate_plugin_connection, adopt_saved_key, connect_saved_key, forget_plugin_connection,
+    select_api_key_connection,
+};
 pub(crate) use theme_modal::run_theme_picker;
 
 use crate::{config::Config, tui::print_wrapped};

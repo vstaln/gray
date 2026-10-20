@@ -51,6 +51,7 @@ pub mod tui;
 pub mod turn_caps;
 pub mod update;
 pub(crate) mod util;
+pub mod win_paste;
 
 use clap::{ArgGroup, Parser};
 use std::path::{Path, PathBuf};
@@ -330,26 +331,37 @@ async fn build_agent_with(
 
         system_prompt: gray_plugin::builder::SystemPrompt::Build({
             let session_cwd = cwd.to_path_buf();
-            Box::new(move |_registry: &gray_tools::Registry| {
-                let mut prompt = system_prompt::build_system_prompt(Some(body));
-                if !identity.is_empty() {
-                    if !prompt.is_empty() {
-                        prompt.push_str("\n\n");
+            Box::new(
+                move |_registry: &gray_tools::Registry, manifests: &[gray_plugin::Manifest]| {
+                    let mut prompt = system_prompt::build_system_prompt(Some(body));
+                    if !identity.is_empty() {
+                        if !prompt.is_empty() {
+                            prompt.push_str("\n\n");
+                        }
+                        prompt.push_str(&identity);
                     }
-                    prompt.push_str(&identity);
-                }
 
-                if !config_bare {
-                    prompt.push_str("\n\n");
-                    prompt.push_str(&system_prompt::harness_facts(Some(
-                        std::time::Duration::from_secs(cache_ttl_secs),
-                    )));
-                    prompt.push_str("\n\n");
-                    prompt.push_str(&system_prompt::session_card(&session_cwd));
-                }
+                    if !config_bare {
+                        prompt.push_str("\n\n");
+                        prompt.push_str(&system_prompt::harness_facts(Some(
+                            std::time::Duration::from_secs(cache_ttl_secs),
+                        )));
+                        prompt.push_str("\n\n");
+                        prompt.push_str(&system_prompt::session_card(&session_cwd));
 
-                prompt
-            })
+                        let plugins = system_prompt::plugins_block(
+                            manifests,
+                            &crate::plugin_cli::forwardable_names(),
+                        );
+                        if !plugins.is_empty() {
+                            prompt.push_str("\n\n");
+                            prompt.push_str(&plugins);
+                        }
+                    }
+
+                    prompt
+                },
+            )
         }),
 
         extra_plugins: extra_surface_plugins(config, spawn_plugins),

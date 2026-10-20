@@ -137,9 +137,20 @@ pub(crate) async fn restart_with(tui: &TuiOpt, resume: bool) {
         Err(std::process::Command::new(&exe).args(&args).exec())
     };
     #[cfg(not(unix))]
-    let spawned: std::io::Result<()> = match std::process::Command::new(&exe).args(&args).spawn() {
-        Ok(_) => std::process::exit(0),
-        Err(e) => Err(e),
+    let spawned: std::io::Result<()> = {
+        let mut cmd = std::process::Command::new(&exe);
+        cmd.args(&args).env(
+            crate::session_store::RESTART_PARENT_ENV,
+            std::process::id().to_string(),
+        );
+        match cmd.spawn() {
+            Ok(mut child) => {
+                crate::session_store::release_open_locks();
+                let code = child.wait().ok().and_then(|s| s.code()).unwrap_or(0);
+                std::process::exit(code)
+            }
+            Err(e) => Err(e),
+        }
     };
     if let Err(e) = spawned {
         let _ = crossterm::terminal::enable_raw_mode();

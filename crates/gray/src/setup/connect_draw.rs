@@ -699,10 +699,23 @@ pub(crate) fn render_authorizing_plugin(
     item: &ConnectItem,
     verification_uri: Option<&str>,
     status_msg: Option<&str>,
+    elapsed: std::time::Duration,
     colors: &ConnectColors,
 ) {
     let status = status_msg.unwrap_or("Checking your terminal login");
     let uri = verification_uri.unwrap_or("");
+    let spin = if crate::tui::unicode_safe() {
+        "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+            .chars()
+            .nth((elapsed.as_millis() / 80) as usize % 10)
+            .unwrap_or('⠋')
+    } else {
+        "|/-\\"
+            .chars()
+            .nth((elapsed.as_millis() / 80) as usize % 4)
+            .unwrap_or('|')
+    };
+    let status = format!("{spin} {status}");
 
     let inner = centered_dialog(
         frame,

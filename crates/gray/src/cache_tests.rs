@@ -314,6 +314,47 @@ fn model_switch_relabels_the_miss() {
 }
 
 #[test]
+fn reconnect_relabels_the_miss_and_consumes_the_flag() {
+    let base = Instant::now();
+    let mut tr = CacheTracker::default();
+    tr.note(
+        &usage(100_000, 100, 90_000, 10_000),
+        "m",
+        Some(priced()),
+        t(base, 0),
+    );
+    tr.note_reconnect();
+    let miss = tr
+        .note(
+            &usage(100_000, 100, 0, 100_000),
+            "m",
+            Some(priced()),
+            t(base, 5),
+        )
+        .expect("miss after reconnect");
+    assert!(miss.reconnected);
+    assert!(!miss.model_changed);
+    assert_eq!(
+        miss.notice().as_deref(),
+        Some("Cache miss after reconnect: 100k tokens re-billed (~$0.345)")
+    );
+
+    let miss = tr
+        .note(
+            &usage(110_000, 100, 0, 110_000),
+            "m",
+            Some(priced()),
+            t(base, 6),
+        )
+        .expect("second miss");
+    assert!(!miss.reconnected);
+    assert_eq!(
+        miss.notice().as_deref(),
+        Some("Cache miss: 100k tokens re-billed (~$0.345)")
+    );
+}
+
+#[test]
 fn read_only_provider_total_miss_counts() {
     let base = Instant::now();
     let mut tr = CacheTracker::default();

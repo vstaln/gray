@@ -214,14 +214,14 @@ pub(crate) fn effort_word(level: &str) -> String {
         .unwrap_or_default()
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub(crate) enum CachedRow {
     Pair(String, String),
     Full(CachedModel),
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct CachedModel {
     pub id: String,
     #[serde(default)]

@@ -282,7 +282,17 @@ fn plugin_login_status_does_not_overwrite_title() {
     };
     let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap();
     terminal
-        .draw(|frame| render_authorizing_plugin(frame, frame.area(), &item, None, None, &colors))
+        .draw(|frame| {
+            render_authorizing_plugin(
+                frame,
+                frame.area(),
+                &item,
+                None,
+                None,
+                std::time::Duration::ZERO,
+                &colors,
+            )
+        })
         .unwrap();
     let buf = terminal.backend().buffer();
     let rows: Vec<String> = (0..24)

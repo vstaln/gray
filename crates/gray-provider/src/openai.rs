@@ -27,6 +27,8 @@ pub const DEFAULT_BASE_URL: &str = "https://openrouter.ai/api/v1";
 
 const MAX_ATTEMPTS: usize = 5;
 
+const MAX_SEND_ATTEMPTS: usize = 3;
+
 const INITIAL_BACKOFF: Duration = Duration::from_secs(1);
 
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
@@ -1768,6 +1770,10 @@ fn session_affinity_headers(session_id: Option<&str>) -> Vec<(&'static str, &str
     vec![("x-opencode-session", sid)]
 }
 
+fn send_stage_retryable(err: &reqwest::Error) -> bool {
+    err.is_connect() || err.is_request()
+}
+
 #[allow(clippy::result_large_err)]
 async fn send_json_once(
     client: &reqwest::Client,
@@ -1777,22 +1783,36 @@ async fn send_json_once(
     attempt: usize,
     session_id: Option<&str>,
 ) -> Result<reqwest::Response, (ProviderError, Option<Duration>, u16)> {
-    let base = if api_key.is_empty() {
-        client.post(url.clone())
-    } else {
-        client
-            .post(url.clone())
-            .header("Authorization", format!("Bearer {api_key}"))
-    };
-    let base = session_affinity_headers(if url.as_str().contains("opencode.ai/zen") {
-        session_id
-    } else {
-        None
-    })
-    .into_iter()
-    .fold(base, |b, (name, value)| b.header(name, value));
-    let req = base.header("Content-Type", "application/json").json(body);
-    let res_result = req.send().await;
+    let mut res_result = None;
+    for send_attempt in 1..=MAX_SEND_ATTEMPTS {
+        let base = if api_key.is_empty() {
+            client.post(url.clone())
+        } else {
+            client
+                .post(url.clone())
+                .header("Authorization", format!("Bearer {api_key}"))
+        };
+        let base = session_affinity_headers(if url.as_str().contains("opencode.ai/zen") {
+            session_id
+        } else {
+            None
+        })
+        .into_iter()
+        .fold(base, |b, (name, value)| b.header(name, value));
+        let req = base.header("Content-Type", "application/json").json(body);
+        match req.send().await {
+            Err(err)
+                if send_attempt < MAX_SEND_ATTEMPTS && send_stage_retryable(&err) =>
+            {
+                log::warn!(target: "gray_provider", "send failed before a response ({err}); retrying on a fresh connection {send_attempt}/{MAX_SEND_ATTEMPTS}");
+            }
+            result => {
+                res_result = Some(result);
+                break;
+            }
+        }
+    }
+    let res_result = res_result.expect("send loop always yields a result");
     log::debug!(target: "gray_provider", "request sent to {url} (attempt {attempt})");
     match res_result {
         Ok(res) => {
@@ -2065,13 +2085,28 @@ async fn send_dynamic_json_once(
         }
         OpenAiAuthorization::None => None,
     };
-    let send = client
-        .post(url.clone())
-        .headers(headers)
-        .header(CONTENT_TYPE, "application/json")
-        .header(ACCEPT, "text/event-stream")
-        .json(body);
-    let response = send.send().await.map_err(map_send_error)?;
+    let mut response = None;
+    for send_attempt in 1..=MAX_SEND_ATTEMPTS {
+        let send = client
+            .post(url.clone())
+            .headers(headers.clone())
+            .header(CONTENT_TYPE, "application/json")
+            .header(ACCEPT, "text/event-stream")
+            .json(body);
+        match send.send().await {
+            Err(err)
+                if send_attempt < MAX_SEND_ATTEMPTS && send_stage_retryable(&err) =>
+            {
+                log::warn!(target: "gray_provider", "dynamic send failed before a response ({err}); retrying on a fresh connection {send_attempt}/{MAX_SEND_ATTEMPTS}");
+            }
+            Err(err) => return Err(map_send_error(err)),
+            Ok(res) => {
+                response = Some(res);
+                break;
+            }
+        }
+    }
+    let response = response.expect("send loop always yields a response");
     let status = response.status();
     if !status.is_success() {
         let mut snippet = String::new();

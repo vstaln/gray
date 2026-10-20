@@ -1286,6 +1286,10 @@ impl Tui {
         self.cache.resume(Instant::now());
     }
 
+    pub(crate) fn note_cache_reconnect(&mut self) {
+        self.cache.note_reconnect();
+    }
+
     pub(crate) fn rearm_cache(&mut self) {
         self.cache.rearm(Instant::now());
     }

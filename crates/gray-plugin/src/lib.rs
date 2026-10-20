@@ -79,6 +79,11 @@ pub struct Manifest {
     #[serde(default)]
     pub subcommands: Vec<String>,
 
+    /// CLI verbs the plugin advertises — `gray <name> <verb>` — also used
+    /// as the slash command's completion set in the REPL.
+    #[serde(default)]
+    pub completion: Vec<String>,
+
     #[serde(default)]
     pub capabilities: Vec<String>,
 
@@ -264,6 +269,7 @@ impl Manifest {
                 .unwrap_or(false),
             protocol: v.get("protocol").and_then(|s| s.as_str()).map(|s| s.into()),
             subcommands: str_list("subcommands"),
+            completion: str_list("completion"),
             capabilities: crate::capabilities::parse_declared(&str_list("capabilities")),
             shell_env: v.get("shell_env").and_then(|raw| {
                 serde_json::from_value(raw.clone())

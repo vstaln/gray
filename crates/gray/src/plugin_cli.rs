@@ -1082,15 +1082,57 @@ fn user_home_lock(home: &Path) -> Option<(PathBuf, LockFile, LockFile)> {
     Some((user, lock, commands))
 }
 
+/// Probe a lock-registered plugin whose `cli_argv` was never recorded —
+/// bulk syncs and older installers wrote entries straight to the lock —
+/// so `gray <name>` forwarding self-heals on first dispatch instead of
+/// dying on "sidecar plugin, not a CLI command". Reloads `lock` when
+/// adoption wrote the entry; silent no-op when nothing changed.
+async fn lazy_adopt(home: &Path, name: &str, lock: &mut LockFile) {
+    let needs_probe = lock
+        .plugins
+        .get(name)
+        .is_some_and(|e| e.cli_argv.is_none() && enabled(home, name, e));
+    if needs_probe
+        && adopt_cli(home, name, &home.join("plugins").join(name))
+            .await
+            .unwrap_or(false)
+        && let Ok(fresh) = load_lock(home)
+    {
+        *lock = fresh;
+    }
+}
+
+/// Plugin names `gray <name>` forwarding can reach: every enabled lock
+/// entry qualifies, since dispatch lazily adopts entries whose `manifest`
+/// verb was never probed at install time.
+pub(crate) fn forwardable_names() -> std::collections::BTreeSet<String> {
+    let mut names = std::collections::BTreeSet::new();
+    let Ok(home) = home() else {
+        return names;
+    };
+    if let Ok(lock) = load_lock(&home) {
+        names.extend(lock.plugins.into_keys());
+    }
+    if let Some((_, lock, _)) = user_home_lock(&home) {
+        names.extend(lock.plugins.into_keys());
+    }
+    names
+}
+
 pub async fn forward(home: &Path, name: &str, rest: &[String]) -> anyhow::Result<()> {
     validate_name(name)?;
     migrate_commands_json(home);
-    let lock = load_lock(home)?;
+    let mut lock = load_lock(home)?;
     let commands = load_commands(home)?;
     let project = std::env::current_dir()
         .ok()
         .and_then(|cwd| LockFile::load(&gray_plugin::lock::project_lock_path(&cwd)).ok());
-    let user_home = user_home_lock(home);
+    let mut user_home = user_home_lock(home);
+
+    lazy_adopt(home, name, &mut lock).await;
+    if let Some((u, l, _)) = user_home.as_mut() {
+        lazy_adopt(u, name, l).await;
+    }
 
     let mut sidecar_named = false;
     let mut direct = None;
@@ -1410,12 +1452,17 @@ pub(crate) async fn adopt_cli(home: &Path, name: &str, dir: &Path) -> anyhow::Re
 pub async fn capture_slash(name: &str, args: &[String]) -> anyhow::Result<Option<String>> {
     let home = home()?;
     migrate_commands_json(&home);
-    let lock = load_lock(&home)?;
+    let mut lock = load_lock(&home)?;
     let commands = commands_or_empty(&home);
     let project = std::env::current_dir()
         .ok()
         .and_then(|cwd| LockFile::load(&gray_plugin::lock::project_lock_path(&cwd)).ok());
-    let user_home = user_home_lock(&home);
+    let mut user_home = user_home_lock(&home);
+
+    lazy_adopt(&home, name, &mut lock).await;
+    if let Some((u, l, _)) = user_home.as_mut() {
+        lazy_adopt(u, name, l).await;
+    }
     let mut conflict_note = None;
     let selected = if let Some(entry) = lock.plugins.get(name).filter(|e| e.cli_argv.is_some()) {
         Some((home.clone(), name.to_string(), entry.clone(), false))
@@ -2227,6 +2274,73 @@ done
         let entry = &load_lock(home).unwrap().plugins["demo"];
         assert_eq!(entry.cli_argv, None);
         assert_eq!(entry.hash, "sha256:abc");
+        assert!(!home.join("plugins/demo-manifest.json").exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn lazy_adopt_records_cli_argv_on_first_dispatch() {
+        use std::os::unix::fs::PermissionsExt;
+        let home = tempfile::tempdir().unwrap();
+        let home = home.path();
+        let dir = home.join("plugins/demo");
+        std::fs::create_dir_all(&dir).unwrap();
+        let exe = dir.join("gray-demo");
+        std::fs::write(
+            &exe,
+            "#!/bin/sh\nprintf '%s\\n' '{\"name\":\"demo\",\"version\":\"1.0.0\",\"commands\":[\"/demo\"]}'\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+        write_lock(home, &serde_json::json!({"demo": index_row(None)}));
+
+        let mut lock = load_lock(home).unwrap();
+        assert!(lock.plugins["demo"].cli_argv.is_none());
+        lazy_adopt(home, "demo", &mut lock).await;
+        assert_eq!(
+            lock.plugins["demo"].cli_argv.as_deref(),
+            Some([exe.to_string_lossy().into_owned()].as_slice())
+        );
+        assert!(home.join("plugins/demo-manifest.json").exists());
+
+        lazy_adopt(home, "ghost", &mut lock).await;
+        assert!(!lock.plugins.contains_key("ghost"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn lazy_adopt_skips_disabled_and_wire_only_plugins() {
+        use std::os::unix::fs::PermissionsExt;
+        let home = tempfile::tempdir().unwrap();
+        let home = home.path();
+        let dir = home.join("plugins/demo");
+        std::fs::create_dir_all(&dir).unwrap();
+        let exe = dir.join("gray-demo");
+        std::fs::write(
+            &exe,
+            "#!/bin/sh\nprintf '%s\\n' '{\"name\":\"demo\",\"version\":\"1.0.0\"}'\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let mut off = index_row(None);
+        off.enabled = false;
+        write_lock(home, &serde_json::json!({"demo": off}));
+        let mut lock = load_lock(home).unwrap();
+        lazy_adopt(home, "demo", &mut lock).await;
+        assert_eq!(lock.plugins["demo"].cli_argv, None);
+
+        write_lock(home, &serde_json::json!({"demo": index_row(None)}));
+        let mut lock = load_lock(home).unwrap();
+        lazy_adopt(home, "demo", &mut lock).await;
+        assert!(lock.plugins["demo"].cli_argv.is_some());
+
+        std::fs::write(&exe, "#!/bin/sh\nexit 1\n").unwrap();
+        let mut lock = load_lock(home).unwrap();
+        lock.plugins.get_mut("demo").unwrap().cli_argv = None;
+        lazy_adopt(home, "demo", &mut lock).await;
+        let disk = load_lock(home).unwrap();
+        assert_eq!(disk.plugins["demo"].cli_argv, None);
         assert!(!home.join("plugins/demo-manifest.json").exists());
     }
 

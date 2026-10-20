@@ -765,6 +765,7 @@ pub(crate) fn dispatch_agent_event(
                 t.end_thinking();
                 t.mark_stream_round_boundary();
                 t.set_status(Some("Reconnecting"));
+                t.note_cache_reconnect();
 
                 if !details.is_empty() && t.last_retry_detail.as_deref() != Some(details.as_str()) {
                     t.last_retry_detail = Some(details.clone());
