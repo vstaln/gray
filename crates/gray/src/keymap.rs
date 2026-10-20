@@ -140,7 +140,7 @@ impl Action {
             Action::Exit => &["ctrl+d"],
             Action::Interrupt => &["escape"],
             Action::PasteClipboard => &["ctrl+v", "ctrl+shift+v", "shift+insert", "alt+v"],
-            Action::NewLine => &["shift+enter", "alt+enter", "ctrl+j", "ctrl+m"],
+            Action::NewLine => &["shift+enter", "alt+enter", "ctrl+j"],
             Action::Submit => &["enter"],
             Action::HistoryPrevious | Action::HistoryNext => &[],
             Action::CursorUp => &["up"],
