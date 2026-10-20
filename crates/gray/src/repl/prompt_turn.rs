@@ -38,6 +38,13 @@ async fn run_streaming_cancellable(
     }
 }
 
+fn slow_turn_end_step(step: &str, since: std::time::Instant) {
+    let took = since.elapsed();
+    if took > std::time::Duration::from_secs(5) {
+        log::warn!(target: "gray_turn", "turn end stalled: {step} took {took:?}");
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_prompt_turn(
     prompt_text: String,
@@ -454,7 +461,11 @@ pub(crate) async fn run_prompt_turn(
     }
 
     watch_stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    // A run that ended but left "Working…" up for hours had nothing in the
+    // log after "agent run end"; these name which step held the turn open.
+    let run_returned = std::time::Instant::now();
     let _ = key_watcher.await;
+    slow_turn_end_step("key watcher stop", run_returned);
     if turn_duration_ms.is_none() {
         turn_duration_ms = Some(turn_start.elapsed().as_millis().min(u128::from(u64::MAX)) as u64);
     }
@@ -587,6 +598,7 @@ pub(crate) async fn run_prompt_turn(
             }
         }
     }
+    slow_turn_end_step("run end to end_turn", run_returned);
     if let Some(s) = &tui_stream {
         s.lock()
             .expect("tui lock")
