@@ -29,6 +29,7 @@ pub(crate) enum PanesOutcome {
     Picked,
     Dismissed,
     Connect(String),
+    Install(String),
     Removed(String),
 }
 
@@ -45,6 +46,9 @@ struct PaneProvider {
     removable: bool,
     installed: Option<InstalledProvider>,
     detected: bool,
+    /// Plugin index key when this row advertises a provider plugin that is
+    /// not installed yet (installable login).
+    install: Option<String>,
 }
 
 impl PaneProvider {
@@ -56,7 +60,8 @@ impl PaneProvider {
     }
 
     fn adoptable(&self, keys: &BTreeMap<String, String>) -> bool {
-        self.connected || self.item.no_auth || keys.contains_key(&self.item.id)
+        self.install.is_none()
+            && (self.connected || self.item.no_auth || keys.contains_key(&self.item.id))
     }
 
     fn key(&self, keys: &BTreeMap<String, String>, config: &Config) -> Option<String> {
@@ -71,10 +76,74 @@ impl PaneProvider {
     }
 }
 
-fn build_rail(config: &Config, ollama: bool) -> (Vec<PaneProvider>, BTreeMap<String, String>) {
+/// Provider sidecar plugins (the `gray-*-sub` family plus a few non-`-sub`
+/// provider plugins) that carry a sign-in for /models. The plugin index
+/// doesn't mark provider plugins, so the rail keeps the known set: index
+/// entries not listed here never get an installable row.
+const LOGIN_PROVIDER_PLUGINS: &[(&str, &str)] = &[
+    ("antigravity", "Antigravity"),
+    ("chatgpt", "ChatGPT"),
+    ("claude", "Claude"),
+    ("cline", "Cline"),
+    ("codex", "Codex"),
+    ("copilot", "GitHub Copilot"),
+    ("credpool", "Credential pool"),
+    ("cursor", "Cursor"),
+    ("deepseek", "DeepSeek"),
+    ("devin", "Devin"),
+    ("gemini", "Gemini"),
+    ("grok", "Grok"),
+    ("kimi", "Kimi"),
+    ("lmstudio", "LM Studio"),
+    ("muse", "Muse"),
+    ("nous", "Nous Portal"),
+    ("ollama", "Ollama"),
+    ("opencode", "opencode"),
+    ("qwen", "Qwen"),
+    ("router", "Model router"),
+    ("zai", "Z.AI"),
+];
+
+/// Plugin names that are already installed (enabled or not), from the same
+/// lock files /plugins reads.
+fn installed_plugin_names(home: &std::path::Path) -> HashSet<String> {
+    crate::plugin_cli::list_managed(home)
+        .map(|rows| rows.into_iter().map(|p| p.name).collect())
+        .unwrap_or_default()
+}
+
+/// Fetch the plugin index the way `gray plugin install <name>` resolves it:
+/// hub index first, community index on failure.
+fn fetch_provider_index() -> Option<gray_pkg::index::Index> {
+    let client = gray_pkg::fetch::client().ok()?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .ok()?;
+    runtime.block_on(async {
+        let secs = std::time::Duration::from_secs(5);
+        if let Ok(Ok(index)) =
+            tokio::time::timeout(secs, gray_pkg::index::fetch_hub_index(&client)).await
+        {
+            return Some(index);
+        }
+        tokio::time::timeout(secs, gray_pkg::index::fetch_index(&client))
+            .await
+            .ok()?
+            .ok()
+    })
+}
+
+fn build_rail(
+    config: &Config,
+    ollama: bool,
+    index: Option<&gray_pkg::index::Index>,
+) -> (Vec<PaneProvider>, BTreeMap<String, String>) {
     let catalog = catalog::load_catalog().unwrap_or_default();
-    let providers = crate::setup::catalog::gray_home()
-        .map(|home| ProviderRegistry::load_cached(&home).installed())
+    let home = crate::setup::catalog::gray_home().ok();
+    let providers = home
+        .as_ref()
+        .map(|home| ProviderRegistry::load_cached(home).installed())
         .unwrap_or_default();
     let customs = load_custom_endpoints();
     let mut items = build_connect_items(&catalog, &providers, &customs);
@@ -83,7 +152,7 @@ fn build_rail(config: &Config, ollama: bool) -> (Vec<PaneProvider>, BTreeMap<Str
     sort_connect_items(&mut items, config, &auth, &detected);
     let keys = load_auth_keys();
 
-    let rail = items
+    let mut rail: Vec<PaneProvider> = items
         .into_iter()
         .map(|item| {
             let installed = match &item.auth {
@@ -99,10 +168,36 @@ fn build_rail(config: &Config, ollama: bool) -> (Vec<PaneProvider>, BTreeMap<Str
                 list_key: PaneProvider::list_key(&item),
                 detected: detected.contains_key(&item.id),
                 installed,
+                install: None,
                 item,
             }
         })
         .collect();
+
+    if let (Some(index), Some(home)) = (index, home.as_ref()) {
+        let installed_names = installed_plugin_names(home);
+        for &(key, display) in LOGIN_PROVIDER_PLUGINS {
+            if installed_names.contains(key) || !index.plugins.contains_key(key) {
+                continue;
+            }
+            rail.push(PaneProvider {
+                item: ConnectItem {
+                    id: format!("plugin:{key}"),
+                    name: display.to_string(),
+                    sublabel: "(not installed)".to_string(),
+                    base_url: String::new(),
+                    no_auth: false,
+                    auth: ConnectAuth::None,
+                },
+                list_key: format!("plugin:{key}"),
+                connected: false,
+                removable: false,
+                installed: None,
+                detected: false,
+                install: Some(key.to_string()),
+            });
+        }
+    }
     (rail, keys)
 }
 
@@ -173,6 +268,9 @@ enum Place {
 /// flat up top; plugin logins and unused API-key catalog entries fold into
 /// labeled groups so the sections don't mix.
 fn place(p: &PaneProvider) -> Place {
+    if p.install.is_some() {
+        return Place::Group(GroupId::Logins);
+    }
     match &p.item.auth {
         ConnectAuth::Plugin { .. } => {
             let oauth = p
@@ -639,7 +737,9 @@ fn draw(frame: &mut Frame, bg: &BackgroundSnapshot, v: &PaneView) {
             }),
         ));
     }
-    if !v.adoptable && provider.is_some() {
+    if provider.is_some_and(|p| p.install.is_some()) {
+        head.push(Span::styled(" · not installed", fg(t.accent)));
+    } else if !v.adoptable && provider.is_some() {
         head.push(Span::styled(" · not connected", fg(t.text_faint)));
     } else if let Some((id, name)) = highlighted {
         head.push(Span::styled(
@@ -733,6 +833,8 @@ fn draw(frame: &mut Frame, bg: &BackgroundSnapshot, v: &PaneView) {
         let mark = Span::styled(
             if p.item.id == "custom" {
                 " + "
+            } else if p.install.is_some() {
+                " ○ "
             } else if p.connected {
                 " ✓ "
             } else {
@@ -777,6 +879,9 @@ fn draw(frame: &mut Frame, bg: &BackgroundSnapshot, v: &PaneView) {
                 " enter/→ to expand"
             } else {
                 match (v.adoptable, v.filter.is_empty()) {
+                    (false, _) if provider.is_some_and(|p| p.install.is_some()) => {
+                        " enter to install"
+                    }
                     (false, _) => " no models yet",
                     (true, true) => " fetching models…",
                     (true, false) => " no matches",
@@ -846,6 +951,9 @@ fn draw(frame: &mut Frame, bg: &BackgroundSnapshot, v: &PaneView) {
             }
         }
         _ if v.notice.is_some() => detail.extend(v.notice.map(|n| dim(n.to_string()))),
+        _ if provider.is_some_and(|p| p.install.is_some()) => {
+            detail.push(dim("not installed — enter to install".into()))
+        }
         _ if !v.adoptable => detail.push(dim("enter to sign in".into())),
         Some((id, _)) if is_composite(id) => detail.push(dim("enter picks its slots".into())),
         Some((id, _)) => {
@@ -896,6 +1004,7 @@ fn draw(frame: &mut Frame, bg: &BackgroundSnapshot, v: &PaneView) {
     let has_fast = highlighted
         .is_some_and(|(id, _)| v.toggles.fast || fast_wire(id, v.shown(id), v.models).is_some());
     let enter = match (v.adoptable, v.focus) {
+        (false, _) if provider.is_some_and(|p| p.install.is_some()) => "install",
         (false, _) => "sign in",
         (true, Focus::Rail) => "open",
         (true, Focus::Models) => "select",
@@ -978,9 +1087,14 @@ pub(crate) fn run_model_panes(
     std::thread::spawn(move || {
         let _ = ollama_tx.send(super::context::ollama_running());
     });
+    let (index_tx, index_rx) = std::sync::mpsc::channel::<Option<gray_pkg::index::Index>>();
+    std::thread::spawn(move || {
+        let _ = index_tx.send(fetch_provider_index());
+    });
+    let mut provider_index: Option<gray_pkg::index::Index> = None;
     let mut first_draw = true;
     let mut before = config.clone();
-    let (mut rail, mut keys) = build_rail(config, ollama);
+    let (mut rail, mut keys) = build_rail(config, ollama, None);
     let mut groups = GroupStates::default();
     let mut rows = rail_rows(&rail, &groups);
     let mut model_cache: HashMap<String, Vec<(String, String)>> = HashMap::new();
@@ -1031,7 +1145,18 @@ pub(crate) fn run_model_panes(
             {
                 ollama = up;
                 let keep = row_provider(&rail, &rows, rail_sel).map(|p| p.item.id.clone());
-                (rail, keys) = build_rail(config, ollama);
+                (rail, keys) = build_rail(config, ollama, provider_index.as_ref());
+                rows = rail_rows(&rail, &groups);
+                rail_sel = keep
+                    .and_then(|id| rail.iter().position(|p| p.item.id == id))
+                    .and_then(|i| rows.iter().position(|r| *r == RailRow::Provider(i)))
+                    .unwrap_or(rail_sel)
+                    .min(rows.len().saturating_sub(1));
+            }
+            if let Ok(index) = index_rx.try_recv() {
+                provider_index = index;
+                let keep = row_provider(&rail, &rows, rail_sel).map(|p| p.item.id.clone());
+                (rail, keys) = build_rail(config, ollama, provider_index.as_ref());
                 rows = rail_rows(&rail, &groups);
                 rail_sel = keep
                     .and_then(|id| rail.iter().position(|p| p.item.id == id))
@@ -1053,7 +1178,7 @@ pub(crate) fn run_model_panes(
                 let id = p.item.id.clone();
                 let name = super::connect::forget_provider(&p.item, config)?;
                 before = config.clone();
-                (rail, keys) = build_rail(config, ollama);
+                (rail, keys) = build_rail(config, ollama, provider_index.as_ref());
                 rows = rail_rows(&rail, &groups);
                 rail_sel = rail
                     .iter()
@@ -1221,6 +1346,9 @@ pub(crate) fn run_model_panes(
                     }
                     _ if !adoptable => {
                         if let Some(p) = provider {
+                            if let Some(name) = &p.install {
+                                return Ok(PanesOutcome::Install(name.clone()));
+                            }
                             return Ok(PanesOutcome::Connect(p.item.id.clone()));
                         }
                     }

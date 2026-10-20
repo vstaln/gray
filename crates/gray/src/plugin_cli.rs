@@ -737,6 +737,43 @@ pub fn print_capabilities(only: Option<&str>) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Grant a single declared capability to an installed plugin (no output);
+/// returns true when the grant set changed. Used when an in-TUI flow installs
+/// a provider plugin specifically to sign in — the interactive install prompt
+/// cannot run there, so `provider.credentials` would otherwise stay deferred
+/// and the provider row hidden.
+pub(crate) fn grant_capability(home: &Path, name: &str, capability: &str) -> anyhow::Result<bool> {
+    migrate_commands_json(home);
+    let declared = gray_plugin::capabilities::parse_declared(
+        &metadata(home, name)
+            .context("no cached manifest — is the plugin installed?")?
+            .get("capabilities")
+            .and_then(Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().map(str::to_string))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default(),
+    );
+    if !declared.iter().any(|d| d == capability) {
+        return Ok(false);
+    }
+    let mut lock = load_lock(home)?;
+    let entry = lock
+        .plugins
+        .get_mut(name)
+        .with_context(|| format!("no plugin named '{name}'"))?;
+    if entry.granted_capabilities.iter().any(|g| g == capability) {
+        return Ok(false);
+    }
+    entry.granted_capabilities.push(capability.to_string());
+    entry.capabilities_hash = Some(gray_plugin::capabilities::consent_hash(&declared));
+    lock.save(&gray_plugin::lock::lock_path(home))?;
+    crate::providers::ProviderRegistry::refresh(home)?;
+    Ok(true)
+}
+
 pub fn grant_all_capabilities(name: &str) -> anyhow::Result<()> {
     let home = home()?;
     migrate_commands_json(&home);
