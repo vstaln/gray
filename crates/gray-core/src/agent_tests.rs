@@ -3585,7 +3585,11 @@ fn soft_elide_keeps_the_measured_anchor_over_thinking_blobs() {
         history.push(Message {
             role: Role::Assistant,
             injected: false,
-            content: vec![ContentBlock::tool_use(&id, TOOL_NAME, serde_json::json!({}))],
+            content: vec![ContentBlock::tool_use(
+                &id,
+                TOOL_NAME,
+                serde_json::json!({}),
+            )],
         });
         history.push(Message {
             role: Role::User,

@@ -96,7 +96,11 @@ fn emitted_stream_matches_output_for_documents() {
     for (i, full) in cases.iter().enumerate() {
         for cs in [1usize, 3, 7, 13, 40, 1000] {
             let (pushed, final_lines) = streamed_pushed_vs_final(full, cs);
-            assert_eq!(norm(&pushed), norm(&final_lines), "case {i} chunk={cs}\nfull={full:?}");
+            assert_eq!(
+                norm(&pushed),
+                norm(&final_lines),
+                "case {i} chunk={cs}\nfull={full:?}"
+            );
         }
     }
 }
@@ -104,19 +108,65 @@ fn emitted_stream_matches_output_for_documents() {
 #[test]
 fn fuzz_emitted_stream_matches_output() {
     let frags = [
-        "word ", "**bold** ", "`code` ", "[l](https://x.com) ", "\n", "\n\n",
-        "## h\n", "- item\n", "1. n\n", "> q\n", "```\ncode line\n", "```rust\nx=1\n", "```\n",
-        "| a | b |\n", "|---|---|\n", "| 1 | 2 |\n", "*it* ", "~~del~~ ", "### ", "text.",
-        "(paren) ", "— dash ", "\"quote\" ", "$math$ ", "https://url.com ", "\\*esc ",
-        "===\n", "---\n", "***\n", "text\n=", "text\n-", "setext\n===\n",
-        "  \n", "\t", "&amp;", "&lt;tag&gt;", "[^1] ", "[^1]: note\n", "<b>html</b> ",
-        "1) paren\n", "+ plus\n", "* star\n", "    indent\n", "~~~\nfence\n", "~~~\n",
-        "text  \n", "a\\n", "__u__ ", "_i_ ", "***bi*** ", ">", "#",
+        "word ",
+        "**bold** ",
+        "`code` ",
+        "[l](https://x.com) ",
+        "\n",
+        "\n\n",
+        "## h\n",
+        "- item\n",
+        "1. n\n",
+        "> q\n",
+        "```\ncode line\n",
+        "```rust\nx=1\n",
+        "```\n",
+        "| a | b |\n",
+        "|---|---|\n",
+        "| 1 | 2 |\n",
+        "*it* ",
+        "~~del~~ ",
+        "### ",
+        "text.",
+        "(paren) ",
+        "— dash ",
+        "\"quote\" ",
+        "$math$ ",
+        "https://url.com ",
+        "\\*esc ",
+        "===\n",
+        "---\n",
+        "***\n",
+        "text\n=",
+        "text\n-",
+        "setext\n===\n",
+        "  \n",
+        "\t",
+        "&amp;",
+        "&lt;tag&gt;",
+        "[^1] ",
+        "[^1]: note\n",
+        "<b>html</b> ",
+        "1) paren\n",
+        "+ plus\n",
+        "* star\n",
+        "    indent\n",
+        "~~~\nfence\n",
+        "~~~\n",
+        "text  \n",
+        "a\\n",
+        "__u__ ",
+        "_i_ ",
+        "***bi*** ",
+        ">",
+        "#",
     ];
     for seed in 0u64..20000 {
         let mut s = seed.wrapping_mul(0x9E3779B97F4A7C15).wrapping_add(1);
         let mut next = move || {
-            s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            s = s
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             s >> 33
         };
         let nfrags = 3 + (next() % 15) as usize;
