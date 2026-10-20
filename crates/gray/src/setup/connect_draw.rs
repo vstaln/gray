@@ -561,7 +561,8 @@ pub(crate) fn render_entering_key(
 ) {
     let provider_line = format!("Provider: {}", item.name);
     let provenance = env_var.map(|var| format!(" (from ${var})"));
-    let get_a_key = catalog::key_url(&item.id).map(|url| format!(" Get a key: {url}"));
+    let get_a_key = crate::quality_of_life::providers::key_url(&item.id)
+        .map(|url| format!(" Get a key: {url}"));
     let action_label = if existing_key.is_some() {
         "update"
     } else {

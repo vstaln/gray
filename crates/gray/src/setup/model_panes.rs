@@ -9,12 +9,13 @@ use ratatui::widgets::{Clear, Paragraph};
 
 use crate::config::Config;
 use crate::providers::{InstalledProvider, ProviderRegistry};
+use crate::quality_of_life::providers::detect_connect_candidates;
 
 use super::catalog::{
     self, AUTH_MODE_API_KEY, AUTH_MODE_NONE, ConnectAuth, ConnectItem, SavedConfig,
-    build_connect_items, detect_connect_candidates, load_auth_keys, load_connect_auth,
-    load_custom_endpoints, load_saved_config_at, lock_saved_config_at, normalize_custom_base_url,
-    plugin_models_key, save_saved_config_at, saved_config_path, sort_connect_items,
+    build_connect_items, load_auth_keys, load_connect_auth, load_custom_endpoints,
+    load_saved_config_at, lock_saved_config_at, normalize_custom_base_url, plugin_models_key,
+    save_saved_config_at, saved_config_path, sort_connect_items,
 };
 use super::model_modal::{
     PickerToggles, commit_row_effort, compose_fast_model, fetch_models_live, fit_chars,

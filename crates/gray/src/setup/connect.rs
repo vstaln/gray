@@ -164,12 +164,7 @@ fn migrate_legacy_custom(config: &Config, cat: &catalog::Catalog) {
     if base.is_empty() {
         return;
     }
-    let known = catalog::POPULAR_DEFS
-        .iter()
-        .any(|(.., url, _)| normalize_custom_base_url(url) == base)
-        || cat
-            .values()
-            .any(|p| normalize_custom_base_url(&p.base_url) == base);
+    let known = crate::quality_of_life::providers::is_known_preset_base(&base, cat);
     if known {
         return;
     }
@@ -269,8 +264,10 @@ fn connect_modal(
         .cloned()
         .unwrap_or_else(BackgroundSnapshot::default_initial);
 
-    let detected =
-        catalog::detect_connect_candidates(context::ollama_running(), |k| std::env::var(k).ok());
+    let detected = crate::quality_of_life::providers::detect_connect_candidates(
+        context::ollama_running(),
+        |k| std::env::var(k).ok(),
+    );
 
     migrate_legacy_custom(config, &catalog);
 
