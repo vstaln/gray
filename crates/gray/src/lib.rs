@@ -730,13 +730,15 @@ pub enum Commands {
         everything: bool,
     },
 
-    #[command(about = "Manage saved sessions")]
+    #[command(visible_alias = "session", about = "Manage saved sessions")]
     Sessions {
         #[command(subcommand)]
         cmd: SessionsCmd,
     },
 
     #[command(
+        visible_alias = "commands",
+        alias = "command",
         about = "Machine-readable command registry — list and run commands (used by gateways)"
     )]
     Cmd {

@@ -889,6 +889,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "shlex",
+ "strsim",
  "tempfile",
  "thiserror",
  "tokio",
