@@ -3252,3 +3252,84 @@ async fn dynamic_relay_surfaces_the_error_after_the_send_budget() {
         "send failures must surface once the budget is spent: {events:?}"
     );
 }
+struct FailingProviderSource(fn() -> gray_core::credential::CredentialError);
+
+#[async_trait]
+impl gray_core::credential::CredentialSource for FailingProviderSource {
+    async fn acquire(
+        &self,
+    ) -> Result<gray_core::credential::CredentialLease, gray_core::credential::CredentialError>
+    {
+        Err((self.0)())
+    }
+}
+
+async fn first_error_with(source: FailingProviderSource) -> ProviderError {
+    use futures::StreamExt;
+    use gray_core::message::{ChatRequest, ContentBlock, Message, Role};
+
+    let profile = OpenAiProviderProfile {
+        base_url: "http://127.0.0.1:9/v1".parse().unwrap(),
+        wire: OpenAiWire::Responses,
+        authorization: OpenAiAuthorization::Bearer {
+            secret_name: "access_token".into(),
+        },
+        headers: Vec::new(),
+        request: OpenAiRequestPolicy {
+            prompt_cache_key: false,
+            store: false,
+            include_reasoning_encrypted: false,
+            previous_response_id: false,
+            tool_choice: None,
+            parallel_tool_calls: None,
+            text_verbosity: None,
+        },
+        follow_redirects: false,
+    };
+    let provider = OpenAiProvider::new_with_profile(
+        "gpt-test",
+        None,
+        Some("session-test".into()),
+        profile,
+        std::sync::Arc::new(source),
+    )
+    .unwrap();
+    let request = ChatRequest {
+        system: None,
+        messages: vec![Message::new(
+            Role::User,
+            vec![ContentBlock::Text { text: "hi".into() }],
+        )],
+        tools: Vec::new(),
+        max_tokens: None,
+    };
+    let mut stream = provider.stream(request);
+    match stream.next().await {
+        Some(Err(error)) => error,
+        other => panic!("expected an acquire error, got {:?}", other.map(|r| r.is_ok())),
+    }
+}
+
+// A credential sidecar that died mid-request (or timed out) is a transient
+// connection failure the turn retries — not "sign in again".
+#[tokio::test]
+async fn unreachable_credential_source_is_retryable() {
+    let error = first_error_with(FailingProviderSource(|| {
+        gray_core::credential::CredentialError::Unavailable(
+            "devin-subscription/devin-login: sidecar child closed stdout".into(),
+        )
+    }))
+    .await;
+    assert!(matches!(error.class(), ProviderError::Connection(_)), "{error}");
+    assert!(error.retryable(), "{error}");
+}
+
+#[tokio::test]
+async fn login_required_credential_stays_an_auth_failure() {
+    let error = first_error_with(FailingProviderSource(|| {
+        gray_core::credential::CredentialError::ReauthRequired("run devin auth login".into())
+    }))
+    .await;
+    assert!(matches!(error.class(), ProviderError::Auth(_)), "{error}");
+    assert!(!error.retryable(), "{error}");
+}

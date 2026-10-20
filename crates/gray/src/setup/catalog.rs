@@ -631,17 +631,17 @@ pub(crate) fn sort_connect_items(
     detected: &BTreeMap<String, Detected>,
 ) {
     items.sort_by_key(|item| {
-        if item.is_connected(config, auth) {
+        if item.id == "custom" {
             0
-        } else if detected.contains_key(&item.id) {
+        } else if item.is_connected(config, auth) {
             1
-        } else if item.id == "custom" {
-            3
+        } else if detected.contains_key(&item.id) {
+            2
         } else if item.id.starts_with("custom:")
             || matches!(item.auth, ConnectAuth::Plugin { .. })
             || POPULAR_DEFS.iter().any(|(id, ..)| *id == item.id)
         {
-            2
+            3
         } else {
             4
         }

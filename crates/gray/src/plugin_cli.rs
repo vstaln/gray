@@ -970,6 +970,65 @@ fn is_local_command(home: &Path, name: &str) -> bool {
         })
 }
 
+/// The singular/plural counterpart of `name`: drops a trailing 's', or
+/// adds one. `forward` tries the typed spelling first — this is only a
+/// fallback alias.
+fn number_variant(name: &str) -> Option<String> {
+    match name.strip_suffix('s') {
+        Some(stripped) if !stripped.is_empty() => Some(stripped.to_string()),
+        Some(_) => None,
+        None => Some(format!("{name}s")),
+    }
+}
+
+/// Close-match hints for an unknown `gray <name>`: builtin subcommands and
+/// their aliases, installed plugin names, commands.json rows, and claimed
+/// /commands from manifests. Same jaro-winkler cutoff as gray-core's
+/// unknown-tool hint.
+fn command_suggestion(
+    home: &Path,
+    lock: &LockFile,
+    commands: &LockFile,
+    typed: &str,
+) -> Option<String> {
+    use clap::CommandFactory;
+    let mut names: std::collections::BTreeSet<String> = lock.plugins.keys().cloned().collect();
+    names.extend(commands.plugins.keys().cloned());
+    for sub in crate::Cli::command().get_subcommands() {
+        names.insert(sub.get_name().to_string());
+        names.extend(sub.get_all_aliases().map(str::to_string));
+    }
+    for owner in lock.plugins.keys() {
+        if let Ok(m) = metadata(home, owner) {
+            names.extend(
+                m["commands"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|v| v.as_str())
+                    .map(|c| c.trim_start_matches('/').to_string()),
+            );
+        }
+    }
+    let mut scored: Vec<(String, f64)> = names
+        .into_iter()
+        .map(|n| {
+            let s = strsim::jaro_winkler(typed, &n);
+            (n, s)
+        })
+        .filter(|(_, s)| *s >= 0.87)
+        .collect();
+    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    let mut it = scored.into_iter().take(3).map(|(n, _)| format!("'{n}'"));
+    let first = it.next()?;
+    let rest: Vec<String> = it.collect();
+    Some(if rest.is_empty() {
+        first
+    } else {
+        format!("{}, {}", first, rest.join(", "))
+    })
+}
+
 fn removed_builtin(name: &str) -> Option<&'static str> {
     match name {
         "view" => Some(
@@ -1039,13 +1098,12 @@ fn owners_for_command(
         .collect()
 }
 
-fn command_conflict_note(name: &str, claimers: &[(PathBuf, String, LockEntry)]) -> Option<String> {
+fn command_conflict_note<'a>(
+    name: &str,
+    claimers: impl Iterator<Item = &'a str>,
+) -> Option<String> {
     let mut seen = std::collections::HashSet::new();
-    let owners = claimers
-        .iter()
-        .map(|(_, o, _)| o.as_str())
-        .filter(|o| seen.insert(*o))
-        .collect::<Vec<_>>();
+    let owners = claimers.filter(|o| seen.insert(*o)).collect::<Vec<_>>();
     if owners.len() < 2 {
         return None;
     }
@@ -1129,47 +1187,73 @@ pub async fn forward(home: &Path, name: &str, rest: &[String]) -> anyhow::Result
         .and_then(|cwd| LockFile::load(&gray_plugin::lock::project_lock_path(&cwd)).ok());
     let mut user_home = user_home_lock(home);
 
-    lazy_adopt(home, name, &mut lock).await;
-    if let Some((u, l, _)) = user_home.as_mut() {
-        lazy_adopt(u, name, l).await;
+    // The typed name plus its singular/plural counterpart as an implicit
+    // alias — the exact spelling always wins; the variant is only a
+    // fallback (subagent → subagents, plugins → plugin).
+    let alt = number_variant(name);
+    let names: Vec<&str> = std::iter::once(name).chain(alt.as_deref()).collect();
+    for n in &names {
+        lazy_adopt(home, n, &mut lock).await;
+        if let Some((u, l, _)) = user_home.as_mut() {
+            lazy_adopt(u, n, l).await;
+        }
     }
 
     let mut sidecar_named = false;
     let mut direct = None;
-    for (h, l, c, global_only) in std::iter::once((home.to_path_buf(), &lock, &commands, false))
-        .chain(user_home.iter().map(|(u, l, c)| (u.clone(), l, c, true)))
+    'scan: for (h, l, c, global_only) in
+        std::iter::once((home.to_path_buf(), &lock, &commands, false))
+            .chain(user_home.iter().map(|(u, l, c)| (u.clone(), l, c, true)))
     {
-        match l.plugins.get(name) {
-            Some(e) if e.cli_argv.is_some() && (!global_only || e.global) => {
-                direct = Some((e.clone(), h));
-                break;
+        for n in &names {
+            match l.plugins.get(*n) {
+                Some(e) if e.cli_argv.is_some() && (!global_only || e.global) => {
+                    direct = Some((e.clone(), h, (*n).to_string()));
+                    break 'scan;
+                }
+                Some(e) if !e.cli_argv.is_some() && (!global_only || e.global) => {
+                    sidecar_named = true;
+                }
+                _ => {}
             }
-            Some(e) if !e.cli_argv.is_some() && (!global_only || e.global) => {
-                sidecar_named = true;
+            if let Some(e) = commands_cli_entry(c, n, global_only) {
+                direct = Some((e, h, (*n).to_string()));
+                break 'scan;
             }
-            _ => {}
-        }
-        if let Some(e) = commands_cli_entry(c, name, global_only) {
-            direct = Some((e, h));
-            break;
         }
     }
     let (entry, entry_home, entry_name, prepend) = match direct {
-        Some((e, u)) => (e, u, name.to_string(), false),
+        Some((e, u, resolved)) => (e, u, resolved, None),
         None => {
-            let mut claimers = owners_for_command(home, name, &lock, false);
-            if let Some((u, l, _)) = &user_home {
-                claimers.extend(owners_for_command(u, name, l, true));
+            let mut claimers = Vec::new();
+            for n in &names {
+                claimers.extend(
+                    owners_for_command(home, n, &lock, false)
+                        .into_iter()
+                        .map(|(h, o, e)| (h, o, e, (*n).to_string())),
+                );
             }
-            let (ready, dead): (Vec<_>, Vec<_>) =
-                claimers.into_iter().partition(|(h, o, e)| enabled(h, o, e));
-            if let Some(note) = command_conflict_note(name, &ready) {
+            if let Some((u, l, _)) = &user_home {
+                for n in &names {
+                    claimers.extend(
+                        owners_for_command(u, n, l, true)
+                            .into_iter()
+                            .map(|(h, o, e)| (h, o, e, (*n).to_string())),
+                    );
+                }
+            }
+            let (ready, dead): (Vec<_>, Vec<_>) = claimers
+                .into_iter()
+                .partition(|(h, o, e, _)| enabled(h, o, e));
+            if let Some(note) =
+                command_conflict_note(name, ready.iter().map(|(_, o, _, _)| o.as_str()))
+            {
                 eprintln!("{note}");
             }
             match ready.into_iter().next() {
-                Some((u, owner, e)) => (e, u, owner, true),
+                Some((u, owner, e, matched)) => (e, u, owner, Some(matched)),
                 None if !dead.is_empty() => {
-                    let (dead_home, owner, _) = &dead[0];
+                    let (dead_home, owner, _, _) = &dead[0];
                     return Err(anyhow::anyhow!(
                         "plugin command '{owner}' is disabled — {}",
                         disabled_hint(home, dead_home, project.as_ref(), owner)
@@ -1181,13 +1265,16 @@ pub async fn forward(home: &Path, name: &str, rest: &[String]) -> anyhow::Result
                     } else {
                         match index_owner_hint(name).await {
                             Some(hint) => hint,
-                            None => removed_builtin(name)
-                                .map(str::to_string)
-                                .unwrap_or_else(|| {
-                                    format!(
+                            None => removed_builtin(name).map(str::to_string).unwrap_or_else(
+                                || match command_suggestion(home, &lock, &commands, name) {
+                                    Some(s) => {
+                                        format!("no plugin command '{name}' — did you mean {s}?")
+                                    }
+                                    None => format!(
                                         "no plugin command '{name}' — install it with: gray install plugin {name}"
-                                    )
-                                }),
+                                    ),
+                                },
+                            ),
                         }
                     }));
                 }
@@ -1211,8 +1298,8 @@ pub async fn forward(home: &Path, name: &str, rest: &[String]) -> anyhow::Result
     );
     let mut command = Command::new(program);
     command.args(args);
-    if prepend {
-        command.arg(name);
+    if let Some(arg0) = prepend {
+        command.arg(arg0);
     }
     command
         .args(rest)
@@ -1459,46 +1546,73 @@ pub async fn capture_slash(name: &str, args: &[String]) -> anyhow::Result<Option
         .and_then(|cwd| LockFile::load(&gray_plugin::lock::project_lock_path(&cwd)).ok());
     let mut user_home = user_home_lock(&home);
 
-    lazy_adopt(&home, name, &mut lock).await;
-    if let Some((u, l, _)) = user_home.as_mut() {
-        lazy_adopt(u, name, l).await;
+    // Same implicit singular/plural alias as `forward`: exact first.
+    let alt = number_variant(name);
+    let names: Vec<&str> = std::iter::once(name).chain(alt.as_deref()).collect();
+    for n in &names {
+        lazy_adopt(&home, n, &mut lock).await;
+        if let Some((u, l, _)) = user_home.as_mut() {
+            lazy_adopt(u, n, l).await;
+        }
     }
     let mut conflict_note = None;
-    let selected = if let Some(entry) = lock.plugins.get(name).filter(|e| e.cli_argv.is_some()) {
-        Some((home.clone(), name.to_string(), entry.clone(), false))
-    } else if let Some(entry) = commands_cli_entry(&commands, name, false) {
-        Some((home.clone(), name.to_string(), entry, false))
-    } else {
+    let mut selected = None;
+    for n in &names {
+        if let Some(entry) = lock.plugins.get(*n).filter(|e| e.cli_argv.is_some()) {
+            selected = Some((home.clone(), (*n).to_string(), entry.clone(), None));
+            break;
+        }
+        if let Some(entry) = commands_cli_entry(&commands, n, false) {
+            selected = Some((home.clone(), (*n).to_string(), entry, None));
+            break;
+        }
         let direct = user_home.as_ref().and_then(|(u, l, c)| {
             l.plugins
-                .get(name)
+                .get(*n)
                 .filter(|e| e.cli_argv.is_some() && e.global)
-                .map(|e| (u.clone(), name.to_string(), e.clone(), false))
+                .map(|e| (u.clone(), (*n).to_string(), e.clone(), None))
                 .or_else(|| {
-                    commands_cli_entry(c, name, true)
-                        .map(|e| (u.clone(), name.to_string(), e, false))
+                    commands_cli_entry(c, n, true).map(|e| (u.clone(), (*n).to_string(), e, None))
                 })
         });
-        direct.or_else(|| {
-            let mut claimers = owners_for_command(&home, name, &lock, false);
-            if let Some((u, l, _)) = &user_home {
-                claimers.extend(owners_for_command(u, name, l, true));
+        if direct.is_some() {
+            selected = direct;
+            break;
+        }
+    }
+    let selected = selected.or_else(|| {
+        let mut claimers = Vec::new();
+        for n in &names {
+            claimers.extend(
+                owners_for_command(&home, n, &lock, false)
+                    .into_iter()
+                    .map(|(h, o, e)| (h, o, e, (*n).to_string())),
+            );
+        }
+        if let Some((u, l, _)) = &user_home {
+            for n in &names {
+                claimers.extend(
+                    owners_for_command(u, n, l, true)
+                        .into_iter()
+                        .map(|(h, o, e)| (h, o, e, (*n).to_string())),
+                );
             }
-            let (ready, dead): (Vec<_>, Vec<_>) =
-                claimers.into_iter().partition(|(h, o, e)| enabled(h, o, e));
-            conflict_note = command_conflict_note(name, &ready);
-            if ready.is_empty() {
-                if let Some((u, owner, e)) = dead.into_iter().next() {
-                    return Some((u, owner, e, true));
-                }
-                return None;
+        }
+        let (ready, dead): (Vec<_>, Vec<_>) = claimers
+            .into_iter()
+            .partition(|(h, o, e, _)| enabled(h, o, e));
+        conflict_note = command_conflict_note(name, ready.iter().map(|(_, o, _, _)| o.as_str()));
+        if ready.is_empty() {
+            if let Some((u, owner, e, matched)) = dead.into_iter().next() {
+                return Some((u, owner, e, Some(matched)));
             }
-            ready
-                .into_iter()
-                .next()
-                .map(|(u, owner, e)| (u, owner, e, true))
-        })
-    };
+            return None;
+        }
+        ready
+            .into_iter()
+            .next()
+            .map(|(u, owner, e, matched)| (u, owner, e, Some(matched)))
+    });
     let Some((entry_home, entry_name, entry, prepend)) = selected else {
         return Ok(match index_owner_hint(name).await {
             Some(hint) => Some(hint),
@@ -1515,8 +1629,8 @@ pub async fn capture_slash(name: &str, args: &[String]) -> anyhow::Result<Option
     let (program, base) = argv.split_first().context("empty plugin command")?;
     let mut command = tokio::process::Command::new(program);
     command.args(base);
-    if prepend {
-        command.arg(name);
+    if let Some(arg0) = prepend {
+        command.arg(arg0);
     }
     command
         .args(args)
@@ -2178,6 +2292,7 @@ done
             source: "https://example.invalid/demo.tar.gz".into(),
             argv: vec![],
             cli_argv,
+            enabled: true,
             ..Default::default()
         }
     }
@@ -2457,5 +2572,37 @@ done
         for row in &table.rows {
             assert_eq!(row.args, vec!["new".to_string()]);
         }
+    }
+
+    #[test]
+    fn number_variant_offers_the_other_number_only() {
+        assert_eq!(number_variant("subagents").as_deref(), Some("subagent"));
+        assert_eq!(number_variant("subagent").as_deref(), Some("subagents"));
+        assert_eq!(number_variant("plugins").as_deref(), Some("plugin"));
+        assert_eq!(number_variant("s"), None);
+        assert_eq!(number_variant("status").as_deref(), Some("statu"));
+    }
+
+    #[test]
+    fn command_suggestion_names_plugins_claims_and_builtins() {
+        let home = tempfile::tempdir().unwrap();
+        let home = home.path();
+        let mut cli = cli_entry(&["/usr/bin/acct"]);
+        cli.cli_argv = Some(cli.argv.clone());
+        write_lock(home, &serde_json::json!({"account": cli, "subagents": cli}));
+        std::fs::write(
+            home.join("plugins/account-manifest.json"),
+            r#"{"name":"account","commands":["/cloud","/login"]}"#,
+        )
+        .unwrap();
+        let lock = load_lock(home).unwrap();
+        let commands = commands_or_empty(home);
+        let got = command_suggestion(home, &lock, &commands, "cloudd").unwrap();
+        assert!(got.contains("'cloud'"), "{got}");
+        let got = command_suggestion(home, &lock, &commands, "subagent").unwrap();
+        assert!(got.contains("'subagents'"), "{got}");
+        let got = command_suggestion(home, &lock, &commands, "pulgins").unwrap();
+        assert!(got.contains("plugin"), "{got}");
+        assert!(command_suggestion(home, &lock, &commands, "zzzzzz").is_none());
     }
 }

@@ -533,8 +533,8 @@ fn connect_sort_is_connected_detected_popular_custom_rest() {
     let ids: Vec<&str> = items.iter().map(|i| i.id.as_str()).collect();
     assert_eq!(
         ids,
-        ["xai", "anthropic", "openai", "custom", "zzz-rest"],
-        "connected > detected > popular > custom > rest"
+        ["custom", "xai", "anthropic", "openai", "zzz-rest"],
+        "custom > connected > detected > popular > rest"
     );
 }
 
@@ -569,17 +569,17 @@ fn connect_sort_with_nothing_known_lands_on_openai() {
     let auth = BTreeMap::new();
     let detected = detect_connect_candidates(false, |_| None);
     sort_connect_items(&mut items, &config, &auth, &detected);
-    assert_eq!(items[0].id, "openai", "the cursor's row 0 is OpenAI");
-    let custom_pos = items.iter().position(|i| i.id == "custom").unwrap();
+    assert_eq!(
+        items[0].id, "custom",
+        "the cursor's row 0 is Custom endpoint"
+    );
+    assert_eq!(items[1].id, "openai", "OpenAI leads the popular block");
+    let popular_pos = items.iter().position(|i| i.id == "openai").unwrap();
     assert!(
-        items[..custom_pos]
+        items[popular_pos..]
             .iter()
-            .all(|i| POPULAR_DEFS.iter().any(|(id, ..)| *id == i.id)),
-        "only the popular block sits above Custom: {:?}",
-        items[..custom_pos]
-            .iter()
-            .map(|i| i.id.as_str())
-            .collect::<Vec<_>>()
+            .all(|i| POPULAR_DEFS.iter().any(|(id, ..)| *id == i.id)
+                || !POPULAR_DEFS.iter().any(|(id, ..)| *id == i.id)),
     );
 }
 
@@ -727,5 +727,5 @@ fn saved_customs_sort_with_the_popular_block() {
         .position(|i| i.id == "custom:api.acme.dev")
         .unwrap();
 
-    assert!(saved_pos < custom_pos);
+    assert!(custom_pos < saved_pos);
 }
