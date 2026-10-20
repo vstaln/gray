@@ -357,6 +357,9 @@ pub struct Tui {
     pub(crate) left_home: bool,
 
     pub(crate) intro_started: Option<std::time::Instant>,
+    /// Set when the intro hands off: the steady home band fades in from
+    /// the background over `HOME_REVEAL_MS` (`draw::frame` applies it).
+    pub(crate) home_reveal: Option<std::time::Instant>,
     pub(crate) replay_queue: Option<Box<ReplayQueue>>,
 
     status_line_seen: u64,
@@ -480,7 +483,74 @@ pub(crate) fn home_column(w: usize) -> (usize, usize) {
     (w.saturating_sub(col_w) / 2, col_w)
 }
 
+/// The mark draws and the title fades in over this window …
 const INTRO_TOTAL_MS: u64 = 1000;
+/// … then the steady home band (input box, model row, hints) fades in.
+pub(crate) const HOME_REVEAL_MS: u64 = 400;
+/// The mark fades up from the background over its first beat.
+const MARK_FADE_MS: f32 = 260.0;
+/// The title fades in once the mark is mostly drawn.
+const TITLE_FADE_MS: (f32, f32) = (520.0, 900.0);
+
+fn ease_in_out_cubic(t: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    if t < 0.5 {
+        4.0 * t * t * t
+    } else {
+        1.0 - (-2.0 * t + 2.0).powi(3) / 2.0
+    }
+}
+
+fn ease_out_cubic(t: f32) -> f32 {
+    1.0 - (1.0 - t.clamp(0.0, 1.0)).powi(3)
+}
+
+/// Frame index for `elapsed` into the intro: eased, so the mark eases in,
+/// runs through the middle and settles instead of ticking linearly.
+fn intro_frame_index(elapsed: Duration, last: usize) -> usize {
+    let t = elapsed.as_secs_f32() * 1000.0 / INTRO_TOTAL_MS as f32;
+    ((ease_in_out_cubic(t) * last as f32).round() as usize).min(last)
+}
+
+/// Colour a fade starts from: the window background when it's a real
+/// colour, black for the terminal default (the stock palette is dark).
+pub(crate) fn fade_floor() -> ratatui::style::Color {
+    match crate::theme::theme().window() {
+        c @ ratatui::style::Color::Rgb(..) => c,
+        _ => ratatui::style::Color::Rgb(0, 0, 0),
+    }
+}
+
+/// `color` at `alpha` (0 = background, 1 = itself). Non-RGB colours
+/// (NO_COLOR, named palettes) have nothing to blend and show as-is.
+pub(crate) fn faded(color: ratatui::style::Color, alpha: f32) -> ratatui::style::Color {
+    if alpha >= 1.0 {
+        return color;
+    }
+    match color {
+        ratatui::style::Color::Rgb(..) => crate::tui::blend_color(fade_floor(), color, alpha),
+        other => other,
+    }
+}
+
+/// Fade every cell of a drawn frame toward the background.
+pub(crate) fn fade_buffer(buf: &mut ratatui::buffer::Buffer, alpha: f32) {
+    if alpha >= 1.0 {
+        return;
+    }
+    let area = buf.area;
+    for y in area.top()..area.bottom() {
+        for x in area.left()..area.right() {
+            let cell = &mut buf[(x, y)];
+            let fg = match cell.fg {
+                ratatui::style::Color::Reset => crate::theme::theme().text_bright,
+                c => c,
+            };
+            cell.fg = faded(fg, alpha);
+            cell.bg = faded(cell.bg, alpha);
+        }
+    }
+}
 const INTRO_FRAMES_TXT: &str = include_str!("../../assets/logo-intro-frames.txt");
 
 fn intro_frames() -> &'static [(Vec<String>, Vec<String>)] {
@@ -503,10 +573,32 @@ fn intro_frames() -> &'static [(Vec<String>, Vec<String>)] {
             })
             .collect();
 
-        if frames.len() >= 2 {
-            frames.extend(intro_settle_frames(&frames[frames.len() - 2].0));
+        // The last baked frame is the finished mark; the settle grows into
+        // it from the frame before, so drop it rather than jump to it and
+        // then retract (the old backstep). Blank lead-in frames and the
+        // baked hold (runs of identical frames) only stall the draw.
+        let full = frames.pop();
+        let blank = |rows: &[String]| {
+            rows.iter()
+                .all(|l| l.chars().all(|c| c == '\u{2800}' || c == ' '))
+        };
+        let mut timeline: Vec<(Vec<String>, Vec<String>)> = Vec::with_capacity(frames.len());
+        for f in frames {
+            if blank(&f.0) || timeline.last().is_some_and(|p| p.0 == f.0) {
+                continue;
+            }
+            timeline.push(f);
         }
-        frames
+        let settle = timeline
+            .last()
+            .map(|(mark, _)| intro_settle_frames(mark))
+            .unwrap_or_default();
+        if settle.is_empty() {
+            timeline.extend(full);
+        } else {
+            timeline.extend(settle);
+        }
+        timeline
     })
 }
 
@@ -674,12 +766,14 @@ pub(crate) fn welcome_body_lines_at(
     let frames = intro_frames();
     let last = frames.len().saturating_sub(1);
     let frame_idx = match intro {
-        Some(elapsed) => {
-            (elapsed.as_secs_f64() * 1000.0 / INTRO_TOTAL_MS as f64 * last as f64) as usize
-        }
-        None => (progress.clamp(0.0, 1.0) * last as f32).round() as usize,
-    }
-    .min(last);
+        Some(elapsed) => intro_frame_index(elapsed, last),
+        None => ((progress.clamp(0.0, 1.0) * last as f32).round() as usize).min(last),
+    };
+    let ms = intro.map(|e| e.as_secs_f32() * 1000.0);
+    let mark_alpha = ms.map_or(1.0, |ms| ease_out_cubic(ms / MARK_FADE_MS));
+    let title_alpha = ms.map_or(1.0, |ms| {
+        ease_out_cubic((ms - TITLE_FADE_MS.0) / (TITLE_FADE_MS.1 - TITLE_FADE_MS.0))
+    });
     let empty = (Vec::new(), Vec::new());
     let (mark_rows, edge_rows) = frames.get(frame_idx).unwrap_or(&empty);
     let l_rows = mark_rows.len().max(1) as f32;
@@ -715,7 +809,10 @@ pub(crate) fn welcome_body_lines_at(
                 let t = (0.15 + 0.85 * diag).clamp(0.0, 1.0);
                 crate::tui::blend_color(base, hilite, t)
             };
-            spans.push(Span::styled(ch.to_string(), Style::default().fg(color)));
+            spans.push(Span::styled(
+                ch.to_string(),
+                Style::default().fg(faded(color, mark_alpha)),
+            ));
         }
         body.push(Line::from(spans));
     }
@@ -739,6 +836,13 @@ pub(crate) fn welcome_body_lines_at(
     let title_w =
         display_width(if safe { "gray \u{25c6} " } else { "gray " }) + display_width(&version);
     title.push(Span::styled(version, Style::default().fg(theme.text_muted)));
+    if title_alpha < 1.0 {
+        for span in &mut title {
+            if let Some(fg) = span.style.fg {
+                span.style.fg = Some(faded(fg, title_alpha));
+            }
+        }
+    }
     body.push(centered(title, title_w));
     body.push(Line::from(""));
     body
@@ -968,6 +1072,7 @@ impl Tui {
             home_session: None,
             left_home: false,
             intro_started: intro,
+            home_reveal: None,
             replay_queue: None,
         }
     }
@@ -1239,18 +1344,33 @@ impl Tui {
         self.home_session = line;
     }
 
+    /// The centered home layout holds only while the transcript is empty
+    /// of conversation. Local slash commands retract their echo
+    /// (`retract_slash_echo`) right after submit, so a bare trailing echo
+    /// is still home. Once a slash echo has output after it — a plugin
+    /// command like `/cloud` printing its receipt — the session has started
+    /// talking: drop to the chat layout instead of stacking transcript rows
+    /// above a still-centered home composer.
     pub(crate) fn is_home(&self) -> bool {
-        !self.left_home
-            && self.history_entries.iter().all(|e| match e {
-                TranscriptEntry::Welcome
-                | TranscriptEntry::Gap(_)
-                | TranscriptEntry::Mascot
-                | TranscriptEntry::StyledLines { .. } => true,
-                TranscriptEntry::UserPrompt(text, _) => text.starts_with('/'),
-                TranscriptEntry::ToolBox { .. }
-                | TranscriptEntry::ToolBoxLines { .. }
-                | TranscriptEntry::ThinkingRun(_) => false,
-            })
+        if self.left_home {
+            return false;
+        }
+        let entries = &self.history_entries;
+        entries.iter().enumerate().all(|(i, e)| match e {
+            TranscriptEntry::Welcome
+            | TranscriptEntry::Gap(_)
+            | TranscriptEntry::Mascot
+            | TranscriptEntry::StyledLines { .. } => true,
+            TranscriptEntry::UserPrompt(text, _) => {
+                text.starts_with('/')
+                    && entries[i + 1..]
+                        .iter()
+                        .all(|later| matches!(later, TranscriptEntry::Gap(_)))
+            }
+            TranscriptEntry::ToolBox { .. }
+            | TranscriptEntry::ToolBoxLines { .. }
+            | TranscriptEntry::ThinkingRun(_) => false,
+        })
     }
 
     pub fn set_model_label(&mut self, label: Option<String>) {
@@ -1542,10 +1662,31 @@ impl Tui {
         draw::draw(self)
     }
 
+    /// Skip (a key) or finish the intro. A skip lands on the steady home
+    /// screen at once; a natural finish hands off to the band fade-in.
     pub(crate) fn end_intro(&mut self) {
+        self.home_reveal = None;
         if self.intro_started.take().is_some() {
             self.reflow_on_resize_inner(self.last_width);
         }
+    }
+
+    fn finish_intro(&mut self) {
+        if self.intro_started.take().is_some() {
+            self.home_reveal = Some(Instant::now());
+            self.reflow_on_resize_inner(self.last_width);
+        }
+    }
+
+    /// The home band's fade-in alpha while it runs; clears itself at 1.
+    pub(crate) fn home_reveal_alpha(&mut self) -> Option<f32> {
+        let started = self.home_reveal?;
+        let t = started.elapsed().as_secs_f32() * 1000.0 / HOME_REVEAL_MS as f32;
+        if t >= 1.0 {
+            self.home_reveal = None;
+            return None;
+        }
+        Some(ease_out_cubic(t))
     }
 
     fn draw_intro(&mut self) {
@@ -1557,12 +1698,13 @@ impl Tui {
         };
         let elapsed = started.elapsed();
         if elapsed >= Duration::from_millis(INTRO_TOTAL_MS) {
-            self.end_intro();
+            self.finish_intro();
             return;
         }
         let w = self.last_width as usize;
         let progress = (elapsed.as_secs_f64() * 1000.0 / INTRO_TOTAL_MS as f64) as f32;
-        let dim = Style::default().fg(crate::theme::theme().text_dim);
+        let hint_alpha = ease_out_cubic(elapsed.as_secs_f32() * 1000.0 / MARK_FADE_MS);
+        let dim = Style::default().fg(faded(crate::theme::theme().text_dim, hint_alpha));
         let _ = self.terminal.draw(|frame| {
             let area = frame.area();
             frame.render_widget(

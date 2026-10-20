@@ -336,6 +336,8 @@ pub(crate) fn read_line(
         let mut guard = shared.lock().expect("tui lock");
         let tui: &mut super::Tui = &mut guard;
         let ev = read()?;
+        // Typing during the band fade-in lands it at once.
+        tui.home_reveal = None;
         if tui.intro_started.is_some() {
             tui.end_intro();
             let swallow = match ev {

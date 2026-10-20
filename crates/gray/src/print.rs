@@ -534,6 +534,14 @@ fn stream_text_enabled() -> bool {
     })
 }
 
+/// `GRAY_PRINT_WAIT_BACKGROUND=0` restores exit-at-turn-end for `-p`.
+fn background_wait_enabled() -> bool {
+    !matches!(
+        std::env::var("GRAY_PRINT_WAIT_BACKGROUND").as_deref(),
+        Ok("0" | "false" | "off")
+    )
+}
+
 fn steer_enabled() -> bool {
     std::env::var("GRAY_STDIN_STEER").is_ok_and(|v| {
         matches!(
@@ -1225,14 +1233,51 @@ async fn run_print_inner(
         .await
         .map_err(map_err);
 
-    while run_result.is_ok()
-        && let Some(rx) = &steer_rx
-        && let Some(text) = rx.lock().ok().and_then(|mut r| r.try_recv().ok())
-    {
-        on_event(&AgentEvent::Steered { text: text.clone() });
+    // A turn that ends with background jobs still running (a bash call that
+    // yielded at its timeout) is not done: wait for each completion notice
+    // and wake the agent on it, the way the REPL's idle wake does. Without
+    // this a `gray -p` child — every subagent — exits mid-task, orphaning
+    // the job and reporting "I'll resume when it wakes me" as its answer.
+    let wait_background = background_wait_enabled();
+    let exec = agent.executor_handle();
+    while run_result.is_ok() && !cancel.is_cancelled() {
+        if let Some(rx) = &steer_rx
+            && let Some(text) = rx.lock().ok().and_then(|mut r| r.try_recv().ok())
+        {
+            on_event(&AgentEvent::Steered { text: text.clone() });
+            run_result = agent
+                .run_streaming(
+                    gray_core::message::Message::user(text),
+                    ctx.clone(),
+                    &mut on_event,
+                )
+                .await
+                .map_err(map_err);
+            continue;
+        }
+        if !wait_background {
+            break;
+        }
+        let notices = agent.drain_background_notifications(&ctx);
+        if notices.is_empty() {
+            if !exec.has_pending_background(&ctx) {
+                break;
+            }
+            // Short slices keep steers responsive while a job runs.
+            tokio::select! {
+                _ = exec.wait_for_notification(&ctx, std::time::Duration::from_secs(1)) => {}
+                _ = cancel.cancelled() => break,
+            }
+            continue;
+        }
+        let text = notices
+            .iter()
+            .map(|n| format!("{}\n{n}", crate::composer::transcript::BG_NOTICE_MARKER))
+            .collect::<Vec<_>>()
+            .join("\n\n");
         run_result = agent
             .run_streaming(
-                gray_core::message::Message::user(text),
+                gray_core::message::Message::user_injected(text),
                 ctx.clone(),
                 &mut on_event,
             )

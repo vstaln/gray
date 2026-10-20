@@ -16,7 +16,10 @@ fn braille_fallback_maps_dot_density_to_ascii_ramp() {
 #[test]
 fn settle_frames_finish_on_the_logo_mark() {
     let frames = intro_frames();
-    assert!(frames.len() > 51, "baked frames plus settle frames");
+    assert!(
+        frames.len() > INTRO_SETTLE_FRAMES,
+        "baked frames plus settle frames"
+    );
     let (mark, _) = frames.last().expect("settle frame");
     let want: Vec<String> = crate::tui::LOGO
         .lines()

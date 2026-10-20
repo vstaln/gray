@@ -355,6 +355,7 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
         )
     });
 
+    let reveal = tui.home_reveal_alpha();
     let res = tui.terminal.draw(|frame| {
         let area = frame.area();
 
@@ -1029,6 +1030,9 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
             )
         };
         frame.set_cursor_position(Position::new(cur_x, cur_y));
+        if let Some(alpha) = reveal {
+            crate::composer::fade_buffer(frame.buffer, alpha);
+        }
     });
     let background_result = if res.is_ok() {
         if let Some(bg) = &mut tui.background {
