@@ -1317,14 +1317,17 @@ pub(crate) fn run_subagent_settings(
         label: label.to_string(),
         description: desc.to_string(),
         opt_in: false,
+        freeform: false,
     };
     let q = |id: &str, question: String, options: Vec<AskOption>| AskQuestion {
         id: id.to_string(),
         header: "subagents".to_string(),
         question,
+        detail: String::new(),
         options,
         multi: false,
         default_all: false,
+        no_other: false,
     };
     let inherit = || {
         opt(

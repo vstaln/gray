@@ -231,7 +231,7 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
     let ask_est: u16 = tui
         .ask_modal
         .as_ref()
-        .map(|m| m.rows.len().min(12) as u16)
+        .map(|m| m.rows.len().min(24) as u16)
         .unwrap_or(0);
 
     let live_est: u16 = tui
@@ -251,7 +251,10 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
 
     let chips = attachment_cells(&tui.attachments, &text);
     let ibox = build_input_box(&text, cursor, w, ghost, home, &chips);
-    let box_h = ibox.lines.len().max(1) as u16;
+    // A consent/question prompt owns the bottom band: the input box (and
+    // its cursor) step aside until it closes.
+    let asking = tui.ask_modal.is_some();
+    let box_h = if asking { 0 } else { ibox.lines.len().max(1) as u16 };
 
     let box_rows_est: u16 = box_h;
     let widget_budget = rows
@@ -397,34 +400,52 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
             .map(|m| {
                 m.rows
                     .iter()
-                    .take(12)
+                    .take(24)
                     .enumerate()
                     .flat_map(|(ri, (glyph, label, desc))| {
-                        let raw = if ri == 0 {
-                            format!("❓ {label} — {desc}")
-                        } else {
-                            let marker = if ri == m.cursor {
-                                crate::tui::arrow_glyph()
-                            } else {
-                                " "
-                            };
-                            format!("  {marker} {glyph} {label} — {desc}")
+                        let theme = crate::theme::theme();
+                        let (raw, style) = match glyph.as_str() {
+                            "?" => (
+                                label.clone(),
+                                Style::default()
+                                    .fg(Color::White)
+                                    .add_modifier(Modifier::BOLD),
+                            ),
+                            "\u{2502}" => (
+                                format!("  \u{2502} {desc}"),
+                                Style::default().fg(theme.text_dim),
+                            ),
+                            "\u{b7}" => (
+                                format!("    {desc}"),
+                                Style::default().fg(theme.text_dim),
+                            ),
+                            _ => {
+                                let marker = if ri == m.cursor {
+                                    crate::tui::arrow_glyph()
+                                } else {
+                                    " "
+                                };
+                                let body = if glyph == "*" {
+                                    format!("{label}: {desc}")
+                                } else if glyph.is_empty() {
+                                    format!("{label} — {desc}")
+                                } else {
+                                    format!("{glyph} {label} — {desc}")
+                                };
+                                (
+                                    format!("  {marker} {body}"),
+                                    if ri == m.cursor {
+                                        Style::default()
+                                            .fg(theme.accent)
+                                            .add_modifier(Modifier::BOLD)
+                                    } else {
+                                        Style::default().fg(theme.text_muted)
+                                    },
+                                )
+                            }
                         };
                         crate::composer::transcript::wrap_styled_line(
-                            Line::from(vec![Span::styled(
-                                raw,
-                                if ri == m.cursor {
-                                    Style::default()
-                                        .fg(crate::theme::theme().accent)
-                                        .add_modifier(Modifier::BOLD)
-                                } else if ri == 0 {
-                                    Style::default()
-                                        .fg(Color::White)
-                                        .add_modifier(Modifier::BOLD)
-                                } else {
-                                    Style::default().fg(crate::theme::theme().text_muted)
-                                },
-                            )]),
+                            Line::from(vec![Span::styled(raw, style)]),
                             w.saturating_sub(4).max(1),
                         )
                     })
@@ -1029,7 +1050,9 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
                 (box_y + ibox.cur_row as u16).min(area.y + area.height.saturating_sub(1)),
             )
         };
-        frame.set_cursor_position(Position::new(cur_x, cur_y));
+        if !asking {
+            frame.set_cursor_position(Position::new(cur_x, cur_y));
+        }
         if let Some(alpha) = reveal {
             crate::composer::fade_buffer(frame.buffer, alpha);
         }

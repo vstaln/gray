@@ -238,6 +238,12 @@ fn finish_spawn(mut child: Child) -> anyhow::Result<(Child, ChildStdin, ChildStd
 
 const MAX_FRAME: usize = 256 * 1024;
 
+/// Cap on one frame *read from* a sidecar. Larger than `MAX_FRAME`
+/// (which bounds what gray writes): a dynamic plugin's `plugin/tools`
+/// reply legitimately carries every tool schema it proxies — an MCP hub
+/// fronting a few big servers runs well past 256 KiB.
+const MAX_READ_FRAME: usize = 8 * 1024 * 1024;
+
 const MAX_HOST_TASKS: usize = 4;
 
 const MAX_PENDING: usize = 64;
@@ -262,7 +268,7 @@ fn spawn_reader(
         loop {
             let mut buf = Vec::new();
             let n = match (&mut reader)
-                .take((MAX_FRAME + 1) as u64)
+                .take((MAX_READ_FRAME + 1) as u64)
                 .read_until(b'\n', &mut buf)
                 .await
             {
@@ -272,7 +278,10 @@ fn spawn_reader(
             if n == 0 {
                 break;
             }
-            if n > MAX_FRAME {
+            if n > MAX_READ_FRAME {
+                if oversize_streak == 0 {
+                    log::warn!(target: "gray_plugin", "{plugin_name}: dropped a frame over the {MAX_READ_FRAME}-byte read cap (a reply it carried will time out)");
+                }
                 oversize_streak += 1;
                 if oversize_streak > 64 {
                     break;

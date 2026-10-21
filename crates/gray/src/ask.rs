@@ -10,6 +10,11 @@ pub struct AskOption {
 
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub opt_in: bool,
+
+    /// Choosing this option opens an inline note instead of answering
+    /// directly ("Deny with a reason"); the text ships as `user_note:`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub freeform: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -17,6 +22,12 @@ pub struct AskQuestion {
     pub id: String,
     pub header: String,
     pub question: String,
+
+    /// Extra context shown above the options (the command being
+    /// approved, a server entry, ...). Display only.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub detail: String,
+
     #[serde(default)]
     pub options: Vec<AskOption>,
 
@@ -25,6 +36,11 @@ pub struct AskQuestion {
 
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub default_all: bool,
+
+    /// Skip the implicit free-form "Other" row appended to
+    /// single-select questions (consent flows carry their own).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub no_other: bool,
 }
 
 impl AskQuestion {
@@ -366,13 +382,15 @@ fn ask_stdin(questions: &[AskQuestion]) -> Vec<AskAnswer> {
             continue;
         }
         println!("Question: {}", q.question);
+        if !q.detail.is_empty() {
+            println!("  {}", q.detail);
+        }
         for (i, opt) in q.options.iter().enumerate() {
             println!("  {}. {} — {}", i + 1, opt.label, opt.description);
         }
-        println!(
-            "  {}. None of the above — Optionally, add details in notes (tab).",
-            q.options.len() + 1
-        );
+        if !q.no_other {
+            println!("  {}. Other — type a note.", q.options.len() + 1);
+        }
         print!("  answer (number, or free text; blank = skip): ");
         let _ = std::io::stdout().flush();
         let mut line = String::new();
@@ -384,9 +402,28 @@ fn ask_stdin(questions: &[AskQuestion]) -> Vec<AskAnswer> {
             continue;
         }
         let t = line.trim();
+        let freeform_note = |stdin: &std::io::Stdin| -> Option<String> {
+            print!("  details (blank = skip): ");
+            let _ = std::io::stdout().flush();
+            let mut note = String::new();
+            if stdin.lock().read_line(&mut note).unwrap_or(0) == 0 {
+                return None;
+            }
+            let note = note.trim();
+            (!note.is_empty()).then(|| format!("user_note: {note}"))
+        };
         let answers = match t.parse::<usize>() {
-            Ok(n) if n >= 1 && n <= q.options.len() => vec![q.options[n - 1].label.clone()],
-            Ok(n) if n == q.options.len() + 1 => vec!["None of the above".to_string()],
+            Ok(n) if n >= 1 && n <= q.options.len() => {
+                let opt = &q.options[n - 1];
+                let mut a = vec![opt.label.clone()];
+                if opt.freeform && let Some(note) = freeform_note(&stdin) {
+                    a.push(note);
+                }
+                a
+            }
+            Ok(n) if n == q.options.len() + 1 && !q.no_other => {
+                vec![freeform_note(&stdin).unwrap_or_else(|| "Other".to_string())]
+            }
             _ if t.is_empty() => Vec::new(),
             _ => vec![format!("user_note: {t}")],
         };
@@ -516,9 +553,8 @@ pub(crate) struct AskModalState {
     pub(crate) questions: Vec<AskQuestion>,
     idx: usize,
     cursor: Vec<usize>,
-    committed: Vec<bool>,
     notes: Vec<String>,
-    notes_open: Vec<bool>,
+    editing: Vec<bool>,
     checked: Vec<Vec<bool>>,
 }
 
@@ -529,9 +565,8 @@ impl AskModalState {
             questions: Vec::new(),
             idx: 0,
             cursor: Vec::new(),
-            committed: Vec::new(),
             notes: Vec::new(),
-            notes_open: Vec::new(),
+            editing: Vec::new(),
             checked: Vec::new(),
         }
     }
@@ -540,9 +575,8 @@ impl AskModalState {
         let n = questions.len();
         self.questions = questions;
         self.cursor = vec![0; n];
-        self.committed = vec![true; n];
         self.notes = vec![String::new(); n];
-        self.notes_open = vec![false; n];
+        self.editing = vec![false; n];
         self.checked = self
             .questions
             .iter()
@@ -560,10 +594,11 @@ impl AskModalState {
     }
 
     fn options_len(&self) -> usize {
-        if self.multi() {
-            return self.questions[self.idx].options.len();
+        let q = &self.questions[self.idx];
+        if q.is_multi() || q.no_other {
+            return q.options.len();
         }
-        self.questions[self.idx].options.len() + 1
+        q.options.len() + 1
     }
 
     fn option_label(&self, q: usize, i: usize) -> &str {
@@ -571,7 +606,29 @@ impl AskModalState {
             .options
             .get(i)
             .map(|o| o.label.as_str())
-            .unwrap_or("None of the above")
+            .unwrap_or("Other")
+    }
+
+    fn is_freeform(&self, q: usize, i: usize) -> bool {
+        match self.questions[q].options.get(i) {
+            Some(o) => o.freeform,
+            None => true,
+        }
+    }
+
+    fn advance(&mut self) -> bool {
+        if self.idx + 1 < self.questions.len() {
+            self.idx += 1;
+            false
+        } else {
+            true
+        }
+    }
+
+    /// Absolute row index of the highlighted option (header + detail sit above).
+    fn cursor_row(&self) -> usize {
+        let q = &self.questions[self.idx];
+        1 + usize::from(!q.detail.is_empty()) + self.cursor[self.idx]
     }
 
     fn finish(&self) -> Vec<AskAnswer> {
@@ -588,8 +645,13 @@ impl AskModalState {
                             .filter(|(_, c)| **c)
                             .map(|(o, _)| o.label.clone()),
                     );
-                } else if self.committed[qi] {
-                    answers.push(self.option_label(qi, self.cursor[qi]).to_string());
+                } else {
+                    let sel = self.cursor[qi];
+                    if sel < q.options.len() {
+                        answers.push(q.options[sel].label.clone());
+                    } else if self.notes[qi].trim().is_empty() {
+                        answers.push("Other".to_string());
+                    }
                 }
                 let note = self.notes[qi].trim();
                 if !note.is_empty() {
@@ -609,46 +671,51 @@ pub(crate) fn ask_rows(state: &AskModalState) -> Vec<(String, String, String)> {
     if state.questions.is_empty() {
         return rows;
     }
-    let q = &state.questions[state.idx];
-    rows.push((
-        "❓".to_string(),
-        format!("Q{}/{} {}", state.idx + 1, state.questions.len(), q.header),
-        q.question.clone(),
-    ));
+    let qi = state.idx;
+    let q = &state.questions[qi];
+    // Header row: the question itself ("Allow bash?"). Multi-question
+    // batches get a small "1/3" counter; the header label is dropped when
+    // it would just repeat the question.
+    let mut title = q.question.clone();
+    if state.questions.len() > 1 {
+        title = format!("{title}  {}/{}", qi + 1, state.questions.len());
+    }
+    rows.push(("?".to_string(), title, q.header.clone()));
+    if !q.detail.is_empty() {
+        rows.push(("\u{2502}".to_string(), String::new(), q.detail.clone()));
+    }
     let multi = state.multi();
+    let editing = state.editing[qi];
+    let note = state.notes[qi].trim().to_string();
     for i in 0..state.options_len() {
-        let picked = if multi {
-            if state.checked[state.idx][i] {
-                "[x]"
-            } else {
-                "[ ]"
-            }
-        } else if state.committed[state.idx] && i == state.cursor[state.idx] {
-            "●"
+        let freeform = state.is_freeform(qi, i);
+        let label = state.option_label(qi, i).to_string();
+        if freeform && (editing || !note.is_empty()) {
+            rows.push(("*".to_string(), label, state.notes[qi].clone()));
+            continue;
+        }
+        let glyph = if multi {
+            if state.checked[qi][i] { "[x]" } else { "[ ]" }
+        } else if i == state.cursor[qi] {
+            "\u{25cf}"
         } else {
-            "○"
+            "\u{25cb}"
         };
         let desc = q
             .options
             .get(i)
-            .map(|o| o.description.as_str())
-            .unwrap_or("add details in notes (tab)");
-        rows.push((
-            picked.to_string(),
-            format!("{}. {}", i + 1, state.option_label(state.idx, i)),
-            desc.to_string(),
-        ));
+            .map(|o| o.description.clone())
+            .unwrap_or_else(|| "type a note".to_string());
+        rows.push((glyph.to_string(), label, desc));
     }
-    let notes = if state.notes[state.idx].is_empty() {
-        if multi {
-            "Space toggle · Tab notes · Enter confirm · Esc skip".to_string()
-        } else {
-            "Tab notes · Enter submit · Esc skip".to_string()
-        }
+    let hint = if editing {
+        "enter submit \u{b7} esc back".to_string()
+    } else if multi {
+        "space toggle \u{b7} enter confirm \u{b7} esc cancel".to_string()
     } else {
-        format!("notes: {}", state.notes[state.idx])
+        "up/down select \u{b7} enter confirm \u{b7} esc cancel".to_string()
     };
-    rows.push(("…".to_string(), "notes".to_string(), notes));
+    rows.push(("\u{b7}".to_string(), String::new(), hint));
     rows
 }
 
@@ -656,7 +723,7 @@ fn draw_ask_modal(tui: &crate::composer::SharedTui, state: &AskModalState) {
     let mut t = t_lock(tui);
     t.ask_modal = Some(crate::composer::AskModal {
         rows: ask_rows(state),
-        cursor: state.cursor[state.idx] + 1,
+        cursor: state.cursor_row(),
     });
     let _ = t.draw();
 }
@@ -692,94 +759,31 @@ fn run_ask_modal(
         if key.kind == KeyEventKind::Release {
             continue;
         }
-        if key.code == KeyCode::Esc {
-            clear_ask_modal(tui);
-            return None;
-        }
         if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
             clear_ask_modal(tui);
             return None;
         }
-        let mut submit = false;
-        {
-            let n = state.questions.len();
-            let i = state.idx;
-            let multi = state.multi();
-            if let Some(up) = crate::keymap::select_move(&key) {
-                state.cursor[i] = if up {
-                    state.cursor[i].saturating_sub(1)
-                } else {
-                    (state.cursor[i] + 1).min(state.options_len() - 1)
-                };
-                if !multi {
-                    state.committed[i] = false;
-                }
-                draw_ask_modal(tui, state);
-                continue;
-            }
+        let i = state.idx;
+        let multi = state.multi();
+
+        // Inline note editor on a free-form row: Esc/Tab back out, Enter
+        // commits the note and moves on.
+        if state.editing[i] {
+            let mut submit = false;
             match key.code {
-                KeyCode::Char(' ') if multi && !state.notes_open[i] => {
-                    let c = state.cursor[i];
-                    state.checked[i][c] = !state.checked[i][c];
-                }
-                KeyCode::Char(c)
-                    if multi
-                        && !state.notes_open[i]
-                        && c.to_digit(10).is_some_and(|d| {
-                            (1..=9).contains(&d) && (d as usize) <= state.options_len()
-                        }) =>
-                {
-                    let d = c.to_digit(10).unwrap_or(1) as usize - 1;
-                    state.cursor[i] = d;
-                    state.checked[i][d] = !state.checked[i][d];
-                }
-                KeyCode::Char(' ') => {
-                    state.committed[i] = true;
-                }
-                KeyCode::Tab => {
-                    state.notes_open[i] = !state.notes_open[i];
+                KeyCode::Esc | KeyCode::Tab => state.editing[i] = false,
+                KeyCode::Enter => {
+                    state.editing[i] = false;
+                    submit = state.advance();
                 }
                 KeyCode::Backspace => {
-                    if state.notes_open[i] && !state.notes[i].is_empty() {
-                        state.notes[i].pop();
-                    } else {
-                        state.committed[i] = false;
-                        state.notes[i].clear();
-                        state.checked[i].iter_mut().for_each(|c| *c = false);
-                        if i + 1 < n {
-                            state.idx += 1;
-                        } else {
-                            submit = true;
-                        }
-                    }
-                }
-                KeyCode::Enter => {
-                    if i + 1 < n {
-                        state.idx += 1;
-                    } else {
-                        submit = true;
-                    }
+                    state.notes[i].pop();
                 }
                 KeyCode::Char(c)
                     if !key.modifiers.contains(KeyModifiers::CONTROL)
                         && !key.modifiers.contains(KeyModifiers::ALT) =>
                 {
-                    if let Some(d) = c.to_digit(10)
-                        && !state.notes_open[i]
-                        && (1..=9).contains(&d)
-                        && (d as usize) <= state.options_len()
-                    {
-                        state.cursor[i] = d as usize - 1;
-                        state.committed[i] = true;
-                        if i + 1 < n {
-                            state.idx += 1;
-                        } else {
-                            submit = true;
-                        }
-                    } else {
-                        state.notes_open[i] = true;
-                        state.notes[i].push(c);
-                    }
+                    state.notes[i].push(c);
                 }
                 _ => {}
             }
@@ -789,6 +793,76 @@ fn run_ask_modal(
                 clear_ask_modal(tui);
                 return Some(answers);
             }
+            continue;
+        }
+
+        if key.code == KeyCode::Esc {
+            clear_ask_modal(tui);
+            return None;
+        }
+        if let Some(up) = crate::keymap::select_move(&key) {
+            state.cursor[i] = if up {
+                state.cursor[i].saturating_sub(1)
+            } else {
+                (state.cursor[i] + 1).min(state.options_len() - 1)
+            };
+            draw_ask_modal(tui, state);
+            continue;
+        }
+        let mut submit = false;
+        match key.code {
+            KeyCode::Enter => {
+                let c = state.cursor[i];
+                if state.is_freeform(i, c) {
+                    state.editing[i] = true;
+                } else {
+                    submit = state.advance();
+                }
+            }
+            KeyCode::Tab if state.is_freeform(i, state.cursor[i]) => {
+                state.editing[i] = true;
+            }
+            KeyCode::Char(' ') if multi => {
+                let c = state.cursor[i];
+                state.checked[i][c] = !state.checked[i][c];
+            }
+            KeyCode::Char(c)
+                if multi
+                    && c.to_digit(10).is_some_and(|d| {
+                        (1..=9).contains(&d) && (d as usize) <= state.options_len()
+                    }) =>
+            {
+                let d = c.to_digit(10).unwrap_or(1) as usize - 1;
+                state.cursor[i] = d;
+                state.checked[i][d] = !state.checked[i][d];
+            }
+            KeyCode::Char(c)
+                if !key.modifiers.contains(KeyModifiers::CONTROL)
+                    && !key.modifiers.contains(KeyModifiers::ALT) =>
+            {
+                if let Some(d) = c.to_digit(10)
+                    && !multi
+                    && (1..=9).contains(&d)
+                    && (d as usize) <= state.options_len()
+                {
+                    state.cursor[i] = d as usize - 1;
+                    if state.is_freeform(i, state.cursor[i]) {
+                        state.editing[i] = true;
+                    } else {
+                        submit = state.advance();
+                    }
+                } else if state.is_freeform(i, state.cursor[i]) {
+                    state.editing[i] = true;
+                    state.notes[i].push(c);
+                }
+            }
+            _ => {}
+        }
+        let answers = if submit { Some(state.finish()) } else { None };
+        draw_ask_modal(tui, state);
+        if let Some(answers) = answers {
+            clear_ask_modal(tui);
+            return Some(answers);
         }
     }
 }
