@@ -254,7 +254,11 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
     // A consent/question prompt owns the bottom band: the input box (and
     // its cursor) step aside until it closes.
     let asking = tui.ask_modal.is_some();
-    let box_h = if asking { 0 } else { ibox.lines.len().max(1) as u16 };
+    let box_h = if asking {
+        0
+    } else {
+        ibox.lines.len().max(1) as u16
+    };
 
     let box_rows_est: u16 = box_h;
     let widget_budget = rows
@@ -415,10 +419,9 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
                                 format!("  \u{2502} {desc}"),
                                 Style::default().fg(theme.text_dim),
                             ),
-                            "\u{b7}" => (
-                                format!("    {desc}"),
-                                Style::default().fg(theme.text_dim),
-                            ),
+                            "\u{b7}" => {
+                                (format!("    {desc}"), Style::default().fg(theme.text_dim))
+                            }
                             _ => {
                                 let marker = if ri == m.cursor {
                                     crate::tui::arrow_glyph()

@@ -84,13 +84,20 @@ impl ToolConsentStore {
         let v: serde_json::Value = match serde_json::from_str(&text) {
             Ok(v) => v,
             Err(e) => {
-                log::warn!("{}: ignoring corrupt tool-consent file: {e}", store.path.display());
+                log::warn!(
+                    "{}: ignoring corrupt tool-consent file: {e}",
+                    store.path.display()
+                );
                 return store;
             }
         };
         let set = |v: Option<&serde_json::Value>| -> HashSet<String> {
             v.and_then(|a| a.as_array())
-                .map(|a| a.iter().filter_map(|s| s.as_str().map(str::to_string)).collect())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|s| s.as_str().map(str::to_string))
+                        .collect()
+                })
                 .unwrap_or_default()
         };
         store.global = set(v.get("global"));
@@ -118,7 +125,10 @@ impl ToolConsentStore {
             log::warn!("tool-consent: could not create {}: {e}", parent.display());
             return;
         }
-        if let Err(e) = std::fs::write(&self.path, serde_json::to_string_pretty(&body).unwrap_or_default() + "\n") {
+        if let Err(e) = std::fs::write(
+            &self.path,
+            serde_json::to_string_pretty(&body).unwrap_or_default() + "\n",
+        ) {
             log::warn!("tool-consent: could not write {}: {e}", self.path.display());
         }
     }
@@ -187,9 +197,8 @@ async fn ask_consent(name: &str, args: &serde_json::Value, cwd: &std::path::Path
         .as_ref()
         .map(|w| format!("Always allow `{w}` commands"));
 
-    let mut options = vec![
-        serde_json::json!({"label": RUN_ONCE, "description": "run this call only"}),
-    ];
+    let mut options =
+        vec![serde_json::json!({"label": RUN_ONCE, "description": "run this call only"})];
     if let Some(l) = &cmd_label {
         options.push(serde_json::json!({"label": l, "description": "remember for all projects"}));
     }
@@ -302,8 +311,7 @@ impl ToolExecutor for ConsentExecutor {
                 let mut allowed = allowed.lock().await;
                 let persisted = ToolConsentStore::load();
                 let word = bash_word(&args);
-                if !allowed.contains(&key)
-                    && !persisted.is_allowed(&key, &ctx.cwd, word.as_deref())
+                if !allowed.contains(&key) && !persisted.is_allowed(&key, &ctx.cwd, word.as_deref())
                 {
                     match ask_consent(&name, &args, &ctx.cwd).await {
                         Verdict::Session => {

@@ -416,7 +416,9 @@ fn ask_stdin(questions: &[AskQuestion]) -> Vec<AskAnswer> {
             Ok(n) if n >= 1 && n <= q.options.len() => {
                 let opt = &q.options[n - 1];
                 let mut a = vec![opt.label.clone()];
-                if opt.freeform && let Some(note) = freeform_note(&stdin) {
+                if opt.freeform
+                    && let Some(note) = freeform_note(&stdin)
+                {
                     a.push(note);
                 }
                 a
