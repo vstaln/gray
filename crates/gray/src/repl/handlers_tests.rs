@@ -214,8 +214,14 @@ async fn reload_agent_failure_preserves_agent() {
         lean: false,
         compact_at: None,
     };
-    let mut agent: Option<Agent> = None;
-    reload_agent(
+    let mut agent = Some(reload_test_agent().with_messages(vec![
+        Message::user("keep my question"),
+        Message::assistant("keep my answer"),
+    ]));
+    let files = tempfile::tempdir().unwrap();
+    let installed = files.path().join("installed-plugin");
+    std::fs::write(&installed, "installed files").unwrap();
+    let outcome = reload_agent(
         &mut agent,
         &config,
         std::path::Path::new("/tmp"),
@@ -223,7 +229,119 @@ async fn reload_agent_failure_preserves_agent() {
         None,
     )
     .await;
-    assert!(agent.is_none());
+    assert!(!outcome.rebuilt);
+    let agent = agent.unwrap();
+    assert_eq!(agent.messages().len(), 2);
+    assert_eq!(agent.messages()[0], Message::user("keep my question"));
+    assert_eq!(
+        std::fs::read_to_string(installed).unwrap(),
+        "installed files"
+    );
+}
+
+fn reload_test_agent() -> Agent {
+    struct NoRequests;
+    impl gray_core::agent::Provider for NoRequests {
+        fn stream(&self, _: gray_core::message::ChatRequest) -> gray_core::agent::ProviderStream {
+            panic!("reload must not call a provider")
+        }
+    }
+    Agent::new(
+        Box::new(NoRequests),
+        Arc::new(gray_tools::Registry::default()),
+    )
+}
+
+#[tokio::test]
+async fn reload_agent_success_keeps_history_and_session_and_rebuilds_once() {
+    let mut agent = Some(reload_test_agent().with_messages(vec![Message::user("history")]));
+    let mut builds = 0;
+    let outcome =
+        super::handlers::reload_agent_with(&mut agent, Some("existing-session"), None, |session| {
+            builds += 1;
+            assert_eq!(session, Some("existing-session"));
+            async { Ok(reload_test_agent()) }
+        })
+        .await;
+    assert!(outcome.rebuilt);
+    assert_eq!(builds, 1);
+    assert_eq!(agent.unwrap().messages(), &[Message::user("history")]);
+}
+
+#[tokio::test]
+async fn reload_agent_failed_plugin_spawn_warns_and_keeps_installation() {
+    // Run the real builder in a subprocess so HOME and its warning queues cannot
+    // affect parallel tests or the user's installed plugins.
+    const CHILD: &str = "GRAY_ACTIVATION_SPAWN_TEST";
+    if std::env::var_os(CHILD).is_none() {
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path().join("home");
+        std::fs::create_dir_all(home.join("plugins/broken")).unwrap();
+        std::fs::write(home.join("plugins/broken/kept.txt"), "installed").unwrap();
+        std::fs::write(
+            home.join("plugins/lock.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "schema": 1,
+                "plugins": {
+                    "broken": {
+                        "ecosystem": "gray-native", "enabled": true,
+                        "version": "1.0.0", "hash": "", "source": "fixture",
+                        "adapter_version": "", "installed_at": "", "scope": "user",
+                        "argv": [home.join("plugins/broken/missing")]
+                    }
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "repl::handlers::tests::reload_agent_failed_plugin_spawn_warns_and_keeps_installation", "--nocapture"])
+            .env(CHILD, "1")
+            .env("GRAY_HOME", &home)
+            .env("GRAY_USER_HOME", &home)
+            .env("HOME", root.path())
+            .env_remove("GRAY_PLUGIN_PATH")
+            .current_dir(root.path())
+            .output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            std::fs::read_to_string(home.join("plugins/broken/kept.txt")).unwrap(),
+            "installed"
+        );
+        return;
+    }
+    use clap::Parser;
+    let cli = crate::Cli::try_parse_from([
+        "gray",
+        "--model",
+        "offline-test",
+        "--base-url",
+        "http://127.0.0.1:1/v1",
+    ])
+    .unwrap();
+    let config = Config::resolve_with(&cli, |_| None).unwrap();
+    let mut agent = Some(reload_test_agent().with_messages(vec![Message::user("history")]));
+    let outcome = reload_agent(
+        &mut agent,
+        &config,
+        &std::env::current_dir().unwrap(),
+        Some("existing-session"),
+        None,
+    )
+    .await;
+    assert!(outcome.rebuilt);
+    assert_eq!(agent.unwrap().messages(), &[Message::user("history")]);
+    let warnings = crate::take_profile_warnings();
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.contains("broken") && w.contains("failed to spawn")),
+        "{warnings:?}"
+    );
 }
 
 #[test]

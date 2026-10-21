@@ -67,6 +67,16 @@ pub async fn download(
     url: &str,
     expected: Option<&crate::index::HashSpec>,
 ) -> anyhow::Result<PathBuf> {
+    let archive = download_owned(client, url, expected, &crate::plugins_dir().join("tmp")).await?;
+    Ok(archive.keep()?)
+}
+
+pub(crate) async fn download_owned(
+    client: &reqwest::Client,
+    url: &str,
+    expected: Option<&crate::index::HashSpec>,
+    tmp_dir: &Path,
+) -> anyhow::Result<tempfile::TempPath> {
     check_url(url)?;
 
     if let Some(spec) = expected
@@ -74,8 +84,7 @@ pub async fn download(
     {
         anyhow::bail!("plugin download requires an expected digest");
     }
-    let tmp_dir = crate::plugins_dir().join("tmp");
-    std::fs::create_dir_all(&tmp_dir)?;
+    std::fs::create_dir_all(tmp_dir)?;
     log::debug!("downloading plugin archive from {}", redact(url));
     let mut resp = client.get(url).send().await?.error_for_status()?;
 
@@ -83,10 +92,9 @@ pub async fn download(
         anyhow::bail!("download redirected to a disallowed URL");
     }
 
-    let tmp = tempfile::NamedTempFile::new_in(&tmp_dir)?;
-    let temppath = tmp.into_temp_path();
-    let path: PathBuf = temppath.to_path_buf();
-    let mut file = tokio::fs::File::create(&path).await?;
+    let tmp = tempfile::NamedTempFile::new_in(tmp_dir)?;
+    let (file, temppath) = tmp.into_parts();
+    let mut file = tokio::fs::File::from_std(file);
     let mut sha256 = Sha256::new();
     let mut sha512 = Sha512::new();
     let mut total: u64 = 0;
@@ -129,10 +137,7 @@ pub async fn download(
         }
     }
 
-    temppath
-        .keep()
-        .map_err(|e| anyhow::anyhow!("keeping download: {e}"))?;
-    Ok(path)
+    Ok(temppath)
 }
 
 fn unsafe_entry_name(name: &str) -> bool {

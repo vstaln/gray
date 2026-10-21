@@ -478,21 +478,40 @@ pub(crate) async fn handle_undo(
     (!resent.is_empty()).then_some(resent)
 }
 
+pub(crate) struct ReloadOutcome {
+    pub rebuilt: bool,
+}
+
 pub(crate) async fn reload_agent(
     agent: &mut Option<Agent>,
     config: &Config,
     cwd: &Path,
     session_id: Option<&str>,
     tui: Option<&crate::composer::SharedTui>,
-) -> bool {
+) -> ReloadOutcome {
+    reload_agent_with(agent, session_id, tui, |session_id| {
+        build_agent(config, cwd, session_id)
+    })
+    .await
+}
+
+async fn reload_agent_with<'a, F>(
+    agent: &mut Option<Agent>,
+    session_id: Option<&'a str>,
+    tui: Option<&crate::composer::SharedTui>,
+    build: impl FnOnce(Option<&'a str>) -> F,
+) -> ReloadOutcome
+where
+    F: std::future::Future<Output = anyhow::Result<Agent>>,
+{
     let started = std::time::Instant::now();
     let old = agent.take();
-    let mut rebuilt = match build_agent(config, cwd, session_id).await {
+    let mut rebuilt = match build(session_id).await {
         Ok(a) => a,
         Err(e) => {
             say(tui, &format!("{e}"));
             *agent = old;
-            return false;
+            return ReloadOutcome { rebuilt: false };
         }
     };
     if let Some(old) = old {
@@ -500,7 +519,7 @@ pub(crate) async fn reload_agent(
     }
     *agent = Some(rebuilt);
     log::debug!(target: "gray_timing", "reload_agent elapsed_ms={}", started.elapsed().as_millis());
-    true
+    ReloadOutcome { rebuilt: true }
 }
 
 pub(crate) async fn switch_agent_model(

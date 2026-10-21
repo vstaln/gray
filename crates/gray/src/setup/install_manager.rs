@@ -41,6 +41,74 @@ impl ManagerOutcome {
     }
 }
 
+#[derive(Debug, Default)]
+pub struct PluginModalOutcome {
+    pub changed: bool,
+    /// Catalog keys newly committed during this visit, excluding concurrent installs.
+    pub installed: Vec<String>,
+    /// Post-commit warnings do not undo a successful installation.
+    pub warnings: Vec<String>,
+}
+
+pub(crate) trait ManagerExtension {
+    fn enter(&mut self);
+    fn tick(&mut self);
+    fn draw(&mut self, frame: &mut ratatui::Frame<'_>, area: ratatui::layout::Rect);
+    fn key(&mut self, key: crossterm::event::KeyEvent) -> bool;
+    fn request_close(&mut self) -> bool;
+    fn take_back(&mut self) -> bool {
+        false
+    }
+    fn animating(&self) -> bool {
+        false
+    }
+}
+
+pub(crate) fn manager_tab_names(has_errors: bool, has_extension: bool) -> Vec<&'static str> {
+    let mut names = vec!["Installed"];
+    if has_extension {
+        names.push("Marketplace");
+    }
+    if has_errors {
+        names.push("Errors");
+    }
+    names
+}
+
+fn manager_panel_tab(names: &[&str], active: usize) -> Tab {
+    if names.get(active) == Some(&"Errors") {
+        Tab::Errors
+    } else {
+        Tab::Installed
+    }
+}
+
+fn manager_tab_for_key(
+    active: usize,
+    names: &[&str],
+    key: crossterm::event::KeyEvent,
+    arrows: bool,
+) -> Option<usize> {
+    use crossterm::event::{KeyCode, KeyModifiers};
+    if names.len() < 2 {
+        return None;
+    }
+    let forward = match key.code {
+        KeyCode::Right if arrows => true,
+        KeyCode::Left if arrows => false,
+        KeyCode::Tab => true,
+        KeyCode::BackTab => false,
+        KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => true,
+        KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => false,
+        _ => return None,
+    };
+    Some(if forward {
+        super::tabs::next_tab(active, names.len())
+    } else {
+        super::tabs::prev_tab(active, names.len())
+    })
+}
+
 pub(crate) fn enter_action(
     item: Option<&ManagerItem>,
     has_setup: bool,
@@ -196,35 +264,45 @@ pub fn run_skills_modal(
     )
 }
 
-pub fn run_plugins_modal(bg: Option<&BackgroundSnapshot>) -> anyhow::Result<bool> {
-    run_install_manager(
-        bg,
-        None,
-        &PLUGINS_SPEC,
-        || {
-            crate::plugin_cli::list_rows().ok().map(|rows| {
-                rows.into_iter()
-                    .map(|r| ManagerItem {
-                        row: format_plugin_row_parts(
-                            &r.name,
-                            &r.version,
-                            &r.scope,
-                            &r.ecosystem,
-                            r.on,
-                        ),
-                        lit: r.on,
-                        enabled: r.on,
-                        read_only: false,
-                        needs_setup: false,
-                        name: r.name,
-                    })
-                    .collect()
-            })
-        },
-        crate::plugin_cli::remove_managed,
-        crate::plugin_cli::set_managed_enabled,
-    )
-    .map(ManagerOutcome::into_changed)
+pub fn run_plugins_modal(bg: Option<&BackgroundSnapshot>) -> anyhow::Result<PluginModalOutcome> {
+    // The synchronous modal must not occupy a Tokio executor thread while it
+    // waits for its owned worker, including on terminal errors.
+    tokio::task::block_in_place(|| {
+        let mut marketplace = super::marketplace::Marketplace::new(crate::plugin_cli::home()?);
+        let result = run_install_manager_extended(
+            bg,
+            None,
+            &PLUGINS_SPEC,
+            || {
+                crate::plugin_cli::list_rows().ok().map(|rows| {
+                    rows.into_iter()
+                        .map(|r| ManagerItem {
+                            row: format_plugin_row_parts(
+                                &r.name,
+                                &r.version,
+                                &r.scope,
+                                &r.ecosystem,
+                                r.on,
+                            ),
+                            lit: r.on,
+                            enabled: r.on,
+                            read_only: false,
+                            needs_setup: false,
+                            name: r.name,
+                        })
+                        .collect()
+                })
+            },
+            crate::plugin_cli::remove_managed,
+            crate::plugin_cli::set_managed_enabled,
+            Some(&mut marketplace),
+        );
+        marketplace.shutdown();
+        let changed = result?.into_changed();
+        let mut outcome = marketplace.into_outcome();
+        outcome.changed |= changed;
+        Ok(outcome)
+    })
 }
 
 pub(crate) fn run_install_manager(
@@ -234,6 +312,18 @@ pub(crate) fn run_install_manager(
     load: impl Fn() -> Option<Vec<ManagerItem>>,
     remove: impl Fn(&str) -> anyhow::Result<()>,
     set_enabled: impl Fn(&str, bool) -> anyhow::Result<()>,
+) -> anyhow::Result<ManagerOutcome> {
+    run_install_manager_extended(bg, setup, spec, load, remove, set_enabled, None)
+}
+
+fn run_install_manager_extended(
+    bg: Option<&BackgroundSnapshot>,
+    setup: Option<SetupAction<'_>>,
+    spec: &ManagerSpec,
+    load: impl Fn() -> Option<Vec<ManagerItem>>,
+    remove: impl Fn(&str) -> anyhow::Result<()>,
+    set_enabled: impl Fn(&str, bool) -> anyhow::Result<()>,
+    mut extension: Option<&mut dyn ManagerExtension>,
 ) -> anyhow::Result<ManagerOutcome> {
     use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, poll, read};
     use crossterm::terminal::{EnterAlternateScreen, LeaveAlternateScreen};
@@ -246,6 +336,10 @@ pub(crate) fn run_install_manager(
     let mut items = load().unwrap_or_default();
     let mut error_entries = gray_pkg::errors::list();
     let mut tab = Tab::Installed;
+    let tab_names = manager_tab_names(spec.errors_tab, extension.is_some());
+    let extension_index = tab_names.iter().position(|name| *name == "Marketplace");
+    let mut active_tab = 0;
+    let mut closing = false;
     let mut sel = 0usize;
     let mut changed = false;
     let mut op_err: Option<String> = None;
@@ -271,6 +365,12 @@ pub(crate) fn run_install_manager(
 
     let result = (|| -> anyhow::Result<ManagerOutcome> {
         loop {
+            if let Some(extra) = extension.as_deref_mut() {
+                extra.tick();
+                if closing && extra.request_close() {
+                    return Ok(ManagerOutcome::Closed(changed));
+                }
+            }
             terminal.draw(|frame| {
                 let area = frame.area();
                 if area.width < 20 || area.height < 6 {
@@ -287,9 +387,14 @@ pub(crate) fn run_install_manager(
                     Tab::Installed => items.len(),
                     Tab::Errors => error_entries.len(),
                 };
-                let rows = tab_count.max(1) as u16;
+                let is_extension = Some(active_tab) == extension_index;
+                let rows = if is_extension {
+                    18
+                } else {
+                    tab_count.max(1).min(u16::MAX as usize) as u16
+                };
 
-                let needed_h = rows + if spec.errors_tab { 6 } else { 5 };
+                let needed_h = rows.saturating_add(if tab_names.len() > 1 { 6 } else { 5 });
                 let modal_h = needed_h
                     .clamp(10, 24)
                     .min(area.height.saturating_sub(2).max(10))
@@ -324,19 +429,21 @@ pub(crate) fn run_install_manager(
                     Rect::new(inner.x, inner.y, inner.width, 1),
                 );
 
-                if spec.errors_tab {
-                    let tabs = [
-                        ("Installed", None),
-                        (
-                            "Errors",
-                            if error_entries.is_empty() {
-                                None
-                            } else {
-                                Some(error_entries.len())
-                            },
-                        ),
-                    ];
-                    let segs = tab_segments(&tabs, tab.index());
+                if tab_names.len() > 1 {
+                    let tabs = tab_names
+                        .iter()
+                        .map(|name| {
+                            (
+                                *name,
+                                if *name == "Errors" && !error_entries.is_empty() {
+                                    Some(error_entries.len())
+                                } else {
+                                    None
+                                },
+                            )
+                        })
+                        .collect::<Vec<_>>();
+                    let segs = tab_segments(&tabs, active_tab);
                     let mut spans = Vec::with_capacity(segs.len() * 2 + 1);
                     let mut used = 0usize;
                     for (i, seg) in segs.iter().enumerate() {
@@ -365,9 +472,18 @@ pub(crate) fn run_install_manager(
                         Rect::new(inner.x, inner.y + 1, inner.width, 1),
                     );
                 }
-                let mut cur_y = inner.y + if spec.errors_tab { 2 } else { 1 };
+                let mut cur_y = inner.y + if tab_names.len() > 1 { 2 } else { 1 };
                 let bottom = inner.y + inner_h;
                 let footer_y = (inner.y + inner_h).saturating_sub(1);
+                if is_extension {
+                    if let Some(extra) = extension.as_deref_mut() {
+                        extra.draw(
+                            frame,
+                            Rect::new(inner.x, cur_y, inner.width, bottom.saturating_sub(cur_y)),
+                        );
+                    }
+                    return;
+                }
 
                 let rows_cap = if op_err.is_some() || pending_remove.is_some() {
                     footer_y.saturating_sub(1).max(inner.y + 2)
@@ -519,7 +635,7 @@ pub(crate) fn run_install_manager(
                 for (k, v) in middle {
                     footer_spans.extend(kv(k, v, box_bg, text_dim));
                 }
-                if spec.errors_tab {
+                if tab_names.len() > 1 {
                     footer_spans.extend(kv("Tab ", "· ", box_bg, text_dim));
                 }
                 footer_spans.extend(kv("Esc ", "close", box_bg, text_dim));
@@ -529,48 +645,72 @@ pub(crate) fn run_install_manager(
                     Rect::new(inner.x, footer_y, inner.width, 1),
                 );
             })?;
-            if !poll(Duration::from_millis(100))? {
+            let animating = Some(active_tab) == extension_index
+                && extension.as_deref().is_some_and(|extra| extra.animating());
+            if !poll(Duration::from_millis(if animating { 33 } else { 100 }))? {
                 continue;
             }
-            match read()? {
+            let event = read()?;
+            if closing {
+                continue;
+            }
+            if Some(active_tab) == extension_index
+                && let Event::Key(key) = event
+                && key.kind == KeyEventKind::Press
+                && let Some(extra) = extension.as_deref_mut()
+            {
+                let consumed = extra.key(key);
+                if extra.take_back() {
+                    active_tab = 0;
+                    tab = Tab::Installed;
+                    relist(&mut items);
+                    error_entries = gray_pkg::errors::list();
+                    sel = 0;
+                    continue;
+                }
+                if consumed {
+                    continue;
+                }
+            }
+            if let Event::Key(key) = event
+                && key.kind == KeyEventKind::Press
+                && let Some(next) =
+                    manager_tab_for_key(active_tab, &tab_names, key, extension.is_some())
+            {
+                active_tab = next;
+                tab = manager_panel_tab(&tab_names, active_tab);
+                if Some(active_tab) == extension_index {
+                    if let Some(extra) = extension.as_deref_mut() {
+                        extra.enter();
+                    }
+                } else if extension.is_some() {
+                    relist(&mut items);
+                }
+                error_entries = gray_pkg::errors::list();
+                sel = 0;
+                pending_remove = None;
+                continue;
+            }
+            match event {
                 Event::Key(KeyEvent {
                     code: KeyCode::Char('c'),
                     modifiers,
                     kind: KeyEventKind::Press,
                     ..
                 }) if modifiers.contains(KeyModifiers::CONTROL) => {
+                    if let Some(extra) = extension.as_deref_mut()
+                        && !extra.request_close()
+                    {
+                        closing = true;
+                        continue;
+                    }
                     return Ok(ManagerOutcome::Closed(changed));
                 }
                 Event::Key(KeyEvent {
                     code,
-                    modifiers,
                     kind: KeyEventKind::Press,
                     ..
                 }) => match code {
-                    KeyCode::Tab if spec.errors_tab => {
-                        tab = tab.next();
-                        error_entries = gray_pkg::errors::list();
-                        sel = 0;
-                        pending_remove = None;
-                    }
-                    KeyCode::BackTab if spec.errors_tab => {
-                        tab = tab.prev();
-                        error_entries = gray_pkg::errors::list();
-                        sel = 0;
-                        pending_remove = None;
-                    }
-                    KeyCode::Char('n') | KeyCode::Char('p')
-                        if modifiers.contains(KeyModifiers::CONTROL) && spec.errors_tab =>
-                    {
-                        tab = if code == KeyCode::Char('n') {
-                            tab.next()
-                        } else {
-                            tab.prev()
-                        };
-                        error_entries = gray_pkg::errors::list();
-                        sel = 0;
-                        pending_remove = None;
-                    }
                     KeyCode::Up | KeyCode::Char('k') => {
                         pending_remove = None;
                         sel = sel.saturating_sub(1);
@@ -584,7 +724,15 @@ pub(crate) fn run_install_manager(
                         .saturating_sub(1);
                         sel = (sel + 1).min(max);
                     }
-                    KeyCode::Esc => return Ok(ManagerOutcome::Closed(changed)),
+                    KeyCode::Esc => {
+                        if let Some(extra) = extension.as_deref_mut()
+                            && !extra.request_close()
+                        {
+                            closing = true;
+                            continue;
+                        }
+                        return Ok(ManagerOutcome::Closed(changed));
+                    }
                     KeyCode::Enter | KeyCode::Char(' ') => {
                         pending_remove = None;
                         match enter_action(items.get(sel), setup.is_some(), spec) {
@@ -680,6 +828,12 @@ pub(crate) fn run_install_manager(
             }
         }
     })();
+    if let Some(extra) = extension {
+        while !extra.request_close() {
+            extra.tick();
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
     let _ = terminal.clear();
     result
 }

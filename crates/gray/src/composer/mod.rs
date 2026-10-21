@@ -446,7 +446,7 @@ pub(crate) fn home_column(w: usize) -> (usize, usize) {
     (w.saturating_sub(col_w) / 2, col_w)
 }
 
-const INTRO_TOTAL_MS: u64 = 1000;
+pub(crate) const INTRO_TOTAL_MS: u64 = 1000;
 const INTRO_FRAMES_TXT: &str = include_str!("../../assets/logo-intro-frames.txt");
 
 fn intro_frames() -> &'static [(Vec<String>, Vec<String>)] {
@@ -487,7 +487,7 @@ const BRAILLE_BITS: [(usize, usize, u32); 8] = [
     (1, 3, 0x80),
 ];
 
-const MARK_CELLS: (usize, usize) = (16, 6);
+pub(crate) const MARK_CELLS: (usize, usize) = (16, 6);
 
 const INTRO_SETTLE_FRAMES: usize = 12;
 
@@ -609,6 +609,64 @@ fn intro_settle_frames(from: &[String]) -> Vec<(Vec<String>, Vec<String>)> {
         .collect()
 }
 
+pub(crate) fn intro_frame_index(intro: Option<Duration>, progress: f32) -> usize {
+    let last = intro_frames().len().saturating_sub(1);
+    match intro {
+        Some(elapsed) => {
+            (elapsed.as_secs_f64() * 1000.0 / INTRO_TOTAL_MS as f64 * last as f64) as usize
+        }
+        None => (progress.clamp(0.0, 1.0) * last as f32).round() as usize,
+    }
+    .min(last)
+}
+
+/// One styled row per line of the intro mark, without leading padding, plus
+/// the widest row's display width so callers can center it.
+pub(crate) fn intro_mark_rows(frame_idx: usize) -> (Vec<Vec<Span<'static>>>, usize) {
+    let theme = crate::theme::theme();
+    let base = theme.text_dim;
+    let hilite = theme.text_bright;
+    let safe = crate::tui::unicode_safe();
+    let empty = (Vec::new(), Vec::new());
+    let (mark_rows, edge_rows) = intro_frames().get(frame_idx).unwrap_or(&empty);
+    let l_rows = mark_rows.len().max(1) as f32;
+    let max_logo_w = mark_rows
+        .iter()
+        .map(|l| display_width(l.trim()))
+        .max()
+        .unwrap_or(0);
+    let l_cols = (max_logo_w as f32).max(1.0);
+    let rows = mark_rows
+        .iter()
+        .enumerate()
+        .map(|(row, line)| {
+            let edge = edge_rows.get(row).map(String::as_str).unwrap_or("");
+            line.chars()
+                .enumerate()
+                .map(|(col, ch)| {
+                    let ch = if safe {
+                        ch
+                    } else {
+                        crate::tui::braille_fallback(ch)
+                    };
+                    if ch.is_whitespace() {
+                        return Span::raw(" ");
+                    }
+                    let color = if edge.chars().nth(col) == Some('1') {
+                        hilite
+                    } else {
+                        let diag = (col as f32 + (l_rows - 1.0 - row as f32)) / (l_cols + l_rows);
+                        let t = (0.15 + 0.85 * diag).clamp(0.0, 1.0);
+                        crate::tui::blend_color(base, hilite, t)
+                    };
+                    Span::styled(ch.to_string(), Style::default().fg(color))
+                })
+                .collect()
+        })
+        .collect();
+    (rows, max_logo_w)
+}
+
 fn welcome_body_lines(w: usize, progress: f32, intro: Option<Duration>) -> Vec<Line<'static>> {
     let (x, col_w) = home_column(w);
     welcome_body_lines_at(x, col_w, progress, intro)
@@ -635,55 +693,17 @@ pub(crate) fn welcome_body_lines_at(
 
     let mut body: Vec<Line<'static>> = Vec::new();
 
-    let base = theme.text_dim;
-    let hilite = theme.text_bright;
-    let frames = intro_frames();
-    let last = frames.len().saturating_sub(1);
-    let frame_idx = match intro {
-        Some(elapsed) => {
-            (elapsed.as_secs_f64() * 1000.0 / INTRO_TOTAL_MS as f64 * last as f64) as usize
-        }
-        None => (progress.clamp(0.0, 1.0) * last as f32).round() as usize,
-    }
-    .min(last);
-    let empty = (Vec::new(), Vec::new());
-    let (mark_rows, edge_rows) = frames.get(frame_idx).unwrap_or(&empty);
-    let l_rows = mark_rows.len().max(1) as f32;
-    let max_logo_w = mark_rows
-        .iter()
-        .map(|l| display_width(l.trim()))
-        .max()
-        .unwrap_or(0);
-    let l_cols = (max_logo_w as f32).max(1.0);
+    let (mark, max_logo_w) = intro_mark_rows(intro_frame_index(intro, progress));
     let logo_pad = x + col_w.saturating_sub(max_logo_w) / 2;
 
     let safe = crate::tui::unicode_safe();
-    for (row, line) in mark_rows.iter().enumerate() {
-        let edge = edge_rows.get(row).map(String::as_str).unwrap_or("");
-        let mut spans: Vec<Span<'static>> = Vec::new();
+    for spans in mark {
+        let mut line = Vec::with_capacity(spans.len() + 1);
         if logo_pad > 0 {
-            spans.push(Span::raw(" ".repeat(logo_pad)));
+            line.push(Span::raw(" ".repeat(logo_pad)));
         }
-        for (col, ch) in line.chars().enumerate() {
-            let ch = if safe {
-                ch
-            } else {
-                crate::tui::braille_fallback(ch)
-            };
-            if ch.is_whitespace() || ch == ' ' {
-                spans.push(Span::raw(" "));
-                continue;
-            }
-            let color = if edge.chars().nth(col) == Some('1') {
-                hilite
-            } else {
-                let diag = (col as f32 + (l_rows - 1.0 - row as f32)) / (l_cols + l_rows);
-                let t = (0.15 + 0.85 * diag).clamp(0.0, 1.0);
-                crate::tui::blend_color(base, hilite, t)
-            };
-            spans.push(Span::styled(ch.to_string(), Style::default().fg(color)));
-        }
-        body.push(Line::from(spans));
+        line.extend(spans);
+        body.push(Line::from(line));
     }
     body.push(Line::from(""));
 

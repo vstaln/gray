@@ -35,14 +35,44 @@ async fn spawn(router: Router) -> String {
     format!("http://127.0.0.1:{port}/index.json")
 }
 
-fn use_env(url: &str) -> tempfile::TempDir {
-    let home = tempfile::tempdir().unwrap();
+struct TestHome {
+    home: tempfile::TempDir,
+    previous: [Option<std::ffi::OsString>; 2],
+}
 
+impl TestHome {
+    fn path(&self) -> &std::path::Path {
+        self.home.path()
+    }
+}
+
+impl Drop for TestHome {
+    fn drop(&mut self) {
+        for (key, value) in ["GRAY_HOME", gray_pkg::index::INDEX_URL_ENV]
+            .into_iter()
+            .zip(&self.previous)
+        {
+            unsafe {
+                match value {
+                    Some(value) => std::env::set_var(key, value),
+                    None => std::env::remove_var(key),
+                }
+            }
+        }
+    }
+}
+
+fn use_env(url: &str) -> TestHome {
+    let home = tempfile::tempdir().unwrap();
+    let previous = [
+        std::env::var_os("GRAY_HOME"),
+        std::env::var_os(gray_pkg::index::INDEX_URL_ENV),
+    ];
     unsafe {
         std::env::set_var("GRAY_HOME", home.path());
         std::env::set_var(gray_pkg::index::INDEX_URL_ENV, url);
     }
-    home
+    TestHome { home, previous }
 }
 
 #[tokio::test]
@@ -122,4 +152,104 @@ async fn env_override_selects_loopback() {
 
     assert_eq!(gray_pkg::index::index_url(), url);
     assert_ne!(url, gray_pkg::index::DEFAULT_INDEX_URL);
+}
+
+#[tokio::test]
+async fn uncached_fetch_never_uses_or_updates_disk() {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+    let _lock = ENV_LOCK.lock().unwrap();
+    let hits = Arc::new(AtomicUsize::new(0));
+    let observed = hits.clone();
+    let url = spawn(Router::new().route(
+        "/index.json",
+        get(move || {
+            let observed = observed.clone();
+            async move {
+                observed.fetch_add(1, Ordering::SeqCst);
+                Json(minimal_index())
+            }
+        }),
+    ))
+    .await;
+    let home = use_env(&url);
+    let cache = home.path().join("plugins/index-cache.json");
+    std::fs::create_dir_all(cache.parent().unwrap()).unwrap();
+    std::fs::write(&cache, b"deliberately not JSON").unwrap();
+    let client = gray_pkg::fetch::client().unwrap();
+    for _ in 0..2 {
+        let catalog = gray_pkg::index::fetch_index_uncached(&client)
+            .await
+            .unwrap();
+        assert!(catalog.plugins.contains_key("demo"));
+    }
+    assert_eq!(hits.load(Ordering::SeqCst), 2);
+    assert_eq!(std::fs::read(&cache).unwrap(), b"deliberately not JSON");
+    assert!(!home.path().join("plugins/hub-index-cache.json").exists());
+}
+
+#[tokio::test]
+async fn uncached_fetch_reports_http_and_json_errors_without_caching() {
+    let _lock = ENV_LOCK.lock().unwrap();
+    for (status, body) in [
+        (StatusCode::SERVICE_UNAVAILABLE, "{}"),
+        (StatusCode::OK, "not JSON"),
+        (StatusCode::NOT_MODIFIED, ""),
+        (StatusCode::FOUND, ""),
+    ] {
+        let url =
+            spawn(Router::new().route("/index.json", get(move || async move { (status, body) })))
+                .await;
+        let home = use_env(&url);
+        let error = gray_pkg::index::fetch_index_uncached(&gray_pkg::fetch::client().unwrap())
+            .await
+            .unwrap_err();
+        if status == StatusCode::NOT_MODIFIED {
+            assert!(error.to_string().contains("304 without a cache"));
+        } else if status == StatusCode::FOUND {
+            assert!(error.to_string().contains("redirect refused"));
+        }
+        assert!(!home.path().join("plugins").exists());
+    }
+}
+
+#[tokio::test]
+async fn uncached_fetch_accepts_empty_catalog() {
+    let _lock = ENV_LOCK.lock().unwrap();
+    let url = spawn(Router::new().route(
+        "/index.json",
+        get(|| async { Json(serde_json::json!({"plugins": {}})) }),
+    ))
+    .await;
+    let home = use_env(&url);
+    let index = gray_pkg::index::fetch_index_uncached(&gray_pkg::fetch::client().unwrap())
+        .await
+        .unwrap();
+    assert!(index.plugins.is_empty());
+    assert!(!home.path().join("plugins").exists());
+}
+
+#[tokio::test]
+async fn uncached_fetch_obeys_client_timeout() {
+    let _lock = ENV_LOCK.lock().unwrap();
+    let url = spawn(Router::new().route(
+        "/index.json",
+        get(|| async {
+            std::future::pending::<()>().await;
+            Json(minimal_index())
+        }),
+    ))
+    .await;
+    let home = use_env(&url);
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_millis(20))
+        .build()
+        .unwrap();
+    let error = gray_pkg::index::fetch_index_uncached(&client)
+        .await
+        .unwrap_err();
+    assert!(error.downcast_ref::<reqwest::Error>().unwrap().is_timeout());
+    assert!(!home.path().join("plugins").exists());
 }

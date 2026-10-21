@@ -577,19 +577,21 @@ fn scan_or_block(root: &Path, force: bool, gate: TrustGate) -> anyhow::Result<Ve
             if !to_lines {
                 crate::repl::say(None, report.render().trim_end());
             }
-            anyhow::bail!(
-                "plugin scan blocked the install: {} critical of {} findings ({}); \
-                 --force does not override a dangerous verdict",
-                critical.len(),
-                report.findings.len(),
-                critical.join(", ")
-            );
+            crate::plugin_install::policy::require_installable_scan(&report).map_err(|_| {
+                anyhow::anyhow!(
+                    "plugin scan blocked the install: {} critical of {} findings ({}); \
+                     --force does not override a dangerous verdict",
+                    critical.len(),
+                    report.findings.len(),
+                    critical.join(", ")
+                )
+            })?;
         }
     }
     Ok(out)
 }
 
-fn provider_only_role_json(manifest: &serde_json::Value) -> Option<String> {
+pub(crate) fn provider_only_role_json(manifest: &serde_json::Value) -> Option<String> {
     let empty = |key: &str| {
         manifest
             .get(key)
@@ -637,11 +639,12 @@ fn consent_capabilities(
         "'{name}' declares {} capability(ies):",
         declared.len()
     )];
-    for id in declared {
-        let what = gray_plugin::capabilities::spec(id)
-            .map(|s| s.description)
+    for line in crate::plugin_install::policy::capability_lines(declared) {
+        // Keep the CLI's raw-ID presentation, including its legacy whitespace handling.
+        let description = gray_plugin::capabilities::spec(&line.id)
+            .map(|_| line.description.as_str())
             .unwrap_or("(unknown to this build)");
-        lines.push(format!("  - {id}: {what}"));
+        lines.push(format!("  - {}: {description}", line.id));
     }
     if matches!(gate, TrustGate::Lines) {
         lines.push(format!(
@@ -1276,13 +1279,9 @@ pub async fn forward(home: &Path, name: &str, rest: &[String]) -> anyhow::Result
 }
 
 async fn cli_manifest(binary: &Path) -> Option<Value> {
-    let mut command = tokio::process::Command::new(binary);
-    command.arg("manifest");
-    capture(command, std::time::Duration::from_secs(10))
+    crate::plugin_install::probe::manifest(binary, tokio_util::sync::CancellationToken::new())
         .await
         .ok()
-        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
-        .filter(|m| m["name"].is_string())
 }
 
 pub async fn register_native(
@@ -1465,10 +1464,7 @@ pub(crate) async fn adopt_cli(home: &Path, name: &str, dir: &Path) -> anyhow::Re
                 .collect();
             entry.cli_argv = Some(vec![exe]);
 
-            let mut metadata = tempfile::NamedTempFile::new_in(&plugins)?;
-            use std::io::Write;
-            writeln!(metadata, "{manifest}")?;
-            metadata.persist(plugins.join(format!("{name}-manifest.json")))?;
+            publish_manifest(home, name, &manifest)?;
             lock.save(&lock_path)?;
 
             crate::providers::ProviderRegistry::refresh(home)?;
@@ -1491,6 +1487,43 @@ pub(crate) async fn adopt_cli(home: &Path, name: &str, dir: &Path) -> anyhow::Re
             Ok(false)
         }
     }
+}
+
+fn publish_manifest(home: &Path, name: &str, manifest: &Value) -> anyhow::Result<()> {
+    let plugins = home.join("plugins");
+    let mut metadata = tempfile::NamedTempFile::new_in(&plugins)?;
+    use std::io::Write;
+    writeln!(metadata, "{manifest}")?;
+    metadata.persist(plugins.join(format!("{name}-manifest.json")))?;
+    Ok(())
+}
+
+pub(crate) fn adopt_prepared(
+    home: &Path,
+    name: &str,
+    executable: &Path,
+    manifest: &Value,
+    cli: bool,
+) -> anyhow::Result<()> {
+    validate_name(name)?;
+    let _guard = gray_pkg::ops::hold_registry_lock_in(&home.join("plugins"))?;
+    let lock = load_lock(home)?;
+    let entry = lock
+        .plugins
+        .get(name)
+        .context("installed plugin no longer registered")?;
+    anyhow::ensure!(
+        entry
+            .argv
+            .first()
+            .is_some_and(|program| Path::new(program) == executable)
+            && entry.cli_argv.is_some() == cli,
+        "installed plugin changed before manifest adoption"
+    );
+    // The guarded package transaction already recorded argv, runtime role, and consent.
+    publish_manifest(home, name, manifest)?;
+    crate::providers::ProviderRegistry::refresh(home)?;
+    Ok(())
 }
 
 pub async fn capture_slash(name: &str, args: &[String]) -> anyhow::Result<Option<String>> {
@@ -1795,46 +1828,11 @@ pub(crate) fn completions(query: &str) -> Vec<(String, String)> {
 }
 
 pub(crate) async fn capture(
-    mut command: tokio::process::Command,
+    command: tokio::process::Command,
     ttl: std::time::Duration,
 ) -> anyhow::Result<Vec<u8>> {
-    use tokio::io::AsyncReadExt;
-    let mut child = command
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .kill_on_drop(true)
-        .spawn()?;
-    let mut stdout = child.stdout.take().context("missing stdout")?.take(65537);
-    let result = tokio::time::timeout(ttl, async {
-        let mut bytes = Vec::new();
-        stdout.read_to_end(&mut bytes).await?;
-        anyhow::ensure!(bytes.len() <= 65536, "plugin output exceeds 64 KiB");
-        let status = child.wait().await?;
-        if !status.success() {
-            let tail = String::from_utf8_lossy(&bytes);
-            let tail = tail.trim_end();
-            let tail = tail.get(tail.len().saturating_sub(500)..).unwrap_or(tail);
-            if tail.is_empty() {
-                anyhow::bail!("plugin exited {status}");
-            }
-            anyhow::bail!("plugin exited {status} — last output: {tail}");
-        }
-        Ok::<_, anyhow::Error>(bytes)
-    })
-    .await;
-    match result {
-        Ok(Ok(bytes)) => Ok(bytes),
-        other => {
-            let _ = child.kill().await;
-            let _ = child.wait().await;
-            match other {
-                Ok(Err(e)) => Err(e),
-                Err(_) => anyhow::bail!("plugin request timed out"),
-                _ => unreachable!(),
-            }
-        }
-    }
+    crate::plugin_install::probe::capture(command, ttl, tokio_util::sync::CancellationToken::new())
+        .await
 }
 
 #[cfg(test)]
@@ -2081,6 +2079,49 @@ mod tests {
         migrate_commands_json(home);
         assert!(load_lock(home).unwrap().plugins.is_empty());
         assert!(!home.join("plugins/commands.json.migrated").exists());
+    }
+
+    #[test]
+    fn consent_policy_extraction_preserves_cli_empty_and_raw_id_output() {
+        let (granted, hash, lines) = consent_capabilities("demo", &[], TrustGate::Lines);
+        assert!(granted.is_empty());
+        assert!(hash.is_none());
+        assert!(lines.is_empty());
+        let declared = vec!["host.ask".into(), " host.ask ".into(), "invented".into()];
+        let (granted, hash, lines) = consent_capabilities("demo", &declared, TrustGate::Lines);
+        assert!(granted.is_empty());
+        assert_eq!(
+            hash,
+            Some(gray_plugin::capabilities::consent_hash(&declared))
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|s| s == "  -  host.ask : (unknown to this build)")
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|s| s == "  - invented: (unknown to this build)")
+        );
+        assert!(lines.iter().any(|s| s.contains("not granted (deferred)")));
+    }
+
+    #[test]
+    fn scan_policy_extraction_preserves_cli_caution_and_dangerous_messages() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("README.md"), "rm -rf /\n").unwrap();
+        let error = scan_or_block(root.path(), false, TrustGate::Lines).unwrap_err();
+        assert!(error.to_string().contains("this surface cannot ask"));
+        let lines = scan_or_block(root.path(), true, TrustGate::Lines).unwrap();
+        assert!(lines.iter().any(|s| s.contains("continuing (--force)")));
+        std::fs::write(root.path().join("plugin.sh"), "#!/bin/sh\nrm -rf /\n").unwrap();
+        let error = scan_or_block(root.path(), true, TrustGate::Lines).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("--force does not override a dangerous verdict")
+        );
     }
 
     #[cfg(unix)]

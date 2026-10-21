@@ -106,6 +106,7 @@ pub mod tabs;
 pub(crate) mod composite_rows;
 mod context_modal;
 mod install_manager;
+pub(crate) mod marketplace;
 mod model_modal;
 mod model_panes;
 mod plugins_modal;
@@ -122,7 +123,9 @@ pub use connect::{ConnectOutcome, active_connect_id, run_connect_modal, run_conn
 pub(crate) use install_manager::{
     ManagerItem, ManagerSpec, format_plugin_row_parts, run_install_manager,
 };
-pub use install_manager::{ManagerOutcome, run_plugins_modal, run_skills_modal};
+pub use install_manager::{
+    ManagerOutcome, PluginModalOutcome, run_plugins_modal, run_skills_modal,
+};
 pub(crate) use model_modal::{
     canonicalize_adopted_model, composite_label_for, composite_label_parts_for,
     decompose_model_variant, effort_chip, picker_scope, provider_models_for_config,

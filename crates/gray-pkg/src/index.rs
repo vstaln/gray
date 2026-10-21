@@ -51,6 +51,15 @@ pub struct Entry {
     pub author: Option<String>,
 
     #[serde(default)]
+    pub description: Option<String>,
+
+    #[serde(default)]
+    pub homepage: Option<String>,
+
+    #[serde(default)]
+    pub repo: Option<String>,
+
+    #[serde(default)]
     pub official: bool,
 
     #[serde(default)]
@@ -139,6 +148,22 @@ fn write_cache(file: &str, cache: &IndexCache) -> anyhow::Result<()> {
 
 pub async fn fetch_index(client: &reqwest::Client) -> anyhow::Result<Index> {
     fetch_index_url(client, &index_url(), "index-cache.json").await
+}
+
+pub async fn fetch_index_uncached(client: &reqwest::Client) -> anyhow::Result<Index> {
+    let url = index_url();
+    crate::fetch::check_url(&url)?;
+    let response = client.get(&url).send().await?;
+    anyhow::ensure!(
+        !response.status().is_redirection()
+            || response.status() == reqwest::StatusCode::NOT_MODIFIED,
+        "catalog redirect refused"
+    );
+    anyhow::ensure!(
+        response.status() != reqwest::StatusCode::NOT_MODIFIED,
+        "catalog returned 304 without a cache"
+    );
+    Ok(response.error_for_status()?.json().await?)
 }
 
 pub async fn fetch_hub_index(client: &reqwest::Client) -> anyhow::Result<Index> {
