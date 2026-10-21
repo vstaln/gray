@@ -48,6 +48,7 @@ fn write_tree(root: &std::path::Path) {
 }
 
 #[tokio::test]
+#[ignore = "benchmark: run on demand — cargo test --test index_bench -- --ignored"]
 async fn index_vs_spawn_tax() {
     let indexed_dir = TempDir::new().unwrap();
     let legacy_dir = TempDir::new().unwrap();
