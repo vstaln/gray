@@ -476,6 +476,9 @@ fn replay_entry(v: &mut Viewer, entry: &SessionEntry, cwd: &Path, w: usize) {
                         }
                     }
                     ContentBlock::Text { text } => {
+                        if text.trim() == "(empty)" {
+                            continue;
+                        }
                         let (lines, hyperlinks) =
                             crate::composer::transcript::render_markdown_lines(text, Some(w));
                         if !lines.is_empty() {

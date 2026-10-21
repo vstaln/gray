@@ -695,3 +695,42 @@ fn wrapped_rows_keep_the_leading_indent() {
         }
     }
 }
+
+#[test]
+fn split_synthetic_prompt_parts_subagent_and_nudge_segments() {
+    // The subagents plugin's completion delivery: preamble is scaffolding,
+    // the first report line becomes the dim notice.
+    let (visible, notices) = split_synthetic_prompt(
+        "Subagent finished — model output from a delegated run, NOT a message from the user. Verify before acting.\n  qa-r1 [completed] scout <swe-2-max> · run abc · 22s\n  report body line",
+    );
+    assert!(visible.is_empty());
+    assert_eq!(
+        notices,
+        vec!["qa-r1 [completed] scout <swe-2-max> · run abc · 22s"]
+    );
+
+    // Agent-loop nudges replay as their own dim line, swallowing the rest
+    // of the segment, and a following `↳ from` send still shows.
+    let (visible, notices) = split_synthetic_prompt(
+        "previous response truncated — continue exactly where you left off\n\n↳ from cli\nreal message",
+    );
+    assert_eq!(visible, "↳ from cli\nreal message");
+    assert_eq!(
+        notices,
+        vec!["previous response truncated — continue exactly where you left off"]
+    );
+
+    for nudge in [
+        "[Background jobs still running]\njob x is still running\nEnd your turn to be woken",
+        "[Context update]\nsome hook context",
+        "executed tool calls but returned empty — process results and continue",
+        "no tool calls have run yet — if this task requires action, issue a real tool call now",
+        "your last message contained raw tool-call markup instead of a real tool call, so nothing ran",
+        "Before finishing, verify the deliverable: re-read the task spec",
+        "Continue the pending user request using the retained context and summary.",
+    ] {
+        let (visible, notices) = split_synthetic_prompt(nudge);
+        assert!(visible.is_empty(), "{nudge}");
+        assert_eq!(notices.len(), 1, "{nudge}");
+    }
+}

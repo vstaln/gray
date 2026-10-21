@@ -561,8 +561,36 @@ pub(crate) const BG_NOTICE_MARKER: &str = "[Background task notification]";
 pub(crate) const CRON_DELIVERY_MARKER: &str = "[Cron delivery: ";
 
 fn is_notice_marker(line: &str) -> bool {
-    line.starts_with(BG_NOTICE_MARKER) || line.starts_with(CRON_DELIVERY_MARKER)
+    line.starts_with(BG_NOTICE_MARKER)
+        || line.starts_with(CRON_DELIVERY_MARKER)
+        || line.starts_with(BG_JOBS_MARKER)
+        || line.starts_with(CONTEXT_UPDATE_MARKER)
+        || line.starts_with(SUBAGENT_DONE_MARKER)
 }
+
+/// Marker that opens a synthetic user message listing still-running
+/// background jobs (agent_loop injects it before an idle wait).
+pub(crate) const BG_JOBS_MARKER: &str = "[Background jobs still running]";
+
+/// Marker that opens a synthetic user message carrying hook context.
+pub(crate) const CONTEXT_UPDATE_MARKER: &str = "[Context update]";
+
+/// Marker that opens the gray-subagents plugin's completion report: the
+/// preamble is model-facing scaffolding; the report lines follow it.
+pub(crate) const SUBAGENT_DONE_MARKER: &str = "Subagent finished";
+
+/// Injected nudge lines that ARE the notice — self-contained agent-loop
+/// scaffolding (no marker header, no body to capture). Replayed as the
+/// dim line itself; anything after them in the same segment is still
+/// scaffolding and gets swallowed.
+const NUDGE_LINE_PREFIXES: &[&str] = &[
+    "previous response truncated",
+    "executed tool calls but returned empty",
+    "no tool calls have run yet",
+    "your last message contained raw tool-call markup",
+    "Before finishing, verify the deliverable:",
+    "Continue the pending user request",
+];
 
 /// Split a stored user prompt into the part worth replaying as a prompt
 /// block and one-line summaries of any injected-notification segments.
@@ -576,6 +604,12 @@ pub(crate) fn split_synthetic_prompt(text: &str) -> (String, Vec<String>) {
         if is_notice_marker(line) {
             in_notice = true;
             captured = false;
+            continue;
+        }
+        if NUDGE_LINE_PREFIXES.iter().any(|p| line.starts_with(p)) {
+            in_notice = true;
+            captured = true;
+            notices.push(line.trim().to_string());
             continue;
         }
         if line.starts_with(crate::session_send::SEND_FROM_PREFIX) {
