@@ -3114,7 +3114,10 @@ async fn first_error_with(source: FailingProviderSource) -> ProviderError {
     let mut stream = provider.stream(request);
     match stream.next().await {
         Some(Err(error)) => error,
-        other => panic!("expected an acquire error, got {:?}", other.map(|r| r.is_ok())),
+        other => panic!(
+            "expected an acquire error, got {:?}",
+            other.map(|r| r.is_ok())
+        ),
     }
 }
 
@@ -3128,7 +3131,10 @@ async fn unreachable_credential_source_is_retryable() {
         )
     }))
     .await;
-    assert!(matches!(error.class(), ProviderError::Connection(_)), "{error}");
+    assert!(
+        matches!(error.class(), ProviderError::Connection(_)),
+        "{error}"
+    );
     assert!(error.retryable(), "{error}");
 }
 

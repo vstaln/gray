@@ -1,0 +1,318 @@
+{
+  "OTIO_SCHEMA": "Timeline.1",
+  "global_start_time": {
+    "OTIO_SCHEMA": "RationalTime.1",
+    "rate": 30.0,
+    "value": 0.0
+  },
+  "metadata": {
+    "filmcraft": {
+      "item": 11,
+      "label": "Forest",
+      "master_effects": [],
+      "master_volume_db": 0.0,
+      "settings": {
+        "audio_master": "Stereo",
+        "color": {
+          "auto_tone_map": true,
+          "wide_gamut": false,
+          "working": "Rec709"
+        },
+        "drop_frame": false,
+        "frame_rate": {
+          "den": 1,
+          "num": 30
+        },
+        "height": 720,
+        "max_bit_depth": false,
+        "max_render_quality": false,
+        "par": [
+          1,
+          1
+        ],
+        "preset": "1280x720 30",
+        "preview_codec": "ProRes 422",
+        "sample_rate": 48000,
+        "width": 1280,
+        "working_space": "Rec. 709"
+      },
+      "start_timecode": 0
+    }
+  },
+  "name": "2026-10-19 02-36-51.mkv",
+  "tracks": {
+    "OTIO_SCHEMA": "Stack.1",
+    "children": [
+      {
+        "OTIO_SCHEMA": "Track.1",
+        "children": [
+          {
+            "OTIO_SCHEMA": "Clip.2",
+            "active_media_reference_key": "DEFAULT_MEDIA",
+            "effects": [],
+            "enabled": true,
+            "markers": [],
+            "media_references": {
+              "DEFAULT_MEDIA": {
+                "OTIO_SCHEMA": "ExternalReference.1",
+                "available_image_bounds": null,
+                "available_range": {
+                  "OTIO_SCHEMA": "TimeRange.1",
+                  "duration": {
+                    "OTIO_SCHEMA": "RationalTime.1",
+                    "rate": 30.0,
+                    "value": 742.38
+                  },
+                  "start_time": {
+                    "OTIO_SCHEMA": "RationalTime.1",
+                    "rate": 30.0,
+                    "value": 0.0
+                  }
+                },
+                "metadata": {
+                  "filmcraft": {
+                    "info": {
+                      "audio_streams": [
+                        {
+                          "bits_per_sample": null,
+                          "channels": 2,
+                          "codec": "AAC",
+                          "sample_rate": 48000
+                        }
+                      ],
+                      "container": "Matroska",
+                      "duration": 6285879936000,
+                      "file_size": 12898002,
+                      "kind": "Movie",
+                      "name": "2026-10-19 02-36-51.mkv",
+                      "start_timecode": null,
+                      "video": {
+                        "bitrate": 4004911,
+                        "codec": "H.264",
+                        "color": {
+                          "matrix": "Bt709",
+                          "primaries": "Bt709",
+                          "range": "Limited",
+                          "transfer": "Bt709"
+                        },
+                        "frame_rate": {
+                          "den": 1,
+                          "num": 30
+                        },
+                        "has_alpha": false,
+                        "height": 720,
+                        "par": [
+                          1,
+                          1
+                        ],
+                        "pixel_format": "",
+                        "width": 1280
+                      }
+                    },
+                    "item": 8,
+                    "label": "Iris",
+                    "offline": false
+                  }
+                },
+                "name": "2026-10-19 02-36-51.mkv",
+                "target_url": "../Videos/2026-10-19 02-36-51.mkv"
+              }
+            },
+            "metadata": {
+              "filmcraft": {
+                "duration_ticks": 2590682880000,
+                "effects": [
+                  {
+                    "effect": "motion",
+                    "enabled": true,
+                    "params": {
+                      "anchor": {
+                        "value": {
+                          "Vec2": {
+                            "x": 640.0,
+                            "y": 360.0
+                          }
+                        }
+                      },
+                      "anti_flicker": {
+                        "value": {
+                          "Float": 0.0
+                        }
+                      },
+                      "position": {
+                        "keyframes": [
+                          {
+                            "in_influence": 0.3333333333333333,
+                            "interp": "AutoBezier",
+                            "out_influence": 0.3333333333333333,
+                            "time": 1854466560000,
+                            "value": {
+                              "Vec2": {
+                                "x": 640.0,
+                                "y": 360.0
+                              }
+                            }
+                          },
+                          {
+                            "in_influence": 0.3333333333333333,
+                            "interp": "AutoBezier",
+                            "out_influence": 0.3333333333333333,
+                            "time": 2489750400000,
+                            "value": {
+                              "Vec2": {
+                                "x": 612.0,
+                                "y": 351.0
+                              }
+                            }
+                          },
+                          {
+                            "in_influence": 0.3333333333333333,
+                            "interp": "Linear",
+                            "out_influence": 0.3333333333333333,
+                            "time": 4521484799999,
+                            "value": {
+                              "Vec2": {
+                                "x": 612.0,
+                                "y": 351.0
+                              }
+                            }
+                          }
+                        ],
+                        "value": {
+                          "Vec2": {
+                            "x": 612.0,
+                            "y": 351.0
+                          }
+                        }
+                      },
+                      "rotation": {
+                        "value": {
+                          "Float": 0.0
+                        }
+                      },
+                      "scale": {
+                        "keyframes": [
+                          {
+                            "in_influence": 0.3333333333333333,
+                            "interp": "AutoBezier",
+                            "out_influence": 0.3333333333333333,
+                            "time": 1854466560000,
+                            "value": {
+                              "Float": 100.0
+                            }
+                          },
+                          {
+                            "in_influence": 0.3333333333333333,
+                            "interp": "AutoBezier",
+                            "out_influence": 0.3333333333333333,
+                            "time": 2489750400000,
+                            "value": {
+                              "Float": 125.0
+                            }
+                          },
+                          {
+                            "in_influence": 0.3333333333333333,
+                            "interp": "Linear",
+                            "out_influence": 0.3333333333333333,
+                            "time": 4521484799999,
+                            "value": {
+                              "Float": 125.0
+                            }
+                          }
+                        ],
+                        "value": {
+                          "Float": 125.0
+                        }
+                      },
+                      "scale_width": {
+                        "value": {
+                          "Float": 100.0
+                        }
+                      },
+                      "uniform_scale": {
+                        "value": {
+                          "Bool": true
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "effect": "opacity",
+                    "enabled": true,
+                    "params": {
+                      "blend": {
+                        "value": {
+                          "Choice": 0
+                        }
+                      },
+                      "opacity": {
+                        "value": {
+                          "Float": 100.0
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "effect": "time_remap",
+                    "enabled": true,
+                    "params": {
+                      "speed": {
+                        "value": {
+                          "Float": 100.0
+                        }
+                      }
+                    }
+                  }
+                ],
+                "gain_db": 0.0,
+                "group": null,
+                "label": "Iris",
+                "link": 26,
+                "scale_to_frame": false,
+                "source_in_ticks": 1854316800000
+              }
+            },
+            "name": "2026-10-19 02-36-51.mkv",
+            "source_range": {
+              "OTIO_SCHEMA": "TimeRange.1",
+              "duration": {
+                "OTIO_SCHEMA": "RationalTime.1",
+                "rate": 30.0,
+                "value": 305.9668934240363
+              },
+              "start_time": {
+                "OTIO_SCHEMA": "RationalTime.1",
+                "rate": 30.0,
+                "value": 219.0
+              }
+            }
+          }
+        ],
+        "effects": [],
+        "enabled": true,
+        "kind": "Video",
+        "markers": [],
+        "metadata": {
+          "filmcraft": {
+            "channels": "Stereo",
+            "effects": [],
+            "locked": false,
+            "muted": false,
+            "pan": 0.0,
+            "solo": false,
+            "sync_lock": true,
+            "volume_db": 0.0
+          }
+        },
+        "name": "Video 1",
+        "source_range": null
+      }
+    ],
+    "effects": [],
+    "enabled": true,
+    "markers": [],
+    "metadata": {},
+    "name": "2026-10-19 02-36-51.mkv",
+    "source_range": null
+  }
+}

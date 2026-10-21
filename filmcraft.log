@@ -1,0 +1,16 @@
+2026-10-18T19:39:37.339Z INFO  [main] filmcraft: FilmCraft 0.5.0 (linux x86_64)
+2026-10-18T19:39:37.346Z INFO  [main] filmcraft: log file /home/vstaln/.local/share/filmcraft/Logs/filmcraft.log
+2026-10-18T19:39:37.636Z INFO  [main] filmcraft_platform: hardware decoding through VA-API: Mesa Gallium driver 26.2.3 for AMD Radeon Vega 8 Graphics (radeonsi, raven, ACO, DRM 3.64, 6.18.54_1)
+2026-10-18T19:39:37.644Z INFO  [main] filmcraft: hardware decoding: Available("VA-API")
+2026-10-18T19:39:37.743Z WARN  [main] winit::platform_impl::linux::x11::xdisplay: error setting XSETTINGS; Xft options won't reload automatically
+filmcraft: control server listening on 127.0.0.1:7822
+2026-10-18T19:46:38.264Z WARN  [main] filmcraft_ui_egui: audio output unavailable: The requested device is no longer available. For example, it has been unplugged.
+2026-10-18T19:49:03.521Z WARN  [main] filmcraft_ui_egui: audio output unavailable: The requested device is no longer available. For example, it has been unplugged.
+2026-10-18T19:52:11.434Z WARN  [main] filmcraft_ui_egui: audio output unavailable: The requested device is no longer available. For example, it has been unplugged.
+2026-10-18T20:05:23.439Z WARN  [main] filmcraft_ui_egui: audio output unavailable: The requested device is no longer available. For example, it has been unplugged.
+2026-10-18T20:14:19.105Z WARN  [main] filmcraft_ui_egui: audio output unavailable: The requested device is no longer available. For example, it has been unplugged.
+2026-10-18T20:14:33.795Z WARN  [main] filmcraft_ui_egui: audio output unavailable: The requested device is no longer available. For example, it has been unplugged.
+
+thread 'main' (20734) panicked at /home/runner/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/winit-0.30.13/src/platform_impl/linux/x11/window.rs:1200:14:
+called `Result::unwrap()` on an `Err` value: X11(X11Error { error_kind: Window, error_code: 3, sequence: 30756, bad_value: 83886082, minor_opcode: 0, major_opcode: 40, extension_name: None, request_name: Some("TranslateCoordinates") })
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
