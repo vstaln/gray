@@ -39,6 +39,38 @@ curl -fsSL https://gray.alignment.id/install.sh | sh && gray
 | **Remembers you** | Cross-session memory of your preferences and project decisions (`gray memory`). |
 | **Your setup already works** | Reads project `AGENTS.md` / `CLAUDE.md`, and `SKILL.md` skills from `~/.gray`, `~/.claude`, `~/.agents`, opencode and pi — no porting. Extend further with stdio plugins. |
 
+## How gray compares
+
+Gray is an open-source (MIT) AI agent harness shipped as one static Rust binary. Bash-only tools, resumable JSONL sessions, a self-compacting context window, skills, plugins and cron. Works with any OpenAI-compatible provider using your own API keys.
+
+| | gray | Claude Code | Aider | OpenCode |
+|---|---|---|---|---|
+| License | MIT | Proprietary | Apache-2.0 | MIT |
+| Shape | One static Rust binary | Proprietary CLI | Python CLI | Terminal TUI |
+| Models | Any OpenAI-compatible provider, Ollama/local, or a Claude/ChatGPT plan via plugins | Claude plans / Anthropic API | BYOK across providers incl. local | 75+ providers via Models.dev |
+| Scope | General always-on agent — cron, gateway, apps | Dedicated coding agent | Git-first pair programmer | Dedicated coding TUI |
+| Supervision | No approvals by default (`permissions` plugin adds them) | Permission modes built in | Confirms shell commands | Plan agent is read-only by default |
+| Price | Free; pay your model provider | Plan or API billing | Free; pay your provider | Free; optional paid services |
+
+They overlap where you spend your day: pick Claude Code, Aider or OpenCode when the job is "drive my coding sessions"; pick gray when you want a small agent you run yourself — including jobs that keep running when the terminal is closed.
+
+## FAQ
+
+**Is gray an alternative to Claude Code?**
+Partly. gray is a general-purpose MIT harness, not a dedicated coding product. If you want Anthropic's polished, plan-gated coding agent, that's Claude Code; if you want a small open binary on any provider — including a Claude or ChatGPT plan through plugins — that's gray.
+
+**Is gray free?**
+Yes — MIT licensed. You pay only your model provider, or nothing with a local model through Ollama.
+
+**Which models does gray support?**
+Any OpenAI-compatible provider with your own API key — Anthropic, OpenAI, Google, OpenRouter, DeepSeek, Groq, xAI, Mistral and the rest of the bundled models.dev catalog — plus local models through Ollama or any OpenAI-compatible server. Official plugins add Claude Pro/Max and ChatGPT plan sign-in.
+
+**Can gray run 24/7?**
+Yes. `gray gateway install` runs it as a user service (systemd or runit) so cron jobs and app connections like Discord keep firing with no terminal open.
+
+**Where does my data live?**
+On your machine: sessions and credentials stay under `~/.gray`, and prompts go directly to whichever provider you configured — no gray account required.
+
 ## Install
 
 ```bash
