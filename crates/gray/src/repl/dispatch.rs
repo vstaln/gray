@@ -352,6 +352,24 @@ pub(crate) async fn dispatch_command(
             Flow::Continue
         }
 
+        ReplCommand::Accounts => {
+            let tui_shared = tui.as_ref().map(|(s, _)| s);
+            if tui_shared.is_none() {
+                say(tui_shared, &super::accounts_panel::format_text());
+            } else {
+                let bg = tui_shared.map(|s| s.lock().expect("tui lock").snapshot());
+                let changed = with_modal_sync(tui_shared, || {
+                    super::accounts_panel::run_accounts_modal(bg.as_ref())
+                });
+                match changed {
+                    Ok(true) => say(tui_shared, "accounts updated"),
+                    Ok(false) => say(tui_shared, &super::accounts_panel::format_text()),
+                    Err(e) => say(tui_shared, &format!("accounts panel failed: {e}")),
+                }
+            }
+            Flow::Continue
+        }
+
         ReplCommand::Copy => {
             handle_copy(agent, tui.as_ref().map(|(s, _)| s));
             Flow::Continue

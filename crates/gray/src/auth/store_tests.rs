@@ -68,6 +68,7 @@ fn plugin_crud_is_namespaced_and_bound() {
                 "plugin:example-sub:example:example-login",
                 "sha256:other",
                 CredentialMaterial::empty(),
+                None,
             )
             .is_err()
     );
@@ -80,6 +81,7 @@ fn plugin_crud_is_namespaced_and_bound() {
             "plugin:example-sub:example:example-login",
             "sha256:one",
             next,
+            None,
         )
         .unwrap();
     assert_eq!(

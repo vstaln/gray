@@ -151,6 +151,7 @@ async fn spawn_hangup_policy() {}
 use crate::config::Config;
 use crate::{DEFAULT_SYS_PROMPT, build_agent, load_or_create_system_prompt_at};
 
+pub(crate) mod accounts_panel;
 pub mod agents_panel;
 pub mod attachments;
 pub mod commands;
@@ -509,6 +510,15 @@ pub async fn run_repl_mode(
     let cwd = std::env::current_dir()?;
     log::debug!(target: "gray_timing", "repl start elapsed_ms={}", crate::turn_caps::process_start().elapsed().as_millis());
     tokio::task::spawn_blocking(crate::setup::context::warm_rates_from_disk_cache);
+    // auth.json v1→v2: single-envelope plugin entries become account
+    // pools. Backs up to auth.json.v1.bak before rewriting; a no-op once
+    // migrated (and when there are no plugin entries at all).
+    if let Ok(path) = crate::setup::catalog::auth_store_path() {
+        let store = crate::auth::CredentialStore::new(path);
+        if let Err(e) = store.migrate_to_v2() {
+            log::warn!("auth store v2 migration skipped: {e:#}");
+        }
+    }
 
     use std::io::IsTerminal;
     let interactive = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();

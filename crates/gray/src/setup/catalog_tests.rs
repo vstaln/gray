@@ -70,7 +70,7 @@ fn saving_key_preserves_oauth_objects() {
         .into_iter()
         .filter_map(|(k, v)| match v {
             AuthEntry::Key(key) => Some((k, key)),
-            AuthEntry::OAuth(_) | AuthEntry::Plugin(_) => None,
+            AuthEntry::OAuth(_) | AuthEntry::Plugin(_) | AuthEntry::PluginPool(_) => None,
         })
         .collect();
     assert_eq!(keys.get("openrouter").map(String::as_str), Some("sk-or-1"));

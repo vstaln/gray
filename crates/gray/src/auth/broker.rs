@@ -146,11 +146,24 @@ impl gray_core::credential::CredentialSource for PluginCredentialSource {
         }
         let identity = self.identity();
         let auth_ref = self.auth_ref();
-        let stored = self
+        // The pool picks the serving account: a usable pin, else the
+        // strategy over non-cooled accounts. Every account cooling is a
+        // retryable "come back at <reset>" — not a missing login.
+        let (account_label, stored) = match self
             .store
-            .read_plugin(&auth_ref)
+            .serving_plugin(&auth_ref)
             .map_err(|e| CredentialError::Store(e.to_string()))?
-            .ok_or_else(|| CredentialError::ReauthRequired(identity.clone()))?;
+        {
+            Some(served) => served,
+            None => {
+                if let Ok(Some(hint)) = self.store.pool_retry_hint(&auth_ref) {
+                    return Err(CredentialError::Unavailable(format!(
+                        "all {identity} accounts are cooling ({hint})"
+                    )));
+                }
+                return Err(CredentialError::ReauthRequired(identity.clone()));
+            }
+        };
         if stored.plugin != self.installed.plugin
             || stored.provider != self.installed.provider.id
             || stored.auth_method != self.installed.auth_method.id
@@ -160,13 +173,18 @@ impl gray_core::credential::CredentialSource for PluginCredentialSource {
                 "{identity} profile binding changed"
             )));
         }
-        if let Some(lease) = valid_lease(&stored, REFRESH_MARGIN_SECS) {
+        if let Some(mut lease) = valid_lease(&stored, REFRESH_MARGIN_SECS) {
+            lease
+                .metadata
+                .insert("account".to_string(), account_label.clone());
             return Ok(lease);
         }
         if stored.credential.expires_at.is_none() {
+            let mut metadata = stored.credential.metadata.clone();
+            metadata.insert("account".to_string(), account_label.clone());
             return Ok(CredentialLease {
                 secrets: stored.credential.secrets.clone(),
-                metadata: stored.credential.metadata.clone(),
+                metadata,
             });
         }
 
@@ -186,26 +204,34 @@ impl gray_core::credential::CredentialSource for PluginCredentialSource {
         }
 
         let _guard = self.refresh.lock().await;
-        if let Some(saved) = self
+        if let Some((saved_label, saved)) = self
             .store
-            .read_plugin(&auth_ref)
+            .serving_plugin(&auth_ref)
             .map_err(|e| CredentialError::Store(e.to_string()))?
-            && let Some(lease) = valid_lease(&saved, REFRESH_MARGIN_SECS)
+            && let Some(mut lease) = valid_lease(&saved, REFRESH_MARGIN_SECS)
         {
+            lease.metadata.insert("account".to_string(), saved_label);
             return Ok(lease);
         }
-        let current = self
+        let (current_label, current) = self
             .store
-            .read_plugin(&auth_ref)
+            .serving_plugin(&auth_ref)
             .map_err(|e| CredentialError::Store(e.to_string()))?
             .ok_or_else(|| CredentialError::ReauthRequired(identity.clone()))?;
         let next = self.rotate(current).await?;
         self.store
-            .replace_plugin_if_bound(&auth_ref, &self.installed.profile_binding, next.clone())
+            .replace_plugin_if_bound(
+                &auth_ref,
+                &self.installed.profile_binding,
+                next.clone(),
+                Some(current_label),
+            )
             .map_err(|e| CredentialError::Store(e.to_string()))?;
+        let mut metadata = next.metadata;
+        metadata.insert("account".to_string(), account_label);
         Ok(CredentialLease {
             secrets: next.secrets,
-            metadata: next.metadata,
+            metadata,
         })
     }
 }
