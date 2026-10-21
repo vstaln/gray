@@ -404,12 +404,11 @@ pub(crate) fn run_plugins_manager(bg: Option<&BackgroundSnapshot>) -> anyhow::Re
                         };
                         let stale = row.stale.as_ref().map(|_| "  [update]").unwrap_or_default();
                         let text = format!(
-                            "{} {:<26} {:<10} {:<32} {}{}",
+                            "{} {:<26} {:<10} {:<32}{}",
                             mark,
                             row.name,
                             row.version,
                             status_text(row),
-                            row.kind,
                             stale,
                         );
                         let text: String = text.chars().take(w).collect();
