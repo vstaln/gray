@@ -1292,51 +1292,6 @@ impl JsonlSessionStore {
         &self.root_dir
     }
 
-    pub(crate) fn resolve_unique_prefix(&self, raw: &str) -> std::result::Result<String, String> {
-        if !valid_session_id(raw) {
-            return Err(format!("invalid session id {raw:?}"));
-        }
-        if self.root_dir.join(format!("{raw}.jsonl")).is_file() {
-            return Ok(raw.to_string());
-        }
-        let mut matches: Vec<String> = match std::fs::read_dir(&self.root_dir) {
-            Ok(read) => read
-                .flatten()
-                .filter_map(|e| {
-                    e.file_name()
-                        .into_string()
-                        .ok()
-                        .and_then(|n| n.strip_suffix(".jsonl").map(str::to_owned))
-                })
-                .filter(|stem| stem.starts_with(raw))
-                .collect(),
-            Err(_) => Vec::new(),
-        };
-        matches.sort();
-        matches.dedup();
-        match matches.len() {
-            0 => Err(format!("no session {raw:?} in {}", self.root_dir.display())),
-            1 => Ok(matches.remove(0)),
-            _ => {
-                let shown = matches
-                    .iter()
-                    .take(8)
-                    .map(String::as_str)
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                let more = matches.len().saturating_sub(8);
-                Err(format!(
-                    "ambiguous session id {raw:?} — matches: {shown}{}",
-                    if more > 0 {
-                        format!(" (+{more} more)")
-                    } else {
-                        String::new()
-                    }
-                ))
-            }
-        }
-    }
-
     fn fnv1a_hex(s: &str) -> String {
         let mut h: u64 = 0xcbf29ce484222325;
         for b in s.bytes() {

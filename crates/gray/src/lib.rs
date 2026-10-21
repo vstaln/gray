@@ -34,7 +34,6 @@ pub mod resume;
 mod rotation;
 pub mod search;
 pub mod session_mailbox;
-pub mod session_read;
 pub mod session_send;
 pub mod session_store;
 pub mod setup;

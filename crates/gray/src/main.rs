@@ -145,7 +145,22 @@ async fn run() -> anyhow::Result<()> {
         wait,
     }) = &cli.command
     {
-        return gray::session_send::run_cli(session, text, attach, from.as_deref(), *wait).await;
+        // `gray send` lives in the gateway plugin; forward the parsed values.
+        let mut argv: Vec<String> = vec!["session".into(), "send".into()];
+        for p in attach {
+            argv.push("--attach".into());
+            argv.push(p.to_string_lossy().into_owned());
+        }
+        if let Some(f) = from {
+            argv.push("--from".into());
+            argv.push(f.clone());
+        }
+        if let Some(w) = wait {
+            argv.push("--wait".into());
+            argv.push(w.to_string());
+        }
+        argv.extend(["--".into(), session.clone(), text.clone()]);
+        return gray::plugin_cli::forward(&gray::plugin_cli::home()?, "gateway", &argv).await;
     }
 
     if let Some(gray::Commands::Read {
@@ -155,7 +170,19 @@ async fn run() -> anyhow::Result<()> {
         json,
     }) = &cli.command
     {
-        return gray::session_read::run_cli(session.as_deref(), *live, *last, *json).await;
+        // `gray read` lives in the gateway plugin; forward the parsed values.
+        let mut argv: Vec<String> = vec!["session".into(), "read".into()];
+        if *live {
+            argv.push("--live".into());
+        }
+        argv.extend(["--last".into(), last.to_string()]);
+        if *json {
+            argv.push("--json".into());
+        }
+        if let Some(id) = session {
+            argv.extend(["--".into(), id.clone()]);
+        }
+        return gray::plugin_cli::forward(&gray::plugin_cli::home()?, "gateway", &argv).await;
     }
 
     if let Some(gray::Commands::Gateway { args }) = &cli.command {
