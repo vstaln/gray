@@ -3,6 +3,11 @@
 # instead of queueing behind each other binary by binary.
 
 [profile.ci]
+# The crates/gray-ide/tests/e2e.rs suite spawns real Xvfb+xdotool sessions
+# and already runs in full in ide.yml (which installs those deps and builds
+# the CLI binary). Running it again here double-pays its cost on ubuntu —
+# on macOS it self-skips anyway — so the workspace run filters it out.
+default-filter = "not binary(e2e)"
 # Report every failing test, never stop at the first: on Windows and macOS
 # one failure must not hide another suite's native evidence.
 fail-fast = false

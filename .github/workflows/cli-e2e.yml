@@ -56,7 +56,10 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Build gray CLI
         run: cargo build --locked -p gray --bin gray
+      # ci.yml's workspace nextest already runs this suite (and more) on
+      # ubuntu and macOS — only the Windows legs add coverage here.
       - name: Run gray unit tests
+        if: runner.os == 'Windows'
         env:
           RUST_BACKTRACE: 1
         run: cargo test --locked -p gray --lib --bins
