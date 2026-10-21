@@ -254,6 +254,7 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
     // A consent/question prompt owns the bottom band: the input box (and
     // its cursor) step aside until it closes.
     let asking = tui.ask_modal.is_some();
+    let ask_gap = u16::from(asking);
     let box_h = if asking {
         0
     } else {
@@ -269,8 +270,9 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
     let mut widget_rows = tui.plugin_widget.rows(widget_budget as usize, w);
     let max_viewport_h = viewport_cap(rows);
 
-    let mut band_allowance =
-        band_budget(max_viewport_h, status_h + box_h + attach_h + panel_est + 1);
+    let mut band_allowance = band_budget(max_viewport_h, status_h + box_h + attach_h + panel_est + 1)
+        .saturating_sub(2 * ask_gap)
+        .max(if asking { ask_est.min(6) } else { 0 });
 
     let reserve_overflow_row = tui.live_tool_overflow() > 0 && band_allowance > 0;
     if reserve_overflow_row {
@@ -294,7 +296,7 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
     let desired = desired_viewport_h(
         status_h,
         queued_est,
-        live_est + tail_est + widget_h + ask_est,
+        live_est + tail_est + widget_h + ask_est + 2 * ask_gap,
         box_rows_est,
         panel_est,
         attach_h,
@@ -305,7 +307,7 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
     let floor = latched_viewport_floor(
         status_h,
         queued_est,
-        live_est + tail_est + widget_h + ask_est,
+        live_est + tail_est + widget_h + ask_est + 2 * ask_gap,
         box_rows_est,
         attach_h,
         footer_h,
@@ -497,8 +499,8 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
         let tail_y = status_y + seam_h;
         let queued_y = status_y + status_h + tail_h;
         let live_y = queued_y + queued_h;
-        let ask_y = live_y + live_h;
-        let widget_y = ask_y + ask_h;
+        let ask_y = live_y + live_h + ask_gap;
+        let widget_y = ask_y + ask_h + ask_gap;
         let box_y = widget_y + widget_h + panel_gap;
         let panel_y = if home_mode {
             (area.y + area.height.saturating_sub(1)).saturating_sub(panel_h)

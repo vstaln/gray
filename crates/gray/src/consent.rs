@@ -34,14 +34,20 @@ pub fn executor_wrap() -> gray_plugin::builder::ExecutorWrap {
 
 struct ConsentExecutor {
     inner: Arc<dyn ToolExecutor>,
-    allowed: Arc<tokio::sync::Mutex<HashSet<String>>>,
+    allowed: &'static tokio::sync::Mutex<HashSet<String>>,
+}
+
+fn session_allowed() -> &'static tokio::sync::Mutex<HashSet<String>> {
+    static SET: std::sync::OnceLock<tokio::sync::Mutex<HashSet<String>>> =
+        std::sync::OnceLock::new();
+    SET.get_or_init(Default::default)
 }
 
 impl ConsentExecutor {
     fn new(inner: Arc<dyn ToolExecutor>) -> Self {
         Self {
             inner,
-            allowed: Arc::new(tokio::sync::Mutex::new(HashSet::new())),
+            allowed: session_allowed(),
         }
     }
 }
@@ -297,7 +303,7 @@ impl ToolExecutor for ConsentExecutor {
         args: serde_json::Value,
     ) -> BoxFuture<'static, ToolOutput> {
         let inner = self.inner.clone();
-        let allowed = self.allowed.clone();
+        let allowed = self.allowed;
         let ctx = ctx.clone();
         let name = name.to_string();
         Box::pin(async move {
