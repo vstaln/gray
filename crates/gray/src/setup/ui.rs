@@ -17,6 +17,15 @@ pub struct BackgroundSnapshot {
     pub home_quality_of_life: Option<String>,
     pub home_session: Option<String>,
     pub attachments: Vec<std::path::PathBuf>,
+    /// Memoized `rebuild_transcript` keyed on (cols, rows). Modal loops
+    /// repaint this backdrop every frame, but the snapshot is frozen —
+    /// shared across clones so a modal's copy stays warm.
+    pub transcript_cache:
+        std::rc::Rc<
+            std::cell::RefCell<
+                Option<(usize, u16, std::rc::Rc<Vec<ratatui::text::Line<'static>>>)>,
+            >,
+        >,
 }
 
 impl BackgroundSnapshot {
@@ -43,15 +52,29 @@ impl BackgroundSnapshot {
             home_quality_of_life: None,
             home_session: None,
             attachments: Vec::new(),
+            transcript_cache: Default::default(),
         }
     }
 
-    pub fn rebuild_transcript(&self, w: usize) -> Vec<ratatui::text::Line<'static>> {
-        if self.history_entries.is_empty() {
-            return self.transcript.clone();
-        }
+    pub fn rebuild_transcript(
+        &self,
+        w: usize,
+    ) -> std::rc::Rc<Vec<ratatui::text::Line<'static>>> {
         let rows = crossterm::terminal::size().map(|(_, r)| r).unwrap_or(24);
-        crate::composer::transcript::layout_history(&self.history_entries, w, rows)
+        if let Some((cw, cr, cached)) = &*self.transcript_cache.borrow()
+            && *cw == w
+            && *cr == rows
+        {
+            return cached.clone();
+        }
+        let lines = if self.history_entries.is_empty() {
+            self.transcript.clone()
+        } else {
+            crate::composer::transcript::layout_history(&self.history_entries, w, rows)
+        };
+        let rc = std::rc::Rc::new(lines);
+        *self.transcript_cache.borrow_mut() = Some((w, rows, rc.clone()));
+        rc
     }
 }
 

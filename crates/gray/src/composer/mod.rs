@@ -1955,6 +1955,7 @@ impl Tui {
             home_quality_of_life: self.home_quality_of_life.clone(),
             home_session: self.home_session.clone(),
             attachments: self.attachments.clone(),
+            transcript_cache: Default::default(),
         }
     }
     pub fn tick_status(&mut self) {
