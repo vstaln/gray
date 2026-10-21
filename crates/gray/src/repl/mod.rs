@@ -912,13 +912,36 @@ pub async fn run_repl_mode(
         && !cfg!(windows)
         && let Ok(home) = crate::setup::gray_home()
     {
+        let watcher_tui = tui.as_ref().map(|(shared, _)| shared.clone());
         tokio::spawn(async move {
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-                if let Some(sid) = crate::host::live_session()
-                    && crate::session_mailbox::session_inbox_pending(&home, &sid)
-                {
+                let Some(sid) = crate::host::live_session() else {
+                    continue;
+                };
+                if crate::session_mailbox::session_inbox_pending(&home, &sid) {
                     crate::host::request_wake();
+                }
+                // Keep the "Queued follow-up inputs" preview fresh even
+                // mid-turn: peek (non-consuming) the session's sends and
+                // repaint only when the set changed.
+                if let Some(shared) = &watcher_tui
+                    && let Ok(mut t) = shared.try_lock()
+                {
+                    let pending: Vec<(String, Vec<std::path::PathBuf>)> =
+                        crate::session_send::peek_sends(&home, &sid)
+                            .into_iter()
+                            .map(|m| {
+                                (
+                                    crate::session_send::prompt_for(&m.from, &m.text),
+                                    m.attachments,
+                                )
+                            })
+                            .collect();
+                    if t.queued_sends != pending {
+                        t.queued_sends = pending;
+                        let _ = t.draw();
+                    }
                 }
             }
         });

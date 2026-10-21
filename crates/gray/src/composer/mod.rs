@@ -305,6 +305,9 @@ pub struct Tui {
 
     pub(crate) attachments: Vec<PathBuf>,
     pub(crate) pending_pastes: Vec<(String, String)>,
+    /// Draft parked while a mailbox/background wake runs its turn: text,
+    /// attachments and pending pastes, restored when `read_line` reopens.
+    pub(crate) stashed_draft: Option<(String, Vec<PathBuf>, Vec<(String, String)>)>,
     model_name: String,
 
     model_label: Option<String>,
@@ -1033,6 +1036,7 @@ impl Tui {
             hint: None,
             attachments: Vec::new(),
             pending_pastes: Vec::new(),
+            stashed_draft: None,
             model_name: String::new(),
             model_label: None,
             model_label_parts: None,
