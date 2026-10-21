@@ -592,7 +592,7 @@ enum Outcome {
 }
 
 fn panel_loop(
-    terminal: &mut ratatui::Terminal<ratatui::backend::CrosstermBackend<std::io::Stdout>>,
+    terminal: &mut crate::setup::ModalTerminal,
     panel: &mut Panel,
     bg: &crate::setup::BackgroundSnapshot,
 ) -> anyhow::Result<Outcome> {
