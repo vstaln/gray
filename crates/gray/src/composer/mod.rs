@@ -1939,7 +1939,7 @@ impl Tui {
             } else {
                 (0, 0.0)
             };
-        crate::setup::BackgroundSnapshot {
+        let snap = crate::setup::BackgroundSnapshot {
             transcript: self.transcript.clone(),
             history_entries: self.history_entries.clone(),
             cwd: self.cwd.clone(),
@@ -1956,7 +1956,10 @@ impl Tui {
             home_session: self.home_session.clone(),
             attachments: self.attachments.clone(),
             transcript_cache: Default::default(),
-        }
+        };
+        let (w, _) = crossterm::terminal::size().unwrap_or((80, 24));
+        snap.rebuild_transcript(w as usize);
+        snap
     }
     pub fn tick_status(&mut self) {
         if self.modal_open {
