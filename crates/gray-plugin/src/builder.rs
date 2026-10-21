@@ -375,6 +375,7 @@ pub async fn active_plugins(
         if let Some(p) =
             spawn_lock_plugin(name, entry, pdir.as_deref(), &handler, &mut outcomes).await
         {
+            p.set_global(entry.global);
             plugins.push(p);
         }
     }
