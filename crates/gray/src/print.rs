@@ -999,7 +999,7 @@ async fn run_print_inner(
     };
     let cwd = std::env::current_dir()?;
     if !config.bare {
-        let _ = crate::plugin_status::ensure_boot(None);
+        let _ = crate::plugin_status::ensure_boot(Some(crate::host::default_handler(cwd.clone())));
     }
     let store = JsonlSessionStore::default();
     let prompt_text = crate::failed_turn::prompt_text(prompt, &user_message);
@@ -1177,12 +1177,29 @@ async fn run_print_inner(
         }));
     }
 
-    let user_msg = if let Some(prompt) = prompt {
+    let mut user_msg = if let Some(prompt) = prompt {
         let inline = crate::repl::attachments::extract_inline_image_paths(prompt, &cwd);
         crate::repl::build_user_message_with_attachments(prompt, &inline)
     } else {
         user_message
     };
+    if resume_target.is_some()
+        && let Ok(home) = crate::setup::gray_home()
+    {
+        let mut delivered: Vec<String> =
+            crate::session_mailbox::drain_session_inbox(&home, session_id.as_str())
+                .into_iter()
+                .map(|d| d.prompt)
+                .collect();
+        for m in crate::session_send::claim_all(&home, session_id.as_str()) {
+            delivered.push(crate::session_send::prompt_for(&m.from, &m.text));
+        }
+        if !delivered.is_empty() {
+            let mut content = gray_core::message::Message::user(delivered.join("\n\n")).content;
+            content.extend(user_msg.content);
+            user_msg.content = content;
+        }
+    }
     log::debug!(target: "gray_timing", "spawn_to_ready_ms={}", crate::turn_caps::process_start().elapsed().as_millis());
 
     let sigint_cancel = cancel.clone();
