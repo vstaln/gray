@@ -26,6 +26,8 @@ enum Verdict {
     Global,
     BashCommands(String),
     Deny(Option<String>),
+    /// The prompt was dismissed (Esc) without a pick: interrupt the turn.
+    Dismissed,
 }
 
 pub fn executor_wrap() -> gray_plugin::builder::ExecutorWrap {
@@ -255,7 +257,8 @@ async fn ask_consent(name: &str, args: &serde_json::Value, cwd: &std::path::Path
         Some(l) if l == project_label => Verdict::Project,
         Some(l) if l == global_label => Verdict::Global,
         Some(DENY_WHY) => Verdict::Deny(note),
-        _ => Verdict::Deny(None),
+        Some(_) => Verdict::Deny(None),
+        None => Verdict::Dismissed,
     }
 }
 
@@ -345,6 +348,13 @@ impl ToolExecutor for ConsentExecutor {
                             }
                         }
                         Verdict::Once => {}
+                        Verdict::Dismissed => {
+                            // Esc on the prompt means stop, as it does
+                            // everywhere else mid-turn — not "decline and
+                            // let the model carry on".
+                            ctx.cancel.cancel();
+                            return ToolOutput::error("cancelled by user");
+                        }
                         Verdict::Deny(reason) => {
                             return ToolOutput::error(match reason {
                                 Some(r) if !r.is_empty() => {

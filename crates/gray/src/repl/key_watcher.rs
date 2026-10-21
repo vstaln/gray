@@ -266,6 +266,14 @@ pub(crate) fn spawn_key_watcher_with_typing(
             if crate::composer::input::stdin_gone() {
                 return;
             }
+            // A live ask modal (tool consent, request_user_input) reads
+            // stdin itself. Polling here too races it for every key and
+            // the watcher's `continue` below drops whatever it wins, so
+            // Esc/arrows/Enter in the modal were mostly swallowed.
+            if crate::ask::is_ask_live() {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+                continue;
+            }
             match poll(std::time::Duration::from_millis(50)) {
                 Ok(true) => {}
                 _ => continue,
