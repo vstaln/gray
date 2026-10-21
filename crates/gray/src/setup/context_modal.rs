@@ -288,8 +288,8 @@ pub fn run_context_modal(
                         window,
                         format_context_length(max)
                     ),
-                    format!("Reserve: {} ({})", format_context_length(reserve), reserve),
-                    format!("Keep: {} ({})", format_context_length(keep), keep),
+                    format!("Reserve: {}", format_context_length(reserve)),
+                    format!("Keep: {}", format_context_length(keep)),
                 ];
                 for (i, text) in set_rows.iter().enumerate() {
                     if set_y + i as u16 >= inner.y + inner.height - 2 {
@@ -366,7 +366,20 @@ pub fn run_context_modal(
             if !poll(Duration::from_millis(100))? {
                 continue;
             }
-            match read()? {
+            let ev = read()?;
+            if editing.is_none()
+                && let Event::Key(key) = ev
+                && key.kind == KeyEventKind::Press
+                && let Some(up) = crate::keymap::select_move(&key)
+            {
+                sel = if up {
+                    sel.saturating_sub(1)
+                } else {
+                    (sel + 1).min(2)
+                };
+                continue;
+            }
+            match ev {
                 Event::Key(KeyEvent {
                     code: KeyCode::Char('c'),
                     modifiers,
@@ -381,15 +394,10 @@ pub fn run_context_modal(
                     ));
                 }
                 Event::Key(KeyEvent {
-                    code,
                     modifiers,
                     kind: KeyEventKind::Press,
                     ..
-                }) if modifiers.contains(KeyModifiers::CONTROL) => match code {
-                    KeyCode::Char('p') if editing.is_none() => sel = sel.saturating_sub(1),
-                    KeyCode::Char('n') if editing.is_none() => sel = (sel + 1).min(2),
-                    _ => {}
-                },
+                }) if modifiers.contains(KeyModifiers::CONTROL) => {}
                 Event::Key(KeyEvent {
                     code,
                     kind: KeyEventKind::Press,
@@ -478,8 +486,6 @@ pub fn run_context_modal(
                         continue;
                     }
                     match code {
-                        KeyCode::Up => sel = sel.saturating_sub(1),
-                        KeyCode::Down => sel = (sel + 1).min(2),
                         KeyCode::Esc | KeyCode::Char('q') => {
                             return Ok(compute_diffs(
                                 config,

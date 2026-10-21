@@ -29,6 +29,8 @@ pub struct CacheMiss {
     pub idle: Duration,
 
     pub model_changed: bool,
+
+    pub reconnected: bool,
 }
 
 impl CacheMiss {
@@ -38,6 +40,8 @@ impl CacheMiss {
         }
         let label = if self.model_changed {
             "Cache miss after model switch".to_string()
+        } else if self.reconnected {
+            "Cache miss after reconnect".to_string()
         } else if self.idle >= cache_ttl() {
             format!("Cache miss after {}m idle", self.idle.as_secs() / 60)
         } else {
@@ -72,6 +76,8 @@ pub struct CacheTracker {
     last: Option<LastRequest>,
 
     paused_at: Option<Instant>,
+
+    reconnected: bool,
 }
 
 impl CacheTracker {
@@ -100,6 +106,7 @@ impl CacheTracker {
                 rate,
                 miss_at,
                 model,
+                std::mem::take(&mut self.reconnected),
             ),
 
             None => None,
@@ -175,8 +182,13 @@ impl CacheTracker {
         }
     }
 
+    pub(crate) fn note_reconnect(&mut self) {
+        self.reconnected = true;
+    }
+
     pub fn reset(&mut self) {
         self.last = None;
+        self.reconnected = false;
     }
 }
 
@@ -190,6 +202,7 @@ fn detect_miss(
     rate: Option<ModelRate>,
     now: Instant,
     model: &str,
+    reconnected: bool,
 ) -> Option<CacheMiss> {
     if prompt_tokens == 0 {
         return None;
@@ -208,6 +221,7 @@ fn detect_miss(
         missed_cost: missed_cost(missed_tokens, usage, read, write, rate),
         idle: now.saturating_duration_since(prev.at),
         model_changed: !model.is_empty() && !prev.model.is_empty() && model != prev.model,
+        reconnected,
     })
 }
 

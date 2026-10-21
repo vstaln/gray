@@ -25,6 +25,33 @@ pub struct ActiveToolCall {
     pub preview: Option<String>,
 }
 
+/// Wrap `text` in an SGR style only when stdout is a terminal and NO_COLOR is
+/// unset — piped `gray -p` output must stay plain text.
+fn sgr(open: &str, text: impl std::fmt::Display) -> String {
+    static ANSI: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    let on = *ANSI.get_or_init(|| {
+        use std::io::IsTerminal as _;
+        std::io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none()
+    });
+    if on {
+        format!("{open}{text}\x1b[0m")
+    } else {
+        text.to_string()
+    }
+}
+
+/// Status chrome (token footer, retries, compaction): dimmed inline on a
+/// terminal; on stderr when stdout is piped so `$(gray -p …)` is the answer only.
+fn meta<W: Write>(w: &mut W, text: String) -> std::io::Result<()> {
+    use std::io::IsTerminal as _;
+    if std::io::stdout().is_terminal() {
+        writeln!(w, "\n{}", sgr("\x1b[2m", text))
+    } else {
+        eprintln!("{text}");
+        Ok(())
+    }
+}
+
 pub fn render_event_with_context<W: Write>(
     w: &mut W,
     event: &AgentEvent,
@@ -40,7 +67,7 @@ pub fn render_event_with_context<W: Write>(
             w.flush()
         }
         AgentEvent::ThinkingDelta { delta } => {
-            write!(w, "\x1b[2m\x1b[3m{delta}\x1b[0m")?;
+            write!(w, "{}", sgr("\x1b[2m\x1b[3m", delta))?;
             w.flush()
         }
         AgentEvent::ToolCallStart { id, name } => {
@@ -146,14 +173,16 @@ pub fn render_event_with_context<W: Write>(
             messages_after,
             reason,
         } => {
-            writeln!(
+            meta(
                 w,
-                "\n\x1b[2m\u{21bb} compacted {} \u{2192} {} tok ({} \u{2192} {} messages){}\x1b[0m",
-                crate::repl::fmt_usage(*tokens_before),
-                crate::repl::fmt_usage(*tokens_after),
-                messages_before,
-                messages_after,
-                crate::compact::compact_reason_note(*reason),
+                format!(
+                    "\u{21bb} compacted {} \u{2192} {} tok ({} \u{2192} {} messages){}",
+                    crate::repl::fmt_usage(*tokens_before),
+                    crate::repl::fmt_usage(*tokens_after),
+                    messages_before,
+                    messages_after,
+                    crate::compact::compact_reason_note(*reason),
+                ),
             )?;
             w.flush()
         }
@@ -162,9 +191,9 @@ pub fn render_event_with_context<W: Write>(
             let message = scrub_error_text(message);
             let details = scrub_error_text(details);
             if details.is_empty() {
-                writeln!(w, "\n\x1b[2m⚠ {message}\x1b[0m")?;
+                meta(w, format!("⚠ {message}"))?;
             } else {
-                writeln!(w, "\n\x1b[2m⚠ {message}\n  {details}\x1b[0m")?;
+                meta(w, format!("⚠ {message}\n  {details}"))?;
             }
             w.flush()
         }
@@ -176,11 +205,13 @@ pub fn render_event_with_context<W: Write>(
         AgentEvent::Steered { .. } | AgentEvent::Retract => Ok(()),
         AgentEvent::TurnEnd { usage, .. } => {
             if usage.total() > 0 {
-                writeln!(
+                meta(
                     w,
-                    "\n\x1b[2m{} {} tok\x1b[0m",
-                    crate::tui::glyph("\u{2b22}", "#"),
-                    crate::repl::fmt_usage(usage.total())
+                    format!(
+                        "{} {} tok",
+                        crate::tui::glyph("\u{2b22}", "#"),
+                        crate::repl::fmt_usage(usage.total())
+                    ),
                 )?;
             }
             w.flush()
@@ -501,6 +532,14 @@ fn stream_text_enabled() -> bool {
             "1" | "true" | "yes" | "on"
         )
     })
+}
+
+/// `GRAY_PRINT_WAIT_BACKGROUND=0` restores exit-at-turn-end for `-p`.
+fn background_wait_enabled() -> bool {
+    !matches!(
+        std::env::var("GRAY_PRINT_WAIT_BACKGROUND").as_deref(),
+        Ok("0" | "false" | "off")
+    )
 }
 
 fn steer_enabled() -> bool {
@@ -890,6 +929,32 @@ async fn run_print_inner(
     crate::setup::set_user_reserve_tokens(config.context_reserve);
     crate::setup::set_user_keep_recent_tokens(config.context_keep);
 
+    // Flag-based connects (--base-url/--model) never passed /models, so probe
+    // the endpoint once (async, cheap) — it fills the context cache so the
+    // endpoint's real context_length drives compaction instead of the 256k
+    // fallback. Cached on disk for later runs.
+    let custom_base = crate::setup::normalize_custom_base_url(&config.base_url)
+        != crate::setup::normalize_custom_base_url(crate::config::DEFAULT_BASE_URL);
+    if !crate::config::offline()
+        && custom_base
+        && config.context_window.is_none()
+        && !config.uses_plugin_credentials()
+        && !config.bare
+        && {
+            crate::setup::context::ensure_disk_loaded();
+            config
+                .model
+                .as_deref()
+                .is_some_and(|m| crate::setup::get_cached_model_context(m).is_none())
+        }
+    {
+        let base = config.base_url.clone();
+        let key = config.api_key.clone();
+        tokio::task::spawn_blocking(move || {
+            crate::setup::fetch_live_provider_models(&base, key.as_deref());
+        });
+    }
+
     let steering = json.is_some() && steer_enabled();
     match json.as_deref() {
         Some(output) if crate::ask::json_enabled() || steering => {
@@ -1168,14 +1233,51 @@ async fn run_print_inner(
         .await
         .map_err(map_err);
 
-    while run_result.is_ok()
-        && let Some(rx) = &steer_rx
-        && let Some(text) = rx.lock().ok().and_then(|mut r| r.try_recv().ok())
-    {
-        on_event(&AgentEvent::Steered { text: text.clone() });
+    // A turn that ends with background jobs still running (a bash call that
+    // yielded at its timeout) is not done: wait for each completion notice
+    // and wake the agent on it, the way the REPL's idle wake does. Without
+    // this a `gray -p` child — every subagent — exits mid-task, orphaning
+    // the job and reporting "I'll resume when it wakes me" as its answer.
+    let wait_background = background_wait_enabled();
+    let exec = agent.executor_handle();
+    while run_result.is_ok() && !cancel.is_cancelled() {
+        if let Some(rx) = &steer_rx
+            && let Some(text) = rx.lock().ok().and_then(|mut r| r.try_recv().ok())
+        {
+            on_event(&AgentEvent::Steered { text: text.clone() });
+            run_result = agent
+                .run_streaming(
+                    gray_core::message::Message::user(text),
+                    ctx.clone(),
+                    &mut on_event,
+                )
+                .await
+                .map_err(map_err);
+            continue;
+        }
+        if !wait_background {
+            break;
+        }
+        let notices = agent.drain_background_notifications(&ctx);
+        if notices.is_empty() {
+            if !exec.has_pending_background(&ctx) {
+                break;
+            }
+            // Short slices keep steers responsive while a job runs.
+            tokio::select! {
+                _ = exec.wait_for_notification(&ctx, std::time::Duration::from_secs(1)) => {}
+                _ = cancel.cancelled() => break,
+            }
+            continue;
+        }
+        let text = notices
+            .iter()
+            .map(|n| format!("{}\n{n}", crate::composer::transcript::BG_NOTICE_MARKER))
+            .collect::<Vec<_>>()
+            .join("\n\n");
         run_result = agent
             .run_streaming(
-                gray_core::message::Message::user(text),
+                gray_core::message::Message::user_injected(text),
                 ctx.clone(),
                 &mut on_event,
             )

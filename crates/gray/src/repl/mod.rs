@@ -512,6 +512,12 @@ pub async fn run_repl_mode(
 
     use std::io::IsTerminal;
     let interactive = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
+    if interactive && std::env::var("TERM").is_ok_and(|t| t.trim() == "dumb") {
+        eprintln!(
+            "gray: the interactive TUI cannot run on TERM=dumb — use `gray -p \"...\"` or a real terminal"
+        );
+        std::process::exit(2);
+    }
     if interactive {
         gray_plugin::builder::set_autostart(true);
     }
@@ -524,7 +530,21 @@ pub async fn run_repl_mode(
     crate::setup::set_active_model_provider(&config.base_url);
 
     let offline = crate::config::offline();
-    if !offline && !config.uses_plugin_credentials() && !config.bare && !config.lean {
+    // Flag-based connects (--base-url/--model) skip /models, so lean mode
+    // still owes the endpoint one cheap /models probe: it fills the context
+    // cache so the UI shows the endpoint's real context_length, not the 256k
+    // fallback. Result is cached on disk for later runs.
+    let custom_base = crate::setup::normalize_custom_base_url(&config.base_url)
+        != crate::setup::normalize_custom_base_url(crate::config::DEFAULT_BASE_URL);
+    let needs_endpoint_probe = !config.lean
+        || (custom_base && config.context_window.is_none() && {
+            crate::setup::context::ensure_disk_loaded();
+            config
+                .model
+                .as_deref()
+                .is_some_and(|m| crate::setup::get_cached_model_context(m).is_none())
+        });
+    if !offline && !config.uses_plugin_credentials() && !config.bare && needs_endpoint_probe {
         let base = config.base_url.clone();
         let key = config.api_key.clone();
         tokio::task::spawn_blocking(move || {

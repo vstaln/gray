@@ -106,8 +106,36 @@ impl HashSpec {
 
 pub fn lookup<'a>(index: &'a Index, name: &str) -> anyhow::Result<&'a Entry> {
     index.plugins.get(name).ok_or_else(|| {
-        anyhow::anyhow!("not in index: {name} (install by https URL or local path instead)")
+        let near = near_names(index, name);
+        if near.is_empty() {
+            anyhow::anyhow!("not in index: {name} (install by https URL or local path instead)")
+        } else {
+            anyhow::anyhow!("not in index: {name} — did you mean {}?", near.join(", "))
+        }
     })
+}
+
+/// Index keys a user plausibly meant: the repo is `gray-<typed>` (e.g.
+/// `devin-sub` → key `devin`, repo gray-devin-sub), or the typed name is the
+/// key plus a suffix / the key's prefix.
+fn near_names(index: &Index, name: &str) -> Vec<String> {
+    let typed = name.trim().to_lowercase();
+    if typed.len() < 3 {
+        return Vec::new();
+    }
+    let repo = format!("/gray-{typed}/");
+    index
+        .plugins
+        .iter()
+        .filter(|(key, e)| {
+            let key = key.to_lowercase();
+            e.source.url.to_lowercase().contains(&repo)
+                || typed.starts_with(&format!("{key}-"))
+                || (key.starts_with(&typed) && key != typed)
+        })
+        .map(|(key, _)| format!("'{key}'"))
+        .take(3)
+        .collect()
 }
 
 #[derive(Debug, Serialize, Deserialize)]

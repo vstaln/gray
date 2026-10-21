@@ -1211,3 +1211,20 @@ fn plain_header_keeps_the_template_second_line() {
     assert!(rows[0].contains("e2e-theme"), "{plain:?}");
     assert!(rows[1].contains("verify the theme fixes"), "{plain:?}");
 }
+
+#[test]
+fn mcp_tool_header_names_server_and_tool() {
+    let line = format_tool_call_header(
+        "mcp__treg__catalog_search",
+        &serde_json::json!({"query": "send an sms"}),
+        None,
+        None,
+    );
+    let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+    assert!(text.contains("MCP treg catalog search"), "{text}");
+    assert!(text.contains("send an sms"), "{text}");
+    assert_eq!(
+        humanize_tool_name("mcp__codegraph__codegraph_explore"),
+        "codegraph \u{b7} codegraph explore"
+    );
+}

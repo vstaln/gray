@@ -611,7 +611,7 @@ pub enum SystemPrompt {
     Build(PromptBuilder),
 }
 
-pub type PromptBuilder = Box<dyn FnOnce(&Registry) -> String + Send>;
+pub type PromptBuilder = Box<dyn FnOnce(&Registry, &[Manifest]) -> String + Send>;
 
 pub type ExecutorWrap = Box<dyn FnOnce(Arc<dyn ToolExecutor>) -> Arc<dyn ToolExecutor> + Send>;
 
@@ -699,7 +699,7 @@ pub async fn build_agent(opts: BuilderOptions) -> anyhow::Result<Agent> {
     let ledger = current_file_ledger();
     let system = match system_prompt {
         SystemPrompt::Literal(s) => s,
-        SystemPrompt::Build(f) => f(&registry),
+        SystemPrompt::Build(f) => f(&registry, &manifests),
     };
     let provider: Box<dyn gray_core::agent::Provider> =
         match (dynamic_provider_profile, dynamic_credential_source) {

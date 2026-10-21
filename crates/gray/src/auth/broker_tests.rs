@@ -641,9 +641,12 @@ async fn relay_chat_unavailable_maps_to_login_required() {
             &self,
             _request: ProviderChatRequest,
         ) -> Result<ProviderChatResult, ProviderRpcError> {
-            Err(ProviderRpcError::Unavailable(
-                "run agy once and complete the Google sign-in".into(),
-            ))
+            Err(ProviderRpcError::Rpc(ProviderRpcFailure {
+                code: "unavailable".into(),
+                message: "run agy once and complete the Google sign-in".into(),
+                retryable: false,
+                terminal: false,
+            }))
         }
         async fn shutdown(&self) {}
     }
@@ -659,6 +662,72 @@ async fn relay_chat_unavailable_maps_to_login_required() {
         &error,
         gray_core::credential::CredentialError::ReauthRequired(hint) if hint.contains("run agy once")
     ));
+}
+
+#[tokio::test]
+async fn relay_chat_transport_failure_is_not_a_login_problem() {
+    struct NoRelay;
+    #[async_trait::async_trait]
+    impl ProviderRpc for NoRelay {
+        async fn auth_start(
+            &self,
+            _provider: &str,
+            _auth_method: &str,
+        ) -> Result<ProviderAuthStart, ProviderRpcError> {
+            unimplemented!()
+        }
+        async fn auth_poll(
+            &self,
+            _operation_id: &str,
+        ) -> Result<ProviderAuthPoll, ProviderRpcError> {
+            unimplemented!()
+        }
+        async fn auth_cancel(&self, _operation_id: &str) -> Result<(), ProviderRpcError> {
+            unimplemented!()
+        }
+        async fn refresh(
+            &self,
+            _request: ProviderRefreshRequest,
+        ) -> Result<CredentialMaterial, ProviderRpcError> {
+            unimplemented!()
+        }
+        async fn revoke(
+            &self,
+            _request: ProviderRevokeRequest,
+        ) -> Result<ProviderRevokeResult, ProviderRpcError> {
+            unimplemented!()
+        }
+        async fn models(
+            &self,
+            _request: ProviderModelsRequest,
+        ) -> Result<ProviderModelCatalog, ProviderRpcError> {
+            unimplemented!()
+        }
+        async fn chat(
+            &self,
+            _request: ProviderChatRequest,
+        ) -> Result<ProviderChatResult, ProviderRpcError> {
+            Err(ProviderRpcError::Unavailable(
+                "sidecar child closed stdout".into(),
+            ))
+        }
+        async fn shutdown(&self) {}
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let store = CredentialStore::new(dir.path().join("auth.json"));
+    let mut relay = installed();
+    relay.auth_method.operations = vec!["models".into(), "chat".into()];
+    let source =
+        shared_plugin_source_with_model(relay, store, Arc::new(NoRelay), Some("flash".into()));
+    let error = source.acquire().await.unwrap_err();
+    assert!(
+        matches!(
+            &error,
+            gray_core::credential::CredentialError::Unavailable(m) if m.contains("closed stdout")
+        ),
+        "{error:?}"
+    );
 }
 
 #[tokio::test]

@@ -156,8 +156,11 @@ impl fmt::Debug for ProviderAuthPoll {
 #[derive(Clone, Serialize, Deserialize)]
 pub struct ProviderRpcFailure {
     pub code: String,
+    #[serde(default)]
     pub message: String,
+    #[serde(default)]
     pub retryable: bool,
+    #[serde(default)]
     pub terminal: bool,
 }
 

@@ -31,6 +31,7 @@ futures = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
+strsim = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
 reqwest = { workspace = true }
@@ -53,4 +54,8 @@ rayon = "1.12"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading", "Win32_System_SystemInformation", "Wdk_System_SystemServices"] }
+
+[target.'cfg(windows)'.dev-dependencies]
+portable-pty = "0.9"
+vt100 = "0.15"
 

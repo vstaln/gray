@@ -329,21 +329,23 @@ fn count_models_json(json: &serde_json::Value) -> usize {
     }
 }
 
-pub fn probe_custom_endpoint(base_url: &str) -> EndpointProbe {
+/// Probe an endpoint on a detached thread, reporting over a channel —
+/// callers can keep reading keys (e.g. esc to cancel) while the check is in
+/// flight.
+pub fn probe_custom_endpoint_detached(base_url: &str) -> std::sync::mpsc::Receiver<EndpointProbe> {
+    let (tx, rx) = std::sync::mpsc::channel();
     let base = base_url.to_string();
-    std::thread::scope(|s| {
-        s.spawn(move || {
-            match tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-            {
-                Ok(rt) => rt.block_on(probe_endpoint_async(base)),
-                Err(_) => EndpointProbe::Down,
-            }
-        })
-        .join()
-        .unwrap_or(EndpointProbe::Down)
-    })
+    std::thread::spawn(move || {
+        let probe = match tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+        {
+            Ok(rt) => rt.block_on(probe_endpoint_async(base)),
+            Err(_) => EndpointProbe::Down,
+        };
+        let _ = tx.send(probe);
+    });
+    rx
 }
 
 pub struct LocalEndpointSuggestion {
@@ -524,6 +526,36 @@ pub fn fetch_live_provider_models(base_url: &str, api_key: Option<&str>) -> Vec<
     rows.iter().map(|r| r.pair()).collect()
 }
 
+pub(crate) fn plugin_catalog_rows(
+    catalog: &gray_plugin::ProviderModelCatalog,
+) -> Vec<crate::setup::variants::CachedRow> {
+    for m in &catalog.models {
+        if let Some(w) = m.context_window {
+            cache_model_context_if_absent(&m.id, w as usize);
+        }
+    }
+    catalog
+        .models
+        .iter()
+        .map(|m| {
+            let name = m.name.trim();
+            crate::setup::variants::CachedRow::Full(crate::setup::variants::CachedModel {
+                id: m.id.clone(),
+                name: if name.is_empty() {
+                    m.id.clone()
+                } else {
+                    name.to_string()
+                },
+                reasoning_efforts: m.reasoning_efforts.clone(),
+                variants: m.variants.clone(),
+                slots: m.slots.clone(),
+                declared: true,
+                price_cliff_tokens: m.price_cliff_tokens,
+            })
+        })
+        .collect()
+}
+
 pub(crate) fn fetch_plugin_provider_models(
     installed: crate::providers::InstalledProvider,
 ) -> Vec<(String, String)> {
@@ -584,32 +616,7 @@ async fn plugin_models_rpc(
         return Vec::new();
     };
 
-    for m in &catalog.models {
-        if let Some(w) = m.context_window {
-            cache_model_context_if_absent(&m.id, w as usize);
-        }
-    }
-
-    let rows: Vec<crate::setup::variants::CachedRow> = catalog
-        .models
-        .iter()
-        .map(|m| {
-            let name = m.name.trim();
-            crate::setup::variants::CachedRow::Full(crate::setup::variants::CachedModel {
-                id: m.id.clone(),
-                name: if name.is_empty() {
-                    m.id.clone()
-                } else {
-                    name.to_string()
-                },
-                reasoning_efforts: m.reasoning_efforts.clone(),
-                variants: m.variants.clone(),
-                slots: m.slots.clone(),
-                declared: true,
-                price_cliff_tokens: m.price_cliff_tokens,
-            })
-        })
-        .collect();
+    let rows = plugin_catalog_rows(&catalog);
     for row in &rows {
         row.register();
     }

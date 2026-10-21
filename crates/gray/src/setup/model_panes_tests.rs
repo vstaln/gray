@@ -1,10 +1,11 @@
 use super::{
-    PaneEfforts, PaneProvider, active_rail_index, list_height, match_range, provider_is_active,
-    scoped_config,
+    GroupId, GroupStates, PaneEfforts, PaneProvider, RailRow, active_rail_index, enclosing_group,
+    list_height, match_range, provider_is_active, rail_filter_hits, rail_rows, rail_rows_for,
+    rail_step, scoped_config,
 };
 use crate::config::Config;
 use crate::setup::SavedConfig;
-use crate::setup::catalog::{ConnectAuth, ConnectItem, plugin_models_key};
+use crate::setup::catalog::{ConnectAuth, ConnectItem, GRAY_PORTAL_ID, plugin_models_key};
 use std::collections::BTreeMap;
 
 const BASE_A: &str = "http://127.0.0.1:1/v1";
@@ -55,6 +56,8 @@ fn row(item: ConnectItem) -> PaneProvider {
         connected: false,
         removable: false,
         installed: None,
+        detected: false,
+        install: None,
         item,
     }
 }
@@ -216,4 +219,242 @@ fn step_reports_whether_the_level_moved() {
     assert!(downs > 0);
     assert!(!efforts.step(&sa, &saved, &a, STEP_MODEL, false));
     assert!(efforts.step(&sa, &saved, &a, STEP_MODEL, true));
+}
+
+#[test]
+fn rail_rows_flat_then_custom_then_groups() {
+    let mut rail = vec![
+        row(item(
+            "openai",
+            "https://api.openai.com/v1",
+            ConnectAuth::ApiKey,
+        )),
+        row(item("custom", "", ConnectAuth::ApiKey)),
+        row(item("devin", "http://x", plugin_auth())),
+        row(item(
+            "mistral",
+            "https://api.mistral.ai/v1",
+            ConnectAuth::ApiKey,
+        )),
+    ];
+    rail[0].connected = true; // connected API key stays flat
+    let rows = rail_rows(&rail, &GroupStates::default());
+    assert_eq!(
+        rows,
+        vec![
+            RailRow::Provider(0),
+            RailRow::Provider(1), // + Custom endpoint after the flat section
+            RailRow::Group(GroupId::Logins),
+            RailRow::Provider(2), // devin (login, open by default)
+            RailRow::Group(GroupId::ApiKey),
+        ]
+    );
+    // API-key group starts closed: mistral hidden behind the header.
+    assert!(!rows.contains(&RailRow::Provider(3)));
+}
+
+#[test]
+fn rail_rows_open_api_key_group_reveals_members() {
+    let rail = vec![
+        row(item(
+            "openai",
+            "https://api.openai.com/v1",
+            ConnectAuth::ApiKey,
+        )),
+        row(item(
+            "mistral",
+            "https://api.mistral.ai/v1",
+            ConnectAuth::ApiKey,
+        )),
+    ];
+    let mut groups = GroupStates::default();
+    groups.set(GroupId::ApiKey, true);
+    let rows = rail_rows(&rail, &groups);
+    assert_eq!(
+        rows,
+        vec![
+            RailRow::Group(GroupId::ApiKey),
+            RailRow::Provider(0),
+            RailRow::Provider(1),
+        ]
+    );
+    assert_eq!(enclosing_group(&rows, 2), Some(0));
+}
+
+#[test]
+fn rail_rows_logins_holds_connected_and_new_logins() {
+    let mut rail = vec![
+        row(item("devin", "http://x", plugin_auth())),
+        row(item("claude", "http://y", plugin_auth())),
+    ];
+    rail[0].connected = true; // connected logins stay inside the group
+    let rows = rail_rows(&rail, &GroupStates::default());
+    assert_eq!(
+        rows,
+        vec![
+            RailRow::Group(GroupId::Logins),
+            RailRow::Provider(0),
+            RailRow::Provider(1),
+        ]
+    );
+}
+
+#[test]
+fn rail_rows_logins_lists_installable_provider_plugins() {
+    let mut rail = vec![row(item(
+        "devin:devin-subscription",
+        "http://x",
+        plugin_auth(),
+    ))];
+    let mut installable = row(item("plugin:claude", "", ConnectAuth::None));
+    installable.item.name = "Claude".into();
+    installable.install = Some("claude".into());
+    rail.push(installable);
+    let rows = rail_rows(&rail, &GroupStates::default());
+    assert_eq!(
+        rows,
+        vec![
+            RailRow::Group(GroupId::Logins),
+            RailRow::Provider(0),
+            RailRow::Provider(1),
+        ]
+    );
+    // The rail filter names them too.
+    let filtered = rail_rows_for(&rail, &GroupStates::default(), "clau");
+    assert_eq!(
+        filtered,
+        vec![RailRow::Group(GroupId::Logins), RailRow::Provider(1)]
+    );
+    // Installable rows are never adoptable, even with a stray stored key.
+    let mut keys = BTreeMap::new();
+    keys.insert("plugin:claude".to_string(), "sk-x".to_string());
+    assert!(!rail[1].adoptable(&keys));
+}
+
+#[test]
+fn rail_rows_detected_and_keyless_stay_flat() {
+    let mut rail = vec![
+        row(item(
+            "openai",
+            "https://api.openai.com/v1",
+            ConnectAuth::ApiKey,
+        )),
+        row(item(
+            "ollama",
+            "http://localhost:11434/v1",
+            ConnectAuth::None,
+        )),
+    ];
+    rail[0].detected = true;
+    let rows = rail_rows(&rail, &GroupStates::default());
+    assert_eq!(rows, vec![RailRow::Provider(0), RailRow::Provider(1)]);
+}
+
+#[test]
+fn rail_filter_narrows_to_matching_providers_or_leaves_rail_alone() {
+    let mut groq = row(item(
+        "groq",
+        "https://api.groq.com/openai/v1",
+        ConnectAuth::ApiKey,
+    ));
+    groq.item.name = "Groq".into();
+    let mut xai = row(item("xai", "https://api.x.ai/v1", ConnectAuth::ApiKey));
+    xai.item.name = "xAI (Grok)".into();
+    let mut oai = row(item(
+        "openai",
+        "https://api.openai.com/v1",
+        ConnectAuth::ApiKey,
+    ));
+    oai.item.name = "OpenAI".into();
+    oai.connected = true;
+    let rail = vec![oai, groq, xai];
+    let groups = GroupStates::default();
+    // "gro" names Groq + xAI (Grok): the closed API-key group opens to show just them.
+    let rows = rail_rows_for(&rail, &groups, "gro");
+    assert_eq!(
+        rows,
+        vec![
+            RailRow::Group(GroupId::ApiKey),
+            RailRow::Provider(1),
+            RailRow::Provider(2)
+        ]
+    );
+    assert!(rail_filter_hits(&rail, "GRO"));
+    // A model-ish filter names no provider: rail unchanged, models get filtered.
+    assert!(!rail_filter_hits(&rail, "gpt-5"));
+    assert_eq!(
+        rail_rows_for(&rail, &groups, "gpt-5"),
+        rail_rows(&rail, &groups)
+    );
+    assert_eq!(rail_rows_for(&rail, &groups, ""), rail_rows(&rail, &groups));
+}
+
+#[test]
+fn portal_row_pins_to_top_with_spacer() {
+    let rail = vec![
+        row(item("a", BASE_A, ConnectAuth::None)),
+        row(item(
+            GRAY_PORTAL_ID,
+            "https://portal/v1",
+            ConnectAuth::ApiKey,
+        )),
+        row(item("b", BASE_B, ConnectAuth::None)),
+    ];
+    let rows = rail_rows(&rail, &GroupStates::default());
+    assert_eq!(
+        rows,
+        vec![
+            RailRow::Provider(1),
+            RailRow::Spacer,
+            RailRow::Provider(0),
+            RailRow::Provider(2),
+        ]
+    );
+}
+
+#[test]
+fn portal_stays_first_with_groups_expanded() {
+    let rail = vec![
+        row(item("keyed", BASE_A, ConnectAuth::ApiKey)),
+        row(item(
+            GRAY_PORTAL_ID,
+            "https://portal/v1",
+            ConnectAuth::ApiKey,
+        )),
+    ];
+    let mut groups = GroupStates::default();
+    groups.set(GroupId::ApiKey, true);
+    let rows = rail_rows(&rail, &groups);
+    assert_eq!(rows[0], RailRow::Provider(1));
+    assert_eq!(rows[1], RailRow::Spacer);
+    assert_eq!(rows[2], RailRow::Group(GroupId::ApiKey));
+    assert_eq!(rows[3], RailRow::Provider(0));
+}
+
+#[test]
+fn rail_step_skips_spacers_and_clamps() {
+    let rows = vec![
+        RailRow::Provider(0),
+        RailRow::Spacer,
+        RailRow::Provider(1),
+        RailRow::Provider(2),
+    ];
+    assert_eq!(rail_step(&rows, 0, false), 2);
+    assert_eq!(rail_step(&rows, 2, true), 0);
+    assert_eq!(rail_step(&rows, 3, false), 3);
+    assert_eq!(rail_step(&rows, 0, true), 0);
+}
+
+#[test]
+fn provider_filter_drops_spacer_row() {
+    let rail = vec![
+        row(item(
+            GRAY_PORTAL_ID,
+            "https://portal/v1",
+            ConnectAuth::ApiKey,
+        )),
+        row(item("openrouter", BASE_A, ConnectAuth::None)),
+    ];
+    let rows = rail_rows_for(&rail, &GroupStates::default(), "openrouter");
+    assert_eq!(rows, vec![RailRow::Provider(1)]);
 }

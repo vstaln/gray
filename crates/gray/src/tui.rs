@@ -311,6 +311,51 @@ pub(crate) fn ansi_supported() -> bool {
     true
 }
 
+/// SGR sequence selecting `color` for the foreground / background:
+/// `38;2`/`48;2` only when `color` is still RGB, `38;5`/`48;5` for a
+/// 256-color index, a named `30-37`/`90-97` (or `40-47`/`100-107`) code for
+/// ANSI colors, and the default `39`/`49` for `Reset`. Feed colors through
+/// `gray_markdown::adapt_ratatui_color` first and the emitted escape always
+/// matches the terminal's level.
+pub(crate) fn sgr_fg(color: ratatui::style::Color) -> String {
+    sgr_color(color, false)
+}
+
+pub(crate) fn sgr_bg(color: ratatui::style::Color) -> String {
+    sgr_color(color, true)
+}
+
+fn sgr_color(color: ratatui::style::Color, bg: bool) -> String {
+    use ratatui::style::Color as C;
+    match color {
+        C::Rgb(r, g, b) => format!("\x1b[{};2;{r};{g};{b}m", if bg { 48 } else { 38 }),
+        C::Indexed(i) => format!("\x1b[{};5;{i}m", if bg { 48 } else { 38 }),
+        C::Reset => format!("\x1b[{}m", if bg { 49 } else { 39 }),
+        named => {
+            let code = match named {
+                C::Black => 30,
+                C::Red => 31,
+                C::Green => 32,
+                C::Yellow => 33,
+                C::Blue => 34,
+                C::Magenta => 35,
+                C::Cyan => 36,
+                C::Gray => 37,
+                C::DarkGray => 90,
+                C::LightRed => 91,
+                C::LightGreen => 92,
+                C::LightYellow => 93,
+                C::LightBlue => 94,
+                C::LightMagenta => 95,
+                C::LightCyan => 96,
+                C::White => 97,
+                _ => 39,
+            };
+            format!("\x1b[{}m", code + if bg { 10 } else { 0 })
+        }
+    }
+}
+
 pub fn print_logo() {
     use std::io::IsTerminal;
     if !std::io::stdout().is_terminal() {
@@ -335,7 +380,9 @@ pub fn print_logo() {
                 let r = (100.0 + 140.0 * t).round() as u8;
                 let g = (100.0 + 140.0 * t).round() as u8;
                 let b = (100.0 + 140.0 * t).round() as u8;
-                formatted.push_str(&format!("\x1b[38;2;{r};{g};{b}m{ch}"));
+                let c = gray_markdown::adapt_ratatui_color(ratatui::style::Color::Rgb(r, g, b));
+                formatted.push_str(&sgr_fg(c));
+                formatted.push(ch);
             }
             print!("\r{formatted}\x1b[0m\r\n");
         }

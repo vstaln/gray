@@ -246,10 +246,7 @@ pub async fn refresh_plugin(home: &Path, entry: &LockEntry) -> anyhow::Result<Pr
     plugin.shutdown(std::time::Duration::from_secs(2)).await;
 
     cached.manifest_sha256 = lock_identity(&plugin_name, entry);
-    let granted_provider = entry
-        .granted_capabilities
-        .iter()
-        .any(|capability| capability == PROVIDER_CAPABILITY);
+    let granted_provider = provider_granted(entry, &manifest.capabilities);
     if granted_provider {
         cached.providers.extend(manifest.providers);
     } else if !manifest.providers.is_empty() {
@@ -264,6 +261,18 @@ pub async fn refresh_plugin(home: &Path, entry: &LockEntry) -> anyhow::Result<Pr
     cache.save(&path)?;
     let _ = refresh_installed_argv(home, &mut cache);
     Ok(cache)
+}
+
+/// Explicitly granted, or grandfathered: a plugin never asked for consent
+/// gets what it declares — the rule the runtime builder and `gray plugin
+/// capabilities` already apply. (Fresh index installs are never asked, so the
+/// stricter check here hid devin/claude providers the runtime would allow.)
+pub(crate) fn provider_granted(entry: &LockEntry, declared: &[String]) -> bool {
+    entry
+        .granted_capabilities
+        .iter()
+        .any(|capability| capability == PROVIDER_CAPABILITY)
+        || gray_plugin::capabilities::granted_for(entry, declared).contains(PROVIDER_CAPABILITY)
 }
 
 fn entry_name(home: &Path, entry: &LockEntry) -> anyhow::Result<String> {
@@ -294,10 +303,14 @@ fn cached_from_manifest(home: &Path, name: &str, entry: &LockEntry) -> CachedPro
         .and_then(serde_json::Value::as_array)
         .cloned()
         .unwrap_or_default();
-    let granted = entry
-        .granted_capabilities
-        .iter()
-        .any(|capability| capability == PROVIDER_CAPABILITY);
+    let declared: Vec<String> = manifest
+        .get("capabilities")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|v| v.as_str().map(str::to_string))
+        .collect();
+    let granted = provider_granted(entry, &declared);
     if !raw_providers.is_empty() && granted {
         match serde_json::from_value::<Vec<ProviderDecl>>(serde_json::Value::Array(raw_providers)) {
             Ok(declared) => cached.providers = declared,

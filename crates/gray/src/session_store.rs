@@ -9,6 +9,9 @@ const SUPPORTED_SESSION_VERSION: u32 = 1;
 
 const SESSION_LOCK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
+pub(crate) const RESTART_PARENT_ENV: &str = "GRAY_RESTART_PARENT_PID";
+const RESTART_PARENT_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
 fn ensure_private_dir(dir: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(dir)?;
     #[cfg(unix)]
@@ -1086,6 +1089,7 @@ fn sanitize_origin_tag(raw: &str) -> Option<String> {
 }
 
 static INHERITED_SESSION: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+static RESTART_PARENT_PID: std::sync::OnceLock<Option<u32>> = std::sync::OnceLock::new();
 
 pub fn capture_inherited_session_env() {
     INHERITED_SESSION.get_or_init(|| {
@@ -1093,6 +1097,12 @@ pub fn capture_inherited_session_env() {
             .ok()
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
+    });
+    RESTART_PARENT_PID.get_or_init(|| {
+        std::env::var(RESTART_PARENT_ENV)
+            .ok()
+            .and_then(|v| v.trim().parse::<u32>().ok())
+            .filter(|&p| p != std::process::id())
     });
 }
 
@@ -1541,18 +1551,19 @@ impl JsonlSessionStore {
         let mut file = options.open(&open_path)?;
         tighten_file_mode(&open_path);
 
-        let mut held = OPEN_LOCKS.lock().expect("open-lock registry poisoned");
-        if let Some(inner) = held.get(&open_path).and_then(std::sync::Weak::upgrade) {
+        if let Some(inner) = take_registered_open_lock(&open_path) {
             return Ok(SessionOpenGuard { _inner: inner });
         }
-        held.remove(&open_path);
+
         match file.try_lock() {
             Ok(()) => {}
             Err(std::fs::TryLockError::WouldBlock) => {
-                return Err(SessionError::Locked {
-                    id: id.clone(),
-                    pid: read_open_holder(&open_path),
-                });
+                if !wait_out_restart_parent(&mut file, &open_path).await {
+                    return Err(SessionError::Locked {
+                        id: id.clone(),
+                        pid: read_open_holder(&open_path),
+                    });
+                }
             }
             Err(std::fs::TryLockError::Error(e)) => {
                 log::warn!(
@@ -1563,7 +1574,10 @@ impl JsonlSessionStore {
         }
         write_open_holder(&mut file, &open_path);
         let inner = std::sync::Arc::new(OpenLockInner { _file: file });
-        held.insert(open_path, std::sync::Arc::downgrade(&inner));
+        OPEN_LOCKS
+            .lock()
+            .expect("open-lock registry poisoned")
+            .insert(open_path, std::sync::Arc::downgrade(&inner));
         Ok(SessionOpenGuard { _inner: inner })
     }
 
@@ -2716,6 +2730,15 @@ pub struct SessionOpenGuard {
     _inner: std::sync::Arc<OpenLockInner>,
 }
 
+fn take_registered_open_lock(open_path: &Path) -> Option<std::sync::Arc<OpenLockInner>> {
+    let mut held = OPEN_LOCKS.lock().expect("open-lock registry poisoned");
+    if let Some(inner) = held.get(open_path).and_then(std::sync::Weak::upgrade) {
+        return Some(inner);
+    }
+    held.remove(open_path);
+    None
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 struct OpenHolder {
     pid: u32,
@@ -2772,6 +2795,63 @@ fn open_lock_held_at(open_path: &Path) -> bool {
         Ok(()) => false,
         Err(std::fs::TryLockError::WouldBlock) => true,
         Err(std::fs::TryLockError::Error(_)) => false,
+    }
+}
+
+/// On Windows `/restart` spawns the new process while the old one is
+/// still exiting, so the session open-lock can briefly remain held by
+/// the dying parent. Give the holder a short grace period to release
+/// the lock before reporting the session as locked. A restarting parent
+/// that sets RESTART_PARENT_ENV gets a longer budget, and a lock held
+/// by any other pid then fails immediately; without the hint (e.g. the
+/// parent is an older build) a few seconds still covers the exit.
+async fn wait_out_restart_parent(file: &mut std::fs::File, open_path: &Path) -> bool {
+    let wait_pid = RESTART_PARENT_PID.get().copied().flatten();
+    let budget = if wait_pid.is_some() {
+        RESTART_PARENT_WAIT
+    } else {
+        std::time::Duration::from_secs(3)
+    };
+    let deadline = tokio::time::Instant::now() + budget;
+    loop {
+        match file.try_lock() {
+            Ok(()) => return true,
+            Err(std::fs::TryLockError::WouldBlock) => {
+                if let (Some(wp), Some(holder)) = (wait_pid, read_open_holder(open_path))
+                    && holder != wp
+                {
+                    return false;
+                }
+            }
+            Err(std::fs::TryLockError::Error(e)) => {
+                log::warn!(
+                    "session open-lock unsupported on {} ({e}); proceeding unlocked",
+                    open_path.display()
+                );
+                return true;
+            }
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+}
+
+/// Releases the OS-level lock on every session open-file this process
+/// holds, without dropping the guards. Windows `/restart` needs this:
+/// the spawned child has to acquire the same lock while the parent is
+/// still alive supervising it. The parent stays in `child.wait()` so
+/// the launching shell cannot reclaim the console and steal input.
+#[cfg(not(unix))]
+pub(crate) fn release_open_locks() {
+    let Ok(held) = OPEN_LOCKS.lock() else {
+        return;
+    };
+    for inner in held.values().filter_map(std::sync::Weak::upgrade) {
+        if let Err(e) = inner._file.unlock() {
+            log::warn!("failed to release session open-lock before restart: {e}");
+        }
     }
 }
 

@@ -43,19 +43,19 @@ fn connected_then_popular_then_custom_then_stable_remainder() {
 
     catalog::sort_connect_items(&mut items, &config(), &BTreeMap::new(), &BTreeMap::new());
     let ids: Vec<&str> = items.iter().map(|i| i.id.as_str()).collect();
-    assert_eq!(&ids[..4], ["openai", "anthropic", "google", "openrouter"]);
     assert_eq!(
-        ids.iter().position(|id| *id == "custom"),
-        Some(catalog::POPULAR_DEFS.len())
+        &ids[..5],
+        ["custom", "openai", "anthropic", "google", "openrouter"]
     );
+    assert_eq!(ids.iter().position(|id| *id == "custom"), Some(0));
     catalog::sort_connect_items(&mut items, &config(), &auth(), &BTreeMap::new());
     assert_eq!(
         items
             .iter()
-            .take(4)
+            .take(5)
             .map(|i| i.id.as_str())
             .collect::<Vec<_>>(),
-        ["openrouter", "commandcode", "openai", "anthropic"]
+        ["custom", "openrouter", "commandcode", "openai", "anthropic"]
     );
     assert_eq!(items.len(), len);
 }
@@ -83,7 +83,7 @@ fn oauth_and_active_keyless_provider_are_connected() {
             .take(5)
             .map(|i| i.id.as_str())
             .collect::<Vec<_>>(),
-        ["openrouter", "commandcode", "ollama", "xai", "openai"]
+        ["custom", "openrouter", "commandcode", "ollama", "xai"]
     );
 }
 
@@ -188,10 +188,10 @@ fn separator_is_after_custom_not_after_first_connected_provider() {
         .collect();
     let custom = rows.iter().position(|r| r.contains("Custom")).unwrap();
 
-    assert!(rows[custom - 2].contains("xAI"));
-    assert!(rows[custom - 1].contains("Mistral"));
     assert!(rows[custom + 1].contains("────"));
-    assert!(!rows[custom + 2].contains("OpenAI"));
+    assert!(rows[custom + 2].contains("OpenRouter"));
+    assert!(rows[custom + 3].contains("CommandCode"));
+    assert!(rows[custom + 4].contains("OpenAI"));
 }
 
 #[test]
@@ -282,7 +282,17 @@ fn plugin_login_status_does_not_overwrite_title() {
     };
     let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap();
     terminal
-        .draw(|frame| render_authorizing_plugin(frame, frame.area(), &item, None, None, &colors))
+        .draw(|frame| {
+            render_authorizing_plugin(
+                frame,
+                frame.area(),
+                &item,
+                None,
+                None,
+                std::time::Duration::ZERO,
+                &colors,
+            )
+        })
         .unwrap();
     let buf = terminal.backend().buffer();
     let rows: Vec<String> = (0..24)
@@ -302,4 +312,57 @@ fn plugin_login_status_does_not_overwrite_title() {
         .filter(|&y| (0..80).any(|x| buf[(x, y)].bg == Color::Black))
         .count();
     assert_eq!(box_rows, 7);
+}
+
+#[test]
+fn failed_plugin_login_wraps_the_full_fix_and_stops_spinning() {
+    let item = ConnectItem {
+        id: "devin-subscription".into(),
+        name: "Devin subscription".into(),
+        sublabel: String::new(),
+        base_url: String::new(),
+        no_auth: false,
+        auth: ConnectAuth::ApiKey,
+    };
+    let colors = ConnectColors {
+        box_bg: Color::Black,
+        input_bg: Color::Black,
+        accent_peach: Color::Yellow,
+        text_dim: Color::DarkGray,
+    };
+    let msg = format!(
+        "{}provider login required: `devin` not found on PATH. Install the Devin CLI, \
+         then run `devin auth login` once to sign in.",
+        super::LOGIN_FAILED
+    );
+    for w in [60u16, 100] {
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(w, 24)).unwrap();
+        terminal
+            .draw(|frame| {
+                render_authorizing_plugin(
+                    frame,
+                    frame.area(),
+                    &item,
+                    None,
+                    Some(&msg),
+                    std::time::Duration::ZERO,
+                    &colors,
+                )
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        let text: String = (0..24)
+            .map(|y| (0..w).map(|x| buf[(x, y)].symbol()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join(" ");
+        let squashed: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(squashed.contains("auth login"), "w={w}: {squashed}");
+        assert!(
+            squashed.contains("✗ provider login required"),
+            "w={w}: {squashed}"
+        );
+        assert!(!squashed.contains('⠋'), "spinner on a failure, w={w}");
+        assert!(squashed.contains("esc cancel"), "w={w}: {squashed}");
+    }
 }

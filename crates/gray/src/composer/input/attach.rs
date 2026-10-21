@@ -91,7 +91,61 @@ pub(crate) fn try_attach_image_paste(tui: &mut Tui, pasted: &str) -> bool {
     false
 }
 
+/// Saves a Windows clipboard bitmap to the `__OUT__` path as PNG; exit 0 on
+/// success, 1 when the clipboard holds no image. `powershell -Command` folds
+/// trailing arguments into the command text, so the path is spliced in.
+#[cfg(target_os = "windows")]
+const WINDOWS_CLIPBOARD_PNG_SCRIPT: &str = "Add-Type -AssemblyName System.Windows.Forms,System.Drawing; \
+$img=$null; \
+for($i=0; $i -lt 10 -and $null -eq $img; $i++){ try { $img=[System.Windows.Forms.Clipboard]::GetImage() } catch { Start-Sleep -Milliseconds 60 } }; \
+if($null -ne $img){ $img.Save('__OUT__',[System.Drawing.Imaging.ImageFormat]::Png); $img.Dispose(); exit 0 }; \
+exit 1";
+
+/// Reads the Windows clipboard bitmap via PowerShell into a fresh temp PNG.
+/// Returns the path when an image was actually saved.
+#[cfg(target_os = "windows")]
+fn windows_clipboard_image() -> Option<PathBuf> {
+    let (file, path) = tempfile::Builder::new()
+        .prefix("clipboard-")
+        .suffix(".png")
+        .tempfile()
+        .ok()?
+        .keep()
+        .ok()?;
+    drop(file);
+    // An absent file afterwards means the clipboard held no image.
+    let _ = std::fs::remove_file(&path);
+    let script = WINDOWS_CLIPBOARD_PNG_SCRIPT
+        .replace("__OUT__", &path.to_string_lossy().replace('\'', "''"));
+    let args: Vec<String> = vec![
+        "-NoProfile".into(),
+        "-NonInteractive".into(),
+        "-STA".into(),
+        "-Command".into(),
+        script,
+    ];
+    let out = clipboard::output_with_timeout(std::path::Path::new("powershell.exe"), &args)?;
+    if !out.status.success() {
+        return None;
+    }
+    match std::fs::metadata(&path) {
+        Ok(m) if m.len() > 0 => Some(path),
+        _ => {
+            let _ = std::fs::remove_file(&path);
+            None
+        }
+    }
+}
+
 pub(crate) fn try_attach_clipboard_image(tui: &mut Tui) -> bool {
+    #[cfg(target_os = "windows")]
+    if let Some(path) = windows_clipboard_image() {
+        if image::open(&path).is_ok() {
+            attach_image(tui, path);
+            return true;
+        }
+        let _ = std::fs::remove_file(&path);
+    }
     for (cmd, args) in [
         ("wl-paste", vec!["--type", "image/png"]),
         (

@@ -667,19 +667,18 @@ fn picker_key(
     code: crossterm::event::KeyCode,
     modifiers: crossterm::event::KeyModifiers,
 ) -> Option<PickerKey> {
-    use crossterm::event::{KeyCode, KeyModifiers};
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    if let Some(up) = crate::keymap::select_move(&KeyEvent::new(code, modifiers)) {
+        return Some(if up { PickerKey::Up } else { PickerKey::Down });
+    }
     if modifiers.contains(KeyModifiers::CONTROL) {
         return match code {
             KeyCode::Char('c') => Some(PickerKey::Cancel),
-            KeyCode::Char('p') => Some(PickerKey::Up),
-            KeyCode::Char('n') => Some(PickerKey::Down),
             KeyCode::Char('r') => Some(PickerKey::ToggleReasoning),
             _ => None,
         };
     }
     Some(match code {
-        KeyCode::Up => PickerKey::Up,
-        KeyCode::Down => PickerKey::Down,
         KeyCode::PageUp => PickerKey::PageUp,
         KeyCode::PageDown => PickerKey::PageDown,
         KeyCode::Left => PickerKey::EffortDown,
@@ -1650,7 +1649,7 @@ fn draw_picker(
     if v.filtered.is_empty() {
         let line = if v.filter.is_empty() {
             Line::from(Span::styled(
-                "  No models listed — press Enter to continue",
+                "  No models listed — type a model id, then Enter",
                 fg(t.text_dim),
             ))
         } else {
@@ -1732,7 +1731,7 @@ pub fn run_model_modal(
 }
 
 pub(crate) fn model_picker_loop(
-    terminal: &mut ratatui::Terminal<ratatui::backend::CrosstermBackend<std::io::Stdout>>,
+    terminal: &mut super::ModalTerminal,
     config: &mut Config,
     bg: Option<&BackgroundSnapshot>,
     focus: Option<&str>,
@@ -2084,7 +2083,9 @@ pub(crate) fn model_picker_loop(
                         validate_direct_model_id(filter.trim(), &models)
                             .unwrap_or_else(|_| filter.trim().to_string())
                     } else {
-                        "default".to_string()
+                        // Nothing listed and nothing typed: don't save a fake
+                        // "default" model id — wait for the user to type one.
+                        continue;
                     };
                     commit_selection(
                         config,

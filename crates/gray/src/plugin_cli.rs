@@ -737,6 +737,43 @@ pub fn print_capabilities(only: Option<&str>) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Grant a single declared capability to an installed plugin (no output);
+/// returns true when the grant set changed. Used when an in-TUI flow installs
+/// a provider plugin specifically to sign in — the interactive install prompt
+/// cannot run there, so `provider.credentials` would otherwise stay deferred
+/// and the provider row hidden.
+pub(crate) fn grant_capability(home: &Path, name: &str, capability: &str) -> anyhow::Result<bool> {
+    migrate_commands_json(home);
+    let declared = gray_plugin::capabilities::parse_declared(
+        &metadata(home, name)
+            .context("no cached manifest — is the plugin installed?")?
+            .get("capabilities")
+            .and_then(Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().map(str::to_string))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default(),
+    );
+    if !declared.iter().any(|d| d == capability) {
+        return Ok(false);
+    }
+    let mut lock = load_lock(home)?;
+    let entry = lock
+        .plugins
+        .get_mut(name)
+        .with_context(|| format!("no plugin named '{name}'"))?;
+    if entry.granted_capabilities.iter().any(|g| g == capability) {
+        return Ok(false);
+    }
+    entry.granted_capabilities.push(capability.to_string());
+    entry.capabilities_hash = Some(gray_plugin::capabilities::consent_hash(&declared));
+    lock.save(&gray_plugin::lock::lock_path(home))?;
+    crate::providers::ProviderRegistry::refresh(home)?;
+    Ok(true)
+}
+
 pub fn grant_all_capabilities(name: &str) -> anyhow::Result<()> {
     let home = home()?;
     migrate_commands_json(&home);
@@ -970,6 +1007,65 @@ fn is_local_command(home: &Path, name: &str) -> bool {
         })
 }
 
+/// The singular/plural counterpart of `name`: drops a trailing 's', or
+/// adds one. `forward` tries the typed spelling first — this is only a
+/// fallback alias.
+fn number_variant(name: &str) -> Option<String> {
+    match name.strip_suffix('s') {
+        Some(stripped) if !stripped.is_empty() => Some(stripped.to_string()),
+        Some(_) => None,
+        None => Some(format!("{name}s")),
+    }
+}
+
+/// Close-match hints for an unknown `gray <name>`: builtin subcommands and
+/// their aliases, installed plugin names, commands.json rows, and claimed
+/// /commands from manifests. Same jaro-winkler cutoff as gray-core's
+/// unknown-tool hint.
+fn command_suggestion(
+    home: &Path,
+    lock: &LockFile,
+    commands: &LockFile,
+    typed: &str,
+) -> Option<String> {
+    use clap::CommandFactory;
+    let mut names: std::collections::BTreeSet<String> = lock.plugins.keys().cloned().collect();
+    names.extend(commands.plugins.keys().cloned());
+    for sub in crate::Cli::command().get_subcommands() {
+        names.insert(sub.get_name().to_string());
+        names.extend(sub.get_all_aliases().map(str::to_string));
+    }
+    for owner in lock.plugins.keys() {
+        if let Ok(m) = metadata(home, owner) {
+            names.extend(
+                m["commands"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|v| v.as_str())
+                    .map(|c| c.trim_start_matches('/').to_string()),
+            );
+        }
+    }
+    let mut scored: Vec<(String, f64)> = names
+        .into_iter()
+        .map(|n| {
+            let s = strsim::jaro_winkler(typed, &n);
+            (n, s)
+        })
+        .filter(|(n, s)| *s >= 0.87 && n != typed)
+        .collect();
+    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    let mut it = scored.into_iter().take(3).map(|(n, _)| format!("'{n}'"));
+    let first = it.next()?;
+    let rest: Vec<String> = it.collect();
+    Some(if rest.is_empty() {
+        first
+    } else {
+        format!("{}, {}", first, rest.join(", "))
+    })
+}
+
 fn removed_builtin(name: &str) -> Option<&'static str> {
     match name {
         "view" => Some(
@@ -1001,11 +1097,12 @@ async fn index_owner_hint(name: &str) -> Option<String> {
     index
         .plugins
         .iter()
-        .find(|(_, e)| {
+        .find(|(owner, e)| {
             e.trusted()
-                && e.commands
-                    .iter()
-                    .any(|c| c.trim_start_matches('/') == name)
+                && (owner.as_str() == name
+                    || e.commands
+                        .iter()
+                        .any(|c| c.trim_start_matches('/') == name))
         })
         .map(|(owner, _)| {
             format!(
@@ -1039,13 +1136,12 @@ fn owners_for_command(
         .collect()
 }
 
-fn command_conflict_note(name: &str, claimers: &[(PathBuf, String, LockEntry)]) -> Option<String> {
+fn command_conflict_note<'a>(
+    name: &str,
+    claimers: impl Iterator<Item = &'a str>,
+) -> Option<String> {
     let mut seen = std::collections::HashSet::new();
-    let owners = claimers
-        .iter()
-        .map(|(_, o, _)| o.as_str())
-        .filter(|o| seen.insert(*o))
-        .collect::<Vec<_>>();
+    let owners = claimers.filter(|o| seen.insert(*o)).collect::<Vec<_>>();
     if owners.len() < 2 {
         return None;
     }
@@ -1082,52 +1178,120 @@ fn user_home_lock(home: &Path) -> Option<(PathBuf, LockFile, LockFile)> {
     Some((user, lock, commands))
 }
 
+/// Probe a lock-registered plugin whose `cli_argv` was never recorded —
+/// bulk syncs and older installers wrote entries straight to the lock —
+/// so `gray <name>` forwarding self-heals on first dispatch instead of
+/// dying on "sidecar plugin, not a CLI command". Reloads `lock` when
+/// adoption wrote the entry; silent no-op when nothing changed.
+async fn lazy_adopt(home: &Path, name: &str, lock: &mut LockFile) {
+    let needs_probe = lock
+        .plugins
+        .get(name)
+        .is_some_and(|e| e.cli_argv.is_none() && enabled(home, name, e));
+    if needs_probe
+        && adopt_cli(home, name, &home.join("plugins").join(name))
+            .await
+            .unwrap_or(false)
+        && let Ok(fresh) = load_lock(home)
+    {
+        *lock = fresh;
+    }
+}
+
+/// Plugin names `gray <name>` forwarding can reach: every enabled lock
+/// entry qualifies, since dispatch lazily adopts entries whose `manifest`
+/// verb was never probed at install time.
+pub(crate) fn forwardable_names() -> std::collections::BTreeSet<String> {
+    let mut names = std::collections::BTreeSet::new();
+    let Ok(home) = home() else {
+        return names;
+    };
+    if let Ok(lock) = load_lock(&home) {
+        names.extend(lock.plugins.into_keys());
+    }
+    if let Some((_, lock, _)) = user_home_lock(&home) {
+        names.extend(lock.plugins.into_keys());
+    }
+    names
+}
+
 pub async fn forward(home: &Path, name: &str, rest: &[String]) -> anyhow::Result<()> {
     validate_name(name)?;
     migrate_commands_json(home);
-    let lock = load_lock(home)?;
+    let mut lock = load_lock(home)?;
     let commands = load_commands(home)?;
     let project = std::env::current_dir()
         .ok()
         .and_then(|cwd| LockFile::load(&gray_plugin::lock::project_lock_path(&cwd)).ok());
-    let user_home = user_home_lock(home);
+    let mut user_home = user_home_lock(home);
+
+    // The typed name plus its singular/plural counterpart as an implicit
+    // alias — the exact spelling always wins; the variant is only a
+    // fallback (subagent → subagents, plugins → plugin).
+    let alt = number_variant(name);
+    let names: Vec<&str> = std::iter::once(name).chain(alt.as_deref()).collect();
+    for n in &names {
+        lazy_adopt(home, n, &mut lock).await;
+        if let Some((u, l, _)) = user_home.as_mut() {
+            lazy_adopt(u, n, l).await;
+        }
+    }
 
     let mut sidecar_named = false;
     let mut direct = None;
-    for (h, l, c, global_only) in std::iter::once((home.to_path_buf(), &lock, &commands, false))
-        .chain(user_home.iter().map(|(u, l, c)| (u.clone(), l, c, true)))
+    'scan: for (h, l, c, global_only) in
+        std::iter::once((home.to_path_buf(), &lock, &commands, false))
+            .chain(user_home.iter().map(|(u, l, c)| (u.clone(), l, c, true)))
     {
-        match l.plugins.get(name) {
-            Some(e) if e.cli_argv.is_some() && (!global_only || e.global) => {
-                direct = Some((e.clone(), h));
-                break;
+        for n in &names {
+            match l.plugins.get(*n) {
+                Some(e) if e.cli_argv.is_some() && (!global_only || e.global) => {
+                    direct = Some((e.clone(), h, (*n).to_string()));
+                    break 'scan;
+                }
+                Some(e) if !e.cli_argv.is_some() && (!global_only || e.global) => {
+                    sidecar_named = true;
+                }
+                _ => {}
             }
-            Some(e) if !e.cli_argv.is_some() && (!global_only || e.global) => {
-                sidecar_named = true;
+            if let Some(e) = commands_cli_entry(c, n, global_only) {
+                direct = Some((e, h, (*n).to_string()));
+                break 'scan;
             }
-            _ => {}
-        }
-        if let Some(e) = commands_cli_entry(c, name, global_only) {
-            direct = Some((e, h));
-            break;
         }
     }
     let (entry, entry_home, entry_name, prepend) = match direct {
-        Some((e, u)) => (e, u, name.to_string(), false),
+        Some((e, u, resolved)) => (e, u, resolved, None),
         None => {
-            let mut claimers = owners_for_command(home, name, &lock, false);
-            if let Some((u, l, _)) = &user_home {
-                claimers.extend(owners_for_command(u, name, l, true));
+            let mut claimers = Vec::new();
+            for n in &names {
+                claimers.extend(
+                    owners_for_command(home, n, &lock, false)
+                        .into_iter()
+                        .map(|(h, o, e)| (h, o, e, (*n).to_string())),
+                );
             }
-            let (ready, dead): (Vec<_>, Vec<_>) =
-                claimers.into_iter().partition(|(h, o, e)| enabled(h, o, e));
-            if let Some(note) = command_conflict_note(name, &ready) {
+            if let Some((u, l, _)) = &user_home {
+                for n in &names {
+                    claimers.extend(
+                        owners_for_command(u, n, l, true)
+                            .into_iter()
+                            .map(|(h, o, e)| (h, o, e, (*n).to_string())),
+                    );
+                }
+            }
+            let (ready, dead): (Vec<_>, Vec<_>) = claimers
+                .into_iter()
+                .partition(|(h, o, e, _)| enabled(h, o, e));
+            if let Some(note) =
+                command_conflict_note(name, ready.iter().map(|(_, o, _, _)| o.as_str()))
+            {
                 eprintln!("{note}");
             }
             match ready.into_iter().next() {
-                Some((u, owner, e)) => (e, u, owner, true),
+                Some((u, owner, e, matched)) => (e, u, owner, Some(matched)),
                 None if !dead.is_empty() => {
-                    let (dead_home, owner, _) = &dead[0];
+                    let (dead_home, owner, _, _) = &dead[0];
                     return Err(anyhow::anyhow!(
                         "plugin command '{owner}' is disabled — {}",
                         disabled_hint(home, dead_home, project.as_ref(), owner)
@@ -1139,13 +1303,16 @@ pub async fn forward(home: &Path, name: &str, rest: &[String]) -> anyhow::Result
                     } else {
                         match index_owner_hint(name).await {
                             Some(hint) => hint,
-                            None => removed_builtin(name)
-                                .map(str::to_string)
-                                .unwrap_or_else(|| {
-                                    format!(
+                            None => removed_builtin(name).map(str::to_string).unwrap_or_else(
+                                || match command_suggestion(home, &lock, &commands, name) {
+                                    Some(s) => {
+                                        format!("no plugin command '{name}' — did you mean {s}?")
+                                    }
+                                    None => format!(
                                         "no plugin command '{name}' — install it with: gray install plugin {name}"
-                                    )
-                                }),
+                                    ),
+                                },
+                            ),
                         }
                     }));
                 }
@@ -1169,8 +1336,8 @@ pub async fn forward(home: &Path, name: &str, rest: &[String]) -> anyhow::Result
     );
     let mut command = Command::new(program);
     command.args(args);
-    if prepend {
-        command.arg(name);
+    if let Some(arg0) = prepend {
+        command.arg(arg0);
     }
     command
         .args(rest)
@@ -1410,48 +1577,80 @@ pub(crate) async fn adopt_cli(home: &Path, name: &str, dir: &Path) -> anyhow::Re
 pub async fn capture_slash(name: &str, args: &[String]) -> anyhow::Result<Option<String>> {
     let home = home()?;
     migrate_commands_json(&home);
-    let lock = load_lock(&home)?;
+    let mut lock = load_lock(&home)?;
     let commands = commands_or_empty(&home);
     let project = std::env::current_dir()
         .ok()
         .and_then(|cwd| LockFile::load(&gray_plugin::lock::project_lock_path(&cwd)).ok());
-    let user_home = user_home_lock(&home);
+    let mut user_home = user_home_lock(&home);
+
+    // Same implicit singular/plural alias as `forward`: exact first.
+    let alt = number_variant(name);
+    let names: Vec<&str> = std::iter::once(name).chain(alt.as_deref()).collect();
+    for n in &names {
+        lazy_adopt(&home, n, &mut lock).await;
+        if let Some((u, l, _)) = user_home.as_mut() {
+            lazy_adopt(u, n, l).await;
+        }
+    }
     let mut conflict_note = None;
-    let selected = if let Some(entry) = lock.plugins.get(name).filter(|e| e.cli_argv.is_some()) {
-        Some((home.clone(), name.to_string(), entry.clone(), false))
-    } else if let Some(entry) = commands_cli_entry(&commands, name, false) {
-        Some((home.clone(), name.to_string(), entry, false))
-    } else {
+    let mut selected = None;
+    for n in &names {
+        if let Some(entry) = lock.plugins.get(*n).filter(|e| e.cli_argv.is_some()) {
+            selected = Some((home.clone(), (*n).to_string(), entry.clone(), None));
+            break;
+        }
+        if let Some(entry) = commands_cli_entry(&commands, n, false) {
+            selected = Some((home.clone(), (*n).to_string(), entry, None));
+            break;
+        }
         let direct = user_home.as_ref().and_then(|(u, l, c)| {
             l.plugins
-                .get(name)
+                .get(*n)
                 .filter(|e| e.cli_argv.is_some() && e.global)
-                .map(|e| (u.clone(), name.to_string(), e.clone(), false))
+                .map(|e| (u.clone(), (*n).to_string(), e.clone(), None))
                 .or_else(|| {
-                    commands_cli_entry(c, name, true)
-                        .map(|e| (u.clone(), name.to_string(), e, false))
+                    commands_cli_entry(c, n, true).map(|e| (u.clone(), (*n).to_string(), e, None))
                 })
         });
-        direct.or_else(|| {
-            let mut claimers = owners_for_command(&home, name, &lock, false);
-            if let Some((u, l, _)) = &user_home {
-                claimers.extend(owners_for_command(u, name, l, true));
+        if direct.is_some() {
+            selected = direct;
+            break;
+        }
+    }
+    let selected = selected.or_else(|| {
+        let mut claimers = Vec::new();
+        for n in &names {
+            claimers.extend(
+                owners_for_command(&home, n, &lock, false)
+                    .into_iter()
+                    .map(|(h, o, e)| (h, o, e, (*n).to_string())),
+            );
+        }
+        if let Some((u, l, _)) = &user_home {
+            for n in &names {
+                claimers.extend(
+                    owners_for_command(u, n, l, true)
+                        .into_iter()
+                        .map(|(h, o, e)| (h, o, e, (*n).to_string())),
+                );
             }
-            let (ready, dead): (Vec<_>, Vec<_>) =
-                claimers.into_iter().partition(|(h, o, e)| enabled(h, o, e));
-            conflict_note = command_conflict_note(name, &ready);
-            if ready.is_empty() {
-                if let Some((u, owner, e)) = dead.into_iter().next() {
-                    return Some((u, owner, e, true));
-                }
-                return None;
+        }
+        let (ready, dead): (Vec<_>, Vec<_>) = claimers
+            .into_iter()
+            .partition(|(h, o, e, _)| enabled(h, o, e));
+        conflict_note = command_conflict_note(name, ready.iter().map(|(_, o, _, _)| o.as_str()));
+        if ready.is_empty() {
+            if let Some((u, owner, e, matched)) = dead.into_iter().next() {
+                return Some((u, owner, e, Some(matched)));
             }
-            ready
-                .into_iter()
-                .next()
-                .map(|(u, owner, e)| (u, owner, e, true))
-        })
-    };
+            return None;
+        }
+        ready
+            .into_iter()
+            .next()
+            .map(|(u, owner, e, matched)| (u, owner, e, Some(matched)))
+    });
     let Some((entry_home, entry_name, entry, prepend)) = selected else {
         return Ok(match index_owner_hint(name).await {
             Some(hint) => Some(hint),
@@ -1468,8 +1667,8 @@ pub async fn capture_slash(name: &str, args: &[String]) -> anyhow::Result<Option
     let (program, base) = argv.split_first().context("empty plugin command")?;
     let mut command = tokio::process::Command::new(program);
     command.args(base);
-    if prepend {
-        command.arg(name);
+    if let Some(arg0) = prepend {
+        command.arg(arg0);
     }
     command
         .args(args)
@@ -2131,6 +2330,7 @@ done
             source: "https://example.invalid/demo.tar.gz".into(),
             argv: vec![],
             cli_argv,
+            enabled: true,
             ..Default::default()
         }
     }
@@ -2227,6 +2427,73 @@ done
         let entry = &load_lock(home).unwrap().plugins["demo"];
         assert_eq!(entry.cli_argv, None);
         assert_eq!(entry.hash, "sha256:abc");
+        assert!(!home.join("plugins/demo-manifest.json").exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn lazy_adopt_records_cli_argv_on_first_dispatch() {
+        use std::os::unix::fs::PermissionsExt;
+        let home = tempfile::tempdir().unwrap();
+        let home = home.path();
+        let dir = home.join("plugins/demo");
+        std::fs::create_dir_all(&dir).unwrap();
+        let exe = dir.join("gray-demo");
+        std::fs::write(
+            &exe,
+            "#!/bin/sh\nprintf '%s\\n' '{\"name\":\"demo\",\"version\":\"1.0.0\",\"commands\":[\"/demo\"]}'\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+        write_lock(home, &serde_json::json!({"demo": index_row(None)}));
+
+        let mut lock = load_lock(home).unwrap();
+        assert!(lock.plugins["demo"].cli_argv.is_none());
+        lazy_adopt(home, "demo", &mut lock).await;
+        assert_eq!(
+            lock.plugins["demo"].cli_argv.as_deref(),
+            Some([exe.to_string_lossy().into_owned()].as_slice())
+        );
+        assert!(home.join("plugins/demo-manifest.json").exists());
+
+        lazy_adopt(home, "ghost", &mut lock).await;
+        assert!(!lock.plugins.contains_key("ghost"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn lazy_adopt_skips_disabled_and_wire_only_plugins() {
+        use std::os::unix::fs::PermissionsExt;
+        let home = tempfile::tempdir().unwrap();
+        let home = home.path();
+        let dir = home.join("plugins/demo");
+        std::fs::create_dir_all(&dir).unwrap();
+        let exe = dir.join("gray-demo");
+        std::fs::write(
+            &exe,
+            "#!/bin/sh\nprintf '%s\\n' '{\"name\":\"demo\",\"version\":\"1.0.0\"}'\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let mut off = index_row(None);
+        off.enabled = false;
+        write_lock(home, &serde_json::json!({"demo": off}));
+        let mut lock = load_lock(home).unwrap();
+        lazy_adopt(home, "demo", &mut lock).await;
+        assert_eq!(lock.plugins["demo"].cli_argv, None);
+
+        write_lock(home, &serde_json::json!({"demo": index_row(None)}));
+        let mut lock = load_lock(home).unwrap();
+        lazy_adopt(home, "demo", &mut lock).await;
+        assert!(lock.plugins["demo"].cli_argv.is_some());
+
+        std::fs::write(&exe, "#!/bin/sh\nexit 1\n").unwrap();
+        let mut lock = load_lock(home).unwrap();
+        lock.plugins.get_mut("demo").unwrap().cli_argv = None;
+        lazy_adopt(home, "demo", &mut lock).await;
+        let disk = load_lock(home).unwrap();
+        assert_eq!(disk.plugins["demo"].cli_argv, None);
         assert!(!home.join("plugins/demo-manifest.json").exists());
     }
 
@@ -2343,5 +2610,42 @@ done
         for row in &table.rows {
             assert_eq!(row.args, vec!["new".to_string()]);
         }
+    }
+
+    #[test]
+    fn number_variant_offers_the_other_number_only() {
+        assert_eq!(number_variant("subagents").as_deref(), Some("subagent"));
+        assert_eq!(number_variant("subagent").as_deref(), Some("subagents"));
+        assert_eq!(number_variant("plugins").as_deref(), Some("plugin"));
+        assert_eq!(number_variant("s"), None);
+        assert_eq!(number_variant("status").as_deref(), Some("statu"));
+    }
+
+    #[test]
+    fn command_suggestion_names_plugins_claims_and_builtins() {
+        let home = tempfile::tempdir().unwrap();
+        let home = home.path();
+        let mut cli = cli_entry(&["/usr/bin/acct"]);
+        cli.cli_argv = Some(cli.argv.clone());
+        write_lock(home, &serde_json::json!({"account": cli, "subagents": cli}));
+        std::fs::write(
+            home.join("plugins/account-manifest.json"),
+            r#"{"name":"account","commands":["/cloud","/login"]}"#,
+        )
+        .unwrap();
+        let lock = load_lock(home).unwrap();
+        let commands = commands_or_empty(home);
+        let got = command_suggestion(home, &lock, &commands, "cloudd").unwrap();
+        assert!(got.contains("'cloud'"), "{got}");
+        let got = command_suggestion(home, &lock, &commands, "subagent").unwrap();
+        assert!(got.contains("'subagents'"), "{got}");
+        let got = command_suggestion(home, &lock, &commands, "pulgins").unwrap();
+        assert!(got.contains("plugin"), "{got}");
+        assert!(command_suggestion(home, &lock, &commands, "zzzzzz").is_none());
+        let got = command_suggestion(home, &lock, &commands, "gateway");
+        assert!(
+            got.as_deref().is_none_or(|g| !g.contains("'gateway'")),
+            "never suggest the typed name: {got:?}"
+        );
     }
 }

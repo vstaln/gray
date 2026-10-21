@@ -245,7 +245,10 @@ pub(crate) fn render_selecting(
                 format!(" {}", item.sublabel)
             };
 
-            let raw_content = format!(" {check_glyph}{}{sub}", item.name);
+            // A text cue on the cursor row too, so selection survives
+            // NO_COLOR / monochrome terminals (the highlight is color-only).
+            let lead = if is_selected { "›" } else { " " };
+            let raw_content = format!("{lead}{check_glyph}{}{sub}", item.name);
             let fill = (inner.width as usize).saturating_sub(raw_content.chars().count());
             let full_row_str = format!("{}{}", raw_content, " ".repeat(fill));
 
@@ -558,7 +561,8 @@ pub(crate) fn render_entering_key(
 ) {
     let provider_line = format!("Provider: {}", item.name);
     let provenance = env_var.map(|var| format!(" (from ${var})"));
-    let get_a_key = catalog::key_url(&item.id).map(|url| format!(" Get a key: {url}"));
+    let get_a_key = crate::quality_of_life::providers::key_url(&item.id)
+        .map(|url| format!(" Get a key: {url}"));
     let action_label = if existing_key.is_some() {
         "update"
     } else {
@@ -699,31 +703,62 @@ pub(crate) fn render_authorizing_plugin(
     item: &ConnectItem,
     verification_uri: Option<&str>,
     status_msg: Option<&str>,
+    elapsed: std::time::Duration,
     colors: &ConnectColors,
 ) {
-    let status = status_msg.unwrap_or("Checking your terminal login");
+    let failed = status_msg.and_then(|m| m.strip_prefix(LOGIN_FAILED));
+    let status = failed
+        .or(status_msg)
+        .unwrap_or("Checking your terminal login");
     let uri = verification_uri.unwrap_or("");
+    let spin = if failed.is_some() {
+        '✗'
+    } else if crate::tui::unicode_safe() {
+        "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+            .chars()
+            .nth((elapsed.as_millis() / 80) as usize % 10)
+            .unwrap_or('⠋')
+    } else {
+        "|/-\\"
+            .chars()
+            .nth((elapsed.as_millis() / 80) as usize % 4)
+            .unwrap_or('|')
+    };
+    let status = format!("{spin} {status}");
 
+    // Wrap long statuses (a failed login carries the fix: "Install the X
+    // CLI, then run `x auth login`…") instead of clipping them to one row.
+    let text_w = 68u16
+        .min(area.width.saturating_sub(4))
+        .saturating_sub(6)
+        .max(1);
+    let status_rows = (status.chars().count() as u16).div_ceil(text_w).clamp(1, 8);
     let inner = centered_dialog(
         frame,
         area,
         68,
-        if uri.is_empty() { 7 } else { 9 },
+        if uri.is_empty() { 7 } else { 9 } + status_rows - 1,
         42,
         6,
         colors,
     );
     let title = format!("Connect \u{2014} {}", item.name);
     render_header_esc(frame, inner, &title, colors);
-    let mut lines = vec![
-        Line::from(vec![Span::styled(
-            status,
-            Style::default()
-                .fg(crate::theme::theme().text_bright)
-                .bg(colors.box_bg),
-        )]),
-        Line::from(""),
-    ];
+    let status_style = if failed.is_some() {
+        Style::default()
+            .fg(crate::theme::theme().error)
+            .bg(colors.box_bg)
+    } else {
+        Style::default()
+            .fg(crate::theme::theme().text_bright)
+            .bg(colors.box_bg)
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(status, status_style)))
+            .wrap(ratatui::widgets::Wrap { trim: true }),
+        Rect::new(inner.x, inner.y + 2, inner.width, status_rows),
+    );
+    let mut lines = vec![];
 
     if !uri.is_empty() {
         lines.push(Line::from(vec![Span::styled(
@@ -748,9 +783,12 @@ pub(crate) fn render_authorizing_plugin(
 
     let body = Rect::new(
         inner.x,
-        inner.y + 2,
+        inner.y + 3 + status_rows,
         inner.width,
-        inner.height.saturating_sub(2),
+        inner.height.saturating_sub(3 + status_rows),
     );
     frame.render_widget(Paragraph::new(lines), body);
 }
+
+/// Prefix on an authorizing-plugin status that marks a failed login.
+pub(crate) const LOGIN_FAILED: &str = "\u{0}failed:";

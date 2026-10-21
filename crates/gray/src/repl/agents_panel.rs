@@ -1211,13 +1211,21 @@ fn run_agents_panel(
                 }
                 continue;
             }
+            if let Some(up) = crate::keymap::select_move(&KeyEvent::new(code, modifiers)) {
+                if up {
+                    sel = sel.checked_sub(1).unwrap_or(rows.len().saturating_sub(1));
+                } else if !rows.is_empty() {
+                    sel = (sel + 1) % rows.len();
+                }
+                continue;
+            }
             match code {
                 KeyCode::Esc | KeyCode::Char('q') => break,
                 KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => break,
-                KeyCode::Up | KeyCode::Char('k') => {
+                KeyCode::Char('k') => {
                     sel = sel.checked_sub(1).unwrap_or(rows.len().saturating_sub(1));
                 }
-                KeyCode::Down | KeyCode::Char('j') => {
+                KeyCode::Char('j') => {
                     if !rows.is_empty() {
                         sel = (sel + 1) % rows.len();
                     }
@@ -1319,14 +1327,17 @@ pub(crate) fn run_subagent_settings(
         label: label.to_string(),
         description: desc.to_string(),
         opt_in: false,
+        freeform: false,
     };
     let q = |id: &str, question: String, options: Vec<AskOption>| AskQuestion {
         id: id.to_string(),
         header: "subagents".to_string(),
         question,
+        detail: String::new(),
         options,
         multi: false,
         default_all: false,
+        no_other: false,
     };
     let inherit = || {
         opt(

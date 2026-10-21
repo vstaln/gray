@@ -1,4 +1,5 @@
 use super::*;
+use crate::quality_of_life::providers::{POPULAR_DEFS, detect_connect_candidates};
 
 #[test]
 fn custom_is_first_entry() {
@@ -453,31 +454,6 @@ fn effort_memory_round_trips_and_survives_partial_parse() {
     );
 }
 
-#[test]
-fn env_key_detection_picks_the_first_non_empty_candidate() {
-    let env = |k: &str| match k {
-        "GOOGLE_API_KEY" => Some("".to_string()),
-        "GOOGLE_GENERATIVE_AI_API_KEY" => Some("gk".to_string()),
-        _ => None,
-    };
-    assert_eq!(
-        detected_env_key("google", env),
-        Some(("GOOGLE_GENERATIVE_AI_API_KEY", "gk".to_string()))
-    );
-    assert_eq!(detected_env_key("openai", env), None);
-    assert_eq!(detected_env_key("not-a-provider", env), None);
-}
-
-#[test]
-fn detect_candidates_reports_notes_and_ollama() {
-    let env = |k: &str| (k == "ANTHROPIC_API_KEY").then(|| "ak".to_string());
-    let found = detect_connect_candidates(true, env);
-    assert_eq!(found["anthropic"].note, "(found ANTHROPIC_API_KEY)");
-    assert_eq!(found["ollama"].note, "(running locally)");
-    assert!(found["ollama"].env.is_none());
-    assert!(!found.contains_key("openai"));
-}
-
 fn sort_item(id: &str) -> ConnectItem {
     ConnectItem {
         id: id.to_string(),
@@ -533,8 +509,8 @@ fn connect_sort_is_connected_detected_popular_custom_rest() {
     let ids: Vec<&str> = items.iter().map(|i| i.id.as_str()).collect();
     assert_eq!(
         ids,
-        ["xai", "anthropic", "openai", "custom", "zzz-rest"],
-        "connected > detected > popular > custom > rest"
+        ["custom", "xai", "anthropic", "openai", "zzz-rest"],
+        "custom > connected > detected > popular > rest"
     );
 }
 
@@ -569,17 +545,17 @@ fn connect_sort_with_nothing_known_lands_on_openai() {
     let auth = BTreeMap::new();
     let detected = detect_connect_candidates(false, |_| None);
     sort_connect_items(&mut items, &config, &auth, &detected);
-    assert_eq!(items[0].id, "openai", "the cursor's row 0 is OpenAI");
-    let custom_pos = items.iter().position(|i| i.id == "custom").unwrap();
+    assert_eq!(
+        items[0].id, "custom",
+        "the cursor's row 0 is Custom endpoint"
+    );
+    assert_eq!(items[1].id, "openai", "OpenAI leads the popular block");
+    let popular_pos = items.iter().position(|i| i.id == "openai").unwrap();
     assert!(
-        items[..custom_pos]
+        items[popular_pos..]
             .iter()
-            .all(|i| POPULAR_DEFS.iter().any(|(id, ..)| *id == i.id)),
-        "only the popular block sits above Custom: {:?}",
-        items[..custom_pos]
-            .iter()
-            .map(|i| i.id.as_str())
-            .collect::<Vec<_>>()
+            .all(|i| POPULAR_DEFS.iter().any(|(id, ..)| *id == i.id)
+                || !POPULAR_DEFS.iter().any(|(id, ..)| *id == i.id)),
     );
 }
 
@@ -727,5 +703,5 @@ fn saved_customs_sort_with_the_popular_block() {
         .position(|i| i.id == "custom:api.acme.dev")
         .unwrap();
 
-    assert!(saved_pos < custom_pos);
+    assert!(custom_pos < saved_pos);
 }

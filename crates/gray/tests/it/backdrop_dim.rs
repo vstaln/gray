@@ -41,18 +41,13 @@ fn cells_with(buf: &ratatui::buffer::Buffer, sym: &str) -> Vec<(u16, u16)> {
 }
 
 #[test]
-fn backdrop_input_arrow_fg_is_color_dimmed() {
-    let theme = gray::theme::theme();
+fn backdrop_input_band_paints_no_prompt_glyphs() {
     let buf = draw_bg(150, 45);
     let pos = cells_with(&buf, "\u{276f}");
-    assert!(!pos.is_empty(), "arrow cell must exist");
-    for (x, y) in pos {
-        assert_eq!(
-            buf[(x, y)].fg,
-            dim_color(theme.text_faint),
-            "input arrow fg must go through dim_color, not full text_faint"
-        );
-    }
+    assert!(
+        pos.is_empty(),
+        "composer band keeps its silhouette only — no arrow or draft text beside a modal: {pos:?}"
+    );
 }
 
 #[test]

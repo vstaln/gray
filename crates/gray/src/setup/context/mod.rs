@@ -3,8 +3,8 @@ mod providers;
 pub(crate) use providers::{
     EndpointProbe, LocalEndpointSuggestion, cache_model_efforts, cache_model_price_cliff,
     ensure_disk_loaded, fetch_plugin_provider_models, load_provider_model_list, ollama_last_seen,
-    ollama_running, probe_custom_endpoint, probe_local_endpoints, provider_model_lists,
-    save_provider_model_list, warm_rates_from_disk_cache,
+    ollama_running, plugin_catalog_rows, probe_custom_endpoint_detached, probe_local_endpoints,
+    provider_model_lists, save_provider_model_rows, warm_rates_from_disk_cache,
 };
 pub use providers::{
     KeyCheck, ModelMeta, ModelRate, cache_model_context, cache_model_context_if_absent,

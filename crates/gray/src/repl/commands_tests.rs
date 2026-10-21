@@ -179,15 +179,7 @@ fn registry_parse_uses_canonical() {
     assert!(
         matches!(parse_command("/GATEWAY off"), ReplCommand::Gateway(Some(arg)) if arg == "off")
     );
-    for gone in [
-        "/keys foo",
-        "/connect foo",
-        "/key foo",
-        "/provider x",
-        "/browse",
-        "/model",
-        "/fast",
-    ] {
+    for gone in ["/keys foo", "/key foo", "/browse", "/fast"] {
         assert!(
             matches!(parse_command(gone), ReplCommand::Unknown(_)),
             "{gone}"
@@ -454,14 +446,13 @@ fn skill_singular_is_alias_for_skills_space() {
 fn bare_model_and_provider_aliases_open_two_pane_picker() {
     assert!(matches!(parse_command("/models"), ReplCommand::ModelPanes));
     assert!(matches!(parse_command("/MODELS"), ReplCommand::ModelPanes));
-    for cmd in [
-        "/model",
-        "/browse",
-        "/providers",
-        "/key",
-        "/effort",
-        "/connect",
-    ] {
+    for cmd in ["/model", "/connect", "/provider"] {
+        assert!(
+            matches!(parse_command(cmd), ReplCommand::ModelPanes),
+            "{cmd}"
+        );
+    }
+    for cmd in ["/browse", "/providers", "/key", "/effort"] {
         assert!(
             matches!(parse_command(cmd), ReplCommand::Unknown(_)),
             "{cmd}"
@@ -587,4 +578,11 @@ fn sessions_is_canonical_and_resume_stays_an_alias() {
             .iter()
             .any(|(n, _)| n == "resume dismiss")
     );
+}
+
+#[test]
+fn connect_completes_to_models_not_gateway() {
+    // "/connect" used to fuzzy-match /gateway's "connections" description.
+    let got = super::completion_matches("connect");
+    assert_eq!(got.first().map(|(n, _)| *n), Some("models"), "{got:?}");
 }

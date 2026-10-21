@@ -54,6 +54,15 @@ fn cwd_display(cwd: &Path, width: usize) -> String {
     }
 }
 
+fn fit_col(text: &str, width: usize) -> String {
+    if text.chars().count() <= width {
+        return text.to_string();
+    }
+    let mut t: String = text.chars().take(width.saturating_sub(1)).collect();
+    t.push('\u{2026}');
+    t
+}
+
 fn preview_text(s: &SessionSummary, width: usize) -> String {
     let raw = s
         .title
@@ -886,6 +895,7 @@ fn run_picker_sync(
                             }
                             _ => short_id(&s.id),
                         };
+                        let right = fit_col(&right, id_w);
                         let rest = format!(
                             " {:>date_w$}  {:cwd_w$}  {:prev_w$}  {:>id_w$}",
                             date,
@@ -983,6 +993,21 @@ fn run_picker_sync(
                 })
             ) {
                 dirty = true;
+            }
+            if takeover.is_none()
+                && rename.is_none()
+                && let Event::Key(key) = event
+                && key.kind == KeyEventKind::Press
+                && let Some(up) = crate::keymap::select_move(&key)
+            {
+                if !filtered.is_empty() {
+                    sel = if up {
+                        sel.saturating_sub(1)
+                    } else {
+                        (sel + 1).min(filtered.len() - 1)
+                    };
+                }
+                continue;
             }
             match event {
                 Event::Key(KeyEvent {
@@ -1092,12 +1117,6 @@ fn run_picker_sync(
                             && let Some(s) = summaries.iter_mut().find(|s| s.id == id)
                         {
                             s.dismissed_at = Some(at);
-                        }
-                    }
-                    KeyCode::Up => sel = sel.saturating_sub(1),
-                    KeyCode::Down => {
-                        if !filtered.is_empty() {
-                            sel = (sel + 1).min(filtered.len() - 1);
                         }
                     }
                     KeyCode::Enter => {

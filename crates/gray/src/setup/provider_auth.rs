@@ -16,26 +16,17 @@ use crate::setup::catalog::{
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum PluginLoginProgress {
+pub(crate) enum PluginLoginProgress {
     Started { verification_uri: String },
     Pending,
     CredentialSaved,
-    Models(Vec<(String, String)>),
+    Models(Vec<super::variants::CachedRow>),
     ModelsUnavailable(String),
     Cancelled,
     Failed(String),
 }
 
-fn model_tuple(model: &gray_plugin::ProviderModel) -> (String, String) {
-    let name = if model.name.trim().is_empty() {
-        model.id.clone()
-    } else {
-        model.name.clone()
-    };
-    (model.id.clone(), name)
-}
-
-pub async fn run_plugin_login(
+pub(crate) async fn run_plugin_login(
     installed: InstalledProvider,
     cancel: CancellationToken,
     progress: tokio::sync::mpsc::UnboundedSender<PluginLoginProgress>,
@@ -120,8 +111,11 @@ pub async fn run_plugin_login(
                 };
                 match rpc.models(request).await {
                     Ok(catalog) => {
-                        let models = catalog.models.iter().map(model_tuple).collect::<Vec<_>>();
-                        let _ = progress.send(PluginLoginProgress::Models(models));
+                        let rows = super::context::plugin_catalog_rows(&catalog);
+                        for row in &rows {
+                            row.register();
+                        }
+                        let _ = progress.send(PluginLoginProgress::Models(rows));
                     }
                     Err(_) => {
                         let _ = progress.send(PluginLoginProgress::ModelsUnavailable(
@@ -175,6 +169,7 @@ async fn run_external_login(
         store,
         Arc::clone(&runtime.rpc()) as Arc<dyn ProviderRpc>,
     );
+    let _ = progress.send(PluginLoginProgress::Pending);
     match source.acquire().await {
         Ok(_) => {}
         Err(error) => {
@@ -206,8 +201,11 @@ async fn run_external_login(
     };
     match rpc.models(request).await {
         Ok(catalog) => {
-            let models = catalog.models.iter().map(model_tuple).collect::<Vec<_>>();
-            let _ = progress.send(PluginLoginProgress::Models(models));
+            let rows = super::context::plugin_catalog_rows(&catalog);
+            for row in &rows {
+                row.register();
+            }
+            let _ = progress.send(PluginLoginProgress::Models(rows));
         }
         Err(_) => {
             let _ = progress.send(PluginLoginProgress::ModelsUnavailable(

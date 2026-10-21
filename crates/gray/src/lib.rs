@@ -7,6 +7,7 @@ pub mod cmd;
 pub mod compact;
 pub mod composer;
 pub mod config;
+pub(crate) mod consent;
 pub mod cron;
 pub(crate) mod exe_watch;
 pub(crate) mod failed_turn;
@@ -24,6 +25,7 @@ pub mod print;
 mod print_meter;
 pub mod profile;
 pub mod project_trust;
+pub mod prompt_history;
 pub mod prompt_templates;
 pub mod providers;
 pub mod quality_of_life;
@@ -51,6 +53,7 @@ pub mod tui;
 pub mod turn_caps;
 pub mod update;
 pub(crate) mod util;
+pub mod win_paste;
 
 use clap::{ArgGroup, Parser};
 use std::path::{Path, PathBuf};
@@ -330,26 +333,37 @@ async fn build_agent_with(
 
         system_prompt: gray_plugin::builder::SystemPrompt::Build({
             let session_cwd = cwd.to_path_buf();
-            Box::new(move |_registry: &gray_tools::Registry| {
-                let mut prompt = system_prompt::build_system_prompt(Some(body));
-                if !identity.is_empty() {
-                    if !prompt.is_empty() {
-                        prompt.push_str("\n\n");
+            Box::new(
+                move |_registry: &gray_tools::Registry, manifests: &[gray_plugin::Manifest]| {
+                    let mut prompt = system_prompt::build_system_prompt(Some(body));
+                    if !identity.is_empty() {
+                        if !prompt.is_empty() {
+                            prompt.push_str("\n\n");
+                        }
+                        prompt.push_str(&identity);
                     }
-                    prompt.push_str(&identity);
-                }
 
-                if !config_bare {
-                    prompt.push_str("\n\n");
-                    prompt.push_str(&system_prompt::harness_facts(Some(
-                        std::time::Duration::from_secs(cache_ttl_secs),
-                    )));
-                    prompt.push_str("\n\n");
-                    prompt.push_str(&system_prompt::session_card(&session_cwd));
-                }
+                    if !config_bare {
+                        prompt.push_str("\n\n");
+                        prompt.push_str(&system_prompt::harness_facts(Some(
+                            std::time::Duration::from_secs(cache_ttl_secs),
+                        )));
+                        prompt.push_str("\n\n");
+                        prompt.push_str(&system_prompt::session_card(&session_cwd));
 
-                prompt
-            })
+                        let plugins = system_prompt::plugins_block(
+                            manifests,
+                            &crate::plugin_cli::forwardable_names(),
+                        );
+                        if !plugins.is_empty() {
+                            prompt.push_str("\n\n");
+                            prompt.push_str(&plugins);
+                        }
+                    }
+
+                    prompt
+                },
+            )
         }),
 
         extra_plugins: extra_surface_plugins(config, spawn_plugins),
@@ -358,7 +372,7 @@ async fn build_agent_with(
         host_handler: Some(host::default_handler(cwd.to_path_buf())),
         profile_path: "gray.yml".to_string(),
         abort_on_spawn_failure: true,
-        wrap_executor: None,
+        wrap_executor: Some(crate::consent::executor_wrap()),
         dynamic_provider_profile: dynamic.as_ref().map(|provider| provider.profile().clone()),
         dynamic_credential_source: dynamic
             .as_ref()
@@ -730,13 +744,15 @@ pub enum Commands {
         everything: bool,
     },
 
-    #[command(about = "Manage saved sessions")]
+    #[command(visible_alias = "session", about = "Manage saved sessions")]
     Sessions {
         #[command(subcommand)]
         cmd: SessionsCmd,
     },
 
     #[command(
+        visible_alias = "commands",
+        alias = "command",
         about = "Machine-readable command registry — list and run commands (used by gateways)"
     )]
     Cmd {
@@ -879,6 +895,7 @@ pub enum PluginCmd {
         #[arg(
             value_name = "SPEC",
             num_args = 1..,
+            required = true,
             help = "Plugin names from the index, https URLs, or local dirs/files"
         )]
         specs: Vec<String>,

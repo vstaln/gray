@@ -27,7 +27,7 @@ pub(crate) const REGISTRY: &[CmdDef] = &[
     CmdDef {
         name: "models",
         desc: "switch provider, model & effort",
-        aliases: &[],
+        aliases: &["model", "connect", "provider"],
         scope: CmdScope::Conversation,
         surface: CmdSurface::Interactive,
     },

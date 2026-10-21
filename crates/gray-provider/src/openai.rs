@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, HashSet, VecDeque};
+use std::error::Error as _;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -26,6 +27,8 @@ use crate::openai_profile::{
 pub const DEFAULT_BASE_URL: &str = "https://openrouter.ai/api/v1";
 
 const MAX_ATTEMPTS: usize = 5;
+
+const MAX_SEND_ATTEMPTS: usize = 3;
 
 const INITIAL_BACKOFF: Duration = Duration::from_secs(1);
 
@@ -1768,6 +1771,10 @@ fn session_affinity_headers(session_id: Option<&str>) -> Vec<(&'static str, &str
     vec![("x-opencode-session", sid)]
 }
 
+fn send_stage_retryable(err: &reqwest::Error) -> bool {
+    err.is_connect() || err.is_request()
+}
+
 #[allow(clippy::result_large_err)]
 async fn send_json_once(
     client: &reqwest::Client,
@@ -1777,22 +1784,34 @@ async fn send_json_once(
     attempt: usize,
     session_id: Option<&str>,
 ) -> Result<reqwest::Response, (ProviderError, Option<Duration>, u16)> {
-    let base = if api_key.is_empty() {
-        client.post(url.clone())
-    } else {
-        client
-            .post(url.clone())
-            .header("Authorization", format!("Bearer {api_key}"))
-    };
-    let base = session_affinity_headers(if url.as_str().contains("opencode.ai/zen") {
-        session_id
-    } else {
-        None
-    })
-    .into_iter()
-    .fold(base, |b, (name, value)| b.header(name, value));
-    let req = base.header("Content-Type", "application/json").json(body);
-    let res_result = req.send().await;
+    let mut res_result = None;
+    for send_attempt in 1..=MAX_SEND_ATTEMPTS {
+        let base = if api_key.is_empty() {
+            client.post(url.clone())
+        } else {
+            client
+                .post(url.clone())
+                .header("Authorization", format!("Bearer {api_key}"))
+        };
+        let base = session_affinity_headers(if url.as_str().contains("opencode.ai/zen") {
+            session_id
+        } else {
+            None
+        })
+        .into_iter()
+        .fold(base, |b, (name, value)| b.header(name, value));
+        let req = base.header("Content-Type", "application/json").json(body);
+        match req.send().await {
+            Err(err) if send_attempt < MAX_SEND_ATTEMPTS && send_stage_retryable(&err) => {
+                log::warn!(target: "gray_provider", "send failed before a response ({err}); retrying on a fresh connection {send_attempt}/{MAX_SEND_ATTEMPTS}");
+            }
+            result => {
+                res_result = Some(result);
+                break;
+            }
+        }
+    }
+    let res_result = res_result.expect("send loop always yields a result");
     log::debug!(target: "gray_provider", "request sent to {url} (attempt {attempt})");
     match res_result {
         Ok(res) => {
@@ -1823,9 +1842,9 @@ async fn send_json_once(
         }
         Err(e) => Err((
             if e.is_connect() {
-                ProviderError::Connection(e.to_string())
+                ProviderError::Connection(friendly_send_error(&e))
             } else if e.is_timeout() {
-                ProviderError::Timeout(e.to_string())
+                ProviderError::Timeout(friendly_send_error(&e))
             } else {
                 ProviderError::Stream(e.to_string())
             },
@@ -2065,13 +2084,26 @@ async fn send_dynamic_json_once(
         }
         OpenAiAuthorization::None => None,
     };
-    let send = client
-        .post(url.clone())
-        .headers(headers)
-        .header(CONTENT_TYPE, "application/json")
-        .header(ACCEPT, "text/event-stream")
-        .json(body);
-    let response = send.send().await.map_err(map_send_error)?;
+    let mut response = None;
+    for send_attempt in 1..=MAX_SEND_ATTEMPTS {
+        let send = client
+            .post(url.clone())
+            .headers(headers.clone())
+            .header(CONTENT_TYPE, "application/json")
+            .header(ACCEPT, "text/event-stream")
+            .json(body);
+        match send.send().await {
+            Err(err) if send_attempt < MAX_SEND_ATTEMPTS && send_stage_retryable(&err) => {
+                log::warn!(target: "gray_provider", "dynamic send failed before a response ({err}); retrying on a fresh connection {send_attempt}/{MAX_SEND_ATTEMPTS}");
+            }
+            Err(err) => return Err(map_send_error(err)),
+            Ok(res) => {
+                response = Some(res);
+                break;
+            }
+        }
+    }
+    let response = response.expect("send loop always yields a response");
     let status = response.status();
     if !status.is_success() {
         let mut snippet = String::new();
@@ -2094,11 +2126,67 @@ async fn send_dynamic_json_once(
     Ok(response)
 }
 
+/// Short human message for a transport-level send failure, with a hint for
+/// the likely cause. The raw reqwest text is kept on a second line.
+pub(crate) fn friendly_send_error(err: &reqwest::Error) -> String {
+    let raw = err.to_string();
+    let Some(url) = err.url() else {
+        return raw;
+    };
+    let host = url.host_str().unwrap_or("");
+    let hostport = url
+        .port_or_known_default()
+        .map_or_else(|| host.to_string(), |port| format!("{host}:{port}"));
+
+    let mut refused = false;
+    let mut dns = false;
+    let mut src = err.source();
+    while let Some(cause) = src {
+        if cause
+            .downcast_ref::<std::io::Error>()
+            .is_some_and(|io| io.kind() == std::io::ErrorKind::ConnectionRefused)
+        {
+            refused = true;
+        }
+        let text = cause.to_string().to_lowercase();
+        if text.contains("connection refused")
+            || text.contains("os error 111")
+            || text.contains("os error 61")
+            || text.contains("os error 10061")
+        {
+            refused = true;
+        }
+        if text.contains("dns")
+            || text.contains("failed to lookup")
+            || text.contains("no such host")
+            || text.contains("name or service not known")
+            || text.contains("nodename nor servname")
+            || text.contains("temporary failure in name resolution")
+        {
+            dns = true;
+        }
+        src = cause.source();
+    }
+
+    let friendly = if refused {
+        format!("nothing is listening at {hostport} — is the server running?")
+    } else if dns {
+        format!("can't resolve {host} — check the address")
+    } else if err.is_timeout() {
+        format!("{hostport} didn't answer in time — is the server reachable?")
+    } else if err.is_connect() {
+        format!("can't connect to {hostport} — is the server reachable?")
+    } else {
+        return raw;
+    };
+    format!("{friendly}\n{raw}")
+}
+
 fn map_send_error(error: reqwest::Error) -> ProviderError {
     if error.is_connect() {
-        ProviderError::Connection(error.to_string())
+        ProviderError::Connection(friendly_send_error(&error))
     } else if error.is_timeout() {
-        ProviderError::Timeout(error.to_string())
+        ProviderError::Timeout(friendly_send_error(&error))
     } else {
         ProviderError::Stream(error.to_string())
     }
@@ -2515,7 +2603,16 @@ impl OpenAiProvider {
             credential_source
                 .acquire()
                 .await
-                .map_err(|e| ProviderError::Auth(format!("provider credential unavailable: {e:#}")))
+                .map_err(|e| match e {
+                    // The credential source is unreachable (sidecar died
+                    // mid-request, timed out, refresh endpoint offline):
+                    // transient, so the turn retries instead of telling
+                    // the user to sign in again.
+                    gray_core::credential::CredentialError::Unavailable(_) => {
+                        ProviderError::Connection(format!("provider credential unavailable: {e:#}"))
+                    }
+                    _ => ProviderError::Auth(format!("provider credential unavailable: {e:#}")),
+                })
                 .and_then(|lease| {
                     let url = match lease.metadata.get("relay_url") {
                         Some(relay) => relay.parse::<Url>().map_err(|e| {

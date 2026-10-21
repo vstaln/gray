@@ -185,3 +185,44 @@ pub(crate) fn anstyle_to_ratatui_color(color: anstyle::Color) -> ratatui::style:
         anstyle::Color::Rgb(rgb) => Color::Rgb(rgb.0, rgb.1, rgb.2),
     }
 }
+
+/// `adapt_color` for a ratatui `Color`: downgrades 24-bit RGB and 256-color
+/// indices to the detected terminal level. `Color::Reset` stays `Reset`;
+/// under `ColorLevel::None` (`NO_COLOR`) every color collapses to `Reset`.
+#[must_use]
+pub fn adapt_ratatui_color(color: ratatui::style::Color) -> ratatui::style::Color {
+    use ratatui::style::Color as RC;
+    if detect_color_level() == ColorLevel::TrueColor {
+        return color;
+    }
+    ratatui_to_anstyle(color)
+        .and_then(adapt_color)
+        .map(anstyle_to_ratatui_color)
+        .unwrap_or(RC::Reset)
+}
+
+fn ratatui_to_anstyle(color: ratatui::style::Color) -> Option<Color> {
+    use ratatui::style::Color as RC;
+    let named = |a: anstyle::AnsiColor| Some(Color::Ansi(a));
+    match color {
+        RC::Reset => None,
+        RC::Black => named(anstyle::AnsiColor::Black),
+        RC::Red => named(anstyle::AnsiColor::Red),
+        RC::Green => named(anstyle::AnsiColor::Green),
+        RC::Yellow => named(anstyle::AnsiColor::Yellow),
+        RC::Blue => named(anstyle::AnsiColor::Blue),
+        RC::Magenta => named(anstyle::AnsiColor::Magenta),
+        RC::Cyan => named(anstyle::AnsiColor::Cyan),
+        RC::Gray => named(anstyle::AnsiColor::White),
+        RC::DarkGray => named(anstyle::AnsiColor::BrightBlack),
+        RC::LightRed => named(anstyle::AnsiColor::BrightRed),
+        RC::LightGreen => named(anstyle::AnsiColor::BrightGreen),
+        RC::LightYellow => named(anstyle::AnsiColor::BrightYellow),
+        RC::LightBlue => named(anstyle::AnsiColor::BrightBlue),
+        RC::LightMagenta => named(anstyle::AnsiColor::BrightMagenta),
+        RC::LightCyan => named(anstyle::AnsiColor::BrightCyan),
+        RC::White => named(anstyle::AnsiColor::BrightWhite),
+        RC::Rgb(r, g, b) => Some(Color::Rgb(anstyle::RgbColor(r, g, b))),
+        RC::Indexed(i) => Some(Color::Ansi256(anstyle::Ansi256Color(i))),
+    }
+}

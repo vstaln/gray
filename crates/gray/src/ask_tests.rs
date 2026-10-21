@@ -10,10 +10,13 @@ fn q(id: &str, options: usize) -> AskQuestion {
                 label: format!("o{i}"),
                 description: "d".into(),
                 opt_in: false,
+                freeform: false,
             })
             .collect(),
+        detail: String::new(),
         multi: false,
         default_all: false,
+        no_other: false,
     }
 }
 
@@ -56,12 +59,31 @@ fn modal_finish_preselects_first_option() {
 }
 
 #[test]
-fn modal_finish_skipped_is_empty() {
+fn modal_finish_uses_cursor_selection() {
     let mut st = AskModalState::new(1);
     st.load(vec![q("a", 2)]);
-    st.committed[0] = false;
+    st.cursor[0] = 1;
     let answers = st.finish();
-    assert!(answers[0].answers.is_empty());
+    assert_eq!(answers[0].answers, vec!["o1".to_string()]);
+}
+
+#[test]
+fn modal_finish_other_row_yields_note_or_other() {
+    let mut st = AskModalState::new(1);
+    st.load(vec![q("a", 2)]);
+    st.cursor[0] = 2;
+    let answers = st.finish();
+    assert_eq!(answers[0].answers, vec!["Other".to_string()]);
+
+    let mut st = AskModalState::new(1);
+    st.load(vec![q("a", 2)]);
+    st.cursor[0] = 2;
+    st.notes[0] = "ship it friday".to_string();
+    let answers = st.finish();
+    assert_eq!(
+        answers[0].answers,
+        vec!["user_note: ship it friday".to_string()]
+    );
 }
 
 #[test]
@@ -83,9 +105,39 @@ fn ask_rows_shape() {
     let rows = ask_rows(&st);
 
     assert_eq!(rows.len(), 5);
-    assert_eq!(rows[0].0, "❓");
-    assert_eq!(rows[1].1, "1. o0");
-    assert_eq!(rows[3].1, "3. None of the above");
+    assert_eq!(rows[0].0, "?");
+    assert_eq!(rows[1].0, "\u{25cf}");
+    assert_eq!(rows[1].1, "o0");
+    assert_eq!(rows[2].0, "\u{25cb}");
+    assert_eq!(rows[3].1, "Other");
+    assert_eq!(rows[4].0, "\u{b7}");
+}
+
+#[test]
+fn ask_rows_detail_and_cursor_offset() {
+    let mut question = q("a", 2);
+    question.detail = "gray mcp list".to_string();
+    let mut st = AskModalState::new(1);
+    st.load(vec![question]);
+    st.cursor[0] = 1;
+    let rows = ask_rows(&st);
+
+    assert_eq!(rows.len(), 6);
+    assert_eq!(rows[1].0, "\u{2502}");
+    assert_eq!(rows[1].2, "gray mcp list");
+    assert_eq!(st.cursor_row(), 3);
+}
+
+#[test]
+fn ask_rows_no_other_drops_extra_row() {
+    let mut question = q("a", 2);
+    question.no_other = true;
+    let mut st = AskModalState::new(1);
+    st.load(vec![question]);
+    let rows = ask_rows(&st);
+
+    assert_eq!(rows.len(), 4);
+    assert_eq!(st.options_len(), 2);
 }
 
 static ASK_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -139,9 +191,12 @@ fn json_wire_asks_with_a_row_and_reads_answers_by_id() {
             label: "main".into(),
             description: "production".into(),
             opt_in: false,
+            freeform: false,
         }],
+        detail: String::new(),
         multi: false,
         default_all: false,
+        no_other: false,
     }];
     let row = json_ask_row("t1", 7, &questions);
     assert_eq!(row["protocol"], 1);
