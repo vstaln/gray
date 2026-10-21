@@ -13,6 +13,7 @@ use crate::event::{
 use crate::message::{ChatRequest, ContentBlock, Message, Role, ThoughtSignature};
 
 const MAX_EMPTY_RETRIES: u8 = 2;
+const MAX_EMPTY_NUDGES: u8 = 3;
 
 const MAX_CONTINUATIONS: u8 = 2;
 
@@ -500,6 +501,7 @@ impl Agent {
         let mut last_retry_err: Option<String> = None;
 
         let mut empty_nudge_sent = false;
+        let mut empty_nudges: u8 = 0;
 
         let mut leak_nudges: u8 = 0;
 
@@ -1355,8 +1357,9 @@ impl Agent {
                         .iter()
                         .any(|b| matches!(b, ContentBlock::ToolResult { .. }))
                 });
-                if tail_had_results && !empty_nudge_sent {
+                if tail_had_results && !empty_nudge_sent && empty_nudges < MAX_EMPTY_NUDGES {
                     empty_nudge_sent = true;
+                    empty_nudges += 1;
                     self.messages.push(Message::assistant("(empty)"));
                     self.messages.push(Message::user_injected(
                         "executed tool calls but returned empty — process results and continue",
@@ -1365,6 +1368,9 @@ impl Agent {
                     continue 'turn;
                 }
                 self.messages.push(Message::assistant("(empty)"));
+            } else if !text_is_empty || !tool_uses.is_empty() {
+                empty_retries = 0;
+                empty_nudge_sent = false;
             }
 
             if tool_uses.is_empty() {
