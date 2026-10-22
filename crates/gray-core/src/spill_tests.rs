@@ -1,10 +1,10 @@
 use crate::spill::*;
 use crate::tool_out;
 
-static HOME_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
 fn with_home<T>(body: impl FnOnce() -> T) -> T {
-    let _guard = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _guard = crate::paths::HOME_ENV_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let dir = tempfile::TempDir::new().expect("tempdir");
 
     unsafe { std::env::set_var("GRAY_HOME", dir.path()) };
