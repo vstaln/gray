@@ -285,10 +285,6 @@ pub(crate) async fn dispatch_command(
             handle_context_window(config, cwd, agent, val, tui.as_ref().map(|(s, _)| s)).await;
             Flow::Continue
         }
-        ReplCommand::Usage => {
-            handle_usage(session_totals, config, tui.as_ref().map(|(s, _)| s));
-            Flow::Continue
-        }
         ReplCommand::Jobs => {
             let tui_shared = tui.as_ref().map(|(s, _)| s);
             let sid = session_state
@@ -336,60 +332,6 @@ pub(crate) async fn dispatch_command(
             Flow::Continue
         }
 
-        ReplCommand::Gateway(arg) => {
-            let tui_shared = tui.as_ref().map(|(s, _)| s);
-            if let Some(on) = arg.as_deref().and_then(handlers::parse_on_off) {
-                let text = handlers::toggle_subsystem(handlers::Subsystem::Gateway, on);
-                say(tui_shared, &text);
-            } else if tui_shared.is_none() {
-                say(tui_shared, &crate::plugin_status::table().await);
-            } else {
-                // Bare /gateway is the plugin manager — the old
-                // "Connections" skin over the same rows folded in.
-                let bg = tui_shared.map(|s| s.lock().expect("tui lock").snapshot());
-                let changed = with_modal_sync(tui_shared, || {
-                    crate::setup::run_plugins_manager(bg.as_ref())
-                });
-                match changed {
-                    Ok(true) => say(tui_shared, "connections updated"),
-
-                    Ok(false) => say(tui_shared, &crate::plugin_status::table().await),
-                    Err(e) => say(tui_shared, &format!("connections picker failed: {e}")),
-                }
-            }
-            Flow::Continue
-        }
-
-
-        ReplCommand::Copy => {
-            handle_copy(agent, tui.as_ref().map(|(s, _)| s));
-            Flow::Continue
-        }
-        ReplCommand::Theme(arg) => {
-            super::customize::handle_theme(arg, tui.as_ref().map(|(s, _)| s));
-            Flow::Continue
-        }
-        ReplCommand::Intro(arg) => {
-            let tui_shared = tui.as_ref().map(|(s, _)| s);
-            let text = match arg.as_deref().and_then(handlers::parse_on_off) {
-                Some(on) => handlers::toggle_subsystem(handlers::Subsystem::Intro, on),
-                None if arg.is_none() => format!(
-                    "logo intro is {}",
-                    if crate::setup::intro_enabled() {
-                        "on"
-                    } else {
-                        "off"
-                    }
-                ),
-                None => "usage: /intro [on|off]".to_string(),
-            };
-            say(tui_shared, &text);
-            Flow::Continue
-        }
-        ReplCommand::Keys(arg) => {
-            super::customize::handle_keys(arg, tui.as_ref().map(|(s, _)| s));
-            Flow::Continue
-        }
         ReplCommand::Reload => {
             super::customize::handle_reload(tui.as_ref().map(|(s, _)| s));
             Flow::Continue
@@ -578,9 +520,7 @@ pub(crate) async fn dispatch_command(
                                     }
                                 }
                                 let pending = crate::session_store::default_root()
-                                    .and_then(|r| {
-                                        r.parent().map(|h| h.join("pending-resume"))
-                                    });
+                                    .and_then(|r| r.parent().map(|h| h.join("pending-resume")));
                                 if let Some(path) = pending
                                     && let Ok(sid) = std::fs::read_to_string(&path)
                                 {

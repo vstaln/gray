@@ -168,7 +168,6 @@ pub(crate) mod plugin_cmds;
 pub(crate) mod prompt_turn;
 mod session;
 pub(crate) mod status;
-pub(crate) mod usage_panel;
 
 pub(crate) use commands::{REGISTRY, completion_fill, completion_matches_dyn, is_builtin_command};
 pub use commands::{ReplCommand, ResumeArgs, SysAction, parse_command};
@@ -183,8 +182,7 @@ pub(crate) use session::{
     persist_turn_messages, print_exit_hint,
 };
 pub(crate) use status::{
-    SessionTotals, handle_compact, handle_context_window, handle_copy, handle_usage, turn_footer,
-    turn_tokens_per_second,
+    SessionTotals, handle_compact, handle_context_window, turn_footer, turn_tokens_per_second,
 };
 
 pub(crate) type TuiOpt = Option<(

@@ -401,7 +401,6 @@ pub struct PluginAccountRow {
     pub pinned: bool,
 }
 
-
 fn now_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

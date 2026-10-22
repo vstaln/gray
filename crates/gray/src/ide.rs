@@ -504,5 +504,4 @@ impl IdeSession {
         }
         ids
     }
-
 }

@@ -10,8 +10,7 @@ use serde_json::{Value, json};
 use crate::CmdVerb;
 use crate::config::Config;
 use crate::repl::commands::{CmdSurface, resolve};
-use crate::repl::usage_panel;
-use crate::repl::{SessionTotals, handlers};
+use crate::repl::handlers;
 use crate::session_store::{JsonlSessionStore, SessionId};
 use crate::setup::variants::{Parts, RowShape};
 
@@ -119,7 +118,6 @@ async fn run_command(
         }
         return match def.name {
             "help" => Ok(help_result()),
-            "usage" => usage_result(config, home).await,
             "models" => model_result(config, home, &rest),
             "new" => new_result(home).await,
             "sessions" => sessions_result(home, &rest).await,
@@ -136,7 +134,6 @@ async fn run_command(
             "reload" => Ok(CommandResult::text(
                 "config reloads on the next turn in this conversation",
             )),
-            "gateway" => gateway_result(&rest),
             other => Err(CmdError::unavailable(format!(
                 "'/{other}' is not implemented over cmd yet"
             ))),
@@ -178,46 +175,6 @@ fn help_result() -> CommandResult {
         }
     }
     CommandResult::text(out.trim_end())
-}
-
-async fn usage_result(config: &Config, home: &Path) -> Result<CommandResult, CmdError> {
-    let store = JsonlSessionStore::new(home.join("sessions"));
-    let summaries = store.list().await;
-    let pointed = pointed_session(home).filter(|sid| summaries.iter().any(|s| s.id == *sid));
-    let id =
-        pointed.or_else(|| crate::resume::latest_summary(&summaries, None).map(|s| s.id.clone()));
-    let Some(id) = id else {
-        return Ok(CommandResult::text(
-            "no sessions yet — usage appears after the first turn",
-        ));
-    };
-    let (meta, entries) = store
-        .load(&id)
-        .await
-        .map_err(|e| CmdError::unavailable(format!("cannot load session {id}: {e:#}")))?;
-    let model = if meta.model.is_empty() {
-        config.model.clone().unwrap_or_default()
-    } else {
-        meta.model
-    };
-    let totals = SessionTotals::from_entries(&entries, &model);
-    if totals.turns == 0 {
-        return Ok(CommandResult::text(
-            "no turns yet this session — usage appears after the first turn",
-        ));
-    }
-    let input = usage_panel::PanelInput {
-        totals: &totals,
-        model: &model,
-        rate: crate::setup::get_model_rate(&model),
-        warmth: usage_panel::Warmth::Unknown,
-    };
-    let mut text = format!("✓ Session usage — {}", usage_panel::usage_header(&input));
-    for line in usage_panel::usage_plain(&input) {
-        text.push('\n');
-        text.push_str(&line);
-    }
-    Ok(CommandResult::text(text))
 }
 
 fn pointed_session(home: &Path) -> Option<SessionId> {
@@ -928,26 +885,6 @@ fn agentsmd_result(rest: &str) -> Result<CommandResult, CmdError> {
         }
         other => Err(CmdError::args(format!(
             "unknown `/agentsmd {other}` over cmd — `show` works; edit/reset need the TUI"
-        ))),
-    }
-}
-
-fn gateway_result(rest: &str) -> Result<CommandResult, CmdError> {
-    match rest.trim() {
-        "" | "status" | "list" => Ok(CommandResult::text(
-            crate::plugin_cli::list_rows()
-                .unwrap_or_default()
-                .iter()
-                .map(|r| {
-                    crate::setup::format_plugin_row_parts(
-                        &r.name, &r.version, &r.scope, &r.ecosystem, r.on,
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join("\n"),
-        )),
-        other => Err(CmdError::args(format!(
-            "unknown `/gateway {other}` over cmd — status only here"
         ))),
     }
 }

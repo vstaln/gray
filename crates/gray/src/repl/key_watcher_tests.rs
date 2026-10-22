@@ -102,22 +102,7 @@ fn hooks() -> Vec<std::sync::Arc<dyn gray_core::agent::PluginHooks>> {
 
 #[test]
 fn builtin_commands_stay_turn_local() {
-    for cmd in [
-        "/usage",
-        "/cost",
-        "/jobs",
-        "/help",
-        "/theme",
-        "/theme banish",
-        "/plugins",
-        "/hotkeys",
-        "/reload",
-        "/intro",
-        "/intro off",
-        "/gateway",
-        "/gateway off",
-        "/hehe",
-    ] {
+    for cmd in ["/jobs", "/help", "/plugins", "/reload", "/hehe"] {
         assert!(is_turn_local_command(cmd, &hooks()), "{cmd}");
         assert!(is_turn_local_command(cmd, &[]), "{cmd} needs no hooks");
     }

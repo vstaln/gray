@@ -112,7 +112,6 @@ mod install_manager;
 mod model_modal;
 mod model_panes;
 mod plugins_modal;
-mod theme_modal;
 pub(crate) mod variants;
 
 pub use context_modal::run_context_modal;
@@ -122,9 +121,7 @@ mod provider_auth;
 mod recommend;
 
 pub use connect::{ConnectOutcome, active_connect_id, run_connect_modal, run_connect_modal_for};
-pub(crate) use install_manager::{
-    ManagerItem, ManagerSpec, format_plugin_row_parts, run_install_manager,
-};
+pub(crate) use install_manager::{ManagerItem, ManagerSpec, run_install_manager};
 pub use install_manager::{ManagerOutcome, run_plugins_modal, run_skills_modal};
 pub(crate) use model_modal::{
     canonicalize_adopted_model, composite_label_for, composite_label_parts_for,
@@ -141,7 +138,6 @@ pub use provider_auth::{
     activate_plugin_connection, adopt_saved_key, connect_saved_key, forget_plugin_connection,
     select_api_key_connection,
 };
-pub(crate) use theme_modal::run_theme_picker;
 
 use crate::{config::Config, tui::print_wrapped};
 

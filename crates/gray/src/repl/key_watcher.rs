@@ -6,8 +6,6 @@ pub(crate) struct TurnLocalCommands {
     pub tui: crate::composer::SharedTui,
     pub cwd: std::path::PathBuf,
     pub session_id: Option<String>,
-    pub config: crate::config::Config,
-    pub totals: super::SessionTotals,
     pub executor: Option<std::sync::Arc<dyn gray_core::agent::ToolExecutor>>,
     pub hooks: Vec<std::sync::Arc<dyn gray_core::agent::PluginHooks>>,
 }
@@ -33,15 +31,9 @@ pub(crate) fn is_turn_local_command(
     hooks: &[std::sync::Arc<dyn gray_core::agent::PluginHooks>],
 ) -> bool {
     match super::parse_command(text) {
-        super::ReplCommand::Usage | super::ReplCommand::Jobs | super::ReplCommand::Help => true,
+        super::ReplCommand::Jobs | super::ReplCommand::Help => true,
 
-        super::ReplCommand::Theme(_)
-        | super::ReplCommand::Plugins
-        | super::ReplCommand::Keys(_)
-        | super::ReplCommand::Reload
-        | super::ReplCommand::Intro(_)
-        | super::ReplCommand::Gateway(_)
-        | super::ReplCommand::Hehe => true,
+        super::ReplCommand::Plugins | super::ReplCommand::Reload | super::ReplCommand::Hehe => true,
         super::ReplCommand::Unknown(_) => plugin_turn_local_args(text, hooks).is_some(),
         _ => false,
     }
@@ -83,9 +75,6 @@ fn help_text(
 fn run_turn_local_command(ctx: &TurnLocalCommands, text: &str) {
     let tui = Some(&ctx.tui);
     match super::parse_command(text) {
-        super::ReplCommand::Usage => {
-            super::status::handle_turn_usage(&ctx.totals, &ctx.config, tui);
-        }
         super::ReplCommand::Jobs => {
             let job_ctx = super::jobs::session_ctx(&ctx.cwd, ctx.session_id.as_deref());
             let jobs = ctx
@@ -106,9 +95,6 @@ fn run_turn_local_command(ctx: &TurnLocalCommands, text: &str) {
             t.push_dim(help_text(&ctx.cwd, &ctx.hooks));
             t.ensure_gap();
         }
-        super::ReplCommand::Theme(arg) => {
-            super::customize::handle_theme(arg, Some(&ctx.tui));
-        }
         super::ReplCommand::Plugins => {
             let tui = Some(&ctx.tui);
             let bg = ctx.tui.lock().expect("tui lock").snapshot();
@@ -121,45 +107,8 @@ fn run_turn_local_command(ctx: &TurnLocalCommands, text: &str) {
                 Err(e) => super::say(tui, &format!("plugins manager failed: {e}")),
             }
         }
-        super::ReplCommand::Keys(arg) => {
-            super::customize::handle_keys(arg, Some(&ctx.tui));
-        }
         super::ReplCommand::Reload => {
             super::customize::handle_reload(Some(&ctx.tui));
-        }
-        super::ReplCommand::Intro(arg) => {
-            let text = match arg.as_deref().and_then(super::handlers::parse_on_off) {
-                Some(on) => {
-                    super::handlers::toggle_subsystem(super::handlers::Subsystem::Intro, on)
-                }
-                None if arg.is_none() => format!(
-                    "logo intro is {}",
-                    if crate::setup::intro_enabled() {
-                        "on"
-                    } else {
-                        "off"
-                    }
-                ),
-                None => "usage: /intro [on|off]".to_string(),
-            };
-            super::say(Some(&ctx.tui), &text);
-        }
-        super::ReplCommand::Gateway(arg) => {
-            let tui = Some(&ctx.tui);
-            if let Some(on) = arg.as_deref().and_then(super::handlers::parse_on_off) {
-                let text =
-                    super::handlers::toggle_subsystem(super::handlers::Subsystem::Gateway, on);
-                super::say(tui, &text);
-            } else {
-                let bg = ctx.tui.lock().expect("tui lock").snapshot();
-                match super::with_modal_sync(tui, || {
-                    crate::setup::run_plugins_manager(Some(&bg))
-                }) {
-                    Ok(true) => super::say(tui, "connections updated"),
-                    Ok(false) => super::say(tui, "see /plugins"),
-                    Err(e) => super::say(tui, &format!("connections picker failed: {e}")),
-                }
-            }
         }
         super::ReplCommand::Hehe => {
             let reverting = crate::mascot::mascot_shown();

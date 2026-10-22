@@ -209,14 +209,10 @@ pub(crate) async fn run_prompt_turn(
     let watcher_tui = tui_stream.clone();
     let cwd_for_watcher = cwd.to_path_buf();
     let turn_locals = tui_stream.as_ref().map(|shared| {
-        let mut local_config = config.clone();
-        local_config.api_key = None;
         key_watcher::TurnLocalCommands {
             tui: shared.clone(),
             cwd: cwd.to_path_buf(),
             session_id: ctx.session_id.clone(),
-            config: local_config,
-            totals: session_totals.clone(),
             executor: Some(agent.executor_handle()),
             hooks: agent.hooks().to_vec(),
         }

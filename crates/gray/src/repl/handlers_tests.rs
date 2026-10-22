@@ -227,44 +227,6 @@ async fn reload_agent_failure_preserves_agent() {
 }
 
 #[test]
-fn subsystem_toggle_parses_bare_switch_words_only() {
-    use super::{Subsystem, parse_on_off};
-    assert_eq!(parse_on_off("on"), Some(true));
-    assert_eq!(parse_on_off("off"), Some(false));
-    assert_eq!(parse_on_off("ON"), Some(true));
-    assert_eq!(parse_on_off("Disable"), Some(false));
-    assert_eq!(parse_on_off(""), None);
-    assert_eq!(parse_on_off("  off  "), Some(false));
-
-    assert_eq!(parse_on_off("off now"), None);
-    assert_eq!(parse_on_off("memory"), None);
-    assert_eq!(parse_on_off("on/off"), None);
-
-    for sub in [Subsystem::Gateway, Subsystem::Intro] {
-        assert!(parse_on_off("off").is_some());
-        assert!(!sub.label().is_empty());
-    }
-}
-
-#[test]
-fn subsystem_toggle_persists_per_subsystem_and_reports_the_manual_path() {
-    use super::{Subsystem, apply_subsystem_toggle};
-    let dir = tempfile::tempdir().unwrap();
-    let cfg = dir.path().join("config.json");
-
-    let msg = apply_subsystem_toggle(&cfg, Subsystem::Gateway, false).unwrap();
-    assert!(msg.contains("status/stop still work"), "{msg}");
-    assert!(!crate::setup::gw_auto_enabled_at(&cfg));
-
-    let msg = apply_subsystem_toggle(&cfg, Subsystem::Gateway, true).unwrap();
-    assert!(msg.contains("gateway on"), "{msg}");
-    assert!(crate::setup::gw_auto_enabled_at(&cfg));
-
-    let missing = dir.path().join("nope.json");
-    assert!(crate::setup::gw_auto_enabled_at(&missing));
-}
-
-#[test]
 fn undo_cut_lands_on_the_last_user_turn() {
     let messages = vec![
         Message::user("first"),

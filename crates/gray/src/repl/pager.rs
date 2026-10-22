@@ -7,7 +7,6 @@ use crate::setup::BackgroundSnapshot;
 
 pub(crate) struct PagerPage {
     pub(crate) tab: String,
-    pub(crate) title: String,
     pub(crate) lines: Vec<Line<'static>>,
 }
 
@@ -36,7 +35,6 @@ pub(crate) fn pages_from_spec(spec: &PanelSpec) -> Vec<PagerPage> {
         .iter()
         .map(|p| PagerPage {
             tab: p.tab.clone(),
-            title: p.title.clone(),
             lines: p
                 .lines
                 .iter()
@@ -51,7 +49,6 @@ pub(crate) fn pages_from_outcome(outcome: Option<CommandOutcome>) -> Vec<PagerPa
         Some(CommandOutcome::Panel(spec)) => pages_from_spec(&spec),
         Some(CommandOutcome::Say(text)) => vec![PagerPage {
             tab: "Result".into(),
-            title: "Result".into(),
             lines: text
                 .lines()
                 .map(|l| Line::from(Span::raw(l.to_string())))

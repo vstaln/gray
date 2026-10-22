@@ -1,25 +1,12 @@
 use std::path::Path;
 
-use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::{Line, Span};
-
-use super::{say, say_lines};
-use crate::composer::transcript::prose_width;
+use super::say;
 use crate::theme::{self, UiTheme};
 
 #[derive(Debug)]
 pub(crate) struct ThemeOutcome {
     pub(crate) message: String,
     pub(crate) apply: Option<(UiTheme, Option<String>)>,
-
-    pub(crate) card: Option<ThemeCard>,
-}
-
-#[derive(Debug)]
-pub(crate) struct ThemeCard {
-    pub(crate) name: String,
-    pub(crate) builtin: bool,
-    pub(crate) notes: Vec<String>,
 }
 
 impl ThemeOutcome {
@@ -27,7 +14,6 @@ impl ThemeOutcome {
         Self {
             message: message.into(),
             apply: None,
-            card: None,
         }
     }
 }
@@ -44,80 +30,6 @@ fn with_warnings(mut msg: String, warnings: &[String]) -> String {
         msg.push_str(&format!("\n  warning: {w}"));
     }
     msg
-}
-
-const CARD_PAD: usize = 1;
-
-fn theme_card_lines(
-    palette: &UiTheme,
-    name: &str,
-    builtin: bool,
-    width: usize,
-) -> Vec<Line<'static>> {
-    let bg = palette.surface_bg;
-    let on = |fg: Color| Style::new().fg(fg).bg(bg);
-    let pad = |n: usize| Span::styled(" ".repeat(n), Style::new().bg(bg));
-
-    let mut head = vec![
-        pad(CARD_PAD),
-        Span::styled("✓", on(palette.success)),
-        pad(1),
-        Span::styled("Theme", on(palette.text_dim)),
-        pad(1),
-        Span::styled(
-            name.to_string(),
-            on(palette.text_bright).add_modifier(Modifier::BOLD),
-        ),
-    ];
-    if builtin {
-        head.push(pad(1));
-        head.push(Span::styled("(built-in)", on(palette.text_dim)));
-    }
-    let swatch = theme::swatch_spans(palette);
-    let text_w: usize = head.iter().map(Span::width).sum();
-    let swatch_w: usize = swatch.iter().map(Span::width).sum();
-    let gap = width.saturating_sub(text_w + swatch_w + CARD_PAD);
-
-    if gap >= 2 {
-        head.push(pad(gap));
-        head.extend(swatch);
-        head.push(pad(CARD_PAD));
-    }
-
-    let roles = [
-        ("accent", palette.accent),
-        ("success", palette.success),
-        ("error", palette.error),
-        ("info", palette.info),
-        ("rose", palette.rose),
-    ];
-    let mut specimen = vec![pad(CARD_PAD)];
-    for (i, (word, fg)) in roles.into_iter().enumerate() {
-        if i > 0 {
-            specimen.push(pad(1));
-        }
-        specimen.push(Span::styled(word, on(fg)));
-    }
-    vec![card_row(head, width, bg), card_row(specimen, width, bg)]
-}
-
-fn card_row(mut spans: Vec<Span<'static>>, width: usize, bg: Color) -> Line<'static> {
-    let used: usize = spans.iter().map(Span::width).sum();
-    if used < width {
-        spans.push(Span::styled(" ".repeat(width - used), Style::new().bg(bg)));
-    }
-    Line::from(spans)
-}
-
-fn theme_success_lines(palette: &UiTheme, card: &ThemeCard, width: usize) -> Vec<Line<'static>> {
-    let dim = Style::new().add_modifier(Modifier::DIM);
-    let mut lines = theme_card_lines(palette, &card.name, card.builtin, width);
-    lines.extend(
-        card.notes
-            .iter()
-            .map(|n| Line::from(Span::styled(format!(" {n}"), dim))),
-    );
-    lines
 }
 
 pub(crate) fn theme_command(
@@ -175,7 +87,6 @@ pub(crate) fn theme_command(
                 Ok((t, warnings)) => ThemeOutcome {
                     message: with_warnings(format!("✓ reloaded theme {name}"), &warnings),
                     apply: Some((t, Some(name.to_string()))),
-                    card: None,
                 },
                 Err(e) => ThemeOutcome::say(format!("theme not reloaded: {e}")),
             },
@@ -191,14 +102,6 @@ pub(crate) fn theme_command(
                     Some(e) => format!("✓ theme gray (built-in) — not saved: {e}"),
                 },
                 apply: Some((theme::GRAY_UI_THEME, None)),
-                card: Some(ThemeCard {
-                    name: theme::BUILTIN_THEME_NAME.to_string(),
-                    builtin: true,
-                    notes: note
-                        .map(|e| format!("not saved: {e}"))
-                        .into_iter()
-                        .collect(),
-                }),
             }
         }
         name => match theme::load_theme_in(themes_dir, name) {
@@ -208,88 +111,13 @@ pub(crate) fn theme_command(
                 if let Some(e) = &saved {
                     msg.push_str(&format!(" — not saved: {e}"));
                 }
-                let notes = saved
-                    .map(|e| format!("not saved: {e}"))
-                    .into_iter()
-                    .chain(warnings.iter().map(|w| format!("warning: {w}")))
-                    .collect();
                 ThemeOutcome {
                     message: with_warnings(msg, &warnings),
                     apply: Some((t, Some(name.to_string()))),
-                    card: Some(ThemeCard {
-                        name: name.to_string(),
-                        builtin: false,
-                        notes,
-                    }),
                 }
             }
             Err(e) => ThemeOutcome::say(format!("theme not applied: {e}")),
         },
-    }
-}
-
-fn picker_arg(
-    tui: Option<&crate::composer::SharedTui>,
-    dir: &Path,
-) -> Result<Option<String>, Option<String>> {
-    if tui.is_none() || theme::list_themes_in(dir).is_empty() {
-        return Err(None);
-    }
-    let bg = tui.map(|s| s.lock().expect("tui lock").snapshot());
-    match super::with_modal_sync(tui, || crate::setup::run_theme_picker(bg.as_ref())) {
-        Ok(pick) => Ok(pick),
-        Err(e) => Err(Some(format!("theme picker: {e}"))),
-    }
-}
-
-pub(crate) fn handle_theme(arg: Option<String>, tui: Option<&crate::composer::SharedTui>) {
-    let (dir, config_path) = match (theme::themes_dir(), crate::setup::saved_config_path()) {
-        (Ok(d), Ok(c)) => (d, c),
-        (Err(e), _) | (_, Err(e)) => {
-            say(tui, &format!("could not resolve gray home: {e}"));
-            return;
-        }
-    };
-    let typed = arg.as_deref().map(str::trim).unwrap_or("");
-    let arg = if typed.is_empty() {
-        match picker_arg(tui, &dir) {
-            Ok(Some(name)) => Some(name),
-            Ok(None) => {
-                say(tui, "theme picker closed");
-                return;
-            }
-            Err(msg) => {
-                if let Some(m) = msg {
-                    say(tui, &m);
-                }
-                None
-            }
-        }
-    } else {
-        Some(typed.to_string())
-    };
-    let active = theme::active_theme_name();
-    let outcome = theme_command(arg.as_deref(), active.as_deref(), &dir, &config_path);
-    if let Some((t, name)) = &outcome.apply {
-        theme::set_theme(*t, name.as_deref());
-    }
-
-    if let Some(shared) = tui {
-        shared.lock().expect("tui lock").repaint_for_palette();
-    }
-    show_outcome(tui, &outcome);
-    if let Some(shared) = tui {
-        let _ = shared.lock().expect("tui lock").draw();
-    }
-}
-
-fn show_outcome(tui: Option<&crate::composer::SharedTui>, outcome: &ThemeOutcome) {
-    match (tui, &outcome.card, &outcome.apply) {
-        (Some(shared), Some(card), Some((palette, _))) => {
-            let width = prose_width(shared.lock().expect("tui lock").width());
-            say_lines(tui, theme_success_lines(palette, card, width));
-        }
-        _ => say(tui, &outcome.message),
     }
 }
 
@@ -350,21 +178,6 @@ fn render_keymap(km: &crate::keymap::Keymap, gray_home: &Path) -> String {
         path.display()
     ));
     with_warnings(out, &km.warnings)
-}
-
-pub(crate) fn handle_keys(arg: Option<String>, tui: Option<&crate::composer::SharedTui>) {
-    let home = match crate::setup::gray_home() {
-        Ok(h) => h,
-        Err(e) => {
-            say(tui, &format!("could not resolve gray home: {e}"));
-            return;
-        }
-    };
-    let (msg, km) = keys_command(arg.as_deref(), &home, &crate::keymap::active());
-    if let Some(km) = km {
-        crate::keymap::set_active(km);
-    }
-    say(tui, &msg);
 }
 
 pub(crate) fn handle_reload(tui: Option<&crate::composer::SharedTui>) {

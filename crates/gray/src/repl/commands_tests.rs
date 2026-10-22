@@ -48,25 +48,17 @@ fn context_renamed_no_window_alias() {
 }
 
 #[test]
-fn usage_command_and_cost_alias() {
-    assert!(matches!(parse_command("/usage"), ReplCommand::Usage));
-    assert!(matches!(parse_command("/copy"), ReplCommand::Copy));
+fn moved_commands_parse_as_unknown_for_plugin_routing() {
+    for name in [
+        "/usage", "/copy", "/cost", "/theme", "/hotkeys", "/intro", "/gateway", "/gw",
+    ] {
+        assert!(
+            matches!(parse_command(name), ReplCommand::Unknown(_)),
+            "{name}"
+        );
+    }
     assert!(matches!(parse_command("/doctor"), ReplCommand::Unknown(_)));
-    assert!(matches!(parse_command("/cost"), ReplCommand::Usage));
     assert!(matches!(parse_command("/session"), ReplCommand::Unknown(_)));
-    use std::path::Path;
-    let cwd = Path::new(".");
-    assert!(
-        super::completion_matches_dyn("/us", cwd)
-            .iter()
-            .any(|(n, _)| n == "usage")
-    );
-
-    assert!(
-        super::completion_matches("cost")
-            .iter()
-            .any(|(n, _)| *n == "usage")
-    );
 }
 
 #[test]
@@ -91,8 +83,8 @@ fn empty_prompt_hides_slash_popup_like_codex() {
 #[test]
 fn registry_resolve_canonical_and_aliases() {
     for name in [
-        "models", "context", "sessions", "new", "compact", "usage", "hehe", "agentsmd",
-        "skills", "plugins", "help", "quit",
+        "models", "context", "sessions", "new", "compact", "hehe", "agentsmd", "skills", "plugins",
+        "help", "quit",
     ] {
         let d = super::resolve(name).unwrap_or_else(|| panic!("resolve {name}"));
         assert_eq!(d.name, name);
@@ -105,7 +97,6 @@ fn registry_resolve_canonical_and_aliases() {
         ("exit", "quit"),
         ("compress", "compact"),
         ("sys", "agentsmd"),
-        ("cost", "usage"),
     ] {
         assert_eq!(super::resolve(alias).unwrap().name, target, "alias {alias}");
         assert_eq!(super::resolve(&format!("/{alias}")).unwrap().name, target);
@@ -126,7 +117,6 @@ fn registry_completion_covers_aliases() {
         ("exit", "quit"),
         ("compress", "compact"),
         ("sys", "agentsmd"),
-        ("cost", "usage"),
     ] {
         assert!(
             super::completion_matches(alias)
@@ -150,8 +140,6 @@ fn registry_completion_covers_aliases() {
 
 #[test]
 fn registry_parse_uses_canonical() {
-    assert!(matches!(parse_command("/cost"), ReplCommand::Usage));
-    assert!(matches!(parse_command("/COST"), ReplCommand::Usage));
     assert!(matches!(
         parse_command("/plugin list"),
         ReplCommand::Plugin(_)
@@ -171,14 +159,6 @@ fn registry_parse_uses_canonical() {
     ));
     assert!(matches!(parse_command("/exit"), ReplCommand::Quit));
 
-    assert!(matches!(parse_command("/gw"), ReplCommand::Gateway(None)));
-    assert!(matches!(
-        parse_command("/gateway status"),
-        ReplCommand::Gateway(Some(arg)) if arg == "status"
-    ));
-    assert!(
-        matches!(parse_command("/GATEWAY off"), ReplCommand::Gateway(Some(arg)) if arg == "off")
-    );
     for gone in ["/keys foo", "/key foo", "/browse", "/fast"] {
         assert!(
             matches!(parse_command(gone), ReplCommand::Unknown(_)),
@@ -224,7 +204,6 @@ fn permission_commands_are_gone() {
         );
     }
 }
-
 
 #[test]
 fn context_arg_completion_levels() {
@@ -466,7 +445,6 @@ fn model_completion_does_not_offer_global_context_catalog() {
     assert!(rows.is_empty(), "unconnected models leaked: {rows:?}");
 }
 
-
 #[test]
 fn update_and_restart_parse_and_register() {
     for (typed, name) in [
@@ -553,7 +531,7 @@ fn sessions_is_canonical_and_resume_stays_an_alias() {
 
 #[test]
 fn connect_completes_to_models_not_gateway() {
-    // "/connect" used to fuzzy-match /gateway's "connections" description.
+    // "/connect" used to fuzzy-match the old /gateway "connections" description.
     let got = super::completion_matches("connect");
     assert_eq!(got.first().map(|(n, _)| *n), Some("models"), "{got:?}");
 }
