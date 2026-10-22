@@ -1,7 +1,7 @@
 use serde_json::Value;
 
 use crate::agent::ToolOutput;
-use crate::spill::{self, MeterEvent};
+use crate::spill;
 
 pub const MAX_LINES: usize = 2000;
 
@@ -125,12 +125,6 @@ fn recoverable(original: &str, shown: String) -> String {
     let Some(handle) = spill::store(original) else {
         return shown;
     };
-    spill::record(MeterEvent {
-        ts: spill::now_millis(),
-        rule: String::new(),
-        raw: original.len() as u64,
-        sent: shown.len() as u64,
-    });
     let lines = original.lines().count();
     format!("{shown}{}", spill::footer(&handle, original.len(), lines))
 }

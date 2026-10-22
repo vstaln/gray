@@ -25,8 +25,6 @@ use crate::shell::view::{
     format_elapsed, header, middle_out, resume_hint, squeeze as squeeze_view,
 };
 use crate::view::Attached;
-use gray_core::spill::{self, MeterEvent};
-use gray_core::squeeze::squeeze;
 
 const READ_CHUNK: u64 = 4 * 1024;
 use crate::{fail, get_opt_u64, get_str, resolve_path};
@@ -1053,34 +1051,12 @@ fn finish_inline(
     let mut view = build_view(log_path, summary);
 
     view.body = squeeze_view(&view.body);
-    let squeezed = squeeze(&view.body, command);
-    let squeeze_note = squeezed.squeezed().then(|| {
-        spill::record(MeterEvent {
-            ts: spill::now_millis(),
-            rule: squeezed.rule.to_string(),
-            raw: squeezed.raw_bytes as u64,
-            sent: squeezed.sent_bytes as u64,
-        });
-        format!(
-            "squeezed by {} · {} → {}",
-            squeezed.rule,
-            spill::fmt_bytes(squeezed.raw_bytes),
-            spill::fmt_bytes(squeezed.sent_bytes)
-        )
-    });
-    if squeeze_note.is_some() {
-        view.body = squeezed.text.clone();
-    }
     let head = header(&report, Some(&view), elapsed, log_path);
     let mut out = match first_line {
         Some(first) => format!("{first}\n{head}"),
         None => head,
     };
 
-    if let Some(note) = &squeeze_note {
-        out.push('\n');
-        out.push_str(note);
-    }
     if !view.body.is_empty() {
         out.push('\n');
         out.push_str(&fence(&view.body));

@@ -16,7 +16,6 @@ pub mod paths;
 pub mod prefix_guard;
 pub mod redaction;
 pub mod spill;
-pub mod squeeze;
 pub mod tool_deferral;
 pub mod tool_out;
 
@@ -37,10 +36,6 @@ mod credential_tests;
 #[cfg(test)]
 #[path = "input_tests.rs"]
 mod input_tests;
-
-#[cfg(test)]
-#[path = "squeeze_tests.rs"]
-mod squeeze_tests;
 
 #[cfg(test)]
 #[path = "spill_tests.rs"]

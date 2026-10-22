@@ -31,7 +31,6 @@ pub fn run_cli(cmd: &SpillCmd) -> Result<()> {
             let re = build(pattern, *ignore_case, *literal)?;
             grep_lines(handle, &text, &re, *context, *limit)
         }
-        SpillCmd::Stats => stats(),
     };
     println!("{}", out.trim_end());
     Ok(())
@@ -136,43 +135,6 @@ fn grep_lines(
          `gray spill head/tail {handle}` for the ends]",
         lines.len()
     ));
-    out
-}
-
-fn stats() -> String {
-    let totals = spill::totals();
-    if totals.events == 0 {
-        return "nothing squeezed or spilled yet on this machine".to_string();
-    }
-    let mut out = format!(
-        "{} result(s) metered · {} produced → {} reached the model · {} saved ({:.0}%)",
-        totals.events,
-        spill::fmt_bytes(totals.raw_bytes as usize),
-        spill::fmt_bytes(totals.sent_bytes as usize),
-        spill::fmt_bytes(totals.saved() as usize),
-        totals.saved_pct()
-    );
-
-    out.push_str(&format!(
-        "\n≈ {} tokens of tool output never entered a context window\n",
-        totals.saved() / 4
-    ));
-    out.push_str("\nby rule:\n");
-    let mut rows: Vec<_> = totals.by_rule.iter().collect();
-
-    rows.sort_by_key(|(_, (_, raw, sent))| std::cmp::Reverse(raw.saturating_sub(*sent)));
-    for (rule, (events, raw, sent)) in rows {
-        let name = if rule.is_empty() {
-            "spill (no rule)"
-        } else {
-            rule
-        };
-        out.push_str(&format!(
-            "  {name:<18} {events:>4} result(s)  {} → {}\n",
-            spill::fmt_bytes(*raw as usize),
-            spill::fmt_bytes(*sent as usize)
-        ));
-    }
     out
 }
 

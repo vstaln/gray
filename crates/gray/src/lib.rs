@@ -766,9 +766,6 @@ pub enum SpillCmd {
         #[arg(long, value_name = "N", help = "Cap the number of matches")]
         limit: Option<usize>,
     },
-
-    #[command(about = "Show spill store stats")]
-    Stats,
 }
 
 #[derive(Parser, Debug, Clone)]
