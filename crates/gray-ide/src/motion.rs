@@ -28,6 +28,12 @@ pub const CARD_MS: u64 = 180;
 pub const WELCOME_MS: u64 = 600;
 /// Message rise-in, monocode `prompt-turn-reveal`.
 pub const RISE_MS: u64 = 320;
+/// In-app toast auto-dismiss.
+pub const TOAST_MS: u64 = 4000;
+/// Composer dock-slide on the first send (monocode `useComposerDockMotion`).
+pub const DOCK_MS: u64 = 480;
+/// Only prompt bubbles this fresh get the celebration burst (monocode FRESH_MS).
+pub const FRESH_MS: i64 = 4_000;
 /// Loops are capped so a running turn doesn't re-render the window at 60 Hz.
 const LOOP_FPS: f32 = 30.;
 
@@ -171,4 +177,103 @@ pub fn braille_spinner(id: impl Into<ElementId>, t: &Theme) -> impl IntoElement 
             Animation::new(ms(800)).repeat().with_max_fps(12.5),
             |d, x| d.child(FRAMES[((x * 10.) as usize).min(9)]),
         )
+}
+
+/// Fade in and slide along x (`travel` px; positive = from the right).
+pub fn enter_x<E: Styled + IntoElement + 'static>(
+    el: E,
+    id: impl Into<ElementId>,
+    dur: u64,
+    travel: f32,
+    easing: impl Fn(f32) -> f32 + 'static,
+) -> AnimationElement<E> {
+    el.with_animation(
+        id,
+        Animation::new(ms(dur)).with_easing(easing),
+        move |el, t| el.opacity(t).left(px(travel * (1. - t))),
+    )
+}
+
+/// Word-by-word fade for streaming markdown (monocode `wordFade`): each
+/// burst's appended text fades in over ~320ms, words ~24ms apart.
+pub fn word_fade() -> gpui_kit::base::TextViewMotion {
+    use gpui_kit::base::motion::Easing;
+    gpui_kit::base::TextViewMotion::default()
+        .with_stream_fade(ms(320))
+        .with_stream_fade_stagger(ms(24))
+        .with_stream_fade_easing(
+            Easing::cubic_bezier(0.33, 0.53, 0.67, 1.0).unwrap_or(Easing::EaseOut),
+        )
+}
+
+/// Halo ring + sheen sweep + ember glow on a just-submitted prompt bubble
+/// (monocode turn-mode-halo / turn-mode-sheen / monocode-ember-glow).
+/// One-shot overlays keyed by the message id, hugging the bubble not the row.
+pub fn celebrate<E: IntoElement + 'static>(bubble: E, id: &str, t: &Theme) -> impl IntoElement {
+    let glow = t.primary;
+    div()
+        .relative()
+        .child(bubble)
+        .child(div().absolute().inset_0().rounded(px(10.)).with_animation(
+            SharedString::from(format!("halo-{id}")),
+            Animation::new(ms(2400)).with_easing(ease_out()),
+            move |d, x| {
+                let a = if x < 0.25 {
+                    x / 0.25
+                } else {
+                    1. - (x - 0.25) / 0.75
+                };
+                d.border_1()
+                    .border_color(glow.opacity(0.6 * a))
+                    .shadow(vec![
+                        BoxShadow::new(px(0.), px(0.), glow.opacity(0.38 * a))
+                            .blur_radius(px(24.))
+                            .spread_radius(px(3.)),
+                    ])
+            },
+        ))
+        .child(
+            div()
+                .absolute()
+                .inset_0()
+                .rounded(px(10.))
+                .overflow_hidden()
+                .with_animation(
+                    SharedString::from(format!("sheen-{id}")),
+                    Animation::new(ms(1400)),
+                    move |d, x| {
+                        let u = ((x * 1400. - 300.) / 1100.).clamp(0., 1.);
+                        d.child(
+                            div()
+                                .absolute()
+                                .top_0()
+                                .bottom_0()
+                                .w(relative(0.45))
+                                .left(relative(-0.45 + 1.6 * u))
+                                .bg(linear_gradient(
+                                    105.,
+                                    linear_color_stop(glow.opacity(0.), 0.),
+                                    linear_color_stop(glow.opacity(0.30), 1.),
+                                )),
+                        )
+                    },
+                ),
+        )
+        .child(div().absolute().inset_0().rounded(px(10.)).with_animation(
+            SharedString::from(format!("ember-{id}")),
+            Animation::new(ms(2200)).with_easing(ease_out()),
+            move |d, x| {
+                let u = ((x * 2200. - 100.) / 2100.).clamp(0., 1.);
+                let a = if u < 0.3 {
+                    u / 0.3
+                } else {
+                    1. - (u - 0.3) / 0.7
+                };
+                d.bg(linear_gradient(
+                    180.,
+                    linear_color_stop(glow.opacity(0.), 0.),
+                    linear_color_stop(glow.opacity(0.35 * a), 1.),
+                ))
+            },
+        ))
 }
