@@ -248,9 +248,6 @@ impl Agent {
         name: &str,
         args: &serde_json::Value,
     ) -> Result<serde_json::Value, ToolOutput> {
-        if name == crate::tool_deferral::LOAD_TOOLS && self.tool_deferral.is_some() {
-            return Err(crate::tool_deferral::run_loader(&self.tools, args));
-        }
         if !self.tools.iter().any(|t| t.name == name) {
             let names: Vec<String> = self.tools.iter().map(|t| t.name.clone()).collect();
             return Err(ToolOutput::error(crate::tool_out::unknown_tool(

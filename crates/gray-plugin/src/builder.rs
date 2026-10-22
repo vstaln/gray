@@ -767,26 +767,7 @@ pub async fn build_agent(opts: BuilderOptions) -> anyhow::Result<Agent> {
         None => base,
     };
     let hooks = PluginHookAdapter::for_plugins(&plugins, &cwd.to_string_lossy());
-    let deferral = gray_core::tool_deferral::enabled_from_env().then(|| {
-        let plugin_tools: std::collections::HashSet<&str> = manifests
-            .iter()
-            .flat_map(|m| m.tools.iter())
-            .map(|t| t.name.as_str())
-            .collect();
-        tool_defs
-            .iter()
-            .map(|t| t.name.as_str())
-            .filter(|n| {
-                ALWAYS_LOADED.contains(n) || (!plugin_tools.contains(n) && !n.starts_with("mcp__"))
-            })
-            .map(str::to_string)
-            .collect::<std::collections::HashSet<String>>()
-    });
     let agent = Agent::new(provider, executor);
-    let agent = match deferral {
-        Some(always) => agent.with_tool_deferral(always),
-        None => agent,
-    };
     Ok(agent
         .with_system(system)
         .with_tools(tool_defs)
@@ -796,7 +777,6 @@ pub async fn build_agent(opts: BuilderOptions) -> anyhow::Result<Agent> {
         .with_hooks(hooks))
 }
 
-const ALWAYS_LOADED: &[&str] = &["memory", "request_user_input", "web_search", "web_fetch"];
 
 #[path = "builder_tests.rs"]
 #[cfg(test)]

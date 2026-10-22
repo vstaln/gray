@@ -516,7 +516,6 @@ pub struct Agent {
     pub(crate) turn_system: Option<String>,
     pub(crate) tools: Vec<ToolDef>,
 
-    pub(crate) tool_deferral: Option<std::collections::HashSet<String>>,
 
     pub(crate) tool_labels: std::collections::HashMap<String, String>,
 
@@ -592,7 +591,6 @@ impl Agent {
             system: String::new(),
             turn_system: None,
             tools: Vec::new(),
-            tool_deferral: None,
             tool_labels: std::collections::HashMap::new(),
             tool_previews: std::collections::HashMap::new(),
             messages: Vec::new(),
@@ -722,18 +720,8 @@ impl Agent {
         self
     }
 
-    pub fn with_tool_deferral(mut self, always: std::collections::HashSet<String>) -> Self {
-        self.tool_deferral = Some(always);
-        self
-    }
-
     pub fn request_tools(&self) -> Vec<ToolDef> {
-        match &self.tool_deferral {
-            Some(always) => {
-                crate::tool_deferral::request_tools(&self.tools, always, &self.messages)
-            }
-            None => self.tools.clone(),
-        }
+        self.tools.clone()
     }
 
     pub fn refresh_tools(&mut self) {
@@ -781,7 +769,6 @@ impl Agent {
     pub fn with_tool_surface_of(mut self, donor: Agent) -> Self {
         self.executor = donor.executor;
         self.tools = donor.tools;
-        self.tool_deferral = donor.tool_deferral;
         self.tool_labels = donor.tool_labels;
         self.tool_previews = donor.tool_previews;
         self.hooks = donor.hooks;

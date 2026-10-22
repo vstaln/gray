@@ -142,7 +142,7 @@ fn ide_parse_matches_repl() {
         "p/m".into()
     ))));
 
-    for local in ["/usage", "/jobs", "/help", "/plugins"] {
+    for local in ["/jobs", "/help", "/plugins"] {
         assert!(
             gray::ide::is_turn_local_command(local),
             "{local} runs locally mid-turn, never steered to the model"

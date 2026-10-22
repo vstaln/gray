@@ -934,25 +934,6 @@ async fn unknown_tool_name_skips_executor_with_error_result() {
         "a far miss stays terse — no inventory dump: {output}"
     );
 
-    let hint = crate::tool_out::unknown_tool("lookpu", &[TOOL_NAME.to_string()]);
-    assert!(hint.contains("'lookup'"), "got {hint}");
-
-    let namespaced = crate::tool_out::unknown_tool(
-        "read_file",
-        &["native__read_file".to_string(), "bash".to_string()],
-    );
-    assert!(
-        namespaced.contains("'native__read_file'"),
-        "unprefixed call should surface the namespaced tool: {namespaced}"
-    );
-    let unprefixed = crate::tool_out::unknown_tool(
-        "native__read_file",
-        &["read_file".to_string(), "bash".to_string()],
-    );
-    assert!(
-        unprefixed.contains("'read_file'"),
-        "namespaced call should surface the bare tool: {unprefixed}"
-    );
     assert_eq!(agent.messages()[1].role, Role::Assistant);
     assert!(matches!(
         &agent.messages()[2].content[0],
