@@ -2704,6 +2704,55 @@ fn float_border(t: &Theme) -> Hsla {
     t.foreground.opacity(0.24)
 }
 
+/// Liquid-glass fill: ink-850 at ~78% so the page ghosts through. Paper in
+/// light mode. Corners stay sharp — the sheen and edges do the selling.
+fn glass_bg(t: &Theme) -> Hsla {
+    if t.mode.is_dark() {
+        hex(0x131316).opacity(0.78)
+    } else {
+        hex(0xf7f6f4).opacity(0.85)
+    }
+}
+
+/// Absolute overlays that make a sharp box read as glass: bright top + left
+/// catch-light hairlines and a faint sheen fading over the top ~90px.
+fn glass_fx(t: &Theme) -> Div {
+    div()
+        .absolute()
+        .inset_0()
+        .child(
+            div()
+                .absolute()
+                .top_0()
+                .left_0()
+                .right_0()
+                .h(px(1.))
+                .bg(t.foreground.opacity(0.13)),
+        )
+        .child(
+            div()
+                .absolute()
+                .top_0()
+                .bottom_0()
+                .left_0()
+                .w(px(1.))
+                .bg(t.foreground.opacity(0.10)),
+        )
+        .child(
+            div()
+                .absolute()
+                .top_0()
+                .left_0()
+                .right_0()
+                .h(px(88.))
+                .bg(linear_gradient(
+                    180.,
+                    linear_color_stop(t.foreground.opacity(0.05), 0.),
+                    linear_color_stop(transparent_black(), 1.),
+                )),
+        )
+}
+
 /// Overlay scrim: lighter in light mode so the page doesn't go muddy.
 fn scrim(t: &Theme) -> Hsla {
     hsla(0., 0., 0., if t.mode.is_dark() { 0.4 } else { 0.18 })
@@ -3920,8 +3969,9 @@ impl GrayApp {
                     } else {
                         float_border(&t)
                     })
-                    .bg(t.popover)
+                    .bg(glass_bg(&t))
                     .shadow(hard_shadow(&t))
+                    .relative()
                     .px_3()
                     .py(px(8.))
                     .text_sm()
@@ -3936,7 +3986,8 @@ impl GrayApp {
                             .small()
                             .text_color(if err { t.danger } else { t.primary }),
                     )
-                    .child(div().flex_1().child(msg)),
+                    .child(div().flex_1().child(msg))
+                    .child(glass_fx(&t)),
                 SharedString::from(format!("toast-in-{}", self.toast_seq)),
                 motion::CARD_MS,
                 8.,
@@ -4783,9 +4834,10 @@ impl GrayApp {
             .occlude()
             .w(px(340.))
             .items_stretch()
+            .relative()
             .border_1()
             .border_color(float_border(&t))
-            .bg(t.popover)
+            .bg(glass_bg(&t))
             .shadow(hard_shadow(&t))
             .overflow_hidden()
             .capture_action(cx.listener(move |this, _: &MoveUp, _, cx| {
@@ -4823,7 +4875,8 @@ impl GrayApp {
                             .child(Input::new(&self.model_input).appearance(false).small()),
                     )
                     .child(list),
-            );
+            )
+            .child(glass_fx(&t));
         // Sits on the composer box's top edge, left-aligned with the chip;
         // deferred so it paints over the timeline.
         div()
@@ -4961,15 +5014,17 @@ impl GrayApp {
             .occlude()
             .w(px(420.))
             .max_h(px(340.))
+            .relative()
             .border_1()
             .border_color(float_border(&t))
-            .bg(t.popover)
+            .bg(glass_bg(&t))
             .shadow(hard_shadow(&t))
             .on_mouse_down_out(cx.listener(|this, _, _, cx| {
                 this.composer_pop = None;
                 cx.notify();
             }))
-            .child(list);
+            .child(list)
+            .child(glass_fx(&t));
         div()
             .absolute()
             .bottom_full()
@@ -5132,8 +5187,9 @@ impl GrayApp {
                     .max_h(px(460.))
                     .border_1()
                     .border_color(float_border(&t))
-                    .bg(t.popover)
+                    .bg(glass_bg(&t))
                     .shadow(hard_shadow(&t))
+                    .relative()
                     .child(
                         div().p_2().border_b_1().border_color(t.border).child(
                             Input::new(&self.palette_input)
@@ -5149,7 +5205,8 @@ impl GrayApp {
                                 }),
                         ),
                     )
-                    .child(list),
+                    .child(list)
+                    .child(glass_fx(&t)),
                 "palette-in",
                 motion::POPOVER_MS,
                 6.,
@@ -5714,6 +5771,7 @@ impl GrayApp {
                 .absolute()
                 .inset_0()
                 .bg(t.background)
+                .child(glass_fx(&t))
                 .child(motion::enter(
                     h_flex().size_full().child(nav_col).child(content),
                     "settings-panel-in",
