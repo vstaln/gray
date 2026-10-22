@@ -32,7 +32,6 @@ use crate::{fail, get_opt_u64, get_str, resolve_path};
 mod jobs;
 
 impl BashTool {
-
     pub fn wait_any_job_fut(
         &self,
         ctx: &ToolContext,

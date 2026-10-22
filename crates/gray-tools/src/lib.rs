@@ -1,6 +1,5 @@
 pub mod images;
 pub mod shell;
-pub mod stats;
 pub mod truncate;
 pub mod video_sheet;
 pub mod view;
@@ -12,9 +11,7 @@ use futures::future::BoxFuture;
 pub use gray_core::agent::Tool;
 use gray_core::agent::{ToolContext, ToolExecutor, ToolOutput};
 use gray_core::message::ToolDef;
-pub(crate) use gray_core::tool_out::{
-    fail, get_opt_u64, get_str, resolve_path,
-};
+pub(crate) use gray_core::tool_out::{fail, get_opt_u64, get_str, resolve_path};
 use serde_json::Value;
 
 pub use shell::spawn::PluginEnv;
@@ -247,15 +244,6 @@ fn coerce_args(def: &ToolDef, args: Value) -> Value {
     args
 }
 
-fn meter_label(args: &Value) -> String {
-    let raw = args
-        .get("path")
-        .or_else(|| args.get("command"))
-        .and_then(|v| v.as_str())
-        .unwrap_or_default();
-    raw.chars().take(80).collect()
-}
-
 #[async_trait]
 impl ToolExecutor for Registry {
     fn drain_notifications(&self, ctx: &ToolContext) -> Vec<String> {
@@ -335,12 +323,6 @@ impl ToolExecutor for Registry {
         Box::pin(async move {
             log::info!(target: "gray_tools", "tool start: {name}");
 
-            let meter_on = crate::stats::enabled();
-            let stat_path = if meter_on {
-                meter_label(&coerced)
-            } else {
-                String::new()
-            };
             let out = match tool {
                 Some(tool) => tool.execute(&ctx, coerced).await,
                 None => ToolOutput::error(gray_core::tool_out::unknown_tool(&name, &available)),
@@ -351,17 +333,6 @@ impl ToolExecutor for Registry {
                 log::info!(target: "gray_tools", "tool {name} done");
             }
 
-            if meter_on && !crate::stats::SELF_REPORTING.contains(&name.as_str()) {
-                crate::stats::ToolStats {
-                    tool: &name,
-                    class: crate::stats::classify(&name),
-                    path: &stat_path,
-                    bytes: out.content.len() as u64,
-                    lines: out.content.lines().count() as u64,
-                    truncated_by: crate::stats::CUT_NONE,
-                }
-                .report();
-            }
             out
         })
     }
