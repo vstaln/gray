@@ -12,13 +12,7 @@ use crate::event::{
 };
 use crate::message::{ChatRequest, ContentBlock, Message, Role, ThoughtSignature};
 
-const MAX_EMPTY_RETRIES: u8 = 2;
-const MAX_EMPTY_NUDGES: u8 = 3;
-
-const MAX_CONTINUATIONS: u8 = 2;
-
-
-const MAX_PROGRESS_NUDGES: u8 = 2;
+const MAX_EMPTY_RETRIES: u8 = 1;
 
 const MAX_TURN_RETRIES: u8 = 8;
 
@@ -402,7 +396,6 @@ impl Agent {
 
         let mut billed = Usage::default();
         let mut empty_retries: u8 = 0;
-        let mut continuations: u8 = 0;
 
         let mut turn_retries: u8 = 0;
 
@@ -410,11 +403,6 @@ impl Agent {
         // real progress again. Bounds total retry time (retry_budget()).
         let mut retry_clock: Option<tokio::time::Instant> = None;
         let mut last_retry_err: Option<String> = None;
-
-        let mut empty_nudge_sent = false;
-        let mut empty_nudges: u8 = 0;
-
-        let mut progress_nudges: u8 = 0;
 
         let mut overflow_recovery_attempted = false;
 
@@ -1203,65 +1191,19 @@ impl Agent {
                 continue 'turn;
             }
 
-            if stop_reason == StopReason::MaxTokens
-                && !text_is_empty
-                && tool_uses.is_empty()
-                && continuations < MAX_CONTINUATIONS
-            {
-                continuations += 1;
-                self.messages.push(Message::user_injected(
-                    "previous response truncated — continue exactly where you left off",
-                ));
-
-                continue 'turn;
-            }
-
             if text_is_empty && tool_uses.is_empty() && stop_reason != StopReason::MaxTokens {
                 self.messages.pop();
                 if empty_retries < MAX_EMPTY_RETRIES {
                     empty_retries += 1;
                     continue 'turn;
                 }
-                let tail_had_results = self.messages.last().is_some_and(|m| {
-                    m.content
-                        .iter()
-                        .any(|b| matches!(b, ContentBlock::ToolResult { .. }))
-                });
-                if tail_had_results && !empty_nudge_sent && empty_nudges < MAX_EMPTY_NUDGES {
-                    empty_nudge_sent = true;
-                    empty_nudges += 1;
-                    self.messages.push(Message::assistant("(empty)"));
-                    self.messages.push(Message::user_injected(
-                        "executed tool calls but returned empty — process results and continue",
-                    ));
-                    emit!(AgentEvent::MessageBoundary);
-                    continue 'turn;
-                }
                 self.messages.push(Message::assistant("(empty)"));
             } else if !text_is_empty || !tool_uses.is_empty() {
                 empty_retries = 0;
-                empty_nudge_sent = false;
             }
 
             if tool_uses.is_empty() {
                 if self.collect_background_notifications(&ctx) {
-                    emit!(AgentEvent::MessageBoundary);
-                    continue 'turn;
-                }
-
-                if self.must_act
-                    && progress_nudges < MAX_PROGRESS_NUDGES
-                    && !self
-                        .messages
-                        .iter()
-                        .flat_map(|m| m.content.iter())
-                        .any(|b| matches!(b, ContentBlock::ToolResult { .. }))
-                {
-                    progress_nudges += 1;
-                    log::info!(target: "gray_agent", "headless run produced no tool calls; nudging {progress_nudges}/{MAX_PROGRESS_NUDGES}");
-                    self.messages.push(Message::user_injected(
-                        "no tool calls have run yet — if this task requires action, issue a real tool call now",
-                    ));
                     emit!(AgentEvent::MessageBoundary);
                     continue 'turn;
                 }

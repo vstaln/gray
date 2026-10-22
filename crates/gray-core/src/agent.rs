@@ -566,7 +566,6 @@ pub struct Agent {
     pub(crate) prefix_rewrite_ok: bool,
 
     pub(crate) lean_prompt: bool,
-    pub(crate) must_act: bool,
     pub(crate) bench_nudges: bool,
     pub(crate) bench_thrash_marks: Vec<u32>,
 }
@@ -627,7 +626,6 @@ impl Agent {
             cache_stats: crate::cache_stats::CacheStats::default(),
             prefix_rewrite_ok: true,
             lean_prompt: false,
-            must_act: false,
             bench_nudges: false,
             bench_thrash_marks: vec![60, 120],
         }
@@ -664,10 +662,6 @@ impl Agent {
 
     pub fn set_lean_prompt(&mut self, lean: bool) {
         self.lean_prompt = lean;
-    }
-
-    pub fn set_must_act(&mut self, must: bool) {
-        self.must_act = must;
     }
 
     pub fn set_bench_nudges(&mut self, on: bool) {

@@ -1082,7 +1082,6 @@ async fn run_print_inner(
         anyhow::bail!("max wall time {max}s reached — stopping (--max-wall-secs SECS)");
     }
     let mut agent = build_agent(config, &cwd, Some(session_id.as_str())).await?;
-    agent.set_must_act(config.bare);
     if std::env::var_os("GRAY_BENCH_NUDGES").is_some() {
         agent.set_bench_nudges(true);
         if let Ok(v) = std::env::var("GRAY_THRASH_NUDGE_AT") {
