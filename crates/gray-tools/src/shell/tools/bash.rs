@@ -138,9 +138,6 @@ impl Tool for BashTool {
         if let Some(out) = image_command(&command, &cwd) {
             return out;
         }
-        if let Some(msg) = media_dump_refusal(&command, &cwd) {
-            return fail(msg);
-        }
 
         let detach = jobs_enabled();
         let secs = if detach {
@@ -350,106 +347,6 @@ fn session_key(ctx: &ToolContext) -> String {
 
 const MAX_IMAGE_CLAIM_PATHS: usize = 8;
 const MAX_IMAGE_CLAIM_BYTES: usize = 20 * 1024 * 1024;
-
-fn is_duration(w: &str) -> bool {
-    let num = w.trim_end_matches(['s', 'm', 'h', 'd']);
-    !num.is_empty() && num.parse::<f64>().is_ok()
-}
-
-fn is_assignment(w: &str) -> bool {
-    let Some(eq) = w.find('=') else {
-        return false;
-    };
-    let mut name = &w[..eq];
-    name = name.strip_suffix('+').unwrap_or(name);
-    !name.is_empty()
-        && name
-            .chars()
-            .enumerate()
-            .all(|(i, c)| c == '_' || c.is_ascii_alphanumeric() && (i > 0 || !c.is_ascii_digit()))
-}
-
-const BYTE_DUMP_HEADS: &[&str] = &["cat", "head", "tail", "base64", "xxd", "od", "hexdump"];
-
-/// Splits a command line at `;`, `|`, `&` and newlines so a dump head's
-/// arguments never bleed into the next command (`tail x.log; ls *.mp4`).
-fn command_segments(command: &str) -> Vec<Vec<&str>> {
-    let b = command.as_bytes();
-    let mut out = Vec::new();
-    let mut start = 0;
-    for i in 0..b.len() {
-        let sep = match b[i] {
-            b';' | b'\n' | b'|' => true,
-            // `&>` and `>&` are redirects, not separators.
-            b'&' => b.get(i + 1) != Some(&b'>') && (i == 0 || b[i - 1] != b'>'),
-            _ => false,
-        };
-        if sep {
-            out.push(&command[start..i]);
-            start = i + 1;
-        }
-    }
-    out.push(&command[start..]);
-    out.into_iter()
-        .map(|seg| seg.split_whitespace().collect::<Vec<_>>())
-        .filter(|ws| !ws.is_empty())
-        .collect()
-}
-
-const HEAD_WRAPPERS: &[&str] = &[
-    "sudo", "doas", "nice", "env", "timeout", "time", "command", "builtin", "exec", "xargs",
-    "watch", "stdbuf", "do", "then", "!",
-];
-
-fn is_command_position(ws: &[&str], i: usize) -> bool {
-    ws[..i].iter().all(|p| {
-        p.starts_with('-') || is_assignment(p) || is_duration(p) || HEAD_WRAPPERS.contains(p)
-    })
-}
-
-fn media_dump_refusal(command: &str, cwd: &Path) -> Option<String> {
-    let whole_bare = command.split_whitespace().count() == 2;
-    command_segments(command)
-        .iter()
-        .find_map(|ws| segment_dump_refusal(ws, whole_bare, cwd))
-}
-
-fn segment_dump_refusal(ws: &[&str], whole_bare: bool, cwd: &Path) -> Option<String> {
-    if ws.iter().any(|t| {
-        matches!(*t, ">" | ">>" | "&>" | "&>>")
-            || t.starts_with('>')
-            || t.starts_with("1>")
-            || t.starts_with("&>")
-    }) {
-        return None;
-    }
-    for (i, t) in ws.iter().enumerate() {
-        if !BYTE_DUMP_HEADS.contains(t) || !is_command_position(ws, i) {
-            continue;
-        }
-        for arg in &ws[i + 1..] {
-            if arg.starts_with('-') {
-                continue;
-            }
-            if !crate::images::is_viewable_extension(Path::new(arg)) {
-                continue;
-            }
-            let bare_missing = *t == "cat"
-                && i == 0
-                && whole_bare
-                && ws.len() == 2
-                && !shell_meta(arg)
-                && resolve_bare_path(cwd, arg).is_none();
-            if !bare_missing {
-                return Some(format!(
-                    "refused: `{t} {arg}` would dump raw media bytes into context. \
-                     Attach the file instead — a bare `cat {arg}` shows it to the model."
-                ));
-            }
-        }
-    }
-    None
-}
 
 fn image_command(command: &str, cwd: &Path) -> Option<ToolOutput> {
     let mut parts = command.split_whitespace();
