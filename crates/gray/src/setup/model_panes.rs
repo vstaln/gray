@@ -77,34 +77,10 @@ impl PaneProvider {
     }
 }
 
-/// Provider sidecar plugins (the `gray-*-sub` family plus a few non-`-sub`
-/// provider plugins) that carry a sign-in for /models. The plugin index
-/// doesn't mark provider plugins, so the rail keeps the known set: index
-/// entries not listed here never get an installable row.
-const LOGIN_PROVIDER_PLUGINS: &[(&str, &str)] = &[
-    ("antigravity", "Antigravity"),
-    ("chatgpt", "ChatGPT"),
-    ("claude", "Claude"),
-    ("cline", "Cline"),
-    ("codex", "Codex"),
-    ("copilot", "GitHub Copilot"),
-    ("credpool", "Credential pool"),
-    ("cursor", "Cursor"),
-    ("deepseek", "DeepSeek"),
-    ("devin", "Devin"),
-    ("gemini", "Gemini"),
-    ("grok", "Grok"),
-    ("kimi", "Kimi"),
-    ("lmstudio", "LM Studio"),
-    ("muse", "Muse"),
-    ("nous", "Nous Portal"),
-    ("ollama", "Ollama"),
-    ("opencode", "opencode"),
-    ("qwen", "Qwen"),
-    ("router", "Model router"),
-    ("zai", "Z.AI"),
-];
-
+/// An index entry earns an installable provider row by declaring
+/// `providers` — the same manifest field installed plugins announce.
+/// Entries without the declaration never reach the rail; the hardcoded
+/// `gray-*-sub` name list this replaced is gone.
 /// Plugin names that are already installed (enabled or not), from the same
 /// lock files /plugins reads.
 fn installed_plugin_names(home: &std::path::Path) -> HashSet<String> {
@@ -186,14 +162,19 @@ fn build_rail(
 
     if let (Some(index), Some(home)) = (index, home.as_ref()) {
         let installed_names = installed_plugin_names(home);
-        for &(key, display) in LOGIN_PROVIDER_PLUGINS {
-            if installed_names.contains(key) || !index.plugins.contains_key(key) {
+        for (key, entry) in &index.plugins {
+            if installed_names.contains(key.as_str()) || entry.providers.is_empty() {
                 continue;
             }
             rail.push(PaneProvider {
                 item: ConnectItem {
                     id: format!("plugin:{key}"),
-                    name: display.to_string(),
+                    name: entry
+                        .providers
+                        .first()
+                        .map(|d| d.name.clone())
+                        .filter(|n| !n.is_empty())
+                        .unwrap_or_else(|| key.clone()),
                     sublabel: "(not installed)".to_string(),
                     base_url: String::new(),
                     no_auth: false,
