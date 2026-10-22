@@ -2306,16 +2306,11 @@ async fn reasoning_item_without_summary_attaches_carrier() {
 }
 
 #[test]
-fn image_budget_is_bounded_and_rewrites_notify_session() {
+fn image_budget_is_bounded_and_bumps_the_history_revision() {
     let mut agent = Agent::new(
         Box::new(FakeProvider::new(vec![])),
         Arc::new(FakeExecutor::new(ToolOutput::ok(""))),
     );
-    let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let hook_count = count.clone();
-    agent = agent.with_history_rewrite_hook(Arc::new(move || {
-        hook_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-    }));
     let before = agent.history_revision();
     agent.set_messages(vec![Message {
         role: Role::User,
@@ -2328,7 +2323,6 @@ fn image_budget_is_bounded_and_rewrites_notify_session() {
     assert!(agent.estimate_tokens() <= 4096);
     assert!(agent.estimate_tokens() >= 1000);
     assert_ne!(agent.history_revision(), before);
-    assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 1);
 }
 
 #[tokio::test]

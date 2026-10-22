@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
@@ -30,7 +30,6 @@ const READ_CHUNK: u64 = 4 * 1024;
 use crate::{fail, get_opt_u64, get_str, resolve_path};
 
 mod jobs;
-mod read_dedup;
 
 impl BashTool {
 
@@ -67,17 +66,10 @@ pub struct BashTool {
 
     cwd: Mutex<BTreeMap<String, (PathBuf, PathBuf)>>,
 
-    ledger: Option<Arc<crate::ledger::FileLedger>>,
-
     plugin_env: PluginEnv,
 }
 
 impl BashTool {
-    pub fn with_ledger(mut self, ledger: Arc<crate::ledger::FileLedger>) -> Self {
-        self.ledger = Some(ledger);
-        self
-    }
-
     /// Environment contributed by enabled plugins (`shell_env` manifests);
     /// merged once when the registry is built.
     pub fn with_plugin_env(mut self, env: PluginEnv) -> Self {
@@ -160,18 +152,7 @@ impl Tool for BashTool {
 
         let running_before = self.jobs.live_ids(ctx);
 
-        let dedup = match self.ledger.as_deref() {
-            Some(ledger) => read_dedup::plain_read(&command, &cwd).map(|read| (ledger, read)),
-            None => None,
-        };
-        let dedup_on = read_dedup::enabled();
-        if let Some((ledger, read)) = &dedup
-            && let Some(hit) = read_dedup::check(ledger, read, dedup_on)
-        {
-            return hit;
-        }
         let log_path = log_path(ctx);
-        let logged = log_path.clone();
         let start = Instant::now();
 
         let cwd_report =
@@ -210,13 +191,6 @@ impl Tool for BashTool {
 
         self.adopt_reported_cwd(ctx, &cwd_report);
 
-        if let Some((ledger, read)) = &dedup
-            && !out.is_error
-            && out.content.starts_with("exit ")
-            && let Ok(meta) = std::fs::metadata(&logged)
-        {
-            read_dedup::record(ledger, read, meta.len());
-        }
         if let Some(footer) = self.jobs.footer(ctx, &running_before) {
             out.content.push('\n');
             out.content.push_str(&footer);

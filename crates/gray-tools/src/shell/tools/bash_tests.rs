@@ -720,62 +720,6 @@ async fn the_cwd_report_does_not_mask_the_commands_exit_code() {
 }
 
 #[cfg(unix)]
-#[tokio::test]
-async fn a_repeated_cat_is_stubbed_once_through_the_tool() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let file = dir.path().join("a.txt");
-    std::fs::write(&file, "alpha\nbeta\ngamma\n").expect("write");
-    let ctx = ctx_for(&sess("dedup"));
-    let tool = BashTool::default().with_ledger(Arc::new(crate::ledger::FileLedger::new()));
-
-    let arg = file.display().to_string().replace('\\', "/");
-    let cmd = json!({"command": format!("cat {arg}")});
-
-    let first = tool.execute(&ctx, cmd.clone()).await;
-    assert!(
-        body(&first.content).contains("gamma"),
-        "the first read is whole: {}",
-        first.content
-    );
-    let second = tool.execute(&ctx, cmd.clone()).await;
-    assert!(
-        !body(&second.content).contains("gamma"),
-        "the repeat is stubbed: {}",
-        second.content
-    );
-    assert!(
-        second
-            .content
-            .contains("unchanged since your previous read"),
-        "{}",
-        second.content
-    );
-    let third = tool.execute(&ctx, cmd).await;
-    assert!(
-        body(&third.content).contains("gamma"),
-        "consume-on-hit: the third read runs: {}",
-        third.content
-    );
-}
-
-#[cfg(unix)]
-#[tokio::test]
-async fn a_tool_without_a_ledger_never_stubs() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let file = dir.path().join("a.txt");
-    std::fs::write(&file, "alpha\n").expect("write");
-    let ctx = ctx_for(&sess("noledger"));
-    let tool = BashTool::default();
-
-    let arg = file.display().to_string().replace('\\', "/");
-    let cmd = json!({"command": format!("cat {arg}")});
-    for _ in 0..2 {
-        let out = tool.execute(&ctx, cmd.clone()).await;
-        assert!(body(&out.content).contains("alpha"), "{}", out.content);
-    }
-}
-
-#[cfg(unix)]
 async fn run_lane(
     tool: &BashTool,
     ctx: &ToolContext,

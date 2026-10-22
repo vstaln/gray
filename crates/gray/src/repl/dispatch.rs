@@ -214,10 +214,6 @@ pub(crate) async fn dispatch_command(
                 .await
                 .ok();
 
-            if let Some(ledger) = gray_plugin::builder::current_file_ledger() {
-                ledger.clear();
-            }
-
             if let Some((shared, _)) = tui {
                 let mut t = shared.lock().expect("tui lock");
                 t.reset_usage();

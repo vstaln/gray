@@ -26,11 +26,8 @@ pub fn from_plugins(plugins: &[Arc<dyn Plugin>]) -> (Registry, Vec<Manifest>) {
     let manifests: Vec<Manifest> = plugins.iter().map(|p| p.manifest()).collect();
     let owners = merge_manifests(manifests.clone());
 
-    let ledger = Arc::new(gray_tools::FileLedger::new());
     let mut tools: Vec<Arc<dyn Tool>> = vec![Arc::new(
-        gray_tools::BashTool::default()
-            .with_ledger(ledger.clone())
-            .with_plugin_env(merged_shell_env(plugins)),
+        gray_tools::BashTool::default().with_plugin_env(merged_shell_env(plugins)),
     )];
     for p in plugins {
         let owner_name = p.manifest().name;
@@ -66,7 +63,6 @@ pub fn from_plugins(plugins: &[Arc<dyn Plugin>]) -> (Registry, Vec<Manifest>) {
         }
     }
     let registry = Registry::new(tools);
-    track_current_ledger(&ledger);
     (registry, manifests)
 }
 
@@ -101,19 +97,6 @@ fn merged_shell_env(plugins: &[Arc<dyn Plugin>]) -> gray_tools::PluginEnv {
         );
     }
     env
-}
-
-static CURRENT_LEDGER: std::sync::Mutex<Option<std::sync::Weak<gray_tools::FileLedger>>> =
-    std::sync::Mutex::new(None);
-
-pub fn current_file_ledger() -> Option<Arc<gray_tools::FileLedger>> {
-    CURRENT_LEDGER.lock().ok()?.as_ref()?.upgrade()
-}
-
-fn track_current_ledger(ledger: &Arc<gray_tools::FileLedger>) {
-    if let Ok(mut g) = CURRENT_LEDGER.lock() {
-        *g = Some(Arc::downgrade(ledger));
-    }
 }
 
 static BUILD_WARNINGS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
@@ -711,7 +694,6 @@ pub async fn build_agent(opts: BuilderOptions) -> anyhow::Result<Agent> {
     }
     let (registry, manifests) = from_plugins(&plugins);
     let dynamic = dynamic_plugins(&plugins);
-    let ledger = current_file_ledger();
     let system = match system_prompt {
         SystemPrompt::Literal(s) => s,
         SystemPrompt::Build(f) => f(&registry, &manifests),
@@ -811,11 +793,6 @@ pub async fn build_agent(opts: BuilderOptions) -> anyhow::Result<Agent> {
         .with_tool_labels(tool_labels)
         .with_tool_previews(tool_previews)
         .with_context_window(context_window)
-        .with_history_rewrite_hook(Arc::new(move || {
-            if let Some(ledger) = &ledger {
-                ledger.disarm_all_dedup();
-            }
-        }))
         .with_hooks(hooks))
 }
 

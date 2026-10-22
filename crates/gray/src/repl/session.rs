@@ -334,9 +334,6 @@ pub(crate) async fn handle_resume(
                     );
                     *agent = Some(built.with_messages((*shared_history).clone()));
 
-                    if let Some(ledger) = gray_plugin::builder::current_file_ledger() {
-                        ledger.clear();
-                    }
                     *session_state = Some(SessionState {
                         full_save_pending: false,
                         session_id: sid.clone(),

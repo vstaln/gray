@@ -36,10 +36,6 @@ pub async fn compact_with_keep(
         return Ok(None);
     };
 
-    if let Some(ledger) = gray_plugin::builder::current_file_ledger() {
-        ledger.disarm_all_dedup();
-    }
-
     let path = write_continuation_checkpoint(&summary, replaced);
     if let Some(p) = path {
         log::info!(target: "gray_compact", "continuation checkpoint: {}", p.display());

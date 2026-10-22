@@ -536,7 +536,6 @@ pub struct Agent {
 
     pub(crate) context_usage: Option<(usize, usize)>,
     history_revision: u64,
-    pub(crate) history_rewrite_hook: Option<Arc<dyn Fn() + Send + Sync>>,
 
     pub(crate) prefix_fp_sink: Option<crate::prefix_guard::FingerprintSink>,
 
@@ -608,7 +607,6 @@ impl Agent {
             soft_elide_rearm: 0,
             context_usage: None,
             history_revision: 0,
-            history_rewrite_hook: None,
             prefix_fp_sink: None,
             steer: None,
             checkpoint: None,
@@ -693,11 +691,6 @@ impl Agent {
         })
     }
 
-    pub fn with_history_rewrite_hook(mut self, hook: Arc<dyn Fn() + Send + Sync>) -> Self {
-        self.history_rewrite_hook = Some(hook);
-        self
-    }
-
     pub(crate) fn history_rewritten(&mut self) {
         self.context_usage = None;
 
@@ -709,22 +702,15 @@ impl Agent {
         self.prefix_guard.expect_change("history rewrite");
         self.history_revision = self.history_revision.wrapping_add(1);
         self.warm_run = None;
-        if let Some(hook) = &self.history_rewrite_hook {
-            hook();
-        }
     }
 
     // Blocks replaced in place, indices unchanged: unlike `history_rewritten`
     // the stale mask and scrub set stay valid, and the revision is left alone
     // so the REPL doesn't append the whole history to the session file again.
-    // The hook still runs: dedup must not answer a re-read of elided content.
     pub(crate) fn history_edited_in_place(&mut self, reason: &'static str) {
         self.context_usage = None;
         self.prefix_guard.expect_change(reason);
         self.warm_run = None;
-        if let Some(hook) = &self.history_rewrite_hook {
-            hook();
-        }
     }
 
     /// Called with the fingerprint of every request as it is sent; the REPL
@@ -811,7 +797,6 @@ impl Agent {
         self.tool_labels = donor.tool_labels;
         self.tool_previews = donor.tool_previews;
         self.hooks = donor.hooks;
-        self.history_rewrite_hook = donor.history_rewrite_hook;
         self.prefix_fp_sink = donor.prefix_fp_sink;
         self
     }

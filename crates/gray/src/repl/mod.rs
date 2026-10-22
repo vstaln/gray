@@ -690,9 +690,6 @@ pub async fn run_repl_mode(
                 ),
             );
         }
-        if let Some(ledger) = gray_plugin::builder::current_file_ledger() {
-            ledger.clear();
-        }
         session_state = Some(SessionState {
             full_save_pending: false,
             session_id: sid.clone(),
