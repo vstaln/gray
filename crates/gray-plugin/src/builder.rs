@@ -219,8 +219,14 @@ fn load_lock_files(cwd: &Path) -> (crate::lock::LockFile, crate::lock::LockFile,
     use std::collections::BTreeMap;
     let mut warnings = Vec::new();
     let mut load = |path: PathBuf| -> crate::lock::LockFile {
-        match crate::lock::LockFile::load(&path) {
-            Ok(lf) => lf,
+        match crate::lock::LockFile::load_with_errors(&path) {
+            Ok((lf, errs)) => {
+                warnings.extend(
+                    errs.into_iter()
+                        .map(|e| format!("{}: bad plugin entry {e} — skipped", path.display())),
+                );
+                lf
+            }
             Err(e) => {
                 warnings.push(format!("cannot load {} ({e:#}); ignoring", path.display()));
                 crate::lock::LockFile {
@@ -390,8 +396,16 @@ pub async fn active_plugins(
     };
     if !same_home && let Some(gh) = global_home {
         let gpath = crate::lock::lock_path(&gh);
-        let global_lock = match crate::lock::LockFile::load(&gpath) {
-            Ok(lf) => lf,
+        let global_lock = match crate::lock::LockFile::load_with_errors(&gpath) {
+            Ok((lf, errs)) => {
+                for e in errs {
+                    push_builder_warning(format!(
+                        "{}: bad plugin entry {e} — skipped",
+                        gpath.display()
+                    ));
+                }
+                lf
+            }
             Err(e) => {
                 push_builder_warning(format!("cannot load {} ({e:#}); ignoring", gpath.display()));
                 crate::lock::LockFile {
@@ -771,7 +785,27 @@ pub async fn build_agent(opts: BuilderOptions) -> anyhow::Result<Agent> {
         None => base,
     };
     let hooks = PluginHookAdapter::for_plugins(&plugins, &cwd.to_string_lossy());
-    Ok(Agent::new(provider, executor)
+    let deferral = gray_core::tool_deferral::enabled_from_env().then(|| {
+        let plugin_tools: std::collections::HashSet<&str> = manifests
+            .iter()
+            .flat_map(|m| m.tools.iter())
+            .map(|t| t.name.as_str())
+            .collect();
+        tool_defs
+            .iter()
+            .map(|t| t.name.as_str())
+            .filter(|n| {
+                ALWAYS_LOADED.contains(n) || (!plugin_tools.contains(n) && !n.starts_with("mcp__"))
+            })
+            .map(str::to_string)
+            .collect::<std::collections::HashSet<String>>()
+    });
+    let agent = Agent::new(provider, executor);
+    let agent = match deferral {
+        Some(always) => agent.with_tool_deferral(always),
+        None => agent,
+    };
+    Ok(agent
         .with_system(system)
         .with_tools(tool_defs)
         .with_tool_labels(tool_labels)
@@ -784,6 +818,8 @@ pub async fn build_agent(opts: BuilderOptions) -> anyhow::Result<Agent> {
         }))
         .with_hooks(hooks))
 }
+
+const ALWAYS_LOADED: &[&str] = &["memory", "request_user_input", "web_search", "web_fetch"];
 
 #[path = "builder_tests.rs"]
 #[cfg(test)]

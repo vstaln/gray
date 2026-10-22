@@ -424,7 +424,11 @@ fn media_dump_refusal_covers_every_shape_the_claim_refuses() {
         "cat notes.txt",
         "cat a.png > copy.png",
         "cat a.png >> copy.png",
+        "cat a.png &> copy.png",
         "ls -la",
+        "tail -5 /tmp/x.log; ssh maid 'ls -la ~/out/*.mp4 2>/dev/null'",
+        "ls -la d/ | grep -i always; tail -5 /tmp/x.log; ssh maid 'ls ~/out/*.mp4'",
+        "head -3 notes.txt && ffprobe clip.mp4",
     ] {
         assert!(media_dump_refusal(cmd, cwd).is_none(), "spurious: {cmd}");
     }

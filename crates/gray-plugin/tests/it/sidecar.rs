@@ -796,3 +796,40 @@ async fn nonzero_exit_respawns_with_one_plugin_crash_say() {
     p.shutdown(std::time::Duration::from_secs(2)).await;
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[tokio::test]
+async fn missing_executable_backs_off_instead_of_announcing_every_call() {
+    use gray_core::event::Usage;
+    use gray_plugin::{CoreEvent, HostHandler};
+    let dir = std::env::temp_dir().join(format!("gray-gone-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let (script, runs) = write_exit_after_manifest_script(&dir, 1);
+    let p = SidecarPlugin::spawn(vec![script.to_string_lossy().to_string()])
+        .await
+        .unwrap();
+    let says = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let says2 = says.clone();
+    let handler: HostHandler = Arc::new(move |method: String, _params: serde_json::Value| {
+        if method == "host/say" {
+            says2.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+        Box::pin(async move { serde_json::json!({"ok": true}) })
+    });
+    p.set_host_handler(handler).await;
+    std::fs::remove_file(&script).unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    for _ in 0..30 {
+        p.on_event(CoreEvent::TurnEnd {
+            usage: Usage::default(),
+        })
+        .await;
+    }
+    assert_eq!(
+        says.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "a missing executable must be announced once, not once per hook call"
+    );
+    assert_eq!(std::fs::read_to_string(&runs).unwrap().lines().count(), 1);
+    p.shutdown(std::time::Duration::from_secs(2)).await;
+    let _ = std::fs::remove_dir_all(&dir);
+}

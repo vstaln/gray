@@ -899,8 +899,39 @@ fn peel_wrapper<'a>(head: &str, rest: &'a [String]) -> Option<&'a [String]> {
 
 const BYTE_DUMP_HEADS: &[&str] = &["cat", "head", "tail", "base64", "xxd", "od", "hexdump"];
 
+/// Splits a command line at `;`, `|`, `&` and newlines so a dump head's
+/// arguments never bleed into the next command (`tail x.log; ls *.mp4`).
+fn command_segments(command: &str) -> Vec<Vec<&str>> {
+    let b = command.as_bytes();
+    let mut out = Vec::new();
+    let mut start = 0;
+    for i in 0..b.len() {
+        let sep = match b[i] {
+            b';' | b'\n' | b'|' => true,
+            // `&>` and `>&` are redirects, not separators.
+            b'&' => b.get(i + 1) != Some(&b'>') && (i == 0 || b[i - 1] != b'>'),
+            _ => false,
+        };
+        if sep {
+            out.push(&command[start..i]);
+            start = i + 1;
+        }
+    }
+    out.push(&command[start..]);
+    out.into_iter()
+        .map(|seg| seg.split_whitespace().collect::<Vec<_>>())
+        .filter(|ws| !ws.is_empty())
+        .collect()
+}
+
 fn media_dump_refusal(command: &str, cwd: &Path) -> Option<String> {
-    let ws: Vec<&str> = command.split_whitespace().collect();
+    let whole_bare = command.split_whitespace().count() == 2;
+    command_segments(command)
+        .iter()
+        .find_map(|ws| segment_dump_refusal(ws, whole_bare, cwd))
+}
+
+fn segment_dump_refusal(ws: &[&str], whole_bare: bool, cwd: &Path) -> Option<String> {
     if ws.iter().any(|t| {
         matches!(*t, ">" | ">>" | "&>" | "&>>")
             || t.starts_with('>')
@@ -922,6 +953,7 @@ fn media_dump_refusal(command: &str, cwd: &Path) -> Option<String> {
             }
             let bare_missing = *t == "cat"
                 && i == 0
+                && whole_bare
                 && ws.len() == 2
                 && !shell_meta(arg)
                 && resolve_bare_path(cwd, arg).is_none();

@@ -82,11 +82,45 @@ impl LockFile {
     }
 
     pub fn load(path: &Path) -> anyhow::Result<Self> {
+        Self::load_with_errors(path).map(|(lf, _)| lf)
+    }
+
+    /// One malformed entry must not zero out the whole registry: `plugins` is
+    /// parsed per entry and each failure comes back as a "name: reason"
+    /// string for the caller to surface; the plugin is skipped.
+    pub fn load_with_errors(path: &Path) -> anyhow::Result<(Self, Vec<String>)> {
         match std::fs::read_to_string(path) {
-            Ok(text) => Ok(serde_json::from_str(&text)?),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::empty()),
+            Ok(text) => Self::parse(&text),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok((Self::empty(), Vec::new())),
             Err(e) => Err(e.into()),
         }
+    }
+
+    fn parse(text: &str) -> anyhow::Result<(Self, Vec<String>)> {
+        #[derive(serde::Deserialize)]
+        struct Raw {
+            schema: u32,
+            #[serde(default)]
+            plugins: BTreeMap<String, serde_json::Value>,
+        }
+        let raw: Raw = serde_json::from_str(text)?;
+        let mut plugins = BTreeMap::new();
+        let mut errors = Vec::new();
+        for (name, value) in raw.plugins {
+            match serde_path_to_error::deserialize::<_, LockEntry>(value) {
+                Ok(entry) => {
+                    plugins.insert(name, entry);
+                }
+                Err(e) => errors.push(format!("{name}: {e}")),
+            }
+        }
+        Ok((
+            Self {
+                schema: raw.schema,
+                plugins,
+            },
+            errors,
+        ))
     }
 
     pub fn save(&self, path: &Path) -> anyhow::Result<()> {
