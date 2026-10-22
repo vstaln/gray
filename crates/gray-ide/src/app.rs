@@ -10,7 +10,7 @@ use gpui_kit::component::diff::{Diff, DiffFile, DiffState};
 use gpui_kit::component::input::{
     Editor, EditorState, Input, InputEvent, InputState, Textarea, TextareaState,
 };
-use gpui_kit::component::text::TextView;
+use gpui_kit::component::text::{TextView, TextViewStyle};
 use gpui_kit::component::{
     ActiveTheme, Icon, IconName, Selectable, Sizable, StyledExt, Theme, ThemeMode, h_flex, v_flex,
 };
@@ -1987,13 +1987,14 @@ fn provider_chip(
     let mut c = h_flex()
         .id(id)
         .gap_1()
-        .px_2()
-        .py_0p5()
-        .rounded_md()
-        .text_xs()
+        .h(px(22.))
+        .px(px(7.))
+        .rounded(px(6.))
+        .text_size(px(12.))
         .text_color(t.muted_foreground)
         .cursor_pointer()
-        .hover(|s| s.bg(t.secondary_hover));
+        .hover(|s| s.bg(t.foreground.opacity(0.06)).text_color(t.foreground))
+        .active(|s| s.bg(t.foreground.opacity(0.10)));
     c = match provider_brand(provider) {
         Some(path) => c.child(
             svg()
@@ -2016,13 +2017,14 @@ fn chip(
     h_flex()
         .id(id)
         .gap_1()
-        .px_2()
-        .py_0p5()
-        .rounded_md()
-        .text_xs()
+        .h(px(22.))
+        .px(px(7.))
+        .rounded(px(6.))
+        .text_size(px(12.))
         .text_color(t.muted_foreground)
         .cursor_pointer()
-        .hover(|s| s.bg(t.secondary_hover))
+        .hover(|s| s.bg(t.foreground.opacity(0.06)).text_color(t.foreground))
+        .active(|s| s.bg(t.foreground.opacity(0.10)))
         .child(Icon::new(icon).xsmall())
         .child(label.into())
 }
@@ -2206,19 +2208,19 @@ impl GrayApp {
                 h_flex()
                     .id(SharedString::from(format!("project-{}", p.id)))
                     .mt_2()
-                    .px_2()
-                    .py_1()
+                    .px(px(10.))
+                    .py(px(5.))
                     .gap_2()
-                    .rounded_md()
-                    .text_xs()
-                    .font_semibold()
+                    .rounded(px(6.))
+                    .text_size(px(12.))
+                    .font_medium()
                     .text_color(if active_project {
-                        t.sidebar_foreground
+                        t.sidebar_foreground.opacity(0.9)
                     } else {
-                        t.muted_foreground
+                        t.muted_foreground.opacity(0.7)
                     })
                     .cursor_pointer()
-                    .hover(|s| s.bg(t.sidebar_accent))
+                    .hover(|s| s.bg(t.list_hover).text_color(t.sidebar_foreground))
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.run(Cmd::Project(pid.clone()), window, cx)
                     }))
@@ -2245,10 +2247,10 @@ impl GrayApp {
             if threads.is_empty() {
                 list = list.child(
                     div()
-                        .px_3()
-                        .py_1()
-                        .text_xs()
-                        .text_color(t.muted_foreground)
+                        .pl(px(30.))
+                        .py(px(4.))
+                        .text_size(px(12.))
+                        .text_color(t.muted_foreground.opacity(0.6))
                         .child("No threads yet"),
                 );
             }
@@ -2268,18 +2270,20 @@ impl GrayApp {
                 list = list.child(
                     h_flex()
                         .id(SharedString::from(format!("thread-{}", th.id)))
-                        .pl_5()
-                        .pr_2()
-                        .py_1p5()
-                        .gap_2()
-                        .rounded_md()
-                        .text_sm()
+                        .pl(px(14.))
+                        .pr(px(10.))
+                        .py(px(6.))
+                        .gap(px(10.))
+                        .rounded(px(6.))
+                        .text_size(px(13.))
+                        .text_color(t.sidebar_foreground.opacity(0.8))
                         .cursor_pointer()
+                        .hover(|s| s.bg(t.list_hover).text_color(t.sidebar_foreground))
                         .when(active, |s| {
-                            s.bg(t.sidebar_accent)
-                                .text_color(t.sidebar_accent_foreground)
+                            s.bg(t.primary.opacity(0.15))
+                                .text_color(t.sidebar_foreground)
+                                .hover(|s| s.bg(t.primary.opacity(0.18)))
                         })
-                        .hover(|s| s.bg(t.sidebar_accent))
                         .on_click(cx.listener(move |this, _, window, cx| {
                             this.run(Cmd::Thread(id.clone()), window, cx)
                         }))
@@ -2290,15 +2294,15 @@ impl GrayApp {
                         })
                         .child(
                             div()
-                                .text_xs()
-                                .text_color(t.muted_foreground)
+                                .text_size(px(11.))
+                                .text_color(t.sidebar_foreground.opacity(0.4))
                                 .child(relative(th.updated_at)),
                         ),
                 );
             }
         }
         v_flex()
-            .w(px(272.))
+            .w_full()
             .h_full()
             .flex_none()
             .bg(t.sidebar)
@@ -2306,15 +2310,16 @@ impl GrayApp {
             .border_color(t.sidebar_border)
             .child(
                 h_flex()
-                    .h(px(48.))
+                    .h(px(40.))
+                    .flex_none()
                     .px_3()
                     .gap_2()
                     .border_b_1()
                     .border_color(t.sidebar_border)
                     .child(
                         div()
-                            .size_6()
-                            .rounded_md()
+                            .size(px(22.))
+                            .rounded(px(6.))
                             .bg(t.foreground)
                             .text_color(t.background)
                             .flex()
@@ -2328,13 +2333,14 @@ impl GrayApp {
                                     .text_color(t.background),
                             ),
                     )
-                    .child(div().font_semibold().child("Gray"))
+                    .child(div().text_size(px(14.)).font_semibold().child("Gray"))
                     .child(
                         div()
-                            .text_xs()
-                            .px_1()
-                            .rounded_sm()
-                            .bg(t.secondary)
+                            .text_size(px(10.))
+                            .font_family(t.mono_font_family.clone())
+                            .px(px(5.))
+                            .rounded(px(4.))
+                            .bg(t.foreground.opacity(0.07))
                             .text_color(t.muted_foreground)
                             .child("IDE"),
                     )
@@ -2355,21 +2361,38 @@ impl GrayApp {
                     .id("sidebar-search")
                     .mx_2()
                     .mt_2()
-                    .px_2()
-                    .py_1p5()
+                    .px(px(10.))
+                    .h(px(30.))
                     .gap_2()
-                    .rounded_md()
+                    .rounded(px(6.))
                     .border_1()
                     .border_color(t.border)
-                    .text_xs()
-                    .text_color(t.muted_foreground)
+                    .bg(t.foreground.opacity(0.03))
+                    .text_size(px(12.))
+                    .text_color(t.muted_foreground.opacity(0.8))
                     .cursor_pointer()
+                    .hover(|s| s.bg(t.list_hover).border_color(t.foreground.opacity(0.12)))
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.open_palette(PaletteMode::Commands, "", window, cx)
                     }))
                     .child(Icon::new(IconName::Search).xsmall())
-                    .child(div().flex_1().child("Search or run a command"))
-                    .child("Ctrl K"),
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .child("Search or run a command"),
+                    )
+                    .child(
+                        div()
+                            .flex_none()
+                            .px(px(5.))
+                            .rounded(px(4.))
+                            .bg(t.foreground.opacity(0.06))
+                            .font_family(t.mono_font_family.clone())
+                            .text_size(px(10.))
+                            .child("Ctrl K"),
+                    ),
             )
             .child(list)
             .child(
@@ -2440,12 +2463,13 @@ impl GrayApp {
             .map(|t| t.title.clone())
             .unwrap_or_else(|| "New thread".into());
         h_flex()
-            .h(px(48.))
+            .h(px(40.))
             .px_3()
             .gap_2()
             .flex_none()
+            .bg(t.title_bar)
             .border_b_1()
-            .border_color(t.border)
+            .border_color(t.title_bar_border)
             .when(!self.sidebar_open, |s| {
                 s.child(
                     Button::new("show-sidebar")
@@ -2457,32 +2481,41 @@ impl GrayApp {
                         })),
                 )
             })
-            .child(div().font_semibold().truncate().child(title))
+            .child(
+                div()
+                    .text_size(px(13.))
+                    .font_medium()
+                    .truncate()
+                    .child(title),
+            )
             .when_some(thread.and_then(|t| t.worktree.clone()), |s, w| {
                 let name = Path::new(&w)
                     .file_name()
                     .map(|n| n.to_string_lossy().to_string())
                     .unwrap_or_default();
                 s.child(
-                    div()
-                        .text_xs()
+                    h_flex()
+                        .h(px(20.))
                         .px_2()
-                        .py_0p5()
-                        .rounded_md()
+                        .gap_1()
+                        .rounded_full()
                         .border_1()
-                        .border_color(t.border)
-                        .text_color(t.muted_foreground)
-                        .child(format!("worktree {name}")),
+                        .border_color(t.primary.opacity(0.25))
+                        .bg(t.primary.opacity(0.08))
+                        .text_size(px(11.))
+                        .text_color(t.primary)
+                        .child(Icon::new(IconName::Github).xsmall())
+                        .child(name),
                 )
             })
             .when_some(project, |s, p| {
                 s.child(
-                    div()
-                        .text_xs()
+                    h_flex()
+                        .h(px(20.))
                         .px_2()
-                        .py_0p5()
-                        .rounded_md()
-                        .bg(t.secondary)
+                        .rounded_full()
+                        .bg(t.foreground.opacity(0.07))
+                        .text_size(px(11.))
                         .text_color(t.muted_foreground)
                         .child(p.name.clone()),
                 )
@@ -2569,46 +2602,65 @@ impl GrayApp {
                 .map(|p| p.name.clone());
             let hint = |k: &str, l: &str| {
                 h_flex()
+                    .w(px(240.))
+                    .h(px(30.))
+                    .px(px(10.))
                     .gap_2()
-                    .text_xs()
-                    .text_color(t.muted_foreground)
+                    .rounded(px(6.))
+                    .text_size(px(12.5))
+                    .text_color(t.foreground.opacity(0.6))
+                    .child(div().flex_1().child(l.to_string()))
                     .child(
                         div()
-                            .px_1p5()
-                            .py_0p5()
-                            .rounded_sm()
+                            .px(px(5.))
+                            .rounded(px(4.))
+                            .bg(t.foreground.opacity(0.06))
                             .border_1()
-                            .border_color(t.border)
+                            .border_color(t.foreground.opacity(0.07))
+                            .font_family(t.mono_font_family.clone())
+                            .text_size(px(11.))
+                            .text_color(t.foreground.opacity(0.55))
                             .child(k.to_string()),
                     )
-                    .child(l.to_string())
             };
             return v_flex()
                 .flex_1()
                 .items_center()
                 .justify_center()
-                .gap_3()
+                .gap(px(10.))
+                .pb(px(40.))
                 .child(
                     svg()
                         .path("icons/gray-logo.svg")
-                        .size_16()
-                        .text_color(t.foreground),
+                        .size(px(52.))
+                        .text_color(t.foreground.opacity(0.9)),
                 )
                 .child(
                     div()
-                        .text_3xl()
+                        .mt(px(6.))
+                        .text_size(px(26.))
                         .font_family("Plus Jakarta Sans")
-                        .font_bold()
+                        .font_semibold()
                         .child("Gray"),
                 )
-                .child(div().text_color(t.muted_foreground).child(match project {
-                    Some(p) => format!("What should we build in {p}?"),
-                    None => "Open a project to get started".to_string(),
-                }))
+                .child(
+                    div()
+                        .text_size(px(14.))
+                        .text_color(t.foreground.opacity(0.55))
+                        .child(match project {
+                            Some(p) => format!("What should we build in {p}?"),
+                            None => "Open a project to get started".to_string(),
+                        }),
+                )
                 .child(
                     v_flex()
-                        .mt_4()
-                        .gap_1p5()
+                        .mt(px(18.))
+                        .p(px(4.))
+                        .gap(px(2.))
+                        .rounded(px(10.))
+                        .border_1()
+                        .border_color(t.foreground.opacity(0.07))
+                        .bg(t.foreground.opacity(0.02))
                         .child(hint("Ctrl K", "Command palette"))
                         .child(hint("Ctrl P", "Open file"))
                         .child(hint("Ctrl Shift M", "Switch model"))
@@ -2620,11 +2672,12 @@ impl GrayApp {
         let thread = thread.unwrap();
         let mut col = v_flex()
             .w_full()
-            .max_w(px(820.))
+            .max_w(px(896.))
             .mx_auto()
-            .px_6()
-            .py_6()
-            .gap_4();
+            .px_4()
+            .pt(px(20.))
+            .pb(px(28.))
+            .gap(px(14.));
         for item in &thread.items {
             col = col.child(render_item(item, &t));
         }
@@ -2659,13 +2712,109 @@ impl GrayApp {
             .into_any_element()
     }
 
+    fn render_status_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let t = cx.theme().clone();
+        let thread = self
+            .active_thread
+            .as_ref()
+            .and_then(|id| self.store.state.thread(id));
+        let (dp, dm, _) = self.defaults();
+        let provider = thread.map(|t| t.provider.clone()).unwrap_or(dp);
+        let model = thread.map(|t| t.model.clone()).unwrap_or(dm);
+        let turn = thread.and_then(|th| self.turns.get(&th.id));
+        let (dot, status) = if self.pending_approval.is_some() {
+            (t.primary, "Awaiting approval".to_string())
+        } else if let Some(a) = turn {
+            (
+                t.info,
+                format!("Working {:.1}s", a.started.elapsed().as_secs_f32()),
+            )
+        } else if thread.is_some_and(|th| th.last_status == "error") {
+            (t.danger, "Error".to_string())
+        } else {
+            (t.success.opacity(0.8), "Ready".to_string())
+        };
+        let running = self.turns.len();
+        let sep = || div().w(px(1.)).h(px(10.)).bg(t.foreground.opacity(0.12));
+        let item = |s: String| div().child(s);
+        h_flex()
+            .id("status-bar")
+            .h(px(26.))
+            .flex_none()
+            .px_3()
+            .gap(px(10.))
+            .bg(t.status_bar)
+            .border_t_1()
+            .border_color(t.status_bar_border)
+            .text_size(px(11.))
+            .text_color(t.foreground.opacity(0.5))
+            .child(
+                h_flex()
+                    .gap(px(6.))
+                    .child(div().size(px(6.)).rounded_full().bg(dot))
+                    .child(item(status)),
+            )
+            .child(sep())
+            .child(
+                h_flex()
+                    .gap(px(5.))
+                    .child(match provider_brand(&provider) {
+                        Some(path) => svg()
+                            .path(path.to_string())
+                            .size(px(11.))
+                            .text_color(t.foreground.opacity(0.5))
+                            .into_any_element(),
+                        None => Icon::new(IconName::Bot).size(px(11.)).into_any_element(),
+                    })
+                    .child(item(format!(
+                        "{} · {}",
+                        provider::provider_label(&provider),
+                        model
+                    ))),
+            )
+            .when(running > 1, |s| {
+                s.child(sep())
+                    .child(item(format!("{running} threads running")))
+            })
+            .child(div().flex_1())
+            .when(!self.diff_files.is_empty(), |s| {
+                s.child(item(format!(
+                    "{} changed file{}",
+                    self.diff_files.len(),
+                    if self.diff_files.len() == 1 { "" } else { "s" }
+                )))
+                .child(sep())
+            })
+            .when_some(self.branch.clone(), |s, b| {
+                s.child(
+                    h_flex()
+                        .gap(px(4.))
+                        .child(Icon::new(IconName::Github).size(px(11.)))
+                        .child(b),
+                )
+            })
+            .when_some(
+                self.active_project
+                    .as_ref()
+                    .and_then(|id| self.store.state.project(id)),
+                |s, p| {
+                    s.child(sep()).child(
+                        h_flex()
+                            .gap(px(4.))
+                            .child(Icon::new(IconName::Folder).size(px(11.)))
+                            .child(p.name.clone()),
+                    )
+                },
+            )
+    }
+
     fn render_approval(&self, label: &str, cx: &mut Context<Self>) -> impl IntoElement {
         let t = cx.theme().clone();
         div()
             .w_full()
-            .max_w(px(820.))
+            .max_w(px(896.))
             .mx_auto()
-            .px_6()
+            .px_4()
             .pb_2()
             .child(
                 h_flex()
@@ -2705,7 +2854,7 @@ impl GrayApp {
             )
     }
 
-    fn render_composer(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_composer(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = cx.theme().clone();
         let thread = self
             .active_thread
@@ -2721,19 +2870,35 @@ impl GrayApp {
         let running = thread
             .map(|t| self.turns.contains_key(&t.id))
             .unwrap_or(false);
+        let dark = t.mode.is_dark();
+        let focused = self.composer.read(cx).focus_handle(cx).is_focused(window);
+        let shade = if dark { gpui::black() } else { t.foreground };
         div()
             .w_full()
-            .max_w(px(820.))
+            .max_w(px(896.))
             .mx_auto()
-            .px_6()
-            .pb_4()
+            .px_4()
+            .pb(px(14.))
             .child(
                 v_flex()
-                    .rounded_xl()
+                    .rounded(px(12.))
                     .border_1()
-                    .border_color(t.border)
+                    .border_color(t.foreground.opacity(if focused { 0.20 } else { 0.10 }))
                     .bg(t.popover)
-                    .shadow_sm()
+                    .shadow(vec![
+                        BoxShadow::new(
+                            px(0.),
+                            px(6.),
+                            shade.opacity(if dark { 0.35 } else { 0.07 }),
+                        )
+                        .blur_radius(px(24.)),
+                        BoxShadow::new(
+                            px(0.),
+                            px(2.),
+                            shade.opacity(if dark { 0.25 } else { 0.05 }),
+                        )
+                        .blur_radius(px(6.)),
+                    ])
                     .children(
                         self.attachments
                             .iter()
@@ -4197,7 +4362,18 @@ impl GrayApp {
     }
 }
 
+fn md_style(t: &Theme) -> TextViewStyle {
+    TextViewStyle::default().code_block(
+        StyleRefinement::default()
+            .rounded(px(10.))
+            .border_1()
+            .border_color(t.foreground.opacity(0.10))
+            .p(px(12.)),
+    )
+}
+
 fn render_item(item: &Item, t: &Theme) -> AnyElement {
+    let ink = t.foreground;
     match item {
         Item::Message {
             id,
@@ -4206,22 +4382,28 @@ fn render_item(item: &Item, t: &Theme) -> AnyElement {
             ..
         } => h_flex()
             .justify_end()
+            .pt(px(6.))
             .child(
                 div()
                     .id(SharedString::from(format!("msg-{id}")))
-                    .max_w(px(620.))
-                    .px_4()
-                    .py_2()
-                    .rounded_2xl()
-                    .bg(t.secondary)
-                    .text_sm()
+                    .max_w(px(576.))
+                    .px(px(12.))
+                    .py(px(8.))
+                    .rounded(px(10.))
+                    .bg(ink.opacity(0.08))
+                    .border_1()
+                    .border_color(ink.opacity(0.10))
+                    .text_size(px(14.))
+                    .line_height(px(21.))
                     .child(text.clone()),
             )
             .into_any_element(),
         Item::Message { id, text, .. } => div()
-            .text_sm()
+            .text_size(px(14.))
+            .line_height(px(22.))
             .child(
                 TextView::markdown(SharedString::from(format!("msg-{id}")), text.clone())
+                    .style(md_style(t))
                     .selectable(true),
             )
             .into_any_element(),
@@ -4231,13 +4413,14 @@ fn render_item(item: &Item, t: &Theme) -> AnyElement {
             detail,
             ..
         } => {
-            let (icon, color) = match kind.as_str() {
-                "error" => (IconName::CircleX, t.danger),
-                "edit" => (IconName::FileText, t.success),
-                "command" => (IconName::SquareTerminal, t.muted_foreground),
-                "checkpoint" => (IconName::Undo2, t.muted_foreground),
-                "thinking" => (IconName::Info, t.muted_foreground),
-                _ => (IconName::Check, t.muted_foreground),
+            let err = kind == "error";
+            let (icon, icon_color) = match kind.as_str() {
+                "error" => (IconName::CircleX, t.danger.opacity(0.8)),
+                "edit" => (IconName::FileText, t.success.opacity(0.8)),
+                "command" => (IconName::SquareTerminal, ink.opacity(0.45)),
+                "checkpoint" => (IconName::Undo2, ink.opacity(0.45)),
+                "thinking" => (IconName::Info, ink.opacity(0.45)),
+                _ => (IconName::Check, ink.opacity(0.45)),
             };
             let short: String = detail
                 .lines()
@@ -4252,16 +4435,44 @@ fn render_item(item: &Item, t: &Theme) -> AnyElement {
                 short
             };
             h_flex()
-                .gap_2()
-                .text_xs()
-                .text_color(color)
-                .child(icon)
-                .child(div().font_family(t.mono_font_family.clone()).child(format!(
-                    "{} · {}",
-                    kind.to_uppercase(),
-                    label
-                )))
-                .child(div().truncate().text_color(t.muted_foreground).child(short))
+                .gap(px(7.))
+                .py(px(1.))
+                .min_w_0()
+                .child(Icon::new(icon).size(px(14.)).text_color(icon_color))
+                .child(
+                    div()
+                        .flex_none()
+                        .max_w(px(460.))
+                        .truncate()
+                        .px(px(5.))
+                        .rounded(px(4.))
+                        .bg(if err {
+                            t.danger.opacity(0.10)
+                        } else {
+                            ink.opacity(0.06)
+                        })
+                        .font_family(t.mono_font_family.clone())
+                        .text_size(px(12.5))
+                        .text_color(if err {
+                            t.danger.opacity(0.9)
+                        } else {
+                            ink.opacity(0.7)
+                        })
+                        .child(label.clone()),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .text_size(px(12.))
+                        .text_color(if err {
+                            t.danger.opacity(0.8)
+                        } else {
+                            ink.opacity(0.4)
+                        })
+                        .child(short),
+                )
                 .into_any_element()
         }
     }
@@ -4329,7 +4540,6 @@ impl Render for GrayApp {
         }
         self.write_snapshot(cx);
         let t = cx.theme().clone();
-        let _ = window;
         let mut center = v_flex()
             .flex_1()
             .min_w_0()
@@ -4341,7 +4551,7 @@ impl Render for GrayApp {
                     .as_ref()
                     .map(|(_, label)| self.render_approval(label, cx)),
             )
-            .child(self.render_composer(cx));
+            .child(self.render_composer(window, cx));
         let side_terminal = self.terminal_open
             && self.store.state.setting("terminal_placement", "bottom") == "right";
         if self.terminal_open && !side_terminal {
@@ -4391,7 +4601,12 @@ impl Render for GrayApp {
                     .child(self.render_panel(p, cx)),
             );
         }
-        let main = div().size_full().min_w_0().min_h_0().child(main);
+        let main = v_flex()
+            .size_full()
+            .min_w_0()
+            .min_h_0()
+            .child(div().flex_1().min_h_0().min_w_0().child(main))
+            .child(self.render_status_bar(cx));
         let bg = self.store.state.setting("background", "none");
         div()
             .id("gray-root")
@@ -4520,6 +4735,10 @@ pub fn apply_brand(cx: &mut App) {
     let t = Theme::global_mut(cx);
     t.font_family = "Plus Jakarta Sans".into();
     t.mono_font_family = "Departure Mono".into();
+    t.font_size = px(14.);
+    t.mono_font_size = px(12.5);
+    t.radius = px(6.);
+    t.radius_lg = px(10.);
     let accent = hex(0xd4a373);
     t.primary = accent;
     t.primary_hover = hex(0xdfb891);
@@ -4531,40 +4750,55 @@ pub fn apply_brand(cx: &mut App) {
     t.button_primary_active = hex(0xe8cdb0);
     t.danger = hex(0xb7513f);
     t.warning = accent;
-    t.radius = px(4.);
-    t.radius_lg = px(6.);
-    if !dark {
-        t.primary_foreground = hex(0x050506);
-        t.button_primary_foreground = hex(0x050506);
-        t.tokens = gpui_kit::component::ThemeTokens::from(&t.colors);
-        return;
-    }
-    t.background = hex(0x050506);
-    t.foreground = hex(0xeceae7);
-    t.muted = hex(0x131316);
-    t.muted_foreground = hex(0x8b8a86);
-    t.border = hex(0x1c1c20);
-    t.input = hex(0x2a2a30);
-    t.popover = hex(0x0a0a0b);
-    t.popover_foreground = hex(0xeceae7);
-    t.secondary = hex(0x131316);
-    t.secondary_hover = hex(0x1c1c20);
-    t.secondary_active = hex(0x2a2a30);
-    t.secondary_foreground = hex(0xeceae7);
-    t.accent = hex(0x131316);
-    t.accent_foreground = hex(0xeceae7);
-    t.sidebar = hex(0x0a0a0b);
-    t.sidebar_foreground = hex(0xeceae7);
-    t.sidebar_border = hex(0x1c1c20);
-    t.sidebar_accent = hex(0x131316);
-    t.sidebar_accent_foreground = hex(0xeceae7);
-    t.list_hover = hex(0x0e0e10);
-    t.list_active = hex(0x1c1c20);
-    t.list_active_border = accent;
-    t.tab_active = hex(0x0e0e10);
-    t.tab_active_foreground = hex(0xeceae7);
-    t.selection = hex(0x3a3a42);
     t.primary_foreground = hex(0x050506);
     t.button_primary_foreground = hex(0x050506);
+    // One neutral ink at fixed alphas for every line and fill (monocode's trick).
+    let (bg, ink, side, pop, a) = if dark {
+        (
+            hex(0x050506),
+            hex(0xeceae7),
+            hex(0x040405),
+            hex(0x0b0b0c),
+            [0.05, 0.06, 0.07, 0.10, 0.12, 0.15],
+        )
+    } else {
+        (
+            hex(0xf7f6f4),
+            hex(0x2b2a28),
+            hex(0xefeeeb),
+            hex(0xfdfcfb),
+            [0.05, 0.06, 0.07, 0.10, 0.12, 0.14],
+        )
+    };
+    let solid = |f: f32| bg.blend(ink.opacity(f));
+    t.background = bg;
+    t.foreground = ink;
+    t.muted = solid(a[1]);
+    t.muted_foreground = if dark { hex(0x8b8a86) } else { hex(0x75736f) };
+    t.border = ink.opacity(a[2]);
+    t.input = ink.opacity(a[3] + 0.04);
+    t.popover = pop;
+    t.popover_foreground = ink;
+    t.secondary = ink.opacity(a[1]);
+    t.secondary_hover = ink.opacity(a[4]);
+    t.secondary_active = ink.opacity(a[5]);
+    t.secondary_foreground = ink;
+    t.accent = ink.opacity(a[3]);
+    t.accent_foreground = ink;
+    t.sidebar = side;
+    t.sidebar_foreground = ink;
+    t.sidebar_border = ink.opacity(a[2]);
+    t.sidebar_accent = ink.opacity(a[3]);
+    t.sidebar_accent_foreground = ink;
+    t.title_bar = bg;
+    t.title_bar_border = ink.opacity(a[2]);
+    t.status_bar = side;
+    t.status_bar_border = ink.opacity(a[2]);
+    t.list_hover = ink.opacity(a[0]);
+    t.list_active = ink.opacity(a[3]);
+    t.list_active_border = accent;
+    t.tab_active = ink.opacity(a[3]);
+    t.tab_active_foreground = ink;
+    t.selection = accent.opacity(0.30);
     t.tokens = gpui_kit::component::ThemeTokens::from(&t.colors);
 }
