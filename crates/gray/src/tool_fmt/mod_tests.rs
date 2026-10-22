@@ -919,21 +919,6 @@ fn a_view_drops_the_shown_echo_but_keeps_its_notes() {
 }
 
 #[test]
-fn noop_commands_read_as_skipped_not_ran() {
-    for cmd in ["true", ":", "echo switching tools"] {
-        let text = header(serde_json::json!({"command": cmd}));
-        assert!(text.contains(&format!("Skipped {cmd}")), "{text:?}");
-        assert!(text.ends_with("no-op, nothing ran"), "{text:?}");
-        assert!(!text.contains("Ran"), "{text:?}");
-    }
-
-    for cmd in ["echo x > f", "true && make"] {
-        let text = header(serde_json::json!({"command": cmd}));
-        assert!(text.contains("Ran "), "{text:?}");
-    }
-}
-
-#[test]
 fn discord_send_preview_strips_markdown_markers() {
     let args = serde_json::json!({"content": "**gray updated + Discord restarted**"});
     let text = row_text(&format_tool_call_header("discord_send", &args, None, None));

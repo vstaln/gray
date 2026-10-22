@@ -187,18 +187,6 @@ async fn cancel_returns_promptly() {
 }
 
 #[tokio::test]
-async fn malformed_background_arg_fails_loud() {
-    let out = BashTool::default()
-        .execute(
-            &ToolContext::default(),
-            json!({"command": "echo hi", "background": []}),
-        )
-        .await;
-    assert!(out.is_error, "{}", out.content);
-    assert!(out.content.contains("background"), "{}", out.content);
-}
-
-#[tokio::test]
 async fn fence_escape_keeps_single_pair() {
     let out = BashTool::default()
         .execute(

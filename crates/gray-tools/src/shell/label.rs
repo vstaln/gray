@@ -1,7 +1,3 @@
-pub fn is_noop(full: &str) -> bool {
-    crate::shell::tools::bash::noop_family(full.trim(), false).is_some()
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CoreCommand<'a> {
     pub command: &'a str,

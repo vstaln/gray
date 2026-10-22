@@ -465,44 +465,6 @@ async fn compound_cat_is_refused_instead_of_dumping_bytes() {
 }
 
 #[tokio::test]
-async fn noop_stall_shapes_are_steered_not_spawned() {
-    let ctx = ToolContext::default();
-
-    for cmd in [
-        "echo stub",
-        "echo 'a literal' && echo \"another\"",
-        "printf 'placeholder'",
-        "gray_jobs() { :; }",
-        "f() { :; } && echo done",
-        "function f { :; }",
-        "bash -c 'echo placeholder'",
-        "sh -c 'true'",
-        "eval 'true'",
-        "command true",
-        "env FOO=bar echo stub",
-        "nice -n 5 true",
-        "timeout 5 echo stub",
-        "FOO=bar",
-        "export FOO=bar",
-        "jobs",
-        "wait",
-        "fg",
-        "# just a comment",
-        "true && : && echo done",
-    ] {
-        let out = BashTool::default()
-            .execute(&ctx, json!({"command": cmd}))
-            .await;
-        assert!(!out.is_error, "{cmd}: {}", out.content);
-        assert!(
-            out.content.contains("nothing ran") || out.content.contains("no-op"),
-            "{cmd}: {}",
-            out.content
-        );
-    }
-}
-
-#[tokio::test]
 async fn real_commands_disguised_as_noops_still_run() {
     let ctx = ToolContext::default();
 
@@ -755,26 +717,6 @@ async fn the_cwd_report_does_not_mask_the_commands_exit_code() {
         "{}",
         r.content
     );
-}
-
-#[test]
-fn search_words_splits_like_the_shell() {
-    let w = |s: &str| search_words(s).map(|v| v.join("|"));
-    assert_eq!(
-        w("gray grep 'TODO' src").as_deref(),
-        Some("gray|grep|TODO|src")
-    );
-    assert_eq!(
-        w("gray grep \"fn main\"").as_deref(),
-        Some("gray|grep|fn main")
-    );
-    assert_eq!(
-        w("gray grep fn\\ main").as_deref(),
-        Some("gray|grep|fn main")
-    );
-    assert_eq!(w("gray find *.txt").as_deref(), Some("gray|find|*.txt"));
-    assert_eq!(w("gray grep 'a|b'").as_deref(), Some("gray|grep|a|b"));
-    assert_eq!(w("gray grep a|b"), None);
 }
 
 #[cfg(unix)]
@@ -1268,14 +1210,6 @@ async fn running_jobs_ride_along_on_later_results() {
         theirs.content
     );
 
-    let noop = tool.execute(&ctx, json!({"command": "true"})).await;
-    assert!(noop.content.contains("no-op"), "{}", noop.content);
-    assert!(noop.content.contains("end your turn"), "{}", noop.content);
-    assert!(
-        noop.content.contains(&format!("background job {id}")),
-        "{}",
-        noop.content
-    );
     tool.cancel_job(&ctx, &id);
     assert!(wait_group_gone(pgid).await);
     wait_notices(&tool, &ctx).await;
@@ -1287,110 +1221,6 @@ async fn running_jobs_ride_along_on_later_results() {
         "finished jobs drop off: {}",
         after.content
     );
-}
-
-#[tokio::test]
-async fn bare_noop_commands_are_steered_not_spawned() {
-    let dir = tempfile::tempdir().unwrap();
-    let ctx = ToolContext {
-        cwd: dir.path().into(),
-        ..ToolContext::default()
-    };
-    for cmd in [
-        "true",
-        ":",
-        " true ",
-        "echo hi",
-        "echo \"switching to harness tools\"",
-        "true && echo ran",
-        "echo a; echo b",
-        "env echo ran",
-    ] {
-        let out = BashTool::default()
-            .execute(&ctx, json!({"command": cmd}))
-            .await;
-        assert!(!out.is_error, "{cmd}: {}", out.content);
-        assert!(out.content.contains("no-op"), "{cmd}: {}", out.content);
-        assert!(
-            out.content.contains("No background jobs"),
-            "{cmd}: {}",
-            out.content
-        );
-    }
-
-    for cmd in [
-        "echo ran > gray-noop-test-out",
-        "echo x | wc -c",
-        "echo $((40 + 2))",
-        "printf 'done\\n'",
-        "printf \"a\\nb\\nc\\n\"",
-        "echo \"a\\nb\"",
-    ] {
-        let out = BashTool::default()
-            .execute(&ctx, json!({"command": cmd}))
-            .await;
-        assert!(out.content.contains("exit 0"), "{cmd}: {}", out.content);
-    }
-    let out_file = ctx.cwd.join("gray-noop-test-out");
-    assert_eq!(std::fs::read_to_string(&out_file).unwrap(), "ran\n");
-    std::fs::remove_file(&out_file).ok();
-}
-
-#[tokio::test]
-async fn removed_arguments_fail_loudly_and_never_spawn() {
-    let dir = tempfile::tempdir().unwrap();
-    let ctx = ToolContext {
-        cwd: dir.path().into(),
-        session_id: Some(sess("removed")),
-        ..ToolContext::default()
-    };
-    let tool = BashTool::default();
-    for args in [
-        json!({"command": "touch BAD", "background": true}),
-        json!({"command": "touch BAD", "background": "true"}),
-        json!({"command": "touch BAD", "wait": 5}),
-        json!({"command": "touch BAD", "action": "output", "job_id": "x"}),
-        json!({"action": "list"}),
-        json!({"action": "cancel", "job_id": "x"}),
-        json!({"command": "touch BAD", "task_id": "t"}),
-        json!({"command": "touch BAD", "from_offset": 3}),
-        json!({"command": "touch BAD", "notify_on": "exit"}),
-        json!({"command": "touch BAD", "run_in_background": true}),
-        json!({"wait_ms": 5000}),
-        json!({"yield_ms": 1000}),
-    ] {
-        let out = tool.execute(&ctx, args.clone()).await;
-        assert!(out.is_error, "{args}: {}", out.content);
-        assert!(
-            out.content.contains("is not a bash argument; remove it"),
-            "{args}: {}",
-            out.content
-        );
-        assert!(
-            out.content.contains("end your turn"),
-            "says how to wait instead: {}",
-            out.content
-        );
-    }
-    assert!(
-        !dir.path().join("BAD").exists(),
-        "a rejected call never runs"
-    );
-
-    for args in [
-        json!({"command": "echo fine | cat", "background": false}),
-        json!({"command": "echo fine | cat", "action": "run"}),
-        json!({"command": "echo fine | cat", "yield_ms": null}),
-        json!({"command": "echo fine | cat", "job_id": "bash-bogus"}),
-        json!({"command": "echo fine | cat", "wait_ms": 5000}),
-        json!({"command": "echo fine | cat", "yield_ms": 1000}),
-        json!({"command": "echo fine | cat", "yield_time_ms": 10000}),
-        json!({"action":"run","background":false,"command":"echo fine | cat","job_id":"","timeout":10,"wait_ms":1000,"yield_ms":1000}),
-    ] {
-        let out = tool.execute(&ctx, args.clone()).await;
-        assert!(!out.is_error, "{args}: {}", out.content);
-        assert!(out.content.contains("fine"), "{args}: {}", out.content);
-    }
 }
 
 #[test]

@@ -933,14 +933,6 @@ fn bash_header(
             let core = gray_tools::shell::label::core_command(full);
             let background = args.get("background").and_then(|v| v.as_bool()) == Some(true);
 
-            if !background && gray_tools::shell::label::is_noop(full) {
-                return Line::from(vec![
-                    bullet,
-                    verb("Skipped "),
-                    Span::styled(truncate_cmd(full).to_string(), cmd_style),
-                    Span::styled(" \u{00b7} no-op, nothing ran", dim_style),
-                ]);
-            }
             if !background && let Some(read) = gray_tools::shell::label::read_only(full) {
                 return read_header(
                     &read,
