@@ -256,3 +256,42 @@ pub fn celebrate<E: IntoElement + 'static>(bubble: E, id: &str, t: &Theme) -> im
             },
         ))
 }
+
+/// Split-flap/odometer text: each glyph is its own animated element keyed on
+/// its value, so only the chars that change replay a quick mechanical flip;
+/// unchanged chars hold still. One-shot per change — no idle repaints.
+pub fn flap(prefix: &str, text: &str, t: &Theme) -> impl IntoElement {
+    let prefix = prefix.to_string();
+    let mono = t.mono_font_family.clone();
+    h_flex().children(text.chars().enumerate().map(move |(i, c)| {
+        let mono = mono.clone();
+        div().font_family(mono).child(c.to_string()).with_animation(
+            SharedString::from(format!("{prefix}-{i}-{c}")),
+            Animation::new(ms(90)).with_easing(ease_pop()),
+            move |d, x| d.opacity(0.2 + 0.8 * x).top(px(-3. * (1. - x))),
+        )
+    }))
+}
+
+/// Scramble-decode: unresolved chars show as mono glyphs and lock in
+/// left-to-right as `x` sweeps 0→1. One-shot on mount/animation-id change.
+const SCRAMBLE: &[char] = &[
+    '#', '%', '&', '@', '*', '+', '=', '/', '\\', '<', '>', '_', '|', '~',
+];
+
+pub fn decode(id: impl Into<ElementId>, text: &str, dur: u64) -> AnimationElement<Div> {
+    let text = text.to_string();
+    div().with_animation(id, Animation::new(ms(dur)), move |d, x| {
+        let chars: Vec<char> = text.chars().collect();
+        let n = (x * chars.len() as f32).round() as usize;
+        let mut s = String::with_capacity(text.len());
+        for (i, c) in chars.iter().enumerate() {
+            if i < n || *c == ' ' || *c == '·' {
+                s.push(*c);
+            } else {
+                s.push(SCRAMBLE[(i * 31 + (x * 91.) as usize) % SCRAMBLE.len()]);
+            }
+        }
+        d.child(s)
+    })
+}

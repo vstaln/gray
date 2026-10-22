@@ -2684,6 +2684,26 @@ const PALETTE_CATEGORY_HINTS: &[&str] = &[
     "Open file",
 ];
 
+/// Neobrutalist lift for floating surfaces: a solid offset ink block, no
+/// blur — replaces soft shadows entirely.
+fn hard_shadow(t: &Theme) -> Vec<BoxShadow> {
+    vec![BoxShadow::new(
+        px(4.),
+        px(4.),
+        if t.mode.is_dark() {
+            hsla(0., 0., 0., 0.85)
+        } else {
+            t.foreground
+        },
+    )]
+}
+
+/// Hairline for floating surfaces — a step up from the page hairline so the
+/// hard shadow has a real edge to read against.
+fn float_border(t: &Theme) -> Hsla {
+    t.foreground.opacity(0.24)
+}
+
 /// Overlay scrim: lighter in light mode so the page doesn't go muddy.
 fn scrim(t: &Theme) -> Hsla {
     hsla(0., 0., 0., if t.mode.is_dark() { 0.4 } else { 0.18 })
@@ -3433,7 +3453,7 @@ impl GrayApp {
                     .active(|s| s.bg(t.foreground.opacity(0.10)))
                     .on_click(move |_, window, cx| window.dispatch_action(run.boxed_clone(), cx))
                     .child(div().flex_1().child(l.to_string()))
-                    .child(key_chip(&keys, &t))
+                    .child(key_chip(&keys, &t, false))
             };
             return motion::enter(
                 v_flex()
@@ -3453,7 +3473,7 @@ impl GrayApp {
                             .mt(px(6.))
                             .text_size(px(26.))
                             .font_family("Brygada 1918")
-                            .child("Gray"),
+                            .child(motion::decode("welcome-title", "Gray", motion::WELCOME_MS)),
                     )
                     .child(
                         div()
@@ -3477,8 +3497,9 @@ impl GrayApp {
                             .p(px(4.))
                             .gap(px(2.))
                             .border_1()
-                            .border_color(t.foreground.opacity(0.07))
-                            .bg(t.foreground.opacity(0.02))
+                            .border_color(float_border(&t))
+                            .bg(t.popover)
+                            .shadow(hard_shadow(&t))
                             .child(hint(&TogglePalette, "Command palette"))
                             .child(hint(&FilePicker, "Open file"))
                             .child(hint(&SearchThreads, "Search threads"))
@@ -3534,9 +3555,16 @@ impl GrayApp {
                                 h_flex()
                                     .gap_1()
                                     .child(motion::shimmer_label("churn-label", "Working", &t))
-                                    .child(format!(
-                                        "· {}",
-                                        fmt_elapsed(a.started.elapsed().as_secs() as i64)
+                                    .child(motion::flap(
+                                        &format!(
+                                            "churn-elapsed-{}",
+                                            a.started.elapsed().as_secs() / 60
+                                        ),
+                                        &format!(
+                                            "· {}",
+                                            fmt_elapsed(a.started.elapsed().as_secs() as i64)
+                                        ),
+                                        &t,
                                     )),
                             ),
                     )
@@ -3610,7 +3638,8 @@ impl GrayApp {
                                 .cursor_pointer()
                                 .bg(t.popover)
                                 .border_1()
-                                .border_color(t.foreground.opacity(0.12))
+                                .border_color(float_border(&t))
+                                .shadow(hard_shadow(&t))
                                 .text_size(px(12.))
                                 .text_color(t.foreground.opacity(0.75))
                                 .hover(|s| s.bg(t.secondary_hover))
@@ -3653,7 +3682,12 @@ impl GrayApp {
         let label = if g.live {
             motion::shimmer_label("group-live", g.label(), t).into_any_element()
         } else {
-            div().child(g.label()).into_any_element()
+            motion::decode(
+                SharedString::from(format!("grp-done-{}", g.id)),
+                &g.label(),
+                motion::RISE_MS,
+            )
+            .into_any_element()
         };
         let gid = g.id.clone();
         let header = h_flex()
@@ -3732,6 +3766,9 @@ impl GrayApp {
         } else {
             (t.success.opacity(0.8), "Ready".to_string())
         };
+        let (status_word, status_num) = status
+            .split_once(" · ")
+            .map_or_else(|| (status.as_str(), ""), |(w, n)| (w, n));
         let running = self.turns.len();
         let sep = || div().w(px(1.)).h(px(10.)).bg(t.foreground.opacity(0.12));
         let item = |s: String| div().child(s);
@@ -3750,7 +3787,14 @@ impl GrayApp {
                 h_flex()
                     .gap(px(6.))
                     .child(div().size(px(6.)).bg(dot))
-                    .child(item(status)),
+                    .child(motion::decode(
+                        SharedString::from(format!("status-{status_word}")),
+                        status_word,
+                        motion::CARD_MS,
+                    ))
+                    .when(!status_num.is_empty(), |s| {
+                        s.child(motion::flap("status-num", &format!("· {status_num}"), &t))
+                    }),
             )
             .child(sep())
             .child(
@@ -3821,6 +3865,7 @@ impl GrayApp {
                     .border_1()
                     .border_color(t.warning)
                     .bg(t.warning.opacity(0.08))
+                    .shadow(hard_shadow(&t))
                     .px_3()
                     .py_2()
                     .child(
@@ -3871,11 +3916,12 @@ impl GrayApp {
                     .items_center()
                     .border_1()
                     .border_color(if err {
-                        t.danger.opacity(0.5)
+                        t.danger.opacity(0.7)
                     } else {
-                        t.foreground.opacity(0.10)
+                        float_border(&t)
                     })
                     .bg(t.popover)
+                    .shadow(hard_shadow(&t))
                     .px_3()
                     .py(px(8.))
                     .text_sm()
@@ -4738,8 +4784,9 @@ impl GrayApp {
             .w(px(340.))
             .items_stretch()
             .border_1()
-            .border_color(t.foreground.opacity(0.08))
+            .border_color(float_border(&t))
             .bg(t.popover)
+            .shadow(hard_shadow(&t))
             .overflow_hidden()
             .capture_action(cx.listener(move |this, _: &MoveUp, _, cx| {
                 if count > 0 {
@@ -4915,8 +4962,9 @@ impl GrayApp {
             .w(px(420.))
             .max_h(px(340.))
             .border_1()
-            .border_color(t.foreground.opacity(0.08))
+            .border_color(float_border(&t))
             .bg(t.popover)
+            .shadow(hard_shadow(&t))
             .on_mouse_down_out(cx.listener(|this, _, _, cx| {
                 this.composer_pop = None;
                 cx.notify();
@@ -5047,7 +5095,7 @@ impl GrayApp {
                                 .child(hint),
                         )
                     })
-                    .when_some(key, |s, k| s.child(key_chip(&k, &t))),
+                    .when_some(key, |s, k| s.child(key_chip(&k, &t, selected))),
             );
         }
         if self.palette_reveal.take() {
@@ -5083,8 +5131,9 @@ impl GrayApp {
                     .h_auto()
                     .max_h(px(460.))
                     .border_1()
-                    .border_color(t.foreground.opacity(0.08))
+                    .border_color(float_border(&t))
                     .bg(t.popover)
+                    .shadow(hard_shadow(&t))
                     .child(
                         div().p_2().border_b_1().border_color(t.border).child(
                             Input::new(&self.palette_input)
@@ -5404,7 +5453,7 @@ impl GrayApp {
                 rows.push(("Enter".into(), "Send message"));
                 rows.push(("Shift+Enter".into(), "New line in composer"));
                 for (keys, desc) in rows {
-                    page = page.child(row(desc, "", key_chip(&keys, &t).into_any_element()));
+                    page = page.child(row(desc, "", key_chip(&keys, &t, false).into_any_element()));
                 }
             }
             "about" => {
@@ -6272,20 +6321,33 @@ fn key_hint(action: &dyn Action, cx: &App) -> Option<String> {
 }
 
 /// A keycap chip for a formatted binding ("Ctrl+Shift+F" -> Ctrl Shift F).
-fn key_chip(keys: &str, t: &Theme) -> Div {
+/// `on_accent` inverts it for the solid amber selection bar.
+fn key_chip(keys: &str, t: &Theme, on_accent: bool) -> Div {
     let mut row = h_flex().gap_0p5().flex_none();
     for part in keys.split('+') {
         row = row.child(
             div()
                 .min_w(px(18.))
                 .px(px(5.))
-                .bg(t.foreground.opacity(0.06))
+                .bg(if on_accent {
+                    t.primary_foreground.opacity(0.12)
+                } else {
+                    t.foreground.opacity(0.06)
+                })
                 .border_1()
-                .border_color(t.foreground.opacity(0.07))
+                .border_color(if on_accent {
+                    t.primary_foreground.opacity(0.25)
+                } else {
+                    t.foreground.opacity(0.07)
+                })
                 .font_family(t.mono_font_family.clone())
                 .text_size(px(11.))
                 .text_center()
-                .text_color(t.primary)
+                .text_color(if on_accent {
+                    t.primary_foreground
+                } else {
+                    t.primary
+                })
                 .child(part.to_string()),
         );
     }
