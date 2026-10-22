@@ -165,13 +165,6 @@ pub(crate) const REGISTRY: &[CmdDef] = &[
         surface: CmdSurface::Interactive,
     },
     CmdDef {
-        name: "accounts",
-        desc: "provider account pools (multi-login)",
-        aliases: &["account"],
-        scope: CmdScope::Global,
-        surface: CmdSurface::Interactive,
-    },
-    CmdDef {
         name: "hehe",
         desc: "something funny",
         aliases: &[],
@@ -616,7 +609,6 @@ pub enum ReplCommand {
 
     Gateway(Option<String>),
 
-    Accounts,
 
     Copy,
 
@@ -756,7 +748,6 @@ pub fn parse_command(line: &str) -> ReplCommand {
         Some("usage") => ReplCommand::Usage,
         Some("jobs") => ReplCommand::Jobs,
         Some("gateway") => ReplCommand::Gateway(opt(rest)),
-        Some("accounts") | Some("account") => ReplCommand::Accounts,
         Some("copy") => ReplCommand::Copy,
         Some("feedback") => ReplCommand::Feedback(opt(rest)),
         Some("help") => ReplCommand::Help,
