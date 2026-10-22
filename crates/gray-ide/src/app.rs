@@ -252,7 +252,13 @@ pub struct GrayApp {
     branch: Option<String>,
     branches: Vec<String>,
     toast: Option<(String, bool)>,
+    toast_at: Option<Instant>,
+    /// Bumps on every toast so a new message replays the card's slide-in.
+    toast_seq: u64,
     toast_queue: Vec<(String, bool)>,
+    /// Set when a send emptied the welcome slot: the composer slides into its
+    /// dock on the next render (monocode `useComposerDockMotion`).
+    dock_slide_at: Option<Instant>,
     items_scroll: ScrollHandle,
     scroll_target: Option<(String, usize, u8)>,
     state_file: Option<PathBuf>,
@@ -430,7 +436,10 @@ impl GrayApp {
             branch: None,
             branches: Vec::new(),
             toast: None,
+            toast_at: None,
+            toast_seq: 0,
             toast_queue: Vec::new(),
+            dock_slide_at: None,
             items_scroll: ScrollHandle::new(),
             scroll_target: None,
             state_file: std::env::var_os("GRAY_IDE_STATE").map(PathBuf::from),
@@ -566,6 +575,8 @@ impl GrayApp {
     fn toast(&mut self, msg: impl Into<String>, error: bool) {
         let msg = msg.into();
         self.toast = Some((msg.clone(), error));
+        self.toast_at = Some(Instant::now());
+        self.toast_seq += 1;
         self.toast_queue.push((msg, error));
     }
 
@@ -691,6 +702,7 @@ impl GrayApp {
             .update(cx, |s, cx| s.set_value("", window, cx));
         let thread = self.store.state.thread(&tid).cloned();
         let Some(thread) = thread else { return };
+        let was_empty = thread.items.is_empty();
         if thread.title == "New thread" {
             let title: String = text.lines().next().unwrap_or("").chars().take(48).collect();
             self.persist(Event::ThreadRenamed {
@@ -749,6 +761,9 @@ impl GrayApp {
         );
         self.follow = true;
         self.scroll.scroll_to_bottom();
+        if was_empty {
+            self.dock_slide_at = Some(Instant::now());
+        }
         cx.notify();
     }
 
@@ -1039,13 +1054,27 @@ impl GrayApp {
                 self.terminal_lines.drain(..cut);
             }
         }
-        for (msg, err) in std::mem::take(&mut self.toast_queue) {
-            let kind = if err {
-                NotificationType::Error
-            } else {
-                NotificationType::Info
-            };
-            window.push_notification(Notification::new().with_type(kind).message(msg), cx);
+        // Focused: the in-app toast card shows it. Unfocused: fall back to the
+        // window's notification stack so the user still sees it.
+        if !window.is_window_active() {
+            for (msg, err) in std::mem::take(&mut self.toast_queue) {
+                let kind = if err {
+                    NotificationType::Error
+                } else {
+                    NotificationType::Info
+                };
+                window.push_notification(Notification::new().with_type(kind).message(msg), cx);
+            }
+        } else {
+            self.toast_queue.clear();
+        }
+        if self
+            .toast_at
+            .is_some_and(|at| at.elapsed() > motion::ms(motion::TOAST_MS))
+        {
+            self.toast = None;
+            self.toast_at = None;
+            changed = true;
         }
         if self.active_thread != self.follow_thread {
             // A freshly opened thread starts at its latest message.
@@ -3376,7 +3405,20 @@ impl GrayApp {
             })
     }
 
-    fn render_timeline(&self, cx: &mut Context<Self>) -> AnyElement {
+    /// Welcome state: no items and no running turn; the composer sits in the
+    /// centered slot instead of the dock.
+    fn timeline_empty(&self) -> bool {
+        match self
+            .active_thread
+            .as_ref()
+            .and_then(|id| self.store.state.thread(id))
+        {
+            Some(th) => th.items.is_empty() && !self.turns.contains_key(&th.id),
+            None => true,
+        }
+    }
+
+    fn render_timeline(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let t = cx.theme().clone();
         let thread = self
             .active_thread
@@ -3396,11 +3438,9 @@ impl GrayApp {
                 }
             }
         };
-        let empty = thread.map(|th| th.items.is_empty()).unwrap_or(true)
-            && thread
-                .map(|th| !self.turns.contains_key(&th.id))
-                .unwrap_or(true);
+        let empty = self.timeline_empty();
         if empty {
+            let welcome_composer = self.render_composer(window, cx);
             let project = self
                 .active_project
                 .as_ref()
@@ -3456,6 +3496,13 @@ impl GrayApp {
                             }),
                     )
                     .child(
+                        div()
+                            .w_full()
+                            .max_w(px(640.))
+                            .mt(px(14.))
+                            .child(welcome_composer),
+                    )
+                    .child(
                         v_flex()
                             .mt(px(18.))
                             .p(px(4.))
@@ -3497,7 +3544,9 @@ impl GrayApp {
                     let assistant =
                         matches!(item, Item::Message { role, .. } if *role != Role::User);
                     // The final reply replaces already-visible streamed text: no rise.
-                    rise(render_item(item, &t), item, ix >= base && !assistant)
+                    let new = ix >= base && !assistant;
+                    let fresh = new && now() - item_at(item) <= motion::FRESH_MS;
+                    rise(render_item(item, &t, fresh), item, new)
                 }
                 Row::Group(r) => self.render_group(&thread.items, r, running, base, &t, cx),
             });
@@ -3540,7 +3589,9 @@ impl GrayApp {
                             )
                         } else {
                             s.child(
-                                TextView::markdown("streaming", a.text.clone()).selectable(true),
+                                TextView::markdown("streaming", a.text.clone())
+                                    .motion(motion::word_fade())
+                                    .selectable(true),
                             )
                         }
                     }),
@@ -3676,7 +3727,11 @@ impl GrayApp {
             .border_l_1()
             .border_color(ink.opacity(0.08));
         for ix in r.clone() {
-            body = body.child(rise(render_item(&items[ix], t), &items[ix], ix >= base));
+            body = body.child(rise(
+                render_item(&items[ix], t, false),
+                &items[ix],
+                ix >= base,
+            ));
         }
         let header = rise(header.into_any_element(), &items[r.start], r.start >= base);
         Collapsible::new()
@@ -3836,7 +3891,60 @@ impl GrayApp {
             ))
     }
 
-    fn render_composer(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
+    /// In-app toast card: slides in with a small overshoot, auto-dismissed by
+    /// poll after `motion::TOAST_MS`.
+    fn render_toast(&self, msg: String, err: bool, cx: &mut Context<Self>) -> impl IntoElement {
+        let t = cx.theme().clone();
+        div()
+            .absolute()
+            .right(px(20.))
+            .bottom(px(40.))
+            .child(motion::enter(
+                h_flex()
+                    .id(SharedString::from(format!("toast-{}", self.toast_seq)))
+                    .max_w(px(360.))
+                    .gap_2()
+                    .items_center()
+                    .rounded(px(10.))
+                    .border_1()
+                    .border_color(if err {
+                        t.danger.opacity(0.5)
+                    } else {
+                        t.foreground.opacity(0.10)
+                    })
+                    .bg(t.popover)
+                    .shadow(overlay_shadow())
+                    .px_3()
+                    .py(px(8.))
+                    .text_sm()
+                    .cursor_pointer()
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.toast = None;
+                        this.toast_at = None;
+                        cx.notify();
+                    }))
+                    .child(
+                        Icon::new(if err {
+                            IconName::CircleX
+                        } else {
+                            IconName::Check
+                        })
+                        .small()
+                        .text_color(if err {
+                            t.danger
+                        } else {
+                            t.primary
+                        }),
+                    )
+                    .child(div().flex_1().child(msg)),
+                SharedString::from(format!("toast-in-{}", self.toast_seq)),
+                motion::CARD_MS,
+                8.,
+                motion::ease_pop(),
+            ))
+    }
+
+    fn render_composer(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let t = cx.theme().clone();
         let thread = self
             .active_thread
@@ -3856,7 +3964,7 @@ impl GrayApp {
         let focused = self.composer.read(cx).focus_handle(cx).is_focused(window);
         let pop_open = self.composer_pop.is_some() && self.composer_token(cx).is_some();
         let shade = if dark { gpui::black() } else { t.foreground };
-        div()
+        let card = div()
             .w_full()
             .max_w(px(896.))
             .mx_auto()
@@ -4044,7 +4152,25 @@ impl GrayApp {
                                     )
                             }),
                     ),
+            );
+        // First send: slide from the centered welcome slot down into the dock.
+        if self
+            .dock_slide_at
+            .is_some_and(|at| at.elapsed() < motion::ms(motion::DOCK_MS + 200))
+        {
+            let tid = self.active_thread.clone().unwrap_or_default();
+            let travel = (f32::from(window.viewport_size().height) * 0.35).clamp(160., 420.);
+            motion::enter(
+                card,
+                SharedString::from(format!("dock-in-{tid}")),
+                motion::DOCK_MS,
+                travel,
+                motion::ease_out(),
             )
+            .into_any_element()
+        } else {
+            card.into_any_element()
+        }
     }
 
     fn render_rail(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -4508,15 +4634,21 @@ impl GrayApp {
                     .into_any_element()
             }
         };
-        v_flex()
-            .w(px(if panel == Panel::Files { 640. } else { 560. }))
-            .h_full()
-            .flex_none()
-            .border_l_1()
-            .border_color(t.border)
-            .bg(t.background)
-            .child(header)
-            .child(body)
+        motion::enter_x(
+            v_flex()
+                .w(px(if panel == Panel::Files { 640. } else { 560. }))
+                .h_full()
+                .flex_none()
+                .border_l_1()
+                .border_color(t.border)
+                .bg(t.background)
+                .child(header)
+                .child(body),
+            SharedString::from(format!("panel-in-{panel:?}")),
+            260,
+            24.,
+            motion::ease_out(),
+        )
     }
 
     fn render_model_picker(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -6005,7 +6137,7 @@ fn faint(t: &Theme, dark: f32) -> f32 {
     }
 }
 
-fn render_item(item: &Item, t: &Theme) -> AnyElement {
+fn render_item(item: &Item, t: &Theme, burst: bool) -> AnyElement {
     let ink = t.foreground;
     match item {
         Item::Message {
@@ -6013,24 +6145,30 @@ fn render_item(item: &Item, t: &Theme) -> AnyElement {
             role: Role::User,
             text,
             ..
-        } => h_flex()
-            .justify_end()
-            .pt(px(6.))
-            .child(
-                div()
-                    .id(SharedString::from(format!("msg-{id}")))
-                    .max_w(px(576.))
-                    .px(px(12.))
-                    .py(px(8.))
-                    .rounded(px(10.))
-                    .bg(ink.opacity(0.08))
-                    .border_1()
-                    .border_color(ink.opacity(0.10))
-                    .text_size(px(14.))
-                    .line_height(px(21.))
-                    .child(text.clone()),
-            )
-            .into_any_element(),
+        } => {
+            let bubble = div()
+                .id(SharedString::from(format!("msg-{id}")))
+                .max_w(px(576.))
+                .px(px(12.))
+                .py(px(8.))
+                .rounded(px(10.))
+                .bg(ink.opacity(0.08))
+                .border_1()
+                .border_color(ink.opacity(0.10))
+                .text_size(px(14.))
+                .line_height(px(21.))
+                .child(text.clone());
+            let bubble = if burst {
+                motion::celebrate(bubble, id, t).into_any_element()
+            } else {
+                bubble.into_any_element()
+            };
+            h_flex()
+                .justify_end()
+                .pt(px(6.))
+                .child(bubble)
+                .into_any_element()
+        }
         Item::Message { id, text, .. } => div()
             .text_size(px(14.))
             .line_height(px(22.))
@@ -6276,13 +6414,15 @@ impl Render for GrayApp {
             .min_w_0()
             .h_full()
             .child(self.render_header(cx))
-            .child(self.render_timeline(cx))
+            .child(self.render_timeline(window, cx))
             .children(
                 self.pending_approval
                     .as_ref()
                     .map(|(_, label)| self.render_approval(label, cx)),
             )
-            .child(self.render_composer(window, cx));
+            .when(!self.timeline_empty(), |s| {
+                s.child(self.render_composer(window, cx))
+            });
         let side_terminal = self.terminal_open
             && self.store.state.setting("terminal_placement", "bottom") == "right";
         if self.terminal_open && !side_terminal {
@@ -6368,6 +6508,7 @@ impl Render for GrayApp {
             .on_action(cx.listener(|this, _: &FocusComposer, w, cx| this.close_overlays(w, cx)))
             .on_action(cx.listener(|this, _: &Dismiss, w, cx| {
                 this.toast = None;
+                this.toast_at = None;
                 w.clear_notifications(cx);
                 this.close_overlays(w, cx)
             }))
@@ -6404,6 +6545,9 @@ impl Render for GrayApp {
             .when(bg != "none", |s| s.child(background_layer(&bg)))
             .when(self.palette_open, |s| s.child(self.render_palette(cx)))
             .when(self.settings_open, |s| s.child(self.render_settings(cx)))
+            .when_some(self.toast.clone(), |s, (msg, err)| {
+                s.child(self.render_toast(msg, err, cx))
+            })
     }
 }
 

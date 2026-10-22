@@ -58,6 +58,40 @@
   pair, the folded Fusion model row, and provider pairings ship as a
   plugin now, and it's opt-in rather than in the default install set.
 
+### Fixed
+- **The composer band now paints over transcript rows when the input
+  box grows** (e.g. a multi-line history recall) instead of scrolling
+  transcript rows into scrollback — which was what left a blank gap and
+  dropped the text bar when pressing Down. Covered rows are repainted
+  when the band shrinks.
+- **Media-dump refusals inspect each command segment** (`;`, `|`, `&&`)
+  separately instead of pattern-matching the whole line —
+  `tail x.log; ssh maid 'ls ~/out/*.mp4'` no longer refuses, while
+  `cat a.png | wc -c` still does.
+- **A malformed `plugins/lock.json` entry no longer empties the
+  registry.** Entries are parsed individually via
+  `serde_path_to_error`; a bad one (e.g. `"hash": null`) is skipped with
+  a `bad plugin entry <name>: <field>: <reason>` warning that reaches
+  the TUI, and provider spawn failures now name the provider (`provider
+  "x" failed to start: empty argv`).
+- **A sidecar whose executable vanished backs off** (1s doubling to
+  60s, gives up after 5) with one notice at first failure and one at
+  give-up — instead of `respawn failed (os error 2)` on every hook call.
+- **The session picker preview skips harness-inserted messages**
+  (`[Context update]`, background-task notices) so rows show what you
+  actually typed.
+- **Wrapped list items in the transcript indent under the item text**
+  instead of flushing to column 0.
+- **System prompt and per-turn context slimmed:** the plugin inventory
+  is a one-line summary, the batching paragraph is shorter, memory
+  entries render as plain lines (no JSON/`Why:`), and the subagents
+  blurb moved to `gray subagents --help` — roughly 8.6k → ~2k chars.
+
+> The sibling `crates/gray-ide` app (excluded from this workspace) saw a
+> large parallel overhaul in this range — monocode restyle, motion
+> pass, palette/panes/approvals/diff view, notifications, skills panel —
+> it versions separately.
+
 ## [0.2.2] - 2026-10-17
 
 ### Added
@@ -136,33 +170,6 @@
   wraps instead of clipping.
 - **rustls updated to 0.23.46** (patched).
 
-- **The composer band now paints over transcript rows when the input
-  box grows** (e.g. a multi-line history recall) instead of scrolling
-  transcript rows into scrollback — which was what left a blank gap and
-  dropped the text bar when pressing Down. Covered rows are repainted
-  when the band shrinks.
-- **Media-dump refusals inspect each command segment** (`;`, `|`, `&&`)
-  separately instead of pattern-matching the whole line —
-  `tail x.log; ssh maid 'ls ~/out/*.mp4'` no longer refuses, while
-  `cat a.png | wc -c` still does.
-- **A malformed `plugins/lock.json` entry no longer empties the
-  registry.** Entries are parsed individually via
-  `serde_path_to_error`; a bad one (e.g. `"hash": null`) is skipped with
-  a `bad plugin entry <name>: <field>: <reason>` warning that reaches
-  the TUI, and provider spawn failures now name the provider (`provider
-  "x" failed to start: empty argv`).
-- **A sidecar whose executable vanished backs off** (1s doubling to
-  60s, gives up after 5) with one notice at first failure and one at
-  give-up — instead of `respawn failed (os error 2)` on every hook call.
-- **The session picker preview skips harness-inserted messages**
-  (`[Context update]`, background-task notices) so rows show what you
-  actually typed.
-- **Wrapped list items in the transcript indent under the item text**
-  instead of flushing to column 0.
-- **System prompt and per-turn context slimmed:** the plugin inventory
-  is a one-line summary, the batching paragraph is shorter, memory
-  entries render as plain lines (no JSON/`Why:`), and the subagents
-  blurb moved to `gray subagents --help` — roughly 8.6k → ~2k chars.
 - **Pasted images no longer vanish for text-only models.** Models that
   can't take image input (swe-*, non-vision deepseek) used to get a
   silent `[image]` wire part the relay dropped; image blocks are now
