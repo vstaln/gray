@@ -935,7 +935,16 @@ fn agentsmd_result(rest: &str) -> Result<CommandResult, CmdError> {
 fn gateway_result(rest: &str) -> Result<CommandResult, CmdError> {
     match rest.trim() {
         "" | "status" | "list" => Ok(CommandResult::text(
-            crate::repl::gateway_panel::format_text(),
+            crate::plugin_cli::list_rows()
+                .unwrap_or_default()
+                .iter()
+                .map(|r| {
+                    crate::setup::format_plugin_row_parts(
+                        &r.name, &r.version, &r.scope, &r.ecosystem, r.on,
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n"),
         )),
         other => Err(CmdError::args(format!(
             "unknown `/gateway {other}` over cmd — status only here"

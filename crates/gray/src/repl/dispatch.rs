@@ -320,16 +320,18 @@ pub(crate) async fn dispatch_command(
                 let text = handlers::toggle_subsystem(handlers::Subsystem::Gateway, on);
                 say(tui_shared, &text);
             } else if tui_shared.is_none() {
-                say(tui_shared, &super::gateway_panel::format_text());
+                say(tui_shared, &crate::plugin_status::table().await);
             } else {
+                // Bare /gateway is the plugin manager — the old
+                // "Connections" skin over the same rows folded in.
                 let bg = tui_shared.map(|s| s.lock().expect("tui lock").snapshot());
                 let changed = with_modal_sync(tui_shared, || {
-                    super::gateway_panel::run_gateway_modal(bg.as_ref())
+                    crate::setup::run_plugins_manager(bg.as_ref())
                 });
                 match changed {
                     Ok(true) => say(tui_shared, "connections updated"),
 
-                    Ok(false) => say(tui_shared, &super::gateway_panel::format_text()),
+                    Ok(false) => say(tui_shared, &crate::plugin_status::table().await),
                     Err(e) => say(tui_shared, &format!("connections picker failed: {e}")),
                 }
             }

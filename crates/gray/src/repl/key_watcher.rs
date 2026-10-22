@@ -152,10 +152,10 @@ fn run_turn_local_command(ctx: &TurnLocalCommands, text: &str) {
             } else {
                 let bg = ctx.tui.lock().expect("tui lock").snapshot();
                 match super::with_modal_sync(tui, || {
-                    super::gateway_panel::run_gateway_modal(Some(&bg))
+                    crate::setup::run_plugins_manager(Some(&bg))
                 }) {
                     Ok(true) => super::say(tui, "connections updated"),
-                    Ok(false) => super::say(tui, &super::gateway_panel::format_text()),
+                    Ok(false) => super::say(tui, "see /plugins"),
                     Err(e) => super::say(tui, &format!("connections picker failed: {e}")),
                 }
             }

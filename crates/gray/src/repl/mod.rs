@@ -156,7 +156,6 @@ pub mod commands;
 mod customize;
 pub(crate) mod dispatch;
 pub mod format;
-pub(crate) mod gateway_panel;
 pub(crate) mod handlers;
 pub(crate) mod jobs;
 pub(crate) mod key_watcher;
