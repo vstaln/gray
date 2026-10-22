@@ -163,44 +163,23 @@ fn tool_batching_guidance_is_not_user_editable_text() {
 }
 
 #[test]
-fn plugins_block_inventories_commands_tools_and_cli() {
+fn plugins_block_names_only_cli_reachable_plugins() {
     let manifest = |v: serde_json::Value| gray_plugin::Manifest::from_result(&v);
     let manifests = vec![
         manifest(serde_json::json!({
             "name": "subagents", "version": "0.5.2",
-            "commands": ["/subagents"], "subcommands": ["narrow"],
-            "completion": ["run", "status", "stop"],
+            "commands": ["/subagents"], "completion": ["run", "status"],
             "tools": [{"name": "narrow_delegate", "description": "d", "parameters": {}}]
         })),
-        manifest(serde_json::json!({
-            "name": "account", "version": "0.6.0", "commands": ["/login", "/whoami"]
-        })),
+        manifest(serde_json::json!({"name": "account", "commands": ["/login"]})),
     ];
     let cli: std::collections::BTreeSet<String> = ["subagents".to_string()].into_iter().collect();
     let block = plugins_block(&manifests, &cli);
-    assert!(block.contains("subagents 0.5.2"), "{block}");
-    assert!(block.contains("commands /subagents narrow"), "{block}");
-    assert!(block.contains("tools narrow_delegate"), "{block}");
-    assert!(
-        block.contains("cli `gray subagents` — verbs: run status stop"),
-        "{block}"
+    assert_eq!(
+        block,
+        "Plugin CLIs (run from bash; `gray <name> --help` prints usage): subagents"
     );
-    assert!(block.contains("account 0.6.0"), "{block}");
-    assert!(!block.contains("gray account"), "{block}");
-    assert!(plugins_block(&[], &cli).is_empty());
-}
-
-#[test]
-fn plugins_block_truncates_long_tool_lists() {
-    let manifest = gray_plugin::Manifest::from_result(&serde_json::json!({
-        "name": "wide",
-        "tools": (0..12)
-            .map(|i| serde_json::json!({"name": format!("t{i}")}))
-            .collect::<Vec<_>>()
-    }));
-    let block = plugins_block(&[manifest], &Default::default());
-    assert!(block.contains("t7, +4 more"), "{block}");
-    assert!(!block.contains("t8"), "{block}");
+    assert!(plugins_block(&manifests, &Default::default()).is_empty());
 }
 
 #[test]

@@ -17,6 +17,7 @@ pub mod prefix_guard;
 pub mod redaction;
 pub mod spill;
 pub mod squeeze;
+pub mod tool_deferral;
 pub mod tool_out;
 
 pub use agent::{

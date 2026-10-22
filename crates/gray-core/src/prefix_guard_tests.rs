@@ -1,4 +1,5 @@
 use crate::message::{ChatRequest, Message, ToolDef};
+use crate::prefix_guard::describe;
 use crate::prefix_guard::{Change, PrefixGuard, diff, fingerprint};
 
 fn req(system: &str, msgs: &[&str]) -> ChatRequest {
@@ -79,5 +80,36 @@ fn change_displays_as_a_short_locator() {
     assert_eq!(
         Change::HistoryTruncated { from: 9, to: 2 }.to_string(),
         "history truncated 9->2"
+    );
+}
+
+#[test]
+fn describe_names_known_reasons_and_skips_tail_growth() {
+    // A change at the history tail is normal growth: it cannot cost a miss
+    // worth a notice.
+    assert_eq!(describe(Change::HistoryAt(3), None, 4), None);
+    assert_eq!(
+        describe(Change::HistoryAt(1), None, 4).as_deref(),
+        Some("history changed at message 2")
+    );
+    assert_eq!(
+        describe(Change::HistoryAt(0), Some("media payload budget"), 9).as_deref(),
+        Some("older images dropped from context")
+    );
+    assert_eq!(
+        describe(Change::HistoryAt(0), Some("history rewrite"), 9).as_deref(),
+        Some("history rewritten")
+    );
+    assert_eq!(
+        describe(Change::Tools, None, 4).as_deref(),
+        Some("tool list changed")
+    );
+    assert_eq!(
+        describe(Change::System, None, 4).as_deref(),
+        Some("system prompt changed")
+    );
+    assert_eq!(
+        describe(Change::HistoryTruncated { from: 9, to: 2 }, None, 9).as_deref(),
+        Some("history truncated")
     );
 }

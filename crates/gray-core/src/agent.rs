@@ -515,6 +515,8 @@ pub struct Agent {
     pub(crate) turn_system: Option<String>,
     pub(crate) tools: Vec<ToolDef>,
 
+    pub(crate) tool_deferral: Option<std::collections::HashSet<String>>,
+
     pub(crate) tool_labels: std::collections::HashMap<String, String>,
 
     pub(crate) tool_previews: std::collections::HashMap<String, String>,
@@ -533,7 +535,9 @@ pub struct Agent {
 
     pub(crate) context_usage: Option<(usize, usize)>,
     history_revision: u64,
-    history_rewrite_hook: Option<Arc<dyn Fn() + Send + Sync>>,
+    pub(crate) history_rewrite_hook: Option<Arc<dyn Fn() + Send + Sync>>,
+
+    pub(crate) prefix_fp_sink: Option<crate::prefix_guard::FingerprintSink>,
 
     pub(crate) steer: Option<SteerHook>,
 
@@ -590,6 +594,7 @@ impl Agent {
             system: String::new(),
             turn_system: None,
             tools: Vec::new(),
+            tool_deferral: None,
             tool_labels: std::collections::HashMap::new(),
             tool_previews: std::collections::HashMap::new(),
             messages: Vec::new(),
@@ -604,6 +609,7 @@ impl Agent {
             context_usage: None,
             history_revision: 0,
             history_rewrite_hook: None,
+            prefix_fp_sink: None,
             steer: None,
             checkpoint: None,
             tool_output_hook: None,
@@ -726,6 +732,21 @@ impl Agent {
         }
     }
 
+    /// Fingerprint of the last request sent, for persisting with the session.
+    pub fn prefix_fingerprint(&self) -> Option<crate::prefix_guard::Fingerprint> {
+        self.prefix_guard.last().cloned()
+    }
+
+    /// Called with the fingerprint of every request as it is sent; the REPL
+    /// persists it so a later process can explain a first-request cache miss.
+    pub fn set_prefix_fp_sink(&mut self, sink: Option<crate::prefix_guard::FingerprintSink>) {
+        self.prefix_fp_sink = sink;
+    }
+
+    pub fn seed_prefix_fingerprint(&mut self, fp: crate::prefix_guard::Fingerprint) {
+        self.prefix_guard.seed(fp);
+    }
+
     pub fn with_system(mut self, system: impl Into<String>) -> Self {
         self.system = system.into();
         self.turn_system = None;
@@ -735,6 +756,20 @@ impl Agent {
     pub fn with_tools(mut self, tools: Vec<ToolDef>) -> Self {
         self.tools = tools;
         self
+    }
+
+    pub fn with_tool_deferral(mut self, always: std::collections::HashSet<String>) -> Self {
+        self.tool_deferral = Some(always);
+        self
+    }
+
+    pub fn request_tools(&self) -> Vec<ToolDef> {
+        match &self.tool_deferral {
+            Some(always) => {
+                crate::tool_deferral::request_tools(&self.tools, always, &self.messages)
+            }
+            None => self.tools.clone(),
+        }
     }
 
     pub fn refresh_tools(&mut self) {
@@ -782,10 +817,12 @@ impl Agent {
     pub fn with_tool_surface_of(mut self, donor: Agent) -> Self {
         self.executor = donor.executor;
         self.tools = donor.tools;
+        self.tool_deferral = donor.tool_deferral;
         self.tool_labels = donor.tool_labels;
         self.tool_previews = donor.tool_previews;
         self.hooks = donor.hooks;
         self.history_rewrite_hook = donor.history_rewrite_hook;
+        self.prefix_fp_sink = donor.prefix_fp_sink;
         self
     }
 

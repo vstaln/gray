@@ -68,7 +68,7 @@ pub(crate) async fn run_compaction_call(
         .complete_isolated(
             (!system.is_empty()).then_some(system),
             messages,
-            agent.tool_defs().to_vec(),
+            agent.request_tools(),
         )
         .await
 }

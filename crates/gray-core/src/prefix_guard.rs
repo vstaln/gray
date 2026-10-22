@@ -1,9 +1,10 @@
 use std::fmt;
 use std::hash::{DefaultHasher, Hash, Hasher};
+use std::sync::Arc;
 
 use crate::message::ChatRequest;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Fingerprint {
     provider: u64,
     system: u64,
@@ -42,6 +43,12 @@ fn digest<T: serde::Serialize + ?Sized>(value: &T) -> u64 {
     h.finish()
 }
 
+impl Fingerprint {
+    pub fn message_count(&self) -> usize {
+        self.messages.len()
+    }
+}
+
 pub fn fingerprint(model_id: &str, req: &ChatRequest) -> Fingerprint {
     Fingerprint {
         provider: digest(model_id),
@@ -49,6 +56,32 @@ pub fn fingerprint(model_id: &str, req: &ChatRequest) -> Fingerprint {
         tools: digest(&req.tools),
         messages: req.messages.iter().map(digest).collect(),
     }
+}
+
+/// Plain-language cause for a cache-miss notice. `None` when the change sits at
+/// the tail of the history (normal growth), which cannot cost a cache miss
+/// worth explaining.
+pub fn describe(change: Change, announced: Option<&str>, prev_len: usize) -> Option<String> {
+    let known = |r: &str| match r {
+        "media payload budget" => "older images dropped from context".to_string(),
+        "stale output mask" => "old tool output trimmed".to_string(),
+        "history rewrite" => "history rewritten".to_string(),
+        other => other.to_string(),
+    };
+    Some(match change {
+        Change::Provider => "model changed".to_string(),
+        Change::System => "system prompt changed".to_string(),
+        Change::Tools => "tool list changed".to_string(),
+        Change::HistoryAt(k) => match announced {
+            Some(r) => known(r),
+            None if k + 1 >= prev_len => return None,
+            None => format!("history changed at message {}", k + 1),
+        },
+        Change::HistoryTruncated { .. } => match announced {
+            Some(r) => known(r),
+            None => "history truncated".to_string(),
+        },
+    })
 }
 
 pub fn diff(prev: &Fingerprint, next: &Fingerprint) -> Option<Change> {
@@ -75,6 +108,10 @@ pub fn diff(prev: &Fingerprint, next: &Fingerprint) -> Option<Change> {
     })
 }
 
+/// Where each sent request's fingerprint is reported; the REPL persists it
+/// beside the session file.
+pub type FingerprintSink = Arc<dyn Fn(&Fingerprint) + Send + Sync>;
+
 #[derive(Debug, Default)]
 pub struct PrefixGuard {
     last: Option<Fingerprint>,
@@ -84,6 +121,18 @@ pub struct PrefixGuard {
 impl PrefixGuard {
     pub fn expect_change(&mut self, reason: &'static str) {
         self.expected = Some(reason);
+    }
+
+    pub fn last(&self) -> Option<&Fingerprint> {
+        self.last.as_ref()
+    }
+
+    /// Seed from a saved session so the first request after a restart is
+    /// compared with the last one sent before it.
+    pub fn seed(&mut self, fp: Fingerprint) {
+        if self.last.is_none() {
+            self.last = Some(fp);
+        }
     }
 
     pub fn observe(

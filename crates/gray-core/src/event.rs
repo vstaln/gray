@@ -212,6 +212,13 @@ pub enum AgentEvent {
         usage: Usage,
     },
 
+    /// The prompt prefix differs from the previous request's, so the
+    /// provider's prompt cache cannot be reused past that point. Sent before
+    /// the request; `cause` is plain language ("tool list changed").
+    PrefixChanged {
+        cause: String,
+    },
+
     StreamError {
         message: String,
         #[serde(default)]

@@ -318,6 +318,9 @@ impl Agent {
         name: &str,
         args: &serde_json::Value,
     ) -> Result<serde_json::Value, ToolOutput> {
+        if name == crate::tool_deferral::LOAD_TOOLS && self.tool_deferral.is_some() {
+            return Err(crate::tool_deferral::run_loader(&self.tools, args));
+        }
         if !self.tools.iter().any(|t| t.name == name) {
             let names: Vec<String> = self.tools.iter().map(|t| t.name.clone()).collect();
             return Err(ToolOutput::error(crate::tool_out::unknown_tool(
@@ -671,20 +674,21 @@ impl Agent {
             let req = ChatRequest {
                 system: (!self.system_text().is_empty()).then(|| self.system_text().to_string()),
                 messages: request_messages,
-                tools: self.tools.clone(),
+                tools: self.request_tools(),
                 max_tokens: None,
             };
+            let prev_len = self.prefix_guard.last().map_or(0, |fp| fp.message_count());
             if let Some((change, announced)) =
                 self.prefix_guard.observe(self.provider.model_id(), &req)
+                && let Some(cause) = crate::prefix_guard::describe(change, announced, prev_len)
             {
-                match announced {
-                    Some(reason) => {
-                        log::debug!(target: "gray_agent", "prefix changed: {change} ({reason})")
-                    }
-                    None => {
-                        log::warn!(target: "gray_agent", "prefix changed: {change} — prompt cache misses from here")
-                    }
-                }
+                log::debug!(target: "gray_agent", "prefix changed: {change} ({cause})");
+                emit!(AgentEvent::PrefixChanged { cause });
+            }
+            if let Some(sink) = &self.prefix_fp_sink
+                && let Some(fp) = self.prefix_guard.last()
+            {
+                sink(fp);
             }
 
             let request_sent = tokio::time::Instant::now();
@@ -1589,7 +1593,7 @@ impl Agent {
                             emit!(AgentEvent::tool_result(
                                 id.clone(),
                                 err.content.clone(),
-                                true
+                                err.is_error
                             ));
                             self.messages.push(Message {
                                 role: Role::User,
@@ -1597,7 +1601,7 @@ impl Agent {
                                 content: vec![ContentBlock::ToolResult {
                                     id: id.clone(),
                                     content: err.content,
-                                    is_error: true,
+                                    is_error: err.is_error,
                                 }],
                             });
                             continue;
@@ -1656,7 +1660,7 @@ impl Agent {
                         emit!(AgentEvent::tool_result(
                             id.clone(),
                             err.content.clone(),
-                            true
+                            err.is_error
                         ));
                         self.messages.push(Message {
                             role: Role::User,
@@ -1664,7 +1668,7 @@ impl Agent {
                             content: vec![ContentBlock::ToolResult {
                                 id: id.clone(),
                                 content: err.content,
-                                is_error: true,
+                                is_error: err.is_error,
                             }],
                         });
                         continue;
