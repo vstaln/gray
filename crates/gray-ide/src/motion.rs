@@ -158,3 +158,17 @@ pub fn running_bars(t: &Theme) -> impl IntoElement {
                 )
         }))
 }
+
+/// Braille terminal spinner (monocode `TerminalSpinner`): one frame per 80 ms.
+pub fn braille_spinner(id: impl Into<ElementId>, t: &Theme) -> impl IntoElement {
+    const FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+    div()
+        .text_size(px(16.))
+        .line_height(px(16.))
+        .text_color(t.primary)
+        .with_animation(
+            id,
+            Animation::new(ms(800)).repeat().with_max_fps(12.5),
+            |d, x| d.child(FRAMES[((x * 10.) as usize).min(9)]),
+        )
+}
