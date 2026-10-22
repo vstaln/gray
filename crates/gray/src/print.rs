@@ -164,7 +164,7 @@ pub fn render_event_with_context<W: Write>(
             }
             w.flush()
         }
-        AgentEvent::StepUsage { .. } => Ok(()),
+        AgentEvent::StepUsage { .. } | AgentEvent::PrefixChanged { .. } => Ok(()),
 
         AgentEvent::Compacted {
             tokens_before,

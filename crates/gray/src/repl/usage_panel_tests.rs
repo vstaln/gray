@@ -110,6 +110,7 @@ fn note_miss_buckets_by_cause() {
         idle: std::time::Duration::from_secs(idle_secs),
         model_changed,
         reconnected: false,
+        cause: None,
     };
     t.note_miss(&miss(crate::cache::cache_ttl().as_secs() + 60, false));
     t.note_miss(&miss(10, true));
@@ -137,6 +138,7 @@ fn plain_render_shows_cache_rows_when_reported() {
         idle: crate::cache::cache_ttl() + std::time::Duration::from_secs(1),
         model_changed: false,
         reconnected: false,
+        cause: None,
     });
     let lines = usage_plain(&input_for(&t, Warmth::Unknown));
     let text = lines.join("\n");

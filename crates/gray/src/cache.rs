@@ -20,7 +20,7 @@ pub const WARN_MISS_TOKENS: usize = 20_000;
 
 pub const WARN_MISS_COST: f64 = 0.10;
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct CacheMiss {
     pub missed_tokens: usize,
 
@@ -31,6 +31,10 @@ pub struct CacheMiss {
     pub model_changed: bool,
 
     pub reconnected: bool,
+
+    /// Why the prompt prefix changed, as reported by the agent
+    /// ("tool list changed"); `None` when it did not change.
+    pub cause: Option<String>,
 }
 
 impl CacheMiss {
@@ -40,6 +44,8 @@ impl CacheMiss {
         }
         let label = if self.model_changed {
             "Cache miss after model switch".to_string()
+        } else if let Some(cause) = &self.cause {
+            format!("Cache miss ({cause})")
         } else if self.reconnected {
             "Cache miss after reconnect".to_string()
         } else if self.idle >= cache_ttl() {
@@ -78,9 +84,17 @@ pub struct CacheTracker {
     paused_at: Option<Instant>,
 
     reconnected: bool,
+
+    prefix_cause: Option<String>,
 }
 
 impl CacheTracker {
+    /// The agent saw the prompt prefix change before the next request; the
+    /// miss that request reports (if any) is labelled with this cause.
+    pub fn note_prefix_change(&mut self, cause: String) {
+        self.prefix_cause = Some(cause);
+    }
+
     pub fn note(
         &mut self,
         usage: &Usage,
@@ -95,7 +109,18 @@ impl CacheTracker {
 
         let miss_at = self.paused_at.unwrap_or(now);
 
-        let miss = match &self.last {
+        let cause = self.prefix_cause.take();
+        // First request after a resume: there is no previous request to
+        // compare with, but the agent compared against the saved session's
+        // last prefix, so a known change still gets judged.
+        let resumed_prev = (self.last.is_none() && cause.is_some()).then(|| LastRequest {
+            at: miss_at,
+            prompt_tokens,
+            model: model.to_string(),
+            reported_cache: false,
+            usage: Usage::default(),
+        });
+        let miss = match self.last.as_ref().or(resumed_prev.as_ref()) {
             Some(prev) if prev.usage == *usage => None,
             Some(prev) => detect_miss(
                 prev,
@@ -110,7 +135,8 @@ impl CacheTracker {
             ),
 
             None => None,
-        };
+        }
+        .map(|miss| CacheMiss { cause, ..miss });
 
         let reported_cache = self
             .last
@@ -189,6 +215,7 @@ impl CacheTracker {
     pub fn reset(&mut self) {
         self.last = None;
         self.reconnected = false;
+        self.prefix_cause = None;
     }
 }
 
@@ -222,6 +249,7 @@ fn detect_miss(
         idle: now.saturating_duration_since(prev.at),
         model_changed: !model.is_empty() && !prev.model.is_empty() && model != prev.model,
         reconnected,
+        cause: None,
     })
 }
 

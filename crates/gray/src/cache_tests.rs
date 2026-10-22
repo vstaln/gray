@@ -510,3 +510,73 @@ fn unpriced_model_reports_tokens_without_a_cost() {
         Some("Cache miss: 100k tokens re-billed")
     );
 }
+
+#[test]
+fn a_known_prefix_change_labels_the_miss() {
+    let base = Instant::now();
+    let mut tr = CacheTracker::default();
+    tr.note(
+        &usage(100_000, 500, 90_000, 10_000),
+        "m",
+        Some(priced()),
+        t(base, 0),
+    );
+    tr.note_prefix_change("tool list changed".to_string());
+    let miss = tr
+        .note(
+            &usage(100_500, 100, 0, 100_500),
+            "m",
+            Some(priced()),
+            t(base, 3),
+        )
+        .expect("miss");
+    let notice = miss.notice().expect("notice");
+    assert!(
+        notice.contains("Cache miss (tool list changed)"),
+        "{notice}"
+    );
+    // Consumed once: the next unexplained miss is bare.
+    tr.note(
+        &usage(100_600, 100, 90_000, 10_000),
+        "m",
+        Some(priced()),
+        t(base, 6),
+    );
+    let miss = tr
+        .note(
+            &usage(101_000, 100, 0, 101_000),
+            "m",
+            Some(priced()),
+            t(base, 9),
+        )
+        .expect("miss");
+    assert!(
+        miss.notice().unwrap().starts_with("Cache miss:"),
+        "{}",
+        miss.notice().unwrap()
+    );
+}
+
+#[test]
+fn a_seeded_resume_judges_the_first_request() {
+    // After a restart the tracker is empty, but the agent seeded the previous
+    // prefix, so a known change still names the miss.
+    let base = Instant::now();
+    let mut tr = CacheTracker::default();
+    tr.note_prefix_change("system prompt changed".to_string());
+    let miss = tr
+        .note(
+            &usage(115_600, 100, 0, 115_600),
+            "m",
+            Some(priced()),
+            t(base, 0),
+        )
+        .expect("miss");
+    assert!(
+        miss.notice()
+            .unwrap()
+            .contains("Cache miss (system prompt changed)"),
+        "{}",
+        miss.notice().unwrap()
+    );
+}

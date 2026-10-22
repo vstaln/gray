@@ -336,6 +336,9 @@ pub(crate) async fn run_prompt_turn(
 
     let wire_model = crate::setup::wire_model_for(config)
         .unwrap_or_else(|| config.model.clone().unwrap_or_default());
+    if let Some(state) = session_state.as_ref() {
+        super::session::wire_prefix_fingerprint(agent, state);
+    }
     let mut run_result = {
         let mut on_event = |ev: &AgentEvent| {
             crate::ide::tap_agent_event(ev);
@@ -496,7 +499,7 @@ pub(crate) async fn run_prompt_turn(
             )
             .await;
             if let Some(state) = &*session_state {
-                crate::auto_title::maybe_start(state, &*agent, initial_count);
+                crate::auto_title::maybe_start(state, &*agent);
             }
         }
         Err(CoreError::Cancelled) => {
