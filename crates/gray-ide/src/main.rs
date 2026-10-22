@@ -3,6 +3,7 @@ mod app;
 mod assets;
 mod git;
 mod graycmds;
+mod motion;
 mod plugins;
 mod provider;
 mod sessions;

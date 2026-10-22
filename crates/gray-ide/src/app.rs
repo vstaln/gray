@@ -1,5 +1,6 @@
 use crate::git;
 use crate::graycmds;
+use crate::motion;
 use crate::plugins::{self, HubEntry, Installed, PluginMsg};
 use crate::provider::{self, MODES, PROVIDERS, ProviderEvent, Turn, TurnRequest};
 use crate::sessions::{self, GraySession};
@@ -831,6 +832,10 @@ impl GrayApp {
         }
         if changed {
             self.scroll.scroll_to_bottom();
+            cx.notify();
+        } else if !self.turns.is_empty() && self.ticks.is_multiple_of(3) {
+            // Keep the elapsed-time label ticking between stream events
+            // (and under reduced motion, when no animation frames run).
             cx.notify();
         }
     }
@@ -1961,13 +1966,6 @@ fn fuzzy(hay: &str, needle: &str) -> bool {
         .all(|c| it.any(|h| h == c))
 }
 
-fn churner(ticks: u64, t: &Theme) -> impl IntoElement {
-    h_flex().gap_0p5().children((0..8).map(|i| {
-        let on = ((ticks / 2) + i) % 8 < 4;
-        div().size(px(4.)).bg(if on { t.primary } else { t.border })
-    }))
-}
-
 fn provider_brand(provider: &str) -> Option<&'static str> {
     match provider {
         "gray" => Some("icons/gray-logo.svg"),
@@ -2623,7 +2621,8 @@ impl GrayApp {
                             .child(k.to_string()),
                     )
             };
-            return v_flex()
+            return motion::enter(
+                v_flex()
                 .flex_1()
                 .items_center()
                 .justify_center()
@@ -2667,7 +2666,12 @@ impl GrayApp {
                         .child(hint("Ctrl J", "Terminal"))
                         .child(hint("Ctrl D", "Diff")),
                 )
-                .into_any_element();
+                "welcome-in",
+                motion::WELCOME_MS,
+                -8.,
+                motion::ease_out(),
+            )
+            .into_any_element();
         }
         let thread = thread.unwrap();
         let mut col = v_flex()
@@ -2690,15 +2694,39 @@ impl GrayApp {
                             .gap_2()
                             .text_xs()
                             .text_color(t.muted_foreground)
-                            .child(churner(self.ticks, &t))
-                            .child(div().font_family(t.mono_font_family.clone()).child(format!(
-                                "{} · CHURNING {:.1}S",
-                                provider::provider_label(&thread.provider),
-                                a.started.elapsed().as_secs_f32()
-                            ))),
+                            .child(motion::churner(&t))
+                            .child(
+                                h_flex()
+                                    .gap_1()
+                                    .font_family(t.mono_font_family.clone())
+                                    .child(format!(
+                                        "{} ·",
+                                        provider::provider_label(&thread.provider)
+                                    ))
+                                    .child(motion::shimmer_label("churn-label", "CHURNING", &t))
+                                    .child(format!("{:.1}S", a.started.elapsed().as_secs_f32())),
+                            ),
                     )
-                    .when(!a.text.is_empty(), |s| {
-                        s.child(TextView::markdown("streaming", a.text.clone()).selectable(true))
+                    .map(|s| {
+                        if a.text.is_empty() {
+                            s.child(
+                                h_flex()
+                                    .gap_2()
+                                    .items_center()
+                                    .child(motion::typing_dots(&t))
+                                    .child(motion::breathe(
+                                        div()
+                                            .text_sm()
+                                            .text_color(t.muted_foreground)
+                                            .child("Thinking"),
+                                        "think-pulse",
+                                    )),
+                            )
+                        } else {
+                            s.child(
+                                TextView::markdown("streaming", a.text.clone()).selectable(true),
+                            )
+                        }
                     }),
             );
         }
@@ -2816,7 +2844,7 @@ impl GrayApp {
             .mx_auto()
             .px_4()
             .pb_2()
-            .child(
+            .child(motion::enter(
                 h_flex()
                     .gap_2()
                     .items_center()
@@ -2851,7 +2879,11 @@ impl GrayApp {
                                 this.run(Cmd::Approve(false), window, cx)
                             })),
                     ),
-            )
+                SharedString::from(format!("approval-in-{label}")),
+                motion::CARD_MS,
+                8.,
+                motion::ease_out(),
+            ))
     }
 
     fn render_composer(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -3223,6 +3255,9 @@ impl GrayApp {
                     .border_color(t.border)
                     .child(Icon::new(IconName::SquareTerminal).xsmall())
                     .child("Terminal")
+                    .when(!self.terminal_rx.is_empty(), |s| {
+                        s.child(motion::running_bars(&t))
+                    })
                     .child(div().flex_1())
                     .child(
                         Button::new("close-terminal")
@@ -3529,6 +3564,7 @@ impl GrayApp {
                     .cursor_pointer()
                     .when(i == 0, |s| s.bg(t.list_active))
                     .hover(|s| s.bg(t.list_hover))
+                    .active(|s| s.bg(t.list_active))
                     .on_click(
                         cx.listener(move |this, _, window, cx| this.run(cmd.clone(), window, cx)),
                     )
@@ -3536,7 +3572,7 @@ impl GrayApp {
                     .child(div().text_xs().text_color(t.muted_foreground).child(hint)),
             );
         }
-        div()
+        let backdrop = div()
             .absolute()
             .inset_0()
             .bg(hsla(0., 0., 0., 0.35))
@@ -3544,7 +3580,7 @@ impl GrayApp {
             .justify_center()
             .items_start()
             .pt(px(96.))
-            .child(
+            .child(motion::enter(
                 v_flex()
                     .w(px(600.))
                     .h_auto()
@@ -3562,7 +3598,12 @@ impl GrayApp {
                         ),
                     )
                     .child(list),
-            )
+                "palette-in",
+                motion::POPOVER_MS,
+                6.,
+                motion::ease_pop(),
+            ));
+        motion::fade_in(backdrop, "palette-backdrop-in", motion::BACKDROP_MS)
     }
 
     fn render_settings(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -4102,12 +4143,22 @@ impl GrayApp {
             }
         }
         content = content.child(page);
-        div()
-            .id("settings-page")
-            .absolute()
-            .inset_0()
-            .bg(t.background)
-            .child(h_flex().size_full().child(nav_col).child(content))
+        motion::fade_in(
+            div()
+                .id("settings-page")
+                .absolute()
+                .inset_0()
+                .bg(t.background)
+                .child(motion::enter(
+                    h_flex().size_full().child(nav_col).child(content),
+                    "settings-panel-in",
+                    motion::MODAL_MS,
+                    -8.,
+                    motion::ease_pop(),
+                )),
+            "settings-fade-in",
+            motion::BACKDROP_MS,
+        )
     }
 }
 
