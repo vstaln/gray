@@ -98,6 +98,12 @@ enum PaletteMode {
     Search,
 }
 
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum PopKind {
+    Mention,
+    Slash,
+}
+
 #[derive(Clone, Debug)]
 enum Cmd {
     NewThread,
@@ -184,6 +190,12 @@ pub struct GrayApp {
     palette_scroll: ScrollHandle,
     /// Scroll the highlighted row into view on the next render.
     palette_reveal: std::cell::Cell<bool>,
+    /// Composer popover anchored above the input: @-mention file picker or
+    /// slash-command menu. The token is re-read from the caret on every use.
+    composer_pop: Option<PopKind>,
+    pop_sel: usize,
+    pop_scroll: ScrollHandle,
+    pop_reveal: std::cell::Cell<bool>,
     /// Model picker popover above the composer's model chip.
     model_open: bool,
     model_input: Entity<InputState>,
@@ -279,13 +291,23 @@ impl GrayApp {
             cx.new(|cx| InputState::new(window, cx).placeholder("Search settings"));
 
         let mut subs = Vec::new();
-        subs.push(
-            cx.subscribe_in(&composer, window, |this, _, ev: &InputEvent, window, cx| {
-                if let InputEvent::PressEnter { shift: false, .. } = ev {
-                    this.send(window, cx);
+        subs.push(cx.subscribe_in(
+            &composer,
+            window,
+            |this, _, ev: &InputEvent, window, cx| match ev {
+                InputEvent::PressEnter { shift: false, .. } => {
+                    if !this.accept_pop(window, cx) {
+                        this.send(window, cx);
+                    }
                 }
-            }),
-        );
+                InputEvent::Change => this.update_composer_pop(cx),
+                InputEvent::Blur => {
+                    this.composer_pop = None;
+                    cx.notify();
+                }
+                _ => {}
+            },
+        ));
         subs.push(cx.subscribe_in(
             &palette_input,
             window,
@@ -358,6 +380,10 @@ impl GrayApp {
             palette_sel: 0,
             palette_scroll: ScrollHandle::new(),
             palette_reveal: std::cell::Cell::new(false),
+            composer_pop: None,
+            pop_sel: 0,
+            pop_scroll: ScrollHandle::new(),
+            pop_reveal: std::cell::Cell::new(false),
             model_open: false,
             model_input,
             model_query: String::new(),
@@ -633,6 +659,7 @@ impl GrayApp {
     }
 
     fn send(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.composer_pop = None;
         let text = self.composer.read(cx).value().trim().to_string();
         if text.is_empty() {
             return;
@@ -1203,6 +1230,159 @@ impl GrayApp {
         };
         self.run(Cmd::Model(format!("{p}:{m}")), window, cx);
         self.close_overlays(window, cx);
+    }
+
+    /// Token under the composer's caret that can drive a popover:
+    /// `@path` anywhere after whitespace, `/cmd` only at a line start.
+    /// Returns (kind, token start byte offset, query).
+    fn composer_token(&self, cx: &App) -> Option<(PopKind, usize, String)> {
+        let st = self.composer.read(cx);
+        let v = st.value().to_string();
+        let cur = st.cursor().min(v.len());
+        if !v.is_char_boundary(cur) {
+            return None;
+        }
+        let before = &v[..cur];
+        let start = before
+            .char_indices()
+            .rev()
+            .find(|(_, c)| c.is_whitespace())
+            .map(|(i, c)| i + c.len_utf8())
+            .unwrap_or(0);
+        let tok = &before[start..];
+        match tok.as_bytes().first() {
+            Some(b'@') => Some((PopKind::Mention, start, tok[1..].to_string())),
+            Some(b'/') if start == 0 || before.as_bytes()[start - 1] == b'\n' => {
+                Some((PopKind::Slash, start, tok[1..].to_string()))
+            }
+            _ => None,
+        }
+    }
+
+    fn update_composer_pop(&mut self, cx: &mut Context<Self>) {
+        let next = self
+            .composer_token(cx)
+            .map(|(k, _, _)| k)
+            .filter(|k| *k != PopKind::Mention || self.work_root().is_some());
+        self.composer_pop = next;
+        self.pop_sel = 0;
+        self.pop_reveal.set(true);
+        cx.notify();
+    }
+
+    /// Project files ranked for the mention query: substring hits first,
+    /// then fuzzy matches, each in walk order.
+    fn mention_items(&self, query: &str) -> Vec<String> {
+        let Some(root) = self.work_root() else {
+            return Vec::new();
+        };
+        let q = query.to_lowercase();
+        let mut scored: Vec<(u8, String)> = workspace::all_files(&root, 5000)
+            .into_iter()
+            .filter_map(|f| {
+                if f.to_lowercase().contains(&q) {
+                    Some((0, f))
+                } else if fuzzy(&f.to_lowercase(), &q) {
+                    Some((1, f))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        scored.sort_by_key(|(r, _)| *r);
+        scored.truncate(50);
+        scored.into_iter().map(|(_, f)| f).collect()
+    }
+
+    fn slash_items(&self, query: &str) -> Vec<SlashCmd> {
+        let q = query.to_lowercase();
+        let mut scored: Vec<(u8, SlashCmd)> = SLASH_COMMANDS
+            .iter()
+            .filter_map(|c| {
+                if c.name.starts_with(&q) {
+                    Some((0, *c))
+                } else if c.name.contains(&q) || c.hint.to_lowercase().contains(&q) {
+                    Some((1, *c))
+                } else if fuzzy(c.name, &q) {
+                    Some((2, *c))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        scored.sort_by_key(|(r, _)| *r);
+        scored.truncate(50);
+        scored.into_iter().map(|(_, c)| c).collect()
+    }
+
+    fn pop_len(&self, cx: &App) -> usize {
+        match self.composer_token(cx) {
+            Some((PopKind::Mention, _, q)) => self.mention_items(&q).len(),
+            Some((PopKind::Slash, _, q)) => self.slash_items(&q).len(),
+            None => 0,
+        }
+    }
+
+    fn pop_move(&mut self, delta: isize, cx: &mut Context<Self>) {
+        let count = self.pop_len(cx);
+        if count > 0 {
+            let n = count as isize;
+            self.pop_sel = (self.pop_sel.min(count - 1) as isize + delta).rem_euclid(n) as usize;
+            self.pop_reveal.set(true);
+        }
+        cx.notify();
+        cx.stop_propagation();
+    }
+
+    /// Enter while a composer popover is open takes the highlighted row.
+    /// Returns false when nothing is selectable so Enter still sends.
+    fn accept_pop(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if self.composer_pop.is_none() {
+            return false;
+        }
+        let Some((kind, start, query)) = self.composer_token(cx) else {
+            self.composer_pop = None;
+            return false;
+        };
+        let cur = self.composer.read(cx).cursor();
+        match kind {
+            PopKind::Mention => {
+                let items = self.mention_items(&query);
+                let Some(path) = items.get(self.pop_sel.min(items.len().saturating_sub(1))) else {
+                    return false;
+                };
+                let text = format!("@{path} ");
+                self.composer.update(cx, |s, cx| {
+                    s.set_selected_range(start..cur, cx);
+                    s.replace(text, window, cx);
+                });
+            }
+            PopKind::Slash => {
+                let items = self.slash_items(&query);
+                let Some(cmd) = items.get(self.pop_sel.min(items.len().saturating_sub(1))) else {
+                    return false;
+                };
+                let cmd = *cmd;
+                self.composer.update(cx, |s, cx| {
+                    s.set_selected_range(start..cur, cx);
+                    s.replace(
+                        if cmd.arg {
+                            format!("/{} ", cmd.name)
+                        } else {
+                            String::new()
+                        },
+                        window,
+                        cx,
+                    );
+                });
+                if !cmd.arg {
+                    self.slash(cmd.name, window, cx);
+                }
+            }
+        }
+        self.composer_pop = None;
+        cx.notify();
+        true
     }
 
     fn close_overlays(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -2360,6 +2540,7 @@ impl GrayApp {
             "skills": self.skills.iter().map(|s| s.name.clone()).collect::<Vec<_>>(),
             "terminal": self.terminal_lines.iter().rev().take(40).rev().cloned().collect::<Vec<_>>(),
             "composer": self.composer.read(cx).value().to_string(),
+            "composer_pop": format!("{:?}", self.composer_pop),
             "toast": self.toast.as_ref().map(|t| t.0.clone()),
             "hub": self.hub.iter().map(|h| h.name.clone()).collect::<Vec<_>>(),
             "hub_error": self.hub_error,
@@ -2381,6 +2562,73 @@ impl GrayApp {
         }
     }
 }
+
+/// A composer `/`-command: name, description, palette-style group, and
+/// whether it needs an argument (then selecting it types `/name ` instead
+/// of running it). Mirrors the arms of `slash()`.
+#[derive(Clone, Copy)]
+struct SlashCmd {
+    name: &'static str,
+    hint: &'static str,
+    group: &'static str,
+    arg: bool,
+}
+
+const fn sc(name: &'static str, hint: &'static str, group: &'static str, arg: bool) -> SlashCmd {
+    SlashCmd {
+        name,
+        hint,
+        group,
+        arg,
+    }
+}
+
+const SLASH_COMMANDS: &[SlashCmd] = &[
+    sc("new", "New thread", "Thread", false),
+    sc("rename", "Rename thread", "Thread", true),
+    sc("pin", "Pin or unpin thread", "Thread", false),
+    sc("archive", "Archive thread", "Thread", false),
+    sc("settle", "Settle or unsettle thread", "Thread", false),
+    sc("snooze", "Snooze thread (minutes)", "Thread", false),
+    sc("stop", "Stop turn", "Thread", false),
+    sc("approve", "Approve pending action", "Thread", false),
+    sc("reject", "Reject pending action", "Thread", false),
+    sc("model", "Set model (provider:model)", "Model", true),
+    sc("provider", "Set provider", "Model", true),
+    sc("mode", "Set access mode", "Model", true),
+    sc("effort", "Set effort (low/medium/high)", "Model", true),
+    sc("diff", "Toggle diff panel", "View", false),
+    sc("terminal", "Toggle terminal", "View", false),
+    sc("plugins", "Plugins panel", "View", false),
+    sc("sessions", "Gray sessions", "View", false),
+    sc("skills", "Gray skills", "View", false),
+    sc("layout", "Set layout", "View", true),
+    sc("checkpoint", "Create checkpoint", "Git", false),
+    sc("restore", "Restore last checkpoint", "Git", false),
+    sc("turndiff", "Diff since last turn", "Git", false),
+    sc("headdiff", "Diff vs HEAD", "Git", false),
+    sc("branch", "Create branch", "Git", true),
+    sc("checkout", "Checkout branch", "Git", true),
+    sc("worktree", "Create worktree", "Git", true),
+    sc("discard", "Discard changes", "Git", false),
+    sc("settings", "Open settings", "Settings", false),
+    sc("theme", "Toggle theme", "Settings", false),
+    sc(
+        "autoaccept",
+        "Auto-accept permissions on|off",
+        "Settings",
+        true,
+    ),
+    sc("background", "Set background", "Settings", true),
+    sc("resume", "Resume gray session", "Gray", true),
+    sc("gray", "Run a gray command", "Gray", true),
+    sc("install", "Install plugin", "Plugins", true),
+    sc("uninstall", "Remove plugin", "Plugins", true),
+    sc("enable", "Enable plugin", "Plugins", true),
+    sc("disable", "Disable plugin", "Plugins", true),
+    sc("attach", "Attach image", "Files", true),
+    sc("view", "Preview file", "Files", true),
+];
 
 /// Bare category hints that a palette group header already says.
 const PALETTE_CATEGORY_HINTS: &[&str] = &[
@@ -3606,6 +3854,7 @@ impl GrayApp {
             .unwrap_or(false);
         let dark = t.mode.is_dark();
         let focused = self.composer.read(cx).focus_handle(cx).is_focused(window);
+        let pop_open = self.composer_pop.is_some() && self.composer_token(cx).is_some();
         let shade = if dark { gpui::black() } else { t.foreground };
         div()
             .w_full()
@@ -3617,6 +3866,20 @@ impl GrayApp {
                 v_flex()
                     .relative()
                     .when(self.model_open, |s| s.child(self.render_model_picker(cx)))
+                    .when(pop_open, |s| {
+                        s.capture_action(
+                            cx.listener(|this, _: &MoveUp, _, cx| this.pop_move(-1, cx)),
+                        )
+                        .capture_action(
+                            cx.listener(|this, _: &MoveDown, _, cx| this.pop_move(1, cx)),
+                        )
+                        .capture_action(cx.listener(|this, _: &Dismiss, _, cx| {
+                            this.composer_pop = None;
+                            cx.notify();
+                            cx.stop_propagation();
+                        }))
+                        .child(self.render_composer_pop(cx))
+                    })
                     .rounded(px(12.))
                     .border_1()
                     .border_color(t.foreground.opacity(if focused { 0.20 } else { 0.10 }))
@@ -4459,6 +4722,150 @@ impl GrayApp {
                 deferred(motion::enter(
                     panel,
                     "model-picker-in",
+                    motion::POPOVER_MS,
+                    -6.,
+                    motion::ease_pop(),
+                ))
+                .with_priority(1),
+            )
+    }
+
+    /// Anchored popover above the composer for the `@`/`/` token under the
+    /// caret. Same row styling and arrow-key nav as the palette.
+    fn render_composer_pop(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let t = cx.theme().clone();
+        let mut list = v_flex()
+            .id("composer-pop-list")
+            .track_scroll(&self.pop_scroll)
+            .max_h(px(320.))
+            .overflow_y_scroll()
+            .p_1();
+        let empty = |msg: &'static str| {
+            div()
+                .px_2()
+                .py_3()
+                .text_sm()
+                .text_color(t.muted_foreground)
+                .child(msg)
+        };
+        let row = |i: usize, selected: bool, cx: &mut Context<Self>| {
+            h_flex()
+                .id(("pop-item", i))
+                .h(px(32.))
+                .flex_shrink_0()
+                .px(px(10.))
+                .gap_2()
+                .rounded_lg()
+                .text_size(px(13.))
+                .cursor_pointer()
+                .when(selected, |s| s.bg(t.primary.opacity(0.12)))
+                .when(!selected, |s| s.hover(|s| s.bg(t.foreground.opacity(0.05))))
+                .active(|s| s.bg(t.primary.opacity(0.18)))
+                .on_mouse_move(cx.listener(move |this, _, _, cx| {
+                    if this.pop_sel != i {
+                        this.pop_sel = i;
+                        cx.notify();
+                    }
+                }))
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.pop_sel = i;
+                    this.accept_pop(window, cx);
+                }))
+        };
+        let mut child_ix = 0usize;
+        let mut sel_child = 0usize;
+        match self.composer_token(cx) {
+            Some((PopKind::Mention, _, q)) => {
+                let items = self.mention_items(&q);
+                if items.is_empty() {
+                    list = list.child(empty("No matching files"));
+                }
+                let sel = self.pop_sel.min(items.len().saturating_sub(1));
+                for (i, path) in items.into_iter().enumerate() {
+                    if i == sel {
+                        sel_child = child_ix;
+                    }
+                    child_ix += 1;
+                    list = list.child(
+                        row(i, i == sel, cx)
+                            .child(
+                                Icon::new(IconName::File)
+                                    .small()
+                                    .text_color(t.muted_foreground),
+                            )
+                            .child(div().flex_1().truncate().child(path)),
+                    );
+                }
+            }
+            Some((PopKind::Slash, _, q)) => {
+                let items = self.slash_items(&q);
+                if items.is_empty() {
+                    list = list.child(empty("No matching commands"));
+                }
+                let sel = self.pop_sel.min(items.len().saturating_sub(1));
+                let mut last_group = None;
+                for (i, cmd) in items.into_iter().enumerate() {
+                    if last_group != Some(cmd.group) {
+                        last_group = Some(cmd.group);
+                        list = list.child(
+                            div()
+                                .px(px(10.))
+                                .pt_2()
+                                .pb_1()
+                                .text_size(px(10.))
+                                .font_medium()
+                                .text_color(t.muted_foreground.opacity(faint(&t, 0.55)))
+                                .child(cmd.group.to_uppercase()),
+                        );
+                        child_ix += 1;
+                    }
+                    if i == sel {
+                        sel_child = if i == 0 { 0 } else { child_ix };
+                    }
+                    child_ix += 1;
+                    list = list.child(
+                        row(i, i == sel, cx)
+                            .child(div().flex_1().truncate().child(format!("/{}", cmd.name)))
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(t.muted_foreground)
+                                    .max_w(px(220.))
+                                    .truncate()
+                                    .child(cmd.hint),
+                            ),
+                    );
+                }
+            }
+            None => {}
+        }
+        if self.pop_reveal.take() {
+            self.pop_scroll.scroll_to_item(sel_child);
+        }
+        let panel = v_flex()
+            .id("composer-pop")
+            .occlude()
+            .w(px(420.))
+            .max_h(px(340.))
+            .rounded(px(10.))
+            .border_1()
+            .border_color(t.foreground.opacity(0.08))
+            .bg(t.popover)
+            .shadow(overlay_shadow())
+            .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                this.composer_pop = None;
+                cx.notify();
+            }))
+            .child(list);
+        div()
+            .absolute()
+            .bottom_full()
+            .left(px(8.))
+            .pb(px(6.))
+            .child(
+                deferred(motion::enter(
+                    panel,
+                    "composer-pop-in",
                     motion::POPOVER_MS,
                     -6.,
                     motion::ease_pop(),
