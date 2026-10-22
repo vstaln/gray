@@ -146,6 +146,31 @@ pub(crate) fn layout_history(
     out
 }
 
+/// The tail of [`layout_history`] holding at least `need` rows, laid out from
+/// only as many trailing entries as that takes. A modal backdrop shows one
+/// screen of a transcript that can run to hundreds of entries, and laying
+/// out all of them cost 1-2s per modal open on a long session.
+///
+/// Entries lay out independently; the only cross-entry state is the blank
+/// gap owed before a block, so a suffix layout can differ from the full one
+/// solely in a leading blank row — never inside the last `need` rows.
+pub(crate) fn layout_history_tail(
+    entries: &[super::TranscriptEntry],
+    w: usize,
+    mascot_h: u16,
+    need: usize,
+) -> Vec<Line<'static>> {
+    let mut take = 8usize;
+    loop {
+        let start = entries.len().saturating_sub(take);
+        let out = layout_history(&entries[start..], w, mascot_h);
+        if start == 0 || out.len() > need {
+            return out;
+        }
+        take = take.saturating_mul(2);
+    }
+}
+
 pub(crate) fn attach_stream_punctuation(
     entries: &mut Vec<super::TranscriptEntry>,
     target: Option<usize>,

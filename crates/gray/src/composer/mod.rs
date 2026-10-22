@@ -1956,6 +1956,7 @@ impl Tui {
             home_session: self.home_session.clone(),
             attachments: self.attachments.clone(),
             transcript_cache: Default::default(),
+            backdrop_cache: Default::default(),
         };
         let (w, _) = crossterm::terminal::size().unwrap_or((80, 24));
         snap.rebuild_transcript(w as usize);

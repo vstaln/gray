@@ -60,7 +60,6 @@ where
     /// rows already in scrollback, or blanks, slid in when the transcript was
     /// pulled down over vacated rows. They are deleted, never scrolled, so
     /// scrollback does not get them twice.
-    ghost_top: u16,
     tail: VecDeque<Vec<Cell>>,
 }
 
@@ -106,7 +105,6 @@ where
             scrollback,
             vacated_above: 0,
             covered: 0,
-            ghost_top: 0,
             tail: VecDeque::new(),
         };
         term.set_viewport_area(viewport_area);
@@ -128,7 +126,6 @@ where
         let screen_shrank = screen_size.height < self.last_known_screen_size.height;
         if screen_size != self.last_known_screen_size {
             self.covered = 0;
-            self.ghost_top = 0;
             self.tail.clear();
         }
         self.last_known_screen_size = screen_size;
@@ -160,19 +157,12 @@ where
         let repaintable = u16::try_from(self.tail.len())
             .unwrap_or(u16::MAX)
             .min(history_end);
-        // The covered band can sit over ghost rows — blanked rows pulled
-        // down over vacated space. Ghosts are deleted, never reinserted, so
-        // they must not count toward `covered`: marking a ghost row covered
-        // repaints scrollback content on uncover and prints it twice.
-        let ghosts_covered = self.ghost_top.saturating_sub(area.y).min(rest);
         let hide = rest
-            .saturating_sub(ghosts_covered)
             .min(overlay.saturating_sub(self.covered))
             .min(repaintable.saturating_sub(self.covered));
         self.covered += hide;
         if rest > hide && !screen_shrank {
-            let ghosts = self.delete_ghost_rows(old.y, rest - hide)?;
-            self.scroll_history_up(old.y, rest - hide - ghosts)?;
+            self.scroll_history_up(old.y, rest - hide)?;
         }
         let drop = area.y.saturating_sub(old.y);
         let uncover = self.covered.min(drop);
@@ -198,60 +188,7 @@ where
             let rows: Vec<&[Cell]> = rows.iter().map(Vec::as_slice).collect();
             self.draw_rows(old.y, &rows)?;
         }
-        self.pull_history_down()
-    }
-
-    /// Close the vacated rows a grounded shrink left between the transcript
-    /// and the band: slide the transcript down onto the band and mark the
-    /// rows that open at the screen top as blank ghost rows (non-transcript
-    /// space; deleted on the next grow or reclaim, never real history).
-    fn pull_history_down(&mut self) -> io::Result<()> {
-        let top = self.viewport_area.top();
-        let n = self.vacated_above;
-        if self.scrollback != Scrollback::Regions || n == 0 || self.covered > 0 || top < 2 {
-            return Ok(());
-        }
-        write!(self.backend, "\x1b[1;{top}r")?;
-        self.backend.set_cursor_position(Position::new(0, 0))?;
-        write!(self.backend, "\x1b[{n}L\x1b[r")?;
-        // The rows that open at the top stay blank. Filling them with tail
-        // rows repaints content that is already at the end of scrollback —
-        // the scrollback/screen seam then shows the same paragraph twice.
-        self.vacated_above = 0;
-        self.ghost_top = (self.ghost_top + n).min(top);
         Ok(())
-    }
-
-    /// Blank up to `n` ghost rows in place. Used when a whole-screen scroll
-    /// would push them into scrollback a second time and the [1, top)
-    /// region cannot isolate them (band top at row 1): a ghost becomes an
-    /// empty line rather than a duplicate of a scrollback row. The rows
-    /// stay ghost-marked — an emptied copy is still not real history.
-    fn blank_ghost_rows(&mut self, n: u16) -> io::Result<u16> {
-        let g = self.ghost_top.min(n);
-        if g == 0 || self.scrollback != Scrollback::Regions {
-            return Ok(0);
-        }
-        for y in 0..g {
-            self.backend.set_cursor_position(Position::new(0, y))?;
-            self.backend.clear_region(ClearType::CurrentLine)?;
-        }
-        Ok(g)
-    }
-
-    /// Delete up to `n` ghost rows from the top of the history region above
-    /// `top`, shifting the rest up without feeding scrollback. Returns how
-    /// many were deleted.
-    fn delete_ghost_rows(&mut self, top: u16, n: u16) -> io::Result<u16> {
-        let g = self.ghost_top.min(n).min(top);
-        if g == 0 || self.scrollback != Scrollback::Regions || top < 2 {
-            return Ok(0);
-        }
-        write!(self.backend, "\x1b[1;{top}r")?;
-        self.backend.set_cursor_position(Position::new(0, 0))?;
-        write!(self.backend, "\x1b[{g}M\x1b[r")?;
-        self.ghost_top -= g;
-        Ok(g)
     }
 
     pub fn clear_after_position(&mut self, position: Position) -> io::Result<()> {
@@ -277,7 +214,6 @@ where
         self.last_known_screen_size = screen_size;
         self.vacated_above = 0;
         self.covered = 0;
-        self.ghost_top = 0;
         self.tail.clear();
         self.set_viewport_area(Rect::new(0, 0, screen_size.width, 0));
         self.buffers[1 - self.current].reset();
@@ -416,13 +352,6 @@ where
                 self.set_viewport_area(area);
             }
             let top = area.top();
-            let ghosts = usize::from(
-                self.delete_ghost_rows(top, rows.len().min(usize::from(u16::MAX)) as u16)?,
-            );
-            if ghosts > 0 {
-                self.draw_rows(top - ghosts as u16, &rows[..ghosts])?;
-                rows = &rows[ghosts..];
-            }
             if !rows.is_empty() && top > 1 {
                 for chunk in rows.chunks(usize::from(top)) {
                     let n = chunk.len() as u16;
@@ -444,8 +373,6 @@ where
     }
 
     fn insert_full_screen(&mut self, mut rows: &[&[Cell]]) -> io::Result<()> {
-        self.blank_ghost_rows(u16::MAX)?;
-        self.ghost_top = 0;
         let screen_h = self.last_known_screen_size.height;
         let mut area = self.viewport_area;
         self.clear_after_position(Position::new(0, area.top()))?;
@@ -476,9 +403,8 @@ where
             return self.scroll_region_up(top, n);
         }
 
-        let ghosts = self.blank_ghost_rows(n)?;
         self.clear_after_position(Position::new(0, top))?;
-        self.scroll_screen_up(n - ghosts)
+        self.scroll_screen_up(n)
     }
 
     fn scroll_region_up(&mut self, top: u16, n: u16) -> io::Result<()> {

@@ -216,20 +216,10 @@ impl Screen {
         self.rows.iter().map(|r| text(r)).collect()
     }
 
+    /// Scrollback plus the rows above the band.
     fn transcript(&self, band_top: u16) -> Vec<String> {
-        self.transcript_past(0, band_top)
-    }
-
-    /// Scrollback plus the rows above the band, minus the ghost rows at the
-    /// top that repeat the end of scrollback.
-    fn transcript_past(&self, ghosts: u16, band_top: u16) -> Vec<String> {
         let mut all = self.scrollback.clone();
-        all.extend(
-            self.lines()
-                .into_iter()
-                .take(usize::from(band_top))
-                .skip(usize::from(ghosts)),
-        );
+        all.extend(self.lines().into_iter().take(usize::from(band_top)));
         all
     }
 }
@@ -339,17 +329,18 @@ fn a_shrunk_grounded_band_returns_to_the_bottom() {
     assert_eq!(term.viewport_area, Rect::new(0, 6, W, 4));
 
     // A modal/popup grows the band, scrolling r14..r17 into scrollback; when
-    // it closes the band drops back to the screen bottom and the transcript
-    // comes back down onto it; the rows that open at the top stay blank
-    // rather than reprinting the end of scrollback.
+    // it closes the band drops back to the screen bottom. The transcript
+    // stays put: sliding it down would open blank rows at the top, a tear
+    // between r17 in scrollback and r18 on screen.
     band(&mut term, 8);
     assert_eq!(term.viewport_area, Rect::new(0, 2, W, 8));
     band(&mut term, 4);
     assert_eq!(term.viewport_area, Rect::new(0, 6, W, 4));
 
     let screen = Screen::replay(&tape, W, 10);
-    assert!(screen.lines()[..4].iter().all(String::is_empty));
-    assert_eq!(screen.lines()[4..6], rows(18..20)[..]);
+    assert_eq!(screen.scrollback, rows(0..18));
+    assert_eq!(screen.lines()[..2], rows(18..20)[..]);
+    assert!(screen.lines()[2..6].iter().all(String::is_empty));
     assert_eq!(screen.lines()[6..], band_rows(4)[..]);
 }
 
@@ -465,12 +456,11 @@ fn a_grounded_shrink_drops_the_band_back_to_the_bottom() {
     band(&mut term, 6);
     band(&mut term, 4);
     // the band was pinned to the screen bottom, so it stays pinned: it
-    // drops back down and the transcript follows it, leaving the vacated
-    // rows at the screen top instead of between the transcript and band
+    // drops back down and the vacated rows wait above it for the next insert
     assert_eq!(term.viewport_area, Rect::new(0, 6, W, 4));
     let screen = Screen::replay(&tape, W, 10);
-    assert!(screen.lines()[..2].iter().all(String::is_empty));
-    assert_eq!(screen.lines()[2..6], rows(0..4)[..]);
+    assert_eq!(screen.lines()[..4], rows(0..4)[..]);
+    assert!(screen.lines()[4..6].iter().all(String::is_empty));
     assert_eq!(screen.lines()[6..], band_rows(4)[..]);
     assert!(screen.scrollback.is_empty());
 }
@@ -612,8 +602,8 @@ fn a_popup_on_a_full_screen_regrounds_the_band() {
     assert_eq!(term.viewport_area, Rect::new(0, 6, W, 4));
     let screen = Screen::replay(&tape, W, 10);
     assert_eq!(screen.scrollback, rows(0..2));
-    assert!(screen.lines()[..2].iter().all(String::is_empty));
-    assert_eq!(screen.lines()[2..6], rows(2..6)[..]);
+    assert_eq!(screen.lines()[..4], rows(2..6)[..]);
+    assert!(screen.lines()[4..6].iter().all(String::is_empty));
     assert_eq!(screen.lines()[6..], band_rows(4)[..]);
 
     insert(&mut term, &["r6", "r7", "r8"]);
@@ -679,7 +669,7 @@ fn a_busy_turn_does_not_tear_the_transcript() {
     }
 
     let screen = Screen::replay(&tape, W, 24);
-    let got = screen.transcript_past(term.ghost_top, 20);
+    let got = screen.transcript(20);
     assert_eq!(trimmed(&got), expected.as_slice());
     assert_eq!(screen.lines()[20..24], band_rows(4)[..]);
 }
@@ -714,7 +704,7 @@ fn a_removed_live_tool_does_not_tear_the_box_below_it() {
         }
 
         let screen = Screen::replay(&tape, W, 24);
-        let got = screen.transcript_past(term.ghost_top, 20);
+        let got = screen.transcript(20);
         assert_eq!(trimmed(&got), expected.as_slice(), "{scrollback:?}");
         assert_eq!(screen.lines()[20..24], band_rows(4)[..], "{scrollback:?}");
     }
@@ -757,7 +747,7 @@ fn fuzz_band_ops_never_duplicate_transcript() {
         }
         band(&mut term, 4);
         let screen = Screen::replay(&tape, W, h);
-        let got = screen.transcript_past(term.ghost_top, term.viewport_area.top());
+        let got = screen.transcript(term.viewport_area.top());
         let got_t = trimmed(&got);
         let want_t = trimmed(&expected);
         if got_t != want_t {
@@ -855,7 +845,7 @@ fn fuzz_band_ops_with_overlay_never_duplicate_transcript() {
         band(&mut term, 4);
         let screen = Screen::replay(&tape, W, h);
         let got: Vec<String> = screen
-            .transcript_past(term.ghost_top, term.viewport_area.top())
+            .transcript(term.viewport_area.top())
             .into_iter()
             .chain(covered_rows(&term))
             .filter(|row| !row.is_empty())
@@ -864,8 +854,7 @@ fn fuzz_band_ops_with_overlay_never_duplicate_transcript() {
         let want_t = trimmed(&expected);
         if got_t != want_t {
             failures.push(format!(
-                "trial {trial} h={h} ghost={} ops={}: got {got_t:?} want {want_t:?}",
-                term.ghost_top,
+                "trial {trial} h={h} ops={}: got {got_t:?} want {want_t:?}",
                 ops.join(" ")
             ));
             if failures.len() > 4 {
@@ -877,8 +866,8 @@ fn fuzz_band_ops_with_overlay_never_duplicate_transcript() {
 }
 
 #[test]
-fn covered_ghost_rows_do_not_print_twice() {
-    // A band shrinking over ghost rows, then growing with overlay, used to
+fn covered_rows_do_not_print_twice() {
+    // A band shrinking over vacated rows, then growing with overlay, used to
     // mark scrollback copies `covered`; the next insert repainted them and
     // the paragraph printed twice. h=11, band fills most of the screen.
     let (mut term, tape) = term(11, 0, Scrollback::Regions);
@@ -904,7 +893,7 @@ fn covered_ghost_rows_do_not_print_twice() {
 
     let screen = Screen::replay(&tape, W, 11);
     let transcript: Vec<String> = screen
-        .transcript_past(term.ghost_top, term.viewport_area.top())
+        .transcript(term.viewport_area.top())
         .into_iter()
         .chain(covered_rows(&term))
         .filter(|row| !row.is_empty())
@@ -915,4 +904,99 @@ fn covered_ghost_rows_do_not_print_twice() {
         "scrollback: {:?}",
         screen.scrollback
     );
+}
+
+/// Scrollback plus the transcript rows above the band, with any blank rows
+/// that sit between two transcript rows. Inserted rows are never blank, so
+/// each one is a tear.
+fn tears(screen: &Screen, band_top: u16) -> Vec<usize> {
+    let all = screen.transcript(band_top);
+    let first = all.iter().position(|l| !l.is_empty()).unwrap_or(0);
+    let last = all.iter().rposition(|l| !l.is_empty()).unwrap_or(0);
+    (first..last).filter(|&i| all[i].is_empty()).collect()
+}
+
+#[test]
+fn a_shrink_after_a_long_card_does_not_tear_it() {
+    // A card taller than the screen lands, then the band loses two rows
+    // with nothing inserted after it (an agents-panel row going away). The
+    // card continues across the scrollback/screen seam without a gap.
+    let (mut term, tape) = term(12, 0, Scrollback::Regions);
+    band(&mut term, 6);
+    let card = rows(0..30);
+    insert(
+        &mut term,
+        &card.iter().map(String::as_str).collect::<Vec<_>>(),
+    );
+    band(&mut term, 4);
+    let screen = Screen::replay(&tape, W, 12);
+    assert!(
+        tears(&screen, term.viewport_area.top()).is_empty(),
+        "{:?}",
+        screen.transcript(term.viewport_area.top())
+    );
+    insert(&mut term, &["next"]);
+    band(&mut term, 4);
+    let screen = Screen::replay(&tape, W, 12);
+    let mut want = card;
+    want.push("next".into());
+    assert_eq!(
+        trimmed(&screen.transcript(term.viewport_area.top())),
+        want.as_slice()
+    );
+}
+
+#[test]
+fn fuzz_band_ops_never_tear_the_transcript() {
+    let mut seed: u64 = 0x1234_5678_9abc_def1;
+    let mut next = move || {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        seed
+    };
+    let mut failures = Vec::new();
+    for trial in 0..6000 {
+        let h = 8 + (next() % 9) as u16;
+        let (mut term, tape) = term(h, 0, Scrollback::Regions);
+        let mut ops: Vec<String> = Vec::new();
+        let mut n = 0usize;
+        for _ in 0..6 + (next() % 14) as usize {
+            let bh = 1 + (next() % (h as u64 - 1)) as u16;
+            let ov = (next() % 4) as u16;
+            match next() % 4 {
+                0 => {
+                    let k = 1 + (next() % 6) as usize;
+                    let chunk = rows(n..n + k);
+                    insert(
+                        &mut term,
+                        &chunk.iter().map(String::as_str).collect::<Vec<_>>(),
+                    );
+                    ops.push(format!("i{k}"));
+                    n += k;
+                }
+                1 => {
+                    ops.push(format!("s{bh}o{ov}"));
+                    settle(&mut term, bh, ov);
+                }
+                _ => {
+                    ops.push(format!("b{bh}o{ov}"));
+                    band_o(&mut term, bh, ov);
+                }
+            }
+        }
+        band(&mut term, 4);
+        let screen = Screen::replay(&tape, W, h);
+        let gaps = tears(&screen, term.viewport_area.top());
+        if !gaps.is_empty() {
+            failures.push(format!(
+                "trial {trial} h={h} gaps={gaps:?} ops={}",
+                ops.join(" ")
+            ));
+            if failures.len() > 4 {
+                break;
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
 }

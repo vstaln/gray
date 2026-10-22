@@ -734,3 +734,42 @@ fn split_synthetic_prompt_parts_subagent_and_nudge_segments() {
         assert_eq!(notices.len(), 1, "{nudge}");
     }
 }
+
+#[test]
+fn backdrop_tail_layout_matches_the_full_layout_tail() {
+    let styled = |rows: &[&str]| TranscriptEntry::StyledLines {
+        lines: rows.iter().map(|r| Line::from(r.to_string())).collect(),
+        hyperlinks: Vec::new(),
+    };
+    let mut entries = vec![TranscriptEntry::Welcome];
+    for i in 0..60 {
+        entries.push(TranscriptEntry::UserPrompt(
+            format!("prompt {i}"),
+            Vec::new(),
+        ));
+        entries.push(TranscriptEntry::Gap(1));
+        entries.push(styled(&["", &format!("reply {i}"), "more", ""]));
+        entries.push(TranscriptEntry::Gap(1));
+        entries.push(TranscriptEntry::ToolBox {
+            header: Line::from(format!("Ran {i}")),
+            body: vec![Line::from("ok")],
+        });
+    }
+    let text = |rows: &[Line<'static>]| rows.iter().map(|l| l.to_string()).collect::<Vec<_>>();
+    let full = text(&layout_history(&entries, 80, 24));
+    for need in [1, 5, 24, 45, 120] {
+        let tail = text(&layout_history_tail(&entries, 80, 24, need));
+        assert!(tail.len() > need && tail.len() < full.len(), "need={need}");
+        assert_eq!(
+            tail[tail.len() - need..],
+            full[full.len() - need..],
+            "need={need}"
+        );
+    }
+    let short = &entries[..4];
+    assert_eq!(
+        text(&layout_history_tail(short, 80, 24, 500)),
+        text(&layout_history(short, 80, 24)),
+        "a transcript shorter than the screen lays out whole"
+    );
+}
