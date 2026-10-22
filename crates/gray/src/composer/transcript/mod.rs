@@ -561,6 +561,7 @@ impl Tui {
         trailing_gap: bool,
     ) {
         self.atomic(|t| {
+            t.flush_markdown();
             t.ensure_gap();
             let lines = format_user_prompt_lines(text, attached, t.width().max(10));
             t.history_entries.push(super::TranscriptEntry::UserPrompt(

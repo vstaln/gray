@@ -820,3 +820,35 @@ fn repro_card_to_card_junction() {
         .collect();
     assert_eq!(blanks, [6], "junction rows: {blanks:?}");
 }
+
+#[test]
+fn pending_stream_text_stays_before_prompt_after_reflow() {
+    use crate::composer::Tui;
+    let mut tui = Tui::test_tui(80, 24);
+    tui.enable_reveal_pacing();
+    tui.stream_text("streamed words go here");
+    tui.push_user_prompt("what now?", &[], false);
+    let text_of = |t: &Tui| -> Vec<String> {
+        t.transcript
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect()
+    };
+    let pos = |rows: &[String]| {
+        (
+            rows.iter().position(|r| r.contains("streamed words")),
+            rows.iter().position(|r| r.contains("what now?")),
+        )
+    };
+    let (md, pr) = pos(&text_of(&tui));
+    assert!(
+        md.is_some() && pr.is_some() && md < pr,
+        "stream text must commit before the prompt"
+    );
+    tui.reflow_on_resize(100);
+    let (md, pr) = pos(&text_of(&tui));
+    assert!(
+        md.is_some() && pr.is_some() && md < pr,
+        "reflow swapped the blocks"
+    );
+}

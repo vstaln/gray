@@ -72,6 +72,7 @@ impl Tui {
     }
 
     pub(crate) fn flush_thinking_fragment(&mut self, fragment: &str, terminated: bool) {
+        self.drain_reveal();
         let mid_line = self.thinking_run_mid_line();
         self.append_thinking_text(fragment, terminated);
         if let Some(text) = thinking_paint_text(fragment, mid_line) {
@@ -172,6 +173,7 @@ impl Tui {
         }
         let rebased = rebase_hyperlinks_for_slice(hyperlinks, line_offset, lines.len());
 
+        self.drain_reveal();
         self.history_entries
             .push(crate::composer::TranscriptEntry::StyledLines {
                 lines: lines.clone(),
