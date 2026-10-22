@@ -77,13 +77,8 @@ pub(crate) fn attachment_cells(attachments: &[std::path::PathBuf], text: &str) -
     )
 }
 
-/// Rows of the band allowed to cover transcript rows instead of scrolling
-/// them into scrollback. The popup panel and the input box's extra lines are
-/// both transient: a recalled multi-line history entry or a long draft
-/// shrinks back, and covered rows are repainted then. Rows pushed into
-/// scrollback cannot come back, leaving a blank gap above the composer.
-pub(crate) fn band_overlay(desired: u16, floor: u16, panel_h: u16, box_h: u16) -> u16 {
-    (desired.saturating_sub(floor).min(panel_h) + box_h.saturating_sub(1)).min(desired)
+pub(crate) fn band_overlay(desired: u16, box_h: u16) -> u16 {
+    box_h.saturating_sub(1).min(desired)
 }
 
 pub(crate) fn viewport_cap(rows: u16) -> u16 {
@@ -324,7 +319,7 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
         max_viewport_h,
     );
     let desired = desired.max(floor);
-    let overlay = band_overlay(desired, floor, panel_est, box_h);
+    let overlay = band_overlay(desired, box_h);
 
     tui.begin_sync();
 

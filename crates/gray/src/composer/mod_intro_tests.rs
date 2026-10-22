@@ -21,10 +21,7 @@ fn settle_frames_finish_on_the_logo_mark() {
         "baked frames plus settle frames"
     );
     let (mark, _) = frames.last().expect("settle frame");
-    let want: Vec<String> = crate::tui::LOGO
-        .lines()
-        .map(|l| l.trim_end().to_string())
-        .collect();
+    let want = crate::tui::logo_mark().to_vec();
     let got: Vec<String> = mark
         .iter()
         .map(|l| l.trim_end_matches('\u{2800}').to_string())
@@ -35,12 +32,7 @@ fn settle_frames_finish_on_the_logo_mark() {
 #[test]
 fn settle_frames_only_grow_toward_the_mark() {
     let frames = intro_frames();
-    let want = braille_dots(
-        &crate::tui::LOGO
-            .lines()
-            .map(str::to_string)
-            .collect::<Vec<_>>(),
-    );
+    let want = braille_dots(crate::tui::logo_mark());
     let mut prev: Option<std::collections::BTreeSet<(usize, usize)>> = None;
     for (mark, _) in frames.iter().skip(frames.len() - INTRO_SETTLE_FRAMES) {
         let dots = braille_dots(mark);
@@ -50,4 +42,18 @@ fn settle_frames_only_grow_toward_the_mark() {
         assert!(dots.is_subset(&want), "settle must not overshoot the logo");
         prev = Some(dots);
     }
+}
+
+#[test]
+fn the_mark_is_drawn_at_twice_its_source_size() {
+    let src: Vec<String> = crate::tui::LOGO.lines().map(str::to_string).collect();
+    let big = crate::tui::logo_mark();
+    assert_eq!(big.len(), src.len() * 2);
+    let (small, big) = (braille_dots(&src), braille_dots(big));
+    assert_eq!(big.len(), small.len() * 4, "each dot becomes a 2x2 block");
+    assert!(
+        small
+            .iter()
+            .all(|&(x, y)| big.contains(&(2 * x + 1, 2 * y + 1)))
+    );
 }

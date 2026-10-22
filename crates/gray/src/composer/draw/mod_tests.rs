@@ -260,10 +260,9 @@ fn a_video_chip_says_video_not_file() {
 #[test]
 fn input_box_growth_covers_transcript_instead_of_scrolling_it_away() {
     // One-line composer: nothing may cover.
-    assert_eq!(band_overlay(3, 3, 0, 1), 0);
+    assert_eq!(band_overlay(3, 1), 0);
     // A 12-line recalled entry: its 11 extra rows cover, so shrinking repaints.
-    assert_eq!(band_overlay(14, 14, 0, 12), 11);
-    // Panel rows still count, and the total never exceeds the band.
-    assert_eq!(band_overlay(10, 6, 4, 3), 6);
-    assert_eq!(band_overlay(5, 5, 0, 40), 5);
+    assert_eq!(band_overlay(14, 12), 11);
+    // The total never exceeds the band.
+    assert_eq!(band_overlay(5, 40), 5);
 }

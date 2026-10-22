@@ -569,7 +569,16 @@ fn intro_frames() -> &'static [(Vec<String>, Vec<String>)] {
                     .collect();
                 (rows.len() == 12).then(|| {
                     let (mark, edge) = rows.split_at(6);
-                    (mark.to_vec(), edge.to_vec())
+                    let k = crate::tui::LOGO_SCALE;
+                    let edge = edge
+                        .iter()
+                        .flat_map(|l| {
+                            let wide: String =
+                                l.chars().flat_map(|c| std::iter::repeat_n(c, k)).collect();
+                            std::iter::repeat_n(wide, k)
+                        })
+                        .collect();
+                    (crate::tui::upscale_braille(mark, k), edge)
                 })
             })
             .collect();
@@ -614,7 +623,7 @@ const BRAILLE_BITS: [(usize, usize, u32); 8] = [
     (1, 3, 0x80),
 ];
 
-const MARK_CELLS: (usize, usize) = (16, 6);
+const MARK_CELLS: (usize, usize) = (32, 12);
 
 const INTRO_SETTLE_FRAMES: usize = 12;
 
@@ -661,10 +670,9 @@ fn intro_settle_frames(from: &[String]) -> Vec<(Vec<String>, Vec<String>)> {
     // Settle math stays in braille space on every terminal: the render pass
     // maps cells to an ASCII ramp when unicode is unsafe, and LOGO_ASCII rows
     // carry no dot data for braille_dots() to settle toward.
-    let src = crate::tui::LOGO;
     let blank = '\u{2800}';
-    let mut target: Vec<String> = src
-        .lines()
+    let mut target: Vec<String> = crate::tui::logo_mark()
+        .iter()
         .map(|l| {
             let mut s = l.to_string();
             while s.chars().count() < cx {
