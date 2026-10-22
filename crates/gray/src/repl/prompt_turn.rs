@@ -617,7 +617,7 @@ pub(crate) async fn run_prompt_turn(
             }
             drop(t);
             *pending_command = Some(expand_skill_command(parsed, cwd, Some(shared), true));
-        } else if let Some((qtext, qimages)) = t.queued_inputs.pop_front() {
+        } else if let Some((qtext, qimages)) = pop_actionable(&mut t.queued_inputs) {
             let parsed = parse_command(&qtext);
             if !parsed.runs_local() {
                 t.push_user_prompt(&qtext, &qimages, !qtext.starts_with('/'));
@@ -635,14 +635,31 @@ pub(crate) async fn run_prompt_turn(
     Ok(())
 }
 
+fn pop_actionable(
+    queued: &mut std::collections::VecDeque<(String, Vec<std::path::PathBuf>)>,
+) -> Option<(String, Vec<std::path::PathBuf>)> {
+    loop {
+        match queued.pop_front() {
+            Some((qt, qi))
+                if qi.is_empty() && crate::tui::sanitize_user_text(&qt).trim().is_empty() => {}
+            other => return other,
+        }
+    }
+}
+
 fn take_steerable(
     queued: &mut std::collections::VecDeque<(String, Vec<std::path::PathBuf>)>,
 ) -> Option<String> {
-    let (text, images) = queued.front()?;
-    if !images.is_empty() || text.starts_with('/') {
-        return None;
+    loop {
+        let (text, images) = queued.front()?;
+        if !images.is_empty() || text.starts_with('/') {
+            return None;
+        }
+        let (text, _) = queued.pop_front().expect("front checked above");
+        if !crate::tui::sanitize_user_text(&text).trim().is_empty() {
+            return Some(text);
+        }
     }
-    queued.pop_front().map(|(text, _)| text)
 }
 
 fn steer_direct_send(

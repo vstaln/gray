@@ -442,8 +442,12 @@ pub(crate) fn read_line(
                     let attached: Vec<PathBuf> = std::mem::take(&mut tui.attachments);
                     tui.textarea.set_text("");
                     if tui.is_task_running {
-                        tui.queued_inputs
-                            .push_back((trimmed.clone(), attached.clone()));
+                        if !crate::tui::sanitize_user_text(&trimmed).trim().is_empty()
+                            || !attached.is_empty()
+                        {
+                            tui.queued_inputs
+                                .push_back((trimmed.clone(), attached.clone()));
+                        }
                         tui.matches.clear();
                         tui.sel = 0;
                         let _ = tui.draw();

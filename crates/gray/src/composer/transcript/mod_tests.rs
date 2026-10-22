@@ -800,6 +800,23 @@ fn backdrop_tail_layout_matches_the_full_layout_tail() {
 }
 
 #[test]
+fn push_user_prompt_skips_empty_submissions() {
+    use crate::composer::Tui;
+    let mut tui = Tui::test_tui(80, 24);
+    tui.push_user_prompt("", &[], true);
+    tui.push_user_prompt("  \n\t  ", &[], true);
+    tui.push_user_prompt("\u{1b}[3~", &[], true);
+    assert!(tui.history_entries.is_empty());
+    assert!(tui.transcript.is_empty());
+    tui.push_user_prompt("still here", &[], true);
+    assert!(
+        tui.transcript
+            .iter()
+            .any(|l| l.spans.iter().any(|s| s.content.contains("still here")))
+    );
+}
+
+#[test]
 fn repro_card_to_card_junction() {
     use crate::composer::Tui;
     let mut tui = Tui::test_tui(80, 24);

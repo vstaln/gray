@@ -560,6 +560,9 @@ impl Tui {
         attached: &[std::path::PathBuf],
         trailing_gap: bool,
     ) {
+        if attached.is_empty() && crate::tui::sanitize_user_text(text).trim().is_empty() {
+            return;
+        }
         self.atomic(|t| {
             t.flush_markdown();
             t.ensure_gap();
