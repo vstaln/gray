@@ -1532,59 +1532,16 @@ pub(crate) fn parse_retry_after(headers: &reqwest::header::HeaderMap) -> Option<
 }
 
 fn parse_http_date_delay(raw: &str) -> Option<Duration> {
-    let rest = raw
-        .strip_suffix(" GMT")
-        .or_else(|| raw.strip_suffix(" UTC"))?;
-    let date = rest.split_once(", ")?.1;
-    let mut parts = date.split_whitespace();
-    let day: u64 = parts.next()?.parse().ok()?;
-    if !(1..=31).contains(&day) {
-        return None;
-    }
-    let month: i64 = match parts.next()? {
-        "Jan" => 1,
-        "Feb" => 2,
-        "Mar" => 3,
-        "Apr" => 4,
-        "May" => 5,
-        "Jun" => 6,
-        "Jul" => 7,
-        "Aug" => 8,
-        "Sep" => 9,
-        "Oct" => 10,
-        "Nov" => 11,
-        "Dec" => 12,
-        _ => return None,
+    let raw = match raw.strip_suffix(" UTC") {
+        Some(rest) => format!("{rest} GMT"),
+        None => raw.to_string(),
     };
-    let year: i64 = parts.next()?.parse().ok()?;
-    let clock = parts.next()?;
-    if parts.next().is_some() {
-        return None;
-    }
-    let mut clock_parts = clock.split(':');
-    let hour: u64 = clock_parts.next()?.parse().ok()?;
-    let min: u64 = clock_parts.next()?.parse().ok()?;
-    let sec: u64 = clock_parts.next()?.parse().ok()?;
-    if clock_parts.next().is_some() || hour > 23 || min > 59 || sec > 60 {
-        return None;
-    }
-
-    let target = days_from_civil(year, month, day) * 86400
-        + hour as i64 * 3600
-        + min as i64 * 60
-        + sec as i64;
-    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs() as i64;
-    Some(Duration::from_secs((target - now).max(0) as u64))
+    let target = chrono::DateTime::parse_from_rfc2822(&raw).ok()?;
+    Some(delay_until(target.timestamp()))
 }
 
-fn days_from_civil(year: i64, month: i64, day: u64) -> i64 {
-    let y = if month <= 2 { year - 1 } else { year };
-    let era = y.div_euclid(400);
-    let yoe = y - era * 400;
-    let mp = (month + 9) % 12;
-    let doy = (153 * mp + 2) / 5 + day as i64 - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    era * 146097 + doe - 719468
+fn delay_until(epoch: i64) -> Duration {
+    Duration::from_secs((epoch - chrono::Utc::now().timestamp()).max(0) as u64)
 }
 
 fn parse_quota_reset_delay(text: &str) -> Option<Duration> {
@@ -1661,16 +1618,7 @@ fn parse_reset_timestamp(s: &str) -> Option<Duration> {
 }
 
 fn parse_iso_reset_epoch(s: &str) -> Option<i64> {
-    let b = s.as_bytes();
-    if b.len() < 10 || b[4] != b'-' || b[7] != b'-' {
-        return None;
-    }
-    let year: i64 = s[0..4].parse().ok()?;
-    let month: i64 = s[5..7].parse().ok()?;
-    let day: u64 = s[8..10].parse().ok()?;
-    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
-        return None;
-    }
+    let date = chrono::NaiveDate::parse_from_str(s.get(..10)?, "%Y-%m-%d").ok()?;
     let rest = s[10..].trim_start_matches(['T', ' ']);
     let (clock, used) = if rest.as_bytes().first().is_some_and(u8::is_ascii_digit) {
         parse_reset_clock(rest)?
@@ -1678,7 +1626,7 @@ fn parse_iso_reset_epoch(s: &str) -> Option<i64> {
         (0, 0)
     };
     let offset = parse_reset_tz_offset(rest[used..].trim_start());
-    Some(days_from_civil(year, month, day) * 86400 + clock - offset)
+    Some(date.and_hms_opt(0, 0, 0)?.and_utc().timestamp() + clock - offset)
 }
 
 fn parse_reset_clock(s: &str) -> Option<(i64, usize)> {
