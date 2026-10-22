@@ -576,7 +576,11 @@ impl Agent {
                 hook(&self.messages, self.history_revision()).await;
             }
 
+            // A caching provider re-bills the whole prefix after a rewrite
+            // (an 86k write to stub ~10k tokens); mask_stale_tool_output on a
+            // cold cache and pre-turn compaction cover it instead.
             if self.prefix_rewrite_ok
+                && !self.warm_cache_reported
                 && needs_soft_elide(self.estimate_tokens(), self.context_window)
             {
                 let before = self.estimate_tokens();

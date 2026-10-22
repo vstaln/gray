@@ -1571,6 +1571,34 @@ fn context_estimate_anchors_on_provider_usage() {
 }
 
 #[tokio::test]
+async fn soft_elision_skips_a_provider_that_caches() {
+    let mut history = vec![Message::user("fix the bug")];
+    for i in 0..30 {
+        history.extend(big_tool_round(&format!("c{i}"), 8_192));
+    }
+    let mut agent = Agent::new(
+        Box::new(FakeProvider::new(vec![end_script()])),
+        Arc::new(FakeExecutor::new(ToolOutput::ok("unused"))),
+    )
+    .with_tools(vec![tool_def()])
+    .with_context_window(Some(100_000))
+    .with_messages(history);
+    agent.warm_cache_reported = true;
+
+    agent
+        .run(Message::user("continue"), ToolContext::default())
+        .await
+        .expect("one plain reply");
+
+    assert!(
+        tool_result_bodies(agent.messages())
+            .iter()
+            .all(|b| !b.contains("elided")),
+        "a warm prefix must not be rewritten"
+    );
+}
+
+#[tokio::test]
 async fn soft_elision_stubs_stale_results_without_a_summary_call() {
     let provider = FakeProvider::new(vec![end_script()]);
     let mut history = vec![Message::user("fix the bug")];
