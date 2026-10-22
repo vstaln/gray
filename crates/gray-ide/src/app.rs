@@ -191,6 +191,8 @@ pub struct GrayApp {
     /// the user scrolls away from the bottom, set again when they return.
     follow: bool,
     last_offset: Pixels,
+    /// Timeline max scroll offset at the last poll; re-pin only when it grows.
+    last_max: Pixels,
     follow_thread: Option<String>,
     /// User overrides of a tool group's fold state (default: open while live).
     group_open: HashMap<String, bool>,
@@ -325,6 +327,7 @@ impl GrayApp {
             scroll: ScrollHandle::new(),
             follow: true,
             last_offset: px(0.),
+            last_max: px(0.),
             follow_thread: None,
             group_open: HashMap::new(),
             rise_base: std::cell::RefCell::new(None),
@@ -499,13 +502,13 @@ impl GrayApp {
         kind: NotificationType,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) {
+    ) -> bool {
         if self.store.state.setting("notify", "false") != "true" {
-            return;
+            return false;
         }
         let elsewhere = self.active_thread.as_deref() != Some(tid);
         if window.is_window_active() && !elsewhere {
-            return;
+            return false;
         }
         let title = self
             .store
@@ -528,6 +531,7 @@ impl GrayApp {
                 });
             });
         window.push_notification(note, cx);
+        true
     }
 
     fn focus_thread(&mut self, tid: &str, cx: &mut Context<Self>) {
@@ -861,7 +865,7 @@ impl GrayApp {
             } else {
                 NotificationType::Error
             };
-            self.notify_turn(&tid, body, kind, window, cx);
+            let notified = self.notify_turn(&tid, body, kind, window, cx);
             if !text.trim().is_empty() {
                 self.persist(Event::MessageAdded {
                     thread_id: tid.clone(),
@@ -882,10 +886,13 @@ impl GrayApp {
                         detail: e.clone(),
                         at: now(),
                     });
-                    self.toast(
-                        format!("Turn failed: {}", e.lines().next().unwrap_or("")),
-                        true,
-                    );
+                    let msg = format!("Turn failed: {}", e.lines().next().unwrap_or(""));
+                    if notified {
+                        // notify_turn already showed an in-app error card.
+                        self.toast = Some((msg, true));
+                    } else {
+                        self.toast(msg, true);
+                    }
                     "error".to_string()
                 }
             };
@@ -970,8 +977,10 @@ impl GrayApp {
             } else if off != self.last_offset {
                 // The offset moved without content pinning it: the user scrolled.
                 self.follow = false;
-            } else if self.follow {
+            } else if self.follow && self.scroll.max_offset().y != self.last_max {
                 // Content grew under us (fold opened, text reflowed): re-pin.
+                // Gated on the max changing: with no timeline laid out (empty
+                // thread) the offsets are stale and this would fire forever.
                 changed = true;
             }
             if was != self.follow {
@@ -989,6 +998,7 @@ impl GrayApp {
             cx.notify();
         }
         self.last_offset = self.scroll.offset().y;
+        self.last_max = self.scroll.max_offset().y;
         self.apply_scroll_target(cx);
     }
 
@@ -1009,14 +1019,14 @@ impl GrayApp {
             return;
         }
         // Timeline children are rows (tool runs fold into one), not items.
-        let ix = self
+        let row = self
             .store
             .state
             .thread(&tid)
             .and_then(|th| timeline_rows(&th.items).iter().position(|r| r.contains(ix)))
             .unwrap_or(ix);
         let (Some(item), Some(first)) = (
-            self.items_scroll.bounds_for_item(ix),
+            self.items_scroll.bounds_for_item(row),
             self.items_scroll.bounds_for_item(0),
         ) else {
             self.scroll_target = Some((tid, ix, tries + 1));
@@ -2499,7 +2509,8 @@ impl GrayApp {
                     .text_color(if active_project {
                         t.sidebar_foreground.opacity(0.9)
                     } else {
-                        t.muted_foreground.opacity(0.7)
+                        t.muted_foreground
+                            .opacity(if t.mode.is_dark() { 0.7 } else { 1.0 })
                     })
                     .cursor_pointer()
                     .hover(|s| s.bg(t.list_hover).text_color(t.sidebar_foreground))
@@ -2532,7 +2543,11 @@ impl GrayApp {
                         .pl(px(30.))
                         .py(px(4.))
                         .text_size(px(12.))
-                        .text_color(t.muted_foreground.opacity(0.6))
+                        .text_color(t.muted_foreground.opacity(if t.mode.is_dark() {
+                            0.6
+                        } else {
+                            1.0
+                        }))
                         .child("No threads yet"),
                 );
             }
@@ -2577,7 +2592,7 @@ impl GrayApp {
                         .child(
                             div()
                                 .text_size(px(11.))
-                                .text_color(t.sidebar_foreground.opacity(0.4))
+                                .text_color(t.sidebar_foreground.opacity(faint(&t, 0.4)))
                                 .child(relative(th.updated_at)),
                         ),
                 );
@@ -2880,7 +2895,10 @@ impl GrayApp {
                     *b = Some((th.id.clone(), th.items.len()));
                     th.items.len()
                 }
-                (None, _) => usize::MAX,
+                (None, _) => {
+                    *b = None;
+                    usize::MAX
+                }
             }
         };
         let empty = thread.map(|th| th.items.is_empty()).unwrap_or(true)
@@ -3139,7 +3157,7 @@ impl GrayApp {
                 h.child(Icon::new(IconName::CircleX).size(px(13.)))
             })
             .child(label)
-            .child(div().text_color(ink.opacity(0.32)).child(format!(
+            .child(div().text_color(ink.opacity(faint(t, 0.32))).child(format!(
                 "· {} {}",
                 g.steps,
                 if g.steps == 1 { "step" } else { "steps" }
@@ -5021,6 +5039,16 @@ fn rise(el: AnyElement, item: &Item, new: bool) -> AnyElement {
     .into_any_element()
 }
 
+/// Opacity for secondary text: dark mode keeps the subtle value; light mode
+/// floors it so it stays readable (>= ~3:1) on a white background.
+fn faint(t: &Theme, dark: f32) -> f32 {
+    if t.mode.is_dark() {
+        dark
+    } else {
+        dark.max(0.6)
+    }
+}
+
 fn render_item(item: &Item, t: &Theme) -> AnyElement {
     let ink = t.foreground;
     match item {
@@ -5118,7 +5146,7 @@ fn render_item(item: &Item, t: &Theme) -> AnyElement {
                         .text_color(if err {
                             t.danger.opacity(0.8)
                         } else {
-                            ink.opacity(0.4)
+                            ink.opacity(faint(t, 0.4))
                         })
                         .child(short),
                 )
@@ -5166,12 +5194,21 @@ fn bg_rows(cx: &mut Context<GrayApp>, app: &GrayApp) -> Vec<AnyElement> {
 
 /// One-line preview of `text` around the first case-insensitive hit of `q`.
 fn snippet(text: &str, q: &str, width: usize) -> Option<String> {
-    let lower = text.to_lowercase();
-    let at = lower.find(q)?;
-    // `to_lowercase` can change byte lengths; map back via char index.
-    let hit = lower[..at].chars().count();
+    // Lowercase one char per original char so match indexes line up with
+    // `chars` (`str::to_lowercase` can expand, e.g. 'İ' -> "i̇").
     let chars: Vec<char> = text.chars().collect();
-    let start = hit.saturating_sub(width / 3);
+    let lower: Vec<char> = chars
+        .iter()
+        .map(|c| c.to_lowercase().next().unwrap_or(*c))
+        .collect();
+    let needle: Vec<char> = q.chars().collect();
+    if needle.is_empty() || needle.len() > lower.len() {
+        return None;
+    }
+    let hit = lower
+        .windows(needle.len())
+        .position(|w| w == needle.as_slice())?;
+    let start = hit.min(chars.len()).saturating_sub(width / 3);
     let end = (start + width).min(chars.len());
     let mut out: String = chars[start..end]
         .iter()
@@ -5519,4 +5556,25 @@ pub fn apply_brand(cx: &mut App) {
     t.tab_active_foreground = ink;
     t.selection = accent.opacity(0.30);
     t.tokens = gpui_kit::component::ThemeTokens::from(&t.colors);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::snippet;
+
+    #[test]
+    fn snippet_survives_expanding_lowercase() {
+        // 'İ'.to_lowercase() is two chars; indexes must still line up.
+        let text = format!("{}ab", "İ".repeat(100));
+        let out = snippet(&text, "ab", 80).expect("hit");
+        assert!(out.ends_with("ab"), "{out}");
+    }
+
+    #[test]
+    fn snippet_case_insensitive_window() {
+        let text = format!("{} Needle {}", "x".repeat(200), "y".repeat(200));
+        let out = snippet(&text, "needle", 30).expect("hit");
+        assert!(out.starts_with('…') && out.ends_with('…'), "{out}");
+        assert!(out.contains("Needle"), "{out}");
+    }
 }
