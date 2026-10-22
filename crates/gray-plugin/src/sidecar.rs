@@ -1650,12 +1650,6 @@ pub(crate) fn command_outcome(v: &Value, plugin_argv: &[String]) -> Option<Comma
             text: field("text").map(str::to_string),
         });
     }
-    if let Some(plugin) = field("subagent_settings") {
-        return Some(CommandOutcome::SubagentSettings(plugin.to_string()));
-    }
-    if let Some(plugin) = field("agent_picker") {
-        return Some(CommandOutcome::AgentPicker(plugin.to_string()));
-    }
     if let Some(row) = field("model_picker") {
         return Some(CommandOutcome::ModelPicker(row.to_string()));
     }

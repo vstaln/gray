@@ -424,9 +424,6 @@ pub enum CommandOutcome {
 
     ModelPicker(String),
 
-    AgentPicker(String),
-
-    SubagentSettings(String),
 
     Panel(PanelSpec),
 

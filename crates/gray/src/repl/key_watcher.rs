@@ -194,26 +194,7 @@ fn run_turn_local_command(ctx: &TurnLocalCommands, text: &str) {
                     t.queued_inputs.push_back((prompt, Vec::new()));
                     let _ = t.draw();
                 }
-                Some(CommandOutcome::AgentPicker(plugin)) => {
-                    let bg = ctx.tui.lock().expect("tui lock").snapshot();
-                    let action = super::with_modal_sync(tui, || {
-                        super::agents_panel::run_agents_viewer(&plugin, Some(&bg))
-                    });
-                    match action {
-                        Ok(Some(super::agents_panel::PanelAction::Say(text))) => {
-                            super::say(tui, &text);
-                        }
-                        Ok(Some(super::agents_panel::PanelAction::Resume { .. })) => {
-                            super::say(tui, "that agent can be resumed after the current turn");
-                        }
-                        Ok(None) => {
-                            ctx.tui.lock().expect("tui lock").ensure_gap();
-                        }
-                        Err(e) => super::say(tui, &format!("agents panel error: {e}")),
-                    }
-                }
                 Some(CommandOutcome::ModelPicker(_))
-                | Some(CommandOutcome::SubagentSettings(_))
                 | Some(CommandOutcome::Panel(_))
                 | Some(CommandOutcome::Picker(_))
                 | Some(CommandOutcome::Terminal { .. }) => {

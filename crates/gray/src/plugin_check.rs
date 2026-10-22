@@ -12,12 +12,6 @@ fn outcome_text(o: &gray_core::agent::CommandOutcome) -> String {
         gray_core::agent::CommandOutcome::Say(s) => format!("{} bytes", s.len()),
         gray_core::agent::CommandOutcome::Prompt(s) => format!("prompt {} bytes", s.len()),
         gray_core::agent::CommandOutcome::ModelPicker(row) => format!("model picker on {row}"),
-        gray_core::agent::CommandOutcome::AgentPicker(plugin) => {
-            format!("agent picker via {plugin}")
-        }
-        gray_core::agent::CommandOutcome::SubagentSettings(plugin) => {
-            format!("subagent settings via {plugin}")
-        }
         gray_core::agent::CommandOutcome::Panel(spec) => {
             format!("panel: {} ({} pages)", spec.title, spec.pages.len())
         }

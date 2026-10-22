@@ -1002,8 +1002,6 @@ async fn plugin_command_result(
             crate::repl::picker::spec_plain(&spec),
         ))),
         Some(gray_plugin::CommandOutcome::ModelPicker(_))
-        | Some(gray_plugin::CommandOutcome::AgentPicker(_))
-        | Some(gray_plugin::CommandOutcome::SubagentSettings(_))
         | Some(gray_plugin::CommandOutcome::Terminal { text: None, .. }) => {
             Err(CmdError::local(name))
         }

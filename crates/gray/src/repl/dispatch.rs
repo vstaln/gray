@@ -403,9 +403,7 @@ pub(crate) async fn dispatch_command(
                 match super::plugin_cmds::provider_command_outcome(&provider_id, &cmd, argv).await {
                     Some(CommandOutcome::ModelPicker(row)) => ReplCommand::ModelFocus(row),
                     Some(CommandOutcome::Prompt(prompt)) => ReplCommand::Prompt(prompt),
-                    Some(CommandOutcome::AgentPicker(_))
-                    | Some(CommandOutcome::SubagentSettings(_))
-                    | Some(CommandOutcome::Panel(_))
+                    Some(CommandOutcome::Panel(_))
                     | Some(CommandOutcome::Picker(_))
                     | Some(CommandOutcome::Terminal { .. })
                     | None => ReplCommand::ProviderLogin(provider_id),
@@ -544,76 +542,6 @@ pub(crate) async fn dispatch_command(
 
                     CommandOutcome::ModelPicker(row) => {
                         *pending_command = Some(ReplCommand::ModelFocus(row));
-                    }
-
-                    CommandOutcome::AgentPicker(plugin) => {
-                        let bg = tui
-                            .as_ref()
-                            .map(|(s, _)| s.lock().expect("tui lock").snapshot());
-                        let action = with_modal_sync(tui.as_ref().map(|(s, _)| s), || {
-                            super::agents_panel::run_agents_picker(&plugin, bg.as_ref())
-                        });
-                        match action {
-                            Ok(Some(super::agents_panel::PanelAction::Resume {
-                                session: sid,
-                                name,
-                            })) => {
-                                handle_resume(
-                                    config,
-                                    cwd,
-                                    ResumeArgs {
-                                        target: Some(sid.clone()),
-                                        last: false,
-                                        all: true,
-                                        dismiss: false,
-                                    },
-                                    &mut *agent,
-                                    &mut *session_state,
-                                    &mut *session_totals,
-                                    tui.as_ref().map(|(s, _)| s),
-                                    &mut *hide_thinking,
-                                )
-                                .await;
-
-                                let inside = session_state
-                                    .as_ref()
-                                    .is_some_and(|s| s.session_id.as_str() == sid);
-                                if inside {
-                                    say(
-                                        tui.as_ref().map(|(s, _)| s),
-                                        &format!(
-                                            "{} inside {name} — prompts continue this agent's session",
-                                            crate::tui::glyph("\u{2b22}", "#")
-                                        ),
-                                    );
-                                }
-                            }
-                            Ok(Some(super::agents_panel::PanelAction::Say(text))) => {
-                                say(tui.as_ref().map(|(s, _)| s), &text);
-                            }
-                            Ok(None) => {
-                                if let Some((shared, _)) = tui {
-                                    shared.lock().expect("tui lock").ensure_gap();
-                                }
-                            }
-                            Err(e) => {
-                                say(
-                                    tui.as_ref().map(|(s, _)| s),
-                                    &format!("agents panel error: {e}"),
-                                );
-                            }
-                        }
-                    }
-
-                    CommandOutcome::SubagentSettings(plugin) => {
-                        let msg = match tui.as_ref().map(|(s, _)| s) {
-                            Some(shared) => {
-                                super::agents_panel::run_subagent_settings(&plugin, shared)
-                                    .unwrap_or_else(|| "cancelled — nothing changed".to_string())
-                            }
-                            None => "subagents settings needs the TUI".to_string(),
-                        };
-                        say(tui.as_ref().map(|(s, _)| s), &msg);
                     }
 
                     CommandOutcome::Terminal {

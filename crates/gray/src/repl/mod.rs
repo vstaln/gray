@@ -151,7 +151,6 @@ async fn spawn_hangup_policy() {}
 use crate::config::Config;
 use crate::{DEFAULT_SYS_PROMPT, build_agent, load_or_create_system_prompt_at};
 
-pub mod agents_panel;
 pub mod attachments;
 pub mod commands;
 mod customize;

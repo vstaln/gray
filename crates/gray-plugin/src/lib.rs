@@ -420,8 +420,6 @@ impl PluginHooks for PluginHookAdapter {
             CommandOutcome::Say(s) if s.is_empty() => None,
             CommandOutcome::Prompt(s) if s.is_empty() => None,
             CommandOutcome::ModelPicker(s) if s.is_empty() => None,
-            CommandOutcome::AgentPicker(s) if s.is_empty() => None,
-            CommandOutcome::SubagentSettings(s) if s.is_empty() => None,
             o => Some(o),
         }
     }
