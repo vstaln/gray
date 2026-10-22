@@ -45,13 +45,7 @@ fn turn_retry_delay() -> std::time::Duration {
 // are exempt — the clock is cleared while a hinted wait is in play.
 #[cfg(not(test))]
 fn retry_budget() -> std::time::Duration {
-    std::env::var("GRAY_RETRY_BUDGET_MS")
-        .ok()
-        .and_then(|v| v.parse::<u64>().ok())
-        .map_or(
-            std::time::Duration::from_secs(60),
-            std::time::Duration::from_millis,
-        )
+    std::time::Duration::from_secs(60)
 }
 #[cfg(test)]
 fn retry_budget() -> std::time::Duration {
