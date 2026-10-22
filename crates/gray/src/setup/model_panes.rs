@@ -542,18 +542,51 @@ fn start_row(models: &[(String, String)], active: Option<&str>) -> usize {
         .unwrap_or(0)
 }
 
+/// The saved model lists, parsed once per modal: every rail move onto a new
+/// provider used to re-read provider_models.json (twice for an empty list).
+struct SavedLists {
+    home: std::path::PathBuf,
+    lists: BTreeMap<String, Vec<super::variants::CachedRow>>,
+}
+
+impl SavedLists {
+    fn load() -> Option<Self> {
+        let home = catalog::gray_home().ok()?;
+        let lists = super::context::provider_model_lists(&home);
+        Some(Self { home, lists })
+    }
+
+    /// Same rows and order as [`saved_models_for`].
+    fn models(
+        &self,
+        saved: &SavedConfig,
+        list_key: &str,
+        sort_base: &str,
+    ) -> Vec<(String, String)> {
+        let mut models = super::context::provider_model_list_in(&self.home, &self.lists, list_key);
+        saved.sort_models(sort_base, &mut models);
+        models
+    }
+}
+
 fn models_for<'a>(
     p: &PaneProvider,
     cache: &'a mut HashMap<String, Vec<(String, String)>>,
+    lists: Option<&SavedLists>,
+    saved: &SavedConfig,
 ) -> &'a [(String, String)] {
+    let load = |key: &str| match lists {
+        Some(l) => l.models(saved, key, &p.item.base_url),
+        None => saved_models_for(key, &p.item.base_url),
+    };
     cache
         .entry(p.list_key.clone())
         .or_insert_with(|| {
-            let mut models = saved_models_for(&p.list_key, &p.item.base_url);
+            let mut models = load(&p.list_key);
             if models.is_empty() {
                 let alt = normalize_custom_base_url(&p.item.base_url);
                 if alt != p.list_key {
-                    models = saved_models_for(&alt, &p.item.base_url);
+                    models = load(&alt);
                 }
             }
             models
@@ -1172,6 +1205,7 @@ pub(crate) fn run_model_panes(
                 load_saved_config_at(&path)
             })
             .unwrap_or_default();
+        let saved_lists = SavedLists::load();
         loop {
             if let Ok(up) = ollama_rx.try_recv()
                 && up != ollama
@@ -1244,7 +1278,7 @@ pub(crate) fn run_model_panes(
             let provider = row_provider(&rail, &rows, rail_sel);
             let adoptable = provider.is_some_and(|p| p.adoptable(&keys));
             let all_models = provider
-                .map(|p| models_for(p, &mut model_cache).to_vec())
+                .map(|p| models_for(p, &mut model_cache, saved_lists.as_ref(), &saved).to_vec())
                 .unwrap_or_default();
             if let Some(p) = provider
                 && adoptable
@@ -1296,32 +1330,38 @@ pub(crate) fn run_model_panes(
                     .as_deref()
                     .is_some_and(|id| fast_wire(id, shown, &models).is_some());
 
-            terminal.draw(|f| {
-                draw(
-                    f,
-                    &bg_snapshot,
-                    &PaneView {
-                        rail: &rail,
-                        rows: &rows,
-                        groups: &groups,
-                        rail_sel,
-                        rail_top,
-                        scoped: &scoped,
-                        saved: &saved,
-                        efforts: &efforts,
-                        models: &models,
-                        model_sel,
-                        model_top,
-                        focus,
-                        filter: &filter,
-                        adoptable,
-                        toggles,
-                        config,
-                        confirm_remove,
-                        notice: notice.as_deref(),
-                    },
-                )
-            })?;
+            // Keys already queued (a held arrow, fast typing) are applied
+            // before the next paint, so a slow frame can't leave the
+            // highlight trailing behind the input.
+            let backlog = !first_draw && poll(std::time::Duration::ZERO)?;
+            if !backlog {
+                terminal.draw(|f| {
+                    draw(
+                        f,
+                        &bg_snapshot,
+                        &PaneView {
+                            rail: &rail,
+                            rows: &rows,
+                            groups: &groups,
+                            rail_sel,
+                            rail_top,
+                            scoped: &scoped,
+                            saved: &saved,
+                            efforts: &efforts,
+                            models: &models,
+                            model_sel,
+                            model_top,
+                            focus,
+                            filter: &filter,
+                            adoptable,
+                            toggles,
+                            config,
+                            confirm_remove,
+                            notice: notice.as_deref(),
+                        },
+                    )
+                })?;
+            }
             if std::mem::take(&mut first_draw) {
                 log::debug!(target: "gray_timing", "model_panes first_draw elapsed_ms={}", opened.elapsed().as_millis());
             }

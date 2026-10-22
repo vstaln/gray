@@ -1068,6 +1068,23 @@ pub(crate) fn load_provider_model_list(base_url: &str) -> Vec<(String, String)> 
     rows.iter().map(|r| r.pair()).collect()
 }
 
+/// [`load_provider_model_list`] against an already-parsed
+/// [`provider_model_lists`] map, for callers that resolve many providers in
+/// one go (the /models rail) and shouldn't re-read the file for each.
+pub(crate) fn provider_model_list_in(
+    home: &std::path::Path,
+    lists: &std::collections::BTreeMap<String, Vec<crate::setup::variants::CachedRow>>,
+    base_url: &str,
+) -> Vec<(String, String)> {
+    let base = crate::setup::catalog::normalize_custom_base_url(base_url);
+    let mut rows = lists.get(&base).cloned().unwrap_or_default();
+    crate::setup::composite_rows::extend_with_composites_in(home, lists, &base, &mut rows);
+    for row in &rows {
+        row.register();
+    }
+    rows.iter().map(|r| r.pair()).collect()
+}
+
 pub fn cache_model_context_if_absent(model_id: &str, length: usize) {
     cache_model_context_with_source(model_id, length, "litellm", false);
 }

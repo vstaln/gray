@@ -141,3 +141,41 @@ fn backdrop_transcript_layout_is_memoized_per_size() {
         "a width change must invalidate the memoized layout"
     );
 }
+
+#[test]
+fn memoized_backdrop_repaints_identically_and_follows_resizes() {
+    let bg = BackgroundSnapshot {
+        history_entries: vec![crate::composer::TranscriptEntry::UserPrompt(
+            "/models".to_string(),
+            Vec::new(),
+        )],
+        prompt_text: "draft".into(),
+        ..Default::default()
+    };
+    let paint = |bg: &BackgroundSnapshot, w: u16, h: u16| {
+        let mut t = ratatui::Terminal::new(ratatui::backend::TestBackend::new(w, h)).unwrap();
+        t.draw(|f| render_dimmed_background(f, bg)).unwrap();
+        t.backend().buffer().clone()
+    };
+    let first = paint(&bg, 40, 12);
+    assert!(
+        bg.backdrop_cache.borrow().is_some(),
+        "first paint is memoized"
+    );
+    assert_eq!(
+        paint(&bg, 40, 12),
+        first,
+        "memoized repaint is cell-identical"
+    );
+
+    let fresh = BackgroundSnapshot {
+        backdrop_cache: Default::default(),
+        transcript_cache: Default::default(),
+        ..bg.clone()
+    };
+    assert_eq!(
+        paint(&bg, 52, 15),
+        paint(&fresh, 52, 15),
+        "a resize repaints instead of reusing the old size"
+    );
+}
