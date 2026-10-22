@@ -1,6 +1,5 @@
 use super::*;
 use crate::event::{AgentEvent, StopReason, Usage};
-use crate::parallel::ENV_LOCK;
 use std::collections::VecDeque;
 use std::sync::Mutex;
 
@@ -202,13 +201,13 @@ impl ToolExecutor for PeakExecutor {
 }
 
 fn read_tool() -> ToolDef {
-    ToolDef::new("read", "r", serde_json::json!({"type": "object"}))
+    ToolDef::new("bash", "r", serde_json::json!({"type": "object"}))
 }
 
 fn two_read_script() -> Vec<StreamEvent> {
     vec![
-        StreamEvent::tool_call_delta(0, Some("c1".into()), Some("read".into()), r#"{"path":"a"}"#),
-        StreamEvent::tool_call_delta(1, Some("c2".into()), Some("read".into()), r#"{"path":"b"}"#),
+        StreamEvent::tool_call_delta(0, Some("c1".into()), Some("bash".into()), r#"{"command":"cat a"}"#),
+        StreamEvent::tool_call_delta(1, Some("c2".into()), Some("bash".into()), r#"{"command":"cat b"}"#),
         StreamEvent::message_complete(Some(StopReason::ToolUse), None),
     ]
 }
@@ -2070,11 +2069,7 @@ async fn pre_post_hooks_emit_around_tool_execution() {
 }
 
 #[tokio::test]
-#[allow(clippy::await_holding_lock)]
 async fn parallel_batch_overlaps_reads_with_ordered_results() {
-    let _g = ENV_LOCK.lock().unwrap();
-    let prev = std::env::var("GRAY_PARALLEL_READS").ok();
-    unsafe { std::env::remove_var("GRAY_PARALLEL_READS") };
     let provider = FakeProvider::new(vec![two_read_script(), end_script()]);
     let peak = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let executor = PeakExecutor {
@@ -2087,10 +2082,6 @@ async fn parallel_batch_overlaps_reads_with_ordered_results() {
         .run(Message::user("go"), ToolContext::default())
         .await
         .unwrap();
-    match prev {
-        Some(v) => unsafe { std::env::set_var("GRAY_PARALLEL_READS", v) },
-        None => unsafe { std::env::remove_var("GRAY_PARALLEL_READS") },
-    }
     assert_eq!(
         peak.load(std::sync::atomic::Ordering::SeqCst),
         2,
@@ -2106,8 +2097,8 @@ async fn parallel_batch_overlaps_reads_with_ordered_results() {
     assert_eq!(
         results,
         vec![
-            ("c1".to_string(), "read-done".to_string()),
-            ("c2".to_string(), "read-done".to_string()),
+            ("c1".to_string(), "bash-done".to_string()),
+            ("c2".to_string(), "bash-done".to_string()),
         ],
         "results stay in input order, {events:?}"
     );
@@ -2122,55 +2113,6 @@ async fn parallel_batch_overlaps_reads_with_ordered_results() {
         last_end.is_some() && last_end < first_result,
         "both ends precede the first result, {events:?}"
     );
-}
-
-#[tokio::test]
-#[allow(clippy::await_holding_lock)]
-async fn lane_off_matches_sequential_events() {
-    let _g = ENV_LOCK.lock().unwrap();
-    let prev = std::env::var("GRAY_PARALLEL_READS").ok();
-    let mut runs = Vec::new();
-    for val in [Some("0"), None] {
-        match val {
-            Some(v) => unsafe { std::env::set_var("GRAY_PARALLEL_READS", v) },
-            None => unsafe { std::env::remove_var("GRAY_PARALLEL_READS") },
-        }
-        let provider = FakeProvider::new(vec![two_read_script(), end_script()]);
-        let executor = FakeExecutor::new(ToolOutput::ok("x"));
-        let mut agent =
-            Agent::new(Box::new(provider), Arc::new(executor)).with_tools(vec![read_tool()]);
-        runs.push(
-            agent
-                .run(Message::user("go"), ToolContext::default())
-                .await
-                .unwrap(),
-        );
-    }
-    match prev {
-        Some(v) => unsafe { std::env::set_var("GRAY_PARALLEL_READS", v) },
-        None => unsafe { std::env::remove_var("GRAY_PARALLEL_READS") },
-    }
-    assert_eq!(runs.len(), 2);
-
-    let call_events = |evs: &[AgentEvent], want: &str| -> Vec<AgentEvent> {
-        evs.iter()
-            .filter(|e| match e {
-                AgentEvent::ToolCallStart { id, .. }
-                | AgentEvent::ToolCallProgress { id, .. }
-                | AgentEvent::ToolCallEnd { id, .. }
-                | AgentEvent::ToolResult { id, .. } => id == want,
-                _ => true,
-            })
-            .cloned()
-            .collect()
-    };
-    for id in ["c1", "c2"] {
-        assert_eq!(
-            call_events(&runs[0], id),
-            call_events(&runs[1], id),
-            "lane off must match lane on for call {id}"
-        );
-    }
 }
 
 struct CancelOnFirstBefore {
@@ -2189,11 +2131,7 @@ impl PluginHooks for CancelOnFirstBefore {
 }
 
 #[tokio::test]
-#[allow(clippy::await_holding_lock)]
 async fn parallel_prepass_cancel_backfills_whole_run_exactly_once() {
-    let _g = ENV_LOCK.lock().unwrap();
-    let prev = std::env::var("GRAY_PARALLEL_READS").ok();
-    unsafe { std::env::remove_var("GRAY_PARALLEL_READS") };
     let cancel = tokio_util::sync::CancellationToken::new();
     let provider = FakeProvider::new(vec![two_read_script(), end_script()]);
     let executor = FakeExecutor::new(ToolOutput::ok("x"));
@@ -2212,10 +2150,6 @@ async fn parallel_prepass_cancel_backfills_whole_run_exactly_once() {
         .run(Message::user("go"), ctx)
         .await
         .expect_err("pre-pass cancel must abort the run");
-    match prev {
-        Some(v) => unsafe { std::env::set_var("GRAY_PARALLEL_READS", v) },
-        None => unsafe { std::env::remove_var("GRAY_PARALLEL_READS") },
-    }
     assert!(matches!(err, CoreError::Cancelled), "got {err:?}");
     assert!(
         call_log.lock().expect("calls lock poisoned").is_empty(),

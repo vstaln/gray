@@ -1479,15 +1479,7 @@ impl Agent {
                 self.tools.iter().map(|t| t.name.clone()).collect();
 
             let round_start = self.messages.len();
-            let segments = if crate::parallel::parallel_enabled() {
-                crate::parallel::plan_segments(&tool_uses, &known)
-            } else {
-                tool_uses
-                    .iter()
-                    .enumerate()
-                    .map(|(i, _)| crate::parallel::Segment::Single(i))
-                    .collect()
-            };
+            let segments = crate::parallel::plan_segments(&tool_uses, &known);
             for segment in segments {
                 if let crate::parallel::Segment::Parallel(idxs) = segment {
                     let (Some(run_start), Some(run_end)) =
