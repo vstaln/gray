@@ -666,6 +666,34 @@ pub(crate) async fn dispatch_command(
                                         say(shared, "plugins changed, reloaded");
                                     }
                                 }
+                                let pending = crate::session_store::default_root()
+                                    .and_then(|r| {
+                                        r.parent().map(|h| h.join("pending-resume"))
+                                    });
+                                if let Some(path) = pending
+                                    && let Ok(sid) = std::fs::read_to_string(&path)
+                                {
+                                    let _ = std::fs::remove_file(&path);
+                                    let sid = sid.trim().to_string();
+                                    if !sid.is_empty() {
+                                        handle_resume(
+                                            config,
+                                            cwd,
+                                            ResumeArgs {
+                                                target: Some(sid),
+                                                last: false,
+                                                all: true,
+                                                dismiss: false,
+                                            },
+                                            &mut *agent,
+                                            &mut *session_state,
+                                            &mut *session_totals,
+                                            tui.as_ref().map(|(s, _)| s),
+                                            &mut *hide_thinking,
+                                        )
+                                        .await;
+                                    }
+                                }
                             }
                             _ => say(
                                 shared,

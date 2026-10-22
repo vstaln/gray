@@ -362,55 +362,6 @@ impl CredentialStore {
         self.replace_locked(&store)
     }
 
-    /// Account-scoped verdicts cool the account; anything else leaves it.
-    pub fn note_plugin_failure(
-        &self,
-        auth_ref: &str,
-        label: &str,
-        status: Option<u16>,
-        detail: &str,
-    ) -> anyhow::Result<()> {
-        let ttl = match status {
-            Some(401) => COOL_401_SECS,
-            Some(429) => COOL_429_SECS,
-            _ => return Ok(()),
-        };
-        let _lock = self.lock()?;
-        let mut store = self.load()?;
-        let Some(AuthEntry::PluginPool(pool)) = store.get_mut(auth_ref) else {
-            return Ok(());
-        };
-        let sole = pool.accounts.len() == 1;
-        let Some(a) = pool.accounts.iter_mut().find(|a| a.label == label) else {
-            return Ok(());
-        };
-        let ttl = if sole {
-            ttl.min(SOLE_CAP_SECS)
-        } else {
-            ttl.min(MAX_RESET_SECS)
-        };
-        a.cooldown_until = now_secs() + ttl.max(1);
-        a.last_error = Some(detail.chars().take(200).collect());
-        self.replace_locked(&store)
-    }
-
-    /// A served request cleared: bump counters, drop any recorded failure.
-    pub fn note_plugin_success(&self, auth_ref: &str, label: &str) -> anyhow::Result<()> {
-        let _lock = self.lock()?;
-        let mut store = self.load()?;
-        let Some(AuthEntry::PluginPool(pool)) = store.get_mut(auth_ref) else {
-            return Ok(());
-        };
-        let Some(a) = pool.accounts.iter_mut().find(|a| a.label == label) else {
-            return Ok(());
-        };
-        a.request_count += 1;
-        a.last_used_at = now_secs();
-        a.cooldown_until = 0;
-        a.last_error = None;
-        self.replace_locked(&store)
-    }
-
     pub fn replace_plugin_if_bound(
         &self,
         auth_ref: &str,
@@ -525,23 +476,6 @@ impl CredentialStore {
     }
 }
 
-pub fn load_plugin_credential(
-    path: &Path,
-    auth_ref: &str,
-) -> anyhow::Result<Option<StoredCredential>> {
-    CredentialStore::new(path.to_path_buf()).read_plugin(auth_ref)
-}
-
-pub fn save_plugin_credential(path: &Path, value: StoredCredential) -> anyhow::Result<()> {
-    CredentialStore::new(path.to_path_buf())
-        .put_plugin(value)
-        .map(|_| ())
-}
-
-pub fn remove_plugin_owner(path: &Path, plugin: &str) -> anyhow::Result<usize> {
-    CredentialStore::new(path.to_path_buf()).remove_plugin_owner(plugin)
-}
-
 const MAX_AUTH_BYTES: usize = 4 * 1024 * 1024;
 
 fn plugin_auth_ref(value: &StoredCredential) -> anyhow::Result<String> {
@@ -613,14 +547,6 @@ pub struct PluginAccountRow {
     pub pinned: bool,
 }
 
-/// Cooldown TTLs mirror the plugin-owned pools: a 401 is a dead login
-/// worth retrying occasionally; a 429 is quota. A lone account never
-/// sits out longer than [`SOLE_CAP_SECS`], so a transient verdict can't
-/// bench the only login for an hour.
-const COOL_401_SECS: u64 = 5 * 60;
-const COOL_429_SECS: u64 = 60 * 60;
-const SOLE_CAP_SECS: u64 = 60;
-const MAX_RESET_SECS: u64 = 8 * 24 * 3600;
 
 fn now_secs() -> u64 {
     std::time::SystemTime::now()
