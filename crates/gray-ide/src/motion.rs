@@ -79,7 +79,7 @@ pub fn fade_in<E: Styled + IntoElement + 'static>(
 pub fn churner(t: &Theme) -> impl IntoElement {
     let on = t.primary;
     h_flex().gap_0p5().children((0..8usize).map(move |i| {
-        div().size(px(4.)).rounded(px(1.)).bg(on).with_animation(
+        div().size(px(4.)).bg(on).with_animation(
             ("churn", i),
             Animation::new(ms(1100))
                 .repeat_synced()
@@ -100,21 +100,16 @@ pub fn typing_dots(t: &Theme) -> impl IntoElement {
         .items_center()
         .gap_1()
         .children((0..3usize).map(move |i| {
-            div()
-                .relative()
-                .size(px(5.))
-                .rounded_full()
-                .bg(c)
-                .with_animation(
-                    ("typing-dot", i),
-                    Animation::new(ms(1100))
-                        .repeat_synced()
-                        .with_max_fps(LOOP_FPS),
-                    move |d, x| {
-                        let b = wave(x, 0.3 + i as f32 * 0.15).powi(2);
-                        d.opacity(0.35 + 0.65 * b).top(px(-3. * b))
-                    },
-                )
+            div().relative().size(px(5.)).bg(c).with_animation(
+                ("typing-dot", i),
+                Animation::new(ms(1100))
+                    .repeat_synced()
+                    .with_max_fps(LOOP_FPS),
+                move |d, x| {
+                    let b = wave(x, 0.3 + i as f32 * 0.15).powi(2);
+                    d.opacity(0.35 + 0.65 * b).top(px(-3. * b))
+                },
+            )
         }))
 }
 
@@ -147,21 +142,16 @@ pub fn running_bars(t: &Theme) -> impl IntoElement {
         .gap(px(2.))
         .items_end()
         .children((0..3usize).map(move |i| {
-            div()
-                .w(px(3.))
-                .h(px(8.))
-                .rounded(px(1.))
-                .bg(c)
-                .with_animation(
-                    ("term-bar", i),
-                    Animation::new(ms(1200))
-                        .repeat_synced()
-                        .with_max_fps(LOOP_FPS),
-                    move |d, x| {
-                        let lit = x >= 0.25 * (i as f32 + 1.);
-                        d.opacity(if lit { 0.9 } else { 0.3 })
-                    },
-                )
+            div().w(px(3.)).h(px(8.)).bg(c).with_animation(
+                ("term-bar", i),
+                Animation::new(ms(1200))
+                    .repeat_synced()
+                    .with_max_fps(LOOP_FPS),
+                move |d, x| {
+                    let lit = x >= 0.25 * (i as f32 + 1.);
+                    d.opacity(if lit { 0.9 } else { 0.3 })
+                },
+            )
         }))
 }
 
@@ -214,7 +204,7 @@ pub fn celebrate<E: IntoElement + 'static>(bubble: E, id: &str, t: &Theme) -> im
     div()
         .relative()
         .child(bubble)
-        .child(div().absolute().inset_0().rounded(px(10.)).with_animation(
+        .child(div().absolute().inset_0().with_animation(
             SharedString::from(format!("halo-{id}")),
             Animation::new(ms(2400)).with_easing(ease_out()),
             move |d, x| {
@@ -225,41 +215,30 @@ pub fn celebrate<E: IntoElement + 'static>(bubble: E, id: &str, t: &Theme) -> im
                 };
                 d.border_1()
                     .border_color(glow.opacity(0.6 * a))
-                    .shadow(vec![
-                        BoxShadow::new(px(0.), px(0.), glow.opacity(0.38 * a))
-                            .blur_radius(px(24.))
-                            .spread_radius(px(3.)),
-                    ])
+                    .bg(glow.opacity(0.08 * a))
             },
         ))
-        .child(
-            div()
-                .absolute()
-                .inset_0()
-                .rounded(px(10.))
-                .overflow_hidden()
-                .with_animation(
-                    SharedString::from(format!("sheen-{id}")),
-                    Animation::new(ms(1400)),
-                    move |d, x| {
-                        let u = ((x * 1400. - 300.) / 1100.).clamp(0., 1.);
-                        d.child(
-                            div()
-                                .absolute()
-                                .top_0()
-                                .bottom_0()
-                                .w(relative(0.45))
-                                .left(relative(-0.45 + 1.6 * u))
-                                .bg(linear_gradient(
-                                    105.,
-                                    linear_color_stop(glow.opacity(0.), 0.),
-                                    linear_color_stop(glow.opacity(0.30), 1.),
-                                )),
-                        )
-                    },
-                ),
-        )
-        .child(div().absolute().inset_0().rounded(px(10.)).with_animation(
+        .child(div().absolute().inset_0().overflow_hidden().with_animation(
+            SharedString::from(format!("sheen-{id}")),
+            Animation::new(ms(1400)),
+            move |d, x| {
+                let u = ((x * 1400. - 300.) / 1100.).clamp(0., 1.);
+                d.child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .bottom_0()
+                        .w(relative(0.45))
+                        .left(relative(-0.45 + 1.6 * u))
+                        .bg(linear_gradient(
+                            105.,
+                            linear_color_stop(glow.opacity(0.), 0.),
+                            linear_color_stop(glow.opacity(0.30), 1.),
+                        )),
+                )
+            },
+        ))
+        .child(div().absolute().inset_0().with_animation(
             SharedString::from(format!("ember-{id}")),
             Animation::new(ms(2200)).with_easing(ease_out()),
             move |d, x| {
@@ -276,4 +255,43 @@ pub fn celebrate<E: IntoElement + 'static>(bubble: E, id: &str, t: &Theme) -> im
                 ))
             },
         ))
+}
+
+/// Split-flap/odometer text: each glyph is its own animated element keyed on
+/// its value, so only the chars that change replay a quick mechanical flip;
+/// unchanged chars hold still. One-shot per change — no idle repaints.
+pub fn flap(prefix: &str, text: &str, t: &Theme) -> impl IntoElement {
+    let prefix = prefix.to_string();
+    let mono = t.mono_font_family.clone();
+    h_flex().children(text.chars().enumerate().map(move |(i, c)| {
+        let mono = mono.clone();
+        div().font_family(mono).child(c.to_string()).with_animation(
+            SharedString::from(format!("{prefix}-{i}-{c}")),
+            Animation::new(ms(90)).with_easing(ease_pop()),
+            move |d, x| d.opacity(0.2 + 0.8 * x).top(px(-3. * (1. - x))),
+        )
+    }))
+}
+
+/// Scramble-decode: unresolved chars show as mono glyphs and lock in
+/// left-to-right as `x` sweeps 0→1. One-shot on mount/animation-id change.
+const SCRAMBLE: &[char] = &[
+    '#', '%', '&', '@', '*', '+', '=', '/', '\\', '<', '>', '_', '|', '~',
+];
+
+pub fn decode(id: impl Into<ElementId>, text: &str, dur: u64) -> AnimationElement<Div> {
+    let text = text.to_string();
+    div().with_animation(id, Animation::new(ms(dur)), move |d, x| {
+        let chars: Vec<char> = text.chars().collect();
+        let n = (x * chars.len() as f32).round() as usize;
+        let mut s = String::with_capacity(text.len());
+        for (i, c) in chars.iter().enumerate() {
+            if i < n || *c == ' ' || *c == '·' {
+                s.push(*c);
+            } else {
+                s.push(SCRAMBLE[(i * 31 + (x * 91.) as usize) % SCRAMBLE.len()]);
+            }
+        }
+        d.child(s)
+    })
 }
