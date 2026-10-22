@@ -1461,6 +1461,10 @@ impl Tui {
         self.cache.note(usage, wire_model, rate, Instant::now())
     }
 
+    pub(crate) fn note_prefix_change(&mut self, cause: String) {
+        self.cache.note_prefix_change(cause);
+    }
+
     pub fn cache_remaining(&self) -> Option<Duration> {
         self.cache.remaining(Instant::now())
     }

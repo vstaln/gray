@@ -134,12 +134,9 @@ pub(crate) fn wrap_styled_line_with_ranges(
         None
     };
 
-    // A leading whitespace run ("  " on host notices, diff indents, ...) is
-    // kept on the first row and re-applied as a same-width pad on every
-    // continuation row. The " | " gutter path handles its own prefix, so the
-    // lead only applies when there is no gutter.
     let lead_end = if gutter_info.is_none() {
-        flat.len() - flat.trim_start().len()
+        let ws = flat.len() - flat.trim_start().len();
+        ws + list_marker_len(&flat[ws..])
     } else {
         0
     };
@@ -152,7 +149,7 @@ pub(crate) fn wrap_styled_line_with_ranges(
             let avail = max_w.saturating_sub(g_width).max(10);
             (g_end, Some(c_str.clone()), Some(g_style), avail)
         } else {
-            (0, None, None, max_w.saturating_sub(lead_w).max(10))
+            (lead_end, None, None, max_w.saturating_sub(lead_w).max(10))
         };
 
     let mut words: Vec<Range<usize>> = Vec::new();
@@ -258,7 +255,7 @@ pub(crate) fn wrap_styled_line_with_ranges(
                     " ".repeat(lead_w),
                     lead_style.patch(line.style),
                 ));
-                out_range = (r.start - lead_end)..r.end;
+                out_range = r.start.saturating_sub(lead_w)..r.end;
             }
         }
         let sliced = slice_line_spans(&line, &span_bounds, &slice_range);
@@ -276,6 +273,19 @@ pub(crate) fn wrap_styled_line_with_ranges(
         result.push((Line::from("").style(line.style), 0..0));
     }
     result
+}
+
+fn list_marker_len(rest: &str) -> usize {
+    for bullet in ["• ", "- ", "* ", "+ "] {
+        if rest.starts_with(bullet) {
+            return bullet.len();
+        }
+    }
+    let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
+    if (1..=3).contains(&digits) && [". ", ") "].iter().any(|m| rest[digits..].starts_with(m)) {
+        return digits + 2;
+    }
+    0
 }
 
 fn char_chunk_fallback(line: Line<'static>, max_w: usize) -> Vec<Line<'static>> {

@@ -906,6 +906,28 @@ async fn a_small_session_is_still_summarized_exactly() {
 }
 
 #[tokio::test]
+async fn injected_harness_messages_never_become_the_preview() {
+    let dir = tempdir().unwrap();
+    let store = JsonlSessionStore::new(dir.path());
+    let sid = SessionId::new("injected");
+    store
+        .create(SessionMeta::new(sid.clone(), 7, "/tmp", "test"))
+        .await
+        .unwrap();
+    for m in [
+        Message::user_injected("[Context update]\nMemory: call the memory tool"),
+        Message::user("is that fast"),
+        Message::assistant("yes"),
+        Message::user_injected("[Background task notification] done"),
+    ] {
+        store.append(&sid, &m).await.unwrap();
+    }
+    let listed = store.list().await;
+    assert_eq!(listed[0].first_user_text.as_deref(), Some("is that fast"));
+    assert_eq!(listed[0].last_user_text.as_deref(), Some("is that fast"));
+}
+
+#[tokio::test]
 async fn a_compaction_boundary_in_the_tail_resets_the_preview() {
     let dir = tempdir().unwrap();
     write_big_session(dir.path(), "compacted", "after compaction");

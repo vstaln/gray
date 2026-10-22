@@ -77,6 +77,15 @@ pub(crate) fn attachment_cells(attachments: &[std::path::PathBuf], text: &str) -
     )
 }
 
+/// Rows of the band allowed to cover transcript rows instead of scrolling
+/// them into scrollback. The popup panel and the input box's extra lines are
+/// both transient: a recalled multi-line history entry or a long draft
+/// shrinks back, and covered rows are repainted then. Rows pushed into
+/// scrollback cannot come back, leaving a blank gap above the composer.
+pub(crate) fn band_overlay(desired: u16, floor: u16, panel_h: u16, box_h: u16) -> u16 {
+    (desired.saturating_sub(floor).min(panel_h) + box_h.saturating_sub(1)).min(desired)
+}
+
 pub(crate) fn viewport_cap(rows: u16) -> u16 {
     rows.saturating_sub(2).max(MIN_VIEWPORT_H)
 }
@@ -270,9 +279,10 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
     let mut widget_rows = tui.plugin_widget.rows(widget_budget as usize, w);
     let max_viewport_h = viewport_cap(rows);
 
-    let mut band_allowance = band_budget(max_viewport_h, status_h + box_h + attach_h + panel_est + 1)
-        .saturating_sub(2 * ask_gap)
-        .max(if asking { ask_est.min(6) } else { 0 });
+    let mut band_allowance =
+        band_budget(max_viewport_h, status_h + box_h + attach_h + panel_est + 1)
+            .saturating_sub(2 * ask_gap)
+            .max(if asking { ask_est.min(6) } else { 0 });
 
     let reserve_overflow_row = tui.live_tool_overflow() > 0 && band_allowance > 0;
     if reserve_overflow_row {
@@ -314,7 +324,7 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
         max_viewport_h,
     );
     let desired = desired.max(floor);
-    let overlay = desired.saturating_sub(floor).min(panel_est);
+    let overlay = band_overlay(desired, floor, panel_est, box_h);
 
     tui.begin_sync();
 

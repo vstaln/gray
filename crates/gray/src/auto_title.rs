@@ -17,11 +17,11 @@ const SYSTEM: &str = "You name chat sessions. Reply with a short title of about 
 that says what the session is about. Plain text only: no quotes, no trailing period, \
 no preamble.";
 
-pub(crate) fn maybe_start(state: &SessionState, agent: &Agent, initial_count: usize) {
+pub(crate) fn maybe_start(state: &SessionState, agent: &Agent) {
     if crate::session_store::session_origin_from_env().is_some() {
         return;
     }
-    let Some((first_user, reply)) = first_exchange(agent.messages(), initial_count) else {
+    let Some((first_user, reply)) = first_exchange(agent.messages()) else {
         return;
     };
     if crate::session_store::opener_tag(&first_user).is_some() {
@@ -46,15 +46,8 @@ pub(crate) fn maybe_start(state: &SessionState, agent: &Agent, initial_count: us
     });
 }
 
-pub(crate) fn first_exchange(
-    messages: &[Message],
-    initial_count: usize,
-) -> Option<(String, String)> {
+pub(crate) fn first_exchange(messages: &[Message]) -> Option<(String, String)> {
     let has_reply = |m: &Message| m.role == Role::Assistant && !m.text_content().trim().is_empty();
-    let before = &messages[..initial_count.min(messages.len())];
-    if before.iter().any(has_reply) {
-        return None;
-    }
     let reply = messages.iter().find(|m| has_reply(m))?.text_content();
     let first_user = messages
         .iter()
@@ -150,23 +143,17 @@ mod tests {
     }
 
     #[test]
-    fn the_first_exchange_is_named_only_when_this_turn_gave_it() {
-        let turn = vec![
+    fn the_first_exchange_is_named_even_after_a_checkpoint() {
+        let msgs = vec![
             Message::user("fix the login loop"),
             Message::assistant("Found it: the redirect"),
-        ];
-        assert_eq!(
-            first_exchange(&turn, 0),
-            Some(("fix the login loop".into(), "Found it: the redirect".into()))
-        );
-
-        let resumed = vec![
-            Message::user("old"),
-            Message::assistant("old reply"),
             Message::user("again"),
             Message::assistant("new"),
         ];
-        assert_eq!(first_exchange(&resumed, 2), None);
+        assert_eq!(
+            first_exchange(&msgs),
+            Some(("fix the login loop".into(), "Found it: the redirect".into()))
+        );
     }
 
     #[test]
@@ -177,7 +164,7 @@ mod tests {
             Message::assistant("answer"),
         ];
         assert_eq!(
-            first_exchange(&msgs, 0).map(|(user, _)| user),
+            first_exchange(&msgs).map(|(user, _)| user),
             Some("real question".into())
         );
     }

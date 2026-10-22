@@ -1697,7 +1697,7 @@ fn summarize_session_file(root: &Path, path: &Path, cwd: Option<&Path>) -> Optio
                 Role::User => SessionEnd::UserUnanswered,
                 Role::System => last_end,
             };
-            if entry.message.role == Role::User {
+            if entry.message.role == Role::User && !entry.message.injected {
                 let text = user_summary_text(&entry.message);
                 if !text.is_empty() {
                     if first_user_text.is_none() && !in_tail {
@@ -2547,7 +2547,7 @@ impl JsonlSessionStore {
             Err(e) => return Err(SessionError::Io(e)),
         }
 
-        for ext in ["dismissed", "title", "autotitle"] {
+        for ext in ["dismissed", "title", "autotitle", "prefix"] {
             let sidecar = self.root_dir.join(format!("{}.{ext}", id.as_str()));
             let _ = tokio::fs::remove_file(&sidecar).await;
         }

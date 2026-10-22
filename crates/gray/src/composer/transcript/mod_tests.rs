@@ -697,6 +697,31 @@ fn wrapped_rows_keep_the_leading_indent() {
 }
 
 #[test]
+fn wrapped_list_items_hang_under_their_text() {
+    for (text, pad) in [
+        (
+            "• load_tools: one line per plugin tool, MCP servers grouped by name",
+            "  ",
+        ),
+        (
+            "  12. second level numbered item that keeps going past the edge",
+            "      ",
+        ),
+    ] {
+        let rows = wrap_styled_line(Line::from(text.to_string()), 30);
+        assert!(rows.len() > 1);
+        for row in &rows[1..] {
+            let row_text: String = row.spans.iter().map(|s| s.content.as_ref()).collect();
+            assert!(
+                row_text.starts_with(pad) && !row_text[pad.len()..].starts_with(' '),
+                "continuation not hung under the item text: {row_text:?}"
+            );
+            assert!(row.width() <= 30);
+        }
+    }
+}
+
+#[test]
 fn split_synthetic_prompt_parts_subagent_and_nudge_segments() {
     // The subagents plugin's completion delivery: preamble is scaffolding,
     // the first report line becomes the dim notice.
