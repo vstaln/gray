@@ -151,25 +151,6 @@ fn aliases_rename_legacy_arg_names() {
 }
 
 #[test]
-fn write_and_edit_alias_props_collapse_to_canonical_args() {
-    let w = coerce_args(
-        &WriteTool::default().def(),
-        json!({"file_path": "a.txt", "contents": "hi"}),
-    );
-    assert_eq!(w.get("path"), Some(&json!("a.txt")));
-    assert_eq!(w.get("content"), Some(&json!("hi")));
-    assert!(w.get("file_path").is_none() && w.get("contents").is_none());
-
-    let e = coerce_args(
-        &EditTool::default().def(),
-        json!({"file_path": "a.txt", "TargetContent": "old", "ReplacementContent": "new"}),
-    );
-    assert_eq!(e.get("path"), Some(&json!("a.txt")));
-    assert_eq!(e.get("oldText"), Some(&json!("old")));
-    assert_eq!(e.get("newText"), Some(&json!("new")));
-}
-
-#[test]
 fn strip_framing_unwraps_code_fences() {
     let raw = "```json\n{\"path\":\"/tmp/x\"}\n```";
     let stripped = strip_framing(raw);
@@ -217,39 +198,6 @@ async fn registry_execute_applies_aliases_and_coercion() {
     let args = seen.lock().unwrap().clone().expect("tool should see args");
     assert_eq!(args.get("path"), Some(&json!("/tmp/x")), "{args}");
     assert_eq!(args.get("limit"), Some(&json!(7)), "{args}");
-}
-
-#[tokio::test]
-async fn session_tools_share_one_ledger() {
-    let dir = tempfile::tempdir().unwrap();
-    let p = dir.path().join("note.txt");
-    std::fs::write(&p, "hello\n").unwrap();
-    let ledger = Arc::new(FileLedger::new());
-    let reg = Registry::new(vec![
-        Arc::new(ReadTool::new(ledger.clone())),
-        Arc::new(WriteTool::new(ledger.clone())),
-        Arc::new(EditTool::new(ledger.clone())),
-    ]);
-    let ctx = ToolContext {
-        cwd: dir.path().to_path_buf(),
-        ..ToolContext::default()
-    };
-    let out = ToolExecutor::execute(&reg, &ctx, "read", json!({"path": "note.txt"})).await;
-    assert!(!out.is_error, "{out:?}");
-    assert!(
-        ledger.get(&p).is_some(),
-        "read must record into the session ledger"
-    );
-    for content in ["hello\nworld\n", "hello\nworld\nagain\n"] {
-        let out = ToolExecutor::execute(
-            &reg,
-            &ctx,
-            "write",
-            json!({"path": "note.txt", "content": content}),
-        )
-        .await;
-        assert!(!out.is_error, "{out:?}");
-    }
 }
 
 #[test]

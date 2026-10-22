@@ -1,14 +1,10 @@
-pub mod edit;
-pub mod edit_diff;
 pub mod images;
 pub mod ledger;
-pub mod read;
 pub mod shell;
 pub mod stats;
 pub mod truncate;
 pub mod video_sheet;
 pub mod view;
-pub mod write;
 
 use std::sync::Arc;
 
@@ -18,16 +14,13 @@ pub use gray_core::agent::Tool;
 use gray_core::agent::{ToolContext, ToolExecutor, ToolOutput};
 use gray_core::message::ToolDef;
 pub(crate) use gray_core::tool_out::{
-    fail, finish, get_opt_bool, get_opt_u64, get_str, resolve_path,
+    fail, finish, get_opt_u64, get_str, resolve_path,
 };
 use serde_json::Value;
 
-pub use edit::EditTool;
 pub use ledger::{FileLedger, LedgerEntry};
-pub use read::ReadTool;
 pub use shell::spawn::PluginEnv;
 pub use shell::tools::bash::BashTool;
-pub use write::WriteTool;
 
 #[derive(Default)]
 pub struct Registry {
