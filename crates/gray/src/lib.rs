@@ -260,7 +260,9 @@ async fn build_agent_with(
     let build_started = std::time::Instant::now();
     let dynamic = if config.uses_plugin_credentials() {
         let home = setup::gray_home()?;
-        Some(crate::providers::connect_dynamic_provider(config, &home).await?)
+        let dynamic = crate::providers::connect_dynamic_provider(config, &home).await?;
+        crate::setup::context::warm_plugin_model_context(config).await;
+        Some(dynamic)
     } else {
         None
     };

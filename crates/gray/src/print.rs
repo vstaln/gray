@@ -955,6 +955,12 @@ async fn run_print_inner(
         });
     }
 
+    // Plugin providers: same gap, filled from the provider's own catalog —
+    // awaited, since the running row below records the ceiling.
+    if config.uses_plugin_credentials() && config.context_window.is_none() {
+        crate::setup::context::warm_plugin_model_context(config).await;
+    }
+
     let steering = json.is_some() && steer_enabled();
     match json.as_deref() {
         Some(output) if crate::ask::json_enabled() || steering => {

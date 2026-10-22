@@ -577,7 +577,6 @@ pub(crate) fn fetch_plugin_provider_models(
 async fn plugin_models_rpc(
     installed: &crate::providers::InstalledProvider,
 ) -> Vec<(String, String)> {
-    use crate::providers::registry::ProviderRpc;
     let runtime = match crate::providers::catalog::live_runtime_for(installed) {
         Some(live) => live,
         None => match crate::providers::ProviderRuntime::start(installed.clone()).await {
@@ -585,6 +584,49 @@ async fn plugin_models_rpc(
             Err(_) => return Vec::new(),
         },
     };
+    plugin_models_on(&runtime, installed).await
+}
+
+/// A plugin-only model id (absent from the LiteLLM/models.dev caches) only
+/// learns its context window from the provider's own catalog, which used to
+/// be fetched solely by the model picker — so bare `gray -p` sized compaction
+/// off the 256k fallback. Ask the catalog before the window resolves, only on
+/// a cache miss (a known model never starts the sidecar), and persist it.
+pub(crate) async fn warm_plugin_model_context(config: &crate::Config) {
+    let Some(model) = config.model.as_deref().filter(|m| !m.is_empty()) else {
+        return;
+    };
+    if crate::config::offline() || super::known_model_context(model).is_some() {
+        return;
+    }
+    let Some(installed) = crate::setup::catalog::gray_home()
+        .ok()
+        .and_then(|home| crate::providers::resolve_provider_connection(config, &home))
+    else {
+        return;
+    };
+    let started = std::time::Instant::now();
+    let fetch = async {
+        let runtime = crate::providers::catalog::shared_runtime(installed.clone()).await.ok()?;
+        Some(plugin_models_on(&runtime, &installed).await)
+    };
+    let fetched = tokio::time::timeout(std::time::Duration::from_secs(10), fetch).await;
+    log::debug!(
+        target: "gray_timing",
+        "plugin model catalog warm model={model} found={} elapsed_ms={}",
+        super::known_model_context(model).is_some(),
+        started.elapsed().as_millis()
+    );
+    if !matches!(fetched, Ok(Some(_))) {
+        log::warn!(target: "gray_config", "plugin model catalog unavailable; {model} context falls back to the default window");
+    }
+}
+
+async fn plugin_models_on(
+    runtime: &crate::providers::ProviderRuntime,
+    installed: &crate::providers::InstalledProvider,
+) -> Vec<(String, String)> {
+    use crate::providers::registry::ProviderRpc;
     let credential = crate::setup::catalog::auth_store_path()
         .ok()
         .and_then(|path| {
@@ -620,6 +662,7 @@ async fn plugin_models_rpc(
     for row in &rows {
         row.register();
     }
+    save_models_cache_to_disk();
     let list_key = crate::setup::catalog::plugin_models_key(&installed.provider_id());
     if !rows.is_empty() {
         save_provider_model_rows(&list_key, rows.clone());
