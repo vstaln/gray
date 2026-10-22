@@ -4597,9 +4597,15 @@ fn snippet(text: &str, q: &str, width: usize) -> Option<String> {
     Some(out)
 }
 
-/// First `n` chars of `text`, flattened to one line.
+/// First `n` chars of `text`, flattened to one line with markdown
+/// emphasis/code markers dropped (notification bodies are plain text).
 fn preview(text: &str, n: usize) -> String {
-    let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let flat = text
+        .split_whitespace()
+        .map(|w| w.trim_start_matches('#').replace(['*', '`'], ""))
+        .filter(|w| !w.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
     if flat.chars().count() <= n {
         return flat;
     }
