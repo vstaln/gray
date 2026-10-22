@@ -109,13 +109,6 @@ pub(crate) const REGISTRY: &[CmdDef] = &[
         surface: CmdSurface::Local,
     },
     CmdDef {
-        name: "feedback",
-        desc: "send feedback",
-        aliases: &[],
-        scope: CmdScope::Global,
-        surface: CmdSurface::Text,
-    },
-    CmdDef {
         name: "theme",
         desc: "pick a color theme (~/.gray/themes/*.json; /theme new <name>)",
         aliases: &["themes"],
@@ -163,13 +156,6 @@ pub(crate) const REGISTRY: &[CmdDef] = &[
         aliases: &[],
         scope: CmdScope::Global,
         surface: CmdSurface::Interactive,
-    },
-    CmdDef {
-        name: "hehe",
-        desc: "something funny",
-        aliases: &[],
-        scope: CmdScope::Conversation,
-        surface: CmdSurface::Local,
     },
     CmdDef {
         name: "help",
@@ -592,9 +578,7 @@ pub enum ReplCommand {
 
     Copy,
 
-    Feedback(Option<String>),
 
-    Hehe,
 
     Theme(Option<String>),
 
@@ -728,9 +712,7 @@ pub fn parse_command(line: &str) -> ReplCommand {
         Some("jobs") => ReplCommand::Jobs,
         Some("gateway") => ReplCommand::Gateway(opt(rest)),
         Some("copy") => ReplCommand::Copy,
-        Some("feedback") => ReplCommand::Feedback(opt(rest)),
         Some("help") => ReplCommand::Help,
-        Some("hehe") => ReplCommand::Hehe,
         Some("theme") => ReplCommand::Theme(opt(rest)),
         Some("intro") => ReplCommand::Intro(opt(rest)),
         Some("hotkeys") => ReplCommand::Keys(opt(rest)),

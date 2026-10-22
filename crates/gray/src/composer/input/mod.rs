@@ -16,9 +16,9 @@ pub(crate) use attach::{
 pub(crate) use clipboard::paste_from_system_clipboard;
 
 #[cfg(unix)]
-pub(crate) fn stdin_gone() -> bool {
+fn fd_dead(fd: i32) -> bool {
     let mut pfd = libc::pollfd {
-        fd: libc::STDIN_FILENO,
+        fd,
         events: libc::POLLIN,
         revents: 0,
     };
@@ -27,9 +27,38 @@ pub(crate) fn stdin_gone() -> bool {
     r > 0 && pfd.revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL) != 0
 }
 
+#[cfg(unix)]
+pub(crate) fn stdin_gone() -> bool {
+    fd_dead(libc::STDIN_FILENO)
+}
+
 #[cfg(not(unix))]
 pub(crate) fn stdin_gone() -> bool {
     false
+}
+
+/// A single `poll` sample can flash POLLERR/POLLNVAL transiently (fd churn
+/// around terminal handoffs); only treat the tty as dead when the flags
+/// persist. ~250ms is still far faster than the EIO spin this prevents.
+#[cfg(unix)]
+fn fd_dead_confirmed(fd: i32) -> bool {
+    for _ in 0..3 {
+        if !fd_dead(fd) {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(80));
+    }
+    true
+}
+
+#[cfg(unix)]
+pub(crate) fn stdin_gone_confirmed() -> bool {
+    fd_dead_confirmed(libc::STDIN_FILENO)
+}
+
+#[cfg(not(unix))]
+pub(crate) fn stdin_gone_confirmed() -> bool {
+    stdin_gone()
 }
 
 pub(crate) fn watch_dead_stdin() {
@@ -41,12 +70,14 @@ pub(crate) fn watch_dead_stdin() {
     std::thread::spawn(|| {
         loop {
             std::thread::sleep(Duration::from_millis(500));
-            if stdin_gone() {
+            if stdin_gone_confirmed() {
+                log::warn!("stdin watchdog: tty reads dead persistently — raising SIGHUP");
                 #[cfg(unix)]
                 unsafe {
                     libc::raise(libc::SIGHUP)
                 };
                 std::thread::sleep(Duration::from_secs(2));
+                log::error!("stdin watchdog: hangup policy did not exit — hard exit 129");
                 std::process::exit(129);
             }
         }
@@ -282,7 +313,7 @@ pub(crate) fn read_line(
     let mut needs_draw = true;
     let mut quit_arm: QuitArm = None;
     loop {
-        if stdin_gone() {
+        if stdin_gone_confirmed() {
             return Ok(None);
         }
 

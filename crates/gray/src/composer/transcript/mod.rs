@@ -72,23 +72,9 @@ pub(crate) fn cap_history_entries(entries: &mut Vec<super::TranscriptEntry>) {
     }
 }
 
-pub(crate) fn drop_mascot_entry(entries: &mut Vec<super::TranscriptEntry>) -> bool {
-    match entries
-        .iter()
-        .rposition(|e| matches!(e, super::TranscriptEntry::Mascot))
-    {
-        Some(i) => {
-            entries.remove(i);
-            true
-        }
-        None => false,
-    }
-}
-
 pub(crate) fn layout_history(
     entries: &[super::TranscriptEntry],
     w: usize,
-    mascot_h: u16,
 ) -> Vec<Line<'static>> {
     use super::TranscriptEntry;
     let mut out: Vec<Line<'static>> = Vec::new();
@@ -132,14 +118,6 @@ pub(crate) fn layout_history(
                     thinking_run_rows(text, prose_width(w), false),
                 );
             }
-            TranscriptEntry::Mascot => {
-                let art = crate::mascot::mascot_lines(
-                    u16::try_from(w).unwrap_or(u16::MAX),
-                    mascot_h,
-                    Some(w),
-                );
-                place(&mut out, &mut owed, art.unwrap_or_default());
-            }
             TranscriptEntry::Gap(_) => owed = true,
         }
     }
@@ -157,13 +135,12 @@ pub(crate) fn layout_history(
 pub(crate) fn layout_history_tail(
     entries: &[super::TranscriptEntry],
     w: usize,
-    mascot_h: u16,
     need: usize,
 ) -> Vec<Line<'static>> {
     let mut take = 8usize;
     loop {
         let start = entries.len().saturating_sub(take);
-        let out = layout_history(&entries[start..], w, mascot_h);
+        let out = layout_history(&entries[start..], w);
         if start == 0 || out.len() > need {
             return out;
         }

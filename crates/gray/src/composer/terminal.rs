@@ -275,6 +275,12 @@ where
     where
         F: FnOnce(&mut Frame),
     {
+        // A 0×0 viewport (hidden pane, transient zero-size resize) hands the
+        // callback an empty buffer — any unconditional write past row 0
+        // panics on index-out-of-bounds. Nothing can be painted anyway.
+        if self.viewport_area.is_empty() {
+            return Ok(());
+        }
         let mut frame = self.get_frame();
         render_callback(&mut frame);
 

@@ -41,8 +41,7 @@ pub(crate) fn is_turn_local_command(
         | super::ReplCommand::Reload
         | super::ReplCommand::Intro(_)
         | super::ReplCommand::Gateway(_)
-        | super::ReplCommand::Hehe => true,
-        super::ReplCommand::Unknown(_) => plugin_turn_local_args(text, hooks).is_some(),
+        | super::ReplCommand::Unknown(_) => plugin_turn_local_args(text, hooks).is_some(),
         _ => false,
     }
 }
@@ -161,23 +160,6 @@ fn run_turn_local_command(ctx: &TurnLocalCommands, text: &str) {
                 }
             }
         }
-        super::ReplCommand::Hehe => {
-            let reverting = crate::mascot::mascot_shown();
-            let shown = {
-                let mut t = ctx.tui.lock().expect("tui lock");
-                if reverting {
-                    t.pop_mascot()
-                } else {
-                    t.push_mascot()
-                }
-            };
-            if !shown && !reverting {
-                super::say(
-                    Some(&ctx.tui),
-                    "graychan needs a truecolor terminal and at least 20x10 cells",
-                );
-            }
-        }
         super::ReplCommand::Unknown(cmd) => {
             let Some((name, argv)) = super::split_plugin_command(&cmd) else {
                 return;
@@ -244,7 +226,7 @@ pub(crate) fn spawn_key_watcher_with_typing(
                 return;
             }
 
-            if crate::composer::input::stdin_gone() {
+            if crate::composer::input::stdin_gone_confirmed() {
                 return;
             }
             // A live ask modal (tool consent, request_user_input) reads

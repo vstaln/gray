@@ -169,7 +169,6 @@ pub(crate) mod prompt_turn;
 mod session;
 pub(crate) mod status;
 pub(crate) mod usage_panel;
-mod user_cmds;
 
 pub(crate) use commands::{REGISTRY, completion_fill, completion_matches_dyn, is_builtin_command};
 pub use commands::{ReplCommand, ResumeArgs, SysAction, parse_command};
@@ -187,7 +186,6 @@ pub(crate) use status::{
     SessionTotals, handle_compact, handle_context_window, handle_copy, handle_usage, turn_footer,
     turn_tokens_per_second,
 };
-pub(crate) use user_cmds::handle_feedback;
 
 pub(crate) type TuiOpt = Option<(
     crate::composer::SharedTui,
@@ -530,8 +528,6 @@ pub async fn run_repl_mode(
         gray_plugin::builder::set_autostart(true);
     }
 
-    crate::composer::input::watch_dead_stdin();
-
     crate::setup::set_user_context_window(config.context_window);
     crate::setup::set_user_reserve_tokens(config.context_reserve);
     crate::setup::set_user_keep_recent_tokens(config.context_keep);
@@ -570,6 +566,11 @@ pub async fn run_repl_mode(
 
     tokio::spawn(spawn_ctrl_c_policy());
     tokio::spawn(spawn_hangup_policy());
+
+    // The watchdog raises SIGHUP — only arm it once the hangup policy owns
+    // the signal disposition, else a dead-at-startup tty hits the default
+    // disposition and kills the process with no cleanup or exit hint.
+    crate::composer::input::watch_dead_stdin();
 
     crate::ask::install(None, interactive);
 

@@ -182,24 +182,6 @@ impl Tui {
         let _ = std::io::stdout().flush();
     }
 
-    pub(crate) fn push_mascot(&mut self) -> bool {
-        let w = self.width().max(10);
-        let cols = u16::try_from(w).unwrap_or(u16::MAX);
-        let rows = self.last_height.max(1);
-        let Some(lines) = crate::mascot::mascot_lines(cols, rows, Some(w)) else {
-            return false;
-        };
-        crate::mascot::set_mascot_shown(true);
-        self.ensure_gap();
-        self.history_entries
-            .push(crate::composer::TranscriptEntry::Mascot);
-        cap_history_entries(&mut self.history_entries);
-        self.emit_styled(lines, Vec::new());
-        self.ensure_gap();
-        let _ = std::io::stdout().flush();
-        true
-    }
-
     pub fn push_dim(&mut self, line: String) {
         let lines: Vec<Line<'static>> = line
             .split('\n')

@@ -37,43 +37,22 @@ pub fn atomic_write_json(path: &Path, value: &impl serde::Serialize) -> anyhow::
     result
 }
 
-pub fn redact_secrets(text: &str, home: &std::path::Path) -> String {
-    let mut out = text.to_string();
-    for secret in known_secrets(home) {
-        out = out.replace(&secret, gray_core::redaction::REDACTED);
-    }
-    let redacted = gray_core::redaction::redact_for_disclosure(&out);
-    if redacted.has_secret() {
-        redacted.into_text()
-    } else {
-        out
-    }
-}
-
-fn known_secrets(home: &std::path::Path) -> Vec<String> {
-    let Ok(raw) = std::fs::read_to_string(home.join("auth.json")) else {
-        return Vec::new();
-    };
-    let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw) else {
-        return Vec::new();
-    };
-    let mut found = Vec::new();
-    collect_strings(&v, &mut found);
-    found.retain(|s| s.chars().count() >= 16 && !s.chars().any(char::is_whitespace));
-    found.sort_by_key(|s| std::cmp::Reverse(s.len()));
-    found.dedup();
-    found
-}
-
-fn collect_strings(v: &serde_json::Value, out: &mut Vec<String>) {
-    match v {
-        serde_json::Value::String(s) => out.push(s.clone()),
-        serde_json::Value::Array(a) => a.iter().for_each(|x| collect_strings(x, out)),
-        serde_json::Value::Object(m) => m.values().for_each(|x| collect_strings(x, out)),
-        _ => {}
-    }
-}
 
 #[path = "util_tests.rs"]
 #[cfg(test)]
 mod tests;
+
+/// Open `url` in the system browser, best-effort (device-flow OAuth
+/// verification pages; was `feedback::open_in_browser`).
+pub fn open_in_browser(url: &str) {
+    let spawn = |prog: &str, args: &[&str]| {
+        std::process::Command::new(prog).args(args).spawn().is_ok()
+    };
+    if cfg!(target_os = "macos") {
+        let _ = spawn("open", &[url]);
+    } else if cfg!(target_os = "windows") {
+        let _ = spawn("cmd", &["/c", "start", url]);
+    } else {
+        let _ = spawn("xdg-open", &[url]);
+    }
+}

@@ -1000,3 +1000,29 @@ fn fuzz_band_ops_never_tear_the_transcript() {
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
+
+#[test]
+fn an_empty_viewport_skips_the_draw_callback() {
+    let (mut term, _tape) = term(16, 0, Scrollback::Regions);
+    term.set_viewport_area(Rect::new(0, 0, 0, 0));
+    let mut ran = false;
+    term.draw(|frame| {
+        ran = true;
+        frame.buffer.set_string(0, 1, "boom", Style::default());
+    })
+    .unwrap();
+    assert!(!ran);
+}
+
+#[test]
+fn a_live_viewport_still_runs_the_draw_callback() {
+    let (mut term, _tape) = term(16, 0, Scrollback::Regions);
+    term.set_viewport_height(4, 0, Size::new(W, 16)).unwrap();
+    let mut ran = false;
+    term.draw(|frame| {
+        assert!(!frame.area().is_empty());
+        ran = true;
+    })
+    .unwrap();
+    assert!(ran);
+}

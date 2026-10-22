@@ -79,7 +79,6 @@ impl BackgroundSnapshot {
             crate::composer::transcript::layout_history_tail(
                 &self.history_entries,
                 w,
-                rows,
                 usize::from(rows),
             )
         };

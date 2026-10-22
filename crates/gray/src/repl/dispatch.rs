@@ -134,28 +134,6 @@ pub(crate) async fn dispatch_command(
             }
             Flow::Continue
         }
-        ReplCommand::Hehe => {
-            let tui_shared = tui.as_ref().map(|(s, _)| s);
-            let reverting = crate::mascot::mascot_shown();
-            let shown = match tui_shared {
-                Some(shared) => {
-                    let mut t = shared.lock().expect("tui lock");
-                    if reverting {
-                        t.pop_mascot()
-                    } else {
-                        t.push_mascot()
-                    }
-                }
-                None => crate::mascot::print_banner(),
-            };
-            if !shown && !reverting {
-                say(
-                    tui_shared,
-                    "graychan needs a truecolor terminal and at least 20x10 cells",
-                );
-            }
-            Flow::Continue
-        }
         ReplCommand::Resume(args) => {
             handle_resume(
                 config,
@@ -390,10 +368,6 @@ pub(crate) async fn dispatch_command(
         }
         ReplCommand::Reload => {
             super::customize::handle_reload(tui.as_ref().map(|(s, _)| s));
-            Flow::Continue
-        }
-        ReplCommand::Feedback(text) => {
-            handle_feedback(text, config, session_state, tui.as_ref().map(|(s, _)| s));
             Flow::Continue
         }
         ReplCommand::ProviderCommand {

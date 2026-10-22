@@ -526,7 +526,7 @@ fn the_backdrop_keeps_the_live_margins() {
         TranscriptEntry::Gap(1),
     ];
     let welcome = crate::composer::build_welcome_lines(80).len();
-    let rows = layout_history(&entries, 80, 24);
+    let rows = layout_history(&entries, 80);
     let body = &rows[welcome..];
     assert!(
         !transcript_row_is_blank(&body[0]),
@@ -781,9 +781,9 @@ fn backdrop_tail_layout_matches_the_full_layout_tail() {
         });
     }
     let text = |rows: &[Line<'static>]| rows.iter().map(|l| l.to_string()).collect::<Vec<_>>();
-    let full = text(&layout_history(&entries, 80, 24));
+    let full = text(&layout_history(&entries, 80));
     for need in [1, 5, 24, 45, 120] {
-        let tail = text(&layout_history_tail(&entries, 80, 24, need));
+        let tail = text(&layout_history_tail(&entries, 80, need));
         assert!(tail.len() > need && tail.len() < full.len(), "need={need}");
         assert_eq!(
             tail[tail.len() - need..],
@@ -793,8 +793,8 @@ fn backdrop_tail_layout_matches_the_full_layout_tail() {
     }
     let short = &entries[..4];
     assert_eq!(
-        text(&layout_history_tail(short, 80, 24, 500)),
-        text(&layout_history(short, 80, 24)),
+        text(&layout_history_tail(short, 80, 500)),
+        text(&layout_history(short, 80)),
         "a transcript shorter than the screen lays out whole"
     );
 }

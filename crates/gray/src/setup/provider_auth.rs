@@ -50,7 +50,7 @@ pub(crate) async fn run_plugin_login(
         verification_uri: operation.verification_uri.clone(),
     });
 
-    crate::feedback::open_in_browser(&operation.verification_uri);
+    crate::util::open_in_browser(&operation.verification_uri);
 
     let mut delay = std::time::Duration::from_millis(1_000);
     loop {

@@ -468,8 +468,6 @@ pub enum TranscriptEntry {
         hyperlinks: Vec<HyperlinkTarget>,
     },
 
-    Mascot,
-
     ThinkingRun(String),
     Gap(usize),
 }
@@ -1278,15 +1276,6 @@ impl Tui {
                     );
                     self.emit_rows(rows, Some(crate::theme::theme().window_bg));
                 }
-                TranscriptEntry::Mascot => {
-                    if let Some(lines) = crate::mascot::mascot_lines(
-                        u16::try_from(w).unwrap_or(u16::MAX),
-                        self.last_height.max(1),
-                        Some(w),
-                    ) {
-                        self.emit_styled(lines, Vec::new());
-                    }
-                }
                 TranscriptEntry::Gap(_) => self.gap_owed = true,
             }
         }
@@ -1294,15 +1283,6 @@ impl Tui {
         self.end_insert_batch();
 
         let _ = self.draw();
-    }
-
-    pub(crate) fn pop_mascot(&mut self) -> bool {
-        crate::mascot::set_mascot_shown(false);
-        if !crate::composer::transcript::drop_mascot_entry(&mut self.history_entries) {
-            return false;
-        }
-        self.reflow_on_resize(self.last_width);
-        true
     }
 
     pub(crate) fn retract_slash_echo(&mut self, cmd: &str) -> bool {
@@ -1363,7 +1343,6 @@ impl Tui {
         entries.iter().enumerate().all(|(i, e)| match e {
             TranscriptEntry::Welcome
             | TranscriptEntry::Gap(_)
-            | TranscriptEntry::Mascot
             | TranscriptEntry::StyledLines { .. } => true,
             TranscriptEntry::UserPrompt(text, _) => {
                 text.starts_with('/')

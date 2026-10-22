@@ -132,7 +132,6 @@ async fn run_command(
             "plugin" => plugin_result(&rest).await,
             "plugins" => Ok(CommandResult::text(crate::plugin_status::table().await)),
             "update" => update_result(&rest).await,
-            "feedback" => feedback_result(config, home, &rest),
             "agentsmd" => agentsmd_result(&rest),
             "reload" => Ok(CommandResult::text(
                 "config reloads on the next turn in this conversation",
@@ -907,35 +906,6 @@ async fn update_result(rest: &str) -> Result<CommandResult, CmdError> {
         }
         other => Err(CmdError::args(format!(
             "unknown `/update {other}` (status|install|auto on|off|status)"
-        ))),
-    }
-}
-
-fn feedback_result(config: &Config, home: &Path, rest: &str) -> Result<CommandResult, CmdError> {
-    let raw = rest.trim();
-    if raw.is_empty() {
-        return Err(CmdError::args(
-            "usage: /feedback <what happened> — saves locally and gives a prefilled issue link",
-        ));
-    }
-    let title = crate::feedback::build_title(raw);
-    let version = env!("CARGO_PKG_VERSION");
-    let os = format!("{} / {}", std::env::consts::OS, std::env::consts::ARCH);
-    let model = config.model.as_deref().unwrap_or("no model");
-    let session = pointed_session(home)
-        .map(|s| s.as_str().to_string())
-        .unwrap_or_else(|| "none".to_string());
-    let body =
-        crate::feedback::build_body(raw, version, &os, model, &session, "gateway", "gateway");
-    let url = crate::feedback::issue_url(&title, &body);
-    let dir = home.join("feedback");
-    match crate::feedback::save_feedback(&dir, &title, &body, &crate::feedback::timestamp()) {
-        Ok(path) => Ok(CommandResult::text(format!(
-            "saved {}\nfile an issue: {url}",
-            path.display()
-        ))),
-        Err(e) => Ok(CommandResult::text(format!(
-            "could not save feedback ({e}) — file manually: {url}"
         ))),
     }
 }
