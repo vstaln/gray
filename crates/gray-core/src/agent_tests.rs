@@ -3106,86 +3106,8 @@ async fn tool_after_replacement_lands_in_history() {
     assert_eq!(results, vec!["RAW [hook note]"]);
 }
 
-#[tokio::test]
-async fn bench_nudges_appends_a_budget_line_to_requests_not_history() {
-    let provider = FakeProvider::new(vec![end_script()]);
-    let seen = provider.seen_requests();
-    let mut agent = Agent::new(
-        Box::new(provider),
-        Arc::new(FakeExecutor::new(ToolOutput::ok(""))),
-    );
-    agent.set_bench_nudges(true);
-    agent
-        .run(Message::user("hi"), ToolContext::default())
-        .await
-        .expect("run should succeed");
 
-    let reqs = seen.lock().expect("seen lock");
-    let last = reqs[0].1.last().expect("a final request message");
-    assert!(
-        last.text_content().contains("[harness] request 1"),
-        "expected ephemeral budget line in request, got {last:?}"
-    );
-    assert!(
-        !agent
-            .messages()
-            .iter()
-            .any(|m| m.text_content().contains("[harness]")),
-        "budget line must not persist into history"
-    );
-}
 
-#[tokio::test]
-async fn bench_nudges_finish_gate_asks_for_verification_once() {
-    let provider = FakeProvider::new(vec![tool_script("call_1"), end_script(), end_script()]);
-    let seen = provider.seen_requests();
-    let mut agent = Agent::new(
-        Box::new(provider),
-        Arc::new(FakeExecutor::new(ToolOutput::ok("done"))),
-    )
-    .with_tools(vec![tool_def()]);
-    agent.set_bench_nudges(true);
-    agent
-        .run(Message::user("go"), ToolContext::default())
-        .await
-        .expect("run should succeed");
-
-    assert_eq!(seen.lock().expect("seen lock").len(), 3);
-    let nudges = agent
-        .messages()
-        .iter()
-        .filter(|m| m.text_content().contains("verify the deliverable"))
-        .count();
-    assert_eq!(nudges, 1, "finish gate must nudge exactly once");
-}
-
-#[tokio::test]
-async fn bench_nudges_thrash_mark_adds_converge_hint() {
-    let provider = FakeProvider::new(vec![
-        tool_script("a"),
-        tool_script("b"),
-        end_script(),
-        end_script(),
-    ]);
-    let seen = provider.seen_requests();
-    let mut agent = Agent::new(
-        Box::new(provider),
-        Arc::new(FakeExecutor::new(ToolOutput::ok("x"))),
-    )
-    .with_tools(vec![tool_def()]);
-    agent.set_bench_nudges(true);
-    agent.set_bench_thrash_marks(vec![2]);
-    agent
-        .run(Message::user("go"), ToolContext::default())
-        .await
-        .expect("run should succeed");
-
-    let reqs = seen.lock().expect("seen lock");
-    let note1 = reqs[0].1.last().expect("note").text_content();
-    let note2 = reqs[1].1.last().expect("note").text_content();
-    assert!(!note1.contains("many requests used"), "early: {note1}");
-    assert!(note2.contains("many requests used"), "mark 2: {note2}");
-}
 
 #[test]
 fn soft_elide_keeps_the_measured_anchor_over_thinking_blobs() {

@@ -565,8 +565,7 @@ pub struct Agent {
     pub(crate) prefix_rewrite_ok: bool,
 
     pub(crate) lean_prompt: bool,
-    pub(crate) bench_nudges: bool,
-    pub(crate) bench_thrash_marks: Vec<u32>,
+
 }
 
 struct SharedProvider(Arc<dyn Provider>);
@@ -624,8 +623,7 @@ impl Agent {
             cache_stats: crate::cache_stats::CacheStats::default(),
             prefix_rewrite_ok: true,
             lean_prompt: false,
-            bench_nudges: false,
-            bench_thrash_marks: vec![60, 120],
+
         }
     }
 
@@ -660,16 +658,6 @@ impl Agent {
 
     pub fn set_lean_prompt(&mut self, lean: bool) {
         self.lean_prompt = lean;
-    }
-
-    pub fn set_bench_nudges(&mut self, on: bool) {
-        self.bench_nudges = on;
-    }
-
-    pub fn set_bench_thrash_marks(&mut self, marks: Vec<u32>) {
-        if !marks.is_empty() {
-            self.bench_thrash_marks = marks;
-        }
     }
 
     pub fn set_steer(&mut self, hook: SteerHook) {

@@ -1088,15 +1088,6 @@ async fn run_print_inner(
         anyhow::bail!("max wall time {max}s reached — stopping (--max-wall-secs SECS)");
     }
     let mut agent = build_agent(config, &cwd, Some(session_id.as_str())).await?;
-    if std::env::var_os("GRAY_BENCH_NUDGES").is_some() {
-        agent.set_bench_nudges(true);
-        if let Ok(v) = std::env::var("GRAY_THRASH_NUDGE_AT") {
-            let mut marks: Vec<u32> = v.split(',').filter_map(|s| s.trim().parse().ok()).collect();
-            marks.sort_unstable();
-            marks.dedup();
-            agent.set_bench_thrash_marks(marks);
-        }
-    }
     log::debug!(target: "gray_timing", "spawn agent_built elapsed_ms={}", crate::turn_caps::process_start().elapsed().as_millis());
 
     if let Some(out) = json.as_deref_mut() {
