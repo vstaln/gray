@@ -298,11 +298,6 @@ pub(crate) fn read_line(
 
     {
         let mut _tui = shared.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some((text, atts, pastes)) = _tui.stashed_draft.take() {
-            _tui.textarea.insert_str(&text);
-            _tui.attachments.extend(atts);
-            _tui.pending_pastes.extend(pastes);
-        }
         let _ = crossterm::execute!(std::io::stdout(), crossterm::event::EnableBracketedPaste);
         crossterm::terminal::enable_raw_mode()?;
         crossterm::execute!(std::io::stdout(), crossterm::cursor::Show)?;
@@ -317,7 +312,7 @@ pub(crate) fn read_line(
             return Ok(None);
         }
 
-        let (timeout, empty_draft) = {
+        let timeout = {
             let mut guard = shared.lock().expect("tui lock");
             let tui: &mut super::Tui = &mut guard;
             if tui.ask_modal.is_some() || tui.modal_open {
@@ -345,35 +340,14 @@ pub(crate) fn read_line(
                 needs_draw = false;
             }
 
-            let timeout = if let Some((_, deadline)) = tui.pending_resize {
-                let now = std::time::Instant::now();
-                if deadline > now {
-                    deadline - now
-                } else {
-                    Duration::from_millis(0)
-                }
-            } else {
-                Duration::from_millis(250)
-            };
-            let empty_draft = tui.textarea.is_empty()
-                && tui.attachments.is_empty()
-                && tui.pending_pastes.is_empty();
-            (timeout, empty_draft)
+            tui.pending_resize
+                .map_or(Duration::from_millis(250), |(_, deadline)| {
+                    deadline.saturating_duration_since(std::time::Instant::now())
+                })
         };
 
         if !poll(timeout)? {
-            // A mailbox/background wake preempts even a non-empty draft:
-            // park the draft, run the wake's turn, restore on reopen.
             if crate::host::wake_requested() {
-                if !empty_draft {
-                    let mut guard = shared.lock().expect("tui lock");
-                    guard.stashed_draft = Some((
-                        guard.textarea.text().to_string(),
-                        std::mem::take(&mut guard.attachments),
-                        std::mem::take(&mut guard.pending_pastes),
-                    ));
-                    guard.textarea.set_text("");
-                }
                 return Ok(Some((String::new(), Vec::new())));
             }
             continue;
