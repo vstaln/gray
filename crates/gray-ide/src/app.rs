@@ -3486,24 +3486,6 @@ impl GrayApp {
                 .as_ref()
                 .and_then(|id| self.store.state.project(id))
                 .map(|p| p.name.clone());
-            let hint = |action: &dyn Action, l: &str| {
-                let keys = key_hint(action, cx).unwrap_or_default();
-                let run = action.boxed_clone();
-                h_flex()
-                    .id(SharedString::from(format!("hint-{l}")))
-                    .w(px(240.))
-                    .h(px(30.))
-                    .px(px(10.))
-                    .gap_2()
-                    .text_size(px(12.5))
-                    .text_color(t.foreground.opacity(0.6))
-                    .cursor_pointer()
-                    .hover(|s| s.bg(t.foreground.opacity(0.05)).text_color(t.foreground))
-                    .active(|s| s.bg(t.foreground.opacity(0.10)))
-                    .on_click(move |_, window, cx| window.dispatch_action(run.boxed_clone(), cx))
-                    .child(div().flex_1().child(l.to_string()))
-                    .child(key_chip(&keys, &t, false))
-            };
             return motion::enter(
                 v_flex()
                     .flex_1()
@@ -3539,22 +3521,6 @@ impl GrayApp {
                             .max_w(px(640.))
                             .mt(px(14.))
                             .child(welcome_composer),
-                    )
-                    .child(
-                        v_flex()
-                            .mt(px(18.))
-                            .p(px(4.))
-                            .gap(px(2.))
-                            .border_1()
-                            .border_color(float_border(&t))
-                            .bg(t.popover)
-                            .shadow(hard_shadow(&t))
-                            .child(hint(&TogglePalette, "Command palette"))
-                            .child(hint(&FilePicker, "Open file"))
-                            .child(hint(&SearchThreads, "Search threads"))
-                            .child(hint(&ModelPicker, "Switch model"))
-                            .child(hint(&ToggleTerminal, "Terminal"))
-                            .child(hint(&ToggleDiff, "Diff")),
                     ),
                 "welcome-in",
                 motion::WELCOME_MS,
@@ -6631,7 +6597,7 @@ fn hex(v: u32) -> Hsla {
 pub fn apply_brand(cx: &mut App) {
     let dark = cx.theme().mode.is_dark();
     let t = Theme::global_mut(cx);
-    t.font_family = "Departure Mono".into();
+    t.font_family = "Plus Jakarta Sans".into();
     t.mono_font_family = "Departure Mono".into();
     t.font_size = px(14.);
     t.mono_font_size = px(12.5);

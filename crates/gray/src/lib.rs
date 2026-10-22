@@ -16,7 +16,6 @@ pub mod host;
 pub mod ide;
 pub mod keymap;
 pub mod logging;
-pub mod plugin_check;
 pub mod plugin_cli;
 pub(crate) mod plugin_status;
 pub mod print;

@@ -466,7 +466,14 @@ async fn run_plugin(cmd: gray::PluginCmd) -> anyhow::Result<()> {
 async fn run_plugin_inner(cmd: gray::PluginCmd) -> anyhow::Result<()> {
     use gray::PluginCmd;
     match cmd {
-        PluginCmd::Check { dir } => gray::plugin_check::check_plugin_dir(&dir).await,
+        PluginCmd::Check { dir } => {
+            gray::plugin_cli::forward(
+                &gray::plugin_cli::home()?,
+                "plugin-dev",
+                &["check".to_string(), dir],
+            )
+            .await
+        }
         PluginCmd::Capabilities { name, all } => {
             if all {
                 let name = name.as_deref().ok_or_else(|| {
