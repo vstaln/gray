@@ -833,7 +833,7 @@ impl GrayApp {
         if changed {
             self.scroll.scroll_to_bottom();
             cx.notify();
-        } else if !self.turns.is_empty() && self.ticks % 3 == 0 {
+        } else if !self.turns.is_empty() && self.ticks.is_multiple_of(3) {
             // Keep the elapsed-time label ticking between stream events
             // (and under reduced motion, when no animation frames run).
             cx.notify();
