@@ -924,6 +924,17 @@ fn command_segments(command: &str) -> Vec<Vec<&str>> {
         .collect()
 }
 
+const HEAD_WRAPPERS: &[&str] = &[
+    "sudo", "doas", "nice", "env", "timeout", "time", "command", "builtin", "exec", "xargs",
+    "watch", "stdbuf", "do", "then", "!",
+];
+
+fn is_command_position(ws: &[&str], i: usize) -> bool {
+    ws[..i].iter().all(|p| {
+        p.starts_with('-') || is_assignment(p) || is_duration(p) || HEAD_WRAPPERS.contains(p)
+    })
+}
+
 fn media_dump_refusal(command: &str, cwd: &Path) -> Option<String> {
     let whole_bare = command.split_whitespace().count() == 2;
     command_segments(command)
@@ -941,7 +952,7 @@ fn segment_dump_refusal(ws: &[&str], whole_bare: bool, cwd: &Path) -> Option<Str
         return None;
     }
     for (i, t) in ws.iter().enumerate() {
-        if !BYTE_DUMP_HEADS.contains(t) {
+        if !BYTE_DUMP_HEADS.contains(t) || !is_command_position(ws, i) {
             continue;
         }
         for arg in &ws[i + 1..] {

@@ -408,6 +408,10 @@ fn media_dump_refusal_covers_every_shape_the_claim_refuses() {
         "x && cat a.png",
         "cat *.png",
         "xxd a.png | head",
+        "sudo cat a.png",
+        "xargs cat a.png",
+        "timeout 5 cat a.png",
+        "env A=B cat a.png",
         "base64 a.png",
         "head -c 200 a.png",
         "cat -n a.png",
@@ -419,6 +423,10 @@ fn media_dump_refusal_covers_every_shape_the_claim_refuses() {
 
     for cmd in [
         "gray plugin a.png",
+        "grep -rn cat assets/logo.png",
+        "rg -l meta assets/a.jpg",
+        "sed -n 's/cat/x/p' notes.txt img.png",
+        "awk '{print $1}' cat img.png",
         "cat a.png",
         "cat missing.png",
         "cat notes.txt",
