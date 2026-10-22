@@ -5,11 +5,14 @@ use crate::provider::{self, MODES, PROVIDERS, ProviderEvent, Turn, TurnRequest};
 use crate::sessions::{self, GraySession};
 use crate::store::{Event, Item, Role, Store, new_id, now};
 use crate::workspace::{self, FileEntry};
+use gpui_kit::component::WindowExt;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::diff::{Diff, DiffFile, DiffState};
 use gpui_kit::component::input::{
     Editor, EditorState, Input, InputEvent, InputState, Textarea, TextareaState,
 };
+use gpui_kit::component::kbd::Kbd;
+use gpui_kit::component::notification::{Notification, NotificationType};
 use gpui_kit::component::text::TextView;
 use gpui_kit::component::{
     ActiveTheme, Icon, IconName, Selectable, Sizable, StyledExt, Theme, ThemeMode, h_flex, v_flex,
@@ -45,7 +48,8 @@ actions!(
         FocusComposer,
         EffortPicker,
         TogglePluginsPanel,
-        ToggleViewer
+        ToggleViewer,
+        SearchThreads
     ]
 );
 
@@ -70,6 +74,7 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("ctrl-shift-e", EffortPicker, None),
         KeyBinding::new("ctrl-shift-p", TogglePluginsPanel, None),
         KeyBinding::new("ctrl-shift-v", ToggleViewer, None),
+        KeyBinding::new("ctrl-shift-f", SearchThreads, None),
     ]);
 }
 
@@ -87,6 +92,7 @@ enum Panel {
 enum PaletteMode {
     Commands,
     Files,
+    Search,
 }
 
 #[derive(Clone, Debug)]
@@ -141,6 +147,9 @@ enum Cmd {
     SetLayout(String),
     SetTerminalPlacement(String),
     SetAutoAccept(bool),
+    OpenMessage(String, Option<usize>),
+    SetNotify(bool),
+    SearchThreads,
 }
 
 struct ActiveTurn {
@@ -196,6 +205,9 @@ pub struct GrayApp {
     branch: Option<String>,
     branches: Vec<String>,
     toast: Option<(String, bool)>,
+    toast_queue: Vec<(String, bool)>,
+    items_scroll: ScrollHandle,
+    scroll_target: Option<(String, usize, u8)>,
     state_file: Option<PathBuf>,
     last_snapshot: String,
     _subs: Vec<Subscription>,
@@ -321,6 +333,9 @@ impl GrayApp {
             branch: None,
             branches: Vec::new(),
             toast: None,
+            toast_queue: Vec::new(),
+            items_scroll: ScrollHandle::new(),
+            scroll_target: None,
             state_file: std::env::var_os("GRAY_IDE_STATE").map(PathBuf::from),
             last_snapshot: String::new(),
             _subs: subs,
@@ -356,12 +371,15 @@ impl GrayApp {
         app.refresh_workspace(cx);
         app.window_handle = Some(window.window_handle());
         app.composer.update(cx, |s, cx| s.focus(window, cx));
-        cx.spawn(async move |this, cx| {
+        cx.spawn_in(window, async move |this, cx| {
             loop {
                 cx.background_executor()
                     .timer(Duration::from_millis(33))
                     .await;
-                if this.update(cx, |app, cx| app.poll(cx)).is_err() {
+                if this
+                    .update_in(cx, |app, window, cx| app.poll(window, cx))
+                    .is_err()
+                {
                     break;
                 }
             }
@@ -446,8 +464,67 @@ impl GrayApp {
         }
     }
 
+    /// Queue an in-app toast; `poll` hands it to the window's notification
+    /// layer (it needs the `Window`, which most callers don't have).
     fn toast(&mut self, msg: impl Into<String>, error: bool) {
-        self.toast = Some((msg.into(), error));
+        let msg = msg.into();
+        self.toast = Some((msg.clone(), error));
+        self.toast_queue.push((msg, error));
+    }
+
+    /// Tell the user a background thread finished or needs approval: a
+    /// system notification (plus in-app toast) when the window is unfocused
+    /// or the thread isn't the one on screen. Opt-in via the `notify` setting.
+    fn notify_turn(
+        &self,
+        tid: &str,
+        body: String,
+        kind: NotificationType,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.store.state.setting("notify", "false") != "true" {
+            return;
+        }
+        let elsewhere = self.active_thread.as_deref() != Some(tid);
+        if window.is_window_active() && !elsewhere {
+            return;
+        }
+        let title = self
+            .store
+            .state
+            .thread(tid)
+            .map(|t| t.title.clone())
+            .unwrap_or_else(|| "Gray".into());
+        let id = tid.to_string();
+        let this = cx.entity().downgrade();
+        let note = Notification::new()
+            .with_type(kind)
+            .title(format!("Gray · {title}"))
+            .message(body)
+            .in_app_and_system()
+            .on_click(move |_, window, cx| {
+                window.activate_window();
+                let id = id.clone();
+                let _ = this.update(cx, |app, cx| {
+                    app.focus_thread(&id, cx);
+                });
+            });
+        window.push_notification(note, cx);
+    }
+
+    fn focus_thread(&mut self, tid: &str, cx: &mut Context<Self>) {
+        let Some(pid) = self.store.state.thread(tid).map(|t| t.project_id.clone()) else {
+            return;
+        };
+        if self.active_thread.as_deref() != Some(tid) {
+            self.active_project = Some(pid);
+            self.active_thread = Some(tid.to_string());
+            self.tabs.clear();
+            self.active_tab = None;
+            self.refresh_workspace(cx);
+        }
+        cx.notify();
     }
 
     fn defaults(&self) -> (String, String, String) {
@@ -633,7 +710,7 @@ impl GrayApp {
         self.run(c, window, cx);
     }
 
-    fn poll(&mut self, cx: &mut Context<Self>) {
+    fn poll(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.ticks += 1;
         if let Some(path) = std::env::var_os("GRAY_IDE_CMDS")
             && let Ok(text) = std::fs::read_to_string(&path)
@@ -710,6 +787,13 @@ impl GrayApp {
                     at: now(),
                 });
             } else {
+                self.notify_turn(
+                    &tid,
+                    format!("Approve: {label}"),
+                    NotificationType::Warning,
+                    window,
+                    cx,
+                );
                 self.pending_approval = Some((tid, label));
             }
         }
@@ -743,6 +827,17 @@ impl GrayApp {
         for (tid, result) in finished {
             changed = true;
             let text = self.turns.remove(&tid).map(|a| a.text).unwrap_or_default();
+            let body = match &result {
+                Err(e) => format!("Turn failed: {}", e.lines().next().unwrap_or("")),
+                Ok(()) if text.trim().is_empty() => "Finished".to_string(),
+                Ok(()) => preview(text.trim(), 120),
+            };
+            let kind = if result.is_ok() {
+                NotificationType::Success
+            } else {
+                NotificationType::Error
+            };
+            self.notify_turn(&tid, body, kind, window, cx);
             if !text.trim().is_empty() {
                 self.persist(Event::MessageAdded {
                     thread_id: tid.clone(),
@@ -829,10 +924,52 @@ impl GrayApp {
                 self.terminal_lines.drain(..cut);
             }
         }
+        for (msg, err) in std::mem::take(&mut self.toast_queue) {
+            let kind = if err {
+                NotificationType::Error
+            } else {
+                NotificationType::Info
+            };
+            window.push_notification(Notification::new().with_type(kind).message(msg), cx);
+        }
         if changed {
             self.scroll.scroll_to_bottom();
             cx.notify();
         }
+        self.apply_scroll_target(cx);
+    }
+
+    /// Scroll the timeline so a search hit is at the top. Item bounds only
+    /// exist after the thread has been laid out, so retry for a few frames.
+    fn apply_scroll_target(&mut self, cx: &mut Context<Self>) {
+        let Some((tid, ix, tries)) = self.scroll_target.clone() else {
+            return;
+        };
+        if self.active_thread.as_deref() != Some(tid.as_str()) || tries > 30 {
+            self.scroll_target = None;
+            return;
+        }
+        if tries < 2 {
+            // Bounds still describe the previous layout until it re-renders.
+            self.scroll_target = Some((tid, ix, tries + 1));
+            cx.notify();
+            return;
+        }
+        let (Some(item), Some(first)) = (
+            self.items_scroll.bounds_for_item(ix),
+            self.items_scroll.bounds_for_item(0),
+        ) else {
+            self.scroll_target = Some((tid, ix, tries + 1));
+            cx.notify();
+            return;
+        };
+        // Offset from the top of the first item is layout-stable, so this
+        // works no matter where the timeline is currently scrolled.
+        let max = self.scroll.max_offset().y;
+        let y = (item.top() - first.top() - px(16.)).max(px(0.)).min(max);
+        self.scroll.set_offset(point(px(0.), -y));
+        self.scroll_target = None;
+        cx.notify();
     }
 
     fn run_terminal(&mut self, cmd: String, cx: &mut Context<Self>) {
@@ -895,16 +1032,20 @@ impl GrayApp {
             }
             return items;
         }
+        if self.palette_mode == PaletteMode::Search {
+            return self.search_items(&q);
+        }
         let k = |s: &str| s.to_string();
-        items.push((k("New thread"), k("Ctrl+N"), Cmd::NewThread));
-        items.push((k("Toggle sidebar"), k("Ctrl+B"), Cmd::ToggleSidebar));
-        items.push((k("Toggle terminal"), k("Ctrl+J"), Cmd::ToggleTerminal));
-        items.push((k("Toggle diff panel"), k("Ctrl+D"), Cmd::ToggleDiff));
-        items.push((k("Toggle files panel"), k("Ctrl+E"), Cmd::ToggleFiles));
-        items.push((k("Open settings"), k("Ctrl+,"), Cmd::Settings));
-        items.push((k("Toggle theme"), k("Ctrl+Shift+L"), Cmd::ToggleTheme));
+        items.push((k("New thread"), k("Thread"), Cmd::NewThread));
+        items.push((k("Search threads"), k("Threads"), Cmd::SearchThreads));
+        items.push((k("Toggle sidebar"), k("View"), Cmd::ToggleSidebar));
+        items.push((k("Toggle terminal"), k("View"), Cmd::ToggleTerminal));
+        items.push((k("Toggle diff panel"), k("View"), Cmd::ToggleDiff));
+        items.push((k("Toggle files panel"), k("View"), Cmd::ToggleFiles));
+        items.push((k("Open settings"), k("Settings"), Cmd::Settings));
+        items.push((k("Toggle theme"), k("Theme"), Cmd::ToggleTheme));
         items.push((k("Create checkpoint"), k("Git"), Cmd::Checkpoint));
-        items.push((k("Plugins"), k("Ctrl+Shift+P"), Cmd::TogglePlugins));
+        items.push((k("Plugins"), k("View"), Cmd::TogglePlugins));
         items.push((k("Sessions"), k("Gray"), Cmd::ToggleSessions));
         items.push((k("Skills"), k("Gray"), Cmd::ToggleSkills));
         for sk in &self.skills {
@@ -921,7 +1062,7 @@ impl GrayApp {
                 Cmd::ResumeSession(gs.id.clone()),
             ));
         }
-        items.push((k("Code viewer"), k("Ctrl+Shift+V"), Cmd::ToggleViewer));
+        items.push((k("Code viewer"), k("View"), Cmd::ToggleViewer));
         for b in [
             ("none", "None"),
             ("andromeda", "Andromeda"),
@@ -966,11 +1107,7 @@ impl GrayApp {
         items.push((k("Snooze thread for 1 hour"), k("Thread"), Cmd::Snooze(60)));
         items.push((k("Unsnooze thread"), k("Thread"), Cmd::Snooze(0)));
         for e in ["low", "medium", "high"] {
-            items.push((
-                format!("Effort: {e}"),
-                k("Ctrl+Shift+E"),
-                Cmd::Effort(e.into()),
-            ));
+            items.push((format!("Effort: {e}"), k("Effort"), Cmd::Effort(e.into())));
         }
         items.push((k("Restore last checkpoint"), k("Git"), Cmd::Restore));
         items.push((k("Diff since last turn"), k("Git"), Cmd::TurnDiff));
@@ -995,6 +1132,16 @@ impl GrayApp {
                 Cmd::SetTerminalPlacement(id.into()),
             ));
         }
+        items.push((
+            k("Notify when a turn finishes: On"),
+            k("Settings"),
+            Cmd::SetNotify(true),
+        ));
+        items.push((
+            k("Notify when a turn finishes: Off"),
+            k("Settings"),
+            Cmd::SetNotify(false),
+        ));
         items.push((
             k("Auto-accept permissions: On"),
             k("Settings"),
@@ -1023,7 +1170,7 @@ impl GrayApp {
             items.push((k("Pin or unpin thread"), k("Thread"), Cmd::Pin));
             items.push((k("Archive or unarchive thread"), k("Thread"), Cmd::Archive));
             items.push((k("Delete thread"), k("Thread"), Cmd::Delete));
-            items.push((k("Stop turn"), k("Ctrl+Shift+X"), Cmd::Stop));
+            items.push((k("Stop turn"), k("Turn"), Cmd::Stop));
         }
         for p in PROVIDERS {
             items.push((
@@ -1123,6 +1270,55 @@ impl GrayApp {
             );
         }
         out
+    }
+
+    /// Cross-thread search (ctrl-shift-f): thread titles first, then
+    /// message text with a snippet around the hit. Empty query lists recent
+    /// threads across every project.
+    fn search_items(&self, q: &str) -> Vec<(String, String, Cmd)> {
+        let mut threads: Vec<&crate::store::Thread> = self.store.state.threads.iter().collect();
+        threads.sort_by_key(|t| std::cmp::Reverse(t.updated_at));
+        let project = |pid: &str| {
+            self.store
+                .state
+                .project(pid)
+                .map(|p| p.name.clone())
+                .unwrap_or_default()
+        };
+        let mut titles = Vec::new();
+        let mut messages = Vec::new();
+        for t in &threads {
+            let when = relative(t.updated_at);
+            let archived = if t.archived { " · archived" } else { "" };
+            if q.is_empty() || fuzzy(&t.title.to_lowercase(), q) {
+                titles.push((
+                    t.title.clone(),
+                    format!("{} · {when}{archived}", project(&t.project_id)),
+                    Cmd::OpenMessage(t.id.clone(), None),
+                ));
+            }
+            if q.chars().count() < 2 || messages.len() >= 60 {
+                continue;
+            }
+            for (ix, item) in t.items.iter().enumerate() {
+                let Item::Message { text, .. } = item else {
+                    continue;
+                };
+                if let Some(snip) = snippet(text, q, 80) {
+                    messages.push((
+                        snip,
+                        format!("{} · {when}", t.title),
+                        Cmd::OpenMessage(t.id.clone(), Some(ix)),
+                    ));
+                    if messages.len() >= 60 {
+                        break;
+                    }
+                }
+            }
+        }
+        titles.truncate(if q.is_empty() { 40 } else { 20 });
+        titles.extend(messages);
+        titles
     }
 
     fn persist(&mut self, e: Event) {
@@ -1298,6 +1494,24 @@ impl GrayApp {
                     key: "terminal_placement".into(),
                     value: v,
                 });
+            }
+            Cmd::SetNotify(b) => {
+                self.persist(Event::SettingChanged {
+                    key: "notify".into(),
+                    value: if b { "true" } else { "false" }.into(),
+                });
+            }
+            Cmd::SearchThreads => {
+                self.open_palette(PaletteMode::Search, "", window, cx);
+                return;
+            }
+            Cmd::OpenMessage(tid, ix) => {
+                if self.active_thread.as_deref() != Some(tid.as_str()) && self.dirty_tabs(cx) > 0 {
+                    self.toast("Unsaved files — save (Ctrl+S) or /discard first", true);
+                    return;
+                }
+                self.focus_thread(&tid, cx);
+                self.scroll_target = ix.map(|ix| (tid, ix, 0));
             }
             Cmd::SetAutoAccept(b) => {
                 self.persist(Event::SettingChanged {
@@ -1922,6 +2136,7 @@ impl GrayApp {
             "settings_section": self.settings_section,
             "layout": self.store.state.setting("layout", "focus"),
             "auto_accept": self.store.state.setting("auto_accept", "false") == "true",
+            "notify": self.store.state.setting("notify", "false") == "true",
             "terminal_placement": self.store.state.setting("terminal_placement", "bottom"),
             "pane_sizes": self.pane_sizes,
             "attachments": self.attachments.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
@@ -2567,20 +2782,13 @@ impl GrayApp {
                 .as_ref()
                 .and_then(|id| self.store.state.project(id))
                 .map(|p| p.name.clone());
-            let hint = |k: &str, l: &str| {
+            let hint = |action: &dyn Action, l: &str| {
+                let keys = key_hint(action, cx).unwrap_or_default();
                 h_flex()
                     .gap_2()
                     .text_xs()
                     .text_color(t.muted_foreground)
-                    .child(
-                        div()
-                            .px_1p5()
-                            .py_0p5()
-                            .rounded_sm()
-                            .border_1()
-                            .border_color(t.border)
-                            .child(k.to_string()),
-                    )
+                    .child(key_chip(&keys, &t))
                     .child(l.to_string())
             };
             return v_flex()
@@ -2609,16 +2817,19 @@ impl GrayApp {
                     v_flex()
                         .mt_4()
                         .gap_1p5()
-                        .child(hint("Ctrl K", "Command palette"))
-                        .child(hint("Ctrl P", "Open file"))
-                        .child(hint("Ctrl Shift M", "Switch model"))
-                        .child(hint("Ctrl J", "Terminal"))
-                        .child(hint("Ctrl D", "Diff")),
+                        .child(hint(&TogglePalette, "Command palette"))
+                        .child(hint(&FilePicker, "Open file"))
+                        .child(hint(&SearchThreads, "Search threads"))
+                        .child(hint(&ModelPicker, "Switch model"))
+                        .child(hint(&ToggleTerminal, "Terminal"))
+                        .child(hint(&ToggleDiff, "Diff")),
                 )
                 .into_any_element();
         }
         let thread = thread.unwrap();
         let mut col = v_flex()
+            .id("timeline-items")
+            .track_scroll(&self.items_scroll)
             .w_full()
             .max_w(px(820.))
             .mx_auto()
@@ -3352,7 +3563,25 @@ impl GrayApp {
             .max_h(px(380.))
             .overflow_y_scroll()
             .p_1();
-        for (i, (label, hint, cmd)) in self.palette_items().into_iter().take(60).enumerate() {
+        let items = self.palette_items();
+        let search = self.palette_mode == PaletteMode::Search;
+        if search && items.is_empty() {
+            list = list.child(
+                div()
+                    .px_2()
+                    .py_3()
+                    .text_sm()
+                    .text_color(t.muted_foreground)
+                    .child("No threads or messages match"),
+            );
+        }
+        for (i, (label, hint, cmd)) in items.into_iter().take(80).enumerate() {
+            let key = cmd_action(&cmd).and_then(|a| key_hint(a.as_ref(), cx));
+            let icon = match &cmd {
+                Cmd::OpenMessage(_, Some(_)) => Some(IconName::Inbox),
+                Cmd::OpenMessage(_, None) => Some(IconName::SquareTerminal),
+                _ => None,
+            };
             list = list.child(
                 h_flex()
                     .id(("palette-item", i))
@@ -3367,8 +3596,19 @@ impl GrayApp {
                     .on_click(
                         cx.listener(move |this, _, window, cx| this.run(cmd.clone(), window, cx)),
                     )
+                    .when_some(icon, |s, icon| {
+                        s.child(Icon::new(icon).small().text_color(t.muted_foreground))
+                    })
                     .child(div().flex_1().truncate().child(label))
-                    .child(div().text_xs().text_color(t.muted_foreground).child(hint)),
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(t.muted_foreground)
+                            .max_w(px(220.))
+                            .truncate()
+                            .child(hint),
+                    )
+                    .when_some(key, |s, k| s.child(key_chip(&k, &t))),
             );
         }
         div()
@@ -3393,7 +3633,15 @@ impl GrayApp {
                         div().p_2().border_b_1().border_color(t.border).child(
                             Input::new(&self.palette_input)
                                 .appearance(false)
-                                .prefix(Icon::new(IconName::Search).small()),
+                                .prefix(Icon::new(IconName::Search).small())
+                                .when(search, |s| {
+                                    s.suffix(
+                                        div()
+                                            .text_xs()
+                                            .text_color(t.muted_foreground)
+                                            .child("Threads & messages"),
+                                    )
+                                }),
                         ),
                     )
                     .child(list),
@@ -3405,6 +3653,7 @@ impl GrayApp {
         let (dp, _, dmode) = self.defaults();
         let layout = self.store.state.setting("layout", "focus");
         let auto_accept = self.store.state.setting("auto_accept", "false") == "true";
+        let notify = self.store.state.setting("notify", "false") == "true";
         let term_side = self.store.state.setting("terminal_placement", "bottom") == "right";
         let q = self.settings_query.to_lowercase();
         let vis = |label: &str| q.is_empty() || fuzzy(&label.to_lowercase(), &q);
@@ -3668,38 +3917,32 @@ impl GrayApp {
                     });
             }
             "shortcuts" => {
-                for (keys, desc) in [
-                    ("Ctrl K", "Command palette"),
-                    ("Ctrl P", "File picker"),
-                    ("Ctrl N", "New thread"),
-                    ("Ctrl B", "Toggle sidebar"),
-                    ("Ctrl E", "Files panel"),
-                    ("Ctrl D", "Diff panel"),
-                    ("Ctrl J", "Terminal drawer"),
-                    ("Ctrl S", "Save editor file"),
-                    ("Ctrl ,", "Settings"),
-                    ("Ctrl Shift P", "Plugins"),
-                    ("Ctrl Shift V", "Viewer"),
-                    ("Ctrl Shift L", "Toggle theme"),
-                    ("Ctrl Shift E", "Next effort"),
-                    ("Enter", "Send message"),
-                    ("Shift Enter", "New line in composer"),
-                    ("Esc", "Close panel or overlay"),
-                ] {
-                    page = page.child(row(
-                        desc,
-                        "",
-                        div()
-                            .font_family(t.mono_font_family.clone())
-                            .text_xs()
-                            .px_2()
-                            .py_1()
-                            .rounded_md()
-                            .border_1()
-                            .border_color(t.border)
-                            .child(keys)
-                            .into_any_element(),
-                    ));
+                let bound: [(&dyn Action, &str); 16] = [
+                    (&TogglePalette, "Command palette"),
+                    (&FilePicker, "File picker"),
+                    (&SearchThreads, "Search threads"),
+                    (&NewThread, "New thread"),
+                    (&ToggleSidebar, "Toggle sidebar"),
+                    (&ToggleFiles, "Files panel"),
+                    (&ToggleDiff, "Diff panel"),
+                    (&ToggleTerminal, "Terminal drawer"),
+                    (&SaveFile, "Save editor file"),
+                    (&OpenSettings, "Settings"),
+                    (&TogglePluginsPanel, "Plugins"),
+                    (&ToggleViewer, "Viewer"),
+                    (&ToggleTheme, "Toggle theme"),
+                    (&EffortPicker, "Effort"),
+                    (&StopTurn, "Stop turn"),
+                    (&Dismiss, "Close panel or overlay"),
+                ];
+                let mut rows: Vec<(String, &str)> = bound
+                    .iter()
+                    .filter_map(|(a, d)| key_hint(*a, cx).map(|k| (k, *d)))
+                    .collect();
+                rows.push(("Enter".into(), "Send message"));
+                rows.push(("Shift+Enter".into(), "New line in composer"));
+                for (keys, desc) in rows {
+                    page = page.child(row(desc, "", key_chip(&keys, &t).into_any_element()));
                 }
             }
             "about" => {
@@ -3881,6 +4124,33 @@ impl GrayApp {
                                         .selected(!auto_accept)
                                         .on_click(cx.listener(|this, _, window, cx| {
                                             this.run(Cmd::SetAutoAccept(false), window, cx)
+                                        })),
+                                )
+                                .into_any_element(),
+                        ))
+                    })
+                    .when(vis("Notifications"), |s| {
+                        s.child(row(
+                            "Notifications",
+                            "Notify when a turn finishes or needs approval while you're in another thread or window",
+                            h_flex()
+                                .gap_1()
+                                .child(
+                                    Button::new("settings-notify-on")
+                                        .small()
+                                        .label("On")
+                                        .selected(notify)
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.run(Cmd::SetNotify(true), window, cx)
+                                        })),
+                                )
+                                .child(
+                                    Button::new("settings-notify-off")
+                                        .small()
+                                        .label("Off")
+                                        .selected(!notify)
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.run(Cmd::SetNotify(false), window, cx)
                                         })),
                                 )
                                 .into_any_element(),
@@ -4304,6 +4574,89 @@ fn bg_rows(cx: &mut Context<GrayApp>, app: &GrayApp) -> Vec<AnyElement> {
     .collect()
 }
 
+/// One-line preview of `text` around the first case-insensitive hit of `q`.
+fn snippet(text: &str, q: &str, width: usize) -> Option<String> {
+    let lower = text.to_lowercase();
+    let at = lower.find(q)?;
+    // `to_lowercase` can change byte lengths; map back via char index.
+    let hit = lower[..at].chars().count();
+    let chars: Vec<char> = text.chars().collect();
+    let start = hit.saturating_sub(width / 3);
+    let end = (start + width).min(chars.len());
+    let mut out: String = chars[start..end]
+        .iter()
+        .map(|c| if c.is_whitespace() { ' ' } else { *c })
+        .collect();
+    out = out.split_whitespace().collect::<Vec<_>>().join(" ");
+    if start > 0 {
+        out.insert(0, '…');
+    }
+    if end < chars.len() {
+        out.push('…');
+    }
+    Some(out)
+}
+
+/// First `n` chars of `text`, flattened to one line.
+fn preview(text: &str, n: usize) -> String {
+    let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if flat.chars().count() <= n {
+        return flat;
+    }
+    let mut out: String = flat.chars().take(n).collect();
+    out.push('…');
+    out
+}
+
+/// The keystroke actually bound to `action`, formatted for display
+/// ("Ctrl+Shift+F"), so hints can't drift from `bind_keys`.
+fn key_hint(action: &dyn Action, cx: &App) -> Option<String> {
+    let keymap = cx.key_bindings();
+    let keymap = keymap.borrow();
+    let binding = keymap.bindings_for_action(action).last()?;
+    let ks = binding.keystrokes().first()?;
+    Some(Kbd::format(ks.as_keystroke()))
+}
+
+/// A keycap chip for a formatted binding ("Ctrl+Shift+F" -> Ctrl Shift F).
+fn key_chip(keys: &str, t: &Theme) -> Div {
+    let mut row = h_flex().gap_0p5().flex_none();
+    for part in keys.split('+') {
+        row = row.child(
+            div()
+                .min_w(px(18.))
+                .px_1()
+                .py(px(1.))
+                .rounded_sm()
+                .border_1()
+                .border_color(t.border)
+                .bg(t.secondary)
+                .text_xs()
+                .text_center()
+                .text_color(t.muted_foreground)
+                .child(part.to_string()),
+        );
+    }
+    row
+}
+
+fn cmd_action(cmd: &Cmd) -> Option<Box<dyn Action>> {
+    Some(match cmd {
+        Cmd::NewThread => Box::new(NewThread),
+        Cmd::SearchThreads => Box::new(SearchThreads),
+        Cmd::ToggleSidebar => Box::new(ToggleSidebar),
+        Cmd::ToggleTerminal => Box::new(ToggleTerminal),
+        Cmd::ToggleDiff => Box::new(ToggleDiff),
+        Cmd::ToggleFiles => Box::new(ToggleFiles),
+        Cmd::Settings => Box::new(OpenSettings),
+        Cmd::ToggleTheme => Box::new(ToggleTheme),
+        Cmd::TogglePlugins => Box::new(TogglePluginsPanel),
+        Cmd::ToggleViewer => Box::new(ToggleViewer),
+        Cmd::Stop => Box::new(StopTurn),
+        _ => return None,
+    })
+}
+
 fn relative(ms: i64) -> String {
     let secs = ((now() - ms) / 1000).max(0);
     if secs < 60 {
@@ -4422,6 +4775,7 @@ impl Render for GrayApp {
             .on_action(cx.listener(|this, _: &FocusComposer, w, cx| this.close_overlays(w, cx)))
             .on_action(cx.listener(|this, _: &Dismiss, w, cx| {
                 this.toast = None;
+                w.clear_notifications(cx);
                 this.close_overlays(w, cx)
             }))
             .on_action(cx.listener(|this, _: &TogglePalette, w, cx| {
@@ -4431,6 +4785,9 @@ impl Render for GrayApp {
                     this.open_palette(PaletteMode::Commands, "", w, cx);
                 }
             }))
+            .on_action(
+                cx.listener(|this, _: &SearchThreads, w, cx| this.run(Cmd::SearchThreads, w, cx)),
+            )
             .on_action(cx.listener(|this, _: &FilePicker, w, cx| {
                 this.open_palette(PaletteMode::Files, "", w, cx)
             }))
@@ -4456,30 +4813,6 @@ impl Render for GrayApp {
             .when(bg != "none", |s| s.child(background_layer(&bg)))
             .when(self.palette_open, |s| s.child(self.render_palette(cx)))
             .when(self.settings_open, |s| s.child(self.render_settings(cx)))
-            .when_some(self.toast.clone(), |s, (msg, err)| {
-                s.child(
-                    div()
-                        .id("toast")
-                        .absolute()
-                        .bottom_4()
-                        .right_4()
-                        .max_w(px(420.))
-                        .px_4()
-                        .py_2()
-                        .rounded_lg()
-                        .border_1()
-                        .border_color(if err { t.danger } else { t.border })
-                        .bg(t.popover)
-                        .shadow_lg()
-                        .text_sm()
-                        .cursor_pointer()
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.toast = None;
-                            cx.notify();
-                        }))
-                        .child(msg),
-                )
-            })
     }
 }
 
