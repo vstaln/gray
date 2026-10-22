@@ -1016,10 +1016,6 @@ const DOT_WHOLE: i32 = 16;
 
 const FULL: i32 = 100 + DOT_WHOLE;
 
-pub fn fuzzy_score(name: &[u8], q: &[u8]) -> Option<i32> {
-    fuzzy_score_capped(name, None, q, FULL)
-}
-
 type Wide<'a> = Option<&'a [u8; 64]>;
 
 fn fuzzy_score_capped(name: &[u8], wide: Wide, q: &[u8], cap: i32) -> Option<i32> {

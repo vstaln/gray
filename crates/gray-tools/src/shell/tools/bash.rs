@@ -35,9 +35,6 @@ mod jobs;
 mod read_dedup;
 
 impl BashTool {
-    pub async fn wait_any_job(&self, ctx: &ToolContext, timeout: Duration) -> bool {
-        self.jobs.wait_any(ctx, timeout).await
-    }
 
     pub fn wait_any_job_fut(
         &self,

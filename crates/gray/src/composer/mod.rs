@@ -1333,16 +1333,8 @@ impl Tui {
         self.plugin_stats = stats;
     }
 
-    pub fn set_home_quality_of_life(&mut self, line: Option<String>) {
-        self.home_quality_of_life = line;
-    }
-
     pub fn set_home_update(&mut self, notice: Option<String>) {
         self.home_update = notice;
-    }
-
-    pub fn set_home_session(&mut self, line: Option<String>) {
-        self.home_session = line;
     }
 
     /// The centered home layout holds only while the transcript is empty

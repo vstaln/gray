@@ -278,20 +278,6 @@ impl Tui {
         self.push_styled_lines_with_hyperlinks(vec![line], &[], 0);
     }
 
-    pub fn replay_session_history(
-        &mut self,
-        history: std::sync::Arc<Vec<gray_core::Message>>,
-        cwd: &std::path::Path,
-        tail: Vec<String>,
-    ) {
-        self.replay_session_history_with_tools(
-            history,
-            cwd,
-            crate::tool_fmt::ToolDisplay::default(),
-            tail,
-        );
-    }
-
     pub fn replay_session_history_with_tools(
         &mut self,
         history: std::sync::Arc<Vec<gray_core::Message>>,

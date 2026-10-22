@@ -220,11 +220,6 @@ impl StreamingMarkdownRenderer {
         &self.output
     }
 
-    pub fn finish_into_output(mut self, syntect: Option<&Syntect>) -> MarkdownRenderOutput {
-        self.finish(syntect);
-        self.output
-    }
-
     /// Finalize like `finish` but keep the frozen prefix verbatim instead of
     /// re-parsing the whole source. Callers that already emitted the frozen
     /// lines to a terminal can slice `output.lines` by the emitted count —

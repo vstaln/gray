@@ -733,11 +733,6 @@ impl Agent {
         }
     }
 
-    /// Fingerprint of the last request sent, for persisting with the session.
-    pub fn prefix_fingerprint(&self) -> Option<crate::prefix_guard::Fingerprint> {
-        self.prefix_guard.last().cloned()
-    }
-
     /// Called with the fingerprint of every request as it is sent; the REPL
     /// persists it so a later process can explain a first-request cache miss.
     pub fn set_prefix_fp_sink(&mut self, sink: Option<crate::prefix_guard::FingerprintSink>) {
@@ -961,21 +956,6 @@ impl Agent {
 
     pub fn tool_defs(&self) -> &[ToolDef] {
         &self.tools
-    }
-
-    pub async fn complete_with_history(
-        &self,
-        system: Option<&str>,
-        messages: Vec<Message>,
-        tools: Vec<ToolDef>,
-    ) -> Result<String, CoreError> {
-        let req = ChatRequest {
-            system: system.map(|s| s.to_string()),
-            messages,
-            tools,
-            max_tokens: None,
-        };
-        drain_reply_text(self.provider.stream(req), self.session_id.as_deref()).await
     }
 
     pub(crate) async fn complete_isolated(

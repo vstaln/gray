@@ -482,11 +482,6 @@ impl Index {
         s..s + self.dir_len(d as usize) as usize
     }
 
-    pub fn descendants(&self, k: u32) -> std::ops::Range<u32> {
-        let (s, e) = (self.dir_start(k as usize), self.dir_end(k as usize));
-        self.dirs_before(s) as u32..self.dirs_before(e) as u32
-    }
-
     pub fn memo_plan(&self) -> &MemoPlan {
         self.plan.get_or_init(|| {
             const CHUNK: u32 = 4096;

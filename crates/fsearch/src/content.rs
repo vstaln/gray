@@ -1159,10 +1159,6 @@ fn write_segment(dir: &Path, id: u64, docs: &[DocMeta<'_>], own: &[ContentMeta<'
     Segment::load(dir, id)
 }
 
-pub fn eligible(path: &[u8], size: u64, home: &[u8]) -> bool {
-    Scope::new(home, &on_disk).file(path, size)
-}
-
 fn name_ok(name: &[u8], size: u64) -> bool {
     if size > MAX_FILE || SKIP_DIRS.contains(&name) {
         return false;
@@ -4160,10 +4156,6 @@ fn open_gated(path: &[u8], at: &std::sync::atomic::AtomicUsize) -> Option<(std::
     let f = open_sized(path);
     at.fetch_sub(1, Release);
     f
-}
-
-pub fn open_regular(path: &[u8]) -> Option<std::fs::File> {
-    open_sized(path).map(|(f, _)| f)
 }
 
 fn open_sized(path: &[u8]) -> Option<(std::fs::File, u64)> {

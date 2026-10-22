@@ -505,7 +505,4 @@ impl IdeSession {
         ids
     }
 
-    pub fn has_agent(&self) -> bool {
-        self.agent.is_some()
-    }
 }

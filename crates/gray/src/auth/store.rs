@@ -159,62 +159,6 @@ impl CredentialStore {
         Ok(store)
     }
 
-    /// Add (or replace) a labeled account under a plugin auth_ref. The
-    /// first account added becomes the pin, matching the plugin pools.
-    pub fn put_plugin_account(
-        &self,
-        value: StoredCredential,
-        label: &str,
-    ) -> anyhow::Result<BTreeMap<String, AuthEntry>> {
-        let auth_ref = plugin_auth_ref(&value)?;
-        anyhow::ensure!(!label.is_empty(), "account label is empty");
-        let _lock = self.lock()?;
-        let mut store = self.load()?;
-        let account = PluginAccount {
-            label: label.to_string(),
-            profile_binding: value.profile_binding.clone(),
-            credential: value.credential.clone(),
-            email: None,
-            added_at: now_secs(),
-            cooldown_until: 0,
-            last_error: None,
-            request_count: 0,
-            last_used_at: 0,
-        };
-        match store.get_mut(&auth_ref) {
-            Some(AuthEntry::PluginPool(pool)) => {
-                match pool.accounts.iter_mut().find(|a| a.label == label) {
-                    Some(a) => {
-                        a.profile_binding = account.profile_binding.clone();
-                        a.credential = account.credential.clone();
-                        a.cooldown_until = 0;
-                        a.last_error = None;
-                    }
-                    None => pool.accounts.push(account),
-                }
-                if pool.selected.is_none() {
-                    pool.selected = Some(label.to_string());
-                }
-            }
-            _ => {
-                store.insert(
-                    auth_ref,
-                    AuthEntry::PluginPool(PluginAuthPool {
-                        version: 2,
-                        plugin: value.plugin.clone(),
-                        provider: value.provider.clone(),
-                        auth_method: value.auth_method.clone(),
-                        selected: Some(label.to_string()),
-                        strategy: "fill_first".to_string(),
-                        accounts: vec![account],
-                    }),
-                );
-            }
-        }
-        self.replace_locked(&store)?;
-        Ok(store)
-    }
-
     /// The credential a caller sees: the pool's serving pick, or the
     /// first account when every one is cooling (a stale credential is a
     /// better answer than none — the caller's request fails upstream with
@@ -251,48 +195,6 @@ impl CredentialStore {
         })
     }
 
-    /// Account rows for the `/accounts` panel.
-    pub fn plugin_account_rows(&self, auth_ref: &str) -> anyhow::Result<Vec<PluginAccountRow>> {
-        let store = self.load()?;
-        let now = now_secs();
-        Ok(match store.get(auth_ref) {
-            Some(AuthEntry::PluginPool(pool)) => pool
-                .accounts
-                .iter()
-                .map(|a| PluginAccountRow {
-                    label: a.label.clone(),
-                    email: a.email.clone(),
-                    cooling: a.cooldown_until > now,
-                    cooldown_until: a.cooldown_until,
-                    last_error: a.last_error.clone(),
-                    request_count: a.request_count,
-                    last_used_at: a.last_used_at,
-                    pinned: pool.selected.as_deref() == Some(a.label.as_str()),
-                })
-                .collect(),
-            Some(AuthEntry::Plugin(_)) => Vec::new(),
-            _ => Vec::new(),
-        })
-    }
-
-    /// The pool's strategy/selected for display: `(strategy, selected)`.
-    pub fn plugin_pool_meta(
-        &self,
-        auth_ref: &str,
-    ) -> anyhow::Result<Option<(String, Option<String>)>> {
-        Ok(match self.load()?.get(auth_ref) {
-            Some(AuthEntry::PluginPool(pool)) => Some((
-                if pool.strategy.is_empty() {
-                    "fill_first".to_string()
-                } else {
-                    pool.strategy.clone()
-                },
-                pool.selected.clone(),
-            )),
-            _ => None,
-        })
-    }
-
     /// Human "reset after …" when every account is cooling.
     pub fn pool_retry_hint(&self, auth_ref: &str) -> anyhow::Result<Option<String>> {
         let store = self.load()?;
@@ -312,54 +214,6 @@ impl CredentialStore {
             }
             _ => None,
         })
-    }
-
-    /// Pin (`Some(label)`) or clear (`None`) the account a pool serves.
-    pub fn select_plugin_account(&self, auth_ref: &str, label: Option<&str>) -> anyhow::Result<()> {
-        let _lock = self.lock()?;
-        let mut store = self.load()?;
-        let Some(AuthEntry::PluginPool(pool)) = store.get_mut(auth_ref) else {
-            anyhow::bail!("no plugin credential pool for {auth_ref}");
-        };
-        if let Some(label) = label {
-            anyhow::ensure!(
-                pool.accounts.iter().any(|a| a.label == label),
-                "no account {label:?} in {auth_ref}"
-            );
-            pool.selected = Some(label.to_string());
-        } else {
-            pool.selected = None;
-        }
-        self.replace_locked(&store)
-    }
-
-    pub fn set_plugin_strategy(&self, auth_ref: &str, strategy: &str) -> anyhow::Result<()> {
-        anyhow::ensure!(
-            matches!(strategy, "fill_first" | "least_used"),
-            "strategy must be fill_first or least_used"
-        );
-        let _lock = self.lock()?;
-        let mut store = self.load()?;
-        let Some(AuthEntry::PluginPool(pool)) = store.get_mut(auth_ref) else {
-            anyhow::bail!("no plugin credential pool for {auth_ref}");
-        };
-        pool.strategy = strategy.to_string();
-        self.replace_locked(&store)
-    }
-
-    pub fn remove_plugin_account(&self, auth_ref: &str, label: &str) -> anyhow::Result<()> {
-        let _lock = self.lock()?;
-        let mut store = self.load()?;
-        let Some(AuthEntry::PluginPool(pool)) = store.get_mut(auth_ref) else {
-            anyhow::bail!("no plugin credential pool for {auth_ref}");
-        };
-        let before = pool.accounts.len();
-        pool.accounts.retain(|a| a.label != label);
-        anyhow::ensure!(pool.accounts.len() < before, "no account {label:?}");
-        if pool.selected.as_deref() == Some(label) {
-            pool.selected = None;
-        }
-        self.replace_locked(&store)
     }
 
     pub fn replace_plugin_if_bound(

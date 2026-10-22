@@ -257,39 +257,6 @@ impl Message {
             .join("\n")
     }
 
-    pub fn context_text(&self) -> String {
-        let mut out = String::new();
-        for block in &self.content {
-            let piece = match block {
-                ContentBlock::Text { text } => text.clone(),
-                ContentBlock::StructuredInput { .. } => block
-                    .provider_text()
-                    .unwrap_or_else(|| "<gray_structured_input unavailable>".to_string()),
-                ContentBlock::ToolResult { content, .. } => content.clone(),
-                ContentBlock::ToolUse { name, args, .. } => {
-                    format!("{name}{args}")
-                }
-                ContentBlock::Thinking {
-                    text,
-                    encrypted_content,
-                    ..
-                } => match encrypted_content {
-                    Some(blob) => format!("{text}{blob}"),
-                    None => text.clone(),
-                },
-
-                ContentBlock::Image { data, .. } | ContentBlock::Media { data, .. } => data.clone(),
-            };
-            if !piece.is_empty() {
-                if !out.is_empty() {
-                    out.push('\n');
-                }
-                out.push_str(&piece);
-            }
-        }
-        out
-    }
-
     pub fn context_text_len(&self) -> usize {
         let mut total = 0usize;
         let mut pieces = 0usize;
