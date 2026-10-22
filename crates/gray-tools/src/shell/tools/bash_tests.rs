@@ -2,7 +2,6 @@ use super::*;
 use gray_core::agent::Tool;
 use serde_json::json;
 use std::sync::atomic::{AtomicU64, Ordering};
-use tokio_util::sync::CancellationToken;
 
 static SESS_N: AtomicU64 = AtomicU64::new(0);
 
@@ -758,56 +757,6 @@ async fn the_cwd_report_does_not_mask_the_commands_exit_code() {
     );
 }
 
-#[tokio::test]
-async fn search_command_answers_the_find_and_grep_verbs() {
-    let dir = tempfile::tempdir().unwrap();
-    std::fs::write(dir.path().join("a.txt"), "needle one\n").unwrap();
-    std::fs::write(dir.path().join("b.rs"), "fn other() {}\n").unwrap();
-
-    let out = search_command("gray find *.txt", dir.path(), &CancellationToken::new())
-        .await
-        .expect("gray find must be claimed, not handed to a shell that cannot know it");
-    assert!(!out.is_error, "{}", out.content);
-    assert!(out.content.contains("a.txt"), "{}", out.content);
-    assert!(
-        !out.content.contains("b.rs"),
-        "glob must hold: {}",
-        out.content
-    );
-
-    let out = search_command("gray grep needle", dir.path(), &CancellationToken::new())
-        .await
-        .expect("gray grep must be claimed");
-    assert!(
-        out.content.contains("a.txt:1: needle one"),
-        "{}",
-        out.content
-    );
-}
-
-#[tokio::test]
-async fn search_command_leaves_the_shell_its_own() {
-    let dir = tempfile::tempdir().unwrap();
-    std::fs::write(dir.path().join("a.txt"), "needle one\n").unwrap();
-    for cmd in [
-        "gray find *.txt | wc -l",
-        "gray grep --help",
-        "rg needle",
-        "gray grep needle;touch marker",
-        "gray grep needle && echo done",
-        "gray grep \"$(whoami)\"",
-        "gray grep 'unclosed",
-        "gray grep --limit",
-    ] {
-        assert!(
-            search_command(cmd, dir.path(), &CancellationToken::new())
-                .await
-                .is_none(),
-            "must fall through to the shell: {cmd}"
-        );
-    }
-}
-
 #[test]
 fn search_words_splits_like_the_shell() {
     let w = |s: &str| search_words(s).map(|v| v.join("|"));
@@ -826,92 +775,6 @@ fn search_words_splits_like_the_shell() {
     assert_eq!(w("gray find *.txt").as_deref(), Some("gray|find|*.txt"));
     assert_eq!(w("gray grep 'a|b'").as_deref(), Some("gray|grep|a|b"));
     assert_eq!(w("gray grep a|b"), None);
-}
-
-#[tokio::test]
-async fn search_command_reads_flag_values_once() {
-    let dir = tempfile::tempdir().unwrap();
-    std::fs::create_dir(dir.path().join("src")).unwrap();
-    std::fs::write(dir.path().join("src/a.rs"), "fn main() {}\n").unwrap();
-    std::fs::write(dir.path().join("src/b.txt"), "fn main() {}\n").unwrap();
-    let run = |cmd: &'static str| {
-        let d = dir.path().to_path_buf();
-        async move {
-            search_command(cmd, &d, &CancellationToken::new())
-                .await
-                .unwrap_or_else(|| panic!("must be claimed: {cmd}"))
-                .content
-        }
-    };
-
-    let out = run("gray grep 'fn main' src").await;
-    assert!(out.contains("a.rs:1: fn main"), "{out}");
-
-    let out = run("gray grep --glob=*.rs main src").await;
-    assert!(out.contains("a.rs"), "{out}");
-    assert!(!out.contains("b.txt"), "glob must hold: {out}");
-
-    let out = run("gray grep --glob *.rs main src").await;
-    assert!(out.contains("a.rs"), "{out}");
-    assert!(!out.contains("b.txt"), "glob must hold: {out}");
-
-    let out = run("gray grep --limit 5 main src").await;
-    assert!(out.contains("a.rs:1: fn main"), "{out}");
-}
-
-#[tokio::test]
-async fn bare_find_and_grep_are_not_claimed() {
-    let dir = tempfile::tempdir().unwrap();
-    std::fs::write(dir.path().join("a.txt"), "needle one\n").unwrap();
-    for cmd in [
-        "grep needle",
-        "grep -i needle a.txt",
-        "find . -name '*.txt'",
-    ] {
-        assert!(
-            search_command(cmd, dir.path(), &CancellationToken::new())
-                .await
-                .is_none(),
-            "bare form must reach the shell: {cmd}"
-        );
-    }
-}
-
-#[tokio::test]
-async fn bare_find_and_grep_leave_the_shell_richer_forms() {
-    let dir = tempfile::tempdir().unwrap();
-    for cmd in [
-        "grep -r needle .",
-        "grep -v needle",
-        "grep -E 'a|b'",
-        "grep -A2 needle",
-        "grep -l needle",
-        "grep --include='*.rs' needle",
-        "grep needle a.txt b.txt",
-        "grep needle *.txt",
-        "grep needle ~/x",
-        "grep needle -",
-        "grep",
-        "egrep needle",
-        "find .",
-        "find . -type f",
-        "find . -type d -name '*.rs'",
-        "find . -iname '*.rs'",
-        "find . -name '*.rs' -o -name '*.txt'",
-        "find / -name x -exec rm {} \\;",
-        "find src docs -name x",
-        "find . -maxdepth 2 -name x",
-        "find . ! -name x",
-        "find . -name 'a/b'",
-        "find . -name",
-    ] {
-        assert!(
-            search_command(cmd, dir.path(), &CancellationToken::new())
-                .await
-                .is_none(),
-            "must fall through to the shell: {cmd}"
-        );
-    }
 }
 
 #[cfg(unix)]

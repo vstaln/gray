@@ -1043,7 +1043,6 @@ version = "0.2.2"
 dependencies = [
  "async-trait",
  "base64",
- "fsearch",
  "futures",
  "globset",
  "gray-core",
@@ -1051,7 +1050,6 @@ dependencies = [
  "image",
  "libc",
  "log",
- "regex",
  "serde_json",
  "strsim",
  "tempfile",

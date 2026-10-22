@@ -1,22 +1,8 @@
 pub mod edit;
 pub mod edit_diff;
-pub mod find;
-pub mod grep;
-pub mod grep_builtin;
 pub mod images;
-pub mod index_filter;
 pub mod ledger;
 pub mod read;
-pub mod search_cmd;
-#[cfg(unix)]
-pub mod search_index_fs;
-pub mod search_plan;
-#[cfg(target_os = "linux")]
-pub mod search_serve;
-#[cfg(unix)]
-pub mod search_shim;
-#[cfg(target_os = "linux")]
-pub mod search_watch;
 pub mod shell;
 pub mod stats;
 pub mod truncate;
@@ -32,13 +18,11 @@ pub use gray_core::agent::Tool;
 use gray_core::agent::{ToolContext, ToolExecutor, ToolOutput};
 use gray_core::message::ToolDef;
 pub(crate) use gray_core::tool_out::{
-    MAX_BYTES, fail, finish, get_opt_bool, get_opt_u64, get_str, resolve_path,
+    fail, finish, get_opt_bool, get_opt_u64, get_str, resolve_path,
 };
 use serde_json::Value;
 
 pub use edit::EditTool;
-pub use find::FindTool;
-pub use grep::GrepTool;
 pub use ledger::{FileLedger, LedgerEntry};
 pub use read::ReadTool;
 pub use shell::spawn::PluginEnv;

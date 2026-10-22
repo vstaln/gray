@@ -30,7 +30,6 @@ pub mod quality_of_life;
 pub mod repl;
 pub mod resume;
 mod rotation;
-pub mod search;
 pub mod session_mailbox;
 pub mod session_send;
 pub mod session_store;
@@ -583,59 +582,6 @@ fn parse_compact_at_cli(s: &str) -> Result<crate::setup::CompactAt, String> {
 
 #[derive(Parser, Debug, Clone)]
 pub enum Commands {
-    #[command(about = "Find files by name pattern under PATH (defaults to .)")]
-    Find {
-        #[arg(value_name = "PATTERN", help = "File-name pattern, e.g. '*.rs'")]
-        pattern: String,
-
-        #[arg(
-            value_name = "PATH",
-            help = "Directory to search (default: current directory)"
-        )]
-        path: Option<String>,
-
-        #[arg(long, value_name = "N", help = "Cap the number of results")]
-        limit: Option<usize>,
-    },
-
-    #[command(about = "Search file contents — regex by default (-i ignore-case, -F literal)")]
-    Grep {
-        #[arg(
-            value_name = "PATTERN",
-            help = "Regex pattern (or literal text with -F)"
-        )]
-        pattern: String,
-
-        #[arg(
-            value_name = "PATH",
-            help = "File or directory to search (default: current directory)"
-        )]
-        path: Option<String>,
-
-        #[arg(long, value_name = "N", help = "Cap the number of matches")]
-        limit: Option<usize>,
-
-        #[arg(
-            long,
-            value_name = "GLOB",
-            help = "Only search files matching GLOB, e.g. '*.toml'"
-        )]
-        glob: Option<String>,
-
-        #[arg(long, short, help = "Case-insensitive matching")]
-        ignore_case: bool,
-
-        #[arg(long, short = 'F', help = "Treat PATTERN as literal text, not regex")]
-        literal: bool,
-
-        #[arg(
-            long,
-            value_name = "N",
-            help = "Print N lines of context around each match"
-        )]
-        context: Option<usize>,
-    },
-
     #[command(about = "Resume a past session — picker by default, or pass an id / --last")]
     Resume {
         #[arg(value_name = "SESSION_ID", help = "Session id or unique prefix")]
@@ -761,19 +707,6 @@ pub enum Commands {
     Spill {
         #[command(subcommand)]
         cmd: SpillCmd,
-    },
-
-    #[cfg(target_os = "linux")]
-    #[command(hide = true)]
-    SearchServe {
-        #[arg(long, value_name = "DIR")]
-        root: std::path::PathBuf,
-
-        #[arg(long, value_name = "PATH")]
-        sock: std::path::PathBuf,
-
-        #[arg(long, value_name = "DIR")]
-        index_dir: Option<std::path::PathBuf>,
     },
 
     #[command(
