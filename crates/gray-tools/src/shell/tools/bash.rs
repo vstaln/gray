@@ -27,7 +27,7 @@ use crate::shell::view::{
 use crate::view::Attached;
 
 const READ_CHUNK: u64 = 4 * 1024;
-use crate::{fail, get_opt_u64, get_str, resolve_path};
+use crate::{fail, finish, get_opt_u64, get_str, resolve_path};
 
 mod jobs;
 
@@ -136,6 +136,9 @@ impl Tool for BashTool {
         }
         let cwd = self.session_cwd(ctx);
         if let Some(out) = image_command(&command, &cwd) {
+            return out;
+        }
+        if let Some(out) = search_command(&command, &cwd, &ctx.cancel).await {
             return out;
         }
 
@@ -347,6 +350,162 @@ fn session_key(ctx: &ToolContext) -> String {
 
 const MAX_IMAGE_CLAIM_PATHS: usize = 8;
 const MAX_IMAGE_CLAIM_BYTES: usize = 20 * 1024 * 1024;
+
+async fn search_command(
+    command: &str,
+    cwd: &Path,
+    cancel: &tokio_util::sync::CancellationToken,
+) -> Option<ToolOutput> {
+    let words = search_words(command)?;
+    match words.first().map(String::as_str) {
+        #[cfg(target_os = "linux")]
+        Some("grep") => return bare_grep_claim(&words[1..], cwd).await,
+        #[cfg(target_os = "linux")]
+        Some("egrep") => {
+            let mut a = vec!["-E".to_string()];
+            a.extend_from_slice(&words[1..]);
+            return bare_grep_claim(&a, cwd).await;
+        }
+        #[cfg(target_os = "linux")]
+        Some("fgrep") => {
+            let mut a = vec!["-F".to_string()];
+            a.extend_from_slice(&words[1..]);
+            return bare_grep_claim(&a, cwd).await;
+        }
+        #[cfg(target_os = "linux")]
+        Some("rg") => return bare_rg_claim(&words[1..], cwd).await,
+        _ => {}
+    }
+    let _ = (cwd, cancel);
+    None
+}
+
+#[cfg(target_os = "linux")]
+async fn bare_grep_claim(argv: &[String], cwd: &Path) -> Option<ToolOutput> {
+    let crate::search_cmd::IndexBackend::Fs(pool) = crate::search_cmd::global_index() else {
+        return None;
+    };
+    let (dir, args) = (cwd.to_path_buf(), argv.to_vec());
+    let ans = crate::search_cmd::spawn_index(move || {
+        pool.engine()
+            .and_then(|e| crate::search_serve::grep_answer(e, &args, &dir))
+    })
+    .await?;
+    let crate::search_serve::Answer::Print {
+        stdout,
+        stderr,
+        code,
+    } = ans
+    else {
+        return None;
+    };
+    let mut text = String::from_utf8_lossy(&stdout).into_owned();
+    if !stderr.is_empty() {
+        if !text.is_empty() && !text.ends_with('\n') {
+            text.push('\n');
+        }
+        text.push_str(&String::from_utf8_lossy(&stderr));
+    }
+
+    if code != 0 {
+        text = format!("exit {code}\n{text}");
+    }
+    Some(finish(text))
+}
+
+#[cfg(target_os = "linux")]
+
+async fn bare_rg_claim(argv: &[String], cwd: &Path) -> Option<ToolOutput> {
+    let crate::search_cmd::IndexBackend::Fs(pool) = crate::search_cmd::global_index() else {
+        return None;
+    };
+    let (dir, args) = (cwd.to_path_buf(), argv.to_vec());
+    let ans = crate::search_cmd::spawn_index(move || {
+        pool.engine()
+            .and_then(|e| crate::search_serve::rg_answer(e, &args, &dir))
+    })
+    .await?;
+    let crate::search_serve::Answer::Print {
+        stdout,
+        stderr,
+        code,
+    } = ans
+    else {
+        return None;
+    };
+    let mut text = String::from_utf8_lossy(&stdout).into_owned();
+    if !stderr.is_empty() {
+        if !text.is_empty() && !text.ends_with('\n') {
+            text.push('\n');
+        }
+        text.push_str(&String::from_utf8_lossy(&stderr));
+    }
+    if code != 0 {
+        text = format!("exit {code}\n{text}");
+    }
+    Some(finish(text))
+}
+
+
+pub(crate) fn search_words(command: &str) -> Option<Vec<String>> {
+    let mut words = Vec::new();
+    let mut word = String::new();
+    let mut in_word = false;
+    let mut chars = command.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            c if c.is_whitespace() => {
+                if in_word {
+                    words.push(std::mem::take(&mut word));
+                    in_word = false;
+                }
+            }
+            '\'' => {
+                in_word = true;
+                loop {
+                    match chars.next()? {
+                        '\'' => break,
+                        c => word.push(c),
+                    }
+                }
+            }
+            '"' => {
+                in_word = true;
+                loop {
+                    match chars.next()? {
+                        '"' => break,
+                        '$' | '`' => return None,
+                        '\\' => match chars.next()? {
+                            c @ ('"' | '\\' | '$' | '`') => word.push(c),
+                            '\n' => {}
+                            c => {
+                                word.push('\\');
+                                word.push(c);
+                            }
+                        },
+                        c => word.push(c),
+                    }
+                }
+            }
+            '\\' => {
+                in_word = true;
+                match chars.next()? {
+                    '\n' => {}
+                    c => word.push(c),
+                }
+            }
+            '|' | '&' | ';' | '<' | '>' | '$' | '`' | '(' | ')' => return None,
+            c => {
+                in_word = true;
+                word.push(c);
+            }
+        }
+    }
+    if in_word {
+        words.push(word);
+    }
+    Some(words)
+}
 
 fn image_command(command: &str, cwd: &Path) -> Option<ToolOutput> {
     let mut parts = command.split_whitespace();
