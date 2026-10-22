@@ -116,6 +116,7 @@ async fn spawn_ctrl_c_policy() {
         }
         let token = TURN_STATE.lock().ok().and_then(|mut g| g.take());
         if let Some(t) = token {
+            log::info!(target: "gray_repl", "turn cancelled by SIGINT");
             t.cancel();
         } else {
             drain_in_flight_turn(TURN_DRAIN_TIMEOUT).await;

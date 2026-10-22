@@ -295,6 +295,7 @@ pub(crate) fn spawn_key_watcher_with_typing(
                     if matches!(ev.code, KeyCode::Char('c') | KeyCode::Char('C'))
                         && ev.modifiers.contains(KeyModifiers::CONTROL)
                     {
+                        log::info!(target: "gray_repl", "turn cancelled by key {ev:?}");
                         watch_cancel.cancel();
                         return;
                     }
@@ -302,6 +303,11 @@ pub(crate) fn spawn_key_watcher_with_typing(
                     let interrupts = bindings.contains(&crate::keymap::Binding::Action(
                         crate::keymap::Action::Interrupt,
                     ));
+                    if interrupts {
+                        // Unexplained mid-turn interrupts were reported; name
+                        // the exact event so a stray terminal sequence shows up.
+                        log::info!(target: "gray_repl", "turn interrupt key {ev:?}");
+                    }
                     let Some(shared) = watcher_tui.as_ref() else {
                         if interrupts {
                             watch_cancel.cancel();
