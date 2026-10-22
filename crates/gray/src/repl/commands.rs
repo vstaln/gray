@@ -213,13 +213,6 @@ pub(crate) const TUI_COMMANDS: &[CmdDef] = &[
         scope: CmdScope::Global,
         surface: CmdSurface::Local,
     },
-    CmdDef {
-        name: "setup",
-        desc: "import detected agent tool setups (rules, skills, plugins)",
-        aliases: &[],
-        scope: CmdScope::Global,
-        surface: CmdSurface::Local,
-    },
 ];
 
 pub(crate) fn resolve(name: &str) -> Option<&'static CmdDef> {
@@ -387,19 +380,6 @@ pub(crate) fn complete_command_args(
         "agentsmd" | "sys" => complete_agentsmd_args(cmd, arg_text),
         "models" => complete_model_args(cmd, arg_text),
         "theme" | "themes" => complete_theme_args(cmd, arg_text),
-        "setup" => {
-            let mut table: Vec<(&str, &str)> = vec![
-                ("undo", "reverse the last import(s)"),
-                ("dismiss", "stop flagging a tool (/setup dismiss <tool>)"),
-                ("scanned", "show the declared scan set"),
-            ];
-            table.extend(
-                crate::quality_of_life::detect::TOOLS
-                    .iter()
-                    .map(|t| (t.id, "import this tool's setup")),
-            );
-            complete_from_table(cmd, arg_text, &table)
-        }
         "intro" => complete_from_table(
             cmd,
             arg_text,
@@ -619,7 +599,6 @@ pub enum ReplCommand {
     Theme(Option<String>),
 
     Intro(Option<String>),
-    Setup(Option<String>),
 
     Keys(Option<String>),
 
@@ -754,7 +733,6 @@ pub fn parse_command(line: &str) -> ReplCommand {
         Some("hehe") => ReplCommand::Hehe,
         Some("theme") => ReplCommand::Theme(opt(rest)),
         Some("intro") => ReplCommand::Intro(opt(rest)),
-        Some("setup") => ReplCommand::Setup(opt(rest)),
         Some("hotkeys") => ReplCommand::Keys(opt(rest)),
         Some("reload") => ReplCommand::Reload,
         Some("models") => match opt(rest) {

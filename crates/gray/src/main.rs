@@ -252,7 +252,12 @@ async fn run() -> anyhow::Result<()> {
                     return gray::auto_update::auto_cli(v);
                 }
                 if everything {
-                    return gray::quality_of_life::update::cli().await;
+                    return gray::plugin_cli::forward(
+                        &gray::plugin_cli::home()?,
+                        "qol",
+                        &["update".to_string()],
+                    )
+                    .await;
                 }
                 return gray::update::update_now().await;
             }

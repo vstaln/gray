@@ -472,6 +472,10 @@ pub trait PluginHooks: Send + Sync {
     async fn post_tool(&self, _name: &str, _output: &ToolOutput) {}
     async fn turn_end(&self, _usage: &Usage) {}
 
+    /// The interactive REPL session came up — plugins use it for
+    /// first-run/detection notices (the old core QoL hook).
+    async fn session_start(&self, _interactive: bool) {}
+
     async fn shutdown(&self) {}
 
     fn is_global(&self) -> bool {

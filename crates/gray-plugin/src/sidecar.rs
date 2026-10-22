@@ -1313,6 +1313,9 @@ impl Plugin for SidecarPlugin {
             CoreEvent::TurnEnd { usage } => {
                 json!({"type": "turn_end", "usage": usage, "session": session})
             }
+            CoreEvent::SessionStart { interactive } => {
+                json!({"type": "session_start", "interactive": interactive, "session": session})
+            }
         };
         let name = self.manifest.name.clone();
 

@@ -176,35 +176,6 @@ pub async fn run_onboarding(config: &mut Config) -> anyhow::Result<bool> {
         2,
     );
     print!("\r\n");
-    let detected = crate::quality_of_life::detect::first_run_detected();
-    if !detected.is_empty() {
-        let names = detected
-            .iter()
-            .map(|d| d.name)
-            .collect::<Vec<_>>()
-            .join(", ");
-        print_wrapped(&format!("\x1b[2m{names} detected\x1b[0m"), 2);
-        print_wrapped(
-            "\x1b[2m[i] import setup via /setup · any other key skips\x1b[0m",
-            2,
-        );
-        use crossterm::event::{Event, KeyCode, KeyEventKind, read};
-        let _ = crossterm::terminal::enable_raw_mode();
-        drain_queued_events();
-        let key = loop {
-            match read() {
-                Ok(Event::Key(k)) if k.kind == KeyEventKind::Press => break Some(k),
-                Ok(_) => continue,
-                Err(_) => break None,
-            }
-        };
-        let _ = crossterm::terminal::disable_raw_mode();
-        print!("\r\n");
-        if matches!(key, Some(k) if matches!(k.code, KeyCode::Char('i') | KeyCode::Char('I'))) {
-            crate::quality_of_life::detect::set_pending_setup(true);
-        }
-    }
-
     let model_ok = config
         .model
         .as_deref()

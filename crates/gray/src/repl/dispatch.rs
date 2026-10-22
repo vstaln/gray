@@ -321,7 +321,13 @@ pub(crate) async fn dispatch_command(
         }
 
         ReplCommand::Update(arg) => {
-            super::maintenance::handle_update(tui, arg).await;
+            if arg.as_deref().map(str::trim) == Some("everything") {
+                // Provider CLIs + plugins + gray: the qol plugin owns the
+                // update-everything flow now.
+                *pending_command = Some(ReplCommand::Plugin("/qol update".to_string()));
+            } else {
+                super::maintenance::handle_update(tui, arg).await;
+            }
             Flow::Continue
         }
 
@@ -359,10 +365,6 @@ pub(crate) async fn dispatch_command(
         }
         ReplCommand::Theme(arg) => {
             super::customize::handle_theme(arg, tui.as_ref().map(|(s, _)| s));
-            Flow::Continue
-        }
-        ReplCommand::Setup(arg) => {
-            crate::quality_of_life::setup::handle(tui, arg).await;
             Flow::Continue
         }
         ReplCommand::Intro(arg) => {

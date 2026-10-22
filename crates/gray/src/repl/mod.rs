@@ -895,11 +895,18 @@ pub async fn run_repl_mode(
         });
     }
 
+    // Plugin-owned quality-of-life detection: gray-qol's session_start
+    // hook hears this and says what it found (the old core QoL spawn).
     if interactive
         && !config.bare
-        && let Some((shared, _)) = &tui
+        && let Some(a) = agent.as_ref()
     {
-        tokio::spawn(crate::quality_of_life::detect::run_for_home(shared.clone()));
+        let hooks = a.hooks().to_vec();
+        tokio::spawn(async move {
+            for h in hooks {
+                h.session_start(true).await;
+            }
+        });
     }
 
     if interactive
@@ -981,10 +988,6 @@ pub async fn run_repl_mode(
 
     if interactive {
         jobs::spawn_footer_poller();
-    }
-
-    if interactive && tui.is_some() && crate::quality_of_life::detect::take_pending_setup() {
-        crate::quality_of_life::setup::handle(&tui, None).await;
     }
 
     loop {
