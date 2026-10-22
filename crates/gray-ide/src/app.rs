@@ -8,6 +8,7 @@ use crate::store::{Event, Item, Role, Store, new_id, now};
 use crate::workspace::{self, FileEntry};
 use gpui_kit::component::WindowExt;
 use gpui_kit::component::button::{Button, ButtonVariants};
+use gpui_kit::component::collapsible::Collapsible;
 use gpui_kit::component::diff::{Diff, DiffFile, DiffState};
 use gpui_kit::component::input::{
     Editor, EditorState, Input, InputEvent, InputState, Textarea, TextareaState,
@@ -186,6 +187,16 @@ pub struct GrayApp {
     terminal_lines: Vec<String>,
     terminal_rx: Vec<Receiver<String>>,
     scroll: ScrollHandle,
+    /// Stick the timeline to the bottom as content streams in. Cleared when
+    /// the user scrolls away from the bottom, set again when they return.
+    follow: bool,
+    last_offset: Pixels,
+    follow_thread: Option<String>,
+    /// User overrides of a tool group's fold state (default: open while live).
+    group_open: HashMap<String, bool>,
+    /// (thread id, item count when it was opened): only items past that count
+    /// get the rise-in, so switching threads never replays it.
+    rise_base: std::cell::RefCell<Option<(String, usize)>>,
     expanded: HashSet<String>,
     tree: Vec<FileEntry>,
     tabs: Vec<Tab>,
@@ -312,6 +323,11 @@ impl GrayApp {
             terminal_lines: Vec::new(),
             terminal_rx: Vec::new(),
             scroll: ScrollHandle::new(),
+            follow: true,
+            last_offset: px(0.),
+            follow_thread: None,
+            group_open: HashMap::new(),
+            rise_base: std::cell::RefCell::new(None),
             expanded: HashSet::new(),
             tree: Vec::new(),
             tabs: Vec::new(),
@@ -649,6 +665,7 @@ impl GrayApp {
                 text: String::new(),
             },
         );
+        self.follow = true;
         self.scroll.scroll_to_bottom();
         cx.notify();
     }
@@ -827,6 +844,12 @@ impl GrayApp {
         }
         for (tid, result) in finished {
             changed = true;
+            // The live group goes back to its default (closed) when the turn ends.
+            if let Some(th) = self.store.state.thread(&tid)
+                && let Some(Row::Group(r)) = timeline_rows(&th.items).last()
+            {
+                self.group_open.remove(&group_id(&th.items[r.start]));
+            }
             let text = self.turns.remove(&tid).map(|a| a.text).unwrap_or_default();
             let body = match &result {
                 Err(e) => format!("Turn failed: {}", e.lines().next().unwrap_or("")),
@@ -933,14 +956,39 @@ impl GrayApp {
             };
             window.push_notification(Notification::new().with_type(kind).message(msg), cx);
         }
+        if self.active_thread != self.follow_thread {
+            // A freshly opened thread starts at its latest message.
+            self.follow_thread = self.active_thread.clone();
+            self.follow = true;
+            changed = true;
+        } else {
+            let off = self.scroll.offset().y;
+            let at_bottom = self.scroll.max_offset().y + off <= px(24.);
+            let was = self.follow;
+            if at_bottom {
+                self.follow = true;
+            } else if off != self.last_offset {
+                // The offset moved without content pinning it: the user scrolled.
+                self.follow = false;
+            } else if self.follow {
+                // Content grew under us (fold opened, text reflowed): re-pin.
+                changed = true;
+            }
+            if was != self.follow {
+                cx.notify();
+            }
+        }
         if changed {
-            self.scroll.scroll_to_bottom();
+            if self.follow {
+                self.scroll.scroll_to_bottom();
+            }
             cx.notify();
         } else if !self.turns.is_empty() && self.ticks.is_multiple_of(3) {
             // Keep the elapsed-time label ticking between stream events
             // (and under reduced motion, when no animation frames run).
             cx.notify();
         }
+        self.last_offset = self.scroll.offset().y;
         self.apply_scroll_target(cx);
     }
 
@@ -960,6 +1008,13 @@ impl GrayApp {
             cx.notify();
             return;
         }
+        // Timeline children are rows (tool runs fold into one), not items.
+        let ix = self
+            .store
+            .state
+            .thread(&tid)
+            .and_then(|th| timeline_rows(&th.items).iter().position(|r| r.contains(ix)))
+            .unwrap_or(ix);
         let (Some(item), Some(first)) = (
             self.items_scroll.bounds_for_item(ix),
             self.items_scroll.bounds_for_item(0),
@@ -2068,7 +2123,19 @@ impl GrayApp {
             .and_then(|t| self.store.state.thread(t));
         let mut messages: Vec<serde_json::Value> = Vec::new();
         let mut activities: Vec<serde_json::Value> = Vec::new();
+        let mut groups: Vec<serde_json::Value> = Vec::new();
         if let Some(t) = thread {
+            let running = self.turns.contains_key(&t.id);
+            for row in timeline_rows(&t.items) {
+                if let Row::Group(r) = row {
+                    let g = group_info(&t.items, &r, running);
+                    groups.push(serde_json::json!({
+                        "id": g.id, "steps": g.steps, "live": g.live, "error": g.err,
+                        "open": self.group_open.get(&g.id).copied().unwrap_or(g.live),
+                        "label": g.label(), "elapsed_ms": g.elapsed_ms,
+                    }));
+                }
+            }
             for i in &t.items {
                 match i {
                     Item::Message { role, text, .. } => {
@@ -2127,6 +2194,8 @@ impl GrayApp {
             "threads": threads,
             "messages": messages,
             "activities": activities,
+            "groups": groups,
+            "following": self.follow,
             "running": thread.map(|t| self.turns.contains_key(&t.id)).unwrap_or(false),
             "turn_seconds": self.active_thread.as_ref().and_then(|t| self.turns.get(t)).map(|a| a.started.elapsed().as_secs_f64()),
             "branch": self.branch,
@@ -2803,6 +2872,17 @@ impl GrayApp {
             .active_thread
             .as_ref()
             .and_then(|id| self.store.state.thread(id));
+        let base = {
+            let mut b = self.rise_base.borrow_mut();
+            match (thread, b.as_ref()) {
+                (Some(th), Some((id, n))) if *id == th.id => *n,
+                (Some(th), _) => {
+                    *b = Some((th.id.clone(), th.items.len()));
+                    th.items.len()
+                }
+                (None, _) => usize::MAX,
+            }
+        };
         let empty = thread.map(|th| th.items.is_empty()).unwrap_or(true)
             && thread
                 .map(|th| !self.turns.contains_key(&th.id))
@@ -2890,8 +2970,18 @@ impl GrayApp {
             .pt(px(20.))
             .pb(px(28.))
             .gap(px(14.));
-        for item in &thread.items {
-            col = col.child(render_item(item, &t));
+        let running = self.turns.contains_key(&thread.id);
+        for row in timeline_rows(&thread.items) {
+            col = col.child(match row {
+                Row::Item(ix) => {
+                    let item = &thread.items[ix];
+                    let assistant =
+                        matches!(item, Item::Message { role, .. } if *role != Role::User);
+                    // The final reply replaces already-visible streamed text: no rise.
+                    rise(render_item(item, &t), item, ix >= base && !assistant)
+                }
+                Row::Group(r) => self.render_group(&thread.items, r, running, base, &t, cx),
+            });
         }
         if let Some(a) = self.turns.get(&thread.id) {
             col = col.child(
@@ -2938,13 +3028,142 @@ impl GrayApp {
                     }),
             );
         }
-        div()
-            .id("timeline")
+        let bg = t.background;
+        v_flex()
+            .relative()
             .flex_1()
             .min_h_0()
-            .overflow_y_scroll()
-            .track_scroll(&self.scroll)
-            .child(col)
+            .child(
+                div()
+                    .id("timeline")
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .track_scroll(&self.scroll)
+                    .child(col),
+            )
+            .when(!self.follow, |d| {
+                d.child(
+                    div()
+                        .absolute()
+                        .left_0()
+                        .right_0()
+                        .bottom_0()
+                        .h(px(48.))
+                        .bg(linear_gradient(
+                            180.,
+                            linear_color_stop(bg.opacity(0.), 0.),
+                            linear_color_stop(bg, 1.),
+                        )),
+                )
+                .child(
+                    h_flex()
+                        .absolute()
+                        .left_0()
+                        .right_0()
+                        .bottom(px(14.))
+                        .justify_center()
+                        .child(motion::enter(
+                            h_flex()
+                                .id("jump-latest")
+                                .h(px(28.))
+                                .px(px(11.))
+                                .gap(px(6.))
+                                .rounded_full()
+                                .cursor_pointer()
+                                .bg(t.popover)
+                                .border_1()
+                                .border_color(t.foreground.opacity(0.12))
+                                .shadow_md()
+                                .text_size(px(12.))
+                                .text_color(t.foreground.opacity(0.75))
+                                .hover(|s| s.bg(t.secondary_hover))
+                                .child(Icon::new(IconName::ArrowDown).size(px(13.)))
+                                .child("Jump to latest")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.follow = true;
+                                    this.scroll.scroll_to_bottom();
+                                    cx.notify();
+                                })),
+                            "jump-latest-in",
+                            motion::CARD_MS,
+                            -6.,
+                            motion::ease_out(),
+                        )),
+                )
+            })
+            .into_any_element()
+    }
+
+    /// A run of tool activity folded under one "Worked for …" header.
+    fn render_group(
+        &self,
+        items: &[Item],
+        r: std::ops::Range<usize>,
+        running: bool,
+        base: usize,
+        t: &Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let g = group_info(items, &r, running);
+        let open = self.group_open.get(&g.id).copied().unwrap_or(g.live);
+        let ink = t.foreground;
+        let color = if g.err {
+            t.danger.opacity(0.85)
+        } else {
+            ink.opacity(0.55)
+        };
+        let label = if g.live {
+            motion::shimmer_label("group-live", g.label(), t).into_any_element()
+        } else {
+            div().child(g.label()).into_any_element()
+        };
+        let gid = g.id.clone();
+        let header = h_flex()
+            .id(SharedString::from(format!("{}-head", g.id)))
+            .gap(px(6.))
+            .py(px(2.))
+            .cursor_pointer()
+            .text_size(px(12.5))
+            .text_color(color)
+            .hover(|s| s.text_color(if g.err { t.danger } else { ink.opacity(0.8) }))
+            .child(
+                Icon::new(if open {
+                    IconName::ChevronDown
+                } else {
+                    IconName::ChevronRight
+                })
+                .size(px(14.)),
+            )
+            .when(g.err, |h| {
+                h.child(Icon::new(IconName::CircleX).size(px(13.)))
+            })
+            .child(label)
+            .child(div().text_color(ink.opacity(0.32)).child(format!(
+                "· {} {}",
+                g.steps,
+                if g.steps == 1 { "step" } else { "steps" }
+            )))
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.group_open.insert(gid.clone(), !open);
+                cx.notify();
+            }));
+        let mut body = v_flex()
+            .gap(px(4.))
+            .ml(px(6.))
+            .mt(px(4.))
+            .pl(px(13.))
+            .border_l_1()
+            .border_color(ink.opacity(0.08));
+        for ix in r.clone() {
+            body = body.child(rise(render_item(&items[ix], t), &items[ix], ix >= base));
+        }
+        let header = rise(header.into_any_element(), &items[r.start], r.start >= base);
+        Collapsible::new()
+            .open(open)
+            .motion_id(SharedString::from(g.id.clone()))
+            .child(header)
+            .content(body)
             .into_any_element()
     }
 
@@ -4688,6 +4907,118 @@ fn md_style(t: &Theme) -> TextViewStyle {
             .border_color(t.foreground.opacity(0.10))
             .p(px(12.)),
     )
+}
+
+/// A timeline row: one item, or a run of tool activity folded together.
+enum Row {
+    Item(usize),
+    Group(std::ops::Range<usize>),
+}
+
+impl Row {
+    fn contains(&self, ix: usize) -> bool {
+        match self {
+            Row::Item(i) => *i == ix,
+            Row::Group(r) => r.contains(&ix),
+        }
+    }
+}
+
+/// Checkpoints stay as their own row: they sit before the prompt, not in the turn.
+fn groupable(item: &Item) -> bool {
+    matches!(item, Item::Activity { kind, .. } if kind != "checkpoint")
+}
+
+fn timeline_rows(items: &[Item]) -> Vec<Row> {
+    let mut rows = Vec::new();
+    let mut i = 0;
+    while i < items.len() {
+        if groupable(&items[i]) {
+            let start = i;
+            while i < items.len() && groupable(&items[i]) {
+                i += 1;
+            }
+            rows.push(Row::Group(start..i));
+        } else {
+            rows.push(Row::Item(i));
+            i += 1;
+        }
+    }
+    rows
+}
+
+fn item_id(item: &Item) -> &str {
+    match item {
+        Item::Message { id, .. } | Item::Activity { id, .. } => id,
+    }
+}
+
+fn item_at(item: &Item) -> i64 {
+    match item {
+        Item::Message { at, .. } | Item::Activity { at, .. } => *at,
+    }
+}
+
+fn group_id(first: &Item) -> String {
+    format!("grp-{}", item_id(first))
+}
+
+struct GroupInfo {
+    id: String,
+    live: bool,
+    err: bool,
+    steps: usize,
+    elapsed_ms: i64,
+}
+
+impl GroupInfo {
+    fn label(&self) -> String {
+        if self.live {
+            return "Working…".to_string();
+        }
+        let s = self.elapsed_ms.max(0) / 1000;
+        let (m, s) = (s / 60, s % 60);
+        match (m, s) {
+            (0, s) => format!("Worked for {s}s"),
+            (m, 0) => format!("Worked for {m}m"),
+            (m, s) => format!("Worked for {m}m {s}s"),
+        }
+    }
+}
+
+/// The turn runs from the prompt before the group to the reply after it
+/// (or the group's last step when the turn ended without a reply).
+fn group_info(items: &[Item], r: &std::ops::Range<usize>, running: bool) -> GroupInfo {
+    let start = item_at(&items[r.start.saturating_sub(1)]);
+    let end = match items.get(r.end) {
+        Some(m @ Item::Message { .. }) => item_at(m),
+        _ => item_at(&items[r.end - 1]),
+    };
+    GroupInfo {
+        id: group_id(&items[r.start]),
+        live: running && r.end == items.len(),
+        err: items[r.clone()]
+            .iter()
+            .any(|i| matches!(i, Item::Activity { kind, .. } if kind == "error")),
+        steps: r.len(),
+        elapsed_ms: end - start,
+    }
+}
+
+/// Message rise-in (opacity + 10px), only for items that arrived after the
+/// thread was opened. Keyed by item id so it plays once per mount.
+fn rise(el: AnyElement, item: &Item, new: bool) -> AnyElement {
+    if !new {
+        return el;
+    }
+    motion::enter(
+        v_flex().w_full().child(el),
+        SharedString::from(format!("rise-{}", item_id(item))),
+        motion::RISE_MS,
+        -10.,
+        motion::ease_out(),
+    )
+    .into_any_element()
 }
 
 fn render_item(item: &Item, t: &Theme) -> AnyElement {

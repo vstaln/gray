@@ -26,6 +26,8 @@ pub const POPOVER_MS: u64 = 170;
 pub const MODAL_MS: u64 = 200;
 pub const CARD_MS: u64 = 180;
 pub const WELCOME_MS: u64 = 600;
+/// Message rise-in, monocode `prompt-turn-reveal`.
+pub const RISE_MS: u64 = 320;
 /// Loops are capped so a running turn doesn't re-render the window at 60 Hz.
 const LOOP_FPS: f32 = 30.;
 
