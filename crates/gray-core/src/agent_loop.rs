@@ -17,7 +17,6 @@ const MAX_EMPTY_NUDGES: u8 = 3;
 
 const MAX_CONTINUATIONS: u8 = 2;
 
-const MAX_LEAK_NUDGES: u8 = 3;
 
 const MAX_PROGRESS_NUDGES: u8 = 2;
 
@@ -256,63 +255,6 @@ impl Agent {
         }
     }
 
-    /// Run the elements of a fused call block sequentially, merging results
-    /// into one ToolOutput so the outer call id still gets a single result.
-    async fn execute_call_block(
-        &self,
-        ctx: &ToolContext,
-        calls: Vec<(String, serde_json::Value)>,
-        dropped: usize,
-        parse_error: Option<String>,
-    ) -> ToolOutput {
-        let total = calls.len() + dropped;
-        let mut ran = 0usize;
-        let mut sections = Vec::with_capacity(calls.len() + 1);
-        for (i, (name, args)) in calls.iter().enumerate() {
-            if ctx.cancel.is_cancelled() {
-                sections.push(format!("== call {}/{total}: cancelled by user ==", i + 1));
-                break;
-            }
-            let out = match self.preflight(name, args).await {
-                Ok(serde_json::Value::Array(_)) => ToolOutput::error(
-                    "nested call blocks are not supported — send the calls as a flat block",
-                ),
-                Ok(eff) => match tokio::time::timeout(
-                    self.tool_timeout,
-                    self.executor.execute(ctx, name, eff),
-                )
-                .await
-                {
-                    Ok(o) => o,
-                    Err(_) => ToolOutput::error(format!(
-                        "Tool '{name}' timed out after {}s",
-                        self.tool_timeout.as_secs()
-                    )),
-                },
-                Err(e) => e,
-            };
-            if !out.is_error {
-                ran += 1;
-            }
-            sections.push(format!(
-                "== call {}/{total}: {name} ==\n{}",
-                i + 1,
-                out.content
-            ));
-        }
-        let mut head = format!("tool-call block: ran {ran}/{total} call(s)");
-        if dropped > 0 {
-            head.push_str(&format!(", dropped {dropped} unparseable element(s)"));
-            if let Some(e) = parse_error {
-                head.push_str(&format!(" ({e})"));
-            }
-        }
-        sections.insert(0, head);
-        let mut out = ToolOutput::ok(sections.join("\n\n"));
-        out.is_error = ran == 0;
-        out
-    }
-
     async fn preflight(
         &self,
         name: &str,
@@ -326,40 +268,6 @@ impl Agent {
             return Err(ToolOutput::error(crate::tool_out::unknown_tool(
                 name, &names,
             )));
-        }
-        if let serde_json::Value::String(s) = args
-            && s.trim_start().starts_with('[')
-        {
-            match serde_json::from_str::<serde_json::Value>(s) {
-                Ok(v) => {
-                    if block_args(&v).is_some() {
-                        return Ok(v);
-                    }
-                }
-                Err(e) => {
-                    let (calls, dropped) = salvage_call_block(s);
-                    if calls.is_empty() {
-                        return Err(ToolOutput::error(format!(
-                            "The tool-call block is not valid JSON ({e}), so none of its calls ran. Check the brackets and quotes, then resend the whole block."
-                        )));
-                    }
-                    return Ok(serde_json::json!({
-                        CALL_BLOCK_SALVAGE: {
-                            "calls": calls
-                                .iter()
-                                .map(|(n, a)| serde_json::json!({"name": n, "arguments": a}))
-                                .collect::<Vec<_>>(),
-                            "dropped": dropped,
-                            "parse_error": e.to_string(),
-                        }
-                    }));
-                }
-            }
-        }
-        if let serde_json::Value::Array(_) = args
-            && block_args(args).is_some()
-        {
-            return Ok(args.clone());
         }
         if !args.is_object() {
             let got = match args {
@@ -505,8 +413,6 @@ impl Agent {
 
         let mut empty_nudge_sent = false;
         let mut empty_nudges: u8 = 0;
-
-        let mut leak_nudges: u8 = 0;
 
         let mut progress_nudges: u8 = 0;
 
@@ -734,23 +640,6 @@ impl Agent {
             let mut text_parts: Vec<String> = Vec::new();
             let mut thinking_text = String::new();
 
-            let mut text_strip = SpecialStrip::default();
-            let mut thinking_strip = SpecialStrip::default();
-            macro_rules! drain_held {
-                () => {{
-                    let held = thinking_strip.flush();
-                    if !held.is_empty() {
-                        emit!(AgentEvent::thinking_delta(held.clone()));
-                        append_thinking_chunk(&mut thinking_text, &held);
-                    }
-                    let held = text_strip.flush();
-                    if !held.is_empty() {
-                        emit!(AgentEvent::text_delta(held.clone()));
-                        text_parts.push(held);
-                    }
-                }};
-            }
-
             let mut pending_reasoning: Option<(String, String)> = None;
             let mut pending: Vec<PendingToolCall> = Vec::new();
             let (stop_reason, usage) = {
@@ -759,7 +648,6 @@ impl Agent {
                     let next_event = tokio::select! {
                         ev = stream.next() => ev,
                         _ = ctx.cancel.cancelled() => {
-                            drain_held!();
                             if !text_parts.is_empty() {
                                 salvage_partial_text(
                                     &mut self.messages,
@@ -780,7 +668,6 @@ impl Agent {
                                 None => std::future::pending::<()>().await,
                             }
                         } => {
-                            drain_held!();
                             if !text_parts.is_empty() {
                                 salvage_partial_text(
                                     &mut self.messages,
@@ -842,7 +729,6 @@ impl Agent {
                                 };
                                 let remaining = retry_budget().saturating_sub(waited);
                                 if !reset_wait && remaining.is_zero() {
-                                    drain_held!();
                                     if !text_parts.is_empty() {
                                         salvage_partial_text(
                                             &mut self.messages,
@@ -892,7 +778,6 @@ impl Agent {
                                 }
                                 continue 'turn;
                             }
-                            drain_held!();
                             if !text_parts.is_empty() {
                                 salvage_partial_text(
                                     &mut self.messages,
@@ -912,14 +797,12 @@ impl Agent {
                             });
                         }
                         Some(Ok(StreamEvent::TextDelta { delta })) => {
-                            let delta = text_strip.push(&delta);
                             if !delta.is_empty() {
                                 emit!(AgentEvent::text_delta(delta.clone()));
                                 text_parts.push(delta);
                             }
                         }
                         Some(Ok(StreamEvent::ThinkingDelta { delta })) => {
-                            let delta = thinking_strip.push(&delta);
                             if !delta.is_empty() {
                                 emit!(AgentEvent::thinking_delta(delta.clone()));
                                 append_thinking_chunk(&mut thinking_text, &delta);
@@ -1028,7 +911,6 @@ impl Agent {
                             }
                         }
                         Some(Ok(StreamEvent::MessageComplete { stop_reason, usage })) => {
-                            drain_held!();
                             break (
                                 stop_reason.unwrap_or(StopReason::EndTurn),
                                 usage.unwrap_or_default(),
@@ -1064,7 +946,6 @@ impl Agent {
                                 };
                                 let remaining = retry_budget().saturating_sub(waited);
                                 if !reset_wait && remaining.is_zero() {
-                                    drain_held!();
                                     if !text_parts.is_empty() {
                                         salvage_partial_text(
                                             &mut self.messages,
@@ -1115,7 +996,6 @@ impl Agent {
                                 continue 'turn;
                             }
 
-                            drain_held!();
                             if !text_parts.is_empty() {
                                 salvage_partial_text(
                                     &mut self.messages,
@@ -1213,10 +1093,6 @@ impl Agent {
             }
             let text = text_parts.concat();
             let text_is_empty = text.is_empty();
-            let text_calls = parse_text_tool_calls(&text);
-
-            let leaked_markup = matches!(stop_reason, StopReason::EndTurn | StopReason::ToolUse)
-                && (leaked_call_markup(&text) || text_strip.leaked());
             if !text.is_empty() {
                 content.push(ContentBlock::Text { text });
             }
@@ -1244,20 +1120,6 @@ impl Agent {
                         }
                     }),
                 });
-            }
-            if !content
-                .iter()
-                .any(|b| matches!(b, ContentBlock::ToolUse { .. }))
-            {
-                for (i, (name, args)) in text_calls.into_iter().enumerate() {
-                    log::info!(target: "gray_agent", "executing tool call emitted as text markup: {name}");
-                    content.push(ContentBlock::ToolUse {
-                        id: format!("gray_text_{}_{i}", self.messages.len()),
-                        name,
-                        args,
-                        thought_signature: None,
-                    });
-                }
             }
             let assistant = Message {
                 role: Role::Assistant,
@@ -1382,18 +1244,6 @@ impl Agent {
             }
 
             if tool_uses.is_empty() {
-                if leaked_markup && leak_nudges < MAX_LEAK_NUDGES {
-                    leak_nudges += 1;
-                    log::info!(target: "gray_agent", "end turn leaked tool-call markup; nudging {leak_nudges}/{MAX_LEAK_NUDGES}");
-                    emit!(AgentEvent::Retract);
-                    self.messages.push(Message::user_injected(
-                        "your last message contained raw tool-call markup instead of a real tool call, so nothing ran — send the call again, or reply without it",
-                    ));
-
-                    emit!(AgentEvent::MessageBoundary);
-                    continue 'turn;
-                }
-
                 if self.collect_background_notifications(&ctx) {
                     emit!(AgentEvent::MessageBoundary);
                     continue 'turn;
@@ -1447,10 +1297,6 @@ impl Agent {
                 emit!(AgentEvent::turn_end(stop_reason, billed));
                 self.emit_turn_end(&billed).await;
                 return Ok(events);
-            }
-
-            if tool_uses.iter().any(|(_, n, a)| productive_call(n, a)) {
-                leak_nudges = 0;
             }
 
             const SIGNATURE_ABORT_REPEATS: usize = 12;
@@ -1671,27 +1517,6 @@ impl Agent {
                     }
                 };
 
-                if let Some((calls, dropped, parse_error)) = block_args(&effective_args) {
-                    let output = self
-                        .execute_call_block(&ctx, calls, dropped, parse_error)
-                        .await;
-                    let output = self.apply_tool_after(name, &output).await;
-                    Self::bill_tool_usage(&mut billed, name, &output, ctx.session_id.as_deref());
-                    for hook in &self.hooks {
-                        hook.post_tool(name, &output).await;
-                    }
-                    emit!(AgentEvent::tool_result(
-                        id.clone(),
-                        output.content.clone(),
-                        output.is_error,
-                    ));
-                    self.messages.push(Message {
-                        role: Role::User,
-                        injected: false,
-                        content: output.message_blocks(id),
-                    });
-                    continue;
-                }
                 let mut exec_fut: futures::future::BoxFuture<'_, ToolOutput> =
                     match self.tool_output_sink(id) {
                         Some(sink) => Box::pin(crate::agent::scope_tool_output(
@@ -1790,370 +1615,8 @@ impl Agent {
     }
 }
 
-fn productive_call(name: &str, args: &serde_json::Value) -> bool {
-    if name != "bash" {
-        return true;
-    }
-    let cmd = args
-        .get("command")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or("")
-        .trim();
-    !matches!(cmd, "true" | ":" | "echo" | "printf")
-        && !cmd.starts_with("echo ")
-        && !cmd.starts_with("printf ")
-}
-
-/// Extract tool calls a model emitted as text markup instead of structured
-/// tool_use — e.g. `<function_call>{"name":"bash","arguments":{..}}`,
-/// `<tool_call>{..}</tool_call>`, `<function=name>{..}`. Returns (name, args).
-fn parse_text_tool_calls(text: &str) -> Vec<(String, serde_json::Value)> {
-    const TAGS: &[&str] = &["<function_call>", "<tool_call>", "<tool_use>"];
-    let mut out: Vec<(String, serde_json::Value)> = Vec::new();
-    let mut cursor = 0usize;
-    while cursor < text.len() {
-        let mut next: Option<(usize, usize)> = None;
-        for tag in TAGS {
-            if let Some(rel) = text[cursor..].find(tag) {
-                let at = cursor + rel;
-                if next.is_none_or(|(s, _)| at < s) {
-                    next = Some((at, at + tag.len()));
-                }
-            }
-        }
-        let func_eq = text[cursor..].find("<function=").map(|rel| cursor + rel);
-        let mut name_override: Option<String> = None;
-        let mut body = next.map(|(_, e)| e).unwrap_or(usize::MAX);
-        if let Some(at) = func_eq
-            && at < body
-        {
-            let name_start = at + "<function=".len();
-            let name_end = text[name_start..]
-                .find(['>', '{'])
-                .map(|i| name_start + i)
-                .unwrap_or(text.len());
-            name_override = Some(text[name_start..name_end].trim().to_string());
-            body = name_end;
-        }
-        if body == usize::MAX {
-            break;
-        }
-        let Some(brace) = text[body..].find('{').map(|i| body + i) else {
-            break;
-        };
-        let Some(js) = json_slice(text, brace) else {
-            break;
-        };
-        if let Some(v) = serde_json::from_str::<serde_json::Value>(js)
-            .ok()
-            .or_else(|| crate::agent_tools::repair_json_text(js))
-        {
-            match name_override {
-                Some(n) if !n.is_empty() => out.push((n, v)),
-                _ => {
-                    if let Some(call) = call_from_json(v) {
-                        out.push(call);
-                    }
-                }
-            }
-        }
-        cursor = brace + js.len();
-    }
-    out
-}
-
-fn call_from_json(v: serde_json::Value) -> Option<(String, serde_json::Value)> {
-    let name = v
-        .get("name")
-        .or_else(|| v.get("function").and_then(|f| f.get("name")))
-        .and_then(|n| n.as_str())?
-        .to_string();
-    if name.trim().is_empty() {
-        return None;
-    }
-    let args = ["arguments", "args", "parameters", "input"]
-        .iter()
-        .find_map(|k| {
-            v.get(*k)
-                .or_else(|| v.get("function").and_then(|f| f.get(*k)))
-        })
-        .cloned()
-        .map(|a| match a {
-            serde_json::Value::String(s) => serde_json::from_str(&s)
-                .ok()
-                .or_else(|| crate::agent_tools::repair_json_text(&s))
-                .unwrap_or(serde_json::Value::String(s)),
-            other => other,
-        })
-        .unwrap_or_else(|| serde_json::json!({}));
-    Some((name, args))
-}
-
-const CALL_BLOCK_SALVAGE: &str = "__gray_call_block_salvaged";
-
-/// Element calls, dropped element count, original parse error.
-type CallBlock = (Vec<(String, serde_json::Value)>, usize, Option<String>);
-
-/// A fused call block decodes to (element calls, dropped elements, original
-/// parse error). Plain arrays with no call-shaped elements are not blocks.
-fn block_args(v: &serde_json::Value) -> Option<CallBlock> {
-    match v {
-        serde_json::Value::Array(items) => {
-            let mut calls = Vec::new();
-            let mut dropped = 0usize;
-            for item in items {
-                match call_from_json(item.clone()) {
-                    Some(c) => calls.push(c),
-                    None => dropped += 1,
-                }
-            }
-            (!calls.is_empty()).then_some((calls, dropped, None))
-        }
-        serde_json::Value::Object(o) => {
-            let b = o.get(CALL_BLOCK_SALVAGE)?;
-            let calls: Vec<(String, serde_json::Value)> = b
-                .get("calls")?
-                .as_array()?
-                .iter()
-                .cloned()
-                .filter_map(call_from_json)
-                .collect();
-            if calls.is_empty() {
-                return None;
-            }
-            let dropped = b
-                .get("dropped")
-                .and_then(serde_json::Value::as_u64)
-                .unwrap_or(0) as usize;
-            let parse_error = b
-                .get("parse_error")
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_string);
-            Some((calls, dropped, parse_error))
-        }
-        _ => None,
-    }
-}
-
-/// Best-effort recovery for a `[{..}, ..]` call block that failed strict JSON
-/// parsing: each balanced top-level object that decodes to a call is kept.
-fn salvage_call_block(text: &str) -> (Vec<(String, serde_json::Value)>, usize) {
-    let mut calls = Vec::new();
-    let mut dropped = 0usize;
-    let mut cursor = 0usize;
-    while let Some(rel) = text[cursor..].find('{') {
-        let start = cursor + rel;
-        match json_slice(text, start) {
-            Some(js) => {
-                match serde_json::from_str::<serde_json::Value>(js)
-                    .ok()
-                    .or_else(|| crate::agent_tools::repair_json_text(js))
-                    .and_then(call_from_json)
-                {
-                    Some(c) => calls.push(c),
-                    None => dropped += 1,
-                }
-                cursor = start + js.len();
-            }
-            None => {
-                dropped += 1;
-                cursor = start + 1;
-            }
-        }
-    }
-    (calls, dropped)
-}
-
-fn json_slice(text: &str, start: usize) -> Option<&str> {
-    debug_assert_eq!(text.as_bytes()[start], b'{');
-    let mut depth = 0u32;
-    let mut in_str = false;
-    let mut esc = false;
-    for (i, b) in text.as_bytes().iter().enumerate().skip(start) {
-        if in_str {
-            if esc {
-                esc = false;
-            } else if *b == b'\\' {
-                esc = true;
-            } else if *b == b'"' {
-                in_str = false;
-            }
-            continue;
-        }
-        match *b {
-            b'"' => in_str = true,
-            b'{' => depth += 1,
-            b'}' => {
-                depth -= 1;
-                if depth == 0 {
-                    return Some(&text[start..=i]);
-                }
-            }
-            _ => {}
-        }
-    }
-    None
-}
-
-fn leaked_call_markup(text: &str) -> bool {
-    if text.contains("```gray_calls")
-        || text.contains("\n[User]\n")
-        || text.contains("\n[Assistant]\n")
-    {
-        return true;
-    }
-
-    let mut in_fence = false;
-    let mut seen = 0u16;
-    for line in text.split_inclusive('\n') {
-        if line.starts_with("```") {
-            in_fence = !in_fence;
-        } else if !in_fence {
-            for (i, t) in LEAKED_SPECIALS.iter().enumerate() {
-                if line.contains(*t) {
-                    seen |= 1 << i;
-                }
-            }
-            if seen.count_ones() >= 2 {
-                return true;
-            }
-        }
-    }
-    false
-}
-
-const LEAKED_SPECIALS: &[&str] = &[
-    "<\x7copen\x7c>",
-    "<\x7cclose\x7c>",
-    "<\x7csep\x7c>",
-    "<\x7ccall\x7c>",
-    "<\x7ctools\x7c>",
-    "<\x7cargument\x7c>",
-    "<\x7cstart\x7c>",
-    "<\x7cend\x7c>",
-];
-
-#[derive(Default)]
-struct SpecialStrip {
-    hold: String,
-    seen: u16,
-    in_fence: bool,
-
-    mid_line: bool,
-
-    ticks: u8,
-}
-
-impl SpecialStrip {
-    fn push(&mut self, delta: &str) -> String {
-        let text = format!("{}{delta}", std::mem::take(&mut self.hold));
-        let mut out = String::with_capacity(text.len());
-        let mut i = 0;
-        while i < text.len() {
-            let tail = &text[i..];
-            if !self.in_fence && tail.starts_with('<') {
-                if let Some(k) = LEAKED_SPECIALS.iter().position(|t| tail.starts_with(t)) {
-                    self.seen |= 1 << k;
-                    self.mid_line = true;
-                    i += LEAKED_SPECIALS[k].len();
-                    continue;
-                }
-                if LEAKED_SPECIALS.iter().any(|t| t.starts_with(tail)) {
-                    self.hold = tail.to_owned();
-                    return out;
-                }
-            }
-            let ch = tail.chars().next().unwrap_or_default();
-            out.push(ch);
-            self.track_fence(ch);
-            i += ch.len_utf8();
-        }
-        out
-    }
-
-    fn track_fence(&mut self, ch: char) {
-        if ch == '\n' {
-            self.mid_line = false;
-            self.ticks = 0;
-        } else if !self.mid_line {
-            if ch == '`' {
-                self.ticks += 1;
-                if self.ticks == 3 {
-                    self.in_fence = !self.in_fence;
-                    self.mid_line = true;
-                    self.ticks = 0;
-                }
-            } else {
-                self.mid_line = true;
-                self.ticks = 0;
-            }
-        }
-    }
-
-    fn flush(&mut self) -> String {
-        std::mem::take(&mut self.hold)
-    }
-
-    fn leaked(&self) -> bool {
-        self.seen.count_ones() >= 2
-    }
-}
-
 fn is_job_progress(content: &str) -> bool {
     content.starts_with("still running · job ")
-}
-
-#[cfg(test)]
-mod leak_strip_tests {
-    use super::*;
-
-    const OPEN: &str = "<\x7copen\x7c>";
-    const CLOSE: &str = "<\x7cclose\x7c>";
-
-    fn run_stream(parts: &[&str]) -> (String, bool) {
-        let mut strip = SpecialStrip::default();
-        let mut out = String::new();
-        for p in parts {
-            out.push_str(&strip.push(p));
-        }
-        out.push_str(&strip.flush());
-        (out, strip.leaked())
-    }
-
-    #[test]
-    fn specials_in_prose_are_dropped_and_counted() {
-        let (out, leaked) = run_stream(&[&format!("a {OPEN} b {CLOSE} c")]);
-        assert_eq!(out, "a  b  c");
-        assert!(leaked);
-    }
-
-    #[test]
-    fn specials_quoted_in_a_fence_pass_through_and_do_not_count() {
-        let text = format!("here:\n```\n{OPEN} and {CLOSE}\n```\nthat's all");
-        let (out, leaked) = run_stream(&[&text]);
-        assert_eq!(out, text);
-        assert!(!leaked);
-        assert!(!leaked_call_markup(&text));
-    }
-
-    #[test]
-    fn fence_state_survives_deltas_split_mid_fence_and_mid_special() {
-        let (out, leaked) = run_stream(&["``", "`\n", &OPEN[..3], &OPEN[3..], "\n```\n", OPEN]);
-        assert_eq!(out, format!("```\n{OPEN}\n```\n{}", ""));
-
-        assert!(!leaked);
-    }
-
-    #[test]
-    fn a_partial_special_at_stream_end_is_flushed_as_text() {
-        let (out, _) = run_stream(&["x <|cl"]);
-        assert_eq!(out, "x <|cl");
-    }
-
-    #[test]
-    fn leaked_call_markup_still_fires_for_prose_specials() {
-        assert!(leaked_call_markup(&format!("{OPEN} do it {CLOSE}")));
-    }
 }
 
 #[cfg(test)]
@@ -2262,37 +1725,6 @@ mod turn_retry_tests {
             },
         );
         assert!(turn_retry_wait(&e, 0).is_none());
-    }
-
-    #[test]
-    fn parses_function_call_markup() {
-        let text = "Let me look.\n<function_call>\n{\"name\": \"bash\", \"arguments\": {\"command\": \"ls /app\"}}\n";
-        let calls = parse_text_tool_calls(text);
-        assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0].0, "bash");
-        assert_eq!(calls[0].1["command"], "ls /app");
-    }
-
-    #[test]
-    fn parses_function_eq_dialect() {
-        let calls = parse_text_tool_calls("<function=bash>{\"command\": \"pwd\"}</function>");
-        assert_eq!(calls[0].0, "bash");
-        assert_eq!(calls[0].1["command"], "pwd");
-    }
-
-    #[test]
-    fn parses_nested_function_args() {
-        let calls = parse_text_tool_calls(
-            "<tool_call>{\"function\": {\"name\": \"read\", \"arguments\": \"{\\\"path\\\": \\\"/a\\\"}\"}}</tool_call>",
-        );
-        assert_eq!(calls[0].0, "read");
-        assert_eq!(calls[0].1["path"], "/a");
-    }
-
-    #[test]
-    fn ignores_prose_with_braces() {
-        assert!(parse_text_tool_calls("the fix is {\"a\": 1} simple").is_empty());
-        assert!(parse_text_tool_calls("no markup here").is_empty());
     }
 
     #[test]
