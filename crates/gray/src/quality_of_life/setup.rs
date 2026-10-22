@@ -1160,16 +1160,19 @@ pub(crate) async fn handle(tui: &TuiOpt, arg: Option<String>) {
             id: d.id.to_string(),
             header: d.name.to_string(),
             question: format!("import from {}? (check what to apply)", d.name),
+            detail: String::new(),
             options: items
                 .iter()
                 .map(|i| crate::ask::AskOption {
                     label: i.label.clone(),
                     description: i.desc.clone(),
                     opt_in: i.opt_in,
+                    freeform: false,
                 })
                 .collect(),
             multi: true,
             default_all: true,
+            no_other: false,
         })
         .collect();
     let Some(answers) = crate::ask::ask_questions_modal(shared, questions) else {

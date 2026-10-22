@@ -737,6 +737,43 @@ pub fn print_capabilities(only: Option<&str>) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Grant a single declared capability to an installed plugin (no output);
+/// returns true when the grant set changed. Used when an in-TUI flow installs
+/// a provider plugin specifically to sign in — the interactive install prompt
+/// cannot run there, so `provider.credentials` would otherwise stay deferred
+/// and the provider row hidden.
+pub(crate) fn grant_capability(home: &Path, name: &str, capability: &str) -> anyhow::Result<bool> {
+    migrate_commands_json(home);
+    let declared = gray_plugin::capabilities::parse_declared(
+        &metadata(home, name)
+            .context("no cached manifest — is the plugin installed?")?
+            .get("capabilities")
+            .and_then(Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().map(str::to_string))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default(),
+    );
+    if !declared.iter().any(|d| d == capability) {
+        return Ok(false);
+    }
+    let mut lock = load_lock(home)?;
+    let entry = lock
+        .plugins
+        .get_mut(name)
+        .with_context(|| format!("no plugin named '{name}'"))?;
+    if entry.granted_capabilities.iter().any(|g| g == capability) {
+        return Ok(false);
+    }
+    entry.granted_capabilities.push(capability.to_string());
+    entry.capabilities_hash = Some(gray_plugin::capabilities::consent_hash(&declared));
+    lock.save(&gray_plugin::lock::lock_path(home))?;
+    crate::providers::ProviderRegistry::refresh(home)?;
+    Ok(true)
+}
+
 pub fn grant_all_capabilities(name: &str) -> anyhow::Result<()> {
     let home = home()?;
     migrate_commands_json(&home);
@@ -1016,7 +1053,7 @@ fn command_suggestion(
             let s = strsim::jaro_winkler(typed, &n);
             (n, s)
         })
-        .filter(|(_, s)| *s >= 0.87)
+        .filter(|(n, s)| *s >= 0.87 && n != typed)
         .collect();
     scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
     let mut it = scored.into_iter().take(3).map(|(n, _)| format!("'{n}'"));
@@ -1060,11 +1097,12 @@ async fn index_owner_hint(name: &str) -> Option<String> {
     index
         .plugins
         .iter()
-        .find(|(_, e)| {
+        .find(|(owner, e)| {
             e.trusted()
-                && e.commands
-                    .iter()
-                    .any(|c| c.trim_start_matches('/') == name)
+                && (owner.as_str() == name
+                    || e.commands
+                        .iter()
+                        .any(|c| c.trim_start_matches('/') == name))
         })
         .map(|(owner, _)| {
             format!(
@@ -1140,21 +1178,64 @@ fn user_home_lock(home: &Path) -> Option<(PathBuf, LockFile, LockFile)> {
     Some((user, lock, commands))
 }
 
+/// Probe a lock-registered plugin whose `cli_argv` was never recorded —
+/// bulk syncs and older installers wrote entries straight to the lock —
+/// so `gray <name>` forwarding self-heals on first dispatch instead of
+/// dying on "sidecar plugin, not a CLI command". Reloads `lock` when
+/// adoption wrote the entry; silent no-op when nothing changed.
+async fn lazy_adopt(home: &Path, name: &str, lock: &mut LockFile) {
+    let needs_probe = lock
+        .plugins
+        .get(name)
+        .is_some_and(|e| e.cli_argv.is_none() && enabled(home, name, e));
+    if needs_probe
+        && adopt_cli(home, name, &home.join("plugins").join(name))
+            .await
+            .unwrap_or(false)
+        && let Ok(fresh) = load_lock(home)
+    {
+        *lock = fresh;
+    }
+}
+
+/// Plugin names `gray <name>` forwarding can reach: every enabled lock
+/// entry qualifies, since dispatch lazily adopts entries whose `manifest`
+/// verb was never probed at install time.
+pub(crate) fn forwardable_names() -> std::collections::BTreeSet<String> {
+    let mut names = std::collections::BTreeSet::new();
+    let Ok(home) = home() else {
+        return names;
+    };
+    if let Ok(lock) = load_lock(&home) {
+        names.extend(lock.plugins.into_keys());
+    }
+    if let Some((_, lock, _)) = user_home_lock(&home) {
+        names.extend(lock.plugins.into_keys());
+    }
+    names
+}
+
 pub async fn forward(home: &Path, name: &str, rest: &[String]) -> anyhow::Result<()> {
     validate_name(name)?;
     migrate_commands_json(home);
-    let lock = load_lock(home)?;
+    let mut lock = load_lock(home)?;
     let commands = load_commands(home)?;
     let project = std::env::current_dir()
         .ok()
         .and_then(|cwd| LockFile::load(&gray_plugin::lock::project_lock_path(&cwd)).ok());
-    let user_home = user_home_lock(home);
+    let mut user_home = user_home_lock(home);
 
     // The typed name plus its singular/plural counterpart as an implicit
     // alias — the exact spelling always wins; the variant is only a
     // fallback (subagent → subagents, plugins → plugin).
     let alt = number_variant(name);
     let names: Vec<&str> = std::iter::once(name).chain(alt.as_deref()).collect();
+    for n in &names {
+        lazy_adopt(home, n, &mut lock).await;
+        if let Some((u, l, _)) = user_home.as_mut() {
+            lazy_adopt(u, n, l).await;
+        }
+    }
 
     let mut sidecar_named = false;
     let mut direct = None;
@@ -1496,15 +1577,22 @@ pub(crate) async fn adopt_cli(home: &Path, name: &str, dir: &Path) -> anyhow::Re
 pub async fn capture_slash(name: &str, args: &[String]) -> anyhow::Result<Option<String>> {
     let home = home()?;
     migrate_commands_json(&home);
-    let lock = load_lock(&home)?;
+    let mut lock = load_lock(&home)?;
     let commands = commands_or_empty(&home);
     let project = std::env::current_dir()
         .ok()
         .and_then(|cwd| LockFile::load(&gray_plugin::lock::project_lock_path(&cwd)).ok());
-    let user_home = user_home_lock(&home);
+    let mut user_home = user_home_lock(&home);
+
     // Same implicit singular/plural alias as `forward`: exact first.
     let alt = number_variant(name);
     let names: Vec<&str> = std::iter::once(name).chain(alt.as_deref()).collect();
+    for n in &names {
+        lazy_adopt(&home, n, &mut lock).await;
+        if let Some((u, l, _)) = user_home.as_mut() {
+            lazy_adopt(u, n, l).await;
+        }
+    }
     let mut conflict_note = None;
     let mut selected = None;
     for n in &names {
@@ -2242,6 +2330,7 @@ done
             source: "https://example.invalid/demo.tar.gz".into(),
             argv: vec![],
             cli_argv,
+            enabled: true,
             ..Default::default()
         }
     }
@@ -2338,6 +2427,73 @@ done
         let entry = &load_lock(home).unwrap().plugins["demo"];
         assert_eq!(entry.cli_argv, None);
         assert_eq!(entry.hash, "sha256:abc");
+        assert!(!home.join("plugins/demo-manifest.json").exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn lazy_adopt_records_cli_argv_on_first_dispatch() {
+        use std::os::unix::fs::PermissionsExt;
+        let home = tempfile::tempdir().unwrap();
+        let home = home.path();
+        let dir = home.join("plugins/demo");
+        std::fs::create_dir_all(&dir).unwrap();
+        let exe = dir.join("gray-demo");
+        std::fs::write(
+            &exe,
+            "#!/bin/sh\nprintf '%s\\n' '{\"name\":\"demo\",\"version\":\"1.0.0\",\"commands\":[\"/demo\"]}'\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+        write_lock(home, &serde_json::json!({"demo": index_row(None)}));
+
+        let mut lock = load_lock(home).unwrap();
+        assert!(lock.plugins["demo"].cli_argv.is_none());
+        lazy_adopt(home, "demo", &mut lock).await;
+        assert_eq!(
+            lock.plugins["demo"].cli_argv.as_deref(),
+            Some([exe.to_string_lossy().into_owned()].as_slice())
+        );
+        assert!(home.join("plugins/demo-manifest.json").exists());
+
+        lazy_adopt(home, "ghost", &mut lock).await;
+        assert!(!lock.plugins.contains_key("ghost"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn lazy_adopt_skips_disabled_and_wire_only_plugins() {
+        use std::os::unix::fs::PermissionsExt;
+        let home = tempfile::tempdir().unwrap();
+        let home = home.path();
+        let dir = home.join("plugins/demo");
+        std::fs::create_dir_all(&dir).unwrap();
+        let exe = dir.join("gray-demo");
+        std::fs::write(
+            &exe,
+            "#!/bin/sh\nprintf '%s\\n' '{\"name\":\"demo\",\"version\":\"1.0.0\"}'\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let mut off = index_row(None);
+        off.enabled = false;
+        write_lock(home, &serde_json::json!({"demo": off}));
+        let mut lock = load_lock(home).unwrap();
+        lazy_adopt(home, "demo", &mut lock).await;
+        assert_eq!(lock.plugins["demo"].cli_argv, None);
+
+        write_lock(home, &serde_json::json!({"demo": index_row(None)}));
+        let mut lock = load_lock(home).unwrap();
+        lazy_adopt(home, "demo", &mut lock).await;
+        assert!(lock.plugins["demo"].cli_argv.is_some());
+
+        std::fs::write(&exe, "#!/bin/sh\nexit 1\n").unwrap();
+        let mut lock = load_lock(home).unwrap();
+        lock.plugins.get_mut("demo").unwrap().cli_argv = None;
+        lazy_adopt(home, "demo", &mut lock).await;
+        let disk = load_lock(home).unwrap();
+        assert_eq!(disk.plugins["demo"].cli_argv, None);
         assert!(!home.join("plugins/demo-manifest.json").exists());
     }
 
@@ -2486,5 +2642,10 @@ done
         let got = command_suggestion(home, &lock, &commands, "pulgins").unwrap();
         assert!(got.contains("plugin"), "{got}");
         assert!(command_suggestion(home, &lock, &commands, "zzzzzz").is_none());
+        let got = command_suggestion(home, &lock, &commands, "gateway");
+        assert!(
+            got.as_deref().is_none_or(|g| !g.contains("'gateway'")),
+            "never suggest the typed name: {got:?}"
+        );
     }
 }

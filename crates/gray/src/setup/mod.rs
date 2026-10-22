@@ -12,10 +12,11 @@ impl TuiSession {
     }
 }
 
-pub(crate) fn open_modal() -> std::io::Result<(
-    TuiSession,
-    ratatui::Terminal<ratatui::backend::CrosstermBackend<std::io::Stdout>>,
-)> {
+pub(crate) type ModalTerminal = ratatui::Terminal<
+    crate::composer::LeveledBackend<ratatui::backend::CrosstermBackend<std::io::Stdout>>,
+>;
+
+pub(crate) fn open_modal() -> std::io::Result<(TuiSession, ModalTerminal)> {
     let session = TuiSession::acquire()?;
     let mut stdout = std::io::stdout();
     crossterm::execute!(
@@ -24,7 +25,9 @@ pub(crate) fn open_modal() -> std::io::Result<(
         crossterm::terminal::Clear(crossterm::terminal::ClearType::All),
         crossterm::cursor::Hide
     )?;
-    let terminal = ratatui::Terminal::new(ratatui::backend::CrosstermBackend::new(stdout))?;
+    let terminal = ratatui::Terminal::new(crate::composer::LeveledBackend::new(
+        ratatui::backend::CrosstermBackend::new(stdout),
+    ))?;
     drain_queued_events();
     Ok((session, terminal))
 }
@@ -67,7 +70,7 @@ pub(crate) use catalog::effort_memory_key;
 pub(crate) use catalog::save_auth_key;
 pub use catalog::{
     AUTH_MODE_API_KEY, AUTH_MODE_NONE, Catalog, CatalogProvider, ConnectAuth, ConnectItem,
-    PROVIDERS_JSON, SavedConfig, auto_update_enabled, auto_update_enabled_at, build_connect_items,
+    SavedConfig, auto_update_enabled, auto_update_enabled_at, build_connect_items,
     disabled_skill_names, gray_home, gw_auto_enabled, gw_auto_enabled_at, intro_enabled,
     load_auth_keys, load_catalog, load_saved_config_at, lock_saved_config_at, mask_key_pretty,
     normalize_custom_base_url, quality_of_life_enabled, quality_of_life_enabled_at,
@@ -131,11 +134,13 @@ pub(crate) use model_modal::{
 };
 pub(crate) use model_panes::{PanesOutcome, run_model_panes};
 pub(crate) use plugins_modal::run_plugins_manager;
-pub use provider_auth::{
-    PluginLoginProgress, activate_plugin_connection, adopt_saved_key, connect_saved_key,
-    forget_plugin_connection, run_plugin_login, select_api_key_connection,
+pub(crate) use provider_auth::{
+    PluginLoginProgress, adopt_connection_effort, apply_connection_effort, run_plugin_login,
 };
-pub(crate) use provider_auth::{adopt_connection_effort, apply_connection_effort};
+pub use provider_auth::{
+    activate_plugin_connection, adopt_saved_key, connect_saved_key, forget_plugin_connection,
+    select_api_key_connection,
+};
 pub(crate) use theme_modal::run_theme_picker;
 
 use crate::{config::Config, tui::print_wrapped};

@@ -37,21 +37,38 @@ fn background(params: serde_json::Value) -> anyhow::Result<()> {
 }
 
 const MAX_SAY_QUEUE: usize = 32;
+const MAX_CRASH_REPEATS: u32 = 5;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct CrashNotice {
     pub plugin: String,
     pub status: String,
     pub restarted: bool,
     pub error: Option<String>,
+    /// Identical crash reports folded into this one instead of queueing.
+    pub repeats: u32,
 }
 
+impl CrashNotice {
+    fn same_kind(&self, other: &Self) -> bool {
+        self.plugin == other.plugin
+            && self.status == other.status
+            && self.restarted == other.restarted
+            && self.error == other.error
+    }
+}
+
+#[derive(Debug)]
 enum SayEntry {
     Lines(Vec<Line<'static>>),
     Crash(CrashNotice),
 }
 
 static SAY_QUEUE: Mutex<Vec<SayEntry>> = Mutex::new(Vec::new());
+
+/// Last crash report seen plus how many identical repeats were suppressed
+/// since; survives drains so a crash loop folds instead of refilling.
+static CRASH_TAIL: Mutex<Option<(CrashNotice, u32)>> = Mutex::new(None);
 
 pub fn take_host_say() -> Vec<Vec<Line<'static>>> {
     let entries = SAY_QUEUE
@@ -85,6 +102,14 @@ fn plugin_short_name(name: &str) -> &str {
     name.strip_prefix("gray-").unwrap_or(name)
 }
 
+fn more_suffix(repeats: u32) -> String {
+    if repeats > 0 {
+        format!(" ({repeats} more)")
+    } else {
+        String::new()
+    }
+}
+
 fn crash_notice_line(crashes: Vec<CrashNotice>) -> Line<'static> {
     let dim = Style::new().add_modifier(Modifier::DIM);
     let bang = Style::new().fg(crate::theme::theme().error);
@@ -95,17 +120,46 @@ fn crash_notice_line(crashes: Vec<CrashNotice>) -> Line<'static> {
             return;
         }
         let status = &run[0].status;
+        let repeats: u32 = run.iter().map(|c| c.repeats).sum();
         let seg = if run.iter().all(|c| &c.status == status) {
-            let names = run
-                .iter()
-                .map(|c| plugin_short_name(&c.plugin))
-                .collect::<Vec<_>>()
-                .join(", ");
-            format!("{names} crashed ({status}), restarted")
+            let mut names: Vec<&str> = Vec::new();
+            for c in run.iter() {
+                let name = plugin_short_name(&c.plugin);
+                if !names.contains(&name) {
+                    names.push(name);
+                }
+            }
+            let names = names.join(", ");
+            format!(
+                "{names} crashed ({}), restarted{}",
+                gray_plugin::friendly_exit_status(status),
+                more_suffix(repeats)
+            )
         } else {
-            let items = run
+            let mut items: Vec<(String, String, u32)> = Vec::new();
+            for c in run.iter() {
+                let name = plugin_short_name(&c.plugin).to_string();
+                let status = gray_plugin::friendly_exit_status(&c.status);
+                match items
+                    .iter_mut()
+                    .find(|(n, st, _)| *n == name && *st == status)
+                {
+                    Some(it) => it.2 += c.repeats,
+                    None => items.push((name, status, c.repeats)),
+                }
+            }
+            let items = items
                 .iter()
-                .map(|c| format!("{} ({})", plugin_short_name(&c.plugin), c.status))
+                .map(|(n, st, r)| {
+                    format!(
+                        "{n} ({st}{})",
+                        if *r > 0 {
+                            format!(", {r} more")
+                        } else {
+                            String::new()
+                        }
+                    )
+                })
                 .collect::<Vec<_>>()
                 .join(", ");
             format!("{items} crashed, restarted")
@@ -125,9 +179,10 @@ fn crash_notice_line(crashes: Vec<CrashNotice>) -> Line<'static> {
             .map(|e| format!(": {e}"))
             .unwrap_or_default();
         segments.push(format!(
-            "{} crashed ({}), restart failed{why}",
+            "{} crashed ({}), restart failed{why}{}",
             plugin_short_name(&c.plugin),
-            c.status
+            gray_plugin::friendly_exit_status(&c.status),
+            more_suffix(c.repeats)
         ));
     }
     flush_run(&mut run, &mut segments);
@@ -139,18 +194,28 @@ fn crash_notice_line(crashes: Vec<CrashNotice>) -> Line<'static> {
     ])
 }
 
+fn push_say(q: &mut Vec<SayEntry>, entry: SayEntry) {
+    if q.len() >= MAX_SAY_QUEUE {
+        q.remove(0);
+    }
+    q.push(entry);
+}
+
 fn queue_say_inner(entry: SayEntry) {
     if let Ok(mut q) = SAY_QUEUE.lock() {
-        if q.len() >= MAX_SAY_QUEUE {
-            q.remove(0);
-        }
-        q.push(entry);
+        push_say(&mut q, entry);
     }
 
     request_wake();
 }
 
 pub(crate) fn queue_say(text: String) {
+    if let Ok(mut tail) = CRASH_TAIL.lock()
+        && tail.is_some()
+        && let Ok(mut q) = SAY_QUEUE.lock()
+    {
+        flush_crash_tail(&mut tail, &mut q);
+    }
     queue_say_inner(SayEntry::Lines(
         text.split('\n')
             .map(|l| {
@@ -163,8 +228,46 @@ pub(crate) fn queue_say(text: String) {
     ));
 }
 
+fn queue_crash_inner(
+    tail: &mut Option<(CrashNotice, u32)>,
+    q: &mut Vec<SayEntry>,
+    notice: CrashNotice,
+) {
+    if let Some((last, n)) = tail
+        && last.same_kind(&notice)
+    {
+        *n += 1;
+        if *n < MAX_CRASH_REPEATS {
+            return;
+        }
+        let mut summary = last.clone();
+        summary.repeats = *n;
+        *n = 0;
+        push_say(q, SayEntry::Crash(summary));
+        return;
+    }
+    flush_crash_tail(tail, q);
+    *tail = Some((notice.clone(), 0));
+    push_say(q, SayEntry::Crash(notice));
+}
+
+fn flush_crash_tail(tail: &mut Option<(CrashNotice, u32)>, q: &mut Vec<SayEntry>) {
+    if let Some((mut last, n)) = tail.take()
+        && n > 0
+    {
+        last.repeats = n;
+        push_say(q, SayEntry::Crash(last));
+    }
+}
+
 pub(crate) fn queue_crash(notice: CrashNotice) {
-    queue_say_inner(SayEntry::Crash(notice));
+    if let Ok(mut tail) = CRASH_TAIL.lock()
+        && let Ok(mut q) = SAY_QUEUE.lock()
+    {
+        queue_crash_inner(&mut tail, &mut q, notice);
+    }
+
+    request_wake();
 }
 
 static WAKE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -241,6 +344,7 @@ pub fn default_handler(cwd: PathBuf) -> HostHandler {
                                     .get("error")
                                     .and_then(|v| v.as_str())
                                     .map(str::to_string),
+                                repeats: 0,
                             });
                         } else if let Some(text) = params.get("text").and_then(|t| t.as_str())
                             && !text.trim().is_empty()

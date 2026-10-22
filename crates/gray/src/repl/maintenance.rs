@@ -137,15 +137,29 @@ pub(crate) async fn restart_with(tui: &TuiOpt, resume: bool) {
         Err(std::process::Command::new(&exe).args(&args).exec())
     };
     #[cfg(not(unix))]
-    let spawned: std::io::Result<()> = match std::process::Command::new(&exe).args(&args).spawn() {
-        Ok(_) => std::process::exit(0),
-        Err(e) => Err(e),
+    let spawned: std::io::Result<()> = {
+        let mut cmd = std::process::Command::new(&exe);
+        cmd.args(&args).env(
+            crate::session_store::RESTART_PARENT_ENV,
+            std::process::id().to_string(),
+        );
+        match cmd.spawn() {
+            Ok(mut child) => {
+                crate::session_store::release_open_locks();
+                let code = child.wait().ok().and_then(|s| s.code()).unwrap_or(0);
+                std::process::exit(code)
+            }
+            Err(e) => Err(e),
+        }
     };
     if let Err(e) = spawned {
         let _ = crossterm::terminal::enable_raw_mode();
         super::say(
             shared,
-            &format!("restart failed to spawn ({e}) — still on the old build"),
+            &format!(
+                "restart failed to spawn ({}) — still on the old build",
+                gray_plugin::friendly_spawn_error(&e)
+            ),
         );
     }
 }
@@ -220,14 +234,20 @@ async fn restart_gateway() -> GatewayRestart {
             ));
         }
         Err(e) => {
-            return GatewayRestart::Failed(format!("could not stop the running gateway: {e}"));
+            return GatewayRestart::Failed(format!(
+                "could not stop the running gateway: {}",
+                gray_plugin::friendly_spawn_error(&e)
+            ));
         }
     }
     match relaunch(&home, rec.pid) {
         Ok(line) => GatewayRestart::Restarted(line),
         Err(e) => GatewayRestart::Failed(format!(
-            "stopped the gateway (pid {}) but could not start it again: {e} — `gray gateway run` when you are back",
-            rec.pid
+            "stopped the gateway (pid {}) but could not start it again: {} — `gray gateway run` when you are back",
+            rec.pid,
+            e.downcast_ref::<std::io::Error>()
+                .map(gray_plugin::friendly_spawn_error)
+                .unwrap_or_else(|| format!("{e:#}"))
         )),
     }
 }

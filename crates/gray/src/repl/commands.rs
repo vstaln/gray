@@ -27,7 +27,7 @@ pub(crate) const REGISTRY: &[CmdDef] = &[
     CmdDef {
         name: "models",
         desc: "switch provider, model & effort",
-        aliases: &[],
+        aliases: &["model", "connect", "provider"],
         scope: CmdScope::Conversation,
         surface: CmdSurface::Interactive,
     },
@@ -161,6 +161,13 @@ pub(crate) const REGISTRY: &[CmdDef] = &[
         name: "plugins",
         desc: "plugin manager (list, enable, update)",
         aliases: &[],
+        scope: CmdScope::Global,
+        surface: CmdSurface::Interactive,
+    },
+    CmdDef {
+        name: "accounts",
+        desc: "provider account pools (multi-login)",
+        aliases: &["account"],
         scope: CmdScope::Global,
         surface: CmdSurface::Interactive,
     },
@@ -609,6 +616,8 @@ pub enum ReplCommand {
 
     Gateway(Option<String>),
 
+    Accounts,
+
     Copy,
 
     Feedback(Option<String>),
@@ -747,6 +756,7 @@ pub fn parse_command(line: &str) -> ReplCommand {
         Some("usage") => ReplCommand::Usage,
         Some("jobs") => ReplCommand::Jobs,
         Some("gateway") => ReplCommand::Gateway(opt(rest)),
+        Some("accounts") | Some("account") => ReplCommand::Accounts,
         Some("copy") => ReplCommand::Copy,
         Some("feedback") => ReplCommand::Feedback(opt(rest)),
         Some("help") => ReplCommand::Help,

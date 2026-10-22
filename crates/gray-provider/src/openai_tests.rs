@@ -3060,6 +3060,193 @@ fn a_recent_stall_shrinks_the_cap_for_the_next_stream() {
     LAST_STREAM_STALL_SECS.store(0, std::sync::atomic::Ordering::Relaxed);
 }
 
+async fn accept_and_drop(listener: &tokio::net::TcpListener) {
+    use tokio::io::AsyncReadExt;
+    let (mut socket, _) = listener.accept().await.unwrap();
+    let mut buf = [0u8; 8192];
+    let _ = socket.read(&mut buf).await;
+}
+
+#[tokio::test]
+async fn dynamic_relay_retries_a_send_dropped_before_any_response() {
+    use futures::StreamExt;
+    use gray_core::message::{ChatRequest, ContentBlock, Message, Role};
+    use tokio::io::AsyncWriteExt;
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let hits2 = hits.clone();
+    let server = tokio::spawn(async move {
+        hits2.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        accept_and_drop(&listener).await;
+
+        hits2.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut buf = [0u8; 8192];
+        let _ = tokio::io::AsyncReadExt::read(&mut socket, &mut buf).await;
+        let sse = concat!(
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hi-relay\"}\n\n",
+            "data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}\n\n",
+            "data: [DONE]\n\n"
+        );
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\n\r\n{}",
+            sse.len(),
+            sse
+        );
+        socket.write_all(response.as_bytes()).await.unwrap();
+        socket.flush().await.unwrap();
+    });
+
+    let profile = OpenAiProviderProfile {
+        base_url: format!("http://{addr}/v1").parse().unwrap(),
+        wire: OpenAiWire::Responses,
+        authorization: OpenAiAuthorization::None,
+        headers: Vec::new(),
+        request: OpenAiRequestPolicy::default(),
+        follow_redirects: false,
+    };
+    let provider = OpenAiProvider::new_with_profile(
+        "gpt-test",
+        None,
+        None,
+        profile,
+        std::sync::Arc::new(StaticProviderSource::default()),
+    )
+    .unwrap();
+
+    let request = ChatRequest {
+        system: None,
+        messages: vec![Message::new(
+            Role::User,
+            vec![ContentBlock::Text { text: "hi".into() }],
+        )],
+        tools: Vec::new(),
+        max_tokens: None,
+    };
+    let events: Vec<_> = provider.stream(request).collect().await;
+    server.await.unwrap();
+
+    assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 2);
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            Ok(StreamEvent::TextDelta { delta }) if delta == "hi-relay"
+        )),
+        "a send dropped before any response must retry transparently: {events:?}"
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, Ok(StreamEvent::StreamError { .. }))),
+        "send-stage retries stay silent: {events:?}"
+    );
+}
+
+#[tokio::test]
+async fn static_wire_retries_a_send_dropped_before_any_response() {
+    use futures::StreamExt;
+    use tokio::io::AsyncWriteExt;
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let hits2 = hits.clone();
+    let server = tokio::spawn(async move {
+        hits2.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        accept_and_drop(&listener).await;
+
+        hits2.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut buf = [0u8; 8192];
+        let _ = tokio::io::AsyncReadExt::read(&mut socket, &mut buf).await;
+        let sse = "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"}}]}\n\ndata: [DONE]\n\n";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\n\r\n{}",
+            sse.len(),
+            sse
+        );
+        socket.write_all(response.as_bytes()).await.unwrap();
+        socket.flush().await.unwrap();
+    });
+
+    let provider =
+        OpenAiProvider::new("key", "test-model", format!("http://{addr}/v1"), None, None)
+            .expect("provider builds");
+    let events: Vec<_> = provider.stream(empty_chat_req()).collect().await;
+    server.abort();
+
+    assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 2);
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            Ok(StreamEvent::TextDelta { delta }) if delta == "hi"
+        )),
+        "a send dropped before any response must retry transparently: {events:?}"
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, Ok(StreamEvent::StreamError { .. }))),
+        "send-stage retries stay silent: {events:?}"
+    );
+}
+
+#[tokio::test]
+async fn dynamic_relay_surfaces_the_error_after_the_send_budget() {
+    use futures::StreamExt;
+    use gray_core::message::{ChatRequest, ContentBlock, Message, Role};
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let hits2 = hits.clone();
+    let server = tokio::spawn(async move {
+        for _ in 0..MAX_SEND_ATTEMPTS {
+            hits2.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            accept_and_drop(&listener).await;
+        }
+    });
+
+    let profile = OpenAiProviderProfile {
+        base_url: format!("http://{addr}/v1").parse().unwrap(),
+        wire: OpenAiWire::Responses,
+        authorization: OpenAiAuthorization::None,
+        headers: Vec::new(),
+        request: OpenAiRequestPolicy::default(),
+        follow_redirects: false,
+    };
+    let provider = OpenAiProvider::new_with_profile(
+        "gpt-test",
+        None,
+        None,
+        profile,
+        std::sync::Arc::new(StaticProviderSource::default()),
+    )
+    .unwrap();
+
+    let request = ChatRequest {
+        system: None,
+        messages: vec![Message::new(
+            Role::User,
+            vec![ContentBlock::Text { text: "hi".into() }],
+        )],
+        tools: Vec::new(),
+        max_tokens: None,
+    };
+    let events: Vec<_> = provider.stream(request).collect().await;
+    server.await.unwrap();
+
+    assert_eq!(
+        hits.load(std::sync::atomic::Ordering::SeqCst),
+        MAX_SEND_ATTEMPTS
+    );
+    assert!(
+        matches!(events.last(), Some(Err(_))),
+        "send failures must surface once the budget is spent: {events:?}"
+    );
+}
 struct FailingProviderSource(fn() -> gray_core::credential::CredentialError);
 
 #[async_trait]
@@ -3114,7 +3301,10 @@ async fn first_error_with(source: FailingProviderSource) -> ProviderError {
     let mut stream = provider.stream(request);
     match stream.next().await {
         Some(Err(error)) => error,
-        other => panic!("expected an acquire error, got {:?}", other.map(|r| r.is_ok())),
+        other => panic!(
+            "expected an acquire error, got {:?}",
+            other.map(|r| r.is_ok())
+        ),
     }
 }
 
@@ -3128,7 +3318,10 @@ async fn unreachable_credential_source_is_retryable() {
         )
     }))
     .await;
-    assert!(matches!(error.class(), ProviderError::Connection(_)), "{error}");
+    assert!(
+        matches!(error.class(), ProviderError::Connection(_)),
+        "{error}"
+    );
     assert!(error.retryable(), "{error}");
 }
 
@@ -3140,4 +3333,35 @@ async fn login_required_credential_stays_an_auth_failure() {
     .await;
     assert!(matches!(error.class(), ProviderError::Auth(_)), "{error}");
     assert!(!error.retryable(), "{error}");
+}
+
+#[tokio::test]
+async fn refused_connection_gets_a_friendly_message_with_raw_detail() {
+    let client = reqwest::Client::new();
+    let err = client.get("http://127.0.0.1:1/x").send().await.unwrap_err();
+    assert!(err.is_connect(), "{err}");
+    let msg = friendly_send_error(&err);
+    assert!(
+        msg.starts_with("nothing is listening at 127.0.0.1:1"),
+        "{msg}"
+    );
+    assert!(msg.contains("is the server running?"), "{msg}");
+    let second = msg.lines().nth(1).unwrap_or("");
+    assert!(second.contains("error sending request"), "{second}");
+}
+
+#[tokio::test]
+async fn dns_failure_gets_a_friendly_message() {
+    let client = reqwest::Client::new();
+    let err = client
+        .get("http://definitely-not-a-real-host.invalid/x")
+        .send()
+        .await
+        .unwrap_err();
+    let msg = friendly_send_error(&err);
+    assert!(
+        msg.contains("can't resolve definitely-not-a-real-host.invalid")
+            || msg.contains("can't connect"),
+        "{msg}"
+    );
 }

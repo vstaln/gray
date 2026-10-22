@@ -1,4 +1,5 @@
 use super::*;
+use crate::quality_of_life::providers::{POPULAR_DEFS, detect_connect_candidates};
 
 #[test]
 fn custom_is_first_entry() {
@@ -69,7 +70,7 @@ fn saving_key_preserves_oauth_objects() {
         .into_iter()
         .filter_map(|(k, v)| match v {
             AuthEntry::Key(key) => Some((k, key)),
-            AuthEntry::OAuth(_) | AuthEntry::Plugin(_) => None,
+            AuthEntry::OAuth(_) | AuthEntry::Plugin(_) | AuthEntry::PluginPool(_) => None,
         })
         .collect();
     assert_eq!(keys.get("openrouter").map(String::as_str), Some("sk-or-1"));
@@ -451,31 +452,6 @@ fn effort_memory_round_trips_and_survives_partial_parse() {
             .as_deref(),
         Some("low")
     );
-}
-
-#[test]
-fn env_key_detection_picks_the_first_non_empty_candidate() {
-    let env = |k: &str| match k {
-        "GOOGLE_API_KEY" => Some("".to_string()),
-        "GOOGLE_GENERATIVE_AI_API_KEY" => Some("gk".to_string()),
-        _ => None,
-    };
-    assert_eq!(
-        detected_env_key("google", env),
-        Some(("GOOGLE_GENERATIVE_AI_API_KEY", "gk".to_string()))
-    );
-    assert_eq!(detected_env_key("openai", env), None);
-    assert_eq!(detected_env_key("not-a-provider", env), None);
-}
-
-#[test]
-fn detect_candidates_reports_notes_and_ollama() {
-    let env = |k: &str| (k == "ANTHROPIC_API_KEY").then(|| "ak".to_string());
-    let found = detect_connect_candidates(true, env);
-    assert_eq!(found["anthropic"].note, "(found ANTHROPIC_API_KEY)");
-    assert_eq!(found["ollama"].note, "(running locally)");
-    assert!(found["ollama"].env.is_none());
-    assert!(!found.contains_key("openai"));
 }
 
 fn sort_item(id: &str) -> ConnectItem {

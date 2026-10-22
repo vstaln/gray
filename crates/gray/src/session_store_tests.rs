@@ -1584,3 +1584,56 @@ async fn compaction_replacement_keeps_kept_entries_metadata() {
         ContentBlock::ToolResult { content, .. } if content == "[elided]"
     ));
 }
+
+#[tokio::test]
+async fn open_lock_wait_lets_an_exiting_predecessor_finish() {
+    let dir = tempdir().unwrap();
+    let open_path = dir.path().join("handoff.open");
+    let mut first = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(&open_path)
+        .unwrap();
+    first.try_lock().unwrap();
+    write_open_holder(&mut first, &open_path);
+
+    let releaser = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        drop(first);
+    });
+
+    let mut second = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&open_path)
+        .unwrap();
+    assert!(wait_out_restart_parent(&mut second, &open_path).await);
+    releaser.join().unwrap();
+}
+
+#[tokio::test]
+async fn open_lock_wait_gives_up_on_a_held_lock() {
+    let dir = tempdir().unwrap();
+    let open_path = dir.path().join("stranger.open");
+    let mut first = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(&open_path)
+        .unwrap();
+    first.try_lock().unwrap();
+    write_open_holder(&mut first, &open_path);
+
+    let mut second = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&open_path)
+        .unwrap();
+    let start = std::time::Instant::now();
+    assert!(!wait_out_restart_parent(&mut second, &open_path).await);
+    assert!(start.elapsed() >= std::time::Duration::from_secs(3));
+    drop(first);
+}

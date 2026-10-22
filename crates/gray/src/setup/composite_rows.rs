@@ -1,5 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use gray_plugin::lock::LockFile;
 use gray_plugin::{
@@ -163,11 +163,22 @@ fn synthesize(
     })
 }
 
+/// A file's (mtime, len), or None when it can't be read — the validity
+/// check for the memoized declarations below.
+type Stamp = Option<(std::time::SystemTime, u64)>;
+
+fn stamp(path: &Path) -> Stamp {
+    let meta = std::fs::metadata(path).ok()?;
+    Some((meta.modified().ok()?, meta.len()))
+}
+
 fn decls_from_lock(
     lock_path: &Path,
     plugins_dir: &Path,
     project: &LockFile,
+    read: &mut Vec<(PathBuf, Stamp)>,
 ) -> Vec<CompositeRowDecl> {
+    read.push((lock_path.to_path_buf(), stamp(lock_path)));
     let Ok(lock) = LockFile::load(lock_path) else {
         return Vec::new();
     };
@@ -177,6 +188,7 @@ fn decls_from_lock(
             continue;
         }
         let path = plugins_dir.join(format!("{name}-manifest.json"));
+        read.push((path.clone(), stamp(&path)));
         let Ok(text) = std::fs::read_to_string(&path) else {
             continue;
         };
@@ -188,11 +200,42 @@ fn decls_from_lock(
     out
 }
 
+struct DeclsMemo {
+    home: PathBuf,
+    project: Option<PathBuf>,
+    global: Option<PathBuf>,
+    /// Every lock and manifest file the scan consulted, with its stamp.
+    read: Vec<(PathBuf, Stamp)>,
+    decls: Vec<CompositeRowDecl>,
+}
+
+/// Parsing every enabled plugin's manifest costs one read + JSON parse per
+/// plugin (~70 on a full install), and model lists are loaded per provider
+/// row as the /models rail moves. The scan is reused while none of the
+/// files it read have changed (re-stat'ing them is ~70 cheap syscalls).
+static DECLS_MEMO: std::sync::Mutex<Option<DeclsMemo>> = std::sync::Mutex::new(None);
+
 fn composite_decls(home: &Path) -> Vec<CompositeRowDecl> {
-    let project = std::env::current_dir()
+    let project_path = std::env::current_dir()
         .ok()
-        .map(|d| gray_plugin::lock::project_lock_path(&d))
-        .and_then(|p| LockFile::load(&p).ok())
+        .map(|d| gray_plugin::lock::project_lock_path(&d));
+    let global = gray_core::paths::gray_user_home().filter(|g| g != home);
+    let mut memo = DECLS_MEMO.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(m) = memo.as_ref()
+        && m.home == home
+        && m.project == project_path
+        && m.global == global
+        && m.read.iter().all(|(path, was)| stamp(path) == *was)
+    {
+        return m.decls.clone();
+    }
+    let mut read = Vec::new();
+    if let Some(p) = &project_path {
+        read.push((p.clone(), stamp(p)));
+    }
+    let project = project_path
+        .as_deref()
+        .and_then(|p| LockFile::load(p).ok())
         .unwrap_or(LockFile {
             schema: 1,
             plugins: BTreeMap::new(),
@@ -201,29 +244,50 @@ fn composite_decls(home: &Path) -> Vec<CompositeRowDecl> {
         &gray_plugin::lock::lock_path(home),
         &home.join("plugins"),
         &project,
+        &mut read,
     );
-    if let Some(global) = gray_core::paths::gray_user_home()
-        && global != *home
-    {
+    if let Some(global) = &global {
         out.extend(decls_from_lock(
-            &gray_plugin::lock::lock_path(&global),
+            &gray_plugin::lock::lock_path(global),
             &global.join("plugins"),
             &project,
+            &mut read,
         ));
     }
+    *memo = Some(DeclsMemo {
+        home: home.to_path_buf(),
+        project: project_path,
+        global,
+        read,
+        decls: out.clone(),
+    });
     out
 }
 
 pub(crate) fn extend_with_composites(home: &Path, list_key: &str, rows: &mut Vec<CachedRow>) {
-    let decls = composite_decls(home);
-    if decls.is_empty() {
+    if composite_decls(home).is_empty() {
         return;
     }
     let mut lists = crate::setup::context::provider_model_lists(home);
     lists.insert(list_key.to_string(), rows.clone());
-    for decl in &decls {
-        if let Some(model) = synthesize(decl, list_key, rows, &lists) {
+    extend_with_composites_in(home, &lists, list_key, rows);
+}
+
+/// [`extend_with_composites`] against already-parsed `lists`, which must
+/// hold `list_key`'s own `rows` (or lack the key when they're empty).
+pub(crate) fn extend_with_composites_in(
+    home: &Path,
+    lists: &BTreeMap<String, Vec<CachedRow>>,
+    list_key: &str,
+    rows: &mut Vec<CachedRow>,
+) {
+    for decl in &composite_decls(home) {
+        if let Some(model) = synthesize(decl, list_key, rows, lists) {
             rows.push(CachedRow::Full(model));
         }
     }
 }
+
+#[path = "composite_rows_tests.rs"]
+#[cfg(test)]
+mod tests;

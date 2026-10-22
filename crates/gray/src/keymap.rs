@@ -18,6 +18,7 @@ pub enum Action {
     Submit,
     HistoryPrevious,
     HistoryNext,
+    HistorySearch,
     CursorUp,
     CursorDown,
     CursorLeft,
@@ -32,6 +33,7 @@ pub enum Action {
     DeleteWordForward,
     DeleteToLineStart,
     DeleteToLineEnd,
+    Yank,
 }
 
 pub const ALL: &[Action] = &[
@@ -47,6 +49,7 @@ pub const ALL: &[Action] = &[
     Action::Submit,
     Action::HistoryPrevious,
     Action::HistoryNext,
+    Action::HistorySearch,
     Action::CursorUp,
     Action::CursorDown,
     Action::CursorLeft,
@@ -61,6 +64,7 @@ pub const ALL: &[Action] = &[
     Action::DeleteWordForward,
     Action::DeleteToLineStart,
     Action::DeleteToLineEnd,
+    Action::Yank,
 ];
 
 impl Action {
@@ -78,6 +82,7 @@ impl Action {
             Action::Submit => "tui.input.submit",
             Action::HistoryPrevious => "tui.editor.historyPrevious",
             Action::HistoryNext => "tui.editor.historyNext",
+            Action::HistorySearch => "tui.editor.historySearch",
             Action::CursorUp => "tui.editor.cursorUp",
             Action::CursorDown => "tui.editor.cursorDown",
             Action::CursorLeft => "tui.editor.cursorLeft",
@@ -92,6 +97,7 @@ impl Action {
             Action::DeleteWordForward => "tui.editor.deleteWordForward",
             Action::DeleteToLineStart => "tui.editor.deleteToLineStart",
             Action::DeleteToLineEnd => "tui.editor.deleteToLineEnd",
+            Action::Yank => "tui.editor.yank",
         }
     }
 
@@ -113,6 +119,7 @@ impl Action {
             Action::Submit => "Send (queues while a turn runs)",
             Action::HistoryPrevious => "Previous prompt from history",
             Action::HistoryNext => "Next prompt from history",
+            Action::HistorySearch => "Reverse-search prompt history",
             Action::CursorUp => "Cursor up, history at the top",
             Action::CursorDown => "Cursor down, history at the bottom",
             Action::CursorLeft => "Cursor left",
@@ -127,6 +134,7 @@ impl Action {
             Action::DeleteWordForward => "Delete word forward",
             Action::DeleteToLineStart => "Delete to line start",
             Action::DeleteToLineEnd => "Delete to line end",
+            Action::Yank => "Yank back the last cleared draft",
         }
     }
 
@@ -139,10 +147,11 @@ impl Action {
             Action::Clear => &["ctrl+c"],
             Action::Exit => &["ctrl+d"],
             Action::Interrupt => &["escape"],
-            Action::PasteClipboard => &["ctrl+v", "ctrl+shift+v", "shift+insert"],
-            Action::NewLine => &["shift+enter", "alt+enter", "ctrl+j", "ctrl+m"],
+            Action::PasteClipboard => &["ctrl+v", "ctrl+shift+v", "shift+insert", "alt+v"],
+            Action::NewLine => &["shift+enter", "alt+enter", "ctrl+j"],
             Action::Submit => &["enter"],
             Action::HistoryPrevious | Action::HistoryNext => &[],
+            Action::HistorySearch => &["ctrl+r"],
             Action::CursorUp => &["up"],
             Action::CursorDown => &["down"],
             Action::CursorLeft => &["left", "ctrl+b"],
@@ -157,6 +166,7 @@ impl Action {
             Action::DeleteWordForward => &["alt+d", "alt+delete", "ctrl+delete"],
             Action::DeleteToLineStart => &["ctrl+u"],
             Action::DeleteToLineEnd => &["ctrl+k"],
+            Action::Yank => &["ctrl+y"],
         }
     }
 }
@@ -498,6 +508,17 @@ pub fn resolve_event(ev: &KeyEvent) -> Vec<Binding> {
         },
         Err(_) => DEFAULTS.with(|d| d.resolve(&chord)),
     }
+}
+
+/// Direction `ev` should move a list selection, when it resolves to
+/// tui.select.up/down: `Some(true)` = up, `Some(false)` = down. Every list
+/// picker routes through this so rebindings apply everywhere.
+pub fn select_move(ev: &KeyEvent) -> Option<bool> {
+    resolve_event(ev).into_iter().find_map(|b| match b {
+        Binding::Action(Action::SelectUp) => Some(true),
+        Binding::Action(Action::SelectDown) => Some(false),
+        _ => None,
+    })
 }
 
 thread_local! {

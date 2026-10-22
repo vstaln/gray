@@ -758,6 +758,20 @@ pub fn format_tool_call_lines(
             bullet,
             Span::styled("Read Discord UI schema", action_style),
         ]),
+        n if mcp_parts(n).is_some() => {
+            let (server, tool) = mcp_parts(n).unwrap_or_default();
+            let mut spans = vec![
+                bullet,
+                Span::styled("MCP ", action_style),
+                Span::styled(server.to_string(), cmd_style),
+                Span::styled(format!(" {}", tool.replace(['_', '-'], " ")), action_style),
+            ];
+            let preview = mcp_arg_preview(args);
+            if !preview.is_empty() {
+                spans.push(Span::styled(format!(" \u{b7} {preview}"), dim_style));
+            }
+            Line::from(spans)
+        }
         other => {
             let headline = args
                 .get("label")
@@ -1122,7 +1136,43 @@ fn running_line(fields: &str) -> String {
     out
 }
 
+/// `mcp__<server>__<tool>` -> `(server, tool)`.
+pub(crate) fn mcp_parts(name: &str) -> Option<(&str, &str)> {
+    let rest = name.strip_prefix("mcp__")?;
+    let (server, tool) = rest.split_once("__")?;
+    (!server.is_empty() && !tool.is_empty()).then_some((server, tool))
+}
+
+/// One-line preview of an MCP call's arguments: the first non-empty
+/// string value (query, url, id, ...), else compact JSON.
+fn mcp_arg_preview(args: &serde_json::Value) -> String {
+    let first = args.as_object().and_then(|m| {
+        m.values()
+            .filter_map(|v| v.as_str())
+            .map(str::trim)
+            .find(|s| !s.is_empty())
+            .map(|s| s.lines().next().unwrap_or(s).to_string())
+    });
+    let text = match first {
+        Some(t) => t,
+        None => match args.as_object() {
+            Some(m) if m.is_empty() => return String::new(),
+            None => return String::new(),
+            _ => serde_json::to_string(args).unwrap_or_default(),
+        },
+    };
+    let cut = truncate_cmd(&text);
+    if cut.len() < text.len() {
+        format!("{}\u{2026}", cut.trim_end())
+    } else {
+        cut.to_string()
+    }
+}
+
 pub(crate) fn humanize_tool_name(name: &str) -> String {
+    if let Some((server, tool)) = mcp_parts(name) {
+        return format!("{server} \u{b7} {}", tool.replace(['_', '-'], " "));
+    }
     if !name.contains('_') && !name.contains('-') {
         return name.to_string();
     }

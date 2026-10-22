@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 use std::io::{self, Write};
 
-use ratatui::backend::{Backend, ClearType};
+use ratatui::backend::{Backend, ClearType, WindowSize};
 use ratatui::buffer::{Buffer, Cell};
 use ratatui::layout::{Position, Rect, Size};
 use ratatui::widgets::Widget;
@@ -60,7 +60,6 @@ where
     /// rows already in scrollback, or blanks, slid in when the transcript was
     /// pulled down over vacated rows. They are deleted, never scrolled, so
     /// scrollback does not get them twice.
-    ghost_top: u16,
     tail: VecDeque<Vec<Cell>>,
 }
 
@@ -106,7 +105,6 @@ where
             scrollback,
             vacated_above: 0,
             covered: 0,
-            ghost_top: 0,
             tail: VecDeque::new(),
         };
         term.set_viewport_area(viewport_area);
@@ -128,7 +126,6 @@ where
         let screen_shrank = screen_size.height < self.last_known_screen_size.height;
         if screen_size != self.last_known_screen_size {
             self.covered = 0;
-            self.ghost_top = 0;
             self.tail.clear();
         }
         self.last_known_screen_size = screen_size;
@@ -165,8 +162,7 @@ where
             .min(repaintable.saturating_sub(self.covered));
         self.covered += hide;
         if rest > hide && !screen_shrank {
-            let ghosts = self.delete_ghost_rows(old.y, rest - hide)?;
-            self.scroll_history_up(old.y, rest - hide - ghosts)?;
+            self.scroll_history_up(old.y, rest - hide)?;
         }
         let drop = area.y.saturating_sub(old.y);
         let uncover = self.covered.min(drop);
@@ -192,48 +188,7 @@ where
             let rows: Vec<&[Cell]> = rows.iter().map(Vec::as_slice).collect();
             self.draw_rows(old.y, &rows)?;
         }
-        self.pull_history_down()
-    }
-
-    /// Close the vacated rows a grounded shrink left between the transcript
-    /// and the band: slide the transcript down onto the band and refill the
-    /// rows that open at the screen top from the tail. Those rows are already
-    /// in scrollback (or unknown, and left blank), so they become ghost rows.
-    fn pull_history_down(&mut self) -> io::Result<()> {
-        let top = self.viewport_area.top();
-        let n = self.vacated_above;
-        if self.scrollback != Scrollback::Regions || n == 0 || self.covered > 0 || top < 2 {
-            return Ok(());
-        }
-        write!(self.backend, "\x1b[1;{top}r")?;
-        self.backend.set_cursor_position(Position::new(0, 0))?;
-        write!(self.backend, "\x1b[{n}L\x1b[r")?;
-        let visible = usize::from(top - n);
-        let above = self.tail.len().saturating_sub(visible).min(usize::from(n));
-        if self.tail.len() >= visible && above > 0 {
-            let end = self.tail.len() - visible;
-            let rows: Vec<Vec<Cell>> = self.tail.range(end - above..end).cloned().collect();
-            let rows: Vec<&[Cell]> = rows.iter().map(Vec::as_slice).collect();
-            self.draw_rows(n - above as u16, &rows)?;
-        }
-        self.vacated_above = 0;
-        self.ghost_top = (self.ghost_top + n).min(top);
         Ok(())
-    }
-
-    /// Delete up to `n` ghost rows from the top of the history region above
-    /// `top`, shifting the rest up without feeding scrollback. Returns how
-    /// many were deleted.
-    fn delete_ghost_rows(&mut self, top: u16, n: u16) -> io::Result<u16> {
-        let g = self.ghost_top.min(n).min(top);
-        if g == 0 || self.scrollback != Scrollback::Regions || top < 2 {
-            return Ok(0);
-        }
-        write!(self.backend, "\x1b[1;{top}r")?;
-        self.backend.set_cursor_position(Position::new(0, 0))?;
-        write!(self.backend, "\x1b[{g}M\x1b[r")?;
-        self.ghost_top -= g;
-        Ok(g)
     }
 
     pub fn clear_after_position(&mut self, position: Position) -> io::Result<()> {
@@ -259,7 +214,6 @@ where
         self.last_known_screen_size = screen_size;
         self.vacated_above = 0;
         self.covered = 0;
-        self.ghost_top = 0;
         self.tail.clear();
         self.set_viewport_area(Rect::new(0, 0, screen_size.width, 0));
         self.buffers[1 - self.current].reset();
@@ -398,13 +352,6 @@ where
                 self.set_viewport_area(area);
             }
             let top = area.top();
-            let ghosts = usize::from(
-                self.delete_ghost_rows(top, rows.len().min(usize::from(u16::MAX)) as u16)?,
-            );
-            if ghosts > 0 {
-                self.draw_rows(top - ghosts as u16, &rows[..ghosts])?;
-                rows = &rows[ghosts..];
-            }
             if !rows.is_empty() && top > 1 {
                 for chunk in rows.chunks(usize::from(top)) {
                     let n = chunk.len() as u16;
@@ -426,7 +373,6 @@ where
     }
 
     fn insert_full_screen(&mut self, mut rows: &[&[Cell]]) -> io::Result<()> {
-        self.ghost_top = 0;
         let screen_h = self.last_known_screen_size.height;
         let mut area = self.viewport_area;
         self.clear_after_position(Position::new(0, area.top()))?;
@@ -531,6 +477,100 @@ fn glyph_width(symbol: &str) -> usize {
         .map(|(_, rest)| rest.split('\x1b').next().unwrap_or(rest))
         .unwrap_or(symbol);
     crate::text_width::display_width(glyph)
+}
+
+/// Wraps a [`Backend`] and downgrades every drawn cell's colors to the
+/// terminal's detected level (`gray_markdown::detect_color_level`). The TUI
+/// authors its chrome in 24-bit RGB; this is the single point where frames
+/// are quantized to xterm-256 or ANSI-16 — or flattened to `Reset` under
+/// `NO_COLOR`. Byte-level writes (scroll-region setup, kitty transmits)
+/// pass through untouched.
+pub(crate) struct LeveledBackend<B> {
+    inner: B,
+}
+
+impl<B> LeveledBackend<B> {
+    pub(crate) fn new(inner: B) -> Self {
+        Self { inner }
+    }
+}
+
+impl<B: Write> Write for LeveledBackend<B> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.inner.write(buf)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Write::flush(&mut self.inner)
+    }
+}
+
+impl<B: Backend> Backend for LeveledBackend<B> {
+    fn draw<'a, I>(&mut self, content: I) -> io::Result<()>
+    where
+        I: Iterator<Item = (u16, u16, &'a Cell)>,
+    {
+        if gray_markdown::detect_color_level() == gray_markdown::ColorLevel::TrueColor {
+            return self.inner.draw(content);
+        }
+        let owned: Vec<(u16, u16, Cell)> = content
+            .map(|(x, y, cell)| (x, y, leveled_cell(cell)))
+            .collect();
+        self.inner.draw(owned.iter().map(|(x, y, c)| (*x, *y, c)))
+    }
+
+    fn append_lines(&mut self, n: u16) -> io::Result<()> {
+        self.inner.append_lines(n)
+    }
+
+    fn hide_cursor(&mut self) -> io::Result<()> {
+        self.inner.hide_cursor()
+    }
+
+    fn show_cursor(&mut self) -> io::Result<()> {
+        self.inner.show_cursor()
+    }
+
+    fn get_cursor_position(&mut self) -> io::Result<Position> {
+        self.inner.get_cursor_position()
+    }
+
+    fn set_cursor_position<P: Into<Position>>(&mut self, position: P) -> io::Result<()> {
+        self.inner.set_cursor_position(position)
+    }
+
+    fn clear(&mut self) -> io::Result<()> {
+        self.inner.clear()
+    }
+
+    fn clear_region(&mut self, clear_type: ClearType) -> io::Result<()> {
+        self.inner.clear_region(clear_type)
+    }
+
+    fn size(&self) -> io::Result<Size> {
+        self.inner.size()
+    }
+
+    fn window_size(&mut self) -> io::Result<WindowSize> {
+        self.inner.window_size()
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Backend::flush(&mut self.inner)
+    }
+}
+
+/// Clone a cell with fg/bg/underline colors downgraded to the detected
+/// terminal color level.
+fn leveled_cell(cell: &Cell) -> Cell {
+    let fg = gray_markdown::adapt_ratatui_color(cell.fg);
+    let bg = gray_markdown::adapt_ratatui_color(cell.bg);
+    let underline = gray_markdown::adapt_ratatui_color(cell.underline_color);
+    let mut out = cell.clone();
+    out.set_fg(fg);
+    out.set_bg(bg);
+    out.underline_color = underline;
+    out
 }
 
 #[path = "terminal_tests.rs"]

@@ -417,13 +417,16 @@ pub(crate) async fn handle(tui: &TuiOpt) {
             id: "update-everything".into(),
             header: "update everything".into(),
             question: "apply the updates above? (Enter runs, Esc cancels)".into(),
+            detail: String::new(),
             options: vec![crate::ask::AskOption {
                 label: RESUME_OPTION.into(),
                 description: "restart re-enters this conversation".into(),
                 opt_in: false,
+                freeform: false,
             }],
             multi: true,
             default_all: true,
+            no_other: false,
         }],
     ) else {
         say(tui, "cancelled — nothing changed");

@@ -79,6 +79,11 @@ pub struct Manifest {
     #[serde(default)]
     pub subcommands: Vec<String>,
 
+    /// CLI verbs the plugin advertises — `gray <name> <verb>` — also used
+    /// as the slash command's completion set in the REPL.
+    #[serde(default)]
+    pub completion: Vec<String>,
+
     #[serde(default)]
     pub capabilities: Vec<String>,
 
@@ -264,6 +269,7 @@ impl Manifest {
                 .unwrap_or(false),
             protocol: v.get("protocol").and_then(|s| s.as_str()).map(|s| s.into()),
             subcommands: str_list("subcommands"),
+            completion: str_list("completion"),
             capabilities: crate::capabilities::parse_declared(&str_list("capabilities")),
             shell_env: v.get("shell_env").and_then(|raw| {
                 serde_json::from_value(raw.clone())
@@ -342,6 +348,27 @@ pub fn merge_manifests(manifests: Vec<Manifest>) -> HashMap<String, String> {
         }
     }
     owner
+}
+
+/// Short human phrasing for a failed plugin spawn — raw io messages like
+/// "No such file or directory (os error 2)" say little about what to do next.
+pub fn friendly_spawn_error(e: &std::io::Error) -> String {
+    match e.kind() {
+        std::io::ErrorKind::NotFound => {
+            "binary missing — plugin removed? reinstall or `gray plugin remove`".to_string()
+        }
+        std::io::ErrorKind::PermissionDenied => "not executable".to_string(),
+        _ => e.to_string(),
+    }
+}
+
+/// Short human phrasing for a process exit status — users know "killed",
+/// not "signal 15".
+pub fn friendly_exit_status(status: &str) -> String {
+    match status {
+        "signal 15" | "signal 9" => "killed".to_string(),
+        _ => status.to_string(),
+    }
 }
 
 pub struct PluginHookAdapter {

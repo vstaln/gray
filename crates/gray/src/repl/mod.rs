@@ -151,6 +151,7 @@ async fn spawn_hangup_policy() {}
 use crate::config::Config;
 use crate::{DEFAULT_SYS_PROMPT, build_agent, load_or_create_system_prompt_at};
 
+pub(crate) mod accounts_panel;
 pub mod agents_panel;
 pub mod attachments;
 pub mod commands;
@@ -509,9 +510,24 @@ pub async fn run_repl_mode(
     let cwd = std::env::current_dir()?;
     log::debug!(target: "gray_timing", "repl start elapsed_ms={}", crate::turn_caps::process_start().elapsed().as_millis());
     tokio::task::spawn_blocking(crate::setup::context::warm_rates_from_disk_cache);
+    // auth.json v1→v2: single-envelope plugin entries become account
+    // pools. Backs up to auth.json.v1.bak before rewriting; a no-op once
+    // migrated (and when there are no plugin entries at all).
+    if let Ok(path) = crate::setup::catalog::auth_store_path() {
+        let store = crate::auth::CredentialStore::new(path);
+        if let Err(e) = store.migrate_to_v2() {
+            log::warn!("auth store v2 migration skipped: {e:#}");
+        }
+    }
 
     use std::io::IsTerminal;
     let interactive = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
+    if interactive && std::env::var("TERM").is_ok_and(|t| t.trim() == "dumb") {
+        eprintln!(
+            "gray: the interactive TUI cannot run on TERM=dumb — use `gray -p \"...\"` or a real terminal"
+        );
+        std::process::exit(2);
+    }
     if interactive {
         gray_plugin::builder::set_autostart(true);
     }
@@ -524,7 +540,21 @@ pub async fn run_repl_mode(
     crate::setup::set_active_model_provider(&config.base_url);
 
     let offline = crate::config::offline();
-    if !offline && !config.uses_plugin_credentials() && !config.bare && !config.lean {
+    // Flag-based connects (--base-url/--model) skip /models, so lean mode
+    // still owes the endpoint one cheap /models probe: it fills the context
+    // cache so the UI shows the endpoint's real context_length, not the 256k
+    // fallback. Result is cached on disk for later runs.
+    let custom_base = crate::setup::normalize_custom_base_url(&config.base_url)
+        != crate::setup::normalize_custom_base_url(crate::config::DEFAULT_BASE_URL);
+    let needs_endpoint_probe = !config.lean
+        || (custom_base && config.context_window.is_none() && {
+            crate::setup::context::ensure_disk_loaded();
+            config
+                .model
+                .as_deref()
+                .is_some_and(|m| crate::setup::get_cached_model_context(m).is_none())
+        });
+    if !offline && !config.uses_plugin_credentials() && !config.bare && needs_endpoint_probe {
         let base = config.base_url.clone();
         let key = config.api_key.clone();
         tokio::task::spawn_blocking(move || {
@@ -892,13 +922,36 @@ pub async fn run_repl_mode(
         && !cfg!(windows)
         && let Ok(home) = crate::setup::gray_home()
     {
+        let watcher_tui = tui.as_ref().map(|(shared, _)| shared.clone());
         tokio::spawn(async move {
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-                if let Some(sid) = crate::host::live_session()
-                    && crate::session_mailbox::session_inbox_pending(&home, &sid)
-                {
+                let Some(sid) = crate::host::live_session() else {
+                    continue;
+                };
+                if crate::session_mailbox::session_inbox_pending(&home, &sid) {
                     crate::host::request_wake();
+                }
+                // Keep the "Queued follow-up inputs" preview fresh even
+                // mid-turn: peek (non-consuming) the session's sends and
+                // repaint only when the set changed.
+                if let Some(shared) = &watcher_tui
+                    && let Ok(mut t) = shared.try_lock()
+                {
+                    let pending: Vec<(String, Vec<std::path::PathBuf>)> =
+                        crate::session_send::peek_sends(&home, &sid)
+                            .into_iter()
+                            .map(|m| {
+                                (
+                                    crate::session_send::prompt_for(&m.from, &m.text),
+                                    m.attachments,
+                                )
+                            })
+                            .collect();
+                    if t.queued_sends != pending {
+                        t.queued_sends = pending;
+                        let _ = t.draw();
+                    }
                 }
             }
         });

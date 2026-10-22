@@ -211,7 +211,8 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
     let footer_h: u16 = u16::from(!home_mode);
 
     let needs_seam = needs_seam(&tui.transcript);
-    let status_h: u16 = status_dock_h(tui.status.is_some(), needs_seam);
+    let dock_live = tui.status.is_some() || tui.hint_active().is_some();
+    let status_h: u16 = status_dock_h(dock_live, needs_seam);
 
     let seam_h: u16 = u16::from(needs_seam);
     let n = tui.queued_inputs.len() + tui.queued_sends.len();
@@ -220,8 +221,9 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
     } else {
         1 + n.min(3) as u16 + u16::from(n > 3) + 1
     };
+    let search_h: u16 = u16::from(tui.search.is_some());
     let panel_est: u16 = if tui.matches.is_empty() {
-        0
+        search_h
     } else {
         tui.matches.len().min(PANEL_ROWS) as u16 + 1
     };
@@ -229,7 +231,7 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
     let ask_est: u16 = tui
         .ask_modal
         .as_ref()
-        .map(|m| m.rows.len().min(12) as u16)
+        .map(|m| m.rows.len().min(24) as u16)
         .unwrap_or(0);
 
     let live_est: u16 = tui
@@ -244,12 +246,20 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
         .saturating_add(u16::from(tui.live_tool_overflow() > 0));
     let stream_tail: Vec<Line<'static>> = tui.stream_tail_rows(w);
 
-    let tail_gap = tail_gap_h(tui.status.is_some(), &stream_tail);
+    let tail_gap = tail_gap_h(dock_live, &stream_tail);
     let tail_est = stream_tail.len() as u16 + tail_gap;
 
     let chips = attachment_cells(&tui.attachments, &text);
     let ibox = build_input_box(&text, cursor, w, ghost, home, &chips);
-    let box_h = ibox.lines.len().max(1) as u16;
+    // A consent/question prompt owns the bottom band: the input box (and
+    // its cursor) step aside until it closes.
+    let asking = tui.ask_modal.is_some();
+    let ask_gap = u16::from(asking);
+    let box_h = if asking {
+        0
+    } else {
+        ibox.lines.len().max(1) as u16
+    };
 
     let box_rows_est: u16 = box_h;
     let widget_budget = rows
@@ -260,8 +270,9 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
     let mut widget_rows = tui.plugin_widget.rows(widget_budget as usize, w);
     let max_viewport_h = viewport_cap(rows);
 
-    let mut band_allowance =
-        band_budget(max_viewport_h, status_h + box_h + attach_h + panel_est + 1);
+    let mut band_allowance = band_budget(max_viewport_h, status_h + box_h + attach_h + panel_est + 1)
+        .saturating_sub(2 * ask_gap)
+        .max(if asking { ask_est.min(6) } else { 0 });
 
     let reserve_overflow_row = tui.live_tool_overflow() > 0 && band_allowance > 0;
     if reserve_overflow_row {
@@ -285,7 +296,7 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
     let desired = desired_viewport_h(
         status_h,
         queued_est,
-        live_est + tail_est + widget_h + ask_est,
+        live_est + tail_est + widget_h + ask_est + 2 * ask_gap,
         box_rows_est,
         panel_est,
         attach_h,
@@ -296,7 +307,7 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
     let floor = latched_viewport_floor(
         status_h,
         queued_est,
-        live_est + tail_est + widget_h + ask_est,
+        live_est + tail_est + widget_h + ask_est + 2 * ask_gap,
         box_rows_est,
         attach_h,
         footer_h,
@@ -353,6 +364,7 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
         )
     });
 
+    let reveal = tui.home_reveal_alpha();
     let res = tui.terminal.draw(|frame| {
         let area = frame.area();
 
@@ -394,34 +406,51 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
             .map(|m| {
                 m.rows
                     .iter()
-                    .take(12)
+                    .take(24)
                     .enumerate()
                     .flat_map(|(ri, (glyph, label, desc))| {
-                        let raw = if ri == 0 {
-                            format!("❓ {label} — {desc}")
-                        } else {
-                            let marker = if ri == m.cursor {
-                                crate::tui::arrow_glyph()
-                            } else {
-                                " "
-                            };
-                            format!("  {marker} {glyph} {label} — {desc}")
+                        let theme = crate::theme::theme();
+                        let (raw, style) = match glyph.as_str() {
+                            "?" => (
+                                label.clone(),
+                                Style::default()
+                                    .fg(Color::White)
+                                    .add_modifier(Modifier::BOLD),
+                            ),
+                            "\u{2502}" => (
+                                format!("  \u{2502} {desc}"),
+                                Style::default().fg(theme.text_dim),
+                            ),
+                            "\u{b7}" => {
+                                (format!("    {desc}"), Style::default().fg(theme.text_dim))
+                            }
+                            _ => {
+                                let marker = if ri == m.cursor {
+                                    crate::tui::arrow_glyph()
+                                } else {
+                                    " "
+                                };
+                                let body = if glyph == "*" {
+                                    format!("{label}: {desc}")
+                                } else if glyph.is_empty() {
+                                    format!("{label} — {desc}")
+                                } else {
+                                    format!("{glyph} {label} — {desc}")
+                                };
+                                (
+                                    format!("  {marker} {body}"),
+                                    if ri == m.cursor {
+                                        Style::default()
+                                            .fg(theme.accent)
+                                            .add_modifier(Modifier::BOLD)
+                                    } else {
+                                        Style::default().fg(theme.text_muted)
+                                    },
+                                )
+                            }
                         };
                         crate::composer::transcript::wrap_styled_line(
-                            Line::from(vec![Span::styled(
-                                raw,
-                                if ri == m.cursor {
-                                    Style::default()
-                                        .fg(crate::theme::theme().accent)
-                                        .add_modifier(Modifier::BOLD)
-                                } else if ri == 0 {
-                                    Style::default()
-                                        .fg(Color::White)
-                                        .add_modifier(Modifier::BOLD)
-                                } else {
-                                    Style::default().fg(crate::theme::theme().text_muted)
-                                },
-                            )]),
+                            Line::from(vec![Span::styled(raw, style)]),
                             w.saturating_sub(4).max(1),
                         )
                     })
@@ -463,15 +492,15 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
         let panel_gap: u16 = if visible_count > 0 {
             visible_count as u16 + 1
         } else {
-            0
+            search_h
         };
         let panel_h: u16 = 0;
         let box_rows = box_h;
         let tail_y = status_y + seam_h;
         let queued_y = status_y + status_h + tail_h;
         let live_y = queued_y + queued_h;
-        let ask_y = live_y + live_h;
-        let widget_y = ask_y + ask_h;
+        let ask_y = live_y + live_h + ask_gap;
+        let widget_y = ask_y + ask_h + ask_gap;
         let box_y = widget_y + widget_h + panel_gap;
         let panel_y = if home_mode {
             (area.y + area.height.saturating_sub(1)).saturating_sub(panel_h)
@@ -502,6 +531,16 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
             ));
             frame.render_widget(
                 Paragraph::new(Line::from(spans)),
+                Rect::new(area.x, status_y + seam_h + tail_h, area.width, 1),
+            );
+        } else if let Some((shown, hint)) = &tui.hint
+            && shown.elapsed() < super::HINT_TTL
+        {
+            frame.render_widget(
+                Paragraph::new(Line::from(Span::styled(
+                    format!(" {hint}"),
+                    Style::default().fg(crate::theme::theme().tool_dim),
+                ))),
                 Rect::new(area.x, status_y + seam_h + tail_h, area.width, 1),
             );
         }
@@ -585,6 +624,36 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
                 Paragraph::new(ibox.lines.clone()),
                 Rect::new(box_x, box_y, area.right() - box_x, rendered_box_h),
             );
+        }
+
+        if let Some(search) = &tui.search {
+            let q = search.query.clone();
+            let no_match = search.idx.is_none();
+            let mut spans = vec![Span::styled(
+                " search: ".to_string(),
+                Style::default()
+                    .fg(crate::theme::theme().accent)
+                    .add_modifier(Modifier::BOLD),
+            )];
+            spans.push(Span::styled(
+                q,
+                Style::default().fg(crate::theme::theme().text_body),
+            ));
+            if no_match {
+                spans.push(Span::styled(
+                    "  (no match)".to_string(),
+                    Style::default()
+                        .fg(crate::theme::theme().text_muted)
+                        .add_modifier(Modifier::ITALIC),
+                ));
+            }
+            let y = box_y.saturating_sub(1);
+            if y < area.bottom() {
+                frame.render_widget(
+                    chrome_row(Line::from(spans)),
+                    Rect::new(area.x, y, area.width, 1),
+                );
+            }
         }
 
         if visible_count > 0 {
@@ -973,10 +1042,25 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
             }
         }
 
-        let cur_x = (area.x + ibox.x as u16 + 3 + ibox.cur_col as u16)
-            .min(area.x + area.width.saturating_sub(1));
-        let cur_y = (box_y + ibox.cur_row as u16).min(area.y + area.height.saturating_sub(1));
-        frame.set_cursor_position(Position::new(cur_x, cur_y));
+        let (cur_x, cur_y) = if let Some(search) = &tui.search {
+            let x = area.x + 9 + display_width(&search.query) as u16;
+            (
+                x.min(area.x + area.width.saturating_sub(1)),
+                box_y.saturating_sub(1),
+            )
+        } else {
+            (
+                (area.x + ibox.x as u16 + 3 + ibox.cur_col as u16)
+                    .min(area.x + area.width.saturating_sub(1)),
+                (box_y + ibox.cur_row as u16).min(area.y + area.height.saturating_sub(1)),
+            )
+        };
+        if !asking {
+            frame.set_cursor_position(Position::new(cur_x, cur_y));
+        }
+        if let Some(alpha) = reveal {
+            crate::composer::fade_buffer(frame.buffer, alpha);
+        }
     });
     let background_result = if res.is_ok() {
         if let Some(bg) = &mut tui.background {

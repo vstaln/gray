@@ -476,6 +476,9 @@ fn replay_entry(v: &mut Viewer, entry: &SessionEntry, cwd: &Path, w: usize) {
                         }
                     }
                     ContentBlock::Text { text } => {
+                        if text.trim() == "(empty)" {
+                            continue;
+                        }
                         let (lines, hyperlinks) =
                             crate::composer::transcript::render_markdown_lines(text, Some(w));
                         if !lines.is_empty() {
@@ -610,9 +613,11 @@ fn paint_viewer(frame: &mut ratatui::Frame, v: &mut Viewer) {
         v.status.clone()
     };
     let hints = if v.chat.focus {
-        "enter send · esc back · ↑↓ scroll"
+        "enter send · esc back"
+    } else if v.managed {
+        "type to chat · x stop · o resume · esc close"
     } else {
-        "type to chat · jk/↑↓ scroll · PgUp/PgDn · x stop · o resume · esc close"
+        "x stop · o resume · esc close"
     };
     let footer = match &v.note {
         Some(n) => format!(" {n} · {hints} "),
@@ -661,7 +666,11 @@ fn paint_viewer(frame: &mut ratatui::Frame, v: &mut Viewer) {
     } else {
         0
     };
-    let box_h = (len - first).min(cap) as u16;
+    let box_h = if v.managed {
+        (len - first).min(cap) as u16
+    } else {
+        0
+    };
     let body_h = inner.height.saturating_sub(box_h);
     let body = Rect::new(inner.x, inner.y, inner.width, body_h);
     let input = Rect::new(inner.x, inner.y + body_h, inner.width, box_h);
@@ -693,7 +702,11 @@ fn paint_viewer(frame: &mut ratatui::Frame, v: &mut Viewer) {
         frame.render_widget(Paragraph::new(rows), body);
     }
 
-    let mut rows: Vec<Line<'static>> = ibox.lines[first..first + box_h as usize].to_vec();
+    let mut rows: Vec<Line<'static>> = if box_h > 0 {
+        ibox.lines[first..first + box_h as usize].to_vec()
+    } else {
+        Vec::new()
+    };
     for line in &mut rows {
         for (i, span) in line.spans.iter_mut().enumerate() {
             span.style =
@@ -1201,13 +1214,21 @@ fn run_agents_panel(
                 }
                 continue;
             }
+            if let Some(up) = crate::keymap::select_move(&KeyEvent::new(code, modifiers)) {
+                if up {
+                    sel = sel.checked_sub(1).unwrap_or(rows.len().saturating_sub(1));
+                } else if !rows.is_empty() {
+                    sel = (sel + 1) % rows.len();
+                }
+                continue;
+            }
             match code {
                 KeyCode::Esc | KeyCode::Char('q') => break,
                 KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => break,
-                KeyCode::Up | KeyCode::Char('k') => {
+                KeyCode::Char('k') => {
                     sel = sel.checked_sub(1).unwrap_or(rows.len().saturating_sub(1));
                 }
-                KeyCode::Down | KeyCode::Char('j') => {
+                KeyCode::Char('j') => {
                     if !rows.is_empty() {
                         sel = (sel + 1) % rows.len();
                     }
@@ -1309,14 +1330,17 @@ pub(crate) fn run_subagent_settings(
         label: label.to_string(),
         description: desc.to_string(),
         opt_in: false,
+        freeform: false,
     };
     let q = |id: &str, question: String, options: Vec<AskOption>| AskQuestion {
         id: id.to_string(),
         header: "subagents".to_string(),
         question,
+        detail: String::new(),
         options,
         multi: false,
         default_all: false,
+        no_other: false,
     };
     let inherit = || {
         opt(

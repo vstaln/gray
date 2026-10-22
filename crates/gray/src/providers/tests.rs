@@ -194,3 +194,22 @@ fn global_user_home_provider_resolves_from_an_empty_session_home() {
     let registry = ProviderRegistry::load_cached_with_user_home(session.path(), Some(user.path()));
     assert!(registry.resolve("global-provider:p", auth_ref).is_none());
 }
+
+#[test]
+fn never_asked_plugin_declaring_provider_capability_is_grandfathered() {
+    let mut entry = LockEntry {
+        granted_capabilities: Vec::new(),
+        capabilities_hash: None,
+        ..Default::default()
+    };
+    let declared = vec!["provider.credentials".to_string()];
+    assert!(super::provider_granted(&entry, &declared));
+    // Not declared → not granted.
+    assert!(!super::provider_granted(&entry, &[]));
+    // Consent recorded without the grant → stays hidden.
+    entry.capabilities_hash = Some("h".into());
+    assert!(!super::provider_granted(&entry, &declared));
+    // Explicit grant always counts.
+    entry.granted_capabilities = declared.clone();
+    assert!(super::provider_granted(&entry, &[]));
+}

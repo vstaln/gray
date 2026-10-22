@@ -164,12 +164,7 @@ fn migrate_legacy_custom(config: &Config, cat: &catalog::Catalog) {
     if base.is_empty() {
         return;
     }
-    let known = catalog::POPULAR_DEFS
-        .iter()
-        .any(|(.., url, _)| normalize_custom_base_url(url) == base)
-        || cat
-            .values()
-            .any(|p| normalize_custom_base_url(&p.base_url) == base);
+    let known = crate::quality_of_life::providers::is_known_preset_base(&base, cat);
     if known {
         return;
     }
@@ -243,6 +238,7 @@ fn connect_modal(
             item: ConnectItem,
             verification_uri: Option<String>,
             status_msg: Option<String>,
+            started: std::time::Instant,
             cancel: tokio_util::sync::CancellationToken,
             progress: tokio::sync::mpsc::UnboundedReceiver<PluginLoginProgress>,
         },
@@ -268,8 +264,10 @@ fn connect_modal(
         .cloned()
         .unwrap_or_else(BackgroundSnapshot::default_initial);
 
-    let detected =
-        catalog::detect_connect_candidates(context::ollama_running(), |k| std::env::var(k).ok());
+    let detected = crate::quality_of_life::providers::detect_connect_candidates(
+        context::ollama_running(),
+        |k| std::env::var(k).ok(),
+    );
 
     migrate_legacy_custom(config, &catalog);
 
@@ -293,12 +291,21 @@ fn connect_modal(
             if let Some(id) = preselect.take()
                 && let Some(item) = all_items.iter().find(|item| item.id == id)
             {
-                if let Some(installed) = providers.iter().find(|p| p.provider_id() == id) {
+                if item.id == "custom" {
+                    state = ModalState::EnteringBaseUrl {
+                        url_buf: String::new(),
+                        status_msg: None,
+                        suggestions: context::probe_local_endpoints(),
+                        sel: 0,
+                        probe_failed: false,
+                    };
+                } else if let Some(installed) = providers.iter().find(|p| p.provider_id() == id) {
                     let (cancel, progress) = spawn_plugin_login(installed.clone());
                     state = ModalState::AuthorizingPlugin {
                         item: item.clone(),
                         verification_uri: None,
                         status_msg: None,
+                        started: std::time::Instant::now(),
                         cancel,
                         progress,
                     };
@@ -450,6 +457,7 @@ fn connect_modal(
                         item,
                         verification_uri,
                         status_msg,
+                        started,
                         ..
                     } => super::connect_draw::render_authorizing_plugin(
                         frame,
@@ -457,6 +465,7 @@ fn connect_modal(
                         item,
                         verification_uri.as_deref(),
                         status_msg.as_deref(),
+                        started.elapsed(),
                         &colors,
                     ),
                 }
@@ -487,7 +496,21 @@ fn connect_modal(
                         sel = filtered.len().saturating_sub(1);
                     }
 
-                    match read()? {
+                    let ev = read()?;
+                    if let Event::Key(key) = ev
+                        && key.kind == KeyEventKind::Press
+                        && let Some(up) = crate::keymap::select_move(&key)
+                    {
+                        if !filtered.is_empty() {
+                            sel = if up {
+                                sel.saturating_sub(1)
+                            } else {
+                                (sel + 1).min(filtered.len() - 1)
+                            };
+                        }
+                        continue;
+                    }
+                    match ev {
                         Event::Key(KeyEvent {
                             code: KeyCode::Char('c'),
                             modifiers,
@@ -497,17 +520,10 @@ fn connect_modal(
                             return Ok(ConnectOutcome::Dismissed);
                         }
                         Event::Key(KeyEvent {
-                            code,
                             modifiers,
                             kind: KeyEventKind::Press,
                             ..
-                        }) if modifiers.contains(KeyModifiers::CONTROL) => match code {
-                            KeyCode::Char('p') => sel = sel.saturating_sub(1),
-                            KeyCode::Char('n') if !filtered.is_empty() => {
-                                sel = (sel + 1).min(filtered.len() - 1);
-                            }
-                            _ => {}
-                        },
+                        }) if modifiers.contains(KeyModifiers::CONTROL) => {}
 
                         Event::Key(KeyEvent {
                             code: KeyCode::Enter,
@@ -526,12 +542,6 @@ fn connect_modal(
                             kind: KeyEventKind::Press,
                             ..
                         }) => match code {
-                            KeyCode::Up => sel = sel.saturating_sub(1),
-                            KeyCode::Down => {
-                                if !filtered.is_empty() {
-                                    sel = (sel + 1).min(filtered.len() - 1);
-                                }
-                            }
                             KeyCode::PageUp => sel = sel.saturating_sub(8),
                             KeyCode::PageDown => {
                                 if !filtered.is_empty() {
@@ -575,6 +585,7 @@ fn connect_modal(
                                             item: item.clone(),
                                             verification_uri: None,
                                             status_msg: None,
+                                            started: std::time::Instant::now(),
                                             cancel,
                                             progress,
                                         };
@@ -671,28 +682,28 @@ fn connect_modal(
                                 }
                             }
                             KeyCode::Enter => {
-                                let chosen = if url_buf.trim().is_empty() {
-                                    filtered.get(*sel).map(|s| s.url.to_string())
-                                } else {
-                                    Some(url_buf.trim().to_string())
-                                };
-                                let normalized = chosen
-                                    .as_deref()
-                                    .map(normalize_custom_base_url)
-                                    .unwrap_or_default();
+                                if url_buf.trim().is_empty() {
+                                    *status_msg = Some(
+                                        "Enter a base URL (e.g. http://localhost:11434/v1)".into(),
+                                    );
+                                    *probe_failed = false;
+                                    continue;
+                                }
+                                let normalized = normalize_custom_base_url(url_buf.trim());
                                 let valid = normalized.starts_with("http://")
                                     || normalized.starts_with("https://");
-                                if normalized.is_empty() || !valid {
+                                if !valid {
                                     *status_msg =
                                         Some("Enter a valid base URL (e.g. https://…/v1)".into());
                                     continue;
                                 }
 
+                                let mut back = false;
                                 let proceed = if *probe_failed {
                                     *probe_failed = false;
                                     true
                                 } else {
-                                    *status_msg = Some("Checking endpoint…".into());
+                                    *status_msg = Some("Checking endpoint… (esc to cancel)".into());
                                     terminal.draw(|frame| {
                                         let area = frame.area();
                                         if area.width >= 20 && area.height >= 6 {
@@ -703,10 +714,47 @@ fn connect_modal(
                                             );
                                         }
                                     })?;
-                                    match context::probe_custom_endpoint(&normalized) {
-                                        context::EndpointProbe::Up { .. }
-                                        | context::EndpointProbe::Auth => true,
-                                        context::EndpointProbe::Down => {
+                                    // Probe on a detached thread so esc can
+                                    // cancel the wait instead of blocking the
+                                    // modal for the full connect timeout.
+                                    let probe_rx =
+                                        context::probe_custom_endpoint_detached(&normalized);
+                                    let (probed, b) = loop {
+                                        if let Ok(p) = probe_rx.try_recv() {
+                                            break (Some(p), false);
+                                        }
+                                        if poll(std::time::Duration::from_millis(50))? {
+                                            match read()? {
+                                                Event::Key(KeyEvent {
+                                                    code: KeyCode::Esc,
+                                                    kind: KeyEventKind::Press,
+                                                    ..
+                                                }) => break (None, false),
+                                                Event::Key(KeyEvent {
+                                                    code: KeyCode::Char('c'),
+                                                    modifiers,
+                                                    kind: KeyEventKind::Press,
+                                                    ..
+                                                }) if modifiers.contains(KeyModifiers::CONTROL) => {
+                                                    break (None, true);
+                                                }
+                                                _ => {}
+                                            }
+                                        }
+                                    };
+                                    back = b;
+                                    match probed {
+                                        None => {
+                                            if !back {
+                                                *status_msg = Some("Check cancelled.".into());
+                                            }
+                                            false
+                                        }
+                                        Some(
+                                            context::EndpointProbe::Up { .. }
+                                            | context::EndpointProbe::Auth,
+                                        ) => true,
+                                        Some(context::EndpointProbe::Down) => {
                                             *status_msg = Some(
                                                 "No answer — Enter again to connect anyway".into(),
                                             );
@@ -715,6 +763,10 @@ fn connect_modal(
                                         }
                                     }
                                 };
+                                if back {
+                                    state = ModalState::Selecting;
+                                    continue;
+                                }
                                 if proceed {
                                     let key_id = catalog::custom_key_id(&normalized);
                                     let existing =
@@ -867,6 +919,7 @@ fn connect_modal(
                     status_msg,
                     cancel,
                     progress,
+                    ..
                 } => {
                     let mut next_state: Option<ModalState> = None;
                     while let Ok(progress) = progress.try_recv() {
@@ -883,10 +936,10 @@ fn connect_modal(
                             PluginLoginProgress::CredentialSaved => {
                                 *status_msg = Some("Credential saved".into())
                             }
-                            PluginLoginProgress::Models(models) => {
-                                super::context::save_provider_model_list(
+                            PluginLoginProgress::Models(rows) => {
+                                super::context::save_provider_model_rows(
                                     &super::catalog::plugin_models_key(&item.id),
-                                    &models,
+                                    rows,
                                 );
                                 next_state =
                                     Some(ModalState::SelectingModel { item: item.clone() });
@@ -899,7 +952,10 @@ fn connect_modal(
                                 *status_msg = None;
                                 next_state = Some(ModalState::Selecting);
                             }
-                            PluginLoginProgress::Failed(message) => *status_msg = Some(message),
+                            PluginLoginProgress::Failed(message) => {
+                                *status_msg =
+                                    Some(format!("{}{message}", super::connect_draw::LOGIN_FAILED))
+                            }
                         }
                     }
                     if let Some(next_state) = next_state.take() {

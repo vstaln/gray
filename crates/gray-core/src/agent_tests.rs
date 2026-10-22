@@ -1278,7 +1278,7 @@ fn tool_script_with_args(id: &str, args: &str) -> Vec<StreamEvent> {
 }
 
 #[tokio::test]
-async fn alternating_tool_empty_stays_bounded_and_nudges_once() {
+async fn alternating_tool_empty_recovers_each_streak() {
     let provider = FakeProvider::new(vec![
         tool_script_with_args("c1", r#"{"q":"a"}"#),
         empty_script(),
@@ -1311,7 +1311,44 @@ async fn alternating_tool_empty_stays_bounded_and_nudges_once() {
         .iter()
         .filter(|m| m.text_content().contains("process results"))
         .count();
-    assert_eq!(nudges, 1, "post-tool empty nudge must fire once per run");
+    assert_eq!(
+        nudges, 2,
+        "each empty streak after real work gets its own nudge"
+    );
+    assert_ne!(
+        agent.messages().last().unwrap().text_content(),
+        "(empty)",
+        "a later empty streak must not end the turn"
+    );
+}
+
+#[tokio::test]
+async fn empty_nudges_are_capped_per_run() {
+    let mut script = Vec::new();
+    for i in 0..6 {
+        script.push(tool_script_with_args(
+            &format!("c{i}"),
+            &format!(r#"{{"q":"{i}"}}"#),
+        ));
+        script.extend([empty_script(), empty_script(), empty_script()]);
+    }
+    script.push(end_script());
+    let mut agent = Agent::new(
+        Box::new(FakeProvider::new(script)),
+        Arc::new(FakeExecutor::new(ToolOutput::ok("ok"))),
+    )
+    .with_tools(vec![tool_def()]);
+
+    agent
+        .run(Message::user("go"), ToolContext::default())
+        .await
+        .expect("must terminate");
+    let nudges = agent
+        .messages()
+        .iter()
+        .filter(|m| m.text_content().contains("process results"))
+        .count();
+    assert_eq!(nudges, 3);
 }
 
 fn text_end_script(text: &str) -> Vec<StreamEvent> {

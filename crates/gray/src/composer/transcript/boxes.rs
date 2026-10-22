@@ -447,6 +447,12 @@ impl Tui {
                             }
                             gray_core::ContentBlock::Text { text } => {
                                 let clean = strip_ansi(text);
+                                // "(empty)" is agent-loop scaffolding for a
+                                // textless turn, not real output — don't
+                                // resurrect it on replay.
+                                if clean.trim() == "(empty)" {
+                                    continue;
+                                }
                                 if !clean.trim().is_empty() {
                                     self.ensure_gap();
 

@@ -36,6 +36,49 @@ fn attach_image_appends_marker_and_pushes_caret_after_it() {
     assert_eq!(tui.attachments, vec![path]);
 }
 
+#[cfg(target_os = "windows")]
+#[test]
+#[ignore = "touches the real system clipboard"]
+fn windows_clipboard_image_attaches() {
+    // Put a real bitmap on the clipboard, then drive the full paste path.
+    let set = std::process::Command::new("powershell.exe")
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-STA",
+            "-Command",
+            // SetImage sometimes throws "clipboard operation did not succeed"
+            // even though the data lands — verify with ContainsImage instead.
+            "Add-Type -AssemblyName System.Windows.Forms,System.Drawing; \
+             $b=New-Object System.Drawing.Bitmap 8,8; \
+             for($i=0; $i -lt 10; $i++){ \
+             try { [System.Windows.Forms.Clipboard]::SetImage($b) } catch {}; \
+             try { if([System.Windows.Forms.Clipboard]::ContainsImage()){ exit 0 } } catch {}; \
+             Start-Sleep -Milliseconds 100 }; \
+             exit 1",
+        ])
+        .output()
+        .expect("spawn powershell");
+    assert!(set.status.success(), "SetImage failed: {:?}", set);
+
+    let mut tui = Tui::test_tui(80, 30);
+    assert!(try_attach_clipboard_image(&mut tui));
+    assert_eq!(tui.attachments.len(), 1);
+    let img = image::open(&tui.attachments[0]).expect("decode pasted png");
+    assert_eq!((img.width(), img.height()), (8, 8));
+
+    std::process::Command::new("powershell.exe")
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-STA",
+            "-Command",
+            "Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.Clipboard]::Clear()",
+        ])
+        .output()
+        .ok();
+}
+
 #[test]
 fn attach_image_appends_each_paste_in_order() {
     let mut tui = Tui::test_tui(80, 30);

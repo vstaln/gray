@@ -139,6 +139,7 @@ fn list_footer_advertises_removal_only_for_a_stored_provider() {
     catalog::sort_connect_items(&mut items, &config, &auth, &BTreeMap::new());
     let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap();
     let mut scroll = 0usize;
+    let sel = items.iter().position(|i| i.id == "openrouter").unwrap();
 
     terminal
         .draw(|frame| {
@@ -147,7 +148,7 @@ fn list_footer_advertises_removal_only_for_a_stored_provider() {
                 frame.area(),
                 &items,
                 "",
-                0,
+                sel,
                 &mut scroll,
                 &config,
                 &auth,

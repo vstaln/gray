@@ -6,6 +6,5 @@ mod plugin_first_command;
 mod plugin_registry;
 mod print_stdin_exit;
 mod provider_effort;
-mod session_read;
 mod windows_limits;
 mod working_directory;

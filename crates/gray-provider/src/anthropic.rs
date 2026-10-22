@@ -588,8 +588,14 @@ async fn connect(
                 };
                 (err, retry_after)
             }
-            Err(e) if e.is_timeout() => (ProviderError::Timeout(e.to_string()), None),
-            Err(e) => (ProviderError::Connection(e.to_string()), None),
+            Err(e) if e.is_timeout() => (
+                ProviderError::Timeout(crate::openai::friendly_send_error(&e)),
+                None,
+            ),
+            Err(e) => (
+                ProviderError::Connection(crate::openai::friendly_send_error(&e)),
+                None,
+            ),
         };
         if !err.retryable() || attempt >= MAX_ATTEMPTS {
             return Err(err);

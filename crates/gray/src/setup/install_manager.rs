@@ -532,7 +532,28 @@ pub(crate) fn run_install_manager(
             if !poll(Duration::from_millis(100))? {
                 continue;
             }
-            match read()? {
+            let ev = read()?;
+            // when the errors tab exists, ctrl+n/p switch tabs (below);
+            // otherwise select_move keeps tui.select.up/down working here
+            if !spec.errors_tab
+                && let Event::Key(key) = ev
+                && key.kind == KeyEventKind::Press
+                && let Some(up) = crate::keymap::select_move(&key)
+            {
+                pending_remove = None;
+                sel = if up {
+                    sel.saturating_sub(1)
+                } else {
+                    let max = match tab {
+                        Tab::Installed => items.len(),
+                        Tab::Errors => error_entries.len(),
+                    }
+                    .saturating_sub(1);
+                    (sel + 1).min(max)
+                };
+                continue;
+            }
+            match ev {
                 Event::Key(KeyEvent {
                     code: KeyCode::Char('c'),
                     modifiers,
@@ -571,11 +592,24 @@ pub(crate) fn run_install_manager(
                         sel = 0;
                         pending_remove = None;
                     }
-                    KeyCode::Up | KeyCode::Char('k') => {
+                    KeyCode::Up | KeyCode::Char('k') if spec.errors_tab => {
                         pending_remove = None;
                         sel = sel.saturating_sub(1);
                     }
-                    KeyCode::Down | KeyCode::Char('j') => {
+                    KeyCode::Down | KeyCode::Char('j') if spec.errors_tab => {
+                        pending_remove = None;
+                        let max = match tab {
+                            Tab::Installed => items.len(),
+                            Tab::Errors => error_entries.len(),
+                        }
+                        .saturating_sub(1);
+                        sel = (sel + 1).min(max);
+                    }
+                    KeyCode::Char('k') => {
+                        pending_remove = None;
+                        sel = sel.saturating_sub(1);
+                    }
+                    KeyCode::Char('j') => {
                         pending_remove = None;
                         let max = match tab {
                             Tab::Installed => items.len(),
