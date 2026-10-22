@@ -11,11 +11,12 @@ use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::collapsible::Collapsible;
 use gpui_kit::component::diff::{Diff, DiffFile, DiffState};
 use gpui_kit::component::input::{
-    Editor, EditorState, Input, InputEvent, InputState, Textarea, TextareaState,
+    Editor, EditorState, Input, InputEvent, InputState, MoveDown, MoveUp, Textarea, TextareaState,
 };
 use gpui_kit::component::kbd::Kbd;
 use gpui_kit::component::notification::{Notification, NotificationType};
 use gpui_kit::component::text::{TextView, TextViewStyle};
+use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{
     ActiveTheme, Icon, IconName, Selectable, Sizable, StyledExt, Theme, ThemeMode, h_flex, v_flex,
 };
@@ -178,6 +179,26 @@ pub struct GrayApp {
     palette_open: bool,
     palette_mode: PaletteMode,
     palette_query: String,
+    /// Highlighted palette row (arrow keys / mouse); Enter runs it.
+    palette_sel: usize,
+    palette_scroll: ScrollHandle,
+    /// Scroll the highlighted row into view on the next render.
+    palette_reveal: std::cell::Cell<bool>,
+    /// Model picker popover above the composer's model chip.
+    model_open: bool,
+    model_input: Entity<InputState>,
+    model_query: String,
+    model_sel: usize,
+    /// Provider filter from the popover's rail (`None` = all providers).
+    model_rail: Option<&'static str>,
+    model_scroll: ScrollHandle,
+    model_reveal: std::cell::Cell<bool>,
+    /// When a click outside closed the picker: that same click landing on the
+    /// model chip must not reopen it.
+    model_closed_at: Option<Instant>,
+    /// Threads whose turn finished while off screen: the sidebar shows a
+    /// check until the thread is opened.
+    done_unseen: HashSet<String>,
     sidebar_open: bool,
     terminal_open: bool,
     settings_open: bool,
@@ -253,6 +274,7 @@ impl GrayApp {
             cx.new(|cx| InputState::new(window, cx).placeholder("Type a command or search"));
         let terminal_input =
             cx.new(|cx| InputState::new(window, cx).placeholder("Run a shell command"));
+        let model_input = cx.new(|cx| InputState::new(window, cx).placeholder("Search models"));
         let settings_search =
             cx.new(|cx| InputState::new(window, cx).placeholder("Search settings"));
 
@@ -270,13 +292,30 @@ impl GrayApp {
             |this, state, ev: &InputEvent, window, cx| match ev {
                 InputEvent::Change => {
                     this.palette_query = state.read(cx).value().to_string();
+                    this.palette_sel = 0;
+                    this.palette_reveal.set(true);
                     cx.notify();
                 }
                 InputEvent::PressEnter { .. } => {
-                    if let Some((_, _, cmd)) = this.palette_items().into_iter().next() {
+                    let items = this.palette_items();
+                    let ix = this.palette_sel.min(items.len().saturating_sub(1));
+                    if let Some((_, _, cmd)) = items.into_iter().nth(ix) {
                         this.run(cmd, window, cx);
                     }
                 }
+                _ => {}
+            },
+        ));
+        subs.push(cx.subscribe_in(
+            &model_input,
+            window,
+            |this, state, ev: &InputEvent, window, cx| match ev {
+                InputEvent::Change => {
+                    this.model_query = state.read(cx).value().to_string();
+                    this.model_sel = 0;
+                    cx.notify();
+                }
+                InputEvent::PressEnter { .. } => this.pick_model(this.model_sel, window, cx),
                 _ => {}
             },
         ));
@@ -316,6 +355,18 @@ impl GrayApp {
             palette_open: false,
             palette_mode: PaletteMode::Commands,
             palette_query: String::new(),
+            palette_sel: 0,
+            palette_scroll: ScrollHandle::new(),
+            palette_reveal: std::cell::Cell::new(false),
+            model_open: false,
+            model_input,
+            model_query: String::new(),
+            model_sel: 0,
+            model_rail: None,
+            model_scroll: ScrollHandle::new(),
+            model_reveal: std::cell::Cell::new(false),
+            model_closed_at: None,
+            done_unseen: HashSet::new(),
             sidebar_open: true,
             terminal_open: false,
             settings_open: false,
@@ -855,6 +906,12 @@ impl GrayApp {
                 self.group_open.remove(&group_id(&th.items[r.start]));
             }
             let text = self.turns.remove(&tid).map(|a| a.text).unwrap_or_default();
+            if result.is_ok()
+                && (self.active_thread.as_deref() != Some(tid.as_str())
+                    || !window.is_window_active())
+            {
+                self.done_unseen.insert(tid.clone());
+            }
             let body = match &result {
                 Err(e) => format!("Turn failed: {}", e.lines().next().unwrap_or("")),
                 Ok(()) if text.trim().is_empty() => "Finished".to_string(),
@@ -967,6 +1024,9 @@ impl GrayApp {
             // A freshly opened thread starts at its latest message.
             self.follow_thread = self.active_thread.clone();
             self.follow = true;
+            if let Some(id) = &self.active_thread {
+                self.done_unseen.remove(id);
+            }
             changed = true;
         } else {
             let off = self.scroll.offset().y;
@@ -1068,9 +1128,12 @@ impl GrayApp {
         cx: &mut Context<Self>,
     ) {
         self.palette_open = true;
+        self.model_open = false;
         self.settings_open = false;
         self.palette_mode = mode;
         self.palette_query = query.to_string();
+        self.palette_sel = 0;
+        self.palette_reveal.set(true);
         let q = query.to_string();
         self.palette_input.update(cx, |s, cx| {
             s.set_value(q, window, cx);
@@ -1079,9 +1142,79 @@ impl GrayApp {
         cx.notify();
     }
 
+    fn current_model(&self) -> (String, String) {
+        let thread = self
+            .active_thread
+            .as_ref()
+            .and_then(|id| self.store.state.thread(id));
+        let (dp, dm, _) = self.defaults();
+        (
+            thread.map(|t| t.provider.clone()).unwrap_or(dp),
+            thread.map(|t| t.model.clone()).unwrap_or(dm),
+        )
+    }
+
+    /// Models shown in the picker, filtered by the rail and the search box.
+    fn model_items(&self) -> Vec<(&'static str, &'static str)> {
+        let q = self.model_query.trim().to_lowercase();
+        let mut out = Vec::new();
+        for p in PROVIDERS {
+            if self.model_rail.is_some_and(|r| r != p.id) {
+                continue;
+            }
+            for m in p.models {
+                let hay = format!("{} {}", p.label, m).to_lowercase();
+                if q.is_empty() || hay.contains(&q) || fuzzy(&hay, &q) {
+                    out.push((p.id, *m));
+                }
+            }
+        }
+        out
+    }
+
+    fn open_model_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.model_open {
+            self.close_overlays(window, cx);
+            return;
+        }
+        if self
+            .model_closed_at
+            .take()
+            .is_some_and(|at| at.elapsed() < Duration::from_millis(400))
+        {
+            return;
+        }
+        self.palette_open = false;
+        self.settings_open = false;
+        self.model_open = true;
+        self.model_rail = None;
+        self.model_query.clear();
+        let (cp, cm) = self.current_model();
+        self.model_sel = self
+            .model_items()
+            .iter()
+            .position(|(p, m)| *p == cp && *m == cm)
+            .unwrap_or(0);
+        self.model_reveal.set(true);
+        self.model_input.update(cx, |s, cx| {
+            s.set_value("", window, cx);
+            s.focus(window, cx);
+        });
+        cx.notify();
+    }
+
+    fn pick_model(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((p, m)) = self.model_items().get(ix).copied() else {
+            return;
+        };
+        self.run(Cmd::Model(format!("{p}:{m}")), window, cx);
+        self.close_overlays(window, cx);
+    }
+
     fn close_overlays(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.palette_open = false;
         self.settings_open = false;
+        self.model_open = false;
         self.composer.update(cx, |s, cx| s.focus(window, cx));
         cx.notify();
     }
@@ -1329,6 +1462,8 @@ impl GrayApp {
                 Cmd::Worktree(raw.into()),
             ));
         }
+        // Stable: keeps match order inside a group, one header per group.
+        out.sort_by_key(|(_, _, c)| cmd_group(c).0);
         if !raw.is_empty() && Path::new(raw).is_dir() {
             out.insert(
                 0,
@@ -2188,6 +2323,10 @@ impl GrayApp {
             "palette_mode": format!("{:?}", self.palette_mode),
             "palette_query": self.palette_query,
             "palette_items": self.palette_items().iter().take(12).map(|i| i.0.clone()).collect::<Vec<_>>(),
+            "palette_sel": self.palette_sel,
+            "model_open": self.model_open,
+            "model_items": self.model_items().iter().map(|(p, m)| format!("{p}:{m}")).collect::<Vec<_>>(),
+            "model_sel": self.model_sel,
             "panel": self.panel.map(|p| format!("{p:?}")),
             "theme": cx.theme().mode.name(),
             "background": self.store.state.setting("background", "none"),
@@ -2246,6 +2385,86 @@ impl GrayApp {
             }
             self.last_snapshot = s;
         }
+    }
+}
+
+/// Bare category hints that a palette group header already says.
+const PALETTE_CATEGORY_HINTS: &[&str] = &[
+    "Thread",
+    "Threads",
+    "View",
+    "Settings",
+    "Theme",
+    "Git",
+    "Gray",
+    "Image",
+    "Plugin",
+    "Effort",
+    "Layout",
+    "Action",
+    "Turn",
+    "Provider",
+    "Model",
+    "Access",
+    "Checkout",
+    "Switch",
+    "Project",
+    "Open file",
+];
+
+/// Overlay scrim: lighter in light mode so the page doesn't go muddy.
+fn scrim(t: &Theme) -> Hsla {
+    hsla(0., 0., 0., if t.mode.is_dark() { 0.4 } else { 0.18 })
+}
+
+/// Floating-surface shadow (monocode peek shadow).
+fn overlay_shadow() -> Vec<BoxShadow> {
+    vec![
+        BoxShadow {
+            color: hsla(0., 0., 0., 0.28),
+            offset: point(px(0.), px(12.)),
+            blur_radius: px(32.),
+            spread_radius: px(0.),
+            inset: false,
+        },
+        BoxShadow {
+            color: hsla(0., 0., 0., 0.16),
+            offset: point(px(0.), px(2.)),
+            blur_radius: px(6.),
+            spread_radius: px(0.),
+            inset: false,
+        },
+    ]
+}
+
+/// Palette group (sort rank, header) for a command.
+fn cmd_group(cmd: &Cmd) -> (u8, &'static str) {
+    use Cmd::*;
+    match cmd {
+        NewThread | SearchThreads | Settle | Snooze(_) | Pin | Archive | Delete | Rename(_)
+        | Stop | ShowArchived | Approve(_) => (0, "Thread"),
+        Thread(_) => (1, "Switch thread"),
+        OpenMessage(_, None) => (1, "Threads"),
+        OpenMessage(_, Some(_)) => (2, "Messages"),
+        Provider(_) | Model(_) | Effort(_) | Mode(_) => (3, "Model"),
+        ToggleSidebar
+        | ToggleTerminal
+        | ToggleDiff
+        | ToggleFiles
+        | TogglePlugins
+        | ToggleViewer
+        | ToggleSessions
+        | ToggleSkills
+        | SetLayout(_)
+        | SetTerminalPlacement(_) => (4, "View"),
+        Checkpoint | Restore | TurnDiff | HeadDiff | Branch(_) | NewBranch(_) | Worktree(_)
+        | DiscardChanges => (5, "Git"),
+        Settings | SettingsSection(_) | SetNotify(_) | SetAutoAccept(_) | ToggleTheme
+        | SetBackground(_) => (6, "Settings"),
+        Project(_) | AddProject(_) => (7, "Project"),
+        UseSkill(_) | ResumeSession(_) | Gray(_) => (8, "Gray"),
+        PluginInstall(_) | PluginRemove(_) | PluginEnable(..) => (9, "Plugins"),
+        OpenFile(_) | PreviewFile(_) | AttachImage(_) | RemoveAttachment(_) => (10, "Files"),
     }
 }
 
@@ -2514,6 +2733,7 @@ impl GrayApp {
                     })
                     .cursor_pointer()
                     .hover(|s| s.bg(t.list_hover).text_color(t.sidebar_foreground))
+                    .active(|s| s.bg(t.foreground.opacity(0.10)))
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.run(Cmd::Project(pid.clone()), window, cx)
                     }))
@@ -2555,22 +2775,40 @@ impl GrayApp {
                 let id = th.id.clone();
                 let active = Some(&th.id) == self.active_thread.as_ref();
                 let running = self.turns.contains_key(&th.id);
-                let status_color = if running {
-                    t.info
+                let approval = running
+                    && self
+                        .pending_approval
+                        .as_ref()
+                        .is_some_and(|(tid, _)| *tid == th.id);
+                // 16px state slot: spinner while working, check when it
+                // finished off screen, x on error, empty otherwise.
+                let slot = div()
+                    .size(px(16.))
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .justify_center();
+                let slot = if running {
+                    slot.child(motion::braille_spinner(
+                        SharedString::from(format!("thread-spin-{}", th.id)),
+                        &t,
+                    ))
                 } else if th.last_status == "error" {
-                    t.danger
-                } else if th.last_status == "completed" {
-                    t.success
+                    slot.child(Icon::new(IconName::CircleX).xsmall().text_color(t.danger))
+                } else if !active && self.done_unseen.contains(&th.id) {
+                    slot.child(Icon::new(IconName::Check).xsmall().text_color(t.success))
                 } else {
-                    t.muted_foreground
+                    slot
                 };
                 list = list.child(
                     h_flex()
                         .id(SharedString::from(format!("thread-{}", th.id)))
-                        .pl(px(14.))
+                        .pl(px(5.))
                         .pr(px(10.))
-                        .py(px(6.))
-                        .gap(px(10.))
+                        .py(px(5.))
+                        .gap(px(8.))
+                        .border_1()
+                        .border_color(transparent_black())
                         .rounded(px(6.))
                         .text_size(px(13.))
                         .text_color(t.sidebar_foreground.opacity(0.8))
@@ -2581,10 +2819,16 @@ impl GrayApp {
                                 .text_color(t.sidebar_foreground)
                                 .hover(|s| s.bg(t.primary.opacity(0.18)))
                         })
+                        .when(approval, |s| {
+                            s.bg(t.foreground.opacity(0.10))
+                                .border_dashed()
+                                .border_color(t.foreground.opacity(0.30))
+                        })
+                        .active(|s| s.bg(t.foreground.opacity(0.10)))
                         .on_click(cx.listener(move |this, _, window, cx| {
                             this.run(Cmd::Thread(id.clone()), window, cx)
                         }))
-                        .child(div().size_1p5().rounded_full().bg(status_color))
+                        .child(slot)
                         .child(div().flex_1().truncate().child(th.title.clone()))
                         .when(th.pinned, |s| {
                             s.child(Icon::new(IconName::Star).xsmall().text_color(t.warning))
@@ -2592,8 +2836,16 @@ impl GrayApp {
                         .child(
                             div()
                                 .text_size(px(11.))
-                                .text_color(t.sidebar_foreground.opacity(faint(&t, 0.4)))
-                                .child(relative(th.updated_at)),
+                                .flex_none()
+                                .when(approval, |s| s.text_color(t.warning))
+                                .when(!approval, |s| {
+                                    s.text_color(t.sidebar_foreground.opacity(faint(&t, 0.4)))
+                                })
+                                .child(if approval {
+                                    "Needs approval".to_string()
+                                } else {
+                                    relative(th.updated_at)
+                                }),
                         ),
                 );
             }
@@ -2669,6 +2921,7 @@ impl GrayApp {
                     .text_color(t.muted_foreground.opacity(0.8))
                     .cursor_pointer()
                     .hover(|s| s.bg(t.list_hover).border_color(t.foreground.opacity(0.12)))
+                    .active(|s| s.bg(t.foreground.opacity(0.10)))
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.open_palette(PaletteMode::Commands, "", window, cx)
                     }))
@@ -2913,7 +3166,9 @@ impl GrayApp {
                 .map(|p| p.name.clone());
             let hint = |action: &dyn Action, l: &str| {
                 let keys = key_hint(action, cx).unwrap_or_default();
+                let run = action.boxed_clone();
                 h_flex()
+                    .id(SharedString::from(format!("hint-{l}")))
                     .w(px(240.))
                     .h(px(30.))
                     .px(px(10.))
@@ -2921,6 +3176,10 @@ impl GrayApp {
                     .rounded(px(6.))
                     .text_size(px(12.5))
                     .text_color(t.foreground.opacity(0.6))
+                    .cursor_pointer()
+                    .hover(|s| s.bg(t.foreground.opacity(0.05)).text_color(t.foreground))
+                    .active(|s| s.bg(t.foreground.opacity(0.10)))
+                    .on_click(move |_, window, cx| window.dispatch_action(run.boxed_clone(), cx))
                     .child(div().flex_1().child(l.to_string()))
                     .child(key_chip(&keys, &t))
             };
@@ -3008,19 +3267,18 @@ impl GrayApp {
                     .child(
                         h_flex()
                             .gap_2()
-                            .text_xs()
-                            .text_color(t.muted_foreground)
+                            .items_center()
+                            .text_size(px(12.))
+                            .text_color(t.muted_foreground.opacity(faint(&t, 0.55)))
                             .child(motion::churner(&t))
                             .child(
                                 h_flex()
                                     .gap_1()
-                                    .font_family(t.mono_font_family.clone())
+                                    .child(motion::shimmer_label("churn-label", "Working", &t))
                                     .child(format!(
-                                        "{} ·",
-                                        provider::provider_label(&thread.provider)
-                                    ))
-                                    .child(motion::shimmer_label("churn-label", "CHURNING", &t))
-                                    .child(format!("{:.1}S", a.started.elapsed().as_secs_f32())),
+                                        "· {}",
+                                        fmt_elapsed(a.started.elapsed().as_secs() as i64)
+                                    )),
                             ),
                     )
                     .map(|s| {
@@ -3096,6 +3354,7 @@ impl GrayApp {
                                 .text_size(px(12.))
                                 .text_color(t.foreground.opacity(0.75))
                                 .hover(|s| s.bg(t.secondary_hover))
+                                .active(|s| s.bg(t.foreground.opacity(0.10)))
                                 .child(Icon::new(IconName::ArrowDown).size(px(13.)))
                                 .child("Jump to latest")
                                 .on_click(cx.listener(|this, _, _, cx| {
@@ -3145,6 +3404,7 @@ impl GrayApp {
             .text_size(px(12.5))
             .text_color(color)
             .hover(|s| s.text_color(if g.err { t.danger } else { ink.opacity(0.8) }))
+            .active(|s| s.bg(t.foreground.opacity(0.10)))
             .child(
                 Icon::new(if open {
                     IconName::ChevronDown
@@ -3200,7 +3460,10 @@ impl GrayApp {
         } else if let Some(a) = turn {
             (
                 t.info,
-                format!("Working {:.1}s", a.started.elapsed().as_secs_f32()),
+                format!(
+                    "Working · {}",
+                    fmt_elapsed(a.started.elapsed().as_secs() as i64)
+                ),
             )
         } else if thread.is_some_and(|th| th.last_status == "error") {
             (t.danger, "Error".to_string())
@@ -3358,6 +3621,8 @@ impl GrayApp {
             .pb(px(14.))
             .child(
                 v_flex()
+                    .relative()
+                    .when(self.model_open, |s| s.child(self.render_model_picker(cx)))
                     .rounded(px(12.))
                     .border_1()
                     .border_color(t.foreground.opacity(if focused { 0.20 } else { 0.10 }))
@@ -3455,15 +3720,11 @@ impl GrayApp {
                                     ),
                                     cx,
                                 )
+                                .when(self.model_open, |c| {
+                                    c.bg(t.foreground.opacity(0.08)).text_color(t.foreground)
+                                })
                                 .on_click(cx.listener(
-                                    |this, _, window, cx| {
-                                        this.open_palette(
-                                            PaletteMode::Commands,
-                                            "Model:",
-                                            window,
-                                            cx,
-                                        )
-                                    },
+                                    |this, _, window, cx| this.open_model_picker(window, cx),
                                 )),
                             )
                             .child(
@@ -3735,7 +3996,7 @@ impl GrayApp {
     fn render_panel(&self, panel: Panel, cx: &mut Context<Self>) -> impl IntoElement {
         let t = cx.theme().clone();
         let header = h_flex()
-            .h(px(48.))
+            .h(px(40.))
             .px_2()
             .gap_1()
             .flex_none()
@@ -3866,6 +4127,7 @@ impl GrayApp {
                             .cursor_pointer()
                             .when(active, |s| s.bg(t.list_active))
                             .hover(|s| s.bg(t.list_hover))
+                            .active(|s| s.bg(t.foreground.opacity(0.10)))
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 if is_dir {
                                     if !this.expanded.remove(&rel) {
@@ -3932,6 +4194,7 @@ impl GrayApp {
                                     .ml_1()
                                     .text_color(t.muted_foreground)
                                     .hover(|s| s.text_color(t.foreground))
+                                    .active(|s| s.bg(t.foreground.opacity(0.10)))
                                     .on_click(cx.listener(move |this, _, _, cx| {
                                         if i < this.tabs.len() {
                                             this.tabs.remove(i);
@@ -3990,15 +4253,226 @@ impl GrayApp {
             .child(body)
     }
 
+    fn render_model_picker(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let t = cx.theme().clone();
+        let items = self.model_items();
+        let count = items.len();
+        let sel = self.model_sel.min(count.saturating_sub(1));
+        let (cp, cm) = self.current_model();
+        let rail_btn = |id: &'static str, active: bool, icon: AnyElement, tip: &'static str| {
+            div()
+                .id(SharedString::from(format!("model-rail-{id}")))
+                .size(px(32.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded_lg()
+                .cursor_pointer()
+                .text_color(if active {
+                    t.foreground
+                } else {
+                    t.muted_foreground
+                })
+                .when(active, |s| s.bg(t.foreground.opacity(0.08)))
+                .hover(|s| s.bg(t.foreground.opacity(0.05)).text_color(t.foreground))
+                .active(|s| s.bg(t.foreground.opacity(0.10)))
+                .tooltip(move |w, cx| Tooltip::new(tip).build(w, cx))
+                .child(icon)
+        };
+        let mut rail = v_flex()
+            .w(px(44.))
+            .flex_shrink_0()
+            .p(px(6.))
+            .gap_1()
+            .border_r_1()
+            .border_color(t.foreground.opacity(0.08))
+            .child(
+                rail_btn(
+                    "all",
+                    self.model_rail.is_none(),
+                    Icon::new(IconName::LayoutDashboard)
+                        .size(px(16.))
+                        .into_any_element(),
+                    "All providers",
+                )
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.model_rail = None;
+                    this.model_sel = 0;
+                    cx.notify();
+                })),
+            );
+        for p in PROVIDERS {
+            let icon = match provider_brand(p.id) {
+                Some(path) => svg()
+                    .path(path.to_string())
+                    .size(px(16.))
+                    .text_color(t.muted_foreground)
+                    .into_any_element(),
+                None => Icon::new(IconName::Bot).size(px(16.)).into_any_element(),
+            };
+            let id = p.id;
+            rail = rail.child(
+                rail_btn(id, self.model_rail == Some(id), icon, p.label).on_click(cx.listener(
+                    move |this, _, _, cx| {
+                        this.model_rail = Some(id);
+                        this.model_sel = 0;
+                        cx.notify();
+                    },
+                )),
+            );
+        }
+        let mut list = v_flex()
+            .id("model-list")
+            .track_scroll(&self.model_scroll)
+            .flex_1()
+            .max_h(px(380.))
+            .overflow_y_scroll()
+            .p_1();
+        if items.is_empty() {
+            list = list.child(
+                div()
+                    .px(px(10.))
+                    .py_3()
+                    .text_size(px(13.))
+                    .text_color(t.muted_foreground)
+                    .child("No models match"),
+            );
+        }
+        let mut last = None;
+        let (mut child_ix, mut sel_child) = (0, 0);
+        for (i, (p, m)) in items.into_iter().enumerate() {
+            if last != Some(p) {
+                last = Some(p);
+                child_ix += 1;
+                list = list.child(
+                    div()
+                        .px(px(10.))
+                        .pt_2()
+                        .pb_1()
+                        .text_size(px(10.))
+                        .font_medium()
+                        .text_color(t.muted_foreground.opacity(faint(&t, 0.55)))
+                        .child(provider::provider_label(p).to_uppercase()),
+                );
+            }
+            let selected = i == sel;
+            if selected && i > 0 {
+                sel_child = child_ix;
+            }
+            child_ix += 1;
+            let current = p == cp && m == cm;
+            list = list.child(
+                h_flex()
+                    .id(("model-item", i))
+                    .h(px(32.))
+                    .flex_shrink_0()
+                    .px(px(10.))
+                    .gap_2()
+                    .rounded_lg()
+                    .text_size(px(13.))
+                    .cursor_pointer()
+                    .when(selected, |s| s.bg(t.primary.opacity(0.12)))
+                    .when(!selected, |s| s.hover(|s| s.bg(t.foreground.opacity(0.05))))
+                    .active(|s| s.bg(t.primary.opacity(0.18)))
+                    .on_mouse_move(cx.listener(move |this, _, _, cx| {
+                        if this.model_sel != i {
+                            this.model_sel = i;
+                            cx.notify();
+                        }
+                    }))
+                    .on_click(
+                        cx.listener(move |this, _, window, cx| this.pick_model(i, window, cx)),
+                    )
+                    .child(div().flex_1().truncate().child(m))
+                    .when(current, |s| {
+                        s.child(
+                            Icon::new(IconName::Check)
+                                .size(px(14.))
+                                .text_color(t.foreground.opacity(0.55)),
+                        )
+                    }),
+            );
+        }
+        if self.model_reveal.take() {
+            self.model_scroll.scroll_to_item(sel_child);
+        }
+        let panel = h_flex()
+            .id("model-picker")
+            .occlude()
+            .w(px(340.))
+            .items_stretch()
+            .rounded(px(10.))
+            .border_1()
+            .border_color(t.foreground.opacity(0.08))
+            .bg(t.popover)
+            .shadow(overlay_shadow())
+            .overflow_hidden()
+            .capture_action(cx.listener(move |this, _: &MoveUp, _, cx| {
+                if count > 0 {
+                    this.model_sel = (this.model_sel.min(count - 1) + count - 1) % count;
+                    this.model_reveal.set(true);
+                    cx.notify();
+                }
+                cx.stop_propagation();
+            }))
+            .capture_action(cx.listener(move |this, _: &MoveDown, _, cx| {
+                if count > 0 {
+                    this.model_sel = (this.model_sel.min(count - 1) + 1) % count;
+                    this.model_reveal.set(true);
+                    cx.notify();
+                }
+                cx.stop_propagation();
+            }))
+            .on_mouse_down_out(cx.listener(|this, _, window, cx| {
+                this.model_closed_at = Some(Instant::now());
+                this.close_overlays(window, cx);
+            }))
+            .child(rail)
+            .child(
+                v_flex()
+                    .flex_1()
+                    .min_w_0()
+                    .child(
+                        div()
+                            .px_3()
+                            .py(px(6.))
+                            .text_size(px(13.))
+                            .border_b_1()
+                            .border_color(t.foreground.opacity(0.08))
+                            .child(Input::new(&self.model_input).appearance(false).small()),
+                    )
+                    .child(list),
+            );
+        // Sits on the composer box's top edge, left-aligned with the chip;
+        // deferred so it paints over the timeline.
+        div()
+            .absolute()
+            .bottom_full()
+            .left(px(8.))
+            .pb(px(6.))
+            .child(
+                deferred(motion::enter(
+                    panel,
+                    "model-picker-in",
+                    motion::POPOVER_MS,
+                    -6.,
+                    motion::ease_pop(),
+                ))
+                .with_priority(1),
+            )
+    }
+
     fn render_palette(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let t = cx.theme().clone();
         let mut list = v_flex()
             .id("palette-list")
+            .track_scroll(&self.palette_scroll)
             .max_h(px(380.))
             .overflow_y_scroll()
             .p_1();
         let items = self.palette_items();
         let search = self.palette_mode == PaletteMode::Search;
+        let grouped = self.palette_mode != PaletteMode::Files;
         if search && items.is_empty() {
             list = list.child(
                 div()
@@ -4009,25 +4483,66 @@ impl GrayApp {
                     .child("No threads or messages match"),
             );
         }
+        let sel = self.palette_sel.min(items.len().saturating_sub(1));
+        let mut last_group = None;
+        let mut child_ix = 0;
+        let mut sel_child = 0;
         for (i, (label, hint, cmd)) in items.into_iter().take(80).enumerate() {
+            let (_, group) = cmd_group(&cmd);
+            if grouped && last_group != Some(group) {
+                last_group = Some(group);
+                list = list.child(
+                    div()
+                        .px(px(10.))
+                        .pt_2()
+                        .pb_1()
+                        .text_size(px(10.))
+                        .font_medium()
+                        .text_color(t.muted_foreground.opacity(faint(&t, 0.55)))
+                        .child(group.to_uppercase()),
+                );
+                child_ix += 1;
+            }
+            if i == sel {
+                // Reveal the group header too when the first row is selected.
+                sel_child = if i == 0 { 0 } else { child_ix };
+            }
+            child_ix += 1;
+            // Bare category hints repeat the group header; keep real detail
+            // (project path, skill source, command description).
+            let hint = if grouped && PALETTE_CATEGORY_HINTS.contains(&hint.as_str()) {
+                String::new()
+            } else {
+                hint
+            };
             let key = cmd_action(&cmd).and_then(|a| key_hint(a.as_ref(), cx));
             let icon = match &cmd {
                 Cmd::OpenMessage(_, Some(_)) => Some(IconName::Inbox),
                 Cmd::OpenMessage(_, None) => Some(IconName::SquareTerminal),
                 _ => None,
             };
+            let selected = i == sel;
             list = list.child(
                 h_flex()
                     .id(("palette-item", i))
-                    .px_2()
-                    .py_1p5()
+                    .h(px(32.))
+                    .flex_shrink_0()
+                    .px(px(10.))
                     .gap_2()
-                    .rounded_md()
-                    .text_sm()
+                    .rounded_lg()
+                    .text_size(px(13.))
                     .cursor_pointer()
-                    .when(i == 0, |s| s.bg(t.list_active))
-                    .hover(|s| s.bg(t.list_hover))
-                    .active(|s| s.bg(t.list_active))
+                    .when(selected, |s| s.bg(t.primary.opacity(0.12)))
+                    .when(!selected, |s| s.hover(|s| s.bg(t.foreground.opacity(0.05))))
+                    .active(|s| s.bg(t.primary.opacity(0.18)))
+                    .on_mouse_move(cx.listener(move |this, _, _, cx| {
+                        // Mouse movement (not hover) moves the highlight, so a
+                        // list scrolling under a resting pointer doesn't steal it.
+                        if this.palette_sel != i {
+                            this.palette_sel = i;
+                            cx.notify();
+                        }
+                    }))
                     .on_click(
                         cx.listener(move |this, _, window, cx| this.run(cmd.clone(), window, cx)),
                     )
@@ -4035,35 +4550,57 @@ impl GrayApp {
                         s.child(Icon::new(icon).small().text_color(t.muted_foreground))
                     })
                     .child(div().flex_1().truncate().child(label))
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(t.muted_foreground)
-                            .max_w(px(220.))
-                            .truncate()
-                            .child(hint),
-                    )
+                    .when(!hint.is_empty(), |s| {
+                        s.child(
+                            div()
+                                .text_xs()
+                                .text_color(t.muted_foreground)
+                                .max_w(px(220.))
+                                .truncate()
+                                .child(hint),
+                        )
+                    })
                     .when_some(key, |s, k| s.child(key_chip(&k, &t))),
             );
         }
+        if self.palette_reveal.take() {
+            self.palette_scroll.scroll_to_item(sel_child);
+        }
+        let count = self.palette_items().len().min(80);
         let backdrop = div()
             .absolute()
             .inset_0()
-            .bg(hsla(0., 0., 0., 0.35))
+            .bg(scrim(&t))
             .flex()
             .justify_center()
             .items_start()
             .pt(px(96.))
+            .capture_action(cx.listener(move |this, _: &MoveUp, _, cx| {
+                if count > 0 {
+                    this.palette_sel = (this.palette_sel.min(count - 1) + count - 1) % count;
+                    this.palette_reveal.set(true);
+                    cx.notify();
+                }
+                cx.stop_propagation();
+            }))
+            .capture_action(cx.listener(move |this, _: &MoveDown, _, cx| {
+                if count > 0 {
+                    this.palette_sel = (this.palette_sel.min(count - 1) + 1) % count;
+                    this.palette_reveal.set(true);
+                    cx.notify();
+                }
+                cx.stop_propagation();
+            }))
             .child(motion::enter(
                 v_flex()
                     .w(px(600.))
                     .h_auto()
                     .max_h(px(460.))
-                    .rounded_xl()
+                    .rounded(px(10.))
                     .border_1()
-                    .border_color(t.border)
+                    .border_color(t.foreground.opacity(0.08))
                     .bg(t.popover)
-                    .shadow_lg()
+                    .shadow(overlay_shadow())
                     .child(
                         div().p_2().border_b_1().border_color(t.border).child(
                             Input::new(&self.palette_input)
@@ -4118,6 +4655,7 @@ impl GrayApp {
                 })
                 .cursor_pointer()
                 .hover(|s| s.bg(t.sidebar_accent))
+                .active(|s| s.bg(t.foreground.opacity(0.10)))
                 .when(sel, |s| s.bg(t.sidebar_accent))
                 .on_click(cx.listener(move |this, _, window, cx| {
                     this.run(Cmd::SettingsSection(sec.clone()), window, cx)
@@ -4144,6 +4682,7 @@ impl GrayApp {
                     .text_color(t.muted_foreground)
                     .cursor_pointer()
                     .hover(|s| s.text_color(t.foreground))
+                    .active(|s| s.bg(t.foreground.opacity(0.10)))
                     .on_click(cx.listener(|this, _, window, cx| this.close_overlays(window, cx)))
                     .child(Icon::new(IconName::ArrowLeft).xsmall())
                     .child("Back to app"),
@@ -4206,6 +4745,7 @@ impl GrayApp {
                     })
                     .cursor_pointer()
                     .hover(|s| s.bg(t.sidebar_accent))
+                    .active(|s| s.bg(t.foreground.opacity(0.10)))
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.run(Cmd::Project(pid.clone()), window, cx)
                     }))
@@ -4994,13 +5534,17 @@ impl GroupInfo {
         if self.live {
             return "Working…".to_string();
         }
-        let s = self.elapsed_ms.max(0) / 1000;
-        let (m, s) = (s / 60, s % 60);
-        match (m, s) {
-            (0, s) => format!("Worked for {s}s"),
-            (m, 0) => format!("Worked for {m}m"),
-            (m, s) => format!("Worked for {m}m {s}s"),
-        }
+        format!("Worked for {}", fmt_elapsed(self.elapsed_ms.max(0) / 1000))
+    }
+}
+
+/// "8s", "1m", "1m 12s".
+fn fmt_elapsed(secs: i64) -> String {
+    let (m, s) = (secs / 60, secs % 60);
+    match (m, s) {
+        (0, s) => format!("{s}s"),
+        (m, 0) => format!("{m}m"),
+        (m, s) => format!("{m}m {s}s"),
     }
 }
 
@@ -5428,9 +5972,7 @@ impl Render for GrayApp {
             .on_action(cx.listener(|this, _: &FilePicker, w, cx| {
                 this.open_palette(PaletteMode::Files, "", w, cx)
             }))
-            .on_action(cx.listener(|this, _: &ModelPicker, w, cx| {
-                this.open_palette(PaletteMode::Commands, "Model:", w, cx)
-            }))
+            .on_action(cx.listener(|this, _: &ModelPicker, w, cx| this.open_model_picker(w, cx)))
             .on_action(cx.listener(|this, _: &TogglePluginsPanel, w, cx| {
                 this.run(Cmd::TogglePlugins, w, cx)
             }))

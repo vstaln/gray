@@ -487,17 +487,16 @@ fn palette_switches_provider_model_and_mode() {
     g.send("first");
     g.wait_for("reply", finished);
     g.key("ctrl+shift+m");
-    let s = g.wait_for("model palette", |s| {
-        s["palette_open"] == true && s["palette_query"] == "Model:"
-    });
+    let s = g.wait_for("model picker", |s| s["model_open"] == true);
     assert!(
-        s["palette_items"]
+        s["model_items"]
             .as_array()
             .unwrap()
             .iter()
-            .all(|i| i.as_str().unwrap().starts_with("Model:"))
+            .all(|i| i.as_str().unwrap().contains(':'))
     );
     g.key("Escape");
+    g.wait_for("picker closed", |s| s["model_open"] == false);
     g.palette("Model: Claude opus");
     g.wait_for("claude opus", |s| {
         s["thread"]["provider"] == "claude" && s["thread"]["model"] == "opus"
