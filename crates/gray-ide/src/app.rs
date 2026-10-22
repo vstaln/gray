@@ -1177,13 +1177,7 @@ impl GrayApp {
             self.close_overlays(window, cx);
             return;
         }
-        if self
-            .model_closed_at
-            .take()
-            .is_some_and(|at| at.elapsed() < Duration::from_millis(400))
-        {
-            return;
-        }
+        self.model_closed_at = None;
         self.palette_open = false;
         self.settings_open = false;
         self.model_open = true;
@@ -3724,7 +3718,16 @@ impl GrayApp {
                                     c.bg(t.foreground.opacity(0.08)).text_color(t.foreground)
                                 })
                                 .on_click(cx.listener(
-                                    |this, _, window, cx| this.open_model_picker(window, cx),
+                                    |this, _, window, cx| {
+                                        // A click outside just closed the picker: that same
+                                        // click landing on the chip must not reopen it.
+                                        if this.model_closed_at.take().is_some_and(|at| {
+                                            at.elapsed() < Duration::from_millis(400)
+                                        }) {
+                                            return;
+                                        }
+                                        this.open_model_picker(window, cx)
+                                    },
                                 )),
                             )
                             .child(
@@ -4298,6 +4301,7 @@ impl GrayApp {
                 .on_click(cx.listener(|this, _, _, cx| {
                     this.model_rail = None;
                     this.model_sel = 0;
+                    this.model_reveal.set(true);
                     cx.notify();
                 })),
             );
@@ -4316,6 +4320,7 @@ impl GrayApp {
                     move |this, _, _, cx| {
                         this.model_rail = Some(id);
                         this.model_sel = 0;
+                        this.model_reveal.set(true);
                         cx.notify();
                     },
                 )),
@@ -4471,6 +4476,7 @@ impl GrayApp {
             .overflow_y_scroll()
             .p_1();
         let items = self.palette_items();
+        let count = items.len().min(80);
         let search = self.palette_mode == PaletteMode::Search;
         let grouped = self.palette_mode != PaletteMode::Files;
         if search && items.is_empty() {
@@ -4566,7 +4572,6 @@ impl GrayApp {
         if self.palette_reveal.take() {
             self.palette_scroll.scroll_to_item(sel_child);
         }
-        let count = self.palette_items().len().min(80);
         let backdrop = div()
             .absolute()
             .inset_0()
