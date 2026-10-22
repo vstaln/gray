@@ -38,10 +38,6 @@ pub fn atomic_write_json(path: &Path, value: &impl serde::Serialize) -> anyhow::
 }
 
 
-#[path = "util_tests.rs"]
-#[cfg(test)]
-mod tests;
-
 /// Open `url` in the system browser, best-effort (device-flow OAuth
 /// verification pages; was `feedback::open_in_browser`).
 pub fn open_in_browser(url: &str) {

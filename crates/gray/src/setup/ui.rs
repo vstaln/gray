@@ -66,7 +66,14 @@ impl BackgroundSnapshot {
     }
 
     pub fn rebuild_transcript(&self, w: usize) -> std::rc::Rc<Vec<ratatui::text::Line<'static>>> {
-        let rows = crossterm::terminal::size().map(|(_, r)| r).unwrap_or(24);
+        // Skip the ioctl off-tty (tests, pipes): the fallback is constant and
+        // a terminal's ownness can't change for stdout.
+        static IS_TTY: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let rows = if *IS_TTY.get_or_init(|| std::io::IsTerminal::is_terminal(&std::io::stdout())) {
+            crossterm::terminal::size().map(|(_, r)| r).unwrap_or(24)
+        } else {
+            24
+        };
         if let Some((cw, cr, cached)) = &*self.transcript_cache.borrow()
             && *cw == w
             && *cr == rows
@@ -79,6 +86,7 @@ impl BackgroundSnapshot {
             crate::composer::transcript::layout_history_tail(
                 &self.history_entries,
                 w,
+                rows,
                 usize::from(rows),
             )
         };

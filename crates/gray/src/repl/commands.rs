@@ -158,6 +158,13 @@ pub(crate) const REGISTRY: &[CmdDef] = &[
         surface: CmdSurface::Interactive,
     },
     CmdDef {
+        name: "hehe",
+        desc: "something funny",
+        aliases: &[],
+        scope: CmdScope::Conversation,
+        surface: CmdSurface::Local,
+    },
+    CmdDef {
         name: "help",
         desc: "show commands",
         aliases: &[],
@@ -578,7 +585,7 @@ pub enum ReplCommand {
 
     Copy,
 
-
+    Hehe,
 
     Theme(Option<String>),
 
@@ -713,6 +720,7 @@ pub fn parse_command(line: &str) -> ReplCommand {
         Some("gateway") => ReplCommand::Gateway(opt(rest)),
         Some("copy") => ReplCommand::Copy,
         Some("help") => ReplCommand::Help,
+        Some("hehe") => ReplCommand::Hehe,
         Some("theme") => ReplCommand::Theme(opt(rest)),
         Some("intro") => ReplCommand::Intro(opt(rest)),
         Some("hotkeys") => ReplCommand::Keys(opt(rest)),

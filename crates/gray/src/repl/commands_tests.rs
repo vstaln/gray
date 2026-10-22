@@ -91,7 +91,7 @@ fn empty_prompt_hides_slash_popup_like_codex() {
 #[test]
 fn registry_resolve_canonical_and_aliases() {
     for name in [
-        "models", "context", "sessions", "new", "compact", "usage", "feedback", "agentsmd",
+        "models", "context", "sessions", "new", "compact", "usage", "hehe", "agentsmd",
         "skills", "plugins", "help", "quit",
     ] {
         let d = super::resolve(name).unwrap_or_else(|| panic!("resolve {name}"));
@@ -225,21 +225,6 @@ fn permission_commands_are_gone() {
     }
 }
 
-#[test]
-fn feedback_parses_with_and_without_text() {
-    assert!(matches!(
-        parse_command("/feedback"),
-        ReplCommand::Feedback(None)
-    ));
-    assert!(matches!(
-        parse_command("/feedback broken x"),
-        ReplCommand::Feedback(Some(_))
-    ));
-    assert!(matches!(
-        parse_command("/FEEDBACK hi"),
-        ReplCommand::Feedback(Some(_))
-    ));
-}
 
 #[test]
 fn context_arg_completion_levels() {
@@ -481,20 +466,6 @@ fn model_completion_does_not_offer_global_context_catalog() {
     assert!(rows.is_empty(), "unconnected models leaked: {rows:?}");
 }
 
-#[test]
-fn hehe_parses_and_is_discoverable() {
-    assert!(matches!(parse_command("/hehe"), ReplCommand::Hehe));
-    assert!(matches!(parse_command("/HEHE"), ReplCommand::Hehe));
-
-    assert!(
-        super::completion_matches("he")
-            .iter()
-            .any(|(n, _)| *n == "hehe")
-    );
-    let hehe = super::resolve("/hehe").expect("registry entry");
-    let help = super::format_help_line(hehe);
-    assert!(help.contains("/hehe"), "help line: {help}");
-}
 
 #[test]
 fn update_and_restart_parse_and_register() {

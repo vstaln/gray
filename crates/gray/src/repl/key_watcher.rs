@@ -41,7 +41,8 @@ pub(crate) fn is_turn_local_command(
         | super::ReplCommand::Reload
         | super::ReplCommand::Intro(_)
         | super::ReplCommand::Gateway(_)
-        | super::ReplCommand::Unknown(_) => plugin_turn_local_args(text, hooks).is_some(),
+        | super::ReplCommand::Hehe => true,
+        super::ReplCommand::Unknown(_) => plugin_turn_local_args(text, hooks).is_some(),
         _ => false,
     }
 }
@@ -158,6 +159,23 @@ fn run_turn_local_command(ctx: &TurnLocalCommands, text: &str) {
                     Ok(false) => super::say(tui, "see /plugins"),
                     Err(e) => super::say(tui, &format!("connections picker failed: {e}")),
                 }
+            }
+        }
+        super::ReplCommand::Hehe => {
+            let reverting = crate::mascot::mascot_shown();
+            let shown = {
+                let mut t = ctx.tui.lock().expect("tui lock");
+                if reverting {
+                    t.pop_mascot()
+                } else {
+                    t.push_mascot()
+                }
+            };
+            if !shown && !reverting {
+                super::say(
+                    Some(&ctx.tui),
+                    "graychan needs a truecolor terminal and at least 20x10 cells",
+                );
             }
         }
         super::ReplCommand::Unknown(cmd) => {

@@ -526,7 +526,7 @@ fn the_backdrop_keeps_the_live_margins() {
         TranscriptEntry::Gap(1),
     ];
     let welcome = crate::composer::build_welcome_lines(80).len();
-    let rows = layout_history(&entries, 80);
+    let rows = layout_history(&entries, 80, 24);
     let body = &rows[welcome..];
     assert!(
         !transcript_row_is_blank(&body[0]),
@@ -781,9 +781,9 @@ fn backdrop_tail_layout_matches_the_full_layout_tail() {
         });
     }
     let text = |rows: &[Line<'static>]| rows.iter().map(|l| l.to_string()).collect::<Vec<_>>();
-    let full = text(&layout_history(&entries, 80));
+    let full = text(&layout_history(&entries, 80, 24));
     for need in [1, 5, 24, 45, 120] {
-        let tail = text(&layout_history_tail(&entries, 80, need));
+        let tail = text(&layout_history_tail(&entries, 80, 24, need));
         assert!(tail.len() > need && tail.len() < full.len(), "need={need}");
         assert_eq!(
             tail[tail.len() - need..],
@@ -793,8 +793,30 @@ fn backdrop_tail_layout_matches_the_full_layout_tail() {
     }
     let short = &entries[..4];
     assert_eq!(
-        text(&layout_history_tail(short, 80, 500)),
-        text(&layout_history(short, 80)),
+        text(&layout_history_tail(short, 80, 24, 500)),
+        text(&layout_history(short, 80, 24)),
         "a transcript shorter than the screen lays out whole"
     );
+}
+
+#[test]
+fn repro_card_to_card_junction() {
+    use crate::composer::Tui;
+    let mut tui = Tui::test_tui(80, 24);
+    tui.push_tool_box(
+        Line::from(vec![Span::raw("● Ran rg -n foo".to_string())]),
+        vec![Line::from("hit 1"), Line::from("hit 2")],
+    );
+    tui.push_tool_box(
+        Line::from(vec![Span::raw("● Read print.rs".to_string())]),
+        vec![Line::from("body a"), Line::from("body b")],
+    );
+    // Card-to-card junction: exactly one blank row separates the two boxes.
+    let blanks: Vec<usize> = tui
+        .transcript
+        .iter()
+        .enumerate()
+        .filter_map(|(i, l)| transcript_row_is_blank(l).then_some(i))
+        .collect();
+    assert_eq!(blanks, [6], "junction rows: {blanks:?}");
 }
