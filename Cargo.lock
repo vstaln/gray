@@ -1050,7 +1050,6 @@ dependencies = [
  "libc",
  "log",
  "serde_json",
- "strsim",
  "tempfile",
  "tokio",
  "tokio-util",
