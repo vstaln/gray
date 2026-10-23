@@ -240,6 +240,15 @@ pub(crate) fn spawn_key_watcher_with_typing(
                     if ev.kind == KeyEventKind::Release {
                         continue;
                     }
+                    // A decoded Esc with bytes still queued is the head of a
+                    // split or unknown escape sequence, not a keypress — drop
+                    // it and drain the tail so it can't cancel the turn or
+                    // type into the composer. A real Esc arrives alone.
+                    if matches!(ev.code, KeyCode::Esc)
+                        && crate::composer::input::esc_is_sequence_head()
+                    {
+                        continue;
+                    }
 
                     if matches!(ev.code, KeyCode::Char('c') | KeyCode::Char('C'))
                         && ev.modifiers.contains(KeyModifiers::CONTROL)
@@ -300,6 +309,13 @@ pub(crate) fn spawn_key_watcher_with_typing(
                                 t.local_command = Some(text);
                                 crate::composer::input::clear_draft(&mut t);
                                 let _ = t.draw();
+                            } else if !text.is_empty() {
+                                // "Cancel the turn, or clear the draft": a
+                                // draft is cleared first — only an empty
+                                // composer cancels the turn.
+                                crate::composer::input::clear_draft(&mut t);
+                                let _ = t.draw();
+                                continue;
                             }
                             watch_cancel.cancel();
                             return;

@@ -229,9 +229,10 @@ pub(crate) fn say(tui: Option<&crate::composer::SharedTui>, msg: &str) {
     if let Some(t) = tui {
         let mut t = t.lock().expect("tui lock");
 
-        for line in msg.split('\n') {
-            t.push_dim(format!("  {line}"));
-        }
+        // One push: a multi-line reply stays a transcript block on home
+        // rather than toasting line by line.
+        let body: Vec<String> = msg.split('\n').map(|l| format!("  {l}")).collect();
+        t.push_dim(body.join("\n"));
 
         t.ensure_gap();
     } else {
@@ -246,9 +247,10 @@ pub(crate) fn say_err(tui: Option<&crate::composer::SharedTui>, msg: &str) {
     if let Some(t) = tui {
         let mut t = t.lock().expect("tui lock");
 
-        for line in msg.split('\n') {
-            t.push_dim(format!("  {line}"));
-        }
+        // One push: a multi-line reply stays a transcript block on home
+        // rather than toasting line by line.
+        let body: Vec<String> = msg.split('\n').map(|l| format!("  {l}")).collect();
+        t.push_dim(body.join("\n"));
 
         t.ensure_gap();
     } else {
@@ -1124,11 +1126,28 @@ pub async fn run_repl_mode(
                 match remaining {
                     Some(r) if r <= EXPIRY_LEAD => {
                         if crate::compact::is_auto_compact_enabled() {
+                            let started = std::time::Instant::now();
                             match crate::compact::auto_compact_if_needed(agent).await {
-                                Ok(true) => say(
-                                    tui.as_ref().map(|(s, _)| s),
-                                    "compacted before cache expiry",
-                                ),
+                                Ok(true) => {
+                                    status::push_compaction_card(
+                                        tui.as_ref().map(|(s, _)| s),
+                                        &crate::composer::fmt_elapsed_compact(
+                                            started.elapsed().as_secs(),
+                                        ),
+                                        "before cache expiry",
+                                    );
+                                    session::persist_compaction_tail(
+                                        agent,
+                                        config,
+                                        &mut session_state,
+                                        &cwd,
+                                        tui.as_ref().map(|(s, _)| s),
+                                    )
+                                    .await;
+                                    tui.as_ref()
+                                        .and_then(|(s, _)| s.lock().ok())
+                                        .map(|mut t| t.rearm_cache());
+                                }
                                 Ok(false) => {}
                                 Err(e) => log::warn!(
                                     target: "gray_agent",

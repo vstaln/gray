@@ -347,6 +347,16 @@ fn cell_pixels() -> (u32, u32) {
     })
 }
 
+/// Force the cell-size probe now, before any stdin reader exists. The
+/// OnceLock caches the result (including the fallback), so a later preview
+/// never races the event loop for the reply — a reply read by crossterm
+/// mid-turn decodes as an Esc press plus stray characters.
+pub(crate) fn warm_cell_pixels() {
+    if supported() {
+        let _ = cell_pixels();
+    }
+}
+
 /// Ask the terminal how big a character cell is: CSI 16 t -> CSI 6 ; h ; w t.
 /// Best-effort: the TUI's input thread can win the race for the reply, in
 /// which case we give up and the caller uses the fallback geometry.
@@ -358,7 +368,7 @@ fn query_cell_pixels() -> Option<(u32, u32)> {
         .write(true)
         .open("/dev/tty")
         .ok()?;
-    tty.write_all(b"[16t").ok()?;
+    tty.write_all(b"\x1b[16t").ok()?;
     tty.flush().ok()?;
     let fd = tty.as_raw_fd();
     let mut pfd = libc::pollfd {
@@ -388,7 +398,7 @@ fn query_cell_pixels() -> Option<(u32, u32)> {
         }
     }
     let s = String::from_utf8_lossy(&buf);
-    let body = s.strip_prefix("[6;")?.strip_suffix('t')?;
+    let body = s.strip_prefix("\x1b[6;")?.strip_suffix('t')?;
     let (h, w) = body.split_once(';')?;
     let h: u32 = h.parse().ok()?;
     let w: u32 = w.parse().ok()?;
@@ -438,6 +448,14 @@ fn image_id(path: &Path, cols: u32, rows: u32) -> u32 {
 fn transmitted() -> &'static Mutex<HashSet<(PathBuf, u32, u32)>> {
     static SET: OnceLock<Mutex<HashSet<(PathBuf, u32, u32)>>> = OnceLock::new();
     SET.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+/// `\x1b[3J` drops scrollback and the virtual placements tied to those
+/// cells; the next preview must re-upload, so forget what we sent.
+pub(crate) fn reset_transmitted() {
+    if let Ok(mut set) = transmitted().lock() {
+        set.clear();
+    }
 }
 
 /// Queued image uploads. APC chunks must never interleave with frame bytes:
@@ -595,6 +613,16 @@ pub(crate) fn preview_lines(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn reset_transmitted_forces_reupload() {
+        super::transmitted()
+            .lock()
+            .unwrap()
+            .insert((std::path::PathBuf::from("/tmp/x.png"), 8, 4));
+        super::reset_transmitted();
+        assert!(super::transmitted().lock().unwrap().is_empty());
+    }
+
     #[test]
     fn placeholder_cells_are_single_width() {
         let mut cell = String::new();

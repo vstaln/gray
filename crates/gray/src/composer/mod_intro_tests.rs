@@ -45,15 +45,28 @@ fn settle_frames_only_grow_toward_the_mark() {
 }
 
 #[test]
-fn the_mark_is_drawn_at_twice_its_source_size() {
-    let src: Vec<String> = crate::tui::LOGO.lines().map(str::to_string).collect();
-    let big = crate::tui::logo_mark();
-    assert_eq!(big.len(), src.len() * 2);
-    let (small, big) = (braille_dots(&src), braille_dots(big));
-    assert_eq!(big.len(), small.len() * 4, "each dot becomes a 2x2 block");
-    assert!(
-        small
-            .iter()
-            .all(|&(x, y)| big.contains(&(2 * x + 1, 2 * y + 1)))
-    );
+fn the_mark_is_the_baked_logo_asset() {
+    let src: Vec<String> = crate::tui::LOGO
+        .lines()
+        .map(|l| l.trim_end_matches('\u{2800}').to_string())
+        .collect();
+    assert_eq!(crate::tui::logo_mark(), &src[..]);
+    let (cx, cy) = MARK_CELLS;
+    assert_eq!(src.len(), cy, "baked at {cx}x{cy} cells");
+    assert!(src.iter().all(|l| l.chars().count() <= cx));
+}
+
+#[test]
+fn intro_timeline_never_holds_a_frame_and_moves_from_the_start() {
+    let frames = intro_frames();
+    assert!(frames.windows(2).all(|w| w[0].0 != w[1].0), "repeated frame is dead time");
+    let last = frames.len() - 1;
+    // Even cadence: no clock tenth may skip more than a few frames.
+    let steps: Vec<usize> = (0..=10)
+        .map(|i| intro_frame_index(Duration::from_millis(DRAW_MS * i / 10), last))
+        .collect();
+    assert!(steps.windows(2).all(|w| w[1] > w[0] && w[1] - w[0] <= last / 5), "{steps:?}");
+    assert!(intro_frame_index(Duration::from_millis(DRAW_MS / 10), last) > 0);
+    assert_eq!(intro_frame_index(Duration::from_millis(DRAW_MS), last), last);
+    assert!(DRAW_MS + HOME_REVEAL_MS <= 2000, "intro must finish within 2s");
 }

@@ -208,15 +208,15 @@ pub(crate) async fn run_prompt_turn(
     let watcher_stopped = watch_stop.clone();
     let watcher_tui = tui_stream.clone();
     let cwd_for_watcher = cwd.to_path_buf();
-    let turn_locals = tui_stream.as_ref().map(|shared| {
-        key_watcher::TurnLocalCommands {
+    let turn_locals = tui_stream
+        .as_ref()
+        .map(|shared| key_watcher::TurnLocalCommands {
             tui: shared.clone(),
             cwd: cwd.to_path_buf(),
             session_id: ctx.session_id.clone(),
             executor: Some(agent.executor_handle()),
             hooks: agent.hooks().to_vec(),
-        }
-    });
+        });
     let key_watcher = if crate::ide::tap_active() {
         // A host (the IDE) cancels via cancel_turn() and has no terminal —
         // watching crossterm keys would write enhancement escapes to stdout

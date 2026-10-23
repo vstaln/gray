@@ -164,7 +164,9 @@ impl ProviderRpc for LazyProviderRpc {
 
 static LIVE_RUNTIME: std::sync::Mutex<Option<Arc<ProviderRuntime>>> = std::sync::Mutex::new(None);
 
-pub(crate) async fn shared_runtime(installed: InstalledProvider) -> anyhow::Result<Arc<ProviderRuntime>> {
+pub(crate) async fn shared_runtime(
+    installed: InstalledProvider,
+) -> anyhow::Result<Arc<ProviderRuntime>> {
     let live = LIVE_RUNTIME
         .lock()
         .unwrap_or_else(|e| e.into_inner())

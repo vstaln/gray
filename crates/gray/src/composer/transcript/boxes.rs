@@ -192,6 +192,7 @@ impl Tui {
             return false;
         };
         crate::mascot::set_mascot_shown(true);
+        self.flush_markdown();
         self.ensure_gap();
         self.history_entries
             .push(crate::composer::TranscriptEntry::Mascot);
@@ -203,6 +204,16 @@ impl Tui {
     }
 
     pub fn push_dim(&mut self, line: String) {
+        // On home a one-liner (quit hint, command reply) is a toast over
+        // the box, not a column-0 transcript row.
+        if !line.contains('\n')
+            && self.home_toast(Line::styled(
+                line.trim().to_string(),
+                Style::default().fg(crate::theme::theme().tool_dim),
+            ))
+        {
+            return;
+        }
         let lines: Vec<Line<'static>> = line
             .split('\n')
             .map(|l| {
@@ -249,7 +260,11 @@ impl Tui {
                 Style::default().fg(crate::theme::theme().text_muted),
             ));
         }
-        let line = self.indent_home_receipt(Line::from(spans));
+        let line = Line::from(spans);
+        if self.home_toast(line.clone()) {
+            return;
+        }
+        let line = self.indent_home_receipt(line);
         self.push_styled_lines_with_hyperlinks(vec![line], &[], 0);
     }
 
@@ -274,6 +289,9 @@ impl Tui {
                 Style::default().fg(crate::theme::theme().text_soft),
             ),
         ]);
+        if self.home_toast(line.clone()) {
+            return;
+        }
         let line = self.indent_home_receipt(line);
         self.push_styled_lines_with_hyperlinks(vec![line], &[], 0);
     }

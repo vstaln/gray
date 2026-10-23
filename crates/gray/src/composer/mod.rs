@@ -17,6 +17,7 @@ pub(crate) const PANEL_ROWS: usize = 6;
 
 pub(crate) const MIN_VIEWPORT_H: u16 = 4;
 
+mod glow;
 mod plugin_widget;
 mod terminal;
 pub(crate) use terminal::{CustomTerminal, LeveledBackend};
@@ -302,6 +303,9 @@ pub struct Tui {
 
     /// Short-lived composer hint drawn in the status dock slot while fresh.
     pub(crate) hint: Option<(Instant, String)>,
+    /// Styled body for `hint` (a home-screen command receipt); plain dim
+    /// `hint` text when None.
+    pub(crate) hint_line: Option<Line<'static>>,
 
     pub(crate) attachments: Vec<PathBuf>,
     pub(crate) pending_pastes: Vec<(String, String)>,
@@ -470,7 +474,6 @@ pub enum TranscriptEntry {
     Gap(usize),
 
     Mascot,
-
 }
 
 pub(crate) fn stats_spans(stats: &str) -> Vec<Span<'static>> {
@@ -486,32 +489,26 @@ pub(crate) fn home_column(w: usize) -> (usize, usize) {
 }
 
 /// The mark draws and the title fades in over this window …
-const INTRO_TOTAL_MS: u64 = 1000;
+const DRAW_MS: u64 = 1200;
+const INTRO_TOTAL_MS: u64 = DRAW_MS;
 /// … then the steady home band (input box, model row, hints) fades in.
-pub(crate) const HOME_REVEAL_MS: u64 = 400;
+pub(crate) const HOME_REVEAL_MS: u64 = 300;
 /// The mark fades up from the background over its first beat.
-const MARK_FADE_MS: f32 = 260.0;
+const MARK_FADE_MS: f32 = 300.0;
 /// The title fades in once the mark is mostly drawn.
-const TITLE_FADE_MS: (f32, f32) = (520.0, 900.0);
-
-fn ease_in_out_cubic(t: f32) -> f32 {
-    let t = t.clamp(0.0, 1.0);
-    if t < 0.5 {
-        4.0 * t * t * t
-    } else {
-        1.0 - (-2.0 * t + 2.0).powi(3) / 2.0
-    }
-}
+const TITLE_FADE_MS: (f32, f32) = (600.0, 1100.0);
 
 fn ease_out_cubic(t: f32) -> f32 {
     1.0 - (1.0 - t.clamp(0.0, 1.0)).powi(3)
 }
 
-/// Frame index for `elapsed` into the intro: eased, so the mark eases in,
-/// runs through the middle and settles instead of ticking linearly.
+/// Frame index for `elapsed` into the intro. Frames advance at an even
+/// cadence (smooth), with a light ease-out: quick off the mark, a gentle
+/// landing, and no frozen stretch at either end.
 fn intro_frame_index(elapsed: Duration, last: usize) -> usize {
-    let t = elapsed.as_secs_f32() * 1000.0 / INTRO_TOTAL_MS as f32;
-    ((ease_in_out_cubic(t) * last as f32).round() as usize).min(last)
+    let t = (elapsed.as_secs_f32() * 1000.0 / DRAW_MS as f32).clamp(0.0, 1.0);
+    let eased = 0.6 * t + 0.4 * (1.0 - (1.0 - t) * (1.0 - t));
+    ((eased * last as f32).round() as usize).min(last)
 }
 
 /// Colour a fade starts from: the window background when it's a real
@@ -568,18 +565,9 @@ fn intro_frames() -> &'static [(Vec<String>, Vec<String>)] {
                     .filter(|l| !l.starts_with('#'))
                     .map(str::to_string)
                     .collect();
-                (rows.len() == 12).then(|| {
-                    let (mark, edge) = rows.split_at(6);
-                    let k = crate::tui::LOGO_SCALE;
-                    let edge = edge
-                        .iter()
-                        .flat_map(|l| {
-                            let wide: String =
-                                l.chars().flat_map(|c| std::iter::repeat_n(c, k)).collect();
-                            std::iter::repeat_n(wide, k)
-                        })
-                        .collect();
-                    (crate::tui::upscale_braille(mark, k), edge)
+                (rows.len() == 24).then(|| {
+                    let (mark, edge) = rows.split_at(12);
+                    (mark.to_vec(), edge.to_vec())
                 })
             })
             .collect();
@@ -609,6 +597,9 @@ fn intro_frames() -> &'static [(Vec<String>, Vec<String>)] {
         } else {
             timeline.extend(settle);
         }
+        // A settle from an already-complete frame is all repeats; every
+        // repeated frame is dead time on the clock.
+        timeline.dedup_by(|later, earlier| later.0 == earlier.0);
         timeline
     })
 }
@@ -796,8 +787,16 @@ pub(crate) fn welcome_body_lines_at(
     let logo_pad = x + col_w.saturating_sub(max_logo_w) / 2;
 
     let safe = crate::tui::unicode_safe();
+    // Only while drawing: the settled banner is the plain mark.
+    let heat = (safe && intro.is_some() && frame_idx < last)
+        .then(|| glow::heat_map(frames, frame_idx));
     for (row, line) in mark_rows.iter().enumerate() {
-        let edge = edge_rows.get(row).map(String::as_str).unwrap_or("");
+        // Fresh-ink highlights belong to the draw; the settled banner is
+        // one even gradient.
+        let edge = match intro {
+            Some(_) => edge_rows.get(row).map(String::as_str).unwrap_or(""),
+            None => "",
+        };
         let mut spans: Vec<Span<'static>> = Vec::new();
         if logo_pad > 0 {
             spans.push(Span::raw(" ".repeat(logo_pad)));
@@ -808,17 +807,25 @@ pub(crate) fn welcome_body_lines_at(
             } else {
                 crate::tui::braille_fallback(ch)
             };
+            let h = heat
+                .as_ref()
+                .and_then(|m| m.get(row)?.get(col).copied())
+                .unwrap_or(0.0);
+            let ch = glow::heat_glyph(ch, h);
             if ch.is_whitespace() || ch == ' ' {
                 spans.push(Span::raw(" "));
                 continue;
             }
-            let color = if edge.chars().nth(col) == Some('1') {
+            let mut color = if edge.chars().nth(col) == Some('1') {
                 hilite
             } else {
                 let diag = (col as f32 + (l_rows - 1.0 - row as f32)) / (l_cols + l_rows);
                 let t = (0.15 + 0.85 * diag).clamp(0.0, 1.0);
                 crate::tui::blend_color(base, hilite, t)
             };
+            if h > 0.0 {
+                color = crate::tui::blend_color(color, hilite, h);
+            }
             spans.push(Span::styled(
                 ch.to_string(),
                 Style::default().fg(faded(color, mark_alpha)),
@@ -932,10 +939,12 @@ pub(crate) fn palette_repaint_due(
 
 impl Tui {
     pub fn new() -> anyhow::Result<Self> {
+        crate::quality_of_life::kitty::warm_cell_pixels();
         Self::with_intro(true)
     }
 
     pub fn new_no_intro() -> anyhow::Result<Self> {
+        crate::quality_of_life::kitty::warm_cell_pixels();
         Self::with_intro(false)
     }
 
@@ -1041,6 +1050,7 @@ impl Tui {
             draft: String::new(),
             killed_draft: None,
             hint: None,
+            hint_line: None,
             attachments: Vec::new(),
             pending_pastes: Vec::new(),
             model_name: String::new(),
@@ -1231,6 +1241,15 @@ impl Tui {
     }
 
     fn reflow_on_resize_inner(&mut self, new_cols: u16) {
+        // One synchronized update: the terminal never shows the cleared
+        // screen between the wipe and the repaint (the intro handoff used
+        // to blank the finished logo for a frame).
+        self.begin_sync();
+        self.reflow_unsynced(new_cols);
+        self.end_sync();
+    }
+
+    fn reflow_unsynced(&mut self, new_cols: u16) {
         self.painted_palette = crate::theme::theme();
         let _ = self.hide_background();
         self.last_width = new_cols;
@@ -1326,6 +1345,7 @@ impl Tui {
     }
 
     pub(crate) fn start_fresh_conversation(&mut self) {
+        crate::mascot::set_mascot_shown(false);
         self.history_entries = vec![TranscriptEntry::Welcome];
         self.left_home = false;
         self.reflow_on_resize(self.last_width);
@@ -1404,6 +1424,26 @@ impl Tui {
 
     pub(crate) fn set_hint(&mut self, text: &str) {
         self.hint = Some((Instant::now(), text.to_string()));
+        self.hint_line = None;
+    }
+
+    /// On the home screen a one-line command reply is a transient toast
+    /// above the input box rather than a transcript row that would scroll
+    /// the welcome banner away. False (nothing shown) off home or when the
+    /// line is too wide for the home column.
+    pub(crate) fn home_toast(&mut self, line: Line<'static>) -> bool {
+        if !self.is_home() || self.intro_started.is_some() {
+            return false;
+        }
+        let (_, col_w) = home_column(self.last_width as usize);
+        if line.width() + 1 > col_w {
+            return false;
+        }
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        self.hint = Some((Instant::now(), text));
+        self.hint_line = Some(line);
+        let _ = self.draw();
+        true
     }
 
     /// The hint while it is still fresh; None once HINT_TTL has elapsed.

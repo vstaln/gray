@@ -118,4 +118,3 @@ fn no_match_is_a_clear_answer_not_an_empty_one() {
 fn a_bad_pattern_is_an_error_not_a_panic() {
     assert!(build("(unclosed", false, false).is_err());
 }
-

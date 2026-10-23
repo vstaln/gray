@@ -266,3 +266,14 @@ fn input_box_growth_covers_transcript_instead_of_scrolling_it_away() {
     // The total never exceeds the band.
     assert_eq!(band_overlay(5, 40), 5);
 }
+
+#[test]
+fn the_popup_shows_only_rows_that_fit_beside_the_box() {
+    // Room to spare: capped at PANEL_ROWS.
+    assert_eq!(popup_rows(40, 30), PANEL_ROWS);
+    // A short band keeps one spacer row and shrinks the list.
+    assert_eq!(popup_rows(40, 4), 3);
+    // No room for a single row: hidden, never drawn over the box.
+    assert_eq!(popup_rows(40, 1), 0);
+    assert_eq!(popup_rows(2, 30), 2);
+}

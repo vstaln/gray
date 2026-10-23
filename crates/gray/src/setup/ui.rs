@@ -20,6 +20,7 @@ pub struct BackgroundSnapshot {
     /// Memoized `rebuild_transcript` keyed on (cols, rows). Modal loops
     /// repaint this backdrop every frame, but the snapshot is frozen —
     /// shared across clones so a modal's copy stays warm.
+    #[allow(clippy::type_complexity)]
     pub transcript_cache: std::rc::Rc<
         std::cell::RefCell<Option<(usize, u16, std::rc::Rc<Vec<ratatui::text::Line<'static>>>)>>,
     >,

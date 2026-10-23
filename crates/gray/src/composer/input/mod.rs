@@ -122,6 +122,31 @@ pub(crate) fn handle_paste(tui: &mut Tui, pasted: String) -> bool {
     true
 }
 
+/// True when a just-decoded Esc is the head of an escape sequence — a
+/// response fragment or a sequence split across reads — rather than a real
+/// keypress: more input is already queued behind it. A genuine Esc arrives
+/// alone (Alt+key decodes as a single event, pastes arrive as Event::Paste,
+/// and nobody types within ~2ms of Esc). Drains the queued tail so the
+/// fragment can't reach bindings or the textarea.
+pub(crate) fn esc_is_sequence_head() -> bool {
+    if !matches!(crossterm::event::poll(Duration::from_millis(2)), Ok(true)) {
+        return false;
+    }
+    for _ in 0..64 {
+        match crossterm::event::poll(Duration::from_millis(0)) {
+            Ok(true) => {
+                let _ = crossterm::event::read();
+            }
+            _ => break,
+        }
+    }
+    let _ = crossterm::event::poll(Duration::from_millis(2));
+    while matches!(crossterm::event::poll(Duration::from_millis(0)), Ok(true)) {
+        let _ = crossterm::event::read();
+    }
+    true
+}
+
 pub(crate) fn has_draft(tui: &Tui) -> bool {
     !tui.textarea.is_empty() || !tui.attachments.is_empty() || !tui.pending_pastes.is_empty()
 }
@@ -386,6 +411,13 @@ pub(crate) fn read_line(
             Event::Paste(data) => {
                 tui.search = None;
                 handle_paste(tui, data);
+            }
+            Event::Key(ev)
+                if ev.kind != KeyEventKind::Release
+                    && matches!(ev.code, KeyCode::Esc)
+                    && esc_is_sequence_head() =>
+            {
+                continue;
             }
             Event::Key(ev) if ev.kind != KeyEventKind::Release => match keys::dispatch(tui, &ev) {
                 KeyOutcome::Edited | KeyOutcome::Ignored => {

@@ -101,7 +101,7 @@ fn home_box_is_the_flat_band_with_hints_stats_and_notice_under_it() {
     let chat = build_input_box("hi", 2, w, None, None, &[]);
     assert_eq!((chat.lines.len(), chat.x, chat.width), (3, 0, w));
 
-    assert_eq!(home_band_h(w), 5);
+    assert_eq!(home_band_h(w), 6);
 }
 
 #[test]

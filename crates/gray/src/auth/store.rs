@@ -100,16 +100,14 @@ impl CredentialStore {
         if next.values().any(|e| matches!(e, AuthEntry::PluginPool(_)))
             && let Ok(raw) = std::fs::read_to_string(&self.path)
             && raw.contains("\"plugin:")
+            && let Ok(values) = serde_json::from_str::<BTreeMap<String, serde_json::Value>>(&raw)
+            && values.iter().any(|(k, v)| {
+                k.starts_with("plugin:")
+                    && v.get("credential").is_some()
+                    && v.get("accounts").is_none()
+            })
         {
-            if let Ok(values) = serde_json::from_str::<BTreeMap<String, serde_json::Value>>(&raw)
-                && values.iter().any(|(k, v)| {
-                    k.starts_with("plugin:")
-                        && v.get("credential").is_some()
-                        && v.get("accounts").is_none()
-                })
-            {
-                let _ = self.backup_v1();
-            }
+            let _ = self.backup_v1();
         }
         let value = serde_json::to_value(next)?;
         if serde_json::to_vec(&value)?.len() > MAX_AUTH_BYTES {

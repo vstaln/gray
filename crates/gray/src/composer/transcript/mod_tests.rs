@@ -869,3 +869,80 @@ fn pending_stream_text_stays_before_prompt_after_reflow() {
         "reflow swapped the blocks"
     );
 }
+
+#[test]
+fn skill_box_margin() {
+    use crate::composer::Tui;
+    use ratatui::text::Line;
+    let mut tui = Tui::test_tui(80, 24);
+    tui.push_user_prompt("/skills be-ambitious", &[], false);
+    let args = serde_json::json!({"name": "be-ambitious"});
+    let header = crate::tool_fmt::format_tool_call_header("skill", &args, None, None);
+    let body: Vec<Line> = vec![Line::from("body line one"), Line::from("body line two")];
+    tui.push_tool_box(header, body);
+    let _ = tui.draw();
+    let text_of = |l: &Line| {
+        l.spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect::<String>()
+    };
+    let body_rows: Vec<&Line> = tui
+        .transcript
+        .iter()
+        .filter(|l| text_of(l).contains("body line"))
+        .collect();
+    assert_eq!(body_rows.len(), 2);
+    for row in body_rows {
+        assert!(
+            text_of(row).starts_with(' '),
+            "body row should carry a left gutter: {:?}",
+            text_of(row)
+        );
+    }
+}
+
+#[test]
+fn dock_shrink_pulls_transcript_down() {
+    use crate::composer::Tui;
+    let mut tui = Tui::test_tui(80, 24);
+    for i in 0..20 {
+        tui.push_dim(format!("line {i}"));
+    }
+    let _ = tui.draw();
+    tui.set_status(Some("Working"));
+    for i in 0..3 {
+        tui.upsert_live_tool(
+            &format!("t{i}"),
+            vec![Line::from(format!("Ran c{i}"))],
+            true,
+        );
+    }
+    tui.queued_inputs.push_back(("q1".into(), Vec::new()));
+    tui.queued_inputs.push_back(("q2".into(), Vec::new()));
+    let _ = tui.draw();
+    tui.set_status(None);
+    for i in 0..3 {
+        tui.remove_live_tool(&format!("t{i}"));
+    }
+    tui.queued_inputs.clear();
+    let _ = tui.draw();
+    let (vacated, _covered, _tail) = tui.terminal.debug_state();
+    assert_eq!(vacated, 0, "dock shrink left vacated rows unfilled");
+}
+
+#[test]
+fn a_growing_dock_scrolls_the_prompt_instead_of_covering_it() {
+    use crate::composer::Tui;
+    let mut tui = Tui::test_tui(80, 24);
+    for i in 0..30 {
+        tui.push_dim(format!("line {i}"));
+    }
+    tui.push_user_prompt("sent while busy", &[], false);
+    let _ = tui.draw();
+    tui.set_status(Some("Working"));
+    tui.queued_inputs.push_back(("q1".into(), Vec::new()));
+    let _ = tui.draw();
+    let (_vacated, covered, _tail) = tui.terminal.debug_state();
+    assert_eq!(covered, 0, "a one-line composer covered transcript rows");
+}

@@ -444,7 +444,7 @@ pub(crate) fn home_band_h(w: usize) -> usize {
     )
     .lines
     .len()
-        + 1
+        + 2
 }
 
 pub(crate) fn transcript_ends_blank(transcript: &[Line<'static>]) -> bool {

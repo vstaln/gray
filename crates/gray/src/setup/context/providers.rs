@@ -607,7 +607,9 @@ pub(crate) async fn warm_plugin_model_context(config: &crate::Config) {
     };
     let started = std::time::Instant::now();
     let fetch = async {
-        let runtime = crate::providers::catalog::shared_runtime(installed.clone()).await.ok()?;
+        let runtime = crate::providers::catalog::shared_runtime(installed.clone())
+            .await
+            .ok()?;
         Some(plugin_models_on(&runtime, &installed).await)
     };
     let fetched = tokio::time::timeout(std::time::Duration::from_secs(10), fetch).await;

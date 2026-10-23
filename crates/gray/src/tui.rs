@@ -276,53 +276,10 @@ pub(crate) fn glyph(unicode: &'static str, ascii: &'static str) -> &'static str 
     if unicode_safe() { unicode } else { ascii }
 }
 
-pub const LOGO_SCALE: usize = 2;
-
-const BRAILLE_BIT: [[u32; 4]; 2] = [[0x01, 0x02, 0x04, 0x40], [0x08, 0x10, 0x20, 0x80]];
-
-pub(crate) fn upscale_braille(rows: &[String], k: usize) -> Vec<String> {
-    let src: Vec<Vec<u32>> = rows
-        .iter()
-        .map(|l| {
-            l.chars()
-                .map(|c| match c {
-                    '\u{2800}'..='\u{28ff}' => c as u32 - 0x2800,
-                    _ => 0,
-                })
-                .collect()
-        })
-        .collect();
-    let dot = |x: usize, y: usize| {
-        src.get(y / 4)
-            .and_then(|r| r.get(x / 2))
-            .is_some_and(|bits| bits & BRAILLE_BIT[x % 2][y % 4] != 0)
-    };
-    (0..rows.len() * k)
-        .map(|r| {
-            let cols = src.get(r / k).map_or(0, Vec::len) * k;
-            (0..cols)
-                .map(|c| {
-                    let mut bits = 0;
-                    for (dx, col) in BRAILLE_BIT.iter().enumerate() {
-                        for (dy, bit) in col.iter().enumerate() {
-                            if dot((c * 2 + dx) / k, (r * 4 + dy) / k) {
-                                bits |= bit;
-                            }
-                        }
-                    }
-                    char::from_u32(0x2800 + bits).unwrap_or(' ')
-                })
-                .collect::<String>()
-        })
-        .collect()
-}
-
 pub fn logo_mark() -> &'static [String] {
     static MARK: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
     MARK.get_or_init(|| {
-        let rows: Vec<String> = LOGO.lines().map(str::to_string).collect();
-        upscale_braille(&rows, LOGO_SCALE)
-            .into_iter()
+        LOGO.lines()
             .map(|l| l.trim_end_matches('\u{2800}').to_string())
             .collect()
     })
