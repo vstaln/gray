@@ -58,6 +58,10 @@ actions!(
 );
 
 pub fn bind_keys(cx: &mut App) {
+    let _sub = Box::leak(Box::new(cx.intercept_keystrokes(|ev, _, _| {
+        eprintln!("[trace] key: {:?} mods={:?} char={:?}", ev.keystroke.key, ev.keystroke.modifiers, ev.keystroke.key_char);
+    })));
+    let _ = _sub;
     cx.bind_keys([
         KeyBinding::new("ctrl-b", ToggleSidebar, None),
         KeyBinding::new("ctrl-j", ToggleTerminal, None),
@@ -321,10 +325,13 @@ impl GrayApp {
             |this, state, ev: &InputEvent, window, cx| match ev {
                 InputEvent::Change => {
                     this.palette_query = state.read(cx).value().to_string();
+                    eprintln!("[trace] palette change: {:?}", this.palette_query);
                     this.palette_sel = 0;
                     this.palette_reveal.set(true);
                     cx.notify();
                 }
+                InputEvent::Focus => eprintln!("[trace] palette FOCUS"),
+                InputEvent::Blur => eprintln!("[trace] palette BLUR"),
                 InputEvent::PressEnter { .. } => {
                     let items = this.palette_items();
                     let ix = this.palette_sel.min(items.len().saturating_sub(1));
@@ -673,6 +680,7 @@ impl GrayApp {
     fn send(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.composer_pop = None;
         let text = self.composer.read(cx).value().trim().to_string();
+        eprintln!("[trace] send text={text:?}");
         if text.is_empty() {
             return;
         }
@@ -828,16 +836,29 @@ impl GrayApp {
 
     fn poll(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.ticks += 1;
+        if self.ticks % 5 == 0 {
+            let pf = self.palette_input.read(cx).focus_handle(cx).is_focused(window);
+            let cf = self.composer.read(cx).focus_handle(cx).is_focused(window);
+            let mf = self.model_input.read(cx).focus_handle(cx).is_focused(window);
+            let sf = self.settings_search.read(cx).focus_handle(cx).is_focused(window);
+            let tf = self.terminal_input.read(cx).focus_handle(cx).is_focused(window);
+            let pv = self.palette_input.read(cx).value().to_string();
+            let tv = self.terminal_input.read(cx).value().to_string();
+            let mv = self.model_input.read(cx).value().to_string();
+            let sv = self.settings_search.read(cx).value().to_string();
+            let cv = self.composer.read(cx).value().to_string();
+            let rootf = self.focus.is_focused(window);
+            eprintln!("[trace] focus t={} pal={} comp={} model={} set={} term={} root={} popen={} q={:?} | cv={:?} pv={:?} tv={:?} mv={:?} sv={:?}", self.ticks, pf, cf, mf, sf, tf, rootf, self.palette_open, self.palette_query, cv, pv, tv, mv, sv);
+        }
         if let Some(path) = std::env::var_os("GRAY_IDE_CMDS")
             && let Ok(text) = std::fs::read_to_string(&path)
             && !text.trim().is_empty()
         {
             let _ = std::fs::write(&path, "");
-            self.pending_cmds.extend(
-                text.lines()
-                    .map(|l| l.trim().to_string())
-                    .filter(|l| !l.is_empty()),
-            );
+            for l in text.lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()) {
+                eprintln!("[trace] pending_cmd: {l:?}");
+                self.pending_cmds.push(l);
+            }
             cx.notify();
         }
         let mut changed = false;
@@ -2229,12 +2250,14 @@ impl GrayApp {
                 } else {
                     Some(Panel::Skills)
                 };
+                eprintln!("[trace] ToggleSkills -> panel={:?}", self.panel);
                 if self.panel == Some(Panel::Skills) {
                     let agent_dir = crate::data_dir()
                         .parent()
                         .map(|p| p.to_path_buf())
                         .unwrap_or_else(crate::data_dir);
                     self.skills = crate::skills::discover(self.work_root().as_deref(), &agent_dir);
+                    eprintln!("[trace] skills discovered: {} root={:?} agent={:?}", self.skills.len(), self.work_root(), agent_dir);
                 }
             }
             Cmd::UseSkill(name) => {
@@ -3130,12 +3153,14 @@ impl GrayApp {
                         .text_size(px(13.))
                         .text_color(t.sidebar_foreground.opacity(0.8))
                         .cursor_pointer()
-                        .hover(|s| s.bg(t.list_hover).text_color(t.sidebar_foreground))
-                        .when(active, |s| {
-                            s.bg(t.primary)
-                                .text_color(t.primary_foreground)
-                                .hover(|s| s.bg(t.primary_hover))
+                        .hover(|s| {
+                            if active {
+                                s.bg(t.primary_hover)
+                            } else {
+                                s.bg(t.list_hover).text_color(t.sidebar_foreground)
+                            }
                         })
+                        .when(active, |s| s.bg(t.primary).text_color(t.primary_foreground))
                         .when(approval, |s| {
                             s.bg(t.foreground.opacity(0.10))
                                 .border_dashed()
@@ -6410,6 +6435,7 @@ fn relative(ms: i64) -> String {
 
 impl Render for GrayApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let __t0 = std::time::Instant::now();
         if !self.pending_cmds.is_empty() {
             let lines = std::mem::take(&mut self.pending_cmds);
             for line in lines {
@@ -6419,6 +6445,7 @@ impl Render for GrayApp {
             }
         }
         self.write_snapshot(cx);
+        let __t1 = std::time::Instant::now();
         let t = cx.theme().clone();
         let mut center = v_flex()
             .flex_1()
@@ -6499,6 +6526,9 @@ impl Render for GrayApp {
             .bg(t.background)
             .text_color(t.foreground)
             .font_family(t.font_family.clone())
+            .on_key_down(cx.listener(|_, ev: &gpui::KeyDownEvent, _, _| {
+                eprintln!("[trace] key: {:?} mods={:?}", ev.keystroke.key, ev.keystroke.modifiers);
+            }))
             .on_action(
                 cx.listener(|this, _: &ToggleSidebar, w, cx| this.run(Cmd::ToggleSidebar, w, cx)),
             )
