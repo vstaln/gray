@@ -144,3 +144,28 @@ fn provider_only_runtime_role_round_trips() {
         Some("provider_only")
     );
 }
+
+#[test]
+fn one_malformed_entry_disables_only_itself_and_is_named() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = lock_path(dir.path());
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let good = serde_json::to_value(entry(vec!["my-plugin"])).unwrap();
+    let mut bad = serde_json::to_value(entry(vec!["broken"])).unwrap();
+    bad["hash"] = serde_json::Value::Null;
+    std::fs::write(
+        &path,
+        serde_json::json!({
+            "schema": 1,
+            "plugins": { "good": good, "bad": bad }
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let (lf, errors) = LockFile::load_with_errors(&path).unwrap();
+    assert!(lf.plugins.contains_key("good"), "good plugin must survive");
+    assert!(!lf.plugins.contains_key("bad"), "bad plugin is skipped");
+    assert_eq!(errors.len(), 1);
+    assert!(errors[0].starts_with("bad:"), "{}", errors[0]);
+    assert!(errors[0].contains("hash"), "{}", errors[0]);
+}

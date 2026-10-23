@@ -103,7 +103,10 @@ FPS = 30
 T_END = max(start + dur for _, start, dur, _, _ in elements)
 N_FRAMES = int(T_END * FPS) + 1
 
-CELLS_X, CELLS_Y = 16, 6
+CELLS_X, CELLS_Y = 32, 12
+# Tip-flag radius in dot units, scaled with the grid
+# (1.5 dots was tuned at 16 cells wide).
+EDGE_R = 1.5 * CELLS_X / 16
 X0, X1 = min(p[0] for p in P), max(p[0] for p in P)
 Y0, Y1 = min(p[1] for p in P), max(p[1] for p in P)
 DOT_X = (X1 - X0) / (CELLS_X * 2)
@@ -195,7 +198,7 @@ def edge_rows(tips):
                     for dy in range(4):
                         px = col * 2 + dx + 0.5
                         py = row * 4 + dy + 0.5
-                        if math.hypot(px - gx, py - gy) <= 1.5:
+                        if math.hypot(px - gx, py - gy) <= EDGE_R:
                             flag[row][col] = True
     out = []
     for row in range(CELLS_Y):
@@ -222,6 +225,13 @@ def main():
 
     here = os.path.dirname(os.path.abspath(__file__))
     ref = os.path.join(here, "logo.txt")
+    if "--write-logo" in sys.argv:
+        rows = [r.rstrip("\u2800") for r in final]
+        while rows and not rows[-1]:
+            rows.pop()
+        with open(ref, "w") as f:
+            f.write("\n".join(rows) + "\n")
+        print(f"wrote {ref}: {len(rows)} rows")
     if os.path.exists(ref):
         old = [l.lstrip(" ") for l in open(ref).read().splitlines()]
         old = [l + "\u2800" * (CELLS_X - len(l)) for l in old]

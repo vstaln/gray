@@ -1292,51 +1292,6 @@ impl JsonlSessionStore {
         &self.root_dir
     }
 
-    pub(crate) fn resolve_unique_prefix(&self, raw: &str) -> std::result::Result<String, String> {
-        if !valid_session_id(raw) {
-            return Err(format!("invalid session id {raw:?}"));
-        }
-        if self.root_dir.join(format!("{raw}.jsonl")).is_file() {
-            return Ok(raw.to_string());
-        }
-        let mut matches: Vec<String> = match std::fs::read_dir(&self.root_dir) {
-            Ok(read) => read
-                .flatten()
-                .filter_map(|e| {
-                    e.file_name()
-                        .into_string()
-                        .ok()
-                        .and_then(|n| n.strip_suffix(".jsonl").map(str::to_owned))
-                })
-                .filter(|stem| stem.starts_with(raw))
-                .collect(),
-            Err(_) => Vec::new(),
-        };
-        matches.sort();
-        matches.dedup();
-        match matches.len() {
-            0 => Err(format!("no session {raw:?} in {}", self.root_dir.display())),
-            1 => Ok(matches.remove(0)),
-            _ => {
-                let shown = matches
-                    .iter()
-                    .take(8)
-                    .map(String::as_str)
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                let more = matches.len().saturating_sub(8);
-                Err(format!(
-                    "ambiguous session id {raw:?} — matches: {shown}{}",
-                    if more > 0 {
-                        format!(" (+{more} more)")
-                    } else {
-                        String::new()
-                    }
-                ))
-            }
-        }
-    }
-
     fn fnv1a_hex(s: &str) -> String {
         let mut h: u64 = 0xcbf29ce484222325;
         for b in s.bytes() {
@@ -1742,7 +1697,7 @@ fn summarize_session_file(root: &Path, path: &Path, cwd: Option<&Path>) -> Optio
                 Role::User => SessionEnd::UserUnanswered,
                 Role::System => last_end,
             };
-            if entry.message.role == Role::User {
+            if entry.message.role == Role::User && !entry.message.injected {
                 let text = user_summary_text(&entry.message);
                 if !text.is_empty() {
                     if first_user_text.is_none() && !in_tail {
@@ -2592,7 +2547,7 @@ impl JsonlSessionStore {
             Err(e) => return Err(SessionError::Io(e)),
         }
 
-        for ext in ["dismissed", "title", "autotitle"] {
+        for ext in ["dismissed", "title", "autotitle", "prefix"] {
             let sidecar = self.root_dir.join(format!("{}.{ext}", id.as_str()));
             let _ = tokio::fs::remove_file(&sidecar).await;
         }

@@ -6,8 +6,6 @@ pub(crate) struct TurnLocalCommands {
     pub tui: crate::composer::SharedTui,
     pub cwd: std::path::PathBuf,
     pub session_id: Option<String>,
-    pub config: crate::config::Config,
-    pub totals: super::SessionTotals,
     pub executor: Option<std::sync::Arc<dyn gray_core::agent::ToolExecutor>>,
     pub hooks: Vec<std::sync::Arc<dyn gray_core::agent::PluginHooks>>,
 }
@@ -33,15 +31,9 @@ pub(crate) fn is_turn_local_command(
     hooks: &[std::sync::Arc<dyn gray_core::agent::PluginHooks>],
 ) -> bool {
     match super::parse_command(text) {
-        super::ReplCommand::Usage | super::ReplCommand::Jobs | super::ReplCommand::Help => true,
+        super::ReplCommand::Jobs | super::ReplCommand::Help => true,
 
-        super::ReplCommand::Theme(_)
-        | super::ReplCommand::Plugins
-        | super::ReplCommand::Keys(_)
-        | super::ReplCommand::Reload
-        | super::ReplCommand::Intro(_)
-        | super::ReplCommand::Gateway(_)
-        | super::ReplCommand::Hehe => true,
+        super::ReplCommand::Plugins | super::ReplCommand::Reload | super::ReplCommand::Hehe => true,
         super::ReplCommand::Unknown(_) => plugin_turn_local_args(text, hooks).is_some(),
         _ => false,
     }
@@ -83,9 +75,6 @@ fn help_text(
 fn run_turn_local_command(ctx: &TurnLocalCommands, text: &str) {
     let tui = Some(&ctx.tui);
     match super::parse_command(text) {
-        super::ReplCommand::Usage => {
-            super::status::handle_turn_usage(&ctx.totals, &ctx.config, tui);
-        }
         super::ReplCommand::Jobs => {
             let job_ctx = super::jobs::session_ctx(&ctx.cwd, ctx.session_id.as_deref());
             let jobs = ctx
@@ -106,9 +95,6 @@ fn run_turn_local_command(ctx: &TurnLocalCommands, text: &str) {
             t.push_dim(help_text(&ctx.cwd, &ctx.hooks));
             t.ensure_gap();
         }
-        super::ReplCommand::Theme(arg) => {
-            super::customize::handle_theme(arg, Some(&ctx.tui));
-        }
         super::ReplCommand::Plugins => {
             let tui = Some(&ctx.tui);
             let bg = ctx.tui.lock().expect("tui lock").snapshot();
@@ -121,45 +107,8 @@ fn run_turn_local_command(ctx: &TurnLocalCommands, text: &str) {
                 Err(e) => super::say(tui, &format!("plugins manager failed: {e}")),
             }
         }
-        super::ReplCommand::Keys(arg) => {
-            super::customize::handle_keys(arg, Some(&ctx.tui));
-        }
         super::ReplCommand::Reload => {
             super::customize::handle_reload(Some(&ctx.tui));
-        }
-        super::ReplCommand::Intro(arg) => {
-            let text = match arg.as_deref().and_then(super::handlers::parse_on_off) {
-                Some(on) => {
-                    super::handlers::toggle_subsystem(super::handlers::Subsystem::Intro, on)
-                }
-                None if arg.is_none() => format!(
-                    "logo intro is {}",
-                    if crate::setup::intro_enabled() {
-                        "on"
-                    } else {
-                        "off"
-                    }
-                ),
-                None => "usage: /intro [on|off]".to_string(),
-            };
-            super::say(Some(&ctx.tui), &text);
-        }
-        super::ReplCommand::Gateway(arg) => {
-            let tui = Some(&ctx.tui);
-            if let Some(on) = arg.as_deref().and_then(super::handlers::parse_on_off) {
-                let text =
-                    super::handlers::toggle_subsystem(super::handlers::Subsystem::Gateway, on);
-                super::say(tui, &text);
-            } else {
-                let bg = ctx.tui.lock().expect("tui lock").snapshot();
-                match super::with_modal_sync(tui, || {
-                    super::gateway_panel::run_gateway_modal(Some(&bg))
-                }) {
-                    Ok(true) => super::say(tui, "connections updated"),
-                    Ok(false) => super::say(tui, &super::gateway_panel::format_text()),
-                    Err(e) => super::say(tui, &format!("connections picker failed: {e}")),
-                }
-            }
         }
         super::ReplCommand::Hehe => {
             let reverting = crate::mascot::mascot_shown();
@@ -194,26 +143,7 @@ fn run_turn_local_command(ctx: &TurnLocalCommands, text: &str) {
                     t.queued_inputs.push_back((prompt, Vec::new()));
                     let _ = t.draw();
                 }
-                Some(CommandOutcome::AgentPicker(plugin)) => {
-                    let bg = ctx.tui.lock().expect("tui lock").snapshot();
-                    let action = super::with_modal_sync(tui, || {
-                        super::agents_panel::run_agents_viewer(&plugin, Some(&bg))
-                    });
-                    match action {
-                        Ok(Some(super::agents_panel::PanelAction::Say(text))) => {
-                            super::say(tui, &text);
-                        }
-                        Ok(Some(super::agents_panel::PanelAction::Resume { .. })) => {
-                            super::say(tui, "that agent can be resumed after the current turn");
-                        }
-                        Ok(None) => {
-                            ctx.tui.lock().expect("tui lock").ensure_gap();
-                        }
-                        Err(e) => super::say(tui, &format!("agents panel error: {e}")),
-                    }
-                }
                 Some(CommandOutcome::ModelPicker(_))
-                | Some(CommandOutcome::SubagentSettings(_))
                 | Some(CommandOutcome::Panel(_))
                 | Some(CommandOutcome::Picker(_))
                 | Some(CommandOutcome::Terminal { .. }) => {
@@ -263,8 +193,16 @@ pub(crate) fn spawn_key_watcher_with_typing(
                 return;
             }
 
-            if crate::composer::input::stdin_gone() {
+            if crate::composer::input::stdin_gone_confirmed() {
                 return;
+            }
+            // A live ask modal (tool consent, request_user_input) reads
+            // stdin itself. Polling here too races it for every key and
+            // the watcher's `continue` below drops whatever it wins, so
+            // Esc/arrows/Enter in the modal were mostly swallowed.
+            if crate::ask::is_ask_live() {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+                continue;
             }
             match poll(std::time::Duration::from_millis(50)) {
                 Ok(true) => {}
@@ -302,10 +240,20 @@ pub(crate) fn spawn_key_watcher_with_typing(
                     if ev.kind == KeyEventKind::Release {
                         continue;
                     }
+                    // A decoded Esc with bytes still queued is the head of a
+                    // split or unknown escape sequence, not a keypress — drop
+                    // it and drain the tail so it can't cancel the turn or
+                    // type into the composer. A real Esc arrives alone.
+                    if matches!(ev.code, KeyCode::Esc)
+                        && crate::composer::input::esc_is_sequence_head()
+                    {
+                        continue;
+                    }
 
                     if matches!(ev.code, KeyCode::Char('c') | KeyCode::Char('C'))
                         && ev.modifiers.contains(KeyModifiers::CONTROL)
                     {
+                        log::info!(target: "gray_repl", "turn cancelled by key {ev:?}");
                         watch_cancel.cancel();
                         return;
                     }
@@ -313,6 +261,11 @@ pub(crate) fn spawn_key_watcher_with_typing(
                     let interrupts = bindings.contains(&crate::keymap::Binding::Action(
                         crate::keymap::Action::Interrupt,
                     ));
+                    if interrupts {
+                        // Unexplained mid-turn interrupts were reported; name
+                        // the exact event so a stray terminal sequence shows up.
+                        log::info!(target: "gray_repl", "turn interrupt key {ev:?}");
+                    }
                     let Some(shared) = watcher_tui.as_ref() else {
                         if interrupts {
                             watch_cancel.cancel();
@@ -356,6 +309,13 @@ pub(crate) fn spawn_key_watcher_with_typing(
                                 t.local_command = Some(text);
                                 crate::composer::input::clear_draft(&mut t);
                                 let _ = t.draw();
+                            } else if !text.is_empty() {
+                                // "Cancel the turn, or clear the draft": a
+                                // draft is cleared first — only an empty
+                                // composer cancels the turn.
+                                crate::composer::input::clear_draft(&mut t);
+                                let _ = t.draw();
+                                continue;
                             }
                             watch_cancel.cancel();
                             return;

@@ -6,8 +6,6 @@ pub const HANDLE_LEN: usize = 16;
 
 pub const MAX_ENTRIES: usize = 256;
 
-const MAX_METER_BYTES: u64 = 1024 * 1024;
-
 #[derive(Debug)]
 pub enum SpillError {
     NoHome,
@@ -121,88 +119,6 @@ fn prune(dir: &Path) {
     for (_, path) in stored.into_iter().take(excess) {
         let _ = std::fs::remove_file(path);
     }
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
-pub struct MeterEvent {
-    pub ts: u64,
-
-    pub rule: String,
-
-    pub raw: u64,
-
-    pub sent: u64,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct MeterTotals {
-    pub events: u64,
-    pub raw_bytes: u64,
-    pub sent_bytes: u64,
-
-    pub by_rule: std::collections::BTreeMap<String, (u64, u64, u64)>,
-}
-
-impl MeterTotals {
-    pub fn saved(&self) -> u64 {
-        self.raw_bytes.saturating_sub(self.sent_bytes)
-    }
-    pub fn saved_pct(&self) -> f64 {
-        if self.raw_bytes == 0 {
-            0.0
-        } else {
-            self.saved() as f64 / self.raw_bytes as f64 * 100.0
-        }
-    }
-    fn add(&mut self, e: &MeterEvent) {
-        self.events += 1;
-        self.raw_bytes += e.raw;
-        self.sent_bytes += e.sent;
-        let slot = self.by_rule.entry(e.rule.clone()).or_default();
-        slot.0 += 1;
-        slot.1 += e.raw;
-        slot.2 += e.sent;
-    }
-}
-
-pub fn record(event: MeterEvent) {
-    let Some(dir) = dir() else { return };
-    if std::fs::create_dir_all(&dir).is_err() {
-        return;
-    }
-    restrict_dir(&dir);
-    let path = dir.join("meter.jsonl");
-    if std::fs::metadata(&path).is_ok_and(|m| m.len() >= MAX_METER_BYTES) {
-        return;
-    }
-    if let Ok(line) = serde_json::to_string(&event) {
-        use std::io::Write;
-        if let Ok(mut f) = std::fs::OpenOptions::new()
-            .append(true)
-            .create(true)
-            .open(&path)
-        {
-            let _ = writeln!(f, "{line}");
-        }
-    }
-}
-
-pub fn events() -> Vec<MeterEvent> {
-    let Some(dir) = dir() else { return Vec::new() };
-    let Ok(text) = std::fs::read_to_string(dir.join("meter.jsonl")) else {
-        return Vec::new();
-    };
-    text.lines()
-        .filter_map(|line| serde_json::from_str(line).ok())
-        .collect()
-}
-
-pub fn totals() -> MeterTotals {
-    let mut totals = MeterTotals::default();
-    for event in events() {
-        totals.add(&event);
-    }
-    totals
 }
 
 pub fn now_millis() -> u64 {

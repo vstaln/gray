@@ -168,8 +168,33 @@ pub(crate) async fn handle_plugin_command(raw: &str, tui: Option<&crate::compose
             Err(e) => say(tui, &format!("disable failed: {e:#}")),
         },
         PluginAction::Check(dir) => {
-            if let Err(e) = crate::plugin_check::check_plugin_dir(&dir).await {
-                say(tui, &format!("check failed: {e:#}"));
+            // The conformance probe lives in the plugin-dev plugin now —
+            // `gray plugin check` forwards to it.
+            let exe = crate::exe_watch::on_disk_exe();
+            match exe {
+                Err(e) => say(tui, &format!("cannot self-spawn: {e:#}")),
+                Ok(exe) => {
+                    let out = tokio::time::timeout(
+                        std::time::Duration::from_secs(60),
+                        tokio::process::Command::new(exe)
+                            .args(["plugin", "check", &dir])
+                            .stdin(std::process::Stdio::null())
+                            .output(),
+                    )
+                    .await;
+                    match out {
+                        Err(_) => say(tui, "plugin check timed out"),
+                        Ok(Err(e)) => say(tui, &format!("plugin check failed to start: {e}")),
+                        Ok(Ok(o)) => {
+                            let text = String::from_utf8_lossy(&o.stdout).trim_end().to_string();
+                            if text.is_empty() {
+                                say(tui, "check produced no output");
+                            } else {
+                                say(tui, &text);
+                            }
+                        }
+                    }
+                }
             }
         }
     }

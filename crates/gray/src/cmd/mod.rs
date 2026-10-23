@@ -10,8 +10,7 @@ use serde_json::{Value, json};
 use crate::CmdVerb;
 use crate::config::Config;
 use crate::repl::commands::{CmdSurface, resolve};
-use crate::repl::usage_panel;
-use crate::repl::{SessionTotals, handlers};
+use crate::repl::handlers;
 use crate::session_store::{JsonlSessionStore, SessionId};
 use crate::setup::variants::{Parts, RowShape};
 
@@ -119,7 +118,6 @@ async fn run_command(
         }
         return match def.name {
             "help" => Ok(help_result()),
-            "usage" => usage_result(config, home).await,
             "models" => model_result(config, home, &rest),
             "new" => new_result(home).await,
             "sessions" => sessions_result(home, &rest).await,
@@ -132,12 +130,10 @@ async fn run_command(
             "plugin" => plugin_result(&rest).await,
             "plugins" => Ok(CommandResult::text(crate::plugin_status::table().await)),
             "update" => update_result(&rest).await,
-            "feedback" => feedback_result(config, home, &rest),
             "agentsmd" => agentsmd_result(&rest),
             "reload" => Ok(CommandResult::text(
                 "config reloads on the next turn in this conversation",
             )),
-            "gateway" => gateway_result(&rest),
             other => Err(CmdError::unavailable(format!(
                 "'/{other}' is not implemented over cmd yet"
             ))),
@@ -179,46 +175,6 @@ fn help_result() -> CommandResult {
         }
     }
     CommandResult::text(out.trim_end())
-}
-
-async fn usage_result(config: &Config, home: &Path) -> Result<CommandResult, CmdError> {
-    let store = JsonlSessionStore::new(home.join("sessions"));
-    let summaries = store.list().await;
-    let pointed = pointed_session(home).filter(|sid| summaries.iter().any(|s| s.id == *sid));
-    let id =
-        pointed.or_else(|| crate::resume::latest_summary(&summaries, None).map(|s| s.id.clone()));
-    let Some(id) = id else {
-        return Ok(CommandResult::text(
-            "no sessions yet — usage appears after the first turn",
-        ));
-    };
-    let (meta, entries) = store
-        .load(&id)
-        .await
-        .map_err(|e| CmdError::unavailable(format!("cannot load session {id}: {e:#}")))?;
-    let model = if meta.model.is_empty() {
-        config.model.clone().unwrap_or_default()
-    } else {
-        meta.model
-    };
-    let totals = SessionTotals::from_entries(&entries, &model);
-    if totals.turns == 0 {
-        return Ok(CommandResult::text(
-            "no turns yet this session — usage appears after the first turn",
-        ));
-    }
-    let input = usage_panel::PanelInput {
-        totals: &totals,
-        model: &model,
-        rate: crate::setup::get_model_rate(&model),
-        warmth: usage_panel::Warmth::Unknown,
-    };
-    let mut text = format!("✓ Session usage — {}", usage_panel::usage_header(&input));
-    for line in usage_panel::usage_plain(&input) {
-        text.push('\n');
-        text.push_str(&line);
-    }
-    Ok(CommandResult::text(text))
 }
 
 fn pointed_session(home: &Path) -> Option<SessionId> {
@@ -911,35 +867,6 @@ async fn update_result(rest: &str) -> Result<CommandResult, CmdError> {
     }
 }
 
-fn feedback_result(config: &Config, home: &Path, rest: &str) -> Result<CommandResult, CmdError> {
-    let raw = rest.trim();
-    if raw.is_empty() {
-        return Err(CmdError::args(
-            "usage: /feedback <what happened> — saves locally and gives a prefilled issue link",
-        ));
-    }
-    let title = crate::feedback::build_title(raw);
-    let version = env!("CARGO_PKG_VERSION");
-    let os = format!("{} / {}", std::env::consts::OS, std::env::consts::ARCH);
-    let model = config.model.as_deref().unwrap_or("no model");
-    let session = pointed_session(home)
-        .map(|s| s.as_str().to_string())
-        .unwrap_or_else(|| "none".to_string());
-    let body =
-        crate::feedback::build_body(raw, version, &os, model, &session, "gateway", "gateway");
-    let url = crate::feedback::issue_url(&title, &body);
-    let dir = home.join("feedback");
-    match crate::feedback::save_feedback(&dir, &title, &body, &crate::feedback::timestamp()) {
-        Ok(path) => Ok(CommandResult::text(format!(
-            "saved {}\nfile an issue: {url}",
-            path.display()
-        ))),
-        Err(e) => Ok(CommandResult::text(format!(
-            "could not save feedback ({e}) — file manually: {url}"
-        ))),
-    }
-}
-
 fn agentsmd_result(rest: &str) -> Result<CommandResult, CmdError> {
     match rest.trim() {
         "" | "show" | "status" => {
@@ -958,17 +885,6 @@ fn agentsmd_result(rest: &str) -> Result<CommandResult, CmdError> {
         }
         other => Err(CmdError::args(format!(
             "unknown `/agentsmd {other}` over cmd — `show` works; edit/reset need the TUI"
-        ))),
-    }
-}
-
-fn gateway_result(rest: &str) -> Result<CommandResult, CmdError> {
-    match rest.trim() {
-        "" | "status" | "list" => Ok(CommandResult::text(
-            crate::repl::gateway_panel::format_text(),
-        )),
-        other => Err(CmdError::args(format!(
-            "unknown `/gateway {other}` over cmd — status only here"
         ))),
     }
 }
@@ -1002,8 +918,6 @@ async fn plugin_command_result(
             crate::repl::picker::spec_plain(&spec),
         ))),
         Some(gray_plugin::CommandOutcome::ModelPicker(_))
-        | Some(gray_plugin::CommandOutcome::AgentPicker(_))
-        | Some(gray_plugin::CommandOutcome::SubagentSettings(_))
         | Some(gray_plugin::CommandOutcome::Terminal { text: None, .. }) => {
             Err(CmdError::local(name))
         }

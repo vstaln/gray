@@ -16,9 +16,9 @@ pub(crate) use attach::{
 pub(crate) use clipboard::paste_from_system_clipboard;
 
 #[cfg(unix)]
-pub(crate) fn stdin_gone() -> bool {
+fn fd_dead(fd: i32) -> bool {
     let mut pfd = libc::pollfd {
-        fd: libc::STDIN_FILENO,
+        fd,
         events: libc::POLLIN,
         revents: 0,
     };
@@ -27,9 +27,38 @@ pub(crate) fn stdin_gone() -> bool {
     r > 0 && pfd.revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL) != 0
 }
 
+#[cfg(unix)]
+pub(crate) fn stdin_gone() -> bool {
+    fd_dead(libc::STDIN_FILENO)
+}
+
 #[cfg(not(unix))]
 pub(crate) fn stdin_gone() -> bool {
     false
+}
+
+/// A single `poll` sample can flash POLLERR/POLLNVAL transiently (fd churn
+/// around terminal handoffs); only treat the tty as dead when the flags
+/// persist. ~250ms is still far faster than the EIO spin this prevents.
+#[cfg(unix)]
+fn fd_dead_confirmed(fd: i32) -> bool {
+    for _ in 0..3 {
+        if !fd_dead(fd) {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(80));
+    }
+    true
+}
+
+#[cfg(unix)]
+pub(crate) fn stdin_gone_confirmed() -> bool {
+    fd_dead_confirmed(libc::STDIN_FILENO)
+}
+
+#[cfg(not(unix))]
+pub(crate) fn stdin_gone_confirmed() -> bool {
+    stdin_gone()
 }
 
 pub(crate) fn watch_dead_stdin() {
@@ -41,12 +70,14 @@ pub(crate) fn watch_dead_stdin() {
     std::thread::spawn(|| {
         loop {
             std::thread::sleep(Duration::from_millis(500));
-            if stdin_gone() {
+            if stdin_gone_confirmed() {
+                log::warn!("stdin watchdog: tty reads dead persistently — raising SIGHUP");
                 #[cfg(unix)]
                 unsafe {
                     libc::raise(libc::SIGHUP)
                 };
                 std::thread::sleep(Duration::from_secs(2));
+                log::error!("stdin watchdog: hangup policy did not exit — hard exit 129");
                 std::process::exit(129);
             }
         }
@@ -88,6 +119,37 @@ pub(crate) fn handle_paste(tui: &mut Tui, pasted: String) -> bool {
         tui.textarea.insert_str(&pasted);
     }
     let _ = tui.draw();
+    true
+}
+
+/// True when a just-decoded Esc is the head of an escape sequence — a
+/// response fragment or a sequence split across reads — rather than a real
+/// keypress: more input is already queued behind it. A genuine Esc arrives
+/// alone (Alt+key decodes as a single event, pastes arrive as Event::Paste,
+/// and nobody types within ~2ms of Esc). Drains the queued tail so the
+/// fragment can't reach bindings or the textarea.
+pub(crate) fn esc_is_sequence_head() -> bool {
+    use crossterm::event::{Event, KeyEventKind};
+    // A key's own release is not a tail: Windows console input (and kitty's
+    // release reporting) queues it right behind every real Esc press.
+    let is_tail = |ev: std::io::Result<Event>| !matches!(ev, Ok(Event::Key(k)) if k.kind == KeyEventKind::Release);
+    if !matches!(crossterm::event::poll(Duration::from_millis(2)), Ok(true)) {
+        return false;
+    }
+    let mut tail = false;
+    for _ in 0..64 {
+        match crossterm::event::poll(Duration::from_millis(0)) {
+            Ok(true) => tail |= is_tail(crossterm::event::read()),
+            _ => break,
+        }
+    }
+    if !tail {
+        return false;
+    }
+    let _ = crossterm::event::poll(Duration::from_millis(2));
+    while matches!(crossterm::event::poll(Duration::from_millis(0)), Ok(true)) {
+        let _ = crossterm::event::read();
+    }
     true
 }
 
@@ -266,7 +328,7 @@ pub(crate) fn read_line(
     use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers, poll, read};
 
     {
-        let _tui = shared.lock().unwrap_or_else(|e| e.into_inner());
+        let mut _tui = shared.lock().unwrap_or_else(|e| e.into_inner());
         let _ = crossterm::execute!(std::io::stdout(), crossterm::event::EnableBracketedPaste);
         crossterm::terminal::enable_raw_mode()?;
         crossterm::execute!(std::io::stdout(), crossterm::cursor::Show)?;
@@ -277,11 +339,11 @@ pub(crate) fn read_line(
     let mut needs_draw = true;
     let mut quit_arm: QuitArm = None;
     loop {
-        if stdin_gone() {
+        if stdin_gone_confirmed() {
             return Ok(None);
         }
 
-        let (timeout, empty_draft) = {
+        let timeout = {
             let mut guard = shared.lock().expect("tui lock");
             let tui: &mut super::Tui = &mut guard;
             if tui.ask_modal.is_some() || tui.modal_open {
@@ -309,24 +371,14 @@ pub(crate) fn read_line(
                 needs_draw = false;
             }
 
-            let timeout = if let Some((_, deadline)) = tui.pending_resize {
-                let now = std::time::Instant::now();
-                if deadline > now {
-                    deadline - now
-                } else {
-                    Duration::from_millis(0)
-                }
-            } else {
-                Duration::from_millis(250)
-            };
-            let empty_draft = tui.textarea.is_empty()
-                && tui.attachments.is_empty()
-                && tui.pending_pastes.is_empty();
-            (timeout, empty_draft)
+            tui.pending_resize
+                .map_or(Duration::from_millis(250), |(_, deadline)| {
+                    deadline.saturating_duration_since(std::time::Instant::now())
+                })
         };
 
         if !poll(timeout)? {
-            if empty_draft && crate::host::wake_requested() {
+            if crate::host::wake_requested() {
                 return Ok(Some((String::new(), Vec::new())));
             }
             continue;
@@ -365,6 +417,13 @@ pub(crate) fn read_line(
             Event::Paste(data) => {
                 tui.search = None;
                 handle_paste(tui, data);
+            }
+            Event::Key(ev)
+                if ev.kind != KeyEventKind::Release
+                    && matches!(ev.code, KeyCode::Esc)
+                    && esc_is_sequence_head() =>
+            {
+                continue;
             }
             Event::Key(ev) if ev.kind != KeyEventKind::Release => match keys::dispatch(tui, &ev) {
                 KeyOutcome::Edited | KeyOutcome::Ignored => {
@@ -421,8 +480,12 @@ pub(crate) fn read_line(
                     let attached: Vec<PathBuf> = std::mem::take(&mut tui.attachments);
                     tui.textarea.set_text("");
                     if tui.is_task_running {
-                        tui.queued_inputs
-                            .push_back((trimmed.clone(), attached.clone()));
+                        if !crate::tui::sanitize_user_text(&trimmed).trim().is_empty()
+                            || !attached.is_empty()
+                        {
+                            tui.queued_inputs
+                                .push_back((trimmed.clone(), attached.clone()));
+                        }
                         tui.matches.clear();
                         tui.sel = 0;
                         let _ = tui.draw();

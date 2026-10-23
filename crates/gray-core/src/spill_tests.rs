@@ -1,10 +1,10 @@
 use crate::spill::*;
 use crate::tool_out;
 
-static HOME_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
 fn with_home<T>(body: impl FnOnce() -> T) -> T {
-    let _guard = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _guard = crate::paths::HOME_ENV_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let dir = tempfile::TempDir::new().expect("tempdir");
 
     unsafe { std::env::set_var("GRAY_HOME", dir.path()) };
@@ -103,62 +103,6 @@ fn an_under_budget_result_is_untouched_and_spends_nothing() {
         let raw = "small enough\n".repeat(10);
         let out = tool_out::finish(raw.clone());
         assert_eq!(out.content, raw);
-        assert!(!dir().is_some_and(|d| d.join("meter.jsonl").exists()));
-    });
-}
-
-#[test]
-fn the_meter_reports_what_compression_saved() {
-    with_home(|| {
-        record(MeterEvent {
-            ts: now_millis(),
-            rule: "cargo".into(),
-            raw: 30_000,
-            sent: 900,
-        });
-        record(MeterEvent {
-            ts: now_millis(),
-            rule: "cargo".into(),
-            raw: 2_000,
-            sent: 1_900,
-        });
-        record(MeterEvent {
-            ts: now_millis(),
-            rule: String::new(),
-            raw: 90_000,
-            sent: 50_000,
-        });
-        let totals = totals();
-        assert_eq!(totals.events, 3);
-        assert_eq!(totals.raw_bytes, 122_000);
-        assert_eq!(totals.sent_bytes, 52_800);
-        assert_eq!(totals.saved(), 69_200);
-        assert!(
-            (totals.saved_pct() - 56.7).abs() < 0.1,
-            "{}",
-            totals.saved_pct()
-        );
-
-        assert_eq!(totals.by_rule["cargo"], (2, 32_000, 2_800));
-        assert_eq!(totals.by_rule[""], (1, 90_000, 50_000));
-    });
-}
-
-#[test]
-fn a_torn_meter_line_does_not_hide_the_rest() {
-    with_home(|| {
-        record(MeterEvent {
-            ts: 1,
-            rule: "npm".into(),
-            raw: 10,
-            sent: 5,
-        });
-        let path = dir().expect("home").join("meter.jsonl");
-        let mut text = std::fs::read_to_string(&path).expect("meter");
-        text.push_str("{\"ts\":2,\"kind\":\"sque\n");
-        std::fs::write(&path, text).expect("write");
-        assert_eq!(events().len(), 1, "the good line still reads back");
-        assert_eq!(totals().saved(), 5);
     });
 }
 

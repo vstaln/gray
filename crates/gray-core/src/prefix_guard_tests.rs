@@ -1,4 +1,5 @@
 use crate::message::{ChatRequest, Message, ToolDef};
+use crate::prefix_guard::describe;
 use crate::prefix_guard::{Change, PrefixGuard, diff, fingerprint};
 
 fn req(system: &str, msgs: &[&str]) -> ChatRequest {
@@ -80,4 +81,59 @@ fn change_displays_as_a_short_locator() {
         Change::HistoryTruncated { from: 9, to: 2 }.to_string(),
         "history truncated 9->2"
     );
+}
+
+#[test]
+fn describe_names_known_reasons_and_skips_tail_growth() {
+    // A change at the history tail is normal growth: it cannot cost a miss
+    // worth a notice.
+    assert_eq!(describe(Change::HistoryAt(3), None, 4), None);
+    assert_eq!(
+        describe(Change::HistoryAt(1), None, 4).as_deref(),
+        Some("history changed at message 2")
+    );
+    assert_eq!(
+        describe(Change::HistoryAt(0), Some("media payload budget"), 9).as_deref(),
+        Some("older images dropped from context")
+    );
+    assert_eq!(
+        describe(Change::HistoryAt(0), Some("history rewrite"), 9).as_deref(),
+        Some("history rewritten")
+    );
+    assert_eq!(
+        describe(Change::Tools, None, 4).as_deref(),
+        Some("tool list changed")
+    );
+    assert_eq!(
+        describe(Change::System, None, 4).as_deref(),
+        Some("system prompt changed")
+    );
+    assert_eq!(
+        describe(Change::HistoryTruncated { from: 9, to: 2 }, None, 9).as_deref(),
+        Some("history truncated")
+    );
+}
+
+#[test]
+fn shared_prefix_ok_proves_cache_extension() {
+    let tools = vec![ToolDef::new("t", "d", serde_json::json!({}))];
+    let base = ChatRequest {
+        system: Some("S".into()),
+        messages: vec![Message::user("a"), Message::assistant("b")],
+        tools: tools.clone(),
+        max_tokens: None,
+    };
+    let fp = fingerprint("m", &base);
+
+    let mut ext = base.messages.clone();
+    ext.push(Message::user_injected("trigger"));
+    assert!(fp.shared_prefix_ok("m", Some("S"), &tools, &ext));
+
+    let mut diverged = vec![Message::user("different"), Message::assistant("b")];
+    diverged.push(Message::user_injected("trigger"));
+    assert!(!fp.shared_prefix_ok("m", Some("S"), &tools, &diverged));
+    assert!(!fp.shared_prefix_ok("m", Some("S2"), &tools, &ext));
+    assert!(!fp.shared_prefix_ok("m", Some("S"), &[], &ext));
+    assert!(!fp.shared_prefix_ok("m2", Some("S"), &tools, &ext));
+    assert!(!fp.shared_prefix_ok("m", Some("S"), &tools, &base.messages[..1]));
 }

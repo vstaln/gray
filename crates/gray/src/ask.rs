@@ -869,24 +869,6 @@ fn run_ask_modal(
     }
 }
 
-pub(crate) fn ask_questions_modal(
-    tui: &crate::composer::SharedTui,
-    questions: Vec<AskQuestion>,
-) -> Option<Vec<AskAnswer>> {
-    let mut state = AskModalState::new(0);
-    state.load(questions);
-    let cancel = tokio_util::sync::CancellationToken::new();
-    let answers = run_ask_modal(tui, &mut state, &cancel);
-    {
-        let mut t = t_lock(tui);
-        if let Some(answers) = &answers {
-            push_ask_summary(&mut t, &state.questions, answers);
-        }
-        let _ = t.draw();
-    }
-    answers
-}
-
 fn push_ask_summary(
     t: &mut crate::composer::Tui,
     questions: &[AskQuestion],

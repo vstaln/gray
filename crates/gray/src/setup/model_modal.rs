@@ -1783,6 +1783,7 @@ pub(crate) fn model_picker_loop(
 
     let result = (|| -> anyhow::Result<bool> {
         let mut refreshing = _refresh.is_some();
+        let mut painted = false;
         loop {
             if refreshing && let Ok(live) = refresh_rx.try_recv() {
                 refreshing = false;
@@ -1904,8 +1905,12 @@ pub(crate) fn model_picker_loop(
                 all_head,
                 gap,
             };
-            terminal
-                .draw(|frame| draw_picker(frame, &bg_snapshot, &view, draw_sel, &mut scroll_top))?;
+            // Apply already-queued keys before repainting (see model_panes).
+            if !std::mem::replace(&mut painted, true) || !poll(Duration::ZERO)? {
+                terminal.draw(|frame| {
+                    draw_picker(frame, &bg_snapshot, &view, draw_sel, &mut scroll_top)
+                })?;
+            }
 
             if !poll(Duration::from_millis(100))? {
                 continue;

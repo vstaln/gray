@@ -6,7 +6,6 @@ use ratatui::style::Modifier;
 fn page(tab: &str, title: &str, lines: &[&str]) -> PagerPage {
     PagerPage {
         tab: tab.to_string(),
-        title: title.to_string(),
         lines: lines.iter().map(|l| Line::from(l.to_string())).collect(),
     }
 }
@@ -15,7 +14,6 @@ fn many_lines(tab: &str, n: usize) -> PagerPage {
     let lines: Vec<String> = (0..n).map(|i| format!("line {i:02}")).collect();
     PagerPage {
         tab: tab.to_string(),
-        title: tab.to_string(),
         lines: lines.iter().map(|l| Line::from(l.clone())).collect(),
     }
 }

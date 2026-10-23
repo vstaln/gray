@@ -1,4 +1,3 @@
-use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Mutex;
@@ -288,17 +287,8 @@ pub async fn install_spec(home: &Path, spec: &str, force: bool, yes: bool) -> an
     Ok(())
 }
 
-const CATALOG: &[(&str, &str, &str)] = &[(
-    "discord",
-    "git+https://github.com/vstaln/gray-discord-plugin.git@b149022a1ca7c9e099007ffd8411c14489d8db93",
-    "gray_discord",
-)];
-
 fn catalog_names() -> String {
-    std::iter::once("background")
-        .chain(CATALOG.iter().map(|(name, _, _)| *name))
-        .collect::<Vec<_>>()
-        .join(", ")
+    "background".to_string()
 }
 
 fn commands_path(home: &Path) -> PathBuf {
@@ -321,19 +311,6 @@ fn load_commands(home: &Path) -> anyhow::Result<LockFile> {
     Ok(registry)
 }
 
-fn cli_registered(home: &Path, name: &str) -> bool {
-    load_commands(home)
-        .map(|registry| registry.plugins.contains_key(name))
-        .unwrap_or(false)
-        || load_lock(home)
-            .map(|lock| {
-                lock.plugins
-                    .get(name)
-                    .is_some_and(|entry| entry.cli_argv.is_some())
-            })
-            .unwrap_or(false)
-}
-
 /// A commands.json row resolves `gray <name>` forwarding: its `argv` is the
 /// plugin's CLI argv. These rows are the live registry — unlike lock
 /// entries, their `argv` is never spawned as a sidecar, so no lock entry is
@@ -350,110 +327,6 @@ fn commands_cli_entry(registry: &LockFile, name: &str, global_only: bool) -> Opt
         })
 }
 
-fn run_installer(program: impl AsRef<OsStr>, args: &[&OsStr]) -> anyhow::Result<()> {
-    let status = Command::new(program)
-        .args(args)
-        .env("PIP_NO_INPUT", "1")
-        .status()
-        .context("could not start plugin installer; check Python and python3-venv")?;
-    anyhow::ensure!(
-        status.success(),
-        "plugin installation step failed ({status}); see output above"
-    );
-    Ok(())
-}
-
-async fn install_catalog(home: &Path, name: &str) -> anyhow::Result<()> {
-    let (_, source, module) = CATALOG
-        .iter()
-        .find(|(n, _, _)| *n == name)
-        .with_context(|| format!("Unknown plugin '{name}'. Available: {}", catalog_names()))?;
-    if cli_registered(home, name) {
-        println!("Plugin '{name}' is already registered. Run: gray {name} --help");
-        return Ok(());
-    }
-    let root = home.join("plugins/cli");
-    std::fs::create_dir_all(&root)?;
-    let env = tempfile::Builder::new()
-        .prefix(&format!("{name}-"))
-        .tempdir_in(&root)?;
-    let python = match std::env::var_os("GRAY_PLUGIN_PYTHON") {
-        Some(python) => python,
-        None => ["python3", "python", "/usr/bin/python3"]
-            .into_iter()
-            .find(|python| {
-                Command::new(python)
-                    .args(["-c", "import sys, venv, ensurepip, ctypes; assert sys.version_info >= (3, 11)"])
-                    .stdout(std::process::Stdio::null())
-                    .stderr(std::process::Stdio::null())
-                    .status()
-                    .is_ok_and(|status| status.success())
-            })
-            .map(std::ffi::OsString::from)
-            .context("Python 3.11+ with venv/pip support is required; install python3-venv or set GRAY_PLUGIN_PYTHON")?,
-    };
-    println!("Installing '{name}' from {source} (plugin code runs with your user permissions).");
-    run_installer(
-        &python,
-        &[OsStr::new("-m"), OsStr::new("venv"), env.path().as_os_str()],
-    )?;
-    let executable = env.path().join(if cfg!(windows) {
-        "Scripts/python.exe"
-    } else {
-        "bin/python"
-    });
-    run_installer(
-        executable.as_os_str(),
-        &[
-            OsStr::new("-m"),
-            OsStr::new("pip"),
-            OsStr::new("install"),
-            OsStr::new(source),
-        ],
-    )?;
-    run_installer(
-        executable.as_os_str(),
-        &[OsStr::new("-m"), OsStr::new(module), OsStr::new("--help")],
-    )?;
-    let plugins = home.join("plugins");
-    std::fs::create_dir_all(&plugins)?;
-    {
-        let _guard = gray_pkg::ops::hold_registry_lock_in(&plugins)?;
-        if cli_registered(home, name) {
-            println!("Plugin '{name}' is already registered. Run: gray {name} --help");
-            return Ok(());
-        }
-        let mut registry = load_commands(home)?;
-        registry.plugins.insert(
-            name.into(),
-            LockEntry {
-                ecosystem: "gray-cli".into(),
-                version: "catalog".into(),
-                hash: String::new(),
-                source: source.to_string(),
-                argv: vec![
-                    executable.to_string_lossy().into_owned(),
-                    "-m".into(),
-                    module.to_string(),
-                ],
-                adapter_version: "1".into(),
-                installed_at: chrono::Utc::now().to_rfc3339(),
-                scope: "user".into(),
-                enabled: true,
-                granted_capabilities: Vec::new(),
-                capabilities_hash: None,
-                runtime_role: None,
-                cli_argv: None,
-                global: false,
-            },
-        );
-        registry.save(&commands_path(home))?;
-    }
-    let _ = env.keep();
-    println!("Installed '{name}'. Next: gray {name} setup");
-    Ok(())
-}
-
 pub async fn install(home: &Path, name: &str) -> anyhow::Result<()> {
     validate_name(name)?;
     if let Some(path) = std::env::var_os("GRAY_PLUGIN_PATH") {
@@ -466,9 +339,6 @@ pub async fn install(home: &Path, name: &str) -> anyhow::Result<()> {
     if name == "background" {
         install_spec(home, name, false, false).await?;
         return Ok(());
-    }
-    if CATALOG.iter().any(|(n, _, _)| *n == name) {
-        return install_catalog(home, name).await;
     }
     if let Some(paths) = std::env::var_os("PATH") {
         for dir in std::env::split_paths(&paths) {

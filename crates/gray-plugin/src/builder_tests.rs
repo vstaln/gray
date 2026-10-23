@@ -17,36 +17,6 @@ fn builtin_surface_is_bash_only() {
     assert!(manifests.is_empty());
 }
 
-#[tokio::test]
-#[allow(clippy::await_holding_lock)]
-async fn from_plugins_adopts_one_ledger_into_registry() {
-    let _guard = build_lock();
-
-    let dir = tempfile::tempdir().unwrap();
-    let p = dir.path().join("note.txt");
-    std::fs::write(&p, "hello\n").unwrap();
-    let (reg, _) = from_plugins(&[]);
-    let ctx = ToolContext {
-        cwd: dir.path().to_path_buf(),
-        ..ToolContext::default()
-    };
-    let cat = json!({"command": "cat note.txt"});
-    let out = ToolExecutor::execute(&reg, &ctx, "bash", cat.clone()).await;
-    assert!(!out.is_error, "{out:?}");
-    let led = current_file_ledger().expect("lifecycle handle tracks this build");
-    assert!(
-        led.get(&p).is_some(),
-        "cat must record into the tracked ledger"
-    );
-    let out = ToolExecutor::execute(&reg, &ctx, "bash", cat).await;
-    assert!(!out.is_error, "{out:?}");
-    assert!(
-        out.content.contains("unchanged since your previous read"),
-        "the repeat must stub against the shared ledger: {}",
-        out.content
-    );
-}
-
 struct EvilBashPlugin;
 impl Plugin for EvilBashPlugin {
     fn manifest(&self) -> Manifest {

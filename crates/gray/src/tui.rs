@@ -276,9 +276,22 @@ pub(crate) fn glyph(unicode: &'static str, ascii: &'static str) -> &'static str 
     if unicode_safe() { unicode } else { ascii }
 }
 
+pub fn logo_mark() -> &'static [String] {
+    static MARK: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+    MARK.get_or_init(|| {
+        LOGO.lines()
+            .map(|l| l.trim_end_matches('\u{2800}').to_string())
+            .collect()
+    })
+}
+
 pub fn logo_lines() -> Vec<String> {
-    let src = if unicode_safe() { LOGO } else { LOGO_ASCII };
-    src.lines()
+    let rows: Vec<String> = if unicode_safe() {
+        logo_mark().to_vec()
+    } else {
+        LOGO_ASCII.lines().map(str::to_string).collect()
+    };
+    rows.into_iter()
         .filter(|l| !l.trim().is_empty())
         .map(|l| format!("  {l}"))
         .collect()

@@ -46,9 +46,22 @@ pub use provider::{
 
 #[derive(Debug, Clone)]
 pub enum CoreEvent {
-    PreTool { name: String, args: Value },
-    PostTool { name: String, output: ToolOutput },
-    TurnEnd { usage: Usage },
+    PreTool {
+        name: String,
+        args: Value,
+    },
+    PostTool {
+        name: String,
+        output: ToolOutput,
+    },
+    TurnEnd {
+        usage: Usage,
+    },
+    /// The REPL session is up and interactive — plugins use it for
+    /// first-run/detection notices (the old core QoL hook).
+    SessionStart {
+        interactive: bool,
+    },
 }
 
 #[derive(Debug, Clone, Default, serde::Serialize)]
@@ -420,8 +433,6 @@ impl PluginHooks for PluginHookAdapter {
             CommandOutcome::Say(s) if s.is_empty() => None,
             CommandOutcome::Prompt(s) if s.is_empty() => None,
             CommandOutcome::ModelPicker(s) if s.is_empty() => None,
-            CommandOutcome::AgentPicker(s) if s.is_empty() => None,
-            CommandOutcome::SubagentSettings(s) if s.is_empty() => None,
             o => Some(o),
         }
     }
@@ -444,6 +455,11 @@ impl PluginHooks for PluginHookAdapter {
     async fn turn_end(&self, usage: &Usage) {
         self.plugin
             .on_event(CoreEvent::TurnEnd { usage: *usage })
+            .await;
+    }
+    async fn session_start(&self, interactive: bool) {
+        self.plugin
+            .on_event(CoreEvent::SessionStart { interactive })
             .await;
     }
     async fn input_submit(&self, text: &str) -> InputSubmit {

@@ -1,7 +1,7 @@
 use serde_json::Value;
 
 use crate::agent::ToolOutput;
-use crate::spill::{self, MeterEvent};
+use crate::spill;
 
 pub const MAX_LINES: usize = 2000;
 
@@ -9,37 +9,9 @@ pub const MAX_BYTES: usize = 12 * 1024;
 
 pub const MAX_ERROR_BYTES: usize = 2048;
 
-fn strip_ns(n: &str) -> &str {
-    n.rsplit("__").next().unwrap_or(n)
-}
-
 pub fn unknown_tool(name: &str, available: &[String]) -> String {
-    let bare = strip_ns(name);
-    let mut scored: Vec<(&str, f64)> = available
-        .iter()
-        .map(|n| {
-            let s = strsim::jaro_winkler(name, n)
-                .max(strsim::jaro_winkler(bare, strip_ns(n)))
-                .max(strsim::jaro_winkler(name, strip_ns(n)));
-            (n.as_str(), s)
-        })
-        .filter(|(_, score)| *score >= 0.87)
-        .collect();
-    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-    let mut msg = format!("Tool '{name}' does not exist.");
-    let mut names = scored.iter().take(3).map(|(n, _)| format!("'{n}'"));
-    if let Some(first) = names.next() {
-        let rest: Vec<String> = names.collect();
-        msg.push_str(&format!(
-            " Did you mean {first}{}?",
-            if rest.is_empty() {
-                String::new()
-            } else {
-                format!(", {}", rest.join(", "))
-            }
-        ));
-    }
-    msg
+    let _ = available;
+    format!("Tool '{name}' does not exist.")
 }
 
 pub fn truncate_output(text: &str) -> String {
@@ -125,12 +97,6 @@ fn recoverable(original: &str, shown: String) -> String {
     let Some(handle) = spill::store(original) else {
         return shown;
     };
-    spill::record(MeterEvent {
-        ts: spill::now_millis(),
-        rule: String::new(),
-        raw: original.len() as u64,
-        sent: shown.len() as u64,
-    });
     let lines = original.lines().count();
     format!("{shown}{}", spill::footer(&handle, original.len(), lines))
 }

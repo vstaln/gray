@@ -208,19 +208,15 @@ pub(crate) async fn run_prompt_turn(
     let watcher_stopped = watch_stop.clone();
     let watcher_tui = tui_stream.clone();
     let cwd_for_watcher = cwd.to_path_buf();
-    let turn_locals = tui_stream.as_ref().map(|shared| {
-        let mut local_config = config.clone();
-        local_config.api_key = None;
-        key_watcher::TurnLocalCommands {
+    let turn_locals = tui_stream
+        .as_ref()
+        .map(|shared| key_watcher::TurnLocalCommands {
             tui: shared.clone(),
             cwd: cwd.to_path_buf(),
             session_id: ctx.session_id.clone(),
-            config: local_config,
-            totals: session_totals.clone(),
             executor: Some(agent.executor_handle()),
             hooks: agent.hooks().to_vec(),
-        }
-    });
+        });
     let key_watcher = if crate::ide::tap_active() {
         // A host (the IDE) cancels via cancel_turn() and has no terminal —
         // watching crossterm keys would write enhancement escapes to stdout
@@ -336,6 +332,9 @@ pub(crate) async fn run_prompt_turn(
 
     let wire_model = crate::setup::wire_model_for(config)
         .unwrap_or_else(|| config.model.clone().unwrap_or_default());
+    if let Some(state) = session_state.as_ref() {
+        super::session::wire_prefix_fingerprint(agent, state);
+    }
     let mut run_result = {
         let mut on_event = |ev: &AgentEvent| {
             crate::ide::tap_agent_event(ev);
@@ -496,7 +495,7 @@ pub(crate) async fn run_prompt_turn(
             )
             .await;
             if let Some(state) = &*session_state {
-                crate::auto_title::maybe_start(state, &*agent, initial_count);
+                crate::auto_title::maybe_start(state, &*agent);
             }
         }
         Err(CoreError::Cancelled) => {
@@ -614,7 +613,7 @@ pub(crate) async fn run_prompt_turn(
             }
             drop(t);
             *pending_command = Some(expand_skill_command(parsed, cwd, Some(shared), true));
-        } else if let Some((qtext, qimages)) = t.queued_inputs.pop_front() {
+        } else if let Some((qtext, qimages)) = pop_actionable(&mut t.queued_inputs) {
             let parsed = parse_command(&qtext);
             if !parsed.runs_local() {
                 t.push_user_prompt(&qtext, &qimages, !qtext.starts_with('/'));
@@ -632,14 +631,31 @@ pub(crate) async fn run_prompt_turn(
     Ok(())
 }
 
+fn pop_actionable(
+    queued: &mut std::collections::VecDeque<(String, Vec<std::path::PathBuf>)>,
+) -> Option<(String, Vec<std::path::PathBuf>)> {
+    loop {
+        match queued.pop_front() {
+            Some((qt, qi))
+                if qi.is_empty() && crate::tui::sanitize_user_text(&qt).trim().is_empty() => {}
+            other => return other,
+        }
+    }
+}
+
 fn take_steerable(
     queued: &mut std::collections::VecDeque<(String, Vec<std::path::PathBuf>)>,
 ) -> Option<String> {
-    let (text, images) = queued.front()?;
-    if !images.is_empty() || text.starts_with('/') {
-        return None;
+    loop {
+        let (text, images) = queued.front()?;
+        if !images.is_empty() || text.starts_with('/') {
+            return None;
+        }
+        let (text, _) = queued.pop_front().expect("front checked above");
+        if !crate::tui::sanitize_user_text(&text).trim().is_empty() {
+            return Some(text);
+        }
     }
-    queued.pop_front().map(|(text, _)| text)
 }
 
 fn steer_direct_send(

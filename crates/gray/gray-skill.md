@@ -76,11 +76,11 @@ fire — whatever ticks the home fires it.
 
 ## Other subcommands
 
-`gray find`, `gray grep`, `gray plugin list`, `gray update`.
+`gray plugin list`, `gray update`.
 
 ## What gray can do
 
-Bash is the main tool. Image, search and background jobs arrive as
+Bash is the main tool. Image viewing and background jobs arrive as
 bash-claimed commands rather than extra tools. A long or silent command
 becomes a background job: poll it with the job output/status actions and a
 wait, never with a tight sleep loop, and a silent blocking command is turned

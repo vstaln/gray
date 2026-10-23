@@ -151,25 +151,6 @@ fn aliases_rename_legacy_arg_names() {
 }
 
 #[test]
-fn write_and_edit_alias_props_collapse_to_canonical_args() {
-    let w = coerce_args(
-        &WriteTool::default().def(),
-        json!({"file_path": "a.txt", "contents": "hi"}),
-    );
-    assert_eq!(w.get("path"), Some(&json!("a.txt")));
-    assert_eq!(w.get("content"), Some(&json!("hi")));
-    assert!(w.get("file_path").is_none() && w.get("contents").is_none());
-
-    let e = coerce_args(
-        &EditTool::default().def(),
-        json!({"file_path": "a.txt", "TargetContent": "old", "ReplacementContent": "new"}),
-    );
-    assert_eq!(e.get("path"), Some(&json!("a.txt")));
-    assert_eq!(e.get("oldText"), Some(&json!("old")));
-    assert_eq!(e.get("newText"), Some(&json!("new")));
-}
-
-#[test]
 fn strip_framing_unwraps_code_fences() {
     let raw = "```json\n{\"path\":\"/tmp/x\"}\n```";
     let stripped = strip_framing(raw);
@@ -219,39 +200,6 @@ async fn registry_execute_applies_aliases_and_coercion() {
     assert_eq!(args.get("limit"), Some(&json!(7)), "{args}");
 }
 
-#[tokio::test]
-async fn session_tools_share_one_ledger() {
-    let dir = tempfile::tempdir().unwrap();
-    let p = dir.path().join("note.txt");
-    std::fs::write(&p, "hello\n").unwrap();
-    let ledger = Arc::new(FileLedger::new());
-    let reg = Registry::new(vec![
-        Arc::new(ReadTool::new(ledger.clone())),
-        Arc::new(WriteTool::new(ledger.clone())),
-        Arc::new(EditTool::new(ledger.clone())),
-    ]);
-    let ctx = ToolContext {
-        cwd: dir.path().to_path_buf(),
-        ..ToolContext::default()
-    };
-    let out = ToolExecutor::execute(&reg, &ctx, "read", json!({"path": "note.txt"})).await;
-    assert!(!out.is_error, "{out:?}");
-    assert!(
-        ledger.get(&p).is_some(),
-        "read must record into the session ledger"
-    );
-    for content in ["hello\nworld\n", "hello\nworld\nagain\n"] {
-        let out = ToolExecutor::execute(
-            &reg,
-            &ctx,
-            "write",
-            json!({"path": "note.txt", "content": content}),
-        )
-        .await;
-        assert!(!out.is_error, "{out:?}");
-    }
-}
-
 #[test]
 fn coerce_multiple_stringified_edits_preserves_array() {
     let def = ToolDef::new(
@@ -262,98 +210,5 @@ fn coerce_multiple_stringified_edits_preserves_array() {
     let edits = json!([{"oldText":"a","newText":"b"},{"oldText":"c","newText":"d"}]);
     for input in [edits.to_string(), format!("```json\n{edits}\n```")] {
         assert_eq!(coerce_args(&def, json!({"edits":input}))["edits"], edits);
-    }
-}
-
-#[test]
-fn meter_label_prefers_path_then_truncates_command() {
-    assert_eq!(meter_label(&json!({"path": "src/lib.rs"})), "src/lib.rs");
-
-    assert_eq!(meter_label(&json!({"command": "echo hi"})), "echo hi");
-    assert_eq!(meter_label(&json!({})), "");
-
-    let long = "x".repeat(200);
-    assert_eq!(meter_label(&json!({"command": long})).chars().count(), 80);
-}
-
-static METER_SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-#[tokio::test]
-#[allow(clippy::await_holding_lock)]
-async fn registry_meter_records_class_per_call() {
-    let _serial = METER_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
-    let dir = tempfile::tempdir().expect("tempdir");
-    let home = dir.path().to_string_lossy().into_owned();
-    let prev_home = std::env::var("GRAY_HOME").ok();
-    let prev_stats = std::env::var("GRAY_TOOL_STATS").ok();
-    unsafe {
-        std::env::set_var("GRAY_HOME", &home);
-        std::env::set_var("GRAY_TOOL_STATS", "1");
-    }
-
-    let reg = Registry::new(vec![std::sync::Arc::new(StubTool {
-        name: "grep",
-        marker: "src/lib.rs:12:match\nsrc/lib.rs:30:match\n",
-    })]);
-    let out = reg
-        .execute(
-            &ToolContext::default(),
-            "grep",
-            json!({"path": "src/lib.rs"}),
-        )
-        .await;
-    assert!(!out.is_error, "stub always succeeds");
-    let log = std::path::Path::new(&home).join("logs/tool-stats.jsonl");
-    let body = std::fs::read_to_string(&log).expect("meter writes when enabled");
-    let rec: Value =
-        serde_json::from_str(body.lines().last().expect("one record")).expect("record is json");
-    assert_eq!(rec["tool"], "grep");
-    assert_eq!(rec["class"], "retrieval");
-    assert_eq!(rec["path"], "src/lib.rs");
-    assert!(rec["bytes"].as_u64().expect("bytes") > 0, "{rec}");
-    assert_eq!(rec["truncated_by"], "none");
-
-    match prev_home {
-        Some(v) => unsafe { std::env::set_var("GRAY_HOME", v) },
-        None => unsafe { std::env::remove_var("GRAY_HOME") },
-    }
-    match prev_stats {
-        Some(v) => unsafe { std::env::set_var("GRAY_TOOL_STATS", v) },
-        None => unsafe { std::env::remove_var("GRAY_TOOL_STATS") },
-    }
-}
-
-#[tokio::test]
-#[allow(clippy::await_holding_lock)]
-async fn registry_meter_is_silent_when_gate_off() {
-    let _serial = METER_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
-    let dir = tempfile::tempdir().expect("tempdir");
-    let home = dir.path().to_string_lossy().into_owned();
-    let prev_home = std::env::var("GRAY_HOME").ok();
-    let prev_stats = std::env::var("GRAY_TOOL_STATS").ok();
-    unsafe {
-        std::env::set_var("GRAY_HOME", &home);
-        std::env::set_var("GRAY_TOOL_STATS", "0");
-    }
-    let reg = Registry::new(vec![std::sync::Arc::new(StubTool {
-        name: "bash",
-        marker: "ok",
-    })]);
-    let _ = reg
-        .execute(&ToolContext::default(), "bash", json!({"command": "true"}))
-        .await;
-    assert!(
-        !std::path::Path::new(&home)
-            .join("logs/tool-stats.jsonl")
-            .exists(),
-        "gate off must write nothing"
-    );
-    match prev_home {
-        Some(v) => unsafe { std::env::set_var("GRAY_HOME", v) },
-        None => unsafe { std::env::remove_var("GRAY_HOME") },
-    }
-    match prev_stats {
-        Some(v) => unsafe { std::env::set_var("GRAY_TOOL_STATS", v) },
-        None => unsafe { std::env::remove_var("GRAY_TOOL_STATS") },
     }
 }

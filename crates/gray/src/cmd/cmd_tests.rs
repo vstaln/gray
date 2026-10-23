@@ -117,9 +117,7 @@ fn list_shape_matches_contract() {
     assert_eq!(model["args"][0]["required"], false);
     assert_eq!(by_name("help")["surface"], "text");
     assert_eq!(by_name("help")["scope"], "global");
-    assert_eq!(by_name("theme")["surface"], "local");
     assert_eq!(by_name("sessions")["surface"], "text");
-    assert_eq!(by_name("usage")["args"], json!([]));
 
     for d in crate::repl::REGISTRY {
         assert_eq!(by_name(d.name)["description"], d.desc);
@@ -386,12 +384,20 @@ async fn run_rejects_local_and_unknown() {
         .await
         .unwrap_err();
     assert_eq!(err.0, "unknown_command");
-    for name in ["theme", "quit", "copy", "hotkeys", "restart", "hehe"] {
+    for name in ["quit", "restart", "hehe"] {
         let err = run_command(&mut config, home.path(), name, &[])
             .await
             .unwrap_err();
         assert_eq!(err.0, "local_only", "{name}");
         assert!(err.1.contains(name));
+    }
+    // theme/copy/hotkeys moved to plugins — the cmd layer sees them as
+    // unknown until a plugin claims them
+    for name in ["theme", "copy", "hotkeys", "usage", "intro", "gateway"] {
+        let err = run_command(&mut config, home.path(), name, &[])
+            .await
+            .unwrap_err();
+        assert_eq!(err.0, "unknown_command", "{name}");
     }
 
     let err = run_command(&mut config, home.path(), "reboot", &[])

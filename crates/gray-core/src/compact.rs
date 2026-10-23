@@ -49,28 +49,82 @@ pub(crate) const SUMMARY_ENVELOPE_PREFIX: &str =
 
 pub(crate) const COMPACTION_TRIGGER: &str = "Summarize this conversation so far for continuing it: outcomes, decisions, open questions. No tool calls.";
 
-pub(crate) async fn run_compaction_call(
-    agent: &Agent,
-    history: &[Message],
-    instructions: Option<&str>,
-) -> Result<String, CoreError> {
-    let mut messages = history.to_vec();
+/// Appended by the turn loop when the wire request ends on an assistant
+/// message; kept here so compaction can re-derive the wire-only tail for
+/// prefix proofs.
+pub(crate) const CONTINUE_TAIL: &str =
+    "Continue the pending user request using the retained context and summary.";
+
+fn trigger_message(instructions: Option<&str>) -> Message {
     let mut trigger = COMPACTION_TRIGGER.to_string();
     if let Some(instructions) = instructions.map(str::trim).filter(|s| !s.is_empty()) {
         trigger.push_str(&format!(
             "\n\n<user-instructions>\nThe user provided these instructions for this summary. Follow them with high priority:\n{instructions}\n</user-instructions>"
         ));
     }
-    messages.push(Message::user_injected(trigger));
+    Message::user_injected(trigger)
+}
+
+pub(crate) async fn run_compaction_call(
+    agent: &Agent,
+    history: &[Message],
+    instructions: Option<&str>,
+) -> Result<String, CoreError> {
+    let mut messages = history.to_vec();
+    messages.push(trigger_message(instructions));
 
     let system = agent.system_text();
     agent
         .complete_isolated(
             (!system.is_empty()).then_some(system),
             messages,
-            agent.tool_defs().to_vec(),
+            agent.request_tools(),
         )
         .await
+}
+
+/// The pi-cached-compaction trick: rebuild the summary call as the last
+/// turn's wire messages plus the appended trigger, so the provider serves
+/// almost all of it from the prompt cache it already holds. `history` must
+/// be the un-elided wire view (`scrubbed_messages`). Returns None — caller
+/// runs the normal cache-off path — unless the prefix guard proves every
+/// cached byte is reproduced.
+pub(crate) fn shared_prefix_compaction_messages(
+    agent: &Agent,
+    history: &[Message],
+    instructions: Option<&str>,
+) -> Option<Vec<Message>> {
+    if media_over_budget(history) {
+        return None;
+    }
+    let fp = agent.prefix_guard.last()?;
+    let mut messages = history.to_vec();
+    // A turn that ended on an assistant message carried a synthetic continue
+    // tail on the wire; re-derive it so the prefix can still match. The reply
+    // may already occupy the tail's slot in history — splice the tail back in
+    // at the divergence and let the proof re-check.
+    let tail = Message::user_injected(CONTINUE_TAIL);
+    if let Some(i) = (0..fp.message_count()).find(|&i| {
+        messages.get(i).map(crate::prefix_guard::message_digest) != fp.message_digest_at(i)
+    }) && fp.message_digest_at(i) == Some(crate::prefix_guard::message_digest(&tail))
+    {
+        messages.insert(i, tail);
+    }
+    // The request is only provably shared when the candidate covers every
+    // message the provider cached; growth since then (the turn's reply) is
+    // fine — it sits after the cached prefix.
+    if messages.len() < fp.message_count() {
+        return None;
+    }
+    messages.push(trigger_message(instructions));
+    let system = agent.system_text();
+    fp.shared_prefix_ok(
+        agent.provider.model_id(),
+        (!system.is_empty()).then_some(system),
+        &agent.request_tools(),
+        &messages,
+    )
+    .then_some(messages)
 }
 
 pub(crate) const RETAINED_MESSAGE_TOKEN_BUDGET: usize = 20_000;
@@ -183,13 +237,17 @@ pub(crate) const MEDIA_PAYLOAD_KEEP_BYTES: usize = 10_000_000;
 pub(crate) const MEDIA_PAYLOAD_MAX_COUNT: usize = 80;
 pub(crate) const MEDIA_PAYLOAD_KEEP_COUNT: usize = 40;
 
-pub(crate) fn elide_media_over_payload_budget(messages: &mut [Message]) -> usize {
+pub(crate) fn media_over_budget(messages: &[Message]) -> bool {
     let (count, bytes) = messages
         .iter()
         .flat_map(|m| &m.content)
         .filter_map(media_bytes)
         .fold((0, 0), |(count, bytes), n| (count + 1, bytes + n));
-    if count <= MEDIA_PAYLOAD_MAX_COUNT && bytes <= MEDIA_PAYLOAD_MAX_BYTES {
+    count > MEDIA_PAYLOAD_MAX_COUNT || bytes > MEDIA_PAYLOAD_MAX_BYTES
+}
+
+pub(crate) fn elide_media_over_payload_budget(messages: &mut [Message]) -> usize {
+    if !media_over_budget(messages) {
         return 0;
     }
     let (mut kept, mut kept_bytes, mut elided) = (0, 0, 0);

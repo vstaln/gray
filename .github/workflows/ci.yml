@@ -110,16 +110,6 @@ jobs:
         env:
           RUST_BACKTRACE: 1
         run: cargo nextest run --locked --workspace --profile ci
-      # A benchmark, not a correctness test: #[ignore]d so it does not run on
-      # every OS, and run once here against the test build above. It must use
-      # the same `--workspace` feature set as that build; `-p gray-tools` (or a
-      # release run in perf-floor) resolves different features and recompiles,
-      # which cost perf-floor four minutes.
-      - if: env.CODE == 'true' && matrix.os == 'ubuntu-latest'
-        name: Tool-call latency baseline
-        run: >-
-          cargo nextest run --locked --workspace --profile ci --run-ignored only
-          --no-capture -E 'binary(tool_bench) and test(=baseline_tool_bench)'
       # nextest does not run doctests. They are platform-neutral, so one OS is
       # enough.
       - if: env.CODE == 'true' && matrix.os == 'ubuntu-latest'

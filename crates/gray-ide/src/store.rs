@@ -114,11 +114,14 @@ pub enum Item {
         id: String,
         role: Role,
         text: String,
+        at: i64,
     },
     Activity {
+        id: String,
         kind: String,
         label: String,
         detail: String,
+        at: i64,
     },
 }
 
@@ -234,23 +237,26 @@ impl State {
                         id: id.clone(),
                         role: role.clone(),
                         text: text.clone(),
+                        at: *at,
                     });
                     t.updated_at = *at;
                 }
             }
             Event::ActivityAdded {
                 thread_id,
+                id,
                 kind,
                 label,
                 detail,
                 at,
-                ..
             } => {
                 if let Some(t) = self.thread_mut(thread_id) {
                     t.items.push(Item::Activity {
+                        id: id.clone(),
                         kind: kind.clone(),
                         label: label.clone(),
                         detail: detail.clone(),
+                        at: *at,
                     });
                     t.updated_at = *at;
                 }

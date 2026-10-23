@@ -1,7 +1,3 @@
-pub fn is_noop(full: &str) -> bool {
-    crate::shell::tools::bash::noop_family(full.trim(), false).is_some()
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CoreCommand<'a> {
     pub command: &'a str,
@@ -256,7 +252,7 @@ pub fn read_only(full: &str) -> Option<ReadOnly> {
     let args = &first[1..];
     let classified = match program {
         "cat" if !args.is_empty() => {
-            let media = args.iter().all(|a| {
+            let media = args.iter().filter(|a| *a != "--").all(|a| {
                 !a.starts_with('-') && crate::images::is_viewable_extension(std::path::Path::new(a))
             });
 

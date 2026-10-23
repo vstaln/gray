@@ -164,7 +164,7 @@ pub fn render_event_with_context<W: Write>(
             }
             w.flush()
         }
-        AgentEvent::StepUsage { .. } => Ok(()),
+        AgentEvent::StepUsage { .. } | AgentEvent::PrefixChanged { .. } => Ok(()),
 
         AgentEvent::Compacted {
             tokens_before,
@@ -955,6 +955,12 @@ async fn run_print_inner(
         });
     }
 
+    // Plugin providers: same gap, filled from the provider's own catalog —
+    // awaited, since the running row below records the ceiling.
+    if config.uses_plugin_credentials() && config.context_window.is_none() {
+        crate::setup::context::warm_plugin_model_context(config).await;
+    }
+
     let steering = json.is_some() && steer_enabled();
     match json.as_deref() {
         Some(output) if crate::ask::json_enabled() || steering => {
@@ -999,7 +1005,7 @@ async fn run_print_inner(
     };
     let cwd = std::env::current_dir()?;
     if !config.bare {
-        let _ = crate::plugin_status::ensure_boot(None);
+        let _ = crate::plugin_status::ensure_boot(Some(crate::host::default_handler(cwd.clone())));
     }
     let store = JsonlSessionStore::default();
     let prompt_text = crate::failed_turn::prompt_text(prompt, &user_message);
@@ -1082,16 +1088,6 @@ async fn run_print_inner(
         anyhow::bail!("max wall time {max}s reached — stopping (--max-wall-secs SECS)");
     }
     let mut agent = build_agent(config, &cwd, Some(session_id.as_str())).await?;
-    agent.set_must_act(config.bare);
-    if std::env::var_os("GRAY_BENCH_NUDGES").is_some() {
-        agent.set_bench_nudges(true);
-        if let Ok(v) = std::env::var("GRAY_THRASH_NUDGE_AT") {
-            let mut marks: Vec<u32> = v.split(',').filter_map(|s| s.trim().parse().ok()).collect();
-            marks.sort_unstable();
-            marks.dedup();
-            agent.set_bench_thrash_marks(marks);
-        }
-    }
     log::debug!(target: "gray_timing", "spawn agent_built elapsed_ms={}", crate::turn_caps::process_start().elapsed().as_millis());
 
     if let Some(out) = json.as_deref_mut() {
@@ -1177,12 +1173,29 @@ async fn run_print_inner(
         }));
     }
 
-    let user_msg = if let Some(prompt) = prompt {
+    let mut user_msg = if let Some(prompt) = prompt {
         let inline = crate::repl::attachments::extract_inline_image_paths(prompt, &cwd);
         crate::repl::build_user_message_with_attachments(prompt, &inline)
     } else {
         user_message
     };
+    if resume_target.is_some()
+        && let Ok(home) = crate::setup::gray_home()
+    {
+        let mut delivered: Vec<String> =
+            crate::session_mailbox::drain_session_inbox(&home, session_id.as_str())
+                .into_iter()
+                .map(|d| d.prompt)
+                .collect();
+        for m in crate::session_send::claim_all(&home, session_id.as_str()) {
+            delivered.push(crate::session_send::prompt_for(&m.from, &m.text));
+        }
+        if !delivered.is_empty() {
+            let mut content = gray_core::message::Message::user(delivered.join("\n\n")).content;
+            content.extend(user_msg.content);
+            user_msg.content = content;
+        }
+    }
     log::debug!(target: "gray_timing", "spawn_to_ready_ms={}", crate::turn_caps::process_start().elapsed().as_millis());
 
     let sigint_cancel = cancel.clone();

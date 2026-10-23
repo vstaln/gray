@@ -119,6 +119,7 @@ fn bare_cat_of_media_is_a_view() {
         ))
     );
     assert_eq!(look("cat a.png b.pdf").map(|l| l.0), Some(Look::Viewed));
+    assert_eq!(look("cat -- '/tmp/a.png'").map(|l| l.0), Some(Look::Viewed));
 }
 
 #[test]

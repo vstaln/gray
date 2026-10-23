@@ -2628,7 +2628,7 @@ dependencies = [
 
 [[package]]
 name = "gray"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2669,7 +2669,7 @@ dependencies = [
 
 [[package]]
 name = "gray-core"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -2679,7 +2679,6 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
- "strsim",
  "thiserror 2.0.21",
  "tokio",
  "tokio-util",
@@ -2707,7 +2706,7 @@ dependencies = [
 
 [[package]]
 name = "gray-markdown"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "anstyle",
  "anstyle-lossy",
@@ -2726,7 +2725,7 @@ dependencies = [
 
 [[package]]
 name = "gray-pkg"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -2744,7 +2743,7 @@ dependencies = [
 
 [[package]]
 name = "gray-plugin"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2755,6 +2754,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "serde_path_to_error",
  "sha2 0.10.9",
  "tempfile",
  "tokio",
@@ -2764,10 +2764,11 @@ dependencies = [
 
 [[package]]
 name = "gray-provider"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
+ "chrono",
  "eventsource-stream",
  "futures",
  "gray-core",
@@ -2781,7 +2782,7 @@ dependencies = [
 
 [[package]]
 name = "gray-tools"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -2795,7 +2796,6 @@ dependencies = [
  "log",
  "regex",
  "serde_json",
- "strsim",
  "tempfile",
  "tokio",
  "tokio-util",
@@ -5514,6 +5514,17 @@ dependencies = [
  "memchr",
  "ryu",
  "serde",
+]
+
+[[package]]
+name = "serde_path_to_error"
+version = "0.1.20"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "10a9ff822e371bb5403e391ecd83e182e0e77ba7f6fe0160b795797109d1b457"
+dependencies = [
+ "itoa",
+ "serde",
+ "serde_core",
 ]
 
 [[package]]

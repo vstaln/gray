@@ -2,6 +2,38 @@
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-10-24
+
+### Added
+- **In-TUI plugin marketplace** (`/plugins`): browse and search the
+  served catalog, stage installs with a manifest probe and capability
+  consent screen, and activate a freshly installed plugin without
+  restarting the session.
+- **`/accounts` panel + plugin account pools (auth.json v2).**
+  Subscription plugins (claude-sub, devin-sub, …) can carry a pool of
+  accounts; rotation, pin/clear and status live in the panel.
+- **`gray send` / `gray read` forward to the gateway plugin** and accept
+  a unique session-id prefix instead of demanding the full id.
+- **Deferred tool loading.** Requests now carry the always-on set (bash,
+  memory, request_user_input, web_search, web_fetch) plus a `load_tools`
+  index; any other tool becomes available once the model loads or calls
+  it. One test request went from 266 tools / ~680k chars of schema to
+  6 / ~21k. `GRAY_DEFER_TOOLS=0` disables.
+- **Prompt-prefix tracking with named cache-miss causes.** The agent
+  fingerprints every request (provider, system, tools, per-message
+  digests); when a request's prefix differs from the previous one the
+  miss notice says why — `Cache miss (tool list changed)`, `(system
+  prompt changed)`, `(older images dropped from context)`, `(history
+  rewritten)` — instead of a bare `Cache miss`. The fingerprint persists
+  in a `<session>.prefix` sidecar, so the first request after a restart
+  can still name the change.
+- **Auto-session titles, restored.** The titler stopped firing once a
+  session had been saved mid-turn; the guard now relies on the claim
+  lockfile instead of the saved-state heuristic.
+- **In-keyboard-search preview while browsing history** — Up keeps
+  walking older entries even when the recalled entry is multi-line,
+  mirroring Down.
+
 ### Changed
 - **`gray login` / `whoami` / `logout` / `cloud` / `cron` moved out of
   core into plugins** (`gray-account`, `gray-gateway`). Core resolves the
@@ -25,6 +57,45 @@
   plugin install fusion`). The lead + persistent-sidekick `handoff`
   pair, the folded Fusion model row, and provider pairings ship as a
   plugin now, and it's opt-in rather than in the default install set.
+
+### Fixed
+- **Bash cards show the whole command.** The card only showed the first
+  heredoc body, so steps before it, after its delimiter, or in a second
+  heredoc never appeared, and multi-line or 80+ column commands lost
+  everything past the header line. Now anything the header can't hold is
+  shown; a lone `cat > f <<EOF` write still shows just its body.
+- **The composer band now paints over transcript rows when the input
+  box grows** (e.g. a multi-line history recall) instead of scrolling
+  transcript rows into scrollback — which was what left a blank gap and
+  dropped the text bar when pressing Down. Covered rows are repainted
+  when the band shrinks.
+- **Media-dump refusals inspect each command segment** (`;`, `|`, `&&`)
+  separately instead of pattern-matching the whole line —
+  `tail x.log; ssh maid 'ls ~/out/*.mp4'` no longer refuses, while
+  `cat a.png | wc -c` still does.
+- **A malformed `plugins/lock.json` entry no longer empties the
+  registry.** Entries are parsed individually via
+  `serde_path_to_error`; a bad one (e.g. `"hash": null`) is skipped with
+  a `bad plugin entry <name>: <field>: <reason>` warning that reaches
+  the TUI, and provider spawn failures now name the provider (`provider
+  "x" failed to start: empty argv`).
+- **A sidecar whose executable vanished backs off** (1s doubling to
+  60s, gives up after 5) with one notice at first failure and one at
+  give-up — instead of `respawn failed (os error 2)` on every hook call.
+- **The session picker preview skips harness-inserted messages**
+  (`[Context update]`, background-task notices) so rows show what you
+  actually typed.
+- **Wrapped list items in the transcript indent under the item text**
+  instead of flushing to column 0.
+- **System prompt and per-turn context slimmed:** the plugin inventory
+  is a one-line summary, the batching paragraph is shorter, memory
+  entries render as plain lines (no JSON/`Why:`), and the subagents
+  blurb moved to `gray subagents --help` — roughly 8.6k → ~2k chars.
+
+> The sibling `crates/gray-ide` app (excluded from this workspace) saw a
+> large parallel overhaul in this range — monocode restyle, motion
+> pass, palette/panes/approvals/diff view, notifications, skills panel —
+> it versions separately.
 
 ## [0.2.2] - 2026-10-17
 

@@ -2,7 +2,6 @@ pub mod agent;
 mod agent_compact;
 mod agent_loop;
 mod agent_tools;
-mod cache_stats;
 pub mod cache_warm;
 mod compact;
 pub mod credential;
@@ -16,7 +15,6 @@ pub mod paths;
 pub mod prefix_guard;
 pub mod redaction;
 pub mod spill;
-pub mod squeeze;
 pub mod tool_out;
 
 pub use agent::{
@@ -36,10 +34,6 @@ mod credential_tests;
 #[cfg(test)]
 #[path = "input_tests.rs"]
 mod input_tests;
-
-#[cfg(test)]
-#[path = "squeeze_tests.rs"]
-mod squeeze_tests;
 
 #[cfg(test)]
 #[path = "spill_tests.rs"]

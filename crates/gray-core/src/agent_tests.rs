@@ -1,6 +1,5 @@
 use super::*;
 use crate::event::{AgentEvent, StopReason, Usage};
-use crate::parallel::ENV_LOCK;
 use std::collections::VecDeque;
 use std::sync::Mutex;
 
@@ -202,13 +201,23 @@ impl ToolExecutor for PeakExecutor {
 }
 
 fn read_tool() -> ToolDef {
-    ToolDef::new("read", "r", serde_json::json!({"type": "object"}))
+    ToolDef::new("bash", "r", serde_json::json!({"type": "object"}))
 }
 
 fn two_read_script() -> Vec<StreamEvent> {
     vec![
-        StreamEvent::tool_call_delta(0, Some("c1".into()), Some("read".into()), r#"{"path":"a"}"#),
-        StreamEvent::tool_call_delta(1, Some("c2".into()), Some("read".into()), r#"{"path":"b"}"#),
+        StreamEvent::tool_call_delta(
+            0,
+            Some("c1".into()),
+            Some("bash".into()),
+            r#"{"command":"cat a"}"#,
+        ),
+        StreamEvent::tool_call_delta(
+            1,
+            Some("c2".into()),
+            Some("bash".into()),
+            r#"{"command":"cat b"}"#,
+        ),
         StreamEvent::message_complete(Some(StopReason::ToolUse), None),
     ]
 }
@@ -935,25 +944,6 @@ async fn unknown_tool_name_skips_executor_with_error_result() {
         "a far miss stays terse — no inventory dump: {output}"
     );
 
-    let hint = crate::tool_out::unknown_tool("lookpu", &[TOOL_NAME.to_string()]);
-    assert!(hint.contains("'lookup'"), "got {hint}");
-
-    let namespaced = crate::tool_out::unknown_tool(
-        "read_file",
-        &["native__read_file".to_string(), "bash".to_string()],
-    );
-    assert!(
-        namespaced.contains("'native__read_file'"),
-        "unprefixed call should surface the namespaced tool: {namespaced}"
-    );
-    let unprefixed = crate::tool_out::unknown_tool(
-        "native__read_file",
-        &["read_file".to_string(), "bash".to_string()],
-    );
-    assert!(
-        unprefixed.contains("'read_file'"),
-        "namespaced call should surface the bare tool: {unprefixed}"
-    );
     assert_eq!(agent.messages()[1].role, Role::Assistant);
     assert!(matches!(
         &agent.messages()[2].content[0],
@@ -1034,20 +1024,6 @@ async fn malformed_string_args_skips_executor_with_error_result() {
         .expect("expected tool result for malformed args");
     assert!(is_error, "malformed args must be is_error, got {output}");
     assert!(output.contains("valid JSON object"), "got {output}");
-}
-
-fn empty_script() -> Vec<StreamEvent> {
-    vec![StreamEvent::message_complete(
-        Some(StopReason::EndTurn),
-        None,
-    )]
-}
-
-fn maxtokens_script(text: &str) -> Vec<StreamEvent> {
-    vec![
-        StreamEvent::text_delta(text.to_string()),
-        StreamEvent::message_complete(Some(StopReason::MaxTokens), None),
-    ]
 }
 
 #[tokio::test]
@@ -1210,62 +1186,33 @@ async fn context_overflow_surfaces_actionable_error_when_compact_fails() {
 }
 
 #[tokio::test]
-async fn empty_turn_retries_twice_then_ends_with_sentinel() {
-    let provider = FakeProvider::new(vec![
-        empty_script(),
-        empty_script(),
-        empty_script(),
-        empty_script(),
-    ]);
+async fn reasoning_only_turn_after_tool_result_surfaces_error_not_sentinel() {
+    let thought_only = || {
+        vec![
+            StreamEvent::thinking_delta("looks unrelated to my change"),
+            StreamEvent::message_complete(Some(StopReason::EndTurn), None),
+        ]
+    };
+    let provider = FakeProvider::new(vec![tool_script("c1"), thought_only(), thought_only()]);
     let mut agent = Agent::new(
         Box::new(provider),
-        Arc::new(FakeExecutor::new(ToolOutput::ok("unused"))),
+        Arc::new(FakeExecutor::new(ToolOutput::ok("result"))),
     );
 
-    let events = agent
+    let err = agent
         .run(Message::user("go"), ToolContext::default())
         .await
-        .expect("empty turn should end gracefully");
+        .expect_err("a turn that ends with nothing must not end the run silently");
 
     assert!(
-        events
-            .iter()
-            .any(|e| matches!(e, AgentEvent::TurnEnd { .. }))
-    );
-    assert_eq!(agent.messages().last().unwrap().text_content(), "(empty)");
-}
-
-#[tokio::test]
-async fn empty_after_tool_results_nudges_once_then_continues() {
-    let provider = FakeProvider::new(vec![
-        tool_script("c1"),
-        empty_script(),
-        empty_script(),
-        empty_script(),
-        end_script(),
-    ]);
-    let mut agent = Agent::new(
-        Box::new(provider),
-        Arc::new(FakeExecutor::new(ToolOutput::ok("tool says hi"))),
-    )
-    .with_tools(vec![tool_def()]);
-
-    let events = agent
-        .run(Message::user("go"), ToolContext::default())
-        .await
-        .expect("nudge should recover the turn");
-
-    assert!(
-        events
-            .iter()
-            .any(|e| matches!(e, AgentEvent::TurnEnd { .. }))
+        err.to_string().contains("no text or tool call"),
+        "got {err}"
     );
     assert!(
         agent
             .messages()
             .iter()
-            .any(|m| m.text_content().contains("process results")),
-        "expected the empty-after-tools nudge in history"
+            .all(|m| m.text_content() != "(empty)")
     );
 }
 
@@ -1275,179 +1222,6 @@ fn tool_script_with_args(id: &str, args: &str) -> Vec<StreamEvent> {
         StreamEvent::tool_call_delta(0, Some(id.to_string()), Some(TOOL_NAME.to_string()), args),
         StreamEvent::message_complete(Some(StopReason::ToolUse), Some(Usage::new(10, 5))),
     ]
-}
-
-#[tokio::test]
-async fn alternating_tool_empty_stays_bounded_and_nudges_once() {
-    let provider = FakeProvider::new(vec![
-        tool_script_with_args("c1", r#"{"q":"a"}"#),
-        empty_script(),
-        empty_script(),
-        empty_script(),
-        tool_script_with_args("c2", r#"{"q":"b"}"#),
-        empty_script(),
-        empty_script(),
-        empty_script(),
-        end_script(),
-    ]);
-    let mut agent = Agent::new(
-        Box::new(provider),
-        Arc::new(FakeExecutor::new(ToolOutput::ok("ok"))),
-    )
-    .with_tools(vec![tool_def()]);
-
-    let events = agent
-        .run(Message::user("go"), ToolContext::default())
-        .await
-        .expect("alternation must terminate");
-
-    assert!(
-        events
-            .iter()
-            .any(|e| matches!(e, AgentEvent::TurnEnd { .. }))
-    );
-    let nudges = agent
-        .messages()
-        .iter()
-        .filter(|m| m.text_content().contains("process results"))
-        .count();
-    assert_eq!(nudges, 1, "post-tool empty nudge must fire once per run");
-}
-
-fn text_end_script(text: &str) -> Vec<StreamEvent> {
-    vec![
-        StreamEvent::text_delta(text.to_string()),
-        StreamEvent::message_complete(Some(StopReason::EndTurn), None),
-    ]
-}
-
-#[tokio::test]
-async fn leaked_call_markup_ending_nudges() {
-    let leaked = concat!(
-        "Before writing code, let me grab the middle of `mod`.\n\n```gray_calls\n",
-        "[{\"name\": \"bash\", \"arguments\": {\"command\": \"sed -n '167,355p' mod\"}}]",
-        "<\x7cclose\x7c>argument<\x7csep\x7c><\x7cclose\x7c>call<\x7csep\x7c><\x7cclose\x7c>tools<\x7csep\x7c>",
-        "\n\n[User]\nContinue.\n\n[Assistant]\nRetrying my reads — the previous calls didn't return output."
-    );
-    let provider = FakeProvider::new(vec![text_end_script(leaked), end_script()]);
-    let mut agent = Agent::new(
-        Box::new(provider),
-        Arc::new(FakeExecutor::new(ToolOutput::ok("unused"))),
-    )
-    .with_tools(vec![tool_def()]);
-
-    agent
-        .run(Message::user("go"), ToolContext::default())
-        .await
-        .expect("markup leak should nudge");
-
-    assert!(
-        agent
-            .messages()
-            .iter()
-            .any(|m| m.text_content().contains("raw tool-call markup")),
-        "leaked tool-call markup should be nudged"
-    );
-}
-
-#[tokio::test]
-async fn nudge_continue_marks_a_message_boundary() {
-    let provider = FakeProvider::new(vec![text_end_script("```gray_calls\n[]"), end_script()]);
-    let mut agent = Agent::new(
-        Box::new(provider),
-        Arc::new(FakeExecutor::new(ToolOutput::ok("unused"))),
-    );
-
-    let events = agent
-        .run(Message::user("go"), ToolContext::default())
-        .await
-        .expect("markup leak should nudge");
-
-    let boundary = events
-        .iter()
-        .position(|e| matches!(e, AgentEvent::MessageBoundary))
-        .expect("nudge continuation emits a message boundary");
-    assert!(
-        events[..boundary]
-            .iter()
-            .any(|e| matches!(e, AgentEvent::TextDelta { .. })),
-        "boundary lands after the first message's text"
-    );
-    assert!(
-        events[boundary..]
-            .iter()
-            .any(|e| matches!(e, AgentEvent::TextDelta { delta } if delta == "done")),
-        "the new message's text streams after the boundary"
-    );
-}
-
-#[tokio::test]
-async fn maxtokens_truncation_continues_and_stitches_partial() {
-    let provider = FakeProvider::new(vec![
-        maxtokens_script("part1 "),
-        vec![
-            StreamEvent::text_delta("part2"),
-            StreamEvent::message_complete(Some(StopReason::EndTurn), None),
-        ],
-    ]);
-    let mut agent = Agent::new(
-        Box::new(provider),
-        Arc::new(FakeExecutor::new(ToolOutput::ok("unused"))),
-    );
-
-    agent
-        .run(Message::user("go"), ToolContext::default())
-        .await
-        .expect("continuation should succeed");
-
-    let joined = agent
-        .messages()
-        .iter()
-        .map(|m| m.text_content())
-        .collect::<Vec<_>>()
-        .join("\n");
-    assert!(
-        joined.contains("part1 ") && joined.contains("part2"),
-        "stitched: {joined}"
-    );
-    assert!(
-        joined.contains("continue exactly where you left off"),
-        "continuation prompt: {joined}"
-    );
-}
-
-#[tokio::test]
-async fn maxtokens_continuations_are_capped_then_partial_kept() {
-    let provider = FakeProvider::new(vec![
-        maxtokens_script("a"),
-        maxtokens_script("b"),
-        maxtokens_script("c"),
-        maxtokens_script("d"),
-    ]);
-    let mut agent = Agent::new(
-        Box::new(provider),
-        Arc::new(FakeExecutor::new(ToolOutput::ok("unused"))),
-    );
-
-    let events = agent
-        .run(Message::user("go"), ToolContext::default())
-        .await
-        .expect("capped continuation keeps partial");
-
-    assert!(
-        events
-            .iter()
-            .any(|e| matches!(e, AgentEvent::TurnEnd { .. }))
-    );
-    let nudges = agent
-        .messages()
-        .iter()
-        .filter(|m| {
-            m.text_content()
-                .contains("continue exactly where you left off")
-        })
-        .count();
-    assert_eq!(nudges, 2, "continuations must be capped");
 }
 
 #[test]
@@ -1530,6 +1304,34 @@ fn context_estimate_anchors_on_provider_usage() {
         agent.estimate_tokens(),
         100,
         "a rewrite drops the stale anchor"
+    );
+}
+
+#[tokio::test]
+async fn soft_elision_skips_a_provider_that_caches() {
+    let mut history = vec![Message::user("fix the bug")];
+    for i in 0..30 {
+        history.extend(big_tool_round(&format!("c{i}"), 8_192));
+    }
+    let mut agent = Agent::new(
+        Box::new(FakeProvider::new(vec![end_script()])),
+        Arc::new(FakeExecutor::new(ToolOutput::ok("unused"))),
+    )
+    .with_tools(vec![tool_def()])
+    .with_context_window(Some(100_000))
+    .with_messages(history);
+    agent.warm_cache_reported = true;
+
+    agent
+        .run(Message::user("continue"), ToolContext::default())
+        .await
+        .expect("one plain reply");
+
+    assert!(
+        tool_result_bodies(agent.messages())
+            .iter()
+            .all(|b| !b.contains("elided")),
+        "a warm prefix must not be rewritten"
     );
 }
 
@@ -2005,11 +1807,7 @@ async fn pre_post_hooks_emit_around_tool_execution() {
 }
 
 #[tokio::test]
-#[allow(clippy::await_holding_lock)]
 async fn parallel_batch_overlaps_reads_with_ordered_results() {
-    let _g = ENV_LOCK.lock().unwrap();
-    let prev = std::env::var("GRAY_PARALLEL_READS").ok();
-    unsafe { std::env::remove_var("GRAY_PARALLEL_READS") };
     let provider = FakeProvider::new(vec![two_read_script(), end_script()]);
     let peak = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let executor = PeakExecutor {
@@ -2022,10 +1820,6 @@ async fn parallel_batch_overlaps_reads_with_ordered_results() {
         .run(Message::user("go"), ToolContext::default())
         .await
         .unwrap();
-    match prev {
-        Some(v) => unsafe { std::env::set_var("GRAY_PARALLEL_READS", v) },
-        None => unsafe { std::env::remove_var("GRAY_PARALLEL_READS") },
-    }
     assert_eq!(
         peak.load(std::sync::atomic::Ordering::SeqCst),
         2,
@@ -2041,8 +1835,8 @@ async fn parallel_batch_overlaps_reads_with_ordered_results() {
     assert_eq!(
         results,
         vec![
-            ("c1".to_string(), "read-done".to_string()),
-            ("c2".to_string(), "read-done".to_string()),
+            ("c1".to_string(), "bash-done".to_string()),
+            ("c2".to_string(), "bash-done".to_string()),
         ],
         "results stay in input order, {events:?}"
     );
@@ -2057,55 +1851,6 @@ async fn parallel_batch_overlaps_reads_with_ordered_results() {
         last_end.is_some() && last_end < first_result,
         "both ends precede the first result, {events:?}"
     );
-}
-
-#[tokio::test]
-#[allow(clippy::await_holding_lock)]
-async fn lane_off_matches_sequential_events() {
-    let _g = ENV_LOCK.lock().unwrap();
-    let prev = std::env::var("GRAY_PARALLEL_READS").ok();
-    let mut runs = Vec::new();
-    for val in [Some("0"), None] {
-        match val {
-            Some(v) => unsafe { std::env::set_var("GRAY_PARALLEL_READS", v) },
-            None => unsafe { std::env::remove_var("GRAY_PARALLEL_READS") },
-        }
-        let provider = FakeProvider::new(vec![two_read_script(), end_script()]);
-        let executor = FakeExecutor::new(ToolOutput::ok("x"));
-        let mut agent =
-            Agent::new(Box::new(provider), Arc::new(executor)).with_tools(vec![read_tool()]);
-        runs.push(
-            agent
-                .run(Message::user("go"), ToolContext::default())
-                .await
-                .unwrap(),
-        );
-    }
-    match prev {
-        Some(v) => unsafe { std::env::set_var("GRAY_PARALLEL_READS", v) },
-        None => unsafe { std::env::remove_var("GRAY_PARALLEL_READS") },
-    }
-    assert_eq!(runs.len(), 2);
-
-    let call_events = |evs: &[AgentEvent], want: &str| -> Vec<AgentEvent> {
-        evs.iter()
-            .filter(|e| match e {
-                AgentEvent::ToolCallStart { id, .. }
-                | AgentEvent::ToolCallProgress { id, .. }
-                | AgentEvent::ToolCallEnd { id, .. }
-                | AgentEvent::ToolResult { id, .. } => id == want,
-                _ => true,
-            })
-            .cloned()
-            .collect()
-    };
-    for id in ["c1", "c2"] {
-        assert_eq!(
-            call_events(&runs[0], id),
-            call_events(&runs[1], id),
-            "lane off must match lane on for call {id}"
-        );
-    }
 }
 
 struct CancelOnFirstBefore {
@@ -2124,11 +1869,7 @@ impl PluginHooks for CancelOnFirstBefore {
 }
 
 #[tokio::test]
-#[allow(clippy::await_holding_lock)]
 async fn parallel_prepass_cancel_backfills_whole_run_exactly_once() {
-    let _g = ENV_LOCK.lock().unwrap();
-    let prev = std::env::var("GRAY_PARALLEL_READS").ok();
-    unsafe { std::env::remove_var("GRAY_PARALLEL_READS") };
     let cancel = tokio_util::sync::CancellationToken::new();
     let provider = FakeProvider::new(vec![two_read_script(), end_script()]);
     let executor = FakeExecutor::new(ToolOutput::ok("x"));
@@ -2147,10 +1888,6 @@ async fn parallel_prepass_cancel_backfills_whole_run_exactly_once() {
         .run(Message::user("go"), ctx)
         .await
         .expect_err("pre-pass cancel must abort the run");
-    match prev {
-        Some(v) => unsafe { std::env::set_var("GRAY_PARALLEL_READS", v) },
-        None => unsafe { std::env::remove_var("GRAY_PARALLEL_READS") },
-    }
     assert!(matches!(err, CoreError::Cancelled), "got {err:?}");
     assert!(
         call_log.lock().expect("calls lock poisoned").is_empty(),
@@ -2558,16 +2295,11 @@ async fn reasoning_item_without_summary_attaches_carrier() {
 }
 
 #[test]
-fn image_budget_is_bounded_and_rewrites_notify_session() {
+fn image_budget_is_bounded_and_bumps_the_history_revision() {
     let mut agent = Agent::new(
         Box::new(FakeProvider::new(vec![])),
         Arc::new(FakeExecutor::new(ToolOutput::ok(""))),
     );
-    let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let hook_count = count.clone();
-    agent = agent.with_history_rewrite_hook(Arc::new(move || {
-        hook_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-    }));
     let before = agent.history_revision();
     agent.set_messages(vec![Message {
         role: Role::User,
@@ -2580,7 +2312,6 @@ fn image_budget_is_bounded_and_rewrites_notify_session() {
     assert!(agent.estimate_tokens() <= 4096);
     assert!(agent.estimate_tokens() >= 1000);
     assert_ne!(agent.history_revision(), before);
-    assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 1);
 }
 
 #[tokio::test]
@@ -3362,210 +3093,6 @@ async fn tool_after_replacement_lands_in_history() {
         })
         .collect();
     assert_eq!(results, vec!["RAW [hook note]"]);
-}
-
-#[tokio::test]
-async fn bench_nudges_appends_a_budget_line_to_requests_not_history() {
-    let provider = FakeProvider::new(vec![end_script()]);
-    let seen = provider.seen_requests();
-    let mut agent = Agent::new(
-        Box::new(provider),
-        Arc::new(FakeExecutor::new(ToolOutput::ok(""))),
-    );
-    agent.set_bench_nudges(true);
-    agent
-        .run(Message::user("hi"), ToolContext::default())
-        .await
-        .expect("run should succeed");
-
-    let reqs = seen.lock().expect("seen lock");
-    let last = reqs[0].1.last().expect("a final request message");
-    assert!(
-        last.text_content().contains("[harness] request 1"),
-        "expected ephemeral budget line in request, got {last:?}"
-    );
-    assert!(
-        !agent
-            .messages()
-            .iter()
-            .any(|m| m.text_content().contains("[harness]")),
-        "budget line must not persist into history"
-    );
-}
-
-#[tokio::test]
-async fn bench_nudges_finish_gate_asks_for_verification_once() {
-    let provider = FakeProvider::new(vec![tool_script("call_1"), end_script(), end_script()]);
-    let seen = provider.seen_requests();
-    let mut agent = Agent::new(
-        Box::new(provider),
-        Arc::new(FakeExecutor::new(ToolOutput::ok("done"))),
-    )
-    .with_tools(vec![tool_def()]);
-    agent.set_bench_nudges(true);
-    agent
-        .run(Message::user("go"), ToolContext::default())
-        .await
-        .expect("run should succeed");
-
-    assert_eq!(seen.lock().expect("seen lock").len(), 3);
-    let nudges = agent
-        .messages()
-        .iter()
-        .filter(|m| m.text_content().contains("verify the deliverable"))
-        .count();
-    assert_eq!(nudges, 1, "finish gate must nudge exactly once");
-}
-
-#[tokio::test]
-async fn bench_nudges_thrash_mark_adds_converge_hint() {
-    let provider = FakeProvider::new(vec![
-        tool_script("a"),
-        tool_script("b"),
-        end_script(),
-        end_script(),
-    ]);
-    let seen = provider.seen_requests();
-    let mut agent = Agent::new(
-        Box::new(provider),
-        Arc::new(FakeExecutor::new(ToolOutput::ok("x"))),
-    )
-    .with_tools(vec![tool_def()]);
-    agent.set_bench_nudges(true);
-    agent.set_bench_thrash_marks(vec![2]);
-    agent
-        .run(Message::user("go"), ToolContext::default())
-        .await
-        .expect("run should succeed");
-
-    let reqs = seen.lock().expect("seen lock");
-    let note1 = reqs[0].1.last().expect("note").text_content();
-    let note2 = reqs[1].1.last().expect("note").text_content();
-    assert!(!note1.contains("many requests used"), "early: {note1}");
-    assert!(note2.contains("many requests used"), "mark 2: {note2}");
-}
-
-#[tokio::test]
-async fn malformed_calls_block_names_the_block_not_the_tool() {
-    let provider = FakeProvider::new(vec![
-        vec![
-            StreamEvent::tool_call_delta(
-                0,
-                Some("c-block".into()),
-                Some(TOOL_NAME.into()),
-                r#"[{"name": "x", "arguments": {"q": 1}]"#,
-            ),
-            StreamEvent::message_complete(Some(StopReason::ToolUse), None),
-        ],
-        end_script(),
-    ]);
-    let executor = FakeExecutor::new(ToolOutput::ok("should-not-reach"));
-    let call_log = executor.calls.clone();
-    let mut agent = Agent::new(Box::new(provider), Arc::new(executor)).with_tools(vec![tool_def()]);
-    let events = agent
-        .run(Message::user("go"), ToolContext::default())
-        .await
-        .unwrap();
-    assert!(call_log.lock().expect("calls lock poisoned").is_empty());
-    let output = events
-        .iter()
-        .find_map(|e| match e {
-            AgentEvent::ToolResult {
-                id,
-                output,
-                is_error: true,
-            } if id == "c-block" => Some(output.clone()),
-            _ => None,
-        })
-        .expect("expected an error result for the block");
-    assert!(
-        output.contains("tool-call block is not valid JSON"),
-        "got {output}"
-    );
-    assert!(output.contains("line 1 column"), "got {output}");
-    assert!(!output.contains(TOOL_NAME), "got {output}");
-}
-
-#[tokio::test]
-async fn valid_calls_block_expands_and_runs_each_call() {
-    let provider = FakeProvider::new(vec![
-        vec![
-            StreamEvent::tool_call_delta(
-                0,
-                Some("c-block".into()),
-                Some(TOOL_NAME.into()),
-                r#"[{"name": "lookup", "arguments": {"q": 1}}, {"name": "lookup", "arguments": {"q": 2}}]"#,
-            ),
-            StreamEvent::message_complete(Some(StopReason::ToolUse), None),
-        ],
-        end_script(),
-    ]);
-    let executor = FakeExecutor::new(ToolOutput::ok("hit"));
-    let call_log = executor.calls.clone();
-    let call_args = executor.call_args.clone();
-    let mut agent = Agent::new(Box::new(provider), Arc::new(executor)).with_tools(vec![tool_def()]);
-    let events = agent
-        .run(Message::user("go"), ToolContext::default())
-        .await
-        .unwrap();
-    let logged = call_args.lock().expect("args lock");
-    assert_eq!(
-        logged.len(),
-        2,
-        "both block elements should run: {logged:?}"
-    );
-    assert_eq!(logged[0].1["q"], 1);
-    assert_eq!(logged[1].1["q"], 2);
-    drop(logged);
-    let output = events
-        .iter()
-        .find_map(|e| match e {
-            AgentEvent::ToolResult {
-                id,
-                output,
-                is_error,
-            } if id == "c-block" => Some((output.clone(), *is_error)),
-            _ => None,
-        })
-        .expect("expected one merged result for the block");
-    assert!(!output.1, "block ran: {}", output.0);
-    assert!(output.0.contains("ran 2/2"), "got {}", output.0);
-}
-
-#[tokio::test]
-async fn malformed_calls_block_runs_salvageable_elements() {
-    let provider = FakeProvider::new(vec![
-        vec![
-            StreamEvent::tool_call_delta(
-                0,
-                Some("c-block".into()),
-                Some(TOOL_NAME.into()),
-                r#"[{"name": "lookup", "arguments": {"q": 7}} , {"name": "lookup", "arguments": {"q": truncated]"#,
-            ),
-            StreamEvent::message_complete(Some(StopReason::ToolUse), None),
-        ],
-        end_script(),
-    ]);
-    let executor = FakeExecutor::new(ToolOutput::ok("hit"));
-    let call_args = executor.call_args.clone();
-    let mut agent = Agent::new(Box::new(provider), Arc::new(executor)).with_tools(vec![tool_def()]);
-    let events = agent
-        .run(Message::user("go"), ToolContext::default())
-        .await
-        .unwrap();
-    let logged = call_args.lock().expect("args lock");
-    assert_eq!(logged.len(), 1, "only the intact element runs: {logged:?}");
-    assert_eq!(logged[0].1["q"], 7);
-    drop(logged);
-    let output = events
-        .iter()
-        .find_map(|e| match e {
-            AgentEvent::ToolResult { id, output, .. } if id == "c-block" => Some(output.clone()),
-            _ => None,
-        })
-        .expect("expected a merged result for the block");
-    assert!(output.contains("ran 1/"), "got {output}");
-    assert!(output.contains("dropped"), "got {output}");
 }
 
 #[test]

@@ -80,81 +80,30 @@ pub fn identity_block(model_label: &str, model_id: &str, provider: &str) -> Stri
     lines.join("\n")
 }
 
-/// A short inventory of the session's plugins so the model knows what the
-/// user has installed instead of inferring it from the tool list alone.
-/// `cli` holds names `gray <name>` forwarding can reach (lock-registered
-/// plugins — dispatch lazily adopts entries that were never probed).
 pub fn plugins_block(
     manifests: &[gray_plugin::Manifest],
     cli: &std::collections::BTreeSet<String>,
 ) -> String {
-    if manifests.is_empty() {
+    let names: Vec<&str> = manifests
+        .iter()
+        .map(|m| m.name.as_str())
+        .filter(|n| cli.contains(*n))
+        .collect();
+    if names.is_empty() {
         return String::new();
     }
-    const MAX_TOOLS: usize = 8;
-    let mut lines = Vec::with_capacity(manifests.len());
-    for m in manifests {
-        let mut parts: Vec<String> = Vec::new();
-        let commands: Vec<&str> = m
-            .commands
-            .iter()
-            .chain(m.subcommands.iter())
-            .map(String::as_str)
-            .collect();
-        if !commands.is_empty() {
-            parts.push(format!("commands {}", commands.join(" ")));
-        }
-        if !m.tools.is_empty() {
-            let shown: Vec<&str> = m
-                .tools
-                .iter()
-                .take(MAX_TOOLS)
-                .map(|t| t.name.as_str())
-                .collect();
-            let extra = m.tools.len() - shown.len();
-            parts.push(if extra == 0 {
-                format!("tools {}", shown.join(", "))
-            } else {
-                format!("tools {}, +{extra} more", shown.join(", "))
-            });
-        }
-        if cli.contains(&m.name) {
-            let verbs = if m.completion.is_empty() {
-                String::new()
-            } else {
-                format!(" — verbs: {}", m.completion.join(" "))
-            };
-            parts.push(format!("cli `gray {}`{verbs}", m.name));
-        }
-        let version = if m.version.is_empty() {
-            String::new()
-        } else {
-            format!(" {}", m.version)
-        };
-        if parts.is_empty() {
-            lines.push(format!("- {}{version}", m.name));
-        } else {
-            lines.push(format!("- {}{version} — {}", m.name, parts.join("; ")));
-        }
-    }
     format!(
-        "Plugins live in this session:\n{}\nPlugin slash commands are typed by the user, not you — \
-         drive a plugin through its listed tools, or from bash via its `gray` cli where marked \
-         (`gray <name> --help` prints its usage).",
-        lines.join("\n")
+        "Plugin CLIs (run from bash; `gray <name> --help` prints usage): {}",
+        names.join(", ")
     )
 }
 
 const TOOL_BATCHING_GUIDANCE: &str = "\
-Tool batching: the tool calls you make in one turn are all run, and their results \
-arrive together in the next turn. Independent calls — reading several files, running \
-the build and the tests, probing two hypotheses — therefore cost one round between \
-them instead of one round each, and every round re-reads the whole conversation. \
-Issue independent calls together in one turn, and only chain calls across turns when \
-the later one actually depends on the earlier one. Same-turn calls may also run \
-concurrently, which changes latency, not cost. A bash command still running at its \
-timeout is not killed: it keeps running as a background job and its completion notice \
-wakes you in a later turn, so keep working or end your turn instead of polling.";
+Tool batching: calls made in one turn all run, possibly concurrently, and their results \
+arrive together, so independent calls (several reads, build and tests) cost one round \
+instead of one each; chain across turns only when a call needs an earlier result. A bash \
+command still running at its timeout is not killed: it keeps running as a background job \
+and its completion wakes you later, so keep working or end your turn instead of polling.";
 
 pub fn harness_facts(cache_ttl: Option<std::time::Duration>) -> String {
     let mut out = TOOL_BATCHING_GUIDANCE.to_string();

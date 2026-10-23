@@ -26,6 +26,8 @@ enum Verdict {
     Global,
     BashCommands(String),
     Deny(Option<String>),
+    /// The prompt was dismissed (Esc) without a pick: interrupt the turn.
+    Dismissed,
 }
 
 pub fn executor_wrap() -> gray_plugin::builder::ExecutorWrap {
@@ -34,14 +36,20 @@ pub fn executor_wrap() -> gray_plugin::builder::ExecutorWrap {
 
 struct ConsentExecutor {
     inner: Arc<dyn ToolExecutor>,
-    allowed: Arc<tokio::sync::Mutex<HashSet<String>>>,
+    allowed: &'static tokio::sync::Mutex<HashSet<String>>,
+}
+
+fn session_allowed() -> &'static tokio::sync::Mutex<HashSet<String>> {
+    static SET: std::sync::OnceLock<tokio::sync::Mutex<HashSet<String>>> =
+        std::sync::OnceLock::new();
+    SET.get_or_init(Default::default)
 }
 
 impl ConsentExecutor {
     fn new(inner: Arc<dyn ToolExecutor>) -> Self {
         Self {
             inner,
-            allowed: Arc::new(tokio::sync::Mutex::new(HashSet::new())),
+            allowed: session_allowed(),
         }
     }
 }
@@ -249,7 +257,8 @@ async fn ask_consent(name: &str, args: &serde_json::Value, cwd: &std::path::Path
         Some(l) if l == project_label => Verdict::Project,
         Some(l) if l == global_label => Verdict::Global,
         Some(DENY_WHY) => Verdict::Deny(note),
-        _ => Verdict::Deny(None),
+        Some(_) => Verdict::Deny(None),
+        None => Verdict::Dismissed,
     }
 }
 
@@ -297,7 +306,7 @@ impl ToolExecutor for ConsentExecutor {
         args: serde_json::Value,
     ) -> BoxFuture<'static, ToolOutput> {
         let inner = self.inner.clone();
-        let allowed = self.allowed.clone();
+        let allowed = self.allowed;
         let ctx = ctx.clone();
         let name = name.to_string();
         Box::pin(async move {
@@ -339,6 +348,13 @@ impl ToolExecutor for ConsentExecutor {
                             }
                         }
                         Verdict::Once => {}
+                        Verdict::Dismissed => {
+                            // Esc on the prompt means stop, as it does
+                            // everywhere else mid-turn — not "decline and
+                            // let the model carry on".
+                            ctx.cancel.cancel();
+                            return ToolOutput::error("cancelled by user");
+                        }
                         Verdict::Deny(reason) => {
                             return ToolOutput::error(match reason {
                                 Some(r) if !r.is_empty() => {

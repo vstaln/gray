@@ -73,6 +73,19 @@ pub struct Entry {
 
     #[serde(default)]
     pub commands: Vec<String>,
+
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub providers: Vec<IndexProviderDecl>,
+}
+
+/// A provider declaration copied from a plugin's manifest into the index —
+/// `{ "id": "claude", "name": "Claude" }`. Only the label rides the index;
+/// the transport/auth declaration stays in the plugin's own manifest.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IndexProviderDecl {
+    pub id: String,
+    #[serde(default)]
+    pub name: String,
 }
 
 impl Entry {

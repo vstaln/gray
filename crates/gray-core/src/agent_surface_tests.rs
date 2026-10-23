@@ -1,6 +1,5 @@
 use super::*;
 use crate::message::Message;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 struct Named(&'static str);
 
@@ -39,16 +38,11 @@ fn tool(name: &str) -> ToolDef {
 
 #[test]
 fn model_switch_keeps_plugin_surface_and_new_model_side() {
-    let rewrites = Arc::new(AtomicUsize::new(0));
-    let seen = Arc::clone(&rewrites);
     let old = Agent::new(Box::new(Named("old-model")), Arc::new(Exec("old-exec")))
         .with_system("old system".to_string())
         .with_tools(vec![tool("bash"), tool("web_fetch")])
         .with_tool_labels(vec![("bash".to_string(), "Ran".to_string())])
         .with_hooks(vec![Arc::new(Hook) as Arc<dyn PluginHooks>])
-        .with_history_rewrite_hook(Arc::new(move || {
-            seen.fetch_add(1, Ordering::SeqCst);
-        }))
         .with_context_window(Some(100_000));
     let executor = old.executor_handle();
     let history = vec![Message::user("hi")];
@@ -67,8 +61,6 @@ fn model_switch_keeps_plugin_surface_and_new_model_side() {
         Some("Ran")
     );
     assert_eq!(fresh.hooks().len(), 1);
-
-    assert_eq!(rewrites.load(Ordering::SeqCst), 1);
 
     assert_eq!(fresh.provider.model_id(), "new-model");
     assert_eq!(fresh.system, "new system");

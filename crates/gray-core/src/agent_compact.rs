@@ -13,6 +13,13 @@ pub fn summary_message(summary: &str) -> Message {
     ))
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MediaPressure {
+    Clear,
+    Stub,
+    Compact,
+}
+
 impl Agent {
     pub(crate) fn ceiling_reason(&self, estimate: usize) -> crate::event::CompactReason {
         use crate::event::CompactReason;
@@ -45,7 +52,11 @@ impl Agent {
             return Ok(None);
         }
 
+        // `shared` is computed on the un-elided wire view before media
+        // stubbing — a stubbed candidate could never be wire-identical.
         let mut candidate = self.scrubbed_messages();
+        let shared =
+            crate::compact::shared_prefix_compaction_messages(self, &candidate, instructions);
         crate::compact::elide_media_over_payload_budget(&mut candidate);
 
         let budget = retained_budget.unwrap_or(match self.context_window {
@@ -62,20 +73,26 @@ impl Agent {
             return Ok(None);
         }
 
-        // The summary call carries the whole history, so a payload 413 that
-        // sent us here would fail it too; the summarizer can do without pixels.
-        let summary = match run_compaction_call(self, &candidate, instructions).await {
-            Err(e)
-                if matches!(e.class(), CoreError::ContextOverflow(_))
-                    && candidate.iter().flat_map(|m| &m.content).any(|b| {
-                        matches!(b, ContentBlock::Image { .. } | ContentBlock::Media { .. })
-                    }) =>
-            {
-                let mut text_only = candidate.clone();
-                crate::compact::stub_all_media(&mut text_only);
-                run_compaction_call(self, &text_only, instructions).await?
+        let summary = match shared {
+            Some(messages) => {
+                let system = self.system_text();
+                match self
+                    .complete_isolated_cached(
+                        (!system.is_empty()).then_some(system),
+                        messages,
+                        self.request_tools(),
+                    )
+                    .await
+                {
+                    // A wire-identical request that still overflows needs the
+                    // stubbed (different, cheaper) request — normal path.
+                    Err(e) if matches!(e.class(), CoreError::ContextOverflow(_)) => {
+                        self.summarizer_call(&candidate, instructions).await?
+                    }
+                    other => other?,
+                }
             }
-            other => other?,
+            None => self.summarizer_call(&candidate, instructions).await?,
         };
         if summary.trim().is_empty() {
             return Ok(None);
@@ -114,6 +131,28 @@ impl Agent {
         }
         self.set_messages(next);
         Ok(Some(summary))
+    }
+
+    /// The summary call carries the whole history, so a payload 413 that sent
+    /// us here would fail it too; the summarizer can do without pixels.
+    async fn summarizer_call(
+        &self,
+        candidate: &[Message],
+        instructions: Option<&str>,
+    ) -> Result<String, CoreError> {
+        match run_compaction_call(self, candidate, instructions).await {
+            Err(e)
+                if matches!(e.class(), CoreError::ContextOverflow(_))
+                    && candidate.iter().flat_map(|m| &m.content).any(|b| {
+                        matches!(b, ContentBlock::Image { .. } | ContentBlock::Media { .. })
+                    }) =>
+            {
+                let mut text_only = candidate.to_vec();
+                crate::compact::stub_all_media(&mut text_only);
+                run_compaction_call(self, &text_only, instructions).await
+            }
+            other => other,
+        }
     }
 }
 
@@ -159,6 +198,23 @@ pub(crate) fn needs_soft_elide(estimate: usize, window: Option<usize>) -> bool {
 }
 
 impl Agent {
+    /// Media past the provider's hard cap must shed before the next request.
+    /// On a cold cache, in-place stubbing is nearly free (the prefix has not
+    /// been billed yet); once warm, mutating history re-bills the whole
+    /// suffix, so pressure is routed through pre-turn compaction, whose
+    /// candidate already drops over-budget media. Callers stub in place only
+    /// when compaction cannot run.
+    pub(crate) fn media_pressure(&self) -> MediaPressure {
+        if !crate::compact::media_over_budget(&self.messages) {
+            return MediaPressure::Clear;
+        }
+        if self.prefix_rewrite_ok && !self.warm_cache_reported {
+            MediaPressure::Stub
+        } else {
+            MediaPressure::Compact
+        }
+    }
+
     pub(crate) fn elide_media_over_budget(&mut self) -> usize {
         let elided = crate::compact::elide_media_over_payload_budget(&mut self.messages);
         // The session file keeps the originals; resume re-elides them the same way.

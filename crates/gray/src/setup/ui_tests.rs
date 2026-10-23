@@ -87,3 +87,95 @@ fn backdrop_dims_card_box_and_inserts_gap_before_input() {
         "input box row still dims to composer gray"
     );
 }
+
+#[test]
+fn backdrop_transcript_layout_is_memoized_per_size() {
+    use crate::composer::TranscriptEntry;
+    use ratatui::text::{Line, Span};
+    use std::rc::Rc;
+    use std::time::Instant;
+
+    // ~4k entries: a long real session (this repo's own sessions run 35MB+).
+    let entries: Vec<TranscriptEntry> = (0..4000)
+        .map(|i| match i % 3 {
+            0 => TranscriptEntry::UserPrompt(
+                format!("prompt {i}: some reasonably long user text that wraps at modal width"),
+                Vec::new(),
+            ),
+            1 => TranscriptEntry::ThinkingRun(format!("thinking step {i}")),
+            _ => TranscriptEntry::StyledLines {
+                lines: vec![
+                    Line::from(Span::raw(format!("answer {i} line one `code` **bold**"))),
+                    Line::from(Span::raw(format!("answer {i} line two"))),
+                ],
+                hyperlinks: Vec::new(),
+            },
+        })
+        .collect();
+    let snap = crate::setup::BackgroundSnapshot {
+        history_entries: entries,
+        ..Default::default()
+    };
+
+    let t = Instant::now();
+    let a = snap.rebuild_transcript(100);
+    let cold = t.elapsed();
+
+    let t = Instant::now();
+    let b = snap.rebuild_transcript(100);
+    let warm = t.elapsed();
+
+    assert!(
+        Rc::ptr_eq(&a, &b),
+        "same-size rebuild must reuse the memoized layout, not re-run layout_history"
+    );
+    eprintln!("backdrop layout: cold={cold:?} warm={warm:?}");
+    assert!(
+        warm < cold / 10 || warm.as_millis() < 5,
+        "memoized repaint should be ~free: cold={cold:?} warm={warm:?}"
+    );
+
+    let c = snap.rebuild_transcript(101);
+    assert!(
+        !Rc::ptr_eq(&a, &c),
+        "a width change must invalidate the memoized layout"
+    );
+}
+
+#[test]
+fn memoized_backdrop_repaints_identically_and_follows_resizes() {
+    let bg = BackgroundSnapshot {
+        history_entries: vec![crate::composer::TranscriptEntry::UserPrompt(
+            "/models".to_string(),
+            Vec::new(),
+        )],
+        prompt_text: "draft".into(),
+        ..Default::default()
+    };
+    let paint = |bg: &BackgroundSnapshot, w: u16, h: u16| {
+        let mut t = ratatui::Terminal::new(ratatui::backend::TestBackend::new(w, h)).unwrap();
+        t.draw(|f| render_dimmed_background(f, bg)).unwrap();
+        t.backend().buffer().clone()
+    };
+    let first = paint(&bg, 40, 12);
+    assert!(
+        bg.backdrop_cache.borrow().is_some(),
+        "first paint is memoized"
+    );
+    assert_eq!(
+        paint(&bg, 40, 12),
+        first,
+        "memoized repaint is cell-identical"
+    );
+
+    let fresh = BackgroundSnapshot {
+        backdrop_cache: Default::default(),
+        transcript_cache: Default::default(),
+        ..bg.clone()
+    };
+    assert_eq!(
+        paint(&bg, 52, 15),
+        paint(&fresh, 52, 15),
+        "a resize repaints instead of reusing the old size"
+    );
+}

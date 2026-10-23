@@ -695,3 +695,254 @@ fn wrapped_rows_keep_the_leading_indent() {
         }
     }
 }
+
+#[test]
+fn wrapped_list_items_hang_under_their_text() {
+    for (text, pad) in [
+        (
+            "• load_tools: one line per plugin tool, MCP servers grouped by name",
+            "  ",
+        ),
+        (
+            "  12. second level numbered item that keeps going past the edge",
+            "      ",
+        ),
+    ] {
+        let rows = wrap_styled_line(Line::from(text.to_string()), 30);
+        assert!(rows.len() > 1);
+        for row in &rows[1..] {
+            let row_text: String = row.spans.iter().map(|s| s.content.as_ref()).collect();
+            assert!(
+                row_text.starts_with(pad) && !row_text[pad.len()..].starts_with(' '),
+                "continuation not hung under the item text: {row_text:?}"
+            );
+            assert!(row.width() <= 30);
+        }
+    }
+}
+
+#[test]
+fn split_synthetic_prompt_parts_subagent_and_nudge_segments() {
+    // The subagents plugin's completion delivery: preamble is scaffolding,
+    // the first report line becomes the dim notice.
+    let (visible, notices) = split_synthetic_prompt(
+        "Subagent finished — model output from a delegated run, NOT a message from the user. Verify before acting.\n  qa-r1 [completed] scout <swe-2-max> · run abc · 22s\n  report body line",
+    );
+    assert!(visible.is_empty());
+    assert_eq!(
+        notices,
+        vec!["qa-r1 [completed] scout <swe-2-max> · run abc · 22s"]
+    );
+
+    // Agent-loop nudges replay as their own dim line, swallowing the rest
+    // of the segment, and a following `↳ from` send still shows.
+    let (visible, notices) = split_synthetic_prompt(
+        "previous response truncated — continue exactly where you left off\n\n↳ from cli\nreal message",
+    );
+    assert_eq!(visible, "↳ from cli\nreal message");
+    assert_eq!(
+        notices,
+        vec!["previous response truncated — continue exactly where you left off"]
+    );
+
+    for nudge in [
+        "[Background jobs still running]\njob x is still running\nEnd your turn to be woken",
+        "[Context update]\nsome hook context",
+        "executed tool calls but returned empty — process results and continue",
+        "no tool calls have run yet — if this task requires action, issue a real tool call now",
+        "your last message contained raw tool-call markup instead of a real tool call, so nothing ran",
+        "Before finishing, verify the deliverable: re-read the task spec",
+        "Continue the pending user request using the retained context and summary.",
+    ] {
+        let (visible, notices) = split_synthetic_prompt(nudge);
+        assert!(visible.is_empty(), "{nudge}");
+        assert_eq!(notices.len(), 1, "{nudge}");
+    }
+}
+
+#[test]
+fn backdrop_tail_layout_matches_the_full_layout_tail() {
+    let styled = |rows: &[&str]| TranscriptEntry::StyledLines {
+        lines: rows.iter().map(|r| Line::from(r.to_string())).collect(),
+        hyperlinks: Vec::new(),
+    };
+    let mut entries = vec![TranscriptEntry::Welcome];
+    for i in 0..60 {
+        entries.push(TranscriptEntry::UserPrompt(
+            format!("prompt {i}"),
+            Vec::new(),
+        ));
+        entries.push(TranscriptEntry::Gap(1));
+        entries.push(styled(&["", &format!("reply {i}"), "more", ""]));
+        entries.push(TranscriptEntry::Gap(1));
+        entries.push(TranscriptEntry::ToolBox {
+            header: Line::from(format!("Ran {i}")),
+            body: vec![Line::from("ok")],
+        });
+    }
+    let text = |rows: &[Line<'static>]| rows.iter().map(|l| l.to_string()).collect::<Vec<_>>();
+    let full = text(&layout_history(&entries, 80, 24));
+    for need in [1, 5, 24, 45, 120] {
+        let tail = text(&layout_history_tail(&entries, 80, 24, need));
+        assert!(tail.len() > need && tail.len() < full.len(), "need={need}");
+        assert_eq!(
+            tail[tail.len() - need..],
+            full[full.len() - need..],
+            "need={need}"
+        );
+    }
+    let short = &entries[..4];
+    assert_eq!(
+        text(&layout_history_tail(short, 80, 24, 500)),
+        text(&layout_history(short, 80, 24)),
+        "a transcript shorter than the screen lays out whole"
+    );
+}
+
+#[test]
+fn push_user_prompt_skips_empty_submissions() {
+    use crate::composer::Tui;
+    let mut tui = Tui::test_tui(80, 24);
+    tui.push_user_prompt("", &[], true);
+    tui.push_user_prompt("  \n\t  ", &[], true);
+    tui.push_user_prompt("\u{1b}[3~", &[], true);
+    assert!(tui.history_entries.is_empty());
+    assert!(tui.transcript.is_empty());
+    tui.push_user_prompt("still here", &[], true);
+    assert!(
+        tui.transcript
+            .iter()
+            .any(|l| l.spans.iter().any(|s| s.content.contains("still here")))
+    );
+}
+
+#[test]
+fn repro_card_to_card_junction() {
+    use crate::composer::Tui;
+    let mut tui = Tui::test_tui(80, 24);
+    tui.push_tool_box(
+        Line::from(vec![Span::raw("● Ran rg -n foo".to_string())]),
+        vec![Line::from("hit 1"), Line::from("hit 2")],
+    );
+    tui.push_tool_box(
+        Line::from(vec![Span::raw("● Read print.rs".to_string())]),
+        vec![Line::from("body a"), Line::from("body b")],
+    );
+    // Card-to-card junction: exactly one blank row separates the two boxes.
+    let blanks: Vec<usize> = tui
+        .transcript
+        .iter()
+        .enumerate()
+        .filter_map(|(i, l)| transcript_row_is_blank(l).then_some(i))
+        .collect();
+    assert_eq!(blanks, [6], "junction rows: {blanks:?}");
+}
+
+#[test]
+fn pending_stream_text_stays_before_prompt_after_reflow() {
+    use crate::composer::Tui;
+    let mut tui = Tui::test_tui(80, 24);
+    tui.enable_reveal_pacing();
+    tui.stream_text("streamed words go here");
+    tui.push_user_prompt("what now?", &[], false);
+    let text_of = |t: &Tui| -> Vec<String> {
+        t.transcript
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect()
+    };
+    let pos = |rows: &[String]| {
+        (
+            rows.iter().position(|r| r.contains("streamed words")),
+            rows.iter().position(|r| r.contains("what now?")),
+        )
+    };
+    let (md, pr) = pos(&text_of(&tui));
+    assert!(
+        md.is_some() && pr.is_some() && md < pr,
+        "stream text must commit before the prompt"
+    );
+    tui.reflow_on_resize(100);
+    let (md, pr) = pos(&text_of(&tui));
+    assert!(
+        md.is_some() && pr.is_some() && md < pr,
+        "reflow swapped the blocks"
+    );
+}
+
+#[test]
+fn skill_box_margin() {
+    use crate::composer::Tui;
+    use ratatui::text::Line;
+    let mut tui = Tui::test_tui(80, 24);
+    tui.push_user_prompt("/skills be-ambitious", &[], false);
+    let args = serde_json::json!({"name": "be-ambitious"});
+    let header = crate::tool_fmt::format_tool_call_header("skill", &args, None, None);
+    let body: Vec<Line> = vec![Line::from("body line one"), Line::from("body line two")];
+    tui.push_tool_box(header, body);
+    let _ = tui.draw();
+    let text_of = |l: &Line| {
+        l.spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect::<String>()
+    };
+    let body_rows: Vec<&Line> = tui
+        .transcript
+        .iter()
+        .filter(|l| text_of(l).contains("body line"))
+        .collect();
+    assert_eq!(body_rows.len(), 2);
+    for row in body_rows {
+        assert!(
+            text_of(row).starts_with(' '),
+            "body row should carry a left gutter: {:?}",
+            text_of(row)
+        );
+    }
+}
+
+#[test]
+fn dock_shrink_pulls_transcript_down() {
+    use crate::composer::Tui;
+    let mut tui = Tui::test_tui(80, 24);
+    for i in 0..20 {
+        tui.push_dim(format!("line {i}"));
+    }
+    let _ = tui.draw();
+    tui.set_status(Some("Working"));
+    for i in 0..3 {
+        tui.upsert_live_tool(
+            &format!("t{i}"),
+            vec![Line::from(format!("Ran c{i}"))],
+            true,
+        );
+    }
+    tui.queued_inputs.push_back(("q1".into(), Vec::new()));
+    tui.queued_inputs.push_back(("q2".into(), Vec::new()));
+    let _ = tui.draw();
+    tui.set_status(None);
+    for i in 0..3 {
+        tui.remove_live_tool(&format!("t{i}"));
+    }
+    tui.queued_inputs.clear();
+    let _ = tui.draw();
+    let (vacated, _covered, _tail) = tui.terminal.debug_state();
+    assert_eq!(vacated, 0, "dock shrink left vacated rows unfilled");
+}
+
+#[test]
+fn a_growing_dock_scrolls_the_prompt_instead_of_covering_it() {
+    use crate::composer::Tui;
+    let mut tui = Tui::test_tui(80, 24);
+    for i in 0..30 {
+        tui.push_dim(format!("line {i}"));
+    }
+    tui.push_user_prompt("sent while busy", &[], false);
+    let _ = tui.draw();
+    tui.set_status(Some("Working"));
+    tui.queued_inputs.push_back(("q1".into(), Vec::new()));
+    let _ = tui.draw();
+    let (_vacated, covered, _tail) = tui.terminal.debug_state();
+    assert_eq!(covered, 0, "a one-line composer covered transcript rows");
+}

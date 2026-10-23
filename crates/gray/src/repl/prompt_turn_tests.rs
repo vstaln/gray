@@ -252,6 +252,35 @@ fn steer_takes_the_oldest_text_entry_and_leaves_the_rest() {
 }
 
 #[test]
+fn steer_drops_empty_entries_and_takes_the_next() {
+    let mut queued = std::collections::VecDeque::from([
+        (String::new(), vec![]),
+        ("   ".to_string(), vec![]),
+        ("\u{1b}[3~".to_string(), vec![]),
+        ("real".to_string(), vec![]),
+    ]);
+    assert_eq!(super::take_steerable(&mut queued).as_deref(), Some("real"));
+    assert!(queued.is_empty());
+}
+
+#[test]
+fn pop_actionable_skips_empty_entries_and_keeps_images() {
+    let mut queued = std::collections::VecDeque::from([
+        (String::new(), vec![]),
+        ("\u{1b}".to_string(), vec![]),
+        (
+            "kept".to_string(),
+            vec![std::path::PathBuf::from("/tmp/i.png")],
+        ),
+        ("next".to_string(), vec![]),
+    ]);
+    let (text, images) = super::pop_actionable(&mut queued).expect("a real entry");
+    assert_eq!(text, "kept");
+    assert_eq!(images.len(), 1);
+    assert_eq!(queued.len(), 1);
+}
+
+#[test]
 fn steer_on_an_empty_queue_takes_nothing() {
     let mut queued = std::collections::VecDeque::new();
     assert_eq!(super::take_steerable(&mut queued), None);

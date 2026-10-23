@@ -132,6 +132,7 @@ pub(crate) fn layout_history(
                     thinking_run_rows(text, prose_width(w), false),
                 );
             }
+            TranscriptEntry::Gap(_) => owed = true,
             TranscriptEntry::Mascot => {
                 let art = crate::mascot::mascot_lines(
                     u16::try_from(w).unwrap_or(u16::MAX),
@@ -140,10 +141,34 @@ pub(crate) fn layout_history(
                 );
                 place(&mut out, &mut owed, art.unwrap_or_default());
             }
-            TranscriptEntry::Gap(_) => owed = true,
         }
     }
     out
+}
+
+/// The tail of [`layout_history`] holding at least `need` rows, laid out from
+/// only as many trailing entries as that takes. A modal backdrop shows one
+/// screen of a transcript that can run to hundreds of entries, and laying
+/// out all of them cost 1-2s per modal open on a long session.
+///
+/// Entries lay out independently; the only cross-entry state is the blank
+/// gap owed before a block, so a suffix layout can differ from the full one
+/// solely in a leading blank row — never inside the last `need` rows.
+pub(crate) fn layout_history_tail(
+    entries: &[super::TranscriptEntry],
+    w: usize,
+    mascot_h: u16,
+    need: usize,
+) -> Vec<Line<'static>> {
+    let mut take = 8usize;
+    loop {
+        let start = entries.len().saturating_sub(take);
+        let out = layout_history(&entries[start..], w, mascot_h);
+        if start == 0 || out.len() > need {
+            return out;
+        }
+        take = take.saturating_mul(2);
+    }
 }
 
 pub(crate) fn attach_stream_punctuation(
@@ -535,7 +560,11 @@ impl Tui {
         attached: &[std::path::PathBuf],
         trailing_gap: bool,
     ) {
+        if attached.is_empty() && crate::tui::sanitize_user_text(text).trim().is_empty() {
+            return;
+        }
         self.atomic(|t| {
+            t.flush_markdown();
             t.ensure_gap();
             let lines = format_user_prompt_lines(text, attached, t.width().max(10));
             t.history_entries.push(super::TranscriptEntry::UserPrompt(
@@ -561,8 +590,36 @@ pub(crate) const BG_NOTICE_MARKER: &str = "[Background task notification]";
 pub(crate) const CRON_DELIVERY_MARKER: &str = "[Cron delivery: ";
 
 fn is_notice_marker(line: &str) -> bool {
-    line.starts_with(BG_NOTICE_MARKER) || line.starts_with(CRON_DELIVERY_MARKER)
+    line.starts_with(BG_NOTICE_MARKER)
+        || line.starts_with(CRON_DELIVERY_MARKER)
+        || line.starts_with(BG_JOBS_MARKER)
+        || line.starts_with(CONTEXT_UPDATE_MARKER)
+        || line.starts_with(SUBAGENT_DONE_MARKER)
 }
+
+/// Marker that opens a synthetic user message listing still-running
+/// background jobs (agent_loop injects it before an idle wait).
+pub(crate) const BG_JOBS_MARKER: &str = "[Background jobs still running]";
+
+/// Marker that opens a synthetic user message carrying hook context.
+pub(crate) const CONTEXT_UPDATE_MARKER: &str = "[Context update]";
+
+/// Marker that opens the gray-subagents plugin's completion report: the
+/// preamble is model-facing scaffolding; the report lines follow it.
+pub(crate) const SUBAGENT_DONE_MARKER: &str = "Subagent finished";
+
+/// Injected nudge lines that ARE the notice — self-contained agent-loop
+/// scaffolding (no marker header, no body to capture). Replayed as the
+/// dim line itself; anything after them in the same segment is still
+/// scaffolding and gets swallowed.
+const NUDGE_LINE_PREFIXES: &[&str] = &[
+    "previous response truncated",
+    "executed tool calls but returned empty",
+    "no tool calls have run yet",
+    "your last message contained raw tool-call markup",
+    "Before finishing, verify the deliverable:",
+    "Continue the pending user request",
+];
 
 /// Split a stored user prompt into the part worth replaying as a prompt
 /// block and one-line summaries of any injected-notification segments.
@@ -576,6 +633,12 @@ pub(crate) fn split_synthetic_prompt(text: &str) -> (String, Vec<String>) {
         if is_notice_marker(line) {
             in_notice = true;
             captured = false;
+            continue;
+        }
+        if NUDGE_LINE_PREFIXES.iter().any(|p| line.starts_with(p)) {
+            in_notice = true;
+            captured = true;
+            notices.push(line.trim().to_string());
             continue;
         }
         if line.starts_with(crate::session_send::SEND_FROM_PREFIX) {

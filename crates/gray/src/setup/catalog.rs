@@ -5,7 +5,7 @@ use crate::providers::registry::InstalledProvider;
 
 use serde::{Deserialize, Serialize};
 
-use gray_core::credential::CredentialEnvelope;
+use gray_core::credential::{CredentialEnvelope, CredentialMaterial};
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct CatalogProvider {
@@ -403,12 +403,90 @@ pub struct StoredAuth {
     pub email: Option<String>,
 }
 
+/// One labeled credential in a v2 plugin pool. `accounts` in
+/// [`PluginAuthPool`] is a vec: file order is the `fill_first` priority
+/// order, matching the plugin-owned pools.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PluginAccount {
+    pub label: String,
+    pub profile_binding: String,
+    pub credential: CredentialMaterial,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
+    #[serde(default)]
+    pub added_at: u64,
+    /// Unix seconds the cooldown ends; 0 = not cooling.
+    #[serde(default)]
+    pub cooldown_until: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
+    #[serde(default)]
+    pub request_count: u64,
+    #[serde(default)]
+    pub last_used_at: u64,
+}
+
+/// auth.json v2 plugin entry: several labeled credential envelopes under
+/// one `plugin:<lock>:<provider>:<method>` auth_ref. `selected` pins an
+/// account; `strategy` orders the rest (`fill_first`, `least_used`).
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PluginAuthPool {
+    pub version: u8,
+    pub plugin: String,
+    pub provider: String,
+    pub auth_method: String,
+    #[serde(default)]
+    pub selected: Option<String>,
+    #[serde(default)]
+    pub strategy: String,
+    pub accounts: Vec<PluginAccount>,
+}
+
+impl PluginAuthPool {
+    /// Wrap a v1 single-credential entry as a one-account pool.
+    pub fn from_envelope(value: &CredentialEnvelope) -> Self {
+        Self {
+            version: 2,
+            plugin: value.plugin.clone(),
+            provider: value.provider.clone(),
+            auth_method: value.auth_method.clone(),
+            selected: Some("default".to_string()),
+            strategy: "fill_first".to_string(),
+            accounts: vec![PluginAccount {
+                label: "default".to_string(),
+                profile_binding: value.profile_binding.clone(),
+                credential: value.credential.clone(),
+                email: None,
+                added_at: 0,
+                cooldown_until: 0,
+                last_error: None,
+                request_count: 0,
+                last_used_at: 0,
+            }],
+        }
+    }
+
+    /// The pool entry as one envelope, for callers that still want a
+    /// single credential (the serving pick is the account's material).
+    pub fn envelope_for(&self, account: &PluginAccount) -> CredentialEnvelope {
+        CredentialEnvelope {
+            version: 1,
+            plugin: self.plugin.clone(),
+            provider: self.provider.clone(),
+            auth_method: self.auth_method.clone(),
+            profile_binding: account.profile_binding.clone(),
+            credential: account.credential.clone(),
+        }
+    }
+}
+
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum AuthEntry {
     Key(String),
     OAuth(StoredAuth),
     Plugin(CredentialEnvelope),
+    PluginPool(PluginAuthPool),
 }
 
 impl std::fmt::Debug for SavedConfig {
@@ -434,6 +512,11 @@ impl std::fmt::Debug for AuthEntry {
             Self::Key(_) => f.write_str("Key(..)"),
             Self::OAuth(a) => f.debug_tuple("OAuth").field(a).finish(),
             Self::Plugin(plugin) => f.debug_tuple("Plugin").field(plugin).finish(),
+            Self::PluginPool(pool) => f
+                .debug_struct("PluginPool")
+                .field("provider", &pool.provider)
+                .field("accounts", &pool.accounts.len())
+                .finish(),
         }
     }
 }
@@ -473,7 +556,7 @@ pub fn load_auth_keys() -> BTreeMap<String, String> {
         .into_iter()
         .filter_map(|(k, v)| match v {
             AuthEntry::Key(key) => Some((k, key)),
-            AuthEntry::OAuth(_) | AuthEntry::Plugin(_) => None,
+            AuthEntry::OAuth(_) | AuthEntry::Plugin(_) | AuthEntry::PluginPool(_) => None,
         })
         .collect()
 }

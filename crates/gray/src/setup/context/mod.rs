@@ -4,7 +4,8 @@ pub(crate) use providers::{
     EndpointProbe, LocalEndpointSuggestion, cache_model_efforts, cache_model_price_cliff,
     ensure_disk_loaded, fetch_plugin_provider_models, load_provider_model_list, ollama_last_seen,
     ollama_running, plugin_catalog_rows, probe_custom_endpoint_detached, probe_local_endpoints,
-    provider_model_lists, save_provider_model_rows, warm_rates_from_disk_cache,
+    provider_model_list_in, provider_model_lists, save_provider_model_rows,
+    warm_plugin_model_context, warm_rates_from_disk_cache,
 };
 pub use providers::{
     KeyCheck, ModelMeta, ModelRate, cache_model_context, cache_model_context_if_absent,
@@ -272,22 +273,18 @@ pub fn model_price_cliff(model_name: &str) -> Option<u32> {
 }
 
 pub fn model_max_context(model_name: &str) -> usize {
+    known_model_context(model_name).unwrap_or(256_000)
+}
+
+pub(crate) fn known_model_context(model_name: &str) -> Option<usize> {
     ensure_disk_loaded();
-
-    if let Some(cached) = get_cached_model_context(model_name) {
-        return cached;
-    }
-    let lower = model_name.to_lowercase();
-    if let Some(cached) = get_cached_model_context(&lower) {
-        return cached;
-    }
-
-    if let Some((_, suffix)) = model_name.rsplit_once('/')
-        && let Some(cached) = get_cached_model_context(suffix)
-    {
-        return cached;
-    }
-    256_000
+    get_cached_model_context(model_name)
+        .or_else(|| get_cached_model_context(&model_name.to_lowercase()))
+        .or_else(|| {
+            model_name
+                .rsplit_once('/')
+                .and_then(|(_, suffix)| get_cached_model_context(suffix))
+        })
 }
 
 pub fn model_context_info(model_name: &str) -> (usize, String) {

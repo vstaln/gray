@@ -12,18 +12,17 @@ log = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
 futures = { workspace = true }
-tempfile = { workspace = true }
 uuid = { workspace = true }
 libc = { workspace = true }
-ignore = { workspace = true }
-globset = { workspace = true }
-regex = { workspace = true }
-strsim = { workspace = true }
 base64 = { workspace = true }
 image = { workspace = true }
+regex = { workspace = true }
+ignore = { workspace = true }
+globset = { workspace = true }
+tempfile = { workspace = true }
 
 # fsearch is a unix daemon crate (byte paths, Unix socket, FSEvents/inotify);
-# its index backend only exists there.
+# it powers the grep/rg interception claimed by BashTool outside --bare.
 [target.'cfg(unix)'.dependencies]
 fsearch = { workspace = true }
 
@@ -31,3 +30,4 @@ fsearch = { workspace = true }
 # Windows cancellation. Keep Win32 APIs out of Unix builds.
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_System_Diagnostics_ToolHelp"] }
+

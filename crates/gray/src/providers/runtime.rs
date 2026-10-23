@@ -92,7 +92,11 @@ pub struct ProviderRuntime {
 
 impl ProviderRuntime {
     pub async fn start(installed: InstalledProvider) -> anyhow::Result<Self> {
-        let plugin = SidecarPlugin::spawn(installed.argv.clone()).await?;
+        let plugin = SidecarPlugin::spawn(installed.argv.clone())
+            .await
+            .map_err(|e| {
+                anyhow::anyhow!("provider {:?} failed to start: {e:#}", installed.plugin)
+            })?;
         plugin.set_capabilities(vec![super::registry::PROVIDER_CAPABILITY.to_string()]);
         let rpc = SidecarProviderRpc::new(installed.clone(), plugin);
         Ok(Self { installed, rpc })

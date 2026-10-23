@@ -196,23 +196,10 @@ async fn notifications_are_once_only_session_scoped_and_never_carry_output() {
 }
 
 #[tokio::test]
-async fn removed_arguments_and_their_aliases_fail_loudly_and_never_spawn() {
+async fn unknown_arguments_are_ignored_and_bad_ones_never_spawn() {
     let dir = tempfile::tempdir().unwrap();
     let ctx = ctx(dir.path());
     let reg = Registry::new(vec![Arc::new(BashTool::default())]);
-
-    for args in [
-        json!({"command": "touch BAD", "background": true}),
-        json!({"command": "touch BAD", "run_in_background": "true"}),
-        json!({"command": "touch BAD", "detach": true}),
-        json!({"action": "list"}),
-        json!({"action": "output", "job_id": "x"}),
-        json!({"command": "touch BAD", "task_id": "t"}),
-    ] {
-        let out = reg.execute(&ctx, "bash", args.clone()).await;
-        assert!(out.is_error, "{args}: {}", out.content);
-        assert!(out.content.contains("remove it"), "{args}: {}", out.content);
-    }
 
     for args in [
         json!({"command": "echo fine | cat", "yield_time_ms": "10000"}),
@@ -226,7 +213,6 @@ async fn removed_arguments_and_their_aliases_fail_loudly_and_never_spawn() {
     }
     let tool = BashTool::default();
     for args in [
-        json!({"command": "touch BAD", "background": []}),
         Value::Null,
         json!({"command": "touch BAD", "timeout": -1}),
         json!({"command": "   "}),

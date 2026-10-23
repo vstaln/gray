@@ -214,10 +214,6 @@ pub(crate) async fn dispatch_command(
                 .await
                 .ok();
 
-            if let Some(ledger) = gray_plugin::builder::current_file_ledger() {
-                ledger.clear();
-            }
-
             if let Some((shared, _)) = tui {
                 let mut t = shared.lock().expect("tui lock");
                 t.reset_usage();
@@ -285,10 +281,6 @@ pub(crate) async fn dispatch_command(
             handle_context_window(config, cwd, agent, val, tui.as_ref().map(|(s, _)| s)).await;
             Flow::Continue
         }
-        ReplCommand::Usage => {
-            handle_usage(session_totals, config, tui.as_ref().map(|(s, _)| s));
-            Flow::Continue
-        }
         ReplCommand::Jobs => {
             let tui_shared = tui.as_ref().map(|(s, _)| s);
             let sid = session_state
@@ -321,7 +313,13 @@ pub(crate) async fn dispatch_command(
         }
 
         ReplCommand::Update(arg) => {
-            super::maintenance::handle_update(tui, arg).await;
+            if arg.as_deref().map(str::trim) == Some("everything") {
+                // Provider CLIs + plugins + gray: the qol plugin owns the
+                // update-everything flow now.
+                *pending_command = Some(ReplCommand::Plugin("/qol update".to_string()));
+            } else {
+                super::maintenance::handle_update(tui, arg).await;
+            }
             Flow::Continue
         }
 
@@ -330,67 +328,8 @@ pub(crate) async fn dispatch_command(
             Flow::Continue
         }
 
-        ReplCommand::Gateway(arg) => {
-            let tui_shared = tui.as_ref().map(|(s, _)| s);
-            if let Some(on) = arg.as_deref().and_then(handlers::parse_on_off) {
-                let text = handlers::toggle_subsystem(handlers::Subsystem::Gateway, on);
-                say(tui_shared, &text);
-            } else if tui_shared.is_none() {
-                say(tui_shared, &super::gateway_panel::format_text());
-            } else {
-                let bg = tui_shared.map(|s| s.lock().expect("tui lock").snapshot());
-                let changed = with_modal_sync(tui_shared, || {
-                    super::gateway_panel::run_gateway_modal(bg.as_ref())
-                });
-                match changed {
-                    Ok(true) => say(tui_shared, "connections updated"),
-
-                    Ok(false) => say(tui_shared, &super::gateway_panel::format_text()),
-                    Err(e) => say(tui_shared, &format!("connections picker failed: {e}")),
-                }
-            }
-            Flow::Continue
-        }
-
-        ReplCommand::Copy => {
-            handle_copy(agent, tui.as_ref().map(|(s, _)| s));
-            Flow::Continue
-        }
-        ReplCommand::Theme(arg) => {
-            super::customize::handle_theme(arg, tui.as_ref().map(|(s, _)| s));
-            Flow::Continue
-        }
-        ReplCommand::Setup(arg) => {
-            crate::quality_of_life::setup::handle(tui, arg).await;
-            Flow::Continue
-        }
-        ReplCommand::Intro(arg) => {
-            let tui_shared = tui.as_ref().map(|(s, _)| s);
-            let text = match arg.as_deref().and_then(handlers::parse_on_off) {
-                Some(on) => handlers::toggle_subsystem(handlers::Subsystem::Intro, on),
-                None if arg.is_none() => format!(
-                    "logo intro is {}",
-                    if crate::setup::intro_enabled() {
-                        "on"
-                    } else {
-                        "off"
-                    }
-                ),
-                None => "usage: /intro [on|off]".to_string(),
-            };
-            say(tui_shared, &text);
-            Flow::Continue
-        }
-        ReplCommand::Keys(arg) => {
-            super::customize::handle_keys(arg, tui.as_ref().map(|(s, _)| s));
-            Flow::Continue
-        }
         ReplCommand::Reload => {
             super::customize::handle_reload(tui.as_ref().map(|(s, _)| s));
-            Flow::Continue
-        }
-        ReplCommand::Feedback(text) => {
-            handle_feedback(text, config, session_state, tui.as_ref().map(|(s, _)| s));
             Flow::Continue
         }
         ReplCommand::ProviderCommand {
@@ -402,9 +341,7 @@ pub(crate) async fn dispatch_command(
                 match super::plugin_cmds::provider_command_outcome(&provider_id, &cmd, argv).await {
                     Some(CommandOutcome::ModelPicker(row)) => ReplCommand::ModelFocus(row),
                     Some(CommandOutcome::Prompt(prompt)) => ReplCommand::Prompt(prompt),
-                    Some(CommandOutcome::AgentPicker(_))
-                    | Some(CommandOutcome::SubagentSettings(_))
-                    | Some(CommandOutcome::Panel(_))
+                    Some(CommandOutcome::Panel(_))
                     | Some(CommandOutcome::Picker(_))
                     | Some(CommandOutcome::Terminal { .. })
                     | None => ReplCommand::ProviderLogin(provider_id),
@@ -545,76 +482,6 @@ pub(crate) async fn dispatch_command(
                         *pending_command = Some(ReplCommand::ModelFocus(row));
                     }
 
-                    CommandOutcome::AgentPicker(plugin) => {
-                        let bg = tui
-                            .as_ref()
-                            .map(|(s, _)| s.lock().expect("tui lock").snapshot());
-                        let action = with_modal_sync(tui.as_ref().map(|(s, _)| s), || {
-                            super::agents_panel::run_agents_picker(&plugin, bg.as_ref())
-                        });
-                        match action {
-                            Ok(Some(super::agents_panel::PanelAction::Resume {
-                                session: sid,
-                                name,
-                            })) => {
-                                handle_resume(
-                                    config,
-                                    cwd,
-                                    ResumeArgs {
-                                        target: Some(sid.clone()),
-                                        last: false,
-                                        all: true,
-                                        dismiss: false,
-                                    },
-                                    &mut *agent,
-                                    &mut *session_state,
-                                    &mut *session_totals,
-                                    tui.as_ref().map(|(s, _)| s),
-                                    &mut *hide_thinking,
-                                )
-                                .await;
-
-                                let inside = session_state
-                                    .as_ref()
-                                    .is_some_and(|s| s.session_id.as_str() == sid);
-                                if inside {
-                                    say(
-                                        tui.as_ref().map(|(s, _)| s),
-                                        &format!(
-                                            "{} inside {name} — prompts continue this agent's session",
-                                            crate::tui::glyph("\u{2b22}", "#")
-                                        ),
-                                    );
-                                }
-                            }
-                            Ok(Some(super::agents_panel::PanelAction::Say(text))) => {
-                                say(tui.as_ref().map(|(s, _)| s), &text);
-                            }
-                            Ok(None) => {
-                                if let Some((shared, _)) = tui {
-                                    shared.lock().expect("tui lock").ensure_gap();
-                                }
-                            }
-                            Err(e) => {
-                                say(
-                                    tui.as_ref().map(|(s, _)| s),
-                                    &format!("agents panel error: {e}"),
-                                );
-                            }
-                        }
-                    }
-
-                    CommandOutcome::SubagentSettings(plugin) => {
-                        let msg = match tui.as_ref().map(|(s, _)| s) {
-                            Some(shared) => {
-                                super::agents_panel::run_subagent_settings(&plugin, shared)
-                                    .unwrap_or_else(|| "cancelled — nothing changed".to_string())
-                            }
-                            None => "subagents settings needs the TUI".to_string(),
-                        };
-                        say(tui.as_ref().map(|(s, _)| s), &msg);
-                    }
-
                     CommandOutcome::Terminal {
                         argv: cmd_argv,
                         text,
@@ -646,6 +513,32 @@ pub(crate) async fn dispatch_command(
                                     let sid = session_state.as_ref().map(|s| s.session_id.as_str());
                                     if reload_agent(agent, config, cwd, sid, shared).await {
                                         say(shared, "plugins changed, reloaded");
+                                    }
+                                }
+                                let pending = crate::session_store::default_root()
+                                    .and_then(|r| r.parent().map(|h| h.join("pending-resume")));
+                                if let Some(path) = pending
+                                    && let Ok(sid) = std::fs::read_to_string(&path)
+                                {
+                                    let _ = std::fs::remove_file(&path);
+                                    let sid = sid.trim().to_string();
+                                    if !sid.is_empty() {
+                                        handle_resume(
+                                            config,
+                                            cwd,
+                                            ResumeArgs {
+                                                target: Some(sid),
+                                                last: false,
+                                                all: true,
+                                                dismiss: false,
+                                            },
+                                            &mut *agent,
+                                            &mut *session_state,
+                                            &mut *session_totals,
+                                            tui.as_ref().map(|(s, _)| s),
+                                            &mut *hide_thinking,
+                                        )
+                                        .await;
                                     }
                                 }
                             }

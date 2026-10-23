@@ -3,12 +3,9 @@ use std::path::{Path, PathBuf};
 use anyhow::Context;
 
 use crate::session_mailbox;
-use crate::session_store::{JsonlSessionStore, SessionId};
 
 pub const KIND: &str = "send";
 
-pub const STATE_QUEUED: &str = "queued";
-pub const STATE_NOT_LIVE: &str = "queued (session not live)";
 pub const STATE_STEERED: &str = "steered";
 pub const STATE_DELIVERED: &str = "delivered";
 
@@ -27,20 +24,6 @@ pub(crate) const SEND_FROM_PREFIX: &str = "↳ from ";
 
 pub fn prompt_for(from: &str, text: &str) -> String {
     format!("{SEND_FROM_PREFIX}{from}\n{text}")
-}
-
-pub fn default_label() -> String {
-    std::env::var("GRAY_SESSION_ID").unwrap_or_default()
-}
-
-pub fn clean_label(raw: &str) -> String {
-    let s: String = raw.chars().filter(|c| !c.is_control()).take(64).collect();
-    let s = s.trim();
-    if s.is_empty() {
-        "cli".to_string()
-    } else {
-        s.to_string()
-    }
 }
 
 pub fn is_send_entry(text: &str) -> bool {
@@ -137,21 +120,6 @@ fn entry_json(
     v.to_string()
 }
 
-pub fn enqueue(
-    home: &Path,
-    session: &str,
-    from: &str,
-    text: &str,
-    attachments: &[PathBuf],
-) -> anyhow::Result<String> {
-    let dir = session_mailbox::session_inbox(home, session)
-        .ok_or_else(|| anyhow::anyhow!("unsafe session id {session:?}"))?;
-    private_dir(&dir)?;
-    let id = uuid::Uuid::new_v4().to_string();
-    session_mailbox::write_entry(&dir, &entry_json(&id, from, text, attachments, None))?;
-    Ok(id)
-}
-
 pub fn write_receipt(home: &Path, session: &str, id: &str, state: &str) -> anyhow::Result<()> {
     if !safe_id(id) {
         anyhow::bail!("unsafe send id {id:?}");
@@ -165,15 +133,6 @@ fn remove_receipt(home: &Path, id: &str) {
     if safe_id(id) {
         let _ = std::fs::remove_file(receipt_dir(home).join(format!("{id}.json")));
     }
-}
-
-pub fn read_receipt_state(home: &Path, id: &str) -> Option<String> {
-    if !safe_id(id) {
-        return None;
-    }
-    let text = std::fs::read_to_string(receipt_dir(home).join(format!("{id}.json"))).ok()?;
-    let v: serde_json::Value = serde_json::from_str(&text).ok()?;
-    v.get("state")?.as_str().map(str::to_string)
 }
 
 fn pending_files(dir: &Path) -> Vec<PathBuf> {
@@ -297,78 +256,5 @@ fn hold_back_one(home: &Path, m: &SendMsg) -> anyhow::Result<()> {
     );
     session_mailbox::write_entry(&dir, &body)?;
     remove_receipt(home, &m.id);
-    Ok(())
-}
-
-fn resolve_attachments(paths: &[PathBuf]) -> Result<Vec<PathBuf>, String> {
-    paths
-        .iter()
-        .map(|p| {
-            let abs =
-                std::fs::canonicalize(p).map_err(|e| format!("attach {}: {e}", p.display()))?;
-            if abs.is_file() {
-                Ok(abs)
-            } else {
-                Err(format!("attach {}: not a file", p.display()))
-            }
-        })
-        .collect()
-}
-
-fn usage(msg: String) -> ! {
-    eprintln!("gray send: {msg}");
-    std::process::exit(2)
-}
-
-pub(crate) fn owner_home() -> anyhow::Result<PathBuf> {
-    match std::env::var_os("GRAY_USER_HOME").filter(|v| !v.to_string_lossy().trim().is_empty()) {
-        Some(home) => Ok(PathBuf::from(home)),
-        None => crate::setup::gray_home(),
-    }
-}
-
-pub async fn run_cli(
-    session: &str,
-    text: &str,
-    attach: &[PathBuf],
-    from: Option<&str>,
-    wait: Option<u64>,
-) -> anyhow::Result<()> {
-    let home = owner_home()?;
-    let root = home.join("sessions");
-    let store = JsonlSessionStore::new(&root);
-    let session = match store.resolve_unique_prefix(session) {
-        Ok(id) => id,
-        Err(msg) => usage(msg),
-    };
-    if text.trim().is_empty() && attach.is_empty() {
-        usage("nothing to send: give text or --attach".to_string());
-    }
-    let attachments = resolve_attachments(attach).unwrap_or_else(|e| usage(e));
-    let from = clean_label(
-        from.map(str::to_string)
-            .unwrap_or_else(default_label)
-            .as_str(),
-    );
-    let live = store.open_lock_held(&SessionId::new(session.clone())).await;
-    let id = enqueue(&home, &session, &from, text, &attachments)?;
-    let mut state = if live { STATE_QUEUED } else { STATE_NOT_LIVE }.to_string();
-    if let Some(secs) = wait {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(secs);
-        loop {
-            if let Some(s) = read_receipt_state(&home, &id) {
-                state = s;
-                break;
-            }
-            if std::time::Instant::now() >= deadline {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-        }
-    }
-    println!(
-        "{}",
-        serde_json::json!({ "session": session, "id": id, "state": state })
-    );
     Ok(())
 }

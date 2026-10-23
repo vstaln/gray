@@ -231,6 +231,7 @@ fn boundary_truncation_charges_thinking_and_tool_blocks() {
 struct CapturingProvider {
     script: Mutex<Vec<StreamEvent>>,
     seen: Arc<Mutex<Vec<ChatRequest>>>,
+    iso: Option<Arc<Mutex<Vec<Option<bool>>>>>,
 }
 
 impl CapturingProvider {
@@ -238,13 +239,24 @@ impl CapturingProvider {
         Self {
             script: Mutex::new(script),
             seen,
+            iso: None,
         }
+    }
+
+    fn with_iso_recorder(mut self, iso: Arc<Mutex<Vec<Option<bool>>>>) -> Self {
+        self.iso = Some(iso);
+        self
     }
 }
 
 #[async_trait]
 impl Provider for CapturingProvider {
     fn stream(&self, req: ChatRequest) -> ProviderStream {
+        if let Some(iso) = &self.iso {
+            iso.lock()
+                .expect("iso lock poisoned")
+                .push(crate::agent::current_isolated_stream().map(|i| i.cache_off));
+        }
         self.seen.lock().expect("seen lock poisoned").push(req);
         let script = std::mem::take(&mut *self.script.lock().expect("script lock poisoned"));
         Box::pin(futures::stream::iter(script.into_iter().map(Ok)))
@@ -879,4 +891,278 @@ fn media_count_budget_caps_many_small_images() {
         );
         assert_eq!(raw_media(&msgs).0, MEDIA_PAYLOAD_KEEP_COUNT);
     });
+}
+
+#[test]
+fn media_pressure_stubs_cold_but_compacts_when_warm() {
+    let mut agent = trigger_test_agent(
+        Vec::new(),
+        Arc::new(Mutex::new(Vec::new())),
+        Arc::new(Mutex::new(Vec::new())),
+        Vec::new(),
+    );
+    let mut msgs = vec![Message::user("hi")];
+    for i in 0..=crate::compact::MEDIA_PAYLOAD_MAX_COUNT {
+        let mut m = Message::user(format!("pic{i}"));
+        m.content.push(ContentBlock::Image {
+            media_type: "image/png".to_string(),
+            data: "QUJD".to_string(),
+        });
+        msgs.push(m);
+    }
+    assert!(crate::compact::media_over_budget(&msgs));
+    let baseline: Vec<Message> = msgs.iter().map(|m| m.clone()).collect();
+    agent.set_messages(msgs);
+
+    // Cold cache: in-place stubbing is nearly free — the prefix has not
+    // been billed yet.
+    assert_eq!(
+        agent.media_pressure(),
+        crate::agent_compact::MediaPressure::Stub
+    );
+
+    // Warm cache: an in-place stub would re-bill the whole suffix, so the
+    // same pressure must route through compaction, and deciding must not
+    // have touched history.
+    agent.warm_cache_reported = true;
+    assert_eq!(
+        agent.media_pressure(),
+        crate::agent_compact::MediaPressure::Compact
+    );
+    assert_eq!(agent.messages(), baseline.as_slice());
+
+    // Under budget: nothing to do in either phase.
+    let mut agent = trigger_test_agent(
+        Vec::new(),
+        Arc::new(Mutex::new(Vec::new())),
+        Arc::new(Mutex::new(Vec::new())),
+        Vec::new(),
+    );
+    agent.set_messages(vec![Message::user("no media")]);
+    assert_eq!(
+        agent.media_pressure(),
+        crate::agent_compact::MediaPressure::Clear
+    );
+}
+
+#[tokio::test]
+async fn compaction_shares_the_cached_prefix_when_provable() {
+    let seen: Arc<Mutex<Vec<ChatRequest>>> = Arc::default();
+    let iso: Arc<Mutex<Vec<Option<bool>>>> = Arc::default();
+    let calls: Arc<Mutex<Vec<String>>> = Arc::default();
+    let tools = vec![ToolDef::new(
+        "read",
+        "r",
+        serde_json::json!({"type": "object"}),
+    )];
+    let mut agent = Agent::new(
+        Box::new(
+            CapturingProvider::new(
+                vec![
+                    StreamEvent::text_delta("reply"),
+                    StreamEvent::message_complete(Some(StopReason::EndTurn), None),
+                ],
+                seen.clone(),
+            )
+            .with_iso_recorder(iso.clone()),
+        ),
+        Arc::new(RecordingExecutor { calls }),
+    )
+    .with_system("S")
+    .with_tools(tools)
+    .with_messages(vec![Message::user("m1")]);
+
+    agent
+        .run(Message::user("m2"), ToolContext::default())
+        .await
+        .expect("turn");
+    let _ = agent.compact_v2(None, Some(0)).await.expect("compact ran");
+
+    let reqs = seen.lock().expect("seen lock poisoned");
+    assert_eq!(reqs.len(), 2, "turn + summary call, got {reqs:?}");
+    let (turn_req, sum_req) = (&reqs[0], &reqs[1]);
+    // The sent prefix is repeated verbatim, then the turn's reply and the
+    // appended trigger extend it — a strict cache-extending suffix.
+    assert_eq!(sum_req.messages.len(), turn_req.messages.len() + 2);
+    assert_eq!(
+        sum_req.messages[..turn_req.messages.len()],
+        turn_req.messages[..],
+        "summary request must repeat the sent prefix verbatim"
+    );
+    assert!(
+        sum_req
+            .messages
+            .last()
+            .expect("trigger")
+            .text_content()
+            .contains("Summarize this conversation")
+    );
+    assert_eq!(sum_req.system, turn_req.system);
+    assert_eq!(sum_req.tools, turn_req.tools);
+    assert_eq!(
+        *iso.lock().expect("iso lock poisoned"),
+        vec![None, Some(false)],
+        "normal turn unscoped, summary call with cache markers on"
+    );
+}
+
+#[tokio::test]
+async fn compaction_falls_back_to_cold_call_when_prefix_diverged() {
+    let seen: Arc<Mutex<Vec<ChatRequest>>> = Arc::default();
+    let iso: Arc<Mutex<Vec<Option<bool>>>> = Arc::default();
+    let calls: Arc<Mutex<Vec<String>>> = Arc::default();
+    let mut agent = Agent::new(
+        Box::new(
+            CapturingProvider::new(
+                vec![
+                    StreamEvent::text_delta("reply"),
+                    StreamEvent::message_complete(Some(StopReason::EndTurn), None),
+                ],
+                seen.clone(),
+            )
+            .with_iso_recorder(iso.clone()),
+        ),
+        Arc::new(RecordingExecutor { calls }),
+    )
+    .with_system("S")
+    .with_messages(vec![Message::user("m1")]);
+
+    agent
+        .run(Message::user("m2"), ToolContext::default())
+        .await
+        .expect("turn");
+    // The wire view now differs from what was sent — no shared prefix.
+    agent.contaminated.insert(0);
+    let _ = agent.compact_v2(None, Some(0)).await.expect("compact ran");
+
+    let reqs = seen.lock().expect("seen lock poisoned");
+    assert_eq!(reqs.len(), 2);
+    assert!(
+        reqs[1].messages[0]
+            .text_content()
+            .contains("cut off by a stream error"),
+        "fallback must send the scrubbed (diverged) view: {:?}",
+        reqs[1].messages[0]
+    );
+    assert_eq!(
+        *iso.lock().expect("iso lock poisoned"),
+        vec![None, Some(true)],
+        "unprovable prefix must keep cache markers off"
+    );
+}
+
+fn agent_with_wire_fp(agent: &mut Agent, wire: Vec<Message>) {
+    let fp = crate::prefix_guard::fingerprint(
+        agent.provider.model_id(),
+        &ChatRequest {
+            system: Some(agent.system_text().to_string()),
+            messages: wire,
+            tools: agent.request_tools(),
+            max_tokens: None,
+        },
+    );
+    agent.seed_prefix_fingerprint(fp);
+}
+
+#[test]
+fn shared_prefix_appends_continue_tail_when_reply_is_pending() {
+    let history = vec![Message::user("m1"), Message::assistant("a1")];
+    let mut wire = history.clone();
+    wire.push(Message::user_injected(CONTINUE_TAIL));
+    let mut agent = trigger_test_agent(Vec::new(), Arc::default(), Arc::default(), Vec::new());
+    agent_with_wire_fp(&mut agent, wire);
+
+    let out = shared_prefix_compaction_messages(&agent, &history, None)
+        .expect("tail must still be appended when history stops before it");
+    assert_eq!(out.len(), 4, "history + tail + trigger: {out:?}");
+    assert_eq!(out[2].text_content(), CONTINUE_TAIL);
+}
+
+#[test]
+fn shared_prefix_splices_continue_tail_over_the_stored_reply() {
+    let base = vec![Message::user("m1"), Message::assistant("a1")];
+    let mut wire = base.clone();
+    wire.push(Message::user_injected(CONTINUE_TAIL));
+    let mut agent = trigger_test_agent(Vec::new(), Arc::default(), Arc::default(), Vec::new());
+    agent_with_wire_fp(&mut agent, wire);
+
+    // The reply is already in history where the wire carried the tail.
+    let mut history = base;
+    history.push(Message::assistant("reply"));
+    let out = shared_prefix_compaction_messages(&agent, &history, None)
+        .expect("spliced tail must re-prove the shared prefix");
+    assert_eq!(out.len(), 5, "history + spliced tail + trigger: {out:?}");
+    assert_eq!(out[2].text_content(), CONTINUE_TAIL);
+    assert_eq!(out[3], Message::assistant("reply"));
+    assert!(
+        out[4]
+            .text_content()
+            .contains("Summarize this conversation"),
+        "trigger still lands last: {:?}",
+        out[4]
+    );
+}
+
+#[test]
+fn shared_prefix_stays_cold_when_divergence_is_not_the_tail() {
+    let mut agent = trigger_test_agent(Vec::new(), Arc::default(), Arc::default(), Vec::new());
+    agent_with_wire_fp(
+        &mut agent,
+        vec![Message::user("m1"), Message::assistant("a1")],
+    );
+
+    let history = vec![Message::user("CHANGED"), Message::assistant("a1")];
+    assert!(shared_prefix_compaction_messages(&agent, &history, None).is_none());
+}
+
+#[tokio::test]
+async fn over_budget_media_takes_the_cold_compaction_path() {
+    let seen: Arc<Mutex<Vec<ChatRequest>>> = Arc::default();
+    let iso: Arc<Mutex<Vec<Option<bool>>>> = Arc::default();
+    let calls: Arc<Mutex<Vec<String>>> = Arc::default();
+    let mut history = vec![Message::user("m1")];
+    for i in 0..=MEDIA_PAYLOAD_MAX_COUNT {
+        let mut m = Message::user(format!("pic{i}"));
+        m.content.push(ContentBlock::Image {
+            media_type: "image/png".to_string(),
+            data: "QUJD".to_string(),
+        });
+        history.push(m);
+    }
+    let mut agent = Agent::new(
+        Box::new(
+            CapturingProvider::new(
+                vec![
+                    StreamEvent::text_delta("SUMMARY"),
+                    StreamEvent::message_complete(Some(StopReason::EndTurn), None),
+                ],
+                seen.clone(),
+            )
+            .with_iso_recorder(iso.clone()),
+        ),
+        Arc::new(RecordingExecutor { calls }),
+    )
+    .with_system("S")
+    .with_messages(history.clone());
+    agent_with_wire_fp(&mut agent, history);
+
+    let out = agent.compact_v2(None, Some(0)).await.expect("compact ran");
+    assert!(out.is_some(), "cold path must still produce a summary");
+    assert_eq!(
+        *iso.lock().expect("iso lock poisoned"),
+        vec![Some(true)],
+        "over-budget media must take the stubbed cold call, not the shared request"
+    );
+    let reqs = seen.lock().expect("seen lock poisoned");
+    assert_eq!(reqs.len(), 1);
+    let images = reqs[0]
+        .messages
+        .iter()
+        .flat_map(|m| &m.content)
+        .filter(|b| matches!(b, ContentBlock::Image { .. }))
+        .count();
+    assert!(
+        images <= MEDIA_PAYLOAD_KEEP_COUNT,
+        "the cold request must go out elided: {images} images"
+    );
 }

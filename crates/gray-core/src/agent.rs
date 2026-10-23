@@ -424,10 +424,6 @@ pub enum CommandOutcome {
 
     ModelPicker(String),
 
-    AgentPicker(String),
-
-    SubagentSettings(String),
-
     Panel(PanelSpec),
 
     Picker(PickerSpec),
@@ -474,6 +470,10 @@ pub trait PluginHooks: Send + Sync {
     async fn pre_tool(&self, _name: &str, _args: &serde_json::Value) {}
     async fn post_tool(&self, _name: &str, _output: &ToolOutput) {}
     async fn turn_end(&self, _usage: &Usage) {}
+
+    /// The interactive REPL session came up — plugins use it for
+    /// first-run/detection notices (the old core QoL hook).
+    async fn session_start(&self, _interactive: bool) {}
 
     async fn shutdown(&self) {}
 
@@ -533,7 +533,8 @@ pub struct Agent {
 
     pub(crate) context_usage: Option<(usize, usize)>,
     history_revision: u64,
-    history_rewrite_hook: Option<Arc<dyn Fn() + Send + Sync>>,
+
+    pub(crate) prefix_fp_sink: Option<crate::prefix_guard::FingerprintSink>,
 
     pub(crate) steer: Option<SteerHook>,
 
@@ -556,14 +557,9 @@ pub struct Agent {
 
     pub(crate) warm_cache_reported: bool,
 
-    pub(crate) cache_stats: crate::cache_stats::CacheStats,
-
     pub(crate) prefix_rewrite_ok: bool,
 
     pub(crate) lean_prompt: bool,
-    pub(crate) must_act: bool,
-    pub(crate) bench_nudges: bool,
-    pub(crate) bench_thrash_marks: Vec<u32>,
 }
 
 struct SharedProvider(Arc<dyn Provider>);
@@ -603,7 +599,7 @@ impl Agent {
             soft_elide_rearm: 0,
             context_usage: None,
             history_revision: 0,
-            history_rewrite_hook: None,
+            prefix_fp_sink: None,
             steer: None,
             checkpoint: None,
             tool_output_hook: None,
@@ -617,12 +613,8 @@ impl Agent {
             )),
             prefix_guard: crate::prefix_guard::PrefixGuard::default(),
             warm_cache_reported: false,
-            cache_stats: crate::cache_stats::CacheStats::default(),
             prefix_rewrite_ok: true,
             lean_prompt: false,
-            must_act: false,
-            bench_nudges: false,
-            bench_thrash_marks: vec![60, 120],
         }
     }
 
@@ -659,20 +651,6 @@ impl Agent {
         self.lean_prompt = lean;
     }
 
-    pub fn set_must_act(&mut self, must: bool) {
-        self.must_act = must;
-    }
-
-    pub fn set_bench_nudges(&mut self, on: bool) {
-        self.bench_nudges = on;
-    }
-
-    pub fn set_bench_thrash_marks(&mut self, marks: Vec<u32>) {
-        if !marks.is_empty() {
-            self.bench_thrash_marks = marks;
-        }
-    }
-
     pub fn set_steer(&mut self, hook: SteerHook) {
         self.steer = Some(hook);
     }
@@ -692,11 +670,6 @@ impl Agent {
         })
     }
 
-    pub fn with_history_rewrite_hook(mut self, hook: Arc<dyn Fn() + Send + Sync>) -> Self {
-        self.history_rewrite_hook = Some(hook);
-        self
-    }
-
     pub(crate) fn history_rewritten(&mut self) {
         self.context_usage = None;
 
@@ -708,22 +681,25 @@ impl Agent {
         self.prefix_guard.expect_change("history rewrite");
         self.history_revision = self.history_revision.wrapping_add(1);
         self.warm_run = None;
-        if let Some(hook) = &self.history_rewrite_hook {
-            hook();
-        }
     }
 
     // Blocks replaced in place, indices unchanged: unlike `history_rewritten`
     // the stale mask and scrub set stay valid, and the revision is left alone
     // so the REPL doesn't append the whole history to the session file again.
-    // The hook still runs: dedup must not answer a re-read of elided content.
     pub(crate) fn history_edited_in_place(&mut self, reason: &'static str) {
         self.context_usage = None;
         self.prefix_guard.expect_change(reason);
         self.warm_run = None;
-        if let Some(hook) = &self.history_rewrite_hook {
-            hook();
-        }
+    }
+
+    /// Called with the fingerprint of every request as it is sent; the REPL
+    /// persists it so a later process can explain a first-request cache miss.
+    pub fn set_prefix_fp_sink(&mut self, sink: Option<crate::prefix_guard::FingerprintSink>) {
+        self.prefix_fp_sink = sink;
+    }
+
+    pub fn seed_prefix_fingerprint(&mut self, fp: crate::prefix_guard::Fingerprint) {
+        self.prefix_guard.seed(fp);
     }
 
     pub fn with_system(mut self, system: impl Into<String>) -> Self {
@@ -735,6 +711,10 @@ impl Agent {
     pub fn with_tools(mut self, tools: Vec<ToolDef>) -> Self {
         self.tools = tools;
         self
+    }
+
+    pub fn request_tools(&self) -> Vec<ToolDef> {
+        self.tools.clone()
     }
 
     pub fn refresh_tools(&mut self) {
@@ -785,7 +765,7 @@ impl Agent {
         self.tool_labels = donor.tool_labels;
         self.tool_previews = donor.tool_previews;
         self.hooks = donor.hooks;
-        self.history_rewrite_hook = donor.history_rewrite_hook;
+        self.prefix_fp_sink = donor.prefix_fp_sink;
         self
     }
 
@@ -867,7 +847,6 @@ impl Agent {
 
     pub fn set_messages(&mut self, messages: Vec<Message>) {
         self.messages = messages;
-        self.cache_stats.reset();
         self.history_rewritten();
     }
 
@@ -925,26 +904,35 @@ impl Agent {
         &self.tools
     }
 
-    pub async fn complete_with_history(
-        &self,
-        system: Option<&str>,
-        messages: Vec<Message>,
-        tools: Vec<ToolDef>,
-    ) -> Result<String, CoreError> {
-        let req = ChatRequest {
-            system: system.map(|s| s.to_string()),
-            messages,
-            tools,
-            max_tokens: None,
-        };
-        drain_reply_text(self.provider.stream(req), self.session_id.as_deref()).await
-    }
-
     pub(crate) async fn complete_isolated(
         &self,
         system: Option<&str>,
         messages: Vec<Message>,
         tools: Vec<ToolDef>,
+    ) -> Result<String, CoreError> {
+        self.complete_isolated_with_cache(system, messages, tools, false)
+            .await
+    }
+
+    /// The request provably extends the last sent prefix: keep provider cache
+    /// markers (Anthropic breakpoints, OpenAI prompt_cache_key) so the call
+    /// reads the warm cache instead of paying a cold write.
+    pub(crate) async fn complete_isolated_cached(
+        &self,
+        system: Option<&str>,
+        messages: Vec<Message>,
+        tools: Vec<ToolDef>,
+    ) -> Result<String, CoreError> {
+        self.complete_isolated_with_cache(system, messages, tools, true)
+            .await
+    }
+
+    async fn complete_isolated_with_cache(
+        &self,
+        system: Option<&str>,
+        messages: Vec<Message>,
+        tools: Vec<ToolDef>,
+        shared_cache: bool,
     ) -> Result<String, CoreError> {
         let req = ChatRequest {
             system: system.map(|s| s.to_string()),
@@ -953,8 +941,16 @@ impl Agent {
             max_tokens: None,
         };
         let iso = IsolatedStream {
-            session_id: Some(uuid::Uuid::new_v4().to_string()),
-            cache_off: true,
+            // Key-scoped caches (OpenAI prompt_cache_key) keep their affinity
+            // only when the shared request reuses the session id.
+            session_id: Some(if shared_cache {
+                self.session_id
+                    .clone()
+                    .unwrap_or_else(|| uuid::Uuid::new_v4().to_string())
+            } else {
+                uuid::Uuid::new_v4().to_string()
+            }),
+            cache_off: !shared_cache,
         };
         let session = self.session_id.clone();
         scope_isolated_stream(iso, async {
@@ -975,7 +971,12 @@ async fn drain_reply_text(
                 result.push_str(&delta);
             }
             StreamEvent::MessageComplete { usage, .. } => {
-                usage.unwrap_or_default().log_request("compaction", session);
+                let kind = if current_isolated_stream().is_some_and(|i| !i.cache_off) {
+                    "compaction-shared"
+                } else {
+                    "compaction"
+                };
+                usage.unwrap_or_default().log_request(kind, session);
                 break;
             }
             _ => {}

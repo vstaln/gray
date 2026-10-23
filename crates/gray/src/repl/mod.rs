@@ -116,6 +116,7 @@ async fn spawn_ctrl_c_policy() {
         }
         let token = TURN_STATE.lock().ok().and_then(|mut g| g.take());
         if let Some(t) = token {
+            log::info!(target: "gray_repl", "turn cancelled by SIGINT");
             t.cancel();
         } else {
             drain_in_flight_turn(TURN_DRAIN_TIMEOUT).await;
@@ -151,13 +152,11 @@ async fn spawn_hangup_policy() {}
 use crate::config::Config;
 use crate::{DEFAULT_SYS_PROMPT, build_agent, load_or_create_system_prompt_at};
 
-pub mod agents_panel;
 pub mod attachments;
 pub mod commands;
 mod customize;
 pub(crate) mod dispatch;
 pub mod format;
-pub(crate) mod gateway_panel;
 pub(crate) mod handlers;
 pub(crate) mod jobs;
 pub(crate) mod key_watcher;
@@ -169,8 +168,6 @@ pub(crate) mod plugin_cmds;
 pub(crate) mod prompt_turn;
 mod session;
 pub(crate) mod status;
-pub(crate) mod usage_panel;
-mod user_cmds;
 
 pub(crate) use commands::{REGISTRY, completion_fill, completion_matches_dyn, is_builtin_command};
 pub use commands::{ReplCommand, ResumeArgs, SysAction, parse_command};
@@ -185,10 +182,8 @@ pub(crate) use session::{
     persist_turn_messages, print_exit_hint,
 };
 pub(crate) use status::{
-    SessionTotals, handle_compact, handle_context_window, handle_copy, handle_usage, turn_footer,
-    turn_tokens_per_second,
+    SessionTotals, handle_compact, handle_context_window, turn_footer, turn_tokens_per_second,
 };
-pub(crate) use user_cmds::handle_feedback;
 
 pub(crate) type TuiOpt = Option<(
     crate::composer::SharedTui,
@@ -234,9 +229,10 @@ pub(crate) fn say(tui: Option<&crate::composer::SharedTui>, msg: &str) {
     if let Some(t) = tui {
         let mut t = t.lock().expect("tui lock");
 
-        for line in msg.split('\n') {
-            t.push_dim(format!("  {line}"));
-        }
+        // One push: a multi-line reply stays a transcript block on home
+        // rather than toasting line by line.
+        let body: Vec<String> = msg.split('\n').map(|l| format!("  {l}")).collect();
+        t.push_dim(body.join("\n"));
 
         t.ensure_gap();
     } else {
@@ -251,9 +247,10 @@ pub(crate) fn say_err(tui: Option<&crate::composer::SharedTui>, msg: &str) {
     if let Some(t) = tui {
         let mut t = t.lock().expect("tui lock");
 
-        for line in msg.split('\n') {
-            t.push_dim(format!("  {line}"));
-        }
+        // One push: a multi-line reply stays a transcript block on home
+        // rather than toasting line by line.
+        let body: Vec<String> = msg.split('\n').map(|l| format!("  {l}")).collect();
+        t.push_dim(body.join("\n"));
 
         t.ensure_gap();
     } else {
@@ -509,6 +506,15 @@ pub async fn run_repl_mode(
     let cwd = std::env::current_dir()?;
     log::debug!(target: "gray_timing", "repl start elapsed_ms={}", crate::turn_caps::process_start().elapsed().as_millis());
     tokio::task::spawn_blocking(crate::setup::context::warm_rates_from_disk_cache);
+    // auth.json v1→v2: single-envelope plugin entries become account
+    // pools. Backs up to auth.json.v1.bak before rewriting; a no-op once
+    // migrated (and when there are no plugin entries at all).
+    if let Ok(path) = crate::setup::catalog::auth_store_path() {
+        let store = crate::auth::CredentialStore::new(path);
+        if let Err(e) = store.migrate_to_v2() {
+            log::warn!("auth store v2 migration skipped: {e:#}");
+        }
+    }
 
     use std::io::IsTerminal;
     let interactive = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
@@ -521,8 +527,6 @@ pub async fn run_repl_mode(
     if interactive {
         gray_plugin::builder::set_autostart(true);
     }
-
-    crate::composer::input::watch_dead_stdin();
 
     crate::setup::set_user_context_window(config.context_window);
     crate::setup::set_user_reserve_tokens(config.context_reserve);
@@ -562,6 +566,11 @@ pub async fn run_repl_mode(
 
     tokio::spawn(spawn_ctrl_c_policy());
     tokio::spawn(spawn_hangup_policy());
+
+    // The watchdog raises SIGHUP — only arm it once the hangup policy owns
+    // the signal disposition, else a dead-at-startup tty hits the default
+    // disposition and kills the process with no cleanup or exit hint.
+    crate::composer::input::watch_dead_stdin();
 
     crate::ask::install(None, interactive);
 
@@ -682,9 +691,6 @@ pub async fn run_repl_mode(
                     "Thinking effort clamped from {old} to {new} (not supported by this model)"
                 ),
             );
-        }
-        if let Some(ledger) = gray_plugin::builder::current_file_ledger() {
-            ledger.clear();
         }
         session_state = Some(SessionState {
             full_save_pending: false,
@@ -887,11 +893,18 @@ pub async fn run_repl_mode(
         });
     }
 
+    // Plugin-owned quality-of-life detection: gray-qol's session_start
+    // hook hears this and says what it found (the old core QoL spawn).
     if interactive
         && !config.bare
-        && let Some((shared, _)) = &tui
+        && let Some(a) = agent.as_ref()
     {
-        tokio::spawn(crate::quality_of_life::detect::run_for_home(shared.clone()));
+        let hooks = a.hooks().to_vec();
+        tokio::spawn(async move {
+            for h in hooks {
+                h.session_start(true).await;
+            }
+        });
     }
 
     if interactive
@@ -912,13 +925,36 @@ pub async fn run_repl_mode(
         && !cfg!(windows)
         && let Ok(home) = crate::setup::gray_home()
     {
+        let watcher_tui = tui.as_ref().map(|(shared, _)| shared.clone());
         tokio::spawn(async move {
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-                if let Some(sid) = crate::host::live_session()
-                    && crate::session_mailbox::session_inbox_pending(&home, &sid)
-                {
+                let Some(sid) = crate::host::live_session() else {
+                    continue;
+                };
+                if crate::session_mailbox::session_inbox_pending(&home, &sid) {
                     crate::host::request_wake();
+                }
+                // Keep the "Queued follow-up inputs" preview fresh even
+                // mid-turn: peek (non-consuming) the session's sends and
+                // repaint only when the set changed.
+                if let Some(shared) = &watcher_tui
+                    && let Ok(mut t) = shared.try_lock()
+                {
+                    let pending: Vec<(String, Vec<std::path::PathBuf>)> =
+                        crate::session_send::peek_sends(&home, &sid)
+                            .into_iter()
+                            .map(|m| {
+                                (
+                                    crate::session_send::prompt_for(&m.from, &m.text),
+                                    m.attachments,
+                                )
+                            })
+                            .collect();
+                    if t.queued_sends != pending {
+                        t.queued_sends = pending;
+                        let _ = t.draw();
+                    }
                 }
             }
         });
@@ -947,13 +983,10 @@ pub async fn run_repl_mode(
     let mut last_turn_resumable = false;
 
     let mut bg_wake: Option<tokio::task::JoinHandle<()>> = None;
+    let mut ttl_wake: Option<tokio::task::JoinHandle<()>> = None;
 
     if interactive {
         jobs::spawn_footer_poller();
-    }
-
-    if interactive && tui.is_some() && crate::quality_of_life::detect::take_pending_setup() {
-        crate::quality_of_life::setup::handle(&tui, None).await;
     }
 
     loop {
@@ -976,6 +1009,9 @@ pub async fn run_repl_mode(
                     .map(|a| (a.executor_handle(), jobs::session_ctx(&cwd, sid.as_deref()))),
             );
             if let Some(h) = bg_wake.take() {
+                h.abort();
+            }
+            if let Some(h) = ttl_wake.take() {
                 h.abort();
             }
 
@@ -1074,6 +1110,62 @@ pub async fn run_repl_mode(
                     turn?;
                 }
                 continue;
+            }
+
+            // Cache-expiry compaction (pi-cached-compaction): a summary fired
+            // while the provider still holds the prompt cache costs ~0.1x,
+            // and the next message doesn't rewrite an expired cache. The
+            // check re-runs each idle pass; armed below, a wake lands ~20s
+            // before TTL. Self-limiting — post-compact the estimate drops
+            // under budget so it can't loop every TTL cycle.
+            const EXPIRY_LEAD: std::time::Duration = std::time::Duration::from_secs(20);
+            if let Some(agent) = agent.as_mut() {
+                let remaining = tui
+                    .as_ref()
+                    .and_then(|(s, _)| s.lock().ok().and_then(|t| t.cache_remaining()));
+                match remaining {
+                    Some(r) if r <= EXPIRY_LEAD => {
+                        if crate::compact::is_auto_compact_enabled() {
+                            let started = std::time::Instant::now();
+                            match crate::compact::auto_compact_if_needed(agent).await {
+                                Ok(true) => {
+                                    status::push_compaction_card(
+                                        tui.as_ref().map(|(s, _)| s),
+                                        &crate::composer::fmt_elapsed_compact(
+                                            started.elapsed().as_secs(),
+                                        ),
+                                        "before cache expiry",
+                                    );
+                                    session::persist_compaction_tail(
+                                        agent,
+                                        config,
+                                        &mut session_state,
+                                        &cwd,
+                                        tui.as_ref().map(|(s, _)| s),
+                                    )
+                                    .await;
+                                    if let Some(mut t) =
+                                        tui.as_ref().and_then(|(s, _)| s.lock().ok())
+                                    {
+                                        t.rearm_cache();
+                                    }
+                                }
+                                Ok(false) => {}
+                                Err(e) => log::warn!(
+                                    target: "gray_agent",
+                                    "idle compaction failed: {e}"
+                                ),
+                            }
+                        }
+                    }
+                    Some(r) => {
+                        ttl_wake = Some(tokio::spawn(async move {
+                            tokio::time::sleep(r - EXPIRY_LEAD).await;
+                            crate::host::request_wake();
+                        }));
+                    }
+                    None => {}
+                }
             }
         }
         let cmd = if let Some(c) = pending_command.take() {

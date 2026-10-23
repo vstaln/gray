@@ -125,7 +125,10 @@ fn apply(tui: &mut Tui, a: Action) -> Option<KeyOutcome> {
         }
         Action::CursorUp => {
             let has_multiline = tui.textarea.text().contains('\n');
-            let at_top = tui.textarea.cursor() == 0 || !has_multiline;
+            // While browsing history, Up keeps walking older entries even
+            // when the recalled one is multi-line (Down already mirrors this);
+            // otherwise a tall entry traps the cursor inside it.
+            let at_top = tui.history_idx.is_some() || tui.textarea.cursor() == 0 || !has_multiline;
             if at_top && !tui.history.is_empty() {
                 history_prev(tui);
             } else {

@@ -20,6 +20,7 @@ fn draw_bg(w: u16, h: u16) -> ratatui::buffer::Buffer {
         home_quality_of_life: None,
         home_session: None,
         attachments: Vec::new(),
+        ..Default::default()
     };
     terminal
         .draw(|f| render_dimmed_background(f, &bg))

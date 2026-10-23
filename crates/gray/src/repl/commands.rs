@@ -88,46 +88,11 @@ pub(crate) const REGISTRY: &[CmdDef] = &[
         surface: CmdSurface::Local,
     },
     CmdDef {
-        name: "usage",
-        desc: "session tokens & cost",
-        aliases: &["cost"],
-        scope: CmdScope::Conversation,
-        surface: CmdSurface::Text,
-    },
-    CmdDef {
         name: "jobs",
         desc: "background jobs (u stops)",
         aliases: &[],
         scope: CmdScope::Conversation,
         surface: CmdSurface::Text,
-    },
-    CmdDef {
-        name: "copy",
-        desc: "copy last assistant response",
-        aliases: &[],
-        scope: CmdScope::Conversation,
-        surface: CmdSurface::Local,
-    },
-    CmdDef {
-        name: "feedback",
-        desc: "send feedback",
-        aliases: &[],
-        scope: CmdScope::Global,
-        surface: CmdSurface::Text,
-    },
-    CmdDef {
-        name: "theme",
-        desc: "pick a color theme (~/.gray/themes/*.json; /theme new <name>)",
-        aliases: &["themes"],
-        scope: CmdScope::Global,
-        surface: CmdSurface::Local,
-    },
-    CmdDef {
-        name: "hotkeys",
-        desc: "show keybindings (~/.gray/keybindings.json; /hotkeys reload)",
-        aliases: &["keybindings", "bindings"],
-        scope: CmdScope::Global,
-        surface: CmdSurface::Local,
     },
     CmdDef {
         name: "reload",
@@ -148,13 +113,6 @@ pub(crate) const REGISTRY: &[CmdDef] = &[
         desc: "list skills (/skills [name] [args] to run one, /skills on|off for auto-context, /skills enable|disable <name>)",
         aliases: &["skill"],
         scope: CmdScope::Conversation,
-        surface: CmdSurface::Text,
-    },
-    CmdDef {
-        name: "gateway",
-        desc: "connections: apps + daemon/cron/memory (space toggles)",
-        aliases: &["gw"],
-        scope: CmdScope::Global,
         surface: CmdSurface::Text,
     },
     CmdDef {
@@ -205,22 +163,7 @@ pub(crate) fn format_help_line(d: &CmdDef) -> String {
 
 const HIDDEN_ALIASES: &[(&str, &str)] = &[("plugin", "plugins")];
 
-pub(crate) const TUI_COMMANDS: &[CmdDef] = &[
-    CmdDef {
-        name: "intro",
-        desc: "logo intro enable|disable",
-        aliases: &[],
-        scope: CmdScope::Global,
-        surface: CmdSurface::Local,
-    },
-    CmdDef {
-        name: "setup",
-        desc: "import detected agent tool setups (rules, skills, plugins)",
-        aliases: &[],
-        scope: CmdScope::Global,
-        surface: CmdSurface::Local,
-    },
-];
+pub(crate) const TUI_COMMANDS: &[CmdDef] = &[];
 
 pub(crate) fn resolve(name: &str) -> Option<&'static CmdDef> {
     let n = name.strip_prefix('/').unwrap_or(name).to_lowercase();
@@ -386,33 +329,6 @@ pub(crate) fn complete_command_args(
         "skill" | "skills" => complete_skill_args(cmd, arg_text, cwd),
         "agentsmd" | "sys" => complete_agentsmd_args(cmd, arg_text),
         "models" => complete_model_args(cmd, arg_text),
-        "theme" | "themes" => complete_theme_args(cmd, arg_text),
-        "setup" => {
-            let mut table: Vec<(&str, &str)> = vec![
-                ("undo", "reverse the last import(s)"),
-                ("dismiss", "stop flagging a tool (/setup dismiss <tool>)"),
-                ("scanned", "show the declared scan set"),
-            ];
-            table.extend(
-                crate::quality_of_life::detect::TOOLS
-                    .iter()
-                    .map(|t| (t.id, "import this tool's setup")),
-            );
-            complete_from_table(cmd, arg_text, &table)
-        }
-        "intro" => complete_from_table(
-            cmd,
-            arg_text,
-            &[
-                ("enable", "animate the logo at startup"),
-                ("disable", "settle instantly"),
-                ("on", "alias of enable"),
-                ("off", "alias of disable"),
-            ],
-        ),
-        "hotkeys" | "keybindings" | "bindings" => {
-            complete_from_table(cmd, arg_text, &[("reload", "re-read keybindings.json")])
-        }
         _ => Vec::new(),
     };
     if arg_text.trim().is_empty()
@@ -449,28 +365,6 @@ fn complete_skill_args(cmd: &str, arg_text: &str, cwd: &std::path::Path) -> Vec<
         .iter()
         .filter(|s| f.is_empty() || s.name.contains(f.as_str()))
         .map(|s| (format!("{cmd} {}", s.name), s.description.clone()))
-        .collect()
-}
-
-fn complete_theme_args(cmd: &str, arg_text: &str) -> Vec<(String, String)> {
-    let mut rows: Vec<(String, String)> =
-        vec![(crate::theme::BUILTIN_THEME_NAME.to_string(), String::new())];
-    if let Ok(dir) = crate::theme::themes_dir() {
-        for name in crate::theme::list_themes_in(&dir) {
-            if !crate::theme::is_builtin_name(&name) {
-                rows.push((name, String::new()));
-            }
-        }
-    }
-    rows.push((
-        "new".into(),
-        "write the current palette to a new theme file".into(),
-    ));
-    rows.push(("reload".into(), "re-read the active theme file".into()));
-    let f = arg_text.trim().to_lowercase();
-    rows.into_iter()
-        .filter(|(n, _)| n.to_lowercase().starts_with(&f))
-        .map(|(n, d)| (format!("{cmd} {n}"), d))
         .collect()
 }
 
@@ -603,24 +497,10 @@ pub enum ReplCommand {
     Update(Option<String>),
 
     Restart,
-    Usage,
 
     Jobs,
 
-    Gateway(Option<String>),
-
-    Copy,
-
-    Feedback(Option<String>),
-
     Hehe,
-
-    Theme(Option<String>),
-
-    Intro(Option<String>),
-    Setup(Option<String>),
-
-    Keys(Option<String>),
 
     Reload,
 
@@ -744,17 +624,12 @@ pub fn parse_command(line: &str) -> ReplCommand {
         Some("context") => ReplCommand::ContextWindow(opt(rest)),
         Some("update") => ReplCommand::Update(opt(rest)),
         Some("restart") => ReplCommand::Restart,
-        Some("usage") => ReplCommand::Usage,
+
         Some("jobs") => ReplCommand::Jobs,
-        Some("gateway") => ReplCommand::Gateway(opt(rest)),
-        Some("copy") => ReplCommand::Copy,
-        Some("feedback") => ReplCommand::Feedback(opt(rest)),
+
         Some("help") => ReplCommand::Help,
         Some("hehe") => ReplCommand::Hehe,
-        Some("theme") => ReplCommand::Theme(opt(rest)),
-        Some("intro") => ReplCommand::Intro(opt(rest)),
-        Some("setup") => ReplCommand::Setup(opt(rest)),
-        Some("hotkeys") => ReplCommand::Keys(opt(rest)),
+
         Some("reload") => ReplCommand::Reload,
         Some("models") => match opt(rest) {
             Some(id) => ReplCommand::Model(Some(id)),

@@ -137,6 +137,20 @@ struct Transport {
     host_slots: Arc<tokio::sync::Semaphore>,
 
     grants: Arc<std::sync::Mutex<BTreeSet<String>>>,
+
+    respawn: std::sync::Mutex<RespawnState>,
+}
+
+#[derive(Default)]
+struct RespawnState {
+    failures: u32,
+    retry_at: Option<tokio::time::Instant>,
+}
+
+const RESPAWN_MAX_FAILURES: u32 = 5;
+
+fn respawn_backoff(failures: u32) -> std::time::Duration {
+    std::time::Duration::from_secs((1u64 << failures.saturating_sub(1).min(6)).min(60))
 }
 
 pub struct SidecarPlugin {
@@ -460,6 +474,7 @@ impl Transport {
             notify,
             host_slots,
             grants,
+            respawn: std::sync::Mutex::new(RespawnState::default()),
         })
     }
 
@@ -471,6 +486,16 @@ impl Transport {
             Err(e) => ("unknown".to_string(), false, Some(e.to_string())),
         };
         let name = Self::name_of(&self.argv);
+        {
+            let state = self.respawn.lock().unwrap_or_else(|e| e.into_inner());
+            if state.failures >= RESPAWN_MAX_FAILURES
+                || state
+                    .retry_at
+                    .is_some_and(|at| tokio::time::Instant::now() < at)
+            {
+                return false;
+            }
+        }
         if clean {
             log::info!(target: "gray_plugin", "sidecar {name} exited cleanly, respawning");
         } else {
@@ -494,15 +519,29 @@ impl Transport {
                     Self::name_of(&self.argv),
                     p.epoch,
                 );
+                *self.respawn.lock().unwrap_or_else(|e| e.into_inner()) = RespawnState::default();
                 if !clean {
                     self.say(&name, &status, true, wait_err).await;
                 }
                 true
             }
             Err(e) => {
-                log::warn!(target: "gray_plugin", "sidecar respawn failed: {e}");
-                let error = Some(format!("{e}"));
-                self.say(&name, &status, false, error).await;
+                let failures = {
+                    let mut state = self.respawn.lock().unwrap_or_else(|e| e.into_inner());
+                    state.failures += 1;
+                    state.retry_at =
+                        Some(tokio::time::Instant::now() + respawn_backoff(state.failures));
+                    state.failures
+                };
+                log::warn!(target: "gray_plugin", "sidecar {name} respawn failed ({failures}/{RESPAWN_MAX_FAILURES}): {e}");
+                if failures == 1 || failures == RESPAWN_MAX_FAILURES {
+                    let error = if failures == RESPAWN_MAX_FAILURES {
+                        format!("{e}; giving up after {failures} attempts until gray restarts")
+                    } else {
+                        format!("{e}")
+                    };
+                    self.say(&name, &status, false, Some(error)).await;
+                }
                 false
             }
         }
@@ -1274,6 +1313,9 @@ impl Plugin for SidecarPlugin {
             CoreEvent::TurnEnd { usage } => {
                 json!({"type": "turn_end", "usage": usage, "session": session})
             }
+            CoreEvent::SessionStart { interactive } => {
+                json!({"type": "session_start", "interactive": interactive, "session": session})
+            }
         };
         let name = self.manifest.name.clone();
 
@@ -1610,12 +1652,6 @@ pub(crate) fn command_outcome(v: &Value, plugin_argv: &[String]) -> Option<Comma
             argv: plugin_argv.iter().cloned().chain(args).collect(),
             text: field("text").map(str::to_string),
         });
-    }
-    if let Some(plugin) = field("subagent_settings") {
-        return Some(CommandOutcome::SubagentSettings(plugin.to_string()));
-    }
-    if let Some(plugin) = field("agent_picker") {
-        return Some(CommandOutcome::AgentPicker(plugin.to_string()));
     }
     if let Some(row) = field("model_picker") {
         return Some(CommandOutcome::ModelPicker(row.to_string()));

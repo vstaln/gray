@@ -4,6 +4,26 @@ static EXIT_SESSION: StdMutex<Option<String>> = StdMutex::new(None);
 
 static RESUME_TRAILER: StdMutex<Option<String>> = StdMutex::new(None);
 
+/// Persist the last sent prompt-prefix fingerprint beside the session file,
+/// and seed the guard from it after a restart, so the first request of a
+/// resumed session can still name what changed ("tool list changed").
+pub(crate) fn wire_prefix_fingerprint(agent: &mut gray_core::Agent, state: &super::SessionState) {
+    let path = state
+        .store
+        .root_dir()
+        .join(format!("{}.prefix", state.session_id.as_str()));
+    if let Ok(text) = std::fs::read_to_string(&path)
+        && let Ok(fp) = serde_json::from_str::<gray_core::prefix_guard::Fingerprint>(&text)
+    {
+        agent.seed_prefix_fingerprint(fp);
+    }
+    agent.set_prefix_fp_sink(Some(std::sync::Arc::new(move |fp| {
+        if let Ok(json) = serde_json::to_string(fp) {
+            let _ = std::fs::write(&path, json);
+        }
+    })));
+}
+
 pub(crate) fn note_resume_trailer(id: &str) {
     *RESUME_TRAILER.lock().unwrap_or_else(|e| e.into_inner()) = Some(id.to_string());
 }
@@ -314,9 +334,6 @@ pub(crate) async fn handle_resume(
                     );
                     *agent = Some(built.with_messages((*shared_history).clone()));
 
-                    if let Some(ledger) = gray_plugin::builder::current_file_ledger() {
-                        ledger.clear();
-                    }
                     *session_state = Some(SessionState {
                         full_save_pending: false,
                         session_id: sid.clone(),
@@ -725,8 +742,18 @@ pub(crate) fn dispatch_agent_event(
                     });
                 }
             }
+            AgentEvent::PrefixChanged { cause } => {
+                t.note_prefix_change(cause.clone());
+            }
             AgentEvent::StepUsage { usage } => {
                 t.set_usage(*usage);
+                let session = std::env::var("GRAY_SESSION_ID").ok();
+                t.cache_stats.observe(
+                    usage,
+                    wire_model,
+                    session.as_deref(),
+                    crate::setup::get_model_rate(model),
+                );
 
                 if let Some(miss) = t.note_cache_request(usage, model, wire_model) {
                     totals.note_miss(&miss);

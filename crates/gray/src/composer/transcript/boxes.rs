@@ -72,6 +72,7 @@ impl Tui {
     }
 
     pub(crate) fn flush_thinking_fragment(&mut self, fragment: &str, terminated: bool) {
+        self.drain_reveal();
         let mid_line = self.thinking_run_mid_line();
         self.append_thinking_text(fragment, terminated);
         if let Some(text) = thinking_paint_text(fragment, mid_line) {
@@ -172,6 +173,7 @@ impl Tui {
         }
         let rebased = rebase_hyperlinks_for_slice(hyperlinks, line_offset, lines.len());
 
+        self.drain_reveal();
         self.history_entries
             .push(crate::composer::TranscriptEntry::StyledLines {
                 lines: lines.clone(),
@@ -190,6 +192,7 @@ impl Tui {
             return false;
         };
         crate::mascot::set_mascot_shown(true);
+        self.flush_markdown();
         self.ensure_gap();
         self.history_entries
             .push(crate::composer::TranscriptEntry::Mascot);
@@ -201,6 +204,16 @@ impl Tui {
     }
 
     pub fn push_dim(&mut self, line: String) {
+        // On home a one-liner (quit hint, command reply) is a toast over
+        // the box, not a column-0 transcript row.
+        if !line.contains('\n')
+            && self.home_toast(Line::styled(
+                line.trim().to_string(),
+                Style::default().fg(crate::theme::theme().tool_dim),
+            ))
+        {
+            return;
+        }
         let lines: Vec<Line<'static>> = line
             .split('\n')
             .map(|l| {
@@ -247,7 +260,11 @@ impl Tui {
                 Style::default().fg(crate::theme::theme().text_muted),
             ));
         }
-        let line = self.indent_home_receipt(Line::from(spans));
+        let line = Line::from(spans);
+        if self.home_toast(line.clone()) {
+            return;
+        }
+        let line = self.indent_home_receipt(line);
         self.push_styled_lines_with_hyperlinks(vec![line], &[], 0);
     }
 
@@ -272,22 +289,11 @@ impl Tui {
                 Style::default().fg(crate::theme::theme().text_soft),
             ),
         ]);
+        if self.home_toast(line.clone()) {
+            return;
+        }
         let line = self.indent_home_receipt(line);
         self.push_styled_lines_with_hyperlinks(vec![line], &[], 0);
-    }
-
-    pub fn replay_session_history(
-        &mut self,
-        history: std::sync::Arc<Vec<gray_core::Message>>,
-        cwd: &std::path::Path,
-        tail: Vec<String>,
-    ) {
-        self.replay_session_history_with_tools(
-            history,
-            cwd,
-            crate::tool_fmt::ToolDisplay::default(),
-            tail,
-        );
     }
 
     pub fn replay_session_history_with_tools(
@@ -447,6 +453,12 @@ impl Tui {
                             }
                             gray_core::ContentBlock::Text { text } => {
                                 let clean = strip_ansi(text);
+                                // "(empty)" is agent-loop scaffolding for a
+                                // textless turn, not real output — don't
+                                // resurrect it on replay.
+                                if clean.trim() == "(empty)" {
+                                    continue;
+                                }
                                 if !clean.trim().is_empty() {
                                     self.ensure_gap();
 

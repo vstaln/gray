@@ -73,6 +73,10 @@ pub(crate) fn format_tool_box_lines_multi(
                     span.style = span.style.bg(line_bg);
                 }
             }
+            l.spans.insert(
+                0,
+                Span::styled(" ".repeat(GUTTER), Style::default().bg(line_bg)),
+            );
             if line_bg != bg_color {
                 let current_w: usize = l.spans.iter().map(|s| s.width()).sum();
                 if current_w < width {

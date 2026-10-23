@@ -77,6 +77,19 @@ pub(crate) fn attachment_cells(attachments: &[std::path::PathBuf], text: &str) -
     )
 }
 
+pub(crate) fn band_overlay(desired: u16, box_h: u16) -> u16 {
+    box_h.saturating_sub(1).min(desired)
+}
+
+/// Completion rows that fit in `room` band rows: the panel needs one spacer
+/// row above the box, and a panel that cannot fit at least one row is hidden
+/// rather than drawn over the box.
+pub(crate) fn popup_rows(matches: usize, room: u16) -> usize {
+    matches
+        .min(PANEL_ROWS)
+        .min(usize::from(room.saturating_sub(1)))
+}
+
 pub(crate) fn viewport_cap(rows: u16) -> u16 {
     rows.saturating_sub(2).max(MIN_VIEWPORT_H)
 }
@@ -212,7 +225,13 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
 
     let needs_seam = needs_seam(&tui.transcript);
     let dock_live = tui.status.is_some() || tui.hint_active().is_some();
-    let status_h: u16 = status_dock_h(dock_live, needs_seam);
+    // Home keeps one fixed toast row above the box, so a hint appearing or
+    // expiring never shifts the centered box.
+    let status_h: u16 = if home_mode {
+        1
+    } else {
+        status_dock_h(dock_live, needs_seam)
+    };
 
     let seam_h: u16 = u16::from(needs_seam);
     let n = tui.queued_inputs.len() + tui.queued_sends.len();
@@ -222,11 +241,6 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
         1 + n.min(3) as u16 + u16::from(n > 3) + 1
     };
     let search_h: u16 = u16::from(tui.search.is_some());
-    let panel_est: u16 = if tui.matches.is_empty() {
-        search_h
-    } else {
-        tui.matches.len().min(PANEL_ROWS) as u16 + 1
-    };
 
     let ask_est: u16 = tui
         .ask_modal
@@ -254,10 +268,37 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
     // A consent/question prompt owns the bottom band: the input box (and
     // its cursor) step aside until it closes.
     let asking = tui.ask_modal.is_some();
+    let ask_gap = u16::from(asking);
     let box_h = if asking {
         0
     } else {
         ibox.lines.len().max(1) as u16
+    };
+
+    // The completion popup shows only as many rows as the band can hold
+    // next to the box and footer, so the whole panel always paints and the
+    // band grows by exactly the panel it draws.
+    // On home the popup drops down from the input band over the model and
+    // hint rows instead of opening above it: the box stays put and the
+    // welcome banner above is never scrolled away by a transient menu.
+    let below_band = (ibox.lines.len().saturating_sub(ibox.lead_h + ibox.band_h)) as u16;
+    let home_room = rows
+        .saturating_sub(tui.terminal.viewport_area.y + status_h + box_h.saturating_sub(below_band));
+    let home_drop = home_mode && !asking && home_room >= tui.matches.len().min(3) as u16;
+    let panel_rows = if home_drop {
+        popup_rows(tui.matches.len(), home_room + 1)
+    } else {
+        popup_rows(
+            tui.matches.len(),
+            viewport_cap(rows).saturating_sub(status_h + box_h + attach_h + footer_h),
+        )
+    };
+    let panel_est: u16 = if panel_rows == 0 {
+        search_h
+    } else if home_drop {
+        (panel_rows as u16).saturating_sub(below_band)
+    } else {
+        panel_rows as u16 + 1
     };
 
     let box_rows_est: u16 = box_h;
@@ -270,7 +311,9 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
     let max_viewport_h = viewport_cap(rows);
 
     let mut band_allowance =
-        band_budget(max_viewport_h, status_h + box_h + attach_h + panel_est + 1);
+        band_budget(max_viewport_h, status_h + box_h + attach_h + panel_est + 1)
+            .saturating_sub(2 * ask_gap)
+            .max(if asking { ask_est.min(6) } else { 0 });
 
     let reserve_overflow_row = tui.live_tool_overflow() > 0 && band_allowance > 0;
     if reserve_overflow_row {
@@ -294,7 +337,7 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
     let desired = desired_viewport_h(
         status_h,
         queued_est,
-        live_est + tail_est + widget_h + ask_est,
+        live_est + tail_est + widget_h + ask_est + 2 * ask_gap,
         box_rows_est,
         panel_est,
         attach_h,
@@ -305,14 +348,22 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
     let floor = latched_viewport_floor(
         status_h,
         queued_est,
-        live_est + tail_est + widget_h + ask_est,
+        live_est + tail_est + widget_h + ask_est + 2 * ask_gap,
         box_rows_est,
         attach_h,
         footer_h,
         max_viewport_h,
     );
     let desired = desired.max(floor);
-    let overlay = desired.saturating_sub(floor).min(panel_est);
+    // Only draft rows past the first are transient: the box's padding rows
+    // and its single text row are always there, so they never cover
+    // transcript rows.
+    let draft_rows = if asking {
+        0
+    } else {
+        ibox.band_h.saturating_sub(2).max(1) as u16
+    };
+    let overlay = band_overlay(desired, draft_rows);
 
     tui.begin_sync();
 
@@ -486,9 +537,11 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
         let ask_h = rows_h[0];
         let widget_h = rows_h[2];
 
-        let visible_count = tui.matches.len().min(PANEL_ROWS);
-        let panel_gap: u16 = if visible_count > 0 {
+        let visible_count = panel_rows;
+        let panel_gap: u16 = if visible_count > 0 && !home_drop {
             visible_count as u16 + 1
+        } else if visible_count > 0 {
+            0
         } else {
             search_h
         };
@@ -497,8 +550,8 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
         let tail_y = status_y + seam_h;
         let queued_y = status_y + status_h + tail_h;
         let live_y = queued_y + queued_h;
-        let ask_y = live_y + live_h;
-        let widget_y = ask_y + ask_h;
+        let ask_y = live_y + live_h + ask_gap;
+        let widget_y = ask_y + ask_h + ask_gap;
         let box_y = widget_y + widget_h + panel_gap;
         let panel_y = if home_mode {
             (area.y + area.height.saturating_sub(1)).saturating_sub(panel_h)
@@ -534,12 +587,22 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
         } else if let Some((shown, hint)) = &tui.hint
             && shown.elapsed() < super::HINT_TTL
         {
-            frame.render_widget(
-                Paragraph::new(Line::from(Span::styled(
-                    format!(" {hint}"),
+            let mut line = tui.hint_line.clone().unwrap_or_else(|| {
+                Line::from(Span::styled(
+                    hint.clone(),
                     Style::default().fg(crate::theme::theme().tool_dim),
-                ))),
-                Rect::new(area.x, status_y + seam_h + tail_h, area.width, 1),
+                ))
+            });
+            line.spans.insert(0, Span::raw(" "));
+            // On home the toast sits over the centered box, not at column 0.
+            let x = if home_mode {
+                (area.x + ibox.x as u16).min(area.right())
+            } else {
+                area.x
+            };
+            frame.render_widget(
+                Paragraph::new(line),
+                Rect::new(x, status_y + seam_h + tail_h, area.right() - x, 1),
             );
         }
 
@@ -686,8 +749,23 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
             let inner_w = (pop_w - pad_x * 2) as usize;
             let pop_h = visible_count as u16;
             let pop_x = (area.x + ibox.x as u16).min(area.right().saturating_sub(pop_w));
-            let pop_y = box_y.saturating_sub(pop_h).max(area.y);
+            let pop_y = if home_drop {
+                (box_y + (ibox.lead_h + ibox.band_h) as u16)
+                    .min(area.bottom().saturating_sub(pop_h))
+            } else {
+                box_y.saturating_sub(pop_h).max(area.y)
+            };
             let rect = Rect::new(pop_x, pop_y, pop_w, pop_h);
+            if home_drop {
+                // Blank the home rows the dropdown covers, edge to edge, so
+                // no half-hidden model/hint text pokes out beside it.
+                let covered = Rect::new(area.x, pop_y, area.width, pop_h).intersection(area);
+                frame.render_widget(ratatui::widgets::Clear, covered);
+                frame.render_widget(
+                    Block::default().style(Style::default().bg(crate::theme::theme().window())),
+                    covered,
+                );
+            }
             frame.render_widget(ratatui::widgets::Clear, rect);
             frame.render_widget(
                 Block::default().style(Style::default().bg(crate::theme::theme().surface_bg)),

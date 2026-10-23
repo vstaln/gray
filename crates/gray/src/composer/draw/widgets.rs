@@ -444,7 +444,7 @@ pub(crate) fn home_band_h(w: usize) -> usize {
     )
     .lines
     .len()
-        + 1
+        + 2
 }
 
 pub(crate) fn transcript_ends_blank(transcript: &[Line<'static>]) -> bool {
@@ -493,9 +493,18 @@ pub(crate) fn queued_preview_lines(
 
     let max_show = 3usize;
     for (text, attached) in queued.iter().chain(sends.iter()).take(max_show) {
-        let first = text.lines().next().unwrap_or("").trim();
-        let mut preview: String = first.chars().take(w.saturating_sub(6).max(8)).collect();
-        if first.chars().count() > preview.chars().count() {
+        let mut it = text.lines();
+        let first = it.next().unwrap_or("").trim();
+        // Sends store "↳ from <sender>\n<body>" — preview sender + first
+        // body line, not the bare header.
+        let body = if let Some(from) = first.strip_prefix(crate::session_send::SEND_FROM_PREFIX) {
+            let rest = it.find(|l| !l.trim().is_empty()).unwrap_or("").trim();
+            format!("↳ {}: {rest}", from.trim())
+        } else {
+            first.to_string()
+        };
+        let mut preview: String = body.chars().take(w.saturating_sub(6).max(8)).collect();
+        if body.chars().count() > preview.chars().count() {
             preview.push('…');
         }
         if !attached.is_empty() {
@@ -507,9 +516,10 @@ pub(crate) fn queued_preview_lines(
             Span::styled(preview, dim_italic),
         ]));
     }
-    if queued.len() > max_show {
+    let overflow = total.saturating_sub(max_show);
+    if overflow > 0 {
         lines.push(Line::from(vec![Span::styled(
-            format!("    … +{} more", queued.len() - max_show),
+            format!("    … +{overflow} more"),
             dim_italic,
         )]));
     }

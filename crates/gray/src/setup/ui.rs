@@ -17,6 +17,24 @@ pub struct BackgroundSnapshot {
     pub home_quality_of_life: Option<String>,
     pub home_session: Option<String>,
     pub attachments: Vec<std::path::PathBuf>,
+    /// Memoized `rebuild_transcript` keyed on (cols, rows). Modal loops
+    /// repaint this backdrop every frame, but the snapshot is frozen —
+    /// shared across clones so a modal's copy stays warm.
+    #[allow(clippy::type_complexity)]
+    pub transcript_cache: std::rc::Rc<
+        std::cell::RefCell<Option<(usize, u16, std::rc::Rc<Vec<ratatui::text::Line<'static>>>)>>,
+    >,
+    /// Memoized painted backdrop keyed on (area, theme); see
+    /// [`render_dimmed_background`].
+    pub backdrop_cache: std::rc::Rc<
+        std::cell::RefCell<
+            Option<(
+                ratatui::layout::Rect,
+                crate::theme::UiTheme,
+                ratatui::buffer::Buffer,
+            )>,
+        >,
+    >,
 }
 
 impl BackgroundSnapshot {
@@ -43,15 +61,39 @@ impl BackgroundSnapshot {
             home_quality_of_life: None,
             home_session: None,
             attachments: Vec::new(),
+            transcript_cache: Default::default(),
+            backdrop_cache: Default::default(),
         }
     }
 
-    pub fn rebuild_transcript(&self, w: usize) -> Vec<ratatui::text::Line<'static>> {
-        if self.history_entries.is_empty() {
-            return self.transcript.clone();
+    pub fn rebuild_transcript(&self, w: usize) -> std::rc::Rc<Vec<ratatui::text::Line<'static>>> {
+        // Skip the ioctl off-tty (tests, pipes): the fallback is constant and
+        // a terminal's ownness can't change for stdout.
+        static IS_TTY: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let rows = if *IS_TTY.get_or_init(|| std::io::IsTerminal::is_terminal(&std::io::stdout())) {
+            crossterm::terminal::size().map(|(_, r)| r).unwrap_or(24)
+        } else {
+            24
+        };
+        if let Some((cw, cr, cached)) = &*self.transcript_cache.borrow()
+            && *cw == w
+            && *cr == rows
+        {
+            return cached.clone();
         }
-        let rows = crossterm::terminal::size().map(|(_, r)| r).unwrap_or(24);
-        crate::composer::transcript::layout_history(&self.history_entries, w, rows)
+        let lines = if self.history_entries.is_empty() {
+            self.transcript.clone()
+        } else {
+            crate::composer::transcript::layout_history_tail(
+                &self.history_entries,
+                w,
+                rows,
+                usize::from(rows),
+            )
+        };
+        let rc = std::rc::Rc::new(lines);
+        *self.transcript_cache.borrow_mut() = Some((w, rows, rc.clone()));
+        rc
     }
 }
 
@@ -136,24 +178,52 @@ fn pad_backdrop_line(
     line
 }
 
+/// Paint the frozen backdrop behind a modal. Modal loops call this every
+/// frame, but the snapshot never changes while the modal is open, so the
+/// painted cells are memoized per (area, theme) and copied in afterwards.
 pub fn render_dimmed_background(frame: &mut ratatui::Frame, bg: &BackgroundSnapshot) {
+    let area = frame.area();
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    let theme = crate::theme::theme();
+    let mut cache = bg.backdrop_cache.borrow_mut();
+    if !matches!(&*cache, Some((a, t, _)) if *a == area && *t == theme) {
+        let mut buf = ratatui::buffer::Buffer::empty(area);
+        paint_dimmed_background(&mut buf, area, bg);
+        *cache = Some((area, theme, buf));
+    }
+    if let Some((_, _, painted)) = &*cache {
+        let target = frame.buffer_mut();
+        if target.area == painted.area {
+            target.content.clone_from_slice(&painted.content);
+        } else {
+            target.merge(painted);
+        }
+    }
+}
+
+fn paint_dimmed_background(
+    buf: &mut ratatui::buffer::Buffer,
+    area: ratatui::layout::Rect,
+    bg: &BackgroundSnapshot,
+) {
     use ratatui::layout::Rect;
     use ratatui::style::{Modifier, Style};
     use ratatui::text::{Line, Span};
+    use ratatui::widgets::Widget;
     use ratatui::widgets::{Block, Clear, Paragraph};
 
-    let area = frame.area();
     let w = area.width as usize;
     let h = area.height as usize;
     if w == 0 || h == 0 {
         return;
     }
 
-    frame.render_widget(Clear, area);
-    frame.render_widget(
-        Block::default().style(Style::default().bg(backdrop_bg())),
-        area,
-    );
+    Clear.render(area, buf);
+    Block::default()
+        .style(Style::default().bg(backdrop_bg()))
+        .render(area, buf);
 
     let box_bg = crate::theme::theme().surface_bg;
     let input_bg = dim_color(box_bg);
@@ -330,7 +400,7 @@ pub fn render_dimmed_background(frame: &mut ratatui::Frame, bg: &BackgroundSnaps
             if y >= area.y + area.height {
                 break;
             }
-            frame.render_widget(Paragraph::new(line), Rect::new(area.x, y, area.width, 1));
+            Paragraph::new(line).render(Rect::new(area.x, y, area.width, 1), buf);
         }
         return;
     }
@@ -383,7 +453,7 @@ pub fn render_dimmed_background(frame: &mut ratatui::Frame, bg: &BackgroundSnaps
         if y >= area.y + area.height {
             break;
         }
-        frame.render_widget(Paragraph::new(line), Rect::new(area.x, y, area.width, 1));
+        Paragraph::new(line).render(Rect::new(area.x, y, area.width, 1), buf);
     }
 }
 

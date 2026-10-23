@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
@@ -25,20 +25,15 @@ use crate::shell::view::{
     format_elapsed, header, middle_out, resume_hint, squeeze as squeeze_view,
 };
 use crate::view::Attached;
-use gray_core::spill::{self, MeterEvent};
-use gray_core::squeeze::squeeze;
 
 const READ_CHUNK: u64 = 4 * 1024;
-use crate::{fail, finish, get_opt_u64, get_str, resolve_path};
+use crate::{fail, get_opt_u64, get_str, resolve_path};
+#[cfg(target_os = "linux")]
+use gray_core::tool_out::finish;
 
 mod jobs;
-mod read_dedup;
 
 impl BashTool {
-    pub async fn wait_any_job(&self, ctx: &ToolContext, timeout: Duration) -> bool {
-        self.jobs.wait_any(ctx, timeout).await
-    }
-
     pub fn wait_any_job_fut(
         &self,
         ctx: &ToolContext,
@@ -72,17 +67,10 @@ pub struct BashTool {
 
     cwd: Mutex<BTreeMap<String, (PathBuf, PathBuf)>>,
 
-    ledger: Option<Arc<crate::ledger::FileLedger>>,
-
     plugin_env: PluginEnv,
 }
 
 impl BashTool {
-    pub fn with_ledger(mut self, ledger: Arc<crate::ledger::FileLedger>) -> Self {
-        self.ledger = Some(ledger);
-        self
-    }
-
     /// Environment contributed by enabled plugins (`shell_env` manifests);
     /// merged once when the registry is built.
     pub fn with_plugin_env(mut self, env: PluginEnv) -> Self {
@@ -133,18 +121,11 @@ impl Tool for BashTool {
         if !args.is_object() {
             return fail("bash arguments must be an object".into());
         }
-        if let Some(out) = removed_arg(&args) {
-            return out;
-        }
         let command = match get_str(&args, "command") {
             Ok(c) if !c.trim().is_empty() => c,
             Ok(_) => return fail("command must be non-empty".into()),
             Err(e) => return e,
         };
-        if let Some(out) = self.noop_steer(ctx, &command) {
-            return out;
-        }
-
         if let Some(out) = self.jobs.intercept_stop(ctx, &command).await {
             return out;
         }
@@ -159,9 +140,6 @@ impl Tool for BashTool {
         if let Some(out) = image_command(&command, &cwd) {
             return out;
         }
-        if let Some(msg) = media_dump_refusal(&command, &cwd) {
-            return fail(msg);
-        }
         if let Some(out) = search_command(&command, &cwd, &ctx.cancel).await {
             return out;
         }
@@ -175,18 +153,7 @@ impl Tool for BashTool {
 
         let running_before = self.jobs.live_ids(ctx);
 
-        let dedup = match self.ledger.as_deref() {
-            Some(ledger) => read_dedup::plain_read(&command, &cwd).map(|read| (ledger, read)),
-            None => None,
-        };
-        let dedup_on = read_dedup::enabled();
-        if let Some((ledger, read)) = &dedup
-            && let Some(hit) = read_dedup::check(ledger, read, dedup_on)
-        {
-            return hit;
-        }
         let log_path = log_path(ctx);
-        let logged = log_path.clone();
         let start = Instant::now();
 
         let cwd_report =
@@ -225,13 +192,6 @@ impl Tool for BashTool {
 
         self.adopt_reported_cwd(ctx, &cwd_report);
 
-        if let Some((ledger, read)) = &dedup
-            && !out.is_error
-            && out.content.starts_with("exit ")
-            && let Ok(meta) = std::fs::metadata(&logged)
-        {
-            read_dedup::record(ledger, read, meta.len());
-        }
         if let Some(footer) = self.jobs.footer(ctx, &running_before) {
             out.content.push('\n');
             out.content.push_str(&footer);
@@ -277,45 +237,6 @@ fn tool_def(jobs: bool) -> ToolDef {
             }
         }),
     )
-}
-
-fn removed_arg(args: &Value) -> Option<ToolOutput> {
-    const REMOVED: &[&str] = &[
-        "action",
-        "background",
-        "wait",
-        "task_id",
-        "from_offset",
-        "notify_on",
-        "run_in_background",
-        "is_background",
-        "detach",
-        "bg",
-    ];
-    const WAIT_ECHO: &[&str] = &["wait_ms", "yield_ms", "yield_time_ms"];
-    let is_run = args
-        .get("command")
-        .and_then(Value::as_str)
-        .is_some_and(|c| !c.trim().is_empty());
-    let key = REMOVED
-        .iter()
-        .chain(WAIT_ECHO.iter().filter(|_| !is_run))
-        .find(|key| match args.get(**key) {
-            None | Some(Value::Null) | Some(Value::Bool(false)) => false,
-            Some(Value::String(s)) if **key == "action" && s == "run" => false,
-            Some(_) => true,
-        })?;
-    let how = if jobs_enabled() {
-        "bash takes only `command` and `timeout`. A command still running at its timeout keeps \
-         running as a background job: end your turn to be woken when it finishes, `tail` its log \
-         to peek, and stop it with the `kill -- -<pgid>` its notice gave you"
-    } else {
-        "bash takes only `command` and `timeout`; to run something in the background, write \
-         `nohup cmd > log 2>&1 &` yourself"
-    };
-    Some(fail(format!(
-        "`{key}` is not a bash argument; remove it. {how}."
-    )))
 }
 
 fn block_bound(command: &str) -> u64 {
@@ -457,25 +378,8 @@ async fn search_command(
         Some("rg") => return bare_rg_claim(&words[1..], cwd).await,
         _ => {}
     }
-    if words.first().map(String::as_str) != Some("gray") {
-        return None;
-    }
-    let sub = words.get(1).map(String::as_str)?;
-    if sub != "find" && sub != "grep" {
-        return None;
-    }
-    let args = verb_search_args(&words[2..], cwd)?;
-    let ctx = ToolContext {
-        cwd: cwd.to_path_buf(),
-        cancel: cancel.clone(),
-        session_id: None,
-    };
-    let text = if sub == "find" {
-        crate::search_cmd::find(&args, &ctx).await
-    } else {
-        crate::search_cmd::grep(&args, &ctx).await
-    };
-    Some(finish(text))
+    let _ = (cwd, cancel);
+    None
 }
 
 #[cfg(target_os = "linux")]
@@ -543,53 +447,6 @@ async fn bare_rg_claim(argv: &[String], cwd: &Path) -> Option<ToolOutput> {
     Some(finish(text))
 }
 
-fn verb_search_args(rest: &[String], cwd: &Path) -> Option<crate::search_cmd::SearchArgs> {
-    let mut positional: Vec<String> = Vec::new();
-    let (mut limit, mut glob, mut context) = (None, None, None);
-    let (mut ignore_case, mut literal) = (false, false);
-    let mut i = 0;
-    while i < rest.len() {
-        let arg = rest[i].as_str();
-
-        let mut take = |name: &str| -> Option<String> {
-            if let Some(v) = arg.strip_prefix(name).and_then(|r| r.strip_prefix('=')) {
-                return Some(v.to_string());
-            }
-            i += 1;
-            rest.get(i).cloned()
-        };
-        match arg {
-            "--ignore-case" | "-i" => ignore_case = true,
-            "--literal" | "-F" => literal = true,
-            a if a == "--limit" || a.starts_with("--limit=") => {
-                limit = Some(take("--limit")?.parse().ok()?)
-            }
-            a if a == "--glob" || a.starts_with("--glob=") => glob = Some(take("--glob")?),
-            a if a == "--context" || a.starts_with("--context=") => {
-                context = Some(take("--context")?.parse().ok()?)
-            }
-            a if a.starts_with('-') => return None,
-            _ => positional.push(arg.to_string()),
-        }
-        i += 1;
-    }
-    let (Some(pattern), path) = (positional.first().cloned(), positional.get(1).cloned()) else {
-        return None;
-    };
-    if positional.len() > 2 {
-        return None;
-    }
-    Some(crate::search_cmd::SearchArgs {
-        pattern,
-        path: path.map(|p| cwd.join(p)),
-        limit,
-        glob,
-        ignore_case,
-        literal,
-        context,
-    })
-}
-
 pub(crate) fn search_words(command: &str) -> Option<Vec<String>> {
     let mut words = Vec::new();
     let mut word = String::new();
@@ -650,303 +507,23 @@ pub(crate) fn search_words(command: &str) -> Option<Vec<String>> {
     Some(words)
 }
 
-impl BashTool {
-    fn noop_steer(&self, ctx: &ToolContext, command: &str) -> Option<ToolOutput> {
-        let trimmed = command.trim();
-        let live = self.jobs.live_ids(ctx);
-        let family = noop_family(trimmed, !live.is_empty())?;
-        let mut note = match family {
-            NoopFamily::JobControl => format!(
-                "`{trimmed}` can only see this one-shot shell's own children — \
-                 there are none; session jobs live outside it — nothing ran and \
-                 nothing was waited on."
-            ),
-            NoopFamily::Plain => {
-                format!("`{trimmed}` is a no-op: nothing ran and nothing was waited on.")
-            }
-        };
-        match self.jobs.footer(ctx, &live) {
-            None => {
-                note.push_str(" No background jobs are running; if you are done, end your turn.")
-            }
-            Some(footer) => {
-                note.push_str(
-                    " To wait for a background job, end your turn: you are woken when it finishes.\n",
-                );
-                note.push_str(&footer);
-            }
-        }
-        Some(ToolOutput::ok(note))
-    }
-}
-
-pub(crate) enum NoopFamily {
-    Plain,
-    JobControl,
-}
-
-pub(crate) fn noop_family(command: &str, live_jobs: bool) -> Option<NoopFamily> {
-    let segments = top_level_segments(command);
-    if segments.iter().all(|s| s.trim().is_empty()) {
-        return None;
-    }
-    let mut family = NoopFamily::Plain;
-    for seg in &segments {
-        match noop_segment(seg.trim(), live_jobs) {
-            Some(NoopFamily::JobControl) => family = NoopFamily::JobControl,
-            Some(NoopFamily::Plain) => {}
-            None => return None,
-        }
-    }
-    Some(family)
-}
-
-fn top_level_segments(command: &str) -> Vec<String> {
-    let mut segs = Vec::new();
-    let mut cur = String::new();
-    let mut quote = None;
-    let mut depth = 0usize;
-    let mut chars = command.chars().peekable();
-    while let Some(c) = chars.next() {
-        if let Some(q) = quote {
-            cur.push(c);
-            if c == '\\' && q == '"' {
-                if let Some(n) = chars.next() {
-                    cur.push(n);
-                }
-            } else if c == q {
-                quote = None;
-            }
-            continue;
-        }
-        match c {
-            '\'' | '"' => {
-                quote = Some(c);
-                cur.push(c);
-            }
-            '(' | '{' => {
-                depth += 1;
-                cur.push(c);
-            }
-            ')' | '}' => {
-                depth = depth.saturating_sub(1);
-                cur.push(c);
-            }
-            ';' | '\n' if depth == 0 => segs.push(std::mem::take(&mut cur)),
-            '&' if depth == 0 => {
-                if chars.peek() == Some(&c) {
-                    chars.next();
-                }
-                segs.push(std::mem::take(&mut cur));
-            }
-            '|' if depth == 0 && chars.peek() == Some(&'|') => {
-                chars.next();
-                segs.push(std::mem::take(&mut cur));
-            }
-            _ => cur.push(c),
-        }
-    }
-    segs.push(cur);
-    segs
-}
-
-fn noop_segment(seg: &str, live_jobs: bool) -> Option<NoopFamily> {
-    if seg.is_empty() || seg.starts_with('#') {
-        return Some(NoopFamily::Plain);
-    }
-    if is_fn_def(seg) {
-        return Some(NoopFamily::Plain);
-    }
-
-    let words = search_words(seg)?;
-
-    let lead = words.iter().take_while(|w| is_assignment(w)).count();
-    let words = &words[lead..];
-    if words.is_empty() {
-        return Some(NoopFamily::Plain);
-    }
-    let head = words[0].as_str();
-    let rest = &words[1..];
-    match head {
-        "true" | ":" | "false" => Some(NoopFamily::Plain),
-
-        "jobs" | "wait" | "fg" | "bg" | "disown" => Some(NoopFamily::JobControl),
-
-        "cat" if rest.is_empty() => Some(NoopFamily::Plain),
-
-        "echo" | "printf" if rest.iter().all(|w| literal_word(w)) && verbatim_print(head, rest) => {
-            Some(NoopFamily::Plain)
-        }
-
-        "sleep" if live_jobs && rest.iter().all(|w| is_duration(w)) => Some(NoopFamily::Plain),
-
-        "export" | "readonly" | "declare" | "typeset" | "local" | "alias"
-            if !rest.is_empty() && rest.iter().all(|w| is_assignment(w)) =>
-        {
-            Some(NoopFamily::Plain)
-        }
-        "unset" | "unalias" | "umask"
-            if !rest.is_empty() && rest.iter().all(|w| !w.starts_with('-')) =>
-        {
-            Some(NoopFamily::Plain)
-        }
-
-        "sh" | "bash" | "dash" | "zsh" | "ksh" => {
-            let c_flag = words
-                .get(1)
-                .is_some_and(|f| f.starts_with('-') && f[1..].contains('c'));
-            match (c_flag, words.get(2)) {
-                (true, Some(script)) => noop_family(script, live_jobs),
-                _ => None,
-            }
-        }
-        "eval" if rest.is_empty() => None,
-        "eval" => noop_family(&rest.join(" "), live_jobs),
-        "command" | "builtin" | "exec" | "nohup" | "time" | "nice" | "timeout" | "env" => {
-            let rest = peel_wrapper(head, rest)?;
-            noop_segment(&rest.join(" "), live_jobs)
-        }
-        _ => None,
-    }
-}
-
-fn is_fn_def(seg: &str) -> bool {
-    let mut t = seg;
-    let kw = t
-        .strip_prefix("function")
-        .is_some_and(|r| r.starts_with(|c: char| c.is_whitespace()));
-    if kw {
-        t = t["function".len()..].trim_start();
-    }
-    let name_len = t
-        .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
-        .unwrap_or(t.len());
-    if name_len == 0 {
-        return false;
-    }
-    let mut rest = t[name_len..].trim_start();
-    match rest.strip_prefix('(') {
-        Some(r) => match r.trim_start().strip_prefix(')') {
-            Some(r) => rest = r.trim_start(),
-            None => return false,
-        },
-
-        None if !kw => return false,
-        None => {}
-    }
-    let rest = rest.trim_end();
-    match rest.as_bytes().first() {
-        Some(b'{') => rest.ends_with('}'),
-        Some(b'(') => rest.ends_with(')'),
-        _ => false,
-    }
-}
-
-fn literal_word(w: &str) -> bool {
-    !w.contains(['*', '?', '[', ']', '{', '}']) && !w.starts_with('~')
-}
-
-fn verbatim_print(cmd: &str, args: &[String]) -> bool {
-    !args.iter().any(|w| {
-        w.contains('\\')
-            || (cmd == "printf" && w.contains('%'))
-            || (cmd == "echo" && w.starts_with('-'))
-    })
-}
-
-fn is_duration(w: &str) -> bool {
-    let num = w.trim_end_matches(['s', 'm', 'h', 'd']);
-    !num.is_empty() && num.parse::<f64>().is_ok()
-}
-
-fn is_assignment(w: &str) -> bool {
-    let Some(eq) = w.find('=') else {
-        return false;
-    };
-    let mut name = &w[..eq];
-    name = name.strip_suffix('+').unwrap_or(name);
-    !name.is_empty()
-        && name
-            .chars()
-            .enumerate()
-            .all(|(i, c)| c == '_' || c.is_ascii_alphanumeric() && (i > 0 || !c.is_ascii_digit()))
-}
-
-fn peel_wrapper<'a>(head: &str, rest: &'a [String]) -> Option<&'a [String]> {
-    let value_flags: &[&str] = match head {
-        "nice" => &["-n", "--adjustment"],
-        "timeout" => &["-s", "--signal", "-k", "--kill-after"],
-        "env" => &["-u", "--unset", "-C", "--chdir", "-S", "--split-string"],
-        _ => &[],
-    };
-
-    let peels_flags = matches!(head, "nice" | "timeout" | "env");
-    let mut r = rest;
-    loop {
-        match r.first().map(String::as_str) {
-            Some(w) if value_flags.contains(&w) && r.len() > 1 => r = &r[2..],
-            Some(w) if peels_flags && w.starts_with('-') => r = &r[1..],
-            Some(w) if head == "env" && is_assignment(w) => r = &r[1..],
-            _ => break,
-        }
-    }
-
-    if head == "timeout" {
-        r = r.split_first().map(|(_, tail)| tail)?;
-    }
-    if r.is_empty() { None } else { Some(r) }
-}
-
-const BYTE_DUMP_HEADS: &[&str] = &["cat", "head", "tail", "base64", "xxd", "od", "hexdump"];
-
-fn media_dump_refusal(command: &str, cwd: &Path) -> Option<String> {
-    let ws: Vec<&str> = command.split_whitespace().collect();
-    if ws.iter().any(|t| {
-        matches!(*t, ">" | ">>" | "&>" | "&>>")
-            || t.starts_with('>')
-            || t.starts_with("1>")
-            || t.starts_with("&>")
-    }) {
-        return None;
-    }
-    for (i, t) in ws.iter().enumerate() {
-        if !BYTE_DUMP_HEADS.contains(t) {
-            continue;
-        }
-        for arg in &ws[i + 1..] {
-            if arg.starts_with('-') {
-                continue;
-            }
-            if !crate::images::is_viewable_extension(Path::new(arg)) {
-                continue;
-            }
-            let bare_missing = *t == "cat"
-                && i == 0
-                && ws.len() == 2
-                && !shell_meta(arg)
-                && resolve_bare_path(cwd, arg).is_none();
-            if !bare_missing {
-                return Some(format!(
-                    "refused: `{t} {arg}` would dump raw media bytes into context. \
-                     Attach the file instead — a bare `cat {arg}` shows it to the model."
-                ));
-            }
-        }
-    }
-    None
-}
-
 fn image_command(command: &str, cwd: &Path) -> Option<ToolOutput> {
-    let mut parts = command.split_whitespace();
-    if parts.next()? != "cat" {
+    // Shell words, so the quoted `cat -- '/tmp/x.png'` form models emit
+    // claims too; search_words already refuses pipes, redirects and `$`.
+    let words = search_words(command)?;
+    let (head, mut paths) = words.split_first()?;
+    if head != "cat" {
         return None;
     }
-
-    let paths: Vec<&str> = parts.collect();
+    if paths.first().is_some_and(|p| p == "--") {
+        paths = &paths[1..];
+    }
     if paths.is_empty()
-        || paths
-            .iter()
-            .any(|p| shell_meta(p) || !crate::images::is_viewable_extension(Path::new(p)))
+        || paths.iter().any(|p| {
+            p.starts_with('-')
+                || p.contains(['*', '?'])
+                || !crate::images::is_viewable_extension(Path::new(p))
+        })
     {
         return None;
     }
@@ -1026,16 +603,6 @@ fn image_command(command: &str, cwd: &Path) -> Option<ToolOutput> {
         media,
         usage: None,
     })
-}
-
-fn shell_meta(arg: &str) -> bool {
-    arg.starts_with('-')
-        || arg.chars().any(|c| {
-            matches!(
-                c,
-                '|' | '&' | ';' | '<' | '>' | '$' | '`' | '"' | '\'' | '*' | '?' | '(' | ')'
-            )
-        })
 }
 
 fn resolve_bare_path(cwd: &Path, raw: &str) -> Option<PathBuf> {
@@ -1509,34 +1076,12 @@ fn finish_inline(
     let mut view = build_view(log_path, summary);
 
     view.body = squeeze_view(&view.body);
-    let squeezed = squeeze(&view.body, command);
-    let squeeze_note = squeezed.squeezed().then(|| {
-        spill::record(MeterEvent {
-            ts: spill::now_millis(),
-            rule: squeezed.rule.to_string(),
-            raw: squeezed.raw_bytes as u64,
-            sent: squeezed.sent_bytes as u64,
-        });
-        format!(
-            "squeezed by {} · {} → {}",
-            squeezed.rule,
-            spill::fmt_bytes(squeezed.raw_bytes),
-            spill::fmt_bytes(squeezed.sent_bytes)
-        )
-    });
-    if squeeze_note.is_some() {
-        view.body = squeezed.text.clone();
-    }
     let head = header(&report, Some(&view), elapsed, log_path);
     let mut out = match first_line {
         Some(first) => format!("{first}\n{head}"),
         None => head,
     };
 
-    if let Some(note) = &squeeze_note {
-        out.push('\n');
-        out.push_str(note);
-    }
     if !view.body.is_empty() {
         out.push('\n');
         out.push_str(&fence(&view.body));
