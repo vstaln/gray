@@ -13,6 +13,13 @@ pub fn summary_message(summary: &str) -> Message {
     ))
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MediaPressure {
+    Clear,
+    Stub,
+    Compact,
+}
+
 impl Agent {
     pub(crate) fn ceiling_reason(&self, estimate: usize) -> crate::event::CompactReason {
         use crate::event::CompactReason;
@@ -159,6 +166,23 @@ pub(crate) fn needs_soft_elide(estimate: usize, window: Option<usize>) -> bool {
 }
 
 impl Agent {
+    /// Media past the provider's hard cap must shed before the next request.
+    /// On a cold cache, in-place stubbing is nearly free (the prefix has not
+    /// been billed yet); once warm, mutating history re-bills the whole
+    /// suffix, so pressure is routed through pre-turn compaction, whose
+    /// candidate already drops over-budget media. Callers stub in place only
+    /// when compaction cannot run.
+    pub(crate) fn media_pressure(&self) -> MediaPressure {
+        if !crate::compact::media_over_budget(&self.messages) {
+            return MediaPressure::Clear;
+        }
+        if self.prefix_rewrite_ok && !self.warm_cache_reported {
+            MediaPressure::Stub
+        } else {
+            MediaPressure::Compact
+        }
+    }
+
     pub(crate) fn elide_media_over_budget(&mut self) -> usize {
         let elided = crate::compact::elide_media_over_payload_budget(&mut self.messages);
         // The session file keeps the originals; resume re-elides them the same way.

@@ -880,3 +880,55 @@ fn media_count_budget_caps_many_small_images() {
         assert_eq!(raw_media(&msgs).0, MEDIA_PAYLOAD_KEEP_COUNT);
     });
 }
+
+#[test]
+fn media_pressure_stubs_cold_but_compacts_when_warm() {
+    let mut agent = trigger_test_agent(
+        Vec::new(),
+        Arc::new(Mutex::new(Vec::new())),
+        Arc::new(Mutex::new(Vec::new())),
+        Vec::new(),
+    );
+    let mut msgs = vec![Message::user("hi")];
+    for i in 0..=crate::compact::MEDIA_PAYLOAD_MAX_COUNT {
+        let mut m = Message::user(format!("pic{i}"));
+        m.content.push(ContentBlock::Image {
+            media_type: "image/png".to_string(),
+            data: "QUJD".to_string(),
+        });
+        msgs.push(m);
+    }
+    assert!(crate::compact::media_over_budget(&msgs));
+    let baseline: Vec<Message> = msgs.iter().map(|m| m.clone()).collect();
+    agent.set_messages(msgs);
+
+    // Cold cache: in-place stubbing is nearly free — the prefix has not
+    // been billed yet.
+    assert_eq!(
+        agent.media_pressure(),
+        crate::agent_compact::MediaPressure::Stub
+    );
+
+    // Warm cache: an in-place stub would re-bill the whole suffix, so the
+    // same pressure must route through compaction, and deciding must not
+    // have touched history.
+    agent.warm_cache_reported = true;
+    assert_eq!(
+        agent.media_pressure(),
+        crate::agent_compact::MediaPressure::Compact
+    );
+    assert_eq!(agent.messages(), baseline.as_slice());
+
+    // Under budget: nothing to do in either phase.
+    let mut agent = trigger_test_agent(
+        Vec::new(),
+        Arc::new(Mutex::new(Vec::new())),
+        Arc::new(Mutex::new(Vec::new())),
+        Vec::new(),
+    );
+    agent.set_messages(vec![Message::user("no media")]);
+    assert_eq!(
+        agent.media_pressure(),
+        crate::agent_compact::MediaPressure::Clear
+    );
+}

@@ -183,13 +183,17 @@ pub(crate) const MEDIA_PAYLOAD_KEEP_BYTES: usize = 10_000_000;
 pub(crate) const MEDIA_PAYLOAD_MAX_COUNT: usize = 80;
 pub(crate) const MEDIA_PAYLOAD_KEEP_COUNT: usize = 40;
 
-pub(crate) fn elide_media_over_payload_budget(messages: &mut [Message]) -> usize {
+pub(crate) fn media_over_budget(messages: &[Message]) -> bool {
     let (count, bytes) = messages
         .iter()
         .flat_map(|m| &m.content)
         .filter_map(media_bytes)
         .fold((0, 0), |(count, bytes), n| (count + 1, bytes + n));
-    if count <= MEDIA_PAYLOAD_MAX_COUNT && bytes <= MEDIA_PAYLOAD_MAX_BYTES {
+    count > MEDIA_PAYLOAD_MAX_COUNT || bytes > MEDIA_PAYLOAD_MAX_BYTES
+}
+
+pub(crate) fn elide_media_over_payload_budget(messages: &mut [Message]) -> usize {
+    if !media_over_budget(messages) {
         return 0;
     }
     let (mut kept, mut kept_bytes, mut elided) = (0, 0, 0);

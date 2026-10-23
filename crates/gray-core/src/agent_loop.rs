@@ -473,26 +473,32 @@ impl Agent {
                 }
             }
 
-            let media_elided = self.elide_media_over_budget();
-            if media_elided > 0 {
-                log::info!(
-                    target: "gray_agent",
-                    "media payload budget: {media_elided} older images stubbed"
-                );
+            let media_pressure = self.media_pressure();
+            if media_pressure == crate::agent_compact::MediaPressure::Stub {
+                let media_elided = self.elide_media_over_budget();
+                if media_elided > 0 {
+                    log::info!(
+                        target: "gray_agent",
+                        "media payload budget: {media_elided} older images stubbed (cold cache)"
+                    );
+                }
             }
 
-            if needs_pre_turn_compact(
+            if media_pressure != crate::agent_compact::MediaPressure::Clear
+                || needs_pre_turn_compact(
                 self.estimate_tokens(),
                 self.context_window,
                 self.compact_reserve,
                 self.compact_ceiling,
             ) {
-                while needs_pre_turn_compact(
-                    self.estimate_tokens(),
-                    self.context_window,
-                    self.compact_reserve,
-                    self.compact_ceiling,
-                ) {
+                while crate::compact::media_over_budget(&self.messages)
+                    || needs_pre_turn_compact(
+                        self.estimate_tokens(),
+                        self.context_window,
+                        self.compact_reserve,
+                        self.compact_ceiling,
+                    )
+                {
                     let before = (self.estimate_tokens(), self.messages.len());
                     match self.try_compact_budgeted().await {
                         Ok(true) => {
@@ -512,6 +518,15 @@ impl Agent {
                             self.emit_turn_end(&billed).await;
                             return Err(e);
                         }
+                    }
+                }
+                if crate::compact::media_over_budget(&self.messages) {
+                    let media_elided = self.elide_media_over_budget();
+                    if media_elided > 0 {
+                        log::info!(
+                            target: "gray_agent",
+                            "media payload budget: {media_elided} older images stubbed (compaction could not shed)"
+                        );
                     }
                 }
             }
