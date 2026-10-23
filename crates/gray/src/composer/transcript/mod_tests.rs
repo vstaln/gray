@@ -927,8 +927,8 @@ fn dock_shrink_pulls_transcript_down() {
     }
     tui.queued_inputs.clear();
     let _ = tui.draw();
-    let (vacated, _covered, _tail) = tui.terminal.debug_state();
-    assert_eq!(vacated, 0, "dock shrink left vacated rows unfilled");
+    let (covered, _tail) = tui.terminal.debug_state();
+    assert_eq!(covered, 0, "dock shrink kept transcript rows covered");
 }
 
 #[test]
@@ -943,6 +943,6 @@ fn a_growing_dock_scrolls_the_prompt_instead_of_covering_it() {
     tui.set_status(Some("Working"));
     tui.queued_inputs.push_back(("q1".into(), Vec::new()));
     let _ = tui.draw();
-    let (_vacated, covered, _tail) = tui.terminal.debug_state();
+    let (covered, _tail) = tui.terminal.debug_state();
     assert_eq!(covered, 0, "a one-line composer covered transcript rows");
 }
