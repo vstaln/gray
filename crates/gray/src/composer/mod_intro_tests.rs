@@ -59,14 +59,28 @@ fn the_mark_is_the_baked_logo_asset() {
 #[test]
 fn intro_timeline_never_holds_a_frame_and_moves_from_the_start() {
     let frames = intro_frames();
-    assert!(frames.windows(2).all(|w| w[0].0 != w[1].0), "repeated frame is dead time");
+    assert!(
+        frames.windows(2).all(|w| w[0].0 != w[1].0),
+        "repeated frame is dead time"
+    );
     let last = frames.len() - 1;
     // Even cadence: no clock tenth may skip more than a few frames.
     let steps: Vec<usize> = (0..=10)
         .map(|i| intro_frame_index(Duration::from_millis(DRAW_MS * i / 10), last))
         .collect();
-    assert!(steps.windows(2).all(|w| w[1] > w[0] && w[1] - w[0] <= last / 5), "{steps:?}");
+    assert!(
+        steps
+            .windows(2)
+            .all(|w| w[1] > w[0] && w[1] - w[0] <= last / 5),
+        "{steps:?}"
+    );
     assert!(intro_frame_index(Duration::from_millis(DRAW_MS / 10), last) > 0);
-    assert_eq!(intro_frame_index(Duration::from_millis(DRAW_MS), last), last);
-    assert!(DRAW_MS + HOME_REVEAL_MS <= 2000, "intro must finish within 2s");
+    assert_eq!(
+        intro_frame_index(Duration::from_millis(DRAW_MS), last),
+        last
+    );
+    assert!(
+        DRAW_MS + HOME_REVEAL_MS <= 2000,
+        "intro must finish within 2s"
+    );
 }

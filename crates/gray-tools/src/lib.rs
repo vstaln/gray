@@ -23,7 +23,7 @@ use futures::future::BoxFuture;
 pub use gray_core::agent::Tool;
 use gray_core::agent::{ToolContext, ToolExecutor, ToolOutput};
 use gray_core::message::ToolDef;
-pub(crate) use gray_core::tool_out::{fail, finish, get_opt_u64, get_str, resolve_path};
+pub(crate) use gray_core::tool_out::{fail, get_opt_u64, get_str, resolve_path};
 use serde_json::Value;
 
 pub use shell::spawn::PluginEnv;

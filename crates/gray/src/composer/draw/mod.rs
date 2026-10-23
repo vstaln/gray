@@ -282,9 +282,8 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
     // hint rows instead of opening above it: the box stays put and the
     // welcome banner above is never scrolled away by a transient menu.
     let below_band = (ibox.lines.len().saturating_sub(ibox.lead_h + ibox.band_h)) as u16;
-    let home_room = rows.saturating_sub(
-        tui.terminal.viewport_area.y + status_h + box_h.saturating_sub(below_band),
-    );
+    let home_room = rows
+        .saturating_sub(tui.terminal.viewport_area.y + status_h + box_h.saturating_sub(below_band));
     let home_drop = home_mode && !asking && home_room >= tui.matches.len().min(3) as u16;
     let panel_rows = if home_drop {
         popup_rows(tui.matches.len(), home_room + 1)

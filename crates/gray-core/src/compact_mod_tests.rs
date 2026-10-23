@@ -1095,7 +1095,9 @@ fn shared_prefix_splices_continue_tail_over_the_stored_reply() {
     assert_eq!(out[2].text_content(), CONTINUE_TAIL);
     assert_eq!(out[3], Message::assistant("reply"));
     assert!(
-        out[4].text_content().contains("Summarize this conversation"),
+        out[4]
+            .text_content()
+            .contains("Summarize this conversation"),
         "trigger still lands last: {:?}",
         out[4]
     );

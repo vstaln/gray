@@ -788,8 +788,8 @@ pub(crate) fn welcome_body_lines_at(
 
     let safe = crate::tui::unicode_safe();
     // Only while drawing: the settled banner is the plain mark.
-    let heat = (safe && intro.is_some() && frame_idx < last)
-        .then(|| glow::heat_map(frames, frame_idx));
+    let heat =
+        (safe && intro.is_some() && frame_idx < last).then(|| glow::heat_map(frames, frame_idx));
     for (row, line) in mark_rows.iter().enumerate() {
         // Fresh-ink highlights belong to the draw; the settled banner is
         // one even gradient.

@@ -55,8 +55,14 @@ fn bash_card_text(cmd: &str, out: &str) -> String {
 fn bash_heredoc_followed_by_more_commands_shows_whole_script() {
     let cmd = "python3 - <<'EOF'\ns=open('a').read()\nEOF\nchromium --headless --dump-dom x > d.html\npython3 -c 'print(1)'";
     let text = bash_card_text(cmd, "1");
-    assert!(text.contains("s=open('a')"), "heredoc body missing: {text:?}");
-    assert!(text.contains("--dump-dom"), "step after EOF clipped: {text:?}");
+    assert!(
+        text.contains("s=open('a')"),
+        "heredoc body missing: {text:?}"
+    );
+    assert!(
+        text.contains("--dump-dom"),
+        "step after EOF clipped: {text:?}"
+    );
     assert!(text.contains("print(1)"), "last step clipped: {text:?}");
 }
 
@@ -71,20 +77,32 @@ fn bash_two_heredocs_show_both() {
 #[test]
 fn bash_multiline_script_without_heredoc_is_shown() {
     let text = bash_card_text("cd /tmp\nmake build\n./run --fast", "ok");
-    assert!(text.contains("make build") && text.contains("./run --fast"), "{text:?}");
+    assert!(
+        text.contains("make build") && text.contains("./run --fast"),
+        "{text:?}"
+    );
 }
 
 #[test]
 fn bash_long_one_liner_is_shown_in_full() {
-    let cmd = format!("echo start && {} && echo the-tail-end", "true ".repeat(30).trim());
+    let cmd = format!(
+        "echo start && {} && echo the-tail-end",
+        "true ".repeat(30).trim()
+    );
     let text = bash_card_text(&cmd, "ok");
-    assert!(text.contains("the-tail-end"), "tail past header cut missing: {text:?}");
+    assert!(
+        text.contains("the-tail-end"),
+        "tail past header cut missing: {text:?}"
+    );
 }
 
 #[test]
 fn bash_short_one_liner_is_header_only() {
     let text = bash_card_text("make build", "ok");
-    assert!(!text.contains("make build"), "header-sized command duplicated: {text:?}");
+    assert!(
+        !text.contains("make build"),
+        "header-sized command duplicated: {text:?}"
+    );
 }
 
 #[test]

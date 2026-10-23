@@ -1144,9 +1144,11 @@ pub async fn run_repl_mode(
                                         tui.as_ref().map(|(s, _)| s),
                                     )
                                     .await;
-                                    tui.as_ref()
-                                        .and_then(|(s, _)| s.lock().ok())
-                                        .map(|mut t| t.rearm_cache());
+                                    if let Some(mut t) =
+                                        tui.as_ref().and_then(|(s, _)| s.lock().ok())
+                                    {
+                                        t.rearm_cache();
+                                    }
                                 }
                                 Ok(false) => {}
                                 Err(e) => log::warn!(

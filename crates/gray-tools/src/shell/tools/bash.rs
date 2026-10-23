@@ -27,9 +27,9 @@ use crate::shell::view::{
 use crate::view::Attached;
 
 const READ_CHUNK: u64 = 4 * 1024;
-#[cfg(target_os = "linux")]
-use crate::finish;
 use crate::{fail, get_opt_u64, get_str, resolve_path};
+#[cfg(target_os = "linux")]
+use gray_core::tool_out::finish;
 
 mod jobs;
 

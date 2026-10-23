@@ -104,14 +104,9 @@ pub(crate) fn shared_prefix_compaction_messages(
     // may already occupy the tail's slot in history — splice the tail back in
     // at the divergence and let the proof re-check.
     let tail = Message::user_injected(CONTINUE_TAIL);
-    if let Some(i) = (0..fp.message_count())
-        .find(|&i| {
-            messages
-                .get(i)
-                .map(crate::prefix_guard::message_digest)
-                != fp.message_digest_at(i)
-        })
-        && fp.message_digest_at(i) == Some(crate::prefix_guard::message_digest(&tail))
+    if let Some(i) = (0..fp.message_count()).find(|&i| {
+        messages.get(i).map(crate::prefix_guard::message_digest) != fp.message_digest_at(i)
+    }) && fp.message_digest_at(i) == Some(crate::prefix_guard::message_digest(&tail))
     {
         messages.insert(i, tail);
     }

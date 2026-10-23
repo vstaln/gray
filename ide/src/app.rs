@@ -204,7 +204,7 @@ impl GrayIde {
                     *running = false;
                 }
             }
-            AgentEvent::StepUsage { .. } => {}
+            AgentEvent::StepUsage { .. } | AgentEvent::PrefixChanged { .. } => {}
             AgentEvent::StreamError { message, details } => {
                 let text = if details.is_empty() {
                     message

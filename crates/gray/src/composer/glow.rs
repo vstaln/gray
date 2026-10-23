@@ -69,7 +69,9 @@ pub(super) fn heat_glyph(ch: char, heat: f32) -> char {
         let (left, right) = ([0x01, 0x02, 0x04, 0x40], [0x08, 0x10, 0x20, 0x80]);
         let (l, r) = (col(b, left), col(b, right));
         let side = |from: u32, a: [u32; 4], b: [u32; 4]| {
-            (0..4).filter(|&i| from & a[i] != 0).fold(0, |acc, i| acc | b[i])
+            (0..4)
+                .filter(|&i| from & a[i] != 0)
+                .fold(0, |acc, i| acc | b[i])
         };
         l | r | side(l, left, right) | side(r, right, left)
     } else {

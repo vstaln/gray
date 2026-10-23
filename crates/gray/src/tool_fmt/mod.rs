@@ -275,7 +275,10 @@ fn decode_partial_string(raw: &str, cap: usize) -> Option<(String, bool)> {
 /// carries the opener and the delimiter adds nothing. Every other command the
 /// header can't hold whole is shown in full.
 enum CommandBody {
-    Heredoc { body: String, target: Option<String> },
+    Heredoc {
+        body: String,
+        target: Option<String>,
+    },
     Script(String),
 }
 

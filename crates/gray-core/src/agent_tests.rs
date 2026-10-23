@@ -1204,7 +1204,10 @@ async fn reasoning_only_turn_after_tool_result_surfaces_error_not_sentinel() {
         .await
         .expect_err("a turn that ends with nothing must not end the run silently");
 
-    assert!(err.to_string().contains("no text or tool call"), "got {err}");
+    assert!(
+        err.to_string().contains("no text or tool call"),
+        "got {err}"
+    );
     assert!(
         agent
             .messages()
