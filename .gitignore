@@ -101,5 +101,14 @@ __pycache__/
 
 target-ship/
 
-# worktree scratch notes (never commit)
-/WHY.md
+
+# internal notes, handoffs and personal machine scripts (never commit)
+# Why: gray is a public repo; these are working records for one operator's
+# box (design plans, bench handoffs, maid build scripts), not product docs.
+/plans/
+/handoff/
+/BENCH-HANDOFF.md
+/REASONING-REPLAY.md
+/scripts/build-maid.sh
+/scripts/memory-ingest-read.py
+.pytest_cache/
