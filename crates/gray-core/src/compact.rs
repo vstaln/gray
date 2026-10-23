@@ -94,17 +94,26 @@ pub(crate) fn shared_prefix_compaction_messages(
     history: &[Message],
     instructions: Option<&str>,
 ) -> Option<Vec<Message>> {
+    if media_over_budget(history) {
+        return None;
+    }
     let fp = agent.prefix_guard.last()?;
     let mut messages = history.to_vec();
     // A turn that ended on an assistant message carried a synthetic continue
-    // tail on the wire; re-derive it so the prefix can still match.
-    if fp.message_count() == messages.len() + 1
-        && fp.message_digest_at(messages.len())
-            == Some(crate::prefix_guard::message_digest(&Message::user_injected(
-                CONTINUE_TAIL,
-            )))
+    // tail on the wire; re-derive it so the prefix can still match. The reply
+    // may already occupy the tail's slot in history — splice the tail back in
+    // at the divergence and let the proof re-check.
+    let tail = Message::user_injected(CONTINUE_TAIL);
+    if let Some(i) = (0..fp.message_count())
+        .find(|&i| {
+            messages
+                .get(i)
+                .map(crate::prefix_guard::message_digest)
+                != fp.message_digest_at(i)
+        })
+        && fp.message_digest_at(i) == Some(crate::prefix_guard::message_digest(&tail))
     {
-        messages.push(Message::user_injected(CONTINUE_TAIL));
+        messages.insert(i, tail);
     }
     // The request is only provably shared when the candidate covers every
     // message the provider cached; growth since then (the turn's reply) is

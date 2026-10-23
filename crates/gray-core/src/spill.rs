@@ -6,7 +6,6 @@ pub const HANDLE_LEN: usize = 16;
 
 pub const MAX_ENTRIES: usize = 256;
 
-
 #[derive(Debug)]
 pub enum SpillError {
     NoHome,

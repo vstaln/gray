@@ -206,8 +206,18 @@ fn read_tool() -> ToolDef {
 
 fn two_read_script() -> Vec<StreamEvent> {
     vec![
-        StreamEvent::tool_call_delta(0, Some("c1".into()), Some("bash".into()), r#"{"command":"cat a"}"#),
-        StreamEvent::tool_call_delta(1, Some("c2".into()), Some("bash".into()), r#"{"command":"cat b"}"#),
+        StreamEvent::tool_call_delta(
+            0,
+            Some("c1".into()),
+            Some("bash".into()),
+            r#"{"command":"cat a"}"#,
+        ),
+        StreamEvent::tool_call_delta(
+            1,
+            Some("c2".into()),
+            Some("bash".into()),
+            r#"{"command":"cat b"}"#,
+        ),
         StreamEvent::message_complete(Some(StopReason::ToolUse), None),
     ]
 }
@@ -1016,13 +1026,6 @@ async fn malformed_string_args_skips_executor_with_error_result() {
     assert!(output.contains("valid JSON object"), "got {output}");
 }
 
-fn empty_script() -> Vec<StreamEvent> {
-    vec![StreamEvent::message_complete(
-        Some(StopReason::EndTurn),
-        None,
-    )]
-}
-
 #[tokio::test]
 async fn context_overflow_compacts_once_then_continues() {
     let provider = FakeProvider::new(vec![
@@ -1183,29 +1186,31 @@ async fn context_overflow_surfaces_actionable_error_when_compact_fails() {
 }
 
 #[tokio::test]
-async fn empty_turn_retries_twice_then_ends_with_sentinel() {
-    let provider = FakeProvider::new(vec![
-        empty_script(),
-        empty_script(),
-        empty_script(),
-        empty_script(),
-    ]);
+async fn reasoning_only_turn_after_tool_result_surfaces_error_not_sentinel() {
+    let thought_only = || {
+        vec![
+            StreamEvent::thinking_delta("looks unrelated to my change"),
+            StreamEvent::message_complete(Some(StopReason::EndTurn), None),
+        ]
+    };
+    let provider = FakeProvider::new(vec![tool_script("c1"), thought_only(), thought_only()]);
     let mut agent = Agent::new(
         Box::new(provider),
-        Arc::new(FakeExecutor::new(ToolOutput::ok("unused"))),
+        Arc::new(FakeExecutor::new(ToolOutput::ok("result"))),
     );
 
-    let events = agent
+    let err = agent
         .run(Message::user("go"), ToolContext::default())
         .await
-        .expect("empty turn should end gracefully");
+        .expect_err("a turn that ends with nothing must not end the run silently");
 
+    assert!(err.to_string().contains("no text or tool call"), "got {err}");
     assert!(
-        events
+        agent
+            .messages()
             .iter()
-            .any(|e| matches!(e, AgentEvent::TurnEnd { .. }))
+            .all(|m| m.text_content() != "(empty)")
     );
-    assert_eq!(agent.messages().last().unwrap().text_content(), "(empty)");
 }
 
 fn tool_script_with_args(id: &str, args: &str) -> Vec<StreamEvent> {
@@ -3086,9 +3091,6 @@ async fn tool_after_replacement_lands_in_history() {
         .collect();
     assert_eq!(results, vec!["RAW [hook note]"]);
 }
-
-
-
 
 #[test]
 fn soft_elide_keeps_the_measured_anchor_over_thinking_blobs() {

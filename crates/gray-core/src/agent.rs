@@ -424,7 +424,6 @@ pub enum CommandOutcome {
 
     ModelPicker(String),
 
-
     Panel(PanelSpec),
 
     Picker(PickerSpec),
@@ -516,7 +515,6 @@ pub struct Agent {
     pub(crate) turn_system: Option<String>,
     pub(crate) tools: Vec<ToolDef>,
 
-
     pub(crate) tool_labels: std::collections::HashMap<String, String>,
 
     pub(crate) tool_previews: std::collections::HashMap<String, String>,
@@ -559,11 +557,9 @@ pub struct Agent {
 
     pub(crate) warm_cache_reported: bool,
 
-
     pub(crate) prefix_rewrite_ok: bool,
 
     pub(crate) lean_prompt: bool,
-
 }
 
 struct SharedProvider(Arc<dyn Provider>);
@@ -619,7 +615,6 @@ impl Agent {
             warm_cache_reported: false,
             prefix_rewrite_ok: true,
             lean_prompt: false,
-
         }
     }
 

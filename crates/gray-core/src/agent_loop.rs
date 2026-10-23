@@ -397,7 +397,6 @@ impl Agent {
 
         let mut overflow_recovery_attempted = false;
 
-
         let mut hook_context = String::new();
         if let Some(hook) = self.checkpoint.clone() {
             hook(&self.messages, self.history_revision()).await;
@@ -486,11 +485,12 @@ impl Agent {
 
             if media_pressure != crate::agent_compact::MediaPressure::Clear
                 || needs_pre_turn_compact(
-                self.estimate_tokens(),
-                self.context_window,
-                self.compact_reserve,
-                self.compact_ceiling,
-            ) {
+                    self.estimate_tokens(),
+                    self.context_window,
+                    self.compact_reserve,
+                    self.compact_ceiling,
+                )
+            {
                 while crate::compact::media_over_budget(&self.messages)
                     || needs_pre_turn_compact(
                         self.estimate_tokens(),
@@ -548,7 +548,6 @@ impl Agent {
                     request_messages = msgs;
                 }
             }
-
 
             let req = ChatRequest {
                 system: (!self.system_text().is_empty()).then(|| self.system_text().to_string()),
@@ -1171,7 +1170,11 @@ impl Agent {
                     empty_retries += 1;
                     continue 'turn;
                 }
-                self.messages.push(Message::assistant("(empty)"));
+                self.emit_turn_end(&billed).await;
+                return Err(CoreError::Provider(format!(
+                    "model ended its turn with no text or tool call ({} empty responses in a row, stop={stop_reason:?})",
+                    empty_retries + 1
+                )));
             } else if !text_is_empty || !tool_uses.is_empty() {
                 empty_retries = 0;
             }
