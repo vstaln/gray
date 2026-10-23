@@ -747,6 +747,13 @@ pub(crate) fn dispatch_agent_event(
             }
             AgentEvent::StepUsage { usage } => {
                 t.set_usage(*usage);
+                let session = std::env::var("GRAY_SESSION_ID").ok();
+                t.cache_stats.observe(
+                    usage,
+                    wire_model,
+                    session.as_deref(),
+                    crate::setup::get_model_rate(model),
+                );
 
                 if let Some(miss) = t.note_cache_request(usage, model, wire_model) {
                     totals.note_miss(&miss);

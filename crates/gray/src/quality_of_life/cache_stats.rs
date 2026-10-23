@@ -1,11 +1,11 @@
-use crate::event::Usage;
+use gray_core::event::Usage;
 use std::time::{Duration, Instant};
 
 const NOISE_FLOOR_TOKENS: usize = 1024;
 const CACHE_TTL: Duration = Duration::from_secs(5 * 60);
 
 #[derive(Default)]
-pub(crate) struct CacheStats {
+pub struct CacheStats {
     prev_prompt_tokens: usize,
     prev_model: String,
     prev_at: Option<Instant>,
@@ -13,16 +13,16 @@ pub(crate) struct CacheStats {
 }
 
 impl CacheStats {
-    pub(crate) fn reset(&mut self) {
+    pub fn reset(&mut self) {
         *self = Self::default();
     }
 
-    pub(crate) fn observe(
+    pub fn observe(
         &mut self,
         usage: &Usage,
         model: &str,
         session: Option<&str>,
-        prices: Option<crate::cache_warm::Prices>,
+        prices: Option<crate::setup::ModelRate>,
     ) {
         let mut u = *usage;
         u.normalize();

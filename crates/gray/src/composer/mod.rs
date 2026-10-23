@@ -324,6 +324,7 @@ pub struct Tui {
     pub cumulative_usage: Option<gray_core::event::Usage>,
 
     pub(crate) cache: crate::cache::CacheTracker,
+    pub(crate) cache_stats: crate::quality_of_life::cache_stats::CacheStats,
     markdown_renderer: gray_markdown::StreamingMarkdownRenderer,
     committed_markdown_lines: usize,
     reveal_buf: String,
@@ -1056,6 +1057,7 @@ impl Tui {
             latest_usage: None,
             cumulative_usage: None,
             cache: crate::cache::CacheTracker::default(),
+            cache_stats: crate::quality_of_life::cache_stats::CacheStats::default(),
             markdown_renderer: gray_markdown::StreamingMarkdownRenderer::new(
                 gray_markdown::gray_markdown_style(),
                 true,
@@ -1446,6 +1448,7 @@ impl Tui {
         self.turn_stream_ms = 0;
 
         self.cache.reset();
+        self.cache_stats.reset();
     }
 
     pub fn note_cache_request(

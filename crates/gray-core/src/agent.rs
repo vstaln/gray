@@ -559,7 +559,6 @@ pub struct Agent {
 
     pub(crate) warm_cache_reported: bool,
 
-    pub(crate) cache_stats: crate::cache_stats::CacheStats,
 
     pub(crate) prefix_rewrite_ok: bool,
 
@@ -618,7 +617,6 @@ impl Agent {
             )),
             prefix_guard: crate::prefix_guard::PrefixGuard::default(),
             warm_cache_reported: false,
-            cache_stats: crate::cache_stats::CacheStats::default(),
             prefix_rewrite_ok: true,
             lean_prompt: false,
 
@@ -854,7 +852,6 @@ impl Agent {
 
     pub fn set_messages(&mut self, messages: Vec<Message>) {
         self.messages = messages;
-        self.cache_stats.reset();
         self.history_rewritten();
     }
 

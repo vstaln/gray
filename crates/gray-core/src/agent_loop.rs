@@ -1010,13 +1010,6 @@ impl Agent {
             }
             billed.accumulate(&usage);
             usage.log_request("turn", self.session_id.as_deref());
-            let prices = self.cache_warm.as_ref().and_then(|p| (p.prices)());
-            self.cache_stats.observe(
-                &usage,
-                self.provider.model_id(),
-                self.session_id.as_deref(),
-                prices,
-            );
 
             {
                 let fallback_base = self.messages.len();

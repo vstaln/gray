@@ -3,6 +3,7 @@
 //! tool-detection importer, `/update everything` and `/setup` moved to
 //! the gray-qol plugin.
 
+pub mod cache_stats;
 pub mod kitty;
 pub mod providers;
 

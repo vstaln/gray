@@ -2,7 +2,6 @@ pub mod agent;
 mod agent_compact;
 mod agent_loop;
 mod agent_tools;
-mod cache_stats;
 pub mod cache_warm;
 mod compact;
 pub mod credential;
