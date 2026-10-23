@@ -129,16 +129,22 @@ pub(crate) fn handle_paste(tui: &mut Tui, pasted: String) -> bool {
 /// and nobody types within ~2ms of Esc). Drains the queued tail so the
 /// fragment can't reach bindings or the textarea.
 pub(crate) fn esc_is_sequence_head() -> bool {
+    use crossterm::event::{Event, KeyEventKind};
+    // A key's own release is not a tail: Windows console input (and kitty's
+    // release reporting) queues it right behind every real Esc press.
+    let is_tail = |ev: std::io::Result<Event>| !matches!(ev, Ok(Event::Key(k)) if k.kind == KeyEventKind::Release);
     if !matches!(crossterm::event::poll(Duration::from_millis(2)), Ok(true)) {
         return false;
     }
+    let mut tail = false;
     for _ in 0..64 {
         match crossterm::event::poll(Duration::from_millis(0)) {
-            Ok(true) => {
-                let _ = crossterm::event::read();
-            }
+            Ok(true) => tail |= is_tail(crossterm::event::read()),
             _ => break,
         }
+    }
+    if !tail {
+        return false;
     }
     let _ = crossterm::event::poll(Duration::from_millis(2));
     while matches!(crossterm::event::poll(Duration::from_millis(0)), Ok(true)) {

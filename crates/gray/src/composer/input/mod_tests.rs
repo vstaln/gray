@@ -32,8 +32,8 @@ fn pty_slave_reports_dead_only_after_master_closes() {
                 &mut master,
                 &mut slave,
                 std::ptr::null_mut(),
-                std::ptr::null(),
-                std::ptr::null()
+                std::ptr::null_mut(),
+                std::ptr::null_mut()
             ),
             0
         );
