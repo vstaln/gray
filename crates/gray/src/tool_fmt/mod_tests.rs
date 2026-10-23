@@ -45,6 +45,48 @@ fn bash_unclosed_heredoc_falls_back_to_output_only() {
     assert!(text.contains("hi"), "output missing: {text:?}");
 }
 
+fn bash_card_text(cmd: &str, out: &str) -> String {
+    let lines =
+        format_tool_result_lines_with_context("bash", Some(&bash_args(cmd)), out, false, None);
+    lines.iter().map(row_text).collect::<Vec<_>>().join("\n")
+}
+
+#[test]
+fn bash_heredoc_followed_by_more_commands_shows_whole_script() {
+    let cmd = "python3 - <<'EOF'\ns=open('a').read()\nEOF\nchromium --headless --dump-dom x > d.html\npython3 -c 'print(1)'";
+    let text = bash_card_text(cmd, "1");
+    assert!(text.contains("s=open('a')"), "heredoc body missing: {text:?}");
+    assert!(text.contains("--dump-dom"), "step after EOF clipped: {text:?}");
+    assert!(text.contains("print(1)"), "last step clipped: {text:?}");
+}
+
+#[test]
+fn bash_two_heredocs_show_both() {
+    let cmd = "cat > a.txt <<'A'\none\nA\ncat > b.txt <<'B'\ntwo\nB";
+    let text = bash_card_text(cmd, "");
+    assert!(text.contains("one") && text.contains("two"), "{text:?}");
+    assert!(text.contains("b.txt"), "second redirect clipped: {text:?}");
+}
+
+#[test]
+fn bash_multiline_script_without_heredoc_is_shown() {
+    let text = bash_card_text("cd /tmp\nmake build\n./run --fast", "ok");
+    assert!(text.contains("make build") && text.contains("./run --fast"), "{text:?}");
+}
+
+#[test]
+fn bash_long_one_liner_is_shown_in_full() {
+    let cmd = format!("echo start && {} && echo the-tail-end", "true ".repeat(30).trim());
+    let text = bash_card_text(&cmd, "ok");
+    assert!(text.contains("the-tail-end"), "tail past header cut missing: {text:?}");
+}
+
+#[test]
+fn bash_short_one_liner_is_header_only() {
+    let text = bash_card_text("make build", "ok");
+    assert!(!text.contains("make build"), "header-sized command duplicated: {text:?}");
+}
+
 #[test]
 fn bash_plain_output_is_numbered() {
     let lines = format_tool_result_lines_with_context("bash", None, "hello\nworld", false, None);

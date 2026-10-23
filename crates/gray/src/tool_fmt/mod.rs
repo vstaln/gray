@@ -266,16 +266,43 @@ fn decode_partial_string(raw: &str, cap: usize) -> Option<(String, bool)> {
     Some((out, closed))
 }
 
-fn heredoc_body(command: &str) -> Option<(String, Option<String>)> {
-    let mut lines = command.lines();
-    let mut opener = None;
-    for line in lines.by_ref() {
-        if line.contains("<<") {
-            opener = Some(line.to_string());
-            break;
-        }
+/// The part of a bash command the result card shows under its header.
+///
+/// The header holds only the first line, cut at 80 columns, so anything past
+/// that has to appear in the card or it never reaches the transcript at all.
+/// A command that is exactly one heredoc (`cat > f <<'EOF'` … `EOF`) shows just
+/// its body, highlighted for the target file, because the header already
+/// carries the opener and the delimiter adds nothing. Every other command the
+/// header can't hold whole is shown in full.
+enum CommandBody {
+    Heredoc { body: String, target: Option<String> },
+    Script(String),
+}
+
+fn command_body(command: &str) -> Option<CommandBody> {
+    let full = command.trim();
+    if full.is_empty() || gray_tools::shell::label::read_only(full).is_some() {
+        return None;
     }
-    let opener = opener?;
+    let core = gray_tools::shell::label::core_command(full).command;
+    let header_fits = truncate_cmd(core).len() == core.len();
+    if !full.contains('\n') {
+        return (!header_fits).then(|| CommandBody::Script(full.to_string()));
+    }
+    if header_fits && let Some((body, target)) = sole_heredoc(full) {
+        return Some(CommandBody::Heredoc { body, target });
+    }
+    Some(CommandBody::Script(full.to_string()))
+}
+
+/// Body and redirect target of a command made of nothing but one heredoc: the
+/// opener on the first line, then the body, then the delimiter as the last line.
+fn sole_heredoc(command: &str) -> Option<(String, Option<String>)> {
+    let mut lines = command.lines();
+    let opener = lines.next()?;
+    if opener.matches("<<").count() != 1 || opener.contains("<<<") {
+        return None;
+    }
     let after = opener.split_once("<<")?.1.trim();
     let after = after.strip_prefix('-').unwrap_or(after).trim();
     let delim = after
@@ -293,18 +320,12 @@ fn heredoc_body(command: &str) -> Option<(String, Option<String>)> {
                 .map(|s| s.trim_matches(|c| c == '\'' || c == '"').to_string())
         })
         .find(|t| !t.is_empty() && !t.starts_with('&'));
-    let mut body: Vec<&str> = Vec::new();
-    for line in lines {
-        if line.trim() == delim {
-            return if body.is_empty() {
-                None
-            } else {
-                Some((body.join("\n"), target))
-            };
-        }
-        body.push(line);
+    let body: Vec<&str> = lines.collect();
+    let (last, body) = body.split_last()?;
+    if last.trim() != delim || body.is_empty() || body.iter().any(|l| l.trim() == delim) {
+        return None;
     }
-    None
+    Some((body.join("\n"), target))
 }
 
 fn skill_display_name(args: &serde_json::Value) -> String {
@@ -1464,13 +1485,22 @@ pub fn format_tool_result_lines_with_context(
 
     if tool_name == "bash"
         && let Some(cmd) = args.and_then(|a| a.get("command")).and_then(|v| v.as_str())
-        && let Some((body, target)) = heredoc_body(cmd)
+        && let Some(shown) = command_body(cmd)
     {
-        let hp = target.map(|t| match cwd {
-            Some(c) => c.join(&t),
-            None => std::path::PathBuf::from(&t),
-        });
-        let mut code = render_code_block(&body, hp.as_deref());
+        let mut code = match shown {
+            CommandBody::Heredoc { body, target } => {
+                let hp = target.map(|t| match cwd {
+                    Some(c) => c.join(&t),
+                    None => std::path::PathBuf::from(&t),
+                });
+                render_code_block(&body, hp.as_deref())
+            }
+            CommandBody::Script(script) => {
+                let syntect = gray_markdown::get_syntect();
+                let mut highlighter = syntect.highlight_lines_for_token("bash");
+                render_numbered_lines(&script.lines().collect::<Vec<_>>(), &mut highlighter)
+            }
+        };
         code.append(&mut rows);
         rows = code;
     }
