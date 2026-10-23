@@ -13,13 +13,13 @@ pub struct SearchArgs {
     pub context: Option<usize>,
 }
 
-
 pub enum IndexBackend {
     #[cfg(unix)]
     Fs(std::sync::Arc<crate::search_index_fs::FsearchPool>),
     Off,
 }
 
+#[cfg(target_os = "linux")]
 pub(crate) fn global_index() -> IndexBackend {
     static BACKEND: std::sync::OnceLock<IndexBackend> = std::sync::OnceLock::new();
     BACKEND
@@ -35,7 +35,7 @@ pub(crate) fn global_index() -> IndexBackend {
         .clone()
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
+#[cfg(target_os = "linux")]
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum BackendKind {
     #[cfg(unix)]
@@ -43,6 +43,7 @@ pub(crate) enum BackendKind {
     Off,
 }
 
+#[cfg(target_os = "linux")]
 pub(crate) fn backend_kind(v: Option<&str>) -> BackendKind {
     match v {
         Some("off") | Some("none") => BackendKind::Off,
@@ -63,7 +64,7 @@ impl Clone for IndexBackend {
     }
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 pub(crate) async fn spawn_index<F, T>(f: F) -> Option<T>
 where
     F: FnOnce() -> Option<T> + Send + 'static,

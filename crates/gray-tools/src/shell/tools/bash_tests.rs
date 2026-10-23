@@ -168,6 +168,8 @@ async fn cat_shows_media_as_images() {
         ("cat a.png", 1),
         ("  cat   a.png  ", 1),
         ("cat a.png b.png", 2),
+        ("cat -- 'a.png'", 1),
+        ("cat \"a.png\" b.png", 2),
     ] {
         let out = image_command(cmd, dir.path()).unwrap_or_else(|| panic!("must claim: {cmd}"));
         assert!(!out.is_error, "{cmd}: {}", out.content);

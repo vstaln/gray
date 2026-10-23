@@ -67,6 +67,7 @@ impl FsearchPool {
         }
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn engine(&self) -> Option<&Engine> {
         self.engine
             .get_or_init(|| {
@@ -321,4 +322,3 @@ pub fn global_fs_pool() -> &'static Arc<FsearchPool> {
     static POOL: std::sync::OnceLock<Arc<FsearchPool>> = std::sync::OnceLock::new();
     POOL.get_or_init(|| Arc::new(FsearchPool::new()))
 }
-

@@ -252,7 +252,7 @@ pub fn read_only(full: &str) -> Option<ReadOnly> {
     let args = &first[1..];
     let classified = match program {
         "cat" if !args.is_empty() => {
-            let media = args.iter().all(|a| {
+            let media = args.iter().filter(|a| *a != "--").all(|a| {
                 !a.starts_with('-') && crate::images::is_viewable_extension(std::path::Path::new(a))
             });
 

@@ -27,7 +27,9 @@ use crate::shell::view::{
 use crate::view::Attached;
 
 const READ_CHUNK: u64 = 4 * 1024;
-use crate::{fail, finish, get_opt_u64, get_str, resolve_path};
+#[cfg(target_os = "linux")]
+use crate::finish;
+use crate::{fail, get_opt_u64, get_str, resolve_path};
 
 mod jobs;
 
@@ -414,7 +416,6 @@ async fn bare_grep_claim(argv: &[String], cwd: &Path) -> Option<ToolOutput> {
 }
 
 #[cfg(target_os = "linux")]
-
 async fn bare_rg_claim(argv: &[String], cwd: &Path) -> Option<ToolOutput> {
     let crate::search_cmd::IndexBackend::Fs(pool) = crate::search_cmd::global_index() else {
         return None;
@@ -445,7 +446,6 @@ async fn bare_rg_claim(argv: &[String], cwd: &Path) -> Option<ToolOutput> {
     }
     Some(finish(text))
 }
-
 
 pub(crate) fn search_words(command: &str) -> Option<Vec<String>> {
     let mut words = Vec::new();
@@ -508,16 +508,22 @@ pub(crate) fn search_words(command: &str) -> Option<Vec<String>> {
 }
 
 fn image_command(command: &str, cwd: &Path) -> Option<ToolOutput> {
-    let mut parts = command.split_whitespace();
-    if parts.next()? != "cat" {
+    // Shell words, so the quoted `cat -- '/tmp/x.png'` form models emit
+    // claims too; search_words already refuses pipes, redirects and `$`.
+    let words = search_words(command)?;
+    let (head, mut paths) = words.split_first()?;
+    if head != "cat" {
         return None;
     }
-
-    let paths: Vec<&str> = parts.collect();
+    if paths.first().is_some_and(|p| p == "--") {
+        paths = &paths[1..];
+    }
     if paths.is_empty()
-        || paths
-            .iter()
-            .any(|p| shell_meta(p) || !crate::images::is_viewable_extension(Path::new(p)))
+        || paths.iter().any(|p| {
+            p.starts_with('-')
+                || p.contains(['*', '?'])
+                || !crate::images::is_viewable_extension(Path::new(p))
+        })
     {
         return None;
     }
@@ -597,16 +603,6 @@ fn image_command(command: &str, cwd: &Path) -> Option<ToolOutput> {
         media,
         usage: None,
     })
-}
-
-fn shell_meta(arg: &str) -> bool {
-    arg.starts_with('-')
-        || arg.chars().any(|c| {
-            matches!(
-                c,
-                '|' | '&' | ';' | '<' | '>' | '$' | '`' | '"' | '\'' | '*' | '?' | '(' | ')'
-            )
-        })
 }
 
 fn resolve_bare_path(cwd: &Path, raw: &str) -> Option<PathBuf> {
