@@ -113,3 +113,27 @@ fn describe_names_known_reasons_and_skips_tail_growth() {
         Some("history truncated")
     );
 }
+
+#[test]
+fn shared_prefix_ok_proves_cache_extension() {
+    let tools = vec![ToolDef::new("t", "d", serde_json::json!({}))];
+    let base = ChatRequest {
+        system: Some("S".into()),
+        messages: vec![Message::user("a"), Message::assistant("b")],
+        tools: tools.clone(),
+        max_tokens: None,
+    };
+    let fp = fingerprint("m", &base);
+
+    let mut ext = base.messages.clone();
+    ext.push(Message::user_injected("trigger"));
+    assert!(fp.shared_prefix_ok("m", Some("S"), &tools, &ext));
+
+    let mut diverged = vec![Message::user("different"), Message::assistant("b")];
+    diverged.push(Message::user_injected("trigger"));
+    assert!(!fp.shared_prefix_ok("m", Some("S"), &tools, &diverged));
+    assert!(!fp.shared_prefix_ok("m", Some("S2"), &tools, &ext));
+    assert!(!fp.shared_prefix_ok("m", Some("S"), &[], &ext));
+    assert!(!fp.shared_prefix_ok("m2", Some("S"), &tools, &ext));
+    assert!(!fp.shared_prefix_ok("m", Some("S"), &tools, &base.messages[..1]));
+}

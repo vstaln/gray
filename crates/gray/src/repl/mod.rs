@@ -981,6 +981,7 @@ pub async fn run_repl_mode(
     let mut last_turn_resumable = false;
 
     let mut bg_wake: Option<tokio::task::JoinHandle<()>> = None;
+    let mut ttl_wake: Option<tokio::task::JoinHandle<()>> = None;
 
     if interactive {
         jobs::spawn_footer_poller();
@@ -1006,6 +1007,9 @@ pub async fn run_repl_mode(
                     .map(|a| (a.executor_handle(), jobs::session_ctx(&cwd, sid.as_deref()))),
             );
             if let Some(h) = bg_wake.take() {
+                h.abort();
+            }
+            if let Some(h) = ttl_wake.take() {
                 h.abort();
             }
 
@@ -1104,6 +1108,43 @@ pub async fn run_repl_mode(
                     turn?;
                 }
                 continue;
+            }
+
+            // Cache-expiry compaction (pi-cached-compaction): a summary fired
+            // while the provider still holds the prompt cache costs ~0.1x,
+            // and the next message doesn't rewrite an expired cache. The
+            // check re-runs each idle pass; armed below, a wake lands ~20s
+            // before TTL. Self-limiting — post-compact the estimate drops
+            // under budget so it can't loop every TTL cycle.
+            const EXPIRY_LEAD: std::time::Duration = std::time::Duration::from_secs(20);
+            if let Some(agent) = agent.as_mut() {
+                let remaining = tui
+                    .as_ref()
+                    .and_then(|(s, _)| s.lock().ok().and_then(|t| t.cache_remaining()));
+                match remaining {
+                    Some(r) if r <= EXPIRY_LEAD => {
+                        if crate::compact::is_auto_compact_enabled() {
+                            match crate::compact::auto_compact_if_needed(agent).await {
+                                Ok(true) => say(
+                                    tui.as_ref().map(|(s, _)| s),
+                                    "compacted before cache expiry",
+                                ),
+                                Ok(false) => {}
+                                Err(e) => log::warn!(
+                                    target: "gray_agent",
+                                    "idle compaction failed: {e}"
+                                ),
+                            }
+                        }
+                    }
+                    Some(r) => {
+                        ttl_wake = Some(tokio::spawn(async move {
+                            tokio::time::sleep(r - EXPIRY_LEAD).await;
+                            crate::host::request_wake();
+                        }));
+                    }
+                    None => {}
+                }
             }
         }
         let cmd = if let Some(c) = pending_command.take() {

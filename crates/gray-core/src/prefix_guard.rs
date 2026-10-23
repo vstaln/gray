@@ -2,7 +2,7 @@ use std::fmt;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::Arc;
 
-use crate::message::ChatRequest;
+use crate::message::{ChatRequest, Message, ToolDef};
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Fingerprint {
@@ -47,6 +47,39 @@ impl Fingerprint {
     pub fn message_count(&self) -> usize {
         self.messages.len()
     }
+
+    /// Digest of the stored message at `index`; lets a caller re-derive
+    /// wire-only entries (the synthetic continue tail) during prefix proofs.
+    pub fn message_digest_at(&self, index: usize) -> Option<u64> {
+        self.messages.get(index).copied()
+    }
+
+    /// True when a request built from `model_id`/`system`/`tools`/`messages`
+    /// provably repeats the last sent request as a prefix — the provider
+    /// would serve it from the prompt cache. Extra trailing entries are
+    /// fine: they extend the cache rather than invalidating it.
+    pub fn shared_prefix_ok(
+        &self,
+        model_id: &str,
+        system: Option<&str>,
+        tools: &[ToolDef],
+        messages: &[Message],
+    ) -> bool {
+        self.provider == digest(model_id)
+            && self.system == digest(&system.unwrap_or_default())
+            && self.tools == digest(&tools)
+            && messages.len() >= self.messages.len()
+            && self
+                .messages
+                .iter()
+                .zip(messages.iter())
+                .all(|(stored, m)| *stored == digest(m))
+    }
+}
+
+/// Digest of one message, exposed for re-deriving wire-only tail entries.
+pub(crate) fn message_digest(m: &Message) -> u64 {
+    digest(m)
 }
 
 pub fn fingerprint(model_id: &str, req: &ChatRequest) -> Fingerprint {

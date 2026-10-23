@@ -231,6 +231,7 @@ fn boundary_truncation_charges_thinking_and_tool_blocks() {
 struct CapturingProvider {
     script: Mutex<Vec<StreamEvent>>,
     seen: Arc<Mutex<Vec<ChatRequest>>>,
+    iso: Option<Arc<Mutex<Vec<Option<bool>>>>>,
 }
 
 impl CapturingProvider {
@@ -238,13 +239,24 @@ impl CapturingProvider {
         Self {
             script: Mutex::new(script),
             seen,
+            iso: None,
         }
+    }
+
+    fn with_iso_recorder(mut self, iso: Arc<Mutex<Vec<Option<bool>>>>) -> Self {
+        self.iso = Some(iso);
+        self
     }
 }
 
 #[async_trait]
 impl Provider for CapturingProvider {
     fn stream(&self, req: ChatRequest) -> ProviderStream {
+        if let Some(iso) = &self.iso {
+            iso.lock()
+                .expect("iso lock poisoned")
+                .push(crate::agent::current_isolated_stream().map(|i| i.cache_off));
+        }
         self.seen.lock().expect("seen lock poisoned").push(req);
         let script = std::mem::take(&mut *self.script.lock().expect("script lock poisoned"));
         Box::pin(futures::stream::iter(script.into_iter().map(Ok)))
@@ -930,5 +942,111 @@ fn media_pressure_stubs_cold_but_compacts_when_warm() {
     assert_eq!(
         agent.media_pressure(),
         crate::agent_compact::MediaPressure::Clear
+    );
+}
+
+#[tokio::test]
+async fn compaction_shares_the_cached_prefix_when_provable() {
+    let seen: Arc<Mutex<Vec<ChatRequest>>> = Arc::default();
+    let iso: Arc<Mutex<Vec<Option<bool>>>> = Arc::default();
+    let calls: Arc<Mutex<Vec<String>>> = Arc::default();
+    let tools = vec![ToolDef::new(
+        "read",
+        "r",
+        serde_json::json!({"type": "object"}),
+    )];
+    let mut agent = Agent::new(
+        Box::new(
+            CapturingProvider::new(
+                vec![
+                    StreamEvent::text_delta("reply"),
+                    StreamEvent::message_complete(Some(StopReason::EndTurn), None),
+                ],
+                seen.clone(),
+            )
+            .with_iso_recorder(iso.clone()),
+        ),
+        Arc::new(RecordingExecutor { calls }),
+    )
+    .with_system("S")
+    .with_tools(tools)
+    .with_messages(vec![Message::user("m1")]);
+
+    agent
+        .run(Message::user("m2"), ToolContext::default())
+        .await
+        .expect("turn");
+    let _ = agent.compact_v2(None, Some(0)).await.expect("compact ran");
+
+    let reqs = seen.lock().expect("seen lock poisoned");
+    assert_eq!(reqs.len(), 2, "turn + summary call, got {reqs:?}");
+    let (turn_req, sum_req) = (&reqs[0], &reqs[1]);
+    // The sent prefix is repeated verbatim, then the turn's reply and the
+    // appended trigger extend it — a strict cache-extending suffix.
+    assert_eq!(sum_req.messages.len(), turn_req.messages.len() + 2);
+    assert_eq!(
+        sum_req.messages[..turn_req.messages.len()],
+        turn_req.messages[..],
+        "summary request must repeat the sent prefix verbatim"
+    );
+    assert!(
+        sum_req
+            .messages
+            .last()
+            .expect("trigger")
+            .text_content()
+            .contains("Summarize this conversation")
+    );
+    assert_eq!(sum_req.system, turn_req.system);
+    assert_eq!(sum_req.tools, turn_req.tools);
+    assert_eq!(
+        *iso.lock().expect("iso lock poisoned"),
+        vec![None, Some(false)],
+        "normal turn unscoped, summary call with cache markers on"
+    );
+}
+
+#[tokio::test]
+async fn compaction_falls_back_to_cold_call_when_prefix_diverged() {
+    let seen: Arc<Mutex<Vec<ChatRequest>>> = Arc::default();
+    let iso: Arc<Mutex<Vec<Option<bool>>>> = Arc::default();
+    let calls: Arc<Mutex<Vec<String>>> = Arc::default();
+    let mut agent = Agent::new(
+        Box::new(
+            CapturingProvider::new(
+                vec![
+                    StreamEvent::text_delta("reply"),
+                    StreamEvent::message_complete(Some(StopReason::EndTurn), None),
+                ],
+                seen.clone(),
+            )
+            .with_iso_recorder(iso.clone()),
+        ),
+        Arc::new(RecordingExecutor { calls }),
+    )
+    .with_system("S")
+    .with_messages(vec![Message::user("m1")]);
+
+    agent
+        .run(Message::user("m2"), ToolContext::default())
+        .await
+        .expect("turn");
+    // The wire view now differs from what was sent — no shared prefix.
+    agent.contaminated.insert(0);
+    let _ = agent.compact_v2(None, Some(0)).await.expect("compact ran");
+
+    let reqs = seen.lock().expect("seen lock poisoned");
+    assert_eq!(reqs.len(), 2);
+    assert!(
+        reqs[1].messages[0]
+            .text_content()
+            .contains("cut off by a stream error"),
+        "fallback must send the scrubbed (diverged) view: {:?}",
+        reqs[1].messages[0]
+    );
+    assert_eq!(
+        *iso.lock().expect("iso lock poisoned"),
+        vec![None, Some(true)],
+        "unprovable prefix must keep cache markers off"
     );
 }

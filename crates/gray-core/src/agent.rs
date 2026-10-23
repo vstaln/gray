@@ -915,6 +915,30 @@ impl Agent {
         messages: Vec<Message>,
         tools: Vec<ToolDef>,
     ) -> Result<String, CoreError> {
+        self.complete_isolated_with_cache(system, messages, tools, false)
+            .await
+    }
+
+    /// The request provably extends the last sent prefix: keep provider cache
+    /// markers (Anthropic breakpoints, OpenAI prompt_cache_key) so the call
+    /// reads the warm cache instead of paying a cold write.
+    pub(crate) async fn complete_isolated_cached(
+        &self,
+        system: Option<&str>,
+        messages: Vec<Message>,
+        tools: Vec<ToolDef>,
+    ) -> Result<String, CoreError> {
+        self.complete_isolated_with_cache(system, messages, tools, true)
+            .await
+    }
+
+    async fn complete_isolated_with_cache(
+        &self,
+        system: Option<&str>,
+        messages: Vec<Message>,
+        tools: Vec<ToolDef>,
+        shared_cache: bool,
+    ) -> Result<String, CoreError> {
         let req = ChatRequest {
             system: system.map(|s| s.to_string()),
             messages,
@@ -922,8 +946,16 @@ impl Agent {
             max_tokens: None,
         };
         let iso = IsolatedStream {
-            session_id: Some(uuid::Uuid::new_v4().to_string()),
-            cache_off: true,
+            // Key-scoped caches (OpenAI prompt_cache_key) keep their affinity
+            // only when the shared request reuses the session id.
+            session_id: Some(if shared_cache {
+                self.session_id
+                    .clone()
+                    .unwrap_or_else(|| uuid::Uuid::new_v4().to_string())
+            } else {
+                uuid::Uuid::new_v4().to_string()
+            }),
+            cache_off: !shared_cache,
         };
         let session = self.session_id.clone();
         scope_isolated_stream(iso, async {
@@ -944,7 +976,12 @@ async fn drain_reply_text(
                 result.push_str(&delta);
             }
             StreamEvent::MessageComplete { usage, .. } => {
-                usage.unwrap_or_default().log_request("compaction", session);
+                let kind = if current_isolated_stream().is_some_and(|i| !i.cache_off) {
+                    "compaction-shared"
+                } else {
+                    "compaction"
+                };
+                usage.unwrap_or_default().log_request(kind, session);
                 break;
             }
             _ => {}

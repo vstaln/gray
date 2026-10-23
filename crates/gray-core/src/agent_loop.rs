@@ -540,9 +540,7 @@ impl Agent {
                 .last()
                 .is_some_and(|message| message.role == Role::Assistant)
             {
-                request_messages.push(Message::user_injected(
-                    "Continue the pending user request using the retained context and summary.",
-                ));
+                request_messages.push(Message::user_injected(crate::compact::CONTINUE_TAIL));
             }
 
             for hook in &self.hooks {
