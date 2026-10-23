@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-10-24
+
 ### Added
 - **In-TUI plugin marketplace** (`/plugins`): browse and search the
   served catalog, stage installs with a manifest probe and capability
@@ -57,6 +59,11 @@
   plugin now, and it's opt-in rather than in the default install set.
 
 ### Fixed
+- **Bash cards show the whole command.** The card only showed the first
+  heredoc body, so steps before it, after its delimiter, or in a second
+  heredoc never appeared, and multi-line or 80+ column commands lost
+  everything past the header line. Now anything the header can't hold is
+  shown; a lone `cat > f <<EOF` write still shows just its body.
 - **The composer band now paints over transcript rows when the input
   box grows** (e.g. a multi-line history recall) instead of scrolling
   transcript rows into scrollback — which was what left a blank gap and
