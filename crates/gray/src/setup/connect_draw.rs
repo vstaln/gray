@@ -555,7 +555,7 @@ pub(crate) fn render_entering_key(
     item: &ConnectItem,
     key_buf: &str,
     existing_key: &Option<String>,
-    env_var: Option<&'static str>,
+    env_var: Option<&str>,
     status_msg: &Option<String>,
     colors: &ConnectColors,
 ) {

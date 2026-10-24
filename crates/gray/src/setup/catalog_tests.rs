@@ -1,5 +1,5 @@
 use super::*;
-use crate::quality_of_life::providers::{POPULAR_DEFS, detect_connect_candidates};
+use crate::quality_of_life::providers::{detect_connect_candidates, is_popular_preset};
 
 #[test]
 fn custom_is_first_entry() {
@@ -554,8 +554,7 @@ fn connect_sort_with_nothing_known_lands_on_openai() {
     assert!(
         items[popular_pos..]
             .iter()
-            .all(|i| POPULAR_DEFS.iter().any(|(id, ..)| *id == i.id)
-                || !POPULAR_DEFS.iter().any(|(id, ..)| *id == i.id)),
+            .all(|i| is_popular_preset(&i.id) || !is_popular_preset(&i.id)),
     );
 }
 

@@ -619,7 +619,7 @@ pub(crate) fn load_connect_auth() -> BTreeMap<String, AuthEntry> {
 
 pub(crate) struct Detected {
     pub note: String,
-    pub env: Option<(&'static str, String)>,
+    pub env: Option<(String, String)>,
 }
 
 pub(crate) fn sort_connect_items(
@@ -759,9 +759,9 @@ fn custom_slug(base_url: &str) -> String {
 
 pub fn custom_display_name(base_url: &str) -> String {
     let normalized = normalize_custom_base_url(base_url);
-    for &(name, url) in KNOWN_LOCAL_ENDPOINTS {
-        if normalize_custom_base_url(url) == normalized {
-            return name.to_string();
+    for ep in &crate::setup::context::provider_meta().local_endpoints {
+        if normalize_custom_base_url(&ep.url) == normalized {
+            return ep.name.clone();
         }
     }
     reqwest::Url::parse(&normalized)
@@ -773,15 +773,6 @@ pub fn custom_display_name(base_url: &str) -> String {
         })
         .unwrap_or_else(|| "Custom".to_string())
 }
-
-pub const KNOWN_LOCAL_ENDPOINTS: &[(&str, &str)] = &[
-    ("Ollama", "http://localhost:11434/v1"),
-    ("LM Studio", "http://localhost:1234/v1"),
-    ("llama.cpp", "http://localhost:8080/v1"),
-    ("vLLM", "http://localhost:8000/v1"),
-    ("Jan", "http://localhost:1337/v1"),
-    ("LiteLLM", "http://localhost:4000/v1"),
-];
 
 pub fn load_custom_endpoints() -> Vec<CustomEndpoint> {
     let path = custom_endpoints_path().unwrap_or_else(|_| PathBuf::from("/dev/null"));
