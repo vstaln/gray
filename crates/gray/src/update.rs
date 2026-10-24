@@ -10,8 +10,6 @@ fn base_url() -> String {
 }
 pub const CHANNEL: &str = env!("GRAY_CHANNEL");
 
-const WINDOWS_UNSUPPORTED: &str = "self-update is not supported on native Windows: close Gray and rerun install-native.ps1 with the verified preview ZIP and checksum";
-
 fn parse_version(v: &str) -> Option<(u64, u64, u64, Option<String>)> {
     let v = v.trim();
     let (core, pre) = match v.split_once('-') {
@@ -98,6 +96,7 @@ fn installer_pin() -> Option<String> {
         .filter(|s| s.len() == 64 && s.chars().all(|c| c.is_ascii_hexdigit()))
 }
 
+#[cfg(not(windows))]
 fn install_command() -> String {
     match CHANNEL {
         "stable" => "sh -c 'curl -fsSL https://gray.alignment.id/install.sh | sh'".into(),
@@ -135,6 +134,7 @@ fn run_step(cmd: &mut Command, quiet: bool, what: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+#[cfg(not(windows))]
 fn run_pinned_installer(pin: &str, base: &str, quiet: bool) -> anyhow::Result<()> {
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("install.sh");
@@ -161,18 +161,24 @@ fn run_installer() -> anyhow::Result<()> {
 }
 
 fn run_installer_with(quiet: bool) -> anyhow::Result<()> {
-    anyhow::ensure!(!cfg!(windows), WINDOWS_UNSUPPORTED);
-
-    if let Some(pin) = installer_pin() {
-        return run_pinned_installer(&pin, &base_url(), quiet);
+    #[cfg(windows)]
+    {
+        windows_install(quiet)
     }
-    run_step(
-        Command::new("sh").arg("-c").arg(install_command()),
-        quiet,
-        "installer",
-    )
+    #[cfg(not(windows))]
+    {
+        if let Some(pin) = installer_pin() {
+            return run_pinned_installer(&pin, &base_url(), quiet);
+        }
+        run_step(
+            Command::new("sh").arg("-c").arg(install_command()),
+            quiet,
+            "installer",
+        )
+    }
 }
 
+#[cfg(not(windows))]
 fn shell_escape(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
@@ -270,6 +276,160 @@ fn windows_installer_dest() -> Option<PathBuf> {
     )
 }
 
+#[cfg(windows)]
+fn download_to(url: &str, dest: &Path, quiet: bool, what: &str) -> anyhow::Result<()> {
+    run_step(
+        Command::new("curl")
+            .arg("-fsSL")
+            .arg(url)
+            .arg("-o")
+            .arg(dest),
+        quiet,
+        what,
+    )
+}
+
+#[cfg(any(windows, test))]
+fn sums_digest(sums: &str, name: &str) -> anyhow::Result<String> {
+    let found: Vec<&str> = sums
+        .lines()
+        .filter_map(|line| {
+            let (digest, file) = line.trim().split_once(char::is_whitespace)?;
+            (digest.len() == 64
+                && digest.bytes().all(|b| b.is_ascii_hexdigit())
+                && file.trim().trim_start_matches('*') == name)
+                .then_some(digest)
+        })
+        .collect();
+    anyhow::ensure!(found.len() == 1, "missing or invalid archive checksum");
+    Ok(found[0].to_ascii_lowercase())
+}
+
+#[cfg(any(windows, test))]
+fn zip_members(listing: &str) -> anyhow::Result<Vec<String>> {
+    let mut names: Vec<String> = listing
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(str::to_string)
+        .collect();
+    names.sort_unstable();
+    anyhow::ensure!(
+        names == ["LICENSE", "THIRD_PARTY_NOTICES.md", "gray.exe"],
+        "update archive must contain exactly gray.exe, LICENSE and THIRD_PARTY_NOTICES.md"
+    );
+    Ok(names)
+}
+
+// bsdtar (System32\tar.exe, Windows 10+) reads zip directly; members are the
+// install-native.ps1 allowlist, enforced exactly before extraction.
+#[cfg(windows)]
+fn extract_update_zip(archive: &Path, dest: &Path) -> anyhow::Result<()> {
+    let out = Command::new("tar").arg("-tf").arg(archive).output()?;
+    anyhow::ensure!(out.status.success(), "cannot list update archive");
+    let members = zip_members(&String::from_utf8_lossy(&out.stdout))?;
+    let mut total = 0u64;
+    for member in members {
+        run_step(
+            Command::new("tar")
+                .arg("-xf")
+                .arg(archive)
+                .arg("-C")
+                .arg(dest)
+                .arg(&member),
+            true,
+            "archive extraction",
+        )?;
+        total += std::fs::metadata(dest.join(member))?.len();
+        anyhow::ensure!(
+            total <= 256 * 1024 * 1024,
+            "expanded archive exceeds 256 MiB"
+        );
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn windows_install(quiet: bool) -> anyhow::Result<()> {
+    let base = base_url();
+    let name = format!("gray-{CHANNEL}-x86_64-windows.zip");
+    let tmp = tempfile::tempdir()?;
+    let archive = tmp.path().join(&name);
+    download_to(
+        &format!("{base}/{name}"),
+        &archive,
+        quiet,
+        "update download",
+    )?;
+    let want = match installer_pin() {
+        Some(pin) => pin,
+        None => {
+            let sums = tmp.path().join("SHA256SUMS");
+            download_to(
+                &format!("{base}/SHA256SUMS-{CHANNEL}"),
+                &sums,
+                quiet,
+                "checksum download",
+            )?;
+            sums_digest(&std::fs::read_to_string(&sums)?, &name)?
+        }
+    };
+    let got = sha256_hex(&std::fs::read(&archive)?);
+    anyhow::ensure!(
+        got == want,
+        "update checksum mismatch (expected {want}, got {got}) — refusing to install"
+    );
+    let stage = tmp.path().join("stage");
+    std::fs::create_dir(&stage)?;
+    extract_update_zip(&archive, &stage)?;
+    anyhow::ensure!(
+        binary_version(&stage.join("gray.exe")).is_some(),
+        "downloaded gray.exe failed its --version probe"
+    );
+    let dest =
+        installer_dest().ok_or_else(|| anyhow::anyhow!("no install dir — set GRAY_INSTALL_DIR"))?;
+    std::fs::create_dir_all(&dest)?;
+    for notice in ["LICENSE", "THIRD_PARTY_NOTICES.md"] {
+        std::fs::copy(stage.join(notice), dest.join(notice))?;
+    }
+    // Stage inside dest so the final rename stays on one volume; a running
+    // gray.exe can't be overwritten but can be renamed aside.
+    let staged = dest.join(".gray-new.exe");
+    std::fs::copy(stage.join("gray.exe"), &staged)?;
+    let exe = dest.join("gray.exe");
+    let old = dest.join("gray.exe.old");
+    if exe.exists() {
+        let _ = std::fs::remove_file(&old);
+        std::fs::rename(&exe, &old)
+            .map_err(|e| anyhow::anyhow!("cannot move the running gray.exe aside: {e}"))?;
+        if let Err(e) = std::fs::rename(&staged, &exe) {
+            let _ = std::fs::rename(&old, &exe);
+            anyhow::bail!("cannot place the new gray.exe: {e}");
+        }
+        // Still locked while the old build runs; cleaned at next startup.
+        let _ = std::fs::remove_file(&old);
+    } else {
+        std::fs::rename(&staged, &exe)?;
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn clean_stale_update_files() {
+    let Some(dest) = installer_dest() else {
+        return;
+    };
+    let Ok(entries) = std::fs::read_dir(&dest) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().is_some_and(|e| e == "old") || entry.file_name() == ".gray-new.exe" {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+}
+
 fn binary_version(path: &Path) -> Option<String> {
     let out = Command::new(path).arg("--version").output().ok()?;
     if !out.status.success() {
@@ -357,8 +517,9 @@ fn shadow_warning(installed: &Path, installed_version: &str, resolved: &Path) ->
     if same_binary(resolved, installed) {
         return None;
     }
+    let rm = if cfg!(windows) { "del" } else { "rm" };
     Some(format!(
-        "⚠ {} comes first on PATH and shadows the updated {} (gray {installed_version}) — new shells keep launching the old build\n  fix:  rm {}   (then open a new shell)",
+        "⚠ {} comes first on PATH and shadows the updated {} (gray {installed_version}) — new shells keep launching the old build\n  fix:  {rm} {}   (then open a new shell)",
         resolved.display(),
         installed.display(),
         resolved.display(),
@@ -366,7 +527,8 @@ fn shadow_warning(installed: &Path, installed_version: &str, resolved: &Path) ->
 }
 
 fn post_update_shadow_warning() -> Option<String> {
-    let installed = installer_dest()?.join("gray");
+    let bin = if cfg!(windows) { "gray.exe" } else { "gray" };
+    let installed = installer_dest()?.join(bin);
 
     let installed_version = binary_version(&installed)?;
     let resolved = drop_cargo_shadow(first_gray_on_path()?, &installed);
@@ -403,7 +565,6 @@ fn warn_on_divergence() {
 }
 
 pub async fn update_now() -> anyhow::Result<()> {
-    anyhow::ensure!(!cfg!(windows), WINDOWS_UNSUPPORTED);
     match latest_version().await {
         Ok(latest)
             if !latest.is_empty()
@@ -438,12 +599,10 @@ pub async fn update_now() -> anyhow::Result<()> {
 }
 
 pub(crate) fn install_unlocked() -> anyhow::Result<()> {
-    anyhow::ensure!(!cfg!(windows), WINDOWS_UNSUPPORTED);
     run_installer_with(true)
 }
 
 pub(crate) fn install() -> anyhow::Result<()> {
-    anyhow::ensure!(!cfg!(windows), WINDOWS_UNSUPPORTED);
     anyhow::ensure!(
         !cfg!(debug_assertions),
         "this is a debug build — self-update would overwrite the installed gray with the release build; use scripts/install-local.sh instead"
@@ -489,14 +648,11 @@ fn auto_update_allowed(channel: &str, flag: Option<&str>) -> bool {
 }
 
 pub async fn startup_check() {
+    #[cfg(windows)]
+    clean_stale_update_files();
     let current = env!("CARGO_PKG_VERSION");
     if std::env::var("GRAY_NO_UPDATE_CHECK").as_deref() == Ok("1") || crate::config::offline() {
         return;
-    }
-    if cfg!(windows) && std::env::var("GRAY_AUTO_UPDATE").as_deref() == Ok("1") {
-        eprintln!(
-            "Automatic installation is not supported on native Windows; close Gray and reinstall externally."
-        );
     }
     if cfg!(debug_assertions) || current == "0.0.0" {
         return;
@@ -516,12 +672,6 @@ pub async fn startup_check() {
     if !update_available(CHANNEL, &latest, current, env!("GRAY_BUILD_ID")) {
         return;
     }
-    if cfg!(windows) {
-        println!(
-            "gray {latest} available; on native Windows close Gray and rerun install-native.ps1 externally."
-        );
-        return;
-    }
     let auto_flag = std::env::var("GRAY_AUTO_UPDATE").ok();
     if auto_update_allowed(CHANNEL, auto_flag.as_deref()) {
         let latest = latest.clone();
@@ -529,11 +679,7 @@ pub async fn startup_check() {
             let Ok(_lock) = acquire_update_lock() else {
                 return;
             };
-            let ok = Command::new("sh")
-                .arg("-c")
-                .arg(install_command())
-                .output()
-                .is_ok_and(|o| o.status.success());
+            let ok = install_unlocked().is_ok();
             if ok {
                 crate::profile::queue_profile_warning(format!(
                     "gray {latest} installed in the background — restart to apply"

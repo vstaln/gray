@@ -148,7 +148,7 @@ pub fn resolve_argv(dir: &Path) -> anyhow::Result<Vec<String>> {
         }
         #[cfg(not(unix))]
         {
-            true
+            p.extension().is_some_and(|e| e.eq_ignore_ascii_case("exe"))
         }
     };
     if is_exec(dir) {

@@ -476,6 +476,13 @@ async fn install_index(
         entry.scope.clone()
     };
     let dest = replace_archive(&archive, name, || {
+        // Register only a dir spawn_lock_plugin can resolve; an empty or
+        // wrong-platform payload must roll back instead of churning respawns.
+        if opts.argv.is_empty() {
+            gray_plugin::builder::resolve_argv(&crate::plugins_dir().join(name)).map_err(|e| {
+                anyhow::anyhow!("package '{name}' has no runnable plugin on this platform: {e:#}")
+            })?;
+        }
         record_install(
             name,
             &entry.ecosystem,
@@ -513,6 +520,11 @@ async fn install_url(
     validate_install_key(&name)?;
     let archive = crate::fetch::download(client, url, None).await?;
     let dest = replace_archive(&archive, &name, || {
+        if opts.argv.is_empty() {
+            gray_plugin::builder::resolve_argv(&crate::plugins_dir().join(&name)).map_err(|e| {
+                anyhow::anyhow!("package '{name}' has no runnable plugin on this platform: {e:#}")
+            })?;
+        }
         record_install(
             &name,
             "url",

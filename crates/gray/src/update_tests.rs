@@ -495,3 +495,38 @@ fn cargo_shadow_is_removed_not_warned_about() {
         },
     );
 }
+
+#[test]
+fn sums_digest_picks_the_named_archive_line() {
+    let want = "a".repeat(64);
+    let sums = format!(
+        "{}  gray-stable-aarch64-apple-darwin.tar.gz\n{want} *gray-stable-x86_64-windows.zip\n",
+        "b".repeat(64)
+    );
+    assert_eq!(
+        sums_digest(&sums, "gray-stable-x86_64-windows.zip").unwrap(),
+        want
+    );
+}
+
+#[test]
+fn sums_digest_rejects_missing_duplicate_and_malformed_entries() {
+    let sha = "a".repeat(64);
+    let name = "gray-stable-x86_64-windows.zip";
+    assert!(sums_digest(&format!("{sha}  other.zip\n"), name).is_err());
+    assert!(sums_digest(&format!("{sha}  {name}\n{sha}  {name}\n"), name).is_err());
+    assert!(sums_digest(&format!("notasha  {name}\n"), name).is_err());
+}
+
+#[test]
+fn zip_members_allow_exactly_the_install_set() {
+    assert!(zip_members("gray.exe\nLICENSE\nTHIRD_PARTY_NOTICES.md\n").is_ok());
+    for listing in [
+        "gray.exe\nLICENSE\n",
+        "gray.exe\nLICENSE\nTHIRD_PARTY_NOTICES.md\nextra.dll\n",
+        "gray.exe\ngray.exe\nLICENSE\nTHIRD_PARTY_NOTICES.md\n",
+        "./gray.exe\nLICENSE\nTHIRD_PARTY_NOTICES.md\n",
+    ] {
+        assert!(zip_members(listing).is_err(), "{listing:?}");
+    }
+}
