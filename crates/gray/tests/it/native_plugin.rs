@@ -60,7 +60,7 @@ fn fresh_home_help_and_quoted_slash_work_before_agent_construction() {
     assert!(output.contains("<>"), "{output}");
     assert!(output.contains("<$(not-executed)>"), "{output}");
     let output = repl(temp.path(), "/alias 'unterminated\n/quit\n");
-    assert!(output.contains("check quotes"), "{output}");
+    assert!(output.contains("<'unterminated>"), "{output}");
 }
 #[test]
 fn direct_cli_forwards_argument_boundaries_and_nonzero_exit() {

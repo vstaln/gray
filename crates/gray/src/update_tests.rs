@@ -115,7 +115,8 @@ fn shadow_warning_names_the_shadowing_path_and_the_fix() {
     .expect("a differing gray first on PATH must be reported");
     assert!(w.contains("/home/u/.cargo/bin/gray"), "{w}");
     assert!(w.contains("0.1.1"), "{w}");
-    assert!(w.contains("rm /home/u/.cargo/bin/gray"), "{w}");
+    let rm = if cfg!(windows) { "del" } else { "rm" };
+    assert!(w.contains(&format!("{rm} /home/u/.cargo/bin/gray")), "{w}");
 }
 
 #[test]
