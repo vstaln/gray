@@ -1,18 +1,3 @@
-use std::path::PathBuf;
-
-#[derive(Debug, Default, Clone)]
-pub struct SearchArgs {
-    pub pattern: String,
-
-    pub path: Option<PathBuf>,
-    pub limit: Option<usize>,
-
-    pub glob: Option<String>,
-    pub ignore_case: bool,
-    pub literal: bool,
-    pub context: Option<usize>,
-}
-
 pub enum IndexBackend {
     #[cfg(unix)]
     Fs(std::sync::Arc<crate::search_index_fs::FsearchPool>),

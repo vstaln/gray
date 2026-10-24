@@ -1,16 +1,12 @@
 pub mod grep_builtin;
 pub mod images;
 pub mod index_filter;
+#[cfg(target_os = "linux")]
+pub mod search_answer;
 pub mod search_cmd;
 #[cfg(unix)]
 pub mod search_index_fs;
 pub mod search_plan;
-#[cfg(target_os = "linux")]
-pub mod search_serve;
-#[cfg(unix)]
-pub mod search_shim;
-#[cfg(target_os = "linux")]
-pub mod search_watch;
 pub mod shell;
 pub mod truncate;
 pub mod video_sheet;

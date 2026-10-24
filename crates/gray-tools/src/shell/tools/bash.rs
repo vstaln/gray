@@ -390,10 +390,10 @@ async fn bare_grep_claim(argv: &[String], cwd: &Path) -> Option<ToolOutput> {
     let (dir, args) = (cwd.to_path_buf(), argv.to_vec());
     let ans = crate::search_cmd::spawn_index(move || {
         pool.engine()
-            .and_then(|e| crate::search_serve::grep_answer(e, &args, &dir))
+            .and_then(|e| crate::search_answer::grep_answer(e, &args, &dir))
     })
     .await?;
-    let crate::search_serve::Answer::Print {
+    let crate::search_answer::Answer::Print {
         stdout,
         stderr,
         code,
@@ -423,10 +423,10 @@ async fn bare_rg_claim(argv: &[String], cwd: &Path) -> Option<ToolOutput> {
     let (dir, args) = (cwd.to_path_buf(), argv.to_vec());
     let ans = crate::search_cmd::spawn_index(move || {
         pool.engine()
-            .and_then(|e| crate::search_serve::rg_answer(e, &args, &dir))
+            .and_then(|e| crate::search_answer::rg_answer(e, &args, &dir))
     })
     .await?;
-    let crate::search_serve::Answer::Print {
+    let crate::search_answer::Answer::Print {
         stdout,
         stderr,
         code,
