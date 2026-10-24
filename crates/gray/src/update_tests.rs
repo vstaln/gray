@@ -42,6 +42,7 @@ fn auto_update_refuses_beta_channel() {
 }
 
 #[test]
+#[cfg(unix)]
 fn install_command_carries_channel() {
     assert!(install_command().contains("gray.alignment.id/install.sh"));
     if CHANNEL == "beta" {
