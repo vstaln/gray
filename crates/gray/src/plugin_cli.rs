@@ -522,6 +522,10 @@ fn consent_capabilities(
     for line in &lines {
         println!("{line}");
     }
+    if matches!(gate, TrustGate::Quiet) {
+        println!("  granted (--yes)");
+        return (declared.to_vec(), Some(hash), Vec::new());
+    }
     if !interactive() {
         println!(
             "  not granted (non-interactive session). Grant later: gray plugin capabilities {name} --all"

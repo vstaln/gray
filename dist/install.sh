@@ -109,11 +109,10 @@ if [ "$SEED" != "0" ]; then
     for plugin in $PLUGINS; do
         if "${DEST}/gray" plugin install --yes "$plugin" >/dev/null 2>&1; then
             echo "→ installed ${plugin}"
-            # fsearch's grep/rg stand-ins need shell.env; installing the
-            # default set is the consent, so grant it here (best-effort).
-            if [ "$plugin" = fsearch ]; then
-                "${DEST}/gray" plugin capabilities fsearch --all >/dev/null 2>&1 || true
-            fi
+            # installing the default set is the consent; grant declared
+            # capabilities outright (new builds do this under --yes already;
+            # keep it for older binaries, best-effort).
+            "${DEST}/gray" plugin capabilities "$plugin" --all >/dev/null 2>&1 || true
         else
             FAILED="${FAILED} ${plugin}"
         fi
