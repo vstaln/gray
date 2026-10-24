@@ -101,7 +101,7 @@ if [ "$SEED" = "auto" ]; then
 fi
 if [ "$SEED" != "0" ]; then
     FLAVOR="full"
-    DEFAULT_PLUGINS="account memory search questions subagents mcp qol hands gateway"
+    DEFAULT_PLUGINS="account memory search gateway"
     [ "$(uname -s)" = Linux ] && DEFAULT_PLUGINS="${DEFAULT_PLUGINS} fsearch"
     PLUGINS="${GRAY_PLUGINS:-$DEFAULT_PLUGINS}"
     FAILED=""
