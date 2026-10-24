@@ -717,10 +717,7 @@ pub(crate) fn key_check_request(base_url: &str) -> (String, AuthStyle, bool) {
     (
         format!("{trimmed}/models"),
         style,
-        meta.key_check
-            .reject_400_hosts
-            .iter()
-            .any(|h| h == &host),
+        meta.key_check.reject_400_hosts.iter().any(|h| h == &host),
     )
 }
 
@@ -1930,9 +1927,7 @@ static EMBEDDED_PROVIDER_META: std::sync::OnceLock<std::sync::Arc<ProviderMeta>>
 
 fn embedded_provider_meta() -> std::sync::Arc<ProviderMeta> {
     std::sync::Arc::clone(EMBEDDED_PROVIDER_META.get_or_init(|| {
-        std::sync::Arc::new(
-            serde_json::from_str(PROVIDER_META_SNAPSHOT).unwrap_or_default(),
-        )
+        std::sync::Arc::new(serde_json::from_str(PROVIDER_META_SNAPSHOT).unwrap_or_default())
     }))
 }
 

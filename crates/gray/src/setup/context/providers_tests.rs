@@ -288,7 +288,11 @@ fn count_models_json_reads_every_list_shape() {
 #[test]
 fn provider_meta_snapshot_parses_with_all_sections() {
     let meta = embedded_provider_meta();
-    assert!(meta.catalog.len() > 100, "catalog snapshot: {}", meta.catalog.len());
+    assert!(
+        meta.catalog.len() > 100,
+        "catalog snapshot: {}",
+        meta.catalog.len()
+    );
     assert_eq!(
         meta.catalog.get("openrouter").map(|p| p.base_url.as_str()),
         Some("https://openrouter.ai/api/v1")

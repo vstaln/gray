@@ -65,9 +65,7 @@ fn only_this_sessions_pending_wakes_count_soonest_first() {
 fn a_missing_or_unreadable_gateway_lists_no_wakes() {
     let home = tempfile::tempdir().unwrap();
     assert!(load_wakes_with(home.path(), "s1", |_| None).is_empty());
-    assert!(
-        load_wakes_with(home.path(), "s1", |_| Some(b"not json".to_vec())).is_empty()
-    );
+    assert!(load_wakes_with(home.path(), "s1", |_| Some(b"not json".to_vec())).is_empty());
 }
 
 #[test]
@@ -151,13 +149,21 @@ fn remove_stops_jobs_and_asks_the_plugin_to_delete_wakes() {
     let home = tempfile::tempdir().unwrap();
     let exec = FakeExec(std::sync::Mutex::new(vec!["cargo-test".into()]));
     let ctx = ToolContext::default();
-    remove_with(&exec, &ctx, home.path(), "job:cargo-test", |_, _| {
-        unreachable!()
-    })
+    remove_with(
+        &exec,
+        &ctx,
+        home.path(),
+        "job:cargo-test",
+        |_, _| unreachable!(),
+    )
     .unwrap();
-    let again = remove_with(&exec, &ctx, home.path(), "job:cargo-test", |_, _| {
-        unreachable!()
-    })
+    let again = remove_with(
+        &exec,
+        &ctx,
+        home.path(),
+        "job:cargo-test",
+        |_, _| unreachable!(),
+    )
     .unwrap_err();
     assert!(again.to_string().contains("not running"), "{again}");
 
@@ -168,14 +174,9 @@ fn remove_stops_jobs_and_asks_the_plugin_to_delete_wakes() {
     };
     remove_with(&exec, &ctx, home.path(), "wake:abc123", rm).unwrap();
     assert_eq!(asked.lock().unwrap().as_slice(), ["abc123"]);
-    let gone = remove_with(&exec, &ctx, home.path(), "wake:abc123", |_, _| {
-        Ok(false)
-    })
-    .unwrap_err();
+    let gone = remove_with(&exec, &ctx, home.path(), "wake:abc123", |_, _| Ok(false)).unwrap_err();
     assert!(gone.to_string().contains("already fired"), "{gone}");
-    assert!(
-        remove_with(&exec, &ctx, home.path(), "plugin:x", |_, _| unreachable!()).is_err()
-    );
+    assert!(remove_with(&exec, &ctx, home.path(), "plugin:x", |_, _| unreachable!()).is_err());
 }
 
 #[test]

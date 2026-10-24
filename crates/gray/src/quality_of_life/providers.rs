@@ -40,7 +40,9 @@ pub(crate) fn append_connect_presets(items: &mut Vec<ConnectItem>, catalog: &Cat
 
     for p in &meta.popular {
         popular_ids.insert(p.id.clone());
-        let url = catalog.get(&p.id).map_or(p.base_url.as_str(), |e| e.base_url.as_str());
+        let url = catalog
+            .get(&p.id)
+            .map_or(p.base_url.as_str(), |e| e.base_url.as_str());
         items.push(ConnectItem {
             id: p.id.clone(),
             name: p.name.clone(),

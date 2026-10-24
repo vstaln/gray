@@ -250,11 +250,7 @@ pub(crate) fn load_wakes(home: &Path, sid: Option<&str>) -> Vec<Wake> {
 }
 
 #[cfg(test)]
-fn load_wakes_with(
-    home: &Path,
-    sid: &str,
-    fetch: impl Fn(&Path) -> Option<Vec<u8>>,
-) -> Vec<Wake> {
+fn load_wakes_with(home: &Path, sid: &str, fetch: impl Fn(&Path) -> Option<Vec<u8>>) -> Vec<Wake> {
     wakes_from_json(&fetch(home).unwrap_or_default(), sid)
 }
 

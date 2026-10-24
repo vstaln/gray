@@ -20,7 +20,10 @@ pub(crate) enum Answer {
 }
 
 enum Op {
-    Indexed { scope: PathBuf, prefix: String },
+    Indexed {
+        scope: PathBuf,
+        prefix: String,
+    },
     #[allow(dead_code)]
     Pass(String),
 }
