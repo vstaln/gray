@@ -645,13 +645,15 @@ pub(crate) async fn dispatch_command(
                                     super::picker::run_list_picker(&mut picker, &bg)
                                 }) {
                                     Ok(Some(idx)) => {
-                                        let picked =
-                                            super::picker::pick_argv(&argv, &spec.items[idx].id);
+                                        let id = &spec.items[idx].id;
+                                        let picked = super::picker::pick_argv(&argv, id);
+                                        let picked_raw =
+                                            format!("{raw} --pick {id}").trim_start().to_string();
                                         outcome = run_plugin_command(
                                             &hooks,
                                             &name,
                                             picked.clone(),
-                                            Some(picked.join(" ")),
+                                            Some(picked_raw),
                                         )
                                         .await;
                                     }

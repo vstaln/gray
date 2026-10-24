@@ -416,6 +416,9 @@ fn windows_install(quiet: bool) -> anyhow::Result<()> {
 
 #[cfg(windows)]
 fn clean_stale_update_files() {
+    let Some(_lock) = try_acquire_update_lock() else {
+        return;
+    };
     let Some(dest) = installer_dest() else {
         return;
     };
@@ -423,9 +426,9 @@ fn clean_stale_update_files() {
         return;
     };
     for entry in entries.flatten() {
-        let path = entry.path();
-        if path.extension().is_some_and(|e| e == "old") || entry.file_name() == ".gray-new.exe" {
-            let _ = std::fs::remove_file(&path);
+        let name = entry.file_name();
+        if name == "gray.exe.old" || name == ".gray-new.exe" {
+            let _ = std::fs::remove_file(entry.path());
         }
     }
 }

@@ -138,7 +138,7 @@ pub fn resolve_argv(dir: &Path) -> anyhow::Result<Vec<String>> {
         let Ok(m) = std::fs::metadata(p) else {
             return false;
         };
-        if !m.is_file() {
+        if !m.is_file() || m.len() == 0 {
             return false;
         }
 
@@ -148,7 +148,10 @@ pub fn resolve_argv(dir: &Path) -> anyhow::Result<Vec<String>> {
         }
         #[cfg(not(unix))]
         {
-            p.extension().is_some_and(|e| e.eq_ignore_ascii_case("exe"))
+            // .exe spawns directly; .sh is wrapped in the Git Bash that
+            // spawn_child resolves via gray_tools::shell::shell_path().
+            p.extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case("exe") || e.eq_ignore_ascii_case("sh"))
         }
     };
     if is_exec(dir) {

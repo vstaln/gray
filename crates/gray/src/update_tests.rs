@@ -129,11 +129,12 @@ fn shadow_warning_stays_quiet_when_path_resolves_the_updated_build() {
 fn shadow_warning_reports_any_differing_path_without_running_it() {
     let installed = Path::new("/home/u/.local/bin/gray");
 
+    let rm = if cfg!(windows) { "del" } else { "rm" };
     for other in ["/opt/gray", "/home/u/.cargo/bin/gray"] {
         let w = shadow_warning(installed, "0.1.1", Path::new(other))
             .expect("a differing path must be reported");
         assert!(w.contains(other), "{w}");
-        assert!(w.contains("rm "), "{w}");
+        assert!(w.contains(&format!("{rm} ")), "{w}");
     }
 }
 

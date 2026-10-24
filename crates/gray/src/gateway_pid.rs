@@ -36,23 +36,23 @@ fn pid_alive(pid: u32) -> bool {
 
 #[cfg(windows)]
 fn pid_alive(pid: u32) -> bool {
-    use windows_sys::Win32::Foundation::CloseHandle;
-    use windows_sys::Win32::System::Threading::{
-        GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    use windows_sys::Win32::Foundation::{
+        CloseHandle, ERROR_ACCESS_DENIED, GetLastError, WAIT_TIMEOUT,
     };
-    const STILL_ACTIVE: u32 = 259;
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, PROCESS_SYNCHRONIZE, WaitForSingleObject,
+    };
     if pid == 0 {
         return false;
     }
     unsafe {
-        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        let handle = OpenProcess(PROCESS_SYNCHRONIZE, 0, pid);
         if handle.is_null() {
-            return false;
+            return GetLastError() == ERROR_ACCESS_DENIED;
         }
-        let mut code = 0u32;
-        let ok = GetExitCodeProcess(handle, &mut code);
+        let status = WaitForSingleObject(handle, 0);
         CloseHandle(handle);
-        ok != 0 && code == STILL_ACTIVE
+        status == WAIT_TIMEOUT
     }
 }
 
