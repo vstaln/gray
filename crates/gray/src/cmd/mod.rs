@@ -662,7 +662,7 @@ fn jobs_result(home: &Path, rest: &str) -> Result<CommandResult, CmdError> {
             Ok(CommandResult::text(crate::repl::jobs::dashboard(
                 &[],
                 &wakes,
-                crate::cron::now_secs(),
+                gray_core::spill::now_secs(),
             )))
         }
         Some("stop") | Some("rm") | Some("remove") => {
@@ -673,9 +673,7 @@ fn jobs_result(home: &Path, rest: &str) -> Result<CommandResult, CmdError> {
             if bare.is_empty() {
                 return Err(CmdError::args("usage: /jobs stop <wake id>"));
             }
-            let store = crate::cron::CronStore::open(home.join("cron"))
-                .map_err(|e| CmdError::unavailable(format!("{e:#}")))?;
-            match store.remove(bare) {
+            match crate::repl::jobs::remove_wake(home, bare) {
                 Ok(true) => Ok(CommandResult::text(format!("stopped {bare}"))),
                 Ok(false) => Ok(CommandResult::text(format!(
                     "unknown job or wake {bare:?} (in-flight jobs live in the running turn)"

@@ -85,7 +85,7 @@ fn run_turn_local_command(ctx: &TurnLocalCommands, text: &str) {
             let text = crate::setup::gray_home()
                 .map(|home| {
                     let wakes = super::jobs::load_wakes(&home, ctx.session_id.as_deref());
-                    super::jobs::dashboard(&jobs, &wakes, crate::cron::now_secs())
+                    super::jobs::dashboard(&jobs, &wakes, gray_core::spill::now_secs())
                 })
                 .unwrap_or_else(|e| format!("jobs dashboard failed: {e}"));
             super::say(tui, &text);

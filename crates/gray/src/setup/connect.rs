@@ -224,7 +224,7 @@ fn connect_modal(
             key_buf: String,
             existing_key: Option<String>,
 
-            env_var: Option<&'static str>,
+            env_var: Option<String>,
             status_msg: Option<String>,
         },
 
@@ -444,7 +444,7 @@ fn connect_modal(
                         item,
                         key_buf,
                         existing_key,
-                        *env_var,
+                        env_var.as_deref(),
                         status_msg,
                         &colors,
                     ),
@@ -868,7 +868,7 @@ fn connect_modal(
                                         item,
                                         key_buf,
                                         existing_key,
-                                        *env_var,
+                                        env_var.as_deref(),
                                         status_msg,
                                         &colors,
                                     );

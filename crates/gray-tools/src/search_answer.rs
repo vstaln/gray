@@ -1,142 +1,12 @@
-#[cfg(target_os = "linux")]
 use std::collections::{BTreeSet, HashMap};
-#[cfg(target_os = "linux")]
 use std::ffi::{OsStr, OsString};
-#[cfg(target_os = "linux")]
-use std::io::{BufRead, BufReader, Write};
-#[cfg(target_os = "linux")]
 use std::os::unix::ffi::OsStrExt;
-#[cfg(target_os = "linux")]
-use std::os::unix::net::{UnixListener, UnixStream};
-use std::path::Path;
-#[cfg(target_os = "linux")]
-use std::path::PathBuf;
-#[cfg(target_os = "linux")]
-use std::sync::{Arc, Mutex};
-#[cfg(target_os = "linux")]
-use std::time::Instant;
+use std::path::{Path, PathBuf};
 
-#[cfg(target_os = "linux")]
-#[cfg(target_os = "linux")]
-use serde_json::{Value, json};
-
-#[cfg(target_os = "linux")]
 use crate::search_plan::{self, GrepPlan, RgPlan};
-#[cfg(target_os = "linux")]
-use crate::search_watch::Watch;
-
-#[cfg(target_os = "linux")]
-struct Server {
-    root: PathBuf,
-    engine: fsearch::Engine,
-    watch: Arc<Watch>,
-
-    order: Mutex<HashMap<PathBuf, Option<HashMap<OsString, usize>>>>,
-
-    unheld: Mutex<Option<Arc<BTreeSet<Vec<u8>>>>>,
-
-    _index_dir: Option<tempfile::TempDir>,
-}
-
-#[cfg(target_os = "linux")]
-pub fn serve(root: &Path, sock: &Path, index_dir: Option<&Path>) -> std::io::Result<()> {
-    let root = root.canonicalize()?;
-    let home = root
-        .to_str()
-        .ok_or_else(|| std::io::Error::other("root is not UTF-8"))?
-        .to_string();
-    let (index_dir, _index_dir) = match index_dir {
-        Some(d) => {
-            std::fs::create_dir_all(d)?;
-            if d.canonicalize()
-                .unwrap_or_else(|_| d.to_path_buf())
-                .starts_with(&root)
-            {
-                return Err(std::io::Error::other(
-                    "index dir must not be inside the indexed root",
-                ));
-            }
-            (d.to_path_buf(), None)
-        }
-        None => {
-            let t = tempfile::Builder::new().prefix("gray-serve-").tempdir()?;
-            (t.path().to_path_buf(), Some(t))
-        }
-    };
-
-    let watch = Arc::new(Watch::new(&root)?);
-    let drain = watch.clone();
-    std::thread::spawn(move || drain.drain_forever());
-    let engine = fsearch::Engine::start(fsearch::Options {
-        dir: index_dir,
-        home,
-        root: Some(root.clone()),
-        skip: Some(Vec::new()),
-    })
-    .map_err(std::io::Error::other)?;
-    let server = Arc::new(Server {
-        root,
-        engine,
-        watch,
-        order: Mutex::new(HashMap::new()),
-        unheld: Mutex::new(None),
-        _index_dir,
-    });
-    let _ = std::fs::remove_file(sock);
-    let listener = UnixListener::bind(sock)?;
-    for conn in listener.incoming() {
-        let Ok(stream) = conn else { continue };
-        let server = server.clone();
-        std::thread::spawn(move || {
-            let _ = answer(&server, stream);
-        });
-    }
-    Ok(())
-}
-
-#[cfg(not(target_os = "linux"))]
-pub fn serve(_root: &Path, _sock: &Path, _index_dir: Option<&Path>) -> std::io::Result<()> {
-    Err(std::io::Error::other("search-serve needs linux inotify"))
-}
-
-#[cfg(target_os = "linux")]
-fn answer(server: &Server, mut stream: UnixStream) -> std::io::Result<()> {
-    let mut line = String::new();
-    BufReader::new(stream.try_clone()?).read_line(&mut line)?;
-    let mut out = decide(server, &line).to_string();
-    out.push('\n');
-    stream.write_all(out.as_bytes())
-}
-
-#[cfg(target_os = "linux")]
-fn decide(server: &Server, line: &str) -> Value {
-    let started = Instant::now();
-    let mut reply = match serve_line(server, line) {
-        Ok(Answer::Exec { argv, files, mode }) => {
-            json!({ "served": true, "argv": argv, "candidates": files.len(), "files": files, "mode": mode })
-        }
-        Ok(Answer::Print {
-            stdout,
-            stderr,
-            code,
-        }) => {
-            use base64::Engine as _;
-            json!({
-                "served": true,
-                "mode": "answer",
-                "candidates": 0,
-                "stdout": base64::engine::general_purpose::STANDARD.encode(&stdout),
-                "stderr": base64::engine::general_purpose::STANDARD.encode(&stderr),
-                "code": code,
-            })
-        }
-        Err(why) => json!({ "served": false, "reason": why }),
-    };
-    reply["server_ms"] = json!(started.elapsed().as_secs_f64() * 1000.0);
-    reply
-}
 
 pub(crate) enum Answer {
+    #[allow(dead_code)]
     Exec {
         argv: Vec<String>,
         files: Vec<String>,
@@ -149,193 +19,15 @@ pub(crate) enum Answer {
     },
 }
 
-#[cfg(target_os = "linux")]
-fn serve_line(server: &Server, line: &str) -> Result<Answer, &'static str> {
-    let req: Value = serde_json::from_str(line).map_err(|_| "bad request")?;
-    let argv = req["argv"]
-        .as_array()
-        .and_then(|a| {
-            a.iter()
-                .map(|x| x.as_str().map(str::to_string))
-                .collect::<Option<Vec<_>>>()
-        })
-        .ok_or("bad request")?;
-    let cwd = Path::new(req["cwd"].as_str().ok_or("bad request")?);
-    match req["tool"].as_str() {
-        Some("grep") => grep(server, &argv, cwd),
-        Some("rg") => rg(server, &argv, cwd),
-        _ => Err("tool not served"),
-    }
-}
-
 enum Op {
-    Indexed { scope: PathBuf, prefix: String },
+    Indexed {
+        scope: PathBuf,
+        prefix: String,
+    },
+    #[allow(dead_code)]
     Pass(String),
 }
 
-type Unheld = Mutex<Option<Arc<BTreeSet<Vec<u8>>>>>;
-
-struct Src<'a> {
-    engine: &'a fsearch::Engine,
-
-    root: &'a Path,
-    watch: Option<&'a Watch>,
-    unheld: Option<&'a Unheld>,
-}
-
-fn grep(server: &Server, argv: &[String], cwd: &Path) -> Result<Answer, &'static str> {
-    let plan = search_plan::grep_plan(argv)?;
-    let dbg = |m: &str| {
-        if std::env::var_os("SERVE_DBG").is_some() {
-            eprintln!("serve[{m}]");
-        }
-    };
-    dbg("plan");
-    let mut ops = Vec::new();
-    let mut indexed = false;
-    for raw in &plan.operands {
-        let joined = cwd.join(raw);
-        let scope = (plan.recursive && !raw.is_empty() && joined.is_dir())
-            .then(|| joined.canonicalize().ok())
-            .flatten();
-        let serve = scope.as_ref().is_some_and(|s| {
-            plan.all_needled
-                && !plan.needles.is_empty()
-                && s.starts_with(&server.root)
-                && !s
-                    .file_name()
-                    .is_some_and(|n| plan.walk.skips_dir(n.as_bytes()))
-        });
-        if !serve {
-            ops.push(Op::Pass(raw.clone()));
-            continue;
-        }
-        let scope = scope.unwrap();
-        let trimmed = raw.trim_end_matches('/');
-        let prefix = if raw.starts_with('/') && trimmed.is_empty() {
-            "/".to_string()
-        } else {
-            format!("{trimmed}/")
-        };
-        ops.push(Op::Indexed { scope, prefix });
-        indexed = true;
-    }
-    let mut files = Vec::new();
-    if indexed {
-        dbg("ops");
-        let st = server.engine.status();
-        if !st.ready || st.root_missing || st.content_pending > 0 || st.content_docs == 0 {
-            return Err("index not settled");
-        }
-        if plan.answerable() && ops.iter().all(|op| matches!(op, Op::Indexed { .. })) {
-            let mut order = server.order.lock().unwrap();
-            let mut unheld: Option<Arc<BTreeSet<Vec<u8>>>> = None;
-            let src = Src {
-                engine: &server.engine,
-                root: &server.root,
-                watch: Some(&server.watch),
-                unheld: Some(&server.unheld),
-            };
-            if let Some(print) = print_answer(&src, &plan, &ops, &mut order, &mut unheld)? {
-                return Ok(print);
-            }
-        }
-        let mut order = server.order.lock().unwrap();
-        let mut unheld: Option<Arc<BTreeSet<Vec<u8>>>> = None;
-        for op in &ops {
-            match op {
-                Op::Pass(raw) => files.push(raw.clone()),
-                Op::Indexed { scope, prefix } => files.extend(dir_files(
-                    server,
-                    scope,
-                    prefix,
-                    &plan,
-                    &mut order,
-                    &mut unheld,
-                )?),
-            }
-        }
-    } else {
-        files = plan.operands.clone();
-    }
-
-    let mut out_argv = plan.argv.clone();
-
-    if plan.recursive {
-        out_argv.push("-r".into());
-    }
-    if plan.with_name.is_none() && (ops.len() > 1 || indexed) {
-        out_argv.insert(0, "-H".into());
-    }
-    Ok(Answer::Exec {
-        argv: out_argv,
-        files,
-        mode: if indexed { "index" } else { "pass" },
-    })
-}
-
-fn dir_files(
-    server: &Server,
-    scope: &Path,
-    prefix: &str,
-    plan: &GrepPlan,
-    order: &mut HashMap<PathBuf, Option<HashMap<OsString, usize>>>,
-    unheld: &mut Option<Arc<BTreeSet<Vec<u8>>>>,
-) -> Result<Vec<String>, &'static str> {
-    let scope_bytes = scope.as_os_str().as_bytes();
-    let changed = server.watch.changed(scope_bytes).ok_or("watch broken")?;
-    if !changed.is_empty() {
-        order.clear();
-        *unheld = None;
-        *server.unheld.lock().unwrap() = None;
-    }
-    if unheld.is_none() {
-        let mut cache = server.unheld.lock().unwrap();
-        if cache.is_none() {
-            let root_bytes = server.root.as_os_str().as_bytes();
-            let all: BTreeSet<Vec<u8>> = server
-                .engine
-                .unheld_files(root_bytes)
-                .ok_or("content index not holding scope")?
-                .into_iter()
-                .collect();
-            *cache = Some(Arc::new(all));
-        }
-        *unheld = Some(cache.as_ref().unwrap().clone());
-    }
-    let unheld = unheld
-        .as_ref()
-        .unwrap()
-        .iter()
-        .filter(|p| {
-            p.starts_with(scope_bytes)
-                && (p.len() == scope_bytes.len() || p.get(scope_bytes.len()) == Some(&b'/'))
-        })
-        .cloned();
-    let matched = server
-        .engine
-        .held_matches(scope_bytes, &plan.needles, plan.ignore_case)
-        .ok_or("match answer partial")?;
-    let all: BTreeSet<Vec<u8>> = unheld.chain(matched).chain(changed).collect();
-    let mut found = Vec::new();
-    for p in all {
-        let path = Path::new(OsStr::from_bytes(&p));
-        let Ok(rel) = path.strip_prefix(scope) else {
-            continue;
-        };
-        if !walked(plan, rel) || !std::fs::symlink_metadata(path).is_ok_and(|m| m.is_file()) {
-            continue;
-        }
-        let name = rel.to_str().ok_or("path is not UTF-8")?;
-        let key = walk_key(order, scope, rel).ok_or("walk order unknown")?;
-        found.push((key, format!("{prefix}{name}")));
-    }
-
-    found.sort();
-    Ok(found.into_iter().map(|(_, f)| f).collect())
-}
-
-#[cfg(target_os = "linux")]
 fn walk_key(
     order: &mut HashMap<PathBuf, Option<HashMap<OsString, usize>>>,
     scope: &Path,
@@ -383,7 +75,6 @@ fn readdir_order(dir: &Path) -> Option<HashMap<OsString, usize>> {
     )
 }
 
-#[cfg(target_os = "linux")]
 const FTS_INODE_SORT_ENTRIES: usize = 10_000;
 
 fn walked(plan: &GrepPlan, rel: &Path) -> bool {
@@ -421,11 +112,10 @@ struct Block {
 type LastPrinted = Option<(usize, Vec<u8>, usize)>;
 
 fn print_answer(
-    src: &Src,
+    engine: &fsearch::Engine,
     plan: &GrepPlan,
     ops: &[Op],
     order: &mut HashMap<PathBuf, Option<HashMap<OsString, usize>>>,
-    unheld: &mut Option<Arc<BTreeSet<Vec<u8>>>>,
 ) -> Result<Option<Answer>, &'static str> {
     let Some(mut g) = plan.fsearch_grep() else {
         if std::env::var_os("SERVE_DBG").is_some() {
@@ -456,7 +146,7 @@ fn print_answer(
             if std::env::var_os("SERVE_DBG").is_some() {
                 eprintln!("serve[engine.grep {scope:?}]", scope = scope);
             }
-            let (res, _idx) = src.engine.grep(&q, &g).map_err(|_| "index grep failed")?;
+            let (res, _idx) = engine.grep(&q, &g).map_err(|_| "index grep failed")?;
             if std::env::var_os("SERVE_DBG").is_some() {
                 eprintln!("serve[grepped: {} files]", res.files.len());
             }
@@ -507,61 +197,18 @@ fn print_answer(
         if std::env::var_os("SERVE_DBG").is_some() {
             eprintln!("serve[changed]");
         }
-        let mut extra: BTreeSet<Vec<u8>> = match src.watch {
-            Some(w) => w
-                .changed(scope_bytes)
-                .ok_or("watch broken")?
-                .into_iter()
-                .collect(),
-            None => BTreeSet::new(),
-        };
-        match src.unheld {
-            Some(cache) => {
-                if unheld.is_none() {
-                    let mut c = cache.lock().unwrap();
-                    if c.is_none() {
-                        if std::env::var_os("SERVE_DBG").is_some() {
-                            eprintln!("serve[unheld_files]");
-                        }
-                        let all: BTreeSet<Vec<u8>> = src
-                            .engine
-                            .unheld_files(src.root.as_os_str().as_bytes())
-                            .ok_or("content index not holding scope")?
-                            .into_iter()
-                            .collect();
-                        *c = Some(Arc::new(all));
-                    }
-                    *unheld = Some(c.as_ref().unwrap().clone());
-                }
-                extra.extend(
-                    unheld
-                        .as_ref()
-                        .unwrap()
-                        .iter()
-                        .filter(|p| {
-                            p.starts_with(scope_bytes)
-                                && (p.len() == scope_bytes.len()
-                                    || p.get(scope_bytes.len()) == Some(&b'/'))
-                        })
-                        .cloned(),
-                );
-            }
-            None => {
-                if std::env::var_os("SERVE_DBG").is_some() {
-                    eprintln!("serve[unheld_files]");
-                }
-                extra.extend(
-                    src.engine
-                        .unheld_files(scope_bytes)
-                        .ok_or("content index not holding scope")?,
-                );
-            }
+        if std::env::var_os("SERVE_DBG").is_some() {
+            eprintln!("serve[unheld_files]");
         }
+        let mut extra: BTreeSet<Vec<u8>> = engine
+            .unheld_files(scope_bytes)
+            .ok_or("content index not holding scope")?
+            .into_iter()
+            .collect();
         if std::env::var_os("SERVE_DBG").is_some() {
             eprintln!("serve[names]");
         }
-        let known = src
-            .engine
+        let known = engine
             .search(&fsearch::Query {
                 scope: Some(scope_bytes.to_vec()),
                 name_re: None,
@@ -726,15 +373,8 @@ pub(crate) fn grep_answer(engine: &fsearch::Engine, argv: &[String], cwd: &Path)
         };
         ops.push(Op::Indexed { scope, prefix });
     }
-    let src = Src {
-        engine,
-        root: Path::new("/"),
-        watch: None,
-        unheld: None,
-    };
     let mut order = HashMap::new();
-    let mut unheld = None;
-    match print_answer(&src, &plan, &ops, &mut order, &mut unheld) {
+    match print_answer(engine, &plan, &ops, &mut order) {
         Ok(Some(a @ Answer::Print { .. })) => Some(a),
         _ => None,
     }
@@ -768,14 +408,7 @@ pub(crate) fn rg_answer(engine: &fsearch::Engine, argv: &[String], cwd: &Path) -
         };
         ops.push(Op::Indexed { scope, prefix });
     }
-    let src = Src {
-        engine,
-        root: Path::new("/"),
-        watch: None,
-        unheld: None,
-    };
-    let mut unheld = None;
-    match rg_print_answer(&src, &plan, &ops, &mut unheld) {
+    match rg_print_answer(engine, &plan, &ops) {
         Ok(Some(a @ Answer::Print { .. })) => Some(a),
         _ => None,
     }
@@ -1225,105 +858,6 @@ fn print_ctx(
     out.push(b'\n');
 }
 
-fn rg(server: &Server, argv: &[String], cwd: &Path) -> Result<Answer, &'static str> {
-    let plan = search_plan::rg_plan(argv)?;
-
-    let raws: Vec<String> = if plan.operands.is_empty() {
-        let cwd_canon = cwd.canonicalize().map_err(|_| "cwd gone")?;
-        if !plan.all_needled || plan.needles.is_empty() || !cwd_canon.starts_with(&server.root) {
-            return Err("cwd search outside the index");
-        }
-        vec![".".to_string()]
-    } else {
-        plan.operands.clone()
-    };
-    let implicit = plan.operands.is_empty();
-    let mut ops = Vec::new();
-    let mut indexed = false;
-    for raw in &raws {
-        let joined = cwd.join(raw);
-        let scope = (!raw.is_empty() && raw != "-" && joined.is_dir())
-            .then(|| joined.canonicalize().ok())
-            .flatten();
-        let serve = scope.as_ref().is_some_and(|s| {
-            plan.all_needled && !plan.needles.is_empty() && s.starts_with(&server.root)
-        });
-        let serve = if implicit { scope.is_some() } else { serve };
-        if !serve {
-            ops.push(Op::Pass(raw.clone()));
-            continue;
-        }
-        let scope = scope.unwrap();
-
-        let trimmed = raw.trim_end_matches('/');
-        let prefix = if implicit {
-            String::new()
-        } else if raw.starts_with('/') && trimmed.is_empty() {
-            "/".to_string()
-        } else {
-            format!("{trimmed}/")
-        };
-        ops.push(Op::Indexed { scope, prefix });
-        indexed = true;
-    }
-    if plan.quiet && ops.iter().any(|op| matches!(op, Op::Pass(_))) {
-        return Err("quiet over pass-through operands");
-    }
-    let mut files = Vec::new();
-    if indexed {
-        let st = server.engine.status();
-        if !st.ready || st.root_missing || st.content_pending > 0 || st.content_docs == 0 {
-            return Err("index not settled");
-        }
-        if plan.answerable() && ops.iter().all(|op| matches!(op, Op::Indexed { .. })) {
-            let mut unheld: Option<Arc<BTreeSet<Vec<u8>>>> = None;
-            let src = Src {
-                engine: &server.engine,
-                root: &server.root,
-                watch: Some(&server.watch),
-                unheld: Some(&server.unheld),
-            };
-            if let Some(print) = rg_print_answer(&src, &plan, &ops, &mut unheld)? {
-                return Ok(print);
-            }
-        }
-        let mut unheld: Option<Arc<BTreeSet<Vec<u8>>>> = None;
-        for op in &ops {
-            match op {
-                Op::Pass(raw) => files.push(raw.clone()),
-                Op::Indexed { scope, prefix } => {
-                    for (display, abs) in rg_dir_files(server, scope, prefix, &plan, &mut unheld)? {
-                        let buf = std::fs::read(&abs).map_err(|_| "file vanished")?;
-                        if buf.contains(&0) {
-                            let safe = plan.fsearch_grep().is_some_and(|g| !g.matches_buf(&buf));
-                            if !safe {
-                                return Err("binary candidate");
-                            }
-                        }
-                        files.push(display);
-                    }
-                }
-            }
-        }
-    } else {
-        files = plan.operands.clone();
-    }
-
-    if ops.len() > 1 && files.len() < 2 {
-        files.push("/dev/null".into());
-    }
-    let mut out_argv = plan.argv.clone();
-
-    if plan.with_name.is_none() && (ops.len() > 1 || indexed) {
-        out_argv.insert(0, "-H".into());
-    }
-    Ok(Answer::Exec {
-        argv: out_argv,
-        files,
-        mode: if indexed { "index" } else { "pass" },
-    })
-}
-
 enum WalkItem {
     File(PathBuf),
     Err(PathBuf, String),
@@ -1397,84 +931,6 @@ fn walk_err(e: &ignore::Error) -> (Option<PathBuf>, String) {
     }
 }
 
-fn rg_dir_files(
-    server: &Server,
-    scope: &Path,
-    prefix: &str,
-    plan: &RgPlan,
-    unheld: &mut Option<Arc<BTreeSet<Vec<u8>>>>,
-) -> Result<Vec<(String, PathBuf)>, &'static str> {
-    let scope_bytes = scope.as_os_str().as_bytes();
-    let changed = server.watch.changed(scope_bytes).ok_or("watch broken")?;
-    if unheld.is_none() {
-        let mut cache = server.unheld.lock().unwrap();
-        if cache.is_none() {
-            let root_bytes = server.root.as_os_str().as_bytes();
-            let all: BTreeSet<Vec<u8>> = server
-                .engine
-                .unheld_files(root_bytes)
-                .ok_or("content index not holding scope")?
-                .into_iter()
-                .collect();
-            *cache = Some(Arc::new(all));
-        }
-        *unheld = Some(cache.as_ref().unwrap().clone());
-    }
-    let insensitive = plan.insensitive();
-    let mut cands: BTreeSet<Vec<u8>> = server
-        .engine
-        .held_matches(scope_bytes, &plan.needles, insensitive)
-        .ok_or("match answer partial")?
-        .into_iter()
-        .collect();
-    cands.extend(changed);
-    cands.extend(
-        unheld
-            .as_ref()
-            .unwrap()
-            .iter()
-            .filter(|p| {
-                p.starts_with(scope_bytes)
-                    && (p.len() == scope_bytes.len() || p.get(scope_bytes.len()) == Some(&b'/'))
-            })
-            .cloned(),
-    );
-    let known: std::collections::HashSet<Vec<u8>> = server
-        .engine
-        .search(&fsearch::Query {
-            scope: Some(scope_bytes.to_vec()),
-            name_re: Some(regex::bytes::Regex::new(".*").map_err(|_| "re")?),
-            size: (0, u64::MAX),
-            mtime: (0, u32::MAX),
-            limit: 1 << 24,
-            ..Default::default()
-        })
-        .map_err(|_| "index list failed")?
-        .into_iter()
-        .map(|f| f.path.as_os_str().as_bytes().to_vec())
-        .collect();
-    let mut out = Vec::new();
-    for item in rg_walk(scope, plan)? {
-        match item {
-            WalkItem::File(path) => {
-                let bytes = path.as_os_str().as_bytes();
-                if !cands.contains(bytes) && known.contains(bytes) {
-                    continue;
-                }
-                let Ok(rel) = path.strip_prefix(scope) else {
-                    continue;
-                };
-                let Some(name) = rel.to_str() else {
-                    return Err("path is not UTF-8");
-                };
-                out.push((rg_display(prefix, name, plan), path));
-            }
-            WalkItem::Err(..) => return Err("walk error"),
-        }
-    }
-    Ok(out)
-}
-
 fn rg_display(prefix: &str, name: &str, plan: &RgPlan) -> String {
     let d = format!("{prefix}{name}");
     match &plan.path_separator {
@@ -1491,10 +947,9 @@ struct RgBlock {
 }
 
 fn rg_print_answer(
-    src: &Src,
+    engine: &fsearch::Engine,
     plan: &RgPlan,
     ops: &[Op],
-    unheld: &mut Option<Arc<BTreeSet<Vec<u8>>>>,
 ) -> Result<Option<Answer>, &'static str> {
     let Some(mut g) = plan.fsearch_grep() else {
         return Ok(None);
@@ -1516,7 +971,7 @@ fn rg_print_answer(
                 mtime: (0, u32::MAX),
                 ..Default::default()
             };
-            let (res, _idx) = src.engine.grep(&q, &g).map_err(|_| "index grep failed")?;
+            let (res, _idx) = engine.grep(&q, &g).map_err(|_| "index grep failed")?;
             if !res.complete {
                 return Ok(None);
             }
@@ -1530,52 +985,12 @@ fn rg_print_answer(
             }
         }
 
-        let mut extra: BTreeSet<Vec<u8>> = match src.watch {
-            Some(w) => w
-                .changed(scope_bytes)
-                .ok_or("watch broken")?
-                .into_iter()
-                .collect(),
-            None => BTreeSet::new(),
-        };
-        match src.unheld {
-            Some(cache) => {
-                if unheld.is_none() {
-                    let mut c = cache.lock().unwrap();
-                    if c.is_none() {
-                        let all: BTreeSet<Vec<u8>> = src
-                            .engine
-                            .unheld_files(src.root.as_os_str().as_bytes())
-                            .ok_or("content index not holding scope")?
-                            .into_iter()
-                            .collect();
-                        *c = Some(Arc::new(all));
-                    }
-                    *unheld = Some(c.as_ref().unwrap().clone());
-                }
-                extra.extend(
-                    unheld
-                        .as_ref()
-                        .unwrap()
-                        .iter()
-                        .filter(|p| {
-                            p.starts_with(scope_bytes)
-                                && (p.len() == scope_bytes.len()
-                                    || p.get(scope_bytes.len()) == Some(&b'/'))
-                        })
-                        .cloned(),
-                );
-            }
-            None => {
-                extra.extend(
-                    src.engine
-                        .unheld_files(scope_bytes)
-                        .ok_or("content index not holding scope")?,
-                );
-            }
-        }
-        let known: std::collections::HashSet<Vec<u8>> = src
-            .engine
+        let extra: BTreeSet<Vec<u8>> = engine
+            .unheld_files(scope_bytes)
+            .ok_or("content index not holding scope")?
+            .into_iter()
+            .collect();
+        let known: std::collections::HashSet<Vec<u8>> = engine
             .search(&fsearch::Query {
                 scope: Some(scope_bytes.to_vec()),
                 name_re: None,
@@ -1938,6 +1353,6 @@ fn rg_prefix(
     }
 }
 
-#[path = "search_serve_tests.rs"]
+#[path = "search_answer_tests.rs"]
 #[cfg(test)]
 mod tests;

@@ -4,143 +4,26 @@ use crate::setup::catalog::{
     Catalog, ConnectAuth, ConnectItem, Detected, normalize_custom_base_url,
 };
 
-const PROVIDERS_JSON: &str = include_str!("../../assets/providers.json");
-
 pub(crate) fn preset_catalog() -> anyhow::Result<Catalog> {
     if !super::enabled() {
         return Ok(Catalog::new());
     }
-    Ok(serde_json::from_str(PROVIDERS_JSON)?)
+    Ok(crate::setup::context::provider_meta().catalog.clone())
 }
 
-pub(crate) const POPULAR_DEFS: &[(&str, &str, &str, &str, bool)] = &[
-    (
-        "openai",
-        "OpenAI",
-        "(API key)",
-        "https://api.openai.com/v1",
-        false,
-    ),
-    (
-        "anthropic",
-        "Anthropic",
-        "(API key)",
-        "https://api.anthropic.com/v1",
-        false,
-    ),
-    (
-        "google",
-        "Google",
-        "(Gemini API key)",
-        "https://generativelanguage.googleapis.com/v1beta/openai",
-        false,
-    ),
-    (
-        "openrouter",
-        "OpenRouter",
-        "(Access 300+ models)",
-        "https://openrouter.ai/api/v1",
-        false,
-    ),
-    (
-        "commandcode",
-        "CommandCode",
-        "(API key)",
-        "https://api.commandcode.ai/provider/v1",
-        false,
-    ),
-    (
-        "deepseek",
-        "DeepSeek",
-        "",
-        "https://api.deepseek.com",
-        false,
-    ),
-    (
-        "groq",
-        "Groq",
-        "(Fast inference)",
-        "https://api.groq.com/openai/v1",
-        false,
-    ),
-    (
-        "ollama",
-        "Ollama",
-        "(Local http://localhost:11434)",
-        "http://localhost:11434/v1",
-        true,
-    ),
-    (
-        "github-copilot",
-        "GitHub Copilot",
-        "",
-        "https://api.githubcopilot.com",
-        false,
-    ),
-    (
-        "xai",
-        "xAI (Grok)",
-        "(Grok login or API key)",
-        "https://api.x.ai/v1",
-        false,
-    ),
-    (
-        "mistral",
-        "Mistral",
-        "(API key)",
-        "https://api.mistral.ai/v1",
-        false,
-    ),
-];
-
-const ENV_KEY_TABLE: &[(&str, &[&str], &str)] = &[
-    (
-        "openai",
-        &["OPENAI_API_KEY"],
-        "https://platform.openai.com/api-keys",
-    ),
-    (
-        "anthropic",
-        &["ANTHROPIC_API_KEY"],
-        "https://console.anthropic.com/settings/keys",
-    ),
-    (
-        "google",
-        &[
-            "GEMINI_API_KEY",
-            "GOOGLE_API_KEY",
-            "GOOGLE_GENERATIVE_AI_API_KEY",
-        ],
-        "https://aistudio.google.com/apikey",
-    ),
-    (
-        "openrouter",
-        &["OPENROUTER_API_KEY"],
-        "https://openrouter.ai/keys",
-    ),
-    (
-        "deepseek",
-        &["DEEPSEEK_API_KEY"],
-        "https://platform.deepseek.com/api_keys",
-    ),
-    ("groq", &["GROQ_API_KEY"], "https://console.groq.com/keys"),
-    (
-        "mistral",
-        &["MISTRAL_API_KEY"],
-        "https://console.mistral.ai/api-keys",
-    ),
-    ("xai", &["XAI_API_KEY"], "https://console.x.ai"),
-];
-
 pub(crate) fn is_popular_preset(id: &str) -> bool {
-    POPULAR_DEFS.iter().any(|(pid, ..)| *pid == id)
+    crate::setup::context::provider_meta()
+        .popular
+        .iter()
+        .any(|p| p.id == id)
 }
 
 pub(crate) fn is_known_preset_base(normalized_base: &str, catalog: &Catalog) -> bool {
     super::enabled()
-        && (POPULAR_DEFS
+        && (crate::setup::context::provider_meta()
+            .popular
             .iter()
-            .any(|(.., url, _)| normalize_custom_base_url(url) == normalized_base)
+            .any(|p| normalize_custom_base_url(&p.base_url) == normalized_base)
             || catalog
                 .values()
                 .any(|p| normalize_custom_base_url(&p.base_url) == normalized_base))
@@ -151,19 +34,22 @@ pub(crate) fn append_connect_presets(items: &mut Vec<ConnectItem>, catalog: &Cat
         return;
     }
 
+    let meta = crate::setup::context::provider_meta();
     let mut popular_ids = std::collections::HashSet::new();
     popular_ids.insert("custom".to_string());
 
-    for &(id, name, sublabel, base_url, no_auth) in POPULAR_DEFS {
-        popular_ids.insert(id.to_string());
-        let url = catalog.get(id).map_or(base_url, |p| p.base_url.as_str());
+    for p in &meta.popular {
+        popular_ids.insert(p.id.clone());
+        let url = catalog
+            .get(&p.id)
+            .map_or(p.base_url.as_str(), |e| e.base_url.as_str());
         items.push(ConnectItem {
-            id: id.to_string(),
-            name: name.to_string(),
-            sublabel: sublabel.to_string(),
+            id: p.id.clone(),
+            name: p.name.clone(),
+            sublabel: p.sublabel.clone(),
             base_url: url.to_string(),
-            no_auth,
-            auth: if no_auth {
+            no_auth: p.no_auth,
+            auth: if p.no_auth {
                 ConnectAuth::None
             } else {
                 ConnectAuth::ApiKey
@@ -197,17 +83,21 @@ pub(crate) fn append_connect_presets(items: &mut Vec<ConnectItem>, catalog: &Cat
 pub(crate) fn detected_env_key(
     id: &str,
     env: impl Fn(&str) -> Option<String>,
-) -> Option<(&'static str, String)> {
-    let (_, vars, _) = ENV_KEY_TABLE.iter().find(|(k, ..)| *k == id)?;
-    vars.iter()
-        .find_map(|var| env(var).filter(|v| !v.trim().is_empty()).map(|v| (*var, v)))
+) -> Option<(String, String)> {
+    let meta = crate::setup::context::provider_meta();
+    meta.env_keys.get(id)?.vars.iter().find_map(|var| {
+        env(var)
+            .filter(|v| !v.trim().is_empty())
+            .map(|v| (var.clone(), v))
+    })
 }
 
-pub(crate) fn key_url(id: &str) -> Option<&'static str> {
-    ENV_KEY_TABLE
-        .iter()
-        .find(|(k, ..)| *k == id)
-        .map(|(.., url)| *url)
+pub(crate) fn key_url(id: &str) -> Option<String> {
+    crate::setup::context::provider_meta()
+        .env_keys
+        .get(id)?
+        .key_url
+        .clone()
 }
 
 pub(crate) fn detect_connect_candidates(
@@ -218,10 +108,10 @@ pub(crate) fn detect_connect_candidates(
     if !super::enabled() {
         return found;
     }
-    for (id, ..) in ENV_KEY_TABLE {
+    for id in crate::setup::context::provider_meta().env_keys.keys() {
         if let Some((var, value)) = detected_env_key(id, &env) {
             found.insert(
-                id.to_string(),
+                id.clone(),
                 Detected {
                     note: format!("(found {var})"),
                     env: Some((var, value)),

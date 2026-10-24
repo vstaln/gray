@@ -349,17 +349,21 @@ pub fn probe_custom_endpoint_detached(base_url: &str) -> std::sync::mpsc::Receiv
 }
 
 pub struct LocalEndpointSuggestion {
-    pub name: &'static str,
-    pub url: &'static str,
+    pub name: String,
+    pub url: String,
 
     pub running: bool,
 }
 
 pub fn probe_local_endpoints() -> Vec<LocalEndpointSuggestion> {
     std::thread::scope(|scope| {
-        let handles: Vec<_> = crate::setup::catalog::KNOWN_LOCAL_ENDPOINTS
+        let meta = provider_meta();
+        let handles: Vec<_> = meta
+            .local_endpoints
             .iter()
-            .map(|&(name, url)| {
+            .map(|ep| {
+                let name = ep.name.clone();
+                let url = ep.url.clone();
                 scope.spawn(move || {
                     let running = (|| {
                         let rt = tokio::runtime::Builder::new_current_thread()
@@ -693,22 +697,19 @@ pub(crate) enum AuthStyle {
     Anthropic,
 }
 
-const BAD_KEY_IS_400: &[&str] = &["generativelanguage.googleapis.com", "api.x.ai"];
-
 pub(crate) fn key_check_request(base_url: &str) -> (String, AuthStyle, bool) {
     let trimmed = base_url.trim().trim_end_matches('/');
-    if trimmed.contains("openrouter.ai") {
-        return (
-            "https://openrouter.ai/api/v1/key".to_string(),
-            AuthStyle::Bearer,
-            false,
-        );
+    let meta = provider_meta();
+    for (frag, url) in &meta.key_check.url_hosts {
+        if trimmed.contains(frag.as_str()) {
+            return (url.clone(), AuthStyle::Bearer, false);
+        }
     }
     let host = reqwest::Url::parse(trimmed)
         .ok()
         .and_then(|u| u.host_str().map(str::to_string))
         .unwrap_or_default();
-    let style = if host == "api.anthropic.com" {
+    let style = if meta.key_check.anthropic_hosts.iter().any(|h| h == &host) {
         AuthStyle::Anthropic
     } else {
         AuthStyle::Bearer
@@ -716,7 +717,7 @@ pub(crate) fn key_check_request(base_url: &str) -> (String, AuthStyle, bool) {
     (
         format!("{trimmed}/models"),
         style,
-        BAD_KEY_IS_400.contains(&host.as_str()),
+        meta.key_check.reject_400_hosts.iter().any(|h| h == &host),
     )
 }
 
@@ -1858,6 +1859,123 @@ pub async fn fetch_recommended_models() -> usize {
     let url = std::env::var("GRAY_RECOMMENDED_URL")
         .unwrap_or_else(|_| "https://gray.alignment.id/models/recommended.json".to_string());
     load_catalog("recommended.json", &url, apply_recommended).await
+}
+
+/// Runtime provider metadata: the connect catalog, popular presets, env-key
+/// hints, local endpoints, and key-check quirks. Loaded from
+/// ~/.gray/cache/providers.json (refreshed by fetch_provider_metadata) when
+/// present, else the snapshot compiled in from assets/providers.json — so
+/// provider/model metadata ships without a release while offline first-run
+/// and /models still work.
+#[derive(Clone, Debug, Default, serde::Deserialize)]
+pub struct ProviderMeta {
+    #[serde(default)]
+    pub catalog: crate::setup::catalog::Catalog,
+    #[serde(default)]
+    pub popular: Vec<PopularProvider>,
+    #[serde(default)]
+    pub env_keys: std::collections::BTreeMap<String, EnvKeyMeta>,
+    #[serde(default)]
+    pub local_endpoints: Vec<LocalEndpoint>,
+    #[serde(default)]
+    pub key_check: KeyCheckMeta,
+}
+
+#[derive(Clone, Debug, Default, serde::Deserialize)]
+pub struct PopularProvider {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub sublabel: String,
+    #[serde(default)]
+    pub base_url: String,
+    #[serde(default)]
+    pub no_auth: bool,
+}
+
+#[derive(Clone, Debug, Default, serde::Deserialize)]
+pub struct EnvKeyMeta {
+    #[serde(default)]
+    pub vars: Vec<String>,
+    #[serde(default)]
+    pub key_url: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, serde::Deserialize)]
+pub struct LocalEndpoint {
+    pub name: String,
+    pub url: String,
+}
+
+#[derive(Clone, Debug, Default, serde::Deserialize)]
+pub struct KeyCheckMeta {
+    /// base-URL substrings with their own key-check endpoint.
+    #[serde(default)]
+    pub url_hosts: std::collections::BTreeMap<String, String>,
+    /// hosts that take x-api-key + anthropic-version instead of a bearer token.
+    #[serde(default)]
+    pub anthropic_hosts: Vec<String>,
+    /// hosts that answer a bad key with HTTP 400 instead of 401/403.
+    #[serde(default)]
+    pub reject_400_hosts: Vec<String>,
+}
+
+const PROVIDER_META_SNAPSHOT: &str = include_str!("../../../assets/providers.json");
+
+static EMBEDDED_PROVIDER_META: std::sync::OnceLock<std::sync::Arc<ProviderMeta>> =
+    std::sync::OnceLock::new();
+
+fn embedded_provider_meta() -> std::sync::Arc<ProviderMeta> {
+    std::sync::Arc::clone(EMBEDDED_PROVIDER_META.get_or_init(|| {
+        std::sync::Arc::new(serde_json::from_str(PROVIDER_META_SNAPSHOT).unwrap_or_default())
+    }))
+}
+
+pub(crate) fn load_provider_meta_at(path: &std::path::Path) -> Option<ProviderMeta> {
+    serde_json::from_slice(&std::fs::read(path).ok()?).ok()
+}
+
+fn provider_meta_cache_path() -> Option<std::path::PathBuf> {
+    crate::setup::catalog::gray_home()
+        .ok()
+        .map(|h| h.join("cache").join("providers.json"))
+}
+
+static PROVIDER_META: std::sync::OnceLock<std::sync::RwLock<std::sync::Arc<ProviderMeta>>> =
+    std::sync::OnceLock::new();
+
+fn provider_meta_cell() -> &'static std::sync::RwLock<std::sync::Arc<ProviderMeta>> {
+    PROVIDER_META.get_or_init(|| {
+        // Tests keep the embedded snapshot so runs never depend on the
+        // developer's real ~/.gray cache.
+        let disk = if cfg!(test) {
+            None
+        } else {
+            provider_meta_cache_path().and_then(|p| load_provider_meta_at(&p))
+        };
+        std::sync::RwLock::new(disk.map_or_else(embedded_provider_meta, std::sync::Arc::new))
+    })
+}
+
+pub fn provider_meta() -> std::sync::Arc<ProviderMeta> {
+    provider_meta_cell()
+        .read()
+        .map(|g| std::sync::Arc::clone(&g))
+        .unwrap_or_else(|_| embedded_provider_meta())
+}
+
+fn apply_provider_meta(meta: ProviderMeta) -> usize {
+    let n = meta.catalog.len();
+    if let Ok(mut g) = provider_meta_cell().write() {
+        *g = std::sync::Arc::new(meta);
+    }
+    n
+}
+
+pub async fn fetch_provider_metadata() -> usize {
+    let url = std::env::var("GRAY_PROVIDERS_URL")
+        .unwrap_or_else(|_| "https://gray.alignment.id/models/providers.json".to_string());
+    load_catalog("providers.json", &url, apply_provider_meta).await
 }
 
 const CATALOG_TTL: std::time::Duration = std::time::Duration::from_secs(24 * 3600);

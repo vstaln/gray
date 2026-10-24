@@ -2,6 +2,28 @@
 
 ## [Unreleased]
 
+### Changed
+- **Cron fully moved to `gray-gateway`.** The core copy of the job
+  store and schedule parsing is deleted; `/jobs` and session wakes
+  read through the plugin's new `gray cron list --json` verb (cached
+  on `jobs.json` mtime plus a 5s TTL) and removals route through
+  `gray cron remove`. With no gateway installed `/jobs` shows
+  nothing pending instead of reading a stale store. Requires
+  gray-gateway >= 0.2.1 for the `list --json` verb.
+- **Search index daemon and watcher moved to the `fsearch` plugin.**
+  `search_serve`, `search_watch` and `search_shim` left `gray-tools`;
+  the plugin already shipped the full stack. Core keeps a slim
+  `search_answer` path so bare `grep`/`rg` in the bash tool still
+  get index answers with no plugin installed.
+- **Provider metadata loads at runtime.** The catalog, popular
+  models, env-key map, local endpoints and key-check quirks moved
+  out of compiled tables into a restructured `assets/providers.json`
+  snapshot, overlaid by a fetched copy at
+  `~/.gray/cache/providers.json` refreshed at REPL start
+  (`GRAY_PROVIDERS_URL` overrides the source). New providers and
+  model metadata stop requiring a release once the endpoint is
+  served.
+
 ## [0.2.3] - 2026-10-24
 
 ### Added

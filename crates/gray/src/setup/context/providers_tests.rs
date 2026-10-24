@@ -284,3 +284,64 @@ fn count_models_json_reads_every_list_shape() {
     );
     assert_eq!(count_models_json(&serde_json::json!({"nope": 1})), 0);
 }
+
+#[test]
+fn provider_meta_snapshot_parses_with_all_sections() {
+    let meta = embedded_provider_meta();
+    assert!(
+        meta.catalog.len() > 100,
+        "catalog snapshot: {}",
+        meta.catalog.len()
+    );
+    assert_eq!(
+        meta.catalog.get("openrouter").map(|p| p.base_url.as_str()),
+        Some("https://openrouter.ai/api/v1")
+    );
+    assert!(meta.popular.iter().any(|p| p.id == "openai"));
+    assert!(
+        meta.popular
+            .iter()
+            .find(|p| p.id == "ollama")
+            .is_some_and(|p| p.no_auth)
+    );
+    assert!(
+        meta.env_keys["openai"]
+            .vars
+            .iter()
+            .any(|v| v == "OPENAI_API_KEY")
+    );
+    assert!(
+        meta.local_endpoints
+            .iter()
+            .any(|e| e.url == "http://localhost:11434/v1")
+    );
+    assert!(
+        meta.key_check
+            .anthropic_hosts
+            .iter()
+            .any(|h| h == "api.anthropic.com")
+    );
+}
+
+#[test]
+fn provider_meta_disk_roundtrip_and_fallback() {
+    let dir = tempfile::TempDir::new().expect("temp home");
+    let path = dir.path().join("providers.json");
+    assert!(
+        load_provider_meta_at(&path).is_none(),
+        "missing cache file reads as absent"
+    );
+    std::fs::write(&path, b"{oops").unwrap();
+    assert!(
+        load_provider_meta_at(&path).is_none(),
+        "corrupt cache file reads as absent"
+    );
+    std::fs::write(
+        &path,
+        br#"{"catalog":{"edge":{"name":"Edge","base_url":"https://edge.example/v1"}},"popular":[{"id":"edge","name":"Edge","base_url":"https://edge.example/v1"}]}"#,
+    )
+    .unwrap();
+    let meta = load_provider_meta_at(&path).expect("valid cache doc parses");
+    assert_eq!(meta.catalog.len(), 1);
+    assert_eq!(meta.popular[0].id, "edge");
+}

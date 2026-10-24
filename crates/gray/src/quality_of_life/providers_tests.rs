@@ -9,7 +9,7 @@ fn env_key_detection_picks_the_first_non_empty_candidate() {
     };
     assert_eq!(
         detected_env_key("google", env),
-        Some(("GOOGLE_GENERATIVE_AI_API_KEY", "gk".to_string()))
+        Some(("GOOGLE_GENERATIVE_AI_API_KEY".to_string(), "gk".to_string()))
     );
     assert_eq!(detected_env_key("openai", env), None);
     assert_eq!(detected_env_key("not-a-provider", env), None);

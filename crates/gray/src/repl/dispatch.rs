@@ -305,7 +305,7 @@ pub(crate) async fn dispatch_command(
                     let wakes = super::jobs::load_wakes(&home, sid.as_deref());
                     say(
                         tui_shared,
-                        &super::jobs::dashboard(&jobs, &wakes, crate::cron::now_secs()),
+                        &super::jobs::dashboard(&jobs, &wakes, gray_core::spill::now_secs()),
                     );
                 }
             }
