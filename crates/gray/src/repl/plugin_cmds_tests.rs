@@ -124,7 +124,12 @@ async fn background_off_dispatches_without_provider_or_prompt() {
                 turn_local_verbs: Vec::new(),
             }]
         }
-        async fn run_command(&self, name: &str, argv: Vec<String>) -> Option<CommandOutcome> {
+        async fn run_command(
+            &self,
+            name: &str,
+            argv: Vec<String>,
+            _raw: Option<String>,
+        ) -> Option<CommandOutcome> {
             self.0.lock().unwrap().push((name.into(), argv));
             Some(CommandOutcome::Say("Background off.".into()))
         }

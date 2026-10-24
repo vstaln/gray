@@ -281,7 +281,7 @@ async fn a_plain_lock_plugin_stays_dormant() {
     // and returned None (see the autostart test); reaching here with the
     // same argv proves the plugin stayed a lazy placeholder
     assert!(
-        got.run_command("/nope", vec![]).await.is_none(),
+        got.run_command("/nope", vec![], None).await.is_none(),
         "an undeclared command must not wake a dormant plugin"
     );
 }

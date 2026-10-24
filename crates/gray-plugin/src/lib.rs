@@ -324,7 +324,12 @@ pub trait Plugin: Send + Sync {
         ToolBefore::Allow
     }
 
-    async fn run_command(&self, _name: &str, _argv: Vec<String>) -> Option<CommandOutcome> {
+    async fn run_command(
+        &self,
+        _name: &str,
+        _argv: Vec<String>,
+        _raw: Option<String>,
+    ) -> Option<CommandOutcome> {
         None
     }
 
@@ -428,8 +433,13 @@ impl PluginHooks for PluginHookAdapter {
             })
             .collect()
     }
-    async fn run_command(&self, name: &str, argv: Vec<String>) -> Option<CommandOutcome> {
-        match self.plugin.run_command(name, argv).await? {
+    async fn run_command(
+        &self,
+        name: &str,
+        argv: Vec<String>,
+        raw: Option<String>,
+    ) -> Option<CommandOutcome> {
+        match self.plugin.run_command(name, argv, raw).await? {
             CommandOutcome::Say(s) if s.is_empty() => None,
             CommandOutcome::Prompt(s) if s.is_empty() => None,
             CommandOutcome::ModelPicker(s) if s.is_empty() => None,

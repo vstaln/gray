@@ -42,6 +42,7 @@ fn auto_update_refuses_beta_channel() {
 }
 
 #[test]
+#[cfg(unix)]
 fn install_command_carries_channel() {
     assert!(install_command().contains("gray.alignment.id/install.sh"));
     if CHANNEL == "beta" {
@@ -114,7 +115,8 @@ fn shadow_warning_names_the_shadowing_path_and_the_fix() {
     .expect("a differing gray first on PATH must be reported");
     assert!(w.contains("/home/u/.cargo/bin/gray"), "{w}");
     assert!(w.contains("0.1.1"), "{w}");
-    assert!(w.contains("rm /home/u/.cargo/bin/gray"), "{w}");
+    let rm = if cfg!(windows) { "del" } else { "rm" };
+    assert!(w.contains(&format!("{rm} /home/u/.cargo/bin/gray")), "{w}");
 }
 
 #[test]
@@ -127,11 +129,12 @@ fn shadow_warning_stays_quiet_when_path_resolves_the_updated_build() {
 fn shadow_warning_reports_any_differing_path_without_running_it() {
     let installed = Path::new("/home/u/.local/bin/gray");
 
+    let rm = if cfg!(windows) { "del" } else { "rm" };
     for other in ["/opt/gray", "/home/u/.cargo/bin/gray"] {
         let w = shadow_warning(installed, "0.1.1", Path::new(other))
             .expect("a differing path must be reported");
         assert!(w.contains(other), "{w}");
-        assert!(w.contains("rm "), "{w}");
+        assert!(w.contains(&format!("{rm} ")), "{w}");
     }
 }
 
@@ -494,4 +497,39 @@ fn cargo_shadow_is_removed_not_warned_about() {
             assert!(fresh.join("gray").exists(), "the real install is untouched");
         },
     );
+}
+
+#[test]
+fn sums_digest_picks_the_named_archive_line() {
+    let want = "a".repeat(64);
+    let sums = format!(
+        "{}  gray-stable-aarch64-apple-darwin.tar.gz\n{want} *gray-stable-x86_64-windows.zip\n",
+        "b".repeat(64)
+    );
+    assert_eq!(
+        sums_digest(&sums, "gray-stable-x86_64-windows.zip").unwrap(),
+        want
+    );
+}
+
+#[test]
+fn sums_digest_rejects_missing_duplicate_and_malformed_entries() {
+    let sha = "a".repeat(64);
+    let name = "gray-stable-x86_64-windows.zip";
+    assert!(sums_digest(&format!("{sha}  other.zip\n"), name).is_err());
+    assert!(sums_digest(&format!("{sha}  {name}\n{sha}  {name}\n"), name).is_err());
+    assert!(sums_digest(&format!("notasha  {name}\n"), name).is_err());
+}
+
+#[test]
+fn zip_members_allow_exactly_the_install_set() {
+    assert!(zip_members("gray.exe\nLICENSE\nTHIRD_PARTY_NOTICES.md\n").is_ok());
+    for listing in [
+        "gray.exe\nLICENSE\n",
+        "gray.exe\nLICENSE\nTHIRD_PARTY_NOTICES.md\nextra.dll\n",
+        "gray.exe\ngray.exe\nLICENSE\nTHIRD_PARTY_NOTICES.md\n",
+        "./gray.exe\nLICENSE\nTHIRD_PARTY_NOTICES.md\n",
+    ] {
+        assert!(zip_members(listing).is_err(), "{listing:?}");
+    }
 }

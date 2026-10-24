@@ -84,7 +84,6 @@ pub fn auto_cli(arg: &str) -> anyhow::Result<()> {
 pub(crate) enum SelfOutcome {
     Current,
     Installed(String),
-    Skipped(String),
     Failed(String),
 }
 
@@ -115,16 +114,12 @@ impl Outcome {
         match &self.gray {
             SelfOutcome::Current => "current".to_string(),
             SelfOutcome::Installed(v) => format!("installed {v}"),
-            SelfOutcome::Skipped(r) => format!("skipped: {r}"),
             SelfOutcome::Failed(e) => format!("failed: {e}"),
         }
     }
 }
 
 async fn self_step() -> SelfOutcome {
-    if cfg!(windows) {
-        return SelfOutcome::Skipped("windows".into());
-    }
     let current = env!("CARGO_PKG_VERSION");
     let latest = match tokio::time::timeout(
         std::time::Duration::from_secs(10),

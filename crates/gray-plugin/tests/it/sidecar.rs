@@ -60,12 +60,12 @@ async fn tool_before_allow_and_command_joins_argv() {
         ToolBefore::Allow
     );
     assert_eq!(
-        p.run_command("/echo", vec!["hi".into(), "there".into()])
+        p.run_command("/echo", vec!["hi".into(), "there".into()], None)
             .await,
         Some(CommandOutcome::Say("hi there".into()))
     );
 
-    assert_eq!(p.run_command("/nope", vec![]).await, None);
+    assert_eq!(p.run_command("/nope", vec![], None).await, None);
 }
 
 #[tokio::test]
@@ -79,7 +79,7 @@ async fn unclaimed_hooks_fail_open_without_rpc() {
         p.tool_before("x", &serde_json::json!({})).await,
         ToolBefore::Allow
     );
-    assert_eq!(p.run_command("/echo", vec!["hi".into()]).await, None);
+    assert_eq!(p.run_command("/echo", vec!["hi".into()], None).await, None);
     assert!(t.elapsed() < std::time::Duration::from_secs(5));
 }
 
@@ -129,7 +129,7 @@ async fn echo_reference_plugin_manifest_and_command_round_trip() {
     assert!(!out.is_error, "{out:?}");
     assert_eq!(out.content, "hi", "{out:?}");
     assert_eq!(
-        p.run_command("/echo", vec!["hello".into(), "world".into()])
+        p.run_command("/echo", vec!["hello".into(), "world".into()], None)
             .await,
         Some(CommandOutcome::Say("hello world".into()))
     );
@@ -297,12 +297,12 @@ async fn e2e_sidecar_command_run_routes_echo() {
     );
     assert_eq!(
         hooks[0]
-            .run_command("/echo", vec!["hello".into(), "world".into()])
+            .run_command("/echo", vec!["hello".into(), "world".into()], None)
             .await,
         Some(CommandOutcome::Say("hello world".into()))
     );
 
-    assert_eq!(hooks[0].run_command("/echo", vec![]).await, None);
+    assert_eq!(hooks[0].run_command("/echo", vec![], None).await, None);
 }
 
 #[tokio::test]
@@ -311,11 +311,11 @@ async fn command_run_prompt_variant() {
         .await
         .unwrap();
     assert_eq!(
-        p.run_command("/ask", vec![]).await,
+        p.run_command("/ask", vec![], None).await,
         Some(CommandOutcome::Prompt("hello from plugin".into()))
     );
 
-    assert_eq!(p.run_command("/nope", vec![]).await, None);
+    assert_eq!(p.run_command("/nope", vec![], None).await, None);
 }
 
 #[tokio::test]
@@ -375,7 +375,7 @@ done
         ToolBefore::Allow
     );
     assert_eq!(
-        p.run_command("/sess", vec![]).await,
+        p.run_command("/sess", vec![], None).await,
         Some(CommandOutcome::Say("ok".into()))
     );
     let ctx = ToolContext {

@@ -165,7 +165,12 @@ impl gray_core::agent::PluginHooks for EchoHook {
         }]
     }
 
-    async fn run_command(&self, name: &str, argv: Vec<String>) -> Option<super::CommandOutcome> {
+    async fn run_command(
+        &self,
+        name: &str,
+        argv: Vec<String>,
+        _raw: Option<String>,
+    ) -> Option<super::CommandOutcome> {
         (name == "/echo").then(|| super::CommandOutcome::Say(argv.join(" ")))
     }
 }
@@ -182,7 +187,12 @@ impl gray_core::agent::PluginHooks for PromptHook {
         }]
     }
 
-    async fn run_command(&self, name: &str, argv: Vec<String>) -> Option<super::CommandOutcome> {
+    async fn run_command(
+        &self,
+        name: &str,
+        argv: Vec<String>,
+        _raw: Option<String>,
+    ) -> Option<super::CommandOutcome> {
         (name == "/ask").then(|| super::CommandOutcome::Prompt(argv.join(" ")))
     }
 }
@@ -197,23 +207,36 @@ fn plugin_command_split_parses_name_and_argv() {
         super::split_plugin_command("/echo hi there"),
         Some((
             "/echo".to_string(),
-            vec!["hi".to_string(), "there".to_string()]
+            vec!["hi".to_string(), "there".to_string()],
+            "hi there".to_string()
         ))
     );
     assert_eq!(
         super::split_plugin_command("/echo"),
-        Some(("/echo".to_string(), vec![]))
+        Some(("/echo".to_string(), vec![], String::new()))
     );
     assert_eq!(super::split_plugin_command("hi"), None);
     assert_eq!(super::split_plugin_command("/"), None);
     assert_eq!(super::split_plugin_command(""), None);
 }
 
+#[test]
+fn plugin_command_split_survives_unbalanced_quotes() {
+    assert_eq!(
+        super::split_plugin_command("/loop fix it's broken"),
+        Some((
+            "/loop".to_string(),
+            vec!["fix".into(), "it's".into(), "broken".into()],
+            "fix it's broken".to_string()
+        ))
+    );
+}
+
 #[tokio::test]
 async fn plugin_command_routes_claimed_to_owner() {
     let hooks = echo_hooks();
-    let (name, argv) = super::split_plugin_command("/echo hi").expect("splits");
-    let out = super::run_plugin_command(&hooks, &name, argv).await;
+    let (name, argv, raw) = super::split_plugin_command("/echo hi").expect("splits");
+    let out = super::run_plugin_command(&hooks, &name, argv, Some(raw)).await;
     assert_eq!(out, Some(super::CommandOutcome::Say("hi".to_string())));
 }
 
@@ -222,8 +245,8 @@ async fn plugin_command_prompt_reply_takes_prompt_path() {
     use super::CommandOutcome;
     let hooks: Vec<std::sync::Arc<dyn gray_core::agent::PluginHooks>> =
         vec![std::sync::Arc::new(PromptHook)];
-    let (name, argv) = super::split_plugin_command("/ask write tests").expect("splits");
-    let out = super::run_plugin_command(&hooks, &name, argv).await;
+    let (name, argv, raw) = super::split_plugin_command("/ask write tests").expect("splits");
+    let out = super::run_plugin_command(&hooks, &name, argv, Some(raw)).await;
 
     assert!(
         matches!(out, Some(CommandOutcome::Prompt(ref p)) if p == "write tests"),
@@ -231,8 +254,8 @@ async fn plugin_command_prompt_reply_takes_prompt_path() {
     );
 
     let hooks = echo_hooks();
-    let (name, argv) = super::split_plugin_command("/echo hi").expect("splits");
-    let out = super::run_plugin_command(&hooks, &name, argv).await;
+    let (name, argv, raw) = super::split_plugin_command("/echo hi").expect("splits");
+    let out = super::run_plugin_command(&hooks, &name, argv, Some(raw)).await;
     assert!(
         matches!(out, Some(CommandOutcome::Say(ref s)) if s == "hi"),
         "got {out:?}"
@@ -242,12 +265,18 @@ async fn plugin_command_prompt_reply_takes_prompt_path() {
 #[tokio::test]
 async fn plugin_command_unclaimed_returns_none() {
     let hooks = echo_hooks();
-    let (name, argv) = super::split_plugin_command("/nope hi").expect("splits");
-    assert_eq!(super::run_plugin_command(&hooks, &name, argv).await, None);
+    let (name, argv, raw) = super::split_plugin_command("/nope hi").expect("splits");
+    assert_eq!(
+        super::run_plugin_command(&hooks, &name, argv, Some(raw)).await,
+        None
+    );
 
     let empty: Vec<std::sync::Arc<dyn gray_core::agent::PluginHooks>> = Vec::new();
-    let (name, argv) = super::split_plugin_command("/echo hi").expect("splits");
-    assert_eq!(super::run_plugin_command(&empty, &name, argv).await, None);
+    let (name, argv, raw) = super::split_plugin_command("/echo hi").expect("splits");
+    assert_eq!(
+        super::run_plugin_command(&empty, &name, argv, Some(raw)).await,
+        None
+    );
 }
 
 #[test]
@@ -272,11 +301,27 @@ fn plugin_slash_preserves_quotes_empty_args_and_literals() {
                 "".into(),
                 "$(not-executed)".into(),
                 "escaped space".into()
-            ]
+            ],
+            r#"run "two word task" '' '$(not-executed)' escaped\ space"#.into()
         ))
     );
-    assert_eq!(super::split_plugin_command("/echo 'unfinished"), None);
-    assert_eq!(super::split_plugin_command("/echo trailing\\"), None);
+    // unbalanced quotes / trailing escapes fall back to plain word splitting
+    assert_eq!(
+        super::split_plugin_command("/echo 'unfinished"),
+        Some((
+            "/echo".into(),
+            vec!["'unfinished".into()],
+            "'unfinished".into()
+        ))
+    );
+    assert_eq!(
+        super::split_plugin_command("/echo trailing\\"),
+        Some((
+            "/echo".into(),
+            vec!["trailing\\".into()],
+            "trailing\\".into()
+        ))
+    );
 }
 
 #[test]

@@ -471,6 +471,7 @@ pub enum ReplCommand {
     ProviderCommand {
         cmd: String,
         argv: Vec<String>,
+        raw: String,
         provider_id: String,
     },
 
@@ -656,9 +657,10 @@ pub fn parse_command(line: &str) -> ReplCommand {
                 .find(|(short, _, _)| short.eq_ignore_ascii_case(name))
             {
                 match super::split_plugin_command(t) {
-                    Some((cmd, argv)) => ReplCommand::ProviderCommand {
+                    Some((cmd, argv, raw)) => ReplCommand::ProviderCommand {
                         cmd,
                         argv,
+                        raw,
                         provider_id: id,
                     },
                     None => ReplCommand::Unknown(t.to_string()),

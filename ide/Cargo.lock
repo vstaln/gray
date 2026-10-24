@@ -2731,6 +2731,7 @@ dependencies = [
  "base64 0.22.1",
  "flate2",
  "gray-core",
+ "gray-plugin",
  "log",
  "reqwest",
  "serde",

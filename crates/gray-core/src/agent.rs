@@ -448,7 +448,12 @@ pub trait PluginHooks: Send + Sync {
         Vec::new()
     }
 
-    async fn run_command(&self, _name: &str, _argv: Vec<String>) -> Option<CommandOutcome> {
+    async fn run_command(
+        &self,
+        _name: &str,
+        _argv: Vec<String>,
+        _raw: Option<String>,
+    ) -> Option<CommandOutcome> {
         None
     }
 
