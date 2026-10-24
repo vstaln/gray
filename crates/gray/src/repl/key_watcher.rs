@@ -14,7 +14,7 @@ fn plugin_turn_local_args(
     text: &str,
     hooks: &[std::sync::Arc<dyn gray_core::agent::PluginHooks>],
 ) -> Option<Vec<String>> {
-    let (name, args) = super::split_plugin_command(text)?;
+    let (name, args, _raw) = super::split_plugin_command(text)?;
     let cmd = hooks
         .iter()
         .flat_map(|h| h.commands())
@@ -128,13 +128,17 @@ fn run_turn_local_command(ctx: &TurnLocalCommands, text: &str) {
             }
         }
         super::ReplCommand::Unknown(cmd) => {
-            let Some((name, argv)) = super::split_plugin_command(&cmd) else {
+            let Some((name, argv, raw)) = super::split_plugin_command(&cmd) else {
                 return;
             };
             use gray_core::agent::CommandOutcome;
             let outcome = tokio::task::block_in_place(|| {
-                tokio::runtime::Handle::current()
-                    .block_on(super::run_plugin_command(&ctx.hooks, &name, argv))
+                tokio::runtime::Handle::current().block_on(super::run_plugin_command(
+                    &ctx.hooks,
+                    &name,
+                    argv,
+                    Some(raw),
+                ))
             });
             match outcome {
                 Some(CommandOutcome::Say(text)) => super::say(tui, &text),

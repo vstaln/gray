@@ -335,10 +335,18 @@ pub(crate) async fn dispatch_command(
         ReplCommand::ProviderCommand {
             cmd,
             argv,
+            raw,
             provider_id,
         } => {
             *pending_command = Some(
-                match super::plugin_cmds::provider_command_outcome(&provider_id, &cmd, argv).await {
+                match super::plugin_cmds::provider_command_outcome(
+                    &provider_id,
+                    &cmd,
+                    argv,
+                    Some(raw),
+                )
+                .await
+                {
                     Some(CommandOutcome::ModelPicker(row)) => ReplCommand::ModelFocus(row),
                     Some(CommandOutcome::Prompt(prompt)) => ReplCommand::Prompt(prompt),
                     Some(CommandOutcome::Panel(_))
@@ -459,7 +467,7 @@ pub(crate) async fn dispatch_command(
                 .as_ref()
                 .map(|a| a.hooks().to_vec())
                 .unwrap_or_default();
-            let Some((name, argv)) = split_plugin_command(&cmd) else {
+            let Some((name, argv, raw)) = split_plugin_command(&cmd) else {
                 say(
                     tui.as_ref().map(|(s, _)| s),
                     "invalid plugin command: check quotes and escapes",
@@ -467,7 +475,8 @@ pub(crate) async fn dispatch_command(
                 return Ok(Flow::Continue);
             };
             let mut handled = false;
-            let mut outcome = run_plugin_command(&hooks, &name, argv.clone()).await;
+            let mut outcome =
+                run_plugin_command(&hooks, &name, argv.clone(), Some(raw.clone())).await;
             while let Some(oc) = outcome.take() {
                 match oc {
                     CommandOutcome::Say(text) => {
@@ -565,10 +574,16 @@ pub(crate) async fn dispatch_command(
                                     let hooks = hooks.clone();
                                     let name = name.clone();
                                     let argv = argv.clone();
+                                    let raw = raw.clone();
                                     Box::new(move || {
                                         let out = tokio::task::block_in_place(|| {
                                             tokio::runtime::Handle::current().block_on(
-                                                run_plugin_command(&hooks, &name, argv.clone()),
+                                                run_plugin_command(
+                                                    &hooks,
+                                                    &name,
+                                                    argv.clone(),
+                                                    Some(raw.clone()),
+                                                ),
                                             )
                                         });
                                         super::pager::pages_from_outcome(out)
@@ -630,10 +645,13 @@ pub(crate) async fn dispatch_command(
                                     super::picker::run_list_picker(&mut picker, &bg)
                                 }) {
                                     Ok(Some(idx)) => {
+                                        let picked =
+                                            super::picker::pick_argv(&argv, &spec.items[idx].id);
                                         outcome = run_plugin_command(
                                             &hooks,
                                             &name,
-                                            super::picker::pick_argv(&argv, &spec.items[idx].id),
+                                            picked.clone(),
+                                            Some(picked.join(" ")),
                                         )
                                         .await;
                                     }

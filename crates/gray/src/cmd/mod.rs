@@ -902,7 +902,7 @@ async fn plugin_command_result(
         .await
         .map_err(|e| CmdError::unavailable(format!("{owner} failed to spawn: {e:#}")))?;
     let outcome = sidecar
-        .run_command(&format!("/{name}"), args.to_vec())
+        .run_command(&format!("/{name}"), args.to_vec(), Some(args.join(" ")))
         .await;
     sidecar.shutdown(std::time::Duration::from_secs(2)).await;
     match outcome {

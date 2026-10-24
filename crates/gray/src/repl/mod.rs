@@ -392,13 +392,19 @@ fn endpoint_host(base_url: &str) -> Option<String> {
     (!host.is_empty()).then(|| host.to_string())
 }
 
-fn split_plugin_command(line: &str) -> Option<(String, Vec<String>)> {
-    let words = shlex::split(line.trim().strip_prefix('/')?)?;
+fn split_plugin_command(line: &str) -> Option<(String, Vec<String>, String)> {
+    let line = line.trim().strip_prefix('/')?;
+    let words =
+        shlex::split(line).unwrap_or_else(|| line.split_whitespace().map(str::to_string).collect());
     let (first, rest) = words.split_first()?;
     if first.is_empty() {
         return None;
     }
-    Some((format!("/{first}"), rest.to_vec()))
+    let raw = line
+        .find(|c: char| c.is_whitespace())
+        .map(|i| line[i..].trim_start().to_string())
+        .unwrap_or_default();
+    Some((format!("/{first}"), rest.to_vec(), raw))
 }
 
 fn plugin_help_entries(hooks: &[Arc<dyn PluginHooks>]) -> Vec<(String, String)> {
@@ -418,11 +424,12 @@ async fn run_plugin_command(
     hooks: &[Arc<dyn PluginHooks>],
     name: &str,
     argv: Vec<String>,
+    raw: Option<String>,
 ) -> Option<CommandOutcome> {
     let owner = hooks
         .iter()
         .find(|h| h.commands().iter().any(|c| c.name == name))?;
-    owner.run_command(name, argv).await
+    owner.run_command(name, argv, raw).await
 }
 
 async fn shutdown_shell_tasks(

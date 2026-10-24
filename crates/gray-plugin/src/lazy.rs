@@ -212,14 +212,19 @@ impl Plugin for LazySidecarPlugin {
         self.live().await.ok()?.tool_after(name, output).await
     }
 
-    async fn run_command(&self, name: &str, argv: Vec<String>) -> Option<CommandOutcome> {
+    async fn run_command(
+        &self,
+        name: &str,
+        argv: Vec<String>,
+        raw: Option<String>,
+    ) -> Option<CommandOutcome> {
         if !self.manifest.commands.iter().any(|c| c == name)
             && !self.manifest.subcommands.iter().any(|c| c == name)
         {
             return None;
         }
         match self.live().await {
-            Ok(p) => p.run_command(name, argv).await,
+            Ok(p) => p.run_command(name, argv, raw).await,
             Err(e) => Some(CommandOutcome::Say(format!(
                 "plugin {} failed to start: {e}",
                 self.manifest.name
@@ -327,7 +332,7 @@ mod tests {
             manifest(0, &[], &["/demo"]),
         )
         .arc();
-        assert!(p.run_command("/other", vec![]).await.is_none());
+        assert!(p.run_command("/other", vec![], None).await.is_none());
         assert!(p.prompt_context("/tmp").await.is_none());
         assert_eq!(p.input_submit("hi").await, crate::InputSubmit::Pass);
         p.on_event(CoreEvent::TurnEnd {
@@ -346,7 +351,7 @@ mod tests {
             manifest(2, &["prompt/context"], &[]),
         )
         .arc();
-        assert!(p.run_command("/nope", vec![]).await.is_none());
+        assert!(p.run_command("/nope", vec![], None).await.is_none());
         assert!(p.live.get().is_none());
 
         assert!(p.prompt_context("/tmp").await.is_none());

@@ -1287,13 +1287,18 @@ impl Plugin for SidecarPlugin {
         }
         Some(out)
     }
-    async fn run_command(&self, name: &str, argv: Vec<String>) -> Option<CommandOutcome> {
+    async fn run_command(
+        &self,
+        name: &str,
+        argv: Vec<String>,
+        raw: Option<String>,
+    ) -> Option<CommandOutcome> {
         if !self.manifest.commands.iter().any(|c| c == name)
             && !self.manifest.subcommands.iter().any(|c| c == name)
         {
             return None;
         }
-        let params = json!({"name": name, "argv": argv, "session": session_json(&self.pinned_sid(), &self.cwd)});
+        let params = json!({"name": name, "argv": argv, "raw": raw, "session": session_json(&self.pinned_sid(), &self.cwd)});
         let v = self
             .transport
             .request("command/run", Some(params), Duration::from_secs(30))
