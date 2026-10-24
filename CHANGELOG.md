@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.2.4] - 2026-10-25
 
 ### Changed
 - **Cron fully moved to `gray-gateway`.** The core copy of the job
