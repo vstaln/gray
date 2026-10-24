@@ -36,7 +36,6 @@ tokio = { workspace = true }
 tokio-util = { workspace = true }
 reqwest = { workspace = true }
 chrono = { workspace = true }
-cron = { workspace = true }
 thiserror = { workspace = true }
 uuid = { workspace = true }
 log = { workspace = true }

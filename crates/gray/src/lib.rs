@@ -8,7 +8,6 @@ pub mod compact;
 pub mod composer;
 pub mod config;
 pub(crate) mod consent;
-pub mod cron;
 pub(crate) mod exe_watch;
 pub(crate) mod failed_turn;
 pub(crate) mod gateway_pid;

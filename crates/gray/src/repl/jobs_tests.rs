@@ -2,44 +2,29 @@ use super::*;
 
 const NOW: i64 = 1_700_000_000;
 
-fn origin(chat: &str) -> crate::cron::store::Origin {
-    crate::cron::store::Origin {
-        platform: crate::session_mailbox::SESSION_PLATFORM.to_string(),
-        chat: chat.to_string(),
-        thread: None,
-        route: None,
+fn cron_job(id: &str, next: Option<i64>, sid: Option<&str>) -> serde_json::Value {
+    let deliver = if sid.is_some() { "origin" } else { "local" };
+    let mut j = serde_json::json!({
+        "id": id,
+        "name": format!("{id}-name"),
+        "enabled": true,
+        "state": "active",
+        "deliver": deliver,
+        "next_run_at": next,
+    });
+    if let Some(s) = sid {
+        j["origin"] = serde_json::json!({
+            "platform": crate::session_mailbox::SESSION_PLATFORM,
+            "chat": s,
+        });
     }
+    j
 }
 
-fn cron(id: &str, next: Option<i64>, sid: Option<&str>) -> crate::cron::CronJob {
-    crate::cron::CronJob {
-        id: id.to_string(),
-        name: format!("{id}-name"),
-        prompt: "check the bench".to_string(),
-        schedule: crate::cron::Schedule::Once {
-            at: next.unwrap_or(NOW),
-        },
-        enabled: true,
-        state: Default::default(),
-        created_at: 1,
-        next_run_at: next,
-        last_run_at: None,
-        last_status: None,
-        last_error: None,
-        last_delivery_error: None,
-        deliver: if sid.is_some() {
-            crate::cron::Deliver::Origin
-        } else {
-            crate::cron::Deliver::Local
-        },
-        origin: sid.map(origin),
-        workdir: None,
-        fire_claim: None,
-        reminder: true,
-        repeat: Default::default(),
-        skills: vec![],
-        script: None,
-    }
+fn list_body(jobs: &[serde_json::Value]) -> Vec<u8> {
+    serde_json::json!({ "jobs": jobs, "health": null })
+        .to_string()
+        .into_bytes()
 }
 
 fn bg(id: &str, secs: u64) -> BackgroundJob {
@@ -52,27 +37,37 @@ fn bg(id: &str, secs: u64) -> BackgroundJob {
 
 #[test]
 fn only_this_sessions_pending_wakes_count_soonest_first() {
-    let mut paused = cron("paused", Some(NOW + 60), Some("s1"));
-    paused.state = crate::cron::store::JobState::Paused;
-    let mut disabled = cron("disabled", Some(NOW + 60), Some("s1"));
-    disabled.enabled = false;
-    let mut chat = cron("chat", Some(NOW + 60), Some("s1"));
-    chat.origin.as_mut().unwrap().platform = "discord".into();
-    let jobs = [
-        cron("later", Some(NOW + 3600), Some("s1")),
-        cron("soon", Some(NOW + 120), Some("s1")),
-        cron("other-session", Some(NOW + 10), Some("s2")),
-        cron("local", Some(NOW + 10), None),
-        cron("unscheduled", None, Some("s1")),
+    let mut paused = cron_job("paused", Some(NOW + 60), Some("s1"));
+    paused["state"] = "paused".into();
+    let mut disabled = cron_job("disabled", Some(NOW + 60), Some("s1"));
+    disabled["enabled"] = false.into();
+    let mut chat = cron_job("chat", Some(NOW + 60), Some("s1"));
+    chat["origin"]["platform"] = "discord".into();
+    let body = list_body(&[
+        cron_job("later", Some(NOW + 3600), Some("s1")),
+        cron_job("soon", Some(NOW + 120), Some("s1")),
+        cron_job("other-session", Some(NOW + 10), Some("s2")),
+        cron_job("local", Some(NOW + 10), None),
+        cron_job("unscheduled", None, Some("s1")),
         paused,
         disabled,
         chat,
-    ];
-    let ids: Vec<String> = session_wakes(&jobs, "s1")
+    ]);
+    let home = tempfile::tempdir().unwrap();
+    let ids: Vec<String> = load_wakes_with(home.path(), "s1", |_| Some(body.clone()))
         .into_iter()
         .map(|w| w.id)
         .collect();
     assert_eq!(ids, ["soon", "later"]);
+}
+
+#[test]
+fn a_missing_or_unreadable_gateway_lists_no_wakes() {
+    let home = tempfile::tempdir().unwrap();
+    assert!(load_wakes_with(home.path(), "s1", |_| None).is_empty());
+    assert!(
+        load_wakes_with(home.path(), "s1", |_| Some(b"not json".to_vec())).is_empty()
+    );
 }
 
 #[test]
@@ -152,36 +147,35 @@ impl ToolExecutor for FakeExec {
 }
 
 #[test]
-fn remove_stops_jobs_and_deletes_wakes() {
+fn remove_stops_jobs_and_asks_the_plugin_to_delete_wakes() {
     let home = tempfile::tempdir().unwrap();
-    let store = crate::cron::CronStore::open(home.path().join("cron")).unwrap();
-    let id = store
-        .add_full(
-            "check",
-            "in 30m",
-            "check the bench",
-            crate::cron::Deliver::Origin,
-            Some(origin("s1")),
-            None,
-            vec![],
-            None,
-            true,
-        )
-        .unwrap();
-    assert_eq!(load_wakes(home.path(), Some("s1")).len(), 1);
-    assert!(load_wakes(home.path(), None).is_empty());
-
     let exec = FakeExec(std::sync::Mutex::new(vec!["cargo-test".into()]));
     let ctx = ToolContext::default();
-    remove(&exec, &ctx, home.path(), "job:cargo-test").unwrap();
-    let again = remove(&exec, &ctx, home.path(), "job:cargo-test").unwrap_err();
+    remove_with(&exec, &ctx, home.path(), "job:cargo-test", |_, _| {
+        unreachable!()
+    })
+    .unwrap();
+    let again = remove_with(&exec, &ctx, home.path(), "job:cargo-test", |_, _| {
+        unreachable!()
+    })
+    .unwrap_err();
     assert!(again.to_string().contains("not running"), "{again}");
 
-    remove(&exec, &ctx, home.path(), &format!("wake:{id}")).unwrap();
-    assert!(load_wakes(home.path(), Some("s1")).is_empty());
-    let gone = remove(&exec, &ctx, home.path(), &format!("wake:{id}")).unwrap_err();
+    let asked = std::sync::Mutex::new(Vec::new());
+    let rm = |_: &Path, id: &str| -> anyhow::Result<bool> {
+        asked.lock().unwrap().push(id.to_string());
+        Ok(true)
+    };
+    remove_with(&exec, &ctx, home.path(), "wake:abc123", rm).unwrap();
+    assert_eq!(asked.lock().unwrap().as_slice(), ["abc123"]);
+    let gone = remove_with(&exec, &ctx, home.path(), "wake:abc123", |_, _| {
+        Ok(false)
+    })
+    .unwrap_err();
     assert!(gone.to_string().contains("already fired"), "{gone}");
-    assert!(remove(&exec, &ctx, home.path(), "plugin:x").is_err());
+    assert!(
+        remove_with(&exec, &ctx, home.path(), "plugin:x", |_, _| unreachable!()).is_err()
+    );
 }
 
 #[test]
