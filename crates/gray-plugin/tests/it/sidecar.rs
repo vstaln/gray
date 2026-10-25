@@ -833,3 +833,51 @@ async fn missing_executable_backs_off_instead_of_announcing_every_call() {
     p.shutdown(std::time::Duration::from_secs(2)).await;
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[tokio::test]
+async fn compact_before_waits_for_the_plugin_reply() {
+    let dir = std::env::temp_dir().join(format!("gray-compact-before-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let log = dir.join("compact.log");
+    let script = dir.join("compact.sh");
+    let body = format!(
+        r#"#!/bin/sh
+LOG="{}"
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed 's/.*"id":\([0-9][0-9]*\).*/\1/')
+  case "$line" in
+    *plugin/manifest*)
+      printf '{{"id":%s,"result":{{"name":"mem","version":"0.1.0","protocol":"1.1","hooks":["compact/before"]}}}}\n' "$id" ;;
+    *plugin/shutdown*) exit 0 ;;
+    *compact/before*)
+      sleep 0.3
+      printf '%s\n' "$line" >> "$LOG"
+      printf '{{"id":%s,"result":{{}}}}\n' "$id" ;;
+  esac
+done
+"#,
+        log.display()
+    );
+    let staging = dir.join("compact.sh.new");
+    std::fs::write(&staging, body).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&staging, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    std::fs::rename(&staging, &script).unwrap();
+    let p = SidecarPlugin::spawn(vec![script.to_string_lossy().to_string()])
+        .await
+        .unwrap();
+    p.set_session_id("calm-otter-delta");
+
+    p.compact_before().await;
+    // Awaited, not fire-and-forget: the plugin has already handled it.
+    let text = std::fs::read_to_string(&log).unwrap_or_default();
+    assert!(
+        text.contains("calm-otter-delta"),
+        "session forwarded: {text}"
+    );
+    p.shutdown(std::time::Duration::from_secs(2)).await;
+    let _ = std::fs::remove_dir_all(&dir);
+}

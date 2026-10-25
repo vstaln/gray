@@ -476,6 +476,11 @@ pub trait PluginHooks: Send + Sync {
     async fn post_tool(&self, _name: &str, _output: &ToolOutput) {}
     async fn turn_end(&self, _usage: &Usage) {}
 
+    /// History is about to be summarized away. Awaited before the summary
+    /// call, so a plugin (memory) can capture what is being dropped; must
+    /// never fail the compaction.
+    async fn compact_before(&self) {}
+
     /// The interactive REPL session came up — plugins use it for
     /// first-run/detection notices (the old core QoL hook).
     async fn session_start(&self, _interactive: bool) {}
@@ -825,9 +830,19 @@ impl Agent {
 
     pub(crate) fn record_context_usage(&mut self, usage: &crate::event::Usage) {
         let tokens = usage.total();
-        if tokens > 0 {
-            self.context_usage = Some((tokens, self.messages.len()));
+        if tokens == 0 {
+            return;
         }
+        // A relay that bills several upstream calls per request (ACP
+        // providers sum every internal step) reports far more than the
+        // context it was sent; anchoring on that re-compacts every turn.
+        let local = crate::agent_compact::est_tokens(&self.messages);
+        if tokens > local.saturating_mul(4).saturating_add(64_000) {
+            log::debug!(target: "gray_agent", "usage {tokens} tok vs ~{local} sent: not a context measurement, ignored");
+            self.context_usage = None;
+            return;
+        }
+        self.context_usage = Some((tokens, self.messages.len()));
     }
 
     pub fn executor_handle(&self) -> std::sync::Arc<dyn ToolExecutor> {

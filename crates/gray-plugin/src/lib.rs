@@ -318,6 +318,8 @@ pub trait Plugin: Send + Sync {
         None
     }
 
+    async fn compact_before(&self) {}
+
     fn set_session_id(&self, _id: &str) {}
 
     async fn tool_before(&self, _name: &str, _args: &Value) -> ToolBefore {
@@ -417,6 +419,9 @@ impl PluginHooks for PluginHookAdapter {
     }
     async fn prompt_context(&self) -> Option<String> {
         self.plugin.prompt_context(&self.cwd).await
+    }
+    async fn compact_before(&self) {
+        self.plugin.compact_before().await
     }
     async fn tool_before(&self, name: &str, args: &Value) -> ToolBefore {
         self.plugin.tool_before(name, args).await

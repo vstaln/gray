@@ -13,7 +13,7 @@ pub const DEFAULT_HUB_INDEX_URL: &str = "https://gray.alignment.id/hub/index.jso
 
 pub const HUB_INDEX_URL_ENV: &str = "GRAY_HUB_INDEX";
 
-pub const INDEX_TTL_SECS: u64 = 24 * 60 * 60;
+pub const INDEX_TTL_SECS: u64 = 10 * 60;
 
 pub fn index_url() -> String {
     std::env::var(INDEX_URL_ENV)
@@ -151,7 +151,7 @@ fn near_names(index: &Index, name: &str) -> Vec<String> {
         .collect()
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct IndexCache {
     etag: Option<String>,
     fetched_at: u64,
@@ -197,6 +197,25 @@ async fn fetch_index_url(
     {
         return Ok(c.index.clone());
     }
+    match revalidate(client, url, cache_file, cached.clone()).await {
+        Ok(index) => Ok(index),
+        // Offline or a registry hiccup: a stale catalog beats none.
+        Err(e) => match cached {
+            Some(c) => {
+                log::warn!("plugin index refresh failed ({e}); using the cached copy");
+                Ok(c.index)
+            }
+            None => Err(e),
+        },
+    }
+}
+
+async fn revalidate(
+    client: &reqwest::Client,
+    url: &str,
+    cache_file: &str,
+    cached: Option<IndexCache>,
+) -> anyhow::Result<Index> {
     let mut req = client.get(url);
     if let Some(etag) = cached.as_ref().and_then(|c| c.etag.as_deref()) {
         req = req.header(reqwest::header::IF_NONE_MATCH, etag);

@@ -163,6 +163,15 @@ impl Plugin for LazySidecarPlugin {
         self.live().await.ok()?.prompt_context(cwd).await
     }
 
+    async fn compact_before(&self) {
+        if !self.claims("compact/before") {
+            return;
+        }
+        if let Ok(p) = self.live().await {
+            p.compact_before().await
+        }
+    }
+
     async fn tool_before(&self, name: &str, args: &Value) -> ToolBefore {
         if !self.claims("tool/before") {
             return ToolBefore::Allow;

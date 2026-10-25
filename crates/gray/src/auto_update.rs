@@ -65,7 +65,7 @@ pub(crate) fn status_text() -> String {
     s
 }
 
-pub fn auto_cli(arg: &str) -> anyhow::Result<()> {
+pub async fn auto_cli(arg: &str) -> anyhow::Result<()> {
     match arg.trim().to_ascii_lowercase().as_str() {
         "on" => {
             set_enabled(true)?;
@@ -76,7 +76,14 @@ pub fn auto_cli(arg: &str) -> anyhow::Result<()> {
             println!("auto-update off — `gray update` still installs manually");
         }
         "status" | "" => println!("{}", status_text()),
-        other => anyhow::bail!("unknown --auto value '{other}' (on|off|status)"),
+        "run" => {
+            if let Some(outcome) = maybe_run(false).await
+                && let Some(notice) = outcome.notice()
+            {
+                println!("{notice}");
+            }
+        }
+        other => anyhow::bail!("unknown --auto value '{other}' (on|off|status|run)"),
     }
     Ok(())
 }
@@ -97,6 +104,9 @@ pub(crate) struct Outcome {
 impl Outcome {
     pub(crate) fn notice(&self) -> Option<String> {
         let mut parts = Vec::new();
+        if let SelfOutcome::Failed(e) = &self.gray {
+            parts.push(format!("gray update failed: {e} — run `gray update`"));
+        }
         if let SelfOutcome::Installed(v) = &self.gray {
             parts.push(format!("gray {v} installed — /restart to load it"));
         }
@@ -153,16 +163,7 @@ fn env_opted_out() -> bool {
 }
 
 pub(crate) async fn maybe_run(bare: bool) -> Option<Outcome> {
-    if bare || env_opted_out() || cfg!(debug_assertions) || env!("CARGO_PKG_VERSION") == "0.0.0" {
-        return None;
-    }
-    if !crate::setup::auto_update_enabled() {
-        return None;
-    }
-    let stamp = stamp_path()?;
-    if !stamp_due(&stamp) {
-        return None;
-    }
+    let stamp = due_stamp(bare)?;
     let _lock = crate::update::try_acquire_update_lock()?;
     if !stamp_due(&stamp) {
         return None;
@@ -198,4 +199,59 @@ pub(crate) async fn maybe_run(bare: bool) -> Option<Outcome> {
     });
     let _ = std::fs::write(&stamp, body.to_string());
     Some(outcome)
+}
+
+fn due_stamp(bare: bool) -> Option<PathBuf> {
+    if bare || env_opted_out() || cfg!(debug_assertions) || env!("CARGO_PKG_VERSION") == "0.0.0" {
+        return None;
+    }
+    if !crate::setup::auto_update_enabled() {
+        return None;
+    }
+    let stamp = stamp_path()?;
+    stamp_due(&stamp).then_some(stamp)
+}
+
+pub(crate) fn due_in_background(bare: bool) -> bool {
+    due_stamp(bare).is_some()
+}
+
+pub fn spawn_background(bare: bool) {
+    if !due_in_background(bare) {
+        return;
+    }
+    let exe = match std::env::current_exe() {
+        Ok(exe) => exe,
+        Err(e) => {
+            log::warn!("auto-update: could not locate executable for background update: {e}");
+            return;
+        }
+    };
+    let mut command = std::process::Command::new(exe);
+    command
+        .args(["update", "--auto", "run"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt as _;
+        command.process_group(0);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt as _;
+        command.creation_flags(0x8 | 0x200 | 0x0800_0000);
+    }
+    if let Err(e) = command.spawn() {
+        log::warn!("auto-update: failed to spawn background update: {e}");
+    }
+}
+
+pub(crate) fn last_failure_notice() -> Option<String> {
+    let stamp = stamp_path().and_then(|path| read_stamp(&path))?;
+    let error = stamp.get("gray")?.as_str()?.strip_prefix("failed: ")?;
+    Some(format!(
+        "auto-update: gray update failed: {error} — run `gray update`"
+    ))
 }

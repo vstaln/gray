@@ -347,7 +347,80 @@ fn push_root(
     }
 }
 
+fn claude_disabled_plugins(home: &Path) -> HashSet<String> {
+    let mut disabled = HashSet::new();
+    for name in ["settings.json", "settings.local.json"] {
+        let Ok(raw) = fs::read_to_string(home.join(".claude").join(name)) else {
+            continue;
+        };
+        let Ok(json) = serde_json::from_str::<serde_json::Value>(&raw) else {
+            continue;
+        };
+        let Some(map) = json.get("enabledPlugins").and_then(|v| v.as_object()) else {
+            continue;
+        };
+        for (key, enabled) in map {
+            if enabled.as_bool() == Some(false) {
+                disabled.insert(key.clone());
+            } else {
+                disabled.remove(key);
+            }
+        }
+    }
+    disabled
+}
+
+fn claude_plugin_skill_dirs(home: &Path) -> Vec<PathBuf> {
+    let manifest = home.join(".claude/plugins/installed_plugins.json");
+    let Ok(raw) = fs::read_to_string(&manifest) else {
+        return Vec::new();
+    };
+    let Ok(json) = serde_json::from_str::<serde_json::Value>(&raw) else {
+        return Vec::new();
+    };
+    let Some(plugins) = json.get("plugins").and_then(|v| v.as_object()) else {
+        return Vec::new();
+    };
+    let disabled = claude_disabled_plugins(home);
+    let mut dirs = Vec::new();
+    for (name, installs) in plugins {
+        if disabled.contains(name) {
+            continue;
+        }
+        let latest = installs
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|e| {
+                let path = e.get("installPath")?.as_str()?;
+                let updated = e
+                    .get("lastUpdated")
+                    .or_else(|| e.get("installedAt"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                Some((updated, path))
+            })
+            .max_by_key(|(updated, _)| *updated);
+        let Some((_, install_path)) = latest else {
+            continue;
+        };
+        let skills = Path::new(install_path).join("skills");
+        if skills.is_dir() {
+            dirs.push(skills);
+        }
+    }
+    dirs
+}
+
 fn skill_search_roots(cwd: &Path, agent_dir: &Path) -> Vec<(PathBuf, &'static str)> {
+    skill_search_roots_under(cwd, agent_dir, resolve_home().as_deref())
+}
+
+fn skill_search_roots_under(
+    cwd: &Path,
+    agent_dir: &Path,
+    home: Option<&Path>,
+) -> Vec<(PathBuf, &'static str)> {
     let resolved_cwd = if cwd.as_os_str().is_empty() {
         std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
     } else {
@@ -364,7 +437,14 @@ fn skill_search_roots(cwd: &Path, agent_dir: &Path) -> Vec<(PathBuf, &'static st
     if std::env::var("GRAY_SKILLS_ONLY").as_deref() == Ok("1") {
         return roots;
     }
-    if let Some(home) = resolve_home() {
+    if let Some(home) = home {
+        push_root(
+            &mut roots,
+            home.join(".claude").join("skills"),
+            "user",
+            &global_skills,
+        );
+
         let config_base = std::env::var("XDG_CONFIG_HOME")
             .map(PathBuf::from)
             .unwrap_or_else(|_| home.join(".config"));
@@ -389,6 +469,10 @@ fn skill_search_roots(cwd: &Path, agent_dir: &Path) -> Vec<(PathBuf, &'static st
             "user",
             &global_skills,
         );
+
+        for dir in claude_plugin_skill_dirs(home) {
+            roots.push((dir, "plugin"));
+        }
     }
 
     if !crate::project_trust::is_trusted(&resolved_agent_dir, &resolved_cwd) {
@@ -417,7 +501,7 @@ fn skill_search_roots(cwd: &Path, agent_dir: &Path) -> Vec<(PathBuf, &'static st
         }
     }
     for ancestor in project_roots.iter().rev() {
-        for cfg in [".gray", ".opencode", ".agents"] {
+        for cfg in [".gray", ".claude", ".opencode", ".agents"] {
             let d = ancestor.join(cfg).join("skills");
             if d.is_dir() {
                 roots.push((d, "project"));

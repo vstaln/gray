@@ -70,6 +70,14 @@ else
 fi
 mkdir -p "$DEST"
 
+# An existing gray binary or home dir means this run is an update, not a
+# first install — seeding plugins then re-downloads every default plugin
+# and resurrects ones the user removed.
+INSTALLED_BEFORE=0
+if [ -e "${DEST}/gray" ] || [ -d "${GRAY_HOME:-$HOME/.gray}" ]; then
+    INSTALLED_BEFORE=1
+fi
+
 mv "${TMP}/gray" "${DEST}/gray"
 chmod +x "${DEST}/gray"
 
@@ -83,9 +91,17 @@ INSTALLED_VER=$("${DEST}/gray" --version 2>/dev/null || true)
 echo "→ installed to ${DEST}/gray (${INSTALLED_VER:-?}, ${CHANNEL})"
 
 FLAVOR="core"
-if [ "${GRAY_INSTALL_PLUGINS:-1}" != "0" ]; then
+SEED="${GRAY_INSTALL_PLUGINS:-auto}"
+if [ "$SEED" = "auto" ]; then
+    if [ "$INSTALLED_BEFORE" = "1" ] && [ -z "${GRAY_PLUGINS:-}" ]; then
+        SEED=0
+    else
+        SEED=1
+    fi
+fi
+if [ "$SEED" != "0" ]; then
     FLAVOR="full"
-    DEFAULT_PLUGINS="account memory search questions subagents mcp qol hands gateway"
+    DEFAULT_PLUGINS="account memory search gateway"
     [ "$(uname -s)" = Linux ] && DEFAULT_PLUGINS="${DEFAULT_PLUGINS} fsearch"
     PLUGINS="${GRAY_PLUGINS:-$DEFAULT_PLUGINS}"
     FAILED=""
@@ -93,11 +109,10 @@ if [ "${GRAY_INSTALL_PLUGINS:-1}" != "0" ]; then
     for plugin in $PLUGINS; do
         if "${DEST}/gray" plugin install --yes "$plugin" >/dev/null 2>&1; then
             echo "→ installed ${plugin}"
-            # fsearch's grep/rg stand-ins need shell.env; installing the
-            # default set is the consent, so grant it here (best-effort).
-            if [ "$plugin" = fsearch ]; then
-                "${DEST}/gray" plugin capabilities fsearch --all >/dev/null 2>&1 || true
-            fi
+            # installing the default set is the consent; grant declared
+            # capabilities outright (new builds do this under --yes already;
+            # keep it for older binaries, best-effort).
+            "${DEST}/gray" plugin capabilities "$plugin" --all >/dev/null 2>&1 || true
         else
             FAILED="${FAILED} ${plugin}"
         fi
@@ -111,6 +126,8 @@ if [ "${GRAY_INSTALL_PLUGINS:-1}" != "0" ]; then
         done
         set +f
     fi
+elif [ "$INSTALLED_BEFORE" = "1" ]; then
+    FLAVOR="update"
 fi
 
 if [ "${GRAY_TELEMETRY:-1}" != "0" ] && [ -z "${GRAY_CDN_URL:-}" ]; then

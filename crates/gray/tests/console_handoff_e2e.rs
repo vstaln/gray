@@ -178,11 +178,15 @@ fn run_restart_scenario(home: &std::path::Path, con: &mut Console) {
     con.send("\x1b");
     con.wait_idle(Duration::from_secs(30));
     con.send("/restart\r");
-    con.wait_for(
-        "restart message",
-        |c| c.contains("restarting"),
-        Duration::from_secs(30),
-    );
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !String::from_utf8_lossy(&con.raw()).contains("restarting") {
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for restart message\n--- screen ---\n{}\n--- end ---",
+            con.contents()
+        );
+        std::thread::sleep(Duration::from_millis(40));
+    }
 
     let mut pre_resumed_marker = false;
     let flood_deadline = Instant::now() + Duration::from_secs(25);

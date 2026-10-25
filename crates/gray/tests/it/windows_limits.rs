@@ -5,7 +5,6 @@ use std::time::Duration;
 async fn unsupported_operations_fail_without_shell_or_service_side_effects() {
     let home = tempfile::tempdir().unwrap();
     for args in [
-        vec!["update"],
         vec!["gateway", "status"],
         vec!["gateway", "install"],
         vec!["cron", "tick"],

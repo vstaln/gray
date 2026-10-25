@@ -145,3 +145,91 @@ fn prompt_cap_counts_only_eligible_unique_skills() {
     );
     assert!(format_skills_for_prompt(&[], true, &BTreeSet::new()).is_empty());
 }
+
+#[test]
+fn claude_user_skills_and_latest_plugin_dirs_are_roots() {
+    let home = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    let agent = tempfile::tempdir().unwrap();
+
+    let claude_skills = home.path().join(".claude").join("skills");
+    fs::create_dir_all(&claude_skills).unwrap();
+
+    let install = home.path().join("cache/mkt/plug/2.0.0");
+    let stale = home.path().join("cache/mkt/plug/1.0.0");
+    fs::create_dir_all(install.join("skills")).unwrap();
+    fs::create_dir_all(stale.join("skills")).unwrap();
+    let plugins = home.path().join(".claude").join("plugins");
+    fs::create_dir_all(&plugins).unwrap();
+    fs::write(
+        plugins.join("installed_plugins.json"),
+        serde_json::json!({
+            "version": 2,
+            "plugins": {
+                "plug@mkt": [
+                    {"installPath": stale.display().to_string(), "version": "1.0.0", "lastUpdated": "2026-01-01T00:00:00Z"},
+                    {"installPath": install.display().to_string(), "version": "2.0.0", "lastUpdated": "2026-02-01T00:00:00Z"}
+                ]
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let roots = skill_search_roots_under(cwd.path(), agent.path(), Some(home.path()));
+    assert!(roots.contains(&(claude_skills, "user")), "{roots:?}");
+    assert!(
+        roots.contains(&(install.join("skills"), "plugin")),
+        "{roots:?}"
+    );
+    assert!(
+        !roots.iter().any(|(p, _)| p.starts_with(&stale)),
+        "stale plugin versions must not be scanned: {roots:?}"
+    );
+}
+
+#[test]
+fn disabled_claude_plugins_are_skipped() {
+    let home = tempfile::tempdir().unwrap();
+    let install = home.path().join("cache/mkt/plug/1.0.0");
+    fs::create_dir_all(install.join("skills")).unwrap();
+    let claude = home.path().join(".claude");
+    fs::create_dir_all(claude.join("plugins")).unwrap();
+    fs::write(
+        claude.join("plugins").join("installed_plugins.json"),
+        serde_json::json!({
+            "plugins": {
+                "off@mkt": [{"installPath": install.display().to_string(), "version": "1.0.0"}]
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    assert_eq!(
+        claude_plugin_skill_dirs(home.path()),
+        vec![install.join("skills")],
+        "installed plugins are enabled unless opted out"
+    );
+
+    fs::write(
+        claude.join("settings.json"),
+        r#"{"enabledPlugins":{"off@mkt":false}}"#,
+    )
+    .unwrap();
+    assert!(claude_plugin_skill_dirs(home.path()).is_empty());
+}
+
+#[test]
+fn project_claude_skills_root_is_discovered_when_trusted() {
+    crate::project_trust::assume_trusted_for_test();
+    let proj = tempfile::tempdir().unwrap();
+    let nested = proj.path().join("sub");
+    let claude_skills = proj.path().join(".claude").join("skills");
+    fs::create_dir_all(&claude_skills).unwrap();
+    fs::create_dir_all(&nested).unwrap();
+    let agent = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let roots = skill_search_roots_under(&nested, agent.path(), Some(home.path()));
+    assert!(roots.contains(&(claude_skills, "project")), "{roots:?}");
+}

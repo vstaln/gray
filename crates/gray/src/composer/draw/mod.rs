@@ -115,6 +115,16 @@ pub(crate) fn trim_to_allowance(counts: &mut [u16], allowance: u16) {
     }
 }
 
+/// The footer's `effort` segment. A composite (Fusion) label already names
+/// the lead's effort, so the segment keeps only the `hidden` marker there.
+fn effort_segment_text(effort_display: &str, composite: bool, hide_thinking: bool) -> String {
+    match (composite, hide_thinking) {
+        (false, _) => effort_display.to_string(),
+        (true, true) if !effort_display.is_empty() => "hidden".to_string(),
+        (true, _) => String::new(),
+    }
+}
+
 pub(crate) fn continue_ghost(
     allow_empty_submit: bool,
     is_task_running: bool,
@@ -977,7 +987,14 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
                         }
                         seg
                     }
-                    "effort" => Seg::new(effort_display.clone(), muted),
+                    "effort" => Seg::new(
+                        effort_segment_text(
+                            &effort_display,
+                            tui.model_label_parts.is_some(),
+                            tui.hide_thinking,
+                        ),
+                        muted,
+                    ),
                     "cwd" => Seg::new(crate::statusline::short_cwd(&tui.cwd), muted),
                     "dir" => Seg::new(dir_name.clone(), muted),
                     "branch" => Seg::new(

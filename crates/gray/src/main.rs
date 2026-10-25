@@ -204,7 +204,7 @@ async fn run() -> anyhow::Result<()> {
             }
             gray::Commands::Update { auto, everything } => {
                 if let Some(v) = auto.as_deref() {
-                    return gray::auto_update::auto_cli(v);
+                    return gray::auto_update::auto_cli(v).await;
                 }
                 if everything {
                     return gray::plugin_cli::forward(
@@ -257,6 +257,7 @@ async fn run() -> anyhow::Result<()> {
         .or(cli.session.as_deref());
 
     if let Some(prompt) = cli.print.as_deref() {
+        gray::auto_update::spawn_background(config.bare);
         let piped;
         let prompt = if prompt == "-" {
             piped = std::io::read_to_string(std::io::stdin())?;
@@ -280,6 +281,7 @@ async fn run() -> anyhow::Result<()> {
         };
         exit_after_print(result);
     } else if let Some(input) = structured_input.as_ref() {
+        gray::auto_update::spawn_background(config.bare);
         let result = gray::print::run_print_mode_json_input(
             &config,
             input,

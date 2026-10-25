@@ -1935,6 +1935,29 @@ pub(crate) fn load_provider_meta_at(path: &std::path::Path) -> Option<ProviderMe
     serde_json::from_slice(&std::fs::read(path).ok()?).ok()
 }
 
+fn backfill(mut meta: ProviderMeta) -> Option<ProviderMeta> {
+    if meta.catalog.is_empty() {
+        return None;
+    }
+    let embedded = embedded_provider_meta();
+    if meta.popular.is_empty() {
+        meta.popular = embedded.popular.clone();
+    }
+    if meta.env_keys.is_empty() {
+        meta.env_keys = embedded.env_keys.clone();
+    }
+    if meta.local_endpoints.is_empty() {
+        meta.local_endpoints = embedded.local_endpoints.clone();
+    }
+    if meta.key_check.url_hosts.is_empty()
+        && meta.key_check.anthropic_hosts.is_empty()
+        && meta.key_check.reject_400_hosts.is_empty()
+    {
+        meta.key_check = embedded.key_check.clone();
+    }
+    Some(meta)
+}
+
 fn provider_meta_cache_path() -> Option<std::path::PathBuf> {
     crate::setup::catalog::gray_home()
         .ok()
@@ -1951,7 +1974,9 @@ fn provider_meta_cell() -> &'static std::sync::RwLock<std::sync::Arc<ProviderMet
         let disk = if cfg!(test) {
             None
         } else {
-            provider_meta_cache_path().and_then(|p| load_provider_meta_at(&p))
+            provider_meta_cache_path()
+                .and_then(|p| load_provider_meta_at(&p))
+                .and_then(backfill)
         };
         std::sync::RwLock::new(disk.map_or_else(embedded_provider_meta, std::sync::Arc::new))
     })
@@ -1965,6 +1990,9 @@ pub fn provider_meta() -> std::sync::Arc<ProviderMeta> {
 }
 
 fn apply_provider_meta(meta: ProviderMeta) -> usize {
+    let Some(meta) = backfill(meta) else {
+        return 0;
+    };
     let n = meta.catalog.len();
     if let Ok(mut g) = provider_meta_cell().write() {
         *g = std::sync::Arc::new(meta);
