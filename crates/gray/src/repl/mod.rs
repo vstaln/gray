@@ -887,8 +887,17 @@ pub async fn run_repl_mode(
         let shared = shared.clone();
         let bare = config.bare;
         tokio::spawn(async move {
-            if let Some(outcome) = crate::auto_update::maybe_run(bare).await
-                && let Some(line) = outcome.notice()
+            let line = crate::auto_update::maybe_run(bare)
+                .await
+                .and_then(|outcome| outcome.notice())
+                .or_else(|| {
+                    if !bare && crate::setup::auto_update_enabled() {
+                        crate::auto_update::last_failure_notice()
+                    } else {
+                        None
+                    }
+                });
+            if let Some(line) = line
                 && let Ok(mut t) = shared.lock()
             {
                 if t.is_home() {

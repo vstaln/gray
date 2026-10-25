@@ -679,8 +679,8 @@ pub enum Commands {
     Update {
         #[arg(
             long,
-            value_name = "on|off|status",
-            help = "Turn auto-update on/off, or show its state"
+            value_name = "on|off|status|run",
+            help = "Turn auto-update on/off, show its state, or run it now"
         )]
         auto: Option<String>,
 
