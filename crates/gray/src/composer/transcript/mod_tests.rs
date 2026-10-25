@@ -529,8 +529,8 @@ fn the_backdrop_keeps_the_live_margins() {
     let rows = layout_history(&entries, 80, 24);
     let body = &rows[welcome..];
     assert!(
-        !transcript_row_is_blank(&body[0]),
-        "the welcome's gap is the gap"
+        transcript_row_is_blank(&body[0]) && !transcript_row_is_blank(&body[1]),
+        "one gap between the welcome and the first prompt"
     );
     for pair in body.windows(2) {
         assert!(
