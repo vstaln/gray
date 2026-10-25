@@ -733,7 +733,16 @@ async fn update_inner(target: &str, check: bool) -> anyhow::Result<Vec<UpdateRow
             ));
             continue;
         }
-        let argv = installed.argv.clone();
+        let own_dir = crate::plugins_dir().join(name);
+        let argv = if installed
+            .argv
+            .first()
+            .is_some_and(|p| Path::new(p).starts_with(&own_dir))
+        {
+            Vec::new()
+        } else {
+            installed.argv.clone()
+        };
         let scope = Some(installed.scope.clone());
         match install_index(
             &client,
