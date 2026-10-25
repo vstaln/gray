@@ -1226,9 +1226,15 @@ impl Agent {
 
             let known: std::collections::HashSet<String> =
                 self.tools.iter().map(|t| t.name.clone()).collect();
+            let read_only: std::collections::HashSet<String> = self
+                .tools
+                .iter()
+                .filter(|t| t.read_only)
+                .map(|t| t.name.clone())
+                .collect();
 
             let round_start = self.messages.len();
-            let segments = crate::parallel::plan_segments(&tool_uses, &known);
+            let segments = crate::parallel::plan_segments(&tool_uses, &known, &read_only);
             for segment in segments {
                 if let crate::parallel::Segment::Parallel(idxs) = segment {
                     let (Some(run_start), Some(run_end)) =
@@ -1270,7 +1276,7 @@ impl Agent {
                     let demoted = {
                         let calls: Vec<(&str, &serde_json::Value)> =
                             ready.iter().map(|(_, n, a)| (n.as_str(), a)).collect();
-                        crate::parallel::rewrite_conflicts(&calls)
+                        crate::parallel::rewrite_conflicts(&calls, &read_only)
                     };
                     if !demoted.is_empty() {
                         let mut keep = Vec::with_capacity(ready.len());

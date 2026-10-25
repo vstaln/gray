@@ -173,6 +173,10 @@ pub fn parse_tool_entry(v: &Value) -> Option<ToolDef> {
         .cloned()
         .unwrap_or_else(|| serde_json::json!({}));
     let mut def = ToolDef::new(name, description, parameters);
+    def.read_only = obj
+        .get("read_only")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     if let Some(label) = obj.get("label").and_then(|l| l.as_str()) {
         let label = label.trim();
         if !label.is_empty() {

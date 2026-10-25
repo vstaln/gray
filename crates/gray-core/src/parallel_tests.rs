@@ -39,7 +39,7 @@ fn planner_demotes_bash_without_parsable_command() {
         ("d".into(), "read".into(), json!({"path": "d"})),
     ];
     assert_eq!(
-        plan_segments(&u, &known),
+        plan_segments(&u, &known, &HashSet::new()),
         vec![
             Segment::Single(0),
             Segment::Single(1),
