@@ -1156,6 +1156,19 @@ impl Plugin for SidecarPlugin {
             .filter(|t| !t.is_empty())
             .map(|t| t.to_string())
     }
+    async fn compact_before(&self) {
+        if !self.claims("compact/before") {
+            return;
+        }
+        let params = json!({"session": session_json(&self.pinned_sid(), &self.cwd)});
+        if let Err(e) = self
+            .transport
+            .request("compact/before", Some(params), Duration::from_secs(20))
+            .await
+        {
+            log::warn!(target: "gray_plugin", "sidecar {} compact/before failed: {e}", self.manifest.name);
+        }
+    }
     async fn tool_before(&self, name: &str, args: &Value) -> ToolBefore {
         if !self.claims("tool/before") {
             return ToolBefore::Allow;

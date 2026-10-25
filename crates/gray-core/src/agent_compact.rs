@@ -72,6 +72,9 @@ impl Agent {
         if est_tokens(&candidate) <= budget {
             return Ok(None);
         }
+        for hook in &self.hooks {
+            hook.compact_before().await;
+        }
 
         let summary = match shared {
             Some(messages) => {
