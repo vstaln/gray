@@ -1936,7 +1936,7 @@ pub(crate) fn load_provider_meta_at(path: &std::path::Path) -> Option<ProviderMe
 }
 
 fn backfill(mut meta: ProviderMeta) -> Option<ProviderMeta> {
-    if meta.catalog.len() == 0 {
+    if meta.catalog.is_empty() {
         return None;
     }
     let embedded = embedded_provider_meta();
