@@ -181,8 +181,7 @@ fn welcome_layout_is_devin_home() {
         "title not centered"
     );
 
-    assert_eq!(title + 2, text.len(), "{text:?}");
-    assert!(text.last().unwrap().trim().is_empty());
+    assert_eq!(title + 1, text.len(), "{text:?}");
 }
 
 #[test]

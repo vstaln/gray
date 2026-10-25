@@ -861,7 +861,6 @@ pub(crate) fn welcome_body_lines_at(
         }
     }
     body.push(centered(title, title_w));
-    body.push(Line::from(""));
     body
 }
 
