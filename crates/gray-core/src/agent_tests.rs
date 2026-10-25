@@ -1307,6 +1307,28 @@ fn context_estimate_anchors_on_provider_usage() {
     );
 }
 
+#[test]
+fn usage_far_above_the_sent_context_is_not_an_anchor() {
+    let mut agent = Agent::new(
+        Box::new(FakeProvider::new(vec![])),
+        Arc::new(FakeExecutor::new(ToolOutput::ok(""))),
+    );
+    // ~21k tok sent right after a compaction; the relay bills 254k.
+    agent.set_messages(vec![Message::user("x".repeat(84_000))]);
+    agent.record_context_usage(&Usage::new(254_000, 100));
+    assert_eq!(
+        agent.estimate_tokens(),
+        21_000,
+        "falls back to the local estimate"
+    );
+    agent.record_context_usage(&Usage::new(30_000, 100));
+    assert_eq!(
+        agent.estimate_tokens(),
+        30_100,
+        "a plausible report still anchors"
+    );
+}
+
 #[tokio::test]
 async fn soft_elision_skips_a_provider_that_caches() {
     let mut history = vec![Message::user("fix the bug")];
