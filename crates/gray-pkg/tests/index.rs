@@ -114,6 +114,47 @@ async fn etag_304_revalidates() {
 }
 
 #[tokio::test]
+async fn failed_refresh_falls_back_to_stale_cache() {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+
+    let _lock = ENV_LOCK.lock().unwrap();
+    let down = Arc::new(AtomicBool::new(false));
+    let router = {
+        let down = down.clone();
+        Router::new().route(
+            "/index.json",
+            get(move || {
+                let down = down.clone();
+                async move {
+                    if down.load(Ordering::SeqCst) {
+                        StatusCode::INTERNAL_SERVER_ERROR.into_response()
+                    } else {
+                        Json(minimal_index()).into_response()
+                    }
+                }
+            }),
+        )
+    };
+    let url = spawn(router).await;
+    let home = use_env(&url);
+
+    let client = gray_pkg::fetch::client().unwrap();
+    gray_pkg::index::fetch_index(&client).await.unwrap();
+    let cache = home.path().join("plugins/index-cache.json");
+    let mut v: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&cache).unwrap()).unwrap();
+    v["fetched_at"] = serde_json::json!(0);
+    std::fs::write(&cache, serde_json::to_string(&v).unwrap()).unwrap();
+
+    down.store(true, Ordering::SeqCst);
+    let stale = gray_pkg::index::fetch_index(&client).await.unwrap();
+    assert!(stale.plugins.contains_key("demo"));
+}
+
+#[tokio::test]
 async fn env_override_selects_loopback() {
     let _lock = ENV_LOCK.lock().unwrap();
     let url =
