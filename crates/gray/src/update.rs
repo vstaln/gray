@@ -567,6 +567,30 @@ fn warn_on_divergence() {
     }
 }
 
+async fn update_plugins_after_gray() {
+    match gray_pkg::ops::update("all").await {
+        Ok(rows) => {
+            let (mut updated, mut rebuilt, mut failed) = (0usize, 0usize, 0usize);
+            for row in &rows {
+                match row.action {
+                    gray_pkg::ops::UpdateAction::Installed(_) => updated += 1,
+                    gray_pkg::ops::UpdateAction::Rebuilt => rebuilt += 1,
+                    gray_pkg::ops::UpdateAction::Failed(_) => failed += 1,
+                    _ => {}
+                }
+            }
+            let n = updated + rebuilt;
+            if n > 0 || failed > 0 {
+                println!(
+                    "{} plugins: {n} updated, {failed} failed",
+                    crate::tui::glyph("✓", "v")
+                );
+            }
+        }
+        Err(e) => eprintln!("plugins: update failed: {e:#}"),
+    }
+}
+
 pub async fn update_now() -> anyhow::Result<()> {
     match latest_version().await {
         Ok(latest)
@@ -582,6 +606,7 @@ pub async fn update_now() -> anyhow::Result<()> {
                 "gray {} is current ({CHANNEL}, latest {latest})",
                 env!("CARGO_PKG_VERSION")
             );
+            update_plugins_after_gray().await;
             warn_on_shadow();
             return Ok(());
         }
@@ -597,6 +622,7 @@ pub async fn update_now() -> anyhow::Result<()> {
         "{} updated. restart gray to use the new version.",
         crate::tui::glyph("✓", "v")
     );
+    update_plugins_after_gray().await;
     warn_on_shadow();
     Ok(())
 }

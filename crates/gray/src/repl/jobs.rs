@@ -1,8 +1,8 @@
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use anyhow::Context;
 use gray_core::agent::{BackgroundJob, ToolContext, ToolExecutor};
 
 use crate::setup::{ManagerItem, ManagerOutcome, ManagerSpec, run_install_manager};
@@ -176,7 +176,7 @@ const JOBS_SPEC: ManagerSpec = ManagerSpec {
 
 /// Hard cap on wake-list staleness; a changed jobs.json mtime usually forces
 /// a refetch sooner, so this only bounds the same-mtime corner.
-const WAKES_STALE_AFTER: Duration = Duration::from_secs(5);
+const WAKES_STALE_AFTER: Duration = Duration::from_secs(60);
 
 struct WakesCache {
     home: PathBuf,
@@ -194,6 +194,54 @@ fn jobs_stamp(home: &Path) -> Option<std::time::SystemTime> {
         .ok()
 }
 
+fn run_with_timeout(
+    cmd: &mut std::process::Command,
+    limit: Duration,
+) -> Option<std::process::Output> {
+    cmd.stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let mut child = cmd.spawn().ok()?;
+    let (Some(stdout), Some(stderr)) = (child.stdout.take(), child.stderr.take()) else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return None;
+    };
+    let stdout_reader = std::thread::spawn(move || {
+        let mut stdout = stdout;
+        let mut bytes = Vec::new();
+        let _ = stdout.read_to_end(&mut bytes);
+        bytes
+    });
+    let stderr_reader = std::thread::spawn(move || {
+        let mut stderr = stderr;
+        let mut bytes = Vec::new();
+        let _ = stderr.read_to_end(&mut bytes);
+        bytes
+    });
+    let started = Instant::now();
+    let status = loop {
+        if started.elapsed() >= limit {
+            let _ = child.kill();
+            let _ = child.wait();
+            return None;
+        }
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => std::thread::sleep(Duration::from_millis(20)),
+            Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    };
+    Some(std::process::Output {
+        status,
+        stdout: stdout_reader.join().ok()?,
+        stderr: stderr_reader.join().ok()?,
+    })
+}
+
 /// `gray cron list --json` through the installed plugin — the same verb
 /// resolution a user-level `gray cron …` takes. Any failure (no gateway
 /// plugin, nonzero exit) reads as "no jobs", never an error.
@@ -201,13 +249,11 @@ fn cron_list_json(home: &Path) -> Option<Vec<u8>> {
     let exe = crate::exe_watch::on_disk_exe()
         .or_else(|_| std::env::current_exe())
         .ok()?;
-    let out = std::process::Command::new(exe)
-        .args(["cron", "list", "--json"])
+    let mut cmd = std::process::Command::new(exe);
+    cmd.args(["cron", "list", "--json"])
         .env("GRAY_HOME", home)
-        .stdin(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .output()
-        .ok()?;
+        .stdin(std::process::Stdio::null());
+    let out = run_with_timeout(&mut cmd, Duration::from_secs(5))?;
     out.status.success().then_some(out.stdout)
 }
 
@@ -299,12 +345,12 @@ pub(crate) fn remove_wake(home: &Path, id: &str) -> anyhow::Result<bool> {
 
 fn cron_remove(home: &Path, id: &str) -> anyhow::Result<bool> {
     let exe = crate::exe_watch::on_disk_exe().or_else(|_| std::env::current_exe())?;
-    let out = std::process::Command::new(exe)
-        .args(["cron", "remove", id])
+    let mut cmd = std::process::Command::new(exe);
+    cmd.args(["cron", "remove", id])
         .env("GRAY_HOME", home)
-        .stdin(std::process::Stdio::null())
-        .output()
-        .context("could not run `gray cron remove`")?;
+        .stdin(std::process::Stdio::null());
+    let out = run_with_timeout(&mut cmd, Duration::from_secs(15))
+        .ok_or_else(|| anyhow::anyhow!("`gray cron remove` timed out"))?;
     if out.status.success() {
         return Ok(true);
     }
@@ -360,10 +406,17 @@ pub(crate) fn spawn_footer_poller() {
 
             let sid = crate::host::live_session();
             if tick.is_multiple_of(5) || sid != wakes_for {
-                wakes = home
-                    .as_deref()
-                    .map(|h| load_wakes(h, sid.as_deref()))
-                    .unwrap_or_default();
+                if let Some(h) = home.clone() {
+                    let sid_for_load = sid.clone();
+                    if let Ok(loaded) =
+                        tokio::task::spawn_blocking(move || load_wakes(&h, sid_for_load.as_deref()))
+                            .await
+                    {
+                        wakes = loaded;
+                    }
+                } else {
+                    wakes = Vec::new();
+                }
                 wakes_for = sid;
             }
             let label = footer_label(jobs, &wakes, gray_core::spill::now_secs());
