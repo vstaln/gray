@@ -1,5 +1,55 @@
 # Changelog
 
+## [0.2.5] - 2026-10-25
+
+### Added
+- **`compact/before` plugin hook.** Right before any compaction
+  (automatic, overflow or `/compact`) gray sends claiming plugins a
+  `compact/before` request and waits up to 20s, so memory can save
+  what the summary is about to drop. Failures are logged and
+  compaction continues. Used by gray-memory >= 0.1.2; gray-gateway
+  0.2.2 now requires memory.
+- **Claude Code plugin skills.** Skills shipped by installed Claude
+  Code plugins (latest install of each) and `~/.claude/skills` are
+  discovered in gray and the IDE; plugins turned off in
+  `enabledPlugins` (`settings.json`, overridden by
+  `settings.local.json`) are skipped.
+
+### Changed
+- **Welcome screen.** No blank line under the title.
+
+### Fixed
+- **Auto-update reaches `gray -p` users.** Print and structured-input
+  turns (what the gateway and chat bots run) spawn a detached
+  `gray update --auto run` when the 6-hour check is due. New
+  `--auto run` verb runs a due check by hand.
+- **Failed self-updates are visible.** A failed gray update shows in
+  the auto-update notice and on the next interactive start until it
+  succeeds, instead of only landing in `auto-update.json`.
+- **No re-compaction every turn after a compaction.** Reported usage
+  far above what gray actually sent (more than 4× its estimate plus
+  64k) is no longer trusted as the context size.
+- **Plugin installs.** Catalog names resolve from the index only,
+  never a bare executable on `PATH`; `--yes` grants declared
+  capabilities; default plugins seed on fresh installs only and the
+  default set is trimmed to the essentials.
+- **Plugin index freshness.** The cached index revalidates after 10
+  minutes instead of 24 hours, and the stale copy is kept when
+  offline.
+- **Fusion footer.** The effort no longer repeats after a Fusion
+  composite label.
+- **`gray update` updates plugins too.** A manual update left plugins
+  behind the new core (0.2.4 needs gray-gateway >= 0.2.1 for `/jobs`
+  and `gray read`/`send`); it now runs the plugin pass as well, even
+  when gray itself is current.
+- **`/jobs` can't hang the REPL.** The `gray cron list`/`remove` calls
+  are time-limited (5s / 15s), the footer poller runs them off the
+  async runtime, and the wake list refetches on jobs.json changes or
+  every 60s instead of spawning two processes every 5s.
+- **Provider metadata can't be wiped by a bad fetch.** A fetched or
+  cached providers.json with no catalog is rejected, and empty
+  sections fall back to the built-in snapshot.
+
 ## [0.2.4] - 2026-10-25
 
 ### Changed
