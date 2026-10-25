@@ -135,6 +135,20 @@ enum TrustGate {
     Lines,
 }
 
+/// A local `gray-<name>` on PATH, for plugins the catalog does not carry.
+/// Never the bare `<name>`: that is whatever program owns the word (`discord`
+/// is the Discord desktop client), and catalog names install from the index.
+fn native_on_path(name: &str) -> Option<PathBuf> {
+    native_in(&std::env::var_os("PATH")?, name)
+}
+
+fn native_in(paths: &std::ffi::OsStr, name: &str) -> Option<PathBuf> {
+    let file = format!("gray-{name}{}", std::env::consts::EXE_SUFFIX);
+    std::env::split_paths(paths)
+        .map(|dir| dir.join(&file))
+        .find(|candidate| candidate.is_file())
+}
+
 async fn index_entry(name: &str) -> Option<gray_pkg::index::Entry> {
     let client = gray_pkg::fetch::client().ok()?;
     if let Ok(Ok(index)) = tokio::time::timeout(
@@ -194,16 +208,10 @@ async fn install_spec_gated(
         return register_native_gated(home, None, path, force, gate).await;
     }
     if validate_name(spec).is_ok()
-        && let Some(paths) = std::env::var_os("PATH")
+        && let Some(candidate) = native_on_path(spec)
+        && index_entry(spec).await.is_none()
     {
-        for dir in std::env::split_paths(&paths) {
-            for stem in [format!("gray-{spec}"), spec.to_string()] {
-                let candidate = dir.join(format!("{stem}{}", std::env::consts::EXE_SUFFIX));
-                if candidate.is_file() {
-                    return register_native_gated(home, Some(spec), &candidate, force, gate).await;
-                }
-            }
-        }
+        return register_native_gated(home, Some(spec), &candidate, force, gate).await;
     }
     let parsed = gray_pkg::ops::parse_spec(spec);
     let mut lines = Vec::new();
@@ -340,22 +348,15 @@ pub async fn install(home: &Path, name: &str) -> anyhow::Result<()> {
         install_spec(home, name, false, false).await?;
         return Ok(());
     }
-    if let Some(paths) = std::env::var_os("PATH") {
-        for dir in std::env::split_paths(&paths) {
-            for stem in [format!("gray-{name}"), name.to_string()] {
-                let candidate = dir.join(format!("{stem}{}", std::env::consts::EXE_SUFFIX));
-                if candidate.is_file() {
-                    let line = register_native(home, Some(name), &candidate, false).await?;
-                    if !line.is_empty() {
-                        println!("{line}");
-                    }
-                    return Ok(());
-                }
-            }
-        }
-    }
     if index_entry(name).await.is_some() {
         install_spec(home, name, false, false).await?;
+        return Ok(());
+    }
+    if let Some(candidate) = native_on_path(name) {
+        let line = register_native(home, Some(name), &candidate, false).await?;
+        if !line.is_empty() {
+            println!("{line}");
+        }
         return Ok(());
     }
     anyhow::bail!(
@@ -1802,6 +1803,20 @@ pub(crate) async fn capture(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_lookup_skips_bare_name_programs() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = |n: &str| format!("{n}{}", std::env::consts::EXE_SUFFIX);
+        std::fs::write(dir.path().join(exe("discord")), "").unwrap();
+        let paths = dir.path().as_os_str();
+        assert_eq!(native_in(paths, "discord"), None);
+        std::fs::write(dir.path().join(exe("gray-discord")), "").unwrap();
+        assert_eq!(
+            native_in(paths, "discord"),
+            Some(dir.path().join(exe("gray-discord")))
+        );
+    }
 
     fn cli_entry(argv: &[&str]) -> LockEntry {
         LockEntry {
