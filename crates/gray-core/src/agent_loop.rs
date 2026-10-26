@@ -81,6 +81,26 @@ fn quota_flavored(e: &ProviderError) -> bool {
     QUOTA_WINDOW_HINTS.iter().any(|h| lower.contains(h))
 }
 
+// Errors that no retry window can clear: a quota that resets weekly/monthly
+// (Devin: "Your weekly usage quota has been exhausted") or a provider content
+// refusal, which some routes wrap in a 500. Retrying these only burns minutes
+// of backoff before the same failure.
+const HOPELESS_HINTS: [&str; 8] = [
+    "weekly usage",
+    "weekly quota",
+    "monthly usage",
+    "monthly quota",
+    "billing period",
+    "content policy",
+    "provider refusal",
+    "usage polic",
+];
+
+fn hopeless(e: &ProviderError) -> bool {
+    let lower = e.to_string().to_lowercase();
+    HOPELESS_HINTS.iter().any(|h| lower.contains(h))
+}
+
 const ROUTING_FLAVOR_HINTS: [&str; 5] = [
     "not a chat model",
     "does not exist",
@@ -146,6 +166,9 @@ fn turn_retry_wait(e: &ProviderError, attempt: u8) -> Option<std::time::Duration
         return None;
     }
     let hint = provider_reset_hint(e);
+    if hint.is_none() && hopeless(e) {
+        return None;
+    }
     if hint.is_some_and(|h| h > MAX_TURN_RETRY_WAIT) {
         return None;
     }
@@ -1639,6 +1662,34 @@ mod turn_retry_tests {
                 ..Default::default()
             },
         );
+        assert!(turn_retry_wait(&e, 0).is_none());
+    }
+
+    #[test]
+    fn weekly_quota_is_terminal() {
+        let msg = "status 429 Too Many Requests: Devin usage limit reached: Your weekly usage quota has been exhausted. Visit https://app.devin.ai/settings/usage to purchase on-demand usage or turn on auto-reload.";
+        let e = detailed(
+            ProviderError::Auth(msg.into()),
+            crate::error::ProviderDetail {
+                status: Some(429),
+                ..Default::default()
+            },
+        );
+        assert!(turn_retry_wait(&e, 0).is_none());
+        // A short window with an explicit hint still waits it out.
+        let e = ProviderError::Auth("weekly usage limit reached, resets in ~4m".into());
+        assert!(turn_retry_wait(&e, 0).is_some());
+    }
+
+    #[test]
+    fn content_refusal_wrapped_in_500_is_terminal() {
+        let e = ProviderError::ServerError(
+            "provider-side status 500 Internal Server Error: native request failed: Provider refusal: This request was refused by Anthropic's content policy.".into(),
+        );
+        assert!(turn_retry_wait(&e, 0).is_none());
+        assert!(turn_retry_wait(&ProviderError::ServerError("status 500".into()), 0).is_some());
+        let e =
+            ProviderError::BadRequest("Devin refused this request under its usage policy".into());
         assert!(turn_retry_wait(&e, 0).is_none());
     }
 

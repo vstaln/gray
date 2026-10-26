@@ -84,6 +84,12 @@ pub fn parse_declared(raw: &[String]) -> Vec<String> {
     for id in raw {
         let id = id.trim();
         if spec(id).is_none() {
+            // Manifests are parsed more than once per process; say it once.
+            static WARNED: std::sync::Mutex<BTreeSet<String>> =
+                std::sync::Mutex::new(BTreeSet::new());
+            if !WARNED.lock().is_ok_and(|mut w| w.insert(id.to_string())) {
+                continue;
+            }
             let known: Vec<&str> = SPECS.iter().map(|s| s.id).collect();
             log::warn!(
                 "plugin declares unknown capability {id:?} (known: {}) — ignoring",
