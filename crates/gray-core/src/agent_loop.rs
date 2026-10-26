@@ -1103,9 +1103,12 @@ impl Agent {
 
             let overflow_retry =
                 stop_reason == StopReason::MaxTokens && !overflow_recovery_attempted;
-            if self
-                .context_window
-                .is_some_and(|w| crate::overflow::is_silent_overflow(&usage, stop_reason, w))
+            let sent = crate::agent_compact::est_tokens(&self.messages);
+            let measures_context = usage.total() <= sent.saturating_mul(4).saturating_add(64_000);
+            if measures_context
+                && self
+                    .context_window
+                    .is_some_and(|w| crate::overflow::is_silent_overflow(&usage, stop_reason, w))
                 && (overflow_retry || stop_reason == StopReason::EndTurn)
             {
                 if overflow_retry

@@ -1075,12 +1075,14 @@ async fn run_print_inner(
             _ => None,
         })
         .unwrap_or("");
-    let _running = RunningGuard::register(
-        session_id.as_str(),
-        task_text,
-        config.model.as_deref().unwrap_or(""),
-        crate::compact::effective_compact_ceiling(config),
-    );
+    let _running = (!config.bare).then(|| {
+        RunningGuard::register(
+            session_id.as_str(),
+            task_text,
+            config.model.as_deref().unwrap_or(""),
+            crate::compact::effective_compact_ceiling(config),
+        )
+    });
 
     if let Some(max) = config.max_wall_secs
         && crate::turn_caps::process_start().elapsed().as_secs() >= max

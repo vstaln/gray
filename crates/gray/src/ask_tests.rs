@@ -11,6 +11,8 @@ fn q(id: &str, options: usize) -> AskQuestion {
                 description: "d".into(),
                 opt_in: false,
                 freeform: false,
+                scopes: Vec::new(),
+                muted: false,
             })
             .collect(),
         detail: String::new(),
@@ -192,6 +194,8 @@ fn json_wire_asks_with_a_row_and_reads_answers_by_id() {
             description: "production".into(),
             opt_in: false,
             freeform: false,
+            scopes: Vec::new(),
+            muted: false,
         }],
         detail: String::new(),
         multi: false,
