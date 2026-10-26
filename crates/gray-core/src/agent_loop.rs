@@ -500,7 +500,7 @@ impl Agent {
                     )
                 {
                     let before = (self.estimate_tokens(), self.messages.len());
-                    match self.try_compact_budgeted().await {
+                    match self.try_compact_pre_turn().await {
                         Ok(true) => {
                             let reason = self.ceiling_reason(before.0);
                             emit!(AgentEvent::compacted(
@@ -1090,6 +1090,7 @@ impl Agent {
             self.messages.push(assistant.clone());
 
             self.record_context_usage(&usage);
+            self.maybe_start_background_compaction();
             self.warm_cache_reported = self.warm_cache_reported
                 || usage.cache_read_input_tokens
                     + usage.cached_tokens

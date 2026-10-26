@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.2.6] - Unreleased
+
+### Added
+- **Experimental background compaction.** Off by default; enable with
+  `--background-compaction`, `GRAY_BACKGROUND_COMPACTION=1`, or the
+  `background_compaction` config key.
+  The summary is written in the background once context reaches 85% of the
+  compaction point and swapped in when compaction is due, so the turn no
+  longer waits on it. Known costs: with the devin-sub provider the summary
+  request moves the live Devin conversation, so the next turn resends the
+  history once; and the swap keeps only the messages added after the summary
+  started, which can be less recent context than inline compaction keeps.
+
 ## [0.2.5] - 2026-10-25
 
 ### Added

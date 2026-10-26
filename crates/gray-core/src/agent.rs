@@ -570,6 +570,12 @@ pub struct Agent {
     pub(crate) prefix_rewrite_ok: bool,
 
     pub(crate) lean_prompt: bool,
+
+    pub(crate) background_compaction: bool,
+
+    pub(crate) held_summary: Option<crate::background_compact::HeldSummary>,
+
+    pub(crate) background_failures: u8,
 }
 
 struct SharedProvider(Arc<dyn Provider>);
@@ -625,12 +631,19 @@ impl Agent {
             warm_cache_reported: false,
             prefix_rewrite_ok: true,
             lean_prompt: false,
+            background_compaction: false,
+            held_summary: None,
+            background_failures: 0,
         }
     }
 
     pub fn with_cache_warm(mut self, policy: Option<crate::cache_warm::CacheWarmPolicy>) -> Self {
         self.cache_warm = policy;
         self
+    }
+
+    pub fn set_background_compaction(&mut self, enabled: bool) {
+        self.background_compaction = enabled;
     }
 
     pub fn map_provider(
@@ -681,6 +694,7 @@ impl Agent {
     }
 
     pub(crate) fn history_rewritten(&mut self) {
+        self.held_summary = None;
         self.context_usage = None;
 
         self.soft_elide_rearm = 0;
@@ -924,6 +938,7 @@ impl Agent {
         &self.tools
     }
 
+    #[cfg(test)]
     pub(crate) async fn complete_isolated(
         &self,
         system: Option<&str>,
@@ -937,6 +952,7 @@ impl Agent {
     /// The request provably extends the last sent prefix: keep provider cache
     /// markers (Anthropic breakpoints, OpenAI prompt_cache_key) so the call
     /// reads the warm cache instead of paying a cold write.
+    #[cfg(test)]
     pub(crate) async fn complete_isolated_cached(
         &self,
         system: Option<&str>,
@@ -947,6 +963,7 @@ impl Agent {
             .await
     }
 
+    #[cfg(test)]
     async fn complete_isolated_with_cache(
         &self,
         system: Option<&str>,
@@ -954,30 +971,48 @@ impl Agent {
         tools: Vec<ToolDef>,
         shared_cache: bool,
     ) -> Result<String, CoreError> {
-        let req = ChatRequest {
-            system: system.map(|s| s.to_string()),
+        complete_isolated_detached(
+            self.provider.clone(),
+            self.session_id.clone(),
+            system.map(str::to_string),
             messages,
             tools,
-            max_tokens: None,
-        };
-        let iso = IsolatedStream {
-            // Key-scoped caches (OpenAI prompt_cache_key) keep their affinity
-            // only when the shared request reuses the session id.
-            session_id: Some(if shared_cache {
-                self.session_id
-                    .clone()
-                    .unwrap_or_else(|| uuid::Uuid::new_v4().to_string())
-            } else {
-                uuid::Uuid::new_v4().to_string()
-            }),
-            cache_off: !shared_cache,
-        };
-        let session = self.session_id.clone();
-        scope_isolated_stream(iso, async {
-            drain_reply_text(self.provider.stream(req), session.as_deref()).await
-        })
+            shared_cache,
+        )
         .await
     }
+}
+
+pub(crate) async fn complete_isolated_detached(
+    provider: Arc<dyn Provider>,
+    session_id: Option<String>,
+    system: Option<String>,
+    messages: Vec<Message>,
+    tools: Vec<ToolDef>,
+    shared_cache: bool,
+) -> Result<String, CoreError> {
+    let req = ChatRequest {
+        system,
+        messages,
+        tools,
+        max_tokens: None,
+    };
+    let iso = IsolatedStream {
+        // Key-scoped caches (OpenAI prompt_cache_key) keep their affinity
+        // only when the shared request reuses the session id.
+        session_id: Some(if shared_cache {
+            session_id
+                .clone()
+                .unwrap_or_else(|| uuid::Uuid::new_v4().to_string())
+        } else {
+            uuid::Uuid::new_v4().to_string()
+        }),
+        cache_off: !shared_cache,
+    };
+    scope_isolated_stream(iso, async {
+        drain_reply_text(provider.stream(req), session_id.as_deref()).await
+    })
+    .await
 }
 
 async fn drain_reply_text(

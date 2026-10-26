@@ -1,4 +1,5 @@
 use crate::agent::Agent;
+#[cfg(test)]
 use crate::error::CoreError;
 use crate::message::{ContentBlock, Message, Role};
 
@@ -55,7 +56,7 @@ pub(crate) const COMPACTION_TRIGGER: &str = "Summarize this conversation so far 
 pub(crate) const CONTINUE_TAIL: &str =
     "Continue the pending user request using the retained context and summary.";
 
-fn trigger_message(instructions: Option<&str>) -> Message {
+pub(crate) fn trigger_message(instructions: Option<&str>) -> Message {
     let mut trigger = COMPACTION_TRIGGER.to_string();
     if let Some(instructions) = instructions.map(str::trim).filter(|s| !s.is_empty()) {
         trigger.push_str(&format!(
@@ -65,6 +66,7 @@ fn trigger_message(instructions: Option<&str>) -> Message {
     Message::user_injected(trigger)
 }
 
+#[cfg(test)]
 pub(crate) async fn run_compaction_call(
     agent: &Agent,
     history: &[Message],
