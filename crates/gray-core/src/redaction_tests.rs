@@ -394,3 +394,41 @@ fn backtick_and_asterisk_wrapped_secrets_are_replaced() {
         assert!(redaction.redacted(), "no receipt for {input:?}");
     }
 }
+
+#[test]
+fn code_and_counts_after_secret_names_survive() {
+    for keep in [
+        "missed_tokens=2027 cached=10",
+        "max_tokens=4096",
+        "arm: CredentialArm::Certain,",
+        "return TokenOutcome::keep();",
+        "format!(\"missed_tokens={missed}\")",
+        "TOKEN=$GITHUB_TOKEN",
+        "api_key=<your-key>",
+        "api_key=None",
+    ] {
+        let r = redact_for_disclosure(keep);
+        assert!(!r.has_secret(), "{keep:?} -> {:?}", r.text());
+    }
+}
+
+#[test]
+fn real_secrets_after_names_still_redact() {
+    for leak in [
+        "password=hunter2",
+        "api_key=abc123def456ghi789",
+        "token: 9f8e7d6c5b4a39281706",
+        "secret=12345678901234567890",
+    ] {
+        let r = redact_for_disclosure(leak);
+        assert!(r.has_secret(), "{leak:?} -> {:?}", r.text());
+    }
+}
+
+#[test]
+fn shell_log_redaction_keeps_paths_beside_a_secret() {
+    let out = redact_bytes_for_log(b"password=hunter2 wrote /home/me/proj/src/main.rs");
+    let out = std::str::from_utf8(&out).unwrap();
+    assert!(out.contains("/home/me/proj/src/main.rs"), "{out}");
+    assert!(!out.contains("hunter2"), "{out}");
+}
