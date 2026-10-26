@@ -1079,6 +1079,16 @@ pub(crate) async fn maybe_threshold_compact(
     if !crate::compact::should_compact(tokens, window, &settings) {
         return;
     }
+    let local = crate::compact::estimate_context_tokens(agent.messages(), None);
+    let freeable = local.saturating_sub(config.context_keep.unwrap_or(20_000));
+    let threshold = settings
+        .ceiling_tokens
+        .unwrap_or(usize::MAX)
+        .min(window.saturating_sub(settings.reserve_tokens));
+    if freeable < tokens.saturating_sub(threshold) {
+        log::info!(target: "gray_compact", "threshold compaction skipped: frees ~{freeable} of {} over", tokens.saturating_sub(threshold));
+        return;
+    }
     let reason = crate::compact::binding_reason(tokens, &settings);
 
     let compaction_id = format!("auto-{}", uuid::Uuid::new_v4().as_simple());

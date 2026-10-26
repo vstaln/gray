@@ -118,11 +118,12 @@ pub fn estimate_tokens(msg: &Message) -> usize {
 }
 
 pub fn estimate_context_tokens(messages: &[Message], last: Option<Usage>) -> usize {
-    let local: usize = messages.iter().map(estimate_tokens).sum();
-    match last.map(|u| u.total()) {
-        Some(t) if t > 0 && t <= local.saturating_mul(4).saturating_add(64_000) => t,
-        _ => local,
+    if let Some(u) = last
+        && u.total() > 0
+    {
+        return u.total();
     }
+    messages.iter().map(estimate_tokens).sum()
 }
 
 pub fn is_context_overflow_error(err: &CoreError) -> bool {
