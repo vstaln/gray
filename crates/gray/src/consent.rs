@@ -67,6 +67,11 @@ fn consent_target(name: &str) -> (String, String) {
     (name.to_string(), name.to_string())
 }
 
+/// Asking the user a question is already the interaction, so a consent prompt in front of it is redundant; MCP servers were consented to when they started.
+fn consent_exempt(name: &str) -> bool {
+    name.starts_with("mcp__") || name == "request_user_input"
+}
+
 /// Persisted consent: `~/.gray/tool-consent.json`
 /// `{"global": ["mcp__treg", ...], "bash_cmds": ["cargo", ...],
 ///   "projects": {"/abs/dir": ["bash", ...]}}`.
@@ -312,8 +317,9 @@ impl ToolExecutor for ConsentExecutor {
         Box::pin(async move {
             // MCP tools run without a prompt: the server itself was already
             // consented to when it started (user config, or the project
-            // `.mcp.json` server prompt).
-            if crate::ask::interactive_tui() && !name.starts_with("mcp__") {
+            // `.mcp.json` server prompt). request_user_input also skips the
+            // prompt because asking the user is already an interaction.
+            if crate::ask::interactive_tui() && !consent_exempt(&name) {
                 let (key, _disp) = consent_target(&name);
                 // The lock is held across the prompt so parallel tool calls
                 // queue on it instead of stacking modals.
@@ -368,5 +374,19 @@ impl ToolExecutor for ConsentExecutor {
             }
             inner.execute(&ctx, &name, args).await
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::consent_exempt;
+
+    #[test]
+    fn consent_exempt_tools_skip_consent_prompts() {
+        assert!(consent_exempt("request_user_input"));
+        assert!(consent_exempt("mcp__treg__call"));
+        assert!(!consent_exempt("bash"));
+        assert!(!consent_exempt("web_fetch"));
+        assert!(!consent_exempt("request_user_inputx"));
     }
 }

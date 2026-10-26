@@ -190,8 +190,17 @@ fn record_install(
     let _guard = hold_registry_lock()?;
     let mut lock = read_lock()?.unwrap_or_default();
     let enabled = lock.plugins.get(name).map(|e| e.enabled).unwrap_or(true);
+    let own_dir = crate::plugins_dir().join(name);
 
-    let cli_argv = lock.plugins.get(name).and_then(|e| e.cli_argv.clone());
+    let cli_argv = lock
+        .plugins
+        .get(name)
+        .and_then(|e| e.cli_argv.clone())
+        .filter(|argv| {
+            !argv
+                .first()
+                .is_some_and(|p| Path::new(p).starts_with(&own_dir))
+        });
     let extra = lock
         .plugins
         .get(name)
@@ -214,6 +223,11 @@ fn record_install(
             extra,
         },
     );
+    match std::fs::remove_file(crate::plugins_dir().join(format!("{name}-manifest.json"))) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e.into()),
+    }
     write_lock(&lock)
 }
 
