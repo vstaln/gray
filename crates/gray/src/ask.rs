@@ -15,6 +15,12 @@ pub struct AskOption {
     /// directly ("Deny with a reason"); the text ships as `user_note:`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub freeform: bool,
+
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub scopes: Vec<String>,
+
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub muted: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -46,6 +52,10 @@ pub struct AskQuestion {
 impl AskQuestion {
     fn is_multi(&self) -> bool {
         self.multi && !self.options.is_empty()
+    }
+
+    fn compact(&self) -> bool {
+        self.options.iter().any(|o| !o.scopes.is_empty())
     }
 }
 
@@ -558,6 +568,7 @@ pub(crate) struct AskModalState {
     notes: Vec<String>,
     editing: Vec<bool>,
     checked: Vec<Vec<bool>>,
+    scope: Vec<Vec<usize>>,
 }
 
 impl AskModalState {
@@ -570,6 +581,7 @@ impl AskModalState {
             notes: Vec::new(),
             editing: Vec::new(),
             checked: Vec::new(),
+            scope: Vec::new(),
         }
     }
 
@@ -579,6 +591,11 @@ impl AskModalState {
         self.cursor = vec![0; n];
         self.notes = vec![String::new(); n];
         self.editing = vec![false; n];
+        self.scope = self
+            .questions
+            .iter()
+            .map(|q| vec![0; q.options.len()])
+            .collect();
         self.checked = self
             .questions
             .iter()
@@ -649,8 +666,11 @@ impl AskModalState {
                     );
                 } else {
                     let sel = self.cursor[qi];
-                    if sel < q.options.len() {
-                        answers.push(q.options[sel].label.clone());
+                    if let Some(o) = q.options.get(sel) {
+                        answers.push(o.label.clone());
+                        if let Some(scope) = o.scopes.get(self.scope[qi][sel]) {
+                            answers.push(format!("scope: {scope}"));
+                        }
                     } else if self.notes[qi].trim().is_empty() {
                         answers.push("Other".to_string());
                     }
@@ -689,6 +709,34 @@ pub(crate) fn ask_rows(state: &AskModalState) -> Vec<(String, String, String)> {
     let multi = state.multi();
     let editing = state.editing[qi];
     let note = state.notes[qi].trim().to_string();
+    if q.compact() {
+        for (i, o) in q.options.iter().enumerate() {
+            let here = i == state.cursor[qi];
+            if here && (editing || !note.is_empty()) {
+                rows.push(("*".to_string(), o.label.clone(), state.notes[qi].clone()));
+                continue;
+            }
+            let desc = match o.scopes.len() {
+                0 => String::new(),
+                n => {
+                    let at = state.scope[qi][i];
+                    let bar: String = (0..n)
+                        .map(|k| if k == at { '\u{25a0}' } else { '\u{25a1}' })
+                        .collect();
+                    format!("\u{2190} {bar} \u{2192} {}", o.scopes[at])
+                }
+            };
+            let glyph = if o.muted { "~" } else { "" };
+            rows.push((glyph.to_string(), o.label.clone(), desc));
+        }
+        let hint = if editing {
+            "enter submit \u{b7} esc back"
+        } else {
+            "\u{2191}\u{2193} select \u{b7} \u{2190}\u{2192} scope \u{b7} tab reason \u{b7} enter confirm \u{b7} esc cancel"
+        };
+        rows.push(("\u{b7}".to_string(), String::new(), hint.to_string()));
+        return rows;
+    }
     for i in 0..state.options_len() {
         let freeform = state.is_freeform(qi, i);
         let label = state.option_label(qi, i).to_string();
@@ -802,6 +850,24 @@ fn run_ask_modal(
             clear_ask_modal(tui);
             return None;
         }
+        if let (KeyCode::Left | KeyCode::Right, Some(n)) = (
+            key.code,
+            state.questions[i]
+                .options
+                .get(state.cursor[i])
+                .map(|o| o.scopes.len())
+                .filter(|&n| n > 0),
+        ) {
+            let c = state.cursor[i];
+            let at = state.scope[i][c];
+            state.scope[i][c] = if key.code == KeyCode::Left {
+                (at + n - 1) % n
+            } else {
+                (at + 1) % n
+            };
+            draw_ask_modal(tui, state);
+            continue;
+        }
         if let Some(up) = crate::keymap::select_move(&key) {
             state.cursor[i] = if up {
                 state.cursor[i].saturating_sub(1)
@@ -821,7 +887,9 @@ fn run_ask_modal(
                     submit = state.advance();
                 }
             }
-            KeyCode::Tab if state.is_freeform(i, state.cursor[i]) => {
+            KeyCode::Tab
+                if state.is_freeform(i, state.cursor[i]) || state.questions[i].compact() =>
+            {
                 state.editing[i] = true;
             }
             KeyCode::Char(' ') if multi => {

@@ -154,8 +154,12 @@ pub enum Segment {
     Single(usize),
 }
 
-/// A call can join a parallel run only if it is a read-only bash command.
-fn batchable(name: &str, args: &Value) -> bool {
+/// A call can join a parallel run only if it is read-only.
+fn batchable(name: &str, args: &Value, read_only: &HashSet<String>) -> bool {
+    read_only.contains(name) || batchable_bash(name, args)
+}
+
+fn batchable_bash(name: &str, args: &Value) -> bool {
     name == "bash"
         && args
             .get("command")
@@ -163,11 +167,12 @@ fn batchable(name: &str, args: &Value) -> bool {
             .is_some_and(bash_is_batchable)
 }
 
-/// Groups consecutive read-only bash calls into parallel runs; everything
+/// Groups consecutive read-only tool calls into parallel runs; everything
 /// else runs on its own, in order.
 pub fn plan_segments(
     tool_uses: &[(String, String, Value)],
     known: &HashSet<String>,
+    read_only: &HashSet<String>,
 ) -> Vec<Segment> {
     let lane = known.contains("bash");
     let mut out = Vec::new();
@@ -180,7 +185,7 @@ pub fn plan_segments(
         }
     };
     for (idx, (_, name, args)) in tool_uses.iter().enumerate() {
-        if lane && batchable(name, args) {
+        if (lane && batchable_bash(name, args)) || read_only.contains(name) {
             run.push(idx);
         } else {
             flush(&mut run, &mut out);
@@ -192,11 +197,11 @@ pub fn plan_segments(
 }
 
 /// Positions of calls a `tool_before` hook rewrote out of the read-only form.
-pub fn rewrite_conflicts(calls: &[(&str, &Value)]) -> Vec<usize> {
+pub fn rewrite_conflicts(calls: &[(&str, &Value)], read_only: &HashSet<String>) -> Vec<usize> {
     calls
         .iter()
         .enumerate()
-        .filter(|(_, (name, args))| !batchable(name, args))
+        .filter(|(_, (name, args))| !batchable(name, args, read_only))
         .map(|(pos, _)| pos)
         .collect()
 }

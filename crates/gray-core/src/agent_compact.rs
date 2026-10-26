@@ -1,10 +1,12 @@
-use crate::agent::Agent;
+use std::sync::Arc;
+
+use crate::agent::{Agent, Provider, complete_isolated_detached};
 use crate::compact::{
     PRICE_CLIFF_KEEP_DIVISOR, RETAINED_MESSAGE_TOKEN_BUDGET, SUMMARY_ENVELOPE_PREFIX,
-    run_compaction_call,
+    trigger_message,
 };
 use crate::error::CoreError;
-use crate::message::{ContentBlock, Message};
+use crate::message::{ContentBlock, Message, ToolDef};
 
 pub fn summary_message(summary: &str) -> Message {
     let s = summary.trim();
@@ -20,6 +22,34 @@ pub(crate) enum MediaPressure {
     Compact,
 }
 
+pub(crate) struct SummaryRequest {
+    provider: Arc<dyn Provider>,
+    session_id: Option<String>,
+    system: Option<String>,
+    tools: Vec<ToolDef>,
+    shared_messages: Option<Vec<Message>>,
+    candidate: Vec<Message>,
+    instructions: Option<String>,
+}
+
+pub(crate) struct PreparedCompaction {
+    pub(crate) request: SummaryRequest,
+    pub(crate) candidate: Vec<Message>,
+    pub(crate) anchor: Option<Message>,
+    retained_budget: usize,
+}
+
+impl PreparedCompaction {
+    pub(crate) fn retained_tail(&self, session_id: Option<&str>) -> Vec<Message> {
+        let walk = if self.anchor.is_some() {
+            &self.candidate[1..]
+        } else {
+            &self.candidate[..]
+        };
+        crate::compact::build_retained_with_session(walk, self.retained_budget, session_id)
+    }
+}
+
 impl Agent {
     pub(crate) fn ceiling_reason(&self, estimate: usize) -> crate::event::CompactReason {
         use crate::event::CompactReason;
@@ -32,30 +62,20 @@ impl Agent {
         }
     }
 
-    pub(crate) async fn try_compact_budgeted(&mut self) -> Result<bool, CoreError> {
-        let before = self.estimate_tokens();
-        let compacted = self.compact_v2(None, self.compact_keep).await?.is_some();
-        log::info!(
-            target: "gray_agent",
-            "compaction: ok={compacted} before={before} after={}",
-            self.estimate_tokens()
-        );
-        Ok(compacted)
-    }
-
-    pub async fn compact_v2(
-        &mut self,
+    pub(crate) fn prepare_compaction(
+        &self,
+        history: &[Message],
         instructions: Option<&str>,
         retained_budget: Option<usize>,
-    ) -> Result<Option<String>, CoreError> {
-        if self.messages.is_empty() {
-            return Ok(None);
+    ) -> Option<PreparedCompaction> {
+        if history.is_empty() {
+            return None;
         }
-
+        let mut candidate = self.scrubbed_messages();
+        candidate.truncate(history.len());
         // `shared` is computed on the un-elided wire view before media
         // stubbing — a stubbed candidate could never be wire-identical.
-        let mut candidate = self.scrubbed_messages();
-        let shared =
+        let shared_messages =
             crate::compact::shared_prefix_compaction_messages(self, &candidate, instructions);
         crate::compact::elide_media_over_payload_budget(&mut candidate);
 
@@ -63,99 +83,217 @@ impl Agent {
             None => RETAINED_MESSAGE_TOKEN_BUDGET,
             Some(w) => RETAINED_MESSAGE_TOKEN_BUDGET.min(w.saturating_sub(COMPACT_RESERVE_TOKENS)),
         });
-
         let budget = match self.compact_ceiling {
             Some(ceiling) => budget.min(ceiling / PRICE_CLIFF_KEEP_DIVISOR),
             None => budget,
         };
-
         if est_tokens(&candidate) <= budget {
-            return Ok(None);
+            return None;
         }
+
+        let candidate_anchor = crate::compact::anchor_message(&candidate);
+        let anchor_tokens = candidate_anchor
+            .as_ref()
+            .map(estimate_message_tokens)
+            .unwrap_or(0);
+        let anchor = candidate_anchor.filter(|_| anchor_tokens < budget);
+        let retained_budget =
+            budget.saturating_sub(if anchor.is_some() { anchor_tokens } else { 0 });
+        let system = self.system_text();
+        Some(PreparedCompaction {
+            request: SummaryRequest {
+                provider: self.provider.clone(),
+                session_id: self.session_id.clone(),
+                system: (!system.is_empty()).then(|| system.to_string()),
+                tools: self.request_tools(),
+                shared_messages,
+                candidate: candidate.clone(),
+                instructions: instructions.map(str::to_string),
+            },
+            candidate,
+            anchor,
+            retained_budget,
+        })
+    }
+
+    pub(crate) async fn apply_compaction(
+        &mut self,
+        summary: &str,
+        anchor: Option<Message>,
+        tail: Vec<Message>,
+    ) -> bool {
+        if summary.trim().is_empty() {
+            return false;
+        }
+        let mut next = Vec::with_capacity(tail.len() + 2);
+        if let Some(anchor) = anchor {
+            next.push(anchor);
+        }
+        next.push(summary_message(summary));
+        next.extend(tail);
+        if est_tokens(&next) >= est_tokens(&self.messages) {
+            return false;
+        }
+        self.set_messages(next);
+        true
+    }
+
+    pub(crate) async fn try_compact_budgeted(&mut self) -> Result<bool, CoreError> {
+        let before = self.estimate_tokens();
+        let started = std::time::Instant::now();
+        let compacted = self.compact_v2(None, self.compact_keep).await?.is_some();
+        log::info!(
+            target: "gray_agent",
+            "compaction: ok={compacted} before={before} after={} source=inline elapsed_ms={}",
+            self.estimate_tokens(),
+            started.elapsed().as_millis()
+        );
+        Ok(compacted)
+    }
+
+    pub(crate) async fn try_compact_pre_turn(&mut self) -> Result<bool, CoreError> {
+        let before = self.estimate_tokens();
+        if let Some(mut held) = self.held_summary.take() {
+            if let Some(reason) = held.discard_reason(self) {
+                self.background_failures = self.background_failures.saturating_add(1);
+                log::info!(target: "gray_agent", "background compaction: discarded reason={reason}");
+            } else {
+                let result = (&mut held.task).await;
+                log::info!(
+                    target: "gray_agent",
+                    "background compaction: ready ms={}",
+                    held.started.elapsed().as_millis()
+                );
+                match result {
+                    Ok(Ok(summary)) if !summary.trim().is_empty() => {
+                        let apply_started = std::time::Instant::now();
+                        let tail = self.messages[held.covered..].to_vec();
+                        for hook in &self.hooks {
+                            hook.compact_before().await;
+                        }
+                        if self
+                            .apply_compaction(&summary, held.anchor.clone(), tail)
+                            .await
+                        {
+                            log::info!(
+                                target: "gray_agent",
+                                "compaction: ok=true before={before} after={} source=background elapsed_ms={}",
+                                self.estimate_tokens(),
+                                apply_started.elapsed().as_millis()
+                            );
+                            return Ok(true);
+                        }
+                        self.background_failures = self.background_failures.saturating_add(1);
+                        log::info!(target: "gray_agent", "background compaction: discarded reason=no_gain");
+                    }
+                    Ok(Ok(_)) => {
+                        self.background_failures = self.background_failures.saturating_add(1);
+                        log::info!(target: "gray_agent", "background compaction: discarded reason=empty");
+                    }
+                    Ok(Err(_)) | Err(_) => {
+                        self.background_failures = self.background_failures.saturating_add(1);
+                        log::info!(target: "gray_agent", "background compaction: discarded reason=error");
+                    }
+                }
+            }
+        }
+        self.try_compact_budgeted().await
+    }
+
+    pub async fn compact_v2(
+        &mut self,
+        instructions: Option<&str>,
+        retained_budget: Option<usize>,
+    ) -> Result<Option<String>, CoreError> {
+        self.held_summary = None;
+        let Some(prepared) =
+            self.prepare_compaction(&self.messages.clone(), instructions, retained_budget)
+        else {
+            return Ok(None);
+        };
         for hook in &self.hooks {
             hook.compact_before().await;
         }
-
-        let summary = match shared {
-            Some(messages) => {
-                let system = self.system_text();
-                match self
-                    .complete_isolated_cached(
-                        (!system.is_empty()).then_some(system),
-                        messages,
-                        self.request_tools(),
-                    )
-                    .await
-                {
-                    // A wire-identical request that still overflows needs the
-                    // stubbed (different, cheaper) request — normal path.
-                    Err(e) if matches!(e.class(), CoreError::ContextOverflow(_)) => {
-                        self.summarizer_call(&candidate, instructions).await?
-                    }
-                    other => other?,
-                }
-            }
-            None => self.summarizer_call(&candidate, instructions).await?,
-        };
-        if summary.trim().is_empty() {
-            return Ok(None);
-        }
-
-        let anchor = crate::compact::anchor_message(&candidate);
-        let anchor_tokens = anchor
-            .as_ref()
-            .map(crate::agent_compact::estimate_message_tokens)
-            .unwrap_or(0);
-
-        let pin_anchor = anchor.is_some() && anchor_tokens < budget;
-
-        let retained_budget = budget.saturating_sub(if pin_anchor { anchor_tokens } else { 0 });
-
-        let walk = if pin_anchor {
-            &candidate[1..]
+        let tail = prepared.retained_tail(self.session_id.as_deref());
+        let summary = run_compaction_summary(prepared.request).await?;
+        if self.apply_compaction(&summary, prepared.anchor, tail).await {
+            Ok(Some(summary))
         } else {
-            &candidate[..]
-        };
-        let retained = crate::compact::build_retained_with_session(
-            walk,
-            retained_budget,
-            self.session_id.as_deref(),
-        );
-
-        let mut next = Vec::with_capacity(retained.len() + 2);
-        if pin_anchor {
-            next.push(anchor.expect("pin_anchor implies Some"));
+            Ok(None)
         }
-        next.push(summary_message(&summary));
-        next.extend(retained);
-
-        if est_tokens(&next) >= est_tokens(&self.messages) {
-            return Ok(None);
-        }
-        self.set_messages(next);
-        Ok(Some(summary))
     }
+}
 
-    /// The summary call carries the whole history, so a payload 413 that sent
-    /// us here would fail it too; the summarizer can do without pixels.
-    async fn summarizer_call(
-        &self,
-        candidate: &[Message],
-        instructions: Option<&str>,
-    ) -> Result<String, CoreError> {
-        match run_compaction_call(self, candidate, instructions).await {
-            Err(e)
-                if matches!(e.class(), CoreError::ContextOverflow(_))
-                    && candidate.iter().flat_map(|m| &m.content).any(|b| {
-                        matches!(b, ContentBlock::Image { .. } | ContentBlock::Media { .. })
-                    }) =>
-            {
-                let mut text_only = candidate.to_vec();
-                crate::compact::stub_all_media(&mut text_only);
-                run_compaction_call(self, &text_only, instructions).await
-            }
-            other => other,
+pub(crate) async fn run_compaction_summary(request: SummaryRequest) -> Result<String, CoreError> {
+    let SummaryRequest {
+        provider,
+        session_id,
+        system,
+        tools,
+        shared_messages,
+        candidate,
+        instructions,
+    } = request;
+    if let Some(messages) = shared_messages {
+        match complete_isolated_detached(
+            provider.clone(),
+            session_id.clone(),
+            system.clone(),
+            messages,
+            tools.clone(),
+            true,
+        )
+        .await
+        {
+            // A wire-identical request that still overflows needs the
+            // stubbed (different, cheaper) request — normal path.
+            Err(error) if matches!(error.class(), CoreError::ContextOverflow(_)) => {}
+            result => return result,
         }
+    }
+    fallback_compaction_summary(provider, session_id, system, tools, candidate, instructions).await
+}
+
+/// The summary call carries the whole history, so a payload 413 that sent
+/// us here would fail it too; the summarizer can do without pixels.
+async fn fallback_compaction_summary(
+    provider: Arc<dyn Provider>,
+    session_id: Option<String>,
+    system: Option<String>,
+    tools: Vec<ToolDef>,
+    candidate: Vec<Message>,
+    instructions: Option<String>,
+) -> Result<String, CoreError> {
+    let mut messages = candidate.clone();
+    messages.push(trigger_message(instructions.as_deref()));
+    match complete_isolated_detached(
+        provider.clone(),
+        session_id.clone(),
+        system.clone(),
+        messages,
+        tools.clone(),
+        false,
+    )
+    .await
+    {
+        Err(error)
+            if matches!(error.class(), CoreError::ContextOverflow(_))
+                && candidate
+                    .iter()
+                    .flat_map(|message| &message.content)
+                    .any(|block| {
+                        matches!(
+                            block,
+                            ContentBlock::Image { .. } | ContentBlock::Media { .. }
+                        )
+                    }) =>
+        {
+            let mut text_only = candidate;
+            crate::compact::stub_all_media(&mut text_only);
+            text_only.push(trigger_message(instructions.as_deref()));
+            complete_isolated_detached(provider, session_id, system, text_only, tools, false).await
+        }
+        result => result,
     }
 }
 

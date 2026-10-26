@@ -212,6 +212,7 @@ async fn reload_agent_failure_preserves_agent() {
         max_wall_secs: None,
         bare: false,
         lean: false,
+        background_compaction: false,
         compact_at: None,
     };
     let mut agent: Option<Agent> = None;

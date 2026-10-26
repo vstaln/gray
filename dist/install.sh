@@ -107,6 +107,12 @@ if [ "$SEED" != "0" ]; then
     FAILED=""
     set -f
     for plugin in $PLUGINS; do
+        if [ "$plugin" = "fsearch" ] && {
+            [ "$(uname -s)" != "Linux" ] || [ "$(uname -m)" != "x86_64" ]
+        }; then
+            echo "→ skipped fsearch (Linux x86_64 only)"
+            continue
+        fi
         if "${DEST}/gray" plugin install --yes "$plugin" >/dev/null 2>&1; then
             echo "→ installed ${plugin}"
             # installing the default set is the consent; grant declared

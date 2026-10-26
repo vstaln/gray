@@ -40,6 +40,7 @@ fn the_first_differing_component_wins_in_prefix_order() {
         parameters: serde_json::json!({}),
         label: Default::default(),
         preview: Default::default(),
+        read_only: false,
     });
     assert_eq!(diff(&base, &fingerprint("m", &tools)), Some(Change::Tools));
     assert_eq!(

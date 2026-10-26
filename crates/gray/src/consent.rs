@@ -15,9 +15,15 @@ use futures::future::BoxFuture;
 use gray_core::agent::{BackgroundJob, ToolContext, ToolExecutor, ToolOutput};
 use gray_core::message::ToolDef;
 
-const RUN_ONCE: &str = "Run once";
+const ALLOW: &str = "Allow";
+const BYPASS: &str = "Bypass mode";
 const DENY: &str = "Deny";
-const DENY_WHY: &str = "Deny with a reason";
+const SCOPE_ONCE: &str = "Once";
+const SCOPE_SESSION: &str = "Session";
+const SCOPE_PROJECT: &str = "Project";
+const SCOPE_ALWAYS: &str = "Always";
+
+static BYPASSED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 enum Verdict {
     Once,
@@ -25,6 +31,7 @@ enum Verdict {
     Project,
     Global,
     BashCommands(String),
+    Bypass,
     Deny(Option<String>),
     /// The prompt was dismissed (Esc) without a pick: interrupt the turn.
     Dismissed,
@@ -65,6 +72,11 @@ fn consent_target(name: &str) -> (String, String) {
         return (format!("mcp__{server}"), format!("{server} tools"));
     }
     (name.to_string(), name.to_string())
+}
+
+/// Asking the user a question is already the interaction, so a consent prompt in front of it is redundant; MCP servers were consented to when they started.
+fn consent_exempt(name: &str) -> bool {
+    name.starts_with("mcp__") || name == "request_user_input"
 }
 
 /// Persisted consent: `~/.gray/tool-consent.json`
@@ -186,7 +198,7 @@ fn describe(name: &str, args: &serde_json::Value) -> String {
     crate::repl::format::truncate_chars(detail.lines().next().unwrap_or(&detail), 400).to_string()
 }
 
-async fn ask_consent(name: &str, args: &serde_json::Value, cwd: &std::path::Path) -> Verdict {
+async fn ask_consent(name: &str, args: &serde_json::Value) -> Verdict {
     let (_key, disp) = consent_target(name);
     let detail = if name.starts_with("mcp__") {
         format!("{name} {}", describe(name, args))
@@ -198,32 +210,21 @@ async fn ask_consent(name: &str, args: &serde_json::Value, cwd: &std::path::Path
     } else {
         None
     };
-    let session_label = format!("Allow {disp} for this session");
-    let project_label = format!("Always allow {disp} in this project");
-    let global_label = format!("Always allow {disp}");
-    let cmd_label = word
-        .as_ref()
-        .map(|w| format!("Always allow `{w}` commands"));
-
-    let mut options =
-        vec![serde_json::json!({"label": RUN_ONCE, "description": "run this call only"})];
-    if let Some(l) = &cmd_label {
-        options.push(serde_json::json!({"label": l, "description": "remember for all projects"}));
-    }
-    options.extend([
-        serde_json::json!({"label": session_label, "description": format!("allow {disp} until this session ends")}),
-        serde_json::json!({"label": project_label, "description": format!("remember for {}", cwd.display())}),
-        serde_json::json!({"label": global_label, "description": "remember for every project"}),
-        serde_json::json!({"label": DENY, "description": "refuse this call"}),
-        serde_json::json!({"label": DENY_WHY, "description": "refuse and tell the agent why", "freeform": true}),
+    let cmd_scope = word.as_ref().map(|w| format!("`{w}` commands"));
+    let mut scopes = vec![SCOPE_ONCE.to_string(), SCOPE_SESSION.to_string()];
+    scopes.extend(cmd_scope.clone());
+    scopes.extend([SCOPE_PROJECT.to_string(), SCOPE_ALWAYS.to_string()]);
+    let options = serde_json::json!([
+        {"label": ALLOW, "description": "", "scopes": scopes},
+        {"label": BYPASS, "description": ""},
+        {"label": DENY, "description": "", "muted": true},
     ]);
 
-    let question = format!("Allow {disp}?");
     let result = crate::ask::handle_ask(serde_json::json!({
         "questions": [{
             "id": "consent",
             "header": "consent",
-            "question": question,
+            "question": format!("Allow {disp}?"),
             "detail": detail,
             "options": options,
             "no_other": true,
@@ -232,32 +233,35 @@ async fn ask_consent(name: &str, args: &serde_json::Value, cwd: &std::path::Path
     }))
     .await;
 
-    let answers = result
+    let answers: Vec<String> = result
         .pointer("/answers/consent/answers")
-        .and_then(|v| v.as_array());
-    let picked = answers.and_then(|answers| {
+        .and_then(|v| v.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|s| s.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+    let tagged = |tag: &str| {
         answers
             .iter()
-            .filter_map(|a| a.as_str())
-            .find(|a| !a.starts_with("user_note: "))
-            .map(str::to_string)
-    });
-    let note = answers.and_then(|answers| {
-        answers
-            .iter()
-            .filter_map(|a| a.as_str())
-            .find_map(|a| a.strip_prefix("user_note: ").map(str::to_string))
-    });
-    match picked.as_deref() {
-        Some(RUN_ONCE) => Verdict::Once,
-        Some(l) if Some(l) == cmd_label.as_deref() => {
-            Verdict::BashCommands(word.unwrap_or_default())
-        }
-        Some(l) if l == session_label => Verdict::Session,
-        Some(l) if l == project_label => Verdict::Project,
-        Some(l) if l == global_label => Verdict::Global,
-        Some(DENY_WHY) => Verdict::Deny(note),
-        Some(_) => Verdict::Deny(None),
+            .find_map(|a| a.strip_prefix(tag).map(str::to_string))
+    };
+    let picked = answers
+        .iter()
+        .find(|a| !a.starts_with("user_note: ") && !a.starts_with("scope: "));
+    match picked.map(String::as_str) {
+        Some(ALLOW) => match tagged("scope: ").as_deref() {
+            Some(SCOPE_SESSION) => Verdict::Session,
+            Some(SCOPE_PROJECT) => Verdict::Project,
+            Some(SCOPE_ALWAYS) => Verdict::Global,
+            Some(s) if Some(s) == cmd_scope.as_deref() => {
+                Verdict::BashCommands(word.unwrap_or_default())
+            }
+            _ => Verdict::Once,
+        },
+        Some(BYPASS) => Verdict::Bypass,
+        Some(_) => Verdict::Deny(tagged("user_note: ")),
         None => Verdict::Dismissed,
     }
 }
@@ -312,8 +316,12 @@ impl ToolExecutor for ConsentExecutor {
         Box::pin(async move {
             // MCP tools run without a prompt: the server itself was already
             // consented to when it started (user config, or the project
-            // `.mcp.json` server prompt).
-            if crate::ask::interactive_tui() && !name.starts_with("mcp__") {
+            // `.mcp.json` server prompt). request_user_input also skips the
+            // prompt because asking the user is already an interaction.
+            if crate::ask::interactive_tui()
+                && !consent_exempt(&name)
+                && !BYPASSED.load(std::sync::atomic::Ordering::Relaxed)
+            {
                 let (key, _disp) = consent_target(&name);
                 // The lock is held across the prompt so parallel tool calls
                 // queue on it instead of stacking modals.
@@ -322,7 +330,7 @@ impl ToolExecutor for ConsentExecutor {
                 let word = bash_word(&args);
                 if !allowed.contains(&key) && !persisted.is_allowed(&key, &ctx.cwd, word.as_deref())
                 {
-                    match ask_consent(&name, &args, &ctx.cwd).await {
+                    match ask_consent(&name, &args).await {
                         Verdict::Session => {
                             allowed.insert(key);
                         }
@@ -348,6 +356,9 @@ impl ToolExecutor for ConsentExecutor {
                             }
                         }
                         Verdict::Once => {}
+                        Verdict::Bypass => {
+                            BYPASSED.store(true, std::sync::atomic::Ordering::Relaxed);
+                        }
                         Verdict::Dismissed => {
                             // Esc on the prompt means stop, as it does
                             // everywhere else mid-turn — not "decline and
@@ -368,5 +379,19 @@ impl ToolExecutor for ConsentExecutor {
             }
             inner.execute(&ctx, &name, args).await
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::consent_exempt;
+
+    #[test]
+    fn consent_exempt_tools_skip_consent_prompts() {
+        assert!(consent_exempt("request_user_input"));
+        assert!(consent_exempt("mcp__treg__call"));
+        assert!(!consent_exempt("bash"));
+        assert!(!consent_exempt("web_fetch"));
+        assert!(!consent_exempt("request_user_inputx"));
     }
 }

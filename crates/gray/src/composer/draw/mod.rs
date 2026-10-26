@@ -491,8 +491,10 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
                                 };
                                 let body = if glyph == "*" {
                                     format!("{label}: {desc}")
-                                } else if glyph.is_empty() {
-                                    format!("{label} — {desc}")
+                                } else if (glyph.is_empty() || glyph == "~") && desc.is_empty() {
+                                    label.clone()
+                                } else if glyph.is_empty() || glyph == "~" {
+                                    format!("{label}   {desc}")
                                 } else {
                                     format!("{glyph} {label} — {desc}")
                                 };
@@ -502,6 +504,8 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
                                         Style::default()
                                             .fg(theme.accent)
                                             .add_modifier(Modifier::BOLD)
+                                    } else if glyph == "~" {
+                                        Style::default().fg(theme.text_dim)
                                     } else {
                                         Style::default().fg(theme.text_muted)
                                     },

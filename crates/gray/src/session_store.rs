@@ -1248,8 +1248,11 @@ struct Header {
 
 pub struct JsonlSessionStore {
     root_dir: PathBuf,
-    lock: tokio::sync::Mutex<()>,
+    lock: tokio::sync::Mutex<AppendTails>,
 }
+
+type AppendTails =
+    std::collections::HashMap<String, (u64, Option<std::time::SystemTime>, u64, Option<u64>)>;
 
 impl Default for JsonlSessionStore {
     fn default() -> Self {
@@ -1284,7 +1287,7 @@ impl JsonlSessionStore {
     pub fn new(root_dir: impl Into<PathBuf>) -> Self {
         Self {
             root_dir: root_dir.into(),
-            lock: tokio::sync::Mutex::new(()),
+            lock: tokio::sync::Mutex::new(AppendTails::new()),
         }
     }
 
@@ -1839,8 +1842,6 @@ async fn scan_session_dir(
 
 const SUMMARY_END_BYTES: u64 = 16 * 1024;
 
-const BOUNDARY_SCAN_BYTES: u64 = 64 * 1024;
-
 struct SessionSlices {
     head: String,
     tail: String,
@@ -1869,55 +1870,32 @@ fn read_session_ends(path: &Path, cwd: Option<&Path>) -> Option<SessionSlices> {
         return None;
     }
     if head_len < len && !head_bytes.last().is_some_and(|b| *b == b'\n') {
-        let mut scan = vec![0u8; BOUNDARY_SCAN_BYTES as usize];
-        let mut got = 0usize;
-        while got < scan.len() {
-            let n = file.read(&mut scan[got..]).ok()?;
-            if n == 0 {
-                break;
-            }
-            got += n;
-            if scan[..got].contains(&b'\n') {
-                break;
-            }
-        }
-        match scan[..got].iter().position(|b| *b == b'\n') {
-            Some(at) => head_bytes.extend_from_slice(&scan[..=at]),
-
-            None => return read_session_whole(path),
-        }
+        std::io::BufRead::read_until(
+            &mut std::io::BufReader::new(&mut file),
+            b'\n',
+            &mut head_bytes,
+        )
+        .ok()?;
     }
     let head = String::from_utf8_lossy(&head_bytes).into_owned();
 
-    if len <= head_bytes.len() as u64 + SUMMARY_END_BYTES {
-        return Some(SessionSlices {
-            head,
-            tail: String::new(),
-        });
-    }
-    file.seek(SeekFrom::Start(len - SUMMARY_END_BYTES)).ok()?;
-    let mut tail_bytes = Vec::with_capacity(SUMMARY_END_BYTES as usize);
-    file.read_to_end(&mut tail_bytes).ok()?;
-    let text = String::from_utf8_lossy(&tail_bytes).into_owned();
-    let tail = match text.find('\n') {
-        Some(at) => text[at + 1..].to_string(),
-        None => return read_session_whole(path),
-    };
-    Some(SessionSlices { head, tail })
-}
-
-fn read_session_whole(path: &Path) -> Option<SessionSlices> {
-    let content = match std::fs::read_to_string(path) {
-        Ok(c) => c,
-        Err(e) => {
-            log::warn!("failed to read session file {}: {}", path.display(), e);
-            return None;
+    let head_end = head_bytes.len() as u64;
+    let mut back = SUMMARY_END_BYTES.min(len.saturating_sub(head_end));
+    let tail = loop {
+        let start = len - back;
+        file.seek(SeekFrom::Start(start)).ok()?;
+        let mut tail_bytes = Vec::with_capacity(back as usize);
+        file.read_to_end(&mut tail_bytes).ok()?;
+        if start <= head_end {
+            break String::from_utf8_lossy(&tail_bytes).into_owned();
+        }
+        let body = &tail_bytes[..tail_bytes.len().saturating_sub(1)];
+        match body.iter().position(|b| *b == b'\n') {
+            Some(at) => break String::from_utf8_lossy(&tail_bytes[at + 1..]).into_owned(),
+            None => back = back.saturating_mul(4).min(len - head_end),
         }
     };
-    Some(SessionSlices {
-        head: content,
-        tail: String::new(),
-    })
+    Some(SessionSlices { head, tail })
 }
 
 impl JsonlSessionStore {
@@ -2007,10 +1985,18 @@ impl JsonlSessionStore {
         duration_ms: Option<u64>,
     ) -> Result<SessionEntryId> {
         let _lock_file = self.lock_session_file(id).await?;
-        let _guard = self.lock.lock().await;
+        let mut tails = self.lock.lock().await;
         let path = self.session_path(id)?;
+        let stamp = |p: &Path| {
+            std::fs::metadata(p)
+                .ok()
+                .map(|m| (m.len(), m.modified().ok()))
+        };
 
-        let (next_id, parent_id) = Self::next_ids_for_append(id, &path).await?;
+        let (next_id, parent_id) = match (tails.get(id.as_str()), stamp(&path)) {
+            (Some(&(len, mtime, next, last)), Some(now)) if (len, mtime) == now => (next, last),
+            _ => Self::next_ids_for_append(id, &path).await?,
+        };
 
         let entry = SessionEntry {
             compaction_boundary: false,
@@ -2043,6 +2029,12 @@ impl JsonlSessionStore {
         file.flush().await?;
         file.sync_all().await?;
         tighten_file_mode(&path);
+        if let Some((len, mtime)) = stamp(&path) {
+            tails.insert(
+                id.as_str().to_string(),
+                (len, mtime, next_id + 1, Some(next_id)),
+            );
+        }
 
         Ok(next_id)
     }

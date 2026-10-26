@@ -261,16 +261,67 @@ pub(crate) fn syntax_highlight_raw(
     use syntect::util::LinesWithEndings;
 
     let syn = syntect?;
-    let mut hl = syn.highlight_lines_for_fence_info(fence_info)?;
-    let mut lines = Vec::new();
-    for line in LinesWithEndings::from(text) {
-        let highlighted = hl.highlight_line(line, syn.syntax_set).ok()?;
-        lines.push(
-            highlighted
-                .into_iter()
+    let key = syn as *const Syntect;
+    let cached = OPEN_BLOCK
+        .with(|c| c.borrow_mut().take())
+        .filter(|b| b.syntect == key && b.fence == fence_info && text.starts_with(&b.done));
+    let (mut hl, mut lines, mut done) = match cached {
+        Some(b) => (
+            HighlightLines::from_state(&syn.theme, b.highlight, b.parse),
+            b.lines,
+            b.done,
+        ),
+        None => (
+            syn.highlight_lines_for_fence_info(fence_info)?,
+            Vec::new(),
+            String::new(),
+        ),
+    };
+    let highlight = |hl: &mut HighlightLines, line: &str| {
+        hl.highlight_line(line, syn.syntax_set).ok().map(|h| {
+            h.into_iter()
                 .map(|(s, t)| (s, t.to_string()))
-                .collect(),
-        );
+                .collect::<Vec<_>>()
+        })
+    };
+    let rest = &text[done.len()..];
+    let mut partial = None;
+    for line in LinesWithEndings::from(rest) {
+        if line.ends_with('\n') {
+            lines.push(highlight(&mut hl, line)?);
+            done.push_str(line);
+        } else {
+            partial = Some(line);
+        }
     }
-    Some(lines)
+    let (hs, ps) = hl.state();
+    let mut out = lines.clone();
+    if let Some(line) = partial {
+        let mut tail = HighlightLines::from_state(&syn.theme, hs.clone(), ps.clone());
+        out.push(highlight(&mut tail, line)?);
+    }
+    OPEN_BLOCK.with(|c| {
+        *c.borrow_mut() = Some(OpenBlock {
+            syntect: key,
+            fence: fence_info.to_string(),
+            done,
+            lines,
+            highlight: hs,
+            parse: ps,
+        })
+    });
+    Some(out)
+}
+
+struct OpenBlock {
+    syntect: *const Syntect,
+    fence: String,
+    done: String,
+    lines: Vec<Vec<(syntect::highlighting::Style, String)>>,
+    highlight: syntect::highlighting::HighlightState,
+    parse: syntect::parsing::ParseState,
+}
+
+thread_local! {
+    static OPEN_BLOCK: std::cell::RefCell<Option<OpenBlock>> = const { std::cell::RefCell::new(None) };
 }

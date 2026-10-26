@@ -2,6 +2,7 @@ pub mod agent;
 mod agent_compact;
 mod agent_loop;
 mod agent_tools;
+mod background_compact;
 pub mod cache_warm;
 mod compact;
 pub mod credential;

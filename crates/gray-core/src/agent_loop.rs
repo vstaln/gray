@@ -500,7 +500,7 @@ impl Agent {
                     )
                 {
                     let before = (self.estimate_tokens(), self.messages.len());
-                    match self.try_compact_budgeted().await {
+                    match self.try_compact_pre_turn().await {
                         Ok(true) => {
                             let reason = self.ceiling_reason(before.0);
                             emit!(AgentEvent::compacted(
@@ -1090,6 +1090,7 @@ impl Agent {
             self.messages.push(assistant.clone());
 
             self.record_context_usage(&usage);
+            self.maybe_start_background_compaction();
             self.warm_cache_reported = self.warm_cache_reported
                 || usage.cache_read_input_tokens
                     + usage.cached_tokens
@@ -1102,10 +1103,15 @@ impl Agent {
 
             let overflow_retry =
                 stop_reason == StopReason::MaxTokens && !overflow_recovery_attempted;
-            if self
-                .context_window
-                .is_some_and(|w| crate::overflow::is_silent_overflow(&usage, stop_reason, w))
-                && (overflow_retry || stop_reason == StopReason::EndTurn)
+            let sent = crate::agent_compact::est_tokens(&self.messages);
+            let reducible = sent.saturating_sub(
+                self.compact_keep
+                    .unwrap_or(crate::compact::RETAINED_MESSAGE_TOKEN_BUDGET),
+            );
+            if self.context_window.is_some_and(|w| {
+                crate::overflow::is_silent_overflow(&usage, stop_reason, w)
+                    && reducible >= usage.input_tokens.saturating_sub(w)
+            }) && (overflow_retry || stop_reason == StopReason::EndTurn)
             {
                 if overflow_retry
                     && self
@@ -1226,9 +1232,15 @@ impl Agent {
 
             let known: std::collections::HashSet<String> =
                 self.tools.iter().map(|t| t.name.clone()).collect();
+            let read_only: std::collections::HashSet<String> = self
+                .tools
+                .iter()
+                .filter(|t| t.read_only)
+                .map(|t| t.name.clone())
+                .collect();
 
             let round_start = self.messages.len();
-            let segments = crate::parallel::plan_segments(&tool_uses, &known);
+            let segments = crate::parallel::plan_segments(&tool_uses, &known, &read_only);
             for segment in segments {
                 if let crate::parallel::Segment::Parallel(idxs) = segment {
                     let (Some(run_start), Some(run_end)) =
@@ -1270,7 +1282,7 @@ impl Agent {
                     let demoted = {
                         let calls: Vec<(&str, &serde_json::Value)> =
                             ready.iter().map(|(_, n, a)| (n.as_str(), a)).collect();
-                        crate::parallel::rewrite_conflicts(&calls)
+                        crate::parallel::rewrite_conflicts(&calls, &read_only)
                     };
                     if !demoted.is_empty() {
                         let mut keep = Vec::with_capacity(ready.len());
