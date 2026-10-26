@@ -1105,10 +1105,15 @@ impl Agent {
                 stop_reason == StopReason::MaxTokens && !overflow_recovery_attempted;
             let sent = crate::agent_compact::est_tokens(&self.messages);
             let measures_context = usage.total() <= sent.saturating_mul(4).saturating_add(64_000);
+            let reducible = sent.saturating_sub(
+                self.compact_keep
+                    .unwrap_or(crate::compact::RETAINED_MESSAGE_TOKEN_BUDGET),
+            );
             if measures_context
-                && self
-                    .context_window
-                    .is_some_and(|w| crate::overflow::is_silent_overflow(&usage, stop_reason, w))
+                && self.context_window.is_some_and(|w| {
+                    crate::overflow::is_silent_overflow(&usage, stop_reason, w)
+                        && reducible >= usage.input_tokens.saturating_sub(w)
+                })
                 && (overflow_retry || stop_reason == StopReason::EndTurn)
             {
                 if overflow_retry
