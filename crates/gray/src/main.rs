@@ -188,8 +188,9 @@ async fn run() -> anyhow::Result<()> {
                 eprintln!("gray: keybindings.json: {w}");
             }
         }
-        gray::win_paste::ensure_ctrl_v_passthrough();
     }
+    // Paste must work in every mode, --bare included.
+    gray::win_paste::ensure_ctrl_v_passthrough();
     gray::setup::set_user_context_window(config.context_window);
     gray::setup::set_user_reserve_tokens(config.context_reserve);
     gray::setup::set_user_keep_recent_tokens(config.context_keep);

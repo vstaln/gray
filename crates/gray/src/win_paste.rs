@@ -210,11 +210,13 @@ fn ensure_unbound_legacy(obj: &mut serde_json::Map<String, serde_json::Value>) -
 #[cfg(target_os = "windows")]
 fn update_settings_file(path: &Path) -> std::io::Result<()> {
     let body = std::fs::read_to_string(path)?;
-    let mut value: serde_json::Value = match serde_json::from_str(&body) {
-        Ok(v) => v,
-        // JSONC (comments/trailing commas) — leave the file untouched.
-        Err(_) => return Ok(()),
-    };
+    // WT writes JSONC (comments, trailing commas). Strip those so the file
+    // still gets the binding; the backup below keeps the original text.
+    let mut value: serde_json::Value =
+        match serde_json::from_str(&body).or_else(|_| serde_json::from_str(&strip_jsonc(&body))) {
+            Ok(v) => v,
+            Err(_) => return Ok(()),
+        };
     let Some(obj) = value.as_object_mut() else {
         return Ok(());
     };
@@ -227,6 +229,50 @@ fn update_settings_file(path: &Path) -> std::io::Result<()> {
     }
     let pretty = serde_json::to_string_pretty(&value).unwrap_or(body);
     std::fs::write(path, format!("{pretty}\n"))
+}
+
+/// Drops `//` and `/* */` comments and trailing commas outside strings.
+#[cfg(any(target_os = "windows", test))]
+fn strip_jsonc(src: &str) -> String {
+    let b = src.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(src.len());
+    let (mut i, mut in_str) = (0, false);
+    while i < b.len() {
+        let c = b[i];
+        if in_str {
+            out.push(c);
+            if c == b'\\' && i + 1 < b.len() {
+                out.push(b[i + 1]);
+                i += 1;
+            } else if c == b'"' {
+                in_str = false;
+            }
+        } else if c == b'"' {
+            in_str = true;
+            out.push(b'"');
+        } else if c == b'/' && b.get(i + 1) == Some(&b'/') {
+            while i < b.len() && b[i] != b'\n' {
+                i += 1;
+            }
+            continue;
+        } else if c == b'/' && b.get(i + 1) == Some(&b'*') {
+            i += 2;
+            while i + 1 < b.len() && !(b[i] == b'*' && b[i + 1] == b'/') {
+                i += 1;
+            }
+            i += 2;
+            continue;
+        } else if c == b',' {
+            let next = b[i + 1..].iter().find(|x| !x.is_ascii_whitespace());
+            if !matches!(next, Some(b'}') | Some(b']')) {
+                out.push(b',');
+            }
+        } else {
+            out.push(c);
+        }
+        i += 1;
+    }
+    String::from_utf8(out).unwrap_or_default()
 }
 
 #[cfg(target_os = "windows")]
@@ -247,3 +293,20 @@ pub fn ensure_ctrl_v_passthrough() {
 
 #[cfg(not(target_os = "windows"))]
 pub fn ensure_ctrl_v_passthrough() {}
+
+#[cfg(test)]
+#[test]
+fn jsonc_settings_parse_after_stripping() {
+    let src = r#"{
+        // comment with "quotes" and a , comma
+        "url": "http://x//y", /* block */
+        "font": "Cascadia ☕ Code",
+        "keys": ["ctrl+v", "a,]"],
+        "actions": [ { "command": "paste", }, ],
+    }"#;
+    let v: serde_json::Value = serde_json::from_str(&strip_jsonc(src)).unwrap();
+    assert_eq!(v["url"], "http://x//y");
+    assert_eq!(v["font"], "Cascadia ☕ Code");
+    assert_eq!(v["keys"][1], "a,]");
+    assert_eq!(v["actions"][0]["command"], "paste");
+}
