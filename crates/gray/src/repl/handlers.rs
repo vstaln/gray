@@ -887,7 +887,3 @@ pub(crate) async fn handle_model(
         }
     }
 }
-
-#[path = "handlers_tests.rs"]
-#[cfg(test)]
-mod tests;

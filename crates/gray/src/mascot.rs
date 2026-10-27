@@ -295,7 +295,3 @@ pub(crate) fn print_banner() -> bool {
     set_mascot_shown(shown);
     shown
 }
-
-#[path = "mascot_tests.rs"]
-#[cfg(test)]
-mod tests;

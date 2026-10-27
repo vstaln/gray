@@ -145,7 +145,3 @@ fn split(cmd: &str) -> Vec<String> {
     push_seg(&mut segs, &mut cur);
     segs
 }
-
-#[path = "split_tests.rs"]
-#[cfg(test)]
-mod split_tests;

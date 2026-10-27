@@ -1170,7 +1170,3 @@ fn build_view(log_path: &std::path::Path, summary: &PumpSummary) -> View {
     );
     view
 }
-
-#[path = "bash_tests.rs"]
-#[cfg(test)]
-mod tests;

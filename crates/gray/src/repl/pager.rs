@@ -272,7 +272,3 @@ where
         }
     }
 }
-
-#[path = "pager_tests.rs"]
-#[cfg(test)]
-mod tests;

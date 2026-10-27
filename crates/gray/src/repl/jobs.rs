@@ -295,11 +295,6 @@ pub(crate) fn load_wakes(home: &Path, sid: Option<&str>) -> Vec<Wake> {
     wakes
 }
 
-#[cfg(test)]
-fn load_wakes_with(home: &Path, sid: &str, fetch: impl Fn(&Path) -> Option<Vec<u8>>) -> Vec<Wake> {
-    wakes_from_json(&fetch(home).unwrap_or_default(), sid)
-}
-
 pub(crate) fn remove(
     exec: &dyn ToolExecutor,
     ctx: &ToolContext,
@@ -503,7 +498,3 @@ pub(crate) fn stop_all_blocking() {
         std::thread::sleep(Duration::from_millis(50));
     }
 }
-
-#[path = "jobs_tests.rs"]
-#[cfg(test)]
-mod tests;

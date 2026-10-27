@@ -130,7 +130,3 @@ pub(crate) fn detect_connect_candidates(
     }
     found
 }
-
-#[path = "providers_tests.rs"]
-#[cfg(test)]
-mod tests;

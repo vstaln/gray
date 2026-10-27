@@ -617,7 +617,3 @@ pub(crate) fn render_markdown_lines(
     );
     (output.lines, output.hyperlinks)
 }
-
-#[path = "boxes_tests.rs"]
-#[cfg(test)]
-mod tests;

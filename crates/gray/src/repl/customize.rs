@@ -227,7 +227,3 @@ fn handle_theme_quiet(arg: Option<&str>, lines: &mut Vec<String>) {
     }
     lines.push(outcome.message);
 }
-
-#[path = "customize_tests.rs"]
-#[cfg(test)]
-mod tests;

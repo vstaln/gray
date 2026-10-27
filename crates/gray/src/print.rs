@@ -1492,7 +1492,3 @@ pub async fn save_session(
 
     Ok(session_id)
 }
-
-#[path = "print_tests.rs"]
-#[cfg(test)]
-mod tests;

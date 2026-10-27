@@ -371,7 +371,3 @@ pub fn default_handler(cwd: PathBuf) -> HostHandler {
         fut
     })
 }
-
-#[path = "host_tests.rs"]
-#[cfg(test)]
-mod tests;

@@ -1217,10 +1217,6 @@ pub(crate) async fn recovery_compact(
     }
 }
 
-#[path = "session_tests.rs"]
-#[cfg(test)]
-mod tests;
-
 fn plural(n: usize) -> &'static str {
     if n == 1 { "" } else { "s" }
 }

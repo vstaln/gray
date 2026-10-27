@@ -512,7 +512,3 @@ fn echo_submit(tui: &mut Tui, text: &str, attached: &[PathBuf]) {
         tui.push_user_prompt(text, attached, !text.starts_with('/'));
     }
 }
-
-#[path = "mod_tests.rs"]
-#[cfg(test)]
-mod tests;

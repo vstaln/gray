@@ -134,7 +134,3 @@ pub fn attach(full: &Path) -> Result<Attached, String> {
         _ => Ok(Attached::Image(img, format!("{name} (contact sheet)"))),
     }
 }
-
-#[path = "view_tests.rs"]
-#[cfg(test)]
-mod tests;

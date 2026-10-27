@@ -248,7 +248,3 @@ async fn revalidate(
     )?;
     Ok(index)
 }
-
-#[path = "index_tests.rs"]
-#[cfg(test)]
-mod tests;

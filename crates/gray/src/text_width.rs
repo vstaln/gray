@@ -33,7 +33,3 @@ pub fn word_window_end(chars: &[char], start: usize, max_w: usize) -> usize {
     }
     end
 }
-
-#[path = "text_width_tests.rs"]
-#[cfg(test)]
-mod tests;

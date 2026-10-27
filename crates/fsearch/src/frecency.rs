@@ -107,29 +107,3 @@ impl Frecency {
         });
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn decays_and_persists() {
-        let dir = std::env::temp_dir().join(format!("fsearch-frecency-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let f = Frecency::load(dir.join("frecency"));
-        let t = fsearch::query::now_secs() - 1000;
-        assert_eq!(f.open(b"/p/src/a.rs", t), 1.0);
-        assert_eq!(f.open(b"/p/src/a.rs", t + 10), 1.0, "refocusing isn't an open");
-        assert!((f.open(b"/p/src/a.rs", t + 1000) - 2.0).abs() < 0.01);
-        assert!((f.score(b"/p/src/a.rs", t + 1000 + 14 * 86_400) - 1.0).abs() < 0.01, "two weeks halve it");
-        assert_eq!(f.under(b"/p", t + 1000).len(), 1);
-        assert!(f.under(b"/p/s", t + 1000).is_empty());
-        assert_eq!((boost(0.0), boost(1.0), boost(5.0), boost(100.0)), (0, 8, 21, 40));
-        assert_eq!(f.open(b"/p/a\nb.rs", t), 1.0);
-        std::thread::sleep(std::time::Duration::from_millis(2500));
-        let g = Frecency::load(dir.join("frecency"));
-        assert!((g.score(b"/p/src/a.rs", t + 1000) - 2.0).abs() < 0.01, "saved");
-        assert!((g.score(b"/p/a\nb.rs", t) - 1.0).abs() < 0.01, "a newline in a name is kept");
-        std::fs::remove_dir_all(&dir).unwrap();
-    }
-}

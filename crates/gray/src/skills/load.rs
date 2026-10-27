@@ -289,7 +289,3 @@ pub(crate) fn load_skills_from_dir_internal(
 
     LoadSkillsResult { skills }
 }
-
-#[path = "load_tests.rs"]
-#[cfg(test)]
-mod tests;

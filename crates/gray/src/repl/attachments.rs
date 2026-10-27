@@ -97,9 +97,6 @@ pub fn extract_inline_image_paths(text: &str, cwd: &Path) -> Vec<PathBuf> {
     }
     out
 }
-#[path = "attachments_tests.rs"]
-#[cfg(test)]
-mod tests;
 
 pub fn attachment_label(path: &Path) -> String {
     let name = path

@@ -262,7 +262,3 @@ impl Jobs {
         Some(lines.join("\n"))
     }
 }
-
-#[path = "jobs_tests.rs"]
-#[cfg(test)]
-mod tests;

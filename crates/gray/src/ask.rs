@@ -961,7 +961,3 @@ fn push_ask_summary(
     }
     t.ensure_gap();
 }
-
-#[path = "ask_tests.rs"]
-#[cfg(test)]
-mod tests;

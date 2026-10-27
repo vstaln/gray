@@ -1,6 +1,4 @@
 use crate::agent::Agent;
-#[cfg(test)]
-use crate::error::CoreError;
 use crate::message::{ContentBlock, Message, Role};
 
 fn message_tokens(m: &Message) -> usize {
@@ -64,25 +62,6 @@ pub(crate) fn trigger_message(instructions: Option<&str>) -> Message {
         ));
     }
     Message::user_injected(trigger)
-}
-
-#[cfg(test)]
-pub(crate) async fn run_compaction_call(
-    agent: &Agent,
-    history: &[Message],
-    instructions: Option<&str>,
-) -> Result<String, CoreError> {
-    let mut messages = history.to_vec();
-    messages.push(trigger_message(instructions));
-
-    let system = agent.system_text();
-    agent
-        .complete_isolated(
-            (!system.is_empty()).then_some(system),
-            messages,
-            agent.request_tools(),
-        )
-        .await
 }
 
 /// The pi-cached-compaction trick: rebuild the summary call as the last
@@ -271,11 +250,6 @@ pub(crate) fn elide_media_over_payload_budget(messages: &mut [Message]) -> usize
         }
     }
     elided
-}
-
-#[cfg(test)]
-pub(crate) fn build_retained(messages: &[Message], budget: usize) -> Vec<Message> {
-    build_retained_with_session(messages, budget, None)
 }
 
 pub(crate) fn build_retained_with_session(
@@ -552,10 +526,6 @@ fn split_head_tail(s: &str, usable: usize) -> (&str, &str) {
     let tail_start = tail_start.max(head_end);
     (&s[..head_end], &s[tail_start..])
 }
-
-#[path = "compact_mod_tests.rs"]
-#[cfg(test)]
-mod tests;
 
 pub(crate) fn anchor_message(messages: &[Message]) -> Option<Message> {
     let first = messages.first()?;

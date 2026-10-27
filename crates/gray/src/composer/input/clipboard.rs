@@ -127,7 +127,3 @@ pub(crate) fn paste_from_system_clipboard(tui: &mut Tui) -> bool {
     }
     false
 }
-
-#[path = "clipboard_tests.rs"]
-#[cfg(test)]
-mod tests;

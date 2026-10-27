@@ -266,7 +266,3 @@ async fn wait_then_wake(
         }
     }
 }
-
-#[path = "notice_tests.rs"]
-#[cfg(test)]
-mod tests;

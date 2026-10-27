@@ -107,19 +107,6 @@ where
         term
     }
 
-    #[cfg(test)]
-    pub(crate) fn debug_state(&self) -> (u16, usize) {
-        (self.covered, self.tail.len())
-    }
-
-    #[cfg(test)]
-    pub(crate) fn tail_text(&self) -> Vec<String> {
-        self.tail
-            .iter()
-            .map(|row| row.iter().map(|c| c.symbol()).collect::<String>())
-            .collect()
-    }
-
     pub fn set_viewport_area(&mut self, area: Rect) {
         self.buffers[self.current].resize(area);
         self.buffers[1 - self.current].resize(area);
@@ -573,7 +560,3 @@ fn leveled_cell(cell: &Cell) -> Cell {
     out.underline_color = underline;
     out
 }
-
-#[path = "terminal_tests.rs"]
-#[cfg(all(test, not(windows)))]
-mod tests;

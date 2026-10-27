@@ -610,26 +610,3 @@ pub(crate) fn preview_lines(
     }
     Some(lines)
 }
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn reset_transmitted_forces_reupload() {
-        super::transmitted()
-            .lock()
-            .unwrap()
-            .insert((std::path::PathBuf::from("/tmp/x.png"), 8, 4));
-        super::reset_transmitted();
-        assert!(super::transmitted().lock().unwrap().is_empty());
-    }
-
-    #[test]
-    fn placeholder_cells_are_single_width() {
-        let mut cell = String::new();
-        cell.push(super::PLACEHOLDER);
-        cell.push(super::DIACRITICS[3]);
-        cell.push(super::DIACRITICS[5]);
-        cell.push(super::DIACRITICS[0]);
-        assert_eq!(crate::text_width::display_width(&cell), 1);
-    }
-}

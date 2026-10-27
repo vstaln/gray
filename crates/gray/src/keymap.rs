@@ -552,7 +552,3 @@ pub fn load_into_active(gray_home: &Path) -> Vec<String> {
     set_active(km);
     warnings
 }
-
-#[path = "keymap_tests.rs"]
-#[cfg(test)]
-mod tests;

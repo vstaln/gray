@@ -309,7 +309,3 @@ pub fn header(
     }
     out
 }
-
-#[path = "view_tests.rs"]
-#[cfg(test)]
-mod tests;

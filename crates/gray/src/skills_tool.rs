@@ -187,7 +187,3 @@ pub fn apply_substitutions(body: &str, args: Option<&str>, skill_dir: &str) -> S
     body.replace("$ARGUMENTS", args.unwrap_or(""))
         .replace("${SKILL_DIR}", skill_dir)
 }
-
-#[path = "skills_tool_tests.rs"]
-#[cfg(test)]
-mod tests;

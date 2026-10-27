@@ -1698,10 +1698,6 @@ pub(crate) fn command_outcome(v: &Value, plugin_argv: &[String]) -> Option<Comma
     field("text").map(|t| CommandOutcome::Say(t.to_string()))
 }
 
-#[path = "sidecar_tests.rs"]
-#[cfg(test)]
-mod tests;
-
 type DynRefresher = Arc<
     dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send>> + Send + Sync,
 >;

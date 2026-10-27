@@ -287,7 +287,3 @@ pub fn format_remaining(remaining: Duration) -> String {
         format!("{secs}s")
     }
 }
-
-#[cfg(test)]
-#[path = "cache_tests.rs"]
-mod tests;

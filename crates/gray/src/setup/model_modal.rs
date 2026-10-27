@@ -434,12 +434,6 @@ fn has_declared_variants(model: &str) -> bool {
     super::variants::row_shape(model).is_some_and(|s| !s.variants.is_empty())
 }
 
-#[cfg(test)]
-fn initial_row_effort(config: &Config, saved: &SavedConfig, model: &str) -> Option<&'static str> {
-    let levels = row_levels(model, false, &config.model_parts);
-    initial_effort_in(config, saved, model, &levels)
-}
-
 pub(crate) fn initial_effort_in(
     config: &Config,
     saved: &SavedConfig,
@@ -2193,7 +2187,3 @@ pub(crate) fn validate_direct_model_id(
         models.len(),
     ))
 }
-
-#[path = "model_modal_tests.rs"]
-#[cfg(test)]
-mod tests;

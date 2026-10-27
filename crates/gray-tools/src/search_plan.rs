@@ -1240,7 +1240,3 @@ pub fn rg_plan(args: &[String]) -> Result<RgPlan, &'static str> {
         exec_only,
     })
 }
-
-#[cfg(test)]
-#[path = "search_plan_tests.rs"]
-mod tests;

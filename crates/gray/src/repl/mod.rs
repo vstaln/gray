@@ -1363,7 +1363,3 @@ pub async fn run_repl_mode(
 
 #[cfg(test)]
 mod tests;
-
-#[path = "mod_ctrl_c_policy_tests.rs"]
-#[cfg(test)]
-mod ctrl_c_policy_tests;

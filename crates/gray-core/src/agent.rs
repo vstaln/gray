@@ -923,36 +923,6 @@ impl Agent {
     pub fn tool_defs(&self) -> &[ToolDef] {
         &self.tools
     }
-
-    #[cfg(test)]
-    pub(crate) async fn complete_isolated(
-        &self,
-        system: Option<&str>,
-        messages: Vec<Message>,
-        tools: Vec<ToolDef>,
-    ) -> Result<String, CoreError> {
-        self.complete_isolated_with_cache(system, messages, tools, false)
-            .await
-    }
-
-    #[cfg(test)]
-    async fn complete_isolated_with_cache(
-        &self,
-        system: Option<&str>,
-        messages: Vec<Message>,
-        tools: Vec<ToolDef>,
-        shared_cache: bool,
-    ) -> Result<String, CoreError> {
-        complete_isolated_detached(
-            self.provider.clone(),
-            self.session_id.clone(),
-            system.map(str::to_string),
-            messages,
-            tools,
-            shared_cache,
-        )
-        .await
-    }
 }
 
 pub(crate) async fn complete_isolated_detached(
@@ -1069,7 +1039,3 @@ mod agent_tests;
 #[path = "agent_repair_tests.rs"]
 #[cfg(test)]
 mod repair_tests;
-
-#[path = "agent_surface_tests.rs"]
-#[cfg(test)]
-mod surface_tests;

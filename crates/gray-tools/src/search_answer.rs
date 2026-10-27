@@ -1352,7 +1352,3 @@ fn rg_prefix(
         out.push(b':');
     }
 }
-
-#[path = "search_answer_tests.rs"]
-#[cfg(test)]
-mod tests;

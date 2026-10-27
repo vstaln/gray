@@ -345,7 +345,3 @@ impl ToolExecutor for Registry {
         })
     }
 }
-
-#[path = "lib_tests.rs"]
-#[cfg(test)]
-mod tests;

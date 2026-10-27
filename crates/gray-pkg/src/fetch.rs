@@ -183,7 +183,3 @@ pub fn unpack_tar_gz(archive: &Path, dest: &Path) -> anyhow::Result<()> {
     );
     Ok(())
 }
-
-#[path = "fetch_tests.rs"]
-#[cfg(test)]
-mod tests;

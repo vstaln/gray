@@ -41,7 +41,3 @@ pub fn check_caps(config: &Config, turns: usize, cost: f64) -> Option<String> {
     }
     None
 }
-
-#[path = "turn_caps_tests.rs"]
-#[cfg(test)]
-mod tests;

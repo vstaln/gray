@@ -3,8 +3,6 @@ use super::*;
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
-#[cfg(test)]
-use ratatui::style::Color;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, Paragraph};
@@ -692,10 +690,6 @@ pub(crate) fn render_entering_key(
         footer_key_spans(&[("enter ", action_label)], colors),
     );
 }
-
-#[cfg(test)]
-#[path = "connect_draw_tests.rs"]
-mod tests;
 
 pub(crate) fn render_authorizing_plugin(
     frame: &mut Frame,

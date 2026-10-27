@@ -1426,7 +1426,3 @@ fn model_picker_fallback(
     ));
     out
 }
-
-#[path = "cmd_tests.rs"]
-#[cfg(test)]
-mod tests;

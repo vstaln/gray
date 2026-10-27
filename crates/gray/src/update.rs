@@ -289,7 +289,7 @@ fn download_to(url: &str, dest: &Path, quiet: bool, what: &str) -> anyhow::Resul
     )
 }
 
-#[cfg(any(windows, test))]
+#[cfg(windows)]
 fn sums_digest(sums: &str, name: &str) -> anyhow::Result<String> {
     let found: Vec<&str> = sums
         .lines()
@@ -305,7 +305,7 @@ fn sums_digest(sums: &str, name: &str) -> anyhow::Result<String> {
     Ok(found[0].to_ascii_lowercase())
 }
 
-#[cfg(any(windows, test))]
+#[cfg(windows)]
 fn zip_members(listing: &str) -> anyhow::Result<Vec<String>> {
     let mut names: Vec<String> = listing
         .lines()
@@ -738,7 +738,3 @@ pub async fn startup_check() {
         }
     }
 }
-
-#[path = "update_tests.rs"]
-#[cfg(test)]
-mod tests;

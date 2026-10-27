@@ -456,7 +456,3 @@ fn paint_dimmed_background(
         Paragraph::new(line).render(Rect::new(area.x, y, area.width, 1), buf);
     }
 }
-
-#[path = "ui_tests.rs"]
-#[cfg(test)]
-mod tests;

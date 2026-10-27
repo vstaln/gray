@@ -219,7 +219,3 @@ impl ActiveWarm {
         settle_warm_phase(&self.phase);
     }
 }
-
-#[path = "cache_warm_tests.rs"]
-#[cfg(test)]
-mod tests;

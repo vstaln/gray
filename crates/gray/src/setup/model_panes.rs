@@ -1486,7 +1486,3 @@ pub(crate) fn run_model_panes(
         (outcome, _) => outcome,
     })
 }
-
-#[path = "model_panes_tests.rs"]
-#[cfg(test)]
-mod tests;

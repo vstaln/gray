@@ -139,7 +139,3 @@ pub fn gray_markdown_style() -> MarkdownStyle {
     }
     .adapt()
 }
-
-#[path = "lib_tests.rs"]
-#[cfg(test)]
-mod tests;

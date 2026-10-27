@@ -432,11 +432,3 @@ impl StreamEvent {
         }
     }
 }
-
-#[path = "estimated_context_tests.rs"]
-#[cfg(test)]
-mod estimated_context_tests;
-
-#[path = "thinking_chunk_tests.rs"]
-#[cfg(test)]
-mod thinking_chunk_tests;

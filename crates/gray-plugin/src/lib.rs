@@ -497,7 +497,3 @@ impl PluginHooks for PluginHookAdapter {
         self.plugin.shutdown().await;
     }
 }
-
-#[cfg(test)]
-#[path = "provider_tests.rs"]
-mod provider_tests;

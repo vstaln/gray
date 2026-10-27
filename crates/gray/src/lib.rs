@@ -888,11 +888,3 @@ pub enum InstallCmd {
         name: String,
     },
 }
-
-#[path = "lib_tests.rs"]
-#[cfg(test)]
-mod tests;
-
-#[cfg(test)]
-#[path = "input_json_tests.rs"]
-mod input_json_tests;

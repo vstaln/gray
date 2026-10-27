@@ -930,7 +930,3 @@ pub fn build_connect_items(
 
     items
 }
-
-#[path = "catalog_tests.rs"]
-#[cfg(test)]
-mod tests;

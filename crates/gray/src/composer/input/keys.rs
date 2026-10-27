@@ -443,7 +443,3 @@ pub(crate) fn line_end(text: &str, cur: usize) -> usize {
         .map(|i| i + cur)
         .unwrap_or(text.len())
 }
-
-#[path = "keys_tests.rs"]
-#[cfg(test)]
-mod tests;

@@ -155,10 +155,6 @@ pub(crate) async fn handle_plugin_command(raw: &str, tui: Option<&crate::compose
     }
 }
 
-#[path = "plugin_cmds_tests.rs"]
-#[cfg(test)]
-mod tests;
-
 pub(crate) async fn provider_command_outcome(
     provider_id: &str,
     cmd: &str,

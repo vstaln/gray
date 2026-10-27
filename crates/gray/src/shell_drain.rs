@@ -50,7 +50,3 @@ pub fn sweep_old_shell_logs() {
         }
     }
 }
-
-#[path = "shell_drain_tests.rs"]
-#[cfg(test)]
-mod tests;

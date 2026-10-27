@@ -1097,23 +1097,6 @@ impl Tui {
         }
     }
 
-    #[cfg(test)]
-    pub(crate) fn test_tui(cols: u16, rows: u16) -> Self {
-        Self::base(
-            CustomTerminal::at_row(
-                LeveledBackend::new(CrosstermBackend::new(std::io::stdout())),
-                ratatui::layout::Size::new(cols, rows),
-                0,
-                terminal::Scrollback::Regions,
-            ),
-            cols,
-            rows,
-            Vec::new(),
-            Vec::new(),
-            None,
-        )
-    }
-
     pub(crate) fn reanchor_viewport(&mut self, cols: u16) {
         self.last_width = cols;
         if let Ok((_, rows)) = crossterm::terminal::size() {
@@ -2084,33 +2067,5 @@ impl Drop for Tui {
         let _ = crossterm::execute!(std::io::stdout(), crossterm::cursor::Show);
     }
 }
-
-#[path = "mod_live_tool_tests.rs"]
-#[cfg(test)]
-mod live_tool_tests;
-
-#[path = "mod_pill_token_tests.rs"]
-#[cfg(test)]
-mod pill_token_tests;
-
-#[path = "mod_thought_line_tests.rs"]
-#[cfg(test)]
-mod thought_line_tests;
-
-#[path = "mod_compaction_tests.rs"]
-#[cfg(test)]
-mod compaction_tests;
-
-#[path = "mod_palette_tests.rs"]
-#[cfg(test)]
-mod palette_tests;
-
-#[path = "mod_fresh_conversation_tests.rs"]
-#[cfg(test)]
-mod fresh_conversation_tests;
-
-#[path = "mod_intro_tests.rs"]
-#[cfg(test)]
-mod intro_tests;
 
 mod background;

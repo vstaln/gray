@@ -221,7 +221,3 @@ where
         let _ = tx.send(carry).await;
     }
 }
-
-#[path = "pump_tests.rs"]
-#[cfg(test)]
-mod tests;

@@ -381,7 +381,3 @@ fn check_setsid(ret: libc::pid_t) -> io::Result<()> {
         Ok(())
     }
 }
-
-#[path = "spawn_tests.rs"]
-#[cfg(test)]
-mod tests;

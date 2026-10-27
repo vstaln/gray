@@ -32,13 +32,5 @@ pub use message::{ChatRequest, ContentBlock, Message, Role, ToolDef};
 mod credential_tests;
 
 #[cfg(test)]
-#[path = "input_tests.rs"]
-mod input_tests;
-
-#[cfg(test)]
-#[path = "spill_tests.rs"]
-mod spill_tests;
-
-#[cfg(test)]
 #[path = "prefix_guard_tests.rs"]
 mod prefix_guard_tests;

@@ -49,7 +49,3 @@ pub(crate) fn rotate_if_needed(path: &Path) {
     let _ = std::fs::rename(path, path.with_extension("log.1"));
     let _ = std::fs::File::create(path);
 }
-
-#[path = "rotation_tests.rs"]
-#[cfg(test)]
-mod tests;

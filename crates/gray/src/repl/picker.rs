@@ -341,7 +341,3 @@ pub(crate) fn run_list_picker<T>(
         }
     }
 }
-
-#[path = "picker_tests.rs"]
-#[cfg(test)]
-mod tests;

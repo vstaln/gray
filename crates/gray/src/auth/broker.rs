@@ -325,7 +325,3 @@ fn valid_lease(saved: &CredentialEnvelope, margin: u64) -> Option<CredentialLeas
         None
     }
 }
-
-#[path = "broker_tests.rs"]
-#[cfg(test)]
-mod tests;

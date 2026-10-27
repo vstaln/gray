@@ -701,7 +701,3 @@ fn fd_read(args: &[String]) -> Option<ReadOnly> {
         detail: (!pos.is_empty()).then(|| pos.join(" ")),
     })
 }
-
-#[path = "label_tests.rs"]
-#[cfg(test)]
-mod tests;

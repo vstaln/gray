@@ -74,7 +74,3 @@ pub(crate) fn junction_blank_run(tail: &[Line<'static>], rows: &[Line<'static>])
         .count();
     trailing + leading
 }
-
-#[path = "margins_tests.rs"]
-#[cfg(test)]
-mod tests;

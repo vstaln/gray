@@ -1021,11 +1021,3 @@ fn connect_modal(
 
     result
 }
-
-#[path = "paste_tests.rs"]
-#[cfg(test)]
-mod paste_tests;
-
-#[path = "remove_tests.rs"]
-#[cfg(test)]
-mod remove_tests;

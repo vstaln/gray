@@ -55,18 +55,6 @@ impl FsearchPool {
         self.hits.load(Ordering::Relaxed)
     }
 
-    #[cfg(test)]
-    pub(crate) fn status_for_test(&self) -> Option<fsearch::Status> {
-        self.engine().map(fsearch::Engine::status)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn save_for_test(&self) {
-        if let Some(e) = self.engine() {
-            e.save();
-        }
-    }
-
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn engine(&self) -> Option<&Engine> {
         self.engine

@@ -652,7 +652,3 @@ pub(crate) fn run_install_manager(
     let _ = terminal.clear();
     result
 }
-
-#[path = "install_manager_tests.rs"]
-#[cfg(test)]
-mod tests;

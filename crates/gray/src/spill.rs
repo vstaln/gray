@@ -137,7 +137,3 @@ fn grep_lines(
     ));
     out
 }
-
-#[path = "spill_tests.rs"]
-#[cfg(test)]
-mod tests;

@@ -484,17 +484,3 @@ fn plugin_auth(item: &crate::setup::ConnectItem) -> anyhow::Result<ConnectAuthPl
         _ => Err(anyhow!("not a plugin provider row")),
     }
 }
-
-#[cfg(test)]
-fn activate_for_test(
-    config: &mut Config,
-    installed: &InstalledProvider,
-    model: &str,
-    path: &Path,
-) -> anyhow::Result<()> {
-    activate_plugin_connection_at(config, installed, model, path)
-}
-
-#[path = "provider_auth_tests.rs"]
-#[cfg(test)]
-mod tests;

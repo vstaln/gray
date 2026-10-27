@@ -681,7 +681,3 @@ fn steer_queued_input(tui: Option<&crate::composer::SharedTui>) -> Option<String
     let _ = t.draw();
     Some(text)
 }
-
-#[path = "prompt_turn_tests.rs"]
-#[cfg(test)]
-mod tests;

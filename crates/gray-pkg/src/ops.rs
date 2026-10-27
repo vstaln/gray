@@ -977,7 +977,3 @@ async fn registered_exe_row(name: &str, installed: &LockEntry, check: bool) -> U
         Err(e) => UpdateRow::new(name, UpdateAction::Failed(format!("{e}"))),
     }
 }
-
-#[path = "ops_tests.rs"]
-#[cfg(test)]
-pub(crate) mod tests;

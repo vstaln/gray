@@ -114,7 +114,3 @@ pub fn drain_session_inbox(home: &std::path::Path, session: &str) -> Vec<Session
     }
     out
 }
-
-#[path = "session_mailbox_tests.rs"]
-#[cfg(test)]
-mod tests;

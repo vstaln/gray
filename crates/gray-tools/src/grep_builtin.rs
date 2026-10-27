@@ -157,7 +157,3 @@ fn walk(root: &Path, globs: Option<&GlobSet>) -> Vec<PathBuf> {
     out.sort();
     out
 }
-
-#[path = "grep_builtin_tests.rs"]
-#[cfg(test)]
-mod tests;

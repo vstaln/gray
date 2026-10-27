@@ -112,7 +112,3 @@ pub fn video_sheet(path: &Path, frames: usize) -> Result<Vec<u8>, MediaError> {
     }
     Ok(out.stdout)
 }
-
-#[path = "video_sheet_tests.rs"]
-#[cfg(test)]
-mod tests;

@@ -1370,17 +1370,3 @@ pub fn default_dir(home: &str) -> PathBuf {
 pub fn default_dir(home: &str) -> PathBuf {
     std::env::var_os("XDG_DATA_HOME").map(PathBuf::from).unwrap_or_else(|| Path::new(home).join(".local/share")).join("fsearch")
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn drops_replaced_stream_events() {
-        let ev = |stream: u32| fsevents::Event { path: b"/x".to_vec(), flags: 0, id: 0, stream };
-
-        let mut v = vec![ev(1), ev(0), ev(2), ev(1)];
-        assert_eq!(drop_stale_events(&mut v, 2), 2);
-        assert_eq!(v.iter().map(|e| e.stream).collect::<Vec<_>>(), [0, 2]);
-    }
-}

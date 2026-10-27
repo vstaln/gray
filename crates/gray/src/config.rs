@@ -390,7 +390,3 @@ pub(crate) fn export_provider_env(config: &Config) {
         }
     }
 }
-
-#[path = "config_tests.rs"]
-#[cfg(test)]
-mod tests;

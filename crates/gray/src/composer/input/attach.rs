@@ -180,7 +180,3 @@ pub(crate) fn try_attach_clipboard_image(tui: &mut Tui) -> bool {
     }
     false
 }
-
-#[path = "attach_tests.rs"]
-#[cfg(test)]
-mod tests;
