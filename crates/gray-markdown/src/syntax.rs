@@ -21,6 +21,13 @@ pub struct Syntect {
     pub theme: SyntectTheme,
 
     pub syntax_set: &'static SyntaxSet,
+    /// Unique per instance; keys the streaming-block cache (an address can be reused once freed).
+    id: u64,
+}
+
+fn next_id() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
 impl Syntect {
@@ -30,7 +37,11 @@ impl Syntect {
             ThemeSet::load_from_reader(&mut cursor).unwrap_or_else(|_| Self::default().theme);
 
         let syntax_set = syntax_set_extra_newlines();
-        Self { theme, syntax_set }
+        Self {
+            theme,
+            syntax_set,
+            id: next_id(),
+        }
     }
 }
 
@@ -44,7 +55,11 @@ impl Default for Syntect {
             .or_else(|| ts.themes.values().next().cloned())
             .unwrap_or_default();
         let syntax_set = syntax_set_defaults();
-        Self { theme, syntax_set }
+        Self {
+            theme,
+            syntax_set,
+            id: next_id(),
+        }
     }
 }
 
@@ -67,6 +82,7 @@ fn themed_syntect(p: crate::style::Palette) -> &'static Syntect {
         Box::leak(Box::new(Syntect {
             theme: palette_theme(&p),
             syntax_set: syntax_set_extra_newlines(),
+            id: next_id(),
         }))
     })
 }
@@ -261,7 +277,7 @@ pub(crate) fn syntax_highlight_raw(
     use syntect::util::LinesWithEndings;
 
     let syn = syntect?;
-    let key = syn as *const Syntect;
+    let key = syn.id;
     let cached = OPEN_BLOCK
         .with(|c| c.borrow_mut().take())
         .filter(|b| b.syntect == key && b.fence == fence_info && text.starts_with(&b.done));
@@ -314,7 +330,7 @@ pub(crate) fn syntax_highlight_raw(
 }
 
 struct OpenBlock {
-    syntect: *const Syntect,
+    syntect: u64,
     fence: String,
     done: String,
     lines: Vec<Vec<(syntect::highlighting::Style, String)>>,

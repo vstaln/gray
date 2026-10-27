@@ -252,6 +252,11 @@ async fn install_spec_gated(
             r.deps.join(", ")
         ));
     }
+    // Dependencies are installed without a cached manifest; adopt them now so
+    // they start lazily like the plugin that pulled them in.
+    for dep in &r.deps {
+        let _ = adopt_cli(home, dep, &home.join("plugins").join(dep)).await;
+    }
 
     match adopt_cli(home, &r.name, &r.path).await {
         Ok(true) => lines.push(format!(

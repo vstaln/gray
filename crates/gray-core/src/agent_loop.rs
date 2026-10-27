@@ -85,12 +85,11 @@ fn quota_flavored(e: &ProviderError) -> bool {
 // (Devin: "Your weekly usage quota has been exhausted") or a provider content
 // refusal, which some routes wrap in a 500. Retrying these only burns minutes
 // of backoff before the same failure.
-const HOPELESS_HINTS: [&str; 8] = [
+const HOPELESS_HINTS: [&str; 7] = [
     "weekly usage",
     "weekly quota",
     "monthly usage",
     "monthly quota",
-    "billing period",
     "content policy",
     "provider refusal",
     "usage polic",
