@@ -535,3 +535,110 @@ async fn background_summary_is_discarded_when_history_changes() {
     agent.messages[0] = Message::user("rewritten");
     assert_eq!(held.discard_reason(&agent), Some("digest"));
 }
+
+struct LiveToolsExecutor {
+    defs: Arc<Mutex<Vec<ToolDef>>>,
+}
+
+#[async_trait]
+impl ToolExecutor for LiveToolsExecutor {
+    fn execute(
+        &self,
+        _ctx: &ToolContext,
+        _name: &str,
+        _args: serde_json::Value,
+    ) -> BoxFuture<'static, ToolOutput> {
+        Box::pin(std::future::ready(ToolOutput::ok("unused")))
+    }
+
+    fn live_defs(&self) -> Option<Vec<ToolDef>> {
+        Some(self.defs.lock().expect("defs lock").clone())
+    }
+}
+
+fn tool(name: &str) -> ToolDef {
+    ToolDef::new(name, "t", serde_json::json!({"type": "object"}))
+}
+
+fn names(defs: &[ToolDef]) -> Vec<&str> {
+    defs.iter().map(|d| d.name.as_str()).collect()
+}
+
+/// An agent that has sent a request just now with a large prompt — the
+/// state where a tool-list change would re-bill the whole cached prefix.
+fn warm_big_agent() -> (Agent, Arc<Mutex<Vec<ToolDef>>>) {
+    let defs = Arc::new(Mutex::new(vec![tool("bash")]));
+    let mut agent = Agent::new(
+        Box::new(FakeProvider::new(vec![])),
+        Arc::new(LiveToolsExecutor { defs: defs.clone() }),
+    );
+    agent.tools = vec![tool("bash")];
+    agent.messages.push(Message::user("hi"));
+    agent.context_usage = Some((100_000, agent.messages.len()));
+    agent.last_request_at = Some(std::time::Instant::now());
+    (agent, defs)
+}
+
+#[test]
+fn tool_change_before_first_request_is_adopted() {
+    let (mut agent, defs) = warm_big_agent();
+    agent.last_request_at = None;
+    defs.lock().unwrap().push(tool("memory"));
+    agent.refresh_tools();
+    assert_eq!(names(&agent.tools), ["bash", "memory"]);
+    assert!(agent.pending_tools.is_none());
+}
+
+#[test]
+fn tool_change_on_warm_big_prompt_is_held() {
+    let (mut agent, defs) = warm_big_agent();
+    defs.lock().unwrap().push(tool("memory"));
+    agent.refresh_tools();
+    assert_eq!(names(&agent.tools), ["bash"], "sent list must not change");
+    assert_eq!(
+        names(agent.pending_tools.as_deref().unwrap()),
+        ["bash", "memory"]
+    );
+}
+
+#[test]
+fn tool_change_on_small_prompt_is_adopted() {
+    let (mut agent, defs) = warm_big_agent();
+    agent.context_usage = Some((2_000, agent.messages.len()));
+    defs.lock().unwrap().push(tool("memory"));
+    agent.refresh_tools();
+    assert_eq!(names(&agent.tools), ["bash", "memory"]);
+}
+
+#[test]
+fn tool_change_after_cache_went_cold_is_adopted() {
+    let (mut agent, defs) = warm_big_agent();
+    agent.last_request_at = std::time::Instant::now()
+        .checked_sub(Duration::from_secs(2 * 60 * 60));
+    defs.lock().unwrap().push(tool("memory"));
+    agent.refresh_tools();
+    assert_eq!(names(&agent.tools), ["bash", "memory"]);
+}
+
+#[test]
+fn held_tool_change_lands_at_history_rewrite() {
+    let (mut agent, defs) = warm_big_agent();
+    defs.lock().unwrap().push(tool("memory"));
+    agent.refresh_tools();
+    assert_eq!(names(&agent.tools), ["bash"]);
+    agent.history_rewritten();
+    assert_eq!(names(&agent.tools), ["bash", "memory"]);
+    assert!(agent.pending_tools.is_none());
+}
+
+#[test]
+fn reverted_tool_change_clears_the_hold() {
+    let (mut agent, defs) = warm_big_agent();
+    defs.lock().unwrap().push(tool("memory"));
+    agent.refresh_tools();
+    defs.lock().unwrap().pop();
+    agent.refresh_tools();
+    assert!(agent.pending_tools.is_none());
+    agent.history_rewritten();
+    assert_eq!(names(&agent.tools), ["bash"]);
+}

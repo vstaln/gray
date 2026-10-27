@@ -582,7 +582,7 @@ impl Agent {
                 self.prefix_guard.observe(self.provider.model_id(), &req)
                 && let Some(cause) = crate::prefix_guard::describe(change, announced, prev_len)
             {
-                log::debug!(target: "gray_agent", "prefix changed: {change} ({cause})");
+                log::info!(target: "gray_agent", "prefix changed: {change} ({cause})");
                 emit!(AgentEvent::PrefixChanged { cause });
             }
             if let Some(sink) = &self.prefix_fp_sink
@@ -592,6 +592,7 @@ impl Agent {
             }
 
             let request_sent = tokio::time::Instant::now();
+            self.last_request_at = Some(std::time::Instant::now());
 
             if let Ok(mut hint) = self.warm_hint.lock() {
                 hint.prompt_tokens = self.estimate_tokens();
