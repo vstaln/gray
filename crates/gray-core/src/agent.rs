@@ -570,6 +570,12 @@ pub struct Agent {
     pub(crate) prefix_rewrite_ok: bool,
 
     pub(crate) lean_prompt: bool,
+
+    pub(crate) background_compaction: bool,
+
+    pub(crate) held_summary: Option<crate::background_compact::HeldSummary>,
+
+    pub(crate) background_failures: u8,
 }
 
 struct SharedProvider(Arc<dyn Provider>);
@@ -625,12 +631,19 @@ impl Agent {
             warm_cache_reported: false,
             prefix_rewrite_ok: true,
             lean_prompt: false,
+            background_compaction: false,
+            held_summary: None,
+            background_failures: 0,
         }
     }
 
     pub fn with_cache_warm(mut self, policy: Option<crate::cache_warm::CacheWarmPolicy>) -> Self {
         self.cache_warm = policy;
         self
+    }
+
+    pub fn set_background_compaction(&mut self, enabled: bool) {
+        self.background_compaction = enabled;
     }
 
     pub fn map_provider(
@@ -681,6 +694,7 @@ impl Agent {
     }
 
     pub(crate) fn history_rewritten(&mut self) {
+        self.held_summary = None;
         self.context_usage = None;
 
         self.soft_elide_rearm = 0;

@@ -111,6 +111,9 @@ pub struct SavedConfig {
     pub lean: Option<bool>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub background_compaction: Option<bool>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub intro: Option<bool>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -262,6 +265,7 @@ fn partial_saved_config(obj: &serde_json::Map<String, serde_json::Value>) -> Sav
         gw_auto: opt_field(obj, "gw_auto"),
         auto_update: opt_field(obj, "auto_update"),
         lean: opt_field(obj, "lean"),
+        background_compaction: opt_field(obj, "background_compaction"),
         intro: opt_field(obj, "intro"),
         theme: opt_field(obj, "theme"),
         status_line: opt_field(obj, "status_line"),
