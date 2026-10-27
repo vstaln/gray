@@ -549,7 +549,10 @@ pub struct Cli {
     #[arg(long, help = "Lean system prompt: skip plugin-provided prompt extras")]
     pub lean: bool,
 
-    #[arg(long, help = "Start context compaction in the background")]
+    #[arg(
+        long,
+        help = "Start context compaction in the background (default on; GRAY_BACKGROUND_COMPACTION=0 turns it off)"
+    )]
     pub background_compaction: bool,
 
     #[arg(long, value_name = "N", help = "Stop the turn after N agent steps")]
