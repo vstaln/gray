@@ -3,7 +3,9 @@ use super::*;
 pub(crate) fn attach_image(tui: &mut Tui, path: PathBuf) {
     let marker = crate::repl::attachments::attachment_marker(&path);
     tui.attachments.push(path);
-    tui.textarea.move_to_end();
+    // The chip lands where the caret is, like pasted text: appending it to
+    // the end put it ahead of anything typed after a paste into an empty
+    // draft, and away from the caret when pasting mid-draft.
     tui.textarea.insert_element(&marker);
     let _ = tui.draw();
 }
