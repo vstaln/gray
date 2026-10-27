@@ -236,6 +236,10 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
     // expiring never shifts the centered box.
     let status_h: u16 = if home_mode {
         1
+    } else if tui.ask_modal.is_some() {
+        // A question carries its own "esc cancel" hint; the status pill's
+        // two rows would only sit blank above it.
+        u16::from(needs_seam)
     } else {
         status_dock_h(dock_live, needs_seam)
     };
@@ -522,7 +526,9 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
         let attach_y = panel_y + panel_h;
         let footer_y = attach_y + attach_h;
 
-        if let Some((started, label)) = &tui.status {
+        if asking {
+            // No status pill while a question owns the band (see status_h).
+        } else if let Some((started, label)) = &tui.status {
             let label_text = format!(" {} {label}\u{2026}", crate::tui::glyph("\u{2b21}", "o"));
 
             let elapsed = match compaction_elapsed {
@@ -610,6 +616,18 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
                     )])),
                     Rect::new(area.x, y, area.width, 1),
                 );
+            }
+        }
+        // The rows framing a question are band padding, like the input
+        // box's own top/bottom rows: paint them, or they read as black bars.
+        if asking {
+            for y in [ask_y.saturating_sub(ask_gap), ask_y + ask_h] {
+                if y >= area.y && y < area.bottom() {
+                    frame.render_widget(
+                        chrome_row(Line::default()),
+                        Rect::new(area.x, y, area.width, 1),
+                    );
+                }
             }
         }
         for (i, line) in ask_rows.iter().enumerate() {
