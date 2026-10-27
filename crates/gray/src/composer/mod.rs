@@ -17,7 +17,9 @@ pub(crate) const PANEL_ROWS: usize = 6;
 
 pub(crate) const MIN_VIEWPORT_H: u16 = 4;
 
+pub(crate) mod cache_stats;
 mod glow;
+pub(crate) mod kitty;
 mod plugin_widget;
 mod terminal;
 pub(crate) use terminal::{CustomTerminal, LeveledBackend};
@@ -328,7 +330,7 @@ pub struct Tui {
     pub cumulative_usage: Option<gray_core::event::Usage>,
 
     pub(crate) cache: crate::cache::CacheTracker,
-    pub(crate) cache_stats: crate::quality_of_life::cache_stats::CacheStats,
+    pub(crate) cache_stats: crate::composer::cache_stats::CacheStats,
     markdown_renderer: gray_markdown::StreamingMarkdownRenderer,
     committed_markdown_lines: usize,
     reveal_buf: String,
@@ -938,12 +940,12 @@ pub(crate) fn palette_repaint_due(
 
 impl Tui {
     pub fn new() -> anyhow::Result<Self> {
-        crate::quality_of_life::kitty::warm_cell_pixels();
+        crate::composer::kitty::warm_cell_pixels();
         Self::with_intro(true)
     }
 
     pub fn new_no_intro() -> anyhow::Result<Self> {
-        crate::quality_of_life::kitty::warm_cell_pixels();
+        crate::composer::kitty::warm_cell_pixels();
         Self::with_intro(false)
     }
 
@@ -1066,7 +1068,7 @@ impl Tui {
             latest_usage: None,
             cumulative_usage: None,
             cache: crate::cache::CacheTracker::default(),
-            cache_stats: crate::quality_of_life::cache_stats::CacheStats::default(),
+            cache_stats: crate::composer::cache_stats::CacheStats::default(),
             markdown_renderer: gray_markdown::StreamingMarkdownRenderer::new(
                 gray_markdown::gray_markdown_style(),
                 true,
@@ -2041,7 +2043,7 @@ impl Tui {
         self.background_closed = true;
         let _ = self.hide_background();
         self.background = None;
-        crate::quality_of_life::kitty::flush_transmits();
+        crate::composer::kitty::flush_transmits();
 
         self.gap_owed = true;
         self.pay_gap();
@@ -2060,7 +2062,7 @@ impl Tui {
 
 impl Drop for Tui {
     fn drop(&mut self) {
-        crate::quality_of_life::kitty::flush_transmits();
+        crate::composer::kitty::flush_transmits();
         let _ = self.hide_background();
         let _ = crossterm::terminal::disable_raw_mode();
         let _ = crossterm::execute!(std::io::stdout(), crossterm::event::DisableBracketedPaste);

@@ -24,7 +24,6 @@ pub mod project_trust;
 pub mod prompt_history;
 pub mod prompt_templates;
 pub mod providers;
-pub mod quality_of_life;
 pub mod repl;
 pub mod resume;
 mod rotation;

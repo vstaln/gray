@@ -107,6 +107,7 @@ pub use icons::icon;
 pub mod tabs;
 
 pub(crate) mod composite_rows;
+pub(crate) mod presets;
 mod context_modal;
 mod install_manager;
 mod model_modal;

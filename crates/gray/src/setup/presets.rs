@@ -5,7 +5,7 @@ use crate::setup::catalog::{
 };
 
 pub(crate) fn preset_catalog() -> anyhow::Result<Catalog> {
-    if !super::enabled() {
+    if !crate::setup::quality_of_life_enabled() {
         return Ok(Catalog::new());
     }
     Ok(crate::setup::context::provider_meta().catalog.clone())
@@ -19,7 +19,7 @@ pub(crate) fn is_popular_preset(id: &str) -> bool {
 }
 
 pub(crate) fn is_known_preset_base(normalized_base: &str, catalog: &Catalog) -> bool {
-    super::enabled()
+    crate::setup::quality_of_life_enabled()
         && (crate::setup::context::provider_meta()
             .popular
             .iter()
@@ -30,7 +30,7 @@ pub(crate) fn is_known_preset_base(normalized_base: &str, catalog: &Catalog) -> 
 }
 
 pub(crate) fn append_connect_presets(items: &mut Vec<ConnectItem>, catalog: &Catalog) {
-    if !super::enabled() {
+    if !crate::setup::quality_of_life_enabled() {
         return;
     }
 
@@ -105,7 +105,7 @@ pub(crate) fn detect_connect_candidates(
     env: impl Fn(&str) -> Option<String>,
 ) -> BTreeMap<String, Detected> {
     let mut found = BTreeMap::new();
-    if !super::enabled() {
+    if !crate::setup::quality_of_life_enabled() {
         return found;
     }
     for id in crate::setup::context::provider_meta().env_keys.keys() {

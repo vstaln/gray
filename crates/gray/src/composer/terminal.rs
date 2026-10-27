@@ -202,7 +202,7 @@ where
 
     pub(crate) fn clear_scrollback_and_screen(&mut self, screen_size: Size) -> io::Result<()> {
         write!(self.backend, "\x1b[r\x1b[0m\x1b[H\x1b[2J\x1b[3J\x1b[H")?;
-        crate::quality_of_life::kitty::reset_transmitted();
+        crate::composer::kitty::reset_transmitted();
         Backend::flush(&mut self.backend)?;
         self.last_known_screen_size = screen_size;
         self.covered = 0;
@@ -356,7 +356,7 @@ where
         self.tail.extend(recent);
         let excess = self.tail.len().saturating_sub(keep);
         self.tail.drain(..excess);
-        crate::quality_of_life::kitty::flush_transmits();
+        crate::composer::kitty::flush_transmits();
         Ok(())
     }
 
