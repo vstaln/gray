@@ -78,10 +78,6 @@ pub(crate) fn attachment_cells(attachments: &[std::path::PathBuf], text: &str) -
     )
 }
 
-pub(crate) fn band_overlay(desired: u16, box_h: u16) -> u16 {
-    box_h.saturating_sub(1).min(desired)
-}
-
 /// Completion rows that fit in `room` band rows: the panel needs one spacer
 /// row above the box, and a panel that cannot fit at least one row is hidden
 /// rather than drawn over the box.
@@ -370,15 +366,12 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
         max_viewport_h,
     );
     let desired = desired.max(floor);
-    // Only draft rows past the first are transient: the box's padding rows
-    // and its single text row are always there, so they never cover
-    // transcript rows.
-    let draft_rows = if asking {
-        0
-    } else {
-        ibox.band_h.saturating_sub(2).max(1) as u16
-    };
-    let overlay = band_overlay(desired, draft_rows);
+    // A growing draft pushes the transcript up rather than covering its
+    // last rows: hiding "Conversation interrupted" behind extra input lines
+    // read as a blank gap. The cost lands on the rare shrink-without-send
+    // (freed rows sit below the footer until the next output); a send fills
+    // them with the echoed message.
+    let overlay = 0;
 
     tui.begin_sync();
 
