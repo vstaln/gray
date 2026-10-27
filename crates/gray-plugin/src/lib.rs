@@ -24,7 +24,8 @@ pub use live::LiveRegistry;
 pub use sidecar::{refresh_dynamic_tools, set_active_model};
 
 pub use sidecar::{
-    ASK_HANDLER_TTL, ASK_TTL, HOST_ASK, HOST_RUN, HOST_SAY, HOST_TTL, HostHandler, SidecarPlugin,
+    ASK_HANDLER_TTL, ASK_TOOL_TTL, ASK_TTL, HOST_ASK, HOST_RUN, HOST_SAY, HOST_TTL, HostHandler,
+    SidecarPlugin,
 };
 
 pub use capabilities::{
