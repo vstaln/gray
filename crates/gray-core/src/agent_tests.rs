@@ -505,3 +505,33 @@ async fn reasoning_only_maxtokens_is_not_retried_as_empty() {
         agent.messages().last()
     );
 }
+
+#[tokio::test]
+async fn background_summary_is_discarded_when_history_changes() {
+    // 100k window - 16k reserve = 84k threshold; 6 x 13k tokens = 78k sits in
+    // the 85%..100% band where a background summary starts.
+    let mut agent = Agent::new(
+        Box::new(FakeProvider::new(vec![])),
+        std::sync::Arc::new(FakeExecutor::new(ToolOutput::ok("unused"))),
+    )
+    .with_context_window(Some(100_000));
+    agent.set_background_compaction(true);
+    for i in 0..6 {
+        let body = "x".repeat(52_000);
+        agent.messages.push(if i % 2 == 0 {
+            Message::user(body)
+        } else {
+            Message::assistant(body)
+        });
+    }
+    agent.maybe_start_background_compaction();
+    let held = agent.held_summary.take().expect("summary should start");
+    assert_eq!(
+        held.discard_reason(&agent),
+        None,
+        "unchanged history keeps it"
+    );
+
+    agent.messages[0] = Message::user("rewritten");
+    assert_eq!(held.discard_reason(&agent), Some("digest"));
+}
