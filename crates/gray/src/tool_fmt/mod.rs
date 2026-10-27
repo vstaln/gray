@@ -627,6 +627,12 @@ pub fn format_tool_call_lines(
         .add_modifier(Modifier::BOLD);
     let dim_style = Style::default().fg(crate::theme::theme().tool_dim);
 
+    let bare = mcp_parts(name).map_or(name, |(_, tool)| tool);
+    if bare == "memory"
+        && let Some(mem) = memory_tool_label(args)
+    {
+        return vec![memory_line(mem, bullet, action_style, cmd_style, dim_style)];
+    }
     let head = match name {
         "bash" => bash_header(args, cwd, bullet, action_style, cmd_style, dim_style),
         "write" => {
@@ -997,20 +1003,7 @@ fn bash_header(
                 );
             }
             if !background && let Some(mem) = memory_label(core.command) {
-                let mut spans = vec![bullet, verb(mem.verb)];
-                if let Some(key) = mem.key {
-                    spans.push(Span::styled(key, cmd_style));
-                }
-                if let Some(text) = mem.text {
-                    let cut = truncate_cmd(&text);
-                    let text = if cut.len() < text.len() {
-                        format!("{}\u{2026}", cut.trim_end())
-                    } else {
-                        text.clone()
-                    };
-                    spans.push(Span::styled(format!(" \u{00b7} {text}"), dim_style));
-                }
-                return Line::from(spans);
+                return memory_line(mem, bullet, action_style, cmd_style, dim_style);
             }
             let cut = truncate_cmd(core.command);
 
@@ -1042,6 +1035,56 @@ struct MemoryLabel {
     verb: &'static str,
     key: Option<String>,
     text: Option<String>,
+}
+
+/// The native `memory` tool's args (`op`, `key`, `text`) as a label.
+fn memory_tool_label(args: &serde_json::Value) -> Option<MemoryLabel> {
+    let key = args.get("key")?.as_str()?.trim();
+    if key.is_empty() {
+        return None;
+    }
+    let verb = match args
+        .get("op")
+        .and_then(|v| v.as_str())
+        .unwrap_or("remember")
+    {
+        "remember" => "Remembered ",
+        "amend" => "Updated memory ",
+        _ => return None,
+    };
+    let text = args
+        .get("text")
+        .and_then(|v| v.as_str())
+        .map(|t| t.lines().next().unwrap_or("").trim().to_string())
+        .filter(|t| !t.is_empty());
+    Some(MemoryLabel {
+        verb,
+        key: Some(key.to_string()),
+        text,
+    })
+}
+
+fn memory_line(
+    mem: MemoryLabel,
+    bullet: Span<'static>,
+    action_style: Style,
+    cmd_style: Style,
+    dim_style: Style,
+) -> Line<'static> {
+    let mut spans = vec![bullet, Span::styled(mem.verb, action_style)];
+    if let Some(key) = mem.key {
+        spans.push(Span::styled(key, cmd_style));
+    }
+    if let Some(text) = mem.text {
+        let cut = truncate_cmd(&text);
+        let text = if cut.len() < text.len() {
+            format!("{}\u{2026}", cut.trim_end())
+        } else {
+            text.clone()
+        };
+        spans.push(Span::styled(format!(" \u{00b7} {text}"), dim_style));
+    }
+    Line::from(spans)
 }
 
 fn memory_label(command: &str) -> Option<MemoryLabel> {
@@ -1644,7 +1687,39 @@ pub use plain::{
 
 #[cfg(test)]
 mod memory_label_tests {
-    use super::{MemoryLabel, memory_label};
+    use super::{MemoryLabel, format_tool_call_header, memory_label};
+
+    fn header_text(name: &str, args: serde_json::Value) -> String {
+        format_tool_call_header(name, &args, None, None)
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect()
+    }
+
+    #[test]
+    fn the_memory_tool_reads_as_remembered_not_raw_args() {
+        let args = serde_json::json!({
+            "key": "draft-growth",
+            "text": "Decision: the transcript scrolls up",
+            "why": "user saw a gap",
+        });
+        for name in ["memory", "mcp__gray__memory"] {
+            let got = header_text(name, args.clone());
+            assert!(
+                got.contains(
+                    "Remembered draft-growth \u{00b7} Decision: the transcript scrolls up"
+                ),
+                "{name}: {got:?}"
+            );
+            assert!(!got.contains("why="), "{name}: {got:?}");
+        }
+        let amend = header_text(
+            "memory",
+            serde_json::json!({"op": "amend", "key": "k", "text": "t"}),
+        );
+        assert!(amend.contains("Updated memory k"), "{amend:?}");
+    }
 
     #[test]
     fn a_memory_set_reads_as_remembered_key_and_text() {
