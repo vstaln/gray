@@ -53,7 +53,7 @@ cargo build --release -p gray                                     # from source
 irm https://gray.alignment.id/install.ps1 | iex
 ```
 
-No WSL needed — Git for Windows supplies the shell. Beta, offline and WSL installs: [Windows guide](docs/windows-preview.md).
+No WSL needed — Git for Windows supplies the shell. For an offline install keep `dist/install.ps1` and the zip together and run `.\dist\install.ps1 -ArchivePath .\gray-stable-x86_64-windows.zip -Sha256 <digest>`. Beta, offline and WSL installs: [Windows guide](docs/windows-preview.md).
 
 ## Quick start
 
