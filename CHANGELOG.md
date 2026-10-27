@@ -1,6 +1,6 @@
 # Changelog
 
-## [0.2.6] - Unreleased
+## [0.2.6] - 2026-10-27
 
 ### Added
 - **Experimental background compaction.** Off by default; enable with
@@ -12,6 +12,50 @@
   request moves the live Devin conversation, so the next turn resends the
   history once; and the swap keeps only the messages added after the summary
   started, which can be less recent context than inline compaction keeps.
+- **Read-only plugin tools run in parallel.** A plugin tool that
+  declares `"read_only": true` in its manifest is batched with other
+  read-only calls, the same way read-only bash already is.
+- **Consent prompt.** Allow (left/right cycles the scope: Once,
+  Session, command, Project, Always), Bypass mode (no more prompts
+  this session) and Deny (tab adds a reason).
+
+### Changed
+- **Faster session saves and listing.** Saves no longer re-read the
+  whole session file to find the next entry id (about 200 ms down to
+  under 1 ms on a 51 MB session), and listing reads only a bounded
+  head and tail of each file.
+- **Faster streaming code blocks.** Syntax highlighting resumes from
+  the open code block instead of re-highlighting from the first line
+  on every chunk.
+- **`request_user_input`** shows its question instead of
+  `questions=[1 items]`, and no longer sits behind a permission
+  prompt.
+
+### Fixed
+- **No more futile overflow compactions.** When reported usage is far
+  above the transcript (Fusion via devin-sub reported 338k on a 256k
+  window for a 24k transcript), gray compacted every turn without
+  ever fitting. Compaction now runs only when the tokens it can free
+  cover the overshoot.
+- **Hopeless errors fail fast.** Weekly or monthly quota errors with
+  no short reset hint, and content-policy refusals, no longer go
+  through the whole-turn retry loop (up to about 13 minutes of
+  backoff before the same failure).
+- **Shell output keeps code intact.** Redaction stopped turning
+  values after secret-looking names into `<redacted>` when they are
+  Rust paths, templates, `$VAR` references, placeholders, short
+  numbers or null-like literals, and file paths are no longer
+  rewritten to `<path>` just because the same output held a secret.
+  Real secrets are still redacted.
+- **Plugin updates across a layout change.** An update that moves a
+  plugin from a single binary to a launcher script no longer leaves
+  it pointing at a file the new archive doesn't have.
+- **Plugin reinstall** drops a stale command path and manifest from
+  the old install.
+- **`install.sh`** skips fsearch on platforms other than Linux x86_64.
+- **`--bare` runs** (plugin workers such as memory distill) no longer
+  show up as subagents.
+- Unknown plugin capability warnings print once per process.
 
 ## [0.2.5] - 2026-10-25
 
