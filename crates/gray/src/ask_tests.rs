@@ -21,6 +21,7 @@ fn question(question: &str, detail: &str, no_other: bool) -> AskQuestion {
         multi: false,
         default_all: false,
         no_other,
+        editable: false,
     }
 }
 
@@ -56,4 +57,13 @@ fn plain_questions_still_offer_other() {
     assert_eq!(kinds(&rows), ["?", " ", "1.", "2.", "3.", " ", "\u{b7}"]);
     assert_eq!(rows[cursor].1, "Other");
     assert_eq!(rows[cursor].2, "type a note");
+}
+
+#[test]
+fn editable_question_prefills_subject_and_marks_edited() {
+    let mut st = AskModalState::new(1);
+    let mut q = question("Allow bash?\ngit status", "in /tmp/x", true);
+    q.editable = true;
+    st.load(vec![q]);
+    assert_eq!(super::edit_subject(&st.questions[0]), "git status");
 }

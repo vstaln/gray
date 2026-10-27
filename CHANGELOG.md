@@ -20,7 +20,13 @@
 - **Tool approval moved to the `permissions` plugin.** The built-in
   per-tool consent prompt is gone from the binary; install
   `gray-permissions` for the `tool/before` approval gate
-  (`/permissions`, read-only/auto/full modes).
+  (`/permissions`, read-only/auto/full modes), now seeded by default on
+  fresh installs. The prompt mirrors Devin CLI: Allow with a
+  Once/Session/Project/Always scope slider, Bypass mode, and Deny —
+  Deny and Esc cancel the whole turn, `e` edits a bash command and runs
+  it, and Project/Always persist allow rules to `.gray/permissions.json`
+  in the project or the user's home. `tool/before` plugins can return a
+  `cancel` verdict to end the turn.
 - **Plugin and MCP tool cards show their output.** Recall, memory,
   subagents and `mcp__*` cards used to render as a bare header; every tool
   now gets the numbered result body (head and tail past 40 lines), except
@@ -28,7 +34,10 @@
 - **Redesigned approval and question prompt.** Borderless in the picker
   style and theme colors: the tool and its full command or path (wrapped,
   never truncated), the working directory dimmed, numbered options with
-  1-N shortcuts. Approvals have no Other row.
+  1-N shortcuts. Approvals have no Other row. Options can carry a scope
+  slider (left/right cycles the value, it ships as `scope:`), and a
+  question marked `editable` lets `e` open the subject inline, shipping
+  the edited text as `edited:`.
 - **Faster session saves and listing.** Saves no longer re-read the
   whole session file to find the next entry id (about 200 ms down to
   under 1 ms on a 51 MB session), and listing reads only a bounded
@@ -39,6 +48,12 @@
 - **`request_user_input`** shows its question instead of
   `questions=[1 items]`, and no longer sits behind a permission
   prompt.
+- **No more capability-consent nags.** A plugin's manifest declaration
+  is the grant: the "declares ungranted capabilities … grant with gray
+  plugin capabilities" warning is gone, along with the pending-consent
+  state. Calls to host methods a plugin did *not* declare still fail
+  `capability_not_granted`; `gray plugin capabilities` keeps showing
+  the declared set.
 
 ### Fixed
 - **No more futile overflow compactions.** When reported usage is far

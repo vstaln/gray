@@ -47,6 +47,12 @@ pub struct AskQuestion {
     /// single-select questions (consent flows carry their own).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub no_other: bool,
+
+    /// `e` opens the subject (everything after the title line) in the
+    /// inline editor before confirming; the edited text ships as
+    /// `edited:` instead of `user_note:`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub editable: bool,
 }
 
 impl AskQuestion {
@@ -559,6 +565,8 @@ pub(crate) struct AskModalState {
     cursor: Vec<usize>,
     notes: Vec<String>,
     editing: Vec<bool>,
+    /// The note buffer holds an `e`-edit of the subject, not a typed note.
+    edited: Vec<bool>,
     checked: Vec<Vec<bool>>,
     scope: Vec<Vec<usize>>,
 }
@@ -572,6 +580,7 @@ impl AskModalState {
             cursor: Vec::new(),
             notes: Vec::new(),
             editing: Vec::new(),
+            edited: Vec::new(),
             checked: Vec::new(),
             scope: Vec::new(),
         }
@@ -583,6 +592,7 @@ impl AskModalState {
         self.cursor = vec![0; n];
         self.notes = vec![String::new(); n];
         self.editing = vec![false; n];
+        self.edited = vec![false; n];
         self.scope = self
             .questions
             .iter()
@@ -663,7 +673,12 @@ impl AskModalState {
                 }
                 let note = self.notes[qi].trim();
                 if !note.is_empty() {
-                    answers.push(format!("user_note: {note}"));
+                    let tag = if self.edited[qi] {
+                        "edited"
+                    } else {
+                        "user_note"
+                    };
+                    answers.push(format!("{tag}: {note}"));
                 }
                 AskAnswer {
                     id: q.id.clone(),
@@ -672,6 +687,17 @@ impl AskModalState {
             })
             .collect()
     }
+}
+
+/// The text `e` pre-fills the editor with: the subject lines (everything
+/// after the question's title line).
+fn edit_subject(q: &AskQuestion) -> String {
+    q.question
+        .trim()
+        .lines()
+        .skip(1)
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Rows of the inline question prompt as `(kind, label, text)` plus the
@@ -733,11 +759,12 @@ pub(crate) fn ask_rows(state: &AskModalState) -> (Vec<(String, String, String)>,
             let glyph = if o.muted { "~" } else { "" };
             rows.push((glyph.to_string(), o.label.clone(), desc));
         }
+        let edit = if q.editable { " \u{b7} e edit" } else { "" };
         let hint = if editing {
             "enter submit \u{b7} esc back".to_string()
         } else {
             format!(
-                "{} select \u{b7} {} scope \u{b7} tab reason \u{b7} enter confirm \u{b7} esc cancel",
+                "{} select \u{b7} {} scope{edit} \u{b7} tab reason \u{b7} enter confirm \u{b7} esc cancel",
                 crate::tui::glyph("\u{2191}\u{2193}", "up/down"),
                 crate::tui::glyph("\u{2190}\u{2192}", "left/right"),
             )
@@ -779,7 +806,12 @@ pub(crate) fn ask_rows(state: &AskModalState) -> (Vec<(String, String, String)>,
             "{arrows} move \u{b7} space or {keys} toggle \u{b7} enter confirm \u{b7} esc cancel"
         )
     } else {
-        format!("{arrows} select \u{b7} {keys} choose \u{b7} enter confirm \u{b7} esc cancel")
+        let edit = if state.questions[qi].editable {
+            " \u{b7} e edit"
+        } else {
+            ""
+        };
+        format!("{arrows} select \u{b7} {keys} choose{edit} \u{b7} enter confirm \u{b7} esc cancel")
     };
     rows.push(row(" ", String::new(), String::new()));
     rows.push(row("\u{b7}", String::new(), hint));
@@ -836,7 +868,13 @@ fn run_ask_modal(
         if state.editing[i] {
             let mut submit = false;
             match key.code {
-                KeyCode::Esc | KeyCode::Tab => state.editing[i] = false,
+                KeyCode::Esc | KeyCode::Tab => {
+                    state.editing[i] = false;
+                    if state.edited[i] {
+                        state.notes[i].clear();
+                        state.edited[i] = false;
+                    }
+                }
                 KeyCode::Enter => {
                     state.editing[i] = false;
                     submit = state.advance();
@@ -920,6 +958,18 @@ fn run_ask_modal(
                 let d = c.to_digit(10).unwrap_or(1) as usize - 1;
                 state.cursor[i] = d;
                 state.checked[i][d] = !state.checked[i][d];
+            }
+            KeyCode::Char('e')
+                if state.questions[i].editable
+                    && !state.is_freeform(i, state.cursor[i])
+                    && !key.modifiers.contains(KeyModifiers::CONTROL)
+                    && !key.modifiers.contains(KeyModifiers::ALT) =>
+            {
+                state.editing[i] = true;
+                state.edited[i] = true;
+                if state.notes[i].is_empty() {
+                    state.notes[i] = edit_subject(&state.questions[i]);
+                }
             }
             KeyCode::Char(c)
                 if !key.modifiers.contains(KeyModifiers::CONTROL)
