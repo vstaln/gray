@@ -744,6 +744,19 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
                     covered,
                 );
             }
+            if !home_drop {
+                // The menu rows and the spacer above them are band padding,
+                // like the rows framing a question: paint them edge to edge
+                // or the cells beside the menu read as a black bar.
+                let top = pop_y.saturating_sub(1).max(area.y);
+                let band = Rect::new(area.x, top, area.width, box_y.saturating_sub(top))
+                    .intersection(area);
+                frame.render_widget(ratatui::widgets::Clear, band);
+                frame.render_widget(
+                    Block::default().style(Style::default().bg(crate::theme::theme().surface_bg)),
+                    band,
+                );
+            }
             frame.render_widget(ratatui::widgets::Clear, rect);
             frame.render_widget(
                 Block::default().style(Style::default().bg(crate::theme::theme().surface_bg)),
