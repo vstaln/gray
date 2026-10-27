@@ -489,7 +489,6 @@ fn connect_sort_is_connected_detected_popular_custom_rest() {
         max_wall_secs: None,
         bare: false,
         lean: true,
-        background_compaction: false,
         compact_at: None,
     };
 
@@ -539,7 +538,6 @@ fn connect_sort_with_nothing_known_lands_on_openai() {
         max_wall_secs: None,
         bare: false,
         lean: true,
-        background_compaction: false,
         compact_at: None,
     };
     let catalog = load_catalog().expect("catalog");
@@ -693,7 +691,6 @@ fn saved_customs_sort_with_the_popular_block() {
         max_wall_secs: None,
         bare: false,
         lean: false,
-        background_compaction: false,
         compact_at: None,
     };
     let auth = BTreeMap::new();

@@ -42,7 +42,6 @@ async fn failed_compaction_save_retries_full_history_before_appending() {
         max_wall_secs: None,
         bare: false,
         lean: false,
-        background_compaction: false,
         compact_at: None,
     };
 

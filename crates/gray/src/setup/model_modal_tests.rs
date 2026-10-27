@@ -370,7 +370,6 @@ fn effort_config(model: &str, effort: Option<&str>) -> Config {
         max_wall_secs: None,
         bare: false,
         lean: false,
-        background_compaction: false,
         compact_at: None,
         provider_id: String::new(),
         credential_source: String::new(),

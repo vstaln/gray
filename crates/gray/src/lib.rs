@@ -404,7 +404,6 @@ async fn build_agent_with(
     agent.set_prefix_rewrite_ok(!config.uses_plugin_credentials() || plugin_warm_replay);
 
     agent.set_lean_prompt(config.lean);
-    agent.set_background_compaction(config.background_compaction);
 
     Ok(agent
         .with_tool_timeout(crate::shell_drain::SHELL_TOOL_TIMEOUT)
@@ -548,9 +547,6 @@ pub struct Cli {
 
     #[arg(long, help = "Lean system prompt: skip plugin-provided prompt extras")]
     pub lean: bool,
-
-    #[arg(long, help = "Start context compaction in the background")]
-    pub background_compaction: bool,
 
     #[arg(long, value_name = "N", help = "Stop the turn after N agent steps")]
     pub max_turns: Option<u32>,

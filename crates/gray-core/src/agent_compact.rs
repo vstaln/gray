@@ -152,51 +152,6 @@ impl Agent {
     }
 
     pub(crate) async fn try_compact_pre_turn(&mut self) -> Result<bool, CoreError> {
-        let before = self.estimate_tokens();
-        if let Some(mut held) = self.held_summary.take() {
-            if let Some(reason) = held.discard_reason(self) {
-                self.background_failures = self.background_failures.saturating_add(1);
-                log::info!(target: "gray_agent", "background compaction: discarded reason={reason}");
-            } else {
-                let result = (&mut held.task).await;
-                log::info!(
-                    target: "gray_agent",
-                    "background compaction: ready ms={}",
-                    held.started.elapsed().as_millis()
-                );
-                match result {
-                    Ok(Ok(summary)) if !summary.trim().is_empty() => {
-                        let apply_started = std::time::Instant::now();
-                        let tail = self.messages[held.covered..].to_vec();
-                        for hook in &self.hooks {
-                            hook.compact_before().await;
-                        }
-                        if self
-                            .apply_compaction(&summary, held.anchor.clone(), tail)
-                            .await
-                        {
-                            log::info!(
-                                target: "gray_agent",
-                                "compaction: ok=true before={before} after={} source=background elapsed_ms={}",
-                                self.estimate_tokens(),
-                                apply_started.elapsed().as_millis()
-                            );
-                            return Ok(true);
-                        }
-                        self.background_failures = self.background_failures.saturating_add(1);
-                        log::info!(target: "gray_agent", "background compaction: discarded reason=no_gain");
-                    }
-                    Ok(Ok(_)) => {
-                        self.background_failures = self.background_failures.saturating_add(1);
-                        log::info!(target: "gray_agent", "background compaction: discarded reason=empty");
-                    }
-                    Ok(Err(_)) | Err(_) => {
-                        self.background_failures = self.background_failures.saturating_add(1);
-                        log::info!(target: "gray_agent", "background compaction: discarded reason=error");
-                    }
-                }
-            }
-        }
         self.try_compact_budgeted().await
     }
 
@@ -205,7 +160,6 @@ impl Agent {
         instructions: Option<&str>,
         retained_budget: Option<usize>,
     ) -> Result<Option<String>, CoreError> {
-        self.held_summary = None;
         let Some(prepared) =
             self.prepare_compaction(&self.messages.clone(), instructions, retained_budget)
         else {

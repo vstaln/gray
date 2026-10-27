@@ -125,8 +125,6 @@ pub struct Config {
     pub bare: bool,
 
     pub lean: bool,
-
-    pub background_compaction: bool,
 }
 
 impl std::fmt::Debug for Config {
@@ -286,15 +284,6 @@ impl Config {
             saved.lean.unwrap_or(true)
         };
 
-        let background_compaction_env = env("GRAY_BACKGROUND_COMPACTION");
-        let background_compaction = !bare
-            && match background_compaction_env.as_deref().map(str::trim) {
-                _ if cli.background_compaction => true,
-                Some("1") => true,
-                Some("0") => false,
-                _ => saved.background_compaction.unwrap_or(false),
-            };
-
         let credential_source = env("GRAY_CREDENTIAL_SOURCE")
             .map(|v| v.trim().to_string())
             .unwrap_or_else(|| {
@@ -362,9 +351,8 @@ impl Config {
             max_wall_secs,
             bare,
             lean,
-            background_compaction,
         };
-        log::info!(target: "gray_config", "config resolved: model={:?}, base_url={}, api_key={}, context_window={:?}, bare={}, lean={}, background_compaction={}", config.model, scrub_url(&config.base_url), config.api_key.as_deref().map(|_| "set").unwrap_or("unset"), config.context_window, config.bare, config.lean, config.background_compaction);
+        log::info!(target: "gray_config", "config resolved: model={:?}, base_url={}, api_key={}, context_window={:?}, bare={}, lean={}", config.model, scrub_url(&config.base_url), config.api_key.as_deref().map(|_| "set").unwrap_or("unset"), config.context_window, config.bare, config.lean);
         Ok(config)
     }
 
