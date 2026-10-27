@@ -195,98 +195,26 @@ async fn restart_gateway() -> GatewayRestart {
         return GatewayRestart::Skipped;
     }
 
-    if let Ok(out) = gateway_cmd(&["restart"]) {
-        let text = format!(
-            "{}{}",
-            String::from_utf8_lossy(&out.stdout),
-            String::from_utf8_lossy(&out.stderr)
-        );
-        if out.status.success() {
-            return GatewayRestart::Restarted(text.trim().to_string());
-        }
-        if !text.contains("no service installed") && !text.contains("not running") {
-            return GatewayRestart::Failed(text.trim().to_string());
-        }
-    }
-
-    let Ok(home) = crate::setup::gray_home() else {
-        return GatewayRestart::NotRunning;
+    let out = match gateway_cmd(&["restart"]) {
+        Ok(out) => out,
+        Err(e) => return GatewayRestart::Failed(gray_plugin::friendly_spawn_error(&e)),
     };
-    let Some(rec) = crate::gateway_pid::running(&home) else {
-        return GatewayRestart::NotRunning;
-    };
-
-    match gateway_cmd(&["stop"]) {
-        Ok(out) if out.status.success() => {}
-        Ok(out) => {
-            let text = format!(
-                "{}{}",
-                String::from_utf8_lossy(&out.stdout),
-                String::from_utf8_lossy(&out.stderr)
-            );
-            return GatewayRestart::Failed(format!(
-                "could not stop the running gateway: {}",
-                text.trim()
-            ));
-        }
-        Err(e) => {
-            return GatewayRestart::Failed(format!(
-                "could not stop the running gateway: {}",
-                gray_plugin::friendly_spawn_error(&e)
-            ));
-        }
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    if out.status.success() {
+        return GatewayRestart::Restarted(text.trim().to_string());
     }
-    match relaunch(&home, rec.pid) {
-        Ok(line) => GatewayRestart::Restarted(line),
-        Err(e) => GatewayRestart::Failed(format!(
-            "stopped the gateway (pid {}) but could not start it again: {} — `gray gateway run` when you are back",
-            rec.pid,
-            e.downcast_ref::<std::io::Error>()
-                .map(gray_plugin::friendly_spawn_error)
-                .unwrap_or_else(|| format!("{e:#}"))
-        )),
-    }
-}
-
-fn relaunch(home: &std::path::Path, old_pid: u32) -> anyhow::Result<String> {
-    use std::process::Stdio;
-    let exe = crate::exe_watch::on_disk_exe()?;
-    let log = home.join("logs").join("gateway.log");
-    std::fs::create_dir_all(
-        log.parent()
-            .ok_or_else(|| anyhow::anyhow!("{} has no parent", log.display()))?,
-    )?;
-    let file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&log)?;
-    let mut cmd = std::process::Command::new(exe);
-    cmd.args(["gateway", "run"])
-        .stdin(Stdio::null())
-        .stdout(Stdio::from(file.try_clone()?))
-        .stderr(Stdio::from(file));
-    #[cfg(unix)]
+    if text.contains("no service installed")
+        || text.contains("not running")
+        || text.contains("no supervisor detected")
+        || text.contains("is provided by the gateway plugin")
     {
-        use std::os::unix::process::CommandExt as _;
-        cmd.process_group(0);
+        return GatewayRestart::NotRunning;
     }
-    cmd.spawn()?;
-
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    while std::time::Instant::now() < deadline {
-        if let Some(now) = crate::gateway_pid::running(home) {
-            return Ok(format!(
-                "gateway restarted on the new build (pid {} was {old_pid}, log: {})",
-                now.pid,
-                log.display()
-            ));
-        }
-        std::thread::sleep(std::time::Duration::from_millis(200));
-    }
-    Ok(format!(
-        "gateway stopped (pid {old_pid}) and relaunched; it has not reported in yet — log: {}",
-        log.display()
-    ))
+    GatewayRestart::Failed(text.trim().to_string())
 }
 
 pub(crate) fn restart_argv(original: Vec<String>, current: Option<&str>) -> Vec<String> {

@@ -10,7 +10,6 @@ pub mod config;
 pub(crate) mod consent;
 pub(crate) mod exe_watch;
 pub(crate) mod failed_turn;
-pub(crate) mod gateway_pid;
 pub mod host;
 pub mod keymap;
 pub mod logging;
