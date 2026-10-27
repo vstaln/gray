@@ -189,11 +189,7 @@ where
         }
         if slide > 0 {
             let n = usize::from(area.y);
-            let rows: Vec<Vec<Cell>> = self
-                .tail
-                .range(self.tail.len() - n..)
-                .cloned()
-                .collect();
+            let rows: Vec<Vec<Cell>> = self.tail.range(self.tail.len() - n..).cloned().collect();
             let rows: Vec<&[Cell]> = rows.iter().map(Vec::as_slice).collect();
             self.draw_rows(0, &rows)?;
         }

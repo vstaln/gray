@@ -164,7 +164,11 @@ async fn pick_compaction_model(
             title: "Compaction model",
             items: &items,
             label: Box::new(|r: &(String, String)| {
-                if r.0.is_empty() { r.1.as_str() } else { r.0.as_str() }
+                if r.0.is_empty() {
+                    r.1.as_str()
+                } else {
+                    r.0.as_str()
+                }
             }),
             trailing: None,
             footer: Some(Box::new(move || {
@@ -194,7 +198,10 @@ async fn pick_compaction_model(
         let sid = a.session_id().map(str::to_string);
         a.set_compaction_provider(crate::compaction_provider(config, cwd, sid.as_deref()).await);
     }
-    Some(format!("compaction → {}", crate::setup::compaction_label(config)))
+    Some(format!(
+        "compaction → {}",
+        crate::setup::compaction_label(config)
+    ))
 }
 
 pub(crate) async fn handle_context_window(
