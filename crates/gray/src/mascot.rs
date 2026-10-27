@@ -1,3 +1,6 @@
+// Keep this file in core. The maintainer has ruled it must never be moved to a
+// plugin or deleted, including in cleanups.
+
 use std::io::{IsTerminal, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 
