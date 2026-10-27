@@ -275,6 +275,10 @@ where
         }
         let mut frame = self.get_frame();
         render_callback(&mut frame);
+        // Uploads queued while composing this frame must land before the
+        // placeholder cells that reference them — terminals don't all
+        // retro-fill placeholders drawn ahead of the image.
+        crate::composer::kitty::flush_transmits();
 
         let cursor_position = frame.cursor_position;
 
@@ -303,6 +307,7 @@ where
         }
         let mut buffer = Buffer::empty(Rect::new(0, 0, width, height));
         draw_fn(&mut buffer);
+        crate::composer::kitty::flush_transmits();
         let hidden: Vec<Vec<Cell>> = self
             .tail
             .drain(self.tail.len() - usize::from(self.covered)..)
