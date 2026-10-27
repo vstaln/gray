@@ -165,14 +165,6 @@ pub fn deliver_json_answer(ask_id: u64, line: &str) {
     }
 }
 
-pub(crate) fn interactive_tui() -> bool {
-    SERVICE
-        .lock()
-        .expect("ask service")
-        .as_ref()
-        .is_some_and(|svc| svc.interactive && svc.tui.is_some())
-}
-
 pub(crate) fn is_ask_live() -> bool {
     SERVICE
         .lock()

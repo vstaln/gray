@@ -280,7 +280,7 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
 
     let chips = attachment_cells(&tui.attachments, &text);
     let ibox = build_input_box(&text, cursor, w, ghost, home, &chips);
-    // A consent/question prompt owns the bottom band: the input box (and
+    // An approval/question prompt owns the bottom band: the input box (and
     // its cursor) step aside until it closes.
     let asking = tui.ask_modal.is_some();
     let ask_gap = u16::from(asking);

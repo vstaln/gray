@@ -6,7 +6,6 @@ pub mod cmd;
 pub mod compact;
 pub mod composer;
 pub mod config;
-pub(crate) mod consent;
 pub(crate) mod failed_turn;
 pub mod host;
 pub mod keymap;
@@ -364,7 +363,7 @@ async fn build_agent_with(
         host_handler: Some(host::default_handler(cwd.to_path_buf())),
         profile_path: "gray.yml".to_string(),
         abort_on_spawn_failure: true,
-        wrap_executor: Some(crate::consent::executor_wrap()),
+        wrap_executor: None,
         dynamic_provider_profile: dynamic.as_ref().map(|provider| provider.profile().clone()),
         dynamic_credential_source: dynamic
             .as_ref()
