@@ -842,6 +842,13 @@ fn run_ask_modal(
         return Some(Vec::new());
     }
     draw_ask_modal(tui, state);
+    // Typing guard: a prompt that pops up mid-sentence must not eat the
+    // sentence. Keys landing within GUARD of the modal opening, or of the
+    // previous guarded key (a typing burst), go back to the composer draft
+    // instead of the modal; otherwise `e` opened the command editor, a
+    // digit picked an option and Enter approved the call.
+    const GUARD: std::time::Duration = std::time::Duration::from_millis(600);
+    let mut guard_until = std::time::Instant::now() + GUARD;
     loop {
         if cancel.is_cancelled() {
             clear_ask_modal(tui);
@@ -859,6 +866,17 @@ fn run_ask_modal(
         if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
             clear_ask_modal(tui);
             return None;
+        }
+        let now = std::time::Instant::now();
+        if now < guard_until {
+            guard_until = now + GUARD;
+            if let KeyCode::Char(c) = key.code
+                && !key.modifiers.contains(KeyModifiers::CONTROL)
+                && !key.modifiers.contains(KeyModifiers::ALT)
+            {
+                t_lock(tui).textarea.insert_str(c.encode_utf8(&mut [0; 4]));
+            }
+            continue;
         }
         let i = state.idx;
         let multi = state.multi();
