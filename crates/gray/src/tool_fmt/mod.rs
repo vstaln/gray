@@ -1384,10 +1384,16 @@ fn render_numbered_lines(
     lines
 }
 
+/// Whether a tool's result text gets a numbered body under its card.
+///
+/// Every tool does (core, plugin and MCP alike) except the few whose output is
+/// either already on screen or too bulky to be useful: file contents from
+/// `read`, a skill's prompt text, the user's own `request_user_input` answer,
+/// and the Discord UI schema reference.
 pub fn tool_may_render_body(tool_name: &str) -> bool {
-    matches!(
+    !matches!(
         tool_name,
-        "bash" | "grep" | "find" | "ls" | "edit" | "write" | "web_search" | "web_fetch"
+        "read" | "skill" | "request_user_input" | "discord_ui_schema"
     )
 }
 
@@ -1563,3 +1569,6 @@ pub use plain::{
     format_tool_call_header_plain, format_tool_call_lines_plain,
     format_tool_result_plain_with_context,
 };
+
+#[cfg(test)]
+mod body_tests;
