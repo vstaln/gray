@@ -50,7 +50,15 @@ pub const TOOLS_CHANGED_DEBOUNCE: Duration = Duration::from_millis(200);
 
 pub const ASK_TTL: Duration = Duration::from_secs(330);
 
-pub const ASK_HANDLER_TTL: Duration = Duration::from_secs(300);
+/// A blocking question waits for the user, not a wall clock: the handler,
+/// the asking plugin and the tool call each get a day-long ceiling (only a
+/// wedged host ever reaches it), nested handler < plugin < tool so the
+/// innermost layer reports first. Esc / turn interrupt still cancel at once.
+pub const ASK_HANDLER_TTL: Duration = Duration::from_secs(23 * 3600);
+
+/// Tool-call deadline for ask-capable sidecars (see ASK_HANDLER_TTL). Hooks
+/// keep ASK_TTL: they are not cancellable by Esc, so they stay short.
+pub const ASK_TOOL_TTL: Duration = Duration::from_secs(24 * 3600);
 
 fn session_json(id: &str, cwd: &str) -> Value {
     let mut v = json!({"id": id, "cwd": cwd});
@@ -1557,7 +1565,7 @@ impl Tool for SidecarTool {
             .map(Duration::from_secs)
             .unwrap_or_else(|| {
                 if self.transport_asks() {
-                    ASK_TTL
+                    ASK_TOOL_TTL
                 } else {
                     HOST_TTL
                 }
