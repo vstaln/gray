@@ -422,11 +422,18 @@ pub enum CommandOutcome {
     Say(String),
     Prompt(String),
 
-    ModelPicker(String),
-
     Panel(PanelSpec),
 
     Picker(PickerSpec),
+
+    /// Open one of the host's own pickers (`kind` is `model` or `theme`).
+    /// The host draws these because they recolor or reconfigure the host
+    /// itself; `text` is the plain fallback when there is no TUI.
+    HostPicker {
+        kind: String,
+        arg: String,
+        text: Option<String>,
+    },
 
     Terminal {
         argv: Vec<String>,

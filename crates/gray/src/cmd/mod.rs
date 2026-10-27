@@ -915,7 +915,10 @@ async fn plugin_command_result(
         Some(gray_plugin::CommandOutcome::Picker(spec)) => Ok(Some(CommandResult::text(
             crate::repl::picker::spec_plain(&spec),
         ))),
-        Some(gray_plugin::CommandOutcome::ModelPicker(_))
+        Some(gray_plugin::CommandOutcome::HostPicker {
+            text: Some(text), ..
+        }) => Ok(Some(CommandResult::text(text))),
+        Some(gray_plugin::CommandOutcome::HostPicker { text: None, .. })
         | Some(gray_plugin::CommandOutcome::Terminal { text: None, .. }) => {
             Err(CmdError::local(name))
         }

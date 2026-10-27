@@ -1662,6 +1662,13 @@ fn attach_media(name: &str, out: &mut ToolOutput, reply: &Value) {
 
 pub(crate) fn command_outcome(v: &Value, plugin_argv: &[String]) -> Option<CommandOutcome> {
     let field = |k: &str| v.get(k).and_then(|t| t.as_str()).filter(|t| !t.is_empty());
+    if v.get("theme_picker").and_then(Value::as_bool) == Some(true) {
+        return Some(CommandOutcome::HostPicker {
+            kind: "theme".into(),
+            arg: String::new(),
+            text: field("text").map(str::to_string),
+        });
+    }
     if let Some(args) = v.get("terminal").and_then(Value::as_array)
         && !plugin_argv.is_empty()
     {
@@ -1672,7 +1679,11 @@ pub(crate) fn command_outcome(v: &Value, plugin_argv: &[String]) -> Option<Comma
         });
     }
     if let Some(row) = field("model_picker") {
-        return Some(CommandOutcome::ModelPicker(row.to_string()));
+        return Some(CommandOutcome::HostPicker {
+            kind: "model".into(),
+            arg: row.to_string(),
+            text: None,
+        });
     }
     if let Some(p) = field("prompt") {
         return Some(CommandOutcome::Prompt(p.to_string()));

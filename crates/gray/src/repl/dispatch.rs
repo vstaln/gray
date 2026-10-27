@@ -347,10 +347,13 @@ pub(crate) async fn dispatch_command(
                 )
                 .await
                 {
-                    Some(CommandOutcome::ModelPicker(row)) => ReplCommand::ModelFocus(row),
+                    Some(CommandOutcome::HostPicker { kind, arg, .. }) if kind == "model" => {
+                        ReplCommand::ModelFocus(arg)
+                    }
                     Some(CommandOutcome::Prompt(prompt)) => ReplCommand::Prompt(prompt),
                     Some(CommandOutcome::Panel(_))
                     | Some(CommandOutcome::Picker(_))
+                    | Some(CommandOutcome::HostPicker { .. })
                     | Some(CommandOutcome::Terminal { .. })
                     | None => ReplCommand::ProviderLogin(provider_id),
                     Some(CommandOutcome::Say(text)) => {
@@ -487,8 +490,8 @@ pub(crate) async fn dispatch_command(
                         *pending_command = Some(ReplCommand::Prompt(prompt));
                     }
 
-                    CommandOutcome::ModelPicker(row) => {
-                        *pending_command = Some(ReplCommand::ModelFocus(row));
+                    CommandOutcome::HostPicker { kind, arg, .. } if kind == "model" => {
+                        *pending_command = Some(ReplCommand::ModelFocus(arg));
                     }
 
                     CommandOutcome::Terminal {
@@ -558,6 +561,57 @@ pub(crate) async fn dispatch_command(
                                 }),
                             ),
                         }
+                    }
+
+                    CommandOutcome::HostPicker { kind, text, .. } if kind == "theme" => {
+                        let tui_shared = tui.as_ref().map(|(s, _)| s);
+                        if let Some(shared) = tui_shared {
+                            let bg = shared.lock().expect("tui lock").snapshot();
+                            match with_modal_sync(tui_shared, || {
+                                crate::setup::run_theme_picker(Some(&bg))
+                            }) {
+                                Ok(Some(name)) => {
+                                    match (
+                                        crate::theme::themes_dir(),
+                                        crate::setup::saved_config_path(),
+                                    ) {
+                                        (Ok(themes_dir), Ok(config_path)) => {
+                                            let active = crate::theme::active_theme_name();
+                                            let outcome = super::customize::theme_command(
+                                                Some(&name),
+                                                active.as_deref(),
+                                                &themes_dir,
+                                                &config_path,
+                                            );
+                                            if let Some((theme, name)) = outcome.apply {
+                                                crate::theme::set_theme(theme, name.as_deref());
+                                                shared
+                                                    .lock()
+                                                    .expect("tui lock")
+                                                    .repaint_for_palette();
+                                            }
+                                            say(tui_shared, &outcome.message);
+                                            let _ = shared.lock().expect("tui lock").draw();
+                                        }
+                                        (Err(e), _) | (_, Err(e)) => {
+                                            say(
+                                                tui_shared,
+                                                &format!("could not resolve gray home: {e}"),
+                                            );
+                                        }
+                                    }
+                                }
+                                Ok(None) => {}
+                                Err(e) => say(tui_shared, &format!("theme picker: {e}")),
+                            }
+                        } else if let Some(text) = text {
+                            say(None, &text);
+                        }
+                    }
+
+                    CommandOutcome::HostPicker { kind, text, .. } => {
+                        let msg = text.unwrap_or_else(|| format!("unknown host picker `{kind}`"));
+                        say(tui.as_ref().map(|(s, _)| s), &msg);
                     }
 
                     CommandOutcome::Panel(spec) => {

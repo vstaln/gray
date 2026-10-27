@@ -10,6 +10,10 @@ pub const HOST_ASK: &str = "host.ask";
 
 pub const HOST_SAY: &str = "host.say";
 
+pub const HOST_RESTART: &str = "host.restart";
+
+pub const HOST_SESSIONS: &str = "host.sessions";
+
 pub const TOOL_OVERRIDE: &str = "tool.override";
 
 pub const WIDGET_OVERRIDE: &str = "widget.override";
@@ -41,6 +45,16 @@ const SPECS: &[CapabilitySpec] = &[
         id: HOST_SAY,
         host_method: Some("host/say"),
         description: "print a line into the conversation on its own",
+    },
+    CapabilitySpec {
+        id: HOST_RESTART,
+        host_method: Some("host/restart"),
+        description: "restart gray on the binary on disk (resuming this conversation)",
+    },
+    CapabilitySpec {
+        id: HOST_SESSIONS,
+        host_method: Some("host/sessions"),
+        description: "see which gray sessions are running (ids and pids)",
     },
     CapabilitySpec {
         id: TOOL_OVERRIDE,

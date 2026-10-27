@@ -298,9 +298,23 @@ pub(crate) fn completion_matches_dyn(
                 .into_iter()
                 .filter(|(n, _)| !shortcuts.iter().any(|(s, _, _)| s == n)),
         );
+        rank_by_name(&mut matches, &f);
         return matches;
     }
     Vec::new()
+}
+
+fn rank_by_name(matches: &mut [(String, String)], filter: &str) {
+    matches.sort_by_key(|(name, _)| {
+        let n = name.trim_start_matches('/').to_lowercase();
+        if n == filter {
+            0u8
+        } else if n.starts_with(filter) {
+            1
+        } else {
+            2
+        }
+    });
 }
 
 pub(crate) fn completion_fill(name: &str) -> String {

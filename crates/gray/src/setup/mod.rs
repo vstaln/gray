@@ -107,12 +107,13 @@ pub use icons::icon;
 pub mod tabs;
 
 pub(crate) mod composite_rows;
-pub(crate) mod presets;
 mod context_modal;
 mod install_manager;
 mod model_modal;
 mod model_panes;
 mod plugins_modal;
+pub(crate) mod presets;
+mod theme_modal;
 pub(crate) mod variants;
 
 pub use context_modal::run_context_modal;
@@ -139,6 +140,7 @@ pub use provider_auth::{
     activate_plugin_connection, adopt_saved_key, connect_saved_key, forget_plugin_connection,
     select_api_key_connection,
 };
+pub(crate) use theme_modal::run_theme_picker;
 
 use crate::{config::Config, tui::print_wrapped};
 

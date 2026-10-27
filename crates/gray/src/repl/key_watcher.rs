@@ -147,7 +147,7 @@ fn run_turn_local_command(ctx: &TurnLocalCommands, text: &str) {
                     t.queued_inputs.push_back((prompt, Vec::new()));
                     let _ = t.draw();
                 }
-                Some(CommandOutcome::ModelPicker(_))
+                Some(CommandOutcome::HostPicker { .. })
                 | Some(CommandOutcome::Panel(_))
                 | Some(CommandOutcome::Picker(_))
                 | Some(CommandOutcome::Terminal { .. }) => {
