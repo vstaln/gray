@@ -135,25 +135,13 @@ pub fn consent_hash(declared: &[String]) -> String {
     })
 }
 
-pub fn granted_for(entry: &LockEntry, declared: &[String]) -> BTreeSet<String> {
-    if entry.capabilities_hash.is_none() {
-        return declared.iter().cloned().collect();
-    }
-    entry
-        .granted_capabilities
-        .iter()
-        .filter(|g| declared.iter().any(|d| d == *g))
-        .cloned()
-        .collect()
-}
-
-pub fn pending_consent(entry: &LockEntry, declared: &[String]) -> Vec<String> {
-    let granted = granted_for(entry, declared);
-    declared
-        .iter()
-        .filter(|d| !granted.contains(d.as_str()))
-        .cloned()
-        .collect()
+/// Everything a manifest declares is granted: the declaration in the
+/// manifest is the consent surface (shown at install/update). A plugin can
+/// still not reach a host method it did not declare — those calls keep
+/// failing `capability_not_granted`. The lock entry only feeds the
+/// `plugin capabilities` status display now.
+pub fn granted_for(_entry: &LockEntry, declared: &[String]) -> BTreeSet<String> {
+    declared.iter().cloned().collect()
 }
 
 pub fn needs_reconsent(entry: &LockEntry, declared: &[String]) -> bool {
@@ -205,50 +193,34 @@ mod tests {
     }
 
     #[test]
-    fn legacy_entries_keep_everything_they_declare() {
-        let e = entry(vec![], None);
-        assert!(granted_for(&e, &["host.ask".into(), "host.turn".into()]).contains("host.ask"));
-        assert!(pending_consent(&e, &["host.ask".into()]).is_empty());
-        assert!(!needs_reconsent(&e, &["host.ask".into()]));
-    }
-
-    #[test]
-    fn a_consented_entry_gets_only_the_intersection() {
+    fn declared_capabilities_are_all_granted() {
         let declared = vec!["host.ask".to_string(), "host.turn".to_string()];
-
-        let e = entry(vec!["host.ask"], Some(consent_hash(&declared).as_str()));
-        let granted = granted_for(&e, &declared);
-        assert!(granted.contains("host.ask"));
-        assert!(!granted.contains("host.turn"));
-        assert_eq!(
-            pending_consent(&e, &declared),
-            vec!["host.turn".to_string()]
-        );
+        // Whatever the lock recorded — old grants, a mismatched hash, none —
+        // the manifest declaration is the consent surface.
+        for e in [
+            entry(vec![], None),
+            entry(vec!["host.ask"], Some(consent_hash(&declared).as_str())),
+            entry(vec![], Some("stale")),
+        ] {
+            let granted = granted_for(&e, &declared);
+            assert!(granted.contains("host.ask"));
+            assert!(granted.contains("host.turn"));
+        }
+        // Undeclared powers stay out.
+        assert!(!granted_for(&entry(vec![], None), &[]).contains("host.ask"));
     }
 
     #[test]
-    fn reconsent_when_the_declared_set_moves() {
+    fn needs_reconsent_tracks_drift_for_the_status_display() {
         let declared = vec!["host.ask".to_string()];
         let e = entry(vec!["host.ask"], Some(consent_hash(&declared).as_str()));
         assert!(!needs_reconsent(&e, &declared));
-
-        let reordered = vec!["host.ask".to_string()];
-        assert!(!needs_reconsent(&e, &reordered));
+        assert!(!needs_reconsent(&e, &["host.ask".to_string()]));
 
         let wider = vec!["host.ask".to_string(), "host.turn".to_string()];
         assert!(needs_reconsent(&e, &wider));
-        assert_eq!(pending_consent(&e, &wider), vec!["host.turn".to_string()]);
-    }
 
-    #[test]
-    fn dropping_a_declaration_removes_the_power() {
-        let granted_at_install = vec!["host.ask".to_string(), "host.turn".to_string()];
-        let hash = consent_hash(&granted_at_install);
-        let e = entry(vec!["host.ask", "host.turn"], Some(hash.as_str()));
-
-        let declared = vec!["host.ask".to_string()];
-        assert!(!granted_for(&e, &declared).contains("host.turn"));
-
-        assert!(needs_reconsent(&e, &declared));
+        let e = entry(vec![], None);
+        assert!(!needs_reconsent(&e, &declared));
     }
 }
