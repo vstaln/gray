@@ -617,3 +617,25 @@ async fn compaction_drops_media_when_the_summary_call_overflows() {
             .any(|m| m.text_content().contains("TEXT-ONLY-SUMMARY"))
     );
 }
+
+#[tokio::test]
+async fn compaction_provider_writes_the_summary() {
+    let mut agent = test_agent("CHAT-SUMMARY");
+    agent.set_compaction_provider(Some(Arc::new(SummaryProvider {
+        text: "CHEAP-SUMMARY".to_string(),
+    })));
+    let bodies: Vec<String> = (1..=4).map(|i| format!("msg{i}")).collect();
+    agent.set_messages(bodies.iter().map(|t| sized_msg(t)).collect());
+    let out = agent.compact_v2(None, Some(0)).await.unwrap();
+    assert_eq!(out.as_deref(), Some("CHEAP-SUMMARY"));
+}
+
+#[tokio::test]
+async fn failed_compaction_provider_falls_back_to_chat_model() {
+    let mut agent = test_agent("CHAT-SUMMARY");
+    agent.set_compaction_provider(Some(Arc::new(FailingProvider)));
+    let bodies: Vec<String> = (1..=4).map(|i| format!("msg{i}")).collect();
+    agent.set_messages(bodies.iter().map(|t| sized_msg(t)).collect());
+    let out = agent.compact_v2(None, Some(0)).await.unwrap();
+    assert_eq!(out.as_deref(), Some("CHAT-SUMMARY"));
+}

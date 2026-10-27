@@ -589,6 +589,9 @@ pub struct Agent {
     pub(crate) lean_prompt: bool,
 
     pub(crate) background_compaction: bool,
+    /// Writes compaction summaries instead of `provider` when set (a
+    /// cheaper model on the same account); `provider` stays the fallback.
+    pub(crate) compaction_provider: Option<Arc<dyn Provider>>,
 
     pub(crate) held_summary: Option<crate::background_compact::HeldSummary>,
 
@@ -661,6 +664,7 @@ impl Agent {
             last_request_at: None,
             lean_prompt: false,
             background_compaction: false,
+            compaction_provider: None,
             held_summary: None,
             background_failures: 0,
         }
@@ -675,12 +679,22 @@ impl Agent {
         self.background_compaction = enabled;
     }
 
+    /// Route compaction summaries to another provider; `None` restores the
+    /// chat provider. A failed summary call retries on the chat provider.
+    pub fn set_compaction_provider(&mut self, provider: Option<Arc<dyn Provider>>) {
+        self.compaction_provider = provider;
+    }
+
     pub fn map_provider(
         mut self,
         wrap: impl FnOnce(Box<dyn Provider>) -> Box<dyn Provider>,
     ) -> Self {
         self.provider = Arc::from(wrap(Box::new(SharedProvider(self.provider.clone()))));
         self
+    }
+
+    pub fn session_id(&self) -> Option<&str> {
+        self.session_id.as_deref()
     }
 
     pub fn provider_handle(&self) -> Arc<dyn Provider> {
