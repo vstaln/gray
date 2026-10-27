@@ -313,6 +313,9 @@ pub enum ToolBefore {
     Modify(serde_json::Value),
 
     Deny(String),
+
+    /// Deny the call and cancel the whole turn (user pressed Deny/Esc).
+    Cancel(String),
 }
 
 impl ToolBefore {
@@ -330,6 +333,13 @@ impl ToolBefore {
                 _ => Self::Deny("plugin modify verdict missing object args".to_string()),
             },
 
+            Some("cancel") => Self::Cancel(
+                v.get("reason")
+                    .and_then(|r| r.as_str())
+                    .filter(|r| !r.is_empty())
+                    .unwrap_or("cancelled by plugin")
+                    .to_string(),
+            ),
             Some("allow") => Self::Allow,
             _ => Self::Deny("plugin returned an unrecognized policy verdict".to_string()),
         }

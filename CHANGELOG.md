@@ -1,5 +1,41 @@
 # Changelog
 
+## [0.2.7] - 2026-10-27
+
+### Changed
+- **Tool approval moved to the `permissions` plugin.** The built-in
+  per-tool consent prompt is gone from the binary; `gray-permissions`
+  owns the `tool/before` approval gate (`/permissions`,
+  read-only/auto/full modes) and is seeded by default on fresh
+  installs. The prompt mirrors Devin CLI: Allow with a
+  Once/Session/Project/Always scope slider, Bypass mode, and Deny —
+  Deny and Esc cancel the whole turn, `e` edits a bash command and runs
+  it, and Project/Always persist allow rules to `.gray/permissions.json`
+  in the project or the user's home. `tool/before` plugins can return a
+  `cancel` verdict to end the turn.
+- **Plugin and MCP tool cards show their output.** Recall, memory,
+  subagents and `mcp__*` cards used to render as a bare header; every tool
+  now gets the numbered result body (head and tail past 40 lines), except
+  `read`, `skill`, `request_user_input` and `discord_ui_schema`.
+- **Redesigned approval and question prompt.** Borderless in the picker
+  style and theme colors: the tool and its full command or path (wrapped,
+  never truncated), the working directory dimmed, numbered options with
+  1-N shortcuts. Approvals have no Other row. Options can carry a scope
+  slider (left/right cycles the value, it ships as `scope:`), and a
+  question marked `editable` lets `e` open the subject inline, shipping
+  the edited text as `edited:`.
+- **No more capability-consent nags.** A plugin's manifest declaration
+  is the grant: the "declares ungranted capabilities … grant with gray
+  plugin capabilities" warning is gone, along with the pending-consent
+  state. Calls to host methods a plugin did *not* declare still fail
+  `capability_not_granted`; `gray plugin capabilities` keeps showing
+  the declared set.
+- **Experimental background compaction is on by default.** It was
+  opt-in in 0.2.6; disable with `GRAY_BACKGROUND_COMPACTION=0` or
+  `"background_compaction": false`.
+- **`/theme` runs through the gray-themes plugin** and crates/gray-ide
+  is the IDE — the in-process prototype was dropped.
+
 ## [0.2.6] - 2026-10-27
 
 ### Added

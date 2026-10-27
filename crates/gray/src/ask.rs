@@ -47,6 +47,12 @@ pub struct AskQuestion {
     /// single-select questions (consent flows carry their own).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub no_other: bool,
+
+    /// `e` opens the subject (everything after the title line) in the
+    /// inline editor before confirming; the edited text ships as
+    /// `edited:` instead of `user_note:`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub editable: bool,
 }
 
 impl AskQuestion {
@@ -163,14 +169,6 @@ pub fn deliver_json_answer(ask_id: u64, line: &str) {
         }
         None => log::warn!("ask answer dropped: unparsable line for ask_id {ask_id}: {excerpt}"),
     }
-}
-
-pub(crate) fn interactive_tui() -> bool {
-    SERVICE
-        .lock()
-        .expect("ask service")
-        .as_ref()
-        .is_some_and(|svc| svc.interactive && svc.tui.is_some())
 }
 
 pub(crate) fn is_ask_live() -> bool {
@@ -567,6 +565,8 @@ pub(crate) struct AskModalState {
     cursor: Vec<usize>,
     notes: Vec<String>,
     editing: Vec<bool>,
+    /// The note buffer holds an `e`-edit of the subject, not a typed note.
+    edited: Vec<bool>,
     checked: Vec<Vec<bool>>,
     scope: Vec<Vec<usize>>,
 }
@@ -580,6 +580,7 @@ impl AskModalState {
             cursor: Vec::new(),
             notes: Vec::new(),
             editing: Vec::new(),
+            edited: Vec::new(),
             checked: Vec::new(),
             scope: Vec::new(),
         }
@@ -591,6 +592,7 @@ impl AskModalState {
         self.cursor = vec![0; n];
         self.notes = vec![String::new(); n];
         self.editing = vec![false; n];
+        self.edited = vec![false; n];
         self.scope = self
             .questions
             .iter()
@@ -644,12 +646,6 @@ impl AskModalState {
         }
     }
 
-    /// Absolute row index of the highlighted option (header + detail sit above).
-    fn cursor_row(&self) -> usize {
-        let q = &self.questions[self.idx];
-        1 + usize::from(!q.detail.is_empty()) + self.cursor[self.idx]
-    }
-
     fn finish(&self) -> Vec<AskAnswer> {
         self.questions
             .iter()
@@ -677,7 +673,12 @@ impl AskModalState {
                 }
                 let note = self.notes[qi].trim();
                 if !note.is_empty() {
-                    answers.push(format!("user_note: {note}"));
+                    let tag = if self.edited[qi] {
+                        "edited"
+                    } else {
+                        "user_note"
+                    };
+                    answers.push(format!("{tag}: {note}"));
                 }
                 AskAnswer {
                     id: q.id.clone(),
@@ -688,24 +689,53 @@ impl AskModalState {
     }
 }
 
-pub(crate) fn ask_rows(state: &AskModalState) -> Vec<(String, String, String)> {
+/// The text `e` pre-fills the editor with: the subject lines (everything
+/// after the question's title line).
+fn edit_subject(q: &AskQuestion) -> String {
+    q.question
+        .trim()
+        .lines()
+        .skip(1)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Rows of the inline question prompt as `(kind, label, text)` plus the
+/// index of the highlighted option row. Kinds the drawer styles
+/// (`composer::draw::ask`):
+///
+/// - `?` title: the question's first line ("Allow bash?")
+/// - `>` subject: every further question line, shown whole (the command or
+///   path being approved)
+/// - `│` detail: dim context lines (working directory, server entry, ...)
+/// - ` ` spacer, `·` key hint
+/// - anything else is an option row: `1.`..`9.` single-select, `[x]`/`[ ]`
+///   multi, `` / `~` compact (scoped) rows, `*` a note being typed.
+pub(crate) fn ask_rows(state: &AskModalState) -> (Vec<(String, String, String)>, usize) {
     let mut rows: Vec<(String, String, String)> = Vec::new();
     if state.questions.is_empty() {
-        return rows;
+        return (rows, 0);
     }
     let qi = state.idx;
     let q = &state.questions[qi];
-    // Header row: the question itself ("Allow bash?"). Multi-question
-    // batches get a small "1/3" counter; the header label is dropped when
-    // it would just repeat the question.
-    let mut title = q.question.clone();
+    let row = |kind: &str, label: String, text: String| (kind.to_string(), label, text);
+    // Title: the question's first line. Multi-question batches get a small
+    // "1/3" counter; the header label is dropped when it would just repeat
+    // the question.
+    let mut lines = q.question.trim().lines();
+    let mut title = lines.next().unwrap_or_default().trim_end().to_string();
     if state.questions.len() > 1 {
         title = format!("{title}  {}/{}", qi + 1, state.questions.len());
     }
-    rows.push(("?".to_string(), title, q.header.clone()));
-    if !q.detail.is_empty() {
-        rows.push(("\u{2502}".to_string(), String::new(), q.detail.clone()));
+    rows.push(row("?", title, q.header.clone()));
+    for l in lines.filter(|l| !l.trim().is_empty()) {
+        rows.push(row(">", String::new(), l.trim_end().to_string()));
     }
+    for l in q.detail.lines().filter(|l| !l.trim().is_empty()) {
+        rows.push(row("\u{2502}", String::new(), l.trim_end().to_string()));
+    }
+    rows.push(row(" ", String::new(), String::new()));
+    let cursor = rows.len() + state.cursor[qi];
     let multi = state.multi();
     let editing = state.editing[qi];
     let note = state.notes[qi].trim().to_string();
@@ -729,13 +759,19 @@ pub(crate) fn ask_rows(state: &AskModalState) -> Vec<(String, String, String)> {
             let glyph = if o.muted { "~" } else { "" };
             rows.push((glyph.to_string(), o.label.clone(), desc));
         }
+        let edit = if q.editable { " \u{b7} e edit" } else { "" };
         let hint = if editing {
-            "enter submit \u{b7} esc back"
+            "enter submit \u{b7} esc back".to_string()
         } else {
-            "\u{2191}\u{2193} select \u{b7} \u{2190}\u{2192} scope \u{b7} tab reason \u{b7} enter confirm \u{b7} esc cancel"
+            format!(
+                "{} select \u{b7} {} scope{edit} \u{b7} tab reason \u{b7} enter confirm \u{b7} esc cancel",
+                crate::tui::glyph("\u{2191}\u{2193}", "up/down"),
+                crate::tui::glyph("\u{2190}\u{2192}", "left/right"),
+            )
         };
-        rows.push(("\u{b7}".to_string(), String::new(), hint.to_string()));
-        return rows;
+        rows.push(row(" ", String::new(), String::new()));
+        rows.push(row("\u{b7}", String::new(), hint));
+        return (rows, cursor);
     }
     for i in 0..state.options_len() {
         let freeform = state.is_freeform(qi, i);
@@ -745,36 +781,47 @@ pub(crate) fn ask_rows(state: &AskModalState) -> Vec<(String, String, String)> {
             continue;
         }
         let glyph = if multi {
-            if state.checked[qi][i] { "[x]" } else { "[ ]" }
-        } else if i == state.cursor[qi] {
-            "\u{25cf}"
+            if state.checked[qi][i] { "[x]" } else { "[ ]" }.to_string()
+        } else if i < 9 {
+            format!("{}.", i + 1)
         } else {
-            "\u{25cb}"
+            String::new()
         };
         let desc = q
             .options
             .get(i)
             .map(|o| o.description.clone())
             .unwrap_or_else(|| "type a note".to_string());
-        rows.push((glyph.to_string(), label, desc));
+        rows.push((glyph, label, desc));
     }
+    let arrows = crate::tui::glyph("\u{2191}\u{2193}", "up/down");
+    let keys = match state.options_len().min(9) {
+        1 => "1".to_string(),
+        n => format!("1-{n}"),
+    };
     let hint = if editing {
         "enter submit \u{b7} esc back".to_string()
     } else if multi {
-        "space toggle \u{b7} enter confirm \u{b7} esc cancel".to_string()
+        format!(
+            "{arrows} move \u{b7} space or {keys} toggle \u{b7} enter confirm \u{b7} esc cancel"
+        )
     } else {
-        "up/down select \u{b7} enter confirm \u{b7} esc cancel".to_string()
+        let edit = if state.questions[qi].editable {
+            " \u{b7} e edit"
+        } else {
+            ""
+        };
+        format!("{arrows} select \u{b7} {keys} choose{edit} \u{b7} enter confirm \u{b7} esc cancel")
     };
-    rows.push(("\u{b7}".to_string(), String::new(), hint));
-    rows
+    rows.push(row(" ", String::new(), String::new()));
+    rows.push(row("\u{b7}", String::new(), hint));
+    (rows, cursor)
 }
 
 fn draw_ask_modal(tui: &crate::composer::SharedTui, state: &AskModalState) {
     let mut t = t_lock(tui);
-    t.ask_modal = Some(crate::composer::AskModal {
-        rows: ask_rows(state),
-        cursor: state.cursor_row(),
-    });
+    let (rows, cursor) = ask_rows(state);
+    t.ask_modal = Some(crate::composer::AskModal { rows, cursor });
     let _ = t.draw();
 }
 
@@ -821,7 +868,13 @@ fn run_ask_modal(
         if state.editing[i] {
             let mut submit = false;
             match key.code {
-                KeyCode::Esc | KeyCode::Tab => state.editing[i] = false,
+                KeyCode::Esc | KeyCode::Tab => {
+                    state.editing[i] = false;
+                    if state.edited[i] {
+                        state.notes[i].clear();
+                        state.edited[i] = false;
+                    }
+                }
                 KeyCode::Enter => {
                     state.editing[i] = false;
                     submit = state.advance();
@@ -905,6 +958,18 @@ fn run_ask_modal(
                 let d = c.to_digit(10).unwrap_or(1) as usize - 1;
                 state.cursor[i] = d;
                 state.checked[i][d] = !state.checked[i][d];
+            }
+            KeyCode::Char('e')
+                if state.questions[i].editable
+                    && !state.is_freeform(i, state.cursor[i])
+                    && !key.modifiers.contains(KeyModifiers::CONTROL)
+                    && !key.modifiers.contains(KeyModifiers::ALT) =>
+            {
+                state.editing[i] = true;
+                state.edited[i] = true;
+                if state.notes[i].is_empty() {
+                    state.notes[i] = edit_subject(&state.questions[i]);
+                }
             }
             KeyCode::Char(c)
                 if !key.modifiers.contains(KeyModifiers::CONTROL)

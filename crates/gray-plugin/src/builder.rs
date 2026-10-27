@@ -521,18 +521,6 @@ async fn spawn_lock_plugin(
                 .into_iter()
                 .collect(),
         );
-        let pending = crate::capabilities::pending_consent(entry, &declared);
-        if !pending.is_empty() {
-            push_builder_warning(format!(
-                "plugin {name:?} declares ungranted {} ({}); grant with gray plugin capabilities {name} --all",
-                if pending.len() == 1 {
-                    "capability".to_string()
-                } else {
-                    "capabilities".to_string()
-                },
-                pending.join(", ")
-            ));
-        }
         outcomes.push(SpawnOutcome {
             name: name.to_string(),
             error: None,
@@ -551,18 +539,6 @@ async fn spawn_lock_plugin(
                     .into_iter()
                     .collect(),
             );
-            let pending = crate::capabilities::pending_consent(entry, &declared);
-            if !pending.is_empty() {
-                push_builder_warning(format!(
-                    "plugin {name:?} declares ungranted {} ({}); grant with gray plugin capabilities {name} --all",
-                    if pending.len() == 1 {
-                        "capability".to_string()
-                    } else {
-                        "capabilities".to_string()
-                    },
-                    pending.join(", ")
-                ));
-            }
             outcomes.push(SpawnOutcome {
                 name: name.to_string(),
                 error: None,

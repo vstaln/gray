@@ -267,6 +267,7 @@ impl Agent {
 
     async fn preflight(
         &self,
+        ctx: &ToolContext,
         name: &str,
         args: &serde_json::Value,
     ) -> Result<serde_json::Value, ToolOutput> {
@@ -297,6 +298,10 @@ impl Agent {
                 ToolBefore::Allow => {}
                 ToolBefore::Modify(rewritten) => effective_args = rewritten,
                 ToolBefore::Deny(reason) => return Err(ToolOutput::error(reason)),
+                ToolBefore::Cancel(reason) => {
+                    ctx.cancel.cancel();
+                    return Err(ToolOutput::error(reason));
+                }
             }
         }
         for hook in &self.hooks {
@@ -1282,10 +1287,14 @@ impl Agent {
                             cancelled_at = Some(idx);
                             break;
                         }
-                        match self.preflight(name, args).await {
+                        match self.preflight(&ctx, name, args).await {
                             Ok(effective_args) => ready.push((idx, name.clone(), effective_args)),
                             Err(err) => {
                                 inline_errors.insert(idx, err);
+                                if ctx.cancel.is_cancelled() {
+                                    cancelled_at = Some(idx);
+                                    break;
+                                }
                             }
                         }
                     }
@@ -1434,7 +1443,7 @@ impl Agent {
 
                 emit!(AgentEvent::tool_call_end(id.clone(), args.clone()));
 
-                let effective_args = match self.preflight(name, args).await {
+                let effective_args = match self.preflight(&ctx, name, args).await {
                     Ok(effective_args) => effective_args,
                     Err(err) => {
                         emit!(AgentEvent::tool_result(
@@ -1451,6 +1460,11 @@ impl Agent {
                                 is_error: err.is_error,
                             }],
                         });
+                        if ctx.cancel.is_cancelled() {
+                            answer_pending_tools(self, &tool_uses, idx + 1, "cancelled by user");
+                            self.emit_turn_end(&billed).await;
+                            return Err(CoreError::Cancelled);
+                        }
                         continue;
                     }
                 };

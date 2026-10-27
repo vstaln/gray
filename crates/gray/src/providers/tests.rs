@@ -206,9 +206,9 @@ fn never_asked_plugin_declaring_provider_capability_is_grandfathered() {
     assert!(super::provider_granted(&entry, &declared));
     // Not declared → not granted.
     assert!(!super::provider_granted(&entry, &[]));
-    // Consent recorded without the grant → stays hidden.
+    // A recorded consent hash does not gate the grant.
     entry.capabilities_hash = Some("h".into());
-    assert!(!super::provider_granted(&entry, &declared));
+    assert!(super::provider_granted(&entry, &declared));
     // Explicit grant always counts.
     entry.granted_capabilities = declared.clone();
     assert!(super::provider_granted(&entry, &[]));
