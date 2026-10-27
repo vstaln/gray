@@ -989,6 +989,7 @@ pub async fn run_repl_mode(
 
     if interactive {
         jobs::spawn_footer_poller();
+        crate::host::set_repl_active(true);
     }
 
     loop {
@@ -998,6 +999,10 @@ pub async fn run_repl_mode(
 
         for lines in crate::host::take_host_say() {
             say_lines(tui.as_ref().map(|(s, _)| s), lines);
+        }
+
+        if let Some(resume) = crate::host::take_restart_request() {
+            maintenance::restart_with(&tui, resume).await;
         }
 
         if interactive && pending_command.is_none() {
