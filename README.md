@@ -91,14 +91,13 @@ Slash commands autocomplete — Enter completes and fires, Tab inserts.
 | `/undo` · `/retry` | drop the last exchange · drop it and ask again (files are git's job) |
 | type during a turn | steers the running turn at its next step |
 | `/context [128k\|1m\|auto]` | inspect or set the window |
-| `/usage` | session tokens & cost |
-| `/memory` | view cross-session memory |
 | `/skills [name] [args]` | list or run a skill |
-| `/plugin …` | list · search · install · remove · update · enable · disable · check |
+| `/plugins` | plugin manager — list, enable, update |
 | `/agentsmd` | edit the system prompt |
-| `/feedback <text>` | save feedback + open a prefilled GitHub issue |
 
-CLI: `gray resume`, `gray cron`, `gray gateway`, `gray plugin`, `gray memory`, `gray sessions prune`, `gray update`. Flags: `-p`, `-c`, `--session <ID>`, `--context-window`, `--json`, `--bare`. `--json` exits `0` success, `1` turn failed, `3` provider/network failure (retryable); error records carry a `code` and a `hint`.
+Plugins claim their own slash commands — `/memory`, `/permissions`, `/cron`, `/loop`, … — same autocomplete, dispatched inside the session.
+
+CLI: `gray resume`, `gray gateway`, `gray plugin`, `gray sessions`, `gray update`, plus any plugin-claimed name (`gray cron`, `gray account`, `gray memory`, …). Flags: `-p`, `-c`, `--session <ID>`, `--context-window`, `--json`, `--bare`. `--json` exits `0` success, `1` turn failed, `3` provider/network failure (retryable); error records carry a `code` and a `hint`.
 
 ## Extend
 
