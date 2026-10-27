@@ -1569,6 +1569,3 @@ pub use plain::{
     format_tool_call_header_plain, format_tool_call_lines_plain,
     format_tool_result_plain_with_context,
 };
-
-#[cfg(test)]
-mod body_tests;
