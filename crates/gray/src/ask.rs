@@ -259,7 +259,6 @@ pub async fn handle_ask(params: serde_json::Value) -> serde_json::Value {
     let answers = tokio::select! {
         biased;
         Ok(a) = rx => a,
-        _ = tokio::time::sleep(std::time::Duration::from_secs(300)) => Vec::new(),
         _ = svc.cancel.cancelled() => Vec::new(),
         _ = drive => Vec::new(),
     };
@@ -540,11 +539,17 @@ async fn drive_tui(svc: &Arc<Service>, id: u64) {
 
         let saved_status = t_lock(&tui).take_status();
         t_lock(&tui).set_status(Some("Question"));
-        let answers = run_ask_modal(&tui, &mut state, &svc.cancel).unwrap_or_default();
+        let still_pending = || svc.pending.lock().expect("ask pending").contains_key(&id);
+        let answers =
+            run_ask_modal(&tui, &mut state, &svc.cancel, &still_pending).unwrap_or_default();
         {
             let mut t = t_lock(&tui);
 
-            push_ask_summary(&mut t, &state.questions, &answers);
+            // An ask the caller already gave up on gets no "→ answer" row:
+            // nothing will receive it.
+            if still_pending() {
+                push_ask_summary(&mut t, &state.questions, &answers);
+            }
             t.restore_status(saved_status);
             let _ = t.draw();
         }
@@ -835,6 +840,7 @@ fn run_ask_modal(
     tui: &crate::composer::SharedTui,
     state: &mut AskModalState,
     cancel: &tokio_util::sync::CancellationToken,
+    still_pending: &dyn Fn() -> bool,
 ) -> Option<Vec<AskAnswer>> {
     use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers, poll, read};
     if state.questions.is_empty() {
@@ -843,7 +849,9 @@ fn run_ask_modal(
     }
     draw_ask_modal(tui, state);
     loop {
-        if cancel.is_cancelled() {
+        // Closed when the turn is cancelled or the asker stopped waiting:
+        // a modal left up after that takes an answer nobody receives.
+        if cancel.is_cancelled() || !still_pending() {
             clear_ask_modal(tui);
             return None;
         }
