@@ -996,6 +996,22 @@ fn bash_header(
                     dim_style,
                 );
             }
+            if !background && let Some(mem) = memory_label(core.command) {
+                let mut spans = vec![bullet, verb(mem.verb)];
+                if let Some(key) = mem.key {
+                    spans.push(Span::styled(key, cmd_style));
+                }
+                if let Some(text) = mem.text {
+                    let cut = truncate_cmd(&text);
+                    let text = if cut.len() < text.len() {
+                        format!("{}\u{2026}", cut.trim_end())
+                    } else {
+                        text.clone()
+                    };
+                    spans.push(Span::styled(format!(" \u{00b7} {text}"), dim_style));
+                }
+                return Line::from(spans);
+            }
             let cut = truncate_cmd(core.command);
 
             let cmd = if cut.len() < core.command.len() || full.lines().nth(1).is_some() {
@@ -1017,6 +1033,56 @@ fn bash_header(
             Line::from(spans)
         }
     }
+}
+
+/// A `gray memory …` shell call, labeled like a tool row ("Remembered KEY ·
+/// text") instead of echoing the raw command line.
+#[derive(Debug, PartialEq)]
+struct MemoryLabel {
+    verb: &'static str,
+    key: Option<String>,
+    text: Option<String>,
+}
+
+fn memory_label(command: &str) -> Option<MemoryLabel> {
+    let words = shlex::split(command)?;
+    let mut it = words.iter().map(String::as_str).peekable();
+    match it.next()? {
+        "gray" if it.next()? == "memory" => {}
+        "gray-memory" => {}
+        _ => return None,
+    }
+    // Leading globals (`--scope user`) may sit before the subcommand too.
+    let mut pos: Vec<&str> = Vec::new();
+    while let Some(w) = it.next() {
+        if w == "--" {
+            pos.extend(it.by_ref());
+            break;
+        }
+        if let Some(flag) = w.strip_prefix("--") {
+            if !flag.contains('=') && matches!(flag, "scope" | "project" | "why") {
+                it.next();
+            }
+            continue;
+        }
+        pos.push(w);
+    }
+    let (sub, rest) = pos.split_first()?;
+    let key = rest.first().map(|k| (*k).to_string());
+    let text = rest.get(1..).filter(|t| !t.is_empty()).map(|t| t.join(" "));
+    let (verb, key, text) = match *sub {
+        "set" | "ingest-set" => ("Remembered ", key, text),
+        "edit" | "ingest-edit" => ("Updated memory ", key, text),
+        "remove" => ("Forgot ", key, None),
+        "show" => ("Recalled ", key, None),
+        "list" => ("Listed memories", None, None),
+        "clear" => ("Cleared memory", None, None),
+        _ => return None,
+    };
+    if verb.ends_with(' ') && key.is_none() {
+        return None;
+    }
+    Some(MemoryLabel { verb, key, text })
 }
 
 fn read_header(
@@ -1066,6 +1132,12 @@ fn read_header(
 
 pub(crate) fn live_bash_verb(done: &str) -> Option<&'static str> {
     Some(match done {
+        "Remembered " => "Remembering ",
+        "Updated memory " => "Updating memory ",
+        "Forgot " => "Forgetting ",
+        "Recalled " => "Recalling ",
+        "Listed memories" => "Listing memories",
+        "Cleared memory" => "Clearing memory",
         "Ran " => "Running ",
         "Skipped " => "Skipping ",
         "Started " => "Starting ",
@@ -1569,3 +1641,50 @@ pub use plain::{
     format_tool_call_header_plain, format_tool_call_lines_plain,
     format_tool_result_plain_with_context,
 };
+
+#[cfg(test)]
+mod memory_label_tests {
+    use super::{MemoryLabel, memory_label};
+
+    #[test]
+    fn a_memory_set_reads_as_remembered_key_and_text() {
+        let got = memory_label(
+            r#"gray memory set --scope user outreach-voice "short plain paragraphs, signs 'best, Grady'""#,
+        );
+        assert_eq!(
+            got,
+            Some(MemoryLabel {
+                verb: "Remembered ",
+                key: Some("outreach-voice".into()),
+                text: Some("short plain paragraphs, signs 'best, Grady'".into()),
+            })
+        );
+    }
+
+    #[test]
+    fn other_memory_verbs_and_non_memory_commands() {
+        assert_eq!(
+            memory_label("gray memory show k").unwrap().verb,
+            "Recalled "
+        );
+        assert_eq!(
+            memory_label("gray-memory remove k").unwrap().verb,
+            "Forgot "
+        );
+        assert_eq!(
+            memory_label("gray memory list").unwrap().verb,
+            "Listed memories"
+        );
+        assert_eq!(
+            memory_label("gray memory --scope=user edit k t")
+                .unwrap()
+                .verb,
+            "Updated memory "
+        );
+        // Unlabeled verbs, a missing key, and other programs fall back to "Ran".
+        assert_eq!(memory_label("gray memory audit"), None);
+        assert_eq!(memory_label("gray memory set"), None);
+        assert_eq!(memory_label("gray recall memory"), None);
+        assert_eq!(memory_label("echo gray memory set k v"), None);
+    }
+}
