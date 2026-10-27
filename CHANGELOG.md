@@ -1,27 +1,13 @@
 # Changelog
 
-## [0.2.6] - 2026-10-27
-
-### Added
-- **Experimental background compaction.** On by default; disable with
-  `GRAY_BACKGROUND_COMPACTION=0` or `"background_compaction": false` in
-  the config.
-  The summary is written in the background once context reaches 85% of the
-  compaction point and swapped in when compaction is due, so the turn no
-  longer waits on it. Known costs: with the devin-sub provider the summary
-  request moves the live Devin conversation, so the next turn resends the
-  history once; and the swap keeps only the messages added after the summary
-  started, which can be less recent context than inline compaction keeps.
-- **Read-only plugin tools run in parallel.** A plugin tool that
-  declares `"read_only": true` in its manifest is batched with other
-  read-only calls, the same way read-only bash already is.
+## [0.2.7] - 2026-10-27
 
 ### Changed
 - **Tool approval moved to the `permissions` plugin.** The built-in
-  per-tool consent prompt is gone from the binary; install
-  `gray-permissions` for the `tool/before` approval gate
-  (`/permissions`, read-only/auto/full modes), now seeded by default on
-  fresh installs. The prompt mirrors Devin CLI: Allow with a
+  per-tool consent prompt is gone from the binary; `gray-permissions`
+  owns the `tool/before` approval gate (`/permissions`,
+  read-only/auto/full modes) and is seeded by default on fresh
+  installs. The prompt mirrors Devin CLI: Allow with a
   Once/Session/Project/Always scope slider, Bypass mode, and Deny —
   Deny and Esc cancel the whole turn, `e` edits a bash command and runs
   it, and Project/Always persist allow rules to `.gray/permissions.json`
@@ -38,6 +24,38 @@
   slider (left/right cycles the value, it ships as `scope:`), and a
   question marked `editable` lets `e` open the subject inline, shipping
   the edited text as `edited:`.
+- **No more capability-consent nags.** A plugin's manifest declaration
+  is the grant: the "declares ungranted capabilities … grant with gray
+  plugin capabilities" warning is gone, along with the pending-consent
+  state. Calls to host methods a plugin did *not* declare still fail
+  `capability_not_granted`; `gray plugin capabilities` keeps showing
+  the declared set.
+- **Experimental background compaction is on by default.** It was
+  opt-in in 0.2.6; disable with `GRAY_BACKGROUND_COMPACTION=0` or
+  `"background_compaction": false`.
+- **`/theme` runs through the gray-themes plugin** and crates/gray-ide
+  is the IDE — the in-process prototype was dropped.
+
+## [0.2.6] - 2026-10-27
+
+### Added
+- **Experimental background compaction.** Off by default; enable with
+  `--background-compaction`, `GRAY_BACKGROUND_COMPACTION=1`, or the
+  `background_compaction` config key.
+  The summary is written in the background once context reaches 85% of the
+  compaction point and swapped in when compaction is due, so the turn no
+  longer waits on it. Known costs: with the devin-sub provider the summary
+  request moves the live Devin conversation, so the next turn resends the
+  history once; and the swap keeps only the messages added after the summary
+  started, which can be less recent context than inline compaction keeps.
+- **Read-only plugin tools run in parallel.** A plugin tool that
+  declares `"read_only": true` in its manifest is batched with other
+  read-only calls, the same way read-only bash already is.
+- **Consent prompt.** Allow (left/right cycles the scope: Once,
+  Session, command, Project, Always), Bypass mode (no more prompts
+  this session) and Deny (tab adds a reason).
+
+### Changed
 - **Faster session saves and listing.** Saves no longer re-read the
   whole session file to find the next entry id (about 200 ms down to
   under 1 ms on a 51 MB session), and listing reads only a bounded
@@ -48,12 +66,6 @@
 - **`request_user_input`** shows its question instead of
   `questions=[1 items]`, and no longer sits behind a permission
   prompt.
-- **No more capability-consent nags.** A plugin's manifest declaration
-  is the grant: the "declares ungranted capabilities … grant with gray
-  plugin capabilities" warning is gone, along with the pending-consent
-  state. Calls to host methods a plugin did *not* declare still fail
-  `capability_not_granted`; `gray plugin capabilities` keeps showing
-  the declared set.
 
 ### Fixed
 - **No more futile overflow compactions.** When reported usage is far
