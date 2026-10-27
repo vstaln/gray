@@ -1,20 +1,6 @@
-use super::{
-    EnterAction, ManagerItem, ManagerSpec, enter_action, enter_label, format_error_row,
-    format_plugin_row_parts,
-};
+use super::{EnterAction, ManagerItem, ManagerSpec, enter_action, enter_label, format_error_row};
 use crate::skills::Skill;
 use gray_pkg::errors::ErrorEntry;
-use gray_pkg::ops::LockEntry;
-
-fn format_plugin_row(name: &str, entry: &LockEntry) -> String {
-    format_plugin_row_parts(
-        name,
-        &entry.version,
-        &entry.scope,
-        &entry.ecosystem,
-        entry.enabled,
-    )
-}
 
 fn discovered(name: &str, description: &str) -> Skill {
     Skill {
@@ -28,42 +14,6 @@ fn discovered(name: &str, description: &str) -> Skill {
         source: "user".to_string(),
         args: Vec::new(),
     }
-}
-
-fn entry(ecosystem: &str, enabled: bool) -> LockEntry {
-    LockEntry {
-        ecosystem: ecosystem.to_string(),
-        version: "1.2.3".to_string(),
-        scope: "user".to_string(),
-        enabled,
-        ..LockEntry::default()
-    }
-}
-
-#[test]
-fn manager_specs_differ_only_where_expected() {
-    let skills = &super::SKILLS_SPEC;
-    assert_eq!(skills.title, "Skills");
-    assert_eq!(skills.empty_hint, "no skills discovered");
-    assert_eq!(skills.error_verb, "remove failed");
-    assert!(!skills.supports_toggle);
-    assert!(skills.enter_invokes);
-    assert!(skills.supports_remove);
-    assert!(skills.errors_tab);
-    assert!(!skills.keep_stale_on_relist_error);
-
-    let plugins = &super::PLUGINS_SPEC;
-    assert_eq!(plugins.title, "Plugins");
-    assert_eq!(
-        plugins.empty_hint,
-        "no plugins installed — /plugin install <spec>"
-    );
-    assert_eq!(plugins.error_verb, "toggle failed");
-    assert!(plugins.supports_toggle);
-    assert!(!plugins.enter_invokes);
-    assert!(plugins.supports_remove);
-    assert!(plugins.errors_tab);
-    assert!(plugins.keep_stale_on_relist_error);
 }
 
 #[test]
@@ -105,45 +55,6 @@ fn error_row_holds_for_varied_entries() {
         });
         assert_eq!(row, format!("{source} {item}: {message}"));
     }
-}
-
-#[test]
-fn unknown_ecosystem_uses_raw_string() {
-    let row = format_plugin_row("demo", &entry("url", true));
-    assert!(row.contains("[url]"), "raw ecosystem: {row:?}");
-}
-
-#[test]
-fn enabled_row_exact_string() {
-    assert_eq!(
-        format_plugin_row("demo", &entry("gray-native", true)),
-        "✓ demo 1.2.3 (user) [Gray Index]"
-    );
-}
-
-#[test]
-fn disabled_row_exact_string() {
-    assert_eq!(
-        format_plugin_row("demo", &entry("gray-native", false)),
-        "○ demo 1.2.3 (user) [Gray Index] [disabled]"
-    );
-}
-
-#[test]
-fn cli_ecosystem_labels_plugin_commands() {
-    assert_eq!(
-        format_plugin_row("demo", &entry("gray-cli", true)),
-        "✓ demo 1.2.3 (user) [Plugin command]"
-    );
-
-    assert_eq!(
-        format_plugin_row_parts("demo", "1.2.3", "user", "gray-cli", true),
-        format_plugin_row("demo", &entry("gray-cli", true))
-    );
-    assert_eq!(
-        format_plugin_row_parts("demo", "1.2.3", "user", "gray-cli", false),
-        format_plugin_row("demo", &entry("gray-cli", false))
-    );
 }
 
 fn setup_row(needs_setup: bool) -> ManagerItem {

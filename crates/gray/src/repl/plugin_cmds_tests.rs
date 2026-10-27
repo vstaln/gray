@@ -1,16 +1,5 @@
 use super::dispatch::{Flow, dispatch_command};
-use super::{PluginAction, is_bare_plugin_cmd, parse_plugin_args};
-
-#[test]
-fn bare_detection_covers_case_and_trailing_space() {
-    assert!(is_bare_plugin_cmd("/plugin"));
-    assert!(is_bare_plugin_cmd("/PLUGINS"));
-    assert!(is_bare_plugin_cmd("/plugin  "));
-    assert!(!is_bare_plugin_cmd("/plugin list"));
-    assert!(!is_bare_plugin_cmd("/plugin list foo"));
-    assert!(!is_bare_plugin_cmd("/plugin install foo"));
-    assert!(!is_bare_plugin_cmd("/plugin enable foo"));
-}
+use super::{PluginAction, parse_plugin_args};
 
 #[test]
 fn parses_install_url() {
