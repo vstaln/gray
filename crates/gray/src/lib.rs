@@ -1,14 +1,12 @@
 pub mod ask;
 pub mod auth;
 pub mod auto_title;
-pub mod auto_update;
 pub mod cache;
 pub mod cmd;
 pub mod compact;
 pub mod composer;
 pub mod config;
 pub(crate) mod consent;
-pub(crate) mod exe_watch;
 pub(crate) mod failed_turn;
 pub mod host;
 pub mod keymap;

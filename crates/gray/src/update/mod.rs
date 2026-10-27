@@ -1,3 +1,6 @@
+pub mod auto;
+pub(crate) mod exe_watch;
+
 use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};

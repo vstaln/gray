@@ -246,7 +246,7 @@ fn run_with_timeout(
 /// resolution a user-level `gray cron …` takes. Any failure (no gateway
 /// plugin, nonzero exit) reads as "no jobs", never an error.
 fn cron_list_json(home: &Path) -> Option<Vec<u8>> {
-    let exe = crate::exe_watch::on_disk_exe()
+    let exe = crate::update::exe_watch::on_disk_exe()
         .or_else(|_| std::env::current_exe())
         .ok()?;
     let mut cmd = std::process::Command::new(exe);
@@ -339,7 +339,7 @@ pub(crate) fn remove_wake(home: &Path, id: &str) -> anyhow::Result<bool> {
 }
 
 fn cron_remove(home: &Path, id: &str) -> anyhow::Result<bool> {
-    let exe = crate::exe_watch::on_disk_exe().or_else(|_| std::env::current_exe())?;
+    let exe = crate::update::exe_watch::on_disk_exe().or_else(|_| std::env::current_exe())?;
     let mut cmd = std::process::Command::new(exe);
     cmd.args(["cron", "remove", id])
         .env("GRAY_HOME", home)

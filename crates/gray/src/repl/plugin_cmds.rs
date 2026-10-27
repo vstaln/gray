@@ -125,7 +125,7 @@ pub(crate) async fn handle_plugin_command(raw: &str, tui: Option<&crate::compose
         PluginAction::Check(dir) => {
             // The conformance probe lives in the plugin-dev plugin now —
             // `gray plugin check` forwards to it.
-            let exe = crate::exe_watch::on_disk_exe();
+            let exe = crate::update::exe_watch::on_disk_exe();
             match exe {
                 Err(e) => say(tui, &format!("cannot self-spawn: {e:#}")),
                 Ok(exe) => {

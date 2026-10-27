@@ -11,14 +11,14 @@ pub(crate) async fn handle_update(tui: &TuiOpt, arg: Option<String>) {
         match word {
             "on" | "off" => {
                 let on = word == "on";
-                let text = match crate::auto_update::set_enabled(on) {
+                let text = match crate::update::auto::set_enabled(on) {
                     Ok(()) if on => "auto-update on".to_string(),
                     Ok(()) => "auto-update off — `gray update` still installs manually".to_string(),
                     Err(e) => format!("auto-update toggle failed: {e:#}"),
                 };
                 super::say(shared, &text);
             }
-            "status" | "" => super::say(shared, &crate::auto_update::status_text()),
+            "status" | "" => super::say(shared, &crate::update::auto::status_text()),
             other => super::say(
                 shared,
                 &format!("unknown `/update auto {other}` (on|off|status)"),
@@ -98,7 +98,7 @@ pub(crate) async fn restart_with(tui: &TuiOpt, resume: bool) {
 
     super::drain_in_flight_turn(std::time::Duration::from_millis(1500)).await;
 
-    let exe = match crate::exe_watch::on_disk_exe() {
+    let exe = match crate::update::exe_watch::on_disk_exe() {
         Ok(p) => p,
         Err(e) => {
             super::say(
@@ -183,7 +183,7 @@ fn is_scratch_home(set: &std::path::Path, default: Option<&std::path::Path>) -> 
 }
 
 fn gateway_cmd(args: &[&str]) -> std::io::Result<std::process::Output> {
-    let exe = crate::exe_watch::on_disk_exe()?;
+    let exe = crate::update::exe_watch::on_disk_exe()?;
     std::process::Command::new(exe)
         .arg("gateway")
         .args(args)

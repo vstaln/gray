@@ -825,7 +825,7 @@ pub async fn run_repl_mode(
         let ticker_tui = shared.clone();
         tokio::spawn(async move {
             let mut last_status = std::time::Instant::now();
-            let exe_watch = crate::exe_watch::ExeWatch::capture();
+            let exe_watch = crate::update::exe_watch::ExeWatch::capture();
             let mut last_exe_check = std::time::Instant::now();
             let mut exe_notified = None;
             loop {
@@ -872,12 +872,12 @@ pub async fn run_repl_mode(
         let shared = shared.clone();
         let bare = config.bare;
         tokio::spawn(async move {
-            let line = crate::auto_update::maybe_run(bare)
+            let line = crate::update::auto::maybe_run(bare)
                 .await
                 .and_then(|outcome| outcome.notice())
                 .or_else(|| {
                     if !bare && crate::setup::auto_update_enabled() {
-                        crate::auto_update::last_failure_notice()
+                        crate::update::auto::last_failure_notice()
                     } else {
                         None
                     }
