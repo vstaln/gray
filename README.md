@@ -39,38 +39,6 @@ curl -fsSL https://gray.alignment.id/install.sh | sh && gray
 | **Remembers you** | Cross-session memory of your preferences and project decisions (`gray memory`). |
 | **Your setup already works** | Reads project `AGENTS.md` / `CLAUDE.md`, and `SKILL.md` skills from `~/.gray`, `~/.claude`, `~/.agents`, opencode and pi — no porting. Extend further with stdio plugins. |
 
-## How gray compares
-
-Gray is an open-source (MIT) AI agent harness shipped as one static Rust binary. Bash-only tools, resumable JSONL sessions, a self-compacting context window, skills, plugins and cron. Works with any OpenAI-compatible provider using your own API keys.
-
-| | gray | Claude Code | Aider | OpenCode |
-|---|---|---|---|---|
-| License | MIT | Proprietary | Apache-2.0 | MIT |
-| Shape | One static Rust binary | Proprietary CLI | Python CLI | Terminal TUI |
-| Models | Any OpenAI-compatible provider, Ollama/local, or a Claude/ChatGPT plan via plugins | Claude plans / Anthropic API | BYOK across providers incl. local | 75+ providers via Models.dev |
-| Scope | General always-on agent — cron, gateway, apps | Dedicated coding agent | Git-first pair programmer | Dedicated coding TUI |
-| Supervision | No approvals by default (`permissions` plugin adds them) | Permission modes built in | Confirms shell commands | Plan agent is read-only by default |
-| Price | Free; pay your model provider | Plan or API billing | Free; pay your provider | Free; optional paid services |
-
-They overlap where you spend your day: pick Claude Code, Aider or OpenCode when the job is "drive my coding sessions"; pick gray when you want a small agent you run yourself — including jobs that keep running when the terminal is closed.
-
-## FAQ
-
-**Is gray an alternative to Claude Code?**
-Partly. gray is a general-purpose MIT harness, not a dedicated coding product. If you want Anthropic's polished, plan-gated coding agent, that's Claude Code; if you want a small open binary on any provider — including a Claude or ChatGPT plan through plugins — that's gray.
-
-**Is gray free?**
-Yes — MIT licensed. You pay only your model provider, or nothing with a local model through Ollama.
-
-**Which models does gray support?**
-Any OpenAI-compatible provider with your own API key — Anthropic, OpenAI, Google, OpenRouter, DeepSeek, Groq, xAI, Mistral and the rest of the bundled models.dev catalog — plus local models through Ollama or any OpenAI-compatible server. Official plugins add Claude Pro/Max and ChatGPT plan sign-in.
-
-**Can gray run 24/7?**
-Yes. `gray gateway install` runs it as a user service (systemd or runit) so cron jobs and app connections like Discord keep firing with no terminal open.
-
-**Where does my data live?**
-On your machine: sessions and credentials stay under `~/.gray`, and prompts go directly to whichever provider you configured — no gray account required.
-
 ## Install
 
 ```bash
@@ -85,7 +53,7 @@ cargo build --release -p gray                                     # from source
 irm https://gray.alignment.id/install.ps1 | iex
 ```
 
-The installer checks the release `SHA256SUMS`. For an offline install keep `dist/install.ps1` and the zip together and run `.\dist\install.ps1 -ArchivePath .\gray-stable-x86_64-windows.zip -Sha256 <digest>`. Gateway/cron execution and self-update aren't supported on native Windows yet — see the [Windows guide](docs/windows-preview.md) for beta, offline and WSL installs.
+No WSL needed — Git for Windows supplies the shell. Beta, offline and WSL installs: [Windows guide](docs/windows-preview.md).
 
 ## Quick start
 
@@ -136,18 +104,9 @@ CLI: `gray resume`, `gray cron`, `gray gateway`, `gray plugin`, `gray memory`, `
 
 **Skills** — `SKILL.md` files from `~/.gray/skills`, `.gray/skills`, and the Claude Code / opencode / agents / pi locations, global and per-project. The model sees the list every turn and reads the one it needs.
 
-**Plugins** — sidecar processes speaking NDJSON over stdio (wire v1, frozen), with timeouts and crash isolation. `gray.yml` profiles order them; [`crates/gray-plugin/testdata/echo.sh`](crates/gray-plugin/testdata/echo.sh) is a copy-paste starting point. More in [docs/plugins.md](docs/plugins.md).
+**Plugins** — sidecar processes speaking NDJSON over stdio, with timeouts and crash isolation. [`crates/gray-plugin/testdata/echo.sh`](crates/gray-plugin/testdata/echo.sh) is a copy-paste starting point; more in [docs/plugins.md](docs/plugins.md).
 
-**Run commands elsewhere** — one setting moves every shell command off your machine:
-
-```json
-// ~/.gray/config.json
-{ "exec_prefix": "docker exec -i dev sh -s" }    // or "ssh box sh -s"
-```
-
-The command crosses as text, so quoting, globs and heredocs reach the far shell untouched. Paths don't cross: remote commands start in that account's home.
-
-**Background jobs** — `bash` takes only `command` and `timeout` (default 120s, max 3600). A command still running at its timeout is not killed: it keeps running as a background job, and the call returns its log, pgid, output so far and a stop command (`kill -- -<pgid>`). The model waits by ending its turn: a finished job wakes the session with its exit status and log path. `/jobs` lists and stops them. Bare mode (`GRAY_NO_JOBS`) is plain mini-swe-agent: a timeout kills.
+**Run commands elsewhere** — `"exec_prefix": "docker exec -i dev sh -s"` (or `"ssh box sh -s"`) in `~/.gray/config.json` moves every shell command off your machine.
 
 ## Safety
 
@@ -186,5 +145,9 @@ Gray runs the model's shell commands with **your privileges, no approval prompt,
 ---
 
 Informed by the projects in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) — thanks to them. `cargo install gray` is a different crate; use the installer or build from source.
+
+---
+
+*Disclaimer: this project is generated with significant AI assistance.*
 
 MIT © 2026 vstaln
