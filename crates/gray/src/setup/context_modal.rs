@@ -8,7 +8,7 @@ pub fn run_context_modal(
 ) -> anyhow::Result<Option<String>> {
     use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, poll, read};
     use ratatui::layout::Rect;
-    use ratatui::style::{Color, Modifier, Style};
+    use ratatui::style::{Modifier, Style};
     use ratatui::text::{Line, Span};
     use ratatui::widgets::{Block, Clear, Paragraph};
     use std::time::Duration;
@@ -106,14 +106,6 @@ pub fn run_context_modal(
                 .unwrap_or(0);
             let cells = parts.grid_cells(window, reserve);
 
-            let mut flat: Vec<usize> = Vec::with_capacity(100);
-            for (kind, n) in cells.iter().enumerate() {
-                flat.extend(std::iter::repeat_n(kind, *n));
-            }
-            while flat.len() < 100 {
-                flat.push(5);
-            }
-
             terminal.draw(|frame| {
                 let area = frame.area();
                 if area.width < 20 || area.height < 6 {
@@ -160,7 +152,7 @@ pub fn run_context_modal(
                     Rect::new(inner.x, inner.y, inner.width, 1),
                 );
                 let head = format!(
-                    "{} · {}/{} tokens ({pct}%)",
+                    "{} · {} / {} tokens · {pct}% used",
                     if model.is_empty() { "no model" } else { model },
                     format_context_length(used),
                     format_context_length(window),
@@ -175,121 +167,91 @@ pub fn run_context_modal(
                     Rect::new(inner.x, inner.y + 1, inner.width, 1),
                 );
 
-                frame.render_widget(
-                    Paragraph::new(Line::from(Span::styled(
-                        "Estimated usage by category",
-                        Style::default()
-                            .fg(text_dim)
-                            .add_modifier(Modifier::ITALIC)
-                            .bg(box_bg),
-                    ))),
-                    Rect::new(inner.x, inner.y + 2, inner.width, 1),
-                );
-
-                let grid_y = inner.y + 3;
-                let detail_x = inner.x + 24;
-                let detail_w = inner.width.saturating_sub(24);
                 let pct_of = |n: usize| {
                     n.checked_mul(100)
                         .and_then(|v| v.checked_div(window))
                         .unwrap_or(0)
                 };
-                let row = |glyph: &str, color: Color, label: &str, n: usize| {
-                    Line::from(vec![
-                        Span::styled(format!("{glyph} "), Style::default().fg(color).bg(box_bg)),
-                        Span::styled(
-                            format!(
-                                "{label}: {} tokens ({}%)",
-                                format_context_length(n),
-                                pct_of(n)
-                            ),
-                            Style::default()
-                                .fg(crate::theme::theme().text_bright)
-                                .bg(box_bg),
-                        ),
-                    ])
-                };
-                let details = [
-                    row(icon("cell"), c_sys, "System prompt", parts.system_prompt),
-                    row(
-                        icon("cell"),
-                        c_ctx,
-                        "Project context",
-                        parts.project_context,
-                    ),
-                    row(icon("cell"), c_tools, "System tools", parts.tools),
-                    row(icon("cell"), c_skills, "Skills", parts.skills),
-                    row(icon("cell"), c_msgs, "Messages", parts.messages),
-                    Line::from(vec![
-                        Span::styled(
-                            format!("{} ", icon("cell_free")),
-                            Style::default().fg(c_free).bg(box_bg),
-                        ),
-                        Span::styled(
-                            format!(
-                                "Free space: {} ({}%)",
-                                format_context_length(free),
-                                pct_of(free)
-                            ),
-                            Style::default().fg(text_dim).bg(box_bg),
-                        ),
-                    ]),
-                    Line::from(vec![
-                        Span::styled(
-                            format!("{} ", icon("cell_buffer")),
-                            Style::default().fg(c_reserve).bg(box_bg),
-                        ),
-                        Span::styled(
-                            format!(
-                                "Autocompact buffer: {} tokens ({}%)",
-                                format_context_length(reserve),
-                                pct_of(reserve)
-                            ),
-                            Style::default().fg(text_dim).bg(box_bg),
-                        ),
-                    ]),
-                ];
-                for r in 0..10u16 {
-                    let mut spans = Vec::with_capacity(10);
-                    for c in 0..10usize {
-                        let kind = flat[(r as usize) * 10 + c];
-                        let (g, col) = match kind {
-                            0 => (icon("cell"), c_sys),
-                            1 => (icon("cell"), c_ctx),
-                            2 => (icon("cell"), c_tools),
-                            3 => (icon("cell"), c_skills),
-                            4 => (icon("cell"), c_msgs),
-                            5 => (icon("cell_free"), c_free),
-                            _ => (icon("cell_buffer"), c_reserve),
-                        };
-                        spans.push(Span::styled(
-                            format!("{g} "),
-                            Style::default().fg(col).bg(box_bg),
-                        ));
+
+                // Stacked bar: one segment per category, scaled to the modal width.
+                let bar_y = inner.y + 3;
+                let bar_w = inner.width as usize;
+                let colors = [c_sys, c_ctx, c_tools, c_skills, c_msgs, c_free, c_reserve];
+                let total: usize = cells.iter().sum::<usize>().max(1);
+                let mut spans = Vec::with_capacity(7);
+                let (mut cum, mut drawn) = (0usize, 0usize);
+                for (kind, n) in cells.iter().enumerate() {
+                    cum += n;
+                    let end = (cum * bar_w + total / 2) / total;
+                    let w = end.saturating_sub(drawn);
+                    drawn = end.max(drawn);
+                    if w == 0 {
+                        continue;
                     }
+                    let glyph = match kind {
+                        5 => "░",
+                        6 => "▒",
+                        _ => "█",
+                    };
+                    spans.push(Span::styled(
+                        glyph.repeat(w),
+                        Style::default().fg(colors[kind]).bg(box_bg),
+                    ));
+                }
+                let bar = Line::from(spans);
+                for dy in 0..2 {
                     frame.render_widget(
-                        Paragraph::new(Line::from(spans)),
-                        Rect::new(inner.x, grid_y + r, 20, 1),
+                        Paragraph::new(bar.clone()),
+                        Rect::new(inner.x, bar_y + dy, inner.width, 1),
                     );
-                    if (r as usize) < details.len() && detail_w > 4 {
-                        frame.render_widget(
-                            Paragraph::new(details[r as usize].clone()),
-                            Rect::new(detail_x, grid_y + r, detail_w, 1),
-                        );
-                    }
                 }
 
-                let set_y = grid_y + 11;
+                // Legend: swatch, label, tokens and share in aligned columns.
+                let legend = [
+                    ("■", c_sys, "System prompt", parts.system_prompt, false),
+                    ("■", c_ctx, "Project context", parts.project_context, false),
+                    ("■", c_tools, "Tools", parts.tools, false),
+                    ("■", c_skills, "Skills", parts.skills, false),
+                    ("■", c_msgs, "Messages", parts.messages, false),
+                    ("░", c_free, "Free", free, true),
+                    ("▒", c_reserve, "Compact buffer", reserve, true),
+                ];
+                let legend_y = bar_y + 3;
+                for (i, (glyph, color, label, n, dim)) in legend.iter().enumerate() {
+                    let fg = if *dim {
+                        text_dim
+                    } else {
+                        crate::theme::theme().text_bright
+                    };
+                    let line = Line::from(vec![
+                        Span::styled(format!("{glyph} "), Style::default().fg(*color).bg(box_bg)),
+                        Span::styled(format!("{label:<16}"), Style::default().fg(fg).bg(box_bg)),
+                        Span::styled(
+                            format!("{:>8}", format_context_length(*n)),
+                            Style::default().fg(fg).bg(box_bg),
+                        ),
+                        Span::styled(
+                            format!("{:>6}", format!("{}%", pct_of(*n))),
+                            Style::default().fg(text_dim).bg(box_bg),
+                        ),
+                    ]);
+                    frame.render_widget(
+                        Paragraph::new(line),
+                        Rect::new(inner.x, legend_y + i as u16, inner.width, 1),
+                    );
+                }
+
+                let set_y = legend_y + 8;
                 let win_src = context_source(model);
                 let set_rows = [
                     format!(
-                        "Window: {} ({}) [{win_src}, max {}]",
+                        "{:<16}{:>8}   {win_src} · max {}",
+                        "Window",
                         format_context_length(window),
-                        window,
                         format_context_length(max)
                     ),
-                    format!("Reserve: {}", format_context_length(reserve)),
-                    format!("Keep: {}", format_context_length(keep)),
+                    format!("{:<16}{:>8}", "Reserve", format_context_length(reserve)),
+                    format!("{:<16}{:>8}", "Keep", format_context_length(keep)),
                 ];
                 for (i, text) in set_rows.iter().enumerate() {
                     if set_y + i as u16 >= inner.y + inner.height - 2 {
