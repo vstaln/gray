@@ -613,8 +613,7 @@ fn tool_change_on_small_prompt_is_adopted() {
 #[test]
 fn tool_change_after_cache_went_cold_is_adopted() {
     let (mut agent, defs) = warm_big_agent();
-    agent.last_request_at = std::time::Instant::now()
-        .checked_sub(Duration::from_secs(2 * 60 * 60));
+    agent.last_request_at = std::time::Instant::now().checked_sub(Duration::from_secs(2 * 60 * 60));
     defs.lock().unwrap().push(tool("memory"));
     agent.refresh_tools();
     assert_eq!(names(&agent.tools), ["bash", "memory"]);
