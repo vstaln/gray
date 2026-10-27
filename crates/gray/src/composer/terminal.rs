@@ -136,10 +136,10 @@ where
         // it can repaint later, and scrolling history only for the rest.
         // A shrink first gives back the rows an overlay was covering, then
         // keeps its top row and frees rows *below* itself; the next insert
-        // pushes it back down. It never slides the transcript down: rows
-        // above the screen are in scrollback, which can't be edited, so any
-        // slide-down leaves blank rows at the scrollback seam — a permanent
-        // gap in the middle of whatever card straddles it.
+        // pushes it back down. The one exception is the bottom-pinned slide
+        // below, which repaints every row above the band from `tail` (never
+        // a bare slide: scrollback can't be edited, so shifting without
+        // repainting would leave blank rows at the scrollback seam).
         let shrink = old.height.saturating_sub(area.height);
         let uncover = if old.bottom() >= screen_size.height {
             self.covered.min(shrink)
@@ -147,6 +147,24 @@ where
             0
         };
         area.y = (old.y + uncover).min(bottom);
+        // A band pinned to the screen bottom that shrinks with nothing
+        // covered (deleting draft lines after growth pushed history up)
+        // slides back down and repaints the history rows it had pushed off,
+        // from `tail`, instead of leaving blank rows under the footer. The
+        // repainted rows also sit in scrollback, so scrolling back can show
+        // them twice; a few repeated rows read better than a dead strip.
+        let slide = if uncover == 0
+            && self.covered == 0
+            && !screen_shrank
+            && old.bottom() >= screen_size.height
+        {
+            let spare = u16::try_from(self.tail.len().saturating_sub(usize::from(old.y)))
+                .unwrap_or(u16::MAX);
+            shrink.min(spare).min(bottom.saturating_sub(area.y))
+        } else {
+            0
+        };
+        area.y += slide;
         let rise = old.y.saturating_sub(area.y);
         let history_end = old.y.saturating_add(self.covered);
         let repaintable = u16::try_from(self.tail.len())
@@ -168,6 +186,16 @@ where
             };
             self.set_viewport_area(area);
             self.clear_after_position(Position::new(0, from))?;
+        }
+        if slide > 0 {
+            let n = usize::from(area.y);
+            let rows: Vec<Vec<Cell>> = self
+                .tail
+                .range(self.tail.len() - n..)
+                .cloned()
+                .collect();
+            let rows: Vec<&[Cell]> = rows.iter().map(Vec::as_slice).collect();
+            self.draw_rows(0, &rows)?;
         }
         if uncover > 0 {
             let start = self.tail.len() - usize::from(self.covered);
