@@ -116,7 +116,7 @@ pub(crate) mod presets;
 mod theme_modal;
 pub(crate) mod variants;
 
-pub use context_modal::run_context_modal;
+pub use context_modal::{ContextModalExit, compaction_label, run_context_modal};
 mod connect;
 mod connect_draw;
 mod provider_auth;
@@ -126,7 +126,7 @@ pub use connect::{ConnectOutcome, active_connect_id, run_connect_modal, run_conn
 pub(crate) use install_manager::{ManagerItem, ManagerSpec, run_install_manager};
 pub use install_manager::{ManagerOutcome, run_skills_modal};
 pub(crate) use model_modal::{
-    canonicalize_adopted_model, composite_label_for, composite_label_parts_for,
+    canonical_model_rows, canonicalize_adopted_model, composite_label_for, composite_label_parts_for,
     decompose_model_variant, effort_chip, picker_scope, provider_models_for_config,
     run_model_modal, saved_models_for, selected_model_label, selection_parts,
     validate_direct_model_id, wire_model_for,
