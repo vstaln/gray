@@ -127,6 +127,10 @@ pub struct Config {
     pub lean: bool,
 
     pub background_compaction: bool,
+
+    /// Model id (on the chat model's provider) that writes compaction
+    /// summaries; `None` uses the chat model.
+    pub compaction_model: Option<String>,
 }
 
 impl std::fmt::Debug for Config {
@@ -295,6 +299,11 @@ impl Config {
                 _ => saved.background_compaction.unwrap_or(true),
             };
 
+        let compaction_model = env("GRAY_COMPACTION_MODEL")
+            .or_else(|| saved.compaction_model.clone())
+            .map(|m| m.trim().to_string())
+            .filter(|m| !m.is_empty());
+
         let credential_source = env("GRAY_CREDENTIAL_SOURCE")
             .map(|v| v.trim().to_string())
             .unwrap_or_else(|| {
@@ -363,6 +372,7 @@ impl Config {
             bare,
             lean,
             background_compaction,
+            compaction_model,
         };
         log::info!(target: "gray_config", "config resolved: model={:?}, base_url={}, api_key={}, context_window={:?}, bare={}, lean={}, background_compaction={}", config.model, scrub_url(&config.base_url), config.api_key.as_deref().map(|_| "set").unwrap_or("unset"), config.context_window, config.bare, config.lean, config.background_compaction);
         Ok(config)

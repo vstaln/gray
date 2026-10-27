@@ -236,6 +236,45 @@ async fn build_agent_with(
     spawn_plugins: bool,
 ) -> anyhow::Result<gray_core::agent::Agent> {
     set_active_model(config);
+    let mut agent = build_agent_inner(config, cwd, session_id, spawn_plugins).await?;
+    agent.set_compaction_provider(compaction_provider(config, cwd, session_id).await);
+    Ok(agent)
+}
+
+/// Transport for `config.compaction_model`: the chat config with the model
+/// swapped, built bare (no plugins, no active-model broadcast). Only the
+/// provider is kept; the summary request still carries the chat agent's
+/// system prompt and tools. Any build failure falls back to the chat model.
+pub(crate) async fn compaction_provider(
+    config: &Config,
+    cwd: &Path,
+    session_id: Option<&str>,
+) -> Option<std::sync::Arc<dyn gray_core::agent::Provider>> {
+    let model = config.compaction_model.as_deref()?;
+    if config.bare || config.model.as_deref() == Some(model) {
+        return None;
+    }
+    let mut c = config.clone();
+    c.model = Some(model.to_string());
+    c.model_parts = Default::default();
+    c.thinking_effort = None;
+    c.compaction_model = None;
+    c.bare = true;
+    match Box::pin(build_agent_inner(&c, cwd, session_id, false)).await {
+        Ok(agent) => Some(agent.provider_handle()),
+        Err(e) => {
+            log::warn!(target: "gray_agent", "compaction model {model} unavailable, using chat model: {e:#}");
+            None
+        }
+    }
+}
+
+async fn build_agent_inner(
+    config: &Config,
+    cwd: &Path,
+    session_id: Option<&str>,
+    spawn_plugins: bool,
+) -> anyhow::Result<gray_core::agent::Agent> {
     let Some(model) = &config.model else {
         anyhow::bail!(
             "no model configured yet — set one with the models picker (TUI), --model/--api-key, or GRAY_MODEL/GRAY_API_KEY"

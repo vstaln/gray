@@ -30,6 +30,9 @@ pub(crate) struct SummaryRequest {
     shared_messages: Option<Vec<Message>>,
     candidate: Vec<Message>,
     instructions: Option<String>,
+    /// Chat-model provider to retry on when `provider` is a separate
+    /// compaction model and its call fails.
+    fallback: Option<Arc<dyn Provider>>,
 }
 
 pub(crate) struct PreparedCompaction {
@@ -102,7 +105,14 @@ impl Agent {
         let system = self.system_text();
         Some(PreparedCompaction {
             request: SummaryRequest {
-                provider: self.provider.clone(),
+                provider: self
+                    .compaction_provider
+                    .clone()
+                    .unwrap_or_else(|| self.provider.clone()),
+                fallback: self
+                    .compaction_provider
+                    .as_ref()
+                    .map(|_| self.provider.clone()),
                 session_id: self.session_id.clone(),
                 system: (!system.is_empty()).then(|| system.to_string()),
                 tools: self.request_tools(),
@@ -233,7 +243,43 @@ pub(crate) async fn run_compaction_summary(request: SummaryRequest) -> Result<St
         shared_messages,
         candidate,
         instructions,
+        fallback,
     } = request;
+    if let Some(chat) = fallback {
+        // A separate compaction model can't reuse the chat model's cached
+        // prefix, so it goes straight to the plain summary request; any
+        // failure (smaller window, outage) retries on the chat model.
+        match fallback_compaction_summary(
+            provider,
+            session_id.clone(),
+            system.clone(),
+            tools.clone(),
+            candidate.clone(),
+            instructions.clone(),
+        )
+        .await
+        {
+            Ok(summary) if !summary.trim().is_empty() => return Ok(summary),
+            outcome => {
+                log::info!(
+                    target: "gray_agent",
+                    "compaction: separate model failed ({}), retrying on chat model",
+                    outcome.err().map(|e| e.to_string()).unwrap_or_else(|| "empty".into())
+                );
+            }
+        }
+        return Box::pin(run_compaction_summary(SummaryRequest {
+            provider: chat,
+            session_id,
+            system,
+            tools,
+            shared_messages,
+            candidate,
+            instructions,
+            fallback: None,
+        }))
+        .await;
+    }
     if let Some(messages) = shared_messages {
         match complete_isolated_detached(
             provider.clone(),
