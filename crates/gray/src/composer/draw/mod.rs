@@ -8,6 +8,7 @@ use ratatui::widgets::{Block, Paragraph};
 use super::{MIN_VIEWPORT_H, PANEL_ROWS, Tui};
 use crate::text_width::display_width;
 
+mod ask;
 pub(crate) mod widgets;
 
 pub(crate) use widgets::{
@@ -255,7 +256,11 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
     let ask_est: u16 = tui
         .ask_modal
         .as_ref()
-        .map(|m| m.rows.len().min(24) as u16)
+        .map(|m| {
+            ask::ask_lines(m, w, usize::MAX)
+                .len()
+                .min(u16::MAX as usize) as u16
+        })
         .unwrap_or(0);
 
     let live_est: u16 = tui
@@ -462,63 +467,7 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
 
         let mut ask_rows: Vec<Line<'static>> = ask_modal
             .as_ref()
-            .map(|m| {
-                m.rows
-                    .iter()
-                    .take(24)
-                    .enumerate()
-                    .flat_map(|(ri, (glyph, label, desc))| {
-                        let theme = crate::theme::theme();
-                        let (raw, style) = match glyph.as_str() {
-                            "?" => (
-                                label.clone(),
-                                Style::default()
-                                    .fg(Color::White)
-                                    .add_modifier(Modifier::BOLD),
-                            ),
-                            "\u{2502}" => (
-                                format!("  \u{2502} {desc}"),
-                                Style::default().fg(theme.text_dim),
-                            ),
-                            "\u{b7}" => {
-                                (format!("    {desc}"), Style::default().fg(theme.text_dim))
-                            }
-                            _ => {
-                                let marker = if ri == m.cursor {
-                                    crate::tui::arrow_glyph()
-                                } else {
-                                    " "
-                                };
-                                let body = if glyph == "*" {
-                                    format!("{label}: {desc}")
-                                } else if (glyph.is_empty() || glyph == "~") && desc.is_empty() {
-                                    label.clone()
-                                } else if glyph.is_empty() || glyph == "~" {
-                                    format!("{label}   {desc}")
-                                } else {
-                                    format!("{glyph} {label} — {desc}")
-                                };
-                                (
-                                    format!("  {marker} {body}"),
-                                    if ri == m.cursor {
-                                        Style::default()
-                                            .fg(theme.accent)
-                                            .add_modifier(Modifier::BOLD)
-                                    } else if glyph == "~" {
-                                        Style::default().fg(theme.text_dim)
-                                    } else {
-                                        Style::default().fg(theme.text_muted)
-                                    },
-                                )
-                            }
-                        };
-                        crate::composer::transcript::wrap_styled_line(
-                            Line::from(vec![Span::styled(raw, style)]),
-                            w.saturating_sub(4).max(1),
-                        )
-                    })
-                    .collect()
-            })
+            .map(|m| ask::ask_lines(m, w, usize::MAX))
             .unwrap_or_default();
 
         let mut rows_h = [
@@ -529,7 +478,12 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
             tail_rows.len() as u16 + tail_gap,
         ];
         trim_to_allowance(&mut rows_h, band_allowance);
-        ask_rows.truncate(rows_h[0] as usize);
+        if let Some(m) = ask_modal.as_ref()
+            && ask_rows.len() > rows_h[0] as usize
+        {
+            // Too tall for the band: fold the subject, keep the options.
+            ask_rows = ask::ask_lines(m, w, rows_h[0] as usize);
+        }
         queued_preview.truncate(rows_h[1] as usize);
         widget_rows.truncate(rows_h[2] as usize);
         while live_rows.len() > rows_h[3] as usize {
