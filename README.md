@@ -104,9 +104,7 @@ CLI: `gray resume`, `gray cron`, `gray gateway`, `gray plugin`, `gray memory`, `
 
 **Skills** — `SKILL.md` files from `~/.gray/skills`, `.gray/skills`, and the Claude Code / opencode / agents / pi locations, global and per-project. The model sees the list every turn and reads the one it needs.
 
-**Plugins** — sidecar processes speaking NDJSON over stdio, with timeouts and crash isolation. [`crates/gray-plugin/testdata/echo.sh`](crates/gray-plugin/testdata/echo.sh) is a copy-paste starting point; more in [docs/plugins.md](docs/plugins.md).
-
-**Run commands elsewhere** — `"exec_prefix": "docker exec -i dev sh -s"` (or `"ssh box sh -s"`) in `~/.gray/config.json` moves every shell command off your machine.
+**Plugins** — sidecar processes speaking NDJSON over stdio. More in [docs/plugins.md](docs/plugins.md).
 
 ## Safety
 
