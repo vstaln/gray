@@ -123,12 +123,23 @@ impl TokenOutcome {
 
 #[must_use]
 pub fn redact_for_disclosure(input: &str) -> Redaction {
+    redact_impl(input, true)
+}
+
+/// Secret-only redaction for the agent's own shell output: paths stay intact
+/// because the model needs them to keep working.
+#[must_use]
+pub fn redact_secrets(input: &str) -> Redaction {
+    redact_impl(input, false)
+}
+
+fn redact_impl(input: &str, paths: bool) -> Redaction {
     if input.contains('\n') {
         let mut kinds = BTreeSet::new();
         let text = input
             .split('\n')
             .map(|line| {
-                let redaction = redact_for_disclosure(line);
+                let redaction = redact_impl(line, paths);
                 kinds.extend(redaction.kinds.iter().cloned());
                 redaction.into_text()
             })
@@ -167,7 +178,7 @@ pub fn redact_for_disclosure(input: &str) -> Redaction {
             .iter()
             .copied()
             .find(|candidate| !candidate.is_empty());
-        let outcome = redact_token(token, next, &mut kinds);
+        let outcome = redact_token(token, next, &mut kinds, paths);
         arm = outcome.arm;
         out.push(outcome.text.unwrap_or_else(|| (*token).to_string()));
     }
@@ -178,7 +189,12 @@ pub fn redact_for_disclosure(input: &str) -> Redaction {
     }
 }
 
-fn redact_token(token: &str, next: Option<&str>, kinds: &mut BTreeSet<String>) -> TokenOutcome {
+fn redact_token(
+    token: &str,
+    next: Option<&str>,
+    kinds: &mut BTreeSet<String>,
+    paths: bool,
+) -> TokenOutcome {
     for separator in ['=', ':'] {
         let Some((name, value)) = token.split_once(separator) else {
             continue;
@@ -205,11 +221,14 @@ fn redact_token(token: &str, next: Option<&str>, kinds: &mut BTreeSet<String>) -
                     TokenOutcome::keep()
                 };
             }
+            if not_a_secret_value(value) {
+                return TokenOutcome::keep();
+            }
             kinds.insert(REDACTION_SECRET.to_string());
             return TokenOutcome::replace(format!("{name}{separator}{REDACTED}"));
         }
 
-        if let Some(kind) = classify_path(value) {
+        if paths && let Some(kind) = classify_path(value) {
             kinds.insert(kind.to_string());
             return TokenOutcome::replace(format!("{name}{separator}{PATH_PLACEHOLDER}"));
         }
@@ -236,12 +255,31 @@ fn redact_token(token: &str, next: Option<&str>, kinds: &mut BTreeSet<String>) -
         return TokenOutcome::replace(REDACTED.to_string());
     }
 
-    if let Some(kind) = classify_path(token) {
+    if paths && let Some(kind) = classify_path(token) {
         kinds.insert(kind.to_string());
         return TokenOutcome::replace(PATH_PLACEHOLDER.to_string());
     }
 
     TokenOutcome::keep()
+}
+
+// Values after a secret-looking name that cannot be a credential. Without
+// this, bash output like `max_tokens=4096`, `missed_tokens={missed}` or Rust
+// paths such as `TokenOutcome::keep()` reach the model as `<redacted>`, and an
+// agent editing that code can write the placeholder back into the file.
+fn not_a_secret_value(value: &str) -> bool {
+    if value.starts_with([':', '{', '$', '<']) {
+        return true;
+    }
+    let v = unwrap_token(value);
+    if !v.is_empty() && v.len() < CREDENTIAL_VALUE_MIN_LEN && v.bytes().all(|b| b.is_ascii_digit())
+    {
+        return true;
+    }
+    matches!(
+        v.to_ascii_lowercase().as_str(),
+        "none" | "null" | "nil" | "true" | "false" | "undefined"
+    )
 }
 
 fn unwrap_token(token: &str) -> &str {
@@ -407,14 +445,14 @@ pub fn contains_redactable(input: &str) -> bool {
 pub fn redact_bytes_for_log(chunk: &[u8]) -> std::borrow::Cow<'_, [u8]> {
     let Ok(text) = std::str::from_utf8(chunk) else {
         let lossy = String::from_utf8_lossy(chunk);
-        let redaction = redact_for_disclosure(&lossy);
+        let redaction = redact_secrets(&lossy);
         if redaction.has_secret() {
             return std::borrow::Cow::Owned(redaction.into_text().into_bytes());
         } else {
             return std::borrow::Cow::Borrowed(chunk);
         }
     };
-    let redaction = redact_for_disclosure(text);
+    let redaction = redact_secrets(text);
     if redaction.has_secret() {
         std::borrow::Cow::Owned(redaction.into_text().into_bytes())
     } else {
