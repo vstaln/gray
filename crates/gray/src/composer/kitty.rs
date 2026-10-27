@@ -481,8 +481,9 @@ fn transmit(id: u32, rgba: &[u8], w: u32, h: u32, cols: u32, rows: u32) -> std::
 }
 
 /// Write all queued uploads as contiguous APC chunks under one stdout lock.
-/// Called from `CustomTerminal::draw` after the frame flush, on the TUI
-/// thread, so chunks can only ever sit between complete frames.
+/// Drained between frames — after the frame is composed, before its cells
+/// hit the wire — so an upload lands before the placeholder cells that
+/// reference it (not every terminal retro-fills cells drawn first).
 pub(crate) fn flush_transmits() {
     let Ok(mut q) = pending().lock() else {
         return;
