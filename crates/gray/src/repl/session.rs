@@ -827,17 +827,6 @@ pub(crate) fn dispatch_agent_event(
         return;
     }
     if !interactive {
-        if crate::ide::tap_active() {
-            if let AgentEvent::TurnEnd { usage, .. } = ev {
-                *turn_usage = Some(*usage);
-                let ms = elapsed_ms();
-                *turn_duration_ms = Some(ms);
-                if usage.total() > 0 {
-                    totals.add(usage, model, Some(ms));
-                }
-            }
-            return;
-        }
         match ev {
             AgentEvent::TextDelta { delta } => {
                 print!("{delta}");

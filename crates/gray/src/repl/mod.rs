@@ -202,15 +202,6 @@ pub(crate) fn say_lines(
     tui: Option<&crate::composer::SharedTui>,
     lines: Vec<ratatui::text::Line<'static>>,
 ) {
-    if crate::ide::emit_output(
-        &lines
-            .iter()
-            .map(|l| format!("{l}"))
-            .collect::<Vec<_>>()
-            .join("\n"),
-    ) {
-        return;
-    }
     if let Some(t) = tui {
         let mut t = t.lock().expect("tui lock");
         t.push_styled_lines_with_hyperlinks(lines, &[], 0);
@@ -223,9 +214,6 @@ pub(crate) fn say_lines(
 }
 
 pub(crate) fn say(tui: Option<&crate::composer::SharedTui>, msg: &str) {
-    if crate::ide::emit_output(msg) {
-        return;
-    }
     if let Some(t) = tui {
         let mut t = t.lock().expect("tui lock");
 
@@ -241,9 +229,6 @@ pub(crate) fn say(tui: Option<&crate::composer::SharedTui>, msg: &str) {
 }
 
 pub(crate) fn say_err(tui: Option<&crate::composer::SharedTui>, msg: &str) {
-    if crate::ide::emit_output(msg) {
-        return;
-    }
     if let Some(t) = tui {
         let mut t = t.lock().expect("tui lock");
 

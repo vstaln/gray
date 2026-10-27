@@ -12,7 +12,6 @@ pub(crate) mod exe_watch;
 pub(crate) mod failed_turn;
 pub(crate) mod gateway_pid;
 pub mod host;
-pub mod ide;
 pub mod keymap;
 pub mod logging;
 pub(crate) mod mascot;
