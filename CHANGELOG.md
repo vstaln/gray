@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.2.8] - 2026-10-28
+
+### Added
+- **Compaction model in `/context`.** A new Compaction row picks the model
+  that writes summaries (`compaction_model` in config,
+  `GRAY_COMPACTION_MODEL` in the environment). If it errors or returns
+  nothing, the summary is retried on the chat model.
+
+### Changed
+- **A growing draft pushes the transcript up** instead of covering it, and
+  deleting lines slides the input band back down.
+- **Pasted images land at the caret** rather than the end of the draft.
+- **README** drops dead commands and marks the ones plugins own.
+
+### Fixed
+- No black strips around question prompts or the `/` and `@` menus; their
+  rows are painted edge to edge.
+- A question or approval that opens while you're typing no longer takes
+  your keystrokes as answers.
+- `request_user_input` waits for the user instead of timing out after five
+  minutes, and its modal closes when the question is no longer pending.
+- `gray memory` shell calls and the native memory tool read as
+  Remembered/Recalled/Forgot rows.
+- kitty/Ghostty image previews no longer flash as a black box.
+
 ## [0.2.7] - 2026-10-27
 
 ### Changed
