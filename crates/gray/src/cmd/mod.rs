@@ -753,7 +753,7 @@ async fn plugin_result(rest: &str) -> Result<CommandResult, CmdError> {
             Err(e) => Err(CmdError::unavailable(format!("disable failed: {e:#}"))),
         },
         PluginAction::Check(dir) => {
-            let exe = crate::exe_watch::on_disk_exe()
+            let exe = crate::update::exe_watch::on_disk_exe()
                 .map_err(|e| CmdError::unavailable(format!("cannot self-spawn: {e}")))?;
             let out = tokio::time::timeout(
                 std::time::Duration::from_secs(60),
@@ -790,7 +790,7 @@ async fn update_result(rest: &str) -> Result<CommandResult, CmdError> {
     if t == "auto" || t.starts_with("auto ") {
         let word = t.trim_start_matches("auto").trim();
         return match word {
-            "on" | "off" => match crate::auto_update::set_enabled(word == "on") {
+            "on" | "off" => match crate::update::auto::set_enabled(word == "on") {
                 Ok(()) if word == "on" => Ok(CommandResult::text("auto-update on")),
                 Ok(()) => Ok(CommandResult::text(
                     "auto-update off — `gray update` still installs manually",
@@ -799,7 +799,7 @@ async fn update_result(rest: &str) -> Result<CommandResult, CmdError> {
                     "auto-update toggle failed: {e:#}"
                 ))),
             },
-            "status" | "" => Ok(CommandResult::text(crate::auto_update::status_text())),
+            "status" | "" => Ok(CommandResult::text(crate::update::auto::status_text())),
             other => Err(CmdError::args(format!(
                 "unknown `/update auto {other}` (on|off|status)"
             ))),
@@ -829,7 +829,7 @@ async fn update_result(rest: &str) -> Result<CommandResult, CmdError> {
             }
         }
         "install" | "now" | "run" => {
-            let exe = crate::exe_watch::on_disk_exe()
+            let exe = crate::update::exe_watch::on_disk_exe()
                 .map_err(|e| CmdError::unavailable(format!("cannot self-spawn: {e}")))?;
             let out = tokio::time::timeout(
                 std::time::Duration::from_secs(120),
@@ -915,7 +915,10 @@ async fn plugin_command_result(
         Some(gray_plugin::CommandOutcome::Picker(spec)) => Ok(Some(CommandResult::text(
             crate::repl::picker::spec_plain(&spec),
         ))),
-        Some(gray_plugin::CommandOutcome::ModelPicker(_))
+        Some(gray_plugin::CommandOutcome::HostPicker {
+            text: Some(text), ..
+        }) => Ok(Some(CommandResult::text(text))),
+        Some(gray_plugin::CommandOutcome::HostPicker { text: None, .. })
         | Some(gray_plugin::CommandOutcome::Terminal { text: None, .. }) => {
             Err(CmdError::local(name))
         }
@@ -1426,7 +1429,3 @@ fn model_picker_fallback(
     ));
     out
 }
-
-#[path = "cmd_tests.rs"]
-#[cfg(test)]
-mod tests;

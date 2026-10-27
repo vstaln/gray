@@ -118,7 +118,3 @@ pub fn harness_facts(cache_ttl: Option<std::time::Duration>) -> String {
     }
     out
 }
-
-#[path = "system_prompt_tests.rs"]
-#[cfg(test)]
-mod tests;

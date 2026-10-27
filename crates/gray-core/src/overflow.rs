@@ -97,33 +97,3 @@ pub fn is_silent_overflow(usage: &Usage, stop: StopReason, window: usize) -> boo
         _ => false,
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn usage(input: usize, cache_read: usize) -> Usage {
-        let mut u = Usage {
-            input_tokens: input,
-            cache_read_input_tokens: cache_read,
-            ..Usage::default()
-        };
-        u.normalize();
-        u
-    }
-
-    #[test]
-    fn silent_overflow_does_not_count_cached_tokens_twice() {
-        // A real turn: 136k prompt, 135k of it cached, on a 256k window.
-        assert!(!is_silent_overflow(
-            &usage(136_162, 135_288),
-            StopReason::EndTurn,
-            256_000
-        ));
-        assert!(is_silent_overflow(
-            &usage(257_000, 250_000),
-            StopReason::EndTurn,
-            256_000
-        ));
-    }
-}

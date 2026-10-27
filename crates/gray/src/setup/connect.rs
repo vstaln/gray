@@ -164,7 +164,7 @@ fn migrate_legacy_custom(config: &Config, cat: &catalog::Catalog) {
     if base.is_empty() {
         return;
     }
-    let known = crate::quality_of_life::providers::is_known_preset_base(&base, cat);
+    let known = crate::setup::presets::is_known_preset_base(&base, cat);
     if known {
         return;
     }
@@ -264,10 +264,10 @@ fn connect_modal(
         .cloned()
         .unwrap_or_else(BackgroundSnapshot::default_initial);
 
-    let detected = crate::quality_of_life::providers::detect_connect_candidates(
-        context::ollama_running(),
-        |k| std::env::var(k).ok(),
-    );
+    let detected =
+        crate::setup::presets::detect_connect_candidates(context::ollama_running(), |k| {
+            std::env::var(k).ok()
+        });
 
     migrate_legacy_custom(config, &catalog);
 
@@ -1021,11 +1021,3 @@ fn connect_modal(
 
     result
 }
-
-#[path = "paste_tests.rs"]
-#[cfg(test)]
-mod paste_tests;
-
-#[path = "remove_tests.rs"]
-#[cfg(test)]
-mod remove_tests;

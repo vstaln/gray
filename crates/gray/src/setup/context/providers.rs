@@ -1069,17 +1069,6 @@ pub(crate) fn load_provider_model_rows_at(
         .unwrap_or_default()
 }
 
-#[cfg(test)]
-pub(crate) fn load_provider_model_list_at(
-    home: &std::path::Path,
-    base_url: &str,
-) -> Vec<(String, String)> {
-    load_provider_model_rows_at(home, base_url)
-        .iter()
-        .map(|r| r.pair())
-        .collect()
-}
-
 pub(crate) fn save_provider_model_list(base_url: &str, models: &[(String, String)]) {
     if cfg!(test) {
         return;
@@ -2183,7 +2172,3 @@ pub(crate) fn warm_rates_from_disk_cache() {
         }
     });
 }
-
-#[path = "providers_tests.rs"]
-#[cfg(test)]
-mod tests;

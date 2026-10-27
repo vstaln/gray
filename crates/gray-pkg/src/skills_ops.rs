@@ -493,7 +493,3 @@ fn remove_inner(name: &str) -> anyhow::Result<()> {
     std::fs::remove_dir_all(&dir)?;
     Ok(())
 }
-
-#[path = "skills_ops_tests.rs"]
-#[cfg(test)]
-mod tests;

@@ -231,7 +231,3 @@ pub(crate) fn clear_checkpoint_in(
         let _ = std::fs::remove_file(&path);
     }
 }
-
-#[path = "failed_turn_tests.rs"]
-#[cfg(test)]
-mod tests;

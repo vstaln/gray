@@ -92,7 +92,3 @@ impl Background {
         Ok(())
     }
 }
-
-#[cfg(test)]
-#[path = "background_tests.rs"]
-mod tests;

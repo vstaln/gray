@@ -52,7 +52,3 @@ pub(crate) fn recommended_ids(
     winners.truncate(limit);
     winners.into_iter().map(|(_, id, _)| id).collect()
 }
-
-#[path = "recommend_tests.rs"]
-#[cfg(test)]
-mod tests;

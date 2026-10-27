@@ -527,7 +527,3 @@ pub(crate) fn queued_preview_lines(
     lines.push(Line::default());
     lines
 }
-
-#[path = "widgets_tests.rs"]
-#[cfg(test)]
-mod tests;

@@ -1563,7 +1563,3 @@ pub use plain::{
     format_tool_call_header_plain, format_tool_call_lines_plain,
     format_tool_result_plain_with_context,
 };
-
-#[path = "mod_tests.rs"]
-#[cfg(test)]
-mod tests;

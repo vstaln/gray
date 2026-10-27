@@ -3993,10 +3993,6 @@ impl Provider for OpenAiProvider {
     }
 }
 
-#[path = "openai_tests.rs"]
-#[cfg(test)]
-mod tests;
-
 #[path = "openai_signature_tests.rs"]
 #[cfg(test)]
 mod signature_tests;

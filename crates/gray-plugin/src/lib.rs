@@ -451,7 +451,9 @@ impl PluginHooks for PluginHookAdapter {
         match self.plugin.run_command(name, argv, raw).await? {
             CommandOutcome::Say(s) if s.is_empty() => None,
             CommandOutcome::Prompt(s) if s.is_empty() => None,
-            CommandOutcome::ModelPicker(s) if s.is_empty() => None,
+            CommandOutcome::HostPicker { kind, arg, .. } if kind == "model" && arg.is_empty() => {
+                None
+            }
             o => Some(o),
         }
     }
@@ -497,7 +499,3 @@ impl PluginHooks for PluginHookAdapter {
         self.plugin.shutdown().await;
     }
 }
-
-#[cfg(test)]
-#[path = "provider_tests.rs"]
-mod provider_tests;

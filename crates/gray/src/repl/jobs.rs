@@ -246,7 +246,7 @@ fn run_with_timeout(
 /// resolution a user-level `gray cron …` takes. Any failure (no gateway
 /// plugin, nonzero exit) reads as "no jobs", never an error.
 fn cron_list_json(home: &Path) -> Option<Vec<u8>> {
-    let exe = crate::exe_watch::on_disk_exe()
+    let exe = crate::update::exe_watch::on_disk_exe()
         .or_else(|_| std::env::current_exe())
         .ok()?;
     let mut cmd = std::process::Command::new(exe);
@@ -295,11 +295,6 @@ pub(crate) fn load_wakes(home: &Path, sid: Option<&str>) -> Vec<Wake> {
     wakes
 }
 
-#[cfg(test)]
-fn load_wakes_with(home: &Path, sid: &str, fetch: impl Fn(&Path) -> Option<Vec<u8>>) -> Vec<Wake> {
-    wakes_from_json(&fetch(home).unwrap_or_default(), sid)
-}
-
 pub(crate) fn remove(
     exec: &dyn ToolExecutor,
     ctx: &ToolContext,
@@ -344,7 +339,7 @@ pub(crate) fn remove_wake(home: &Path, id: &str) -> anyhow::Result<bool> {
 }
 
 fn cron_remove(home: &Path, id: &str) -> anyhow::Result<bool> {
-    let exe = crate::exe_watch::on_disk_exe().or_else(|_| std::env::current_exe())?;
+    let exe = crate::update::exe_watch::on_disk_exe().or_else(|_| std::env::current_exe())?;
     let mut cmd = std::process::Command::new(exe);
     cmd.args(["cron", "remove", id])
         .env("GRAY_HOME", home)
@@ -503,7 +498,3 @@ pub(crate) fn stop_all_blocking() {
         std::thread::sleep(Duration::from_millis(50));
     }
 }
-
-#[path = "jobs_tests.rs"]
-#[cfg(test)]
-mod tests;

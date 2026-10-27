@@ -147,7 +147,7 @@ fn run_turn_local_command(ctx: &TurnLocalCommands, text: &str) {
                     t.queued_inputs.push_back((prompt, Vec::new()));
                     let _ = t.draw();
                 }
-                Some(CommandOutcome::ModelPicker(_))
+                Some(CommandOutcome::HostPicker { .. })
                 | Some(CommandOutcome::Panel(_))
                 | Some(CommandOutcome::Picker(_))
                 | Some(CommandOutcome::Terminal { .. }) => {
@@ -412,7 +412,3 @@ pub(crate) fn spawn_key_watcher_with_typing(
 fn sync_matches(t: &mut crate::composer::Tui, cwd: &std::path::Path) {
     crate::composer::input::sync_completion(t, cwd);
 }
-
-#[path = "key_watcher_tests.rs"]
-#[cfg(test)]
-mod tests;

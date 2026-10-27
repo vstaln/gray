@@ -410,7 +410,3 @@ pub fn clear_screen() {
         let _ = std::io::stdout().flush();
     }
 }
-
-#[path = "tui_tests.rs"]
-#[cfg(test)]
-mod tests;

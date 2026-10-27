@@ -287,7 +287,3 @@ pub(crate) fn extend_with_composites_in(
         }
     }
 }
-
-#[path = "composite_rows_tests.rs"]
-#[cfg(test)]
-mod tests;

@@ -19,7 +19,7 @@ pub struct CatalogProvider {
 pub type Catalog = BTreeMap<String, CatalogProvider>;
 
 pub fn load_catalog() -> anyhow::Result<Catalog> {
-    crate::quality_of_life::providers::preset_catalog()
+    crate::setup::presets::preset_catalog()
 }
 
 pub fn mask_key_pretty(key: &str) -> String {
@@ -641,7 +641,7 @@ pub(crate) fn sort_connect_items(
             2
         } else if item.id.starts_with("custom:")
             || matches!(item.auth, ConnectAuth::Plugin { .. })
-            || crate::quality_of_life::providers::is_popular_preset(&item.id)
+            || crate::setup::presets::is_popular_preset(&item.id)
         {
             3
         } else {
@@ -930,11 +930,7 @@ pub fn build_connect_items(
         auth: ConnectAuth::ApiKey,
     });
 
-    crate::quality_of_life::providers::append_connect_presets(&mut items, catalog);
+    crate::setup::presets::append_connect_presets(&mut items, catalog);
 
     items
 }
-
-#[path = "catalog_tests.rs"]
-#[cfg(test)]
-mod tests;

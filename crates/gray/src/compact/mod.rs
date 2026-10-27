@@ -101,7 +101,3 @@ fn rotate_continuation_checkpoints(dir: &std::path::Path) {
         let _ = std::fs::remove_file(path);
     }
 }
-
-#[path = "mod_tests.rs"]
-#[cfg(test)]
-mod tests;

@@ -2722,6 +2722,25 @@ fn write_open_holder(file: &mut std::fs::File, path: &Path) {
     }
 }
 
+pub(crate) fn running_sessions(root: &Path) -> Vec<(String, Option<u32>)> {
+    let Ok(rd) = std::fs::read_dir(root) else {
+        return Vec::new();
+    };
+    rd.flatten()
+        .filter_map(|e| {
+            let path = e.path();
+            if path.extension()? != "open" {
+                return None;
+            }
+            let id = path.file_stem()?.to_str()?.to_string();
+            if !valid_session_id(&id) || !open_lock_held_at(&path) {
+                return None;
+            }
+            Some((id, read_open_holder(&path)))
+        })
+        .collect()
+}
+
 fn open_lock_held_at(open_path: &Path) -> bool {
     if let Ok(held) = OPEN_LOCKS.lock()
         && held

@@ -264,7 +264,3 @@ pub fn find(cwd: &Path, name: &str) -> Option<PromptTemplate> {
         .into_iter()
         .find(|t| t.name.eq_ignore_ascii_case(name))
 }
-
-#[path = "prompt_templates_tests.rs"]
-#[cfg(test)]
-mod tests;

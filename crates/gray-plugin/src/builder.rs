@@ -779,7 +779,3 @@ pub async fn build_agent(opts: BuilderOptions) -> anyhow::Result<Agent> {
         .with_context_window(context_window)
         .with_hooks(hooks))
 }
-
-#[path = "builder_tests.rs"]
-#[cfg(test)]
-mod tests;

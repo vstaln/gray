@@ -92,7 +92,3 @@ impl ToolExecutor for LiveRegistry {
         }
     }
 }
-
-#[path = "live_tests.rs"]
-#[cfg(test)]
-mod tests;

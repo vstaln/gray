@@ -583,7 +583,7 @@ fn tile_previews(previews: Vec<Vec<Line<'static>>>, max_w: usize) -> Vec<Vec<Lin
 }
 
 fn image_preview_lines(path: &std::path::Path, max_w: usize) -> Option<Vec<Line<'static>>> {
-    if let Some(rows) = crate::quality_of_life::kitty::preview_lines(path, max_w, GUTTER + 2) {
+    if let Some(rows) = crate::composer::kitty::preview_lines(path, max_w, GUTTER + 2) {
         return Some(rows);
     }
     let img = image::open(path).ok()?;

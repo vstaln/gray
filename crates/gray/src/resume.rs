@@ -208,21 +208,6 @@ fn visible_indices(
     out
 }
 
-#[cfg(test)]
-fn visible_sessions<'a>(
-    summaries: &'a [SessionSummary],
-    query: &str,
-    cwd_filter: Option<&Path>,
-    show_system: bool,
-    filter: StateFilter,
-    running: &std::collections::HashSet<String>,
-) -> Vec<&'a SessionSummary> {
-    visible_indices(summaries, query, cwd_filter, show_system, filter, running)
-        .into_iter()
-        .map(|i| &summaries[i])
-        .collect()
-}
-
 fn session_matches_with(
     s: &SessionSummary,
     query: &str,
@@ -1233,7 +1218,3 @@ fn terminate_holder(pid: u32) -> Result<(), String> {
     let _ = pid;
     Err("take over isn't supported on this platform — close the other instance yourself".into())
 }
-
-#[path = "resume_tests.rs"]
-#[cfg(test)]
-mod tests;

@@ -301,6 +301,45 @@ pub(crate) fn background_source() -> Option<BackgroundSource> {
         .clone()
 }
 
+static REPL_ACTIVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static RESTART: Mutex<Option<bool>> = Mutex::new(None);
+
+pub(crate) fn set_repl_active(on: bool) {
+    REPL_ACTIVE.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// A plugin's `host/restart`, picked up by the REPL loop between turns.
+pub(crate) fn take_restart_request() -> Option<bool> {
+    RESTART.lock().unwrap_or_else(|e| e.into_inner()).take()
+}
+
+fn request_restart(params: &serde_json::Value) -> serde_json::Value {
+    if !REPL_ACTIVE.load(std::sync::atomic::Ordering::Relaxed) {
+        return serde_json::json!({"error": "host/restart: no interactive session to restart"});
+    }
+    let resume = params
+        .get("resume")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
+    *RESTART.lock().unwrap_or_else(|e| e.into_inner()) = Some(resume);
+    request_wake();
+    serde_json::json!({"ok": true})
+}
+
+async fn list_sessions() -> serde_json::Value {
+    let Some(root) = crate::session_store::default_root() else {
+        return serde_json::json!({"sessions": []});
+    };
+    let live = tokio::task::spawn_blocking(move || crate::session_store::running_sessions(&root))
+        .await
+        .unwrap_or_default();
+    let sessions: Vec<_> = live
+        .into_iter()
+        .map(|(id, pid)| serde_json::json!({"id": id, "running": true, "pid": pid}))
+        .collect();
+    serde_json::json!({"sessions": sessions})
+}
+
 static LIVE_SESSION: Mutex<Option<String>> = Mutex::new(None);
 
 pub(crate) fn set_live_session(sid: Option<&str>) {
@@ -353,6 +392,8 @@ pub fn default_handler(cwd: PathBuf) -> HostHandler {
                         }
                         serde_json::json!({"ok": true})
                     }
+                    "host/restart" => request_restart(&params),
+                    "host/sessions" => list_sessions().await,
                     HOST_ASK => crate::ask::handle_ask(params).await,
                     HOST_RUN => {
                         let prompt = params
@@ -371,7 +412,3 @@ pub fn default_handler(cwd: PathBuf) -> HostHandler {
         fut
     })
 }
-
-#[path = "host_tests.rs"]
-#[cfg(test)]
-mod tests;

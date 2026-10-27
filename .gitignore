@@ -28,7 +28,6 @@ pairing/
 # build artifacts that should never be committed
 dist/dl/
 /dist-build/
-/ide/target/
 
 # rust / editor / os
 **/*.rs.bk

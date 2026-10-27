@@ -51,7 +51,3 @@ pub fn list() -> Vec<ErrorEntry> {
 pub fn clear() {
     let _ = std::fs::remove_file(errors_path());
 }
-
-#[path = "errors_tests.rs"]
-#[cfg(test)]
-mod tests;

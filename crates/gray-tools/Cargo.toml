@@ -16,15 +16,6 @@ uuid = { workspace = true }
 libc = { workspace = true }
 base64 = { workspace = true }
 image = { workspace = true }
-regex = { workspace = true }
-ignore = { workspace = true }
-globset = { workspace = true }
-tempfile = { workspace = true }
-
-# fsearch is a unix daemon crate (byte paths, Unix socket, FSEvents/inotify);
-# it powers the grep/rg interception claimed by BashTool outside --bare.
-[target.'cfg(unix)'.dependencies]
-fsearch = { workspace = true }
 
 # Job Objects own native shell descendants; POSIX process groups cannot model
 # Windows cancellation. Keep Win32 APIs out of Unix builds.

@@ -11,23 +11,23 @@
 //! model (`keys` inline on actions) are handled. Changes are idempotent and a
 //! one-time `settings.json.gray-backup` is kept next to the file.
 
-#[cfg(any(target_os = "windows", test))]
+#[cfg(target_os = "windows")]
 use std::path::{Path, PathBuf};
 
-#[cfg(any(target_os = "windows", test))]
+#[cfg(target_os = "windows")]
 const UNBOUND_ID: &str = "User.gray.unboundCtrlV";
-#[cfg(any(target_os = "windows", test))]
+#[cfg(target_os = "windows")]
 const PASTE_KEY: &str = "ctrl+v";
 
 /// Ids WT uses for the built-in clipboard paste — safe to repoint because
 /// gray's own paste handler covers text and images once the key gets through.
-#[cfg(any(target_os = "windows", test))]
+#[cfg(target_os = "windows")]
 fn is_default_paste_id(id: &serde_json::Value) -> bool {
     id.is_null() || id.as_str() == Some("Terminal.PasteFromClipboard")
 }
 
 /// `keys` may be a string or an array of strings; true when `key` is one.
-#[cfg(any(target_os = "windows", test))]
+#[cfg(target_os = "windows")]
 fn keys_include(keys: &serde_json::Value, key: &str) -> bool {
     match keys {
         serde_json::Value::String(s) => s == key,
@@ -38,7 +38,7 @@ fn keys_include(keys: &serde_json::Value, key: &str) -> bool {
 
 /// Removes `key` from a `keys` value. Returns false when nothing remains —
 /// the caller should then drop the whole entry.
-#[cfg(any(target_os = "windows", test))]
+#[cfg(target_os = "windows")]
 fn strip_key(keys: &mut serde_json::Value, key: &str) -> bool {
     match keys {
         serde_json::Value::String(s) => s != key,
@@ -50,7 +50,7 @@ fn strip_key(keys: &mut serde_json::Value, key: &str) -> bool {
     }
 }
 
-#[cfg(any(target_os = "windows", test))]
+#[cfg(target_os = "windows")]
 fn wt_settings_paths() -> Vec<PathBuf> {
     let Some(local) = std::env::var_os("LOCALAPPDATA") else {
         return Vec::new();
@@ -69,7 +69,7 @@ fn wt_settings_paths() -> Vec<PathBuf> {
 }
 
 /// Rewrites `obj` so `ctrl+v` reaches the app. Returns true when modified.
-#[cfg(any(target_os = "windows", test))]
+#[cfg(target_os = "windows")]
 fn ensure_unbound(obj: &mut serde_json::Map<String, serde_json::Value>) -> bool {
     if obj.contains_key("keybindings") {
         ensure_unbound_split(obj)
@@ -80,7 +80,7 @@ fn ensure_unbound(obj: &mut serde_json::Map<String, serde_json::Value>) -> bool 
 
 /// Modern model: `actions` holds commands with `id`s, `keybindings` maps
 /// ids → keys. Last entry wins for duplicate keys.
-#[cfg(any(target_os = "windows", test))]
+#[cfg(target_os = "windows")]
 fn ensure_unbound_split(obj: &mut serde_json::Map<String, serde_json::Value>) -> bool {
     let mut changed = false;
 
@@ -154,7 +154,7 @@ fn ensure_unbound_split(obj: &mut serde_json::Map<String, serde_json::Value>) ->
 }
 
 /// Legacy model: `actions` entries carry `keys` inline.
-#[cfg(any(target_os = "windows", test))]
+#[cfg(target_os = "windows")]
 fn ensure_unbound_legacy(obj: &mut serde_json::Map<String, serde_json::Value>) -> bool {
     let mut changed = false;
     let Some(serde_json::Value::Array(actions)) = obj.get_mut("actions") else {
@@ -207,14 +207,16 @@ fn ensure_unbound_legacy(obj: &mut serde_json::Map<String, serde_json::Value>) -
     changed
 }
 
-#[cfg(any(target_os = "windows", test))]
+#[cfg(target_os = "windows")]
 fn update_settings_file(path: &Path) -> std::io::Result<()> {
     let body = std::fs::read_to_string(path)?;
-    let mut value: serde_json::Value = match serde_json::from_str(&body) {
-        Ok(v) => v,
-        // JSONC (comments/trailing commas) — leave the file untouched.
-        Err(_) => return Ok(()),
-    };
+    // WT writes JSONC (comments, trailing commas). Strip those so the file
+    // still gets the binding; the backup below keeps the original text.
+    let mut value: serde_json::Value =
+        match serde_json::from_str(&body).or_else(|_| serde_json::from_str(&strip_jsonc(&body))) {
+            Ok(v) => v,
+            Err(_) => return Ok(()),
+        };
     let Some(obj) = value.as_object_mut() else {
         return Ok(());
     };
@@ -227,6 +229,50 @@ fn update_settings_file(path: &Path) -> std::io::Result<()> {
     }
     let pretty = serde_json::to_string_pretty(&value).unwrap_or(body);
     std::fs::write(path, format!("{pretty}\n"))
+}
+
+/// Drops `//` and `/* */` comments and trailing commas outside strings.
+#[cfg(any(target_os = "windows", test))]
+fn strip_jsonc(src: &str) -> String {
+    let b = src.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(src.len());
+    let (mut i, mut in_str) = (0, false);
+    while i < b.len() {
+        let c = b[i];
+        if in_str {
+            out.push(c);
+            if c == b'\\' && i + 1 < b.len() {
+                out.push(b[i + 1]);
+                i += 1;
+            } else if c == b'"' {
+                in_str = false;
+            }
+        } else if c == b'"' {
+            in_str = true;
+            out.push(b'"');
+        } else if c == b'/' && b.get(i + 1) == Some(&b'/') {
+            while i < b.len() && b[i] != b'\n' {
+                i += 1;
+            }
+            continue;
+        } else if c == b'/' && b.get(i + 1) == Some(&b'*') {
+            i += 2;
+            while i + 1 < b.len() && !(b[i] == b'*' && b[i + 1] == b'/') {
+                i += 1;
+            }
+            i += 2;
+            continue;
+        } else if c == b',' {
+            let next = b[i + 1..].iter().find(|x| !x.is_ascii_whitespace());
+            if !matches!(next, Some(b'}') | Some(b']')) {
+                out.push(b',');
+            }
+        } else {
+            out.push(c);
+        }
+        i += 1;
+    }
+    String::from_utf8(out).unwrap_or_default()
 }
 
 #[cfg(target_os = "windows")]
@@ -248,6 +294,19 @@ pub fn ensure_ctrl_v_passthrough() {
 #[cfg(not(target_os = "windows"))]
 pub fn ensure_ctrl_v_passthrough() {}
 
-#[path = "win_paste_tests.rs"]
 #[cfg(test)]
-mod tests;
+#[test]
+fn jsonc_settings_parse_after_stripping() {
+    let src = r#"{
+        // comment with "quotes" and a , comma
+        "url": "http://x//y", /* block */
+        "font": "Cascadia ☕ Code",
+        "keys": ["ctrl+v", "a,]"],
+        "actions": [ { "command": "paste", }, ],
+    }"#;
+    let v: serde_json::Value = serde_json::from_str(&strip_jsonc(src)).unwrap();
+    assert_eq!(v["url"], "http://x//y");
+    assert_eq!(v["font"], "Cascadia ☕ Code");
+    assert_eq!(v["keys"][1], "a,]");
+    assert_eq!(v["actions"][0]["command"], "paste");
+}

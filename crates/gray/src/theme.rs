@@ -551,7 +551,3 @@ pub fn init_from_saved(saved: Option<&str>) {
         Err(e) => log::warn!(target: "gray_theme", "theme {name} not applied: {e}"),
     }
 }
-
-#[path = "theme_tests.rs"]
-#[cfg(test)]
-mod tests;

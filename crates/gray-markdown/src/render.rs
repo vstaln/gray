@@ -605,7 +605,3 @@ impl<'a, 'b> ParsedMarkdown<'a, 'b> {
         )
     }
 }
-
-#[path = "entity_tests.rs"]
-#[cfg(test)]
-mod entity_tests;

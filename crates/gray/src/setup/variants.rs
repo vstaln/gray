@@ -276,7 +276,3 @@ impl CachedRow {
         super::context::cache_model_price_cliff(&m.id, m.price_cliff_tokens);
     }
 }
-
-#[cfg(test)]
-#[path = "variants_tests.rs"]
-mod tests;

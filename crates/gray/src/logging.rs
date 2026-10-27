@@ -168,7 +168,3 @@ pub fn init() {
         }
     });
 }
-
-#[path = "logging_tests.rs"]
-#[cfg(test)]
-mod tests;

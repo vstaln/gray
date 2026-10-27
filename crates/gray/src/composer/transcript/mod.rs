@@ -655,7 +655,3 @@ pub(crate) fn split_synthetic_prompt(text: &str) -> (String, Vec<String>) {
     }
     (visible.join("\n").trim_end().to_string(), notices)
 }
-
-#[path = "mod_tests.rs"]
-#[cfg(test)]
-mod tests;

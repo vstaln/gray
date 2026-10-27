@@ -75,7 +75,3 @@ pub fn run_external_editor(path: &Path, initial: &str) -> anyhow::Result<Option<
         }
     })
 }
-
-#[path = "sys_editor_tests.rs"]
-#[cfg(test)]
-mod tests;

@@ -188,8 +188,9 @@ async fn run() -> anyhow::Result<()> {
                 eprintln!("gray: keybindings.json: {w}");
             }
         }
-        gray::win_paste::ensure_ctrl_v_passthrough();
     }
+    // Paste must work in every mode, --bare included.
+    gray::win_paste::ensure_ctrl_v_passthrough();
     gray::setup::set_user_context_window(config.context_window);
     gray::setup::set_user_reserve_tokens(config.context_reserve);
     gray::setup::set_user_keep_recent_tokens(config.context_keep);
@@ -204,7 +205,7 @@ async fn run() -> anyhow::Result<()> {
             }
             gray::Commands::Update { auto, everything } => {
                 if let Some(v) = auto.as_deref() {
-                    return gray::auto_update::auto_cli(v).await;
+                    return gray::update::auto::auto_cli(v).await;
                 }
                 if everything {
                     return gray::plugin_cli::forward(
@@ -257,7 +258,7 @@ async fn run() -> anyhow::Result<()> {
         .or(cli.session.as_deref());
 
     if let Some(prompt) = cli.print.as_deref() {
-        gray::auto_update::spawn_background(config.bare);
+        gray::update::auto::spawn_background(config.bare);
         let piped;
         let prompt = if prompt == "-" {
             piped = std::io::read_to_string(std::io::stdin())?;
@@ -281,7 +282,7 @@ async fn run() -> anyhow::Result<()> {
         };
         exit_after_print(result);
     } else if let Some(input) = structured_input.as_ref() {
-        gray::auto_update::spawn_background(config.bare);
+        gray::update::auto::spawn_background(config.bare);
         let result = gray::print::run_print_mode_json_input(
             &config,
             input,

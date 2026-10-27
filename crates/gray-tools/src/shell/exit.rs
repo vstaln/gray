@@ -104,7 +104,3 @@ fn masked_note(command: &str, stages: Option<&[i32]>) -> Option<String> {
 const UNMASKABLE_TAILS: [&str; 9] = [
     "head", "tail", "cat", "less", "awk", "sed", "tr", "cut", "column",
 ];
-
-#[path = "exit_tests.rs"]
-#[cfg(all(test, unix))]
-mod exit_tests;

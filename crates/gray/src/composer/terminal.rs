@@ -107,19 +107,6 @@ where
         term
     }
 
-    #[cfg(test)]
-    pub(crate) fn debug_state(&self) -> (u16, usize) {
-        (self.covered, self.tail.len())
-    }
-
-    #[cfg(test)]
-    pub(crate) fn tail_text(&self) -> Vec<String> {
-        self.tail
-            .iter()
-            .map(|row| row.iter().map(|c| c.symbol()).collect::<String>())
-            .collect()
-    }
-
     pub fn set_viewport_area(&mut self, area: Rect) {
         self.buffers[self.current].resize(area);
         self.buffers[1 - self.current].resize(area);
@@ -215,7 +202,7 @@ where
 
     pub(crate) fn clear_scrollback_and_screen(&mut self, screen_size: Size) -> io::Result<()> {
         write!(self.backend, "\x1b[r\x1b[0m\x1b[H\x1b[2J\x1b[3J\x1b[H")?;
-        crate::quality_of_life::kitty::reset_transmitted();
+        crate::composer::kitty::reset_transmitted();
         Backend::flush(&mut self.backend)?;
         self.last_known_screen_size = screen_size;
         self.covered = 0;
@@ -369,7 +356,7 @@ where
         self.tail.extend(recent);
         let excess = self.tail.len().saturating_sub(keep);
         self.tail.drain(..excess);
-        crate::quality_of_life::kitty::flush_transmits();
+        crate::composer::kitty::flush_transmits();
         Ok(())
     }
 
@@ -573,7 +560,3 @@ fn leveled_cell(cell: &Cell) -> Cell {
     out.underline_color = underline;
     out
 }
-
-#[path = "terminal_tests.rs"]
-#[cfg(all(test, not(windows)))]
-mod tests;

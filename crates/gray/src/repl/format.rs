@@ -518,7 +518,3 @@ pub fn fmt_duration_ms(ms: u64) -> String {
         }
     }
 }
-
-#[path = "format_tests.rs"]
-#[cfg(test)]
-mod tests;

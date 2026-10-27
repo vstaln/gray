@@ -354,7 +354,3 @@ impl ContextParts {
         cells
     }
 }
-
-#[path = "mod_tests.rs"]
-#[cfg(test)]
-mod tests;

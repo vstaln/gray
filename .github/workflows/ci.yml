@@ -241,9 +241,13 @@ jobs:
           RUST_BACKTRACE: 1
         run: cargo nextest run --locked --workspace --profile ci
       # The installer only places and verifies a binary; it never depends on
-      # optimisation. The debug gray.exe the integration tests above already
-      # built is exactly as good, and skips a 2-3 minute release build here.
-      # Installer evidence is independent of workspace runtime failures.
+      # optimisation. Build the debug gray.exe explicitly — it used to ride in
+      # on the rust-cache restore, which is keyed on Cargo.lock and misses on
+      # any dependency change. Installer evidence is independent of workspace
+      # runtime failures.
+      - name: Build gray.exe
+        if: ${{ !cancelled() }}
+        run: cargo build --locked -p gray
       - name: Test native installer with PowerShell 7
         if: ${{ !cancelled() }}
         run: ./dist/tests/install-native.ps1 -Binary (Resolve-Path target/debug/gray.exe)

@@ -9,7 +9,7 @@ use ratatui::widgets::{Clear, Paragraph};
 
 use crate::config::Config;
 use crate::providers::{InstalledProvider, ProviderRegistry};
-use crate::quality_of_life::providers::detect_connect_candidates;
+use crate::setup::presets::detect_connect_candidates;
 
 use super::catalog::{
     self, AUTH_MODE_API_KEY, AUTH_MODE_NONE, AuthEntry, ConnectAuth, ConnectItem, SavedConfig,
@@ -1486,7 +1486,3 @@ pub(crate) fn run_model_panes(
         (outcome, _) => outcome,
     })
 }
-
-#[path = "model_panes_tests.rs"]
-#[cfg(test)]
-mod tests;

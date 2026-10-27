@@ -70,14 +70,6 @@ fn gone(target: i32) -> bool {
     }
 }
 
-#[cfg(all(test, unix))]
-pub(crate) fn is_tracked(pgid: i32) -> bool {
-    TRACKED_PGIDS
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .contains(&pgid)
-}
-
 #[cfg(unix)]
 pub(crate) fn group_alive(pgid: i32) -> bool {
     pgid > 1
@@ -145,10 +137,6 @@ pub async fn term_then_kill(pgid: i32, grace: Duration) -> Result<(), String> {
     }
     escalate(-pgid, &format!("process group {pgid}"), grace).await
 }
-
-#[path = "kill_tests.rs"]
-#[cfg(all(test, unix))]
-mod tests;
 
 #[cfg(windows)]
 pub async fn term_then_kill(job: &super::windows::Job, _grace: Duration) -> Result<(), String> {

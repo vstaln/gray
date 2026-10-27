@@ -202,15 +202,6 @@ pub(crate) fn say_lines(
     tui: Option<&crate::composer::SharedTui>,
     lines: Vec<ratatui::text::Line<'static>>,
 ) {
-    if crate::ide::emit_output(
-        &lines
-            .iter()
-            .map(|l| format!("{l}"))
-            .collect::<Vec<_>>()
-            .join("\n"),
-    ) {
-        return;
-    }
     if let Some(t) = tui {
         let mut t = t.lock().expect("tui lock");
         t.push_styled_lines_with_hyperlinks(lines, &[], 0);
@@ -223,9 +214,6 @@ pub(crate) fn say_lines(
 }
 
 pub(crate) fn say(tui: Option<&crate::composer::SharedTui>, msg: &str) {
-    if crate::ide::emit_output(msg) {
-        return;
-    }
     if let Some(t) = tui {
         let mut t = t.lock().expect("tui lock");
 
@@ -241,9 +229,6 @@ pub(crate) fn say(tui: Option<&crate::composer::SharedTui>, msg: &str) {
 }
 
 pub(crate) fn say_err(tui: Option<&crate::composer::SharedTui>, msg: &str) {
-    if crate::ide::emit_output(msg) {
-        return;
-    }
     if let Some(t) = tui {
         let mut t = t.lock().expect("tui lock");
 
@@ -840,7 +825,7 @@ pub async fn run_repl_mode(
         let ticker_tui = shared.clone();
         tokio::spawn(async move {
             let mut last_status = std::time::Instant::now();
-            let exe_watch = crate::exe_watch::ExeWatch::capture();
+            let exe_watch = crate::update::exe_watch::ExeWatch::capture();
             let mut last_exe_check = std::time::Instant::now();
             let mut exe_notified = None;
             loop {
@@ -887,12 +872,12 @@ pub async fn run_repl_mode(
         let shared = shared.clone();
         let bare = config.bare;
         tokio::spawn(async move {
-            let line = crate::auto_update::maybe_run(bare)
+            let line = crate::update::auto::maybe_run(bare)
                 .await
                 .and_then(|outcome| outcome.notice())
                 .or_else(|| {
                     if !bare && crate::setup::auto_update_enabled() {
-                        crate::auto_update::last_failure_notice()
+                        crate::update::auto::last_failure_notice()
                     } else {
                         None
                     }
@@ -1004,6 +989,7 @@ pub async fn run_repl_mode(
 
     if interactive {
         jobs::spawn_footer_poller();
+        crate::host::set_repl_active(true);
     }
 
     loop {
@@ -1013,6 +999,10 @@ pub async fn run_repl_mode(
 
         for lines in crate::host::take_host_say() {
             say_lines(tui.as_ref().map(|(s, _)| s), lines);
+        }
+
+        if let Some(resume) = crate::host::take_restart_request() {
+            maintenance::restart_with(&tui, resume).await;
         }
 
         if interactive && pending_command.is_none() {
@@ -1378,7 +1368,3 @@ pub async fn run_repl_mode(
 
 #[cfg(test)]
 mod tests;
-
-#[path = "mod_ctrl_c_policy_tests.rs"]
-#[cfg(test)]
-mod ctrl_c_policy_tests;

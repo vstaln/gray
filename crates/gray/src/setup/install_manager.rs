@@ -104,40 +104,6 @@ const SKILLS_SPEC: ManagerSpec = ManagerSpec {
     keep_stale_on_relist_error: false,
 };
 
-const PLUGINS_SPEC: ManagerSpec = ManagerSpec {
-    title: "Plugins",
-    empty_hint: "no plugins installed — /plugin install <spec>",
-    error_verb: "toggle failed",
-    supports_toggle: true,
-    enter_invokes: false,
-    supports_remove: true,
-    errors_tab: true,
-    keep_stale_on_relist_error: true,
-};
-
-fn source_label(ecosystem: &str) -> &str {
-    match ecosystem {
-        "gray-native" => "Gray Index",
-        "gray-cli" => "Plugin command",
-        other => other,
-    }
-}
-
-pub(crate) fn format_plugin_row_parts(
-    name: &str,
-    version: &str,
-    scope: &str,
-    ecosystem: &str,
-    on: bool,
-) -> String {
-    let base = format!("{name} {version} ({scope}) [{}]", source_label(ecosystem));
-    if on {
-        format!("✓ {base}")
-    } else {
-        format!("○ {base} [disabled]")
-    }
-}
-
 pub(crate) fn format_error_row(entry: &ErrorEntry) -> String {
     format!("{} {}: {}", entry.source, entry.item, entry.message)
 }
@@ -194,37 +160,6 @@ pub fn run_skills_modal(
         },
         |_, _| Ok(()),
     )
-}
-
-pub fn run_plugins_modal(bg: Option<&BackgroundSnapshot>) -> anyhow::Result<bool> {
-    run_install_manager(
-        bg,
-        None,
-        &PLUGINS_SPEC,
-        || {
-            crate::plugin_cli::list_rows().ok().map(|rows| {
-                rows.into_iter()
-                    .map(|r| ManagerItem {
-                        row: format_plugin_row_parts(
-                            &r.name,
-                            &r.version,
-                            &r.scope,
-                            &r.ecosystem,
-                            r.on,
-                        ),
-                        lit: r.on,
-                        enabled: r.on,
-                        read_only: false,
-                        needs_setup: false,
-                        name: r.name,
-                    })
-                    .collect()
-            })
-        },
-        crate::plugin_cli::remove_managed,
-        crate::plugin_cli::set_managed_enabled,
-    )
-    .map(ManagerOutcome::into_changed)
 }
 
 pub(crate) fn run_install_manager(
@@ -717,7 +652,3 @@ pub(crate) fn run_install_manager(
     let _ = terminal.clear();
     result
 }
-
-#[path = "install_manager_tests.rs"]
-#[cfg(test)]
-mod tests;

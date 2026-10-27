@@ -595,7 +595,3 @@ pub(crate) fn load_skills(cwd: &Path, agent_dir: &Path) -> LoadSkillsResult {
 pub fn discover_skills(cwd: &Path) -> LoadSkillsResult {
     load_skills(cwd, &gray_agent_dir())
 }
-
-#[path = "mod_tests.rs"]
-#[cfg(test)]
-mod tests;

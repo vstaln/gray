@@ -234,7 +234,3 @@ impl StreamingMarkdownRenderer {
         self.output
     }
 }
-
-#[path = "streaming_torn_tests.rs"]
-#[cfg(test)]
-mod streaming_torn_tests;

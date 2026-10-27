@@ -535,3 +535,18 @@ fn connect_completes_to_models_not_gateway() {
     let got = super::completion_matches("connect");
     assert_eq!(got.first().map(|(n, _)| *n), Some("models"), "{got:?}");
 }
+
+#[test]
+fn exact_name_outranks_description_match() {
+    let mut rows = vec![
+        (
+            "reload".to_string(),
+            "re-read theme, keybindings".to_string(),
+        ),
+        ("/themeish".to_string(), "x".to_string()),
+        ("/theme".to_string(), "themes plugin".to_string()),
+    ];
+    super::rank_by_name(&mut rows, "theme");
+    let names: Vec<&str> = rows.iter().map(|(n, _)| n.as_str()).collect();
+    assert_eq!(names, ["/theme", "/themeish", "reload"]);
+}

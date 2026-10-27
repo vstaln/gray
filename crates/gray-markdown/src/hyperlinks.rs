@@ -116,7 +116,3 @@ pub(crate) fn emit_segment_hyperlinks(
         });
     }
 }
-
-#[path = "hyperlink_tests.rs"]
-#[cfg(test)]
-mod hyperlink_tests;

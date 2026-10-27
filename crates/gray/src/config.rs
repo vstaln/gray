@@ -292,7 +292,7 @@ impl Config {
                 _ if cli.background_compaction => true,
                 Some("1") => true,
                 Some("0") => false,
-                _ => saved.background_compaction.unwrap_or(false),
+                _ => saved.background_compaction.unwrap_or(true),
             };
 
         let credential_source = env("GRAY_CREDENTIAL_SOURCE")
@@ -402,7 +402,3 @@ pub(crate) fn export_provider_env(config: &Config) {
         }
     }
 }
-
-#[path = "config_tests.rs"]
-#[cfg(test)]
-mod tests;

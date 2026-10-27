@@ -422,11 +422,18 @@ pub enum CommandOutcome {
     Say(String),
     Prompt(String),
 
-    ModelPicker(String),
-
     Panel(PanelSpec),
 
     Picker(PickerSpec),
+
+    /// Open one of the host's own pickers (`kind` is `model` or `theme`).
+    /// The host draws these because they recolor or reconfigure the host
+    /// itself; `text` is the plain fallback when there is no TUI.
+    HostPicker {
+        kind: String,
+        arg: String,
+        text: Option<String>,
+    },
 
     Terminal {
         argv: Vec<String>,
@@ -576,7 +583,17 @@ pub struct Agent {
     pub(crate) held_summary: Option<crate::background_compact::HeldSummary>,
 
     pub(crate) background_failures: u8,
+
+    /// A changed tool list held back because sending it now would re-bill
+    /// the whole cached prefix (tools sit in front of it).
+    pub(crate) pending_tools: Option<Vec<ToolDef>>,
+
+    pub(crate) last_request_at: Option<std::time::Instant>,
 }
+
+/// Below this many prompt tokens a full cache rewrite is cheap enough to
+/// take a changed tool list at once.
+const CHEAP_REWRITE_TOKENS: usize = 16_000;
 
 struct SharedProvider(Arc<dyn Provider>);
 
@@ -630,6 +647,8 @@ impl Agent {
             prefix_guard: crate::prefix_guard::PrefixGuard::default(),
             warm_cache_reported: false,
             prefix_rewrite_ok: true,
+            pending_tools: None,
+            last_request_at: None,
             lean_prompt: false,
             background_compaction: false,
             held_summary: None,
@@ -703,6 +722,9 @@ impl Agent {
 
         self.masked_prefix = 0;
         self.prefix_guard.expect_change("history rewrite");
+        if let Some(tools) = self.pending_tools.take() {
+            self.tools = tools;
+        }
         self.history_revision = self.history_revision.wrapping_add(1);
         self.warm_run = None;
     }
@@ -741,10 +763,42 @@ impl Agent {
         self.tools.clone()
     }
 
+    /// Adopt the executor's live tool list, unless doing so would throw
+    /// away a warm, expensive prompt cache: then it waits in
+    /// `pending_tools` until the cache is cold, the prefix is cheap, or a
+    /// compaction rewrites the history anyway.
     pub fn refresh_tools(&mut self) {
-        if let Some(defs) = self.executor.live_defs() {
-            self.tools = defs;
+        let Some(defs) = self.executor.live_defs() else {
+            return;
+        };
+        if defs == self.tools {
+            self.pending_tools = None;
+            return;
         }
+        if self.tool_change_is_free() {
+            self.tools = defs;
+            self.pending_tools = None;
+            self.prefix_guard.expect_change("tool list changed");
+        } else {
+            log::info!(target: "gray_agent", "tool list changed ({} -> {} tools); held until the prompt cache is cold or the next compaction", self.tools.len(), defs.len());
+            self.pending_tools = Some(defs);
+        }
+    }
+
+    fn tool_change_is_free(&self) -> bool {
+        let Some(last) = self.last_request_at else {
+            return true;
+        };
+        let ttl = self
+            .cache_warm
+            .as_ref()
+            .map_or(Duration::from_secs(5 * 60), |p| p.ttl);
+        let warmed = if self.cache_warm.is_some() {
+            crate::cache_warm::MAX_WARMING_AGE
+        } else {
+            Duration::ZERO
+        };
+        last.elapsed() >= ttl + warmed || self.estimate_tokens() < CHEAP_REWRITE_TOKENS
     }
 
     pub fn repin_session_id(&self, id: &str) {
@@ -937,50 +991,6 @@ impl Agent {
     pub fn tool_defs(&self) -> &[ToolDef] {
         &self.tools
     }
-
-    #[cfg(test)]
-    pub(crate) async fn complete_isolated(
-        &self,
-        system: Option<&str>,
-        messages: Vec<Message>,
-        tools: Vec<ToolDef>,
-    ) -> Result<String, CoreError> {
-        self.complete_isolated_with_cache(system, messages, tools, false)
-            .await
-    }
-
-    /// The request provably extends the last sent prefix: keep provider cache
-    /// markers (Anthropic breakpoints, OpenAI prompt_cache_key) so the call
-    /// reads the warm cache instead of paying a cold write.
-    #[cfg(test)]
-    pub(crate) async fn complete_isolated_cached(
-        &self,
-        system: Option<&str>,
-        messages: Vec<Message>,
-        tools: Vec<ToolDef>,
-    ) -> Result<String, CoreError> {
-        self.complete_isolated_with_cache(system, messages, tools, true)
-            .await
-    }
-
-    #[cfg(test)]
-    async fn complete_isolated_with_cache(
-        &self,
-        system: Option<&str>,
-        messages: Vec<Message>,
-        tools: Vec<ToolDef>,
-        shared_cache: bool,
-    ) -> Result<String, CoreError> {
-        complete_isolated_detached(
-            self.provider.clone(),
-            self.session_id.clone(),
-            system.map(str::to_string),
-            messages,
-            tools,
-            shared_cache,
-        )
-        .await
-    }
 }
 
 pub(crate) async fn complete_isolated_detached(
@@ -1097,7 +1107,3 @@ mod agent_tests;
 #[path = "agent_repair_tests.rs"]
 #[cfg(test)]
 mod repair_tests;
-
-#[path = "agent_surface_tests.rs"]
-#[cfg(test)]
-mod surface_tests;

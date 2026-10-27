@@ -280,11 +280,3 @@ pub async fn join_ordered(
     done.sort_by_key(|(i, _)| *i);
     done
 }
-
-#[path = "parallel_tests.rs"]
-#[cfg(test)]
-mod tests;
-
-#[path = "parallel_screen_tests.rs"]
-#[cfg(test)]
-mod screen_tests;

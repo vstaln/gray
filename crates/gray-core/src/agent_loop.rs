@@ -85,12 +85,11 @@ fn quota_flavored(e: &ProviderError) -> bool {
 // (Devin: "Your weekly usage quota has been exhausted") or a provider content
 // refusal, which some routes wrap in a 500. Retrying these only burns minutes
 // of backoff before the same failure.
-const HOPELESS_HINTS: [&str; 8] = [
+const HOPELESS_HINTS: [&str; 7] = [
     "weekly usage",
     "weekly quota",
     "monthly usage",
     "monthly quota",
-    "billing period",
     "content policy",
     "provider refusal",
     "usage polic",
@@ -583,7 +582,7 @@ impl Agent {
                 self.prefix_guard.observe(self.provider.model_id(), &req)
                 && let Some(cause) = crate::prefix_guard::describe(change, announced, prev_len)
             {
-                log::debug!(target: "gray_agent", "prefix changed: {change} ({cause})");
+                log::info!(target: "gray_agent", "prefix changed: {change} ({cause})");
                 emit!(AgentEvent::PrefixChanged { cause });
             }
             if let Some(sink) = &self.prefix_fp_sink
@@ -593,6 +592,7 @@ impl Agent {
             }
 
             let request_sent = tokio::time::Instant::now();
+            self.last_request_at = Some(std::time::Instant::now());
 
             if let Ok(mut hint) = self.warm_hint.lock() {
                 hint.prompt_tokens = self.estimate_tokens();

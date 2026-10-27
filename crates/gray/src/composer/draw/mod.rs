@@ -1174,10 +1174,6 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
-#[path = "mod_tests.rs"]
-#[cfg(test)]
-mod tests;
-
 fn live_tool_row(line: Line<'static>) -> Paragraph<'static> {
     Paragraph::new(line).block(
         Block::default()

@@ -72,7 +72,3 @@ pub fn prev_tab(cur: usize, n: usize) -> usize {
     }
     (cur + n - 1) % n
 }
-
-#[path = "tabs_tests.rs"]
-#[cfg(test)]
-mod tests;

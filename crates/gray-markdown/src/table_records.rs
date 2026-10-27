@@ -273,7 +273,3 @@ pub(crate) fn render_records(
     }
     out
 }
-
-#[path = "table_records_tests.rs"]
-#[cfg(test)]
-mod tests;

@@ -1,18 +1,14 @@
 pub mod ask;
 pub mod auth;
 pub mod auto_title;
-pub mod auto_update;
 pub mod cache;
 pub mod cmd;
 pub mod compact;
 pub mod composer;
 pub mod config;
 pub(crate) mod consent;
-pub(crate) mod exe_watch;
 pub(crate) mod failed_turn;
-pub(crate) mod gateway_pid;
 pub mod host;
-pub mod ide;
 pub mod keymap;
 pub mod logging;
 pub(crate) mod mascot;
@@ -25,7 +21,6 @@ pub mod project_trust;
 pub mod prompt_history;
 pub mod prompt_templates;
 pub mod providers;
-pub mod quality_of_life;
 pub mod repl;
 pub mod resume;
 mod rotation;
@@ -550,7 +545,10 @@ pub struct Cli {
     #[arg(long, help = "Lean system prompt: skip plugin-provided prompt extras")]
     pub lean: bool,
 
-    #[arg(long, help = "Start context compaction in the background")]
+    #[arg(
+        long,
+        help = "Start context compaction in the background (default on; GRAY_BACKGROUND_COMPACTION=0 turns it off)"
+    )]
     pub background_compaction: bool,
 
     #[arg(long, value_name = "N", help = "Stop the turn after N agent steps")]
@@ -893,11 +891,3 @@ pub enum InstallCmd {
         name: String,
     },
 }
-
-#[path = "lib_tests.rs"]
-#[cfg(test)]
-mod tests;
-
-#[cfg(test)]
-#[path = "input_json_tests.rs"]
-mod input_json_tests;

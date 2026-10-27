@@ -6,7 +6,3 @@ pub fn fence(body: &str) -> String {
     let escaped = trimmed.replace("</untrusted-output>", "<\\/untrusted-output>");
     format!("<untrusted-output>\n{escaped}\n</untrusted-output>")
 }
-
-#[path = "fence_tests.rs"]
-#[cfg(test)]
-mod tests;

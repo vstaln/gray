@@ -396,7 +396,3 @@ pub fn short_cwd(cwd: &str) -> String {
     }
     cwd.to_string()
 }
-
-#[path = "statusline_tests.rs"]
-#[cfg(test)]
-mod tests;

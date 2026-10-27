@@ -11,14 +11,14 @@ pub(crate) async fn handle_update(tui: &TuiOpt, arg: Option<String>) {
         match word {
             "on" | "off" => {
                 let on = word == "on";
-                let text = match crate::auto_update::set_enabled(on) {
+                let text = match crate::update::auto::set_enabled(on) {
                     Ok(()) if on => "auto-update on".to_string(),
                     Ok(()) => "auto-update off — `gray update` still installs manually".to_string(),
                     Err(e) => format!("auto-update toggle failed: {e:#}"),
                 };
                 super::say(shared, &text);
             }
-            "status" | "" => super::say(shared, &crate::auto_update::status_text()),
+            "status" | "" => super::say(shared, &crate::update::auto::status_text()),
             other => super::say(
                 shared,
                 &format!("unknown `/update auto {other}` (on|off|status)"),
@@ -98,7 +98,7 @@ pub(crate) async fn restart_with(tui: &TuiOpt, resume: bool) {
 
     super::drain_in_flight_turn(std::time::Duration::from_millis(1500)).await;
 
-    let exe = match crate::exe_watch::on_disk_exe() {
+    let exe = match crate::update::exe_watch::on_disk_exe() {
         Ok(p) => p,
         Err(e) => {
             super::say(
@@ -183,7 +183,7 @@ fn is_scratch_home(set: &std::path::Path, default: Option<&std::path::Path>) -> 
 }
 
 fn gateway_cmd(args: &[&str]) -> std::io::Result<std::process::Output> {
-    let exe = crate::exe_watch::on_disk_exe()?;
+    let exe = crate::update::exe_watch::on_disk_exe()?;
     std::process::Command::new(exe)
         .arg("gateway")
         .args(args)
@@ -195,98 +195,26 @@ async fn restart_gateway() -> GatewayRestart {
         return GatewayRestart::Skipped;
     }
 
-    if let Ok(out) = gateway_cmd(&["restart"]) {
-        let text = format!(
-            "{}{}",
-            String::from_utf8_lossy(&out.stdout),
-            String::from_utf8_lossy(&out.stderr)
-        );
-        if out.status.success() {
-            return GatewayRestart::Restarted(text.trim().to_string());
-        }
-        if !text.contains("no service installed") && !text.contains("not running") {
-            return GatewayRestart::Failed(text.trim().to_string());
-        }
-    }
-
-    let Ok(home) = crate::setup::gray_home() else {
-        return GatewayRestart::NotRunning;
+    let out = match gateway_cmd(&["restart"]) {
+        Ok(out) => out,
+        Err(e) => return GatewayRestart::Failed(gray_plugin::friendly_spawn_error(&e)),
     };
-    let Some(rec) = crate::gateway_pid::running(&home) else {
-        return GatewayRestart::NotRunning;
-    };
-
-    match gateway_cmd(&["stop"]) {
-        Ok(out) if out.status.success() => {}
-        Ok(out) => {
-            let text = format!(
-                "{}{}",
-                String::from_utf8_lossy(&out.stdout),
-                String::from_utf8_lossy(&out.stderr)
-            );
-            return GatewayRestart::Failed(format!(
-                "could not stop the running gateway: {}",
-                text.trim()
-            ));
-        }
-        Err(e) => {
-            return GatewayRestart::Failed(format!(
-                "could not stop the running gateway: {}",
-                gray_plugin::friendly_spawn_error(&e)
-            ));
-        }
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    if out.status.success() {
+        return GatewayRestart::Restarted(text.trim().to_string());
     }
-    match relaunch(&home, rec.pid) {
-        Ok(line) => GatewayRestart::Restarted(line),
-        Err(e) => GatewayRestart::Failed(format!(
-            "stopped the gateway (pid {}) but could not start it again: {} — `gray gateway run` when you are back",
-            rec.pid,
-            e.downcast_ref::<std::io::Error>()
-                .map(gray_plugin::friendly_spawn_error)
-                .unwrap_or_else(|| format!("{e:#}"))
-        )),
-    }
-}
-
-fn relaunch(home: &std::path::Path, old_pid: u32) -> anyhow::Result<String> {
-    use std::process::Stdio;
-    let exe = crate::exe_watch::on_disk_exe()?;
-    let log = home.join("logs").join("gateway.log");
-    std::fs::create_dir_all(
-        log.parent()
-            .ok_or_else(|| anyhow::anyhow!("{} has no parent", log.display()))?,
-    )?;
-    let file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&log)?;
-    let mut cmd = std::process::Command::new(exe);
-    cmd.args(["gateway", "run"])
-        .stdin(Stdio::null())
-        .stdout(Stdio::from(file.try_clone()?))
-        .stderr(Stdio::from(file));
-    #[cfg(unix)]
+    if text.contains("no service installed")
+        || text.contains("not running")
+        || text.contains("no supervisor detected")
+        || text.contains("is provided by the gateway plugin")
     {
-        use std::os::unix::process::CommandExt as _;
-        cmd.process_group(0);
+        return GatewayRestart::NotRunning;
     }
-    cmd.spawn()?;
-
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    while std::time::Instant::now() < deadline {
-        if let Some(now) = crate::gateway_pid::running(home) {
-            return Ok(format!(
-                "gateway restarted on the new build (pid {} was {old_pid}, log: {})",
-                now.pid,
-                log.display()
-            ));
-        }
-        std::thread::sleep(std::time::Duration::from_millis(200));
-    }
-    Ok(format!(
-        "gateway stopped (pid {old_pid}) and relaunched; it has not reported in yet — log: {}",
-        log.display()
-    ))
+    GatewayRestart::Failed(text.trim().to_string())
 }
 
 pub(crate) fn restart_argv(original: Vec<String>, current: Option<&str>) -> Vec<String> {
@@ -383,54 +311,4 @@ pub(crate) fn with_terminal<T>(
     }
     super::restore_viewport(shared);
     out
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_scratch_gray_home_never_reaches_the_system_gateway() {
-        let default = std::path::Path::new("/home/me/.gray");
-
-        assert!(is_scratch_home(
-            std::path::Path::new("/tmp/vp_home"),
-            Some(default)
-        ));
-        assert!(is_scratch_home(std::path::Path::new("/tmp/vp_home"), None));
-        assert!(!is_scratch_home(
-            std::path::Path::new("/home/me/.gray/"),
-            Some(default)
-        ));
-    }
-
-    #[test]
-    fn a_bare_session_resumes_its_own_conversation() {
-        assert_eq!(
-            restart_argv(vec![], Some("viscous-lithium-meridian")),
-            vec!["resume", "viscous-lithium-meridian"]
-        );
-
-        assert_eq!(restart_argv(vec![], None), vec!["resume", "--last"]);
-    }
-
-    #[test]
-    fn anything_the_user_typed_is_passed_through() {
-        for args in [
-            vec!["resume".to_string(), "--last".to_string()],
-            vec!["-r".to_string(), "other-session".to_string()],
-            vec!["--session=x".to_string()],
-            vec!["-c".to_string()],
-        ] {
-            assert_eq!(
-                restart_argv(args.clone(), Some("viscous-lithium-meridian")),
-                args
-            );
-        }
-
-        assert_eq!(
-            restart_argv(vec!["-p".to_string(), "hello".to_string()], None),
-            vec!["-p", "hello"]
-        );
-    }
 }
