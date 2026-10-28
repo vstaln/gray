@@ -627,6 +627,12 @@ pub fn format_tool_call_lines(
         .add_modifier(Modifier::BOLD);
     let dim_style = Style::default().fg(crate::theme::theme().tool_dim);
 
+    let bare = mcp_parts(name).map_or(name, |(_, tool)| tool);
+    if bare == "memory"
+        && let Some(mem) = memory_tool_label(args)
+    {
+        return vec![memory_line(mem, bullet, action_style, cmd_style, dim_style)];
+    }
     let head = match name {
         "bash" => bash_header(args, cwd, bullet, action_style, cmd_style, dim_style),
         "write" => {
@@ -996,6 +1002,9 @@ fn bash_header(
                     dim_style,
                 );
             }
+            if !background && let Some(mem) = memory_label(core.command) {
+                return memory_line(mem, bullet, action_style, cmd_style, dim_style);
+            }
             let cut = truncate_cmd(core.command);
 
             let cmd = if cut.len() < core.command.len() || full.lines().nth(1).is_some() {
@@ -1017,6 +1026,106 @@ fn bash_header(
             Line::from(spans)
         }
     }
+}
+
+/// A `gray memory …` shell call, labeled like a tool row ("Remembered KEY ·
+/// text") instead of echoing the raw command line.
+#[derive(Debug, PartialEq)]
+struct MemoryLabel {
+    verb: &'static str,
+    key: Option<String>,
+    text: Option<String>,
+}
+
+/// The native `memory` tool's args (`op`, `key`, `text`) as a label.
+fn memory_tool_label(args: &serde_json::Value) -> Option<MemoryLabel> {
+    let key = args.get("key")?.as_str()?.trim();
+    if key.is_empty() {
+        return None;
+    }
+    let verb = match args
+        .get("op")
+        .and_then(|v| v.as_str())
+        .unwrap_or("remember")
+    {
+        "remember" => "Remembered ",
+        "amend" => "Updated memory ",
+        _ => return None,
+    };
+    let text = args
+        .get("text")
+        .and_then(|v| v.as_str())
+        .map(|t| t.lines().next().unwrap_or("").trim().to_string())
+        .filter(|t| !t.is_empty());
+    Some(MemoryLabel {
+        verb,
+        key: Some(key.to_string()),
+        text,
+    })
+}
+
+fn memory_line(
+    mem: MemoryLabel,
+    bullet: Span<'static>,
+    action_style: Style,
+    cmd_style: Style,
+    dim_style: Style,
+) -> Line<'static> {
+    let mut spans = vec![bullet, Span::styled(mem.verb, action_style)];
+    if let Some(key) = mem.key {
+        spans.push(Span::styled(key, cmd_style));
+    }
+    if let Some(text) = mem.text {
+        let cut = truncate_cmd(&text);
+        let text = if cut.len() < text.len() {
+            format!("{}\u{2026}", cut.trim_end())
+        } else {
+            text.clone()
+        };
+        spans.push(Span::styled(format!(" \u{00b7} {text}"), dim_style));
+    }
+    Line::from(spans)
+}
+
+fn memory_label(command: &str) -> Option<MemoryLabel> {
+    let words = shlex::split(command)?;
+    let mut it = words.iter().map(String::as_str).peekable();
+    match it.next()? {
+        "gray" if it.next()? == "memory" => {}
+        "gray-memory" => {}
+        _ => return None,
+    }
+    // Leading globals (`--scope user`) may sit before the subcommand too.
+    let mut pos: Vec<&str> = Vec::new();
+    while let Some(w) = it.next() {
+        if w == "--" {
+            pos.extend(it.by_ref());
+            break;
+        }
+        if let Some(flag) = w.strip_prefix("--") {
+            if !flag.contains('=') && matches!(flag, "scope" | "project" | "why") {
+                it.next();
+            }
+            continue;
+        }
+        pos.push(w);
+    }
+    let (sub, rest) = pos.split_first()?;
+    let key = rest.first().map(|k| (*k).to_string());
+    let text = rest.get(1..).filter(|t| !t.is_empty()).map(|t| t.join(" "));
+    let (verb, key, text) = match *sub {
+        "set" | "ingest-set" => ("Remembered ", key, text),
+        "edit" | "ingest-edit" => ("Updated memory ", key, text),
+        "remove" => ("Forgot ", key, None),
+        "show" => ("Recalled ", key, None),
+        "list" => ("Listed memories", None, None),
+        "clear" => ("Cleared memory", None, None),
+        _ => return None,
+    };
+    if verb.ends_with(' ') && key.is_none() {
+        return None;
+    }
+    Some(MemoryLabel { verb, key, text })
 }
 
 fn read_header(
@@ -1066,6 +1175,12 @@ fn read_header(
 
 pub(crate) fn live_bash_verb(done: &str) -> Option<&'static str> {
     Some(match done {
+        "Remembered " => "Remembering ",
+        "Updated memory " => "Updating memory ",
+        "Forgot " => "Forgetting ",
+        "Recalled " => "Recalling ",
+        "Listed memories" => "Listing memories",
+        "Cleared memory" => "Clearing memory",
         "Ran " => "Running ",
         "Skipped " => "Skipping ",
         "Started " => "Starting ",
@@ -1569,3 +1684,82 @@ pub use plain::{
     format_tool_call_header_plain, format_tool_call_lines_plain,
     format_tool_result_plain_with_context,
 };
+
+#[cfg(test)]
+mod memory_label_tests {
+    use super::{MemoryLabel, format_tool_call_header, memory_label};
+
+    fn header_text(name: &str, args: serde_json::Value) -> String {
+        format_tool_call_header(name, &args, None, None)
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect()
+    }
+
+    #[test]
+    fn the_memory_tool_reads_as_remembered_not_raw_args() {
+        let args = serde_json::json!({
+            "key": "draft-growth",
+            "text": "Decision: the transcript scrolls up",
+            "why": "user saw a gap",
+        });
+        for name in ["memory", "mcp__gray__memory"] {
+            let got = header_text(name, args.clone());
+            assert!(
+                got.contains(
+                    "Remembered draft-growth \u{00b7} Decision: the transcript scrolls up"
+                ),
+                "{name}: {got:?}"
+            );
+            assert!(!got.contains("why="), "{name}: {got:?}");
+        }
+        let amend = header_text(
+            "memory",
+            serde_json::json!({"op": "amend", "key": "k", "text": "t"}),
+        );
+        assert!(amend.contains("Updated memory k"), "{amend:?}");
+    }
+
+    #[test]
+    fn a_memory_set_reads_as_remembered_key_and_text() {
+        let got = memory_label(
+            r#"gray memory set --scope user outreach-voice "short plain paragraphs, signs 'best, Grady'""#,
+        );
+        assert_eq!(
+            got,
+            Some(MemoryLabel {
+                verb: "Remembered ",
+                key: Some("outreach-voice".into()),
+                text: Some("short plain paragraphs, signs 'best, Grady'".into()),
+            })
+        );
+    }
+
+    #[test]
+    fn other_memory_verbs_and_non_memory_commands() {
+        assert_eq!(
+            memory_label("gray memory show k").unwrap().verb,
+            "Recalled "
+        );
+        assert_eq!(
+            memory_label("gray-memory remove k").unwrap().verb,
+            "Forgot "
+        );
+        assert_eq!(
+            memory_label("gray memory list").unwrap().verb,
+            "Listed memories"
+        );
+        assert_eq!(
+            memory_label("gray memory --scope=user edit k t")
+                .unwrap()
+                .verb,
+            "Updated memory "
+        );
+        // Unlabeled verbs, a missing key, and other programs fall back to "Ran".
+        assert_eq!(memory_label("gray memory audit"), None);
+        assert_eq!(memory_label("gray memory set"), None);
+        assert_eq!(memory_label("gray recall memory"), None);
+        assert_eq!(memory_label("echo gray memory set k v"), None);
+    }
+}

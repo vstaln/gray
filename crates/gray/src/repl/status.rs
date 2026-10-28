@@ -132,10 +132,82 @@ pub(crate) fn turn_footer(
     }
 }
 
+/// The /context Compaction row's picker: "Same as chat model" plus the
+/// current provider's models. Saves the pick, swaps the live agent's
+/// compaction provider, and returns a change line (None when unchanged).
+async fn pick_compaction_model(
+    config: &mut Config,
+    cwd: &Path,
+    agent: &mut Option<Agent>,
+    tui: Option<&crate::composer::SharedTui>,
+    bg: Option<&crate::setup::BackgroundSnapshot>,
+) -> Option<String> {
+    const SAME: &str = "Same as chat model";
+    let mut items: Vec<(String, String)> = vec![(String::new(), SAME.to_string())];
+    let mut rows = crate::setup::canonical_model_rows(config);
+    if rows.is_empty() {
+        // Nothing cached for this provider yet: ask it.
+        rows = crate::setup::provider_models_for_config(config).1;
+    }
+    items.extend(rows.into_iter().filter(|(id, _)| !id.is_empty()));
+    let selected = config
+        .compaction_model
+        .as_deref()
+        .and_then(|m| items.iter().position(|(id, _)| id == m))
+        .unwrap_or(0);
+    let bg = bg
+        .cloned()
+        .unwrap_or_else(crate::setup::BackgroundSnapshot::default_initial);
+    let footer_note = "No prompt-cache reuse; falls back to chat model";
+    let picked = with_modal_sync(tui, || {
+        let mut picker = crate::repl::picker::ListPicker {
+            title: "Compaction model",
+            items: &items,
+            label: Box::new(|r: &(String, String)| {
+                if r.0.is_empty() {
+                    r.1.as_str()
+                } else {
+                    r.0.as_str()
+                }
+            }),
+            trailing: None,
+            footer: Some(Box::new(move || {
+                vec![ratatui::text::Line::from(ratatui::text::Span::styled(
+                    footer_note,
+                    ratatui::style::Style::default().fg(crate::theme::theme().text_muted),
+                ))]
+            })),
+            on_highlight: None,
+            selected,
+        };
+        crate::repl::picker::run_list_picker(&mut picker, &bg)
+    });
+    let Ok(Some(i)) = picked else { return None };
+    let new = (!items[i].0.is_empty()).then(|| items[i].0.clone());
+    if new == config.compaction_model {
+        return None;
+    }
+    config.compaction_model = new.clone();
+    if let Ok(path) = crate::setup::saved_config_path() {
+        let _lock = crate::setup::lock_saved_config_at(&path).ok();
+        let mut saved = crate::setup::load_saved_config_at(&path);
+        saved.compaction_model = new;
+        let _ = crate::setup::save_saved_config_at(&path, &saved);
+    }
+    if let Some(a) = agent.as_mut() {
+        let sid = a.session_id().map(str::to_string);
+        a.set_compaction_provider(crate::compaction_provider(config, cwd, sid.as_deref()).await);
+    }
+    Some(format!(
+        "compaction → {}",
+        crate::setup::compaction_label(config)
+    ))
+}
+
 pub(crate) async fn handle_context_window(
     config: &mut Config,
     cwd: &Path,
-    agent: &Option<Agent>,
+    agent: &mut Option<Agent>,
     direct: Option<String>,
     tui: Option<&crate::composer::SharedTui>,
 ) {
@@ -169,20 +241,42 @@ pub(crate) async fn handle_context_window(
     }
     let Some(val) = direct else {
         if tui.is_some() {
+            use crate::setup::ContextModalExit;
             let model = config.model.clone().unwrap_or_default();
             let breakdown = collect_parts(cwd, agent, tui);
             let bg = tui.map(|s| s.lock().expect("tui lock").snapshot());
-            let res = with_modal_sync(tui, || {
-                crate::setup::run_context_modal(config, &breakdown, &model, bg.as_ref())
-            });
-            match res {
-                Ok(Some(summary)) => emit(summary, tui, true),
-                Ok(None) => {
-                    if let Some(shared) = tui {
-                        shared.lock().expect("tui lock").ensure_gap();
+            // Changes made across reopenings (the compaction picker closes
+            // and reopens the modal) are reported once, at the end.
+            let mut changes: Vec<String> = Vec::new();
+            loop {
+                let res = with_modal_sync(tui, || {
+                    crate::setup::run_context_modal(config, &breakdown, &model, bg.as_ref())
+                });
+                match res {
+                    Ok(ContextModalExit::PickCompaction(diff)) => {
+                        changes.extend(diff);
+                        if let Some(change) =
+                            pick_compaction_model(config, cwd, agent, tui, bg.as_ref()).await
+                        {
+                            changes.push(change);
+                        }
+                    }
+                    Ok(ContextModalExit::Closed(diff)) => {
+                        changes.extend(diff);
+                        break;
+                    }
+                    Err(e) => {
+                        emit(format!("context error: {e}"), tui, false);
+                        return;
                     }
                 }
-                Err(e) => emit(format!("context error: {e}"), tui, false),
+            }
+            if changes.is_empty() {
+                if let Some(shared) = tui {
+                    shared.lock().expect("tui lock").ensure_gap();
+                }
+            } else {
+                emit(changes.join(" · "), tui, true);
             }
         } else {
             emit(

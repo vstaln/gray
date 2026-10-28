@@ -1,11 +1,28 @@
 use super::*;
 
+/// How the /context modal closed.
+pub enum ContextModalExit {
+    /// Closed; `Some` summarizes what changed.
+    Closed(Option<String>),
+    /// Enter on the Compaction row: the caller runs the model picker (a
+    /// separate modal session) and reopens /context.
+    PickCompaction(Option<String>),
+}
+
+/// The Compaction row's value: the configured model, or the chat model.
+pub fn compaction_label(config: &Config) -> String {
+    config
+        .compaction_model
+        .clone()
+        .unwrap_or_else(|| "same as chat model".to_string())
+}
+
 pub fn run_context_modal(
     config: &mut Config,
     parts: &ContextParts,
     model: &str,
     bg: Option<&BackgroundSnapshot>,
-) -> anyhow::Result<Option<String>> {
+) -> anyhow::Result<ContextModalExit> {
     use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, poll, read};
     use ratatui::layout::Rect;
     use ratatui::style::{Modifier, Style};
@@ -92,7 +109,7 @@ pub fn run_context_modal(
         .unwrap_or_else(BackgroundSnapshot::default_initial);
     let setting_labels = ["Window", "Reserve", "Keep"];
 
-    let result = (|| -> anyhow::Result<Option<String>> {
+    let result = (|| -> anyhow::Result<ContextModalExit> {
         loop {
             let window = resolve_model_context_length(model);
             let max = model_max_context(model);
@@ -114,9 +131,9 @@ pub fn run_context_modal(
                 render_dimmed_background(frame, &bg_snapshot);
                 let modal_w = 76.min(area.width.saturating_sub(2)).max(60).min(area.width);
 
-                let modal_h = 21
+                let modal_h = 22
                     .min(area.height.saturating_sub(1))
-                    .max(19)
+                    .max(20)
                     .min(area.height);
                 let modal_x = (area.width.saturating_sub(modal_w)) / 2;
                 let modal_y = (area.height.saturating_sub(modal_h)) / 3;
@@ -252,6 +269,7 @@ pub fn run_context_modal(
                     ),
                     format!("{:<16}{:>8}", "Reserve", format_context_length(reserve)),
                     format!("{:<16}{:>8}", "Keep", format_context_length(keep)),
+                    format!("{:<16}{}", "Compaction", compaction_label(config)),
                 ];
                 for (i, text) in set_rows.iter().enumerate() {
                     if set_y + i as u16 >= inner.y + inner.height - 2 {
@@ -337,7 +355,7 @@ pub fn run_context_modal(
                 sel = if up {
                     sel.saturating_sub(1)
                 } else {
-                    (sel + 1).min(2)
+                    (sel + 1).min(3)
                 };
                 continue;
             }
@@ -348,12 +366,12 @@ pub fn run_context_modal(
                     kind: KeyEventKind::Press,
                     ..
                 }) if modifiers.contains(KeyModifiers::CONTROL) => {
-                    return Ok(compute_diffs(
+                    return Ok(ContextModalExit::Closed(compute_diffs(
                         config,
                         initial_window,
                         initial_reserve,
                         initial_keep,
-                    ));
+                    )));
                 }
                 Event::Key(KeyEvent {
                     modifiers,
@@ -449,12 +467,20 @@ pub fn run_context_modal(
                     }
                     match code {
                         KeyCode::Esc | KeyCode::Char('q') => {
-                            return Ok(compute_diffs(
+                            return Ok(ContextModalExit::Closed(compute_diffs(
                                 config,
                                 initial_window,
                                 initial_reserve,
                                 initial_keep,
-                            ));
+                            )));
+                        }
+                        KeyCode::Enter if sel == 3 => {
+                            return Ok(ContextModalExit::PickCompaction(compute_diffs(
+                                config,
+                                initial_window,
+                                initial_reserve,
+                                initial_keep,
+                            )));
                         }
                         KeyCode::Enter => {
                             buf = match sel {
