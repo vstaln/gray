@@ -744,19 +744,11 @@ pub fn format_tool_call_lines(
                         .collect()
                 })
                 .unwrap_or_default();
+            // The questions and answers render in full as the card body
+            // (ask_card.rs); the header only counts them.
             let mut spans = vec![bullet, Span::styled("Asked", action_style)];
-            if let Some(first) = qs.first() {
-                let cut = truncate_cmd(first);
-                let shown = if cut.len() < first.len() {
-                    format!("{}\u{2026}", cut.trim_end())
-                } else {
-                    cut.to_string()
-                };
-                spans.push(Span::raw(" "));
-                spans.push(Span::styled(shown, cmd_style));
-            }
             if qs.len() > 1 {
-                spans.push(Span::styled(format!(" +{}", qs.len() - 1), dim_style));
+                spans.push(Span::styled(format!(" {} questions", qs.len()), dim_style));
             }
             Line::from(spans)
         }
@@ -1356,6 +1348,7 @@ pub(crate) fn humanize_tool_name(name: &str) -> String {
         out
     }
 }
+mod ask_card;
 mod diff;
 
 pub use diff::{DiffHunk, DiffLine, DiffTag, parse_diff_hunks, render_diff_hunks};
@@ -1614,6 +1607,9 @@ pub fn format_tool_result_lines_with_context(
         return Vec::new();
     }
 
+    if tool_name == "request_user_input" {
+        return ask_card::ask_body(args, output);
+    }
     if !tool_may_render_body(tool_name) {
         return Vec::new();
     }
