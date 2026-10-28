@@ -733,24 +733,11 @@ pub fn format_tool_call_lines(
             ])
         }
         "request_user_input" => {
-            let qs: Vec<&str> = args
+            let n = args
                 .get("questions")
                 .and_then(|v| v.as_array())
-                .map(|a| {
-                    a.iter()
-                        .filter_map(|q| q.get("question").and_then(|v| v.as_str()))
-                        .map(str::trim)
-                        .filter(|q| !q.is_empty())
-                        .collect()
-                })
-                .unwrap_or_default();
-            // The questions and answers render in full as the card body
-            // (ask_card.rs); the header only counts them.
-            let mut spans = vec![bullet, Span::styled("Asked", action_style)];
-            if qs.len() > 1 {
-                spans.push(Span::styled(format!(" {} questions", qs.len()), dim_style));
-            }
-            Line::from(spans)
+                .map_or(0, |a| a.len());
+            ask_card::asked_header(n)
         }
         "web_fetch" => {
             let url = args.get("url").and_then(|v| v.as_str()).unwrap_or("");
@@ -1348,7 +1335,7 @@ pub(crate) fn humanize_tool_name(name: &str) -> String {
         out
     }
 }
-mod ask_card;
+pub mod ask_card;
 mod diff;
 
 pub use diff::{DiffHunk, DiffLine, DiffTag, parse_diff_hunks, render_diff_hunks};

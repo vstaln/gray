@@ -71,7 +71,7 @@ pub struct AskAnswer {
     pub answers: Vec<String>,
 }
 
-fn parse_params(v: &serde_json::Value) -> anyhow::Result<(Vec<AskQuestion>, bool, bool)> {
+fn parse_params(v: &serde_json::Value) -> anyhow::Result<(Vec<AskQuestion>, bool)> {
     let questions: Vec<AskQuestion> =
         serde_json::from_value(v.get("questions").cloned().unwrap_or(serde_json::json!([])))
             .map_err(|e| anyhow::anyhow!("host/ask: bad questions: {e}"))?;
@@ -79,8 +79,7 @@ fn parse_params(v: &serde_json::Value) -> anyhow::Result<(Vec<AskQuestion>, bool
         anyhow::bail!("host/ask: at most 3 questions");
     }
     let blocking = v.get("blocking").and_then(|b| b.as_bool()).unwrap_or(true);
-    let echo = v.get("echo").and_then(|b| b.as_bool()).unwrap_or(true);
-    Ok((questions, blocking, echo))
+    Ok((questions, blocking))
 }
 
 fn answers_json(answers: &[AskAnswer]) -> serde_json::Value {
@@ -93,10 +92,6 @@ fn answers_json(answers: &[AskAnswer]) -> serde_json::Value {
 
 struct PendingAsk {
     questions: Vec<AskQuestion>,
-    /// Print the `? … / → …` summary after the modal closes. A caller that
-    /// records the exchange itself (the `request_user_input` tool card)
-    /// sends `echo: false`.
-    echo: bool,
     tx: tokio::sync::oneshot::Sender<Vec<AskAnswer>>,
 }
 
@@ -204,7 +199,7 @@ pub async fn handle_ask(params: serde_json::Value) -> serde_json::Value {
     let Some(svc) = svc else {
         return serde_json::json!({"error": "host/ask: ask service not installed"});
     };
-    let (questions, blocking, echo) = match parse_params(&params) {
+    let (questions, blocking) = match parse_params(&params) {
         Ok(p) => p,
         Err(e) => return serde_json::json!({"error": format!("{e:#}")}),
     };
@@ -231,7 +226,7 @@ pub async fn handle_ask(params: serde_json::Value) -> serde_json::Value {
     svc.pending
         .lock()
         .expect("ask pending")
-        .insert(id, PendingAsk { questions, echo, tx });
+        .insert(id, PendingAsk { questions, tx });
 
     let drive_svc = svc.clone();
     let drive = tokio::spawn(async move {
@@ -533,11 +528,9 @@ async fn drive_tui(svc: &Arc<Service>, id: u64) {
     tokio::task::spawn_blocking(move || {
         let Some(tui) = svc.tui.clone() else { return };
         let mut state = AskModalState::new(id);
-        let echo;
         {
             let pending = svc.pending.lock().expect("ask pending");
             if let Some(p) = pending.get(&state.id) {
-                echo = p.echo;
                 state.load(p.questions.clone());
             } else {
                 return;
@@ -554,7 +547,7 @@ async fn drive_tui(svc: &Arc<Service>, id: u64) {
 
             // An ask the caller already gave up on gets no "→ answer" row:
             // nothing will receive it.
-            if echo && still_pending() {
+            if still_pending() {
                 push_ask_summary(&mut t, &state.questions, &answers);
             }
             t.restore_status(saved_status);
@@ -1040,22 +1033,20 @@ fn push_ask_summary(
     questions: &[AskQuestion],
     answers: &[AskAnswer],
 ) {
+    use crate::tool_fmt::ask_card::{AskedRow, asked_header, asked_lines};
     if questions.is_empty() {
         return;
     }
-    t.ensure_gap();
-    for q in questions {
-        t.push_dim(format!("? {}", q.question));
-        let joined = answers
-            .iter()
-            .find(|a| a.id == q.id)
-            .map(|a| a.answers.join(" · "))
-            .unwrap_or_default();
-        if joined.is_empty() {
-            t.push_dim("  → skipped".to_string());
-        } else {
-            t.push_dim(format!("  → {joined}"));
-        }
-    }
-    t.ensure_gap();
+    let rows: Vec<AskedRow> = questions
+        .iter()
+        .map(|q| AskedRow {
+            question: q.question.clone(),
+            answers: answers
+                .iter()
+                .find(|a| a.id == q.id)
+                .map(|a| a.answers.clone())
+                .unwrap_or_default(),
+        })
+        .collect();
+    t.push_tool_box(asked_header(rows.len()), asked_lines(&rows, "skipped"));
 }

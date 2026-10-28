@@ -1,6 +1,6 @@
-//! Body of the `request_user_input` card: every question in full with the
-//! user's answer under it, drawn inside the card so the exchange reads as
-//! one block (the host skips its plain `? … / → …` echo for these asks).
+//! The "Asked" card: every question in full with the user's answer under
+//! it. The host draws it for every plugin's `host/ask` (tool approvals,
+//! `request_user_input`, git-flow, ...) when the modal closes.
 
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -10,6 +10,14 @@ use unicode_width::UnicodeWidthStr;
 const INDENT: &str = "  ";
 const ARROW_PAD: &str = "    ";
 
+/// One asked question and what the user picked (`None` = nothing yet).
+pub struct AskedRow {
+    pub question: String,
+    pub answers: Vec<String>,
+}
+
+/// Body of the `request_user_input` card when a session is resumed: the
+/// same rows the host drew live, rebuilt from the tool call and result.
 pub(super) fn ask_body(args: Option<&serde_json::Value>, output: &str) -> Vec<Line<'static>> {
     let qs: Vec<(String, String)> = args
         .and_then(|a| a.get("questions"))
@@ -35,7 +43,56 @@ pub(super) fn ask_body(args: Option<&serde_json::Value>, output: &str) -> Vec<Li
     } else {
         "skipped"
     };
+    let rows: Vec<AskedRow> = qs
+        .into_iter()
+        .map(|(id, question)| AskedRow {
+            question,
+            answers: answers
+                .and_then(|m| m.get(&id))
+                .and_then(|e| e.get("answers"))
+                .and_then(|a| a.as_array())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|v| v.as_str())
+                        .map(str::to_string)
+                        .collect()
+                })
+                .unwrap_or_default(),
+        })
+        .collect();
+    asked_lines(&rows, fallback)
+}
 
+/// Card header for any ask: `⬢ Asked` or `⬢ Asked N questions`.
+pub fn asked_header(n: usize) -> Line<'static> {
+    let theme = crate::theme::theme();
+    let mut spans = vec![
+        Span::styled(
+            format!("{} ", crate::tui::glyph("\u{2b22}", "#")),
+            Style::default()
+                .fg(super::tool_hue("request_user_input"))
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            "Asked",
+            Style::default()
+                .fg(theme.text_body)
+                .add_modifier(Modifier::BOLD),
+        ),
+    ];
+    if n > 1 {
+        spans.push(Span::styled(
+            format!(" {n} questions"),
+            Style::default().fg(theme.tool_dim),
+        ));
+    }
+    Line::from(spans)
+}
+
+/// Every question in full with the answer under it. Shared by the host's
+/// card for every plugin ask (approvals, request_user_input, ...) and the
+/// resumed `request_user_input` tool card.
+pub fn asked_lines(rows: &[AskedRow], fallback: &str) -> Vec<Line<'static>> {
     let theme = crate::theme::theme();
     let q_style = Style::default().fg(theme.text_body);
     let arrow_style = Style::default().fg(theme.tool_dim);
@@ -55,39 +112,39 @@ pub(super) fn ask_body(args: Option<&serde_json::Value>, output: &str) -> Vec<Li
     let a_w = term_w.saturating_sub(4 + ARROW_PAD.len()).max(20);
 
     let mut lines = Vec::new();
-    for (i, (id, q)) in qs.iter().enumerate() {
+    for (i, row) in rows.iter().enumerate() {
         if i > 0 {
             lines.push(Line::from(""));
         }
-        for row in wrap(q, q_w) {
-            lines.push(Line::from(vec![Span::raw(INDENT), Span::styled(row, q_style)]));
+        for r in wrap(row.question.trim(), q_w) {
+            lines.push(Line::from(vec![
+                Span::raw(INDENT),
+                Span::styled(r, q_style),
+            ]));
         }
-        let picked: Vec<String> = answers
-            .and_then(|m| m.get(id))
-            .and_then(|e| e.get("answers"))
-            .and_then(|a| a.as_array())
-            .map(|a| {
-                a.iter()
-                    .filter_map(|v| v.as_str())
-                    .map(|s| match s.strip_prefix("user_note: ") {
-                        Some(note) => format!("note: {note}"),
-                        None => s.to_string(),
-                    })
-                    .collect()
+        let picked: Vec<String> = row
+            .answers
+            .iter()
+            .map(|s| match s.strip_prefix("user_note: ") {
+                Some(note) => format!("note: {note}"),
+                None => s.clone(),
             })
-            .unwrap_or_default();
+            .collect();
         let (text, style) = if picked.is_empty() {
             (fallback.to_string(), none_style)
         } else {
             (picked.join(" \u{b7} "), a_style)
         };
-        for (j, row) in wrap(&text, a_w).into_iter().enumerate() {
+        for (j, r) in wrap(&text, a_w).into_iter().enumerate() {
             let lead = if j == 0 {
-                Span::styled(format!("{INDENT}{} ", crate::tui::glyph("\u{2192}", ">")), arrow_style)
+                Span::styled(
+                    format!("{INDENT}{} ", crate::tui::glyph("\u{2192}", ">")),
+                    arrow_style,
+                )
             } else {
                 Span::raw(ARROW_PAD)
             };
-            lines.push(Line::from(vec![lead, Span::styled(row, style)]));
+            lines.push(Line::from(vec![lead, Span::styled(r, style)]));
         }
     }
     lines
@@ -134,7 +191,12 @@ mod tests {
     fn text(lines: &[Line<'_>]) -> String {
         lines
             .iter()
-            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>())
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
             .collect::<Vec<_>>()
             .join("\n")
     }
@@ -150,7 +212,10 @@ mod tests {
     fn shows_every_question_in_full_with_its_answer() {
         let out = r#"{"answers":{"ship":{"answers":["Merge + deploy (Recommended)"]},"color":{"answers":["Red","user_note: darker"]}}}"#;
         let shown = text(&ask_body(Some(&args()), out));
-        assert!(shown.contains("What should I do with the long question that must not be cut?"), "{shown}");
+        assert!(
+            shown.contains("What should I do with the long question that must not be cut?"),
+            "{shown}"
+        );
         assert!(shown.contains("Merge + deploy (Recommended)"), "{shown}");
         assert!(shown.contains("Red \u{b7} note: darker"), "{shown}");
         assert!(!shown.contains('\u{2026}'), "{shown}");
