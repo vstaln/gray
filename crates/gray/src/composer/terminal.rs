@@ -136,10 +136,10 @@ where
         // it can repaint later, and scrolling history only for the rest.
         // A shrink first gives back the rows an overlay was covering, then
         // keeps its top row and frees rows *below* itself; the next insert
-        // pushes it back down. The one exception is the bottom-pinned slide
-        // below, which repaints every row above the band from `tail` (never
-        // a bare slide: scrollback can't be edited, so shifting without
-        // repainting would leave blank rows at the scrollback seam).
+        // pushes it back down. It never slides the transcript back down and
+        // never repaints pushed-off rows from `tail`: every tail row that is
+        // not on screen already sits in scrollback, which cannot be edited,
+        // so repainting it would scroll it into scrollback a second time.
         let shrink = old.height.saturating_sub(area.height);
         let uncover = if old.bottom() >= screen_size.height {
             self.covered.min(shrink)
@@ -147,24 +147,6 @@ where
             0
         };
         area.y = (old.y + uncover).min(bottom);
-        // A band pinned to the screen bottom that shrinks with nothing
-        // covered (deleting draft lines after growth pushed history up)
-        // slides back down and repaints the history rows it had pushed off,
-        // from `tail`, instead of leaving blank rows under the footer. The
-        // repainted rows also sit in scrollback, so scrolling back can show
-        // them twice; a few repeated rows read better than a dead strip.
-        let slide = if uncover == 0
-            && self.covered == 0
-            && !screen_shrank
-            && old.bottom() >= screen_size.height
-        {
-            let spare = u16::try_from(self.tail.len().saturating_sub(usize::from(old.y)))
-                .unwrap_or(u16::MAX);
-            shrink.min(spare).min(bottom.saturating_sub(area.y))
-        } else {
-            0
-        };
-        area.y += slide;
         let rise = old.y.saturating_sub(area.y);
         let history_end = old.y.saturating_add(self.covered);
         let repaintable = u16::try_from(self.tail.len())
@@ -186,12 +168,6 @@ where
             };
             self.set_viewport_area(area);
             self.clear_after_position(Position::new(0, from))?;
-        }
-        if slide > 0 {
-            let n = usize::from(area.y);
-            let rows: Vec<Vec<Cell>> = self.tail.range(self.tail.len() - n..).cloned().collect();
-            let rows: Vec<&[Cell]> = rows.iter().map(Vec::as_slice).collect();
-            self.draw_rows(0, &rows)?;
         }
         if uncover > 0 {
             let start = self.tail.len() - usize::from(self.covered);
@@ -588,4 +564,276 @@ fn leveled_cell(cell: &Cell) -> Cell {
     out.set_bg(bg);
     out.underline_color = underline;
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::backend::WindowSize;
+    use ratatui::text::Line;
+
+    /// Minimal VT emulator for scrollback assertions: a cell grid plus the
+    /// lines committed above the screen. Understands just what
+    /// `CustomTerminal` writes by hand — `\x1b[a;br` / `\x1b[r` scroll
+    /// regions, `\x1bM` reverse index, CR and LF — alongside the `Backend`
+    /// trait calls. A line scrolled off the top of a region whose top is
+    /// the screen's top row lands in `scrollback`; off any other region it
+    /// is discarded, like a real terminal.
+    struct Emu {
+        size: Size,
+        cells: Vec<Vec<Cell>>,
+        scrollback: Vec<String>,
+        cursor: Position,
+        region: (u16, u16),
+        esc: Esc,
+    }
+
+    enum Esc {
+        None,
+        Seen,
+        Csi(String),
+    }
+
+    impl Emu {
+        fn new(size: Size) -> Self {
+            let cells =
+                vec![vec![Cell::default(); usize::from(size.width)]; usize::from(size.height)];
+            Self {
+                size,
+                cells,
+                scrollback: Vec::new(),
+                cursor: Position::new(0, 0),
+                region: (0, size.height.saturating_sub(1)),
+                esc: Esc::None,
+            }
+        }
+
+        fn row_text(&self, y: u16) -> String {
+            self.cells[usize::from(y)]
+                .iter()
+                .map(Cell::symbol)
+                .collect::<String>()
+                .trim_end()
+                .to_string()
+        }
+
+        fn blank_row(&self) -> Vec<Cell> {
+            vec![Cell::default(); usize::from(self.size.width)]
+        }
+
+        fn line_feed(&mut self) {
+            if self.cursor.y == self.region.1 {
+                let row = self.cells.remove(usize::from(self.region.0));
+                if self.region.0 == 0 {
+                    let text = row
+                        .iter()
+                        .map(Cell::symbol)
+                        .collect::<String>()
+                        .trim_end()
+                        .to_string();
+                    self.scrollback.push(text);
+                }
+                self.cells
+                    .insert(usize::from(self.region.1), self.blank_row());
+            } else if self.cursor.y + 1 < self.size.height {
+                self.cursor.y += 1;
+            }
+        }
+
+        fn reverse_index(&mut self) {
+            if self.cursor.y == self.region.0 {
+                self.cells.remove(usize::from(self.region.1));
+                self.cells
+                    .insert(usize::from(self.region.0), self.blank_row());
+            } else if self.cursor.y > 0 {
+                self.cursor.y -= 1;
+            }
+        }
+
+        fn feed(&mut self, byte: u8) {
+            match std::mem::replace(&mut self.esc, Esc::None) {
+                Esc::Seen => match byte {
+                    b'[' => self.esc = Esc::Csi(String::new()),
+                    b'M' => self.reverse_index(),
+                    _ => {}
+                },
+                Esc::Csi(mut params) => {
+                    if byte.is_ascii_alphabetic() {
+                        if byte == b'r' {
+                            let full = (0, self.size.height.saturating_sub(1));
+                            self.region = match params.as_str() {
+                                "" => full,
+                                p => {
+                                    let mut it = p.split(';');
+                                    let a = it.next().and_then(|v| v.parse::<u16>().ok());
+                                    let b = it.next().and_then(|v| v.parse::<u16>().ok());
+                                    (
+                                        a.unwrap_or(1).saturating_sub(1),
+                                        b.map_or(full.1, |v: u16| v.saturating_sub(1)),
+                                    )
+                                }
+                            };
+                        }
+                    } else {
+                        params.push(char::from(byte));
+                        self.esc = Esc::Csi(params);
+                    }
+                }
+                Esc::None => match byte {
+                    0x1b => self.esc = Esc::Seen,
+                    b'\r' => self.cursor.x = 0,
+                    b'\n' => self.line_feed(),
+                    _ => {}
+                },
+            }
+        }
+    }
+
+    impl Write for Emu {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            for &b in buf {
+                self.feed(b);
+            }
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl Backend for Emu {
+        fn draw<'a, I>(&mut self, content: I) -> io::Result<()>
+        where
+            I: Iterator<Item = (u16, u16, &'a Cell)>,
+        {
+            for (x, y, cell) in content {
+                if x < self.size.width && y < self.size.height {
+                    self.cells[usize::from(y)][usize::from(x)] = cell.clone();
+                }
+            }
+            Ok(())
+        }
+
+        fn hide_cursor(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+
+        fn show_cursor(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+
+        fn get_cursor_position(&mut self) -> io::Result<Position> {
+            Ok(self.cursor)
+        }
+
+        fn set_cursor_position<P: Into<Position>>(&mut self, position: P) -> io::Result<()> {
+            self.cursor = position.into();
+            Ok(())
+        }
+
+        fn clear(&mut self) -> io::Result<()> {
+            for row in &mut self.cells {
+                for cell in row {
+                    *cell = Cell::default();
+                }
+            }
+            Ok(())
+        }
+
+        fn clear_region(&mut self, clear_type: ClearType) -> io::Result<()> {
+            if clear_type == ClearType::AfterCursor {
+                for y in self.cursor.y..self.size.height {
+                    let from = if y == self.cursor.y { self.cursor.x } else { 0 };
+                    for x in from..self.size.width {
+                        self.cells[usize::from(y)][usize::from(x)] = Cell::default();
+                    }
+                }
+            }
+            Ok(())
+        }
+
+        fn size(&self) -> io::Result<Size> {
+            Ok(self.size)
+        }
+
+        fn window_size(&mut self) -> io::Result<WindowSize> {
+            Ok(WindowSize {
+                columns_rows: self.size,
+                pixels: Size::new(0, 0),
+            })
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// Growing the band scrolls transcript rows into scrollback; a later
+    /// shrink must not repaint them — they would scroll into scrollback a
+    /// second time. Regression test for the duplicated transcript rows and
+    /// extra blank lines seen in scrollback after a draft grew then
+    /// shrank.
+    #[test]
+    fn shrink_after_growth_does_not_recommit_scrollback() {
+        let size = Size::new(20, 10);
+        let mut term = CustomTerminal::at_row(Emu::new(size), size, 7, Scrollback::Regions);
+        term.set_viewport_height(3, 0, size).unwrap();
+
+        for i in 0..7 {
+            let text = format!("t{i}");
+            term.insert_before(1, |buf| {
+                buf.set_line(0, 0, &Line::from(text.as_str()), size.width);
+            })
+            .unwrap();
+        }
+
+        // The draft grows by two rows: t0 and t1 scroll into scrollback.
+        term.set_viewport_height(5, 0, size).unwrap();
+        // The user deletes those draft rows again.
+        term.set_viewport_height(3, 0, size).unwrap();
+
+        // The shrink keeps the band's top row; the rows it freed sit blank
+        // below until the next insert pushes the band back down. Nothing
+        // already in scrollback is repainted.
+        assert_eq!(term.viewport_area.y, 5);
+        assert_eq!(term.backend.row_text(0), "t2");
+
+        term.insert_before(1, |buf| {
+            buf.set_line(0, 0, &Line::from("t7"), size.width);
+        })
+        .unwrap();
+        term.insert_before(1, |buf| {
+            buf.set_line(0, 0, &Line::from("t8"), size.width);
+        })
+        .unwrap();
+        term.insert_before(1, |buf| {
+            buf.set_line(0, 0, &Line::from("t9"), size.width);
+        })
+        .unwrap();
+
+        for i in 0..10 {
+            let text = format!("t{i}");
+            let count = term
+                .backend
+                .scrollback
+                .iter()
+                .filter(|line| **line == text)
+                .count();
+            assert!(
+                count <= 1,
+                "scrollback holds {text} {count} times: {:?}",
+                term.backend.scrollback
+            );
+        }
+        // The pushed-off rows did reach scrollback once (draft growth still
+        // scrolls the transcript up).
+        for text in ["t0", "t1", "t2"] {
+            assert!(
+                term.backend.scrollback.iter().any(|line| *line == text),
+                "scrollback is missing {text}: {:?}",
+                term.backend.scrollback
+            );
+        }
+    }
 }

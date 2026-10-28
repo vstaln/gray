@@ -372,8 +372,11 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
     let desired = desired.max(floor);
     // A growing draft pushes the transcript up rather than covering its
     // last rows: hiding "Conversation interrupted" behind extra input lines
-    // read as a blank gap. Deleting lines again slides the band back down
-    // and repaints the pushed-off rows (Terminal::set_viewport_height).
+    // read as a blank gap. The cost lands on the rare shrink-without-send
+    // (freed rows sit below the footer until the next output); a send fills
+    // them with the echoed message. Sliding the band back down would need
+    // the pushed-off rows repainted, and repaint commits them to scrollback
+    // a second time (Terminal::set_viewport_height).
     let overlay = 0;
 
     tui.begin_sync();
