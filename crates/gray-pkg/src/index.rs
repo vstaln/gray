@@ -193,7 +193,7 @@ async fn fetch_index_url(
 ) -> anyhow::Result<Index> {
     let cached = read_cache(cache_file).ok().filter(|c| c.url == url);
     if let Some(c) = &cached
-        && crate::now_secs().saturating_sub(c.fetched_at) < INDEX_TTL_SECS
+        && gray_core::time::now_secs().saturating_sub(c.fetched_at) < INDEX_TTL_SECS
     {
         return Ok(c.index.clone());
     }
@@ -225,7 +225,7 @@ async fn revalidate(
     if resp.status() == reqwest::StatusCode::NOT_MODIFIED {
         let mut cache =
             cached.ok_or_else(|| anyhow::anyhow!("index revalidated but no cache present"))?;
-        cache.fetched_at = crate::now_secs();
+        cache.fetched_at = gray_core::time::now_secs();
         let index = cache.index.clone();
         write_cache(cache_file, &cache)?;
         return Ok(index);
@@ -241,7 +241,7 @@ async fn revalidate(
         cache_file,
         &IndexCache {
             etag,
-            fetched_at: crate::now_secs(),
+            fetched_at: gray_core::time::now_secs(),
             url: url.to_string(),
             index: index.clone(),
         },

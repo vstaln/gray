@@ -83,12 +83,6 @@ impl PaneProvider {
 /// `gray-*-sub` name list this replaced is gone.
 /// Plugin names that are already installed (enabled or not), from the same
 /// lock files /plugins reads.
-fn installed_plugin_names(home: &std::path::Path) -> HashSet<String> {
-    crate::plugin_cli::list_managed(home)
-        .map(|rows| rows.into_iter().map(|p| p.name).collect())
-        .unwrap_or_default()
-}
-
 /// Fetch the plugin index the way `gray plugin install <name>` resolves it:
 /// hub index first, community index on failure.
 fn fetch_provider_index() -> Option<gray_pkg::index::Index> {
@@ -161,7 +155,7 @@ fn build_rail(
         .collect();
 
     if let (Some(index), Some(home)) = (index, home.as_ref()) {
-        let installed_names = installed_plugin_names(home);
+        let installed_names = crate::plugin_cli::installed_names(home);
         for (key, entry) in &index.plugins {
             if installed_names.contains(key.as_str()) || entry.providers.is_empty() {
                 continue;

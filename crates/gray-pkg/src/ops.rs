@@ -1,68 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-use serde::{Deserialize, Serialize};
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct LockFile {
-    pub schema: u32,
-    #[serde(default)]
-    pub plugins: BTreeMap<String, LockEntry>,
-}
-
-fn default_true() -> bool {
-    true
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LockEntry {
-    #[serde(default)]
-    pub ecosystem: String,
-    #[serde(default)]
-    pub version: String,
-    #[serde(default)]
-    pub hash: String,
-    #[serde(default)]
-    pub source: String,
-    #[serde(default)]
-    pub argv: Vec<String>,
-    #[serde(default)]
-    pub adapter_version: String,
-    #[serde(default)]
-    pub installed_at: String,
-    #[serde(default)]
-    pub scope: String,
-    #[serde(default = "default_true")]
-    pub enabled: bool,
-
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cli_argv: Option<Vec<String>>,
-
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub global: bool,
-
-    #[serde(flatten)]
-    pub extra: serde_json::Map<String, serde_json::Value>,
-}
-
-impl Default for LockEntry {
-    fn default() -> Self {
-        Self {
-            ecosystem: String::new(),
-            version: String::new(),
-            hash: String::new(),
-            source: String::new(),
-            argv: Vec::new(),
-            adapter_version: String::new(),
-            installed_at: String::new(),
-            scope: String::new(),
-            enabled: true,
-            cli_argv: None,
-            global: false,
-            extra: Default::default(),
-        }
-    }
-}
+pub use gray_plugin::lock::{LockEntry, LockFile};
 
 #[derive(Debug, Clone)]
 pub enum NameOrUrl {
@@ -97,12 +36,8 @@ fn lock_path() -> PathBuf {
     crate::plugins_dir().join("lock.json")
 }
 
-fn read_lock() -> anyhow::Result<Option<LockFile>> {
-    match std::fs::read_to_string(lock_path()) {
-        Ok(raw) => Ok(Some(serde_json::from_str(&raw)?)),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(e.into()),
-    }
+fn read_lock() -> anyhow::Result<LockFile> {
+    LockFile::load(&lock_path())
 }
 
 const REGISTRY_LOCK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
@@ -165,17 +100,7 @@ pub fn hold_registry_lock() -> anyhow::Result<Option<std::fs::File>> {
 }
 
 fn write_lock(lock: &LockFile) -> anyhow::Result<()> {
-    let path = lock_path();
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let mut lock = lock.clone();
-    lock.schema = 1;
-    use std::io::Write;
-    let mut temporary = tempfile::NamedTempFile::new_in(path.parent().unwrap())?;
-    temporary.write_all(serde_json::to_string_pretty(&lock)?.as_bytes())?;
-    temporary.persist(&path)?;
-    Ok(())
+    lock.save(&lock_path())
 }
 
 fn record_install(
@@ -188,7 +113,7 @@ fn record_install(
     argv: Vec<String>,
 ) -> anyhow::Result<()> {
     let _guard = hold_registry_lock()?;
-    let mut lock = read_lock()?.unwrap_or_default();
+    let mut lock = read_lock()?;
     let enabled = lock.plugins.get(name).map(|e| e.enabled).unwrap_or(true);
     let own_dir = crate::plugins_dir().join(name);
 
@@ -201,11 +126,7 @@ fn record_install(
                 .first()
                 .is_some_and(|p| Path::new(p).starts_with(&own_dir))
         });
-    let extra = lock
-        .plugins
-        .get(name)
-        .map(|e| e.extra.clone())
-        .unwrap_or_default();
+    let prior = lock.plugins.get(name).cloned().unwrap_or_default();
     lock.plugins.insert(
         name.to_string(),
         LockEntry {
@@ -215,12 +136,15 @@ fn record_install(
             source: source.to_string(),
             argv,
             adapter_version: env!("CARGO_PKG_VERSION").to_string(),
-            installed_at: crate::now_secs().to_string(),
+            installed_at: gray_core::time::now_secs().to_string(),
             scope,
             enabled,
             cli_argv,
             global: lock.plugins.get(name).is_some_and(|e| e.global),
-            extra,
+            granted_capabilities: prior.granted_capabilities,
+            capabilities_hash: prior.capabilities_hash,
+            runtime_role: prior.runtime_role,
+            extra: prior.extra,
         },
     );
     match std::fs::remove_file(crate::plugins_dir().join(format!("{name}-manifest.json"))) {
@@ -301,7 +225,6 @@ fn install_identity(spec: &NameOrUrl) -> (String, String) {
 fn ecosystem_of(name: &str) -> String {
     read_lock()
         .ok()
-        .flatten()
         .and_then(|l| l.plugins.get(name).map(|e| e.ecosystem.clone()))
         .filter(|s| !s.trim().is_empty())
         .unwrap_or_else(|| "plugin".to_string())
@@ -377,12 +300,8 @@ fn replace_archive(
 
 const MAX_DEP_DEPTH: usize = 8;
 
-fn installed_plugin_names() -> BTreeMap<String, LockEntry> {
-    read_lock()
-        .ok()
-        .flatten()
-        .map(|l| l.plugins)
-        .unwrap_or_default()
+fn installed_entries() -> BTreeMap<String, LockEntry> {
+    read_lock().map(|l| l.plugins).unwrap_or_default()
 }
 
 async fn install_index(
@@ -424,7 +343,7 @@ async fn install_index(
     }
     visited.insert(name.to_string());
 
-    let installed = installed_plugin_names();
+    let installed = installed_entries();
     let mut deps = Vec::new();
     for dep in &entry.requires_plugins {
         if installed.contains_key(dep) || visited.contains(dep) {
@@ -437,7 +356,7 @@ async fn install_index(
         deps.push(dep.clone());
     }
 
-    let installed = installed_plugin_names();
+    let installed = installed_entries();
     let conflicts: Vec<String> = entry
         .conflicts
         .iter()
@@ -558,7 +477,7 @@ async fn install_url(
 }
 
 pub fn list() -> anyhow::Result<BTreeMap<String, LockEntry>> {
-    Ok(read_lock()?.map(|l| l.plugins).unwrap_or_default())
+    Ok(read_lock()?.plugins)
 }
 
 pub fn remove(name: &str) -> anyhow::Result<()> {
@@ -573,8 +492,8 @@ fn remove_inner(name: &str) -> anyhow::Result<()> {
         anyhow::bail!("not installed: {name}");
     }
     let _guard = hold_registry_lock()?;
-    let mut lock = read_lock()?.unwrap_or_default();
-    if lock.plugins.remove(name).is_none() {
+    let mut lock = read_lock()?;
+    if !lock.remove(name) {
         anyhow::bail!("not installed: {name}");
     }
 
@@ -595,7 +514,7 @@ pub fn set_enabled(name: &str, on: bool) -> anyhow::Result<()> {
 
 fn set_enabled_inner(name: &str, on: bool) -> anyhow::Result<()> {
     let _guard = hold_registry_lock()?;
-    let mut lock = read_lock()?.unwrap_or_default();
+    let mut lock = read_lock()?;
     let Some(entry) = lock.plugins.get_mut(name) else {
         anyhow::bail!("not installed: {name}");
     };
@@ -616,7 +535,7 @@ pub fn set_global(name: &str, global: bool) -> anyhow::Result<()> {
 
 fn set_global_inner(name: &str, global: bool) -> anyhow::Result<()> {
     let _guard = hold_registry_lock()?;
-    let mut lock = read_lock()?.unwrap_or_default();
+    let mut lock = read_lock()?;
     let Some(entry) = lock.plugins.get_mut(name) else {
         anyhow::bail!("not installed: {name}");
     };
@@ -684,7 +603,7 @@ pub async fn check_update(target: &str) -> anyhow::Result<Vec<UpdateRow>> {
 }
 
 async fn update_inner(target: &str, check: bool) -> anyhow::Result<Vec<UpdateRow>> {
-    let lock = read_lock()?.unwrap_or_default();
+    let lock = read_lock()?;
     let names: Vec<String> = if target == "all" {
         lock.plugins.keys().cloned().collect()
     } else {
@@ -844,7 +763,7 @@ fn reconcile_mtime(exe: &Path, head_secs: u64) {
 }
 
 fn rebuild_log(name: &str) -> Option<PathBuf> {
-    let dir = crate::gray_home().join("logs");
+    let dir = gray_core::paths::gray_home_or_temp().join("logs");
     std::fs::create_dir_all(&dir).ok()?;
     Some(dir.join(format!("plugin-build-{name}.log")))
 }
@@ -877,7 +796,11 @@ fn rebuild_registered(name: &str, repo: &Path) -> Result<(), String> {
         }
     }
     if let Some(mut f) = log_file {
-        let _ = writeln!(f, "=== {} cargo build --release ===", crate::now_secs());
+        let _ = writeln!(
+            f,
+            "=== {} cargo build --release ===",
+            gray_core::time::now_secs()
+        );
     }
     let mut child = cmd.spawn().map_err(|e| format!("spawn build: {e}"))?;
     let deadline = std::time::Instant::now() + REBUILD_TIMEOUT;

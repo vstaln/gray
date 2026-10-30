@@ -236,10 +236,7 @@ fn composite_decls(home: &Path) -> Vec<CompositeRowDecl> {
     let project = project_path
         .as_deref()
         .and_then(|p| LockFile::load(p).ok())
-        .unwrap_or(LockFile {
-            schema: 1,
-            plugins: BTreeMap::new(),
-        });
+        .unwrap_or_default();
     let mut out = decls_from_lock(
         &gray_plugin::lock::lock_path(home),
         &home.join("plugins"),

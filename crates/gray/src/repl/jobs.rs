@@ -376,7 +376,7 @@ pub(crate) fn run_jobs_modal(
         || {
             let wakes = load_wakes(home, sid.as_deref());
             let jobs = exec.background_jobs(&ctx);
-            Some(items(&jobs, &wakes, gray_core::spill::now_secs()))
+            Some(items(&jobs, &wakes, gray_core::time::now_secs() as i64))
         },
         |name| remove(exec.as_ref(), &ctx, home, name),
         |_, _| anyhow::bail!("nothing to toggle here"),
@@ -414,7 +414,7 @@ pub(crate) fn spawn_footer_poller() {
                 }
                 wakes_for = sid;
             }
-            let label = footer_label(jobs, &wakes, gray_core::spill::now_secs());
+            let label = footer_label(jobs, &wakes, gray_core::time::now_secs() as i64);
             if label == shown {
                 continue;
             }

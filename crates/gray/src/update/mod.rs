@@ -689,7 +689,7 @@ pub async fn startup_check() {
     if cfg!(debug_assertions) || current == "0.0.0" {
         return;
     }
-    let now = gray_core::spill::now_secs() as u64;
+    let now = gray_core::time::now_secs();
     if !update_check_due(read_last_check(), now) {
         return;
     }

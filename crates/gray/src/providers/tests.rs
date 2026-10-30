@@ -83,10 +83,8 @@ async fn disabled_entry_hides_cached_provider() {
 fn provider_only_runtime_role_survives_lock_round_trip() {
     let mut entry = lock_entry(vec!["provider-sidecar".to_string()]);
     entry.runtime_role = Some("provider_only".to_string());
-    let lock = gray_plugin::lock::LockFile {
-        schema: 1,
-        plugins: BTreeMap::from([("example-sub".to_string(), entry.clone())]),
-    };
+    let mut lock = gray_plugin::lock::LockFile::default();
+    lock.plugins = BTreeMap::from([("example-sub".to_string(), entry.clone())]);
     let dir = tempfile::tempdir().unwrap();
     let path = gray_plugin::lock::lock_path(dir.path());
     lock.save(&path).unwrap();
@@ -156,10 +154,7 @@ fn write_user_global_provider(user: &Path, global: bool) {
         r#"{"name":"global-provider","providers":[{"id":"p","name":"P","transport":{"kind":"openai-responses","base_url":"https://127.0.0.1:1/","authorization":{"kind":"bearer","secret_name":"k"}},"auth_methods":[{"id":"a","kind":"api_key","name":"A","operations":["models"]}]}]}"#,
     )
     .unwrap();
-    let mut lock = LockFile {
-        schema: 1,
-        plugins: BTreeMap::new(),
-    };
+    let mut lock = LockFile::default();
     lock.plugins.insert(
         "global-provider".to_string(),
         LockEntry {

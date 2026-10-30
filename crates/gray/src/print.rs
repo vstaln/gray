@@ -13,7 +13,7 @@ use gray_core::redaction::{redact_for_disclosure, redact_message};
 use crate::build_agent;
 use crate::config::Config;
 
-pub(crate) use gray_core::spill::now_millis;
+use gray_core::time::now_millis;
 
 #[derive(Debug, Clone, Default)]
 pub struct ActiveToolCall {

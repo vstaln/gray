@@ -7,17 +7,6 @@ pub mod sources;
 
 use std::path::PathBuf;
 
-pub(crate) fn gray_home() -> PathBuf {
-    gray_core::paths::gray_home().unwrap_or_else(|| PathBuf::from(".gray"))
-}
-
 pub(crate) fn plugins_dir() -> PathBuf {
-    gray_home().join("plugins")
-}
-
-pub(crate) fn now_secs() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
+    gray_core::paths::gray_home_or_temp().join("plugins")
 }

@@ -202,7 +202,6 @@ pub fn resolve_argv(dir: &Path) -> anyhow::Result<Vec<String>> {
 }
 
 fn load_lock_files(cwd: &Path) -> (crate::lock::LockFile, crate::lock::LockFile, Vec<String>) {
-    use std::collections::BTreeMap;
     let mut warnings = Vec::new();
     let mut load = |path: PathBuf| -> crate::lock::LockFile {
         match crate::lock::LockFile::load_with_errors(&path) {
@@ -215,20 +214,14 @@ fn load_lock_files(cwd: &Path) -> (crate::lock::LockFile, crate::lock::LockFile,
             }
             Err(e) => {
                 warnings.push(format!("cannot load {} ({e:#}); ignoring", path.display()));
-                crate::lock::LockFile {
-                    schema: 1,
-                    plugins: BTreeMap::new(),
-                }
+                crate::lock::LockFile::default()
             }
         }
     };
 
     let user = gray_core::paths::gray_home()
         .map(|h| load(crate::lock::lock_path(&h)))
-        .unwrap_or(crate::lock::LockFile {
-            schema: 1,
-            plugins: BTreeMap::new(),
-        });
+        .unwrap_or_default();
     let project = load(crate::lock::project_lock_path(cwd));
     (user, project, warnings)
 }
@@ -394,10 +387,7 @@ pub async fn active_plugins(
             }
             Err(e) => {
                 push_builder_warning(format!("cannot load {} ({e:#}); ignoring", gpath.display()));
-                crate::lock::LockFile {
-                    schema: 1,
-                    plugins: std::collections::BTreeMap::new(),
-                }
+                crate::lock::LockFile::default()
             }
         };
         let gpdir = gh.join("plugins");

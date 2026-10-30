@@ -485,7 +485,7 @@ pub(crate) async fn ensure_session_state(
     {
         let store = JsonlSessionStore::new(root);
         let session_id = store.fresh_id().await;
-        let timestamp = crate::print::now_millis();
+        let timestamp = gray_core::time::now_millis();
         let meta = SessionMeta::new(
             session_id.clone(),
             timestamp,
@@ -1030,7 +1030,7 @@ async fn remint_missing_session(state: &SessionState) -> bool {
     let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("/tmp"));
     let meta = SessionMeta::new(
         state.session_id.clone(),
-        crate::print::now_millis(),
+        gray_core::time::now_millis(),
         cwd,
         "reminted",
     )

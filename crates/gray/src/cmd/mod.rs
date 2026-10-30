@@ -82,14 +82,14 @@ fn fail(e: CmdError) -> Value {
 pub async fn run_cli(verb: CmdVerb, config: &mut Config) -> anyhow::Result<()> {
     let out = match verb {
         CmdVerb::List => ok(registry::list_json()),
-        CmdVerb::Run { name, args } => match gray_home() {
+        CmdVerb::Run { name, args } => match crate::setup::gray_home() {
             Ok(home) => match run_command(config, &home, &name, &args).await {
                 Ok(res) => ok(serde_json::to_value(res)?),
                 Err(e) => fail(e),
             },
             Err(e) => fail(CmdError::unavailable(format!("{e:#}"))),
         },
-        CmdVerb::Interact { token, action } => match gray_home() {
+        CmdVerb::Interact { token, action } => match crate::setup::gray_home() {
             Ok(home) => match interact(config, &home, &token, action.as_deref()) {
                 Ok(res) => ok(serde_json::to_value(res)?),
                 Err(e) => fail(e),
@@ -99,10 +99,6 @@ pub async fn run_cli(verb: CmdVerb, config: &mut Config) -> anyhow::Result<()> {
     };
     println!("{out}");
     Ok(())
-}
-
-fn gray_home() -> anyhow::Result<PathBuf> {
-    crate::setup::gray_home()
 }
 
 async fn run_command(
@@ -236,7 +232,7 @@ fn model_result(config: &mut Config, home: &Path, rest: &str) -> Result<CommandR
     }
     let pending = store::PendingDoc {
         kind: "model_picker".to_string(),
-        created_at: crate::util::now_secs(),
+        created_at: gray_core::time::now_secs() as i64,
         user: None,
         draft: draft.clone(),
         models: models.clone(),
@@ -451,7 +447,7 @@ async fn new_result(home: &Path) -> Result<CommandResult, CmdError> {
     {
         state["session_id"] = Value::Null;
         state["generation"] = Value::String(uuid::Uuid::new_v4().simple().to_string());
-        state["last_activity"] = json!(crate::util::now_secs());
+        state["last_activity"] = json!(gray_core::time::now_secs() as i64);
         let _ = crate::util::atomic_write_json(&state_path, &state);
     }
 
@@ -662,7 +658,7 @@ fn jobs_result(home: &Path, rest: &str) -> Result<CommandResult, CmdError> {
             Ok(CommandResult::text(crate::repl::jobs::dashboard(
                 &[],
                 &wakes,
-                gray_core::spill::now_secs(),
+                gray_core::time::now_secs() as i64,
             )))
         }
         Some("stop") | Some("rm") | Some("remove") => {
@@ -1015,7 +1011,7 @@ fn interact(
     token: &str,
     action_json: Option<&str>,
 ) -> Result<CommandResult, CmdError> {
-    let mut rec = store::get(home, token, crate::util::now_secs())?;
+    let mut rec = store::get(home, token, gray_core::time::now_secs() as i64)?;
     if rec.kind != "model_picker" {
         return Err(CmdError::invalid_action(format!(
             "unknown pending doc kind '{}'",

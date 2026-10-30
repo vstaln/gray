@@ -180,7 +180,7 @@ pub(crate) async fn dispatch_command(
             if let Some(root) = default_root() {
                 let store = JsonlSessionStore::new(root);
                 let session_id = store.fresh_id().await;
-                let timestamp = crate::print::now_millis();
+                let timestamp = gray_core::time::now_millis();
                 let meta = SessionMeta::new(
                     session_id.clone(),
                     timestamp,
@@ -305,7 +305,7 @@ pub(crate) async fn dispatch_command(
                     let wakes = super::jobs::load_wakes(&home, sid.as_deref());
                     say(
                         tui_shared,
-                        &super::jobs::dashboard(&jobs, &wakes, gray_core::spill::now_secs()),
+                        &super::jobs::dashboard(&jobs, &wakes, gray_core::time::now_secs() as i64),
                     );
                 }
             }
@@ -505,7 +505,8 @@ pub(crate) async fn dispatch_command(
                                 if std::io::stdin().is_terminal()
                                     && std::io::stdout().is_terminal() =>
                             {
-                                let before = installed_plugin_names();
+                                let before = gray_core::paths::gray_home()
+                                    .map(|h| crate::plugin_cli::installed_names(&h));
                                 let status = with_modal_sync(shared, || {
                                     super::maintenance::with_terminal(shared, || {
                                         let mut child = std::process::Command::new(prog);
@@ -521,7 +522,10 @@ pub(crate) async fn dispatch_command(
                                     Ok(s) => say(shared, &format!("{name} exited: {s}")),
                                     Err(e) => say(shared, &format!("{name}: {e}")),
                                 }
-                                if installed_plugin_names() != before {
+                                if gray_core::paths::gray_home()
+                                    .map(|h| crate::plugin_cli::installed_names(&h))
+                                    != before
+                                {
                                     let sid = session_state.as_ref().map(|s| s.session_id.as_str());
                                     if reload_agent(agent, config, cwd, sid, shared).await {
                                         say(shared, "plugins changed, reloaded");
@@ -749,13 +753,4 @@ pub(crate) async fn dispatch_command(
             Flow::Continue
         }
     })
-}
-
-/// Installed plugin names from the user lock file, so a terminal handoff that
-/// installs or removes plugins (the account plugin's `/marketplace`) can
-/// activate them without a restart.
-fn installed_plugin_names() -> Option<std::collections::BTreeSet<String>> {
-    let home = gray_core::paths::gray_home()?;
-    let lock = gray_plugin::lock::LockFile::load(&gray_plugin::lock::lock_path(&home)).ok()?;
-    Some(lock.plugins.into_keys().collect())
 }

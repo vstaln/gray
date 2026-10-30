@@ -185,16 +185,12 @@ fn canonical_json(value: &serde_json::Value) -> String {
     }
 }
 
-fn is_false(b: &bool) -> bool {
-    !*b
-}
-
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Message {
     pub role: Role,
     pub content: Vec<ContentBlock>,
 
-    #[serde(default, skip_serializing_if = "is_false")]
+    #[serde(default, skip_serializing_if = "crate::is_false")]
     pub injected: bool,
 }
 

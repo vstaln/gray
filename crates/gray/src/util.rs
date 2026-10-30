@@ -1,10 +1,6 @@
 use std::fs::OpenOptions;
 use std::path::Path;
 
-pub fn now_secs() -> i64 {
-    gray_core::spill::now_secs()
-}
-
 pub fn atomic_write_json(path: &Path, value: &impl serde::Serialize) -> anyhow::Result<()> {
     use std::io::Write as _;
     let body = serde_json::to_string_pretty(value)?;

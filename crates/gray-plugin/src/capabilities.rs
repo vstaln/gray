@@ -171,6 +171,7 @@ mod tests {
             capabilities_hash: hash.map(str::to_string),
             cli_argv: None,
             global: false,
+            extra: Default::default(),
         }
     }
 
