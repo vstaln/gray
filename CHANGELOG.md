@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.2.9] - 2026-10-30
+
+### Changed
+- **One "Asked" card per question.** Every plugin's `host/ask` draws a
+  single card with the full question and its answer; `request_user_input`
+  shows every question in full. The `echo` flag and the duplicate
+  `request_user_input` card are gone.
+- **Plugin `installed_at` is Unix seconds**, matching gray-pkg.
+- **Large files split into child modules** with no behaviour change:
+  `composer/mod.rs`, gray-ide `app.rs`, `openai.rs`, `session_store.rs`,
+  `model_modal.rs` and `context/providers.rs`.
+
 ## [0.2.8] - 2026-10-28
 
 ### Added

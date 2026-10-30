@@ -485,7 +485,7 @@ pub(crate) async fn ensure_session_state(
     {
         let store = JsonlSessionStore::new(root);
         let session_id = store.fresh_id().await;
-        let timestamp = crate::print::now_millis();
+        let timestamp = gray_core::time::now_millis();
         let meta = SessionMeta::new(
             session_id.clone(),
             timestamp,
@@ -726,8 +726,18 @@ pub(crate) fn dispatch_agent_event(
                         lines.extend(rows);
                     }
 
+                    // An answered ask was already drawn as an "Asked" card
+                    // by the host when its modal closed (ask.rs); a second
+                    // card here would repeat it.
+                    let host_drew_ask = name == "request_user_input"
+                        && !*is_error
+                        && serde_json::from_str::<serde_json::Value>(output.trim())
+                            .is_ok_and(|v| v.get("answers").is_some());
                     t.atomic(|t| {
                         t.remove_live_tool(id);
+                        if host_drew_ask {
+                            return;
+                        }
                         let header = match args.as_ref() {
                             Some(a) => tool_header(display, &name, a, Some(cwd)),
                             None => crate::tool_fmt::format_live_tool_header(
@@ -1020,7 +1030,7 @@ async fn remint_missing_session(state: &SessionState) -> bool {
     let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("/tmp"));
     let meta = SessionMeta::new(
         state.session_id.clone(),
-        crate::print::now_millis(),
+        gray_core::time::now_millis(),
         cwd,
         "reminted",
     )

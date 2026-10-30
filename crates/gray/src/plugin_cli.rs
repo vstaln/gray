@@ -52,10 +52,7 @@ fn migrate_commands(home: &Path, commands: &Path) -> anyhow::Result<()> {
 }
 
 fn merge_command_entries(lock: &mut LockFile, old: LockFile) -> LockFile {
-    let mut remaining = LockFile {
-        schema: 1,
-        plugins: std::collections::BTreeMap::new(),
-    };
+    let mut remaining = LockFile::default();
     for (name, entry) in old.plugins {
         match lock.plugins.get_mut(&name) {
             Some(cur) => {
@@ -309,10 +306,7 @@ fn commands_path(home: &Path) -> PathBuf {
 }
 
 fn commands_or_empty(home: &Path) -> LockFile {
-    load_commands(home).unwrap_or_else(|_| LockFile {
-        schema: 1,
-        plugins: std::collections::BTreeMap::new(),
-    })
+    load_commands(home).unwrap_or_else(|_| LockFile::default())
 }
 
 fn load_commands(home: &Path) -> anyhow::Result<LockFile> {
@@ -693,6 +687,13 @@ pub struct ManagedPlugin {
     pub cli: bool,
 }
 
+/// Names of every managed plugin (lock file plus legacy command registry).
+pub fn installed_names(home: &Path) -> std::collections::BTreeSet<String> {
+    list_managed(home)
+        .map(|rows| rows.into_iter().map(|p| p.name).collect())
+        .unwrap_or_default()
+}
+
 pub fn list_managed(home: &Path) -> anyhow::Result<Vec<ManagedPlugin>> {
     migrate_commands_json(home);
     let lock = load_lock(home)?;
@@ -779,7 +780,7 @@ fn remove_commands_entry(home: &Path, name: &str) -> anyhow::Result<bool> {
     let _guard = gray_pkg::ops::hold_registry_lock_in(&home.join("plugins"))?;
     let path = commands_path(home);
     let mut registry = LockFile::load(&path)?;
-    let removed = registry.plugins.remove(name).is_some();
+    let removed = registry.remove(name);
     if removed {
         registry.save(&path)?;
     }
@@ -1346,12 +1347,17 @@ async fn register_native_gated(
                 .collect(),
             cli_argv: (!wire_only).then(|| vec![binary.to_string_lossy().into_owned()]),
             adapter_version: manifest["protocol"].as_str().unwrap_or("1").to_string(),
-            installed_at: chrono::Utc::now().to_rfc3339(),
+            installed_at: gray_core::time::now_secs().to_string(),
             scope: "user".into(),
             enabled: true,
             global: lock.plugins.get(&name).is_some_and(|e| e.global),
             granted_capabilities: granted.clone(),
             capabilities_hash,
+            extra: lock
+                .plugins
+                .get(&name)
+                .map(|e| e.extra.clone())
+                .unwrap_or_default(),
         },
     );
 

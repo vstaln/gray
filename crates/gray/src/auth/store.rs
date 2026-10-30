@@ -141,7 +141,7 @@ impl CredentialStore {
                         profile_binding: value.profile_binding.clone(),
                         credential: value.credential.clone(),
                         email: None,
-                        added_at: now_secs(),
+                        added_at: gray_core::time::now_secs(),
                         cooldown_until: 0,
                         last_error: None,
                         request_count: 0,
@@ -196,7 +196,7 @@ impl CredentialStore {
     /// Human "reset after …" when every account is cooling.
     pub fn pool_retry_hint(&self, auth_ref: &str) -> anyhow::Result<Option<String>> {
         let store = self.load()?;
-        let now = now_secs();
+        let now = gray_core::time::now_secs();
         Ok(match store.get(auth_ref) {
             Some(AuthEntry::PluginPool(pool)) if !pool.accounts.is_empty() => {
                 let earliest = pool
@@ -399,13 +399,6 @@ pub struct PluginAccountRow {
     pub pinned: bool,
 }
 
-fn now_secs() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
-}
-
 /// The usable pick: pinned wins when it's not cooling, then `least_used`
 /// (oldest use) or `fill_first` (pool order). `None` when the pool is
 /// empty or every account is cooling.
@@ -413,7 +406,7 @@ fn pick_account(pool: &PluginAuthPool) -> Option<(&str, &PluginAccount)> {
     if pool.accounts.is_empty() {
         return None;
     }
-    let now = now_secs();
+    let now = gray_core::time::now_secs();
     let usable = |a: &PluginAccount| a.cooldown_until <= now;
     if let Some(sel) = pool.selected.as_deref()
         && let Some(a) = pool.accounts.iter().find(|a| a.label == sel && usable(a))

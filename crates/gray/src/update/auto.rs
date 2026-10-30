@@ -15,7 +15,7 @@ fn read_stamp(path: &PathBuf) -> Option<Value> {
 }
 
 fn stamp_due(path: &PathBuf) -> bool {
-    let now = gray_core::spill::now_secs() as u64;
+    let now = gray_core::time::now_secs();
     match read_stamp(path).and_then(|v| v.get("at").and_then(Value::as_u64)) {
         None => true,
         Some(at) => now.checked_sub(at).is_none_or(|e| e >= INTERVAL_SECS),
@@ -193,7 +193,7 @@ pub(crate) async fn maybe_run(bare: bool) -> Option<Outcome> {
         plugins_failed: failed,
     };
     let body = json!({
-        "at": gray_core::spill::now_secs() as u64,
+        "at": gray_core::time::now_secs(),
         "gray": outcome.gray_stamp(),
         "plugins": {"updated": updated, "rebuilt": rebuilt, "failed": failed},
     });

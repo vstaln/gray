@@ -28,7 +28,7 @@ pub struct InstalledSkill {
 pub const ORIGIN_FILE: &str = ".gray-origin.json";
 
 pub(crate) fn skills_dir() -> PathBuf {
-    crate::gray_home().join("skills")
+    gray_core::paths::gray_home_or_temp().join("skills")
 }
 
 pub fn is_skill_spec(spec: &str) -> bool {
@@ -119,7 +119,7 @@ fn finish_skill(p: PendingSkill) -> anyhow::Result<crate::ops::Report> {
         slug: p.slug.clone(),
         owner: p.owner,
         installed_version: p.version.clone(),
-        installed_at: crate::now_secs().to_string(),
+        installed_at: gray_core::time::now_secs().to_string(),
         source_url: p.source_url.clone(),
     };
     if dest.exists() {

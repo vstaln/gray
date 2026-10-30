@@ -733,32 +733,11 @@ pub fn format_tool_call_lines(
             ])
         }
         "request_user_input" => {
-            let qs: Vec<&str> = args
+            let n = args
                 .get("questions")
                 .and_then(|v| v.as_array())
-                .map(|a| {
-                    a.iter()
-                        .filter_map(|q| q.get("question").and_then(|v| v.as_str()))
-                        .map(str::trim)
-                        .filter(|q| !q.is_empty())
-                        .collect()
-                })
-                .unwrap_or_default();
-            let mut spans = vec![bullet, Span::styled("Asked", action_style)];
-            if let Some(first) = qs.first() {
-                let cut = truncate_cmd(first);
-                let shown = if cut.len() < first.len() {
-                    format!("{}\u{2026}", cut.trim_end())
-                } else {
-                    cut.to_string()
-                };
-                spans.push(Span::raw(" "));
-                spans.push(Span::styled(shown, cmd_style));
-            }
-            if qs.len() > 1 {
-                spans.push(Span::styled(format!(" +{}", qs.len() - 1), dim_style));
-            }
-            Line::from(spans)
+                .map_or(0, |a| a.len());
+            ask_card::asked_header(n)
         }
         "web_fetch" => {
             let url = args.get("url").and_then(|v| v.as_str()).unwrap_or("");
@@ -1356,6 +1335,7 @@ pub(crate) fn humanize_tool_name(name: &str) -> String {
         out
     }
 }
+pub mod ask_card;
 mod diff;
 
 pub use diff::{DiffHunk, DiffLine, DiffTag, parse_diff_hunks, render_diff_hunks};
@@ -1614,6 +1594,9 @@ pub fn format_tool_result_lines_with_context(
         return Vec::new();
     }
 
+    if tool_name == "request_user_input" {
+        return ask_card::ask_body(args, output);
+    }
     if !tool_may_render_body(tool_name) {
         return Vec::new();
     }

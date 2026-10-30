@@ -898,12 +898,8 @@ fn shell_quote_path(path: &Path) -> String {
     format!("'{raw}'")
 }
 
-fn gray_home() -> PathBuf {
-    gray_core::paths::gray_home().unwrap_or_else(|| std::env::temp_dir().join(".gray"))
-}
-
 fn shell_dir() -> PathBuf {
-    gray_home().join("shell")
+    gray_core::paths::gray_home_or_temp().join("shell")
 }
 
 async fn abort_pump(pump: JoinHandle<PumpSummary>) {

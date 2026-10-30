@@ -1033,22 +1033,20 @@ fn push_ask_summary(
     questions: &[AskQuestion],
     answers: &[AskAnswer],
 ) {
+    use crate::tool_fmt::ask_card::{AskedRow, asked_header, asked_lines};
     if questions.is_empty() {
         return;
     }
-    t.ensure_gap();
-    for q in questions {
-        t.push_dim(format!("? {}", q.question));
-        let joined = answers
-            .iter()
-            .find(|a| a.id == q.id)
-            .map(|a| a.answers.join(" · "))
-            .unwrap_or_default();
-        if joined.is_empty() {
-            t.push_dim("  → skipped".to_string());
-        } else {
-            t.push_dim(format!("  → {joined}"));
-        }
-    }
-    t.ensure_gap();
+    let rows: Vec<AskedRow> = questions
+        .iter()
+        .map(|q| AskedRow {
+            question: q.question.clone(),
+            answers: answers
+                .iter()
+                .find(|a| a.id == q.id)
+                .map(|a| a.answers.clone())
+                .unwrap_or_default(),
+        })
+        .collect();
+    t.push_tool_box(asked_header(rows.len()), asked_lines(&rows, "skipped"));
 }

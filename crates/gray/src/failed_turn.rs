@@ -4,8 +4,8 @@ use sha2::{Digest, Sha256};
 
 use gray_core::message::Message;
 
-use crate::print::now_millis;
 use crate::session_store::{JsonlSessionStore, SessionId, valid_session_id};
+use gray_core::time::now_millis;
 
 pub(crate) const FRESH_MS: u64 = 60 * 60 * 1000;
 

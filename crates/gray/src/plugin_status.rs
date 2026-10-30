@@ -89,7 +89,7 @@ fn recent_updated() -> Option<u64> {
     let v: serde_json::Value =
         serde_json::from_slice(&std::fs::read(home.join("auto-update.json")).ok()?).ok()?;
     let at = v.get("at")?.as_u64()?;
-    let now = gray_core::spill::now_secs().max(0) as u64;
+    let now = gray_core::time::now_secs();
     if now.saturating_sub(at) > 24 * 3600 {
         return None;
     }

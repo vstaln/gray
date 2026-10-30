@@ -13,7 +13,7 @@ pub struct ErrorEntry {
 pub const MAX_ENTRIES: usize = 100;
 
 fn errors_path() -> PathBuf {
-    crate::gray_home().join("errors.json")
+    gray_core::paths::gray_home_or_temp().join("errors.json")
 }
 
 fn read_all() -> Vec<ErrorEntry> {
@@ -26,7 +26,7 @@ fn read_all() -> Vec<ErrorEntry> {
 pub fn record(source: &str, item: &str, message: String) {
     let mut entries = read_all();
     entries.push(ErrorEntry {
-        ts_secs: crate::now_secs(),
+        ts_secs: gray_core::time::now_secs(),
         source: source.to_string(),
         item: item.to_string(),
         message,

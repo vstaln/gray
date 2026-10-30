@@ -16,7 +16,13 @@ pub mod paths;
 pub mod prefix_guard;
 pub mod redaction;
 pub mod spill;
+pub mod time;
 pub mod tool_out;
+
+/// `skip_serializing_if` predicate for `bool` fields that default to false.
+pub fn is_false(b: &bool) -> bool {
+    !*b
+}
 
 pub use agent::{
     Agent, CommandOutcome, PanelPage, PanelSpan, PanelSpec, PanelStyle, PickerItem, PickerSpec,

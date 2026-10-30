@@ -42,7 +42,7 @@ pub struct ProviderAuthorizationDecl {
 pub struct ProviderRequestPolicyDecl {
     pub prompt_cache_key: bool,
 
-    #[serde(default, skip_serializing_if = "is_false")]
+    #[serde(default, skip_serializing_if = "gray_core::is_false")]
     pub warm_replay: bool,
     #[serde(default)]
     pub store: bool,
@@ -613,10 +613,6 @@ impl ProviderTransportDecl {
         }
         Ok(())
     }
-}
-
-fn is_false(b: &bool) -> bool {
-    !*b
 }
 
 fn normalize_base_url(mut url: Url) -> Url {

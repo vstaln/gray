@@ -18,6 +18,12 @@ pub fn gray_home() -> Option<PathBuf> {
         .or_else(|| user_home().map(|p| p.join(".gray")))
 }
 
+/// `gray_home`, or `$TMP/.gray` when no home resolves — for callers that
+/// must keep working without one. Always absolute: never the cwd.
+pub fn gray_home_or_temp() -> PathBuf {
+    gray_home().unwrap_or_else(|| std::env::temp_dir().join(".gray"))
+}
+
 pub fn gray_user_home() -> Option<PathBuf> {
     std::env::var_os("GRAY_USER_HOME")
         .filter(|v| !v.to_string_lossy().trim().is_empty())

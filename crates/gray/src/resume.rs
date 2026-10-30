@@ -4,7 +4,7 @@ use crate::session_store::{
     JsonlSessionStore, SessionEnd, SessionId, SessionScanEvent, SessionSummary,
 };
 
-use crate::print::now_millis;
+use gray_core::time::now_millis;
 
 fn format_relative(ts: u64) -> String {
     let now = now_millis();
