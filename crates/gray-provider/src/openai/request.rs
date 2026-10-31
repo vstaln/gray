@@ -60,6 +60,13 @@ pub(super) fn image_data_url(media_type: &str, data: &str) -> String {
     format!("data:{media_type};base64,{data}")
 }
 
+pub(super) fn fitted_image_url(media_type: &str, data: &str) -> String {
+    match crate::image_fit::fit_image(media_type, data) {
+        Some((mt, b64)) => image_data_url(&mt, &b64),
+        None => image_data_url(media_type, data),
+    }
+}
+
 pub(super) fn input_audio_format(media_type: &str) -> Option<&'static str> {
     Some(match media_type {
         "audio/wav" | "audio/x-wav" | "audio/wave" => "wav",
@@ -264,7 +271,7 @@ pub(super) fn map_chat_request(
                             }
                         }
                         ContentBlock::Image { media_type, data } => {
-                            let url = image_data_url(&media_type, &data);
+                            let url = fitted_image_url(&media_type, &data);
                             media_parts.push(
                                 serde_json::json!({"type":"image_url","image_url":{"url": url}}),
                             );
@@ -575,7 +582,7 @@ pub(super) fn map_chat_to_responses(
                             }
                         }
                         ContentBlock::Image { media_type, data } => {
-                            let url = image_data_url(&media_type, &data);
+                            let url = fitted_image_url(&media_type, &data);
                             if !text_parts.is_empty() {
                                 input.push(serde_json::json!({"role": role_str, "content": text_parts.join("\n")}));
                                 text_parts.clear();
@@ -893,5 +900,27 @@ pub(crate) fn maybe_annotate_reasoning_conflict(err: ProviderError, model: &str)
             }
         }
         other => other,
+    }
+}
+
+#[cfg(test)]
+mod fitted_image_url_tests {
+    #[test]
+    fn oversized_data_url_is_shrunk() {
+        use base64::Engine as _;
+        let mut seed: u32 = 7;
+        let img = image::RgbImage::from_fn(1800, 1400, |_, _| {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            image::Rgb([(seed >> 24) as u8, (seed >> 16) as u8, (seed >> 8) as u8])
+        });
+        let mut buf = Vec::new();
+        image::DynamicImage::ImageRgb8(img)
+            .write_to(&mut std::io::Cursor::new(&mut buf), image::ImageFormat::Png)
+            .unwrap();
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&buf);
+        assert!(b64.len() > 5 * 1024 * 1024);
+        let url = super::fitted_image_url("image/png", &b64);
+        assert!(url.len() < 5 * 1024 * 1024 + 64);
+        assert!(url.starts_with("data:image/png;base64,"));
     }
 }

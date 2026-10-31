@@ -3,7 +3,7 @@ use std::io::Cursor;
 const MAX_B64_BYTES: usize = 5 * 1024 * 1024;
 const MAX_EDGE_PX: u32 = 8000;
 
-pub(crate) fn fit_anthropic(media_type: &str, data_b64: &str) -> Option<(String, String)> {
+pub(crate) fn fit_image(media_type: &str, data_b64: &str) -> Option<(String, String)> {
     use base64::Engine as _;
     use image::{ImageDecoder, ImageFormat};
     let bytes = base64::engine::general_purpose::STANDARD
@@ -65,3 +65,7 @@ pub(crate) fn fit_anthropic(media_type: &str, data_b64: &str) -> Option<(String,
     }
     None
 }
+
+#[cfg(test)]
+#[path = "image_fit_tests.rs"]
+mod tests;

@@ -145,7 +145,7 @@ pub(crate) fn map_request(
                     }
                 }
                 ContentBlock::Image { media_type, data } => {
-                    let (media_type, data) = crate::image_fit::fit_anthropic(&media_type, &data)
+                    let (media_type, data) = crate::image_fit::fit_image(&media_type, &data)
                         .unwrap_or((media_type, data));
                     blocks.push(json!({
                         "type": "image",
