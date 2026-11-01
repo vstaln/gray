@@ -75,9 +75,9 @@ fn push_chat_image(
     data: &str,
 ) {
     match fitted_image_url(media_type, data) {
-        Some(url) => media_parts.push(
-            serde_json::json!({"type":"image_url","image_url":{"url": url}}),
-        ),
+        Some(url) => {
+            media_parts.push(serde_json::json!({"type":"image_url","image_url":{"url": url}}))
+        }
         None => text_parts.push(IMAGE_TOO_LARGE.to_string()),
     }
 }

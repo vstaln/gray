@@ -79,7 +79,10 @@ pub(crate) fn fit_image(media_type: &str, data_b64: &str) -> ImageFit {
     };
     for attempt in 0..MAX_ENCODE_ATTEMPTS {
         let mut buf = Vec::new();
-        if img.write_to(&mut Cursor::new(&mut buf), out_format).is_err() {
+        if img
+            .write_to(&mut Cursor::new(&mut buf), out_format)
+            .is_err()
+        {
             return undecodable();
         }
         let b64 = base64::engine::general_purpose::STANDARD.encode(&buf);
