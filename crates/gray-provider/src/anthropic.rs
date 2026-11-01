@@ -5,7 +5,9 @@ use eventsource_stream::Eventsource;
 use futures::stream::{self, BoxStream, StreamExt};
 use gray_core::agent::{Provider, ProviderError, current_isolated_stream};
 use gray_core::event::{StopReason, StreamEvent, Usage};
-use gray_core::message::{ChatRequest, ContentBlock, IMAGE_OMITTED, Role, resolve_media};
+use gray_core::message::{
+    ChatRequest, ContentBlock, IMAGE_OMITTED, IMAGE_TOO_LARGE, Role, resolve_media,
+};
 use reqwest::Url;
 use serde_json::{Value, json};
 
@@ -111,6 +113,21 @@ fn ephemeral() -> Value {
     json!({"type": "ephemeral"})
 }
 
+fn push_image_block(blocks: &mut Vec<Value>, media_type: String, data: String) {
+    let fitted = match crate::image_fit::fit_image(&media_type, &data) {
+        crate::image_fit::ImageFit::Refit(mt, d) => Some((mt, d)),
+        crate::image_fit::ImageFit::Fits => Some((media_type, data)),
+        crate::image_fit::ImageFit::TooLarge => None,
+    };
+    match fitted {
+        Some((media_type, data)) => blocks.push(json!({
+            "type": "image",
+            "source": {"type": "base64", "media_type": media_type, "data": data},
+        })),
+        None => blocks.push(json!({"type": "text", "text": IMAGE_TOO_LARGE})),
+    }
+}
+
 pub(crate) fn map_request(
     req: ChatRequest,
     model: &str,
@@ -145,12 +162,12 @@ pub(crate) fn map_request(
                     }
                 }
                 ContentBlock::Image { media_type, data } => {
-                    let (media_type, data) = crate::image_fit::fit_image(&media_type, &data)
-                        .unwrap_or((media_type, data));
-                    blocks.push(json!({
-                        "type": "image",
-                        "source": {"type": "base64", "media_type": media_type, "data": data},
-                    }));
+                    push_image_block(&mut blocks, media_type, data);
+                }
+                ContentBlock::Media {
+                    media_type, data, ..
+                } if media_type.starts_with("image/") => {
+                    push_image_block(&mut blocks, media_type, data);
                 }
                 ContentBlock::Media {
                     media_type, data, ..

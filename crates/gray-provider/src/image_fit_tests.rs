@@ -20,14 +20,37 @@ fn noisy_png_b64(w: u32, h: u32) -> String {
 
 #[test]
 fn small_image_passes_through() {
-    assert!(fit_image("image/png", &noisy_png_b64(64, 64)).is_none());
+    assert!(matches!(
+        fit_image("image/png", &noisy_png_b64(64, 64)),
+        ImageFit::Fits
+    ));
 }
 
 #[test]
 fn oversized_image_is_shrunk_under_the_cap() {
     let b64 = noisy_png_b64(1800, 1400);
     assert!(b64.len() > MAX_B64_BYTES);
-    let (mime, out) = fit_image("image/png", &b64).expect("should refit");
-    assert_eq!(mime, "image/png");
-    assert!(out.len() <= MAX_B64_BYTES);
+    match fit_image("image/png", &b64) {
+        ImageFit::Refit(mime, out) => {
+            assert_eq!(mime, "image/png");
+            assert!(out.len() <= MAX_B64_BYTES);
+        }
+        _ => panic!("should refit"),
+    }
+}
+
+#[test]
+fn oversized_undecodable_image_is_too_large() {
+    let b64 = base64::engine::general_purpose::STANDARD.encode(vec![0u8; 4 * 1024 * 1024]);
+    assert!(b64.len() > MAX_B64_BYTES);
+    assert!(matches!(
+        fit_image("image/x-unknown", &b64),
+        ImageFit::TooLarge
+    ));
+}
+
+#[test]
+fn undersized_undecodable_image_passes_through() {
+    let b64 = base64::engine::general_purpose::STANDARD.encode(b"not an image".to_vec());
+    assert!(matches!(fit_image("image/x-unknown", &b64), ImageFit::Fits));
 }
