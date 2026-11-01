@@ -38,6 +38,7 @@ pub(super) enum DynamicState {
         lease: CredentialLease,
         body: Box<ResponsesRequest>,
         session_id: Option<String>,
+        isolated: bool,
     },
     Streaming {
         event_stream: BoxedEventStream,
@@ -112,6 +113,7 @@ pub(super) fn dynamic_headers(
     Ok(headers)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn send_dynamic_json_once(
     client: &reqwest::Client,
     url: &Url,
@@ -119,9 +121,11 @@ pub(super) async fn send_dynamic_json_once(
     lease: &CredentialLease,
     body: &ResponsesRequest,
     session_id: Option<&str>,
+    isolated: bool,
     attempt: usize,
 ) -> Result<reqwest::Response, ProviderError> {
-    let headers = dynamic_headers(profile, lease, session_id)?;
+    let mut headers = dynamic_headers(profile, lease, session_id)?;
+    mark_isolated(&mut headers, &lease.metadata, isolated);
     let bearer = match &profile.authorization {
         OpenAiAuthorization::Bearer { secret_name } => {
             lease.secrets.get(secret_name).map(str::to_owned)
@@ -466,6 +470,7 @@ pub(super) async fn dynamic_step(
                 lease,
                 body,
                 session_id,
+                isolated,
             } => {
                 match send_dynamic_json_once(
                     &client,
@@ -474,6 +479,7 @@ pub(super) async fn dynamic_step(
                     &lease,
                     &body,
                     session_id.as_deref(),
+                    isolated,
                     1,
                 )
                 .await
@@ -618,6 +624,27 @@ pub(super) async fn dynamic_step(
 
 pub(super) const MAX_DYNAMIC_ERROR_BYTES: usize = 4096;
 
+/// Marks a relay request as a side request (compaction summary) that is
+/// not the next turn of the conversation.
+pub const ISOLATED_HEADER: &str = "x-gray-isolated";
+
+/// Side requests (compaction summaries) must not continue a relay's live
+/// conversation: a pooled relay would otherwise take one for the next turn
+/// and supersede the tool calls still parked in it. Only relays get the
+/// header — real endpoints never see it.
+pub(super) fn mark_isolated(
+    headers: &mut reqwest::header::HeaderMap,
+    metadata: &std::collections::BTreeMap<String, String>,
+    isolated: bool,
+) {
+    if isolated && metadata.contains_key("relay_url") {
+        headers.insert(
+            reqwest::header::HeaderName::from_static(ISOLATED_HEADER),
+            reqwest::header::HeaderValue::from_static("1"),
+        );
+    }
+}
+
 impl OpenAiProvider {
     pub(super) fn dynamic_stream(
         &self,
@@ -626,6 +653,7 @@ impl OpenAiProvider {
         credential_source: Arc<dyn CredentialSource>,
         session_id: Option<String>,
         cache_off: bool,
+        isolated: bool,
     ) -> BoxStream<'static, Result<StreamEvent, ProviderError>> {
         let mut body = map_chat_to_responses(
             request,
@@ -677,6 +705,7 @@ impl OpenAiProvider {
                         lease,
                         body: Box::new(body),
                         session_id: session_id.clone(),
+                        isolated,
                     },
                     dynamic_step,
                 )
@@ -684,5 +713,39 @@ impl OpenAiProvider {
                 Err(error) => stream::once(async move { Err(error) }).boxed(),
             })
             .boxed()
+    }
+}
+
+#[cfg(test)]
+mod isolated_header_tests {
+    use super::*;
+
+    fn meta(relay: bool) -> std::collections::BTreeMap<String, String> {
+        let mut m = std::collections::BTreeMap::new();
+        if relay {
+            m.insert(
+                "relay_url".into(),
+                "http://127.0.0.1:1/relay/x/responses".into(),
+            );
+        }
+        m
+    }
+
+    #[test]
+    fn only_isolated_relay_requests_are_marked() {
+        for (relay, isolated, marked) in [
+            (true, true, true),
+            (true, false, false),
+            (false, true, false),
+            (false, false, false),
+        ] {
+            let mut h = reqwest::header::HeaderMap::new();
+            mark_isolated(&mut h, &meta(relay), isolated);
+            assert_eq!(
+                h.contains_key(ISOLATED_HEADER),
+                marked,
+                "relay={relay} isolated={isolated}"
+            );
+        }
     }
 }
