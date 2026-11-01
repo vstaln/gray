@@ -11,7 +11,8 @@ use gray_core::agent::{Provider, ProviderError, current_isolated_stream};
 use gray_core::credential::{CredentialLease, CredentialSource};
 use gray_core::event::{StopReason, StreamEvent, Usage};
 use gray_core::message::{
-    ChatRequest, ContentBlock, IMAGE_OMITTED, Role, TOOL_IMAGE_OMITTED, resolve_media,
+    ChatRequest, ContentBlock, IMAGE_OMITTED, IMAGE_TOO_LARGE, Role, TOOL_IMAGE_OMITTED,
+    resolve_media,
 };
 use reqwest::Url;
 use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue};

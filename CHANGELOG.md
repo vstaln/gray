@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.2.10] - 2026-11-01
+
+### Fixed
+- **Over-cap images can never reach the API raw again.** `fit_image` returns
+  `Fits`/`Refit`/`TooLarge` instead of one `Option` that conflated "already
+  fits" with "couldn't fit" — an oversized image that can't be decoded or
+  shrunk now becomes a text placeholder instead of 9MB of raw base64 that
+  broke the stream. `image/*` Media blocks route through the same fitting,
+  BMP decodes, and fitting covers the OpenAI chat and Responses paths.
+- **pulldown-cmark 0.13.5** (RUSTSEC-2026-0414).
+
 ## [0.2.9] - 2026-10-30
 
 ### Changed

@@ -60,6 +60,47 @@ pub(super) fn image_data_url(media_type: &str, data: &str) -> String {
     format!("data:{media_type};base64,{data}")
 }
 
+pub(super) fn fitted_image_url(media_type: &str, data: &str) -> Option<String> {
+    match crate::image_fit::fit_image(media_type, data) {
+        crate::image_fit::ImageFit::Refit(mt, b64) => Some(image_data_url(&mt, &b64)),
+        crate::image_fit::ImageFit::Fits => Some(image_data_url(media_type, data)),
+        crate::image_fit::ImageFit::TooLarge => None,
+    }
+}
+
+fn push_chat_image(
+    media_parts: &mut Vec<Value>,
+    text_parts: &mut Vec<String>,
+    media_type: &str,
+    data: &str,
+) {
+    match fitted_image_url(media_type, data) {
+        Some(url) => {
+            media_parts.push(serde_json::json!({"type":"image_url","image_url":{"url": url}}))
+        }
+        None => text_parts.push(IMAGE_TOO_LARGE.to_string()),
+    }
+}
+
+fn push_responses_image(
+    input: &mut Vec<Value>,
+    text_parts: &mut Vec<String>,
+    role_str: &str,
+    media_type: &str,
+    data: &str,
+) {
+    match fitted_image_url(media_type, data) {
+        Some(url) => {
+            if !text_parts.is_empty() {
+                input.push(serde_json::json!({"role": role_str, "content": text_parts.join("\n")}));
+                text_parts.clear();
+            }
+            input.push(serde_json::json!({"role": "user", "content": [{"type":"input_image","image_url": url}]}));
+        }
+        None => text_parts.push(IMAGE_TOO_LARGE.to_string()),
+    }
+}
+
 pub(super) fn input_audio_format(media_type: &str) -> Option<&'static str> {
     Some(match media_type {
         "audio/wav" | "audio/x-wav" | "audio/wave" => "wav",
@@ -264,10 +305,12 @@ pub(super) fn map_chat_request(
                             }
                         }
                         ContentBlock::Image { media_type, data } => {
-                            let url = image_data_url(&media_type, &data);
-                            media_parts.push(
-                                serde_json::json!({"type":"image_url","image_url":{"url": url}}),
-                            );
+                            push_chat_image(&mut media_parts, &mut text_parts, &media_type, &data);
+                        }
+                        ContentBlock::Media {
+                            media_type, data, ..
+                        } if media_type.starts_with("image/") => {
+                            push_chat_image(&mut media_parts, &mut text_parts, &media_type, &data);
                         }
                         ContentBlock::Media {
                             media_type, data, ..
@@ -575,12 +618,24 @@ pub(super) fn map_chat_to_responses(
                             }
                         }
                         ContentBlock::Image { media_type, data } => {
-                            let url = image_data_url(&media_type, &data);
-                            if !text_parts.is_empty() {
-                                input.push(serde_json::json!({"role": role_str, "content": text_parts.join("\n")}));
-                                text_parts.clear();
-                            }
-                            input.push(serde_json::json!({"role": "user", "content": [{"type":"input_image","image_url": url}]}));
+                            push_responses_image(
+                                &mut input,
+                                &mut text_parts,
+                                role_str,
+                                &media_type,
+                                &data,
+                            );
+                        }
+                        ContentBlock::Media {
+                            media_type, data, ..
+                        } if media_type.starts_with("image/") => {
+                            push_responses_image(
+                                &mut input,
+                                &mut text_parts,
+                                role_str,
+                                &media_type,
+                                &data,
+                            );
                         }
                         ContentBlock::Media {
                             media_type, data, ..
@@ -893,5 +948,34 @@ pub(crate) fn maybe_annotate_reasoning_conflict(err: ProviderError, model: &str)
             }
         }
         other => other,
+    }
+}
+
+#[cfg(test)]
+mod fitted_image_url_tests {
+    #[test]
+    fn oversized_data_url_is_shrunk() {
+        use base64::Engine as _;
+        let mut seed: u32 = 7;
+        let img = image::RgbImage::from_fn(1800, 1400, |_, _| {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            image::Rgb([(seed >> 24) as u8, (seed >> 16) as u8, (seed >> 8) as u8])
+        });
+        let mut buf = Vec::new();
+        image::DynamicImage::ImageRgb8(img)
+            .write_to(&mut std::io::Cursor::new(&mut buf), image::ImageFormat::Png)
+            .unwrap();
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&buf);
+        assert!(b64.len() > 5 * 1024 * 1024);
+        let url = super::fitted_image_url("image/png", &b64).expect("should refit");
+        assert!(url.len() < 5 * 1024 * 1024 + 64);
+        assert!(url.starts_with("data:image/png;base64,"));
+    }
+
+    #[test]
+    fn oversized_undecodable_data_url_is_dropped() {
+        use base64::Engine as _;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(vec![0u8; 4 * 1024 * 1024]);
+        assert!(super::fitted_image_url("image/x-unknown", &b64).is_none());
     }
 }

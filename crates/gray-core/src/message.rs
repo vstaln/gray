@@ -289,6 +289,9 @@ pub const IMAGE_OMITTED: &str = "(image omitted: model does not support images)"
 
 pub const TOOL_IMAGE_OMITTED: &str = "(tool image omitted: model does not support images)";
 
+pub const IMAGE_TOO_LARGE: &str =
+    "(image omitted: exceeds the model's image size limit and could not be resized)";
+
 pub fn resolve_media(
     blocks: Vec<ContentBlock>,
     accepts: impl Fn(&str) -> bool,
