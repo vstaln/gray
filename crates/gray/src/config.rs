@@ -46,6 +46,13 @@ fn resolve_api_key(
         })
 }
 
+/// An explicit `--api-key` / `GRAY_API_KEY` picks a key-based provider, so a
+/// plugin selection inherited from a parent session or the saved config must
+/// not swallow it. Callers that want a plugin provider unset the key.
+fn explicit_key_drops_plugin(explicit_key: bool, credential_source: &str) -> bool {
+    explicit_key && credential_source == "plugin"
+}
+
 fn scrub_url(url: &str) -> String {
     let after_scheme = url.split_once("://").map(|(_, r)| r).unwrap_or(url);
     let auth_end = after_scheme
@@ -189,9 +196,27 @@ impl Config {
             .or(saved.base_url)
             .unwrap_or_else(|| DEFAULT_BASE_URL.to_string());
 
-        let provider_id = env("GRAY_PROVIDER_ID")
+        let explicit_key = nonempty(cli.api_key.as_deref())
+            .or_else(|| nonempty(env("GRAY_API_KEY").as_deref()))
+            .is_some();
+        let inherited_source = env("GRAY_CREDENTIAL_SOURCE")
             .map(|v| v.trim().to_string())
-            .unwrap_or_else(|| nonempty(Some(saved.provider_id.as_str())).unwrap_or_default());
+            .unwrap_or_else(|| {
+                nonempty(Some(saved.credential_source.as_str())).unwrap_or_default()
+            });
+        let drop_plugin = explicit_key_drops_plugin(explicit_key, &inherited_source);
+        if drop_plugin {
+            log::info!(target: "gray_config",
+                "explicit API key given: ignoring plugin provider selection");
+        }
+
+        let provider_id = if drop_plugin {
+            String::new()
+        } else {
+            env("GRAY_PROVIDER_ID")
+                .map(|v| v.trim().to_string())
+                .unwrap_or_else(|| nonempty(Some(saved.provider_id.as_str())).unwrap_or_default())
+        };
         let target_effort = remembered_effort(
             &saved.effort_memory,
             &provider_id,
@@ -304,14 +329,18 @@ impl Config {
             .map(|m| m.trim().to_string())
             .filter(|m| !m.is_empty());
 
-        let credential_source = env("GRAY_CREDENTIAL_SOURCE")
-            .map(|v| v.trim().to_string())
-            .unwrap_or_else(|| {
-                nonempty(Some(saved.credential_source.as_str())).unwrap_or_default()
-            });
-        let auth_ref = env("GRAY_AUTH_REF")
-            .map(|v| v.trim().to_string())
-            .unwrap_or_else(|| nonempty(Some(saved.auth_ref.as_str())).unwrap_or_default());
+        let credential_source = if drop_plugin {
+            String::new()
+        } else {
+            inherited_source
+        };
+        let auth_ref = if drop_plugin {
+            String::new()
+        } else {
+            env("GRAY_AUTH_REF")
+                .map(|v| v.trim().to_string())
+                .unwrap_or_else(|| nonempty(Some(saved.auth_ref.as_str())).unwrap_or_default())
+        };
 
         let parse_parts = |raw: &str| -> std::collections::BTreeMap<String, String> {
             raw.split(',')
@@ -410,5 +439,21 @@ pub(crate) fn export_provider_env(config: &Config) {
                 std::env::remove_var("GRAY_CREDENTIAL_SOURCE");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod explicit_key_tests {
+    use super::explicit_key_drops_plugin;
+
+    #[test]
+    fn explicit_key_beats_plugin_selection() {
+        assert!(explicit_key_drops_plugin(true, "plugin"));
+    }
+
+    #[test]
+    fn plugin_selection_kept_without_explicit_key() {
+        assert!(!explicit_key_drops_plugin(false, "plugin"));
+        assert!(!explicit_key_drops_plugin(true, ""));
     }
 }
