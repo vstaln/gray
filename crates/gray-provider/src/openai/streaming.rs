@@ -249,6 +249,23 @@ pub(super) fn stream_unfold_step(
                             };
                         }
                         Err((err, floor, http_status)) => {
+                            if body.prompt_cache_key.is_some()
+                                && should_retry_without_cache_key(http_status, &err.to_string())
+                            {
+                                log::warn!(target: "gray_provider", "retrying without prompt_cache_key after 400: {err}");
+                                let mut stripped = body;
+                                stripped.prompt_cache_key = None;
+                                state = StreamState::Init {
+                                    client,
+                                    url,
+                                    api_key,
+                                    body: stripped,
+                                    session_id,
+                                    attempt,
+                                    retry_after: floor,
+                                };
+                                continue;
+                            }
                             if attempt == 1
                                 && chat_has_reasoning_params(&body)
                                 && should_retry_without_reasoning(
@@ -362,6 +379,25 @@ pub(super) fn stream_unfold_step(
                             };
                         }
                         Err((err, floor, http_status)) => {
+                            if body.prompt_cache_key.is_some()
+                                && should_retry_without_cache_key(http_status, &err.to_string())
+                            {
+                                log::warn!(target: "gray_provider", "retrying responses without prompt_cache_key after 400: {err}");
+                                let mut stripped = body;
+                                stripped.prompt_cache_key = None;
+                                state = StreamState::ResponsesInit {
+                                    client,
+                                    url,
+                                    api_key,
+                                    body: stripped,
+                                    attempt,
+                                    retry_after: floor,
+                                    stream_attempt,
+                                    tools_by_call_id,
+                                    index_to_call_id,
+                                };
+                                continue;
+                            }
                             if attempt == 1
                                 && body.previous_response_id.is_some()
                                 && should_retry_without_previous_response(

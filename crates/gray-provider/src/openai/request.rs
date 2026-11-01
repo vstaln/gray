@@ -910,22 +910,30 @@ pub(crate) fn should_retry_without_reasoning(
     if !names_reasoning {
         return false;
     }
-    const REJECTION_HINTS: [&str; 13] = [
-        "extra",
-        "permitted",
-        "not allowed",
-        "unsupported",
-        "unknown",
-        "unexpected",
-        "additional",
-        "unrecognized",
-        "invalid",
-        "only",
-        "required",
-        "must",
-        "not permitted",
-    ];
     REJECTION_HINTS.iter().any(|h| lower.contains(h))
+}
+
+const REJECTION_HINTS: [&str; 13] = [
+    "extra",
+    "permitted",
+    "not allowed",
+    "unsupported",
+    "unknown",
+    "unexpected",
+    "additional",
+    "unrecognized",
+    "invalid",
+    "only",
+    "required",
+    "must",
+    "not permitted",
+];
+
+pub(crate) fn should_retry_without_cache_key(status: u16, snippet: &str) -> bool {
+    let lower = snippet.to_lowercase();
+    status == 400
+        && lower.contains("prompt_cache_key")
+        && REJECTION_HINTS.iter().any(|h| lower.contains(h))
 }
 
 pub(crate) fn reasoning_conflict_hint(model: &str, snippet: &str) -> String {
@@ -977,5 +985,34 @@ mod fitted_image_url_tests {
         use base64::Engine as _;
         let b64 = base64::engine::general_purpose::STANDARD.encode(vec![0u8; 4 * 1024 * 1024]);
         assert!(super::fitted_image_url("image/x-unknown", &b64).is_none());
+    }
+}
+
+#[cfg(test)]
+mod cache_key_retry_tests {
+    use super::should_retry_without_cache_key;
+
+    #[test]
+    fn strict_server_rejection_retries_without_the_key() {
+        assert!(should_retry_without_cache_key(
+            400,
+            "property 'prompt_cache_key' is unsupported (code: invalid_request_error)"
+        ));
+        assert!(should_retry_without_cache_key(
+            400,
+            "Unrecognized request argument supplied: prompt_cache_key"
+        ));
+    }
+
+    #[test]
+    fn unrelated_errors_do_not_retry() {
+        assert!(!should_retry_without_cache_key(
+            400,
+            "messages: field required"
+        ));
+        assert!(!should_retry_without_cache_key(
+            500,
+            "property 'prompt_cache_key' is unsupported"
+        ));
     }
 }
