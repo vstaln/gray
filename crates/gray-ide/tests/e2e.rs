@@ -862,7 +862,14 @@ fn real_gray_cli_provider_streams_and_resumes_session() {
         return;
     };
     g.send("first question for gray");
-    let s = g.wait_for("gray reply", finished);
+    // The engine reports its session id alongside/after the reply; on a slow
+    // runner it can land a beat after the turn finishes.
+    let s = g.wait_for("gray reply with session", |s| {
+        finished(s)
+            && s["thread"]["session"]
+                .as_str()
+                .is_some_and(|x| !x.is_empty())
+    });
     assert_eq!(s["thread"]["provider"], "gray");
     assert_eq!(messages(&s)[1].1, "Hello from mock turn 1");
     let sid = s["thread"]["session"]
@@ -969,7 +976,15 @@ fn plugins_panel_browses_hub_and_manages_real_gray_plugins() {
     let Some(g) = Gray::start_with("plugins", "fake", env) else {
         return;
     };
-    g.key("ctrl+shift+p");
+    // Like `palette()`: under Xvfb a key press can land before the window
+    // takes focus, so re-press until the panel is up.
+    for _ in 0..10 {
+        if g.state()["panel"] == "Plugins" {
+            break;
+        }
+        g.key("ctrl+shift+p");
+        sleep(Duration::from_millis(400));
+    }
     let s = g.wait_for("hub loaded", |s| {
         s["panel"] == "Plugins" && s["hub"].as_array().map(|h| h.len() == 2).unwrap_or(false)
     });

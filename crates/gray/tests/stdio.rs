@@ -200,8 +200,15 @@ fn spawn_stdio(base_url: &str) -> Proc {
     std::fs::create_dir_all(&tmp).unwrap();
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_gray"));
     cmd.env_clear()
-        .env("PATH", std::env::var("PATH").unwrap_or_default())
-        .env("HOME", &tmp)
+        .env("PATH", std::env::var("PATH").unwrap_or_default());
+    // Windows can't open sockets without these (Winsock reads SystemRoot);
+    // carry them over so the child can reach the stub server.
+    for key in ["SystemRoot", "SYSTEMROOT", "windir", "TEMP", "TMP"] {
+        if let Some(v) = std::env::var_os(key) {
+            cmd.env(key, v);
+        }
+    }
+    cmd.env("HOME", &tmp)
         .env("GRAY_HOME", &tmp)
         .env("GRAY_USER_HOME", &tmp)
         .args([
