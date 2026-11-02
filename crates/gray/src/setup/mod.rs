@@ -110,6 +110,7 @@ pub(crate) mod composite_rows;
 mod context_modal;
 mod install_manager;
 mod model_modal;
+mod model_dump;
 mod model_panes;
 mod plugins_modal;
 pub(crate) mod presets;
@@ -132,6 +133,7 @@ pub(crate) use model_modal::{
     selection_parts, validate_direct_model_id, wire_model_for,
 };
 pub(crate) use model_panes::{PanesOutcome, run_model_panes};
+pub use model_dump::{DumpModels, dump_model_catalog_json, select_cli_provider};
 pub(crate) use plugins_modal::run_plugins_manager;
 pub(crate) use provider_auth::{
     PluginLoginProgress, adopt_connection_effort, apply_connection_effort, run_plugin_login,

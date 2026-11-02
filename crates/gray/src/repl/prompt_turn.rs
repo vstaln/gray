@@ -70,6 +70,13 @@ pub(crate) async fn run_prompt_turn(
     let tui_stream = shared.as_ref().map(|(s, _)| (*s).clone());
     if agent.is_none() {
         if *unconfigured {
+            if crate::stdio::is_active() {
+                say(
+                    None,
+                    "no provider configured — connect one with set_model (list_models shows what's available)",
+                );
+                return Ok(());
+            }
             let bg = tui
                 .as_ref()
                 .map(|(shared, _)| shared.lock().expect("tui lock").snapshot());
@@ -156,7 +163,8 @@ pub(crate) async fn run_prompt_turn(
             .as_ref()
             .map(|s| s.session_id.as_str().to_string());
         ag.set_steer(std::sync::Arc::new(move || {
-            steer_queued_input(steer_tui.as_ref())
+            crate::stdio::take_steer()
+                .or_else(|| steer_queued_input(steer_tui.as_ref()))
                 .or_else(|| steer_direct_send(steer_tui.as_ref(), steer_sid.as_deref()))
         }));
         let out_tui = tui_stream.clone();
@@ -217,13 +225,18 @@ pub(crate) async fn run_prompt_turn(
             hooks: agent.hooks().to_vec(),
         });
     let key_watcher = {
-        key_watcher::spawn_key_watcher_with_typing(
-            watch_cancel,
-            watcher_stopped,
-            watcher_tui,
-            cwd_for_watcher,
-            turn_locals,
-        )
+        if crate::stdio::is_active() {
+            // The protocol owns stdin — a key watcher would eat request bytes.
+            tokio::task::spawn_blocking(|| {})
+        } else {
+            key_watcher::spawn_key_watcher_with_typing(
+                watch_cancel,
+                watcher_stopped,
+                watcher_tui,
+                cwd_for_watcher,
+                turn_locals,
+            )
+        }
     };
 
     {

@@ -59,7 +59,9 @@ async fn run() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    if cli.command.is_some() && (cli.print.is_some() || cli.input_json.is_some() || cli.json) {
+    if cli.command.is_some()
+        && (cli.print.is_some() || cli.input_json.is_some() || cli.json || cli.stdio)
+    {
         Cli::command()
             .error(
                 clap::error::ErrorKind::UnknownArgument,
@@ -176,6 +178,27 @@ async fn run() -> anyhow::Result<()> {
     };
 
     let mut config = Config::resolve(&cli)?;
+    if let Some(provider) = cli.provider.as_deref() {
+        if let Err(e) = gray::setup::select_cli_provider(
+            &mut config,
+            provider,
+            cli.model.as_deref(),
+            cli.model_parts.is_some() || std::env::var_os("GRAY_MODEL_PARTS").is_some(),
+        ) {
+            eprintln!("error: {e:#}");
+            std::process::exit(1);
+        }
+    }
+    if let Some(mode) = cli.dump_models {
+        match serde_json::to_string_pretty(&gray::setup::dump_model_catalog_json(&config, mode)) {
+            Ok(out) => println!("{out}"),
+            Err(e) => {
+                eprintln!("error: {e:#}");
+                std::process::exit(1);
+            }
+        }
+        return Ok(());
+    }
     log::debug!(target: "gray_timing", "spawn config_loaded elapsed_ms={}", gray::turn_caps::process_start().elapsed().as_millis());
     if !config.bare {
         let saved_theme = gray::setup::saved_config_path()
@@ -194,6 +217,17 @@ async fn run() -> anyhow::Result<()> {
     gray::setup::set_user_context_window(config.context_window);
     gray::setup::set_user_reserve_tokens(config.context_reserve);
     gray::setup::set_user_keep_recent_tokens(config.context_keep);
+
+    if cli.stdio {
+        let resume_last = cli.continue_last || matches!(&cli.resume, Some(None));
+        let session_arg = cli
+            .resume
+            .as_ref()
+            .and_then(|r| r.as_deref())
+            .or(cli.session.as_deref());
+        return gray::stdio::run_stdio_mode(&mut config, resume_last, session_arg).await;
+    }
+
     if let Some(cmd) = cli.command {
         match cmd {
             gray::Commands::Resume {

@@ -282,7 +282,7 @@ pub(crate) fn canonicalize_effort_variant(
     Some((base, tier, fast))
 }
 
-pub(super) fn recent_head_for(base_url: &str) -> (Option<String>, Vec<String>) {
+pub(crate) fn recent_head_for(base_url: &str) -> (Option<String>, Vec<String>) {
     let Ok(path) = saved_config_path() else {
         return (None, Vec::new());
     };
@@ -298,7 +298,7 @@ pub(super) fn recent_head_for(base_url: &str) -> (Option<String>, Vec<String>) {
     (current, recent)
 }
 
-pub(super) fn recent_prefix_len<'a>(
+pub(crate) fn recent_prefix_len<'a>(
     current: Option<&str>,
     recent: &[String],
     ids: impl Iterator<Item = &'a str>,

@@ -52,7 +52,7 @@ pub(super) fn detail_rows(models: &[(String, String)]) -> usize {
 
 pub(super) const ROW_TAIL: usize = 2 + 1 + 1 + 2 + METER_W + 2 + 1 + 7;
 
-pub(super) const RECOMMENDED_HEAD: usize = 5;
+pub(crate) const RECOMMENDED_HEAD: usize = 5;
 
 pub(super) fn meter_glyphs() -> (&'static str, &'static str) {
     if super::super::icons::has_nerd_font() {

@@ -241,7 +241,9 @@ pub async fn handle_ask(params: serde_json::Value) -> serde_json::Value {
                     None => return,
                 }
             };
-            {
+            if crate::stdio::is_active() {
+                crate::stdio::emit_ask(id, &questions);
+            } else {
                 use std::io::Write;
                 let mut out = std::io::stdout().lock();
                 let _ = writeln!(out, "{}", json_ask_row(&turn, id, &questions));
