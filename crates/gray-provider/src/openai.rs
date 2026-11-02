@@ -162,6 +162,7 @@ impl Provider for OpenAiProvider {
     }
 
     fn stream(&self, req: ChatRequest) -> BoxStream<'static, Result<StreamEvent, ProviderError>> {
+        let isolated = current_isolated_stream().is_some();
         let iso = current_isolated_stream().unwrap_or_default();
         let session_id = iso.session_id.or_else(|| self.session_id.clone());
         let cache_off = iso.cache_off;
@@ -176,7 +177,14 @@ impl Provider for OpenAiProvider {
                 })
                 .boxed();
             }
-            return self.dynamic_stream(req, profile, credential_source, session_id, cache_off);
+            return self.dynamic_stream(
+                req,
+                profile,
+                credential_source,
+                session_id,
+                cache_off,
+                isolated,
+            );
         }
         if self.caps.prefer_responses {
             let url = match responses_url(&self.base_url) {

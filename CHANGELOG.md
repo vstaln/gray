@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.2.12] - 2026-11-03
+
+### Added
+- **`gray --dump-models`** prints the `/models` provider rail (plugins included) as JSON, and gray's stdio protocol exposes the same catalog via `list_models`. gray-ide uses it to fill its model picker.
+
+### Changed
+- Merges the 0.2.11 fixes into the split-god-files refactor line.
+
+## [0.2.11] - 2026-11-01
+
+### Fixed
+- **Strict OpenAI-compatible servers work (Groq).** A 400 that names `prompt_cache_key` as rejected now replays the request once without it, on chat and Responses paths (#293).
+- **An explicit `--api-key`/`GRAY_API_KEY` beats an inherited plugin provider.** A nested `gray -p` started from a plugin-backed session no longer silently routes to the parent's plugin.
+- **Compaction summaries no longer poison claude-sub sessions** (#293). They are marked as side requests (`x-gray-isolated`) for plugin relays; needs gray-claude-sub 0.2.5.
+
 ## [0.2.10] - 2026-11-01
 
 ### Fixed
