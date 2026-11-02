@@ -109,8 +109,8 @@ pub mod tabs;
 pub(crate) mod composite_rows;
 mod context_modal;
 mod install_manager;
-mod model_modal;
 mod model_dump;
+mod model_modal;
 mod model_panes;
 mod plugins_modal;
 pub(crate) mod presets;
@@ -126,6 +126,7 @@ mod recommend;
 pub use connect::{ConnectOutcome, active_connect_id, run_connect_modal, run_connect_modal_for};
 pub(crate) use install_manager::{ManagerItem, ManagerSpec, run_install_manager};
 pub use install_manager::{ManagerOutcome, run_skills_modal};
+pub use model_dump::{DumpModels, dump_model_catalog_json, select_cli_provider};
 pub(crate) use model_modal::{
     canonical_model_rows, canonicalize_adopted_model, composite_label_for,
     composite_label_parts_for, decompose_model_variant, effort_chip, picker_scope,
@@ -133,7 +134,6 @@ pub(crate) use model_modal::{
     selection_parts, validate_direct_model_id, wire_model_for,
 };
 pub(crate) use model_panes::{PanesOutcome, run_model_panes};
-pub use model_dump::{DumpModels, dump_model_catalog_json, select_cli_provider};
 pub(crate) use plugins_modal::run_plugins_manager;
 pub(crate) use provider_auth::{
     PluginLoginProgress, adopt_connection_effort, apply_connection_effort, run_plugin_login,

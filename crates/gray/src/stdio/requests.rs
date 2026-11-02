@@ -73,7 +73,7 @@ pub(crate) fn approve(v: &Value, id: &Value) {
 
 /// `status` — session/model/context/usage snapshot.
 pub(crate) fn status(sess: &mut Session, config: &Config, cwd: &std::path::Path, id: &Value) {
-    let last = lock(&LAST_USAGE).clone();
+    let last = *lock(&LAST_USAGE);
     let window = config
         .model
         .as_deref()

@@ -248,6 +248,9 @@ struct Tab {
     _sub: Subscription,
 }
 
+/// One find-in-files result batch: (query, [(path, preview, open cmd)]).
+type GrepBatch = (String, Vec<(String, String, Cmd)>);
+
 pub struct GrayApp {
     focus: FocusHandle,
     store: Store,
@@ -400,7 +403,7 @@ pub struct GrayApp {
     /// Find-in-files: query in flight, last results, receiver for the worker.
     grep_q: String,
     grep_items: Vec<(String, String, Cmd)>,
-    grep_rx: Option<Receiver<(String, Vec<(String, String, Cmd)>)>>,
+    grep_rx: Option<Receiver<GrepBatch>>,
 }
 
 impl GrayApp {

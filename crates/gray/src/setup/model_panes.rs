@@ -422,7 +422,11 @@ pub(crate) fn provider_is_active(p: &PaneProvider, config: &Config) -> bool {
             == normalize_custom_base_url(&config.base_url)
 }
 
-pub(crate) fn scoped_config(config: &Config, p: &PaneProvider, keys: &BTreeMap<String, String>) -> Config {
+pub(crate) fn scoped_config(
+    config: &Config,
+    p: &PaneProvider,
+    keys: &BTreeMap<String, String>,
+) -> Config {
     let mut scoped = config.clone();
     if !provider_is_active(p, config) {
         scoped.model = None;

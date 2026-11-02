@@ -421,11 +421,8 @@ impl GrayApp {
     pub(super) fn drain_engines(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
         let mut msgs: Vec<(String, EngineMsg)> = Vec::new();
         for (tid, eng) in self.engines.iter_mut() {
-            loop {
-                match eng.engine.rx.try_recv() {
-                    Ok(m) => msgs.push((tid.clone(), m)),
-                    Err(_) => break,
-                }
+            while let Ok(m) = eng.engine.rx.try_recv() {
+                msgs.push((tid.clone(), m));
             }
             // Keep the status line fresh: every few seconds while idle, every
             // ~1.5s while a turn streams (usage updates with each step).
@@ -644,7 +641,7 @@ impl GrayApp {
                 }
                 self.flush_thinking(tid);
                 self.finish_turn(
-                    &tid.to_string(),
+                    tid,
                     if ok {
                         Ok(())
                     } else {

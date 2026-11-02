@@ -426,10 +426,10 @@ impl GrayApp {
                             ),
                     );
                 }
-                if std::mem::take(&mut self.file_tabs_reveal) {
-                    if let Some(i) = self.active_tab {
-                        self.file_tabs_scroll.scroll_to_item(i);
-                    }
+                if std::mem::take(&mut self.file_tabs_reveal)
+                    && let Some(i) = self.active_tab
+                {
+                    self.file_tabs_scroll.scroll_to_item(i);
                 }
                 let editor: AnyElement = match self.active_tab.and_then(|i| self.tabs.get(i)) {
                     Some(tab) => div()

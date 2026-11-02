@@ -82,8 +82,11 @@ fn env_key(
     config: &Config,
     detected: &Detected,
 ) -> Option<String> {
-    p.key(keys, config)
-        .or_else(|| detected.get(&p.item.id).and_then(|d| d.env.clone().map(|(_, v)| v)))
+    p.key(keys, config).or_else(|| {
+        detected
+            .get(&p.item.id)
+            .and_then(|d| d.env.clone().map(|(_, v)| v))
+    })
 }
 
 fn load_cached(
@@ -180,7 +183,10 @@ pub fn dump_model_catalog_json(config: &Config, mode: DumpModels) -> Value {
 fn build_model_catalog(config: &Config, mode: DumpModels) -> Value {
     let (rail, keys, detected) = rail_ctx(config);
     let path = saved_config_path().ok();
-    let saved = path.as_deref().map(load_saved_config_at).unwrap_or_default();
+    let saved = path
+        .as_deref()
+        .map(load_saved_config_at)
+        .unwrap_or_default();
     let lists = SavedLists::load();
 
     let usable: Vec<&PaneProvider> = rail
@@ -344,7 +350,10 @@ pub fn select_cli_provider(
     }
 
     let path = saved_config_path().ok();
-    let mut saved = path.as_deref().map(load_saved_config_at).unwrap_or_default();
+    let mut saved = path
+        .as_deref()
+        .map(load_saved_config_at)
+        .unwrap_or_default();
     let lists = SavedLists::load();
     let models = load_cached(lists.as_ref(), &saved, p);
 
@@ -378,9 +387,7 @@ pub fn select_cli_provider(
     if std::env::var_os("GRAY_THINKING_EFFORT").is_none() {
         super::provider_auth::apply_connection_effort(config, &mut saved);
     }
-    if !explicit_parts
-        && let Some(m) = config.model.clone()
-    {
+    if !explicit_parts && let Some(m) = config.model.clone() {
         config.model_parts = saved
             .parts_memory
             .get(&super::catalog::effort_memory_key(

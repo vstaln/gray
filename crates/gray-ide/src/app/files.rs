@@ -430,16 +430,16 @@ impl GrayApp {
                         if self.pending_ask.as_ref().is_some_and(|a| a.tid == tid) {
                             self.pending_ask = None;
                         }
-                    } else if let Some(t) = self.turns.get(&tid) {
-                        if let Some(turn) = t.turn.as_ref() {
-                            if let Ok(mut p) = turn.pending.lock()
-                                && let Some(tx) = p.take()
-                            {
-                                let _ = tx.send(false);
-                            }
-                            self.pending_approval = None;
-                            turn.cancel();
+                    } else if let Some(t) = self.turns.get(&tid)
+                        && let Some(turn) = t.turn.as_ref()
+                    {
+                        if let Ok(mut p) = turn.pending.lock()
+                            && let Some(tx) = p.take()
+                        {
+                            let _ = tx.send(false);
                         }
+                        self.pending_approval = None;
+                        turn.cancel();
                     }
                 }
             }

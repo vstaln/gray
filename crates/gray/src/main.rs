@@ -178,16 +178,16 @@ async fn run() -> anyhow::Result<()> {
     };
 
     let mut config = Config::resolve(&cli)?;
-    if let Some(provider) = cli.provider.as_deref() {
-        if let Err(e) = gray::setup::select_cli_provider(
+    if let Some(provider) = cli.provider.as_deref()
+        && let Err(e) = gray::setup::select_cli_provider(
             &mut config,
             provider,
             cli.model.as_deref(),
             cli.model_parts.is_some() || std::env::var_os("GRAY_MODEL_PARTS").is_some(),
-        ) {
-            eprintln!("error: {e:#}");
-            std::process::exit(1);
-        }
+        )
+    {
+        eprintln!("error: {e:#}");
+        std::process::exit(1);
     }
     if let Some(mode) = cli.dump_models {
         match serde_json::to_string_pretty(&gray::setup::dump_model_catalog_json(&config, mode)) {

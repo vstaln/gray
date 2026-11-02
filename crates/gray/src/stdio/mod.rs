@@ -279,7 +279,7 @@ async fn run_turn(
     if let Err(e) = &r {
         emit_say("error", &format!("{e:#}"));
     }
-    let usage = lock(&LAST_USAGE).clone();
+    let usage = *lock(&LAST_USAGE);
     emit(json!({
         "type": "turn_end",
         "turn_id": turn_id,
