@@ -11,16 +11,40 @@ impl GrayApp {
             .p_1();
         let items = self.palette_items();
         let count = items.len().min(80);
-        let search = self.palette_mode == PaletteMode::Search;
-        let grouped = self.palette_mode != PaletteMode::Files;
-        if search && items.is_empty() {
+        let grouped = matches!(
+            self.palette_mode,
+            PaletteMode::Commands | PaletteMode::Search
+        );
+        let mode_hint = match self.palette_mode {
+            PaletteMode::Search => Some("Threads & messages"),
+            PaletteMode::Grep => Some("Find in files"),
+            PaletteMode::GoToLine => Some("Line[:column]"),
+            _ => None,
+        };
+        let empty_msg = match self.palette_mode {
+            PaletteMode::Search => Some("No threads or messages match"),
+            PaletteMode::GoToLine => Some("Type a line number, e.g. 42 or 42:7"),
+            PaletteMode::Grep => {
+                if self.palette_query.trim().chars().count() < 2 {
+                    Some("Type at least 2 characters to search project files")
+                } else if self.grep_rx.is_some() {
+                    Some("Searching...")
+                } else {
+                    Some("No matches")
+                }
+            }
+            _ => None,
+        };
+        if items.is_empty()
+            && let Some(msg) = empty_msg
+        {
             list = list.child(
                 div()
                     .px_2()
                     .py_3()
                     .text_sm()
                     .text_color(t.muted_foreground)
-                    .child("No threads or messages match"),
+                    .child(msg),
             );
         }
         let sel = self.palette_sel.min(items.len().saturating_sub(1));
@@ -33,6 +57,9 @@ impl GrayApp {
                 last_group = Some(group);
                 list = list.child(
                     div()
+                        // Inside the scrolling column a header without this
+                        // shrinks to nothing and overlaps the first row.
+                        .flex_shrink_0()
                         .px(px(10.))
                         .pt_2()
                         .pb_1()
@@ -71,11 +98,11 @@ impl GrayApp {
                     .gap_2()
                     .text_size(px(13.))
                     .cursor_pointer()
-                    .when(selected, |s| {
-                        s.bg(t.primary).text_color(t.primary_foreground)
-                    })
+                    // A soft tint marks the selection; a solid accent fill
+                    // shouted over every row it passed.
+                    .when(selected, |s| s.bg(t.foreground.opacity(0.09)))
                     .when(!selected, |s| s.hover(|s| s.bg(t.foreground.opacity(0.05))))
-                    .active(|s| s.bg(t.primary_active))
+                    .active(|s| s.bg(t.foreground.opacity(0.12)))
                     .on_mouse_move(cx.listener(move |this, _, _, cx| {
                         // Mouse movement (not hover) moves the highlight, so a
                         // list scrolling under a resting pointer doesn't steal it.
@@ -89,7 +116,7 @@ impl GrayApp {
                     )
                     .when_some(icon, |s, icon| {
                         s.child(Icon::new(icon).small().text_color(if selected {
-                            t.primary_foreground
+                            t.foreground
                         } else {
                             t.muted_foreground
                         }))
@@ -99,17 +126,13 @@ impl GrayApp {
                         s.child(
                             div()
                                 .text_xs()
-                                .text_color(if selected {
-                                    t.primary_foreground
-                                } else {
-                                    t.muted_foreground
-                                })
+                                .text_color(t.muted_foreground)
                                 .max_w(px(220.))
                                 .truncate()
                                 .child(hint),
                         )
                     })
-                    .when_some(key, |s, k| s.child(key_chip(&k, &t, selected))),
+                    .when_some(key, |s, k| s.child(key_chip(&k, &t, false))),
             );
         }
         if self.palette_reveal.take() {
@@ -147,19 +170,15 @@ impl GrayApp {
                     .border_1()
                     .border_color(float_border(&t))
                     .bg(glass_bg(&t))
-                    .shadow(hard_shadow(&t))
                     .relative()
                     .child(
-                        div().p_2().border_b_1().border_color(t.border).child(
+                        div().p_2().child(
                             Input::new(&self.palette_input)
                                 .appearance(false)
                                 .prefix(Icon::new(GIcon::Search).small())
-                                .when(search, |s| {
+                                .when_some(mode_hint, |s, hint| {
                                     s.suffix(
-                                        div()
-                                            .text_xs()
-                                            .text_color(t.muted_foreground)
-                                            .child("Threads & messages"),
+                                        div().text_xs().text_color(t.muted_foreground).child(hint),
                                     )
                                 }),
                         ),
@@ -216,8 +235,6 @@ impl GrayApp {
             .h_full()
             .flex_none()
             .bg(t.sidebar)
-            .border_r_1()
-            .border_color(t.sidebar_border)
             .p_3()
             .gap_2()
             .child(
@@ -308,16 +325,18 @@ impl GrayApp {
             cx,
         ));
 
+        // The label column keeps a readable minimum width; the control is
+        // capped and wraps (a long option list used to squeeze the label to
+        // one character per line).
         let row = |label: &str, desc: &str, control: AnyElement| {
             h_flex()
                 .py_3()
                 .gap_4()
-                .border_b_1()
-                .border_color(t.border)
+                .items_start()
                 .child(
                     v_flex()
                         .flex_1()
-                        .min_w_0()
+                        .min_w(px(220.))
                         .child(div().text_sm().font_medium().child(label.to_string()))
                         .child(
                             div()
@@ -326,7 +345,14 @@ impl GrayApp {
                                 .child(desc.to_string()),
                         ),
                 )
-                .child(control)
+                .child(
+                    h_flex()
+                        .flex_shrink(1.)
+                        .min_w_0()
+                        .max_w(px(440.))
+                        .justify_end()
+                        .child(control),
+                )
         };
         let opt = |id: SharedString, label: &str, sel: bool| {
             Button::new(id)
@@ -335,13 +361,13 @@ impl GrayApp {
                 .when(sel, |b| b.primary())
         };
 
-        let mut providers = h_flex().gap_1().flex_wrap();
-        for prov in PROVIDERS {
+        let mut providers = h_flex().gap_1().flex_wrap().justify_end();
+        for prov in self.providers() {
             let id = prov.id.to_string();
             providers = providers.child(
                 opt(
                     SharedString::from(format!("settings-provider-{}", prov.id)),
-                    prov.label,
+                    prov.label.as_str(),
                     dp == prov.id,
                 )
                 .on_click(cx.listener(move |this, _, _, cx| {
@@ -499,9 +525,9 @@ impl GrayApp {
                             .text_xs()
                             .text_color(t.muted_foreground)
                             .child(
-                                PROVIDERS
+                                self.providers()
                                     .iter()
-                                    .map(|p| p.label)
+                                    .map(|p| p.label.clone())
                                     .collect::<Vec<_>>()
                                     .join(" \u{00b7} "),
                             )
@@ -509,7 +535,14 @@ impl GrayApp {
                     ));
             }
             _ => {
-                let bar = |w: f32, h: f32, c: Hsla| div().w(px(w)).h(px(h)).bg(c);
+                // w = None: a full-width bar (a px(f32::MAX) width overflows the card).
+                let bar = |w: Option<f32>, h: f32, c: Hsla| {
+                    let d = div().h(px(h)).bg(c).max_w_full();
+                    match w {
+                        Some(w) => d.w(px(w)),
+                        None => d.w_full(),
+                    }
+                };
                 let mut cards = h_flex().gap_4().pb_4();
                 for (id, name, desc, sketch) in [
                     (
@@ -527,10 +560,10 @@ impl GrayApp {
                                 v_flex()
                                     .flex_1()
                                     .gap_1()
-                                    .child(bar(f32::MAX, 9., t.sidebar_accent))
-                                    .child(bar(110., 6., t.muted.opacity(0.6)))
-                                    .child(bar(80., 6., t.muted.opacity(0.6)))
-                                    .child(bar(140., 6., t.muted.opacity(0.6)))
+                                    .child(bar(None, 9., t.sidebar_accent))
+                                    .child(bar(Some(110.), 6., t.muted.opacity(0.6)))
+                                    .child(bar(Some(80.), 6., t.muted.opacity(0.6)))
+                                    .child(bar(Some(140.), 6., t.muted.opacity(0.6)))
                                     .child(div().flex_1().bg(t.sidebar_accent)),
                             )
                             .into_any_element(),
@@ -550,10 +583,10 @@ impl GrayApp {
                                 v_flex()
                                     .flex_1()
                                     .gap_1()
-                                    .child(bar(f32::MAX, 7., t.sidebar_accent))
-                                    .child(bar(120., 6., t.muted.opacity(0.6)))
-                                    .child(bar(90., 6., t.muted.opacity(0.6)))
-                                    .child(bar(150., 6., t.muted.opacity(0.6)))
+                                    .child(bar(None, 7., t.sidebar_accent))
+                                    .child(bar(Some(120.), 6., t.muted.opacity(0.6)))
+                                    .child(bar(Some(90.), 6., t.muted.opacity(0.6)))
+                                    .child(bar(Some(150.), 6., t.muted.opacity(0.6)))
                                     .child(div().flex_1().bg(t.sidebar_accent)),
                             )
                             .into_any_element(),
@@ -565,10 +598,15 @@ impl GrayApp {
                         v_flex()
                             .id(SharedString::from(format!("layout-card-{id}")))
                             .w(px(320.))
+                            .overflow_hidden()
                             .p_3()
                             .gap_2()
-                            .border_1()
-                            .border_color(if sel { t.info } else { t.border })
+                            .rounded(px(10.))
+                            .bg(if sel {
+                                t.info.opacity(0.15)
+                            } else {
+                                t.foreground.opacity(0.05)
+                            })
                             .cursor_pointer()
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 this.run(Cmd::SetLayout(id_s.clone()), window, cx)

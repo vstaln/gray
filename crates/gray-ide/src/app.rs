@@ -3,7 +3,7 @@ use crate::graycmds;
 use crate::icons::GIcon;
 use crate::motion;
 use crate::plugins::{self, HubEntry, Installed, PluginMsg};
-use crate::provider::{self, MODES, PROVIDERS, ProviderEvent, Turn, TurnRequest};
+use crate::provider::{self, MODES, ModelEntry, ProviderEntry, ProviderEvent, Turn, TurnRequest};
 use crate::sessions::{self, GraySession};
 use crate::store::{Event, Item, Role, Store, new_id, now};
 use crate::workspace::{self, FileEntry};
@@ -53,7 +53,30 @@ actions!(
         EffortPicker,
         TogglePluginsPanel,
         ToggleViewer,
-        SearchThreads
+        SearchThreads,
+        SplitPane,
+        CloseTab,
+        NextTab,
+        PrevTab,
+        ActivatePaneLeft,
+        ActivatePaneRight,
+        ActivatePaneUp,
+        ActivatePaneDown,
+        SwapPaneLeft,
+        SwapPaneRight,
+        SwapPaneUp,
+        SwapPaneDown,
+        ToggleZoom,
+        ReopenClosed,
+        GoBack,
+        GoForward,
+        GoToLine,
+        MoveLineUp,
+        MoveLineDown,
+        DuplicateLine,
+        DeleteLine,
+        ToggleComment,
+        ProjectSearch
     ]
 );
 
@@ -79,6 +102,35 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("ctrl-shift-p", TogglePluginsPanel, None),
         KeyBinding::new("ctrl-shift-v", ToggleViewer, None),
         KeyBinding::new("ctrl-shift-f", SearchThreads, None),
+        KeyBinding::new("ctrl-\\", SplitPane, None),
+        KeyBinding::new("ctrl-w", CloseTab, None),
+        KeyBinding::new("ctrl-tab", NextTab, None),
+        KeyBinding::new("ctrl-shift-tab", PrevTab, None),
+        // Zed puts these on `ctrl-k <arrow>`; Ctrl+K is our palette.
+        KeyBinding::new("ctrl-alt-left", ActivatePaneLeft, None),
+        KeyBinding::new("ctrl-alt-right", ActivatePaneRight, None),
+        KeyBinding::new("ctrl-alt-up", ActivatePaneUp, None),
+        KeyBinding::new("ctrl-alt-down", ActivatePaneDown, None),
+        KeyBinding::new("ctrl-alt-shift-left", SwapPaneLeft, None),
+        KeyBinding::new("ctrl-alt-shift-right", SwapPaneRight, None),
+        KeyBinding::new("ctrl-alt-shift-up", SwapPaneUp, None),
+        KeyBinding::new("ctrl-alt-shift-down", SwapPaneDown, None),
+        KeyBinding::new("shift-escape", ToggleZoom, None),
+        KeyBinding::new("ctrl-shift-t", ReopenClosed, None),
+        KeyBinding::new("ctrl-alt--", GoBack, None),
+        KeyBinding::new("ctrl-alt-_", GoForward, None),
+        KeyBinding::new("ctrl-alt-shift--", GoForward, None),
+        KeyBinding::new("ctrl-g", GoToLine, None),
+        KeyBinding::new("ctrl-shift-h", ProjectSearch, None),
+        KeyBinding::new("alt-up", MoveLineUp, Some("Input && mode == editor")),
+        KeyBinding::new("alt-down", MoveLineDown, Some("Input && mode == editor")),
+        KeyBinding::new(
+            "ctrl-shift-d",
+            DuplicateLine,
+            Some("Input && mode == editor"),
+        ),
+        KeyBinding::new("ctrl-shift-k", DeleteLine, Some("Input && mode == editor")),
+        KeyBinding::new("ctrl-/", ToggleComment, Some("Input && mode == editor")),
     ]);
 }
 
@@ -97,6 +149,10 @@ enum PaletteMode {
     Commands,
     Files,
     Search,
+    /// Find in files.
+    Grep,
+    /// Ctrl+G: `line[:col]`.
+    GoToLine,
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -151,6 +207,8 @@ enum Cmd {
     TurnDiff,
     HeadDiff,
     Approve(bool),
+    AskPick(String, String),
+    AskSubmit,
     AttachImage(String),
     RemoveAttachment(usize),
     SettingsSection(String),
@@ -160,11 +218,24 @@ enum Cmd {
     OpenMessage(String, Option<usize>),
     SetNotify(bool),
     SearchThreads,
+    SplitPane,
+    SplitTo(panes::SplitDir),
+    ClosePane,
+    FocusPaneDir(panes::SplitDir),
+    SwapPaneDir(panes::SplitDir),
+    ToggleZoom,
+    CloseFile(String, Option<bool>),
+    ReopenClosed,
+    GoBack,
+    GoForward,
+    GoToLine(usize, usize),
+    OpenFileAt(String, usize, usize),
 }
 
 struct ActiveTurn {
-    turn: Turn,
+    turn: Option<Turn>,
     text: String,
+    thinking: String,
     started: Instant,
 }
 
@@ -172,6 +243,9 @@ struct Tab {
     path: String,
     editor: Entity<EditorState>,
     saved: String,
+    /// Last keystroke, for autosave.
+    edited_at: Option<Instant>,
+    _sub: Subscription,
 }
 
 pub struct GrayApp {
@@ -203,23 +277,41 @@ pub struct GrayApp {
     model_query: String,
     model_sel: usize,
     /// Provider filter from the popover's rail (`None` = all providers).
-    model_rail: Option<&'static str>,
+    model_rail: Option<String>,
     model_scroll: ScrollHandle,
     model_reveal: std::cell::Cell<bool>,
     /// When a click outside closed the picker: that same click landing on the
     /// model chip must not reopen it.
     model_closed_at: Option<Instant>,
+    /// Provider/model catalog from `gray --dump-models`; None until loaded or
+    /// when the installed gray can't produce it (fallback providers only).
+    model_catalog: Option<Vec<ProviderEntry>>,
+    model_catalog_tx: Sender<Option<Vec<ProviderEntry>>>,
+    model_catalog_rx: Receiver<Option<Vec<ProviderEntry>>>,
+    model_catalog_loading: bool,
+    /// Installed external CLIs (claude, codex) with the models they report.
+    cli_providers: Vec<ProviderEntry>,
+    cli_providers_tx: Sender<Vec<ProviderEntry>>,
+    cli_providers_rx: Receiver<Vec<ProviderEntry>>,
+    model_catalog_at: Option<Instant>,
+    /// Effort chosen per "provider:model" row in the picker, applied on pick.
+    model_efforts: HashMap<String, String>,
     /// Threads whose turn finished while off screen: the sidebar shows a
     /// check until the thread is opened.
     done_unseen: HashSet<String>,
     sidebar_open: bool,
+    projects_collapsed: bool,
     terminal_open: bool,
     settings_open: bool,
     show_archived: bool,
     panel: Option<Panel>,
     turns: HashMap<String, ActiveTurn>,
     terminal_lines: Vec<String>,
-    terminal_rx: Vec<Receiver<String>>,
+    terminal_rx: Vec<Receiver<workspace::ShellMsg>>,
+    /// (work root, dir) where the next drawer command runs, so `cd` carries
+    /// over; ignored once the work root changes.
+    terminal_cwd: Option<(PathBuf, PathBuf)>,
+    terminal_scroll: ScrollHandle,
     scroll: ScrollHandle,
     /// Stick the timeline to the bottom as content streams in. Cleared when
     /// the user scrolls away from the bottom, set again when they return.
@@ -240,6 +332,9 @@ pub struct GrayApp {
     gray_sessions: Vec<GraySession>,
     gray_cmds: Vec<(String, String)>,
     pending_approval: Option<(String, String)>,
+    pending_ask: Option<engine::PendingAsk>,
+    /// `gray --stdio` processes, one per gray-backed thread (lazy spawn).
+    engines: HashMap<String, engine::Eng>,
     attachments: Vec<PathBuf>,
     skills: Vec<crate::skills::Skill>,
     settings_section: String,
@@ -274,6 +369,38 @@ pub struct GrayApp {
     plugin_busy: Option<String>,
     plugin_tx: Sender<PluginMsg>,
     plugin_rx: Receiver<PluginMsg>,
+    /// Thread tabs of the focused pane (other panes keep theirs in `panes`).
+    thread_tabs: Vec<String>,
+    panes: Vec<panes::PaneView>,
+    focused_pane: usize,
+    last_layout: String,
+    /// Focused pane fills the center; the others stay open behind it.
+    zoomed: bool,
+    /// Split layout over `panes` (leaves are pane indices).
+    pane_tree: panes::PaneNode,
+    pane_drag: Option<panes::PaneDrag>,
+    /// Last painted bounds of each split, keyed by tree path (drag math).
+    split_bounds: std::rc::Rc<std::cell::RefCell<HashMap<Vec<usize>, Bounds<Pixels>>>>,
+    /// Pane whose split menu is open.
+    split_menu: Option<usize>,
+    /// Last painted bounds of each pane (directional focus/swap).
+    pane_bounds: std::rc::Rc<std::cell::RefCell<HashMap<usize, Bounds<Pixels>>>>,
+    /// Tab drag hovering pane `.0`: the edge it would split on, or `None`
+    /// to move the tab into that pane.
+    tab_drop: Option<(usize, Option<panes::SplitDir>)>,
+    confirm: Option<editing::Confirm>,
+    closed: Vec<editing::Closed>,
+    file_tabs_scroll: ScrollHandle,
+    file_tabs_reveal: bool,
+    composer_chips_scroll: ScrollHandle,
+    /// Focused pane's thread history (others park theirs in `panes`).
+    nav_back: Vec<String>,
+    nav_fwd: Vec<String>,
+    navigating: bool,
+    /// Find-in-files: query in flight, last results, receiver for the worker.
+    grep_q: String,
+    grep_items: Vec<(String, String, Cmd)>,
+    grep_rx: Option<Receiver<(String, Vec<(String, String, Cmd)>)>>,
 }
 
 impl GrayApp {
@@ -283,12 +410,9 @@ impl GrayApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let composer = cx.new(|cx| {
-            TextareaState::new(window, cx)
-                .auto_grow(2, 10)
-                .submit_on_enter(true)
-                .placeholder("Ask Gray anything, @ to mention files, / for commands")
-        });
+        let (composer, composer_sub) = Self::new_composer(window, cx);
+        // Placeholder parked in the focused pane's slot; never rendered.
+        let hollow = cx.new(|cx| TextareaState::new(window, cx));
         let palette_input =
             cx.new(|cx| InputState::new(window, cx).placeholder("Type a command or search"));
         let terminal_input =
@@ -298,23 +422,7 @@ impl GrayApp {
             cx.new(|cx| InputState::new(window, cx).placeholder("Search settings"));
 
         let mut subs = Vec::new();
-        subs.push(cx.subscribe_in(
-            &composer,
-            window,
-            |this, _, ev: &InputEvent, window, cx| match ev {
-                InputEvent::PressEnter { shift: false, .. } => {
-                    if !this.accept_pop(window, cx) {
-                        this.send(window, cx);
-                    }
-                }
-                InputEvent::Change => this.update_composer_pop(cx),
-                InputEvent::Blur => {
-                    this.composer_pop = None;
-                    cx.notify();
-                }
-                _ => {}
-            },
-        ));
+        subs.push(composer_sub);
         subs.push(cx.subscribe_in(
             &palette_input,
             window,
@@ -323,6 +431,7 @@ impl GrayApp {
                     this.palette_query = state.read(cx).value().to_string();
                     this.palette_sel = 0;
                     this.palette_reveal.set(true);
+                    this.grep_spawn();
                     cx.notify();
                 }
                 InputEvent::PressEnter { .. } => {
@@ -372,6 +481,16 @@ impl GrayApp {
         std::thread::spawn(move || {
             let _ = gray_cmd_tx.send(graycmds::list());
         });
+        let (cli_tx, cli_rx) = channel();
+        let cli_tx2 = cli_tx.clone();
+        std::thread::spawn(move || {
+            let _ = cli_tx2.send(provider::load_cli_providers());
+        });
+        let (model_cat_tx, model_cat_rx) = channel();
+        let cat_tx = model_cat_tx.clone();
+        std::thread::spawn(move || {
+            let _ = cat_tx.send(provider::load_model_catalog());
+        });
         let mut app = Self {
             focus: cx.focus_handle(),
             store,
@@ -399,8 +518,18 @@ impl GrayApp {
             model_scroll: ScrollHandle::new(),
             model_reveal: std::cell::Cell::new(false),
             model_closed_at: None,
+            model_catalog: None,
+            model_catalog_tx: model_cat_tx,
+            model_catalog_rx: model_cat_rx,
+            model_catalog_loading: true,
+            cli_providers: Vec::new(),
+            cli_providers_tx: cli_tx,
+            cli_providers_rx: cli_rx,
+            model_catalog_at: None,
+            model_efforts: HashMap::new(),
             done_unseen: HashSet::new(),
             sidebar_open: true,
+            projects_collapsed: false,
             terminal_open: false,
             settings_open: false,
             show_archived: false,
@@ -408,6 +537,8 @@ impl GrayApp {
             turns: HashMap::new(),
             terminal_lines: Vec::new(),
             terminal_rx: Vec::new(),
+            terminal_cwd: None,
+            terminal_scroll: ScrollHandle::new(),
             scroll: ScrollHandle::new(),
             follow: true,
             last_offset: px(0.),
@@ -422,6 +553,8 @@ impl GrayApp {
             gray_sessions: Vec::new(),
             gray_cmds: Vec::new(),
             pending_approval: None,
+            pending_ask: None,
+            engines: HashMap::new(),
             attachments: Vec::new(),
             skills: Vec::new(),
             settings_section: "preferences".into(),
@@ -453,6 +586,28 @@ impl GrayApp {
             plugin_busy: None,
             plugin_tx,
             plugin_rx,
+            thread_tabs: Vec::new(),
+            panes: vec![panes::PaneView::new(hollow)],
+            focused_pane: 0,
+            last_layout: String::new(),
+            zoomed: false,
+            pane_tree: panes::PaneNode::Leaf(0),
+            pane_drag: None,
+            split_bounds: Default::default(),
+            split_menu: None,
+            pane_bounds: Default::default(),
+            tab_drop: None,
+            confirm: None,
+            closed: Vec::new(),
+            file_tabs_scroll: ScrollHandle::new(),
+            file_tabs_reveal: false,
+            composer_chips_scroll: ScrollHandle::new(),
+            nav_back: Vec::new(),
+            nav_fwd: Vec::new(),
+            navigating: false,
+            grep_q: String::new(),
+            grep_items: Vec::new(),
+            grep_rx: None,
         };
         if let Some(path) = initial {
             app.add_project(&path);
@@ -468,6 +623,7 @@ impl GrayApp {
                 .first()
                 .map(|t| t.id.clone());
         }
+        app.restore_layout(window, cx);
         let mode = if app.store.state.setting("theme", "dark") == "light" {
             ThemeMode::Light
         } else {
@@ -514,16 +670,7 @@ impl Render for GrayApp {
             .flex_1()
             .min_w_0()
             .h_full()
-            .child(self.render_header(cx))
-            .child(self.render_timeline(window, cx))
-            .children(
-                self.pending_approval
-                    .as_ref()
-                    .map(|(_, label)| self.render_approval(label, cx)),
-            )
-            .when(!self.timeline_empty(), |s| {
-                s.child(self.render_composer(window, cx))
-            });
+            .child(self.render_panes(window, cx));
         let side_terminal = self.terminal_open
             && self.store.state.setting("terminal_placement", "bottom") == "right";
         if self.terminal_open && !side_terminal {
@@ -534,8 +681,9 @@ impl Render for GrayApp {
             center_outer = center_outer.child(self.render_terminal(true, cx));
         }
         let pro = self.store.state.setting("layout", "focus") == "pro";
-        let mut main = h_resizable("main-split").on_resize(cx.listener(
-            |this, state: &Entity<ResizableState>, _w, cx| {
+        let mut main = h_resizable("main-split")
+            .with_handle_appearance(lineless_handle())
+            .on_resize(cx.listener(|this, state: &Entity<ResizableState>, _w, cx| {
                 let sizes: Vec<f32> = state
                     .read(cx)
                     .sizes()
@@ -545,8 +693,7 @@ impl Render for GrayApp {
                 if sizes != this.pane_sizes {
                     this.pane_sizes = sizes;
                 }
-            },
-        ));
+            }));
         if pro {
             main = main.child(
                 resizable_panel()
@@ -623,6 +770,69 @@ impl Render for GrayApp {
             .on_action(
                 cx.listener(|this, _: &SearchThreads, w, cx| this.run(Cmd::SearchThreads, w, cx)),
             )
+            .on_action(cx.listener(|this, _: &SplitPane, w, cx| this.run(Cmd::SplitPane, w, cx)))
+            .on_action(cx.listener(|this, _: &CloseTab, w, cx| this.close_active(w, cx)))
+            .on_action(
+                cx.listener(|this, _: &ReopenClosed, w, cx| this.run(Cmd::ReopenClosed, w, cx)),
+            )
+            .on_action(cx.listener(|this, _: &GoBack, w, cx| this.go_history(true, w, cx)))
+            .on_action(cx.listener(|this, _: &GoForward, w, cx| this.go_history(false, w, cx)))
+            .on_action(cx.listener(|this, _: &GoToLine, w, cx| {
+                this.open_palette(PaletteMode::GoToLine, "", w, cx)
+            }))
+            .on_action(cx.listener(|this, _: &ProjectSearch, w, cx| {
+                this.open_palette(PaletteMode::Grep, "", w, cx)
+            }))
+            .on_action(cx.listener(|this, _: &MoveLineUp, w, cx| {
+                this.line_edit(editing::LineOp::MoveUp, w, cx)
+            }))
+            .on_action(cx.listener(|this, _: &MoveLineDown, w, cx| {
+                this.line_edit(editing::LineOp::MoveDown, w, cx)
+            }))
+            .on_action(cx.listener(|this, _: &DuplicateLine, w, cx| {
+                this.line_edit(editing::LineOp::Duplicate, w, cx)
+            }))
+            .on_action(cx.listener(|this, _: &DeleteLine, w, cx| {
+                this.line_edit(editing::LineOp::Delete, w, cx)
+            }))
+            .on_action(cx.listener(|this, _: &ToggleComment, w, cx| {
+                this.line_edit(editing::LineOp::Comment, w, cx)
+            }))
+            .on_mouse_down(
+                MouseButton::Navigate(NavigationDirection::Back),
+                cx.listener(|this, _, w, cx| this.go_history(true, w, cx)),
+            )
+            .on_mouse_down(
+                MouseButton::Navigate(NavigationDirection::Forward),
+                cx.listener(|this, _, w, cx| this.go_history(false, w, cx)),
+            )
+            .on_action(cx.listener(|this, _: &NextTab, w, cx| this.cycle_tab(1, w, cx)))
+            .on_action(cx.listener(|this, _: &PrevTab, w, cx| this.cycle_tab(-1, w, cx)))
+            .on_action(cx.listener(|this, _: &ActivatePaneLeft, w, cx| {
+                this.run(Cmd::FocusPaneDir(panes::SplitDir::Left), w, cx)
+            }))
+            .on_action(cx.listener(|this, _: &ActivatePaneRight, w, cx| {
+                this.run(Cmd::FocusPaneDir(panes::SplitDir::Right), w, cx)
+            }))
+            .on_action(cx.listener(|this, _: &ActivatePaneUp, w, cx| {
+                this.run(Cmd::FocusPaneDir(panes::SplitDir::Up), w, cx)
+            }))
+            .on_action(cx.listener(|this, _: &ActivatePaneDown, w, cx| {
+                this.run(Cmd::FocusPaneDir(panes::SplitDir::Down), w, cx)
+            }))
+            .on_action(cx.listener(|this, _: &SwapPaneLeft, w, cx| {
+                this.run(Cmd::SwapPaneDir(panes::SplitDir::Left), w, cx)
+            }))
+            .on_action(cx.listener(|this, _: &SwapPaneRight, w, cx| {
+                this.run(Cmd::SwapPaneDir(panes::SplitDir::Right), w, cx)
+            }))
+            .on_action(cx.listener(|this, _: &SwapPaneUp, w, cx| {
+                this.run(Cmd::SwapPaneDir(panes::SplitDir::Up), w, cx)
+            }))
+            .on_action(cx.listener(|this, _: &SwapPaneDown, w, cx| {
+                this.run(Cmd::SwapPaneDir(panes::SplitDir::Down), w, cx)
+            }))
+            .on_action(cx.listener(|this, _: &ToggleZoom, w, cx| this.run(Cmd::ToggleZoom, w, cx)))
             .on_action(cx.listener(|this, _: &FilePicker, w, cx| {
                 this.open_palette(PaletteMode::Files, "", w, cx)
             }))
@@ -646,6 +856,9 @@ impl Render for GrayApp {
             .when(bg != "none", |s| s.child(background_layer(&bg)))
             .when(self.palette_open, |s| s.child(self.render_palette(cx)))
             .when(self.settings_open, |s| s.child(self.render_settings(cx)))
+            .when_some(self.confirm.as_ref(), |s, c| {
+                s.child(self.render_confirm(c, cx))
+            })
             .when_some(self.toast.clone(), |s, (msg, err)| {
                 s.child(self.render_toast(msg, err, cx))
             })
@@ -696,14 +909,41 @@ mod render_palette;
 mod render_panels;
 mod render_timeline;
 
+mod editing;
+mod engine;
 mod files;
+mod panes;
 mod pickers;
 mod projects;
 mod turns;
 
 #[cfg(test)]
 mod tests {
-    use super::snippet;
+    use super::{rank_paths, snippet};
+
+    #[test]
+    fn file_ranking_prefers_names_and_drops_scatter() {
+        let files = [
+            "assets/app-icon.png",
+            "crates/gray-ide/assets/icons/g/settings.svg",
+            "crates/gray-ide/src/sessions.rs",
+            "crates/gray/src/repl/session.rs",
+            "docs/session-store.md",
+        ]
+        .map(String::from)
+        .to_vec();
+        let got = rank_paths(files, "session", 10);
+        assert_eq!(got[0], "crates/gray/src/repl/session.rs");
+        assert!(got.iter().all(|p| p.contains("session")), "{got:?}");
+        let got = rank_paths(
+            ["src/app/render_palette.rs", "src/app/pickers.rs"]
+                .map(String::from)
+                .to_vec(),
+            "rpal",
+            10,
+        );
+        assert_eq!(got, ["src/app/render_palette.rs"]);
+    }
 
     #[test]
     fn snippet_survives_expanding_lowercase() {

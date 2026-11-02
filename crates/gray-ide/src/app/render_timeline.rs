@@ -14,7 +14,7 @@ impl GrayApp {
         }
     }
 
-    pub(super) fn render_timeline(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn render_timeline(&self, _window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let t = cx.theme().clone();
         let thread = self
             .active_thread
@@ -35,55 +35,56 @@ impl GrayApp {
             }
         };
         let empty = self.timeline_empty();
+        // With 3+ panes side by side the greeting just truncates; leave
+        // the empty pane blank.
+        if empty && self.panes.len() > 2 && !self.zoomed {
+            return div().flex_1().min_h_0().w_full().into_any_element();
+        }
         if empty {
-            let welcome_composer = self.render_composer(window, cx);
             let project = self
                 .active_project
                 .as_ref()
                 .and_then(|id| self.store.state.project(id))
                 .map(|p| p.name.clone());
-            return motion::enter(
-                v_flex()
-                    .flex_1()
-                    .items_center()
-                    .justify_center()
-                    .gap(px(10.))
-                    .pb(px(40.))
-                    .child(
-                        svg()
-                            .path("icons/gray-logo.svg")
-                            .size(px(52.))
-                            .text_color(t.foreground.opacity(0.9)),
-                    )
-                    .child(
-                        div()
-                            .mt(px(6.))
-                            .text_size(px(26.))
-                            .font_family("Brygada 1918")
-                            .child(motion::decode("welcome-title", "Gray", motion::WELCOME_MS)),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(14.))
-                            .text_color(t.foreground.opacity(0.55))
-                            .child(match project {
-                                Some(p) => format!("What should we build in {p}?"),
-                                None => "Open a project to get started".to_string(),
-                            }),
-                    )
-                    .child(
-                        div()
-                            .w_full()
-                            .max_w(px(640.))
-                            .mt(px(14.))
-                            .child(welcome_composer),
-                    ),
-                "welcome-in",
-                motion::WELCOME_MS,
-                -8.,
-                motion::ease_out(),
-            )
-            .into_any_element();
+            let greeting = match project {
+                Some(p) => format!("What should we build in {p}?"),
+                None => "Open a project to get started".to_string(),
+            };
+            // Greeting sits top-left; the composer stays in its bottom dock.
+            return div()
+                .flex_1()
+                .min_h_0()
+                .w_full()
+                .child(
+                    div()
+                        .w_full()
+                        .max_w(px(896.))
+                        .mx_auto()
+                        .px_4()
+                        .pt(px(28.))
+                        .child(
+                            h_flex()
+                                .min_w_0()
+                                .gap(px(10.))
+                                .items_center()
+                                .child(
+                                    svg()
+                                        .path("icons/gray-logo.svg")
+                                        .size(px(32.))
+                                        .flex_none()
+                                        .text_color(t.foreground.opacity(0.9)),
+                                )
+                                .child(
+                                    div()
+                                        .min_w_0()
+                                        .truncate()
+                                        .text_size(px(22.))
+                                        .font_family("Ancizar Serif")
+                                        .child(greeting),
+                                ),
+                        ),
+                )
+                .into_any_element();
         }
         let thread = thread.unwrap();
         let mut col = v_flex()
@@ -210,7 +211,6 @@ impl GrayApp {
                                 .bg(t.popover)
                                 .border_1()
                                 .border_color(float_border(&t))
-                                .shadow(hard_shadow(&t))
                                 .text_size(px(12.))
                                 .text_color(t.foreground.opacity(0.75))
                                 .hover(|s| s.bg(t.secondary_hover))
@@ -289,13 +289,7 @@ impl GrayApp {
                 this.group_open.insert(gid.clone(), !open);
                 cx.notify();
             }));
-        let mut body = v_flex()
-            .gap(px(4.))
-            .ml(px(6.))
-            .mt(px(4.))
-            .pl(px(13.))
-            .border_l_1()
-            .border_color(ink.opacity(0.08));
+        let mut body = v_flex().gap(px(4.)).ml(px(6.)).mt(px(4.)).pl(px(13.));
         for ix in r.clone() {
             body = body.child(rise(
                 render_item(&items[ix], t, false),

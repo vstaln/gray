@@ -3,8 +3,7 @@ use super::*;
 pub(super) fn md_style(t: &Theme) -> TextViewStyle {
     TextViewStyle::default().code_block(
         StyleRefinement::default()
-            .border_1()
-            .border_color(t.foreground.opacity(0.10))
+            .bg(t.foreground.opacity(0.05))
             .p(px(12.)),
     )
 }
@@ -24,9 +23,10 @@ impl Row {
     }
 }
 
-/// Checkpoints stay as their own row: they sit before the prompt, not in the turn.
+/// Checkpoints stay as their own row: they sit before the prompt, not in the
+/// turn. Errors too: folded into "Worked for …" the failure text was hidden.
 pub(super) fn groupable(item: &Item) -> bool {
-    matches!(item, Item::Activity { kind, .. } if kind != "checkpoint")
+    matches!(item, Item::Activity { kind, .. } if kind != "checkpoint" && kind != "error")
 }
 
 pub(super) fn timeline_rows(items: &[Item]) -> Vec<Row> {
@@ -124,8 +124,6 @@ pub(super) fn render_item(item: &Item, t: &Theme, burst: bool) -> AnyElement {
                 .px(px(12.))
                 .py(px(8.))
                 .bg(ink.opacity(0.08))
-                .border_1()
-                .border_color(ink.opacity(0.10))
                 .text_size(px(14.))
                 .line_height(px(21.))
                 .child(text.clone());
@@ -157,6 +155,52 @@ pub(super) fn render_item(item: &Item, t: &Theme, burst: bool) -> AnyElement {
             ..
         } => {
             let err = kind == "error";
+            if err {
+                // The whole message (capped), wrapped: the one-line form
+                // truncated exactly the part that says what went wrong.
+                let mut body: String = detail.lines().take(8).collect::<Vec<_>>().join("\n");
+                if detail.lines().count() > 8 {
+                    body.push_str("\n…");
+                }
+                return h_flex()
+                    .items_start()
+                    .gap(px(7.))
+                    .py(px(4.))
+                    .px(px(10.))
+                    .bg(t.danger.opacity(0.08))
+                    .border_l_2()
+                    .border_color(t.danger.opacity(0.6))
+                    .child(
+                        Icon::new(GIcon::CircleX)
+                            .size(px(14.))
+                            .mt(px(2.))
+                            .text_color(t.danger.opacity(0.85)),
+                    )
+                    .child(
+                        v_flex()
+                            .flex_1()
+                            .min_w_0()
+                            .gap(px(2.))
+                            .child(
+                                div()
+                                    .text_size(px(12.5))
+                                    .font_medium()
+                                    .text_color(t.danger.opacity(0.95))
+                                    .child(label.clone()),
+                            )
+                            .when(!body.trim().is_empty(), |s| {
+                                s.child(
+                                    div()
+                                        .font_family(t.mono_font_family.clone())
+                                        .text_size(px(12.))
+                                        .text_color(ink.opacity(0.75))
+                                        .whitespace_normal()
+                                        .child(body),
+                                )
+                            }),
+                    )
+                    .into_any_element();
+            }
             let (icon, icon_color) = match kind.as_str() {
                 "error" => (GIcon::CircleX, t.danger.opacity(0.8)),
                 "edit" => (GIcon::FileText, t.success.opacity(0.8)),
@@ -319,6 +363,23 @@ pub(super) fn cmd_action(cmd: &Cmd) -> Option<Box<dyn Action>> {
         Cmd::TogglePlugins => Box::new(TogglePluginsPanel),
         Cmd::ToggleViewer => Box::new(ToggleViewer),
         Cmd::Stop => Box::new(StopTurn),
+        Cmd::SplitPane => Box::new(SplitPane),
+        Cmd::ToggleZoom => Box::new(ToggleZoom),
+        Cmd::ReopenClosed => Box::new(ReopenClosed),
+        Cmd::GoBack => Box::new(GoBack),
+        Cmd::GoForward => Box::new(GoForward),
+        Cmd::FocusPaneDir(d) => match d {
+            panes::SplitDir::Left => Box::new(ActivatePaneLeft),
+            panes::SplitDir::Right => Box::new(ActivatePaneRight),
+            panes::SplitDir::Up => Box::new(ActivatePaneUp),
+            panes::SplitDir::Down => Box::new(ActivatePaneDown),
+        },
+        Cmd::SwapPaneDir(d) => match d {
+            panes::SplitDir::Left => Box::new(SwapPaneLeft),
+            panes::SplitDir::Right => Box::new(SwapPaneRight),
+            panes::SplitDir::Up => Box::new(SwapPaneUp),
+            panes::SplitDir::Down => Box::new(SwapPaneDown),
+        },
         _ => return None,
     })
 }

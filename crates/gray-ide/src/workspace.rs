@@ -108,14 +108,31 @@ pub fn language_for(path: &str) -> &'static str {
     }
 }
 
-pub fn run_shell(cwd: &Path, command: &str) -> Receiver<String> {
+/// One event from a terminal-drawer command.
+pub enum ShellMsg {
+    Line(String),
+    /// The shell's working directory when the command finished, so `cd`
+    /// carries over to the next command.
+    Cwd(std::path::PathBuf),
+}
+
+const CWD_MARK: &str = "\u{1f}GRAYCWD ";
+
+/// Run `command` under `sh` in `cwd`. stderr is merged into stdout for the
+/// whole script (a trailing `2>&1` would only cover the last command), and
+/// the final `$PWD` is reported after a marker.
+pub fn run_shell(cwd: &Path, command: &str) -> Receiver<ShellMsg> {
     let (tx, rx) = channel();
     let cwd = cwd.to_path_buf();
-    let command = command.to_string();
+    // Newlines keep a trailing `# comment` in the command from eating the
+    // wrapper.
+    let script = format!(
+        "exec 2>&1\n{command}\n__gray_s=$?\nprintf '\\n\\037GRAYCWD %s\\n' \"$PWD\"\nexit $__gray_s"
+    );
     thread::spawn(move || {
         let child = Command::new("sh")
             .arg("-c")
-            .arg(format!("{command} 2>&1"))
+            .arg(script)
             .current_dir(&cwd)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -123,17 +140,113 @@ pub fn run_shell(cwd: &Path, command: &str) -> Receiver<String> {
         match child {
             Ok(mut child) => {
                 if let Some(out) = child.stdout.take() {
+                    let mut pending: Option<String> = None;
                     for line in BufReader::new(out).lines().map_while(Result::ok) {
-                        let _ = tx.send(line);
+                        if let Some(dir) = line.strip_prefix(CWD_MARK) {
+                            // The marker's leading newline adds one blank
+                            // line; drop it.
+                            if let Some(p) = pending.take().filter(|p| !p.is_empty()) {
+                                let _ = tx.send(ShellMsg::Line(p));
+                            }
+                            let _ = tx.send(ShellMsg::Cwd(dir.into()));
+                            continue;
+                        }
+                        if let Some(p) = pending.replace(strip_ansi(&line)) {
+                            let _ = tx.send(ShellMsg::Line(p));
+                        }
+                    }
+                    if let Some(p) = pending {
+                        let _ = tx.send(ShellMsg::Line(p));
                     }
                 }
                 let code = child.wait().ok().and_then(|s| s.code()).unwrap_or(-1);
-                let _ = tx.send(format!("[exit {code}]"));
+                if code != 0 {
+                    let _ = tx.send(ShellMsg::Line(format!("[exit {code}]")));
+                }
             }
             Err(e) => {
-                let _ = tx.send(format!("error: {e}"));
+                let _ = tx.send(ShellMsg::Line(format!("error: {e}")));
             }
         }
     });
     rx
+}
+
+/// Drop ANSI escape sequences (CSI/OSC) and stray control bytes; the drawer
+/// renders plain text.
+pub fn strip_ansi(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut it = s.chars().peekable();
+    while let Some(c) = it.next() {
+        match c {
+            '\u{1b}' => match it.next() {
+                Some('[') => {
+                    for c in it.by_ref() {
+                        if ('@'..='~').contains(&c) {
+                            break;
+                        }
+                    }
+                }
+                Some(']') => {
+                    while let Some(c) = it.next() {
+                        if c == '\u{7}' {
+                            break;
+                        }
+                        if c == '\u{1b}' && it.peek() == Some(&'\\') {
+                            it.next();
+                            break;
+                        }
+                    }
+                }
+                _ => {}
+            },
+            '\t' => out.push_str("    "),
+            '\r' => {}
+            c if c.is_control() => {}
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn run(cwd: &Path, cmd: &str) -> (Vec<String>, Option<std::path::PathBuf>) {
+        let mut lines = Vec::new();
+        let mut dir = None;
+        for m in run_shell(cwd, cmd) {
+            match m {
+                ShellMsg::Line(l) => lines.push(l),
+                ShellMsg::Cwd(d) => dir = Some(d),
+            }
+        }
+        (lines, dir)
+    }
+
+    #[test]
+    fn stderr_of_every_command_is_captured() {
+        let (lines, _) = run(Path::new("/"), "echo out; echo err >&2; false");
+        assert_eq!(lines, ["out", "err", "[exit 1]"]);
+    }
+
+    #[test]
+    fn cd_is_reported_and_no_blank_tail() {
+        let (lines, dir) = run(Path::new("/"), "cd /tmp # comment");
+        assert!(lines.is_empty(), "{lines:?}");
+        assert_eq!(dir.unwrap(), Path::new("/tmp"));
+    }
+
+    #[test]
+    fn output_without_trailing_newline_survives() {
+        let (lines, _) = run(Path::new("/"), "printf abc");
+        assert_eq!(lines, ["abc"]);
+    }
+
+    #[test]
+    fn ansi_is_stripped() {
+        assert_eq!(strip_ansi("\u{1b}[01;34mdir\u{1b}[0m x"), "dir x");
+        assert_eq!(strip_ansi("\u{1b}]0;title\u{7}hi"), "hi");
+    }
 }

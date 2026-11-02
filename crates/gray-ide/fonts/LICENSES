@@ -1,4 +1,5 @@
 Bundled fonts (converted to TTF for embedding):
-- Plus Jakarta Sans — SIL Open Font License 1.1 (tokotype.github.io/plusjakarta-sans)
-- Departure Mono — MIT / OFL (github.com/rektdeckard/departure-mono)
-- Brygada 1918 — SIL Open Font License 1.1 (github.com/enkoder-Art/sortie-Brygada)
+- Plus Jakarta Sans — SIL Open Font License 1.1 (tokotype.github.io/plusjakarta-sans);
+  static 400/500/600/700 instances cut from the variable font with fontTools
+- Commit Mono — SIL Open Font License 1.1 (commitmono.com)
+- Ancizar Serif — SIL Open Font License 1.1 (github.com/UNAL-OMD/ancizar)

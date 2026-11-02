@@ -318,6 +318,23 @@ impl State {
         self.projects.iter().find(|p| p.id == id)
     }
 
+    /// The "fake" provider is e2e scaffolding. If a test run ever leaked it
+    /// into a real data dir, map it back to the gray CLI on load so the
+    /// composer never shows or runs it.
+    pub fn drop_test_provider(&mut self) {
+        if self.settings.get("default_provider").map(String::as_str) == Some("fake") {
+            self.settings.remove("default_provider");
+        }
+        self.settings.remove("default_model.fake");
+        for t in &mut self.threads {
+            if t.provider == "fake" {
+                t.provider = "gray".into();
+                t.model = "default".into();
+                t.session = None;
+            }
+        }
+    }
+
     pub fn setting(&self, key: &str, default: &str) -> String {
         self.settings
             .get(key)
@@ -361,6 +378,9 @@ impl Store {
                     state.apply(&event);
                 }
             }
+        }
+        if !crate::provider::fake_enabled() {
+            state.drop_test_provider();
         }
         Ok(Self { path, state })
     }

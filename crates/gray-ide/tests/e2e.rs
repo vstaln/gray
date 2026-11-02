@@ -488,6 +488,8 @@ fn palette_switches_provider_model_and_mode() {
     g.wait_for("reply", finished);
     g.key("ctrl+shift+m");
     let s = g.wait_for("model picker", |s| s["model_open"] == true);
+    sleep(Duration::from_millis(2000));
+    g.screenshot("model-picker");
     assert!(
         s["model_items"]
             .as_array()

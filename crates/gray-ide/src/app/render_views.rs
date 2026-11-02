@@ -12,8 +12,6 @@ impl GrayApp {
                     .px_3()
                     .py_2()
                     .gap_3()
-                    .border_b_1()
-                    .border_color(t.border)
                     .child(
                         v_flex()
                             .flex_1()
@@ -79,29 +77,43 @@ impl GrayApp {
                     .px_3()
                     .py_2()
                     .gap_3()
-                    .border_b_1()
-                    .border_color(t.border)
+                    // The prompt is the title; id, model, age and cwd are
+                    // the muted detail line.
                     .child(
                         v_flex()
                             .flex_1()
                             .min_w_0()
+                            .gap_0p5()
                             .child(
                                 h_flex()
                                     .gap_2()
                                     .items_center()
-                                    .child(
-                                        div()
-                                            .font_family(t.mono_font_family.clone())
-                                            .text_xs()
-                                            .child(gs.id.clone()),
-                                    )
+                                    .min_w_0()
                                     .when(gs.live, |s| {
                                         s.child(
                                             div()
-                                                .text_xs()
-                                                .font_family(t.mono_font_family.clone())
-                                                .text_color(t.success)
-                                                .child("LIVE"),
+                                                .flex_none()
+                                                .size(px(6.))
+                                                .rounded_full()
+                                                .bg(t.success),
+                                        )
+                                    })
+                                    .child(div().flex_1().min_w_0().text_sm().truncate().child(
+                                        if gs.preview.is_empty() {
+                                            gs.id.clone()
+                                        } else {
+                                            gs.preview.clone()
+                                        },
+                                    ))
+                                    .when(gs.subagent, |s| {
+                                        s.child(
+                                            div()
+                                                .flex_none()
+                                                .px_1()
+                                                .text_size(px(10.))
+                                                .text_color(t.muted_foreground)
+                                                .bg(t.foreground.opacity(0.06))
+                                                .child("subagent"),
                                         )
                                     }),
                             )
@@ -110,23 +122,19 @@ impl GrayApp {
                                     .text_xs()
                                     .text_color(t.muted_foreground)
                                     .truncate()
-                                    .child(if gs.preview.is_empty() {
-                                        format!("{} · {}", gs.model, relative(gs.timestamp))
-                                    } else {
-                                        format!(
-                                            "{} · {} · {}",
-                                            gs.preview,
-                                            gs.model,
-                                            relative(gs.timestamp)
-                                        )
-                                    }),
-                            )
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(t.muted_foreground)
-                                    .truncate()
-                                    .child(gs.cwd.clone()),
+                                    .child(
+                                        [
+                                            gs.id.as_str(),
+                                            gs.model.as_str(),
+                                            &relative(gs.timestamp),
+                                            gs.cwd.as_str(),
+                                        ]
+                                        .iter()
+                                        .filter(|p| !p.is_empty())
+                                        .copied()
+                                        .collect::<Vec<_>>()
+                                        .join(" · "),
+                                    ),
                             ),
                     )
                     .child(
@@ -199,8 +207,6 @@ impl GrayApp {
                             .flex_none()
                             .px_3()
                             .items_center()
-                            .border_b_1()
-                            .border_color(t.border)
                             .child(crumbs)
                             .child(div().flex_1())
                             .child(

@@ -71,10 +71,10 @@ impl GrayApp {
         let provider = self.store.state.setting("default_provider", "gray");
         let model = self.store.state.setting(
             &format!("default_model.{provider}"),
-            provider::default_model(&provider),
+            &self.default_model(&provider),
         );
         let mode = self.store.state.setting("default_mode", "full");
-        let mode = if provider == "gray" {
+        let mode = if provider::is_gray_provider(&provider) {
             "full".to_string()
         } else {
             mode
@@ -109,7 +109,7 @@ impl GrayApp {
         if let Some(cmd) = text.strip_prefix('/') {
             self.composer
                 .update(cx, |s, cx| s.set_value("", window, cx));
-            self.slash(cmd.trim(), window, cx);
+            self.dispatch_slash(cmd.trim(), window, cx);
             return;
         }
         let Some(root) = self.work_root() else {
@@ -124,15 +124,21 @@ impl GrayApp {
                 None => return,
             },
         };
-        if self.turns.contains_key(&tid) {
+        let thread = self.store.state.thread(&tid).cloned();
+        let Some(thread) = thread else { return };
+        let gray = provider::is_gray_provider(&thread.provider);
+        let running = self.turns.contains_key(&tid);
+        if running && !gray {
             self.toast("A turn is already running in this thread", true);
             cx.notify();
             return;
         }
+        if gray && !self.ensure_engine(&tid) {
+            // Spawn failure already toasted; keep the draft.
+            return;
+        }
         self.composer
             .update(cx, |s, cx| s.set_value("", window, cx));
-        let thread = self.store.state.thread(&tid).cloned();
-        let Some(thread) = thread else { return };
         let was_empty = thread.items.is_empty();
         if thread.title == "New thread" {
             let title: String = text.lines().next().unwrap_or("").chars().take(48).collect();
@@ -141,8 +147,15 @@ impl GrayApp {
                 title,
             });
         }
+        // Only a new checkpoint when the tree changed since the thread's last
+        // one; otherwise every turn repeated an identical restore point.
+        let last_checkpoint = thread.items.iter().rev().find_map(|i| match i {
+            Item::Activity { kind, detail, .. } if kind == "checkpoint" => Some(detail.clone()),
+            _ => None,
+        });
         if git::is_repo(&root)
             && let Some(tree) = git::checkpoint(&root)
+            && last_checkpoint.as_deref() != Some(tree.as_str())
         {
             self.persist(Event::ActivityAdded {
                 thread_id: tid.clone(),
@@ -160,42 +173,64 @@ impl GrayApp {
             text: text.clone(),
             at: now(),
         });
-        let mut prompt = expand_mentions(&text, &root);
-        for a in &self.attachments {
-            prompt.push_str(&format!("\n[Attached image: {}]", a.display()));
+        let attachments = std::mem::take(&mut self.attachments);
+        if gray {
+            self.engine_prompt(&tid, &text, &attachments);
+        } else {
+            let mut prompt = expand_mentions(&text, &root);
+            for a in &attachments {
+                prompt.push_str(&format!("\n[Attached image: {}]", a.display()));
+            }
+            let turn = provider::start(TurnRequest {
+                provider: thread.provider.clone(),
+                model: thread.model.clone(),
+                mode: thread.mode.clone(),
+                prompt,
+                cwd: root,
+                effort: thread.effort.clone(),
+                session: thread
+                    .session
+                    .as_ref()
+                    .filter(|(p, _)| p == &thread.provider)
+                    .map(|(_, sid)| sid.clone()),
+            });
+            self.turns.insert(
+                tid,
+                ActiveTurn {
+                    turn: Some(turn),
+                    text: String::new(),
+                    thinking: String::new(),
+                    started: Instant::now(),
+                },
+            );
         }
-        self.attachments.clear();
-        let turn = provider::start(TurnRequest {
-            provider: thread.provider.clone(),
-            model: thread.model.clone(),
-            mode: if thread.provider == "gray" {
-                "full".to_string()
-            } else {
-                thread.mode.clone()
-            },
-            prompt,
-            cwd: root,
-            effort: thread.effort.clone(),
-            session: thread
-                .session
-                .as_ref()
-                .filter(|(p, _)| p == &thread.provider)
-                .map(|(_, sid)| sid.clone()),
-        });
-        self.turns.insert(
-            tid,
-            ActiveTurn {
-                turn,
-                started: Instant::now(),
-                text: String::new(),
-            },
-        );
         self.follow = true;
         self.scroll.scroll_to_bottom();
         if was_empty {
             self.dock_slide_at = Some(Instant::now());
         }
         cx.notify();
+    }
+
+    /// Route a `/` line: gray-engine threads go through the protocol (gray
+    /// commands win collisions), legacy-provider threads keep the local map.
+    pub(super) fn dispatch_slash(
+        &mut self,
+        cmd: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let gray = self
+            .active_thread
+            .as_ref()
+            .and_then(|t| self.store.state.thread(t))
+            .map(|t| provider::is_gray_provider(&t.provider))
+            .unwrap_or(true);
+        if gray {
+            self.engine_slash(cmd, window, cx);
+        } else {
+            self.slash(cmd, window, cx);
+        }
     }
 
     pub(super) fn slash(&mut self, cmd: &str, window: &mut Window, cx: &mut Context<Self>) {
@@ -258,6 +293,16 @@ impl GrayApp {
 
     pub(super) fn poll(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.ticks += 1;
+        self.autosave_tick(cx);
+        if let Some(rx) = &self.grep_rx
+            && let Ok((q, items)) = rx.try_recv()
+        {
+            if q == self.grep_q {
+                self.grep_items = items;
+            }
+            self.grep_rx = None;
+            cx.notify();
+        }
         if let Some(path) = std::env::var_os("GRAY_IDE_CMDS")
             && let Ok(text) = std::fs::read_to_string(&path)
             && !text.trim().is_empty()
@@ -270,14 +315,17 @@ impl GrayApp {
             );
             cx.notify();
         }
-        let mut changed = false;
+        let mut changed = self.drain_engines(window, cx);
         let mut finished: Vec<(String, Result<(), String>)> = Vec::new();
         let mut activities: Vec<(String, String, String, String)> = Vec::new();
         let mut sessions: Vec<(String, String)> = Vec::new();
         let mut approvals: Vec<(String, String)> = Vec::new();
         for (tid, active) in self.turns.iter_mut() {
+            let Some(turn) = active.turn.as_ref() else {
+                continue;
+            };
             loop {
-                match active.turn.rx.try_recv() {
+                match turn.rx.try_recv() {
                     Ok(ProviderEvent::Text(d)) => {
                         active.text.push_str(&d);
                         changed = true;
@@ -319,7 +367,8 @@ impl GrayApp {
             let auto = self.store.state.setting("auto_accept", "false") == "true";
             if auto {
                 if let Some(t) = self.turns.get(&tid)
-                    && let Ok(mut p) = t.turn.pending.lock()
+                    && let Some(turn) = t.turn.as_ref()
+                    && let Ok(mut p) = turn.pending.lock()
                     && let Some(tx) = p.take()
                 {
                     let _ = tx.send(true);
@@ -372,70 +421,23 @@ impl GrayApp {
         }
         for (tid, result) in finished {
             changed = true;
-            // The live group goes back to its default (closed) when the turn ends.
-            if let Some(th) = self.store.state.thread(&tid)
-                && let Some(Row::Group(r)) = timeline_rows(&th.items).last()
-            {
-                self.group_open.remove(&group_id(&th.items[r.start]));
-            }
-            let text = self.turns.remove(&tid).map(|a| a.text).unwrap_or_default();
-            if result.is_ok()
-                && (self.active_thread.as_deref() != Some(tid.as_str())
-                    || !window.is_window_active())
-            {
-                self.done_unseen.insert(tid.clone());
-            }
-            let body = match &result {
-                Err(e) => format!("Turn failed: {}", e.lines().next().unwrap_or("")),
-                Ok(()) if text.trim().is_empty() => "Finished".to_string(),
-                Ok(()) => preview(text.trim(), 120),
-            };
-            let kind = if result.is_ok() {
-                NotificationType::Success
-            } else {
-                NotificationType::Error
-            };
-            let notified = self.notify_turn(&tid, body, kind, window, cx);
-            if !text.trim().is_empty() {
-                self.persist(Event::MessageAdded {
-                    thread_id: tid.clone(),
-                    id: new_id(),
-                    role: Role::Assistant,
-                    text: text.trim_end().to_string(),
-                    at: now(),
-                });
-            }
-            let status = match result {
-                Ok(()) => "completed".to_string(),
-                Err(e) => {
-                    self.persist(Event::ActivityAdded {
-                        thread_id: tid.clone(),
-                        id: new_id(),
-                        kind: "error".into(),
-                        label: "Turn failed".into(),
-                        detail: e.clone(),
-                        at: now(),
-                    });
-                    let msg = format!("Turn failed: {}", e.lines().next().unwrap_or(""));
-                    if notified {
-                        // notify_turn already showed an in-app error card.
-                        self.toast = Some((msg, true));
-                    } else {
-                        self.toast(msg, true);
-                    }
-                    "error".to_string()
-                }
-            };
-            self.persist(Event::TurnFinished {
-                thread_id: tid,
-                status,
-                at: now(),
-            });
-            self.refresh_workspace(cx);
+            self.finish_turn(&tid, result, false, window, cx);
         }
         while let Ok(cmds) = self.gray_cmd_rx.try_recv() {
             changed = true;
             self.gray_cmds = cmds;
+        }
+        while let Ok(list) = self.cli_providers_rx.try_recv() {
+            changed = true;
+            self.cli_providers = list;
+        }
+        while let Ok(catalog) = self.model_catalog_rx.try_recv() {
+            changed = true;
+            self.model_catalog_loading = false;
+            if let Some(c) = catalog {
+                self.model_catalog = Some(c);
+            }
+            self.model_catalog_at = Some(Instant::now());
         }
         while let Ok(msg) = self.plugin_rx.try_recv() {
             changed = true;
@@ -456,14 +458,23 @@ impl GrayApp {
             }
         }
         if !self.terminal_rx.is_empty() {
+            // Follow new output only when the user is already at the bottom.
+            let ts = &self.terminal_scroll;
+            let term_at_bottom = ts.max_offset().y + ts.offset().y <= px(24.);
+            let before = self.terminal_lines.len();
             let mut i = 0;
             while i < self.terminal_rx.len() {
                 let mut closed = false;
                 loop {
                     match self.terminal_rx[i].try_recv() {
-                        Ok(line) => {
+                        Ok(workspace::ShellMsg::Line(line)) => {
                             self.terminal_lines.push(line);
                             changed = true;
+                        }
+                        Ok(workspace::ShellMsg::Cwd(dir)) => {
+                            if let Some(root) = self.work_root() {
+                                self.terminal_cwd = Some((root, dir));
+                            }
                         }
                         Err(TryRecvError::Empty) => break,
                         Err(TryRecvError::Disconnected) => {
@@ -484,6 +495,9 @@ impl GrayApp {
                 let cut = self.terminal_lines.len() - 2000;
                 self.terminal_lines.drain(..cut);
             }
+            if term_at_bottom && self.terminal_lines.len() != before {
+                self.terminal_scroll.scroll_to_bottom();
+            }
         }
         // Focused: the in-app toast card shows it. Unfocused: fall back to the
         // window's notification stack so the user still sees it.
@@ -495,6 +509,10 @@ impl GrayApp {
                     NotificationType::Info
                 };
                 window.push_notification(Notification::new().with_type(kind).message(msg), cx);
+                // The window stack shows it; a second in-app card would
+                // duplicate it.
+                self.toast = None;
+                self.toast_at = None;
             }
         } else {
             self.toast_queue.clear();
@@ -507,6 +525,109 @@ impl GrayApp {
             self.toast_at = None;
             changed = true;
         }
+        // Every pane follows its own thread's stream.
+        let mut notify = false;
+        for j in 0..self.panes.len() {
+            notify |= self.with_pane(j, |this| this.follow_step(changed, cx));
+        }
+        if notify {
+            cx.notify();
+        } else if !self.turns.is_empty() && self.ticks.is_multiple_of(3) {
+            // Keep the elapsed-time label ticking between stream events
+            // (and under reduced motion, when no animation frames run).
+            cx.notify();
+        }
+        self.apply_scroll_target(cx);
+    }
+
+    /// A turn finished (Done/Error from a legacy provider, `turn_end` or
+    /// engine death from the stdio engine): flush buffers, persist the
+    /// assistant message, stamp the thread status.
+    pub(super) fn finish_turn(
+        &mut self,
+        tid: &str,
+        result: Result<(), String>,
+        interrupted: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // The live group goes back to its default (closed) when the turn ends.
+        if let Some(th) = self.store.state.thread(tid)
+            && let Some(Row::Group(r)) = timeline_rows(&th.items).last()
+        {
+            self.group_open.remove(&group_id(&th.items[r.start]));
+        }
+        let active = self.turns.remove(tid);
+        let (text, thinking) = active.map(|a| (a.text, a.thinking)).unwrap_or_default();
+        if !thinking.trim().is_empty() {
+            self.persist(Event::ActivityAdded {
+                thread_id: tid.to_string(),
+                id: new_id(),
+                kind: "thinking".into(),
+                label: "Thinking".into(),
+                detail: thinking.trim_end().to_string(),
+                at: now(),
+            });
+        }
+        if result.is_ok() && (!self.thread_visible(tid) || !window.is_window_active()) {
+            self.done_unseen.insert(tid.to_string());
+        }
+        let body = match &result {
+            Err(e) => format!("Turn failed: {}", e.lines().next().unwrap_or("")),
+            Ok(()) if interrupted => "Interrupted".to_string(),
+            Ok(()) if text.trim().is_empty() => "Finished".to_string(),
+            Ok(()) => preview(text.trim(), 120),
+        };
+        let kind = if result.is_ok() {
+            NotificationType::Success
+        } else {
+            NotificationType::Error
+        };
+        let notified = self.notify_turn(tid, body, kind, window, cx);
+        if !text.trim().is_empty() {
+            self.persist(Event::MessageAdded {
+                thread_id: tid.to_string(),
+                id: new_id(),
+                role: Role::Assistant,
+                text: text.trim_end().to_string(),
+                at: now(),
+            });
+        }
+        let status = if interrupted {
+            "interrupted".to_string()
+        } else {
+            match result {
+                Ok(()) => "completed".to_string(),
+                Err(e) => {
+                    self.persist(Event::ActivityAdded {
+                        thread_id: tid.to_string(),
+                        id: new_id(),
+                        kind: "error".into(),
+                        label: "Turn failed".into(),
+                        detail: e.clone(),
+                        at: now(),
+                    });
+                    let msg = format!("Turn failed: {}", e.lines().next().unwrap_or(""));
+                    // notify_turn already pushed an in-app notification;
+                    // the failure also shows inline in the timeline.
+                    if !notified {
+                        self.toast(msg, true);
+                    }
+                    "error".to_string()
+                }
+            }
+        };
+        self.persist(Event::TurnFinished {
+            thread_id: tid.to_string(),
+            status,
+            at: now(),
+        });
+        self.refresh_workspace(cx);
+    }
+
+    /// Pin the live pane's timeline to the bottom while it follows; returns
+    /// whether a re-render is needed.
+    fn follow_step(&mut self, mut changed: bool, cx: &mut Context<Self>) -> bool {
         if self.active_thread != self.follow_thread {
             // A freshly opened thread starts at its latest message.
             self.follow_thread = self.active_thread.clone();
@@ -534,19 +655,12 @@ impl GrayApp {
                 cx.notify();
             }
         }
-        if changed {
-            if self.follow {
-                self.scroll.scroll_to_bottom();
-            }
-            cx.notify();
-        } else if !self.turns.is_empty() && self.ticks.is_multiple_of(3) {
-            // Keep the elapsed-time label ticking between stream events
-            // (and under reduced motion, when no animation frames run).
-            cx.notify();
+        if changed && self.follow {
+            self.scroll.scroll_to_bottom();
         }
         self.last_offset = self.scroll.offset().y;
         self.last_max = self.scroll.max_offset().y;
-        self.apply_scroll_target(cx);
+        changed
     }
 
     /// Scroll the timeline so a search hit is at the top. Item bounds only
@@ -602,8 +716,16 @@ impl GrayApp {
         let Some(root) = self.work_root() else {
             return;
         };
+        let cwd = self
+            .terminal_cwd
+            .as_ref()
+            .filter(|(r, d)| *r == root && d.is_dir())
+            .map(|(_, d)| d.clone())
+            .unwrap_or(root);
         self.terminal_lines.push(format!("$ {cmd}"));
-        self.terminal_rx.push(workspace::run_shell(&root, &cmd));
+        self.terminal_rx.push(workspace::run_shell(&cwd, &cmd));
+        // Running a command always jumps to its output.
+        self.terminal_scroll.scroll_to_bottom();
         cx.notify();
     }
 }
