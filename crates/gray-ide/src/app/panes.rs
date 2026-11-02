@@ -10,6 +10,8 @@ use super::*;
 pub(super) const MAX_PANES: usize = 6;
 /// Smallest a pane may be dragged (px): Zed's HORIZONTAL_MIN_SIZE /
 /// VERTICAL_MIN_SIZE.
+/// Stored title of a thread nothing has been sent in yet.
+const UNTITLED: &str = "New thread";
 const MIN_PANE_W: f32 = 80.;
 const MIN_PANE_H: f32 = 100.;
 
@@ -286,6 +288,46 @@ impl PaneView {
 }
 
 impl GrayApp {
+    /// What a thread tab shows. Untitled threads (no message sent yet) are
+    /// named after their project folder, numbered when the pane holds several
+    /// of them: `vstaln`, `vstaln 2`, ...
+    pub(super) fn tab_title(&self, id: &str) -> String {
+        let Some(th) = self.store.state.thread(id) else {
+            return String::new();
+        };
+        if th.title != UNTITLED {
+            return th.title.clone();
+        }
+        let folder = self
+            .store
+            .state
+            .project(&th.project_id)
+            .map(|p| {
+                std::path::Path::new(&p.path)
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| p.name.clone())
+            })
+            .unwrap_or_else(|| UNTITLED.to_string());
+        let same = |t: &&String| {
+            self.store
+                .state
+                .thread(t)
+                .is_some_and(|o| o.title == UNTITLED && o.project_id == th.project_id)
+        };
+        let n = self
+            .thread_tabs
+            .iter()
+            .filter(same)
+            .position(|t| t == id)
+            .unwrap_or(0);
+        if n == 0 {
+            folder
+        } else {
+            format!("{folder} {}", n + 1)
+        }
+    }
+
     /// A composer wired to the shared handler. Events from a composer that
     /// isn't the live one first focus its pane, so `send` & co. act on it.
     pub(super) fn new_composer(
@@ -1052,9 +1094,10 @@ impl GrayApp {
             .h_full()
             .overflow_x_scroll();
         for id in &self.thread_tabs {
-            let Some(th) = self.store.state.thread(id) else {
+            if self.store.state.thread(id).is_none() {
                 continue;
-            };
+            }
+            let title = self.tab_title(id);
             let active = self.active_thread.as_deref() == Some(id.as_str());
             let running = self.turns.contains_key(id);
             let unseen = !active && self.done_unseen.contains(id);
@@ -1062,7 +1105,7 @@ impl GrayApp {
             let drag = DraggedTab {
                 tid: id.clone(),
                 from: j,
-                title: th.title.clone().into(),
+                title: title.clone().into(),
             };
             tabs = tabs.child(
                 h_flex()
@@ -1098,7 +1141,7 @@ impl GrayApp {
                     .when(!running && unseen, |s| {
                         s.child(div().size(px(6.)).rounded_full().bg(t.success))
                     })
-                    .child(div().min_w_0().truncate().child(th.title.clone()))
+                    .child(div().min_w_0().truncate().child(title))
                     .child(
                         div()
                             .id(SharedString::from(format!("ttab-x-{j}-{id}")))
@@ -1144,7 +1187,11 @@ impl GrayApp {
                     } else {
                         t.foreground.opacity(0.7)
                     })
-                    .child("New thread"),
+                    .child(
+                        self.project_path()
+                            .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+                            .unwrap_or_else(|| "New thread".into()),
+                    ),
             );
         }
 

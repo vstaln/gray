@@ -73,27 +73,7 @@ impl GrayApp {
         let opening_file = matches!(cmd, Cmd::OpenFile(_));
         match cmd {
             Cmd::NewThread => {
-                // An untouched "New thread" already open in this pane is the
-                // new thread: reuse it instead of stacking another empty tab.
-                let empty = self
-                    .active_thread
-                    .iter()
-                    .chain(self.thread_tabs.iter())
-                    .find(|id| {
-                        !self.turns.contains_key(*id)
-                            && self.store.state.thread(id).is_some_and(|t| {
-                                t.items.is_empty()
-                                    && !t.archived
-                                    && Some(&t.project_id) == self.active_project.as_ref()
-                            })
-                    })
-                    .cloned();
-                match empty {
-                    Some(id) => self.active_thread = Some(id),
-                    None => {
-                        self.create_thread(cx);
-                    }
-                }
+                self.create_thread(cx);
             }
             Cmd::ToggleSidebar => self.sidebar_open = !self.sidebar_open,
             Cmd::ToggleTerminal => self.terminal_open = !self.terminal_open,
@@ -941,6 +921,7 @@ impl GrayApp {
             "branches": self.branches,
             "tree": self.tree.iter().map(|e| e.rel.clone()).collect::<Vec<_>>(),
             "tabs": self.tabs.iter().map(|t| t.path.clone()).collect::<Vec<_>>(),
+            "thread_tabs": self.thread_tabs.iter().map(|t| self.tab_title(t)).collect::<Vec<_>>(),
             "active_tab": self.active_tab.and_then(|i| self.tabs.get(i)).map(|t| t.path.clone()),
             "editor_text": self.active_tab.and_then(|i| self.tabs.get(i)).map(|t| t.editor.read(cx).value().to_string()),
             "diff_files": self.diff_files,
