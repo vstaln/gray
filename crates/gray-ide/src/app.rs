@@ -352,6 +352,9 @@ pub struct GrayApp {
     branches: Vec<String>,
     toast: Option<(String, bool)>,
     toast_at: Option<Instant>,
+    /// The current toast went to the window notification stack (window
+    /// unfocused), so the in-app card stays hidden to avoid a duplicate.
+    toast_in_stack: bool,
     /// Bumps on every toast so a new message replays the card's slide-in.
     toast_seq: u64,
     toast_queue: Vec<(String, bool)>,
@@ -576,6 +579,7 @@ impl GrayApp {
             toast_at: None,
             toast_seq: 0,
             toast_queue: Vec::new(),
+            toast_in_stack: false,
             dock_slide_at: None,
             items_scroll: ScrollHandle::new(),
             scroll_target: None,
@@ -862,9 +866,10 @@ impl Render for GrayApp {
             .when_some(self.confirm.as_ref(), |s, c| {
                 s.child(self.render_confirm(c, cx))
             })
-            .when_some(self.toast.clone(), |s, (msg, err)| {
-                s.child(self.render_toast(msg, err, cx))
-            })
+            .when_some(
+                self.toast.clone().filter(|_| !self.toast_in_stack),
+                |s, (msg, err)| s.child(self.render_toast(msg, err, cx)),
+            )
     }
 }
 

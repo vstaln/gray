@@ -481,7 +481,44 @@ fn keyboard_shortcuts_toggle_every_surface() {
 
 #[test]
 fn palette_switches_provider_model_and_mode() {
-    let Some(g) = Gray::start("palette_model") else {
+    // A stand-in `claude` CLI: answers the stream-json `initialize` and
+    // `list_models` control requests the way Claude Code does, so the
+    // picker's model list comes from the CLI rather than a hardcoded table.
+    let stub_dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("gray-e2e-claude-stub");
+    fs::create_dir_all(&stub_dir).unwrap();
+    let stub = stub_dir.join("claude");
+    fs::write(
+        &stub,
+        r#"#!/usr/bin/env python3
+import json, sys
+for line in sys.stdin:
+    try:
+        req = json.loads(line)
+    except ValueError:
+        continue
+    sub = req.get("request", {}).get("subtype")
+    body = {"subtype": "success", "request_id": req.get("request_id")}
+    if sub == "list_models":
+        body["response"] = {"models": [
+            {"value": "opus", "displayName": "Opus", "supportedEffortLevels": ["low", "high"]},
+            {"value": "sonnet", "displayName": "Sonnet", "supportedEffortLevels": []},
+        ]}
+    print(json.dumps({"type": "control_response", "response": body}), flush=True)
+"#,
+    )
+    .unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&stub, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let Some(g) = Gray::start_with(
+        "palette_model",
+        "fake",
+        vec![
+            ("GRAY_IDE_CLAUDE_BIN".into(), stub.display().to_string()),
+            ("GRAY_IDE_CODEX_BIN".into(), "/nonexistent/codex".into()),
+        ],
+    ) else {
         return;
     };
     g.send("first");
@@ -499,7 +536,7 @@ fn palette_switches_provider_model_and_mode() {
     );
     g.key("Escape");
     g.wait_for("picker closed", |s| s["model_open"] == false);
-    g.palette("Model: Claude opus");
+    g.palette("Model: Claude Opus");
     g.wait_for("claude opus", |s| {
         s["thread"]["provider"] == "claude" && s["thread"]["model"] == "opus"
     });
@@ -607,12 +644,13 @@ fn terminal_runs_shell_commands_in_project() {
     g.wait_for("terminal", |s| s["terminal_open"] == true);
     g.type_text("echo gray-e2e && pwd");
     g.key("Return");
+    // Success prints no `[exit 0]` trailer; the pwd line is the last output.
     let s = g.wait_for("output", |s| {
         s["terminal"]
             .as_array()
             .unwrap()
             .iter()
-            .any(|l| l == "[exit 0]")
+            .any(|l| l.as_str().is_some_and(|l| l.ends_with("/project")))
     });
     let lines: Vec<&str> = s["terminal"]
         .as_array()
@@ -748,10 +786,15 @@ fn mock_llm() -> MockLlm {
                 );
                 continue;
             }
-            let n = {
+            let body = String::from_utf8_lossy(&body).to_string();
+            // Side requests (session title, compaction) carry no tools: answer
+            // them without counting, so `turn N` tracks the agent turns only.
+            let n = if body.contains("\"tools\"") {
                 let mut l = log.lock().unwrap();
-                l.push(String::from_utf8_lossy(&body).to_string());
-                l.len()
+                l.push(body);
+                l.len().to_string()
+            } else {
+                "side".to_string()
             };
             let mut resp = String::from(
                 "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\n",

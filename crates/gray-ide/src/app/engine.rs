@@ -311,10 +311,17 @@ impl GrayApp {
                 true
             }
             "sessions" | "resume" => {
+                let engine_thread = self
+                    .active_thread
+                    .clone()
+                    .filter(|t| self.engines.contains_key(t));
                 if arg.is_empty() {
                     self.run(Cmd::ToggleSessions, window, cx);
-                } else if let Some(tid) = self.active_thread.clone() {
+                } else if let Some(tid) = engine_thread {
                     self.engine_resume(&tid, arg);
+                } else {
+                    // No gray thread to resume into: open one on the session.
+                    self.run(Cmd::ResumeSession(arg.to_string()), window, cx);
                 }
                 true
             }

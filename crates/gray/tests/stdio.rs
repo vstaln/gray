@@ -188,10 +188,13 @@ impl Proc {
 }
 
 fn spawn_stdio(base_url: &str) -> Proc {
+    // `{:?}` of an Instant contains `:` and spaces, which Windows paths
+    // reject; a process id plus a counter is unique and portable.
+    static SEQ: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
     let tmp: PathBuf = std::env::temp_dir().join(format!(
-        "gray-stdio-test-{}-{:?}",
+        "gray-stdio-test-{}-{}",
         std::process::id(),
-        Instant::now()
+        SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     ));
     let _ = std::fs::remove_dir_all(&tmp);
     std::fs::create_dir_all(&tmp).unwrap();

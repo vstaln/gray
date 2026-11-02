@@ -8,6 +8,7 @@ impl GrayApp {
         self.toast = Some((msg.clone(), error));
         self.toast_at = Some(Instant::now());
         self.toast_seq += 1;
+        self.toast_in_stack = false;
         self.toast_queue.push((msg, error));
     }
 
@@ -225,7 +226,7 @@ impl GrayApp {
             .as_ref()
             .and_then(|t| self.store.state.thread(t))
             .map(|t| provider::is_gray_provider(&t.provider))
-            .unwrap_or(true);
+            .unwrap_or_else(|| provider::is_gray_provider(&self.defaults().0));
         if gray {
             self.engine_slash(cmd, window, cx);
         } else {
@@ -511,8 +512,7 @@ impl GrayApp {
                 window.push_notification(Notification::new().with_type(kind).message(msg), cx);
                 // The window stack shows it; a second in-app card would
                 // duplicate it.
-                self.toast = None;
-                self.toast_at = None;
+                self.toast_in_stack = true;
             }
         } else {
             self.toast_queue.clear();
