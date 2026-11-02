@@ -252,12 +252,15 @@ pub(super) fn provider_brand(provider: &str) -> Option<&'static str> {
         _ if has("cursor") => "icons/cursor.svg",
         _ if has("copilot") => "icons/copilot.svg",
         _ if has("github") => "icons/g/github.svg",
-        _ if has("lmstudio") || has("lm-studio") || has("mimo") => "icons/lmstudio.svg",
+        _ if has("lmstudio") || has("lm-studio") => "icons/lmstudio.svg",
         _ if has("nous") => "icons/nous.svg",
         _ if has("muse") => "icons/muse.svg",
         _ if has("gmi") => "icons/gmi-cloud.svg",
-        // Every provider routed through the gray CLI gets the gray mark.
-        _ if crate::provider::is_gray_provider(provider) => "icons/gray-logo.svg",
+        // The gray CLI itself gets the gray mark; any other provider it routes
+        // to without a logo of its own gets a neutral chip, so unknown
+        // providers don't all look like gray.
+        _ if p == "gray" => "icons/gray-logo.svg",
+        _ if crate::provider::is_gray_provider(provider) => "icons/provider.svg",
         _ => return None,
     })
 }
