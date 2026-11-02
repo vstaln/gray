@@ -166,7 +166,7 @@ pub(crate) mod pager;
 pub(crate) mod picker;
 pub(crate) mod plugin_cmds;
 pub(crate) mod prompt_turn;
-mod session;
+pub(crate) mod session;
 pub(crate) mod status;
 
 pub(crate) use commands::{REGISTRY, completion_fill, completion_matches_dyn, is_builtin_command};
@@ -206,6 +206,8 @@ pub(crate) fn say_lines(
         let mut t = t.lock().expect("tui lock");
         t.push_styled_lines_with_hyperlinks(lines, &[], 0);
         t.ensure_gap();
+    } else if crate::stdio::is_active() {
+        crate::stdio::emit_say_lines(&lines);
     } else {
         for line in lines {
             println!("{line}");
@@ -223,6 +225,8 @@ pub(crate) fn say(tui: Option<&crate::composer::SharedTui>, msg: &str) {
         t.push_dim(body.join("\n"));
 
         t.ensure_gap();
+    } else if crate::stdio::is_active() {
+        crate::stdio::emit_say("info", msg);
     } else {
         println!("{msg}");
     }
@@ -238,6 +242,8 @@ pub(crate) fn say_err(tui: Option<&crate::composer::SharedTui>, msg: &str) {
         t.push_dim(body.join("\n"));
 
         t.ensure_gap();
+    } else if crate::stdio::is_active() {
+        crate::stdio::emit_say("error", msg);
     } else {
         eprintln!("{msg}");
     }
@@ -417,7 +423,7 @@ async fn run_plugin_command(
     owner.run_command(name, argv, raw).await
 }
 
-async fn shutdown_shell_tasks(
+pub(crate) async fn shutdown_shell_tasks(
     agent: Option<&gray_core::agent::Agent>,
     session_state: &Option<SessionState>,
     cwd: &std::path::Path,
@@ -432,7 +438,7 @@ async fn shutdown_shell_tasks(
     }
 }
 
-async fn shutdown_hooks(agent: Option<&gray_core::agent::Agent>) {
+pub(crate) async fn shutdown_hooks(agent: Option<&gray_core::agent::Agent>) {
     let hooks: Vec<Arc<dyn PluginHooks>> = agent.map(|a| a.hooks().to_vec()).unwrap_or_default();
     let _ = tokio::time::timeout(
         std::time::Duration::from_secs(3),

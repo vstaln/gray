@@ -365,6 +365,13 @@ pub(crate) async fn dispatch_command(
             Flow::Continue
         }
         ReplCommand::ProviderLogin(id) => {
+            if crate::stdio::is_active() {
+                say(
+                    tui.as_ref().map(|(s, _)| s),
+                    "provider sign-in is interactive-only — connect it in the terminal REPL once, then set_model works here",
+                );
+                return Ok(Flow::Continue);
+            }
             let preselect = Some(id);
             let bg = tui
                 .as_ref()

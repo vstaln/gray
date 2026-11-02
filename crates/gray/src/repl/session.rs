@@ -836,6 +836,18 @@ pub(crate) fn dispatch_agent_event(
         let _ = std::io::stdout().flush();
         return;
     }
+    if crate::stdio::is_active() {
+        crate::stdio::events::on_agent_event(
+            ev,
+            pending_tools,
+            turn_usage,
+            model,
+            totals,
+            turn_start,
+            turn_duration_ms,
+        );
+        return;
+    }
     if !interactive {
         match ev {
             AgentEvent::TextDelta { delta } => {

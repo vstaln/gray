@@ -8,7 +8,7 @@ pub(super) enum Row {
     Opt(usize),
 }
 
-pub(super) fn head_first<'a>(
+pub(crate) fn head_first<'a>(
     list: &[&'a (String, String)],
     head: &[String],
 ) -> Vec<&'a (String, String)> {
@@ -38,11 +38,11 @@ pub(super) fn skip_divider(rows: &[Row], sel: usize, down: bool) -> usize {
     }
 }
 
-pub(super) fn is_composite_id(id: &str) -> bool {
+pub(crate) fn is_composite_id(id: &str) -> bool {
     super::super::variants::row_shape(id).is_some_and(|s| s.is_composite())
 }
 
-pub(super) fn composites_first<'a>(list: &[&'a (String, String)]) -> Vec<&'a (String, String)> {
+pub(crate) fn composites_first<'a>(list: &[&'a (String, String)]) -> Vec<&'a (String, String)> {
     let (mut out, plain): (Vec<_>, Vec<_>) = list
         .iter()
         .copied()

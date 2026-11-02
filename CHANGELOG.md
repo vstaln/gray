@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.12] - 2026-11-03
+
+### Added
+- **`gray --dump-models`** prints the `/models` provider rail (plugins included) as JSON, and gray's stdio protocol exposes the same catalog via `list_models`. gray-ide uses it to fill its model picker.
+
+### Changed
+- Merges the 0.2.11 fixes into the split-god-files refactor line.
+
 ## [0.2.11] - 2026-11-01
 
 ### Fixed

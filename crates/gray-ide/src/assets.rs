@@ -7,8 +7,31 @@ impl AssetSource for GrayAssets {
     fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
         let bytes: Option<&'static [u8]> = match path {
             "icons/gray-logo.svg" => Some(include_bytes!("../assets/icons/gray-logo.svg")),
+            "icons/antigravity.svg" => Some(include_bytes!("../assets/icons/antigravity.svg")),
             "icons/claude.svg" => Some(include_bytes!("../assets/icons/claude.svg")),
-            "icons/openai.svg" => Some(include_bytes!("../assets/icons/openai.svg")),
+            "icons/chatgpt.svg" => Some(include_bytes!("../assets/icons/chatgpt.svg")),
+            "icons/codex.svg" => Some(include_bytes!("../assets/icons/codex.svg")),
+            "icons/commandcode.svg" => Some(include_bytes!("../assets/icons/commandcode.svg")),
+            "icons/copilot.svg" => Some(include_bytes!("../assets/icons/copilot.svg")),
+            "icons/cursor.svg" => Some(include_bytes!("../assets/icons/cursor.svg")),
+            "icons/deepseek.svg" => Some(include_bytes!("../assets/icons/deepseek.svg")),
+            "icons/devin.svg" => Some(include_bytes!("../assets/icons/devin.svg")),
+            "icons/gemini.svg" => Some(include_bytes!("../assets/icons/gemini.svg")),
+            "icons/gmi-cloud.svg" => Some(include_bytes!("../assets/icons/gmi-cloud.svg")),
+            "icons/grok.svg" => Some(include_bytes!("../assets/icons/grok.svg")),
+            "icons/kimi.svg" => Some(include_bytes!("../assets/icons/kimi.svg")),
+            "icons/lmstudio.svg" => Some(include_bytes!("../assets/icons/lmstudio.svg")),
+            "icons/meta.svg" => Some(include_bytes!("../assets/icons/meta.svg")),
+            "icons/mistral.svg" => Some(include_bytes!("../assets/icons/mistral.svg")),
+            "icons/muse.svg" => Some(include_bytes!("../assets/icons/muse.svg")),
+            "icons/nous.svg" => Some(include_bytes!("../assets/icons/nous.svg")),
+            "icons/ollama.svg" => Some(include_bytes!("../assets/icons/ollama.svg")),
+            "icons/opencode.svg" => Some(include_bytes!("../assets/icons/opencode.svg")),
+            "icons/openrouter.svg" => Some(include_bytes!("../assets/icons/openrouter.svg")),
+            "icons/provider.svg" => Some(include_bytes!("../assets/icons/provider.svg")),
+            "icons/qwen.svg" => Some(include_bytes!("../assets/icons/qwen.svg")),
+            "icons/stepfun.svg" => Some(include_bytes!("../assets/icons/stepfun.svg")),
+            "icons/zai.svg" => Some(include_bytes!("../assets/icons/zai.svg")),
             "icons/g/arrow-down.svg" => Some(include_bytes!("../assets/icons/g/arrow-down.svg")),
             "icons/g/arrow-left.svg" => Some(include_bytes!("../assets/icons/g/arrow-left.svg")),
             "icons/g/arrow-up.svg" => Some(include_bytes!("../assets/icons/g/arrow-up.svg")),
@@ -17,6 +40,12 @@ impl AssetSource for GrayAssets {
             "icons/g/check.svg" => Some(include_bytes!("../assets/icons/g/check.svg")),
             "icons/g/chevron-down.svg" => {
                 Some(include_bytes!("../assets/icons/g/chevron-down.svg"))
+            }
+            "icons/g/columns.svg" => Some(include_bytes!("../assets/icons/g/columns.svg")),
+            "icons/g/maximize.svg" => Some(include_bytes!("../assets/icons/g/maximize.svg")),
+            "icons/g/minimize.svg" => Some(include_bytes!("../assets/icons/g/minimize.svg")),
+            "icons/g/chevron-left.svg" => {
+                Some(include_bytes!("../assets/icons/g/chevron-left.svg"))
             }
             "icons/g/chevron-right.svg" => {
                 Some(include_bytes!("../assets/icons/g/chevron-right.svg"))

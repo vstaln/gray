@@ -46,7 +46,7 @@ impl GrayApp {
         };
         let provider_id = provider.clone().unwrap_or(t.provider.clone());
         let mode = mode.or(Some(t.mode.clone())).map(|m| {
-            if provider_id == "gray" {
+            if provider::is_gray_provider(&provider_id) {
                 "full".to_string()
             } else {
                 m
@@ -54,7 +54,7 @@ impl GrayApp {
         });
         let model = model.unwrap_or_else(|| {
             if provider.is_some() && provider_id != t.provider {
-                provider::default_model(&provider_id).to_string()
+                self.default_model(&provider_id)
             } else {
                 t.model.clone()
             }
@@ -73,7 +73,27 @@ impl GrayApp {
         let opening_file = matches!(cmd, Cmd::OpenFile(_));
         match cmd {
             Cmd::NewThread => {
-                self.create_thread(cx);
+                // An untouched "New thread" already open in this pane is the
+                // new thread: reuse it instead of stacking another empty tab.
+                let empty = self
+                    .active_thread
+                    .iter()
+                    .chain(self.thread_tabs.iter())
+                    .find(|id| {
+                        !self.turns.contains_key(*id)
+                            && self.store.state.thread(id).is_some_and(|t| {
+                                t.items.is_empty()
+                                    && !t.archived
+                                    && Some(&t.project_id) == self.active_project.as_ref()
+                            })
+                    })
+                    .cloned();
+                match empty {
+                    Some(id) => self.active_thread = Some(id),
+                    None => {
+                        self.create_thread(cx);
+                    }
+                }
             }
             Cmd::ToggleSidebar => self.sidebar_open = !self.sidebar_open,
             Cmd::ToggleTerminal => self.terminal_open = !self.terminal_open,
@@ -112,19 +132,32 @@ impl GrayApp {
                 apply_brand(cx);
             }
             Cmd::Provider(p) => {
-                if PROVIDERS.iter().any(|x| x.id == p) {
+                if self.providers().iter().any(|x| x.id == p) {
                     self.configure(Some(p), None, None);
+                    self.push_model_to_engine();
                 } else {
                     self.toast(format!("Unknown provider {p}"), true);
                 }
             }
             Cmd::Model(spec) => {
-                let (p, m) = match spec.split_once(':') {
-                    Some((p, m)) => (Some(p.to_string()), m.to_string()),
+                // "provider:model" — the provider head is only honored when
+                // it's a known provider id (they may contain ':' themselves,
+                // e.g. "devin-sub:devin" or "custom:http://...").
+                let (p, m) = match self
+                    .providers()
+                    .iter()
+                    .filter_map(|x| {
+                        spec.strip_prefix(&format!("{}:", x.id))
+                            .map(|m| (x.id.clone(), m))
+                    })
+                    .max_by_key(|(id, _)| id.len())
+                {
+                    Some((p, m)) => (Some(p), m.to_string()),
                     None => (None, spec.clone()),
                 };
                 if !m.is_empty() {
                     self.configure(p, Some(m), None);
+                    self.push_model_to_engine();
                 }
             }
             Cmd::Mode(m) => {
@@ -228,9 +261,16 @@ impl GrayApp {
                 }
             }
             Cmd::Approve(ok) => {
-                if let Some((tid, label)) = self.pending_approval.take() {
+                if self.pending_ask.is_some() {
+                    if ok {
+                        self.answer_ask(None);
+                    } else {
+                        self.reject_ask();
+                    }
+                } else if let Some((tid, label)) = self.pending_approval.take() {
                     if let Some(t) = self.turns.get(&tid)
-                        && let Ok(mut p) = t.turn.pending.lock()
+                        && let Some(turn) = t.turn.as_ref()
+                        && let Ok(mut p) = turn.pending.lock()
                         && let Some(tx) = p.take()
                     {
                         let _ = tx.send(ok);
@@ -245,6 +285,8 @@ impl GrayApp {
                     });
                 }
             }
+            Cmd::AskPick(q, label) => self.answer_ask(Some((q.as_str(), label.as_str()))),
+            Cmd::AskSubmit => self.answer_ask(None),
             Cmd::Gray(name) => {
                 self.terminal_open = true;
                 self.run_terminal(format!("{} cmd run {name}", graycmds::bin()), cx);
@@ -315,8 +357,16 @@ impl GrayApp {
             }
             Cmd::Delete => {
                 if let Some(id) = self.active_thread.take() {
-                    if let Some(t) = self.turns.remove(&id) {
-                        t.turn.cancel();
+                    if let Some(t) = self.turns.remove(&id)
+                        && let Some(turn) = t.turn.as_ref()
+                    {
+                        turn.cancel();
+                    }
+                    if let Some(eng) = self.engines.remove(&id) {
+                        eng.engine.shutdown();
+                    }
+                    if self.pending_ask.as_ref().is_some_and(|a| a.tid == id) {
+                        self.pending_ask = None;
                     }
                     self.persist(Event::ThreadDeleted { id });
                 }
@@ -374,16 +424,23 @@ impl GrayApp {
                 }
             }
             Cmd::Stop => {
-                if let Some(tid) = &self.active_thread
-                    && let Some(t) = self.turns.get(tid)
-                {
-                    if let Ok(mut p) = t.turn.pending.lock()
-                        && let Some(tx) = p.take()
+                if let Some(tid) = self.active_thread.clone() {
+                    if self.engines.contains_key(&tid) {
+                        self.engine_interrupt(&tid);
+                        if self.pending_ask.as_ref().is_some_and(|a| a.tid == tid) {
+                            self.pending_ask = None;
+                        }
+                    } else if let Some(t) = self.turns.get(&tid)
+                        && let Some(turn) = t.turn.as_ref()
                     {
-                        let _ = tx.send(false);
+                        if let Ok(mut p) = turn.pending.lock()
+                            && let Some(tx) = p.take()
+                        {
+                            let _ = tx.send(false);
+                        }
+                        self.pending_approval = None;
+                        turn.cancel();
                     }
-                    self.pending_approval = None;
-                    t.turn.cancel();
                 }
             }
             Cmd::AddProject(p) => {
@@ -413,14 +470,54 @@ impl GrayApp {
                 self.refresh_workspace(cx);
             }
             Cmd::Thread(id) => {
+                if let Some(j) = self.pane_showing(&id) {
+                    self.focus_pane(j, true, window, cx);
+                    return;
+                }
                 if self.dirty_tabs(cx) > 0 {
                     self.toast("Unsaved files — save (Ctrl+S) or /discard first", true);
                     return;
                 }
-                self.active_thread = Some(id);
+                let from = self.active_thread.replace(id);
+                self.push_history(from);
                 self.tabs.clear();
                 self.active_tab = None;
                 self.refresh_workspace(cx);
+            }
+            Cmd::CloseFile(path, save) => self.close_file(&path, save, cx),
+            Cmd::ReopenClosed => self.reopen_closed(window, cx),
+            Cmd::GoBack => self.go_history(true, window, cx),
+            Cmd::GoForward => self.go_history(false, window, cx),
+            Cmd::GoToLine(l, c) => self.go_to_line(l, c, window, cx),
+            Cmd::OpenFileAt(path, l, c) => {
+                self.palette_open = false;
+                self.open_file(&path, window, cx);
+                if self.tabs.iter().any(|t| t.path == path) {
+                    self.go_to_line(l, c, window, cx);
+                }
+            }
+            Cmd::SplitPane => self.split_pane(panes::SplitDir::Right, window, cx),
+            Cmd::SplitTo(dir) => self.split_pane(dir, window, cx),
+            Cmd::FocusPaneDir(dir) => {
+                if let Some(k) = self.pane_toward(dir) {
+                    self.focus_pane(k, true, window, cx);
+                }
+            }
+            Cmd::SwapPaneDir(dir) => {
+                if let Some(k) = self.pane_toward(dir) {
+                    self.pane_tree.swap(self.focused_pane, k);
+                    cx.notify();
+                }
+            }
+            Cmd::ToggleZoom => {
+                if self.panes.len() > 1 {
+                    self.zoomed = !self.zoomed;
+                    cx.notify();
+                }
+            }
+            Cmd::ClosePane => {
+                let j = self.focused_pane;
+                self.close_pane(j, window, cx);
             }
             Cmd::ShowArchived => self.show_archived = !self.show_archived,
             Cmd::TogglePlugins => {
@@ -531,6 +628,13 @@ impl GrayApp {
                     Some(Panel::Sessions)
                 };
                 self.gray_sessions = sessions::list();
+                if let Some(tid) = self.active_thread.clone() {
+                    self.engine_send(
+                        &tid,
+                        serde_json::json!({"type": "list_sessions", "all": true}),
+                        engine::ReqKind::Sessions,
+                    );
+                }
             }
             Cmd::ResumeSession(id) => {
                 let Some(tid) = self.create_thread(cx) else {
@@ -539,7 +643,7 @@ impl GrayApp {
                 let model = self
                     .store
                     .state
-                    .setting("default_model.gray", provider::default_model("gray"));
+                    .setting("default_model.gray", &self.default_model("gray"));
                 self.persist(Event::ThreadConfigured {
                     id: tid.clone(),
                     provider: "gray".into(),
@@ -552,9 +656,10 @@ impl GrayApp {
                     session: id.clone(),
                 });
                 self.persist(Event::ThreadRenamed {
-                    id: tid,
+                    id: tid.clone(),
                     title: format!("gray/{id}"),
                 });
+                self.ensure_engine(&tid);
                 self.toast(format!("Resuming {id}"), false);
             }
             Cmd::SetBackground(b) => {
@@ -572,12 +677,16 @@ impl GrayApp {
                 );
             }
             Cmd::Effort(e) => {
-                if ["low", "medium", "high"].contains(&e.as_str()) {
+                if provider::EFFORT_LEVELS.contains(&e.as_str()) {
                     if let Some(id) = self.active_thread.clone() {
-                        self.persist(Event::ThreadEffort { id, effort: e });
+                        self.persist(Event::ThreadEffort {
+                            id: id.clone(),
+                            effort: e.clone(),
+                        });
+                        self.engine_set_model(&id, None, None, Some(&e));
                     }
                 } else {
-                    self.toast("Effort must be low, medium or high", true);
+                    self.toast(format!("Unknown effort {e}"), true);
                 }
             }
             Cmd::Worktree(name) => {
@@ -658,12 +767,23 @@ impl GrayApp {
             s
         });
         editor.update(cx, |s, cx| s.focus(window, cx));
+        let path = rel.to_string();
+        let sub = cx.subscribe(&editor, move |this, _, ev: &InputEvent, _| {
+            if let InputEvent::Change = ev
+                && let Some(t) = this.tabs.iter_mut().find(|t| t.path == path)
+            {
+                t.edited_at = Some(Instant::now());
+            }
+        });
         self.tabs.push(Tab {
             path: rel.to_string(),
             editor,
             saved: content,
+            edited_at: None,
+            _sub: sub,
         });
         self.active_tab = Some(self.tabs.len() - 1);
+        self.file_tabs_reveal = true;
         self.panel = Some(Panel::Files);
     }
 
@@ -719,22 +839,12 @@ impl GrayApp {
     }
 
     pub(super) fn save_file(&mut self, cx: &mut Context<Self>) {
-        let (Some(root), Some(i)) = (self.work_root(), self.active_tab) else {
+        let Some(i) = self.active_tab else {
             return;
         };
-        let Some(tab) = self.tabs.get_mut(i) else {
-            return;
-        };
-        let value = tab.editor.read(cx).value().to_string();
-        match std::fs::write(root.join(&tab.path), &value) {
-            Ok(()) => {
-                tab.saved = value;
-                let p = tab.path.clone();
-                self.toast(format!("Saved {p}"), false);
-            }
-            Err(e) => self.toast(e.to_string(), true),
+        if self.save_tab(i, false, cx) {
+            self.refresh_workspace(cx);
         }
-        self.refresh_workspace(cx);
         cx.notify();
     }
 
@@ -805,7 +915,7 @@ impl GrayApp {
             "palette_items": self.palette_items().iter().take(12).map(|i| i.0.clone()).collect::<Vec<_>>(),
             "palette_sel": self.palette_sel,
             "model_open": self.model_open,
-            "model_items": self.model_items().iter().map(|(p, m)| format!("{p}:{m}")).collect::<Vec<_>>(),
+            "model_items": self.model_items().iter().map(|m| format!("{}:{}", m.provider, m.id)).collect::<Vec<_>>(),
             "model_sel": self.model_sel,
             "panel": self.panel.map(|p| format!("{p:?}")),
             "theme": cx.theme().mode.name(),
@@ -836,6 +946,25 @@ impl GrayApp {
             "diff_files": self.diff_files,
             "diff_base": self.diff_base,
             "approval": self.pending_approval.as_ref().map(|(_, l)| l.clone()),
+            "ask": self.pending_ask.as_ref().map(|a| serde_json::json!({
+                "tid": a.tid,
+                "ask_id": a.ask_id,
+                "questions": a.questions.iter().map(|q| serde_json::json!({
+                    "id": q.id,
+                    "header": q.header,
+                    "question": q.question,
+                    "options": q.options.iter().map(|o| o.0.clone()).collect::<Vec<_>>(),
+                })).collect::<Vec<_>>(),
+                "picks": a.picks,
+            })),
+            "engine": self.active_thread.as_ref().and_then(|t| self.engines.get(t)).map(|e| serde_json::json!({
+                "alive": !e.engine.is_dead(),
+                "turn_active": e.turn_active,
+                "commands": e.commands.len(),
+                "session_id": e.session_id,
+                "status": e.status,
+            })),
+            "engine_status_line": self.engine_status_line(),
             "settings_section": self.settings_section,
             "layout": self.store.state.setting("layout", "focus"),
             "auto_accept": self.store.state.setting("auto_accept", "false") == "true",

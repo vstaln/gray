@@ -8,12 +8,46 @@ impl GrayApp {
             .as_ref()
             .and_then(|id| self.store.state.thread(id));
         let (dp, dm, dmode) = self.defaults();
-        let provider = thread.map(|t| t.provider.clone()).unwrap_or(dp);
-        let model = thread.map(|t| t.model.clone()).unwrap_or(dm);
+        let (provider, model) = self.resolve_model(
+            &thread.map(|t| t.provider.clone()).unwrap_or(dp),
+            &thread.map(|t| t.model.clone()).unwrap_or(dm),
+        );
         let mode = thread.map(|t| t.mode.clone()).unwrap_or(dmode);
         let effort = thread
             .map(|t| t.effort.clone())
             .unwrap_or_else(|| "medium".into());
+        // A live engine reports its real model/effort via `status` — that is
+        // the truth the chip shows (a /model change inside gray lands too).
+        let (provider, model, effort) = match self
+            .active_thread
+            .as_ref()
+            .and_then(|t| self.engines.get(t))
+            .and_then(|e| e.status.as_ref())
+        {
+            Some(st) => {
+                let sp = st
+                    .get("provider_id")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let sm = st
+                    .get("model")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let se = st
+                    .get("effort")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                (
+                    if sp.is_empty() { provider } else { sp },
+                    if sm.is_empty() { model } else { sm },
+                    if se.is_empty() { effort } else { se },
+                )
+            }
+            None => (provider, model, effort),
+        };
         let running = thread
             .map(|t| self.turns.contains_key(&t.id))
             .unwrap_or(false);
@@ -28,7 +62,9 @@ impl GrayApp {
             .child(
                 v_flex()
                     .relative()
-                    .when(self.model_open, |s| s.child(self.render_model_picker(cx)))
+                    .when(self.model_open, |s| {
+                        s.child(self.render_model_picker(window, cx))
+                    })
                     .when(pop_open, |s| {
                         s.capture_action(
                             cx.listener(|this, _: &MoveUp, _, cx| this.pop_move(-1, cx)),
@@ -44,8 +80,9 @@ impl GrayApp {
                         .child(self.render_composer_pop(cx))
                     })
                     .border_1()
-                    .border_color(t.foreground.opacity(if focused { 0.20 } else { 0.10 }))
-                    .bg(t.popover)
+                    .border_color(t.foreground.opacity(if focused { 0.22 } else { 0.12 }))
+                    .bg(glass_bg(&t))
+                    .child(glass_fx(&t))
                     .children(
                         self.attachments
                             .iter()
@@ -58,18 +95,12 @@ impl GrayApp {
                                     .gap_2()
                                     .items_center()
                                     .child(
-                                        div()
-                                            .w(px(44.))
-                                            .h(px(44.))
-                                            .border_1()
-                                            .border_color(t.border)
-                                            .overflow_hidden()
-                                            .child(
-                                                img(path.clone())
-                                                    .w(px(44.))
-                                                    .h(px(44.))
-                                                    .object_fit(ObjectFit::Cover),
-                                            ),
+                                        div().w(px(44.)).h(px(44.)).overflow_hidden().child(
+                                            img(path.clone())
+                                                .w(px(44.))
+                                                .h(px(44.))
+                                                .object_fit(ObjectFit::Cover),
+                                        ),
                                     )
                                     .child(
                                         div()
@@ -113,64 +144,80 @@ impl GrayApp {
                             .pb_2()
                             .gap_1()
                             .child(
-                                provider_chip(
-                                    "composer-model",
-                                    &provider,
-                                    format!(
-                                        "{} · {} · {}",
-                                        provider::provider_label(&provider),
-                                        model,
-                                        effort
-                                    ),
-                                    cx,
-                                )
-                                .when(self.model_open, |c| {
-                                    c.bg(t.foreground.opacity(0.08)).text_color(t.foreground)
-                                })
-                                .on_click(cx.listener(
-                                    |this, _, window, cx| {
-                                        // A click outside just closed the picker: that same
-                                        // click landing on the chip must not reopen it.
-                                        if this.model_closed_at.take().is_some_and(|at| {
-                                            at.elapsed() < Duration::from_millis(400)
-                                        }) {
-                                            return;
+                                h_flex()
+                                    .id("composer-chips")
+                                    .flex_1()
+                                    .min_w_0()
+                                    .track_scroll(&self.composer_chips_scroll)
+                                    .overflow_x_scroll()
+                                    .gap_1()
+                                    .child(
+                                        {
+                                            let name = self.model_name(&provider, &model);
+                                            let label = if effort.is_empty() {
+                                                name.clone()
+                                            } else {
+                                                format!("{name} · {effort}")
+                                            };
+                                            let tip = format!(
+                                                "{} · {label}",
+                                                self.provider_label(&provider)
+                                            );
+                                            provider_chip("composer-model", &provider, label, cx)
+                                                .tooltip(move |w, cx| {
+                                                    Tooltip::new(tip.clone()).build(w, cx)
+                                                })
                                         }
-                                        this.open_model_picker(window, cx)
-                                    },
-                                )),
-                            )
-                            .child(
-                                chip(
-                                    "composer-mode",
-                                    GIcon::TriangleAlert,
-                                    provider::mode_label(&mode),
-                                    cx,
-                                )
-                                .on_click(cx.listener(
-                                    |this, _, window, cx| {
-                                        this.open_palette(
-                                            PaletteMode::Commands,
-                                            "Mode:",
-                                            window,
+                                        .when(self.model_open, |c| {
+                                            c.bg(t.foreground.opacity(0.08))
+                                                .text_color(t.foreground)
+                                        })
+                                        .on_click(
+                                            cx.listener(|this, _, window, cx| {
+                                                // A click outside just closed the picker: that same
+                                                // click landing on the chip must not reopen it.
+                                                if this.model_closed_at.take().is_some_and(|at| {
+                                                    at.elapsed() < Duration::from_millis(400)
+                                                }) {
+                                                    return;
+                                                }
+                                                this.open_model_picker(window, cx)
+                                            }),
+                                        ),
+                                    )
+                                    .child(
+                                        chip(
+                                            "composer-mode",
+                                            GIcon::TriangleAlert,
+                                            provider::mode_label(&mode),
                                             cx,
                                         )
-                                    },
-                                )),
-                            )
-                            .when_some(self.branch.clone(), |s, b| {
-                                s.child(chip("composer-branch", GIcon::Github, b, cx).on_click(
-                                    cx.listener(|this, _, window, cx| {
-                                        this.open_palette(
-                                            PaletteMode::Commands,
-                                            "Branch:",
-                                            window,
-                                            cx,
+                                        .on_click(
+                                            cx.listener(|this, _, window, cx| {
+                                                this.open_palette(
+                                                    PaletteMode::Commands,
+                                                    "Mode:",
+                                                    window,
+                                                    cx,
+                                                )
+                                            }),
+                                        ),
+                                    )
+                                    .when_some(self.branch.clone(), |s, b| {
+                                        s.child(
+                                            chip("composer-branch", GIcon::Github, b, cx).on_click(
+                                                cx.listener(|this, _, window, cx| {
+                                                    this.open_palette(
+                                                        PaletteMode::Commands,
+                                                        "Branch:",
+                                                        window,
+                                                        cx,
+                                                    )
+                                                }),
+                                            ),
                                         )
                                     }),
-                                ))
-                            })
-                            .child(div().flex_1())
+                            )
                             .child(if running {
                                 Button::new("stop")
                                     .small()
@@ -180,18 +227,40 @@ impl GrayApp {
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.run(Cmd::Stop, window, cx)
                                     }))
+                                    .into_any_element()
                             } else {
-                                Button::new("send")
-                                    .small()
-                                    .primary()
-                                    .icon(GIcon::ArrowUp)
-                                    .tooltip("Send (Enter)")
+                                h_flex()
+                                    .id("send")
+                                    .size(px(26.))
+                                    .flex_none()
+                                    .items_center()
+                                    .justify_center()
+                                    .rounded(px(7.))
+                                    .bg(t.foreground.opacity(0.10))
+                                    .text_color(t.foreground)
+                                    .cursor_pointer()
+                                    .hover(|s| s.bg(t.foreground.opacity(0.16)))
+                                    .active(|s| s.bg(t.foreground.opacity(0.22)))
+                                    .tooltip(|w, cx| Tooltip::new("Send (Enter)").build(w, cx))
                                     .on_click(
                                         cx.listener(|this, _, window, cx| this.send(window, cx)),
                                     )
+                                    .child(Icon::new(GIcon::ArrowUp).size(px(14.)))
+                                    .into_any_element()
                             }),
                     ),
-            );
+            )
+            // Engine status: model · effort · ctx · cost · cache · queued.
+            .when_some(self.engine_status_line(), |s, line| {
+                s.child(
+                    div()
+                        .px_2()
+                        .pt_1()
+                        .text_size(px(11.))
+                        .text_color(t.muted_foreground)
+                        .child(line),
+                )
+            });
         // First send: slide from the centered welcome slot down into the dock.
         if self
             .dock_slide_at
@@ -286,10 +355,10 @@ impl GrayApp {
                     list = list.child(empty("No matching commands"));
                 }
                 let sel = self.pop_sel.min(items.len().saturating_sub(1));
-                let mut last_group = None;
+                let mut last_group: Option<String> = None;
                 for (i, cmd) in items.into_iter().enumerate() {
-                    if last_group != Some(cmd.group) {
-                        last_group = Some(cmd.group);
+                    if last_group.as_deref() != Some(cmd.group.as_str()) {
+                        last_group = Some(cmd.group.clone());
                         list = list.child(
                             div()
                                 .px(px(10.))
@@ -334,7 +403,6 @@ impl GrayApp {
             .border_1()
             .border_color(float_border(&t))
             .bg(glass_bg(&t))
-            .shadow(hard_shadow(&t))
             .on_mouse_down_out(cx.listener(|this, _, _, cx| {
                 this.composer_pop = None;
                 cx.notify();

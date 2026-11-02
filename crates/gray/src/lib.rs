@@ -32,6 +32,7 @@ pub mod skills;
 pub mod skills_tool;
 pub mod spill;
 pub mod statusline;
+pub mod stdio;
 pub mod sys_editor;
 pub mod system_prompt;
 pub mod term_keys;
@@ -483,6 +484,13 @@ pub struct Cli {
     pub base_url: Option<String>,
 
     #[arg(
+        long,
+        value_name = "ID",
+        help = "Provider to use for this run — an id from the /models rail or --dump-models (does not change the saved provider)"
+    )]
+    pub provider: Option<String>,
+
+    #[arg(
         short = 'p',
         long = "print",
         value_name = "PROMPT",
@@ -569,10 +577,27 @@ pub struct Cli {
     pub dump_manifest: bool,
 
     #[arg(
+        long = "dump-models",
+        value_name = "MODE",
+        num_args = 0..=1,
+        default_missing_value = "cached",
+        value_enum,
+        help = "Print the /models provider rail and model lists as JSON and exit (optional: 'live' to refresh every provider)"
+    )]
+    pub dump_models: Option<crate::setup::DumpModels>,
+
+    #[arg(
         long = "skill",
         help = "Print the gray agent-skill doc (for embedding in other agents) and exit"
     )]
     pub skill: bool,
+
+    #[arg(
+        long,
+        conflicts_with_all = ["print", "input_json", "json", "dump_manifest", "dump_models", "skill"],
+        help = "Serve the persistent NDJSON machine protocol on stdin/stdout (for embedding surfaces like gray-ide)"
+    )]
+    pub stdio: bool,
 
     #[arg(
         long,

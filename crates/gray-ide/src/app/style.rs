@@ -1,21 +1,6 @@
 use super::*;
 
-/// Neobrutalist lift for floating surfaces: a solid offset ink block, no
-/// blur — replaces soft shadows entirely.
-pub(super) fn hard_shadow(t: &Theme) -> Vec<BoxShadow> {
-    vec![BoxShadow::new(
-        px(4.),
-        px(4.),
-        if t.mode.is_dark() {
-            hsla(0., 0., 0., 0.85)
-        } else {
-            t.foreground
-        },
-    )]
-}
-
-/// Hairline for floating surfaces — a step up from the page hairline so the
-/// hard shadow has a real edge to read against.
+/// Hairline for floating surfaces — a step up from the page hairline.
 pub(super) fn float_border(t: &Theme) -> Hsla {
     t.foreground.opacity(0.24)
 }
@@ -23,10 +8,12 @@ pub(super) fn float_border(t: &Theme) -> Hsla {
 /// Liquid-glass fill: ink-850 at ~78% so the page ghosts through. Paper in
 /// light mode. Corners stay sharp — the sheen and edges do the selling.
 pub(super) fn glass_bg(t: &Theme) -> Hsla {
+    // Nearly opaque: without a backdrop blur (X11), lower alphas let the
+    // transcript text read through palettes and popovers.
     if t.mode.is_dark() {
-        hex(0x131316).opacity(0.78)
+        hex(0x232325).opacity(0.95)
     } else {
-        hex(0xf7f6f4).opacity(0.85)
+        hex(0xf7f6f4).opacity(0.96)
     }
 }
 
@@ -74,12 +61,37 @@ pub(super) fn scrim(t: &Theme) -> Hsla {
     hsla(0., 0., 0., if t.mode.is_dark() { 0.4 } else { 0.18 })
 }
 
+/// Lineless divider for the main split: paints nothing at rest, a soft pill
+/// when the pointer owns the handle (hit band + cursor stay with gpui-base).
+pub(super) fn lineless_handle() -> base::ResizeHandleRenderer {
+    std::rc::Rc::new(|handle, _w, cx| {
+        let engaged = handle.state() != base::ResizeHandleState::Idle;
+        Some(
+            div()
+                .size_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .when(engaged, |s| {
+                    s.child(
+                        div()
+                            .w(px(3.))
+                            .h(px(24.))
+                            .rounded_full()
+                            .bg(cx.theme().foreground.opacity(0.18)),
+                    )
+                })
+                .into_any_element(),
+        )
+    })
+}
+
 /// Palette group (sort rank, header) for a command.
 pub(super) fn cmd_group(cmd: &Cmd) -> (u8, &'static str) {
     use Cmd::*;
     match cmd {
         NewThread | SearchThreads | Settle | Snooze(_) | Pin | Archive | Delete | Rename(_)
-        | Stop | ShowArchived | Approve(_) => (0, "Thread"),
+        | Stop | ShowArchived | Approve(_) | AskPick(..) | AskSubmit => (0, "Thread"),
         Thread(_) => (1, "Switch thread"),
         OpenMessage(_, None) => (1, "Threads"),
         OpenMessage(_, Some(_)) => (2, "Messages"),
@@ -93,7 +105,17 @@ pub(super) fn cmd_group(cmd: &Cmd) -> (u8, &'static str) {
         | ToggleSessions
         | ToggleSkills
         | SetLayout(_)
-        | SetTerminalPlacement(_) => (4, "View"),
+        | SetTerminalPlacement(_)
+        | SplitPane
+        | SplitTo(_)
+        | ClosePane
+        | FocusPaneDir(_)
+        | SwapPaneDir(_)
+        | ToggleZoom
+        | ReopenClosed
+        | GoBack
+        | GoForward => (4, "View"),
+        CloseFile(..) | GoToLine(..) | OpenFileAt(..) => (10, "Files"),
         Checkpoint | Restore | TurnDiff | HeadDiff | Branch(_) | NewBranch(_) | Worktree(_)
         | DiscardChanges => (5, "Git"),
         Settings | SettingsSection(_) | SetNotify(_) | SetAutoAccept(_) | ToggleTheme
@@ -116,13 +138,128 @@ pub(super) fn fuzzy(hay: &str, needle: &str) -> bool {
         .all(|c| it.any(|h| h == c))
 }
 
-pub(super) fn provider_brand(provider: &str) -> Option<&'static str> {
-    match provider {
-        "gray" => Some("icons/gray-logo.svg"),
-        "claude" => Some("icons/claude.svg"),
-        "codex" => Some("icons/openai.svg"),
-        _ => None,
+/// Rank a path for a lowercase query; higher is better, None = no match.
+/// Filename hits beat directory hits, contiguous beats scattered, and a
+/// subsequence that falls apart into many fragments is no match at all (a
+/// loose subsequence matched "session" against `assets/app-icon.png`).
+pub(super) fn path_score(path: &str, q: &str) -> Option<i32> {
+    let q: String = q.chars().filter(|c| !c.is_whitespace()).collect();
+    if q.is_empty() {
+        return Some(0);
     }
+    let lower = path.to_lowercase();
+    let name = lower.rsplit('/').next().unwrap_or(&lower);
+    let short = -(lower.len().min(200) as i32);
+    if name == q || name.split('.').next() == Some(q.as_str()) {
+        return Some(10_000 + short);
+    }
+    if name.starts_with(&q) {
+        return Some(8_000 + short);
+    }
+    if name.contains(&q) {
+        return Some(6_000 + short);
+    }
+    if let Some(at) = lower.find(&q) {
+        let boundary = at == 0 || matches!(lower.as_bytes()[at - 1], b'/' | b'_' | b'-' | b'.');
+        return Some(4_000 + if boundary { 500 } else { 0 } + short);
+    }
+    // Subsequence: try each start of the first char, extend preferring the
+    // adjacent char, then a word-boundary hit, then the nearest; keep the
+    // attempt with the fewest fragments.
+    let hay: Vec<char> = lower.chars().collect();
+    let qc: Vec<char> = q.chars().collect();
+    let name_start = hay.len() - name.chars().count();
+    let boundary = |i: usize| i == 0 || matches!(hay[i - 1], '/' | '_' | '-' | '.' | ' ');
+    let mut best: Option<(usize, i32)> = None;
+    for start in (0..hay.len()).filter(|&i| hay[i] == qc[0]) {
+        let mut runs = 1;
+        let mut bonus = if boundary(start) { 40 } else { 0 };
+        let mut last = start;
+        let mut ok = true;
+        for &c in &qc[1..] {
+            let pos = if hay.get(last + 1) == Some(&c) {
+                last + 1
+            } else {
+                let next = (last + 1..hay.len()).filter(|&i| hay[i] == c);
+                match next
+                    .clone()
+                    .find(|&i| boundary(i))
+                    .or_else(|| next.clone().next())
+                {
+                    Some(p) => {
+                        runs += 1;
+                        if boundary(p) {
+                            bonus += 40;
+                        }
+                        p
+                    }
+                    None => {
+                        ok = false;
+                        break;
+                    }
+                }
+            };
+            if pos >= name_start {
+                bonus += 10;
+            }
+            last = pos;
+        }
+        if ok && best.is_none_or(|(r, b)| runs < r || (runs == r && bonus > b)) {
+            best = Some((runs, bonus));
+        }
+    }
+    let (runs, bonus) = best?;
+    let qlen = qc.len();
+    if qlen >= 3 && runs > qlen.div_ceil(2) {
+        return None;
+    }
+    Some(2_000 - runs as i32 * 100 + bonus + short)
+}
+
+/// Best `limit` paths for `q`, best first.
+pub(super) fn rank_paths(paths: Vec<String>, q: &str, limit: usize) -> Vec<String> {
+    let mut scored: Vec<(i32, String)> = paths
+        .into_iter()
+        .filter_map(|p| path_score(&p, q).map(|s| (s, p)))
+        .collect();
+    scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+    scored.truncate(limit);
+    scored.into_iter().map(|(_, p)| p).collect()
+}
+
+pub(super) fn provider_brand(provider: &str) -> Option<&'static str> {
+    let p = provider.to_ascii_lowercase();
+    let has = |f: &str| p.contains(f);
+    Some(match () {
+        _ if has("antigravity") => "icons/antigravity.svg",
+        _ if has("claude") || has("anthropic") => "icons/claude.svg",
+        _ if has("codex") => "icons/codex.svg",
+        _ if has("openai") || has("chatgpt") => "icons/chatgpt.svg",
+        _ if has("gemini") || has("google") => "icons/gemini.svg",
+        _ if has("devin") => "icons/devin.svg",
+        _ if has("deepseek") => "icons/deepseek.svg",
+        _ if has("openrouter") => "icons/openrouter.svg",
+        _ if has("ollama") => "icons/ollama.svg",
+        _ if has("qwen") || has("dashscope") => "icons/qwen.svg",
+        _ if has("grok") || has("xai") => "icons/grok.svg",
+        _ if has("kimi") || has("moonshot") => "icons/kimi.svg",
+        _ if has("zai") || has("zhipu") || has("glm") => "icons/zai.svg",
+        _ if has("mistral") => "icons/mistral.svg",
+        _ if has("meta") || has("llama") => "icons/meta.svg",
+        _ if has("commandcode") => "icons/commandcode.svg",
+        _ if has("opencode") => "icons/opencode.svg",
+        _ if has("stepfun") || has("step-") => "icons/stepfun.svg",
+        _ if has("cursor") => "icons/cursor.svg",
+        _ if has("copilot") => "icons/copilot.svg",
+        _ if has("github") => "icons/g/github.svg",
+        _ if has("lmstudio") || has("lm-studio") || has("mimo") => "icons/lmstudio.svg",
+        _ if has("nous") => "icons/nous.svg",
+        _ if has("muse") => "icons/muse.svg",
+        _ if has("gmi") => "icons/gmi-cloud.svg",
+        // Every provider routed through the gray CLI gets the gray mark.
+        _ if crate::provider::is_gray_provider(provider) => "icons/gray-logo.svg",
+        _ => return None,
+    })
 }
 
 pub(super) fn provider_chip(
@@ -135,10 +272,10 @@ pub(super) fn provider_chip(
     let mut c = h_flex()
         .id(id)
         .gap_1()
-        .h(px(22.))
-        .px(px(7.))
-        .text_size(px(12.))
-        .text_color(t.muted_foreground)
+        .h(px(20.))
+        .px(px(6.))
+        .text_size(px(11.5))
+        .text_color(t.muted_foreground.opacity(faint(t, 0.9)))
         .cursor_pointer()
         .hover(|s| s.bg(t.foreground.opacity(0.06)).text_color(t.foreground))
         .active(|s| s.bg(t.foreground.opacity(0.10)));
@@ -164,10 +301,10 @@ pub(super) fn chip(
     h_flex()
         .id(id)
         .gap_1()
-        .h(px(22.))
-        .px(px(7.))
-        .text_size(px(12.))
-        .text_color(t.muted_foreground)
+        .h(px(20.))
+        .px(px(6.))
+        .text_size(px(11.5))
+        .text_color(t.muted_foreground.opacity(faint(t, 0.9)))
         .cursor_pointer()
         .hover(|s| s.bg(t.foreground.opacity(0.06)).text_color(t.foreground))
         .active(|s| s.bg(t.foreground.opacity(0.10)))
@@ -225,12 +362,6 @@ pub(super) fn key_chip(keys: &str, t: &Theme, on_accent: bool) -> Div {
                 } else {
                     t.foreground.opacity(0.06)
                 })
-                .border_1()
-                .border_color(if on_accent {
-                    t.primary_foreground.opacity(0.25)
-                } else {
-                    t.foreground.opacity(0.07)
-                })
                 .font_family(t.mono_font_family.clone())
                 .text_size(px(11.))
                 .text_center()
@@ -253,7 +384,7 @@ pub fn apply_brand(cx: &mut App) {
     let dark = cx.theme().mode.is_dark();
     let t = Theme::global_mut(cx);
     t.font_family = "Plus Jakarta Sans".into();
-    t.mono_font_family = "Departure Mono".into();
+    t.mono_font_family = "CommitMono".into();
     t.font_size = px(14.);
     t.mono_font_size = px(12.5);
     t.radius = px(0.);
@@ -274,10 +405,10 @@ pub fn apply_brand(cx: &mut App) {
     // One neutral ink at fixed alphas for every line and fill (monocode's trick).
     let (bg, ink, side, pop, a) = if dark {
         (
-            hex(0x050506),
+            hex(0x1c1c1d),
             hex(0xeceae7),
-            hex(0x040405),
-            hex(0x0b0b0c),
+            hex(0x18181a),
+            hex(0x232325),
             [0.05, 0.06, 0.07, 0.10, 0.12, 0.15],
         )
     } else {

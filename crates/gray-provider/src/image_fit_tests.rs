@@ -51,6 +51,6 @@ fn oversized_undecodable_image_is_too_large() {
 
 #[test]
 fn undersized_undecodable_image_passes_through() {
-    let b64 = base64::engine::general_purpose::STANDARD.encode(b"not an image".to_vec());
+    let b64 = base64::engine::general_purpose::STANDARD.encode(b"not an image");
     assert!(matches!(fit_image("image/x-unknown", &b64), ImageFit::Fits));
 }

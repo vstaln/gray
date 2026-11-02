@@ -40,32 +40,32 @@ enum Focus {
     Models,
 }
 
-struct PaneProvider {
-    item: ConnectItem,
-    list_key: String,
-    connected: bool,
+pub(crate) struct PaneProvider {
+    pub(crate) item: ConnectItem,
+    pub(crate) list_key: String,
+    pub(crate) connected: bool,
     removable: bool,
-    installed: Option<InstalledProvider>,
-    detected: bool,
+    pub(crate) installed: Option<InstalledProvider>,
+    pub(crate) detected: bool,
     /// Plugin index key when this row advertises a provider plugin that is
     /// not installed yet (installable login).
-    install: Option<String>,
+    pub(crate) install: Option<String>,
 }
 
 impl PaneProvider {
-    fn list_key(item: &ConnectItem) -> String {
+    pub(crate) fn list_key(item: &ConnectItem) -> String {
         match &item.auth {
             ConnectAuth::Plugin { .. } => plugin_models_key(&item.id),
             _ => item.base_url.clone(),
         }
     }
 
-    fn adoptable(&self, keys: &BTreeMap<String, String>) -> bool {
+    pub(crate) fn adoptable(&self, keys: &BTreeMap<String, String>) -> bool {
         self.install.is_none()
             && (self.connected || self.item.no_auth || keys.contains_key(&self.item.id))
     }
 
-    fn key(&self, keys: &BTreeMap<String, String>, config: &Config) -> Option<String> {
+    pub(crate) fn key(&self, keys: &BTreeMap<String, String>, config: &Config) -> Option<String> {
         keys.get(&self.item.id)
             .cloned()
             .or_else(|| {
@@ -105,7 +105,7 @@ fn fetch_provider_index() -> Option<gray_pkg::index::Index> {
     })
 }
 
-fn build_rail(
+pub(crate) fn build_rail(
     config: &Config,
     ollama: bool,
     index: Option<&gray_pkg::index::Index>,
@@ -194,7 +194,7 @@ enum RailRow {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum GroupId {
+pub(crate) enum GroupId {
     Logins,
     OAuth,
     ApiKey,
@@ -211,7 +211,7 @@ impl GroupId {
         }
     }
 
-    fn label(self) -> &'static str {
+    pub(crate) fn label(self) -> &'static str {
         match self {
             GroupId::Logins => "Logins",
             GroupId::OAuth => "OAuth",
@@ -245,7 +245,7 @@ impl GroupStates {
     }
 }
 
-enum Place {
+pub(crate) enum Place {
     Flat,
     Group(GroupId),
 }
@@ -253,7 +253,7 @@ enum Place {
 /// Where a provider lives on the rail: ready-to-use key/no-auth entries stay
 /// flat up top; plugin logins and unused API-key catalog entries fold into
 /// labeled groups so the sections don't mix.
-fn place(p: &PaneProvider) -> Place {
+pub(crate) fn place(p: &PaneProvider) -> Place {
     if p.install.is_some() {
         return Place::Group(GroupId::Logins);
     }
@@ -413,7 +413,7 @@ fn active_row_index(rail: &[PaneProvider], rows: &[RailRow], config: &Config) ->
         .unwrap_or(0)
 }
 
-fn provider_is_active(p: &PaneProvider, config: &Config) -> bool {
+pub(crate) fn provider_is_active(p: &PaneProvider, config: &Config) -> bool {
     if config.credential_source == "plugin" || matches!(p.item.auth, ConnectAuth::Plugin { .. }) {
         return config.credential_source == "plugin" && config.provider_id == p.item.id;
     }
@@ -422,7 +422,11 @@ fn provider_is_active(p: &PaneProvider, config: &Config) -> bool {
             == normalize_custom_base_url(&config.base_url)
 }
 
-fn scoped_config(config: &Config, p: &PaneProvider, keys: &BTreeMap<String, String>) -> Config {
+pub(crate) fn scoped_config(
+    config: &Config,
+    p: &PaneProvider,
+    keys: &BTreeMap<String, String>,
+) -> Config {
     let mut scoped = config.clone();
     if !provider_is_active(p, config) {
         scoped.model = None;
@@ -519,20 +523,20 @@ fn start_row(models: &[(String, String)], active: Option<&str>) -> usize {
 
 /// The saved model lists, parsed once per modal: every rail move onto a new
 /// provider used to re-read provider_models.json (twice for an empty list).
-struct SavedLists {
+pub(crate) struct SavedLists {
     home: std::path::PathBuf,
     lists: BTreeMap<String, Vec<super::variants::CachedRow>>,
 }
 
 impl SavedLists {
-    fn load() -> Option<Self> {
+    pub(crate) fn load() -> Option<Self> {
         let home = catalog::gray_home().ok()?;
         let lists = super::context::provider_model_lists(&home);
         Some(Self { home, lists })
     }
 
     /// Same rows and order as [`saved_models_for`].
-    fn models(
+    pub(crate) fn models(
         &self,
         saved: &SavedConfig,
         list_key: &str,

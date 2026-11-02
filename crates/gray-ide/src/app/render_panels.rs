@@ -1,3 +1,4 @@
+use super::pickers::FAV_TAB;
 use super::*;
 
 impl GrayApp {
@@ -77,16 +78,12 @@ impl GrayApp {
             .h_full()
             .flex_none()
             .bg(t.sidebar)
-            .border_r_1()
-            .border_color(t.sidebar_border)
             .child(icons)
             .child(
                 v_flex()
                     .p_2()
                     .gap_1()
                     .items_center()
-                    .border_t_1()
-                    .border_color(t.sidebar_border)
                     .child(icon_btn(
                         "rail-new",
                         GIcon::Plus,
@@ -162,11 +159,11 @@ impl GrayApp {
         for l in self.terminal_lines.iter().rev().take(300).rev() {
             lines = lines.child(div().child(l.clone()));
         }
-        let mut outer = v_flex().flex_none().border_color(t.border).bg(t.background);
+        let mut outer = v_flex().flex_none().bg(t.sidebar);
         outer = if side {
-            outer.w(px(300.)).h_full().border_l_1()
+            outer.w(px(300.)).h_full()
         } else {
-            outer.h(px(240.)).border_t_1()
+            outer.h(px(240.))
         };
         outer
             .child(
@@ -175,8 +172,6 @@ impl GrayApp {
                     .px_3()
                     .gap_2()
                     .text_xs()
-                    .border_b_1()
-                    .border_color(t.border)
                     .child(Icon::new(GIcon::SquareTerminal).xsmall())
                     .child("Terminal")
                     .when(!self.terminal_rx.is_empty(), |s| {
@@ -198,6 +193,7 @@ impl GrayApp {
                     .id("terminal-output")
                     .flex_1()
                     .min_h_0()
+                    .track_scroll(&self.terminal_scroll)
                     .overflow_y_scroll()
                     .px_3()
                     .py_2()
@@ -211,15 +207,17 @@ impl GrayApp {
             )
     }
 
-    pub(super) fn render_panel(&self, panel: Panel, cx: &mut Context<Self>) -> impl IntoElement {
+    pub(super) fn render_panel(
+        &mut self,
+        panel: Panel,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let t = cx.theme().clone();
         let header = h_flex()
             .h(px(40.))
             .px_2()
             .gap_1()
             .flex_none()
-            .border_b_1()
-            .border_color(t.border)
             .child(
                 Button::new("panel-files")
                     .ghost()
@@ -323,8 +321,7 @@ impl GrayApp {
                     .flex_none()
                     .overflow_y_scroll()
                     .py_1()
-                    .border_r_1()
-                    .border_color(t.border);
+                    .bg(t.sidebar);
                 for e in &self.tree {
                     let rel = e.rel.clone();
                     let is_dir = e.is_dir;
@@ -373,31 +370,41 @@ impl GrayApp {
                     );
                 }
                 let mut tabs = h_flex()
+                    .id("file-tabs")
                     .h(px(32.))
                     .flex_none()
-                    .border_b_1()
-                    .border_color(t.border)
-                    .overflow_x_hidden();
+                    .track_scroll(&self.file_tabs_scroll)
+                    .overflow_x_scroll();
                 for (i, tab) in self.tabs.iter().enumerate() {
                     let dirty = tab.editor.read(cx).value().as_ref() != tab.saved.as_str();
                     let name = Path::new(&tab.path)
                         .file_name()
                         .map(|n| n.to_string_lossy().to_string())
                         .unwrap_or_default();
+                    let path = tab.path.clone();
                     let active = Some(i) == self.active_tab;
                     tabs = tabs.child(
                         h_flex()
                             .id(SharedString::from(format!("tab-{}", tab.path)))
                             .h_full()
+                            .flex_none()
                             .px_3()
                             .gap_1()
                             .text_xs()
-                            .border_r_1()
-                            .border_color(t.border)
                             .cursor_pointer()
                             .when(active, |s| {
                                 s.bg(t.tab_active).text_color(t.tab_active_foreground)
                             })
+                            .on_mouse_down(
+                                MouseButton::Middle,
+                                cx.listener({
+                                    let path = path.clone();
+                                    move |this, _, _, cx| {
+                                        this.close_file(&path, None, cx);
+                                        cx.stop_propagation();
+                                    }
+                                }),
+                            )
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.active_tab = Some(i);
                                 cx.notify();
@@ -412,20 +419,17 @@ impl GrayApp {
                                     .hover(|s| s.text_color(t.foreground))
                                     .active(|s| s.bg(t.foreground.opacity(0.10)))
                                     .on_click(cx.listener(move |this, _, _, cx| {
-                                        if i < this.tabs.len() {
-                                            this.tabs.remove(i);
-                                        }
-                                        this.active_tab = if this.tabs.is_empty() {
-                                            None
-                                        } else {
-                                            Some(i.min(this.tabs.len() - 1))
-                                        };
+                                        this.close_file(&path, None, cx);
                                         cx.stop_propagation();
-                                        cx.notify();
                                     }))
                                     .child("×"),
                             ),
                     );
+                }
+                if std::mem::take(&mut self.file_tabs_reveal)
+                    && let Some(i) = self.active_tab
+                {
+                    self.file_tabs_scroll.scroll_to_item(i);
                 }
                 let editor: AnyElement = match self.active_tab.and_then(|i| self.tabs.get(i)) {
                     Some(tab) => div()
@@ -463,9 +467,7 @@ impl GrayApp {
                 .w(px(if panel == Panel::Files { 640. } else { 560. }))
                 .h_full()
                 .flex_none()
-                .border_l_1()
-                .border_color(t.border)
-                .bg(t.background)
+                .bg(t.sidebar)
                 .child(header)
                 .child(body),
             SharedString::from(format!("panel-in-{panel:?}")),
@@ -475,17 +477,34 @@ impl GrayApp {
         )
     }
 
-    pub(super) fn render_model_picker(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    pub(super) fn render_model_picker(
+        &self,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let t = cx.theme().clone();
         let items = self.model_items();
         let count = items.len();
         let sel = self.model_sel.min(count.saturating_sub(1));
         let (cp, cm) = self.current_model();
-        let rail_btn = |id: &'static str, active: bool, icon: AnyElement, tip: &'static str| {
+        let tab = self.model_tab();
+        let favs = self.model_favorites();
+        let providers = self.providers();
+        let label_of = |id: &str| {
+            providers
+                .iter()
+                .find(|p| p.id == id)
+                .map(|p| p.label.clone())
+                .unwrap_or_else(|| id.to_string())
+        };
+
+        // ── Rail: favorites, then one tab per provider ──────────────────
+        let rail_btn = |key: SharedString, active: bool, icon: AnyElement, tip: SharedString| {
             div()
-                .id(SharedString::from(format!("model-rail-{id}")))
+                .id(SharedString::from(format!("model-rail-{key}")))
                 .size(px(32.))
                 .flex()
+                .flex_shrink_0()
                 .items_center()
                 .justify_center()
                 .cursor_pointer()
@@ -494,37 +513,32 @@ impl GrayApp {
                 } else {
                     t.muted_foreground
                 })
-                .when(active, |s| s.bg(t.foreground.opacity(0.08)))
+                .when(active, |s| s.bg(t.foreground.opacity(0.10)))
                 .hover(|s| s.bg(t.foreground.opacity(0.05)).text_color(t.foreground))
-                .active(|s| s.bg(t.foreground.opacity(0.10)))
-                .tooltip(move |w, cx| Tooltip::new(tip).build(w, cx))
+                .tooltip(move |w, cx| Tooltip::new(tip.clone()).build(w, cx))
                 .child(icon)
         };
-        let mut rail = v_flex()
-            .w(px(44.))
-            .flex_shrink_0()
-            .p(px(6.))
-            .gap_1()
-            .border_r_1()
-            .border_color(t.foreground.opacity(0.08))
-            .child(
-                rail_btn(
-                    "all",
-                    self.model_rail.is_none(),
-                    Icon::new(GIcon::LayoutDashboard)
-                        .size(px(16.))
-                        .into_any_element(),
-                    "All providers",
-                )
-                .on_click(cx.listener(|this, _, _, cx| {
-                    this.model_rail = None;
+        let select_tab = |id: String| {
+            cx.listener(
+                move |this: &mut Self, _: &ClickEvent, _, cx: &mut Context<Self>| {
+                    this.model_rail = Some(id.clone());
                     this.model_sel = 0;
                     this.model_reveal.set(true);
                     cx.notify();
-                })),
-            );
-        for p in PROVIDERS {
-            let icon = match provider_brand(p.id) {
+                },
+            )
+        };
+        let mut rail = v_flex().p(px(6.)).gap_1().child(
+            rail_btn(
+                "fav".into(),
+                tab == FAV_TAB,
+                Icon::new(GIcon::Star).size(px(16.)).into_any_element(),
+                "Favorites".into(),
+            )
+            .on_click(select_tab(FAV_TAB.to_string())),
+        );
+        for p in &providers {
+            let icon = match provider_brand(&p.id) {
                 Some(path) => svg()
                     .path(path.to_string())
                     .size(px(16.))
@@ -532,72 +546,60 @@ impl GrayApp {
                     .into_any_element(),
                 None => Icon::new(GIcon::Bot).size(px(16.)).into_any_element(),
             };
-            let id = p.id;
             rail = rail.child(
-                rail_btn(id, self.model_rail == Some(id), icon, p.label).on_click(cx.listener(
-                    move |this, _, _, cx| {
-                        this.model_rail = Some(id);
-                        this.model_sel = 0;
-                        this.model_reveal.set(true);
-                        cx.notify();
-                    },
-                )),
+                rail_btn(
+                    p.id.clone().into(),
+                    tab == p.id,
+                    icon,
+                    p.label.clone().into(),
+                )
+                .on_click(select_tab(p.id.clone())),
             );
         }
+
+        // ── Model rows: one flat list for the open tab ──────────────────
+        const ROW_H: f32 = 32.;
         let mut list = v_flex()
             .id("model-list")
             .track_scroll(&self.model_scroll)
-            .flex_1()
-            .max_h(px(380.))
             .overflow_y_scroll()
             .p_1();
         if items.is_empty() {
+            let msg = if tab == FAV_TAB && self.model_query.trim().is_empty() {
+                "No favorites yet. Star a model to pin it here."
+            } else {
+                "No models match"
+            };
             list = list.child(
                 div()
                     .px(px(10.))
                     .py_3()
                     .text_size(px(13.))
                     .text_color(t.muted_foreground)
-                    .child("No models match"),
+                    .child(msg),
             );
         }
-        let mut last = None;
-        let (mut child_ix, mut sel_child) = (0, 0);
-        for (i, (p, m)) in items.into_iter().enumerate() {
-            if last != Some(p) {
-                last = Some(p);
-                child_ix += 1;
-                list = list.child(
-                    div()
-                        .px(px(10.))
-                        .pt_2()
-                        .pb_1()
-                        .text_size(px(10.))
-                        .font_medium()
-                        .text_color(t.muted_foreground.opacity(faint(&t, 0.55)))
-                        .child(provider::provider_label(p).to_uppercase()),
-                );
-            }
+        for (i, m) in items.iter().enumerate() {
             let selected = i == sel;
-            if selected && i > 0 {
-                sel_child = child_ix;
-            }
-            child_ix += 1;
-            let current = p == cp && m == cm;
+            let current = m.provider == cp && m.id == cm;
+            let key = format!("{}:{}", m.provider, m.id);
+            let fav = favs.contains(&key);
+            // In favorites, rows come from many providers: name the source.
+            let source = (tab == FAV_TAB).then(|| label_of(&m.provider));
             list = list.child(
                 h_flex()
                     .id(("model-item", i))
-                    .h(px(32.))
+                    .h(px(ROW_H))
                     .flex_shrink_0()
                     .px(px(10.))
                     .gap_2()
                     .text_size(px(13.))
                     .cursor_pointer()
                     .when(selected, |s| {
-                        s.bg(t.primary).text_color(t.primary_foreground)
+                        s.bg(t.foreground.opacity(0.09)).text_color(t.foreground)
                     })
                     .when(!selected, |s| s.hover(|s| s.bg(t.foreground.opacity(0.05))))
-                    .active(|s| s.bg(t.primary_active))
+                    .active(|s| s.bg(t.foreground.opacity(0.14)))
                     .on_mouse_move(cx.listener(move |this, _, _, cx| {
                         if this.model_sel != i {
                             this.model_sel = i;
@@ -607,33 +609,241 @@ impl GrayApp {
                     .on_click(
                         cx.listener(move |this, _, window, cx| this.pick_model(i, window, cx)),
                     )
-                    .child(div().flex_1().truncate().child(m))
+                    .child(div().flex_1().min_w_0().truncate().child(m.name.clone()))
+                    .when_some(source, |s, src| {
+                        s.child(
+                            div()
+                                .flex_shrink_0()
+                                .text_size(px(10.5))
+                                .text_color(t.muted_foreground)
+                                .child(src),
+                        )
+                    })
                     .when(current, |s| {
                         s.child(
                             Icon::new(GIcon::Check)
                                 .size(px(14.))
-                                .text_color(if selected {
-                                    t.primary_foreground
+                                .text_color(t.foreground.opacity(0.7)),
+                        )
+                    })
+                    // Star: always shown when starred, on the hovered row otherwise.
+                    .when(fav || selected, |s| {
+                        s.child(
+                            div()
+                                .id(("model-fav", i))
+                                .size(px(20.))
+                                .flex()
+                                .flex_shrink_0()
+                                .items_center()
+                                .justify_center()
+                                .text_color(if fav {
+                                    t.foreground
                                 } else {
-                                    t.foreground.opacity(0.55)
-                                }),
+                                    t.muted_foreground.opacity(0.6)
+                                })
+                                .hover(|s| s.text_color(t.foreground))
+                                .tooltip(move |w, cx| {
+                                    Tooltip::new(if fav {
+                                        "Remove from favorites"
+                                    } else {
+                                        "Add to favorites"
+                                    })
+                                    .build(w, cx)
+                                })
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    cx.stop_propagation();
+                                    this.toggle_model_favorite(key.clone(), cx);
+                                }))
+                                .child(Icon::new(GIcon::Star).size(px(13.))),
                         )
                     }),
             );
         }
+        // Cap the list so the panel stays inside the pane: the composer
+        // card, tab strip and status bar take ~180px below it, the picker's
+        // own chrome (search, label, effort) ~100px above the list.
+        let pane = self.pane_bounds.borrow().get(&self.focused_pane).cloned();
+        let viewport: gpui_kit::Size<Pixels> = window.viewport_size();
+        let pane_h: f32 = pane
+            .as_ref()
+            .map(|b| b.size.height.into())
+            .unwrap_or(viewport.height.into());
+        let content_h = if items.is_empty() {
+            44.
+        } else {
+            8. + count as f32 * ROW_H
+        };
+        let list_h = content_h.min(352.).min((pane_h - 284.).max(96.));
+        let list = list.h(px(list_h));
         if self.model_reveal.take() {
-            self.model_scroll.scroll_to_item(sel_child);
+            self.model_scroll.scroll_to_item(sel);
         }
+
+        // ── Effort: stepped slider for the highlighted model ────────────
+        let effort_row = items.get(sel).filter(|m| m.efforts.len() > 1).map(|m| {
+            let row_current = m.provider == cp && m.id == cm;
+            let cur = self.model_effort_for(m);
+            let levels = m.efforts.clone();
+            let n = levels.len();
+            let cur_ix = levels.iter().position(|e| *e == cur).unwrap_or(0);
+            let key = format!("{}:{}", m.provider, m.id);
+            let frac = cur_ix as f32 / (n - 1) as f32;
+            // Click or drag across equal-width zones; each zone is one level.
+            let mut zones = h_flex().absolute().inset_0();
+            for (j, e) in levels.iter().enumerate() {
+                let (k1, e1) = (key.clone(), e.clone());
+                let (k2, e2) = (key.clone(), e.clone());
+                let set = move |this: &mut Self, k: &String, e: &String, cx: &mut Context<Self>| {
+                    if this.model_efforts.get(k) == Some(e) {
+                        return;
+                    }
+                    this.model_efforts.insert(k.clone(), e.clone());
+                    // Live model: apply to the running engine right away.
+                    if row_current && let Some(tid) = this.active_thread.clone() {
+                        this.engine_set_model(&tid, None, None, Some(e));
+                    }
+                    cx.notify();
+                };
+                zones = zones.child(
+                    div()
+                        .id(SharedString::from(format!("effort-zone-{j}")))
+                        .flex_1()
+                        .h_full()
+                        .cursor_pointer()
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |this, _, _, cx| set(this, &k1, &e1, cx)),
+                        )
+                        .on_mouse_move(cx.listener(move |this, ev: &MouseMoveEvent, _, cx| {
+                            if ev.pressed_button == Some(MouseButton::Left) {
+                                set(this, &k2, &e2, cx);
+                            }
+                        })),
+                );
+            }
+            // Track spans zone centers: inset by half a zone on each side.
+            let inset = 100. / (2. * n as f32);
+            let track = div()
+                .relative()
+                .flex_1()
+                .h(px(20.))
+                .child(
+                    div()
+                        .absolute()
+                        .top(px(9.))
+                        .left(gpui_kit::relative(inset / 100.))
+                        .right(gpui_kit::relative(inset / 100.))
+                        .h(px(2.))
+                        .bg(t.foreground.opacity(0.14))
+                        .child(
+                            div()
+                                .absolute()
+                                .top_0()
+                                .left_0()
+                                .h_full()
+                                .w(gpui_kit::relative(frac))
+                                .bg(t.foreground.opacity(0.7)),
+                        )
+                        .children((0..n).map(|j| {
+                            div()
+                                .absolute()
+                                .top(px(-2.))
+                                .left(gpui_kit::relative(j as f32 / (n - 1) as f32))
+                                .ml(px(-3.))
+                                .size(px(6.))
+                                .bg(if j <= cur_ix {
+                                    t.foreground.opacity(0.7)
+                                } else {
+                                    t.foreground.opacity(0.22)
+                                })
+                        }))
+                        .child(
+                            div()
+                                .absolute()
+                                .top(px(-5.))
+                                .left(gpui_kit::relative(frac))
+                                .ml(px(-6.))
+                                .size(px(12.))
+                                .bg(t.foreground)
+                                .border_2()
+                                .border_color(t.popover),
+                        ),
+                )
+                .child(zones);
+            h_flex()
+                .px(px(10.))
+                .py(px(8.))
+                .gap_3()
+                .items_center()
+                .border_t_1()
+                .border_color(t.foreground.opacity(0.08))
+                .child(
+                    div()
+                        .text_size(px(11.))
+                        .text_color(t.muted_foreground)
+                        .child("Effort"),
+                )
+                .child(track)
+                .child(
+                    div()
+                        .w(px(48.))
+                        .text_size(px(11.))
+                        .text_color(t.foreground)
+                        .text_right()
+                        .child(cur.clone()),
+                )
+        });
+
+        let col = v_flex()
+            .flex_1()
+            .min_w_0()
+            .child(
+                div()
+                    .px_3()
+                    .py(px(6.))
+                    .text_size(px(13.))
+                    .border_b_1()
+                    .border_color(t.foreground.opacity(0.08))
+                    .child(Input::new(&self.model_input).appearance(false).small()),
+            )
+            .child(
+                div()
+                    .px(px(14.))
+                    .pt(px(8.))
+                    .pb(px(2.))
+                    .text_size(px(10.))
+                    .font_medium()
+                    .text_color(t.muted_foreground)
+                    .child(if tab == FAV_TAB {
+                        "FAVORITES".to_string()
+                    } else {
+                        label_of(&tab).to_uppercase()
+                    }),
+            )
+            .child(list)
+            .children(effort_row);
+
+        // The rail sits in normal flow, so the panel is as tall as the taller
+        // of rail and list (a one-model tab no longer clips the rail); past
+        // the pane-derived cap the rail scrolls.
+        let rail = rail
+            .id("model-rail")
+            .w(px(44.))
+            .flex_shrink_0()
+            .min_h_0()
+            .overflow_y_scroll()
+            .bg(t.foreground.opacity(0.03));
+
         let panel = h_flex()
             .id("model-picker")
             .occlude()
-            .w(px(340.))
+            .w(px(380.))
+            .max_h(px((pane_h - 200.).max(160.)))
             .items_stretch()
             .relative()
             .border_1()
             .border_color(float_border(&t))
-            .bg(glass_bg(&t))
-            .shadow(hard_shadow(&t))
+            .bg(t.popover)
             .overflow_hidden()
             .capture_action(cx.listener(move |this, _: &MoveUp, _, cx| {
                 if count > 0 {
@@ -656,22 +866,7 @@ impl GrayApp {
                 this.close_overlays(window, cx);
             }))
             .child(rail)
-            .child(
-                v_flex()
-                    .flex_1()
-                    .min_w_0()
-                    .child(
-                        div()
-                            .px_3()
-                            .py(px(6.))
-                            .text_size(px(13.))
-                            .border_b_1()
-                            .border_color(t.foreground.opacity(0.08))
-                            .child(Input::new(&self.model_input).appearance(false).small()),
-                    )
-                    .child(list),
-            )
-            .child(glass_fx(&t));
+            .child(col);
         // Sits on the composer box's top edge, left-aligned with the chip;
         // deferred so it paints over the timeline.
         div()
