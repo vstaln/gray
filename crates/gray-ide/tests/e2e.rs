@@ -477,6 +477,16 @@ fn keyboard_shortcuts_toggle_every_surface() {
     g.wait_for("palette closed", |s| s["palette_open"] == false);
     g.key("ctrl+n");
     g.wait_for("new thread", |s| s["thread"]["title"] == "New thread");
+    // Each Ctrl+N opens another tab; untitled ones are named after the
+    // project folder and numbered.
+    g.key("ctrl+n");
+    g.wait_for("second new thread tab", |s| {
+        let tabs: Vec<&str> = s["thread_tabs"]
+            .as_array()
+            .map(|a| a.iter().filter_map(|t| t.as_str()).collect())
+            .unwrap_or_default();
+        tabs.contains(&"project") && tabs.contains(&"project 2")
+    });
 }
 
 #[test]
