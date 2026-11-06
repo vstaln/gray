@@ -70,6 +70,24 @@ impl ToolExecutor for NoopExecutor {
     }
 }
 
+#[test]
+fn compaction_trigger_requests_a_checkpoint() {
+    let trigger = crate::compact::COMPACTION_TRIGGER;
+    for section in [
+        "## Goal",
+        "## Progress",
+        "## Decisions",
+        "## Files",
+        "## Context",
+        "## Details",
+        "## Next",
+    ] {
+        assert!(trigger.contains(section), "missing {section}");
+    }
+    assert!(trigger.contains("in their words"));
+    assert!(trigger.contains("carry its still-relevant content forward"));
+}
+
 fn test_agent(summary_text: &str) -> Agent {
     Agent::new(
         Box::new(SummaryProvider {

@@ -46,7 +46,32 @@ pub(crate) fn image_block_tokens(_media_type: &str, base64_len: usize) -> usize 
 pub(crate) const SUMMARY_ENVELOPE_PREFIX: &str =
     "The conversation history before this point was compacted into the following summary:";
 
-pub(crate) const COMPACTION_TRIGGER: &str = "Summarize this conversation so far for continuing it: outcomes, decisions, open questions. No tool calls.";
+/// Checkpoint sections follow pi's compaction summary; the verbatim-details
+/// and user-instructions rules follow kimi-code's handoff note.
+pub(crate) const COMPACTION_TRIGGER: &str = "Write a checkpoint of this conversation so far so the work can continue from it alone. No tool calls. Use these sections and skip any that would be empty:
+
+## Goal
+What the user wants. Keep every instruction, constraint and preference the user stated, in their words where the wording matters.
+
+## Progress
+Done (and how it was verified), in progress, blocked.
+
+## Decisions
+What was decided and why, including approaches tried and rejected.
+
+## Files
+Paths read and paths changed, with what changed.
+
+## Context
+Code paths, APIs, invariants, hazards and other technical details needed to continue without re-reading the repo.
+
+## Details
+Exact commands, error messages, values, identifiers and URLs still needed, copied verbatim.
+
+## Next
+The concrete next step.
+
+If the conversation already holds an earlier summary, carry its still-relevant content forward into these sections instead of dropping it. Be concise: keep what is needed to continue and nothing else.";
 
 /// Appended by the turn loop when the wire request ends on an assistant
 /// message; kept here so compaction can re-derive the wire-only tail for
