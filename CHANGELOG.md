@@ -2,9 +2,6 @@
 
 ## [Unreleased]
 
-### Fixed
-- **Lean mode keeps your project rules.** The nearest `AGENTS.md` / `CLAUDE.md` in a trusted project now reaches the model under lean mode (the default) too; lean still skips plugin prompt extras, and `--bare` still loads nothing.
-
 ## [0.2.13] - 2026-11-06
 
 ### Added
@@ -12,6 +9,7 @@
 
 ### Fixed
 - **Warm pings now count as cache activity.** With cache warming on, gray called the cache cold 5 minutes after the last real request even though warm pings had kept it alive, and masked old tool output on the next turn, which itself broke the warm cache.
+- **Lean mode keeps your project rules.** The nearest `AGENTS.md` / `CLAUDE.md` in a trusted project now reaches the model under lean mode (the default) too; lean still skips plugin prompt extras, and `--bare` still loads nothing.
 
 ### Changed
 - **Skills left gray.** Bare gray has no skills: no discovery, no listing, no `/skills`, no `skill` hub entries or `github:`/`url:` skill specs. `gray plugin install skills` adds them all back; `gray plugin enable skills --global` keeps the listing on under lean mode.
