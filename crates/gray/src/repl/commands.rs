@@ -177,6 +177,9 @@ pub(crate) fn is_builtin_command(name: &str) -> bool {
 }
 
 pub(crate) fn provider_shortcuts() -> Vec<(String, String, String)> {
+    if crate::plugin_cli::slash_commands_off() {
+        return Vec::new();
+    }
     let Ok(home) = crate::setup::gray_home() else {
         return Vec::new();
     };

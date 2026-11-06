@@ -1451,7 +1451,23 @@ pub(crate) async fn adopt_cli(home: &Path, name: &str, dir: &Path) -> anyhow::Re
     }
 }
 
+/// Set when the session runs `--bare`: no plugin slash commands are offered
+/// or run, matching bare's promise of no plugins.
+static SLASH_COMMANDS_OFF: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+pub fn disable_slash_commands() {
+    SLASH_COMMANDS_OFF.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub(crate) fn slash_commands_off() -> bool {
+    SLASH_COMMANDS_OFF.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 pub async fn capture_slash(name: &str, args: &[String]) -> anyhow::Result<Option<String>> {
+    if slash_commands_off() {
+        return Ok(None);
+    }
     let home = home()?;
     migrate_commands_json(&home);
     let mut lock = load_lock(&home)?;
@@ -1767,6 +1783,9 @@ fn completion_table<'a>(
 }
 
 pub(crate) fn completions(query: &str) -> Vec<(String, String)> {
+    if slash_commands_off() {
+        return Vec::new();
+    }
     let Ok(home) = home() else { return Vec::new() };
     migrate_commands_json(&home);
     let user_home = gray_core::paths::gray_user_home();
