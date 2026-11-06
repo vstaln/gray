@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Added
+- **Plugins can complete their own arguments.** A plugin may write `plugins/<name>-completion.json` (`{"completion": ["verb", {"arg": "name", "description": "…"}]}`) and the slash popup picks it up as soon as the file changes, so arguments that change after install, like installed skill names, complete with descriptions. With the skills plugin, `/skills be-am…` now completes to `/skills be-ambitious`.
+
+### Fixed
+- **`--bare` no longer offers or runs plugin commands.** The slash popup listed every installed plugin's commands (and provider login shortcuts) under `--bare`, and typing one still ran the plugin, so `/skills` worked in bare gray.
+
 ## [0.2.13] - 2026-11-06
 
 ### Added
