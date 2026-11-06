@@ -8,6 +8,9 @@
 ### Fixed
 - **`--bare` no longer offers or runs plugin commands.** The slash popup listed every installed plugin's commands (and provider login shortcuts) under `--bare`, and typing one still ran the plugin, so `/skills` worked in bare gray.
 
+### Changed
+- **Compaction now writes a checkpoint instead of a loose summary.** The summarizer is asked for goal, progress, decisions, files, verbatim details and next steps, carries earlier summaries forward, and preserves user instructions in their words. This should reduce post-compact drift and re-reading on long sessions.
+
 ## [0.2.13] - 2026-11-06
 
 ### Added
