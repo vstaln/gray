@@ -109,13 +109,6 @@ pub(crate) const REGISTRY: &[CmdDef] = &[
         surface: CmdSurface::Text,
     },
     CmdDef {
-        name: "skills",
-        desc: "list skills (/skills [name] [args] to run one, /skills on|off for auto-context, /skills enable|disable <name>)",
-        aliases: &["skill"],
-        scope: CmdScope::Conversation,
-        surface: CmdSurface::Text,
-    },
-    CmdDef {
         name: "plugins",
         desc: "plugin manager (list, enable, update)",
         aliases: &[],
@@ -318,17 +311,7 @@ fn rank_by_name(matches: &mut [(String, String)], filter: &str) {
 }
 
 pub(crate) fn completion_fill(name: &str) -> String {
-    if name.contains(' ')
-        || resolve(name).is_some()
-        || crate::prompt_templates::is_cached_name(name)
-        || provider_shortcuts().iter().any(|(s, _, _)| s == name)
-        || crate::plugin_cli::completions(name)
-            .iter()
-            .any(|(n, _)| n == name)
-    {
-        return format!("/{name} ");
-    }
-    format!("/skills {name} ")
+    format!("/{name} ")
 }
 
 pub(crate) fn complete_command_args(
@@ -340,7 +323,6 @@ pub(crate) fn complete_command_args(
         "context" => complete_context_args(arg_text),
         "plugin" | "plugins" => complete_plugin_args(cmd, arg_text, cwd),
         "sessions" | "resume" => complete_resume_args(cmd, arg_text),
-        "skill" | "skills" => complete_skill_args(cmd, arg_text, cwd),
         "agentsmd" | "sys" => complete_agentsmd_args(cmd, arg_text),
         "models" => complete_model_args(cmd, arg_text),
         _ => Vec::new(),
@@ -370,16 +352,6 @@ fn complete_resume_args(cmd: &str, arg_text: &str) -> Vec<(String, String)> {
         ("dismiss", "stop flagging interrupted sessions here"),
     ];
     complete_from_table(cmd, arg_text, FLAGS)
-}
-
-fn complete_skill_args(cmd: &str, arg_text: &str, cwd: &std::path::Path) -> Vec<(String, String)> {
-    let f = arg_text.trim().to_lowercase();
-    crate::skills::discover_skills(cwd)
-        .skills
-        .iter()
-        .filter(|s| f.is_empty() || s.name.contains(f.as_str()))
-        .map(|s| (format!("{cmd} {}", s.name), s.description.clone()))
-        .collect()
 }
 
 fn complete_agentsmd_args(cmd: &str, arg_text: &str) -> Vec<(String, String)> {
@@ -525,8 +497,6 @@ pub enum ReplCommand {
 
     Plugins,
 
-    Skill(Option<String>),
-
     Prompt(String),
 
     Empty,
@@ -534,17 +504,15 @@ pub enum ReplCommand {
 
 impl ReplCommand {
     pub fn runs_local(&self) -> bool {
-        match self {
+        !matches!(
+            self,
             ReplCommand::Prompt(_)
-            | ReplCommand::Empty
-            | ReplCommand::Compact(_)
-            | ReplCommand::Retry
-            | ReplCommand::Unknown(_)
-            | ReplCommand::ProviderCommand { .. } => false,
-
-            ReplCommand::Skill(payload) => payload.is_none(),
-            _ => true,
-        }
+                | ReplCommand::Empty
+                | ReplCommand::Compact(_)
+                | ReplCommand::Retry
+                | ReplCommand::Unknown(_)
+                | ReplCommand::ProviderCommand { .. }
+        )
     }
 }
 
@@ -606,14 +574,7 @@ pub fn parse_command(line: &str) -> ReplCommand {
         None => (t, ""),
     };
     let opt = |s: &str| (!s.is_empty()).then(|| s.to_string());
-    let lower_cmd = cmd.to_lowercase();
-    let canon: Option<&str> = if lower_cmd == "/skills" || lower_cmd == "/skill" {
-        Some("skills")
-    } else if let Some(d) = resolve(cmd) {
-        Some(d.name)
-    } else {
-        None
-    };
+    let canon = resolve(cmd).map(|d| d.name);
     match canon {
         Some("quit") => ReplCommand::Quit,
         Some("sessions") => ReplCommand::Resume(if rest.is_empty() {
@@ -655,13 +616,6 @@ pub fn parse_command(line: &str) -> ReplCommand {
             None => ReplCommand::Plugins,
             Some(_) => ReplCommand::Plugin(t.to_string()),
         },
-        Some("skills") => {
-            if rest.is_empty() {
-                ReplCommand::Skill(None)
-            } else {
-                ReplCommand::Skill(Some(rest.to_string()))
-            }
-        }
         _ => {
             let name = t[1..].split_whitespace().next().unwrap_or("");
             if name.is_empty() || name.contains('/') {

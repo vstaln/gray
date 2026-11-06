@@ -24,15 +24,11 @@ pub(crate) enum EnterAction {
 
     Toggle,
 
-    Invoke,
-
     Ignore,
 }
 
 pub enum ManagerOutcome {
     Closed(bool),
-
-    Invoke(String),
 }
 
 impl ManagerOutcome {
@@ -58,9 +54,6 @@ pub(crate) fn enter_action(
     if spec.supports_toggle {
         return EnterAction::Toggle;
     }
-    if spec.enter_invokes {
-        return EnterAction::Invoke;
-    }
     EnterAction::Ignore
 }
 
@@ -72,7 +65,6 @@ pub(crate) fn enter_label(
     match enter_action(item, has_setup, spec) {
         EnterAction::Setup => "set up \u{b7} ",
         EnterAction::Toggle => "toggle \u{b7} ",
-        EnterAction::Invoke => "invoke \u{b7} ",
         EnterAction::Ignore => "",
     }
 }
@@ -84,8 +76,6 @@ pub(crate) struct ManagerSpec {
     pub error_verb: &'static str,
     pub supports_toggle: bool,
 
-    pub enter_invokes: bool,
-
     pub supports_remove: bool,
 
     pub errors_tab: bool,
@@ -93,73 +83,8 @@ pub(crate) struct ManagerSpec {
     pub keep_stale_on_relist_error: bool,
 }
 
-const SKILLS_SPEC: ManagerSpec = ManagerSpec {
-    title: "Skills",
-    empty_hint: "no skills discovered",
-    error_verb: "remove failed",
-    supports_toggle: false,
-    enter_invokes: true,
-    supports_remove: true,
-    errors_tab: true,
-    keep_stale_on_relist_error: false,
-};
-
 pub(crate) fn format_error_row(entry: &ErrorEntry) -> String {
     format!("{} {}: {}", entry.source, entry.item, entry.message)
-}
-
-pub fn run_skills_modal(
-    bg: Option<&BackgroundSnapshot>,
-    cwd: &std::path::Path,
-) -> anyhow::Result<ManagerOutcome> {
-    run_install_manager(
-        bg,
-        None,
-        &SKILLS_SPEC,
-        || {
-            Some(
-                crate::skills::discover_skills(cwd)
-                    .skills
-                    .iter()
-                    .map(|skill| {
-                        let auto = crate::setup::skills_auto_enabled();
-                        let mut row = crate::skills::format_discovered_skill_row(skill);
-                        if !auto {
-                            row.push_str(" [auto-off]");
-                        } else if crate::setup::disabled_skill_names().contains(&skill.name) {
-                            row.push_str(" [disabled]");
-                        }
-                        ManagerItem {
-                            name: skill.name.clone(),
-                            row,
-                            lit: true,
-                            enabled: true,
-                            read_only: false,
-                            needs_setup: false,
-                        }
-                    })
-                    .collect(),
-            )
-        },
-        |name| match gray_pkg::skills_ops::remove(name) {
-            Ok(()) => Ok(()),
-            Err(e) => {
-                if let Some(hit) = crate::skills::discover_skills(cwd)
-                    .skills
-                    .iter()
-                    .find(|s| s.name == name)
-                {
-                    anyhow::bail!(
-                        "'{}' lives outside ~/.gray/skills ({}) — delete it manually",
-                        name,
-                        hit.file_path.display()
-                    );
-                }
-                Err(e)
-            }
-        },
-        |_, _| Ok(()),
-    )
 }
 
 pub(crate) fn run_install_manager(
@@ -599,12 +524,6 @@ pub(crate) fn run_install_manager(
                                     }
                                 }
                                 sel = sel.min(items.len().saturating_sub(1));
-                            }
-                            EnterAction::Invoke => {
-                                if tab == Tab::Installed {
-                                    let name = items[sel].name.clone();
-                                    return Ok(ManagerOutcome::Invoke(name));
-                                }
                             }
                             EnterAction::Ignore => {}
                         }

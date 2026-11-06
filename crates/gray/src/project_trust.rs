@@ -3,9 +3,16 @@ use std::path::{Path, PathBuf};
 
 const FILE: &str = "trusted_projects.json";
 
+pub(crate) fn find_git_root(start: &Path) -> Option<PathBuf> {
+    start
+        .ancestors()
+        .find(|dir| dir.join(".git").exists())
+        .map(Path::to_path_buf)
+}
+
 #[must_use]
 pub fn project_root(dir: &Path) -> PathBuf {
-    let base = crate::skills::find_git_root(dir).unwrap_or_else(|| dir.to_path_buf());
+    let base = find_git_root(dir).unwrap_or_else(|| dir.to_path_buf());
     std::fs::canonicalize(&base).unwrap_or(base)
 }
 
@@ -71,7 +78,7 @@ pub fn run_cli(dir: Option<PathBuf>, revoke: bool) -> anyhow::Result<()> {
         Some(d) => d,
         None => std::env::current_dir()?,
     };
-    let home = crate::skills::gray_agent_dir();
+    let home = gray_core::paths::gray_home_or_temp();
     let root = project_root(&dir);
     if revoke {
         if untrust(&home, &dir)? {

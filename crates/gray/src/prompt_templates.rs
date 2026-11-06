@@ -126,13 +126,83 @@ fn valid_name(name: &str) -> bool {
         && !name.chars().any(char::is_whitespace)
 }
 
+#[derive(Default)]
+struct Frontmatter {
+    description: Option<String>,
+    argument_hint: Option<String>,
+}
+
+/// `None` when frontmatter is opened but never closed.
+fn parse_frontmatter(content: &str) -> Option<(Frontmatter, String)> {
+    let trimmed = content.trim_start();
+    let Some(after) = trimmed.strip_prefix("---") else {
+        return Some((Frontmatter::default(), content.to_string()));
+    };
+    let after = after
+        .strip_prefix("\r\n")
+        .or_else(|| after.strip_prefix('\n'))
+        .unwrap_or(after);
+    let mut offset = 0;
+    for line in after.split_inclusive('\n') {
+        if line.trim() == "---" {
+            let body = after[offset + line.len()..].to_string();
+            return Some((parse_fields(&after[..offset]), body));
+        }
+        offset += line.len();
+    }
+    None
+}
+
+fn parse_fields(block: &str) -> Frontmatter {
+    let mut fm = Frontmatter::default();
+    let lines: Vec<&str> = block.lines().collect();
+    let mut i = 0;
+    while i < lines.len() {
+        let line = lines[i].trim();
+        i += 1;
+        if line.starts_with('#') {
+            continue;
+        }
+        let Some((key, val)) = line.split_once(':') else {
+            continue;
+        };
+        let mut val = val.trim().to_string();
+        let folded = matches!(val.as_str(), ">" | ">-" | ">+");
+        if folded || matches!(val.as_str(), "|" | "|-" | "|+") {
+            let mut parts = Vec::new();
+            while i < lines.len() {
+                let next = lines[i];
+                if !next.trim().is_empty() {
+                    if !next.starts_with([' ', '\t']) {
+                        break;
+                    }
+                    parts.push(next.trim());
+                }
+                i += 1;
+            }
+            val = parts.join(if folded { " " } else { "\n" });
+        } else if val.len() >= 2
+            && ((val.starts_with('"') && val.ends_with('"'))
+                || (val.starts_with('\'') && val.ends_with('\'')))
+        {
+            val = val[1..val.len() - 1].to_string();
+        }
+        match key.trim().trim_matches(['"', '\'']) {
+            "description" => fm.description = Some(val),
+            "argument-hint" | "argument_hint" => fm.argument_hint = Some(val),
+            _ => {}
+        }
+    }
+    fm
+}
+
 pub fn load_template(path: &Path, source: &'static str) -> Option<PromptTemplate> {
     let name = path.file_stem()?.to_str()?.to_string();
     if !valid_name(&name) {
         return None;
     }
     let raw = std::fs::read_to_string(path).ok()?;
-    let (fm, body) = crate::skills::parse_frontmatter(&raw).ok()?;
+    let (fm, body) = parse_frontmatter(&raw)?;
     let description = fm
         .description
         .filter(|d| !d.trim().is_empty())
@@ -181,7 +251,7 @@ pub fn search_dirs(
     _home: Option<&Path>,
 ) -> Vec<(PathBuf, &'static str)> {
     let mut dirs = Vec::new();
-    let git_root = crate::skills::find_git_root(cwd);
+    let git_root = crate::project_trust::find_git_root(cwd);
     let mut cur = Some(cwd.to_path_buf());
     while let Some(dir) = cur {
         dirs.push((dir.join(".gray").join("prompts"), "project"));
@@ -226,7 +296,7 @@ pub fn discover(cwd: &Path) -> Vec<PromptTemplate> {
     let home = gray_core::paths::user_home();
     let mut dirs = search_dirs(cwd, gray_home.as_deref(), home.as_deref());
 
-    if !crate::project_trust::is_trusted(&crate::skills::gray_agent_dir(), cwd) {
+    if !crate::project_trust::is_trusted(&gray_core::paths::gray_home_or_temp(), cwd) {
         dirs.retain(|(_, source)| *source != "project");
     }
     let list: Vec<PromptTemplate> = discover_in(&dirs)

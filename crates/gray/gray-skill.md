@@ -100,5 +100,5 @@ into a job after 600 s rather than hanging the turn.
 ## Extending gray
 
 - `gray --skill` prints this file.
-- `/skill` inside the REPL installs skills from disk.
+- `gray plugin install skills` adds skills; bare gray has none.
 - `gray --dump-manifest` prints the merged plugin manifest as JSON.

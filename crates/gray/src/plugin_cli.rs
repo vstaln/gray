@@ -182,15 +182,6 @@ async fn install_spec_gated(
     gate: TrustGate,
 ) -> anyhow::Result<Vec<String>> {
     migrate_commands_json(home);
-    if gray_pkg::skills_ops::is_skill_spec(spec) {
-        let r = gray_pkg::skills_ops::install(spec).await?;
-        return Ok(vec![format!(
-            "installed {} {} at {}",
-            r.name,
-            r.version,
-            r.path.display()
-        )]);
-    }
     if let Some(path) = std::env::var_os("GRAY_PLUGIN_PATH") {
         anyhow::ensure!(!path.is_empty(), "GRAY_PLUGIN_PATH is set but empty");
         return register_native_gated(home, Some(spec), Path::new(&path), force, gate).await;

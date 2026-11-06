@@ -257,6 +257,11 @@ pub(crate) async fn run_prompt_turn(
         }
     }
 
+    if let Some(s) = &tui_stream {
+        s.lock()
+            .expect("tui lock")
+            .set_warm_source(agent.warm_refreshed());
+    }
     if agent.prefix_rewrite_ok()
         && let Some(s) = &tui_stream
         && s.lock().expect("tui lock").cache_is_cold()
@@ -601,18 +606,18 @@ pub(crate) async fn run_prompt_turn(
         let mut t = shared.lock().expect("tui lock");
         if let Some(text) = t.local_command.take() {
             let parsed = parse_command(&text);
-            if !parsed.runs_local() && !matches!(parsed, ReplCommand::Skill(_)) {
+            if !parsed.runs_local() {
                 t.push_user_prompt(&text, &[], false);
             }
             drop(t);
-            *pending_command = Some(expand_skill_command(parsed, cwd, Some(shared), true));
+            *pending_command = Some(expand_prompt_template(parsed, cwd, true));
         } else if let Some((qtext, qimages)) = pop_actionable(&mut t.queued_inputs) {
             let parsed = parse_command(&qtext);
             if !parsed.runs_local() {
                 t.push_user_prompt(&qtext, &qimages, !qtext.starts_with('/'));
             }
             drop(t);
-            *pending_command = Some(expand_skill_command(parsed, cwd, Some(shared), false));
+            *pending_command = Some(expand_prompt_template(parsed, cwd, false));
             *pending_images = qimages;
         }
     }

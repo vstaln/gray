@@ -1,5 +1,5 @@
 use std::collections::HashSet;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use serde_json::{Value, json};
 
@@ -34,14 +34,7 @@ pub(crate) fn list_json() -> Value {
     let mut commands: Vec<Value> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
     for d in REGISTRY {
-        let args = if d.name == "skills" {
-            vec![
-                json!({"name": "name", "required": false, "hint": "skill name"}),
-                json!({"name": "args", "required": false, "hint": "[args]"}),
-            ]
-        } else {
-            args_hint(d.name).map(hint_arg).unwrap_or_default()
-        };
+        let args = args_hint(d.name).map(hint_arg).unwrap_or_default();
         let mut row = json!({
             "name": d.name,
             "description": d.desc,
@@ -51,9 +44,6 @@ pub(crate) fn list_json() -> Value {
             "surface": d.surface,
             "source": "builtin",
         });
-        if d.name == "skills" {
-            row["completions"] = json!(skill_completions());
-        }
         if SLOW.contains(&d.name) {
             row["slow"] = json!(true);
         }
@@ -80,18 +70,6 @@ pub(crate) fn list_json() -> Value {
         }
     }
     json!({"commands": commands})
-}
-
-fn skill_completions() -> Vec<Value> {
-    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    crate::skills::discover_skills(&cwd)
-        .skills
-        .into_iter()
-        .map(|s| {
-            let description: String = s.description.chars().take(100).collect();
-            json!({"name": s.name, "description": description})
-        })
-        .collect()
 }
 
 struct PluginRow {

@@ -46,7 +46,6 @@ base64 = { workspace = true }
 async-trait = { workspace = true }
 libc = { workspace = true }
 unicode-width = { workspace = true }
-ignore = { workspace = true }
 regex = { workspace = true }
 rayon = "1.12"
 

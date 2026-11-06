@@ -52,8 +52,35 @@ impl Tui {
         self.cache.remaining(Instant::now())
     }
 
-    pub fn cache_is_cold(&self) -> bool {
+    pub fn cache_is_cold(&mut self) -> bool {
+        self.sync_warm();
         self.cache.is_cold(Instant::now())
+    }
+
+    pub(crate) fn set_warm_source(&mut self, cell: gray_core::cache_warm::WarmRefreshed) {
+        self.warm_refreshed = Some(cell);
+    }
+
+    fn sync_warm(&mut self) {
+        let at = self
+            .warm_refreshed
+            .as_ref()
+            .and_then(|c| c.lock().ok().and_then(|at| *at));
+        if let Some(at) = at {
+            self.cache.note_warm(at);
+        }
+    }
+
+    /// The resend a cold cache would bill, when it is worth a confirm.
+    pub(crate) fn cold_resend_to_confirm(&mut self) -> Option<crate::cache::ColdResend> {
+        let threshold = crate::cache::cold_confirm_usd();
+        if threshold <= 0.0 {
+            return None;
+        }
+        self.sync_warm();
+        self.cache
+            .cold_resend(Instant::now())
+            .filter(|r| r.cost >= threshold)
     }
 
     pub fn reset_cache(&mut self) {

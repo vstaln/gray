@@ -91,7 +91,6 @@ pub fn run_context_modal(
     let c_sys = crate::theme::theme().ctx_system;
     let c_ctx = crate::theme::theme().ctx_context;
     let c_tools = crate::theme::theme().ctx_tools;
-    let c_skills = crate::theme::theme().ctx_skills;
     let c_msgs = crate::theme::theme().ctx_messages;
     let c_free = crate::theme::theme().ctx_free;
     let c_reserve = crate::theme::theme().rose;
@@ -193,9 +192,9 @@ pub fn run_context_modal(
                 // Stacked bar: one segment per category, scaled to the modal width.
                 let bar_y = inner.y + 3;
                 let bar_w = inner.width as usize;
-                let colors = [c_sys, c_ctx, c_tools, c_skills, c_msgs, c_free, c_reserve];
+                let colors = [c_sys, c_ctx, c_tools, c_msgs, c_free, c_reserve];
                 let total: usize = cells.iter().sum::<usize>().max(1);
-                let mut spans = Vec::with_capacity(7);
+                let mut spans = Vec::with_capacity(6);
                 let (mut cum, mut drawn) = (0usize, 0usize);
                 for (kind, n) in cells.iter().enumerate() {
                     cum += n;
@@ -206,8 +205,8 @@ pub fn run_context_modal(
                         continue;
                     }
                     let glyph = match kind {
-                        5 => "░",
-                        6 => "▒",
+                        4 => "░",
+                        5 => "▒",
                         _ => "█",
                     };
                     spans.push(Span::styled(
@@ -228,7 +227,6 @@ pub fn run_context_modal(
                     ("■", c_sys, "System prompt", parts.system_prompt, false),
                     ("■", c_ctx, "Project context", parts.project_context, false),
                     ("■", c_tools, "Tools", parts.tools, false),
-                    ("■", c_skills, "Skills", parts.skills, false),
                     ("■", c_msgs, "Messages", parts.messages, false),
                     ("░", c_free, "Free", free, true),
                     ("▒", c_reserve, "Compact buffer", reserve, true),

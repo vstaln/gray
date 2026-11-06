@@ -174,7 +174,7 @@ pub use commands::{ReplCommand, ResumeArgs, SysAction, parse_command};
 pub(crate) use format::build_user_message_with_attachments;
 pub use format::{THINKING_STYLE, fmt_usage, format_core_error};
 pub(crate) use handlers::{
-    expand_skill_command, handle_model, handle_sys, handle_undo, reload_agent,
+    expand_prompt_template, handle_model, handle_sys, handle_undo, reload_agent,
 };
 pub(crate) use plugin_cmds::handle_plugin_command;
 pub(crate) use session::{
@@ -1249,7 +1249,7 @@ pub async fn run_repl_mode(
                     .expect("tui lock")
                     .retract_slash_echo(&line_text);
             }
-            expand_skill_command(parsed, cwd.as_path(), tui.as_ref().map(|(s, _)| s), false)
+            expand_prompt_template(parsed, cwd.as_path(), false)
         };
 
         if !matches!(&cmd, ReplCommand::Prompt(_) | ReplCommand::Empty) {

@@ -182,39 +182,6 @@ pub(crate) fn validate_install_key(key: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub(crate) fn clone_git_repo(
-    url: &str,
-    git_ref: Option<&str>,
-) -> anyhow::Result<(tempfile::TempDir, PathBuf, String)> {
-    let branch = git_ref.filter(|r| !r.is_empty());
-    let mut extra: Vec<&str> = Vec::new();
-    if let Some(b) = branch {
-        extra.push("--branch");
-        extra.push(b);
-    }
-    let (staging, clone_dir) = crate::sources::clone_into_tmp(url, &extra, true)?;
-    let sha_out = std::process::Command::new("git")
-        .arg("-C")
-        .arg(&clone_dir)
-        .arg("rev-parse")
-        .arg("HEAD")
-        .output()?;
-    if !sha_out.status.success() {
-        anyhow::bail!(
-            "cloning {} failed: cannot read commit sha",
-            crate::fetch::redact(url)
-        );
-    }
-    let sha = String::from_utf8_lossy(&sha_out.stdout).trim().to_string();
-    if sha.is_empty() {
-        anyhow::bail!(
-            "cloning {} failed: empty commit sha",
-            crate::fetch::redact(url)
-        );
-    }
-    Ok((staging, clone_dir, sha))
-}
-
 fn install_identity(spec: &NameOrUrl) -> (String, String) {
     match spec {
         NameOrUrl::Name(n) => ("index".to_string(), n.clone()),
@@ -325,7 +292,9 @@ async fn install_index(
     };
     match entry.kind.as_str() {
         "" | "plugin" => {}
-        "skill" => return crate::skills_ops::install_hub_entry(client, name, &entry).await,
+        "skill" => {
+            anyhow::bail!("'{name}' is a skill — `gray plugin install skills` adds skill support")
+        }
         other => {
             anyhow::bail!("package '{name}' is kind '{other}' — not installable yet")
         }

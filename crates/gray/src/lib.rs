@@ -16,6 +16,7 @@ pub(crate) mod plugin_status;
 pub mod print;
 mod print_meter;
 pub mod profile;
+pub mod project_context;
 pub mod project_trust;
 pub mod prompt_history;
 pub mod prompt_templates;
@@ -28,8 +29,6 @@ pub mod session_send;
 pub mod session_store;
 pub mod setup;
 pub mod shell_drain;
-pub mod skills;
-pub mod skills_tool;
 pub mod spill;
 pub mod statusline;
 pub mod stdio;
@@ -62,12 +61,10 @@ the prompt reaches the model — only the text after this note reaches it.
 This file IS the stored system prompt, sent verbatim every turn with no
 runtime context appended. Only what the model can't already know: the
 tools describe themselves and the task says the rest.
-Per turn gray may append ephemeral context: the <available_skills> list
-(fresh skill discovery for the turn's directory) — no skill tool, read
-matches with bash — plus <project_context>, the nearest AGENTS.md /
-CLAUDE.md above the working directory, and plugin docs. Lean mode — the
-default — skips all of that: this file alone is the system prompt. Opt
-back in with "lean": false or GRAY_LEAN=0. Edit with `/agentsmd`
+Per turn gray may append ephemeral context: <project_context>, the nearest
+AGENTS.md / CLAUDE.md above the working directory, and plugin docs. Lean
+mode — the default — skips them. Opt back in with
+"lean": false or GRAY_LEAN=0. Edit with `/agentsmd`
 (Ctrl-S save & apply, Ctrl-R reset to this default, Ctrl-X cancel).
 -->
 You are Gray, running on the user's machine.
@@ -83,9 +80,9 @@ This file IS the stored system prompt. Comments like this one stay in the
 file but are stripped before the prompt reaches the model. After it, gray
 appends a small runtime block: identity, harness facts, and your working
 directory / repo / branch. Per turn it may also inject ephemeral context —
-<available_skills> for the turn's directory, <project_context> from the
-nearest AGENTS.md / CLAUDE.md above cwd, plugin docs. Lean mode (default)
-skips those; opt in with "lean": false or GRAY_LEAN=0.
+<project_context> from the nearest AGENTS.md / CLAUDE.md above cwd, plugin
+docs. Lean mode (default) skips them; opt in with "lean": false or
+GRAY_LEAN=0.
 
 Edit with `/agentsmd` (Ctrl-S save & apply, Ctrl-R reset to default,
 Ctrl-X cancel).
@@ -321,6 +318,17 @@ async fn build_agent_inner(
         .and_then(|p| p.installed().provider.transport.request.cache_ttl_secs)
         .unwrap_or(300);
     crate::cache::set_cache_ttl(std::time::Duration::from_secs(cache_ttl_secs));
+    // Plugin-credentialed providers are subscription logins: a cold resend
+    // isn't re-billed, so there is nothing to confirm.
+    crate::cache::set_cold_confirm_usd(if config.uses_plugin_credentials() {
+        0.0
+    } else {
+        crate::setup::catalog::saved_config_path()
+            .ok()
+            .map(|p| crate::setup::catalog::load_saved_config_at(&p))
+            .and_then(|s| s.cold_confirm_usd)
+            .unwrap_or(crate::cache::COLD_CONFIRM_USD)
+    });
     let cache_warm = cache_warm_policy(config, &wire_model, plugin_warm_replay, cache_ttl_secs);
 
     let identity = if config.bare {
@@ -450,12 +458,10 @@ pub(crate) fn extra_surface_plugins(
     config: &Config,
     spawn_plugins: bool,
 ) -> Vec<Arc<dyn gray_plugin::Plugin>> {
-    let mut extra: Vec<Arc<dyn gray_plugin::Plugin>> = Vec::new();
-    if !(config.bare || config.lean || !spawn_plugins) {
-        extra.push(Arc::new(crate::skills_tool::SkillsPlugin::default()));
-        extra.push(Arc::new(crate::skills_tool::ProjectContextPlugin));
+    if config.bare || config.lean || !spawn_plugins {
+        return Vec::new();
     }
-    extra
+    vec![Arc::new(crate::project_context::ProjectContextPlugin)]
 }
 
 #[derive(Parser, Debug, Clone)]

@@ -309,7 +309,7 @@ async fn drain_queued(
         let Some((text, images, req)) = next else {
             break;
         };
-        let cmd = repl::expand_skill_command(repl::parse_command(&text), cwd, None, false);
+        let cmd = repl::expand_prompt_template(repl::parse_command(&text), cwd, false);
         match cmd {
             repl::ReplCommand::Empty => {}
             repl::ReplCommand::Prompt(text) => {
@@ -462,7 +462,7 @@ async fn run_command(
     line: String,
 ) -> anyhow::Result<()> {
     *lock(&CURRENT_REQ) = Some(req.clone());
-    let cmd = repl::expand_skill_command(repl::parse_command(&line), cwd, None, false);
+    let cmd = repl::expand_prompt_template(repl::parse_command(&line), cwd, false);
     match cmd {
         repl::ReplCommand::Empty => {
             *lock(&CURRENT_REQ) = None;

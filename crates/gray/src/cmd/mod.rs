@@ -3,7 +3,7 @@ mod store;
 mod ui;
 
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use serde_json::{Value, json};
 
@@ -117,7 +117,6 @@ async fn run_command(
             "models" => model_result(config, home, &rest),
             "new" => new_result(home).await,
             "sessions" => sessions_result(home, &rest).await,
-            "skills" => skills_result(&rest),
             "context" => context_result(config, home, &rest).await,
             "compact" => compact_result(config, home, &rest).await,
             "undo" => undo_result(home, false).await,
@@ -137,9 +136,6 @@ async fn run_command(
     }
     if let Some(result) = plugin_command_result(home, name, args).await? {
         return Ok(result);
-    }
-    if let Some(result) = skill_command_result(name, &rest) {
-        return result;
     }
     Err(CmdError::unknown(name))
 }
@@ -477,67 +473,6 @@ async fn sessions_result(home: &Path, rest: &str) -> Result<CommandResult, CmdEr
     let mut out = String::new();
     for s in &summaries {
         out.push_str(&crate::resume::format_summary_row(s));
-        out.push('\n');
-    }
-    Ok(CommandResult::text(out.trim_end()))
-}
-
-fn unknown_skill_text(name: &str) -> String {
-    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let discovered = crate::skills::discover_skills(&cwd);
-    let needle = name.to_lowercase();
-    let mut ranked: Vec<(&str, usize)> = discovered
-        .skills
-        .iter()
-        .map(|s| {
-            let n = s.name.to_lowercase();
-            let score = if n.contains(&needle) || needle.contains(&n) {
-                0
-            } else if n.starts_with(&needle[..needle.len().min(3)]) {
-                1
-            } else {
-                usize::MAX
-            };
-            (s.name.as_str(), score)
-        })
-        .collect();
-    ranked.retain(|(_, score)| *score != usize::MAX);
-    ranked.sort_by_key(|(n, score)| (*score, n.to_string()));
-    let close: Vec<&str> = ranked.iter().take(5).map(|(n, _)| *n).collect();
-    if close.is_empty() {
-        format!("no skill '{name}' — `gray cmd run skills` lists the discovered names")
-    } else {
-        format!("no skill '{name}' — closest matches: {}", close.join(", "))
-    }
-}
-
-fn skills_result(rest: &str) -> Result<CommandResult, CmdError> {
-    let rest = rest.trim();
-    if !rest.is_empty() {
-        let (name, args) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
-        return skill_command_result(name.trim(), args)
-            .unwrap_or_else(|| Err(CmdError::args(unknown_skill_text(name))));
-    }
-    let cwd = std::env::current_dir()
-        .map_err(|e| CmdError::unavailable(format!("cannot resolve cwd: {e}")))?;
-    let discovered = crate::skills::discover_skills(&cwd);
-    if discovered.skills.is_empty() {
-        return Ok(CommandResult::text("no skills discovered"));
-    }
-    let auto = crate::setup::skills_auto_enabled();
-    let disabled = crate::setup::disabled_skill_names();
-    let mut out = String::new();
-    if !auto {
-        out.push_str("skills auto-load is off (/skills on to re-enable)\n");
-    }
-    for s in &discovered.skills {
-        let mut row = crate::skills::format_discovered_skill_row_full(s);
-        if !auto {
-            row.push_str(" [auto-off]");
-        } else if disabled.contains(&s.name) {
-            row.push_str(" [disabled]");
-        }
-        out.push_str(&row);
         out.push('\n');
     }
     Ok(CommandResult::text(out.trim_end()))
@@ -974,25 +909,6 @@ fn find_command_owner(home: &Path, name: &str) -> Option<(String, Vec<String>)> 
         }
     }
     None
-}
-
-fn skill_command_result(name: &str, args_raw: &str) -> Option<Result<CommandResult, CmdError>> {
-    let cwd = std::env::current_dir().ok()?;
-    let discovered = crate::skills::discover_skills(&cwd);
-    let skill = discovered.skills.iter().find(|s| s.name == name)?;
-    let args = (!args_raw.trim().is_empty()).then(|| args_raw.trim().to_string());
-    Some((|| {
-        crate::skills::validate_skill_args(skill, args.as_deref()).map_err(CmdError::args)?;
-        let content = std::fs::read_to_string(&skill.file_path).map_err(|e| {
-            CmdError::unavailable(format!("failed to read {}: {e}", skill.file_path.display()))
-        })?;
-        let body = crate::skills_tool::strip_frontmatter(&content);
-        let prompt = handlers::format_skill_paste(body, &skill.name, args.as_deref());
-        Ok(CommandResult::Prompt {
-            prompt,
-            fallback_text: format!("Running the \"{}\" skill.", skill.name),
-        })
-    })())
 }
 
 #[derive(Debug, Default, serde::Deserialize)]

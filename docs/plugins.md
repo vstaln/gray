@@ -21,8 +21,7 @@ gray plugin install /path/to/executable     # register a local binary
 executable install probes `manifest` before registering anything; a
 `gray-<name>` already on PATH registers with `gray plugin install <name>`
 too. `GRAY_PLUGIN_PATH=/path/to/bin gray plugin install <name>` overrides
-the binary a name resolves to. Skill specs (`github:<owner/repo[/path]>`, `url:<https-url>`) install a `SKILL.md`
-bundle into `~/.gray/skills` instead of a plugin.
+the binary a name resolves to.
 
 Index entries are `gray-native`/`tarball` with `sha256:<hex>`:
 

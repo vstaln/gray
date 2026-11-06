@@ -428,7 +428,6 @@ pub(crate) async fn dispatch_command(
             }
             Flow::Continue
         }
-        ReplCommand::Skill(_) => Flow::Continue,
         ReplCommand::Plugin(raw) => {
             handle_plugin_command(&raw, tui.as_ref().map(|(s, _)| s)).await;
             Flow::Continue

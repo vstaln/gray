@@ -83,8 +83,8 @@ fn empty_prompt_hides_slash_popup_like_codex() {
 #[test]
 fn registry_resolve_canonical_and_aliases() {
     for name in [
-        "models", "context", "sessions", "new", "compact", "hehe", "agentsmd", "skills", "plugins",
-        "help", "quit",
+        "models", "context", "sessions", "new", "compact", "hehe", "agentsmd", "plugins", "help",
+        "quit",
     ] {
         let d = super::resolve(name).unwrap_or_else(|| panic!("resolve {name}"));
         assert_eq!(d.name, name);
@@ -171,19 +171,9 @@ fn registry_parse_uses_canonical() {
     ));
     assert!(matches!(parse_command("/whoami"), ReplCommand::Unknown(_)));
     assert!(matches!(parse_command("/logout"), ReplCommand::Unknown(_)));
-    assert!(matches!(
-        parse_command("/skills foo"),
-        ReplCommand::Skill(Some(_))
-    ));
+    assert!(matches!(parse_command("/skills"), ReplCommand::Unknown(_)));
     assert!(matches!(
         parse_command("/skill foo"),
-        ReplCommand::Skill(Some(_))
-    ));
-    assert!(matches!(parse_command("/skills"), ReplCommand::Skill(None)));
-    assert!(matches!(parse_command("/skill"), ReplCommand::Skill(None)));
-
-    assert!(matches!(
-        parse_command("/skills:commit"),
         ReplCommand::Unknown(_)
     ));
 }
@@ -234,45 +224,6 @@ fn context_arg_completion_levels() {
         completion_matches_dyn("/cont", cwd)
             .iter()
             .any(|(n, _)| n == "context")
-    );
-}
-
-fn temp_skill_cwd(name: &str) -> tempfile::TempDir {
-    let dir = tempfile::tempdir().unwrap();
-    let skill_dir = dir.path().join(".gray").join("skills").join(name);
-    std::fs::create_dir_all(&skill_dir).unwrap();
-    std::fs::write(
-        skill_dir.join("SKILL.md"),
-        "---\ndescription: Temp skill for completion tests\n---\n# temp\n",
-    )
-    .unwrap();
-    dir
-}
-
-#[test]
-fn top_level_query_never_surfaces_skills() {
-    crate::project_trust::assume_trusted_for_test();
-    use super::completion_matches_dyn;
-    let dir = temp_skill_cwd("commit");
-    let cwd = dir.path();
-
-    assert!(
-        crate::skills::discover_skills(cwd)
-            .skills
-            .iter()
-            .any(|s| s.name == "commit")
-    );
-
-    let top = completion_matches_dyn("/com", cwd);
-    assert!(
-        !top.iter().any(|(n, _)| n == "commit"),
-        "skill must not appear in / completion: {top:?}"
-    );
-
-    let scoped = completion_matches_dyn("/skills com", cwd);
-    assert!(
-        scoped.iter().any(|(n, _)| n == "skills commit"),
-        "skill must complete under /skills : {scoped:?}"
     );
 }
 
@@ -344,66 +295,6 @@ fn model_completes_cached_ids() {
             .any(|(n, _)| n == "models test-completion-model-xyz")
     );
     crate::setup::set_active_model_provider("");
-}
-
-#[test]
-fn skill_singular_is_alias_for_skills_space() {
-    crate::project_trust::assume_trusted_for_test();
-    use super::super::handlers::expand_skill_command;
-    use super::completion_matches_dyn;
-    let dir = temp_skill_cwd("commit");
-    let cwd = dir.path();
-
-    assert_eq!(
-        parse_command("/skill commit"),
-        parse_command("/skills commit")
-    );
-    assert_eq!(
-        parse_command("/skill commit extra"),
-        parse_command("/skills commit extra")
-    );
-    assert_eq!(parse_command("/skill"), parse_command("/skills"));
-    assert_eq!(parse_command("/SKILL"), parse_command("/skills"));
-    assert_eq!(
-        parse_command("/SKILL commit"),
-        parse_command("/skills commit")
-    );
-
-    let a = expand_skill_command(parse_command("/skill commit"), cwd, None, false);
-    let b = expand_skill_command(parse_command("/skills commit"), cwd, None, false);
-    assert!(matches!(a, ReplCommand::Prompt(_)));
-    assert_eq!(a, b);
-
-    let a = expand_skill_command(parse_command("/skill commit bogus-arg"), cwd, None, false);
-    let b = expand_skill_command(parse_command("/skills commit bogus-arg"), cwd, None, false);
-    assert!(matches!(a, ReplCommand::Prompt(_)));
-    assert_eq!(a, b);
-
-    let a = expand_skill_command(parse_command("/skill nope"), cwd, None, false);
-    let b = expand_skill_command(parse_command("/skills nope"), cwd, None, false);
-    assert_eq!(a, ReplCommand::Empty);
-    assert_eq!(a, b);
-
-    let rows = completion_matches_dyn("/skill com", cwd);
-    assert!(
-        rows.iter().any(|(n, _)| n == "skill commit"),
-        "skill must complete under /skill : {rows:?}"
-    );
-    let rows = completion_matches_dyn("/skill ", cwd);
-    assert!(rows.iter().any(|(n, _)| n == "skill commit"));
-
-    let rows = completion_matches_dyn("/skills com", cwd);
-    assert!(
-        rows.iter().any(|(n, _)| n == "skills commit"),
-        "skill must complete under /skills : {rows:?}"
-    );
-    let rows = completion_matches_dyn("/skills ", cwd);
-    assert!(rows.iter().any(|(n, _)| n == "skills commit"));
-
-    assert!(matches!(
-        parse_command("/skills:commit"),
-        ReplCommand::Unknown(_)
-    ));
 }
 
 #[test]

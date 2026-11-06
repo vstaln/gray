@@ -626,6 +626,7 @@ impl Agent {
                             request_sent,
                             warm_spent.clone(),
                             phase.clone(),
+                            self.warm_refreshed.clone(),
                         ),
                     )),
                     phase,
