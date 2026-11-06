@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+- **Lean mode keeps your project rules.** The nearest `AGENTS.md` / `CLAUDE.md` in a trusted project now reaches the model under lean mode (the default) too; lean still skips plugin prompt extras, and `--bare` still loads nothing.
+
 ## [0.2.13] - 2026-11-06
 
 ### Added

@@ -105,4 +105,10 @@ impl gray_plugin::Plugin for ProjectContextPlugin {
     async fn prompt_context(&self, cwd: &str) -> Option<String> {
         project_context_block(Path::new(cwd))
     }
+
+    /// Project rules are the user's own instructions, not a plugin extra:
+    /// lean mode keeps them (trust still gates them).
+    fn is_global(&self) -> bool {
+        true
+    }
 }

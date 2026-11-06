@@ -62,9 +62,9 @@ This file IS the stored system prompt, sent verbatim every turn with no
 runtime context appended. Only what the model can't already know: the
 tools describe themselves and the task says the rest.
 Per turn gray may append ephemeral context: <project_context>, the nearest
-AGENTS.md / CLAUDE.md above the working directory, and plugin docs. Lean
-mode — the default — skips them. Opt back in with
-"lean": false or GRAY_LEAN=0. Edit with `/agentsmd`
+AGENTS.md / CLAUDE.md above the working directory in a trusted project, and
+plugin docs. Lean mode — the default — keeps the project rules and skips
+plugin docs. Opt back in with "lean": false or GRAY_LEAN=0. Edit with `/agentsmd`
 (Ctrl-S save & apply, Ctrl-R reset to this default, Ctrl-X cancel).
 -->
 You are Gray, running on the user's machine.
@@ -80,9 +80,9 @@ This file IS the stored system prompt. Comments like this one stay in the
 file but are stripped before the prompt reaches the model. After it, gray
 appends a small runtime block: identity, harness facts, and your working
 directory / repo / branch. Per turn it may also inject ephemeral context —
-<project_context> from the nearest AGENTS.md / CLAUDE.md above cwd, plugin
-docs. Lean mode (default) skips them; opt in with "lean": false or
-GRAY_LEAN=0.
+<project_context> from the nearest AGENTS.md / CLAUDE.md above cwd (trusted
+projects), plugin docs. Lean mode (default) keeps the project rules and skips
+plugin docs; opt in with "lean": false or GRAY_LEAN=0.
 
 Edit with `/agentsmd` (Ctrl-S save & apply, Ctrl-R reset to default,
 Ctrl-X cancel).
@@ -458,7 +458,7 @@ pub(crate) fn extra_surface_plugins(
     config: &Config,
     spawn_plugins: bool,
 ) -> Vec<Arc<dyn gray_plugin::Plugin>> {
-    if config.bare || config.lean || !spawn_plugins {
+    if config.bare || !spawn_plugins {
         return Vec::new();
     }
     vec![Arc::new(crate::project_context::ProjectContextPlugin)]
