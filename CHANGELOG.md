@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.2.14] - 2026-11-06
 
 ### Added
 - **Plugins can complete their own arguments.** A plugin may write `plugins/<name>-completion.json` (`{"completion": ["verb", {"arg": "name", "description": "…"}]}`) and the slash popup picks it up as soon as the file changes, so arguments that change after install, like installed skill names, complete with descriptions. With the skills plugin, `/skills be-am…` now completes to `/skills be-ambitious`.
