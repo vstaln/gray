@@ -200,6 +200,9 @@ async fn run() -> anyhow::Result<()> {
         return Ok(());
     }
     log::debug!(target: "gray_timing", "spawn config_loaded elapsed_ms={}", gray::turn_caps::process_start().elapsed().as_millis());
+    if config.bare {
+        gray::plugin_cli::disable_slash_commands();
+    }
     if !config.bare {
         let saved_theme = gray::setup::saved_config_path()
             .ok()

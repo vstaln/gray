@@ -1451,7 +1451,23 @@ pub(crate) async fn adopt_cli(home: &Path, name: &str, dir: &Path) -> anyhow::Re
     }
 }
 
+/// Set when the session runs `--bare`: no plugin slash commands are offered
+/// or run, matching bare's promise of no plugins.
+static SLASH_COMMANDS_OFF: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+pub fn disable_slash_commands() {
+    SLASH_COMMANDS_OFF.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub(crate) fn slash_commands_off() -> bool {
+    SLASH_COMMANDS_OFF.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 pub async fn capture_slash(name: &str, args: &[String]) -> anyhow::Result<Option<String>> {
+    if slash_commands_off() {
+        return Ok(None);
+    }
     let home = home()?;
     migrate_commands_json(&home);
     let mut lock = load_lock(&home)?;
@@ -1569,8 +1585,30 @@ struct CompletionRow {
     command: String,
 
     plugin: String,
+    /// Argument completions after the command, with an optional description.
+    args: Vec<(String, Option<String>)>,
+}
 
-    args: Vec<String>,
+/// One `completion` entry: a bare argument string, or
+/// `{"arg": "...", "description": "..."}`.
+fn completion_entry(v: &serde_json::Value) -> Option<(String, Option<String>)> {
+    if let Some(arg) = v.as_str() {
+        return Some((arg.to_string(), None));
+    }
+    let arg = v["arg"].as_str().filter(|a| !a.trim().is_empty())?;
+    let desc = v["description"]
+        .as_str()
+        .map(|d| d.split_whitespace().collect::<Vec<_>>().join(" "))
+        .filter(|d| !d.is_empty());
+    Some((arg.to_string(), desc))
+}
+
+/// Completion arguments a plugin publishes at runtime, beside its manifest:
+/// `plugins/<name>-completion.json` holding `{"completion": [...]}` in the
+/// manifest's entry format. Lets a plugin offer arguments that change after
+/// install (installed items, names from the current project).
+fn dynamic_completion_path(home: &Path, name: &str) -> PathBuf {
+    home.join("plugins").join(format!("{name}-completion.json"))
 }
 
 struct CompletionTable {
@@ -1637,16 +1675,26 @@ fn scan_lock_completions(
             .filter_map(|v| v.as_str())
             .map(|c| c.trim_start_matches('/'))
             .collect();
-        let args: Vec<String> = m["completion"]
-            .as_array()
-            .map(|args| {
-                args.iter()
-                    .filter_map(|v| v.as_str())
-                    .filter(|a| !own_commands.contains(a))
-                    .map(str::to_string)
-                    .collect()
-            })
-            .unwrap_or_default();
+        let dynamic_path = dynamic_completion_path(home, name);
+        stamps.push((dynamic_path.clone(), file_mtime(&dynamic_path)));
+        let dynamic = std::fs::read(&dynamic_path)
+            .ok()
+            .and_then(|raw| serde_json::from_slice::<serde_json::Value>(&raw).ok());
+        let mut args: Vec<(String, Option<String>)> = Vec::new();
+        for entry in [
+            m["completion"].as_array(),
+            dynamic.as_ref().and_then(|d| d["completion"].as_array()),
+        ]
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(completion_entry)
+        {
+            if own_commands.contains(entry.0.as_str()) || args.iter().any(|(a, _)| *a == entry.0) {
+                continue;
+            }
+            args.push(entry);
+        }
         for command in commands.iter().filter_map(|v| v.as_str()) {
             let command = command.trim_start_matches('/');
             if crate::repl::is_builtin_command(command) || !seen.insert(command.to_string()) {
@@ -1735,6 +1783,9 @@ fn completion_table<'a>(
 }
 
 pub(crate) fn completions(query: &str) -> Vec<(String, String)> {
+    if slash_commands_off() {
+        return Vec::new();
+    }
     let Ok(home) = home() else { return Vec::new() };
     migrate_commands_json(&home);
     let user_home = gray_core::paths::gray_user_home();
@@ -1749,10 +1800,13 @@ pub(crate) fn completions(query: &str) -> Vec<(String, String)> {
         if !query.contains(' ') && row.command.starts_with(query) {
             out.push((row.command.clone(), format!("{} plugin", row.plugin)));
         }
-        for arg in &row.args {
+        for (arg, desc) in &row.args {
             let full = format!("{} {arg}", row.command);
             if query.contains(' ') && full.starts_with(query) {
-                out.push((full, format!("{} plugin command", row.plugin)));
+                let desc = desc
+                    .clone()
+                    .unwrap_or_else(|| format!("{} plugin command", row.plugin));
+                out.push((full, desc));
             }
         }
     }
@@ -1799,5 +1853,29 @@ pub(crate) async fn capture(
                 _ => unreachable!(),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod completion_entry_tests {
+    use super::completion_entry;
+    use serde_json::json;
+
+    #[test]
+    fn strings_and_described_objects_parse() {
+        assert_eq!(
+            completion_entry(&json!("list")),
+            Some(("list".into(), None))
+        );
+        assert_eq!(
+            completion_entry(&json!({"arg": "be-ambitious", "description": "Go  big\nnow"})),
+            Some(("be-ambitious".into(), Some("Go big now".into())))
+        );
+        assert_eq!(
+            completion_entry(&json!({"arg": "x"})),
+            Some(("x".into(), None))
+        );
+        assert_eq!(completion_entry(&json!({"description": "no arg"})), None);
+        assert_eq!(completion_entry(&json!(3)), None);
     }
 }
