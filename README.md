@@ -37,7 +37,7 @@ curl -fsSL https://gray.alignment.id/install.sh | sh && gray
 | **Bash is the tool** | Read, search, edit, run — all through one `bash` tool, with background jobs for long work. Point `exec_prefix` at a container or SSH box to run it somewhere else. |
 | **Sessions that survive** | JSONL transcripts with branching. `-c` reopens the latest, `/sessions` (alias `/resume`) picks any, `/undo` and `/retry` rewind. Context auto-compacts before the limit. |
 | **Remembers you** | Cross-session memory of your preferences and project decisions (`gray memory`). |
-| **Your setup already works** | Reads project `AGENTS.md` / `CLAUDE.md`, and `SKILL.md` skills from `~/.gray`, `~/.claude`, `~/.agents`, opencode and pi — no porting. Extend further with stdio plugins. |
+| **Your setup already works** | Reads project `AGENTS.md` / `CLAUDE.md` — no porting. Extend further with stdio plugins. |
 
 ## Install
 
@@ -91,7 +91,6 @@ Slash commands autocomplete — Enter completes and fires, Tab inserts.
 | `/undo` · `/retry` | drop the last exchange · drop it and ask again (files are git's job) |
 | type during a turn | steers the running turn at its next step |
 | `/context [128k\|1m\|auto]` | inspect or set the window |
-| `/skills [name] [args]` | list or run a skill |
 | `/plugins` | plugin manager — list, enable, update |
 | `/agentsmd` | edit the system prompt |
 
@@ -101,7 +100,7 @@ CLI: `gray resume`, `gray gateway`, `gray plugin`, `gray sessions`, `gray update
 
 ## Extend
 
-**Skills** — `SKILL.md` files from `~/.gray/skills`, `.gray/skills`, and the Claude Code / opencode / agents / pi locations, global and per-project. The model sees the list every turn and reads the one it needs.
+**Skills** — not in bare gray. `gray plugin install skills` adds `SKILL.md` discovery across `~/.gray`, Claude Code, opencode and agents locations, a per-turn listing, and `/skills`.
 
 **Plugins** — sidecar processes speaking NDJSON over stdio. More in [docs/plugins.md](docs/plugins.md).
 

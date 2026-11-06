@@ -55,27 +55,3 @@ fn trusting_twice_records_the_project_once() {
     trust(home.path(), proj.path()).unwrap();
     assert_eq!(trusted(home.path()).len(), 1);
 }
-
-#[test]
-fn project_skills_load_only_once_the_project_is_trusted() {
-    let home = tempfile::tempdir().unwrap();
-    let proj = tempfile::tempdir().unwrap();
-    repo(proj.path());
-    let skill = proj.path().join(".gray/skills/commit");
-    std::fs::create_dir_all(&skill).unwrap();
-    std::fs::write(
-        skill.join("SKILL.md"),
-        "---\nname: commit\ndescription: commit changes\n---\nBody",
-    )
-    .unwrap();
-    let names = |home: &Path| {
-        crate::skills::load_skills(proj.path(), home)
-            .skills
-            .into_iter()
-            .map(|s| s.name)
-            .collect::<Vec<_>>()
-    };
-    assert!(!names(home.path()).contains(&"commit".to_string()));
-    trust(home.path(), proj.path()).unwrap();
-    assert!(names(home.path()).contains(&"commit".to_string()));
-}

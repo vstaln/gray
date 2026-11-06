@@ -468,11 +468,15 @@ pub(crate) fn read_line(
                     for (ph, full) in &tui.pending_pastes {
                         text = text.replace(ph, full);
                     }
-                    tui.pending_pastes.clear();
                     let trimmed = text.trim().to_string();
                     if trimmed.is_empty() && tui.attachments.is_empty() && !tui.allow_empty_submit {
+                        tui.pending_pastes.clear();
                         continue;
                     }
+                    if needs_cold_confirm(tui, &trimmed) {
+                        continue;
+                    }
+                    tui.pending_pastes.clear();
                     crate::prompt_history::record(&mut tui.history, &trimmed);
                     tui.history_idx = None;
                     tui.draft.clear();
@@ -505,6 +509,31 @@ pub(crate) fn read_line(
             _ => {}
         }
     }
+}
+
+/// First Enter on a cold, expensive cache: keep the draft and say what
+/// sending costs; Enter again on the same draft sends. Commands, queued
+/// input and empty submits never ask.
+fn needs_cold_confirm(tui: &mut Tui, text: &str) -> bool {
+    if tui.is_task_running || text.is_empty() || text.starts_with('/') {
+        tui.cold_confirm_armed = None;
+        return false;
+    }
+    let Some(resend) = tui.cold_resend_to_confirm() else {
+        tui.cold_confirm_armed = None;
+        return false;
+    };
+    if tui.cold_confirm_armed.as_deref() == Some(text) {
+        tui.cold_confirm_armed = None;
+        return false;
+    }
+    tui.cold_confirm_armed = Some(text.to_string());
+    let line = resend.confirm_line();
+    if !tail_line_is(tui, &line) {
+        tui.push_dim(line);
+    }
+    let _ = tui.draw();
+    true
 }
 
 fn echo_submit(tui: &mut Tui, text: &str, attached: &[PathBuf]) {

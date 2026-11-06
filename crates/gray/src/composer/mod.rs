@@ -153,6 +153,12 @@ pub struct Tui {
     pub cumulative_usage: Option<gray_core::event::Usage>,
 
     pub(crate) cache: crate::cache::CacheTracker,
+
+    /// The agent's warm-ping stamp, so warm refreshes keep `cache` warm.
+    pub(crate) warm_refreshed: Option<gray_core::cache_warm::WarmRefreshed>,
+
+    /// Draft the cold-cache confirm was shown for; Enter on the same draft sends.
+    pub(crate) cold_confirm_armed: Option<String>,
     pub(crate) cache_stats: crate::composer::cache_stats::CacheStats,
     markdown_renderer: gray_markdown::StreamingMarkdownRenderer,
     committed_markdown_lines: usize,
@@ -404,6 +410,8 @@ impl Tui {
             latest_usage: None,
             cumulative_usage: None,
             cache: crate::cache::CacheTracker::default(),
+            warm_refreshed: None,
+            cold_confirm_armed: None,
             cache_stats: crate::composer::cache_stats::CacheStats::default(),
             markdown_renderer: gray_markdown::StreamingMarkdownRenderer::new(
                 gray_markdown::gray_markdown_style(),

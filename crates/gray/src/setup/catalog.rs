@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use crate::providers::registry::InstalledProvider;
@@ -79,9 +79,6 @@ pub struct SavedConfig {
     pub context_window: Option<usize>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub skills_auto: Option<bool>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub context_reserve: Option<usize>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -92,9 +89,6 @@ pub struct SavedConfig {
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub exec_prefix: Option<String>,
-
-    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
-    pub disabled_skills: BTreeSet<String>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub memory_auto: Option<bool>,
@@ -112,6 +106,10 @@ pub struct SavedConfig {
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub background_compaction: Option<bool>,
+
+    /// Resend cost (USD) at which a cold cache asks for a second Enter; 0 is off.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cold_confirm_usd: Option<f64>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub compaction_model: Option<String>,
@@ -152,22 +150,6 @@ pub fn gray_home() -> anyhow::Result<PathBuf> {
 
 pub fn saved_config_path() -> anyhow::Result<PathBuf> {
     Ok(gray_home()?.join("config.json"))
-}
-
-pub fn disabled_skill_names() -> BTreeSet<String> {
-    saved_config_path()
-        .map(|p| load_saved_config_at(&p).disabled_skills)
-        .unwrap_or_default()
-}
-
-pub fn skills_auto_enabled() -> bool {
-    saved_config_path()
-        .map(|p| load_saved_config_at(&p).skills_auto.unwrap_or(true))
-        .unwrap_or(true)
-}
-
-pub fn skills_auto_enabled_at(path: &Path) -> bool {
-    load_saved_config_at(path).skills_auto.unwrap_or(true)
 }
 
 pub fn gw_auto_enabled() -> bool {
@@ -257,18 +239,17 @@ fn partial_saved_config(obj: &serde_json::Map<String, serde_json::Value>) -> Sav
         temperature: opt_field(obj, "temperature"),
         top_p: opt_field(obj, "top_p"),
         context_window: opt_field(obj, "context_window"),
-        skills_auto: opt_field(obj, "skills_auto"),
         context_reserve: opt_field(obj, "context_reserve"),
         context_keep: opt_field(obj, "context_keep"),
         compact_at: opt_field(obj, "compact_at_tokens"),
         exec_prefix: opt_field(obj, "exec_prefix"),
-        disabled_skills: opt_field(obj, "disabled_skills").unwrap_or_default(),
         memory_auto: opt_field(obj, "memory_auto"),
         cron_auto: opt_field(obj, "cron_auto"),
         gw_auto: opt_field(obj, "gw_auto"),
         auto_update: opt_field(obj, "auto_update"),
         lean: opt_field(obj, "lean"),
         background_compaction: opt_field(obj, "background_compaction"),
+        cold_confirm_usd: opt_field(obj, "cold_confirm_usd"),
         compaction_model: opt_field(obj, "compaction_model"),
         intro: opt_field(obj, "intro"),
         theme: opt_field(obj, "theme"),

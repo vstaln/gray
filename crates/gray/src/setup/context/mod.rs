@@ -304,7 +304,6 @@ pub struct ContextParts {
     pub system_prompt: usize,
     pub project_context: usize,
     pub tools: usize,
-    pub skills: usize,
     pub messages: usize,
 }
 
@@ -313,7 +312,6 @@ impl ContextParts {
         self.system_prompt
             .saturating_add(self.project_context)
             .saturating_add(self.tools)
-            .saturating_add(self.skills)
             .saturating_add(self.messages)
     }
 
@@ -321,26 +319,25 @@ impl ContextParts {
         window.saturating_sub(self.used().saturating_add(reserve))
     }
 
-    pub fn grid_cells(&self, window: usize, reserve: usize) -> [usize; 7] {
+    pub fn grid_cells(&self, window: usize, reserve: usize) -> [usize; 6] {
         if window == 0 {
-            return [0; 7];
+            return [0; 6];
         }
         let mut cells = [
             ((self.system_prompt as f64 / window as f64) * 100.0).round() as usize,
             ((self.project_context as f64 / window as f64) * 100.0).round() as usize,
             ((self.tools as f64 / window as f64) * 100.0).round() as usize,
-            ((self.skills as f64 / window as f64) * 100.0).round() as usize,
             ((self.messages as f64 / window as f64) * 100.0).round() as usize,
             0,
             ((reserve as f64 / window as f64) * 100.0).round() as usize,
         ];
-        let used: usize = cells[0] + cells[1] + cells[2] + cells[3] + cells[4] + cells[6];
-        cells[5] = 100usize.saturating_sub(used.min(100));
+        let used: usize = cells[0] + cells[1] + cells[2] + cells[3] + cells[5];
+        cells[4] = 100usize.saturating_sub(used.min(100));
 
         let total: usize = cells.iter().sum();
         if total > 100 {
             let mut over = total - 100;
-            let mut idx: Vec<usize> = (0..7).collect();
+            let mut idx: Vec<usize> = (0..6).collect();
             idx.sort_by_key(|&i| std::cmp::Reverse(cells[i]));
             for i in idx {
                 if over == 0 {

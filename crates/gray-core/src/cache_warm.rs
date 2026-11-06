@@ -107,6 +107,10 @@ pub(crate) struct WarmHint {
     pub(crate) warm_off: bool,
 }
 
+/// Last successful warm refresh, shared with the front end.
+pub type WarmRefreshed = Arc<Mutex<Option<std::time::Instant>>>;
+
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn keep_warm(
     provider: Arc<dyn Provider>,
     mut req: ChatRequest,
@@ -115,6 +119,7 @@ pub(crate) async fn keep_warm(
     sent: Instant,
     spent: Arc<Mutex<Usage>>,
     phase: WarmPhaseCell,
+    refreshed: WarmRefreshed,
 ) {
     let Some(delay) = warming_delay(policy.ttl) else {
         return;
@@ -184,6 +189,9 @@ pub(crate) async fn keep_warm(
                             h.warm_off = true;
                         }
                         return;
+                    }
+                    if let Ok(mut at) = refreshed.lock() {
+                        *at = Some(std::time::Instant::now());
                     }
                 }
                 Err(e) => {

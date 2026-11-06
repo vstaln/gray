@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.2.13] - 2026-11-06
+
+### Added
+- **Enter twice to send on a cold cache.** When the prompt cache has gone cold and sending would re-bill at least $0.50, the first Enter keeps your draft and shows what it costs (`Cache cold after 12m idle: sending re-bills 180k tokens (~$0.62)…`); Enter again on the same draft sends, or run `/compact` first. Commands, queued messages, `gray -p` and subscription (plugin-credentialed) providers never ask. Set `cold_confirm_usd` in `config.json` to change the threshold; `0` turns it off.
+
+### Fixed
+- **Warm pings now count as cache activity.** With cache warming on, gray called the cache cold 5 minutes after the last real request even though warm pings had kept it alive, and masked old tool output on the next turn, which itself broke the warm cache.
+
+### Changed
+- **Skills left gray.** Bare gray has no skills: no discovery, no listing, no `/skills`, no `skill` hub entries or `github:`/`url:` skill specs. `gray plugin install skills` adds them all back; `gray plugin enable skills --global` keeps the listing on under lean mode.
+- **The skills plugin lists the way Claude Code does.** Every skill name always appears, descriptions share 1% of the context window (1,536 characters each at most), and the least-used skills lose theirs first. The model loads a skill by name through a `skill` tool. `skills_auto` and `disabled_skills` in `config.json` are no longer read; `/skills on|off` and `enable|disable` now live in `skills-state.json`.
+
 ## [0.2.12] - 2026-11-03
 
 ### Added

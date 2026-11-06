@@ -580,6 +580,10 @@ pub struct Agent {
 
     pub(crate) warm_hint: std::sync::Arc<std::sync::Mutex<crate::cache_warm::WarmHint>>,
 
+    /// When a warm ping last refreshed the provider cache; shared with the
+    /// front end so its idle clock doesn't call a warmed cache cold.
+    pub(crate) warm_refreshed: crate::cache_warm::WarmRefreshed,
+
     pub(crate) prefix_guard: crate::prefix_guard::PrefixGuard,
 
     pub(crate) warm_cache_reported: bool,
@@ -657,6 +661,7 @@ impl Agent {
             warm_hint: std::sync::Arc::new(std::sync::Mutex::new(
                 crate::cache_warm::WarmHint::default(),
             )),
+            warm_refreshed: Default::default(),
             prefix_guard: crate::prefix_guard::PrefixGuard::default(),
             warm_cache_reported: false,
             prefix_rewrite_ok: true,
@@ -668,6 +673,11 @@ impl Agent {
             held_summary: None,
             background_failures: 0,
         }
+    }
+
+    /// Cell stamped each time a warm ping refreshes the cache.
+    pub fn warm_refreshed(&self) -> crate::cache_warm::WarmRefreshed {
+        self.warm_refreshed.clone()
     }
 
     pub fn with_cache_warm(mut self, policy: Option<crate::cache_warm::CacheWarmPolicy>) -> Self {

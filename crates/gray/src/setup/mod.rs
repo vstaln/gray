@@ -70,11 +70,10 @@ pub(crate) use catalog::effort_memory_key;
 pub(crate) use catalog::save_auth_key;
 pub use catalog::{
     AUTH_MODE_API_KEY, AUTH_MODE_NONE, Catalog, CatalogProvider, ConnectAuth, ConnectItem,
-    SavedConfig, auto_update_enabled, auto_update_enabled_at, build_connect_items,
-    disabled_skill_names, gray_home, gw_auto_enabled, gw_auto_enabled_at, intro_enabled,
-    load_auth_keys, load_catalog, load_saved_config_at, lock_saved_config_at, mask_key_pretty,
-    normalize_custom_base_url, quality_of_life_enabled, quality_of_life_enabled_at,
-    save_saved_config_at, saved_config_path, skills_auto_enabled, skills_auto_enabled_at,
+    SavedConfig, auto_update_enabled, auto_update_enabled_at, build_connect_items, gray_home,
+    gw_auto_enabled, gw_auto_enabled_at, intro_enabled, load_auth_keys, load_catalog,
+    load_saved_config_at, lock_saved_config_at, mask_key_pretty, normalize_custom_base_url,
+    quality_of_life_enabled, quality_of_life_enabled_at, save_saved_config_at, saved_config_path,
 };
 
 pub fn user_home() -> anyhow::Result<std::path::PathBuf> {
@@ -124,8 +123,8 @@ mod provider_auth;
 mod recommend;
 
 pub use connect::{ConnectOutcome, active_connect_id, run_connect_modal, run_connect_modal_for};
+pub use install_manager::ManagerOutcome;
 pub(crate) use install_manager::{ManagerItem, ManagerSpec, run_install_manager};
-pub use install_manager::{ManagerOutcome, run_skills_modal};
 pub use model_dump::{DumpModels, dump_model_catalog_json, select_cli_provider};
 pub(crate) use model_modal::{
     canonical_model_rows, canonicalize_adopted_model, composite_label_for,

@@ -168,7 +168,6 @@ const JOBS_SPEC: ManagerSpec = ManagerSpec {
     empty_hint: "nothing pending \u{2014} no background jobs or scheduled wakes",
     error_verb: "stop failed",
     supports_toggle: false,
-    enter_invokes: false,
     supports_remove: true,
     errors_tab: false,
     keep_stale_on_relist_error: false,

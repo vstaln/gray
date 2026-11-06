@@ -321,11 +321,6 @@ pub(crate) fn collect_context_parts(
         .and_then(|p| load_or_create_system_prompt_at(&p).ok())
         .map(|s| crate::setup::estimate_str_tokens(&crate::system_prompt::strip_comments(&s)))
         .unwrap_or(0);
-    let skills = crate::setup::estimate_str_tokens(&crate::skills::format_skills_for_prompt(
-        &crate::skills::discover_skills(cwd).skills,
-        crate::setup::skills_auto_enabled(),
-        &crate::setup::disabled_skill_names(),
-    ));
     let tools_toks = serde_json::to_string(&crate::profile::builtin_registry().defs())
         .map(|s| crate::setup::estimate_str_tokens(&s))
         .unwrap_or(0);
@@ -335,14 +330,13 @@ pub(crate) fn collect_context_parts(
         Some(total) => total.saturating_sub(sys.saturating_add(tools_toks)),
         None => history_est,
     };
-    let project = crate::skills_tool::project_context_block(cwd)
+    let project = crate::project_context::project_context_block(cwd)
         .map(|b| crate::setup::estimate_str_tokens(&b))
         .unwrap_or(0);
     crate::setup::ContextParts {
         system_prompt: sys,
         project_context: project,
         tools: tools_toks,
-        skills,
         messages,
     }
 }
@@ -376,7 +370,6 @@ pub(crate) fn context_breakdown_text(
            · System prompt:      {} tokens ({}%)\n\
            · Project context:    {} tokens ({}%)\n\
            · System tools:       {} tokens ({}%)\n\
-           · Skills:             {} tokens ({}%)\n\
            · Messages:           {} tokens ({}%)\n\
            · Free space:         {} ({}%)\n\
            · Autocompact buffer: {} tokens ({}%)\n\
@@ -394,8 +387,6 @@ pub(crate) fn context_breakdown_text(
         pct(parts.project_context),
         f(parts.tools),
         pct(parts.tools),
-        f(parts.skills),
-        pct(parts.skills),
         f(parts.messages),
         pct(parts.messages),
         f(free),
