@@ -251,6 +251,56 @@ struct Tab {
 /// One find-in-files result batch: (query, [(path, preview, open cmd)]).
 type GrepBatch = (String, Vec<(String, String, Cmd)>);
 
+#[derive(Debug, Clone, Copy, Default)]
+pub(super) enum CatalogPhase {
+    #[default]
+    Unloaded,
+    Loading {
+        last_loaded_at: Option<Instant>,
+    },
+    Loaded(Instant),
+}
+
+#[derive(Default)]
+pub(super) struct CatalogState {
+    pub(super) entries: Option<Vec<ProviderEntry>>,
+    pub(super) phase: CatalogPhase,
+}
+
+impl CatalogState {
+    pub(super) fn should_refresh(&self, ttl: Duration) -> bool {
+        match self.phase {
+            CatalogPhase::Loading { .. } => false,
+            CatalogPhase::Loaded(at) => at.elapsed() >= ttl,
+            CatalogPhase::Unloaded => true,
+        }
+    }
+
+    pub(super) fn begin_loading(&mut self) {
+        let last_loaded_at = match self.phase {
+            CatalogPhase::Loaded(at) => Some(at),
+            CatalogPhase::Loading { last_loaded_at } => last_loaded_at,
+            CatalogPhase::Unloaded => None,
+        };
+        self.phase = CatalogPhase::Loading { last_loaded_at };
+    }
+
+    pub(super) fn finish_loading(&mut self, catalog: Option<Vec<ProviderEntry>>, now: Instant) {
+        if let Some(c) = catalog {
+            self.entries = Some(c);
+        }
+        self.phase = CatalogPhase::Loaded(now);
+    }
+}
+
+#[derive(Clone)]
+pub(super) struct ActiveToast {
+    pub(super) msg: String,
+    pub(super) error: bool,
+    pub(super) shown_at: Instant,
+    pub(super) in_stack: bool,
+}
+
 pub struct GrayApp {
     focus: FocusHandle,
     store: Store,
@@ -288,15 +338,13 @@ pub struct GrayApp {
     model_closed_at: Option<Instant>,
     /// Provider/model catalog from `gray --dump-models`; None until loaded or
     /// when the installed gray can't produce it (fallback providers only).
-    model_catalog: Option<Vec<ProviderEntry>>,
+    model_catalog: CatalogState,
     model_catalog_tx: Sender<Option<Vec<ProviderEntry>>>,
     model_catalog_rx: Receiver<Option<Vec<ProviderEntry>>>,
-    model_catalog_loading: bool,
     /// Installed external CLIs (claude, codex) with the models they report.
     cli_providers: Vec<ProviderEntry>,
     cli_providers_tx: Sender<Vec<ProviderEntry>>,
     cli_providers_rx: Receiver<Vec<ProviderEntry>>,
-    model_catalog_at: Option<Instant>,
     /// Effort chosen per "provider:model" row in the picker, applied on pick.
     model_efforts: HashMap<String, String>,
     /// Threads whose turn finished while off screen: the sidebar shows a
@@ -350,11 +398,7 @@ pub struct GrayApp {
     diff_files: Vec<String>,
     branch: Option<String>,
     branches: Vec<String>,
-    toast: Option<(String, bool)>,
-    toast_at: Option<Instant>,
-    /// The current toast went to the window notification stack (window
-    /// unfocused), so the in-app card stays hidden to avoid a duplicate.
-    toast_in_stack: bool,
+    toast: Option<ActiveToast>,
     /// Bumps on every toast so a new message replays the card's slide-in.
     toast_seq: u64,
     toast_queue: Vec<(String, bool)>,
@@ -365,6 +409,7 @@ pub struct GrayApp {
     scroll_target: Option<(String, usize, u8)>,
     state_file: Option<PathBuf>,
     last_snapshot: String,
+    home_intro_at: Option<Instant>,
     _subs: Vec<Subscription>,
     ticks: u64,
     window_handle: Option<gpui::AnyWindowHandle>,
@@ -413,6 +458,7 @@ impl GrayApp {
     pub fn new(
         store: Store,
         initial: Option<PathBuf>,
+        started_at: Instant,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -524,14 +570,17 @@ impl GrayApp {
             model_scroll: ScrollHandle::new(),
             model_reveal: std::cell::Cell::new(false),
             model_closed_at: None,
-            model_catalog: None,
+            model_catalog: CatalogState {
+                entries: None,
+                phase: CatalogPhase::Loading {
+                    last_loaded_at: None,
+                },
+            },
             model_catalog_tx: model_cat_tx,
             model_catalog_rx: model_cat_rx,
-            model_catalog_loading: true,
             cli_providers: Vec::new(),
             cli_providers_tx: cli_tx,
             cli_providers_rx: cli_rx,
-            model_catalog_at: None,
             model_efforts: HashMap::new(),
             done_unseen: HashSet::new(),
             sidebar_open: true,
@@ -576,15 +625,14 @@ impl GrayApp {
             branch: None,
             branches: Vec::new(),
             toast: None,
-            toast_at: None,
             toast_seq: 0,
             toast_queue: Vec::new(),
-            toast_in_stack: false,
             dock_slide_at: None,
             items_scroll: ScrollHandle::new(),
             scroll_target: None,
-            state_file: std::env::var_os("GRAY_IDE_STATE").map(PathBuf::from),
+            state_file: std::env::var_os("GRAY_TUI_STATE").map(PathBuf::from),
             last_snapshot: String::new(),
+            home_intro_at: None,
             _subs: subs,
             ticks: 0,
             hub: Vec::new(),
@@ -622,14 +670,6 @@ impl GrayApp {
         if app.active_project.is_none() {
             app.active_project = app.store.state.projects.first().map(|p| p.id.clone());
         }
-        if let Some(pid) = app.active_project.clone() {
-            app.active_thread = app
-                .store
-                .state
-                .threads_for(&pid, false)
-                .first()
-                .map(|t| t.id.clone());
-        }
         app.restore_layout(window, cx);
         let mode = if app.store.state.setting("theme", "dark") == "light" {
             ThemeMode::Light
@@ -639,6 +679,10 @@ impl GrayApp {
         Theme::change(mode, Some(window), cx);
         apply_brand(cx);
         app.refresh_workspace(cx);
+        app.home_intro_at = (started_at.elapsed() >= Duration::from_millis(150)).then(Instant::now);
+        if std::env::var_os("GRAY_TUI_BOOT_TRACE").is_some() {
+            eprintln!("boot {:?}", started_at.elapsed());
+        }
         app.window_handle = Some(window.window_handle());
         app.composer.update(cx, |s, cx| s.focus(window, cx));
         cx.spawn_in(window, async move |this, cx| {
@@ -763,7 +807,6 @@ impl Render for GrayApp {
             .on_action(cx.listener(|this, _: &FocusComposer, w, cx| this.close_overlays(w, cx)))
             .on_action(cx.listener(|this, _: &Dismiss, w, cx| {
                 this.toast = None;
-                this.toast_at = None;
                 w.clear_notifications(cx);
                 this.close_overlays(w, cx)
             }))
@@ -867,7 +910,7 @@ impl Render for GrayApp {
                 s.child(self.render_confirm(c, cx))
             })
             .when_some(
-                self.toast.clone().filter(|_| !self.toast_in_stack),
+                self.toast.as_ref().filter(|t| !t.in_stack).map(|t| (t.msg.clone(), t.error)),
                 |s, (msg, err)| s.child(self.render_toast(msg, err, cx)),
             )
     }
@@ -933,8 +976,8 @@ mod tests {
     fn file_ranking_prefers_names_and_drops_scatter() {
         let files = [
             "assets/app-icon.png",
-            "crates/gray-ide/assets/icons/g/settings.svg",
-            "crates/gray-ide/src/sessions.rs",
+            "crates/gray-tui/assets/icons/g/settings.svg",
+            "crates/gray-tui/src/sessions.rs",
             "crates/gray/src/repl/session.rs",
             "docs/session-store.md",
         ]

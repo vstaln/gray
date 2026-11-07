@@ -1,7 +1,7 @@
 use std::process::Command;
 
 pub fn bin() -> String {
-    std::env::var("GRAY_IDE_GRAY_BIN").unwrap_or_else(|_| "gray".to_string())
+    std::env::var("GRAY_TUI_GRAY_BIN").unwrap_or_else(|_| "gray".to_string())
 }
 
 pub fn list() -> Vec<(String, String)> {

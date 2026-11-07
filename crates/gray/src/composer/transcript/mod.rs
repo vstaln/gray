@@ -394,19 +394,18 @@ impl Tui {
             self.set_status(Some("Working"));
         }
         let clean = strip_ansi(chunk);
-        if should_drop_stream_punctuation(self.stream_round_boundary, &clean) {
-            self.stream_round_target = attach_stream_punctuation(
+        if should_drop_stream_punctuation(self.stream_round.is_boundary(), &clean) {
+            let target = attach_stream_punctuation(
                 &mut self.history_entries,
-                self.stream_round_target,
+                self.stream_round.boundary_target(),
                 clean.trim(),
             );
-
-            self.stream_round_boundary = true;
+            self.stream_round = super::StreamRoundState::Boundary { target };
             self.streamed_bytes = self.streamed_bytes.saturating_add(clean.len() as u64);
             let _ = self.draw();
             return;
         }
-        if self.stream_round_boundary && clean.trim().is_empty() {
+        if self.stream_round.is_boundary() && clean.trim().is_empty() {
             self.streamed_bytes = self.streamed_bytes.saturating_add(clean.len() as u64);
             let _ = self.draw();
             return;
@@ -417,11 +416,11 @@ impl Tui {
             let _ = self.draw();
             return;
         }
-        self.stream_round_boundary = false;
-        self.stream_round_target = None;
-        if !clean.trim().is_empty() {
-            self.stream_round_had_text = true;
-        }
+        self.stream_round = if !clean.trim().is_empty() {
+            super::StreamRoundState::StreamingText
+        } else {
+            super::StreamRoundState::Fresh
+        };
 
         self.streamed_bytes = self.streamed_bytes.saturating_add(clean.len() as u64);
 

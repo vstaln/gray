@@ -12,7 +12,7 @@ use serde_json::{Value, json};
 use gray_core::event::{AgentEvent, Usage};
 use gray_core::redaction::redact_for_disclosure;
 
-use super::{CURRENT_REQ, CURRENT_SESSION, CURRENT_TURN, LAST_USAGE, OUT, SEQ, lock};
+use super::{CURRENT_REQ, CURRENT_SESSION, LAST_USAGE, OUT, SEQ, current_turn_id, lock};
 
 const DETAIL_CAP: usize = 4_000;
 const OUTPUT_CAP: usize = 8_000;
@@ -31,11 +31,8 @@ pub(crate) fn emit(mut row: Value) {
     });
     obj.entry("req")
         .or_insert_with(|| lock(&CURRENT_REQ).clone().unwrap_or(Value::Null));
-    obj.entry("turn_id").or_insert_with(|| {
-        lock(&CURRENT_TURN)
-            .clone()
-            .map_or(Value::Null, Value::String)
-    });
+    obj.entry("turn_id")
+        .or_insert_with(|| current_turn_id().map_or(Value::Null, Value::String));
     let _guard = OUT.lock().unwrap_or_else(|e| e.into_inner());
     let mut out = std::io::stdout().lock();
     let _ = writeln!(out, "{row}");

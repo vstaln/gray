@@ -9,9 +9,9 @@ members = [
     "crates/gray-plugin",
     "crates/gray-pkg",
 ]
-exclude = ["crates/gray-ide"]
+exclude = ["crates/gray-tui"]
 [workspace.package]
-version = "0.2.14"
+version = "0.2.15"
 edition = "2024"
 rust-version = "1.91"
 license = "MIT"

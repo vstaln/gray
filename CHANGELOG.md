@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.2.15] - 2026-11-07
+
+### Fixed
+- **`--bare` carries no token ceilings or request caps.** Saved or environment context settings (`context_window`, `context_reserve`, `context_keep`, `compact_at`), `with_compact_ceiling`, the `--json` `compact_ceiling` progress row, and the default 32-request `--json` cap are all skipped under `--bare`.
+- **`gray-ide` renamed to `gray-tui`.** Package, binary, crate path, data dir (`.gray/tui`), and `GRAY_TUI_*` environment variables now use `gray-tui`.
+
+### Changed
+- **Explicit state machines across composer, stdio, ask, markdown, and gray-tui.** Replaced coupled boolean/Option state tuples with explicit state types (`StreamRoundState`, `BackgroundSlot`, `AskDriver`, `StdioTurnState`, `CatalogState`, `ActiveToast`, `CellStyleState`).
+
 ## [0.2.14] - 2026-11-06
 
 ### Added

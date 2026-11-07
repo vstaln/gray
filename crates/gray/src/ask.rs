@@ -95,26 +95,37 @@ struct PendingAsk {
     tx: tokio::sync::oneshot::Sender<Vec<AskAnswer>>,
 }
 
+enum AskDriver {
+    Tui(crate::composer::SharedTui),
+    Stdin,
+    Json {
+        turn_id: String,
+        demux: std::sync::atomic::AtomicBool,
+    },
+}
+
 struct Service {
-    tui: Option<crate::composer::SharedTui>,
-    interactive: bool,
+    driver: AskDriver,
     pending: Mutex<HashMap<u64, PendingAsk>>,
     next: Mutex<u64>,
     cancel: tokio_util::sync::CancellationToken,
-
-    json_turn: Option<String>,
-
-    demux: std::sync::atomic::AtomicBool,
 }
 
 static SERVICE: Mutex<Option<Arc<Service>>> = Mutex::new(None);
 
 pub fn install(tui: Option<crate::composer::SharedTui>, interactive: bool) {
-    install_service(tui, interactive, None);
+    let driver = match tui.filter(|_| interactive) {
+        Some(t) => AskDriver::Tui(t),
+        None => AskDriver::Stdin,
+    };
+    install_service(driver);
 }
 
 pub fn install_json(turn_id: String) {
-    install_service(None, false, Some(turn_id));
+    install_service(AskDriver::Json {
+        turn_id,
+        demux: std::sync::atomic::AtomicBool::new(false),
+    });
 }
 
 pub fn json_enabled() -> bool {
@@ -126,26 +137,21 @@ pub fn json_enabled() -> bool {
     })
 }
 
-fn install_service(
-    tui: Option<crate::composer::SharedTui>,
-    interactive: bool,
-    json_turn: Option<String>,
-) {
+fn install_service(driver: AskDriver) {
     let svc = Arc::new(Service {
-        tui,
-        interactive,
+        driver,
         pending: Mutex::new(HashMap::new()),
         next: Mutex::new(0),
         cancel: tokio_util::sync::CancellationToken::new(),
-        json_turn,
-        demux: std::sync::atomic::AtomicBool::new(false),
     });
     *SERVICE.lock().expect("ask service") = Some(svc);
 }
 
 pub fn set_demux() {
-    if let Some(svc) = SERVICE.lock().expect("ask service").as_ref() {
-        svc.demux.store(true, std::sync::atomic::Ordering::Relaxed);
+    if let Some(svc) = SERVICE.lock().expect("ask service").as_ref()
+        && let AskDriver::Json { demux, .. } = &svc.driver
+    {
+        demux.store(true, std::sync::atomic::Ordering::Relaxed);
     }
 }
 
@@ -176,10 +182,9 @@ pub(crate) fn is_ask_live() -> bool {
         .lock()
         .expect("ask service")
         .as_ref()
-        .is_some_and(|svc| {
-            svc.tui
-                .as_ref()
-                .is_some_and(|t| t.lock().map(|t| t.ask_modal.is_some()).unwrap_or(false))
+        .is_some_and(|svc| match &svc.driver {
+            AskDriver::Tui(t) => t.lock().map(|t| t.ask_modal.is_some()).unwrap_or(false),
+            _ => false,
         })
 }
 
@@ -230,32 +235,37 @@ pub async fn handle_ask(params: serde_json::Value) -> serde_json::Value {
 
     let drive_svc = svc.clone();
     let drive = tokio::spawn(async move {
-        if drive_svc.demux.load(std::sync::atomic::Ordering::Relaxed)
-            && drive_svc.json_turn.is_some()
-        {
-            let turn = drive_svc.json_turn.clone().expect("json_turn checked");
-            let questions = {
-                let pending = drive_svc.pending.lock().expect("ask pending");
-                match pending.get(&id) {
-                    Some(p) => p.questions.clone(),
-                    None => return,
+        match &drive_svc.driver {
+            AskDriver::Json { turn_id, demux }
+                if demux.load(std::sync::atomic::Ordering::Relaxed) =>
+            {
+                let turn = turn_id.clone();
+                let questions = {
+                    let pending = drive_svc.pending.lock().expect("ask pending");
+                    match pending.get(&id) {
+                        Some(p) => p.questions.clone(),
+                        None => return,
+                    }
+                };
+                if crate::stdio::is_active() {
+                    crate::stdio::emit_ask(id, &questions);
+                } else {
+                    use std::io::Write;
+                    let mut out = std::io::stdout().lock();
+                    let _ = writeln!(out, "{}", json_ask_row(&turn, id, &questions));
+                    let _ = out.flush();
                 }
-            };
-            if crate::stdio::is_active() {
-                crate::stdio::emit_ask(id, &questions);
-            } else {
-                use std::io::Write;
-                let mut out = std::io::stdout().lock();
-                let _ = writeln!(out, "{}", json_ask_row(&turn, id, &questions));
-                let _ = out.flush();
+                std::future::pending::<()>().await;
             }
-            std::future::pending::<()>().await;
-        } else if let Some(turn) = drive_svc.json_turn.clone() {
-            drive_json(&drive_svc, id, turn).await;
-        } else if drive_svc.interactive && drive_svc.tui.is_some() {
-            drive_tui(&drive_svc, id).await;
-        } else {
-            drive_stdin(&drive_svc, id).await;
+            AskDriver::Json { turn_id, .. } => {
+                drive_json(&drive_svc, id, turn_id.clone()).await;
+            }
+            AskDriver::Tui(tui) => {
+                drive_tui(&drive_svc, tui.clone(), id).await;
+            }
+            AskDriver::Stdin => {
+                drive_stdin(&drive_svc, id).await;
+            }
         }
     });
     let answers = tokio::select! {
@@ -525,10 +535,9 @@ fn t_lock(tui: &crate::composer::SharedTui) -> std::sync::MutexGuard<'_, crate::
     tui.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-async fn drive_tui(svc: &Arc<Service>, id: u64) {
+async fn drive_tui(svc: &Arc<Service>, tui: crate::composer::SharedTui, id: u64) {
     let svc = svc.clone();
     tokio::task::spawn_blocking(move || {
-        let Some(tui) = svc.tui.clone() else { return };
         let mut state = AskModalState::new(id);
         {
             let pending = svc.pending.lock().expect("ask pending");

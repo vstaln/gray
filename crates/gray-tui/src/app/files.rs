@@ -439,12 +439,7 @@ impl GrayApp {
                     return;
                 }
                 self.active_project = Some(id.clone());
-                self.active_thread = self
-                    .store
-                    .state
-                    .threads_for(&id, false)
-                    .first()
-                    .map(|t| t.id.clone());
+                self.active_thread = None;
                 self.tabs.clear();
                 self.active_tab = None;
                 self.refresh_workspace(cx);
@@ -957,7 +952,7 @@ impl GrayApp {
             "terminal": self.terminal_lines.iter().rev().take(40).rev().cloned().collect::<Vec<_>>(),
             "composer": self.composer.read(cx).value().to_string(),
             "composer_pop": format!("{:?}", self.composer_pop),
-            "toast": self.toast.as_ref().map(|t| t.0.clone()),
+            "toast": self.toast.as_ref().map(|t| t.msg.clone()),
             "hub": self.hub.iter().map(|h| h.name.clone()).collect::<Vec<_>>(),
             "hub_error": self.hub_error,
             "plugins": self.installed.iter().map(|p| serde_json::json!({"name": p.name, "version": p.version, "enabled": p.enabled})).collect::<Vec<_>>(),

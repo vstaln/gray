@@ -1,21 +1,21 @@
-name: ide
+name: tui
 
 on:
   pull_request:
     paths:
       - 'crates/**'
-      - '.github/workflows/ide.yml'
+      - '.github/workflows/tui.yml'
   push:
     branches: [main]
     paths:
       - 'crates/**'
-      - '.github/workflows/ide.yml'
+      - '.github/workflows/tui.yml'
 
 permissions:
   contents: read
 
 concurrency:
-  group: ide-${{ github.event.pull_request.number || github.sha }}
+  group: tui-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: true
 
 env:
@@ -28,7 +28,7 @@ jobs:
     timeout-minutes: 60
     defaults:
       run:
-        working-directory: crates/gray-ide
+        working-directory: crates/gray-tui
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -36,7 +36,7 @@ jobs:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: crates/gray-ide
+          workspaces: crates/gray-tui
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install GPUI and e2e dependencies
         working-directory: .
@@ -58,6 +58,6 @@ jobs:
       - if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: gray-ide-e2e-screenshots
-          path: crates/gray-ide/target/tmp/gray-e2e-screenshots
+          name: gray-tui-e2e-screenshots
+          path: crates/gray-tui/target/tmp/gray-e2e-screenshots
           if-no-files-found: ignore

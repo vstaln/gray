@@ -433,16 +433,20 @@ async fn build_agent_inner(
         }
     }
 
-    let window = crate::setup::context::resolve_model_context_length(model);
-    let (ceiling, price_cliff) = crate::compact::ceiling_for(
-        config.compact_at,
-        window,
-        crate::setup::context::user_reserve_tokens_for(window),
-        crate::setup::model_price_cliff(model).map(|c| c as usize),
-    );
-    let mut agent = agent
-        .with_compaction_budget(config.context_reserve, config.context_keep)
-        .with_compact_ceiling(ceiling, price_cliff);
+    let mut agent = if config.bare {
+        agent
+    } else {
+        let window = crate::setup::context::resolve_model_context_length(model);
+        let (ceiling, price_cliff) = crate::compact::ceiling_for(
+            config.compact_at,
+            window,
+            crate::setup::context::user_reserve_tokens_for(window),
+            crate::setup::model_price_cliff(model).map(|c| c as usize),
+        );
+        agent
+            .with_compaction_budget(config.context_reserve, config.context_keep)
+            .with_compact_ceiling(ceiling, price_cliff)
+    };
 
     agent.set_prefix_rewrite_ok(!config.uses_plugin_credentials() || plugin_warm_replay);
 
@@ -601,7 +605,7 @@ pub struct Cli {
     #[arg(
         long,
         conflicts_with_all = ["print", "input_json", "json", "dump_manifest", "dump_models", "skill"],
-        help = "Serve the persistent NDJSON machine protocol on stdin/stdout (for embedding surfaces like gray-ide)"
+        help = "Serve the persistent NDJSON machine protocol on stdin/stdout (for embedding surfaces like gray-tui)"
     )]
     pub stdio: bool,
 

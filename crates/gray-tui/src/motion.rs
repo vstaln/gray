@@ -31,6 +31,7 @@ pub const RISE_MS: u64 = 320;
 pub const TOAST_MS: u64 = 4000;
 /// Composer dock-slide on the first send (monocode `useComposerDockMotion`).
 pub const DOCK_MS: u64 = 480;
+pub const HOME_INTRO_MS: u64 = 500;
 /// Only prompt bubbles this fresh get the celebration burst (monocode FRESH_MS).
 pub const FRESH_MS: i64 = 4_000;
 /// Loops are capped so a running turn doesn't re-render the window at 60 Hz.
@@ -72,6 +73,34 @@ pub fn fade_in<E: Styled + IntoElement + 'static>(
         Animation::new(ms(dur)).with_easing(ease_out()),
         |el, t| el.opacity(t),
     )
+}
+
+pub fn grow_in<E: Styled + IntoElement + 'static>(
+    el: E,
+    id: impl Into<ElementId>,
+    from: f32,
+    to: f32,
+    dur: u64,
+) -> AnimationElement<E> {
+    el.with_animation(
+        id,
+        Animation::new(ms(dur)).with_easing(ease_out()),
+        move |el, t| el.opacity(t).size(px(from + (to - from) * t)),
+    )
+}
+
+pub fn fade_in_after<E: Styled + IntoElement + 'static>(
+    el: E,
+    id: impl Into<ElementId>,
+    delay: u64,
+    dur: u64,
+) -> AnimationElement<E> {
+    let total = (delay + dur) as f32;
+    let ease = ease_out();
+    el.with_animation(id, Animation::new(ms(delay + dur)), move |el, t| {
+        let u = ((t * total - delay as f32) / dur as f32).clamp(0., 1.);
+        el.opacity(ease(u))
+    })
 }
 
 /// Eight accent squares with a comet of light running through them.

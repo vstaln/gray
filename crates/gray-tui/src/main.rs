@@ -17,38 +17,39 @@ use gpui_kit::*;
 use std::path::PathBuf;
 
 pub fn data_dir() -> PathBuf {
-    std::env::var_os("GRAY_IDE_HOME")
+    std::env::var_os("GRAY_TUI_HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| {
             std::env::var_os("HOME")
                 .map(PathBuf::from)
                 .unwrap_or_else(|| PathBuf::from("."))
                 .join(".gray")
-                .join("ide")
+                .join("tui")
         })
 }
 
 fn main() {
+    let started = std::time::Instant::now();
     env_logger::init();
     match std::env::args().nth(1).as_deref() {
         Some("--version" | "-V") => {
-            println!("gray-ide {}", env!("CARGO_PKG_VERSION"));
+            println!("gray-tui {}", env!("CARGO_PKG_VERSION"));
             return;
         }
         Some("--help" | "-h") => {
             println!(
-                "usage: gray-ide [FOLDER]\n\nOpens FOLDER (default: the current directory) as a project."
+                "usage: gray-tui [FOLDER]\n\nOpens FOLDER (default: the current directory) as a project."
             );
             return;
         }
         Some(flag) if flag.starts_with('-') => {
-            eprintln!("gray-ide: unknown option {flag} (try --help)");
+            eprintln!("gray-tui: unknown option {flag} (try --help)");
             std::process::exit(2);
         }
         _ => {}
     }
     let initial = std::env::args().nth(1).map(PathBuf::from).or_else(|| {
-        if std::env::var_os("GRAY_IDE_NO_CWD").is_some() {
+        if std::env::var_os("GRAY_TUI_NO_CWD").is_some() {
             None
         } else {
             std::env::current_dir().ok()
@@ -93,15 +94,15 @@ fn main() {
             let opts = WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 titlebar: Some(TitlebarOptions {
-                    title: Some("Gray".into()),
+                    title: Some("Gray TUI".into()),
                     ..Default::default()
                 }),
                 window_background: WindowBackgroundAppearance::Opaque,
-                app_id: Some("gray-ide".into()),
+                app_id: Some("gray-tui".into()),
                 ..Default::default()
             };
             gpui_kit::open_window(opts, cx, move |window, cx| {
-                cx.new(|cx| app::GrayApp::new(store, initial, window, cx))
+                cx.new(|cx| app::GrayApp::new(store, initial, started, window, cx))
             })
             .expect("open window");
             cx.activate(true);

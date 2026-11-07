@@ -50,6 +50,50 @@ impl GrayApp {
                 Some(p) => format!("What should we build in {p}?"),
                 None => "Open a project to get started".to_string(),
             };
+            let intro = self
+                .home_intro_at
+                .filter(|at| at.elapsed() < Duration::from_millis(motion::HOME_INTRO_MS));
+            let intro_mark: AnyElement = match intro {
+                Some(_) => motion::grow_in(
+                    svg()
+                        .path("icons/gray-logo.svg")
+                        .size(px(32.))
+                        .flex_none()
+                        .text_color(t.foreground.opacity(0.9)),
+                    "home-intro-mark",
+                    18.,
+                    32.,
+                    420,
+                )
+                .into_any_element(),
+                None => svg()
+                    .path("icons/gray-logo.svg")
+                    .size(px(32.))
+                    .flex_none()
+                    .text_color(t.foreground.opacity(0.9))
+                    .into_any_element(),
+            };
+            let intro_greeting: AnyElement = match intro {
+                Some(_) => motion::fade_in_after(
+                    div()
+                        .min_w_0()
+                        .truncate()
+                        .text_size(px(22.))
+                        .font_family("Ancizar Serif")
+                        .child(greeting),
+                    "home-intro-greeting",
+                    110,
+                    380,
+                )
+                .into_any_element(),
+                None => div()
+                    .min_w_0()
+                    .truncate()
+                    .text_size(px(22.))
+                    .font_family("Ancizar Serif")
+                    .child(greeting)
+                    .into_any_element(),
+            };
             // Greeting sits top-left; the composer stays in its bottom dock.
             return div()
                 .flex_1()
@@ -67,21 +111,8 @@ impl GrayApp {
                                 .min_w_0()
                                 .gap(px(10.))
                                 .items_center()
-                                .child(
-                                    svg()
-                                        .path("icons/gray-logo.svg")
-                                        .size(px(32.))
-                                        .flex_none()
-                                        .text_color(t.foreground.opacity(0.9)),
-                                )
-                                .child(
-                                    div()
-                                        .min_w_0()
-                                        .truncate()
-                                        .text_size(px(22.))
-                                        .font_family("Ancizar Serif")
-                                        .child(greeting),
-                                ),
+                                .child(intro_mark)
+                                .child(intro_greeting),
                         ),
                 )
                 .into_any_element();
