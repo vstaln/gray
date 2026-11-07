@@ -35,21 +35,46 @@ static ACTIVE: AtomicBool = AtomicBool::new(false);
 pub(crate) static SEQ: AtomicU64 = AtomicU64::new(0);
 pub(crate) static OUT: Mutex<()> = Mutex::new(());
 
-/// Request id currently being handled; attached to every emitted row.
+pub(crate) enum StdioTurnState {
+    Idle,
+    Running { turn_id: String, interrupted: bool },
+}
+
 pub(crate) static CURRENT_REQ: Mutex<Option<Value>> = Mutex::new(None);
-/// Turn id currently streaming; attached to every emitted row.
-pub(crate) static CURRENT_TURN: Mutex<Option<String>> = Mutex::new(None);
-/// Session id, refreshed after every state change.
+pub(crate) static TURN_STATE_SLOT: Mutex<StdioTurnState> = Mutex::new(StdioTurnState::Idle);
 pub(crate) static CURRENT_SESSION: Mutex<Option<String>> = Mutex::new(None);
-/// Usage of the most recent turn, for `status` and `turn_end`.
 pub(crate) static LAST_USAGE: Mutex<Option<Usage>> = Mutex::new(None);
-/// Set when an `interrupt` request cancels a live turn token.
-pub(crate) static WAS_INTERRUPTED: AtomicBool = AtomicBool::new(false);
-/// Protocol-level "a turn is running" flag — set before `turn_start` is
-/// emitted, cleared after `turn_end`. The reader thread routes incoming
-/// prompts/commands/steers onto the queue while this is true, mirroring the
-/// REPL's "typed input during a turn" behaviour.
-pub(crate) static TURN_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+pub(crate) fn is_turn_active() -> bool {
+    matches!(*lock(&TURN_STATE_SLOT), StdioTurnState::Running { .. })
+}
+
+pub(crate) fn current_turn_id() -> Option<String> {
+    match &*lock(&TURN_STATE_SLOT) {
+        StdioTurnState::Running { turn_id, .. } => Some(turn_id.clone()),
+        StdioTurnState::Idle => None,
+    }
+}
+
+pub(crate) fn mark_turn_interrupted() {
+    if let StdioTurnState::Running { interrupted, .. } = &mut *lock(&TURN_STATE_SLOT) {
+        *interrupted = true;
+    }
+}
+
+fn begin_turn_state(turn_id: String) {
+    *lock(&TURN_STATE_SLOT) = StdioTurnState::Running {
+        turn_id,
+        interrupted: false,
+    };
+}
+
+fn end_turn_state() -> bool {
+    match std::mem::replace(&mut *lock(&TURN_STATE_SLOT), StdioTurnState::Idle) {
+        StdioTurnState::Running { interrupted, .. } => interrupted,
+        StdioTurnState::Idle => false,
+    }
+}
 
 /// Inputs received while a turn runs. Mirrors the REPL's `queued_inputs`:
 /// the agent's steer hook drains them mid-turn (`take_steer`), and whatever
@@ -198,7 +223,7 @@ fn route_incoming(tx: &tokio::sync::mpsc::UnboundedSender<Value>, v: Value) {
             push_queued(text, images, id.clone());
             emit_result(&id, true, json!({"queued": true}));
         }
-        "prompt" | "command" if TURN_ACTIVE.load(Ordering::Relaxed) => {
+        "prompt" | "command" if is_turn_active() => {
             let text = if ty == "prompt" {
                 v.get("text")
                     .and_then(|t| t.as_str())
@@ -238,9 +263,7 @@ async fn run_turn(
         SEQ.fetch_add(1, Ordering::Relaxed)
     );
     *lock(&CURRENT_REQ) = Some(req.clone());
-    *lock(&CURRENT_TURN) = Some(turn_id.clone());
-    WAS_INTERRUPTED.store(false, Ordering::Relaxed);
-    TURN_ACTIVE.store(true, Ordering::Relaxed);
+    begin_turn_state(turn_id.clone());
 
     emit(json!({"type": "turn_start", "turn_id": turn_id, "prompt": text}));
 
@@ -251,9 +274,8 @@ async fn run_turn(
         );
         emit(json!({"type": "turn_end", "turn_id": turn_id, "ok": false, "error": "no_provider"}));
         emit_result(&req, false, json!({"error": "no_provider"}));
-        *lock(&CURRENT_TURN) = None;
+        let _ = end_turn_state();
         *lock(&CURRENT_REQ) = None;
-        TURN_ACTIVE.store(false, Ordering::Relaxed);
         return Ok(());
     }
 
@@ -275,7 +297,7 @@ async fn run_turn(
     )
     .await;
 
-    let interrupted = WAS_INTERRUPTED.swap(false, Ordering::Relaxed);
+    let interrupted = end_turn_state();
     if let Err(e) = &r {
         emit_say("error", &format!("{e:#}"));
     }
@@ -288,9 +310,7 @@ async fn run_turn(
         "usage": usage,
     }));
     emit_result(&req, r.is_ok(), json!({"turn_id": turn_id}));
-    *lock(&CURRENT_TURN) = None;
     *lock(&CURRENT_REQ) = None;
-    TURN_ACTIVE.store(false, Ordering::Relaxed);
     sync_session(sess);
     r?;
     Ok(())

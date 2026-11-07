@@ -89,7 +89,7 @@ impl GrayApp {
     /// the models they reported. The fake
     /// provider only appears when the e2e harness enables it.
     pub(super) fn providers(&self) -> Vec<provider::ProviderEntry> {
-        let mut out = match &self.model_catalog {
+        let mut out = match &self.model_catalog.entries {
             Some(c) if !c.is_empty() => c.clone(),
             _ => vec![provider::fallback_gray_provider()],
         };
@@ -128,6 +128,7 @@ impl GrayApp {
         if provider == "gray"
             && let Some(ap) = self
                 .model_catalog
+                .entries
                 .as_ref()
                 .and_then(|c| c.iter().find(|p| p.active))
         {
@@ -149,14 +150,10 @@ impl GrayApp {
     /// Kick a fresh `gray --dump-models` load when the catalog is not already
     /// loading — cheap enough to repeat on every picker open.
     pub(super) fn refresh_model_catalog(&mut self) {
-        if self.model_catalog_loading
-            || self
-                .model_catalog_at
-                .is_some_and(|t| t.elapsed() < Duration::from_secs(60))
-        {
+        if !self.model_catalog.should_refresh(Duration::from_secs(60)) {
             return;
         }
-        self.model_catalog_loading = true;
+        self.model_catalog.begin_loading();
         let tx = self.model_catalog_tx.clone();
         std::thread::spawn(move || {
             let _ = tx.send(provider::load_model_catalog());

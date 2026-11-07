@@ -82,6 +82,20 @@ impl StyledCell {
     }
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct CellStyleState {
+    pub bold: bool,
+    pub italic: bool,
+    pub code: bool,
+    pub link: Option<(String, u32)>,
+}
+
+impl CellStyleState {
+    pub fn reset(&mut self) {
+        *self = Self::default();
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct TableState {
     pub alignments: Vec<pulldown_cmark::Alignment>,
@@ -94,11 +108,7 @@ pub struct TableState {
 
     pub current_cell: StyledCell,
 
-    pub cell_bold: bool,
-    pub cell_italic: bool,
-    pub cell_code: bool,
-
-    pub cell_link: Option<(String, u32)>,
+    pub cell_style: CellStyleState,
 
     pub in_header: bool,
 
@@ -113,10 +123,7 @@ impl TableState {
             rows: Vec::new(),
             current_row: Vec::new(),
             current_cell: StyledCell::new(),
-            cell_bold: false,
-            cell_italic: false,
-            cell_code: false,
-            cell_link: None,
+            cell_style: CellStyleState::default(),
             in_header: false,
             range: start..start,
         }
@@ -125,10 +132,10 @@ impl TableState {
     pub fn push_text(&mut self, text: &str) {
         self.current_cell.spans.push(CellSpan::new(
             text.to_string(),
-            self.cell_bold,
-            self.cell_italic,
-            self.cell_code,
-            self.cell_link.clone(),
+            self.cell_style.bold,
+            self.cell_style.italic,
+            self.cell_style.code,
+            self.cell_style.link.clone(),
         ));
     }
 }

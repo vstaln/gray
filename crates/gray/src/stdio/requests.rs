@@ -10,8 +10,8 @@ use crate::config::Config;
 use crate::session_store::{JsonlSessionStore, default_root};
 
 use super::{
-    CURRENT_REQ, LAST_USAGE, Session, WAS_INTERRUPTED, emit, emit_result, emit_say, lock,
-    sync_session,
+    CURRENT_REQ, LAST_USAGE, Session, emit, emit_result, emit_say, is_turn_active, lock,
+    mark_turn_interrupted, sync_session,
 };
 
 /// `interrupt` — cancel the running turn, same token SIGINT cancels in the
@@ -19,12 +19,12 @@ use super::{
 pub(crate) fn interrupt(id: &Value) {
     let taken = lock(&crate::repl::TURN_STATE).take();
     if let Some(token) = taken {
-        WAS_INTERRUPTED.store(true, Ordering::Relaxed);
+        mark_turn_interrupted();
         token.cancel();
         emit_result(id, true, json!({"interrupted": true}));
         return;
     }
-    if !super::TURN_ACTIVE.load(Ordering::Relaxed) {
+    if !is_turn_active() {
         emit_result(id, true, json!({"interrupted": false}));
         return;
     }
@@ -38,12 +38,12 @@ pub(crate) fn interrupt(id: &Value) {
             std::thread::sleep(std::time::Duration::from_millis(25));
             let taken = lock(&crate::repl::TURN_STATE).take();
             if let Some(token) = taken {
-                WAS_INTERRUPTED.store(true, Ordering::Relaxed);
+                mark_turn_interrupted();
                 token.cancel();
                 emit_result(&id, true, json!({"interrupted": true}));
                 return;
             }
-            if !super::TURN_ACTIVE.load(Ordering::Relaxed) {
+            if !is_turn_active() {
                 break;
             }
         }

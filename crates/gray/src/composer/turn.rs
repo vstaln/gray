@@ -13,9 +13,7 @@ impl Tui {
 
         self.turn_show_effort = Some(footer_badge_visible(&self.model_name, None));
         self.cache.pause(now);
-        self.stream_round_boundary = false;
-        self.stream_round_had_text = false;
-        self.stream_round_target = None;
+        self.stream_round = StreamRoundState::Fresh;
 
         self.discard_held_punctuation();
 
@@ -64,29 +62,21 @@ impl Tui {
     }
 
     pub(crate) fn mark_stream_round_boundary(&mut self) {
-        if self.is_task_running {
-            if self.stream_round_had_text {
-                let was_boundary = self.stream_round_boundary;
-
-                let target = self.history_entries.iter().rposition(|entry| {
-                    matches!(
-                        entry,
-                        TranscriptEntry::StyledLines { lines, .. }
-                            if lines.iter().any(|line| {
-                                !crate::composer::transcript::transcript_row_is_blank(line)
-                            })
-                    )
-                });
-                if target.is_some() {
-                    self.stream_round_target = target;
-                    self.stream_round_boundary = true;
-                } else if !was_boundary {
-                    self.stream_round_target = None;
-                    self.stream_round_boundary = false;
-                }
-            }
-
-            self.stream_round_had_text = false;
+        if self.is_task_running && matches!(self.stream_round, StreamRoundState::StreamingText) {
+            let target = self.history_entries.iter().rposition(|entry| {
+                matches!(
+                    entry,
+                    TranscriptEntry::StyledLines { lines, .. }
+                        if lines.iter().any(|line| {
+                            !crate::composer::transcript::transcript_row_is_blank(line)
+                        })
+                )
+            });
+            self.stream_round = if target.is_some() {
+                StreamRoundState::Boundary { target }
+            } else {
+                StreamRoundState::Fresh
+            };
         }
     }
 
@@ -168,9 +158,7 @@ impl Tui {
         }
 
         self.flush_markdown();
-        self.stream_round_boundary = false;
-        self.stream_round_had_text = false;
-        self.stream_round_target = None;
+        self.stream_round = StreamRoundState::Fresh;
 
         self.discard_held_punctuation();
         self.is_task_running = false;
@@ -284,9 +272,8 @@ impl Tui {
     }
 
     pub fn shutdown(&mut self) {
-        self.background_closed = true;
         let _ = self.hide_background();
-        self.background = None;
+        self.background = BackgroundSlot::Closed;
         crate::composer::kitty::flush_transmits();
 
         self.gap_owed = true;

@@ -306,7 +306,7 @@ async fn run_print_mode_json_message(
         previews: HashMap::new(),
     };
     let result = match crate::print_meter::Meter::new(
-        max_requests.unwrap_or(32),
+        max_requests.unwrap_or(if config.bare { 0 } else { 32 }),
         input_price,
         output_price,
         config.max_cost_micros,
@@ -1092,7 +1092,9 @@ async fn run_print_inner(
     let mut agent = build_agent(config, &cwd, Some(session_id.as_str())).await?;
     log::debug!(target: "gray_timing", "spawn agent_built elapsed_ms={}", crate::turn_caps::process_start().elapsed().as_millis());
 
-    if let Some(out) = json.as_deref_mut() {
+    if !config.bare
+        && let Some(out) = json.as_deref_mut()
+    {
         let mut row = serde_json::json!({
             "type": "progress",
             "phase": "compact_ceiling",

@@ -809,7 +809,6 @@ impl GrayApp {
                     .cursor_pointer()
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.toast = None;
-                        this.toast_at = None;
                         cx.notify();
                     }))
                     .child(

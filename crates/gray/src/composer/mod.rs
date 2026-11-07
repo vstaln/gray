@@ -67,10 +67,40 @@ pub(crate) struct KilledDraft {
     pub(crate) attachments: Vec<PathBuf>,
 }
 
+#[derive(Default)]
+pub(crate) enum BackgroundSlot {
+    #[default]
+    Empty,
+    Loaded(background::Background),
+    Closed,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum StreamRoundState {
+    #[default]
+    Fresh,
+    StreamingText,
+    Boundary {
+        target: Option<usize>,
+    },
+}
+
+impl StreamRoundState {
+    pub(crate) fn is_boundary(self) -> bool {
+        matches!(self, Self::Boundary { .. })
+    }
+
+    pub(crate) fn boundary_target(self) -> Option<usize> {
+        match self {
+            Self::Boundary { target } => target,
+            _ => None,
+        }
+    }
+}
+
 pub struct Tui {
     pub(crate) terminal: Term,
-    background: Option<background::Background>,
-    background_closed: bool,
+    pub(crate) background: BackgroundSlot,
     pub(crate) textarea: TextArea,
     pub(crate) matches: Vec<(String, String)>,
     /// Text the completion popup was dismissed for: sync_completion keeps
@@ -88,11 +118,7 @@ pub struct Tui {
 
     batch_depth: u32,
 
-    stream_round_boundary: bool,
-
-    stream_round_had_text: bool,
-
-    stream_round_target: Option<usize>,
+    pub(crate) stream_round: StreamRoundState,
 
     stream_punct_hold: String,
     active_compaction: Option<ActiveCompaction>,
@@ -357,8 +383,7 @@ impl Tui {
             .unwrap_or_default();
         Self {
             terminal,
-            background: None,
-            background_closed: false,
+            background: BackgroundSlot::Empty,
             textarea: TextArea::new(),
             matches: Vec::new(),
             muted_text: None,
@@ -368,9 +393,7 @@ impl Tui {
             gap_owed: false,
             sync_depth: 0,
             batch_depth: 0,
-            stream_round_boundary: false,
-            stream_round_had_text: false,
-            stream_round_target: None,
+            stream_round: StreamRoundState::Fresh,
             stream_punct_hold: String::new(),
             active_compaction: None,
             turn_started: None,

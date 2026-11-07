@@ -736,7 +736,7 @@ impl GrayApp {
                 if let Some(cat) = v.get("catalog")
                     && let Some(list) = provider::parse_model_catalog(cat)
                 {
-                    self.model_catalog = Some(list);
+                    self.model_catalog.finish_loading(Some(list), Instant::now());
                 }
             }
             Some(ReqKind::Sessions) => {
