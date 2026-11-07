@@ -441,9 +441,11 @@ impl Tui {
                             } => replay_tool_result(
                                 self,
                                 tool_calls,
-                                id,
-                                content,
-                                *is_error,
+                                ReplayResult {
+                                    id,
+                                    content,
+                                    is_error: *is_error,
+                                },
                                 cwd,
                                 display,
                                 &mut tool_media_stubs,
@@ -533,9 +535,11 @@ impl Tui {
                             replay_tool_result(
                                 self,
                                 tool_calls,
-                                id,
-                                content,
-                                *is_error,
+                                ReplayResult {
+                                    id,
+                                    content,
+                                    is_error: *is_error,
+                                },
                                 cwd,
                                 display,
                                 &mut Vec::new(),
@@ -566,16 +570,25 @@ fn is_media_stub_text(text: &str) -> bool {
     t.starts_with('[') && t.ends_with(']') && t.contains(" elided from context (")
 }
 
+struct ReplayResult<'a> {
+    id: &'a str,
+    content: &'a str,
+    is_error: bool,
+}
+
 fn replay_tool_result(
     tui: &mut Tui,
     tool_calls: &mut HashMap<String, (String, serde_json::Value)>,
-    id: &str,
-    content: &str,
-    is_error: bool,
+    result: ReplayResult<'_>,
     cwd: &std::path::Path,
     display: crate::tool_fmt::ToolDisplay<'_>,
     stub_images: &mut Vec<std::path::PathBuf>,
 ) {
+    let ReplayResult {
+        id,
+        content,
+        is_error,
+    } = result;
     let (name, args) = tool_calls
         .remove(id)
         .map(|(n, a)| (n, Some(a)))
