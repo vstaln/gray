@@ -601,7 +601,7 @@ pub struct Cli {
     #[arg(
         long,
         conflicts_with_all = ["print", "input_json", "json", "dump_manifest", "dump_models", "skill"],
-        help = "Serve the persistent NDJSON machine protocol on stdin/stdout (for embedding surfaces like gray-ide)"
+        help = "Serve the persistent NDJSON machine protocol on stdin/stdout (for embedding surfaces like gray-tui)"
     )]
     pub stdio: bool,
 

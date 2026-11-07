@@ -383,9 +383,34 @@ impl Tui {
                 gray_core::Role::User => {
                     let mut user_text = String::new();
                     let mut attached: Vec<std::path::PathBuf> = Vec::new();
+                    let mut media_stubs: Vec<String> = Vec::new();
+                    let has_tool_result = msg
+                        .content
+                        .iter()
+                        .any(|b| matches!(b, gray_core::ContentBlock::ToolResult { .. }));
+                    let mut tool_media_stubs: Vec<std::path::PathBuf> = msg
+                        .content
+                        .iter()
+                        .filter_map(|b| match b {
+                            gray_core::ContentBlock::Text { text } => {
+                                media_stub_saved_path(text).filter(|p| p.is_file())
+                            }
+                            _ => None,
+                        })
+                        .collect();
                     for block in &msg.content {
                         match block {
                             gray_core::ContentBlock::Text { text } => {
+                                if is_media_stub_text(text) {
+                                    if has_tool_result {
+                                        continue;
+                                    }
+                                    match media_stub_saved_path(text).filter(|p| p.is_file()) {
+                                        Some(saved) => attached.push(saved),
+                                        None => media_stubs.push(text.trim().to_string()),
+                                    }
+                                    continue;
+                                }
                                 if !user_text.is_empty() {
                                     user_text.push('\n');
                                 }
@@ -414,7 +439,14 @@ impl Tui {
                                 content,
                                 is_error,
                             } => replay_tool_result(
-                                self, tool_calls, id, content, *is_error, cwd, display,
+                                self,
+                                tool_calls,
+                                id,
+                                content,
+                                *is_error,
+                                cwd,
+                                display,
+                                &mut tool_media_stubs,
                             ),
                             _ => {}
                         }
@@ -424,13 +456,16 @@ impl Tui {
                             .content
                             .iter()
                             .any(|b| matches!(b, gray_core::ContentBlock::Text { .. }));
-                    if !user_text.is_empty() || !attached.is_empty() {
+                    if !user_text.is_empty() || !attached.is_empty() || !media_stubs.is_empty() {
                         let (visible, notices) = super::split_synthetic_prompt(&user_text);
                         if !visible.is_empty() || !attached.is_empty() {
                             self.push_user_prompt(&visible, &attached, true);
                         }
                         for notice in notices {
                             self.push_dim(format!("\u{2b22} {notice}"));
+                        }
+                        for stub in &media_stubs {
+                            self.push_dim(format!("\u{2b22} {stub}"));
                         }
                         if typed && !visible.is_empty() {
                             self.history.push(visible);
@@ -496,7 +531,14 @@ impl Tui {
                         } = block
                         {
                             replay_tool_result(
-                                self, tool_calls, id, content, *is_error, cwd, display,
+                                self,
+                                tool_calls,
+                                id,
+                                content,
+                                *is_error,
+                                cwd,
+                                display,
+                                &mut Vec::new(),
                             );
                         }
                     }
@@ -504,6 +546,24 @@ impl Tui {
             }
         }
     }
+}
+
+/// Compaction swaps old image blocks for a stub text block before the
+/// history is persisted; on replay, recover the saved copy so the preview
+/// still renders instead of dumping the stub into the prompt.
+fn media_stub_saved_path(text: &str) -> Option<std::path::PathBuf> {
+    let t = text.trim();
+    if !is_media_stub_text(t) {
+        return None;
+    }
+    let rest = t.split("Saved to ").nth(1)?;
+    let path = rest.split("; read it to re-view]").next()?.trim();
+    (!path.is_empty()).then(|| std::path::PathBuf::from(path))
+}
+
+fn is_media_stub_text(text: &str) -> bool {
+    let t = text.trim();
+    t.starts_with('[') && t.ends_with(']') && t.contains(" elided from context (")
 }
 
 fn replay_tool_result(
@@ -514,6 +574,7 @@ fn replay_tool_result(
     is_error: bool,
     cwd: &std::path::Path,
     display: crate::tool_fmt::ToolDisplay<'_>,
+    stub_images: &mut Vec<std::path::PathBuf>,
 ) {
     let (name, args) = tool_calls
         .remove(id)
@@ -542,15 +603,24 @@ fn replay_tool_result(
         is_error,
         Some(cwd),
     );
-    if !is_error
-        && let Some(rows) = crate::composer::transcript::rows::viewed_image_lines(
+    if !is_error {
+        let rows = crate::composer::transcript::rows::viewed_image_lines(
             &name,
             args.as_ref(),
             cwd,
             tui.width(),
         )
-    {
-        lines.extend(rows);
+        .or_else(|| {
+            let rows =
+                crate::composer::transcript::rows::attached_image_lines(stub_images, tui.width());
+            if rows.is_some() {
+                stub_images.clear();
+            }
+            rows
+        });
+        if let Some(rows) = rows {
+            lines.extend(rows);
+        }
     }
     tui.push_tool_box_lines(header, lines);
 }
@@ -616,4 +686,34 @@ pub(crate) fn render_markdown_lines(
         Some(tw),
     );
     (output.lines, output.hyperlinks)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn media_stub_saved_path_extracts_path() {
+        let text = "[image/png elided from context (711160 bytes). Saved to /home/u/.gray/attachments/ab12.png; read it to re-view]";
+        assert_eq!(
+            media_stub_saved_path(text),
+            Some(std::path::PathBuf::from(
+                "/home/u/.gray/attachments/ab12.png"
+            ))
+        );
+    }
+
+    #[test]
+    fn media_stub_without_saved_path_is_still_a_stub() {
+        let text = "[image/png elided from context (215264 bytes). The original survives in the session transcript and source file]";
+        assert!(is_media_stub_text(text));
+        assert_eq!(media_stub_saved_path(text), None);
+    }
+
+    #[test]
+    fn plain_prompt_text_is_not_a_stub() {
+        assert!(!is_media_stub_text("fix this please"));
+        assert!(!is_media_stub_text("[not a stub] elided from context-ish"));
+        assert_eq!(media_stub_saved_path("hello"), None);
+    }
 }

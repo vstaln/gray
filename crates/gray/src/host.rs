@@ -31,7 +31,7 @@ fn background(params: serde_json::Value) -> anyhow::Result<()> {
         .lock()
         .map_err(|_| anyhow::anyhow!("TUI unavailable"))?
         .upgrade()
-        .ok_or_else(|| anyhow::anyhow!("background requires an interactive Gray TUI"))?;
+        .ok_or_else(|| anyhow::anyhow!("background requires an interactive gray session"))?;
     let mut tui = tui.lock().map_err(|_| anyhow::anyhow!("TUI unavailable"))?;
     tui.set_background(request.path.as_deref())
 }

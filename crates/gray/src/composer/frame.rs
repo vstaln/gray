@@ -6,7 +6,7 @@ impl Tui {
     }
 
     pub(crate) fn set_background(&mut self, path: Option<&std::path::Path>) -> anyhow::Result<()> {
-        anyhow::ensure!(!self.background_closed, "Gray TUI has closed");
+        anyhow::ensure!(!self.background_closed, "the gray session has closed");
         anyhow::ensure!(
             !self.modal_open,
             "close the modal before changing background"

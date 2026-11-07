@@ -29,7 +29,7 @@ pub enum PluginMsg {
 pub const DEFAULT_HUB: &str = "https://gray.alignment.id/hub/index.json";
 
 fn gray_bin() -> String {
-    std::env::var("GRAY_IDE_GRAY_BIN").unwrap_or_else(|_| "gray".into())
+    std::env::var("GRAY_TUI_GRAY_BIN").unwrap_or_else(|_| "gray".into())
 }
 
 pub fn hub_url() -> String {

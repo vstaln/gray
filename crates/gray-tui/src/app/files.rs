@@ -439,12 +439,7 @@ impl GrayApp {
                     return;
                 }
                 self.active_project = Some(id.clone());
-                self.active_thread = self
-                    .store
-                    .state
-                    .threads_for(&id, false)
-                    .first()
-                    .map(|t| t.id.clone());
+                self.active_thread = None;
                 self.tabs.clear();
                 self.active_tab = None;
                 self.refresh_workspace(cx);

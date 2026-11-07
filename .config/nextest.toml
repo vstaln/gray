@@ -3,8 +3,8 @@
 # instead of queueing behind each other binary by binary.
 
 [profile.ci]
-# crates/gray-ide is workspace-excluded, so its Xvfb+xdotool e2e suite never
-# reaches this run; it runs in full in ide.yml. (The old `not binary(e2e)`
+# crates/gray-tui is workspace-excluded, so its Xvfb+xdotool e2e suite never
+# reaches this run; it runs in full in tui.yml. (The old `not binary(e2e)`
 # filter broke the moment fsearch — whose examples/e2e.rs was the only
 # binary named `e2e` in the workspace — moved out to a plugin.)
 # Report every failing test, never stop at the first: on Windows and macOS

@@ -365,6 +365,7 @@ pub struct GrayApp {
     scroll_target: Option<(String, usize, u8)>,
     state_file: Option<PathBuf>,
     last_snapshot: String,
+    home_intro_at: Option<Instant>,
     _subs: Vec<Subscription>,
     ticks: u64,
     window_handle: Option<gpui::AnyWindowHandle>,
@@ -413,6 +414,7 @@ impl GrayApp {
     pub fn new(
         store: Store,
         initial: Option<PathBuf>,
+        started_at: Instant,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -583,8 +585,9 @@ impl GrayApp {
             dock_slide_at: None,
             items_scroll: ScrollHandle::new(),
             scroll_target: None,
-            state_file: std::env::var_os("GRAY_IDE_STATE").map(PathBuf::from),
+            state_file: std::env::var_os("GRAY_TUI_STATE").map(PathBuf::from),
             last_snapshot: String::new(),
+            home_intro_at: None,
             _subs: subs,
             ticks: 0,
             hub: Vec::new(),
@@ -622,14 +625,6 @@ impl GrayApp {
         if app.active_project.is_none() {
             app.active_project = app.store.state.projects.first().map(|p| p.id.clone());
         }
-        if let Some(pid) = app.active_project.clone() {
-            app.active_thread = app
-                .store
-                .state
-                .threads_for(&pid, false)
-                .first()
-                .map(|t| t.id.clone());
-        }
         app.restore_layout(window, cx);
         let mode = if app.store.state.setting("theme", "dark") == "light" {
             ThemeMode::Light
@@ -639,6 +634,10 @@ impl GrayApp {
         Theme::change(mode, Some(window), cx);
         apply_brand(cx);
         app.refresh_workspace(cx);
+        app.home_intro_at = (started_at.elapsed() >= Duration::from_millis(150)).then(Instant::now);
+        if std::env::var_os("GRAY_TUI_BOOT_TRACE").is_some() {
+            eprintln!("boot {:?}", started_at.elapsed());
+        }
         app.window_handle = Some(window.window_handle());
         app.composer.update(cx, |s, cx| s.focus(window, cx));
         cx.spawn_in(window, async move |this, cx| {
@@ -933,8 +932,8 @@ mod tests {
     fn file_ranking_prefers_names_and_drops_scatter() {
         let files = [
             "assets/app-icon.png",
-            "crates/gray-ide/assets/icons/g/settings.svg",
-            "crates/gray-ide/src/sessions.rs",
+            "crates/gray-tui/assets/icons/g/settings.svg",
+            "crates/gray-tui/src/sessions.rs",
             "crates/gray/src/repl/session.rs",
             "docs/session-store.md",
         ]
