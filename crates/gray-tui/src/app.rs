@@ -910,7 +910,10 @@ impl Render for GrayApp {
                 s.child(self.render_confirm(c, cx))
             })
             .when_some(
-                self.toast.as_ref().filter(|t| !t.in_stack).map(|t| (t.msg.clone(), t.error)),
+                self.toast
+                    .as_ref()
+                    .filter(|t| !t.in_stack)
+                    .map(|t| (t.msg.clone(), t.error)),
                 |s, (msg, err)| s.child(self.render_toast(msg, err, cx)),
             )
     }
