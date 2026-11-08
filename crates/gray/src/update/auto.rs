@@ -186,6 +186,7 @@ pub(crate) async fn maybe_run(bare: bool) -> Option<Outcome> {
             failed += 1;
         }
     }
+    crate::update::ensure_skills_plugin().await;
     let outcome = Outcome {
         gray,
         plugins_updated: updated,

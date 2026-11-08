@@ -570,7 +570,25 @@ fn warn_on_divergence() {
     }
 }
 
+/// gray <=0.2.12 shipped skills in core; 0.2.13 moved them to the `skills`
+/// plugin. Anyone updating across that line gets it installed without asking.
+pub(crate) async fn ensure_skills_plugin() {
+    let installed = gray_pkg::ops::list()
+        .map(|lock| lock.contains_key("skills"))
+        .unwrap_or(false);
+    if installed {
+        return;
+    }
+    let Ok(home) = crate::plugin_cli::home() else {
+        return;
+    };
+    if let Err(e) = crate::plugin_cli::install_spec(&home, "skills", false, true).await {
+        log::warn!("skills plugin auto-install failed: {e:#}");
+    }
+}
+
 async fn update_plugins_after_gray() {
+    ensure_skills_plugin().await;
     match gray_pkg::ops::update("all").await {
         Ok(rows) => {
             let (mut updated, mut rebuilt, mut failed) = (0usize, 0usize, 0usize);
