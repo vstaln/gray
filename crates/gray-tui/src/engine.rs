@@ -39,7 +39,7 @@ impl Engine {
     /// all three afterwards via `set_model` (effort is not a CLI flag and a
     /// `resume` may adopt the session's model).
     pub fn spawn(cwd: &Path, provider: &str, model: &str, effort: &str) -> Result<Self, String> {
-        let bin = std::env::var("GRAY_IDE_GRAY_BIN").unwrap_or_else(|_| "gray".into());
+        let bin = std::env::var("GRAY_TUI_GRAY_BIN").unwrap_or_else(|_| "gray".into());
         let mut cmd = Command::new(bin);
         cmd.arg("--stdio");
         if !provider.is_empty() && provider != "gray" {

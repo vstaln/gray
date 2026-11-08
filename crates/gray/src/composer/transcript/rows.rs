@@ -502,7 +502,7 @@ pub(crate) fn viewed_image_lines(
         return None;
     };
     let raw_paths = collected.into_iter().take(MAX_PREVIEWS);
-    let mut previews = Vec::new();
+    let mut paths = Vec::new();
     for raw in raw_paths {
         let path = std::path::Path::new(&raw);
         let path = if path.is_absolute() {
@@ -510,13 +510,22 @@ pub(crate) fn viewed_image_lines(
         } else {
             cwd.join(path)
         };
-        let is_image = gray_tools::images::is_image_extension(&path);
-        if !is_image {
-            continue;
+        if gray_tools::images::is_image_extension(&path) {
+            paths.push(path);
         }
-        previews.extend(image_preview_lines(&path, max_w));
     }
-    let mut lines = Vec::new();
+    attached_image_lines(&paths, max_w)
+}
+
+pub(crate) fn attached_image_lines(
+    paths: &[std::path::PathBuf],
+    max_w: usize,
+) -> Option<Vec<Line<'static>>> {
+    let previews = paths
+        .iter()
+        .filter_map(|path| image_preview_lines(path, max_w))
+        .collect();
+    let mut lines: Vec<Line<'static>> = Vec::new();
     for band in tile_previews(previews, max_w) {
         if !lines.is_empty() {
             lines.push(Line::default());

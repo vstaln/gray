@@ -3,7 +3,7 @@
 One long-lived `gray` process that drives the **same engine the interactive
 REPL uses** — `run_prompt_turn` for turns and `dispatch_command` for slash
 commands — over newline-delimited JSON (NDJSON) on stdin/stdout. Built for
-embedding surfaces like gray-ide; one process per IDE thread/conversation.
+embedding surfaces like gray-tui; one process per IDE thread/conversation.
 
 ```
 gray --stdio [--model M] [--provider P] [--base-url U] [--api-key K] \

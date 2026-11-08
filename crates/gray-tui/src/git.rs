@@ -144,7 +144,7 @@ pub fn worktree_add(root: &Path, dir: &Path, branch: &str) -> Result<(), String>
 }
 
 pub fn checkpoint(dir: &Path) -> Option<String> {
-    let index = std::env::temp_dir().join(format!("gray-ide-index-{}", std::process::id()));
+    let index = std::env::temp_dir().join(format!("gray-tui-index-{}", std::process::id()));
     let _ = std::fs::remove_file(&index);
     let run = |args: &[&str]| {
         Command::new("git")

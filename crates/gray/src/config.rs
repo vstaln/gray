@@ -257,30 +257,47 @@ impl Config {
             .filter(|p| *p > 0.0 && *p <= 1.0)
             .or(saved.top_p);
 
-        let context_window = cli
-            .context_window
-            .or_else(|| {
-                env("GRAY_CONTEXT_WINDOW").and_then(|s| crate::setup::parse_context_window(&s))
-            })
-            .or(saved.context_window);
+        let bare = cli.bare || env("GRAY_BARE").is_some_and(|v| v.trim() == "1");
 
-        let context_reserve = cli
-            .context_reserve
-            .or_else(|| {
-                env("GRAY_CONTEXT_RESERVE").and_then(|s| crate::setup::parse_context_window(&s))
+        let context_window = (!bare)
+            .then(|| {
+                cli.context_window
+                    .or_else(|| {
+                        env("GRAY_CONTEXT_WINDOW")
+                            .and_then(|s| crate::setup::parse_context_window(&s))
+                    })
+                    .or(saved.context_window)
             })
-            .or(saved.context_reserve);
+            .flatten();
 
-        let compact_at = cli
-            .compact_at
-            .or(env("GRAY_COMPACT_AT").and_then(|s| crate::setup::parse_compact_at(&s)))
-            .or(saved.compact_at);
-        let context_keep = cli
-            .context_keep
-            .or_else(|| {
-                env("GRAY_CONTEXT_KEEP").and_then(|s| crate::setup::parse_context_window(&s))
+        let context_reserve = (!bare)
+            .then(|| {
+                cli.context_reserve
+                    .or_else(|| {
+                        env("GRAY_CONTEXT_RESERVE")
+                            .and_then(|s| crate::setup::parse_context_window(&s))
+                    })
+                    .or(saved.context_reserve)
             })
-            .or(saved.context_keep);
+            .flatten();
+
+        let compact_at = (!bare)
+            .then(|| {
+                cli.compact_at
+                    .or(env("GRAY_COMPACT_AT").and_then(|s| crate::setup::parse_compact_at(&s)))
+                    .or(saved.compact_at)
+            })
+            .flatten();
+        let context_keep = (!bare)
+            .then(|| {
+                cli.context_keep
+                    .or_else(|| {
+                        env("GRAY_CONTEXT_KEEP")
+                            .and_then(|s| crate::setup::parse_context_window(&s))
+                    })
+                    .or(saved.context_keep)
+            })
+            .flatten();
 
         let exec_prefix = nonempty(env("GRAY_EXEC_PREFIX").as_deref()).or(saved.exec_prefix);
 
@@ -303,8 +320,6 @@ impl Config {
         let max_wall_secs = cli.max_wall_secs.filter(|&n| n > 0).or_else(|| {
             env("GRAY_MAX_WALL_SECS").and_then(|s| s.trim().parse::<u64>().ok().filter(|&n| n > 0))
         });
-
-        let bare = cli.bare || env("GRAY_BARE").is_some_and(|v| v.trim() == "1");
 
         let lean_env = env("GRAY_LEAN").map(|v| v.trim().to_string());
         let lean = if cli.lean || lean_env.as_deref() == Some("1") {

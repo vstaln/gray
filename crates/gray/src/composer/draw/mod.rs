@@ -1140,7 +1140,7 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
         }
     });
     let background_result = if res.is_ok() {
-        if let Some(bg) = &mut tui.background {
+        if let super::BackgroundSlot::Loaded(bg) = &mut tui.background {
             bg.draw(&mut std::io::stdout().lock(), cols, rows)
         } else {
             Ok(())

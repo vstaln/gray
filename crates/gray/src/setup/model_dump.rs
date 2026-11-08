@@ -1,5 +1,5 @@
 //! Machine-readable view of the `/models` provider rail and model lists, for
-//! embedding surfaces (gray-ide) that must mirror the picker's contents without
+//! embedding surfaces (gray-tui) that must mirror the picker's contents without
 //! reimplementing provider/plugin resolution. `--dump-models` prints
 //! [`model_catalog_json`]; `--provider <id>` switches this process's provider
 //! in memory via [`select_cli_provider`] — the same resolution the panes apply

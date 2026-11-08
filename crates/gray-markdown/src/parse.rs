@@ -415,19 +415,19 @@ impl<'a, 'b, 'syn> MarkdownParser<'a, 'b, 'syn> {
             }
             Event::Code(code) => {
                 if let Some(ref mut state) = self.table_state {
-                    let prev_code = state.cell_code;
-                    state.cell_code = true;
+                    let prev_code = state.cell_style.code;
+                    state.cell_style.code = true;
                     state.push_text(&code);
-                    state.cell_code = prev_code;
+                    state.cell_style.code = prev_code;
                 }
                 self.style_inline_code_span(&code, &range);
             }
             Event::InlineMath(math) => {
                 if let Some(ref mut state) = self.table_state {
-                    let prev_code = state.cell_code;
-                    state.cell_code = true;
+                    let prev_code = state.cell_style.code;
+                    state.cell_style.code = true;
                     state.push_text(&math);
-                    state.cell_code = prev_code;
+                    state.cell_style.code = prev_code;
                 }
 
                 self.style_inline_code_span(&math, &range);
@@ -485,10 +485,10 @@ impl<'a, 'b, 'syn> MarkdownParser<'a, 'b, 'syn> {
             }
             Event::DisplayMath(math) => {
                 if let Some(ref mut state) = self.table_state {
-                    let prev_code = state.cell_code;
-                    state.cell_code = true;
+                    let prev_code = state.cell_style.code;
+                    state.cell_style.code = true;
                     state.push_text(&math);
-                    state.cell_code = prev_code;
+                    state.cell_style.code = prev_code;
                     self.push_highlight(Some(self.ms.math), &range);
                 } else {
                     self.push_highlight(Some(self.ms.code_outer), &range);
@@ -702,13 +702,13 @@ impl<'a, 'b, 'syn> MarkdownParser<'a, 'b, 'syn> {
             }
             Tag::Emphasis => {
                 if let Some(ref mut state) = self.table_state {
-                    state.cell_italic = true;
+                    state.cell_style.italic = true;
                 }
                 Some(self.ms.emphasis_outer)
             }
             Tag::Strong => {
                 if let Some(ref mut state) = self.table_state {
-                    state.cell_bold = true;
+                    state.cell_style.bold = true;
                 }
                 Some(self.ms.strong_outer)
             }
@@ -722,7 +722,7 @@ impl<'a, 'b, 'syn> MarkdownParser<'a, 'b, 'syn> {
                 if let Some(ref mut state) = self.table_state {
                     let id = self.link_id_counter;
                     self.link_id_counter += 1;
-                    state.cell_link = Some((dest_url.to_string(), id));
+                    state.cell_style.link = Some((dest_url.to_string(), id));
                     self.tag_stack.push(tag);
                     return;
                 }
@@ -836,20 +836,20 @@ impl<'a, 'b, 'syn> MarkdownParser<'a, 'b, 'syn> {
         let style = match &tag_end {
             TagEnd::Emphasis => {
                 if let Some(ref mut state) = self.table_state {
-                    state.cell_italic = false;
+                    state.cell_style.italic = false;
                 }
                 None
             }
             TagEnd::Strong => {
                 if let Some(ref mut state) = self.table_state {
-                    state.cell_bold = false;
+                    state.cell_style.bold = false;
                 }
                 None
             }
             TagEnd::Strikethrough => None,
             TagEnd::Link | TagEnd::Image => {
                 if let Some(ref mut state) = self.table_state {
-                    state.cell_link = None;
+                    state.cell_style.link = None;
                 }
                 None
             }
@@ -859,10 +859,7 @@ impl<'a, 'b, 'syn> MarkdownParser<'a, 'b, 'syn> {
                         .current_row
                         .push(std::mem::take(&mut state.current_cell));
 
-                    state.cell_bold = false;
-                    state.cell_italic = false;
-                    state.cell_code = false;
-                    state.cell_link = None;
+                    state.cell_style.reset();
                 }
                 None
             }

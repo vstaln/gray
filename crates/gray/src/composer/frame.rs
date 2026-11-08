@@ -6,7 +6,10 @@ impl Tui {
     }
 
     pub(crate) fn set_background(&mut self, path: Option<&std::path::Path>) -> anyhow::Result<()> {
-        anyhow::ensure!(!self.background_closed, "Gray TUI has closed");
+        anyhow::ensure!(
+            !matches!(self.background, BackgroundSlot::Closed),
+            "the gray session has closed"
+        );
         anyhow::ensure!(
             !self.modal_open,
             "close the modal before changing background"
@@ -26,9 +29,9 @@ impl Tui {
                 ),
                 "background requires Ghostty or Kitty"
             );
-            Some(background::Background::load(path)?)
+            BackgroundSlot::Loaded(background::Background::load(path)?)
         } else {
-            None
+            BackgroundSlot::Empty
         };
         self.hide_background()?;
         self.background = next;
@@ -36,7 +39,7 @@ impl Tui {
     }
 
     pub(crate) fn hide_background(&mut self) -> std::io::Result<()> {
-        if let Some(bg) = &mut self.background {
+        if let BackgroundSlot::Loaded(bg) = &mut self.background {
             bg.hide(&mut std::io::stdout().lock())?;
         }
         Ok(())

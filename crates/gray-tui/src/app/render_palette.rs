@@ -502,7 +502,7 @@ impl GrayApp {
                 page = page
                     .child(row(
                         "Version",
-                        "gray-ide",
+                        "gray-tui",
                         div()
                             .text_sm()
                             .text_color(t.muted_foreground)

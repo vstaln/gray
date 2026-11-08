@@ -5,10 +5,13 @@ impl GrayApp {
     /// layer (it needs the `Window`, which most callers don't have).
     pub(super) fn toast(&mut self, msg: impl Into<String>, error: bool) {
         let msg = msg.into();
-        self.toast = Some((msg.clone(), error));
-        self.toast_at = Some(Instant::now());
+        self.toast = Some(ActiveToast {
+            msg: msg.clone(),
+            error,
+            shown_at: Instant::now(),
+            in_stack: false,
+        });
         self.toast_seq += 1;
-        self.toast_in_stack = false;
         self.toast_queue.push((msg, error));
     }
 
@@ -304,7 +307,7 @@ impl GrayApp {
             self.grep_rx = None;
             cx.notify();
         }
-        if let Some(path) = std::env::var_os("GRAY_IDE_CMDS")
+        if let Some(path) = std::env::var_os("GRAY_TUI_CMDS")
             && let Ok(text) = std::fs::read_to_string(&path)
             && !text.trim().is_empty()
         {
@@ -434,11 +437,7 @@ impl GrayApp {
         }
         while let Ok(catalog) = self.model_catalog_rx.try_recv() {
             changed = true;
-            self.model_catalog_loading = false;
-            if let Some(c) = catalog {
-                self.model_catalog = Some(c);
-            }
-            self.model_catalog_at = Some(Instant::now());
+            self.model_catalog.finish_loading(catalog, Instant::now());
         }
         while let Ok(msg) = self.plugin_rx.try_recv() {
             changed = true;
@@ -512,17 +511,19 @@ impl GrayApp {
                 window.push_notification(Notification::new().with_type(kind).message(msg), cx);
                 // The window stack shows it; a second in-app card would
                 // duplicate it.
-                self.toast_in_stack = true;
+                if let Some(active) = &mut self.toast {
+                    active.in_stack = true;
+                }
             }
         } else {
             self.toast_queue.clear();
         }
         if self
-            .toast_at
-            .is_some_and(|at| at.elapsed() > motion::ms(motion::TOAST_MS))
+            .toast
+            .as_ref()
+            .is_some_and(|t| t.shown_at.elapsed() > motion::ms(motion::TOAST_MS))
         {
             self.toast = None;
-            self.toast_at = None;
             changed = true;
         }
         // Every pane follows its own thread's stream.
