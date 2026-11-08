@@ -153,7 +153,7 @@ function Install-NativeGray {
         $flavor = 'core'
         if ($env:GRAY_INSTALL_PLUGINS -ne '0') {
             $flavor = 'full'
-            $plugins = if ($env:GRAY_PLUGINS) { $env:GRAY_PLUGINS -split '\s+' | Where-Object { $_ } } else { @('account', 'memory', 'search', 'questions', 'subagents', 'mcp', 'gateway') }
+            $plugins = if ($env:GRAY_PLUGINS) { $env:GRAY_PLUGINS -split '\s+' | Where-Object { $_ } } else { @('account', 'memory', 'search', 'skills', 'questions', 'subagents', 'mcp', 'gateway') }
             $failed = @()
             foreach ($plugin in $plugins) {
                 try {
