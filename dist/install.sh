@@ -17,6 +17,19 @@ REPO_URL="${GRAY_CDN_URL:-https://gray.alignment.id/dl}"
 
 have_cmd() { command -v "$1" >/dev/null 2>&1; }
 
+# true when dotted numeric version $1 sorts before $2
+ver_lt() {
+    _v1=$1; _v2=$2
+    OIFS=$IFS
+    IFS='.'
+    set -- $_v1
+    _a1=${1:-0}; _a2=${2:-0}; _a3=${3:-0}
+    set -- $_v2
+    _b1=${1:-0}; _b2=${2:-0}; _b3=${3:-0}
+    IFS=$OIFS
+    [ $((_a1 * 1000000 + _a2 * 1000 + _a3)) -lt $((_b1 * 1000000 + _b2 * 1000 + _b3)) ]
+}
+
 ARCH=$(uname -m)
 OS=$(uname -s)
 case "$OS" in
@@ -78,6 +91,13 @@ if [ -e "${DEST}/gray" ] || [ -d "${GRAY_HOME:-$HOME/.gray}" ]; then
     INSTALLED_BEFORE=1
 fi
 
+# Version being replaced — the skills migration below only fires when an
+# update crosses the 0.2.12 -> 0.2.13 core/plugin split.
+OLD_VER=""
+if [ -x "${DEST}/gray" ]; then
+    OLD_VER=$("${DEST}/gray" --version 2>/dev/null || true)
+fi
+
 mv "${TMP}/gray" "${DEST}/gray"
 chmod +x "${DEST}/gray"
 
@@ -134,6 +154,24 @@ if [ "$SEED" != "0" ]; then
     fi
 elif [ "$INSTALLED_BEFORE" = "1" ]; then
     FLAVOR="update"
+fi
+
+# gray <=0.2.12 shipped skills in core; 0.2.13 moved them into the `skills`
+# plugin. An update crossing that line installs it here, in the installer —
+# installer changes ship without a gray release, which is where future
+# core->plugin migrations like this belong. Bare installs
+# (GRAY_INSTALL_PLUGINS=0, e.g. install-core.sh) and custom plugin sets
+# (GRAY_PLUGINS) are left alone.
+if [ "$INSTALLED_BEFORE" = "1" ] && [ -z "${GRAY_PLUGINS:-}" ] && [ "${GRAY_INSTALL_PLUGINS:-auto}" != "0" ]; then
+    OLD_SEMVER=$(printf '%s' "$OLD_VER" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n 1)
+    if [ -n "$OLD_SEMVER" ] && ver_lt "$OLD_SEMVER" "0.2.13" && [ ! -d "${GRAY_HOME:-$HOME/.gray}/plugins/skills" ]; then
+        if "${DEST}/gray" plugin install --yes skills >/dev/null 2>&1; then
+            echo "→ installed skills"
+            "${DEST}/gray" plugin capabilities skills --all >/dev/null 2>&1 || true
+        else
+            echo "  could not install skills plugin -- retry: gray plugin install --yes skills"
+        fi
+    fi
 fi
 
 if [ "${GRAY_TELEMETRY:-1}" != "0" ] && [ -z "${GRAY_CDN_URL:-}" ]; then
