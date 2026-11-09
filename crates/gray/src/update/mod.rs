@@ -571,19 +571,30 @@ fn warn_on_divergence() {
 }
 
 /// gray <=0.2.12 shipped skills in core; 0.2.13 moved them to the `skills`
-/// plugin. Anyone updating across that line gets it installed without asking.
+/// plugin. install.sh ensures it for updates crossing that line; this is the
+/// backstop for Windows (its updater swaps the zip directly, no installer
+/// script) and for installer attempts that failed. A stamp makes it run at
+/// most once per install, so removing the plugin is never undone by an update.
 pub(crate) async fn ensure_skills_plugin() {
+    let Ok(home) = crate::plugin_cli::home() else {
+        return;
+    };
+    let stamp = home.join("plugins").join(".skills-migration-done");
+    if stamp.exists() {
+        return;
+    }
     let installed = gray_pkg::ops::list()
         .map(|lock| lock.contains_key("skills"))
         .unwrap_or(false);
     if installed {
+        let _ = std::fs::write(&stamp, b"");
         return;
     }
-    let Ok(home) = crate::plugin_cli::home() else {
-        return;
-    };
-    if let Err(e) = crate::plugin_cli::install_spec(&home, "skills", false, true).await {
-        log::warn!("skills plugin auto-install failed: {e:#}");
+    match crate::plugin_cli::install_spec(&home, "skills", false, true).await {
+        Ok(()) => {
+            let _ = std::fs::write(&stamp, b"");
+        }
+        Err(e) => log::warn!("skills plugin auto-install failed: {e:#}"),
     }
 }
 
