@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.2.16] - 2026-11-10
+
 ### Fixed
 - **Context updates no longer resend the whole plugin context.** Memory, skills and subagent listings are injected as separate context blocks, so writing a memory no longer re-sends the entire skills listing on the next request.
 

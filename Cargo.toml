@@ -11,7 +11,7 @@ members = [
 ]
 exclude = ["crates/gray-tui"]
 [workspace.package]
-version = "0.2.15"
+version = "0.2.16"
 edition = "2024"
 rust-version = "1.91"
 license = "MIT"
