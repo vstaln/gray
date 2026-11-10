@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.2.18] - 2026-11-10
+
+### Fixed
+- **Auto-updated plugins no longer vanish.** `gray update` and the background auto-updater now re-adopt every plugin they update, the same way `gray plugin update` does, so the plugin's manifest is rewritten and the provider list refreshed. Before, an auto-update deleted a provider plugin's manifest without restoring it, and providers like Claude subscription dropped out of the model picker until the plugin was reinstalled.
+- **Capability grants no longer race plugin installs.** Granting a plugin capability now holds the plugin registry lock, so a concurrent install can't be overwritten.
+
 ## [0.2.17] - 2026-11-10
 
 ### Fixed
