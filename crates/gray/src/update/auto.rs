@@ -170,7 +170,7 @@ pub(crate) async fn maybe_run(bare: bool) -> Option<Outcome> {
     }
     let gray = self_step().await;
     let (mut updated, mut rebuilt, mut failed) = (0usize, 0usize, 0usize);
-    match gray_pkg::ops::update("all").await {
+    match crate::plugin_cli::update_managed("all").await {
         Ok(rows) => {
             for r in &rows {
                 match r.action {
