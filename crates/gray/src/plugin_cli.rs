@@ -624,6 +624,7 @@ pub(crate) fn grant_capability(home: &Path, name: &str, capability: &str) -> any
     if !declared.iter().any(|d| d == capability) {
         return Ok(false);
     }
+    let _guard = gray_pkg::ops::hold_registry_lock_in(&home.join("plugins"))?;
     let mut lock = load_lock(home)?;
     let entry = lock
         .plugins
@@ -658,6 +659,7 @@ pub fn grant_all_capabilities(name: &str) -> anyhow::Result<()> {
         !declared.is_empty(),
         "'{name}' declares no capabilities — nothing to grant"
     );
+    let _guard = gray_pkg::ops::hold_registry_lock_in(&home.join("plugins"))?;
     let mut lock = load_lock(&home)?;
     let entry = lock
         .plugins
@@ -855,6 +857,9 @@ pub async fn update_managed(target: &str) -> anyhow::Result<Vec<gray_pkg::ops::U
                 r.name
             );
         }
+    }
+    if let Err(e) = crate::providers::ProviderRegistry::refresh(&home) {
+        log::warn!("could not refresh providers after update: {e:#}");
     }
     Ok(reports)
 }
