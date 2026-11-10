@@ -424,7 +424,6 @@ impl Agent {
 
         let mut overflow_recovery_attempted = false;
 
-        let mut hook_context = String::new();
         if let Some(hook) = self.checkpoint.clone() {
             hook(&self.messages, self.history_revision()).await;
         }
@@ -435,17 +434,17 @@ impl Agent {
             if let Some(text) = hook.prompt_context().await
                 && !text.trim().is_empty()
             {
-                if !hook_context.is_empty() {
-                    hook_context.push_str("\n\n");
+                let sent = self.messages.iter().any(|message| {
+                    message.injected
+                        && message.content.iter().any(|block| {
+                            matches!(block, ContentBlock::Text { text: seen }
+                                if seen.starts_with("[Context update]\n") && seen.contains(text.as_str()))
+                        })
+                });
+                if !sent {
+                    self.messages
+                        .push(Message::user_injected(format!("[Context update]\n{text}")));
                 }
-                hook_context.push_str(&text);
-            }
-        }
-
-        if !hook_context.is_empty() {
-            let note = Message::user_injected(format!("[Context update]\n{hook_context}"));
-            if !self.messages.contains(&note) {
-                self.messages.push(note);
             }
         }
 

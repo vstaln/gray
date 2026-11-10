@@ -1,5 +1,13 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+- **Context updates no longer resend the whole plugin context.** Memory, skills and subagent listings are injected as separate context blocks, so writing a memory no longer re-sends the entire skills listing on the next request.
+
+### Changed
+- **Project rules load without `gray trust`.** Every `AGENTS.md` / `CLAUDE.md` at or above the working directory now reaches the model, outermost first, plus `~/.claude/CLAUDE.md` when it exists; before, only the nearest file loaded and only in a trusted project, so with an empty trust list rules never loaded at all. The first turn shows a `Rules` line naming the files in use. `--bare` still loads nothing; `gray trust` now only gates a project's `.gray/prompts`.
+
 ## [0.2.15] - 2026-11-07
 
 ### Fixed

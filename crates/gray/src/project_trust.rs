@@ -88,10 +88,7 @@ pub fn run_cli(dir: Option<PathBuf>, revoke: bool) -> anyhow::Result<()> {
         }
     } else {
         trust(&home, &dir)?;
-        println!(
-            "trusted {} — its .gray/prompts, SKILL.md and AGENTS.md now load",
-            root.display()
-        );
+        println!("trusted {} — its .gray/prompts now load", root.display());
     }
     Ok(())
 }

@@ -80,9 +80,9 @@ This file IS the stored system prompt. Comments like this one stay in the
 file but are stripped before the prompt reaches the model. After it, gray
 appends a small runtime block: identity, harness facts, and your working
 directory / repo / branch. Per turn it may also inject ephemeral context —
-<project_context> from the nearest AGENTS.md / CLAUDE.md above cwd (trusted
-projects), plugin docs. Lean mode (default) keeps the project rules and skips
-plugin docs; opt in with "lean": false or GRAY_LEAN=0.
+<project_context> from every AGENTS.md / CLAUDE.md at or above cwd, plugin
+docs. Lean mode (default) keeps the project rules and skips plugin docs; opt
+in with "lean": false or GRAY_LEAN=0.
 
 Edit with `/agentsmd` (Ctrl-S save & apply, Ctrl-R reset to default,
 Ctrl-X cancel).
@@ -738,7 +738,7 @@ pub enum Commands {
         args: Vec<String>,
     },
 
-    #[command(about = "Trust a directory's .gray/prompts, SKILL.md and AGENTS.md files")]
+    #[command(about = "Trust a directory's .gray/prompts")]
     Trust {
         #[arg(
             value_name = "DIR",
