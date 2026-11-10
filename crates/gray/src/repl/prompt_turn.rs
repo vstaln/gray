@@ -269,6 +269,20 @@ pub(crate) async fn run_prompt_turn(
         agent.mask_stale_tool_output();
     }
 
+    if let Some(s) = &tui_stream
+        && !config.bare
+        && let Some(rules) = crate::project_context::project_rules_label(cwd)
+    {
+        static ANNOUNCED: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+        let mut announced = ANNOUNCED.lock().unwrap_or_else(|e| e.into_inner());
+        if *announced != rules {
+            s.lock()
+                .expect("tui lock")
+                .push_action("Rules", Some(&rules));
+            *announced = rules;
+        }
+    }
+
     if let Some(s) = &tui_stream {
         s.lock().expect("tui lock").begin_turn("Working");
     }

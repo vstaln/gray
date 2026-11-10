@@ -77,7 +77,7 @@ Shipped:
   `host/ui/status` (protocol 2.0, below) feeds `status`. `/reload` picks
   up edits.
 - **System prompt.** Already covered: `~/.gray/AGENTS.md` is the editable
-  system prompt (pi's `SYSTEM.md`), the nearest project `AGENTS.md`/`CLAUDE.md`
+  system prompt (pi's `SYSTEM.md`), every `AGENTS.md`/`CLAUDE.md` at or above cwd
   is appended per turn (pi's `APPEND_SYSTEM.md`/context files).
 
 Next:

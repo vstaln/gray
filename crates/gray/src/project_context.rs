@@ -4,58 +4,75 @@ const PROJECT_RULES_NAMES: [&str; 2] = ["AGENTS.md", "CLAUDE.md"];
 
 pub(crate) const PROJECT_RULES_MAX_CHARS: usize = 32_768;
 
-pub fn project_context_block(cwd: &Path) -> Option<String> {
+pub fn project_rules_files(cwd: &Path) -> Vec<PathBuf> {
     let gray_home = crate::setup::gray_home()
         .ok()
         .and_then(|p| p.canonicalize().ok());
-
-    if !crate::project_trust::is_trusted(&gray_core::paths::gray_home_or_temp(), cwd) {
-        return None;
+    let mut files: Vec<PathBuf> = cwd
+        .ancestors()
+        .filter(|d| gray_home.is_none() || d.canonicalize().ok() != gray_home)
+        .filter_map(|d| {
+            PROJECT_RULES_NAMES
+                .iter()
+                .map(|name| d.join(name))
+                .find(|candidate| candidate.is_file())
+        })
+        .collect();
+    if let Some(global) = gray_core::paths::user_home()
+        .map(|h| h.join(".claude").join("CLAUDE.md"))
+        .filter(|p| p.is_file())
+    {
+        files.push(global);
     }
-    let path = find_project_rules(cwd, gray_home.as_deref())?;
-    let body = std::fs::read_to_string(&path).ok()?;
-    let body = strip_rationale_comments(body.trim());
+    files.reverse();
+    files
+}
 
+pub fn project_rules_label(cwd: &Path) -> Option<String> {
+    let home = gray_core::paths::user_home();
+    let names: Vec<String> = project_rules_files(cwd)
+        .iter()
+        .map(
+            |p| match home.as_deref().and_then(|h| p.strip_prefix(h).ok()) {
+                Some(rest) => format!("~/{}", rest.display()),
+                None => p.display().to_string(),
+            },
+        )
+        .collect();
+    (!names.is_empty()).then(|| names.join(" · "))
+}
+
+fn rules_block(path: &Path) -> Option<String> {
+    let body = std::fs::read_to_string(path).ok()?;
+    let mut body = strip_rationale_comments(body.trim());
     if body.trim().is_empty() {
         return None;
     }
-    let mut body = body;
-    if body.chars().count() > PROJECT_RULES_MAX_CHARS {
-        let cut = body
-            .char_indices()
-            .nth(PROJECT_RULES_MAX_CHARS)
-            .map(|(i, _)| i)
-            .unwrap_or(body.len());
+    if let Some((cut, _)) = body.char_indices().nth(PROJECT_RULES_MAX_CHARS) {
         body.truncate(cut);
         body.push_str(&format!(
             "\n…[truncated — read {} for the full file]",
             path.display()
         ));
     }
-
     Some(format!(
-        "<project_context source=\"{}\">\nProject rules; they outrank general defaults. The file also has `# r1: ...` rationale lines, stripped here; keep them when editing it.\n\n{body}\n</project_context>",
+        "<project_context source=\"{}\">\n{body}\n</project_context>",
         path.display()
     ))
 }
 
-fn find_project_rules(cwd: &Path, gray_home: Option<&Path>) -> Option<PathBuf> {
-    let mut dir = Some(cwd);
-    while let Some(d) = dir {
-        let is_gray_home = gray_home
-            .map(|h| d.canonicalize().ok().as_deref() == Some(h))
-            .unwrap_or(false);
-        if !is_gray_home {
-            for name in PROJECT_RULES_NAMES {
-                let candidate = d.join(name);
-                if candidate.is_file() {
-                    return Some(candidate);
-                }
-            }
-        }
-        dir = d.parent();
+pub fn project_context_block(cwd: &Path) -> Option<String> {
+    let blocks: Vec<String> = project_rules_files(cwd)
+        .iter()
+        .filter_map(|p| rules_block(p))
+        .collect();
+    if blocks.is_empty() {
+        return None;
     }
-    None
+    Some(format!(
+        "Project rules, outermost directory first; they outrank general defaults and a nearer file outranks a farther one. The files also have `# r1: ...` rationale lines, stripped here; keep them when editing.\n\n{}",
+        blocks.join("\n\n")
+    ))
 }
 
 fn is_rationale_comment(line: &str) -> bool {
@@ -107,7 +124,7 @@ impl gray_plugin::Plugin for ProjectContextPlugin {
     }
 
     /// Project rules are the user's own instructions, not a plugin extra:
-    /// lean mode keeps them (trust still gates them).
+    /// lean mode keeps them.
     fn is_global(&self) -> bool {
         true
     }
