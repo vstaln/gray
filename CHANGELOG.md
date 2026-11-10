@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+## [0.2.17] - 2026-11-10
+
+### Fixed
+- **Windows `plugin.sh` sidecars no longer fail with "gave no manifest".** The plugin builder prefers the native platform leg over the shell wrapper on Windows, and `.sh` sidecars get the shell's own directory on PATH with stderr captured, so Git-for-Windows-style installs resolve correctly.
+
 ## [0.2.16] - 2026-11-10
 
 ### Fixed
