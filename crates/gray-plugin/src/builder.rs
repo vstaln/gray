@@ -160,10 +160,6 @@ pub fn resolve_argv(dir: &Path) -> anyhow::Result<Vec<String>> {
     if !dir.is_dir() {
         anyhow::bail!("{} is not a directory (or executable)", dir.display());
     }
-    let script = dir.join("plugin.sh");
-    if is_exec(&script) {
-        return Ok(vec![script.to_string_lossy().into_owned()]);
-    }
     let triple = if cfg!(windows) {
         "x86_64-pc-windows-msvc"
     } else if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
@@ -176,10 +172,20 @@ pub fn resolve_argv(dir: &Path) -> anyhow::Result<Vec<String>> {
         "x86_64-unknown-linux-musl"
     };
     let leg_dir = dir.join(triple);
+    let script = dir.join("plugin.sh");
+    // On Windows a plugin.sh runs under Git's non-login sh.exe, whose PATH
+    // may lack coreutils (dirname, uname); a packaged native leg avoids the
+    // shell entirely, so prefer it there. Elsewhere plugin.sh stays first.
+    if !cfg!(windows) && is_exec(&script) {
+        return Ok(vec![script.to_string_lossy().into_owned()]);
+    }
     if leg_dir.is_dir()
         && let Ok(argv) = resolve_argv(&leg_dir)
     {
         return Ok(argv);
+    }
+    if is_exec(&script) {
+        return Ok(vec![script.to_string_lossy().into_owned()]);
     }
     let mut execs = Vec::new();
     for entry in std::fs::read_dir(dir)? {
@@ -744,4 +750,41 @@ pub async fn build_agent(opts: BuilderOptions) -> anyhow::Result<Agent> {
         .with_tool_previews(tool_previews)
         .with_context_window(context_window)
         .with_hooks(hooks))
+}
+
+#[cfg(test)]
+mod resolve_argv_tests {
+    use super::resolve_argv;
+
+    #[test]
+    fn plugin_sh_vs_native_leg_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let triple = if cfg!(windows) {
+            "x86_64-pc-windows-msvc"
+        } else if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+            "aarch64-apple-darwin"
+        } else if cfg!(target_os = "macos") {
+            "x86_64-apple-darwin"
+        } else if cfg!(target_arch = "aarch64") {
+            "aarch64-unknown-linux-musl"
+        } else {
+            "x86_64-unknown-linux-musl"
+        };
+        let leg = dir.path().join(triple);
+        std::fs::create_dir(&leg).unwrap();
+        let bin = leg.join(if cfg!(windows) { "p.exe" } else { "p" });
+        std::fs::write(&bin, "x").unwrap();
+        let script = dir.path().join("plugin.sh");
+        std::fs::write(&script, "#!/bin/sh\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            for p in [&bin, &script] {
+                std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o755)).unwrap();
+            }
+        }
+        let argv = resolve_argv(dir.path()).unwrap();
+        let want = if cfg!(windows) { &bin } else { &script };
+        assert_eq!(argv, vec![want.to_string_lossy().into_owned()]);
+    }
 }

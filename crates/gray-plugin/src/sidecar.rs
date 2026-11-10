@@ -198,7 +198,20 @@ fn spawn_child(argv: &[String]) -> anyhow::Result<(Child, ChildStdin, ChildStdou
     #[cfg(windows)]
     if prog.to_ascii_lowercase().ends_with(".sh") {
         let script = prog.replace('\\', "/");
-        let mut cmd = Command::new(gray_tools::shell::shell_path()?);
+        let sh = gray_tools::shell::shell_path()?;
+        let mut cmd = Command::new(&sh);
+        // `sh -c` is not a login shell: PATH is the inherited Windows PATH,
+        // which often has Git\cmd but not Git\usr\bin, so the script's
+        // dirname/uname are missing. Put sh.exe's own dir (coreutils) first.
+        if let Some(bin) = sh.parent() {
+            let mut paths = vec![bin.to_path_buf()];
+            if let Some(cur) = std::env::var_os("PATH") {
+                paths.extend(std::env::split_paths(&cur));
+            }
+            if let Ok(joined) = std::env::join_paths(paths) {
+                cmd.env("PATH", joined);
+            }
+        }
         cmd.arg("-c")
             .arg("exec \"$@\"")
             .arg("sh")
@@ -207,6 +220,7 @@ fn spawn_child(argv: &[String]) -> anyhow::Result<(Child, ChildStdin, ChildStdou
         let child = spawn_retrying_etxtbsy(|| {
             cmd.stdin(std::process::Stdio::piped())
                 .stdout(std::process::Stdio::piped())
+                .stderr(sidecar_stderr(prog))
                 .kill_on_drop(true)
                 .spawn()
         })
