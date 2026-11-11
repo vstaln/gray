@@ -215,6 +215,7 @@ enum Cmd {
     SetLayout(String),
     SetTerminalPlacement(String),
     SetAutoAccept(bool),
+    SetAutosave(bool),
     OpenMessage(String, Option<usize>),
     SetNotify(bool),
     SearchThreads,

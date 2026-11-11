@@ -217,6 +217,12 @@ impl GrayApp {
                     value: if b { "true" } else { "false" }.into(),
                 });
             }
+            Cmd::SetAutosave(b) => {
+                self.persist(Event::SettingChanged {
+                    key: "autosave".into(),
+                    value: if b { "true" } else { "false" }.into(),
+                });
+            }
             Cmd::AttachImage(arg) => {
                 let rel = PathBuf::from(arg.trim());
                 let path = if rel.is_absolute() {

@@ -199,6 +199,7 @@ impl GrayApp {
         let layout = self.store.state.setting("layout", "focus");
         let auto_accept = self.store.state.setting("auto_accept", "false") == "true";
         let notify = self.store.state.setting("notify", "false") == "true";
+        let autosave = self.store.state.setting("autosave", "true") == "true";
         let term_side = self.store.state.setting("terminal_placement", "bottom") == "right";
         let q = self.settings_query.to_lowercase();
         let vis = |label: &str| q.is_empty() || fuzzy(&label.to_lowercase(), &q);
@@ -679,6 +680,33 @@ impl GrayApp {
                                         .when(!auto_accept, |b| b.primary())
                                         .on_click(cx.listener(|this, _, window, cx| {
                                             this.run(Cmd::SetAutoAccept(false), window, cx)
+                                        })),
+                                )
+                                .into_any_element(),
+                        ))
+                    })
+                    .when(vis("Autosave"), |s| {
+                        s.child(row(
+                            "Autosave",
+                            "Save dirty files once you stop typing",
+                            h_flex()
+                                .gap_1()
+                                .child(
+                                    Button::new("settings-autosave-on")
+                                        .small()
+                                        .label("On")
+                                        .when(autosave, |b| b.primary())
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.run(Cmd::SetAutosave(true), window, cx)
+                                        })),
+                                )
+                                .child(
+                                    Button::new("settings-autosave-off")
+                                        .small()
+                                        .label("Off")
+                                        .when(!autosave, |b| b.primary())
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.run(Cmd::SetAutosave(false), window, cx)
                                         })),
                                 )
                                 .into_any_element(),

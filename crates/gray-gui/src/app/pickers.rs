@@ -743,6 +743,8 @@ impl GrayApp {
             k("Settings"),
             Cmd::SetAutoAccept(false),
         ));
+        items.push((k("Autosave: On"), k("Settings"), Cmd::SetAutosave(true)));
+        items.push((k("Autosave: Off"), k("Settings"), Cmd::SetAutosave(false)));
         if self.pending_approval.is_some() {
             items.push((k("Approve pending action"), k("Action"), Cmd::Approve(true)));
             items.push((k("Reject pending action"), k("Action"), Cmd::Approve(false)));

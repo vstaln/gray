@@ -118,8 +118,8 @@ pub(super) fn cmd_group(cmd: &Cmd) -> (u8, &'static str) {
         CloseFile(..) | GoToLine(..) | OpenFileAt(..) => (10, "Files"),
         Checkpoint | Restore | TurnDiff | HeadDiff | Branch(_) | NewBranch(_) | Worktree(_)
         | DiscardChanges => (5, "Git"),
-        Settings | SettingsSection(_) | SetNotify(_) | SetAutoAccept(_) | ToggleTheme
-        | SetBackground(_) => (6, "Settings"),
+        Settings | SettingsSection(_) | SetNotify(_) | SetAutoAccept(_) | SetAutosave(_)
+        | ToggleTheme | SetBackground(_) => (6, "Settings"),
         Project(_) | AddProject(_) => (7, "Project"),
         UseSkill(_) | ResumeSession(_) | Gray(_) => (8, "Gray"),
         PluginInstall(_) | PluginRemove(_) | PluginEnable(..) => (9, "Plugins"),
