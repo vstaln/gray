@@ -14,7 +14,7 @@ fn lock_rotation(path: &Path) -> Option<std::fs::File> {
         .write(true)
         .open(&lock_path)
         .ok()?;
-    let _ = f.try_lock();
+    f.try_lock().ok()?;
     Some(f)
 }
 

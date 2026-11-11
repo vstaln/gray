@@ -47,12 +47,28 @@ pub fn materialize_media(media_type: &str, data: &str) -> Option<PathBuf> {
     std::fs::create_dir_all(&dir).ok()?;
     let path = dir.join(format!("{tag}.{}", media_extension(media_type)));
     if !path.exists() {
-        std::fs::write(&path, &bytes).ok()?;
         #[cfg(unix)]
         {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+            use std::io::Write as _;
+            use std::os::unix::fs::OpenOptionsExt;
+            match std::fs::OpenOptions::new()
+                .create_new(true)
+                .write(true)
+                .mode(0o600)
+                .open(&path)
+            {
+                Ok(mut f) => {
+                    if f.write_all(&bytes).is_err() {
+                        let _ = std::fs::remove_file(&path);
+                        return None;
+                    }
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(_) => return None,
+            }
         }
+        #[cfg(not(unix))]
+        std::fs::write(&path, &bytes).ok()?;
     }
     Some(path)
 }

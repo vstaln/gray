@@ -96,7 +96,7 @@ pub(crate) async fn restart_with(tui: &TuiOpt, resume: bool) {
         GatewayRestart::Failed(e) => super::say(shared, &format!("gateway restart failed: {e}")),
     }
 
-    super::drain_in_flight_turn(std::time::Duration::from_millis(1500)).await;
+    super::drain_in_flight_turn(super::TURN_DRAIN_TIMEOUT).await;
 
     let exe = match crate::update::exe_watch::on_disk_exe() {
         Ok(p) => p,

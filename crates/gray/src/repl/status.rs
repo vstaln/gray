@@ -637,11 +637,23 @@ pub(crate) async fn handle_compact(
 
     match compact_res {
         Ok(Some(summary)) => {
-            if let Some(state) = session_state {
-                let _ = state
+            if let Some(state) = session_state
+                && let Err(e) = state
                     .store
                     .append_compaction_replacement(&state.session_id, ag.messages())
-                    .await;
+                    .await
+            {
+                let message = format!(
+                    "compaction summary did not save: {e} — resuming this session will replay both halves"
+                );
+                if let Some(shared) = tui {
+                    shared
+                        .lock()
+                        .expect("tui lock")
+                        .push_dim(format!("■ {message}"));
+                } else {
+                    say(None, &message);
+                }
             }
 
             if let Some(shared) = tui {

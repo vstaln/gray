@@ -190,6 +190,16 @@ fn spawn_retrying_etxtbsy(
     }
 }
 
+fn knows_asks(protocol: Option<&str>) -> bool {
+    let Some(version) = protocol else {
+        return false;
+    };
+    let mut parts = version.split('.');
+    let major: u32 = parts.next().and_then(|p| p.parse().ok()).unwrap_or(0);
+    let minor: u32 = parts.next().and_then(|p| p.parse().ok()).unwrap_or(0);
+    (major, minor) >= (1, 1)
+}
+
 fn spawn_child(argv: &[String]) -> anyhow::Result<(Child, ChildStdin, ChildStdout)> {
     let (prog, args) = argv
         .split_first()
@@ -792,7 +802,7 @@ impl SidecarPlugin {
         }
         manifest.name = name;
         let dynamic = manifest.protocol.as_deref() == Some(DYNAMIC_PROTOCOL);
-        let asks = manifest.protocol.as_deref() == Some("1.1") || dynamic;
+        let asks = knows_asks(manifest.protocol.as_deref());
         let tools = Arc::new(std::sync::RwLock::new(build_tools(
             &transport,
             result.get("tools").unwrap_or(&Value::Null),

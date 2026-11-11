@@ -276,12 +276,16 @@ pub(crate) fn apply_model_selection_at(
     } else {
         fast.or(id_fast.then_some(true))
     };
+    let _saved_lock = match saved_path {
+        Some(path) => Some(crate::setup::lock_saved_config_at(path).map_err(|e| format!("{e:#}"))?),
+        None => None,
+    };
+    let mut saved = saved_path.map(crate::setup::load_saved_config_at);
+
     if let Some(f) = fast {
         config.fast_mode = Some(f);
-        if let Some(path) = saved_path {
-            let mut saved = crate::setup::load_saved_config_at(path);
+        if let Some(saved) = saved.as_mut() {
             saved.fast_mode = Some(f);
-            let _ = crate::setup::save_saved_config_at(path, &saved);
         }
     }
     config.model = Some(m.clone());
@@ -290,34 +294,29 @@ pub(crate) fn apply_model_selection_at(
     match variant_tier.or_else(|| effort.map(str::to_string)) {
         Some(e) if std::env::var_os("GRAY_THINKING_EFFORT").is_none() => {
             config.thinking_effort = Some(e.clone());
-            if let Some(path) = saved_path {
-                let mut saved = crate::setup::load_saved_config_at(path);
+            if let Some(saved) = saved.as_mut() {
                 saved.remember_effort(
                     &crate::setup::effort_memory_key(&config.provider_id, &config.base_url, &m),
                     &e,
                 );
                 saved.thinking_effort = config.thinking_effort.clone();
-                let _ = crate::setup::save_saved_config_at(path, &saved);
             }
         }
         Some(_) => {}
         None => {
-            let _cfg_lock = saved_path.and_then(|p| crate::setup::lock_saved_config_at(p).ok());
-            let mut saved = saved_path.map(crate::setup::load_saved_config_at);
             crate::setup::apply_connection_effort(
                 config,
                 saved.get_or_insert_with(Default::default),
             );
-            if let (Some(path), Some(saved)) = (saved_path, saved) {
-                let _ = crate::setup::save_saved_config_at(path, &saved);
-            }
         }
     }
     let clamped = super::clamp_thinking_to_model(config);
-    if let Some(path) = saved_path {
-        let mut saved = crate::setup::load_saved_config_at(path);
+    if let Some(saved) = saved.as_mut() {
         saved.model = Some(m.clone());
-        let _ = crate::setup::save_saved_config_at(path, &saved);
+    }
+    if let (Some(path), Some(saved)) = (saved_path, saved.as_ref()) {
+        crate::setup::save_saved_config_at(path, saved)
+            .map_err(|e| format!("could not save the model choice: {e:#}"))?;
     }
     Ok(ModelApply {
         model: m,
