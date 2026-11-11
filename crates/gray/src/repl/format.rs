@@ -296,6 +296,9 @@ fn format_detailed_error(e: &CoreError, d: &ProviderDetail, base_url: &str) -> S
         CoreError::Auth(_) => format!(
             "✗ Auth failed (not retryable):\n  {short}\n  Check API key or run /models to reconfigure provider."
         ),
+        CoreError::Quota { .. } => format!(
+            "✗ Quota exhausted (not retryable):\n  {short}\n  Wait for the quota window to reset or switch model via /models."
+        ),
         CoreError::RateLimited(_) => format!(
             "✗ Rate limited (retryable):\n  {short}\n  Try again later or switch model via /models."
         ),
@@ -431,6 +434,10 @@ pub fn format_core_error(e: &CoreError, base_url: &str) -> String {
             let short = truncate_chars(detail, 600);
             format!("✗ Tool loop detected (not retryable): {short}")
         }
+        CoreError::Quota { message, .. } => format!(
+            "✗ Quota exhausted (not retryable):\n  {}\n  Wait for the quota window to reset or switch model via /models.",
+            truncate_chars(message, 600)
+        ),
         CoreError::Cancelled => "■ Cancelled.".to_string(),
         _ => format!("agent error: {e}"),
     }

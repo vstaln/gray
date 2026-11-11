@@ -18,6 +18,11 @@ pub enum ProviderError {
     RateLimited(String),
     #[error("auth failed: {0}")]
     Auth(String),
+    #[error("quota exhausted: {message}")]
+    Quota {
+        message: String,
+        resets_in: Option<Duration>,
+    },
     #[error("bad request: {0}")]
     BadRequest(String),
     #[error("context exhausted — start /new or compact: {0}")]
@@ -514,6 +519,7 @@ impl From<ProviderError> for CoreError {
         match e {
             ProviderError::RateLimited(msg) => CoreError::RateLimited(msg),
             ProviderError::Auth(msg) => CoreError::Auth(msg),
+            ProviderError::Quota { message, resets_in } => CoreError::Quota { message, resets_in },
             ProviderError::BadRequest(msg) => CoreError::BadRequest(msg),
             ProviderError::ContextOverflow(msg) => CoreError::ContextOverflow(msg),
             ProviderError::Connection(msg) => CoreError::Connection(msg),

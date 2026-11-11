@@ -440,7 +440,10 @@ pub(super) fn stream_failure(event: &Value, detail: String) -> ProviderError {
     {
         let resets_in = parse_quota_reset_delay(&detail);
         return ProviderError::Detailed {
-            class: Box::new(ProviderError::Auth(detail.clone())),
+            class: Box::new(ProviderError::Quota {
+                message: detail.clone(),
+                resets_in,
+            }),
             detail: Box::new(gray_core::error::ProviderDetail {
                 status: None,
                 vendor_code: Some(quota_vendor_code(

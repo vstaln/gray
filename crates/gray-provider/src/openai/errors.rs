@@ -55,6 +55,9 @@ pub fn is_quota_exhausted(err: &ProviderError) -> bool {
     {
         return true;
     }
+    if matches!(err.class(), ProviderError::Quota { .. }) {
+        return true;
+    }
     matches!(err.class(), ProviderError::Auth(msg) | ProviderError::BadRequest(msg) | ProviderError::RateLimited(msg) if quota_hinted(msg))
 }
 
@@ -93,20 +96,27 @@ pub(crate) fn classify_http_error(
     cf_ray: Option<&str>,
     req_id: Option<&str>,
 ) -> ProviderError {
-    let class = classify_http_error_inner(status, snippet, cf_ray, req_id);
+    let mut class = classify_http_error_inner(status, snippet, cf_ray, req_id);
     let vendor_message = error_body_message(snippet);
     let mut vendor_code = error_body_code(snippet);
     let mut resets_in = None;
-    if matches!(
-        class.class(),
-        ProviderError::Auth(_) | ProviderError::BadRequest(_)
-    ) && quota_hinted(snippet)
+    if matches!(class.class(), ProviderError::Quota { .. })
+        || (matches!(
+            class.class(),
+            ProviderError::Auth(_) | ProviderError::BadRequest(_)
+        ) && quota_hinted(snippet))
     {
         resets_in = vendor_message
             .as_deref()
             .and_then(parse_quota_reset_delay)
             .or_else(|| parse_quota_reset_delay(snippet));
         vendor_code = Some(quota_vendor_code(vendor_code, resets_in));
+        if let ProviderError::Quota {
+            resets_in: slot, ..
+        } = &mut class
+        {
+            *slot = resets_in;
+        }
     }
     ProviderError::Detailed {
         class: Box::new(class),
@@ -181,8 +191,14 @@ pub(super) fn classify_http_error_inner(
     match status.as_u16() {
         401 | 403 => ProviderError::Auth(msg),
 
-        402 => ProviderError::Auth(msg),
-        429 if quota_exhausted => ProviderError::Auth(msg),
+        402 => ProviderError::Quota {
+            message: msg,
+            resets_in: None,
+        },
+        429 if quota_exhausted => ProviderError::Quota {
+            message: msg,
+            resets_in: None,
+        },
         429 => ProviderError::RateLimited(msg),
 
         413 => ProviderError::ContextOverflow(format!(

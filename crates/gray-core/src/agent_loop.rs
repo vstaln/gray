@@ -73,8 +73,9 @@ const QUOTA_WINDOW_HINTS: [&str; 8] = [
 ];
 
 fn quota_flavored(e: &ProviderError) -> bool {
-    let ProviderError::Auth(msg) = e.class() else {
-        return false;
+    let msg = match e.class() {
+        ProviderError::Auth(msg) | ProviderError::Quota { message: msg, .. } => msg,
+        _ => return false,
     };
     if e.detail().is_some_and(|d| d.status == Some(429)) {
         return true;
