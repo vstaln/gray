@@ -375,7 +375,9 @@ fn opening_parts(
 fn commit_parts(config: &mut Config, home: &Path, parts: &Parts) {
     config.model_parts = parts.clone();
     let path = home.join("config.json");
-    let _cfg_lock = crate::setup::lock_saved_config_at(&path).ok();
+    let _cfg_lock = crate::setup::lock_saved_config_at(&path)
+        .inspect_err(|e| log::warn!("cannot lock {} ({e:#})", path.display()))
+        .ok();
     let mut saved = crate::setup::load_saved_config_at(&path);
     let key = crate::setup::effort_memory_key(
         &config.provider_id,
@@ -383,7 +385,9 @@ fn commit_parts(config: &mut Config, home: &Path, parts: &Parts) {
         config.model.as_deref().unwrap_or_default(),
     );
     saved.remember_parts(&key, parts);
-    let _ = crate::setup::save_saved_config_at(&path, &saved);
+    if let Err(e) = crate::setup::save_saved_config_at(&path, &saved) {
+        log::warn!("cannot save {} ({e:#})", path.display());
+    }
 }
 
 fn composite_name(
