@@ -483,7 +483,7 @@ fn inline_media_attachment_is_priced_per_block_not_per_base64_byte() {
         ],
     };
     let core = crate::agent_compact::estimate_message_tokens(&msg);
-    let cap = crate::compact::image_block_tokens("application/pdf", 10_700_000);
+    let cap = crate::compact::image_block_tokens(10_700_000);
     assert!(
         core <= cap + 16,
         "core estimate {core} must be the per-block price, got base64/4"

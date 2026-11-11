@@ -1007,22 +1007,13 @@ impl Agent {
                         .any(|b| matches!(b, ContentBlock::Text { text: seen } if seen == text))
             });
         if !text.is_empty() && !already_recorded {
-            let mut content = Vec::new();
-            if !thinking.is_empty() {
-                content.push(thinking_block(
-                    thinking.to_string(),
-                    &None,
-                    self.provider.model_id(),
-                ));
-            }
-            content.push(ContentBlock::Text {
-                text: text.to_string(),
-            });
-            self.messages.push(Message {
-                role: Role::Assistant,
-                injected: false,
-                content,
-            });
+            salvage_partial_text(
+                &mut self.messages,
+                thinking.to_string(),
+                text.to_string(),
+                &None,
+                self.provider.model_id(),
+            );
         }
     }
 

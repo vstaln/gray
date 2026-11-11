@@ -119,7 +119,12 @@ impl Widget {
                         if let Some(argv) = gate.argv() {
                             if resolved_fresh || last_spawn.elapsed() >= interval {
                                 last_spawn = Instant::now();
-                                let snapshot = spawn_widget(argv, &cwd).await.unwrap_or_default();
+                                let snapshot =
+                                    spawn_widget(argv, &cwd).await.unwrap_or_else(|e| Snapshot {
+                                        version: 1,
+                                        text: format!("widget error: {e:#}"),
+                                        ..Default::default()
+                                    });
                                 active = !snapshot.text.is_empty();
                                 if tx.try_send(snapshot).is_err()
                                     && flag.load(std::sync::atomic::Ordering::Relaxed)

@@ -193,23 +193,7 @@ impl StreamingMarkdownRenderer {
 
         self.output = full_output;
 
-        let (extra_links, post_scan_next_id) = crate::url_scan::detect_plain_urls(
-            &self.output.lines,
-            &self.output.hyperlinks,
-            full_next_link_id,
-        );
-        self.output.hyperlinks.extend(extra_links);
-        let (file_links, post_scan_next_id) = crate::url_scan::detect_file_paths(
-            &self.output.lines,
-            &self.output.hyperlinks,
-            post_scan_next_id,
-        );
-        self.output.hyperlinks.extend(file_links);
-
-        self.output
-            .hyperlinks
-            .sort_by_key(|h| (h.line_index, h.column_range.start));
-        crate::url_scan::apply_link_styling(&mut self.output.lines, &self.output.hyperlinks);
+        let post_scan_next_id = crate::url_scan::attach_links(&mut self.output, full_next_link_id);
 
         self.frozen = FrozenState {
             lines_len: self.output.lines.len(),

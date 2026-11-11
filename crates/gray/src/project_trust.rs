@@ -26,21 +26,7 @@ pub fn trusted(home: &Path) -> Vec<PathBuf> {
 
 #[must_use]
 pub fn is_trusted(home: &Path, dir: &Path) -> bool {
-    #[cfg(test)]
-    if ASSUME_TRUSTED.with(std::cell::Cell::get) {
-        return true;
-    }
     trusted(home).contains(&project_root(dir))
-}
-
-#[cfg(test)]
-thread_local! {
-    static ASSUME_TRUSTED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-}
-
-#[cfg(test)]
-pub fn assume_trusted_for_test() {
-    ASSUME_TRUSTED.with(|c| c.set(true));
 }
 
 pub fn trust(home: &Path, dir: &Path) -> io::Result<PathBuf> {

@@ -548,28 +548,35 @@ impl SavedLists {
     }
 }
 
+pub(crate) fn cached_models(
+    lists: Option<&SavedLists>,
+    saved: &SavedConfig,
+    list_key: &str,
+    base_url: &str,
+) -> Vec<(String, String)> {
+    let load = |key: &str| match lists {
+        Some(l) => l.models(saved, key, base_url),
+        None => saved_models_for(key, base_url),
+    };
+    let mut models = load(list_key);
+    if models.is_empty() {
+        let alt = normalize_custom_base_url(base_url);
+        if alt != list_key {
+            models = load(&alt);
+        }
+    }
+    models
+}
+
 fn models_for<'a>(
     p: &PaneProvider,
     cache: &'a mut HashMap<String, Vec<(String, String)>>,
     lists: Option<&SavedLists>,
     saved: &SavedConfig,
 ) -> &'a [(String, String)] {
-    let load = |key: &str| match lists {
-        Some(l) => l.models(saved, key, &p.item.base_url),
-        None => saved_models_for(key, &p.item.base_url),
-    };
     cache
         .entry(p.list_key.clone())
-        .or_insert_with(|| {
-            let mut models = load(&p.list_key);
-            if models.is_empty() {
-                let alt = normalize_custom_base_url(&p.item.base_url);
-                if alt != p.list_key {
-                    models = load(&alt);
-                }
-            }
-            models
-        })
+        .or_insert_with(|| cached_models(lists, saved, &p.list_key, &p.item.base_url))
         .as_slice()
 }
 
@@ -700,7 +707,7 @@ fn fast_wire(model: &str, effort: Option<&str>, models: &[(String, String)]) -> 
     }
 }
 
-fn model_label<'a>(id: &'a str, name: &'a str) -> &'a str {
+pub(crate) fn model_label<'a>(id: &'a str, name: &'a str) -> &'a str {
     if name.is_empty() { id } else { name }
 }
 

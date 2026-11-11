@@ -11,7 +11,7 @@ use crate::profile::{PluginEntry, load_entries};
 use crate::{HostHandler, Manifest, Plugin, PluginHookAdapter, SidecarPlugin, merge_manifests};
 
 fn is_live_plugin(p: &dyn Plugin) -> bool {
-    p.manifest().protocol.as_deref() == Some("1.3")
+    p.manifest().protocol.as_deref() == Some(crate::DYNAMIC_PROTOCOL)
 }
 
 pub fn dynamic_plugins(plugins: &[Arc<dyn Plugin>]) -> Vec<Arc<dyn Plugin>> {

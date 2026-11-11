@@ -290,8 +290,6 @@ impl TextArea {
 
         if width < target_col {
             byte_pos = line_end;
-
-            if byte_pos > line_start {}
         }
         let mut new_pos = self.clamp_to_boundary(byte_pos);
 

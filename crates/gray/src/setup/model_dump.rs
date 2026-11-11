@@ -13,15 +13,14 @@ use serde_json::{Value, json};
 
 use crate::config::Config;
 
-use super::catalog::{
-    ConnectAuth, load_saved_config_at, normalize_custom_base_url, saved_config_path,
-};
+use super::catalog::{ConnectAuth, load_saved_config_at, saved_config_path};
 use super::model_modal::{
     RECOMMENDED_HEAD, composites_first, fetch_models_live, head_first, is_composite_id,
-    recent_head_for, recent_prefix_len, row_levels, saved_models_for,
+    recent_head_for, recent_prefix_len, row_levels,
 };
 use super::model_panes::{
-    PaneProvider, Place, SavedLists, build_rail, place, provider_is_active, scoped_config,
+    PaneProvider, Place, SavedLists, build_rail, cached_models, place, provider_is_active,
+    scoped_config,
 };
 use super::variants::Parts;
 
@@ -87,25 +86,6 @@ fn env_key(
             .get(&p.item.id)
             .and_then(|d| d.env.clone().map(|(_, v)| v))
     })
-}
-
-fn load_cached(
-    lists: Option<&SavedLists>,
-    saved: &super::catalog::SavedConfig,
-    p: &PaneProvider,
-) -> Vec<(String, String)> {
-    let load = |key: &str| match lists {
-        Some(l) => l.models(saved, key, &p.item.base_url),
-        None => saved_models_for(key, &p.item.base_url),
-    };
-    let mut models = load(&p.list_key);
-    if models.is_empty() {
-        let alt = normalize_custom_base_url(&p.item.base_url);
-        if alt != p.list_key {
-            models = load(&alt);
-        }
-    }
-    models
 }
 
 /// The picker's row order for one provider, exactly as `model_picker_loop`
@@ -196,7 +176,12 @@ fn build_model_catalog(config: &Config, mode: DumpModels) -> Value {
 
     let mut models_of: HashMap<String, Vec<(String, String)>> = usable
         .iter()
-        .map(|p| (p.item.id.clone(), load_cached(lists.as_ref(), &saved, p)))
+        .map(|p| {
+            (
+                p.item.id.clone(),
+                cached_models(lists.as_ref(), &saved, &p.list_key, &p.item.base_url),
+            )
+        })
         .collect();
 
     let fetching: Vec<&&PaneProvider> = usable
@@ -355,7 +340,7 @@ pub fn select_cli_provider(
         .map(load_saved_config_at)
         .unwrap_or_default();
     let lists = SavedLists::load();
-    let models = load_cached(lists.as_ref(), &saved, p);
+    let models = cached_models(lists.as_ref(), &saved, &p.list_key, &p.item.base_url);
 
     if config.model.is_none() {
         config.model = models

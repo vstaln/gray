@@ -226,20 +226,6 @@ pub fn init_from_saved_config() -> bool {
     custom
 }
 
-pub fn set_status(key: &str, text: Option<&str>) {
-    let Ok(mut m) = PLUGIN_STATUS.lock() else {
-        return;
-    };
-    let line = text.map(one_line).filter(|t| !t.is_empty());
-    let changed = match line {
-        Some(t) => m.insert(key.to_string(), t.clone()) != Some(t),
-        None => m.remove(key).is_some(),
-    };
-    if changed {
-        bump();
-    }
-}
-
 pub fn status(key: &str) -> Option<String> {
     PLUGIN_STATUS.lock().ok()?.get(key).cloned()
 }

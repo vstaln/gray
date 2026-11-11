@@ -278,27 +278,30 @@ pub(super) fn background_layer(bg: &str) -> Div {
     )
 }
 
+pub(super) const BACKGROUNDS: &[(&str, &str)] = &[
+    ("none", "None"),
+    ("andromeda", "Andromeda"),
+    ("bluemarble", "Blue Marble"),
+];
+
 pub(super) fn bg_rows(cx: &mut Context<GrayApp>, app: &GrayApp) -> Vec<AnyElement> {
     let cur = app.store.state.setting("background", "none");
-    [
-        ("none", "None"),
-        ("andromeda", "Andromeda"),
-        ("bluemarble", "Blue Marble"),
-    ]
-    .into_iter()
-    .map(|(id, label)| {
-        let id = id.to_string();
-        Button::new(SharedString::from(format!("bg-{}", id)))
-            .small()
-            .label(label)
-            .when(cur == id, |b| b.primary())
-            .on_click(cx.listener(move |this, _, window, cx| {
-                this.run(Cmd::SetBackground(id.clone()), window, cx);
-                this.settings_open = true;
-            }))
-            .into_any_element()
-    })
-    .collect()
+    BACKGROUNDS
+        .iter()
+        .copied()
+        .map(|(id, label)| {
+            let id = id.to_string();
+            Button::new(SharedString::from(format!("bg-{}", id)))
+                .small()
+                .label(label)
+                .when(cur == id, |b| b.primary())
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.run(Cmd::SetBackground(id.clone()), window, cx);
+                    this.settings_open = true;
+                }))
+                .into_any_element()
+        })
+        .collect()
 }
 
 /// One-line preview of `text` around the first case-insensitive hit of `q`.

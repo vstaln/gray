@@ -70,17 +70,7 @@ pub fn effective_compact_ceiling(config: &crate::Config) -> usize {
 }
 
 pub fn estimate_tokens(msg: &Message) -> usize {
-    if msg.content.iter().any(|block| {
-        matches!(
-            block,
-            gray_core::message::ContentBlock::Image { .. }
-                | gray_core::message::ContentBlock::Media { .. }
-        )
-    }) {
-        gray_core::agent::estimate_message_tokens(msg)
-    } else {
-        msg.context_text_len().div_ceil(4)
-    }
+    gray_core::agent::estimate_message_tokens(msg)
 }
 
 pub fn estimate_context_tokens(messages: &[Message], last: Option<Usage>) -> usize {
@@ -93,14 +83,15 @@ pub fn estimate_context_tokens(messages: &[Message], last: Option<Usage>) -> usi
 }
 
 pub fn is_context_overflow_error(err: &CoreError) -> bool {
-    if let CoreError::Provider(msg) = err {
-        let lower = msg.to_lowercase();
-        lower.contains("context_length")
-            || lower.contains("context window")
-            || lower.contains("context length")
-            || lower.contains("max_tokens")
-            || gray_core::overflow::is_context_overflow_message(msg)
-    } else {
-        false
+    match err.class() {
+        CoreError::ContextOverflow(_) => true,
+        CoreError::Provider(msg) => {
+            let lower = msg.to_lowercase();
+            lower.contains("context_length")
+                || lower.contains("context window")
+                || lower.contains("context length")
+                || gray_core::overflow::is_context_overflow_message(msg)
+        }
+        _ => false,
     }
 }

@@ -388,15 +388,6 @@ pub(crate) fn thinking_paint_text(fragment: &str, mid_line: bool) -> Option<&str
     (!rest.trim().is_empty()).then_some(rest)
 }
 
-pub(crate) fn thinking_replay_lines(text: &str) -> Vec<Line<'static>> {
-    if text.trim().is_empty() {
-        return Vec::new();
-    }
-    text.lines()
-        .map(|l| Line::from(vec![Span::styled(l.to_string(), thinking_style())]))
-        .collect()
-}
-
 pub(crate) fn format_user_prompt_lines(
     text: &str,
     attached: &[std::path::PathBuf],

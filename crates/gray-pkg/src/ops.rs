@@ -590,6 +590,15 @@ async fn update_inner(target: &str, check: bool) -> anyhow::Result<Vec<UpdateRow
     let mut out = Vec::new();
     for name in &names {
         let installed = &lock.plugins[name];
+        if installed.ecosystem == "url" {
+            out.push(UpdateRow::new(
+                name,
+                UpdateAction::Skipped(
+                    "installed from a URL — reinstall the same URL to refresh".into(),
+                ),
+            ));
+            continue;
+        }
         if is_registered_executable(installed) {
             out.push(registered_exe_row(name, installed, check).await);
             continue;

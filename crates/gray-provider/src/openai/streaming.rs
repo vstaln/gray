@@ -21,7 +21,6 @@ pub(super) enum StreamState {
         stream_attempt: usize,
 
         tools_by_call_id: BTreeMap<String, (usize, String, String)>,
-        index_to_call_id: BTreeMap<usize, String>,
     },
     Streaming {
         event_stream: BoxedEventStream,
@@ -43,8 +42,6 @@ pub(super) enum StreamState {
         event_stream: BoxedEventStream,
 
         tools_by_call_id: BTreeMap<String, (usize, String, String)>,
-
-        index_to_call_id: BTreeMap<usize, String>,
         last_usage: Option<Usage>,
         pending_events: VecDeque<StreamEvent>,
         completed: bool,
@@ -123,7 +120,6 @@ pub(super) fn emit_tool_calls_and_completion(
 
 pub(super) fn emit_responses_tool_calls_and_completion(
     tools_by_call_id: &mut BTreeMap<String, (usize, String, String)>,
-    index_to_call_id: &mut BTreeMap<usize, String>,
     usage: Option<Usage>,
     pending_events: &mut VecDeque<StreamEvent>,
 ) -> Result<(), ProviderError> {
@@ -131,7 +127,6 @@ pub(super) fn emit_responses_tool_calls_and_completion(
     for (call_id, (idx, name, args)) in std::mem::take(tools_by_call_id) {
         ordered.insert(idx, (call_id, name, args));
     }
-    index_to_call_id.clear();
     for (idx, (call_id, name, args)) in ordered {
         if name.is_empty() && args.trim().is_empty() {
             log::debug!(target: "gray_provider", "skipping ghost Responses tool-call fragment at index {idx} (no name, no args)");
@@ -164,18 +159,11 @@ pub(super) fn emit_responses_tool_calls_and_completion(
 
 pub(super) type ResponsesToolsByCallId = BTreeMap<String, (usize, String, String)>;
 
-pub(super) type ResponsesIndexToCallId = BTreeMap<usize, String>;
-
 pub(super) fn resume_body_and_tool_prefix(
     mut body: ResponsesRequest,
     tools_by_call_id: ResponsesToolsByCallId,
-    index_to_call_id: ResponsesIndexToCallId,
     last_response_id: Option<String>,
-) -> (
-    ResponsesRequest,
-    ResponsesToolsByCallId,
-    ResponsesIndexToCallId,
-) {
+) -> (ResponsesRequest, ResponsesToolsByCallId) {
     let has_reasoning = body.reasoning.is_some()
         || body
             .include
@@ -184,9 +172,9 @@ pub(super) fn resume_body_and_tool_prefix(
     let continuing = last_response_id.is_some() && !has_reasoning;
     body.previous_response_id = if continuing { last_response_id } else { None };
     if continuing {
-        (body, tools_by_call_id, index_to_call_id)
+        (body, tools_by_call_id)
     } else {
-        (body, BTreeMap::new(), BTreeMap::new())
+        (body, BTreeMap::new())
     }
 }
 
@@ -327,7 +315,6 @@ pub(super) fn stream_unfold_step(
                     retry_after,
                     stream_attempt,
                     tools_by_call_id,
-                    index_to_call_id,
                 } => {
                     if attempt > 1 {
                         tokio::time::sleep(backoff_delay(
@@ -361,7 +348,6 @@ pub(super) fn stream_unfold_step(
                             state = StreamState::ResponsesStreaming {
                                 event_stream,
                                 tools_by_call_id,
-                                index_to_call_id,
                                 last_usage: None,
                                 pending_events: VecDeque::new(),
                                 completed: false,
@@ -394,7 +380,6 @@ pub(super) fn stream_unfold_step(
                                     retry_after: floor,
                                     stream_attempt,
                                     tools_by_call_id,
-                                    index_to_call_id,
                                 };
                                 continue;
                             }
@@ -419,7 +404,6 @@ pub(super) fn stream_unfold_step(
                                     stream_attempt,
 
                                     tools_by_call_id: BTreeMap::new(),
-                                    index_to_call_id: BTreeMap::new(),
                                 };
                                 continue;
                             }
@@ -445,7 +429,6 @@ pub(super) fn stream_unfold_step(
                                     retry_after: floor,
                                     stream_attempt,
                                     tools_by_call_id,
-                                    index_to_call_id,
                                 };
                                 continue;
                             }
@@ -462,7 +445,6 @@ pub(super) fn stream_unfold_step(
                                     retry_after: retry_floor(&err, floor, attempt),
                                     stream_attempt,
                                     tools_by_call_id,
-                                    index_to_call_id,
                                 };
 
                                 if attempt == 1 {
@@ -818,7 +800,6 @@ pub(super) fn stream_unfold_step(
                 StreamState::ResponsesStreaming {
                     mut event_stream,
                     mut tools_by_call_id,
-                    mut index_to_call_id,
                     mut last_usage,
                     mut pending_events,
                     mut completed,
@@ -839,7 +820,6 @@ pub(super) fn stream_unfold_step(
                             StreamState::ResponsesStreaming {
                                 event_stream,
                                 tools_by_call_id,
-                                index_to_call_id,
                                 last_usage,
                                 pending_events,
                                 completed,
@@ -867,7 +847,6 @@ pub(super) fn stream_unfold_step(
                                 state = StreamState::ResponsesStreaming {
                                     event_stream,
                                     tools_by_call_id,
-                                    index_to_call_id,
                                     last_usage,
                                     pending_events,
                                     completed,
@@ -982,7 +961,6 @@ pub(super) fn stream_unfold_step(
                                                     call_id.clone(),
                                                     (idx, name.clone(), String::new()),
                                                 );
-                                                index_to_call_id.insert(idx, call_id.clone());
                                                 if item_id != call_id && !item_id.is_empty() {
                                                     tools_by_call_id.insert(
                                                         item_id.clone(),
@@ -1007,7 +985,6 @@ pub(super) fn stream_unfold_step(
                                                 item_id.to_string(),
                                                 (idx, String::new(), delta.to_string()),
                                             );
-                                            index_to_call_id.insert(idx, item_id.to_string());
                                         }
                                     }
                                 }
@@ -1041,53 +1018,12 @@ pub(super) fn stream_unfold_step(
                                             .get("response")
                                             .and_then(|r| r.get("usage"))
                                             .or_else(|| value.get("usage"));
-                                        if let Some(uval) = usage_val {
-                                            if let Ok(u) = serde_json::from_value::<OpenAiUsageChunk>(
+                                        if let Some(uval) = usage_val
+                                            && let Ok(u) = serde_json::from_value::<OpenAiUsageChunk>(
                                                 uval.clone(),
-                                            ) {
-                                                last_usage = Some(map_usage(&u));
-                                            } else {
-                                                let input = uval
-                                                    .get("input_tokens")
-                                                    .and_then(|v| v.as_u64())
-                                                    .unwrap_or(0)
-                                                    as usize;
-                                                let output = uval
-                                                    .get("output_tokens")
-                                                    .and_then(|v| v.as_u64())
-                                                    .unwrap_or(0)
-                                                    as usize;
-                                                let cached = uval
-                                                    .get("input_tokens_details")
-                                                    .and_then(|d| d.get("cached_tokens"))
-                                                    .and_then(|v| v.as_u64())
-                                                    .unwrap_or(0)
-                                                    as usize;
-                                                let reasoning = uval
-                                                    .get("output_tokens_details")
-                                                    .and_then(|d| d.get("reasoning_tokens"))
-                                                    .and_then(|v| v.as_u64())
-                                                    .unwrap_or(0)
-                                                    as usize;
-                                                let total = uval
-                                                    .get("total_tokens")
-                                                    .and_then(|v| v.as_u64())
-                                                    .map(|v| v as usize)
-                                                    .unwrap_or(input + output);
-                                                let mut usage = Usage {
-                                                    input_tokens: input,
-                                                    output_tokens: output,
-                                                    reasoning_tokens: reasoning,
-                                                    cached_tokens: cached,
-                                                    non_cached_input_tokens: input
-                                                        .saturating_sub(cached),
-                                                    cache_read_input_tokens: cached,
-                                                    cache_write_input_tokens: 0,
-                                                    total_tokens: total,
-                                                };
-                                                usage.normalize();
-                                                last_usage = Some(usage);
-                                            }
+                                            )
+                                        {
+                                            last_usage = Some(map_usage(&u));
                                         }
                                         let mut dedup: BTreeMap<usize, (String, String, String)> =
                                             BTreeMap::new();
@@ -1113,13 +1049,8 @@ pub(super) fn stream_unfold_step(
                                             tools_by_call_id
                                                 .insert(call_id.clone(), (idx, name, args));
                                         }
-                                        index_to_call_id.clear();
-                                        for (call_id, (idx, _, _)) in &tools_by_call_id {
-                                            index_to_call_id.insert(*idx, call_id.clone());
-                                        }
                                         if let Err(err) = emit_responses_tool_calls_and_completion(
                                             &mut tools_by_call_id,
-                                            &mut index_to_call_id,
                                             last_usage,
                                             &mut pending_events,
                                         ) {
@@ -1147,7 +1078,6 @@ pub(super) fn stream_unfold_step(
                                             usage: last_usage,
                                         });
                                         tools_by_call_id.clear();
-                                        index_to_call_id.clear();
                                         completed = true;
                                     } else {
                                         return Some((
@@ -1235,7 +1165,6 @@ pub(super) fn stream_unfold_step(
                             state = StreamState::ResponsesStreaming {
                                 event_stream,
                                 tools_by_call_id,
-                                index_to_call_id,
                                 last_usage,
                                 pending_events,
                                 completed,
@@ -1263,13 +1192,11 @@ pub(super) fn stream_unfold_step(
                                     None,
                                 ))
                                 .await;
-                                let (resumed, resume_tools, resume_index) =
-                                    resume_body_and_tool_prefix(
-                                        body,
-                                        tools_by_call_id,
-                                        index_to_call_id,
-                                        last_response_id,
-                                    );
+                                let (resumed, resume_tools) = resume_body_and_tool_prefix(
+                                    body,
+                                    tools_by_call_id,
+                                    last_response_id,
+                                );
                                 state = StreamState::ResponsesInit {
                                     client,
                                     url,
@@ -1279,7 +1206,6 @@ pub(super) fn stream_unfold_step(
                                     retry_after: None,
                                     stream_attempt: stream_attempt + 1,
                                     tools_by_call_id: resume_tools,
-                                    index_to_call_id: resume_index,
                                 };
                                 continue;
                             }
@@ -1307,7 +1233,6 @@ pub(super) fn stream_unfold_step(
                                 state = StreamState::ResponsesStreaming {
                                     event_stream,
                                     tools_by_call_id,
-                                    index_to_call_id,
                                     last_usage,
                                     pending_events,
                                     completed,

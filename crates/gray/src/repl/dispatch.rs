@@ -179,40 +179,12 @@ pub(crate) async fn dispatch_command(
             *pending_history = std::sync::Arc::new(Vec::new());
             *session_totals = SessionTotals::default();
             *session_state = None;
-            let mut short_id = String::new();
-            let mut new_sid: Option<SessionId> = None;
-            if let Some(root) = default_root() {
-                let store = JsonlSessionStore::new(root);
-                let session_id = store.fresh_id().await;
-                let timestamp = gray_core::time::now_millis();
-                let meta = SessionMeta::new(
-                    session_id.clone(),
-                    timestamp,
-                    cwd.to_path_buf(),
-                    config.model.clone().unwrap_or_else(|| "unset".into()),
-                )
-                .with_origin(crate::session_store::session_origin_from_env());
-                if let Err(e) = store.create(meta).await {
-                    log::warn!(target: "gray_session", "session create failed: {e}");
-                }
-
-                let open_guard = match store.acquire_open(&session_id).await {
-                    Ok(guard) => Some(guard),
-                    Err(e) => {
-                        log::warn!(target: "gray_session", "session open-lock failed: {e}");
-                        None
-                    }
-                };
-                short_id = crate::resume::short_id(&session_id);
-                new_sid = Some(session_id.clone());
-                super::session::export_session_env(session_id.as_str());
-                *session_state = Some(SessionState {
-                    full_save_pending: false,
-                    store,
-                    session_id,
-                    _open_guard: open_guard,
-                });
-            }
+            super::session::ensure_session_state(session_state, config, cwd).await;
+            let short_id = session_state
+                .as_ref()
+                .map(|s| crate::resume::short_id(&s.session_id))
+                .unwrap_or_default();
+            let new_sid = session_state.as_ref().map(|s| s.session_id.clone());
 
             *agent = match build_agent(config, cwd, new_sid.as_ref().map(|s| s.as_str())).await {
                 Ok(built) => Some(built),
@@ -334,7 +306,7 @@ pub(crate) async fn dispatch_command(
             if arg.as_deref().map(str::trim) == Some("everything") {
                 // Provider CLIs + plugins + gray: the qol plugin owns the
                 // update-everything flow now.
-                *pending_command = Some(ReplCommand::Plugin("/qol update".to_string()));
+                *pending_command = Some(ReplCommand::Unknown("/qol update".to_string()));
             } else {
                 super::maintenance::handle_update(tui, arg).await;
             }

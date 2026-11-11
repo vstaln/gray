@@ -262,7 +262,7 @@ pub(crate) fn spawn_key_watcher_with_typing(
                     use crate::composer::input::keys::{KeyOutcome, dispatch_bindings};
                     match dispatch_bindings(&mut t, &ev, &bindings) {
                         KeyOutcome::Edited => {
-                            sync_matches(&mut t, &cwd_for_watcher);
+                            crate::composer::input::sync_completion(&mut t, &cwd_for_watcher);
                             let _ = t.draw();
                         }
                         KeyOutcome::Ignored | KeyOutcome::Exit => {}
@@ -367,15 +367,11 @@ pub(crate) fn spawn_key_watcher_with_typing(
                     }
                     t.search = None;
                     t.handle_paste(data);
-                    sync_matches(&mut t, &cwd_for_watcher);
+                    crate::composer::input::sync_completion(&mut t, &cwd_for_watcher);
                     let _ = t.draw();
                 }
                 _ => {}
             }
         }
     })
-}
-
-fn sync_matches(t: &mut crate::composer::Tui, cwd: &std::path::Path) {
-    crate::composer::input::sync_completion(t, cwd);
 }

@@ -31,22 +31,6 @@ pub(crate) fn desired_viewport_h(
         .clamp(MIN_VIEWPORT_H, max_h)
 }
 
-pub(crate) fn latched_viewport_floor(
-    status_h: u16,
-    queued_h: u16,
-    live_h: u16,
-    box_rows: u16,
-    attach_h: u16,
-    footer_h: u16,
-    max_h: u16,
-) -> u16 {
-    let with_dock = status_h + queued_h + live_h + box_rows + attach_h + footer_h;
-    let no_status = queued_h + live_h + box_rows + attach_h + footer_h;
-
-    let live_overrun = live_h + box_rows + attach_h + footer_h;
-    with_dock.max(no_status).max(live_overrun).min(max_h)
-}
-
 pub(crate) fn attachment_cells(attachments: &[std::path::PathBuf], text: &str) -> Vec<InputCell> {
     let t = crate::theme::theme();
     let mut open = std::collections::HashMap::<String, usize>::new();
@@ -360,35 +344,12 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
         max_viewport_h,
     );
 
-    let floor = latched_viewport_floor(
-        status_h,
-        queued_est,
-        live_est + tail_est + widget_h + ask_est + 2 * ask_gap,
-        box_rows_est,
-        attach_h,
-        footer_h,
-        max_viewport_h,
-    );
-    let desired = desired.max(floor);
-    // A growing draft pushes the transcript up rather than covering its
-    // last rows: hiding "Conversation interrupted" behind extra input lines
-    // read as a blank gap. The cost lands on the rare shrink-without-send
-    // (freed rows sit below the footer until the next output); a send fills
-    // them with the echoed message. Sliding the band back down would need
-    // the pushed-off rows repainted, and repaint commits them to scrollback
-    // a second time (Terminal::set_viewport_height).
-    let overlay = 0;
-
     tui.begin_sync();
 
-    if let Err(e) = tui
-        .terminal
-        .set_viewport_height(desired, overlay, screen_size)
-    {
+    if let Err(e) = tui.terminal.set_viewport_height(desired, screen_size) {
         tui.end_sync();
         return Err(e.into());
     }
-    tui.viewport_h = desired;
 
     if !paint {
         tui.end_sync();

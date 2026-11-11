@@ -232,7 +232,7 @@ fn turn_retry_detail(e: &ProviderError, attempt: u8, already_shown: bool) -> Str
         e.to_string()
     };
     let mut detail = format!("{what} · retry {attempt}/{MAX_TURN_RETRIES}");
-    if attempt >= 2 && silent_stall(e) {
+    if attempt >= MAX_STREAM_STALL_RETRIES && silent_stall(e) {
         detail.push_str(
             " — provider is holding the request but sending nothing; try /model to another route",
         );
@@ -358,10 +358,7 @@ impl Agent {
         args: &serde_json::Value,
     ) -> Result<serde_json::Value, ToolOutput> {
         if !self.tools.iter().any(|t| t.name == name) {
-            let names: Vec<String> = self.tools.iter().map(|t| t.name.clone()).collect();
-            return Err(ToolOutput::error(crate::tool_out::unknown_tool(
-                name, &names,
-            )));
+            return Err(ToolOutput::error(crate::tool_out::unknown_tool(name)));
         }
         if !args.is_object() {
             let got = match args {
@@ -1218,10 +1215,12 @@ impl Agent {
             let overflow_retry =
                 stop_reason == StopReason::MaxTokens && !overflow_recovery_attempted;
             let sent = crate::agent_compact::est_tokens(&self.messages);
-            let reducible = sent.saturating_sub(
-                self.compact_keep
-                    .unwrap_or(crate::compact::RETAINED_MESSAGE_TOKEN_BUDGET),
-            );
+            let reducible = sent.saturating_sub(crate::agent_compact::retained_message_budget(
+                self.compact_keep,
+                self.context_window,
+                self.compact_reserve,
+                self.compact_ceiling,
+            ));
             if self.context_window.is_some_and(|w| {
                 crate::overflow::is_silent_overflow(&usage, stop_reason, w)
                     && reducible >= usage.input_tokens.saturating_sub(w)

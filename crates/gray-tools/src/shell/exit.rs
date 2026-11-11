@@ -35,11 +35,7 @@ pub fn exit_report(
     } else {
         None
     };
-    ExitReport {
-        effective,
-        label,
-        note,
-    }
+    ExitReport { label, note }
 }
 
 fn signal_name(sig: i32) -> String {
@@ -65,15 +61,16 @@ fn base_head(cmd: &str) -> &str {
     head.rsplit('/').next().unwrap_or(head)
 }
 
-const TAIL_CMDS: [&str; 8] = ["tail", "head", "grep", "tee", "sort", "wc", "less", "cat"];
+const MASKING_TAILS: [&str; 13] = [
+    "tail", "head", "grep", "tee", "sort", "wc", "less", "cat", "awk", "sed", "tr", "cut", "column",
+];
 
 pub fn masks_pipeline(command: &str) -> bool {
     let segs = split_pipeline(command);
     if segs.len() < 2 {
         return false;
     }
-    let last = base_head(&segs[segs.len() - 1]);
-    UNMASKABLE_TAILS.contains(&last) || TAIL_CMDS.contains(&last)
+    MASKING_TAILS.contains(&base_head(&segs[segs.len() - 1]))
 }
 
 fn masked_note(command: &str, stages: Option<&[i32]>) -> Option<String> {
@@ -87,7 +84,7 @@ fn masked_note(command: &str, stages: Option<&[i32]>) -> Option<String> {
         return None;
     }
     let last = base_head(&segs[segs.len() - 1]);
-    if !UNMASKABLE_TAILS.contains(&last) && !TAIL_CMDS.contains(&last) {
+    if !MASKING_TAILS.contains(&last) {
         return None;
     }
     if segs.len() > 2 {
@@ -100,7 +97,3 @@ fn masked_note(command: &str, stages: Option<&[i32]>) -> Option<String> {
         "`{last}` masks `{first}`'s exit; rerun `{first}` alone for its status"
     ))
 }
-
-const UNMASKABLE_TAILS: [&str; 9] = [
-    "head", "tail", "cat", "less", "awk", "sed", "tr", "cut", "column",
-];

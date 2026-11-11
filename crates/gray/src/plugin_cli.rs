@@ -80,20 +80,13 @@ fn validate_name(name: &str) -> anyhow::Result<()> {
 }
 
 pub(crate) fn enabled(home: &Path, name: &str, entry: &LockEntry) -> bool {
-    if !entry.enabled {
-        return false;
-    }
     let Ok(user) = LockFile::load(&gray_plugin::lock::lock_path(home)) else {
         return false;
     };
     let project = std::env::current_dir()
         .ok()
         .and_then(|cwd| LockFile::load(&gray_plugin::lock::project_lock_path(&cwd)).ok());
-    project
-        .as_ref()
-        .and_then(|lock| lock.plugins.get(name))
-        .or_else(|| user.plugins.get(name))
-        .is_none_or(|entry| entry.enabled)
+    enabled_in(&user, project.as_ref(), name, entry)
 }
 
 pub(crate) fn declared_subcommands(home: &Path, name: &str) -> Vec<String> {
@@ -243,7 +236,11 @@ async fn install_spec_gated(
     // Dependencies are installed without a cached manifest; adopt them now so
     // they start lazily like the plugin that pulled them in.
     for dep in &r.deps {
-        let _ = adopt_cli(home, dep, &home.join("plugins").join(dep)).await;
+        if let Err(e) = adopt_cli(home, dep, &home.join("plugins").join(dep)).await {
+            lines.push(format!(
+                "warning: could not set up `gray {dep}` forwarding: {e:#}"
+            ));
+        }
     }
 
     match adopt_cli(home, &r.name, &r.path).await {
@@ -286,10 +283,6 @@ pub async fn install_spec(home: &Path, spec: &str, force: bool, yes: bool) -> an
         println!("{line}");
     }
     Ok(())
-}
-
-fn catalog_names() -> String {
-    "background".to_string()
 }
 
 fn commands_path(home: &Path) -> PathBuf {
@@ -350,8 +343,7 @@ pub async fn install(home: &Path, name: &str) -> anyhow::Result<()> {
         return Ok(());
     }
     anyhow::bail!(
-        "Unknown plugin '{name}'. Catalog: {}. For a local native plugin, put gray-{name} on PATH or set GRAY_PLUGIN_PATH to its executable",
-        catalog_names()
+        "Unknown plugin '{name}'. For a local native plugin, put gray-{name} on PATH or set GRAY_PLUGIN_PATH to its executable"
     )
 }
 

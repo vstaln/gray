@@ -1,8 +1,5 @@
+use super::super::model_panes::model_label;
 use super::*;
-
-pub(super) fn row_name(m: &(String, String)) -> &str {
-    if m.1.is_empty() { &m.0 } else { &m.1 }
-}
 
 pub(super) fn put_line(
     frame: &mut ratatui::Frame,
@@ -148,7 +145,7 @@ pub(super) fn picker_row_line(
     let sel = |s: Style| {
         if selected { s.bg(t.accent) } else { s }
     };
-    let (id, name) = (m.0.as_str(), row_name(m));
+    let (id, name) = (m.0.as_str(), model_label(&m.0, &m.1));
 
     let mut spans = vec![
         Span::styled(
@@ -202,7 +199,13 @@ pub(super) fn picker_row_line(
                 suffix,
             ));
         }
-    } else if selected && name != id && v.models.iter().filter(|o| row_name(o) == name).count() > 1
+    } else if selected
+        && name != id
+        && v.models
+            .iter()
+            .filter(|o| model_label(&o.0, &o.1) == name)
+            .count()
+            > 1
     {
         let room = w.saturating_sub(used + 2);
         if room >= 8 {
@@ -637,7 +640,7 @@ pub(super) fn draw_picker(
     let longest = v
         .models
         .iter()
-        .map(|m| row_name(m).chars().count())
+        .map(|m| model_label(&m.0, &m.1).chars().count())
         .max()
         .unwrap_or(0);
     let inner_want = (2 + longest + ROW_TAIL).max(footer_floor_width()).max(24);

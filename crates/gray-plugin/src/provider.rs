@@ -202,7 +202,7 @@ impl fmt::Display for ProviderRpcError {
 
 impl std::error::Error for ProviderRpcError {}
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ProviderRefreshRequest {
     pub provider: String,
     pub auth_method: String,
@@ -210,18 +210,7 @@ pub struct ProviderRefreshRequest {
     pub credential: CredentialEnvelope,
 }
 
-impl fmt::Debug for ProviderRefreshRequest {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ProviderRefreshRequest")
-            .field("provider", &self.provider)
-            .field("auth_method", &self.auth_method)
-            .field("profile_binding", &self.profile_binding)
-            .field("credential", &self.credential)
-            .finish()
-    }
-}
-
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ProviderRevokeRequest {
     pub provider: String,
     pub auth_method: String,
@@ -229,18 +218,7 @@ pub struct ProviderRevokeRequest {
     pub credential: CredentialEnvelope,
 }
 
-impl fmt::Debug for ProviderRevokeRequest {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ProviderRevokeRequest")
-            .field("provider", &self.provider)
-            .field("auth_method", &self.auth_method)
-            .field("profile_binding", &self.profile_binding)
-            .field("credential", &self.credential)
-            .finish()
-    }
-}
-
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ProviderModelsRequest {
     pub provider: String,
     pub auth_method: String,
@@ -248,34 +226,13 @@ pub struct ProviderModelsRequest {
     pub credential: CredentialEnvelope,
 }
 
-impl fmt::Debug for ProviderModelsRequest {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ProviderModelsRequest")
-            .field("provider", &self.provider)
-            .field("auth_method", &self.auth_method)
-            .field("profile_binding", &self.profile_binding)
-            .field("credential", &self.credential)
-            .finish()
-    }
-}
-
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ProviderUsageRequest {
     pub provider: String,
     pub auth_method: String,
     #[serde(default)]
     pub profile_binding: String,
     pub credential: CredentialEnvelope,
-}
-
-impl fmt::Debug for ProviderUsageRequest {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ProviderUsageRequest")
-            .field("provider", &self.provider)
-            .field("auth_method", &self.auth_method)
-            .field("profile_binding", &self.profile_binding)
-            .finish()
-    }
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]

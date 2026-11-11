@@ -85,12 +85,16 @@ pub(crate) fn spec_lines(spec: &PanelSpec) -> Vec<Line<'static>> {
     out
 }
 
-pub(crate) fn spec_plain(spec: &PanelSpec) -> String {
-    spec_lines(spec)
+pub(crate) fn plain_lines(lines: &[Line<'static>]) -> String {
+    lines
         .iter()
         .map(|l| l.to_string())
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+pub(crate) fn spec_plain(spec: &PanelSpec) -> String {
+    plain_lines(&spec_lines(spec))
 }
 
 pub(crate) fn draw_pager(

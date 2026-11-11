@@ -151,6 +151,32 @@ fn status_text(row: &Row) -> String {
     }
 }
 
+fn toggle_row(rows: &mut [Row], ri: usize) -> (bool, Option<String>) {
+    let name = rows[ri].name.clone();
+    let now_on = !rows[ri].enabled;
+    match crate::plugin_cli::set_managed_enabled(&name, now_on) {
+        Ok(()) => {
+            crate::plugin_status::drop_boot();
+            rows[ri].enabled = now_on;
+            (
+                true,
+                Some(format!(
+                    "{name} {} (applies next session or /restart)",
+                    if now_on { "enabled" } else { "disabled" },
+                )),
+            )
+        }
+        Err(e) => (false, Some(format!("toggle {name} failed: {e}"))),
+    }
+}
+
+fn update_target(all: bool, rows: &[Row], filtered: &[usize], sel: usize) -> Option<String> {
+    if all {
+        return Some("all".to_string());
+    }
+    filtered.get(sel).map(|&ri| rows[ri].name.clone())
+}
+
 fn spawn_update(tx: Sender<(String, Result<Vec<String>, String>)>, target: String) {
     std::thread::spawn(move || {
         let out = tokio::runtime::Builder::new_current_thread()
@@ -526,8 +552,7 @@ pub(crate) fn run_plugins_manager(bg: Option<&BackgroundSnapshot>) -> anyhow::Re
                     KeyCode::Char('c') => return Ok(changed),
 
                     KeyCode::Char('u') if updating.is_none() => {
-                        if let Some(&ri) = filtered.get(sel) {
-                            let target = rows[ri].name.clone();
+                        if let Some(target) = update_target(false, &rows, &filtered, sel) {
                             updating = Some(target.clone());
                             spawn_update(upd_tx.clone(), target);
                         }
@@ -545,35 +570,18 @@ pub(crate) fn run_plugins_manager(bg: Option<&BackgroundSnapshot>) -> anyhow::Re
                             KeyCode::Esc | KeyCode::Enter | KeyCode::Backspace => detail = false,
                             KeyCode::Char(' ') => {
                                 if let Some(&ri) = filtered.get(sel) {
-                                    let name = rows[ri].name.clone();
-                                    let now_on = !rows[ri].enabled;
-                                    match crate::plugin_cli::set_managed_enabled(&name, now_on) {
-                                        Ok(()) => {
-                                            changed = true;
-                                            crate::plugin_status::drop_boot();
-                                            rows[ri].enabled = now_on;
-                                            op_msg = Some(format!(
-                                                "{name} {} (applies next session or /restart)",
-                                                if now_on { "enabled" } else { "disabled" },
-                                            ));
-                                        }
-                                        Err(e) => {
-                                            op_msg = Some(format!("toggle {name} failed: {e}"))
-                                        }
-                                    }
+                                    let (toggled, msg) = toggle_row(&mut rows, ri);
+                                    changed |= toggled;
+                                    op_msg = msg;
                                 }
                             }
                             KeyCode::Char('u') | KeyCode::Char('U') if updating.is_none() => {
-                                let target = if code == KeyCode::Char('U') {
-                                    "all".to_string()
-                                } else {
-                                    match filtered.get(sel) {
-                                        Some(&ri) => rows[ri].name.clone(),
-                                        None => continue,
-                                    }
-                                };
-                                updating = Some(target.clone());
-                                spawn_update(upd_tx.clone(), target);
+                                if let Some(target) =
+                                    update_target(code == KeyCode::Char('U'), &rows, &filtered, sel)
+                                {
+                                    updating = Some(target.clone());
+                                    spawn_update(upd_tx.clone(), target);
+                                }
                             }
                             _ => {}
                         }
@@ -598,20 +606,9 @@ pub(crate) fn run_plugins_manager(bg: Option<&BackgroundSnapshot>) -> anyhow::Re
                         }
                         KeyCode::Tab => {
                             if let Some(&ri) = filtered.get(sel) {
-                                let name = rows[ri].name.clone();
-                                let now_on = !rows[ri].enabled;
-                                match crate::plugin_cli::set_managed_enabled(&name, now_on) {
-                                    Ok(()) => {
-                                        changed = true;
-                                        crate::plugin_status::drop_boot();
-                                        rows[ri].enabled = now_on;
-                                        op_msg = Some(format!(
-                                            "{name} {} (applies next session or /restart)",
-                                            if now_on { "enabled" } else { "disabled" },
-                                        ));
-                                    }
-                                    Err(e) => op_msg = Some(format!("toggle {name} failed: {e}")),
-                                }
+                                let (toggled, msg) = toggle_row(&mut rows, ri);
+                                changed |= toggled;
+                                op_msg = msg;
                             }
                         }
                         KeyCode::PageUp | KeyCode::PageDown => {

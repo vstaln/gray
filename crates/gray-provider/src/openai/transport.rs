@@ -11,6 +11,21 @@ pub(super) fn send_stage_retryable(err: &reqwest::Error) -> bool {
     err.is_connect() || err.is_request()
 }
 
+pub(super) async fn send_with_retries(
+    label: &str,
+    mut send: impl FnMut() -> reqwest::RequestBuilder,
+) -> Result<reqwest::Response, reqwest::Error> {
+    for send_attempt in 1..=MAX_SEND_ATTEMPTS {
+        match send().send().await {
+            Err(err) if send_attempt < MAX_SEND_ATTEMPTS && send_stage_retryable(&err) => {
+                log::warn!(target: "gray_provider", "{label} failed before a response ({err}); retrying on a fresh connection {send_attempt}/{MAX_SEND_ATTEMPTS}");
+            }
+            result => return result,
+        }
+    }
+    unreachable!("send loop always yields a result")
+}
+
 #[allow(clippy::result_large_err)]
 pub(super) async fn send_json_once(
     client: &reqwest::Client,
@@ -20,8 +35,7 @@ pub(super) async fn send_json_once(
     attempt: usize,
     session_id: Option<&str>,
 ) -> Result<reqwest::Response, (ProviderError, Option<Duration>, u16)> {
-    let mut res_result = None;
-    for send_attempt in 1..=MAX_SEND_ATTEMPTS {
+    let res_result = send_with_retries("send", || {
         let base = if api_key.is_empty() {
             client.post(url.clone())
         } else {
@@ -36,18 +50,9 @@ pub(super) async fn send_json_once(
         })
         .into_iter()
         .fold(base, |b, (name, value)| b.header(name, value));
-        let req = base.header("Content-Type", "application/json").json(body);
-        match req.send().await {
-            Err(err) if send_attempt < MAX_SEND_ATTEMPTS && send_stage_retryable(&err) => {
-                log::warn!(target: "gray_provider", "send failed before a response ({err}); retrying on a fresh connection {send_attempt}/{MAX_SEND_ATTEMPTS}");
-            }
-            result => {
-                res_result = Some(result);
-                break;
-            }
-        }
-    }
-    let res_result = res_result.expect("send loop always yields a result");
+        base.header("Content-Type", "application/json").json(body)
+    })
+    .await;
     log::debug!(target: "gray_provider", "request sent to {url} (attempt {attempt})");
     match res_result {
         Ok(res) => {
@@ -67,7 +72,10 @@ pub(super) async fn send_json_once(
                 .or_else(|| res.headers().get("request-id"))
                 .and_then(|v| v.to_str().ok())
                 .map(|s| s.to_string());
-            let text = res.text().await.unwrap_or_default();
+            let text = res
+                .text()
+                .await
+                .unwrap_or_else(|e| format!("(failed to read the error body: {e})"));
 
             let snippet: String = text.chars().take(4000).collect();
             Err((
@@ -76,17 +84,7 @@ pub(super) async fn send_json_once(
                 status.as_u16(),
             ))
         }
-        Err(e) => Err((
-            if e.is_connect() {
-                ProviderError::Connection(friendly_send_error(&e))
-            } else if e.is_timeout() {
-                ProviderError::Timeout(friendly_send_error(&e))
-            } else {
-                ProviderError::Stream(e.to_string())
-            },
-            None,
-            0,
-        )),
+        Err(e) => Err((map_send_error(e), None, 0)),
     }
 }
 

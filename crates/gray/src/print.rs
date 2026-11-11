@@ -219,10 +219,6 @@ pub fn render_event_with_context<W: Write>(
     }
 }
 
-pub async fn run_print_mode(config: &Config, prompt: &str) -> anyhow::Result<()> {
-    run_print_mode_with_session(config, prompt, None, false).await
-}
-
 pub async fn run_print_mode_with_session(
     config: &Config,
     prompt: &str,
@@ -1109,10 +1105,8 @@ async fn run_print_inner(
         )
     });
 
-    if let Some(max) = config.max_wall_secs
-        && crate::turn_caps::process_start().elapsed().as_secs() >= max
-    {
-        anyhow::bail!("max wall time {max}s reached — stopping (--max-wall-secs SECS)");
+    if let Some(cap) = crate::turn_caps::check_caps(config, 0, 0.0) {
+        anyhow::bail!("{cap}");
     }
     let mut agent = build_agent(config, &cwd, Some(session_id.as_str())).await?;
     log::debug!(target: "gray_timing", "spawn agent_built elapsed_ms={}", crate::turn_caps::process_start().elapsed().as_millis());
@@ -1409,17 +1403,7 @@ async fn run_print_inner(
     };
     match &result {
         Ok(()) => crate::failed_turn::clear_checkpoint(&session_id, &cwd, &prompt_hash),
-        Err(e) => {
-            let failure = PrintFailure::of(e);
-            crate::failed_turn::record_failure(
-                &session_id,
-                &cwd,
-                &prompt_text,
-                &prompt_hash,
-                failure.code,
-                failure.exit,
-            );
-        }
+        Err(_) => crate::failed_turn::record_failure(&session_id, &cwd, &prompt_hash),
     }
     result
 }

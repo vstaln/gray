@@ -654,15 +654,11 @@ impl GrayApp {
             ));
         }
         items.push((k("Code viewer"), k("View"), Cmd::ToggleViewer));
-        for b in [
-            ("none", "None"),
-            ("andromeda", "Andromeda"),
-            ("bluemarble", "Blue Marble"),
-        ] {
+        for &(id, label) in BACKGROUNDS {
             items.push((
-                format!("Background: {}", b.1),
+                format!("Background: {label}"),
                 k("Theme"),
-                Cmd::SetBackground(b.0.into()),
+                Cmd::SetBackground(id.into()),
             ));
         }
         if let Some(root) = self.work_root() {

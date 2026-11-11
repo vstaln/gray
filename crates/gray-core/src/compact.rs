@@ -1,25 +1,12 @@
 use crate::agent::Agent;
 use crate::message::{ContentBlock, Message, Role};
 
-fn message_tokens(m: &Message) -> usize {
-    if m.content
-        .iter()
-        .any(|b| matches!(b, ContentBlock::Image { .. } | ContentBlock::Media { .. }))
-    {
-        m.content.iter().map(block_tokens).sum()
-    } else {
-        crate::agent_compact::est_tokens(std::slice::from_ref(m))
-    }
-}
-
 pub(crate) fn block_tokens(b: &ContentBlock) -> usize {
     match b {
         ContentBlock::Text { text } => text.len() / 4,
-        ContentBlock::Image { media_type, data } => image_block_tokens(media_type, data.len()),
+        ContentBlock::Image { data, .. } => image_block_tokens(data.len()),
 
-        ContentBlock::Media {
-            media_type, data, ..
-        } => image_block_tokens(media_type, data.len()),
+        ContentBlock::Media { data, .. } => image_block_tokens(data.len()),
         ContentBlock::ToolResult { content, .. } => content.len() / 4,
         ContentBlock::StructuredInput {
             protocol,
@@ -39,7 +26,7 @@ pub(crate) fn block_tokens(b: &ContentBlock) -> usize {
     }
 }
 
-pub(crate) fn image_block_tokens(_media_type: &str, base64_len: usize) -> usize {
+pub(crate) fn image_block_tokens(base64_len: usize) -> usize {
     (base64_len.saturating_mul(3) / 4 / 4).clamp(1_000, 4_096)
 }
 
@@ -433,7 +420,7 @@ fn is_tool_use_only(m: &Message) -> bool {
 }
 
 fn group_tokens(group: &[Message]) -> usize {
-    group.iter().map(message_tokens).sum()
+    crate::agent_compact::est_tokens(group)
 }
 
 fn group_is_retained(group: &[Message]) -> bool {
@@ -488,11 +475,8 @@ fn fit_group_to_budget(group: &[Message], budget: usize) -> Option<Vec<Message>>
     for msg in out.iter_mut().rev() {
         for block in msg.content.iter_mut().rev() {
             match block {
-                ContentBlock::Image { media_type, data }
-                | ContentBlock::Media {
-                    media_type, data, ..
-                } => {
-                    let price = image_block_tokens(media_type, data.len());
+                ContentBlock::Image { data, .. } | ContentBlock::Media { data, .. } => {
+                    let price = image_block_tokens(data.len());
                     if price <= remaining {
                         remaining -= price;
                         retained_billable = true;

@@ -11,7 +11,6 @@ pub(crate) const FRESH_MS: u64 = 60 * 60 * 1000;
 
 const FILE_PREFIX: &str = "gray-failed-turn-";
 const KEY_CHARS: usize = 24;
-const PROMPT_CAP: usize = 4000;
 const KEEP: usize = 8;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -19,10 +18,7 @@ pub(crate) struct FailedTurn {
     pub session: String,
     pub cwd: PathBuf,
     pub prompt_hash: String,
-    pub prompt: String,
     pub failed_at_ms: u64,
-    pub exit: i32,
-    pub code: String,
 }
 
 fn disabled() -> bool {
@@ -124,40 +120,22 @@ fn sweep(dir: &Path) {
     }
 }
 
-pub(crate) fn record_failure(
-    session_id: &SessionId,
-    cwd: &Path,
-    prompt_text: &str,
-    prompt_hash: &str,
-    code: &str,
-    exit: i32,
-) {
+pub(crate) fn record_failure(session_id: &SessionId, cwd: &Path, prompt_hash: &str) {
     if disabled() {
         return;
     }
     let Some(dir) = checkpoints_dir() else {
         return;
     };
-    record_failure_in(&dir, session_id, cwd, prompt_text, prompt_hash, code, exit);
+    record_failure_in(&dir, session_id, cwd, prompt_hash);
 }
 
-pub(crate) fn record_failure_in(
-    dir: &Path,
-    session_id: &SessionId,
-    cwd: &Path,
-    prompt_text: &str,
-    prompt_hash: &str,
-    code: &str,
-    exit: i32,
-) {
+pub(crate) fn record_failure_in(dir: &Path, session_id: &SessionId, cwd: &Path, prompt_hash: &str) {
     let cp = FailedTurn {
         session: session_id.as_str().to_string(),
         cwd: canonical(cwd),
         prompt_hash: prompt_hash.to_string(),
-        prompt: prompt_text.chars().take(PROMPT_CAP).collect(),
         failed_at_ms: now_millis(),
-        exit,
-        code: code.to_string(),
     };
     let Ok(body) = serde_json::to_string(&cp) else {
         return;

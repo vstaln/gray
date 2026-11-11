@@ -1,5 +1,21 @@
 use super::*;
 
+fn file_editor(
+    rel: &str,
+    content: String,
+    window: &mut Window,
+    cx: &mut Context<GrayApp>,
+) -> Entity<EditorState> {
+    let lang = workspace::language_for(rel);
+    cx.new(|cx| {
+        let mut s = EditorState::new(window, cx)
+            .language(lang)
+            .line_number(true);
+        s.set_value(content, window, cx);
+        s
+    })
+}
+
 impl GrayApp {
     pub(super) fn persist(&mut self, e: Event) {
         if let Err(err) = self.store.append(e) {
@@ -348,9 +364,7 @@ impl GrayApp {
                     {
                         turn.cancel();
                     }
-                    if let Some(eng) = self.engines.remove(&id) {
-                        eng.engine.shutdown();
-                    }
+                    let _ = self.engines.remove(&id);
                     if self.pending_ask.as_ref().is_some_and(|a| a.tid == id) {
                         self.pending_ask = None;
                     }
@@ -738,15 +752,7 @@ impl GrayApp {
                 return;
             }
         };
-        let lang = workspace::language_for(rel);
-        let value = content.clone();
-        let editor = cx.new(|cx| {
-            let mut s = EditorState::new(window, cx)
-                .language(lang)
-                .line_number(true);
-            s.set_value(value, window, cx);
-            s
-        });
+        let editor = file_editor(rel, content.clone(), window, cx);
         editor.update(cx, |s, cx| s.focus(window, cx));
         let path = rel.to_string();
         let sub = cx.subscribe(&editor, move |this, _, ev: &InputEvent, _| {
@@ -786,19 +792,12 @@ impl GrayApp {
                 return;
             }
         };
-        let lang = workspace::language_for(rel);
         match &self.viewer {
             Some((p, st)) if p == rel => {
                 st.update(cx, |s, cx| s.set_value(content, window, cx));
             }
             _ => {
-                let st = cx.new(|cx| {
-                    let mut s = EditorState::new(window, cx)
-                        .language(lang)
-                        .line_number(true);
-                    s.set_value(content, window, cx);
-                    s
-                });
+                let st = file_editor(rel, content, window, cx);
                 self.viewer = Some((rel.to_string(), st));
             }
         }

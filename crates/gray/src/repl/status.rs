@@ -31,15 +31,13 @@ impl SessionTotals {
         let write = usage.cache_write_input_tokens;
         self.cache_read += read;
         self.cache_write += write;
-        if let Some(c) = crate::setup::turn_cost(usage, model) {
+        let cost = crate::setup::turn_cost(usage, model);
+        if let Some(c) = cost {
             self.cost += c;
         }
         if let Some(rate) = crate::setup::get_model_rate(model)
             && rate.has_cache_prices
-            && let (Some(full), Some(actual)) = (
-                crate::setup::uncached_cost(usage, model),
-                crate::setup::turn_cost(usage, model),
-            )
+            && let (Some(full), Some(actual)) = (crate::setup::uncached_cost(usage, model), cost)
         {
             self.saved += full - actual;
         }
@@ -202,10 +200,8 @@ pub(crate) async fn handle_context_window(
     ) -> crate::setup::ContextParts {
         let messages: &[Message] = agent.as_ref().map(|a| a.messages()).unwrap_or(&[]);
         let latest = tui.and_then(|t| t.lock().ok().and_then(|g| g.latest_usage));
-        collect_context_parts(cwd, messages, latest)
-    }
-    fn breakdown_text(config: &Config, parts: &crate::setup::ContextParts) -> String {
-        context_breakdown_text(config, parts)
+        let tools = agent.as_ref().map(|a| a.tool_defs());
+        collect_context_parts(cwd, messages, latest, tools)
     }
     let Some(val) = direct else {
         if tui.is_some() {
@@ -248,7 +244,7 @@ pub(crate) async fn handle_context_window(
             }
         } else {
             emit(
-                breakdown_text(config, &collect_parts(cwd, agent, tui)),
+                context_breakdown_text(config, &collect_parts(cwd, agent, tui)),
                 tui,
                 false,
             );
@@ -258,7 +254,7 @@ pub(crate) async fn handle_context_window(
     let lower = val.trim().to_lowercase();
     if lower.is_empty() || lower == "status" || lower == "show" {
         emit(
-            breakdown_text(config, &collect_parts(cwd, agent, tui)),
+            context_breakdown_text(config, &collect_parts(cwd, agent, tui)),
             tui,
             false,
         );
@@ -268,14 +264,20 @@ pub(crate) async fn handle_context_window(
     emit(msg, tui, ok);
 }
 
-pub(crate) fn persist_context_window(config: &Config) {
-    if let Ok(path) = crate::setup::saved_config_path() {
-        let _cfg_lock = crate::setup::lock_saved_config_at(&path).ok();
-        let mut saved = crate::setup::load_saved_config_at(&path);
-        saved.context_window = config.context_window;
-        saved.context_reserve = config.context_reserve;
-        saved.context_keep = config.context_keep;
-        let _ = crate::setup::save_saved_config_at(&path, &saved);
+pub(crate) fn persist_context_window(config: &Config) -> anyhow::Result<()> {
+    let path = crate::setup::saved_config_path()?;
+    let _cfg_lock = crate::setup::lock_saved_config_at(&path).ok();
+    let mut saved = crate::setup::load_saved_config_at(&path);
+    saved.context_window = config.context_window;
+    saved.context_reserve = config.context_reserve;
+    saved.context_keep = config.context_keep;
+    crate::setup::save_saved_config_at(&path, &saved)
+}
+
+fn persist_note(config: &Config) -> String {
+    match persist_context_window(config) {
+        Ok(()) => String::new(),
+        Err(e) => format!(" — not saved for the next launch: {e:#}"),
     }
 }
 
@@ -283,15 +285,19 @@ pub(crate) fn collect_context_parts(
     cwd: &Path,
     messages: &[Message],
     latest: Option<gray_core::event::Usage>,
+    tools: Option<&[gray_core::message::ToolDef]>,
 ) -> crate::setup::ContextParts {
     let sys = crate::sys_prompt_path()
         .ok()
         .and_then(|p| load_or_create_system_prompt_at(&p).ok())
         .map(|s| crate::setup::estimate_str_tokens(&crate::system_prompt::strip_comments(&s)))
         .unwrap_or(0);
-    let tools_toks = serde_json::to_string(&crate::profile::builtin_registry().defs())
-        .map(|s| crate::setup::estimate_str_tokens(&s))
-        .unwrap_or(0);
+    let tools_toks = match tools {
+        Some(defs) => serde_json::to_string(defs),
+        None => serde_json::to_string(&crate::profile::builtin_registry().defs()),
+    }
+    .map(|s| crate::setup::estimate_str_tokens(&s))
+    .unwrap_or(0);
 
     let history_est = messages.iter().map(crate::compact::estimate_tokens).sum();
     let messages = match latest.map(|u| u.total()).filter(|t| *t > 0) {
@@ -373,7 +379,7 @@ pub(crate) fn apply_context_arg(config: &mut Config, val: &str) -> (String, bool
     if lower == "auto" || lower == "clear" || lower == "reset" || lower == "0" {
         config.context_window = None;
         crate::setup::set_user_context_window(None);
-        persist_context_window(config);
+        let note = persist_note(config);
 
         if let Some(m) = config.model.clone()
             && crate::setup::get_cached_model_context(&m).is_none()
@@ -388,7 +394,7 @@ pub(crate) fn apply_context_arg(config: &mut Config, val: &str) -> (String, bool
             crate::setup::resolve_model_context_length(config.model.as_deref().unwrap_or(""));
         return (
             format!(
-                "window reset to auto ({} / {})",
+                "window reset to auto ({} / {}){note}",
                 effective,
                 crate::setup::format_context_length(effective)
             ),
@@ -426,14 +432,14 @@ pub(crate) fn apply_context_arg(config: &mut Config, val: &str) -> (String, bool
                 config.context_keep = None;
                 crate::setup::set_user_keep_recent_tokens(None);
             }
-            persist_context_window(config);
-            return (format!("{head} cleared → auto"), true);
+            let note = persist_note(config);
+            return (format!("{head} cleared → auto{note}"), true);
         }
         if !is_reserve && (rest == "off" || rest == "0") {
             config.context_keep = Some(0);
             crate::setup::set_user_keep_recent_tokens(Some(0));
-            persist_context_window(config);
-            return ("keep set to 0 (summary only)".to_string(), true);
+            let note = persist_note(config);
+            return (format!("keep set to 0 (summary only){note}"), true);
         }
         return match crate::setup::parse_context_window(rest) {
             Some(n) if n > 0 => {
@@ -444,10 +450,10 @@ pub(crate) fn apply_context_arg(config: &mut Config, val: &str) -> (String, bool
                     config.context_keep = Some(n);
                     crate::setup::set_user_keep_recent_tokens(Some(n));
                 }
-                persist_context_window(config);
+                let note = persist_note(config);
                 (
                     format!(
-                        "{head} set to {n} tokens ({})",
+                        "{head} set to {n} tokens ({}){note}",
                         crate::setup::format_context_length(n)
                     ),
                     true,
@@ -466,17 +472,17 @@ pub(crate) fn apply_context_arg(config: &mut Config, val: &str) -> (String, bool
             let (final_n, clamped) = if n > max { (max, true) } else { (n, false) };
             config.context_window = Some(final_n);
             crate::setup::set_user_context_window(Some(final_n));
-            persist_context_window(config);
+            let note = persist_note(config);
             let msg = if clamped {
                 format!(
-                    "window clamped to model max {} ({}) — requested {}",
+                    "window clamped to model max {} ({}) — requested {}{note}",
                     final_n,
                     crate::setup::format_context_length(final_n),
                     crate::setup::format_context_length(n)
                 )
             } else {
                 format!(
-                    "window set to {} tokens ({})",
+                    "window set to {} tokens ({}){note}",
                     final_n,
                     crate::setup::format_context_length(final_n)
                 )

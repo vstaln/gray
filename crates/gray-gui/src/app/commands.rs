@@ -29,7 +29,7 @@ pub(super) const SLASH_COMMANDS: &[SlashCmd] = &[
     sc("pin", "Pin or unpin thread", "Thread", false),
     sc("archive", "Archive thread", "Thread", false),
     sc("settle", "Settle or unsettle thread", "Thread", false),
-    sc("snooze", "Snooze thread (minutes)", "Thread", false),
+    sc("snooze", "Snooze thread (minutes)", "Thread", true),
     sc("stop", "Stop turn", "Thread", false),
     sc("approve", "Approve pending action", "Thread", false),
     sc("reject", "Reject pending action", "Thread", false),

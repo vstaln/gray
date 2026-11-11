@@ -418,7 +418,7 @@ fn supported() -> bool {
             Some("off") | Some("blocks") | Some("halfblock") => return false,
             _ => {}
         }
-        if std::env::var_os("TMUX").is_some() {
+        if crate::term_keys::in_multiplexer() {
             return false;
         }
         if !std::io::stdout().is_terminal() {

@@ -83,6 +83,21 @@ pub(crate) struct ManagerSpec {
     pub keep_stale_on_relist_error: bool,
 }
 
+fn row_count(tab: Tab, items: &[ManagerItem], errors: &[ErrorEntry]) -> usize {
+    match tab {
+        Tab::Installed => items.len(),
+        Tab::Errors => errors.len(),
+    }
+}
+
+fn move_sel(sel: &mut usize, up: bool, count: usize) {
+    *sel = if up {
+        sel.saturating_sub(1)
+    } else {
+        (*sel + 1).min(count.saturating_sub(1))
+    };
+}
+
 pub(crate) fn format_error_row(entry: &ErrorEntry) -> String {
     format!("{} {}: {}", entry.source, entry.item, entry.message)
 }
@@ -401,16 +416,7 @@ pub(crate) fn run_install_manager(
                 && let Some(up) = crate::keymap::select_move(&key)
             {
                 pending_remove = None;
-                sel = if up {
-                    sel.saturating_sub(1)
-                } else {
-                    let max = match tab {
-                        Tab::Installed => items.len(),
-                        Tab::Errors => error_entries.len(),
-                    }
-                    .saturating_sub(1);
-                    (sel + 1).min(max)
-                };
+                move_sel(&mut sel, up, row_count(tab, &items, &error_entries));
                 continue;
             }
             match ev {
@@ -454,29 +460,19 @@ pub(crate) fn run_install_manager(
                     }
                     KeyCode::Up | KeyCode::Char('k') if spec.errors_tab => {
                         pending_remove = None;
-                        sel = sel.saturating_sub(1);
+                        move_sel(&mut sel, true, row_count(tab, &items, &error_entries));
                     }
                     KeyCode::Down | KeyCode::Char('j') if spec.errors_tab => {
                         pending_remove = None;
-                        let max = match tab {
-                            Tab::Installed => items.len(),
-                            Tab::Errors => error_entries.len(),
-                        }
-                        .saturating_sub(1);
-                        sel = (sel + 1).min(max);
+                        move_sel(&mut sel, false, row_count(tab, &items, &error_entries));
                     }
                     KeyCode::Char('k') => {
                         pending_remove = None;
-                        sel = sel.saturating_sub(1);
+                        move_sel(&mut sel, true, row_count(tab, &items, &error_entries));
                     }
                     KeyCode::Char('j') => {
                         pending_remove = None;
-                        let max = match tab {
-                            Tab::Installed => items.len(),
-                            Tab::Errors => error_entries.len(),
-                        }
-                        .saturating_sub(1);
-                        sel = (sel + 1).min(max);
+                        move_sel(&mut sel, false, row_count(tab, &items, &error_entries));
                     }
                     KeyCode::Esc => return Ok(ManagerOutcome::Closed(changed)),
                     KeyCode::Enter | KeyCode::Char(' ') => {

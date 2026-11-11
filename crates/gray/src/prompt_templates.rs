@@ -245,11 +245,7 @@ fn load_dir(dir: &Path, source: &'static str, out: &mut Vec<PromptTemplate>) {
 }
 
 #[must_use]
-pub fn search_dirs(
-    cwd: &Path,
-    gray_home: Option<&Path>,
-    _home: Option<&Path>,
-) -> Vec<(PathBuf, &'static str)> {
+pub fn search_dirs(cwd: &Path, gray_home: Option<&Path>) -> Vec<(PathBuf, &'static str)> {
     let mut dirs = Vec::new();
     let git_root = crate::project_trust::find_git_root(cwd);
     let mut cur = Some(cwd.to_path_buf());
@@ -293,8 +289,7 @@ pub fn discover(cwd: &Path) -> Vec<PromptTemplate> {
         return list.clone();
     }
     let gray_home = crate::setup::gray_home().ok();
-    let home = gray_core::paths::user_home();
-    let mut dirs = search_dirs(cwd, gray_home.as_deref(), home.as_deref());
+    let mut dirs = search_dirs(cwd, gray_home.as_deref());
 
     if !crate::project_trust::is_trusted(&gray_core::paths::gray_home_or_temp(), cwd) {
         dirs.retain(|(_, source)| *source != "project");
@@ -313,18 +308,6 @@ pub fn invalidate_cache() {
     if let Ok(mut guard) = CACHE.lock() {
         *guard = None;
     }
-}
-
-#[must_use]
-pub fn is_cached_name(name: &str) -> bool {
-    CACHE
-        .lock()
-        .ok()
-        .and_then(|g| {
-            g.as_ref()
-                .map(|(_, _, list)| list.iter().any(|t| t.name == name))
-        })
-        .unwrap_or(false)
 }
 
 #[must_use]

@@ -519,15 +519,16 @@ fn same_binary(a: &Path, b: &Path) -> bool {
     }
 }
 
-fn shadow_warning(installed: &Path, installed_version: &str, resolved: &Path) -> Option<String> {
-    if same_binary(resolved, installed) {
+fn shadow_warning(expected: &Path, expected_version: &str) -> Option<String> {
+    let resolved = drop_cargo_shadow(first_gray_on_path()?, expected);
+    if same_binary(&resolved, expected) {
         return None;
     }
     let rm = if cfg!(windows) { "del" } else { "rm" };
     Some(format!(
-        "⚠ {} comes first on PATH and shadows the updated {} (gray {installed_version}) — new shells keep launching the old build\n  fix:  {rm} {}   (then open a new shell)",
+        "⚠ {} comes first on PATH and is not {} (gray {expected_version}) — a new shell launches that one instead\n  fix:  {rm} {}   (then open a new shell)",
         resolved.display(),
-        installed.display(),
+        expected.display(),
         resolved.display(),
     ))
 }
@@ -535,10 +536,8 @@ fn shadow_warning(installed: &Path, installed_version: &str, resolved: &Path) ->
 fn post_update_shadow_warning() -> Option<String> {
     let bin = if cfg!(windows) { "gray.exe" } else { "gray" };
     let installed = installer_dest()?.join(bin);
-
     let installed_version = binary_version(&installed)?;
-    let resolved = drop_cargo_shadow(first_gray_on_path()?, &installed);
-    shadow_warning(&installed, &installed_version, &resolved)
+    shadow_warning(&installed, &installed_version)
 }
 
 pub(crate) fn warn_on_shadow() {
@@ -547,21 +546,9 @@ pub(crate) fn warn_on_shadow() {
     }
 }
 
-fn divergence_warning(current: &Path, running: &str, resolved: &Path) -> Option<String> {
-    if same_binary(resolved, current) {
-        return None;
-    }
-    Some(format!(
-        "⚠ {} comes first on PATH and is not this build (gray {running}, {}) — a new shell may launch a different gray\n  relaunch `gray` to run it",
-        resolved.display(),
-        current.display(),
-    ))
-}
-
 fn path_divergence_warning() -> Option<String> {
     let current = std::env::current_exe().ok()?;
-    let resolved = drop_cargo_shadow(first_gray_on_path()?, &current);
-    divergence_warning(&current, env!("CARGO_PKG_VERSION"), &resolved)
+    shadow_warning(&current, env!("CARGO_PKG_VERSION"))
 }
 
 fn warn_on_divergence() {
@@ -624,8 +611,9 @@ async fn update_plugins_after_gray() {
 }
 
 pub async fn update_now() -> anyhow::Result<()> {
-    match latest_version().await {
-        Ok(latest)
+    let checked = tokio::time::timeout(std::time::Duration::from_secs(15), latest_version()).await;
+    match checked {
+        Ok(Ok(latest))
             if !latest.is_empty()
                 && !update_available(
                     CHANNEL,
@@ -642,8 +630,9 @@ pub async fn update_now() -> anyhow::Result<()> {
             warn_on_shadow();
             return Ok(());
         }
-        Ok(_) => {}
-        Err(e) => log::debug!("version check failed ({e:#}); installing anyway"),
+        Ok(Ok(_)) => {}
+        Ok(Err(e)) => log::debug!("version check failed ({e:#}); installing anyway"),
+        Err(_) => log::debug!("version check timed out; installing anyway"),
     }
     println!(
         "{} updating gray ({CHANNEL})...",
@@ -753,8 +742,13 @@ pub async fn startup_check() {
         });
         return;
     }
+    let (bold, dim, off) = if crate::tui::ansi_supported() {
+        ("\x1b[1m", "\x1b[2m", "\x1b[0m")
+    } else {
+        ("", "", "")
+    };
     println!(
-        "\x1b[1mgray {latest} available\x1b[0m \x1b[2m(you have {current})\x1b[0m — update now? \x1b[2m[y/N]\x1b[0m"
+        "{bold}gray {latest} available{off} {dim}(you have {current}){off} — update now? {dim}[y/N]{off}"
     );
     if confirm() {
         match run_installer_locked() {

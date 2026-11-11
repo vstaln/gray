@@ -22,8 +22,8 @@ pub(crate) use boxes::render_markdown_lines;
 pub(crate) use cards::{format_tool_box_lines, format_tool_box_lines_multi};
 pub(crate) use rows::{
     GUTTER, format_user_prompt_lines, left_pad, prose_width, thinking_paint_text,
-    thinking_replay_lines, thinking_run_rows, thinking_style, transcript_row_is_blank,
-    word_flush_cut, wrap_styled_line, wrap_styled_line_with_ranges,
+    thinking_run_rows, thinking_style, transcript_row_is_blank, word_flush_cut, wrap_styled_line,
+    wrap_styled_line_with_ranges,
 };
 
 pub(crate) fn paint_insert_rows(
@@ -38,10 +38,7 @@ pub(crate) fn paint_insert_rows(
             width: area.width,
             height: 1,
         };
-        let mut p = Paragraph::new(line.clone());
-        if let Some(bg) = bg {
-            p = p.style(Style::default().bg(*bg));
-        }
+        let p = Paragraph::new(line.clone()).style(Style::default().bg(*bg));
         p.render(row_area, buf);
         for h in hls {
             for col in h.column_range.clone() {
@@ -271,7 +268,7 @@ impl Tui {
 
     fn write_gap(&mut self) {
         let blank = vec![Line::default()];
-        self.insert_paragraph(&blank, Some(crate::theme::theme().window_bg));
+        self.insert_paragraph(&blank, crate::theme::theme().window_bg);
         self.record_rows(blank);
     }
 
@@ -306,7 +303,7 @@ impl Tui {
         });
     }
 
-    pub(crate) fn emit_rows(&mut self, rows: Vec<Line<'static>>, bg: Option<Color>) {
+    pub(crate) fn emit_rows(&mut self, rows: Vec<Line<'static>>, bg: Color) {
         self.drain_reveal();
         let shaped = margins::shape_block(rows, Vec::new());
         self.atomic(|t| {
@@ -570,7 +567,7 @@ impl Tui {
                 text.to_string(),
                 attached.to_vec(),
             ));
-            t.emit_rows(lines, Some(crate::theme::theme().surface_bg));
+            t.emit_rows(lines, crate::theme::theme().surface_bg);
             if trailing_gap {
                 t.ensure_gap();
             }

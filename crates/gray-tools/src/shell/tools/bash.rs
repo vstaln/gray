@@ -13,13 +13,12 @@ use tokio::task::JoinHandle;
 use crate::shell::contract::EXIT_STDIO_GRACE_MS;
 use crate::shell::contract::{
     DEFAULT_TIMEOUT_SECS, DETACHED_DRAIN_TIMEOUT, INLINE_BUDGET_BYTES, MAX_TIMEOUT_SECS,
-    MEM_HEAD_BYTES, MEM_TAIL_BYTES, PUMP_DRAIN_TIMEOUT, PumpSummary, SLEEP_SLACK_SECS,
-    VIEW_BUDGET_LINES, View,
+    PUMP_DRAIN_TIMEOUT, PumpSummary, SLEEP_SLACK_SECS, TERM_KILL_GRACE, VIEW_BUDGET_LINES, View,
 };
 use crate::shell::exit::exit_report;
 use crate::shell::fence::fence;
 use crate::shell::kill::term_then_kill;
-use crate::shell::pump::{Pump, now_grindmill};
+use crate::shell::pump::{MemView, Pump, now_grindmill};
 use crate::shell::spawn::{PluginEnv, spawn};
 use crate::shell::view::{
     format_elapsed, header, middle_out, resume_hint, squeeze as squeeze_view,
@@ -597,7 +596,7 @@ async fn settle_command(
         s = child.wait() => match s {
             Ok(st) => { exited = Some(st); Cause::Exit }
             Err(e) => {
-                let _ = term_then_kill(target, Duration::from_secs(2)).await;
+                let _ = term_then_kill(target, TERM_KILL_GRACE).await;
                 let _ = child.start_kill();
                 abort_pump(pump).await;
                 return Settled::Done(fail(format!("failed to wait for command: {e}")));
@@ -655,7 +654,7 @@ async fn settle_command(
                     _ = ctx.cancel.cancelled() => true,
                 };
                 if cancelled {
-                    let _ = term_then_kill(target, Duration::from_secs(2)).await;
+                    let _ = term_then_kill(target, TERM_KILL_GRACE).await;
                     break;
                 }
             }
@@ -670,11 +669,12 @@ async fn settle_command(
     #[cfg(not(unix))]
     let detached_group = false;
 
+    let timed_out = matches!(cause, Cause::Timeout);
     let first_line: Option<String> = match cause {
         Cause::Exit => None,
 
-        Cause::Timeout => {
-            match tokio::try_join!(term_then_kill(target, Duration::from_secs(2)), async {
+        Cause::Timeout | Cause::Cancel => {
+            match tokio::try_join!(term_then_kill(target, TERM_KILL_GRACE), async {
                 child
                     .wait()
                     .await
@@ -687,29 +687,17 @@ async fn settle_command(
                     return Settled::Done(fail(e));
                 }
             }
-            Some(format!(
-                "timed out after {}s (process group killed) \u{b7} rerun without `timeout` to let it finish, or with a larger one (max {MAX_TIMEOUT_SECS}s)",
-                secs.unwrap_or_default()
-            ))
-        }
-        Cause::Cancel => {
-            match tokio::try_join!(term_then_kill(target, Duration::from_secs(2)), async {
-                child
-                    .wait()
-                    .await
-                    .map_err(|e| format!("failed to wait for command: {e}"))
-            }) {
-                Ok(((), st)) => exited = Some(st),
-                Err(e) => {
-                    let _ = child.start_kill();
-                    abort_pump(pump).await;
-                    return Settled::Done(fail(e));
-                }
-            }
-            Some(format!(
-                "cancelled by user after {}",
-                format_elapsed(start.elapsed())
-            ))
+            Some(if timed_out {
+                format!(
+                    "timed out after {}s (process group killed) \u{b7} rerun without `timeout` to let it finish, or with a larger one (max {MAX_TIMEOUT_SECS}s)",
+                    secs.unwrap_or_default()
+                )
+            } else {
+                format!(
+                    "cancelled by user after {}",
+                    format_elapsed(start.elapsed())
+                )
+            })
         }
     };
 
@@ -924,38 +912,25 @@ async fn drain_pump(
 }
 
 fn truncated_summary_from_disk(log_path: &std::path::Path) -> PumpSummary {
-    use std::io::{Read, Seek, SeekFrom};
-    let total_bytes = std::fs::metadata(log_path).map(|m| m.len()).unwrap_or(0);
-    let mut head = Vec::new();
-    let mut tail = Vec::new();
-    if let Ok(mut f) = std::fs::File::open(log_path) {
-        let _ = f
-            .by_ref()
-            .take(MEM_HEAD_BYTES as u64)
-            .read_to_end(&mut head);
-        let tail_len = (MEM_TAIL_BYTES as u64).min(total_bytes);
-        if total_bytes > head.len() as u64
-            && f.seek(SeekFrom::Start(total_bytes.saturating_sub(tail_len)))
-                .is_ok()
-        {
-            let _ = f.by_ref().take(tail_len).read_to_end(&mut tail);
+    use std::io::Read;
+    let mut mem = MemView::new();
+    match std::fs::File::open(log_path) {
+        Ok(mut f) => {
+            let mut buf = [0u8; 8192];
+            loop {
+                match f.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => mem.push(&buf[..n]),
+                    Err(e) => {
+                        log::warn!("shell: cannot read log {}: {e}", log_path.display());
+                        break;
+                    }
+                }
+            }
         }
+        Err(e) => log::warn!("shell: cannot open log {}: {e}", log_path.display()),
     }
-    let total_lines = head
-        .iter()
-        .chain(tail.iter())
-        .filter(|&&b| b == b'\n')
-        .count();
-
-    let has_cr = head.iter().chain(tail.iter()).any(|&b| b == b'\r');
-    PumpSummary {
-        total_bytes,
-        total_lines,
-        head,
-        tail,
-        has_cr,
-        log_write_failed: false,
-    }
+    mem.into_summary(false)
 }
 
 #[allow(clippy::too_many_arguments)]

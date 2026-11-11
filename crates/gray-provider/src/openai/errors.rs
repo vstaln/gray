@@ -33,9 +33,11 @@ pub(super) fn is_quota_code(code: &str) -> bool {
     code.split(';').next() == Some(QUOTA_VENDOR_CODE)
 }
 
-pub(super) fn quota_hinted(text: &str) -> bool {
-    let lower = text.to_lowercase();
-    QUOTA_EXHAUSTED_HINTS.iter().any(|h| lower.contains(h))
+pub(super) fn quota_hinted(texts: &[&str]) -> bool {
+    let lowered: Vec<String> = texts.iter().map(|t| t.to_lowercase()).collect();
+    QUOTA_EXHAUSTED_HINTS
+        .iter()
+        .any(|h| lowered.iter().any(|t| t.contains(h)))
 }
 
 pub(super) fn quota_vendor_code(orig: Option<String>, resets_in: Option<Duration>) -> String {
@@ -58,7 +60,7 @@ pub fn is_quota_exhausted(err: &ProviderError) -> bool {
     if matches!(err.class(), ProviderError::Quota { .. }) {
         return true;
     }
-    matches!(err.class(), ProviderError::Auth(msg) | ProviderError::BadRequest(msg) | ProviderError::RateLimited(msg) if quota_hinted(msg))
+    matches!(err.class(), ProviderError::Auth(msg) | ProviderError::BadRequest(msg) | ProviderError::RateLimited(msg) if quota_hinted(&[msg.as_str()]))
 }
 
 pub fn quota_reset_in(err: &ProviderError) -> Option<Duration> {
@@ -104,7 +106,7 @@ pub(crate) fn classify_http_error(
         || (matches!(
             class.class(),
             ProviderError::Auth(_) | ProviderError::BadRequest(_)
-        ) && quota_hinted(snippet))
+        ) && quota_hinted(&[snippet]))
     {
         resets_in = vendor_message
             .as_deref()
@@ -187,7 +189,7 @@ pub(super) fn classify_http_error_inner(
     if is_unsupported {
         return ProviderError::BadRequest(msg);
     }
-    let quota_exhausted = QUOTA_EXHAUSTED_HINTS.iter().any(|h| lower.contains(h));
+    let quota_exhausted = quota_hinted(&[snippet]);
     match status.as_u16() {
         401 | 403 => ProviderError::Auth(msg),
 
@@ -211,15 +213,11 @@ pub(super) fn classify_http_error_inner(
     }
 }
 
-pub(crate) fn is_retryable_error(err: &ProviderError) -> bool {
-    err.retryable()
-}
-
 pub(super) fn should_retry_request(err: &ProviderError, http_status: u16, attempt: usize) -> bool {
     if is_quota_exhausted(err) {
         return false;
     }
-    if is_retryable_error(err) {
+    if err.retryable() {
         return true;
     }
     http_status == 403 && attempt == 1 && matches!(err.class(), ProviderError::Auth(_))

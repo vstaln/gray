@@ -413,7 +413,6 @@ pub struct GrayApp {
     home_intro_at: Option<Instant>,
     _subs: Vec<Subscription>,
     ticks: u64,
-    window_handle: Option<gpui::AnyWindowHandle>,
     pending_cmds: Vec<String>,
     hub: Vec<HubEntry>,
     hub_error: Option<String>,
@@ -617,7 +616,6 @@ impl GrayApp {
             settings_query: String::new(),
             pane_sizes: Vec::new(),
             gray_cmd_rx,
-            window_handle: None,
             pending_cmds: Vec::new(),
             active_tab: None,
             diff: None,
@@ -684,7 +682,6 @@ impl GrayApp {
         if std::env::var_os("GRAY_GUI_BOOT_TRACE").is_some() {
             eprintln!("boot {:?}", started_at.elapsed());
         }
-        app.window_handle = Some(window.window_handle());
         app.composer.update(cx, |s, cx| s.focus(window, cx));
         cx.spawn_in(window, async move |this, cx| {
             loop {

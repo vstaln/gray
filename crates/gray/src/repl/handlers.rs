@@ -65,7 +65,12 @@ pub(crate) async fn handle_sys(
             }
             let initial = std::fs::read_to_string(&path).unwrap_or_default();
 
-            let _ = crate::sys_editor::backup_before_overwrite(&path);
+            if let Err(e) = crate::sys_editor::backup_before_overwrite(&path) {
+                say(
+                    tui,
+                    &format!("backup failed ({e}) — editing without a copy"),
+                );
+            }
             let tui_snap = tui.cloned();
             let editor_paused = if let Some(shared) = &tui_snap {
                 let mut t = shared.lock().expect("tui lock");

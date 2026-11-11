@@ -14,7 +14,6 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
 
 use serde_json::{Value, json};
 
@@ -115,20 +114,6 @@ impl Engine {
         writeln!(w, "{line}")
             .and_then(|_| w.flush())
             .map_err(|e| format!("gray --stdio write failed: {e}"))
-    }
-
-    /// Ask the engine to exit gracefully, then kill it after a short grace
-    /// period if it is still around (hooks/shell tasks need a beat to drain).
-    pub fn shutdown(&self) {
-        let _ = self.send_line(&json!({"type": "shutdown"}));
-        let child = self.child.clone();
-        thread::spawn(move || {
-            thread::sleep(Duration::from_millis(800));
-            if let Ok(mut g) = child.lock() {
-                let _ = g.kill();
-                let _ = g.wait();
-            }
-        });
     }
 }
 

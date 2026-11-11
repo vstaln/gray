@@ -83,14 +83,12 @@ impl Agent {
             crate::compact::shared_prefix_compaction_messages(self, &candidate, instructions);
         crate::compact::elide_media_over_payload_budget(&mut candidate);
 
-        let budget = retained_budget.unwrap_or(match self.context_window {
-            None => RETAINED_MESSAGE_TOKEN_BUDGET,
-            Some(w) => RETAINED_MESSAGE_TOKEN_BUDGET.min(w.saturating_sub(COMPACT_RESERVE_TOKENS)),
-        });
-        let budget = match self.compact_ceiling {
-            Some(ceiling) => budget.min(ceiling / PRICE_CLIFF_KEEP_DIVISOR),
-            None => budget,
-        };
+        let budget = retained_message_budget(
+            retained_budget,
+            self.context_window,
+            self.compact_reserve,
+            self.compact_ceiling,
+        );
         if est_tokens(&candidate) <= budget {
             return None;
         }
@@ -370,6 +368,23 @@ pub(crate) fn est_tokens(msgs: &[Message]) -> usize {
 }
 
 pub const COMPACT_RESERVE_TOKENS: usize = 16_000;
+
+pub(crate) fn retained_message_budget(
+    keep: Option<usize>,
+    context_window: Option<usize>,
+    reserve: Option<usize>,
+    ceiling: Option<usize>,
+) -> usize {
+    let budget = keep.unwrap_or(match context_window {
+        None => RETAINED_MESSAGE_TOKEN_BUDGET,
+        Some(window) => RETAINED_MESSAGE_TOKEN_BUDGET
+            .min(window.saturating_sub(reserve.unwrap_or(COMPACT_RESERVE_TOKENS))),
+    });
+    match ceiling {
+        Some(ceiling) => budget.min(ceiling / PRICE_CLIFF_KEEP_DIVISOR),
+        None => budget,
+    }
+}
 
 pub(crate) fn needs_pre_turn_compact(
     estimate: usize,

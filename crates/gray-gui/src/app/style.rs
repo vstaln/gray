@@ -5,8 +5,6 @@ pub(super) fn float_border(t: &Theme) -> Hsla {
     t.foreground.opacity(0.24)
 }
 
-/// Liquid-glass fill: ink-850 at ~78% so the page ghosts through. Paper in
-/// light mode. Corners stay sharp — the sheen and edges do the selling.
 pub(super) fn glass_bg(t: &Theme) -> Hsla {
     // Nearly opaque: without a backdrop blur (X11), lower alphas let the
     // transcript text read through palettes and popovers.

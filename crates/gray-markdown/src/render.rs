@@ -587,10 +587,9 @@ impl<'a, 'b> ParsedMarkdown<'a, 'b> {
         }
 
         let checkpoint = match (checkpoint_info, checkpoint_output_lines) {
-            (Some((kind, source_bytes)), Some(output_lines)) => Some(Checkpoint {
+            (Some((_, source_bytes)), Some(output_lines)) => Some(Checkpoint {
                 source_bytes,
                 output_lines,
-                kind,
             }),
             _ => None,
         };

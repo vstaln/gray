@@ -9,8 +9,7 @@ pub const MAX_BYTES: usize = 12 * 1024;
 
 pub const MAX_ERROR_BYTES: usize = 2048;
 
-pub fn unknown_tool(name: &str, available: &[String]) -> String {
-    let _ = available;
+pub fn unknown_tool(name: &str) -> String {
     format!("Tool '{name}' does not exist.")
 }
 

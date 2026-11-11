@@ -781,7 +781,7 @@ impl SidecarPlugin {
         let (child, stdin, stdout) = spawn_child(&argv)?;
         let transport = Transport::new(child, stdin, stdout, argv.clone());
         let result = transport
-            .request("plugin/manifest", None, Duration::from_secs(30))
+            .request("plugin/manifest", None, HOST_TTL)
             .await
             .map_err(|e| {
                 let prog = Path::new(&argv[0])
@@ -913,12 +913,10 @@ impl SidecarPlugin {
     }
 
     pub async fn shutdown(&self, grace: Duration) {
-        if self.manifest.protocol.is_some() {
-            let _ = self
-                .transport
-                .send_notification("plugin/shutdown", json!({"reason": "session_end"}))
-                .await;
-        }
+        let _ = self
+            .transport
+            .send_notification("plugin/shutdown", json!({"reason": "session_end"}))
+            .await;
         let mut child = self.transport.child.lock().await;
         let _ = timeout(grace, child.wait()).await;
         let _ = child.kill().await;
@@ -1104,10 +1102,6 @@ impl SidecarPlugin {
             .lock()
             .unwrap_or_else(|e| e.into_inner()) = Some(handler);
     }
-
-    fn claims(&self, hook: &str) -> bool {
-        self.manifest.hooks.iter().any(|h| h == hook)
-    }
 }
 
 fn parse_auth_poll(value: Value) -> Result<ProviderAuthPoll, ProviderRpcError> {
@@ -1174,13 +1168,13 @@ impl Plugin for SidecarPlugin {
             .store(global, std::sync::atomic::Ordering::Relaxed);
     }
     async fn prompt_context(&self, cwd: &str) -> Option<String> {
-        if !self.claims("prompt/context") {
+        if !self.manifest.claims("prompt/context") {
             return None;
         }
         let params = json!({"cwd": cwd, "session": session_json(&self.pinned_sid(), cwd)});
         let v = self
             .transport
-            .request("prompt/context", Some(params), Duration::from_secs(30))
+            .request("prompt/context", Some(params), HOST_TTL)
             .await
             .ok()?;
         v.get("text")
@@ -1188,21 +1182,8 @@ impl Plugin for SidecarPlugin {
             .filter(|t| !t.is_empty())
             .map(|t| t.to_string())
     }
-    async fn compact_before(&self) {
-        if !self.claims("compact/before") {
-            return;
-        }
-        let params = json!({"session": session_json(&self.pinned_sid(), &self.cwd)});
-        if let Err(e) = self
-            .transport
-            .request("compact/before", Some(params), Duration::from_secs(20))
-            .await
-        {
-            log::warn!(target: "gray_plugin", "sidecar {} compact/before failed: {e}", self.manifest.name);
-        }
-    }
     async fn tool_before(&self, name: &str, args: &Value) -> ToolBefore {
-        if !self.claims("tool/before") {
+        if !self.manifest.claims("tool/before") {
             return ToolBefore::Allow;
         }
         let params = json!({"name": name, "args": args, "session": session_json(&self.pinned_sid(), &self.cwd)});
@@ -1231,7 +1212,7 @@ impl Plugin for SidecarPlugin {
         }
     }
     async fn input_submit(&self, text: &str) -> InputSubmit {
-        if !self.claims("input/submit") {
+        if !self.manifest.claims("input/submit") {
             return InputSubmit::Pass;
         }
         let params = json!({"text": text, "session": session_json(&self.pinned_sid(), &self.cwd)});
@@ -1250,7 +1231,7 @@ impl Plugin for SidecarPlugin {
         }
     }
     async fn agent_before_start(&self) -> Option<String> {
-        if !self.claims("agent/before_start") {
+        if !self.manifest.claims("agent/before_start") {
             return None;
         }
         let params = json!({"session": session_json(&self.pinned_sid(), &self.cwd)});
@@ -1266,7 +1247,7 @@ impl Plugin for SidecarPlugin {
             .map(|t| t.to_string())
     }
     async fn context_build(&self, messages: &[Message]) -> Option<Vec<Message>> {
-        if !self.claims("context/build") {
+        if !self.manifest.claims("context/build") {
             return None;
         }
 
@@ -1308,7 +1289,7 @@ impl Plugin for SidecarPlugin {
     }
 
     async fn tool_after(&self, name: &str, output: &ToolOutput) -> Option<ToolOutput> {
-        if !self.claims("tool/after") {
+        if !self.manifest.claims("tool/after") {
             return None;
         }
         let params = json!({"name": name, "content": output.content, "is_error": output.is_error, "session": session_json(&self.pinned_sid(), &self.cwd)});
@@ -1346,7 +1327,7 @@ impl Plugin for SidecarPlugin {
         let params = json!({"name": name, "argv": argv, "raw": raw, "session": session_json(&self.pinned_sid(), &self.cwd)});
         let v = self
             .transport
-            .request("command/run", Some(params), Duration::from_secs(30))
+            .request("command/run", Some(params), HOST_TTL)
             .await
             .ok()?;
         command_outcome(&v, &self.transport.argv)

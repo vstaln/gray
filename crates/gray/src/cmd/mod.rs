@@ -501,7 +501,7 @@ async fn context_result(
             .await
             .map(|(_, m)| m)
             .unwrap_or_default();
-        let parts = crate::repl::status::collect_context_parts(&cwd, &messages, None);
+        let parts = crate::repl::status::collect_context_parts(&cwd, &messages, None, None);
         return Ok(CommandResult::text(
             crate::repl::status::context_breakdown_text(config, &parts),
         ));

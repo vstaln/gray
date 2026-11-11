@@ -18,7 +18,7 @@ pub const TOOL_OVERRIDE: &str = "tool.override";
 
 pub const WIDGET_OVERRIDE: &str = "widget.override";
 
-pub const PROVIDER_CREDENTIALS: &str = "provider.credentials";
+pub use crate::provider::PROVIDER_CREDENTIALS;
 
 pub const SHELL_ENV: &str = "shell.env";
 

@@ -49,7 +49,6 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 pub use config::Config;
-pub use print::run_print_mode;
 pub use profile::{build_registry, take_profile_warnings};
 pub use repl::{ReplCommand, parse_command, run_repl_mode};
 pub use tui::{clear_screen, print_wrapped};

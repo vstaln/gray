@@ -16,7 +16,7 @@ impl Tui {
         );
         let next = if let Some(path) = path {
             anyhow::ensure!(
-                std::env::var_os("TMUX").is_none() && std::env::var_os("STY").is_none(),
+                !crate::term_keys::in_multiplexer(),
                 "background through tmux/screen is not supported"
             );
             anyhow::ensure!(

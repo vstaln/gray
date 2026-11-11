@@ -55,11 +55,7 @@ pub(crate) fn spec_lines(spec: &PickerSpec) -> Vec<Line<'static>> {
 }
 
 pub(crate) fn spec_plain(spec: &PickerSpec) -> String {
-    spec_lines(spec)
-        .iter()
-        .map(|l| l.to_string())
-        .collect::<Vec<_>>()
-        .join("\n")
+    super::pager::plain_lines(&spec_lines(spec))
 }
 
 pub(crate) fn draw_list_picker<T>(

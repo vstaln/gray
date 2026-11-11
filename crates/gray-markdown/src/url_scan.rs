@@ -3,7 +3,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
 use crate::buffers::unicode_display_width;
-use crate::output::HyperlinkTarget;
+use crate::output::{HyperlinkTarget, MarkdownRenderOutput};
 
 fn link_style() -> Style {
     let fg = crate::style::palette()
@@ -218,6 +218,18 @@ pub(crate) fn detect_file_paths_with_offset(
         }
     }
     (result, current_id)
+}
+
+pub(crate) fn attach_links(output: &mut MarkdownRenderOutput, next_link_id: u32) -> u32 {
+    let (urls, next) = detect_plain_urls(&output.lines, &output.hyperlinks, next_link_id);
+    output.hyperlinks.extend(urls);
+    let (paths, next) = detect_file_paths(&output.lines, &output.hyperlinks, next);
+    output.hyperlinks.extend(paths);
+    output
+        .hyperlinks
+        .sort_by_key(|h| (h.line_index, h.column_range.start));
+    apply_link_styling(&mut output.lines, &output.hyperlinks);
+    next
 }
 
 pub(crate) fn apply_link_styling(lines: &mut [Line<'_>], hyperlinks: &[HyperlinkTarget]) {

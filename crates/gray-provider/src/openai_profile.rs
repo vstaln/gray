@@ -38,20 +38,6 @@ pub struct OpenAiRequestPolicy {
     pub text_verbosity: Option<String>,
 }
 
-impl Default for OpenAiRequestPolicy {
-    fn default() -> Self {
-        Self {
-            prompt_cache_key: true,
-            store: false,
-            include_reasoning_encrypted: true,
-            previous_response_id: true,
-            tool_choice: None,
-            parallel_tool_calls: None,
-            text_verbosity: None,
-        }
-    }
-}
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OpenAiProviderProfile {
     pub base_url: Url,

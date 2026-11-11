@@ -28,10 +28,7 @@ pub use sidecar::{
     SidecarPlugin,
 };
 
-pub use capabilities::{
-    CapabilitySpec, HOST_ASK as CAP_HOST_ASK, HOST_SAY as CAP_HOST_SAY, HOST_TURN, SHELL_ENV,
-    TOOL_OVERRIDE, WIDGET_OVERRIDE,
-};
+pub use capabilities::{CapabilitySpec, HOST_TURN, SHELL_ENV, TOOL_OVERRIDE, WIDGET_OVERRIDE};
 
 pub const DYNAMIC_PROTOCOL: &str = "1.3";
 
@@ -201,6 +198,10 @@ pub fn manifest_tools(v: &Value) -> Vec<ToolDef> {
 }
 
 impl Manifest {
+    pub fn claims(&self, hook: &str) -> bool {
+        self.hooks.iter().any(|h| h == hook)
+    }
+
     pub fn from_result(v: &Value) -> Self {
         let str_list = |key: &str| {
             v.get(key)
@@ -452,9 +453,6 @@ impl PluginHooks for PluginHookAdapter {
         match self.plugin.run_command(name, argv, raw).await? {
             CommandOutcome::Say(s) if s.is_empty() => None,
             CommandOutcome::Prompt(s) if s.is_empty() => None,
-            CommandOutcome::HostPicker { kind, arg, .. } if kind == "model" && arg.is_empty() => {
-                None
-            }
             o => Some(o),
         }
     }
