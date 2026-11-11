@@ -1055,6 +1055,12 @@ fn user_home_lock(home: &Path) -> Option<(PathBuf, LockFile, LockFile)> {
     Some((user, lock, commands))
 }
 
+fn sidecar_usage(name: &str) -> String {
+    format!(
+        "'{name}' runs inside a Gray session, not as `gray {name}`: start `gray` and type /{name}, or run it headless with `gray cmd run {name} [args]`"
+    )
+}
+
 /// Probe a lock-registered plugin whose `cli_argv` was never recorded —
 /// bulk syncs and older installers wrote entries straight to the lock —
 /// so `gray <name>` forwarding self-heals on first dispatch instead of
@@ -1176,7 +1182,7 @@ pub async fn forward(home: &Path, name: &str, rest: &[String]) -> anyhow::Result
                 }
                 None => {
                     return Err(anyhow::anyhow!(if sidecar_named {
-                        format!("'{name}' is a sidecar plugin, not a CLI command")
+                        sidecar_usage(name)
                     } else {
                         match index_owner_hint(name).await {
                             Some(hint) => hint,
@@ -1201,9 +1207,7 @@ pub async fn forward(home: &Path, name: &str, rest: &[String]) -> anyhow::Result
         "plugin command '{entry_name}' is disabled — {}",
         disabled_hint(home, &entry_home, project.as_ref(), &entry_name)
     );
-    let argv = entry
-        .cli_argv
-        .with_context(|| format!("'{name}' is a sidecar plugin, not a CLI command"))?;
+    let argv = entry.cli_argv.with_context(|| sidecar_usage(name))?;
     let (program, args) = argv
         .split_first()
         .context("plugin command has no entry point")?;

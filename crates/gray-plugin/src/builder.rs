@@ -195,7 +195,17 @@ pub fn resolve_argv(dir: &Path) -> anyhow::Result<Vec<String>> {
         }
     }
     match execs.len() {
-        1 => Ok(vec![execs[0].to_string_lossy().into_owned()]),
+        1 => {
+            if let Some(kind) = foreign_binary(&execs[0]) {
+                anyhow::bail!(
+                    "{} is a {kind} binary and cannot run on {}-{}; this plugin release has no build for this platform, update or reinstall it",
+                    execs[0].display(),
+                    std::env::consts::OS,
+                    std::env::consts::ARCH
+                );
+            }
+            Ok(vec![execs[0].to_string_lossy().into_owned()])
+        }
         0 => anyhow::bail!(
             "no executable in {} (expected plugin.sh or one executable)",
             dir.display()
@@ -205,6 +215,37 @@ pub fn resolve_argv(dir: &Path) -> anyhow::Result<Vec<String>> {
             dir.display()
         ),
     }
+}
+
+fn foreign_binary(path: &Path) -> Option<&'static str> {
+    use std::io::Read;
+    let mut head = [0u8; 20];
+    let n = std::fs::File::open(path).ok()?.read(&mut head).ok()?;
+    let head = &head[..n];
+    let kind = if head.starts_with(b"\x7fELF") {
+        match head.get(18..20) {
+            Some([0x3e, 0]) => "linux-x86_64",
+            Some([0xb7, 0]) => "linux-aarch64",
+            _ => "linux",
+        }
+    } else if head.starts_with(&[0xcf, 0xfa, 0xed, 0xfe])
+        || head.starts_with(&[0xce, 0xfa, 0xed, 0xfe])
+        || head.starts_with(&[0xca, 0xfe, 0xba, 0xbe])
+    {
+        "macos"
+    } else if head.starts_with(b"MZ") {
+        "windows"
+    } else {
+        return None;
+    };
+    let native = match kind {
+        "linux-x86_64" => cfg!(all(target_os = "linux", target_arch = "x86_64")),
+        "linux-aarch64" => cfg!(all(target_os = "linux", target_arch = "aarch64")),
+        "linux" => cfg!(target_os = "linux"),
+        "macos" => cfg!(target_os = "macos"),
+        _ => cfg!(windows),
+    };
+    (!native).then_some(kind)
 }
 
 fn load_lock_files(cwd: &Path) -> (crate::lock::LockFile, crate::lock::LockFile, Vec<String>) {
