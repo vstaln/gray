@@ -145,9 +145,8 @@ pub(crate) fn detect_file_paths_with_offset(
                 } else {
                     end_b += 1;
                 }
-                while end_b < bytes.len() {
-                    let c = bytes[end_b] as char;
-                    if c.is_ascii_alphanumeric() || matches!(c, '/' | '.' | '-' | '_' | '~') {
+                while let Some(c) = span_text[end_b..].chars().next() {
+                    if c.is_alphanumeric() || matches!(c, '/' | '.' | '-' | '_' | '~') {
                         end_b += c.len_utf8();
                     } else {
                         break;
