@@ -35,9 +35,11 @@ const INITIAL_BACKOFF: Duration = Duration::from_secs(1);
 
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
 
-const DEFAULT_STREAM_STALL: Duration = Duration::from_secs(300);
+const DEFAULT_STREAM_STALL: Duration = Duration::from_secs(120);
 
 const RETRY_STREAM_STALL: Duration = Duration::from_secs(75);
+
+const STREAM_STALL_READ_MARGIN: Duration = Duration::from_secs(30);
 
 const STREAM_STALL_MEMORY_SECS: i64 = 15 * 60;
 
@@ -107,9 +109,11 @@ impl OpenAiProvider {
     }
 
     fn http_client(follow_redirects: bool) -> reqwest::Client {
+        let read_timeout = env_secs("GRAY_PROVIDER_STALL_SECS").unwrap_or(DEFAULT_STREAM_STALL)
+            + STREAM_STALL_READ_MARGIN;
         reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(10))
-            .read_timeout(Duration::from_secs(120))
+            .read_timeout(read_timeout)
             .redirect(if follow_redirects {
                 Policy::default()
             } else {
