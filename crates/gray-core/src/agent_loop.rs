@@ -61,13 +61,15 @@ fn retry_give_up(detail: &str, retries: u8, waited: Option<std::time::Duration>)
     ))
 }
 
-const QUOTA_WINDOW_HINTS: [&str; 6] = [
+const QUOTA_WINDOW_HINTS: [&str; 8] = [
     "quota",
     "usage limit",
     "session limit",
     "resets in ~",
     "insufficient balance",
     "insufficient credits",
+    "5-hour limit",
+    "hour limit",
 ];
 
 fn quota_flavored(e: &ProviderError) -> bool {
@@ -118,7 +120,9 @@ fn routing_flavored(e: &ProviderError) -> bool {
 
 fn reset_hint_from_text(msg: &str) -> Option<std::time::Duration> {
     let lower = msg.to_lowercase();
-    let rest = &lower[lower.find("resets in ~")? + "resets in ~".len()..];
+    let Some(rest) = lower.split_once("resets in ~").map(|(_, rest)| rest) else {
+        return reset_clock_wait(&lower);
+    };
     let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
     let n: u64 = rest.get(..digits)?.parse().ok()?;
     Some(match rest.as_bytes().get(digits) {
@@ -126,6 +130,86 @@ fn reset_hint_from_text(msg: &str) -> Option<std::time::Duration> {
         Some(b's') => std::time::Duration::from_secs(n),
         _ => std::time::Duration::from_secs(n * 60),
     })
+}
+
+const QUOTA_CLOCK_FALLBACK: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+
+fn parse_clock_reset(text: &str) -> Option<(u64, Option<String>)> {
+    let rest = text.get(text.find("resets ")? + "resets ".len()..)?;
+    let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
+    let hour: u64 = rest.get(..digits)?.parse().ok()?;
+    let mut rest = rest.get(digits..)?;
+    let mut minute = 0;
+    if let Some(after) = rest.strip_prefix(':') {
+        minute = after.get(..2)?.parse().ok()?;
+        rest = after.get(2..)?;
+    }
+    let hour = if let Some(after) = rest.strip_prefix("am") {
+        rest = after;
+        hour % 12
+    } else if let Some(after) = rest.strip_prefix("pm") {
+        rest = after;
+        hour % 12 + 12
+    } else {
+        return None;
+    };
+    if minute > 59 {
+        return None;
+    }
+    let tz = rest
+        .trim_start()
+        .strip_prefix('(')
+        .and_then(|r| r.split_once(')'))
+        .map(|(tz, _)| tz.trim().to_string())
+        .filter(|tz| !tz.is_empty());
+    Some((hour * 60 + minute, tz))
+}
+
+fn machine_zone() -> Option<String> {
+    if let Some(tz) = std::env::var("TZ").ok() {
+        let tz = tz.trim_start_matches(':').trim();
+        if !tz.is_empty() {
+            return Some(tz.to_string());
+        }
+    }
+    let link = std::fs::read_link("/etc/localtime").ok()?;
+    let path = link.to_string_lossy().into_owned();
+    Some(path.split("zoneinfo/").nth(1).unwrap_or(&path).to_string())
+}
+
+fn local_clock_minutes(tz: Option<&str>) -> Option<u64> {
+    let zone = machine_zone()?;
+    if !zone.eq_ignore_ascii_case(tz?) {
+        return None;
+    }
+    let out = std::process::Command::new("date")
+        .arg("+%H:%M")
+        .output()
+        .ok()?;
+    let clock = String::from_utf8(out.stdout).ok()?;
+    let (hour, minute) = clock.trim().split_once(':')?;
+    Some(hour.parse::<u64>().ok()? % 24 * 60 + minute.parse::<u64>().ok()? % 60)
+}
+
+fn reset_clock_wait(text: &str) -> Option<std::time::Duration> {
+    let lower = text.to_lowercase();
+    let (target, tz) = parse_clock_reset(&lower)?;
+    let Some(now) = local_clock_minutes(tz.as_deref()) else {
+        return Some(QUOTA_CLOCK_FALLBACK);
+    };
+    Some(std::time::Duration::from_secs(
+        (target + 1440 - now) % 1440 * 60,
+    ))
+}
+
+fn terminal_error(e: ProviderError) -> CoreError {
+    match reset_clock_wait(&e.to_string()) {
+        Some(resets_in) => CoreError::Quota {
+            message: e.to_string(),
+            resets_in: Some(resets_in),
+        },
+        None => CoreError::from(e),
+    }
 }
 
 fn provider_reset_hint(e: &ProviderError) -> Option<std::time::Duration> {
@@ -162,6 +246,9 @@ fn turn_retry_wait(e: &ProviderError, attempt: u8) -> Option<std::time::Duration
         return None;
     }
     if silent_stall(e) && attempt >= MAX_STREAM_STALL_RETRIES {
+        return None;
+    }
+    if reset_clock_wait(&e.to_string()).is_some_and(|wait| wait > retry_budget()) {
         return None;
     }
     let hint = provider_reset_hint(e);
@@ -789,7 +876,7 @@ impl Agent {
                             return Err(if turn_retries >= MAX_TURN_RETRIES {
                                 retry_give_up(&e.to_string(), turn_retries, None)
                             } else {
-                                CoreError::from(e)
+                                terminal_error(e)
                             });
                         }
                         Some(Ok(StreamEvent::TextDelta { delta })) => {
@@ -1022,7 +1109,7 @@ impl Agent {
                                         let err = if turn_retries >= MAX_TURN_RETRIES {
                                             retry_give_up(&e.to_string(), turn_retries, None)
                                         } else {
-                                            CoreError::from(e)
+                                            terminal_error(e)
                                         };
                                         self.emit_turn_end(&billed).await;
                                         return Err(err);
@@ -1032,7 +1119,7 @@ impl Agent {
                             let err = if turn_retries >= MAX_TURN_RETRIES {
                                 retry_give_up(&e.to_string(), turn_retries, None)
                             } else {
-                                CoreError::from(e)
+                                terminal_error(e)
                             };
                             self.emit_turn_end(&billed).await;
                             return Err(err);
