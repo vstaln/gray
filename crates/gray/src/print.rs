@@ -1048,7 +1048,7 @@ async fn run_print_inner(
             Some(crate::resume::resolve_session_strict(&store, raw, false).await?),
             false,
         ),
-        None if continue_last => (crate::resume::latest_session_anywhere(&store).await, false),
+        None if continue_last => (crate::resume::latest_session_here(&store).await, false),
         None => (
             crate::failed_turn::resume_session(&store, &cwd, &prompt_hash).await,
             false,

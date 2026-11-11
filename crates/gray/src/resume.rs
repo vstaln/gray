@@ -376,17 +376,12 @@ pub async fn resolve_session_strict(
     }
 }
 
-pub async fn latest_session_anywhere(store: &JsonlSessionStore) -> Option<SessionId> {
-    let cwd = std::env::current_dir().ok();
-    if let Some(c) = cwd.as_deref()
-        && let Some(id) = store.recall_validated(c).await
-    {
+pub async fn latest_session_here(store: &JsonlSessionStore) -> Option<SessionId> {
+    let cwd = std::env::current_dir().ok()?;
+    if let Some(id) = store.recall_validated(&cwd).await {
         return Some(id);
     }
-    let summaries = store.list().await;
-    latest_summary(&summaries, cwd.as_deref())
-        .or_else(|| latest_summary(&summaries, None))
-        .map(|s| s.id.clone())
+    latest_summary(&store.list().await, Some(&cwd)).map(|s| s.id.clone())
 }
 
 pub fn effective_session_model(config_model: Option<&str>, meta_model: &str) -> Option<String> {
