@@ -10,7 +10,7 @@ use crate::config::Config;
 use crate::session_store::{JsonlSessionStore, default_root};
 
 use super::{
-    CURRENT_REQ, LAST_USAGE, Session, emit, emit_result, emit_say, is_turn_active, lock,
+    CURRENT_REQ, LAST_USAGE, Session, emit_result, emit_say, is_turn_active, lock,
     mark_turn_interrupted, sync_session,
 };
 
@@ -347,11 +347,4 @@ pub(crate) async fn resume(
             );
         }
     }
-}
-
-/// Surface a fatal condition as an event (used sparingly; most errors ride
-/// the `result`/`say` rows instead).
-#[allow(dead_code)]
-pub(crate) fn emit_protocol_error(code: &str, message: &str) {
-    emit(json!({"type": "error", "code": code, "message": message}));
 }

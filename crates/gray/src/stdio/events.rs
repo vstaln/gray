@@ -12,6 +12,7 @@ use serde_json::{Value, json};
 use gray_core::event::{AgentEvent, Usage};
 use gray_core::redaction::redact_for_disclosure;
 
+use super::protocol::Event;
 use super::{CURRENT_REQ, CURRENT_SESSION, LAST_USAGE, OUT, SEQ, current_turn_id, lock};
 
 const DETAIL_CAP: usize = 4_000;
@@ -19,9 +20,11 @@ const OUTPUT_CAP: usize = 8_000;
 
 /// Attach protocol envelope fields and write one NDJSON row. `req` and
 /// `turn_id` are filled from the current context unless already present.
-pub(crate) fn emit(mut row: Value) {
+pub(crate) fn emit(event: Event, mut row: Value) {
+    debug_assert!(event.listed(), "{event:?} missing from Event::ALL");
     let seq = SEQ.fetch_add(1, Ordering::Relaxed) + 1;
     let obj = row.as_object_mut().expect("emit takes a JSON object");
+    obj.insert("type".into(), json!(event.name()));
     obj.insert("protocol".into(), json!(2));
     obj.insert("seq".into(), json!(seq));
     obj.entry("session_id").or_insert_with(|| {
@@ -61,7 +64,10 @@ fn strip_ansi(text: &str) -> String {
 
 /// Command output / notices the REPL would print via `say`/`say_err`.
 pub(crate) fn emit_say(level: &str, text: &str) {
-    emit(json!({"type": "say", "level": level, "text": strip_ansi(text)}));
+    emit(
+        Event::Say,
+        json!({"level": level, "text": strip_ansi(text)}),
+    );
 }
 
 /// `say_lines` callers hand us styled ratatui lines (host say queue, pager
@@ -77,11 +83,13 @@ pub(crate) fn emit_say_lines(lines: &[ratatui::text::Line<'static>]) {
 
 /// Approval/question request from the ask service (`approve` answers it).
 pub(crate) fn emit_ask(ask_id: u64, questions: &[crate::ask::AskQuestion]) {
-    emit(json!({
-        "type": "ask",
-        "ask_id": ask_id,
-        "questions": questions,
-    }));
+    emit(
+        Event::Ask,
+        json!({
+            "ask_id": ask_id,
+            "questions": questions,
+        }),
+    );
 }
 
 fn disclose(text: &str, cap: usize) -> String {
@@ -116,14 +124,14 @@ pub(crate) fn on_agent_event(
     match ev {
         AgentEvent::Start | AgentEvent::MessageBoundary => {}
         AgentEvent::TextDelta { delta } => {
-            emit(json!({"type": "text", "delta": delta}));
+            emit(Event::Text, json!({"delta": delta}));
         }
         AgentEvent::ThinkingDelta { delta } => {
-            emit(json!({"type": "thinking", "delta": delta}));
+            emit(Event::Thinking, json!({"delta": delta}));
         }
         AgentEvent::ToolCallStart { id, name } => {
             pending_tools.insert(id.clone(), (name.clone(), None));
-            emit(json!({"type": "tool_start", "id": id, "name": name}));
+            emit(Event::ToolStart, json!({"id": id, "name": name}));
         }
         AgentEvent::ToolCallProgress {
             id,
@@ -133,12 +141,14 @@ pub(crate) fn on_agent_event(
             pending_tools
                 .entry(id.clone())
                 .or_insert((name.clone(), None));
-            emit(json!({
-                "type": "tool_progress",
-                "id": id,
-                "name": name,
-                "args_so_far": disclose(args_so_far, DETAIL_CAP),
-            }));
+            emit(
+                Event::ToolProgress,
+                json!({
+                    "id": id,
+                    "name": name,
+                    "args_so_far": disclose(args_so_far, DETAIL_CAP),
+                }),
+            );
         }
         AgentEvent::ToolCallEnd { id, args } => {
             let entry = pending_tools
@@ -150,12 +160,14 @@ pub(crate) fn on_agent_event(
             } else {
                 entry.0.clone()
             };
-            emit(json!({
-                "type": "tool_call",
-                "id": id,
-                "name": name,
-                "args": args,
-            }));
+            emit(
+                Event::ToolCall,
+                json!({
+                    "id": id,
+                    "name": name,
+                    "args": args,
+                }),
+            );
         }
         AgentEvent::ToolResult {
             id,
@@ -166,32 +178,39 @@ pub(crate) fn on_agent_event(
                 .remove(id)
                 .map(|(n, a)| (if n.is_empty() { "tool".to_string() } else { n }, a))
                 .unwrap_or_else(|| ("tool".to_string(), None));
-            emit(json!({
-                "type": "tool_result",
-                "id": id,
-                "name": name,
-                "args": args,
-                "output": disclose(output, OUTPUT_CAP),
-                "is_error": is_error,
-            }));
+            emit(
+                Event::ToolResult,
+                json!({
+                    "id": id,
+                    "name": name,
+                    "args": args,
+                    "output": disclose(output, OUTPUT_CAP),
+                    "is_error": is_error,
+                }),
+            );
         }
         AgentEvent::StepUsage { usage } => {
-            emit(json!({"type": "usage", "step": true, "usage": usage}));
+            emit(Event::Usage, json!({"step": true, "usage": usage}));
         }
         AgentEvent::PrefixChanged { cause } => {
-            emit(json!({"type": "notice", "kind": "prefix_changed", "cause": cause}));
+            emit(
+                Event::Notice,
+                json!({"kind": "prefix_changed", "cause": cause}),
+            );
         }
         AgentEvent::StreamError { message, details } => {
-            emit(json!({
-                "type": "say",
-                "level": "warn",
-                "kind": "provider_retry",
-                "text": disclose(message, DETAIL_CAP),
-                "details": disclose(details, DETAIL_CAP),
-            }));
+            emit(
+                Event::Say,
+                json!({
+                    "level": "warn",
+                    "kind": "provider_retry",
+                    "text": disclose(message, DETAIL_CAP),
+                    "details": disclose(details, DETAIL_CAP),
+                }),
+            );
         }
         AgentEvent::Steered { text } => {
-            emit(json!({"type": "steered", "text": disclose(text, DETAIL_CAP)}));
+            emit(Event::Steered, json!({"text": disclose(text, DETAIL_CAP)}));
         }
         AgentEvent::Compacted {
             tokens_before,
@@ -200,14 +219,16 @@ pub(crate) fn on_agent_event(
             messages_after,
             reason,
         } => {
-            emit(json!({
-                "type": "compacted",
-                "tokens_before": tokens_before,
-                "tokens_after": tokens_after,
-                "messages_before": messages_before,
-                "messages_after": messages_after,
-                "reason": reason,
-            }));
+            emit(
+                Event::Compacted,
+                json!({
+                    "tokens_before": tokens_before,
+                    "tokens_after": tokens_after,
+                    "messages_before": messages_before,
+                    "messages_after": messages_after,
+                    "reason": reason,
+                }),
+            );
         }
         AgentEvent::TurnEnd { usage, stop_reason } => {
             *turn_usage = Some(*usage);
@@ -217,11 +238,13 @@ pub(crate) fn on_agent_event(
                 totals.add(usage, model, Some(ms));
             }
             *lock(&LAST_USAGE) = Some(*usage);
-            emit(json!({
-                "type": "turn_usage",
-                "usage": usage,
-                "stop_reason": stop_reason,
-            }));
+            emit(
+                Event::TurnUsage,
+                json!({
+                    "usage": usage,
+                    "stop_reason": stop_reason,
+                }),
+            );
         }
     }
 }

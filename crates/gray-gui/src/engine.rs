@@ -138,9 +138,18 @@ fn pump_stdout(
         if t.is_empty() {
             continue;
         }
-        if let Ok(v) = serde_json::from_str::<Value>(t)
-            && tx.send(EngineMsg::Row(v)).is_err()
-        {
+        let Ok(v) = serde_json::from_str::<Value>(t) else {
+            continue;
+        };
+        if v["protocol"] != 2 {
+            dead.store(true, Ordering::SeqCst);
+            let _ = tx.send(EngineMsg::Died(format!(
+                "gray speaks protocol {}, this build understands 2; update gray or the IDE",
+                v["protocol"]
+            )));
+            return;
+        }
+        if tx.send(EngineMsg::Row(v)).is_err() {
             return;
         }
     }

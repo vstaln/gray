@@ -595,6 +595,12 @@ pub struct Cli {
     pub dump_manifest: bool,
 
     #[arg(
+        long = "dump-protocol",
+        help = "Print the `gray --stdio` protocol reference as markdown and exit"
+    )]
+    pub dump_protocol: bool,
+
+    #[arg(
         long = "dump-models",
         value_name = "MODE",
         num_args = 0..=1,
@@ -612,7 +618,7 @@ pub struct Cli {
 
     #[arg(
         long,
-        conflicts_with_all = ["print", "input_json", "json", "dump_manifest", "dump_models", "skill"],
+        conflicts_with_all = ["print", "input_json", "json", "dump_manifest", "dump_protocol", "dump_models", "skill"],
         help = "Serve the persistent NDJSON machine protocol on stdin/stdout (for embedding surfaces like gray-gui)"
     )]
     pub stdio: bool,

@@ -5,12 +5,13 @@
 //! `repl::dispatch::dispatch_command` for slash commands — while embedding
 //! surfaces (gray-gui) speak NDJSON on stdin/stdout instead of a terminal.
 //!
-//! Wire shape is documented in `docs/stdio-protocol.md`. In short: requests
+//! Wire shape is generated into `docs/stdio-protocol.md` from `protocol.rs`. In short: requests
 //! arrive as `{"type": ..., "id": ...}`; every emitted row carries
 //! `protocol`, `seq`, `session_id`, `req` (the request id that produced it)
 //! and `turn_id` (when inside a turn).
 
 pub(crate) mod events;
+pub mod protocol;
 mod requests;
 
 use std::collections::VecDeque;
@@ -21,6 +22,8 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use serde_json::{Value, json};
+
+use protocol::{Event, Request};
 
 use crate::config::Config;
 use crate::repl::{self, SessionState, SessionTotals};
@@ -185,13 +188,13 @@ fn command_line(v: &Value) -> String {
 }
 
 fn emit_result(id: &Value, ok: bool, extra: Value) {
-    let mut row = json!({"type": "result", "id": id, "ok": ok});
+    let mut row = json!({"id": id, "ok": ok});
     if let (Some(dst), Some(src)) = (row.as_object_mut(), extra.as_object()) {
         for (k, v) in src {
             dst.insert(k.clone(), v.clone());
         }
     }
-    emit(row);
+    emit(Event::Result, row);
 }
 
 /// Routing on the stdin-reader thread. Turn-control verbs are serviced
@@ -206,10 +209,10 @@ fn route_incoming(tx: &tokio::sync::mpsc::UnboundedSender<Value>, v: Value) {
         .unwrap_or("")
         .to_string();
     let id = v.get("id").cloned().unwrap_or(Value::Null);
-    match ty.as_str() {
-        "interrupt" => requests::interrupt(&id),
-        "approve" => requests::approve(&v, &id),
-        "steer" => {
+    match Request::parse(&ty) {
+        Some(Request::Interrupt) => requests::interrupt(&id),
+        Some(Request::Approve) => requests::approve(&v, &id),
+        Some(Request::Steer) => {
             let text = v
                 .get("text")
                 .and_then(|t| t.as_str())
@@ -223,8 +226,8 @@ fn route_incoming(tx: &tokio::sync::mpsc::UnboundedSender<Value>, v: Value) {
             push_queued(text, images, id.clone());
             emit_result(&id, true, json!({"queued": true}));
         }
-        "prompt" | "command" if is_turn_active() => {
-            let text = if ty == "prompt" {
+        Some(req @ (Request::Prompt | Request::Command)) if is_turn_active() => {
+            let text = if req == Request::Prompt {
                 v.get("text")
                     .and_then(|t| t.as_str())
                     .unwrap_or_default()
@@ -232,7 +235,7 @@ fn route_incoming(tx: &tokio::sync::mpsc::UnboundedSender<Value>, v: Value) {
             } else {
                 command_line(&v)
             };
-            let images = if ty == "prompt" {
+            let images = if req == Request::Prompt {
                 parse_attachments(&v)
             } else {
                 Vec::new()
@@ -265,14 +268,20 @@ async fn run_turn(
     *lock(&CURRENT_REQ) = Some(req.clone());
     begin_turn_state(turn_id.clone());
 
-    emit(json!({"type": "turn_start", "turn_id": turn_id, "prompt": text}));
+    emit(
+        Event::TurnStart,
+        json!({"turn_id": turn_id, "prompt": text}),
+    );
 
     if config.model.is_none() && sess.agent.is_none() {
         emit_say(
             "error",
             "no provider configured — connect one with set_model (list_models shows what's available)",
         );
-        emit(json!({"type": "turn_end", "turn_id": turn_id, "ok": false, "error": "no_provider"}));
+        emit(
+            Event::TurnEnd,
+            json!({"turn_id": turn_id, "ok": false, "error": "no_provider"}),
+        );
         emit_result(&req, false, json!({"error": "no_provider"}));
         let _ = end_turn_state();
         *lock(&CURRENT_REQ) = None;
@@ -302,13 +311,15 @@ async fn run_turn(
         emit_say("error", &format!("{e:#}"));
     }
     let usage = *lock(&LAST_USAGE);
-    emit(json!({
-        "type": "turn_end",
-        "turn_id": turn_id,
-        "ok": r.is_ok(),
-        "interrupted": interrupted,
-        "usage": usage,
-    }));
+    emit(
+        Event::TurnEnd,
+        json!({
+            "turn_id": turn_id,
+            "ok": r.is_ok(),
+            "interrupted": interrupted,
+            "usage": usage,
+        }),
+    );
     emit_result(&req, r.is_ok(), json!({"turn_id": turn_id}));
     *lock(&CURRENT_REQ) = None;
     sync_session(sess);
@@ -666,16 +677,18 @@ pub async fn run_stdio_mode(
     }
 
     sync_session(&sess);
-    emit(json!({
-        "type": "hello",
-        "gray_version": env!("CARGO_PKG_VERSION"),
-        "cwd": cwd.display().to_string(),
-        "model": config.model,
-        "effort": config.thinking_effort,
-        "provider_id": config.provider_id,
-        "base_url": config.base_url,
-        "unconfigured": sess.unconfigured,
-    }));
+    emit(
+        Event::Hello,
+        json!({
+            "gray_version": env!("CARGO_PKG_VERSION"),
+            "cwd": cwd.display().to_string(),
+            "model": config.model,
+            "effort": config.thinking_effort,
+            "provider_id": config.provider_id,
+            "base_url": config.base_url,
+            "unconfigured": sess.unconfigured,
+        }),
+    );
 
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Value>();
     let ptx = tx.clone();
@@ -695,11 +708,13 @@ pub async fn run_stdio_mode(
             }
             match serde_json::from_str::<Value>(trimmed) {
                 Ok(v) => route_incoming(&ptx, v),
-                Err(e) => emit(json!({
-                    "type": "error",
-                    "code": "bad_json",
-                    "message": format!("malformed request line: {e}"),
-                })),
+                Err(e) => emit(
+                    Event::Error,
+                    json!({
+                        "code": "bad_json",
+                        "message": format!("malformed request line: {e}"),
+                    }),
+                ),
             }
         }
     });
@@ -728,8 +743,8 @@ pub async fn run_stdio_mode(
                     .and_then(|t| t.as_str())
                     .unwrap_or("")
                     .to_string();
-                let r = match ty.as_str() {
-                    "prompt" => {
+                let r = match Request::parse(&ty) {
+                    Some(Request::Prompt) => {
                         let text = v
                             .get("text")
                             .and_then(|t| t.as_str())
@@ -751,7 +766,7 @@ pub async fn run_stdio_mode(
                             .await
                         }
                     }
-                    "command" => {
+                    Some(Request::Command) => {
                         let line = command_line(&v);
                         if line.is_empty() {
                             emit_result(&id, false, json!({"error": "command needs line"}));
@@ -760,7 +775,7 @@ pub async fn run_stdio_mode(
                             run_command(&mut sess, config, &cwd, &tui, id.clone(), line).await
                         }
                     }
-                    "steer" => {
+                    Some(Request::Steer) => {
                         let text = v
                             .get("text")
                             .and_then(|t| t.as_str())
@@ -770,49 +785,49 @@ pub async fn run_stdio_mode(
                         emit_result(&id, true, json!({"queued": true}));
                         Ok(())
                     }
-                    "interrupt" => {
+                    Some(Request::Interrupt) => {
                         requests::interrupt(&id);
                         Ok(())
                     }
-                    "approve" => {
+                    Some(Request::Approve) => {
                         requests::approve(&v, &id);
                         Ok(())
                     }
-                    "status" => {
+                    Some(Request::Status) => {
                         requests::status(&mut sess, config, &cwd, &id);
                         Ok(())
                     }
-                    "list_commands" => {
+                    Some(Request::ListCommands) => {
                         requests::list_commands(&sess, &id);
                         Ok(())
                     }
-                    "list_models" => {
+                    Some(Request::ListModels) => {
                         requests::list_models(config, &v, &id).await;
                         Ok(())
                     }
-                    "set_model" => {
+                    Some(Request::SetModel) => {
                         requests::set_model(&mut sess, config, &cwd, &tui, &v, &id).await;
                         Ok(())
                     }
-                    "list_sessions" => requests::list_sessions(&v, &id).await,
-                    "resume" => {
+                    Some(Request::ListSessions) => requests::list_sessions(&v, &id).await,
+                    Some(Request::Resume) => {
                         requests::resume(&mut sess, config, &cwd, &tui, &v, &id).await;
                         Ok(())
                     }
-                    "shutdown" | "quit" => {
+                    Some(Request::Shutdown) => {
                         sess.quit = true;
                         emit_result(&id, true, json!({"bye": true}));
                         Ok(())
                     }
-                    "" => {
+                    None if ty.is_empty() => {
                         emit_result(&id, false, json!({"error": "missing request type"}));
                         Ok(())
                     }
-                    other => {
+                    None => {
                         emit_result(
                             &id,
                             false,
-                            json!({"error": format!("unknown request type '{other}'")}),
+                            json!({"error": format!("unknown request type '{ty}'")}),
                         );
                         Ok(())
                     }

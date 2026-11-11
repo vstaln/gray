@@ -142,6 +142,8 @@ jobs:
         run: cargo build --locked --release -p gray
       - name: Binary size floor
         run: ./scripts/perf-floor.sh
+      - name: stdio protocol doc matches the code
+        run: ./target/release/gray --dump-protocol | diff -u crates/gray/docs/stdio-protocol.md -
 
   installer-smoke:
     runs-on: ubuntu-latest

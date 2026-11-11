@@ -73,6 +73,10 @@ async fn run() -> anyhow::Result<()> {
     if let Some(gray::Commands::Spill { cmd }) = &cli.command {
         return gray::spill::run_cli(cmd);
     }
+    if cli.dump_protocol {
+        print!("{}", gray::stdio::protocol::render());
+        return Ok(());
+    }
     if cli.dump_manifest {
         match gray::build_registry().await {
             Ok((_registry, manifests, fallback)) => {
