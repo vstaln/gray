@@ -35,7 +35,7 @@ pub(crate) fn saved_models_for(list_key: &str, sort_base: &str) -> Vec<(String, 
     let mut models = super::context::load_provider_model_list(list_key);
     if let Ok(path) = saved_config_path() {
         let _cfg_lock = crate::setup::lock_saved_config_at(&path)
-            .inspect_err(|e| log::warn!("cannot lock {} ({e:#})", &path.display()))
+            .inspect_err(|e| log::warn!("cannot lock {} ({e:#})", path.display()))
             .ok();
         load_saved_config_at(&path).sort_models(sort_base, &mut models);
     }
@@ -175,7 +175,7 @@ pub(crate) fn model_picker_loop(
     let effort_saved = saved_config_path()
         .map(|path| {
             let _cfg_lock = crate::setup::lock_saved_config_at(&path)
-                .inspect_err(|e| log::warn!("cannot lock {} ({e:#})", &path.display()))
+                .inspect_err(|e| log::warn!("cannot lock {} ({e:#})", path.display()))
                 .ok();
             load_saved_config_at(&path)
         })

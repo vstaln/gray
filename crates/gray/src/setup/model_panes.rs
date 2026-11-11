@@ -1181,7 +1181,7 @@ pub(crate) fn run_model_panes(
         let saved = saved_config_path()
             .map(|path| {
                 let _cfg_lock = crate::setup::lock_saved_config_at(&path)
-                    .inspect_err(|e| log::warn!("cannot lock {} ({e:#})", &path.display()))
+                    .inspect_err(|e| log::warn!("cannot lock {} ({e:#})", path.display()))
                     .ok();
                 load_saved_config_at(&path)
             })

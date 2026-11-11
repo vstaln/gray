@@ -56,7 +56,7 @@ pub(crate) fn merge_models(base_url: &str, live: Vec<(String, String)>) -> Vec<(
     let mut models = live;
     if let Ok(path) = saved_config_path() {
         let _cfg_lock = crate::setup::lock_saved_config_at(&path)
-            .inspect_err(|e| log::warn!("cannot lock {} ({e:#})", &path.display()))
+            .inspect_err(|e| log::warn!("cannot lock {} ({e:#})", path.display()))
             .ok();
         load_saved_config_at(&path).sort_models(base_url, &mut models);
     }
@@ -67,7 +67,7 @@ pub(crate) fn picker_models_for(base_url: &str, api_key: Option<&str>) -> Vec<(S
     let mut models = fetch_live_provider_models(base_url, api_key);
     if let Ok(path) = saved_config_path() {
         let _cfg_lock = crate::setup::lock_saved_config_at(&path)
-            .inspect_err(|e| log::warn!("cannot lock {} ({e:#})", &path.display()))
+            .inspect_err(|e| log::warn!("cannot lock {} ({e:#})", path.display()))
             .ok();
         load_saved_config_at(&path).sort_models(base_url, &mut models);
     }
