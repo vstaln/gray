@@ -1293,8 +1293,12 @@ pub(super) fn stream_unfold_step(
                             if tools_by_call_id.is_empty() && saw_output_text {
                                 log::warn!(
                                     target: "gray_provider",
-                                    "responses stream ended without response.completed; completing text output"
+                                    "responses stream ended without response.completed; keeping partial text and reporting truncation"
                                 );
+                                pending_events.push_back(StreamEvent::stream_error(
+                                    "Stream truncated; partial answer kept",
+                                    "Responses stream ended before response.completed; send another message to retry",
+                                ));
                                 completed = true;
                                 pending_events.push_back(StreamEvent::MessageComplete {
                                     stop_reason: Some(StopReason::EndTurn),
