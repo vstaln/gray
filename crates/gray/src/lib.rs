@@ -201,6 +201,25 @@ fn cache_warm_policy(
     })
 }
 
+pub(crate) fn sync_context_budget(agent: &mut gray_core::agent::Agent, config: &Config) {
+    let model = config.model.as_deref().unwrap_or("");
+    let window = crate::setup::context::resolve_model_context_length(model);
+    let reserve = crate::setup::context::user_reserve_tokens_for(window);
+    let (ceiling, price_cliff) = crate::compact::ceiling_for(
+        config.compact_at,
+        window,
+        reserve,
+        crate::setup::model_price_cliff(model).map(|c| c as usize),
+    );
+    agent.set_context_budget(
+        window,
+        reserve,
+        crate::setup::context::user_keep_for(window),
+        ceiling,
+        price_cliff,
+    );
+}
+
 pub async fn build_agent(
     config: &Config,
     cwd: &Path,
@@ -433,20 +452,10 @@ async fn build_agent_inner(
         }
     }
 
-    let mut agent = if config.bare {
-        agent
-    } else {
-        let window = crate::setup::context::resolve_model_context_length(model);
-        let (ceiling, price_cliff) = crate::compact::ceiling_for(
-            config.compact_at,
-            window,
-            crate::setup::context::user_reserve_tokens_for(window),
-            crate::setup::model_price_cliff(model).map(|c| c as usize),
-        );
-        agent
-            .with_compaction_budget(config.context_reserve, config.context_keep)
-            .with_compact_ceiling(ceiling, price_cliff)
-    };
+    let mut agent = agent;
+    if !config.bare {
+        sync_context_budget(&mut agent, config);
+    }
 
     agent.set_prefix_rewrite_ok(!config.uses_plugin_credentials() || plugin_warm_replay);
 

@@ -216,9 +216,8 @@ async fn pipeline_summary_first_then_retained() {
 
 #[tokio::test]
 async fn compact_v2_caps_retained_under_ceiling() {
-    let mut agent = test_agent("FIXED-SUMMARY-123")
-        .with_context_window(Some(200_000))
-        .with_compact_ceiling(Some(400), None);
+    let mut agent = test_agent("FIXED-SUMMARY-123");
+    agent.set_context_budget(200_000, 16_000, 20_000, Some(400), None);
     let bodies: Vec<String> = (1..=6).map(|i| format!("msg{i}")).collect();
     agent.set_messages(bodies.iter().map(|t| sized_msg(t)).collect());
     agent.compact_v2(None, None).await.unwrap();

@@ -1,17 +1,9 @@
 use super::*;
 
-pub struct CompactionSettings {
-    pub reserve_tokens: usize,
-
-    pub ceiling_tokens: Option<usize>,
-
-    pub price_cliff_tokens: Option<usize>,
-}
-
 static AUTO_COMPACT_ENABLED: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(true);
 
-pub fn set_auto_compact_enabled(on: bool) {
+fn set_auto_compact_enabled(on: bool) {
     AUTO_COMPACT_ENABLED.store(on, std::sync::atomic::Ordering::Relaxed);
 }
 
@@ -29,20 +21,6 @@ pub fn init_auto_compact_from_env() {
         })
         .unwrap_or(false);
     set_auto_compact_enabled(!disabled);
-}
-
-pub fn should_compact(tokens: usize, window: usize, s: &CompactionSettings) -> bool {
-    tokens > window.saturating_sub(s.reserve_tokens)
-        || s.ceiling_tokens.is_some_and(|c| tokens >= c)
-}
-
-pub fn binding_reason(tokens: usize, s: &CompactionSettings) -> Option<CompactReason> {
-    s.ceiling_tokens
-        .filter(|&c| tokens >= c)
-        .map(|_| match s.price_cliff_tokens {
-            Some(cliff) => CompactReason::PriceCliff { cliff },
-            None => CompactReason::UserCeiling,
-        })
 }
 
 pub fn compact_reason_note(reason: CompactReason) -> String {
@@ -89,18 +67,6 @@ pub fn effective_compact_ceiling(config: &crate::Config) -> usize {
     )
     .0
     .unwrap_or_else(|| window.saturating_sub(reserve))
-}
-
-pub fn compaction_settings_for(
-    window: usize,
-    ceiling: Option<usize>,
-    price_cliff: Option<usize>,
-) -> CompactionSettings {
-    CompactionSettings {
-        reserve_tokens: crate::setup::user_reserve_tokens_for(window),
-        ceiling_tokens: ceiling,
-        price_cliff_tokens: price_cliff,
-    }
 }
 
 pub fn estimate_tokens(msg: &Message) -> usize {

@@ -592,7 +592,7 @@ pub struct Agent {
 
     pub(crate) prefix_guard: crate::prefix_guard::PrefixGuard,
 
-    pub(crate) warm_cache_reported: bool,
+    pub(crate) warm_cache_reported: Option<bool>,
 
     pub(crate) prefix_rewrite_ok: bool,
 
@@ -606,6 +606,8 @@ pub struct Agent {
     pub(crate) held_summary: Option<crate::background_compact::HeldSummary>,
 
     pub(crate) background_failures: u8,
+
+    pub(crate) unbilled: Usage,
 
     /// A changed tool list held back because sending it now would re-bill
     /// the whole cached prefix (tools sit in front of it).
@@ -669,7 +671,7 @@ impl Agent {
             )),
             warm_refreshed: Default::default(),
             prefix_guard: crate::prefix_guard::PrefixGuard::default(),
-            warm_cache_reported: false,
+            warm_cache_reported: None,
             prefix_rewrite_ok: true,
             pending_tools: None,
             last_request_at: None,
@@ -678,6 +680,7 @@ impl Agent {
             compaction_provider: None,
             held_summary: None,
             background_failures: 0,
+            unbilled: Usage::default(),
         }
     }
 
@@ -903,20 +906,19 @@ impl Agent {
         self
     }
 
-    pub fn with_compaction_budget(mut self, reserve: Option<usize>, keep: Option<usize>) -> Self {
-        self.compact_reserve = reserve;
-        self.compact_keep = keep;
-        self
-    }
-
-    pub fn with_compact_ceiling(
-        mut self,
+    pub fn set_context_budget(
+        &mut self,
+        window: usize,
+        reserve: usize,
+        keep: usize,
         ceiling: Option<usize>,
         price_cliff: Option<usize>,
-    ) -> Self {
+    ) {
+        self.context_window = Some(window);
+        self.compact_reserve = Some(reserve);
+        self.compact_keep = Some(keep);
         self.compact_ceiling = ceiling;
         self.price_cliff = if ceiling.is_some() { price_cliff } else { None };
-        self
     }
 
     pub fn price_cliff(&self) -> Option<usize> {
@@ -1040,7 +1042,7 @@ pub(crate) async fn complete_isolated_detached(
     messages: Vec<Message>,
     tools: Vec<ToolDef>,
     shared_cache: bool,
-) -> Result<String, CoreError> {
+) -> Result<(String, Usage), CoreError> {
     let req = ChatRequest {
         system,
         messages,
@@ -1068,8 +1070,9 @@ pub(crate) async fn complete_isolated_detached(
 async fn drain_reply_text(
     mut stream: ProviderStream,
     session: Option<&str>,
-) -> Result<String, CoreError> {
+) -> Result<(String, Usage), CoreError> {
     let mut result = String::new();
+    let mut spent = Usage::default();
     while let Some(event) = stream.next().await {
         match event? {
             StreamEvent::TextDelta { delta } => {
@@ -1081,13 +1084,14 @@ async fn drain_reply_text(
                 } else {
                     "compaction"
                 };
-                usage.unwrap_or_default().log_request(kind, session);
+                spent = usage.unwrap_or_default();
+                spent.log_request(kind, session);
                 break;
             }
             _ => {}
         }
     }
-    Ok(result)
+    Ok((result, spent))
 }
 
 pub(crate) fn thinking_block(

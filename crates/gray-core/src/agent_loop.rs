@@ -570,7 +570,7 @@ impl Agent {
             // (an 86k write to stub ~10k tokens); mask_stale_tool_output on a
             // cold cache and pre-turn compaction cover it instead.
             if self.prefix_rewrite_ok
-                && !self.warm_cache_reported
+                && self.warm_cache_reported == Some(false)
                 && needs_soft_elide(self.estimate_tokens(), self.context_window)
             {
                 let before = self.estimate_tokens();
@@ -686,7 +686,7 @@ impl Agent {
 
             if let Ok(mut hint) = self.warm_hint.lock() {
                 hint.prompt_tokens = self.estimate_tokens();
-                hint.cache_reported = self.warm_cache_reported;
+                hint.cache_reported = self.warm_cache_reported == Some(true);
             }
             let warm_off = self
                 .warm_hint
@@ -1205,14 +1205,14 @@ impl Agent {
 
             self.record_context_usage(&usage);
             self.maybe_start_background_compaction();
-            self.warm_cache_reported = self.warm_cache_reported
-                || usage.cache_read_input_tokens
-                    + usage.cached_tokens
-                    + usage.cache_write_input_tokens
-                    > 0;
+            let caching = usage.cache_read_input_tokens
+                + usage.cached_tokens
+                + usage.cache_write_input_tokens
+                > 0;
+            self.warm_cache_reported = Some(self.warm_cache_reported == Some(true) || caching);
             if let (true, Ok(mut hint)) = (usage.input_tokens > 0, self.warm_hint.lock()) {
                 hint.prompt_tokens = usage.input_tokens;
-                hint.cache_reported = self.warm_cache_reported;
+                hint.cache_reported = self.warm_cache_reported == Some(true);
             }
 
             let overflow_retry =
@@ -1316,6 +1316,7 @@ impl Agent {
                 {
                     billed.accumulate(&spent);
                 }
+                billed.accumulate(&std::mem::take(&mut self.unbilled));
                 log::info!(target: "gray_agent", "agent run end: session={} stop={stop_reason:?}, usage in={} out={} cached={} hit={:.0}%, {} messages", ctx.session_id.as_deref().unwrap_or("-"), total_usage.input_tokens, total_usage.output_tokens, total_usage.cached_tokens, hit, self.messages.len());
                 emit!(AgentEvent::turn_end(stop_reason, billed));
                 self.emit_turn_end(&billed).await;

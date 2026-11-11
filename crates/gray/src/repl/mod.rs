@@ -178,8 +178,8 @@ pub(crate) use handlers::{
 };
 pub(crate) use plugin_cmds::handle_plugin_command;
 pub(crate) use session::{
-    dispatch_agent_event, handle_resume, maybe_overflow_compact, maybe_threshold_compact,
-    persist_turn_messages, print_exit_hint,
+    dispatch_agent_event, handle_resume, maybe_overflow_compact, persist_turn_messages,
+    print_exit_hint,
 };
 pub(crate) use status::{
     SessionTotals, handle_compact, handle_context_window, turn_footer, turn_tokens_per_second,
@@ -533,6 +533,7 @@ pub async fn run_repl_mode(
     crate::setup::set_user_context_window(config.context_window);
     crate::setup::set_user_reserve_tokens(config.context_reserve);
     crate::setup::set_user_keep_recent_tokens(config.context_keep);
+    crate::compact::init_auto_compact_from_env();
     crate::setup::set_active_model_provider(&config.base_url);
 
     let offline = crate::config::offline();

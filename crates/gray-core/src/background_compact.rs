@@ -12,7 +12,7 @@ pub(crate) struct HeldSummary {
     pub(crate) model: String,
     pub(crate) anchor: Option<Message>,
     pub(crate) started: Instant,
-    pub(crate) task: tokio::task::JoinHandle<Result<String, CoreError>>,
+    pub(crate) task: tokio::task::JoinHandle<Result<(String, crate::event::Usage), CoreError>>,
 }
 
 impl Drop for HeldSummary {

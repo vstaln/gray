@@ -657,13 +657,13 @@ pub(crate) async fn handle_compact(
                 super::notice::push_notice(
                     &mut shared.lock().expect("tui lock"),
                     "Nothing to compact",
-                    "conversation already fits in context",
+                    "a summary would not be smaller than the history it replaces",
                     false,
                 );
             } else {
                 say(
                     None,
-                    "nothing to compact (conversation already fits in context)",
+                    "nothing to compact (a summary would not be smaller than the history it replaces)",
                 );
             }
         }

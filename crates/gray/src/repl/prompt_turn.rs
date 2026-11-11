@@ -239,24 +239,6 @@ pub(crate) async fn run_prompt_turn(
         }
     };
 
-    {
-        let latest = tui
-            .as_ref()
-            .and_then(|(s, _)| s.lock().ok().and_then(|t| t.latest_usage));
-        tokio::select! {
-            _ = cancel.cancelled() => {}
-            _ = maybe_threshold_compact(
-                agent,
-                config,
-                &mut *session_state,
-                cwd,
-                tui.as_ref().map(|(s, _)| s),
-                latest,
-                &mut initial_count,
-            ) => {}
-        }
-    }
-
     if let Some(s) = &tui_stream {
         s.lock()
             .expect("tui lock")

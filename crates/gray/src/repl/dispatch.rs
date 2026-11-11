@@ -292,6 +292,11 @@ pub(crate) async fn dispatch_command(
         }
         ReplCommand::ContextWindow(val) => {
             handle_context_window(config, cwd, agent, val, tui.as_ref().map(|(s, _)| s)).await;
+            if let Some(agent) = agent.as_mut()
+                && !config.bare
+            {
+                crate::sync_context_budget(agent, config);
+            }
             Flow::Continue
         }
         ReplCommand::Jobs => {
