@@ -267,11 +267,7 @@ impl Message {
                 ContentBlock::ToolUse { name, args, .. } => {
                     name.len() + serde_json::to_string(args).map(|s| s.len()).unwrap_or(0)
                 }
-                ContentBlock::Thinking {
-                    text,
-                    encrypted_content,
-                    ..
-                } => text.len() + encrypted_content.as_deref().map_or(0, str::len),
+                ContentBlock::Thinking { text, .. } => text.len(),
                 ContentBlock::Image { data, .. } | ContentBlock::Media { data, .. } => data.len(),
             };
             if n > 0 {
