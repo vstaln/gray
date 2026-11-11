@@ -238,7 +238,7 @@ pub(crate) fn provider_granted(entry: &LockEntry, declared: &[String]) -> bool {
         .granted_capabilities
         .iter()
         .any(|capability| capability == PROVIDER_CAPABILITY)
-        || gray_plugin::capabilities::granted_for(entry, declared).contains(PROVIDER_CAPABILITY)
+        || declared.iter().any(|c| c == PROVIDER_CAPABILITY)
 }
 
 fn cached_from_manifest(home: &Path, name: &str, entry: &LockEntry) -> CachedProviderPlugin {

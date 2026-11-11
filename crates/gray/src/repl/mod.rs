@@ -409,7 +409,7 @@ fn plugin_help_entries(hooks: &[Arc<dyn PluginHooks>]) -> Vec<(String, String)> 
         .map(|c| {
             (
                 c.name.strip_prefix('/').unwrap_or(&c.name).to_string(),
-                c.description,
+                String::new(),
             )
         })
         .collect()

@@ -193,9 +193,6 @@ pub(crate) fn on_agent_event(
         AgentEvent::Steered { text } => {
             emit(json!({"type": "steered", "text": disclose(text, DETAIL_CAP)}));
         }
-        AgentEvent::Retract => {
-            emit(json!({"type": "retract"}));
-        }
         AgentEvent::Compacted {
             tokens_before,
             tokens_after,

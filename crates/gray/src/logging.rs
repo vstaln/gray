@@ -155,7 +155,6 @@ pub fn init() {
             return;
         };
         let path = home.join("logs").join("gray.log");
-        crate::rotation::rotate_if_needed(&path);
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }

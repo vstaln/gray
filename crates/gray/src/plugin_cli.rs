@@ -549,7 +549,10 @@ pub fn print_capabilities(only: Option<&str>) -> anyhow::Result<()> {
             })
             .unwrap_or_default();
         let (granted, hash) = (
-            gray_plugin::capabilities::granted_for(entry, &declared),
+            declared
+                .iter()
+                .cloned()
+                .collect::<std::collections::BTreeSet<_>>(),
             entry.capabilities_hash.clone(),
         );
         println!(

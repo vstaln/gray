@@ -105,7 +105,6 @@ notifications. Each maps to the pi event an ported extension expects.
 | `provider/before_request` | `before_provider_request` | headers/body patch |
 | `tool/before` (exists) | `tool_call` | allow/deny/patch args |
 | `tool/after` **(shipped)** | `tool_result` | replacement result content |
-| `compact/before` | `session_before_compact` | custom summary, or cancel |
 | `session/before_switch`, `/before_fork` | same | cancel |
 | `model/select` | `model_select` | observe |
 | `bash/user` | `user_bash` | handle `!cmd` instead of the shell |

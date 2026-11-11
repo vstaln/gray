@@ -181,9 +181,6 @@ impl Agent {
                         self.unbilled.accumulate(&spent);
                         let apply_started = std::time::Instant::now();
                         let tail = self.messages[held.covered..].to_vec();
-                        for hook in &self.hooks {
-                            hook.compact_before().await;
-                        }
                         if self
                             .apply_compaction(&summary, held.anchor.clone(), tail)
                             .await
@@ -225,9 +222,6 @@ impl Agent {
         else {
             return Ok(None);
         };
-        for hook in &self.hooks {
-            hook.compact_before().await;
-        }
         let tail = prepared.retained_tail(self.session_id.as_deref());
         let (summary, spent) = run_compaction_summary(prepared.request).await?;
         self.unbilled.accumulate(&spent);

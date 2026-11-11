@@ -231,8 +231,6 @@ pub enum AgentEvent {
         text: String,
     },
 
-    Retract,
-
     TurnEnd {
         stop_reason: StopReason,
         usage: Usage,

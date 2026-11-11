@@ -552,12 +552,7 @@ async fn spawn_lock_plugin(
             p.set_host_handler(h.clone()).await;
         }
 
-        let declared = p.manifest().capabilities.clone();
-        p.set_capabilities(
-            crate::capabilities::granted_for(entry, &declared)
-                .into_iter()
-                .collect(),
-        );
+        p.set_capabilities(p.manifest().capabilities.to_vec());
         outcomes.push(SpawnOutcome {
             name: name.to_string(),
             error: None,
@@ -570,12 +565,7 @@ async fn spawn_lock_plugin(
                 p.set_host_handler(h.clone()).await;
             }
 
-            let declared = p.manifest().capabilities.clone();
-            p.set_capabilities(
-                crate::capabilities::granted_for(entry, &declared)
-                    .into_iter()
-                    .collect(),
-            );
+            p.set_capabilities(p.manifest().capabilities.to_vec());
             outcomes.push(SpawnOutcome {
                 name: name.to_string(),
                 error: None,

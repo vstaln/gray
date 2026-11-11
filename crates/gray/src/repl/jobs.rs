@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use gray_core::agent::{BackgroundJob, ToolContext, ToolExecutor};
 
-use crate::setup::{ManagerItem, ManagerOutcome, ManagerSpec, run_install_manager};
+use crate::setup::{ManagerItem, ManagerSpec, run_install_manager};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Wake {
@@ -136,18 +136,13 @@ pub(crate) fn items(jobs: &[BackgroundJob], wakes: &[Wake], now: i64) -> Vec<Man
         name: format!("job:{}", j.id),
         row: job_row(j),
         lit: !j.stopping,
-        enabled: false,
-
         read_only: j.stopping,
-        needs_setup: false,
     });
     let wake_items = wakes.iter().map(|w| ManagerItem {
         name: format!("wake:{}", w.id),
         row: wake_row(w, now),
         lit: true,
-        enabled: false,
         read_only: false,
-        needs_setup: false,
     });
     job_items.chain(wake_items).collect()
 }
@@ -167,10 +162,6 @@ const JOBS_SPEC: ManagerSpec = ManagerSpec {
     title: "Background",
     empty_hint: "nothing pending \u{2014} no background jobs or scheduled wakes",
     error_verb: "stop failed",
-    supports_toggle: false,
-    supports_remove: true,
-    errors_tab: false,
-    keep_stale_on_relist_error: false,
 };
 
 /// Hard cap on wake-list staleness; a changed jobs.json mtime usually forces
@@ -370,17 +361,14 @@ pub(crate) fn run_jobs_modal(
     let sid = ctx.session_id.clone();
     run_install_manager(
         bg,
-        None,
         &JOBS_SPEC,
         || {
             let wakes = load_wakes(home, sid.as_deref());
             let jobs = exec.background_jobs(&ctx);
-            Some(items(&jobs, &wakes, gray_core::time::now_secs() as i64))
+            items(&jobs, &wakes, gray_core::time::now_secs() as i64)
         },
         |name| remove(exec.as_ref(), &ctx, home, name),
-        |_, _| anyhow::bail!("nothing to toggle here"),
     )
-    .map(ManagerOutcome::into_changed)
 }
 
 pub(crate) fn spawn_footer_poller() {

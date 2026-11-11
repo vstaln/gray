@@ -202,7 +202,7 @@ pub fn render_event_with_context<W: Write>(
             write!(w, "\n\n")?;
             w.flush()
         }
-        AgentEvent::Steered { .. } | AgentEvent::Retract => Ok(()),
+        AgentEvent::Steered { .. } => Ok(()),
         AgentEvent::TurnEnd { usage, .. } => {
             if usage.total() > 0 {
                 meta(
@@ -620,15 +620,6 @@ impl JsonOutput {
             } else {
                 Vec::new()
             };
-        }
-
-        if let AgentEvent::Retract = event {
-            let seg = self.segment.index;
-            self.segment = TextSegment {
-                index: seg + 1,
-                ..TextSegment::default()
-            };
-            return vec![serde_json::json!({"type": "retract", "segment": seg})];
         }
 
         let mut rows = match event {

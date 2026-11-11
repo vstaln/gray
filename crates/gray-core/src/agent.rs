@@ -375,7 +375,6 @@ impl InputSubmit {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PluginCommand {
     pub name: String,
-    pub description: String,
     /// First-argv verbs the plugin allows to run while a turn is in
     /// flight (manifest `turn_local`); `""` covers the bare command and
     /// `"*"` allows any argv.
@@ -497,11 +496,6 @@ pub trait PluginHooks: Send + Sync {
     async fn pre_tool(&self, _name: &str, _args: &serde_json::Value) {}
     async fn post_tool(&self, _name: &str, _output: &ToolOutput) {}
     async fn turn_end(&self, _usage: &Usage) {}
-
-    /// History is about to be summarized away. Awaited before the summary
-    /// call, so a plugin (memory) can capture what is being dropped; must
-    /// never fail the compaction.
-    async fn compact_before(&self) {}
 
     /// The interactive REPL session came up — plugins use it for
     /// first-run/detection notices (the old core QoL hook).

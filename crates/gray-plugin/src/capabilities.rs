@@ -135,15 +135,6 @@ pub fn consent_hash(declared: &[String]) -> String {
     })
 }
 
-/// Everything a manifest declares is granted: the declaration in the
-/// manifest is the consent surface (shown at install/update). A plugin can
-/// still not reach a host method it did not declare — those calls keep
-/// failing `capability_not_granted`. The lock entry only feeds the
-/// `plugin capabilities` status display now.
-pub fn granted_for(_entry: &LockEntry, declared: &[String]) -> BTreeSet<String> {
-    declared.iter().cloned().collect()
-}
-
 pub fn needs_reconsent(entry: &LockEntry, declared: &[String]) -> bool {
     match &entry.capabilities_hash {
         None => false,
@@ -191,24 +182,6 @@ mod tests {
         assert_eq!(capability_for_host_method("host/run"), Some(HOST_TURN));
         assert_eq!(capability_for_host_method("host/say"), Some(HOST_SAY));
         assert_eq!(capability_for_host_method("tool/call"), None);
-    }
-
-    #[test]
-    fn declared_capabilities_are_all_granted() {
-        let declared = vec!["host.ask".to_string(), "host.turn".to_string()];
-        // Whatever the lock recorded — old grants, a mismatched hash, none —
-        // the manifest declaration is the consent surface.
-        for e in [
-            entry(vec![], None),
-            entry(vec!["host.ask"], Some(consent_hash(&declared).as_str())),
-            entry(vec![], Some("stale")),
-        ] {
-            let granted = granted_for(&e, &declared);
-            assert!(granted.contains("host.ask"));
-            assert!(granted.contains("host.turn"));
-        }
-        // Undeclared powers stay out.
-        assert!(!granted_for(&entry(vec![], None), &[]).contains("host.ask"));
     }
 
     #[test]

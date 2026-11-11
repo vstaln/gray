@@ -8,17 +8,14 @@ pub(crate) enum Flow {
 
 pub(crate) fn help_text(cwd: &std::path::Path, hooks: &[Arc<dyn PluginHooks>]) -> String {
     let mut out = String::new();
-    for d in REGISTRY.iter().chain(commands::TUI_COMMANDS) {
+    for d in REGISTRY.iter() {
         out.push_str(&commands::format_help_line(d));
         out.push('\n');
     }
     let mut entries = crate::plugin_cli::completions("");
     entries.extend(plugin_help_entries(hooks));
-    let mut seen: std::collections::HashSet<String> = REGISTRY
-        .iter()
-        .chain(commands::TUI_COMMANDS)
-        .map(|d| d.name.to_string())
-        .collect();
+    let mut seen: std::collections::HashSet<String> =
+        REGISTRY.iter().map(|d| d.name.to_string()).collect();
     for (name, description) in entries {
         if seen.insert(name.clone()) {
             out.push_str(&format!("  /{name:<10} {description}\n"));

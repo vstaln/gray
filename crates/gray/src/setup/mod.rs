@@ -103,7 +103,6 @@ pub mod ui;
 pub use ui::{BackgroundSnapshot, dim_color, render_dimmed_background};
 pub mod icons;
 pub use icons::icon;
-pub mod tabs;
 
 pub(crate) mod composite_rows;
 mod context_modal;
@@ -123,7 +122,6 @@ mod provider_auth;
 mod recommend;
 
 pub use connect::{ConnectOutcome, active_connect_id, run_connect_modal, run_connect_modal_for};
-pub use install_manager::ManagerOutcome;
 pub(crate) use install_manager::{ManagerItem, ManagerSpec, run_install_manager};
 pub use model_dump::{DumpModels, dump_model_catalog_json, select_cli_provider};
 pub(crate) use model_modal::{

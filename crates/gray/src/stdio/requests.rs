@@ -125,10 +125,7 @@ pub(crate) fn status(sess: &mut Session, config: &Config, cwd: &std::path::Path,
 pub(crate) fn list_commands(sess: &Session, id: &Value) {
     let mut out: Vec<Value> = Vec::new();
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-    for d in crate::repl::commands::REGISTRY
-        .iter()
-        .chain(crate::repl::commands::TUI_COMMANDS)
-    {
+    for d in crate::repl::commands::REGISTRY.iter() {
         seen.insert(d.name.to_string());
         out.push(json!({
             "name": d.name,
@@ -160,7 +157,7 @@ pub(crate) fn list_commands(sess: &Session, id: &Value) {
             if seen.insert(name.clone()) {
                 out.push(json!({
                     "name": name,
-                    "description": c.description,
+                    "description": "",
                     "turn_local_verbs": c.turn_local_verbs,
                     "source": "plugin",
                 }));

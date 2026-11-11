@@ -100,7 +100,7 @@ forms) lives in `PLUGIN-CONTRACT.md` at the root of the plugin source
 tree (`grayplugins/`).
 
 Protocol 2.0 adds mutating events, each claims-gated by `hooks` like the
-v1 methods (unclaimed = no IPC, pre-2.0 sidecars are never sent them):
+v1 methods (unclaimed = no IPC):
 
 - `input/submit` — `{"text","session"}` → `{text}` rewrite,
   `{handled: true}` swallow (no turn, nothing recorded), else pass.
