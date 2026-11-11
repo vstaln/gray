@@ -144,7 +144,6 @@ pub fn middle_out(log: &[u8], budget_bytes: usize, budget_lines: usize, base_off
             omitted_bytes: 0,
             omitted_range: None,
             total_lines,
-            total_bytes,
             has_cr,
         };
     }
@@ -168,7 +167,6 @@ pub fn middle_out(log: &[u8], budget_bytes: usize, budget_lines: usize, base_off
         omitted_bytes,
         omitted_range,
         total_lines,
-        total_bytes,
         has_cr,
     }
 }

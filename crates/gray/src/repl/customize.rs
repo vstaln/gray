@@ -121,63 +121,17 @@ pub(crate) fn theme_command(
     }
 }
 
-pub(crate) fn keys_command(
-    arg: Option<&str>,
-    gray_home: &Path,
-    active: &crate::keymap::Keymap,
-) -> (String, Option<crate::keymap::Keymap>) {
-    let arg = arg.map(str::trim).unwrap_or("");
-    match arg {
-        "" | "list" => (render_keymap(active, gray_home), None),
-        "reload" => {
-            let km = crate::keymap::load_in(gray_home);
-            let msg = with_warnings(
-                format!(
-                    "✓ reloaded keybindings ({} override{})",
-                    km.overridden.len(),
-                    if km.overridden.len() == 1 { "" } else { "s" }
-                ),
-                &km.warnings,
-            );
-            (msg, Some(km))
-        }
-        other => (format!("usage: /hotkeys [reload] (got `{other}`)"), None),
-    }
-}
-
-fn render_keymap(km: &crate::keymap::Keymap, gray_home: &Path) -> String {
-    let path = crate::keymap::path_in(gray_home);
-    let mut out = String::from("keybindings:");
-    for &a in crate::keymap::ALL {
-        let keys: Vec<String> = km.keys_for(a).iter().map(|c| c.display()).collect();
-        let keys = if keys.is_empty() {
-            "—".to_string()
-        } else {
-            keys.join(", ")
-        };
-        let mark = if km.overridden.iter().any(|o| o == a.id()) {
-            "*"
-        } else {
-            " "
-        };
-        out.push_str(&format!(
-            "\n {mark} {:<22} {:<30} {}",
-            keys,
-            a.id(),
-            a.describe()
-        ));
-    }
-    if !km.commands().is_empty() {
-        out.push_str("\ncommands:");
-        for (chord, cmd) in km.commands() {
-            out.push_str(&format!("\n * {:<22} {cmd}", chord.display()));
-        }
-    }
-    out.push_str(&format!(
-        "\n\n* = set in {} (pi's ids and key syntax; `\"/cmd\": \"ctrl+x\"` binds a command; /hotkeys reload applies edits)",
-        path.display()
-    ));
-    with_warnings(out, &km.warnings)
+pub(crate) fn keys_command(gray_home: &Path) -> (String, Option<crate::keymap::Keymap>) {
+    let km = crate::keymap::load_in(gray_home);
+    let msg = with_warnings(
+        format!(
+            "✓ reloaded keybindings ({} override{})",
+            km.overridden.len(),
+            if km.overridden.len() == 1 { "" } else { "s" }
+        ),
+        &km.warnings,
+    );
+    (msg, Some(km))
 }
 
 pub(crate) fn handle_reload(tui: Option<&crate::composer::SharedTui>) {
@@ -191,7 +145,7 @@ pub(crate) fn handle_reload(tui: Option<&crate::composer::SharedTui>) {
     }
     match crate::setup::gray_home() {
         Ok(home) => {
-            let (msg, km) = keys_command(Some("reload"), &home, &crate::keymap::active());
+            let (msg, km) = keys_command(&home);
             if let Some(km) = km {
                 crate::keymap::set_active(km);
             }

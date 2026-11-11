@@ -122,7 +122,6 @@ async fn run_command(
             "undo" => undo_result(home, false).await,
             "retry" => undo_result(home, true).await,
             "jobs" => jobs_result(home, &rest),
-            "plugin" => plugin_result(&rest).await,
             "plugins" => Ok(CommandResult::text(crate::plugin_status::table().await)),
             "update" => update_result(&rest).await,
             "agentsmd" => agentsmd_result(&rest),
@@ -617,106 +616,6 @@ fn jobs_result(home: &Path, rest: &str) -> Result<CommandResult, CmdError> {
             }
         }
         Some(_) => Err(CmdError::args("usage: /jobs [stop <wake id>]")),
-    }
-}
-
-async fn plugin_result(rest: &str) -> Result<CommandResult, CmdError> {
-    use crate::repl::plugin_cmds::PluginAction;
-    let action = crate::repl::plugin_cmds::parse_plugin_args(&format!("plugin {rest}"))
-        .map_err(|e| CmdError::args(format!("{e:#}")))?;
-    match action {
-        PluginAction::List => match crate::plugin_cli::list_rows() {
-            Ok(rows) if rows.is_empty() => Ok(CommandResult::text("no plugins installed")),
-            Ok(rows) => {
-                let out = rows
-                    .iter()
-                    .map(|r| {
-                        let state = if r.on { "" } else { " [disabled]" };
-                        let kind = if r.cli { " [command]" } else { "" };
-                        format!("{} {} ({}){state}{kind}", r.name, r.version, r.scope)
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                Ok(CommandResult::text(out))
-            }
-            Err(e) => Err(CmdError::unavailable(format!("plugin list failed: {e:#}"))),
-        },
-        PluginAction::Update(target) => {
-            let mut check = false;
-            let mut parts = Vec::new();
-            for tok in target.split_whitespace() {
-                if tok == "--check" {
-                    check = true;
-                } else {
-                    parts.push(tok);
-                }
-            }
-            let target = if parts.is_empty() {
-                "all".to_string()
-            } else {
-                parts.join(" ")
-            };
-            let res = if check {
-                crate::plugin_cli::check_managed(&target).await
-            } else {
-                crate::plugin_cli::update_managed(&target).await
-            };
-            match res {
-                Ok(reports) => {
-                    let mut lines = Vec::new();
-                    for r in &reports {
-                        if matches!(r.action, gray_pkg::ops::UpdateAction::Current) {
-                            continue;
-                        }
-                        lines.push(format!("{}: {}", r.name, r.detail()));
-                    }
-                    Ok(CommandResult::text(if lines.is_empty() {
-                        "up to date".to_string()
-                    } else {
-                        lines.join("\n")
-                    }))
-                }
-                Err(e) => Err(CmdError::unavailable(format!("update failed: {e:#}"))),
-            }
-        }
-        PluginAction::Enable(name) => match crate::plugin_cli::set_managed_enabled(&name, true) {
-            Ok(()) => Ok(CommandResult::text(format!("enabled {name}"))),
-            Err(e) => Err(CmdError::unavailable(format!("enable failed: {e:#}"))),
-        },
-        PluginAction::Disable(name) => match crate::plugin_cli::set_managed_enabled(&name, false) {
-            Ok(()) => Ok(CommandResult::text(format!("disabled {name}"))),
-            Err(e) => Err(CmdError::unavailable(format!("disable failed: {e:#}"))),
-        },
-        PluginAction::Check(dir) => {
-            let exe = crate::update::exe_watch::on_disk_exe()
-                .map_err(|e| CmdError::unavailable(format!("cannot self-spawn: {e}")))?;
-            let out = tokio::time::timeout(
-                std::time::Duration::from_secs(60),
-                tokio::process::Command::new(exe)
-                    .args(["plugin", "check", &dir])
-                    .stdin(std::process::Stdio::null())
-                    .output(),
-            )
-            .await
-            .map_err(|_| CmdError::unavailable("plugin check timed out".to_string()))?
-            .map_err(|e| CmdError::unavailable(format!("plugin check failed to start: {e}")))?;
-            let text = String::from_utf8_lossy(&out.stdout).trim_end().to_string();
-            if out.status.success() {
-                Ok(CommandResult::text(text))
-            } else {
-                Err(CmdError::unavailable(format!(
-                    "check failed:\n{}",
-                    if text.is_empty() {
-                        String::from_utf8_lossy(&out.stderr).trim_end().to_string()
-                    } else {
-                        text
-                    }
-                )))
-            }
-        }
-        PluginAction::Install(_) | PluginAction::Remove(_) => Ok(CommandResult::text(
-            "installing or removing plugins needs a shell — run `gray plugin <install|remove> …`",
-        )),
     }
 }
 

@@ -868,22 +868,6 @@ pub async fn check_managed(target: &str) -> anyhow::Result<Vec<gray_pkg::ops::Up
     gray_pkg::ops::check_update(target).await
 }
 
-#[allow(dead_code)]
-fn is_local_command(home: &Path, name: &str) -> bool {
-    migrate_commands_json(home);
-    load_lock(home)
-        .ok()
-        .and_then(|lock| {
-            lock.plugins
-                .get(name)
-                .map(|e| e.cli_argv.is_some() && e.hash.is_empty())
-        })
-        .unwrap_or_else(|| {
-            commands_cli_entry(&commands_or_empty(home), name, false)
-                .is_some_and(|e| e.hash.is_empty())
-        })
-}
-
 /// The singular/plural counterpart of `name`: drops a trailing 's', or
 /// adds one. `forward` tries the typed spelling first — this is only a
 /// fallback alias.

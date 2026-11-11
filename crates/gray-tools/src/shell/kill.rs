@@ -10,11 +10,6 @@ unsafe fn signal_pid(target: i32, sig: i32) -> i32 {
     unsafe { libc::kill(target, sig) }
 }
 
-#[cfg(all(not(unix), not(windows)))]
-unsafe fn signal_pid(_target: i32, _sig: i32) -> i32 {
-    -1
-}
-
 #[cfg(unix)]
 static TRACKED_PGIDS: std::sync::Mutex<std::collections::BTreeSet<i32>> =
     std::sync::Mutex::new(std::collections::BTreeSet::new());
@@ -55,7 +50,6 @@ pub fn kill_tracked_groups() {
 }
 
 #[cfg(not(windows))]
-#[cfg_attr(not(unix), allow(dead_code))]
 fn gone(target: i32) -> bool {
     if unsafe { signal_pid(target, 0) } == 0 {
         return false;
@@ -63,10 +57,6 @@ fn gone(target: i32) -> bool {
     #[cfg(unix)]
     {
         io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
-    }
-    #[cfg(not(unix))]
-    {
-        false
     }
 }
 
@@ -80,13 +70,6 @@ pub(crate) fn group_alive(pgid: i32) -> bool {
 
 #[cfg(not(windows))]
 async fn escalate(sig_target: i32, what: &str, grace: Duration) -> Result<(), String> {
-    #[cfg(not(unix))]
-    {
-        let _ = (sig_target, grace);
-        return Err(format!(
-            "cannot signal {what}: POSIX signals are unavailable on this platform"
-        ));
-    }
     #[cfg(unix)]
     {
         let t0 = Instant::now();

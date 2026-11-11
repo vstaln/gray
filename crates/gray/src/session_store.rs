@@ -112,15 +112,13 @@ pub enum SessionEnd {
     UserUnanswered,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SessionSummary {
-    #[serde(default)]
     pub last_end: SessionEnd,
 
-    #[serde(default)]
     pub dismissed_at: Option<u64>,
 
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
 
     pub id: SessionId,
@@ -131,13 +129,11 @@ pub struct SessionSummary {
 
     pub first_user_text: Option<String>,
 
-    #[serde(default)]
     pub last_user_text: Option<String>,
 
-    #[serde(default)]
     pub last_message_at: u64,
 
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub origin: Option<String>,
 }
 

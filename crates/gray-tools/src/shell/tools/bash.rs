@@ -1054,7 +1054,6 @@ fn build_view(log_path: &std::path::Path, summary: &PumpSummary) -> View {
         omitted_bytes,
         omitted_range,
         total_lines: summary.total_lines,
-        total_bytes: summary.total_bytes,
         has_cr: summary.has_cr,
     };
     let hint = resume_hint(&view, log_path);

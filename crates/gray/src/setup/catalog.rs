@@ -94,11 +94,6 @@ pub struct SavedConfig {
     pub memory_auto: Option<bool>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub cron_auto: Option<bool>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub gw_auto: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub auto_update: Option<bool>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -150,14 +145,6 @@ pub fn gray_home() -> anyhow::Result<PathBuf> {
 
 pub fn saved_config_path() -> anyhow::Result<PathBuf> {
     Ok(gray_home()?.join("config.json"))
-}
-
-pub fn gw_auto_enabled() -> bool {
-    subsystem_enabled(|s| s.gw_auto)
-}
-
-pub fn gw_auto_enabled_at(path: &Path) -> bool {
-    subsystem_enabled_at(path, |s| s.gw_auto)
 }
 
 pub fn intro_enabled() -> bool {
@@ -244,8 +231,6 @@ fn partial_saved_config(obj: &serde_json::Map<String, serde_json::Value>) -> Sav
         compact_at: opt_field(obj, "compact_at_tokens"),
         exec_prefix: opt_field(obj, "exec_prefix"),
         memory_auto: opt_field(obj, "memory_auto"),
-        cron_auto: opt_field(obj, "cron_auto"),
-        gw_auto: opt_field(obj, "gw_auto"),
         auto_update: opt_field(obj, "auto_update"),
         lean: opt_field(obj, "lean"),
         background_compaction: opt_field(obj, "background_compaction"),

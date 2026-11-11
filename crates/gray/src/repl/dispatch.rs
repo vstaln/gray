@@ -6,6 +6,36 @@ pub(crate) enum Flow {
     Break,
 }
 
+pub(crate) fn help_text(cwd: &std::path::Path, hooks: &[Arc<dyn PluginHooks>]) -> String {
+    let mut out = String::new();
+    for d in REGISTRY.iter().chain(commands::TUI_COMMANDS) {
+        out.push_str(&commands::format_help_line(d));
+        out.push('\n');
+    }
+    let mut entries = crate::plugin_cli::completions("");
+    entries.extend(plugin_help_entries(hooks));
+    let mut seen: std::collections::HashSet<String> = REGISTRY
+        .iter()
+        .chain(commands::TUI_COMMANDS)
+        .map(|d| d.name.to_string())
+        .collect();
+    for (name, description) in entries {
+        if seen.insert(name.clone()) {
+            out.push_str(&format!("  /{name:<10} {description}\n"));
+        }
+    }
+    let templates = crate::prompt_templates::discover(cwd);
+    if !templates.is_empty() {
+        out.push_str("prompt templates:\n");
+        for t in templates {
+            if seen.insert(t.name.clone()) {
+                out.push_str(&format!("  /{:<10} {}\n", t.name, t.description));
+            }
+        }
+    }
+    out.trim_end().to_string()
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn dispatch_command(
     cmd: ReplCommand,
@@ -96,41 +126,15 @@ pub(crate) async fn dispatch_command(
             Flow::Continue
         }
         ReplCommand::Help => {
-            let mut out = String::new();
-            for d in REGISTRY.iter().chain(commands::TUI_COMMANDS) {
-                out.push_str(&commands::format_help_line(d));
-                out.push('\n');
-            }
-            let mut entries = crate::plugin_cli::completions("");
-            if let Some(a) = agent.as_ref() {
-                entries.extend(plugin_help_entries(a.hooks()));
-            }
-            let mut seen: std::collections::HashSet<String> = REGISTRY
-                .iter()
-                .chain(commands::TUI_COMMANDS)
-                .map(|d| d.name.to_string())
-                .collect();
-            for (name, description) in entries {
-                if seen.insert(name.clone()) {
-                    out.push_str(&format!("  /{name:<10} {description}\n"));
-                }
-            }
-            let templates = crate::prompt_templates::discover(cwd);
-            if !templates.is_empty() {
-                out.push_str("prompt templates:\n");
-                for t in templates {
-                    if seen.insert(t.name.clone()) {
-                        out.push_str(&format!("  /{:<10} {}\n", t.name, t.description));
-                    }
-                }
-            }
+            let hooks = agent.as_ref().map(|a| a.hooks()).unwrap_or_default();
+            let out = help_text(cwd, hooks);
             if let Some((shared, _)) = tui {
                 let mut t = shared.lock().expect("tui lock");
-                t.push_dim(out.trim_end().to_string());
+                t.push_dim(out);
                 t.ensure_gap();
             } else {
                 say(None, &crate::rule("commands"));
-                say(None, out.trim_end());
+                say(None, &out);
             }
             Flow::Continue
         }

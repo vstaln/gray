@@ -252,24 +252,6 @@ fn activate_plugin_connection_at(
     save_saved_config_at(path, &saved)
 }
 
-fn clear_plugin_selection(config: &mut Config, saved: &mut SavedConfig, provider_id: &str) {
-    if saved.provider_id == provider_id {
-        saved.provider_id.clear();
-        saved.credential_source.clear();
-        saved.auth_ref.clear();
-        saved.api_key = None;
-        saved.auth_mode = None;
-        saved.model = None;
-    }
-    if config.provider_id == provider_id {
-        config.provider_id.clear();
-        config.credential_source.clear();
-        config.auth_ref.clear();
-        config.api_key = None;
-        config.model = None;
-    }
-}
-
 fn clear_plugin_identity(config: &mut Config, saved: &mut SavedConfig) {
     config.provider_id.clear();
     config.credential_source.clear();
@@ -416,74 +398,5 @@ pub fn adopt_saved_key(config: &mut Config) -> bool {
             true
         }
         None => false,
-    }
-}
-
-pub async fn forget_plugin_connection(
-    item: &crate::setup::ConnectItem,
-    config: &mut Config,
-) -> anyhow::Result<String> {
-    let home = crate::setup::gray_home()?;
-    let auth_path = home.join("auth.json");
-    let saved_path = saved_config_path()?;
-    let ConnectAuthPlugin {
-        auth_ref,
-        profile_binding,
-    } = plugin_auth(item)?;
-    let installed = crate::providers::resolve_provider_connection(
-        &Config {
-            provider_id: item.id.clone(),
-            credential_source: "plugin".to_string(),
-            auth_ref: auth_ref.clone(),
-            ..config.clone()
-        },
-        &home,
-    );
-    let store = CredentialStore::new(auth_path);
-    let credential = store
-        .read_plugin(&auth_ref)
-        .context("cannot read provider credential")?;
-    let removed = store
-        .remove(&auth_ref)
-        .context("cannot remove provider credential")?;
-    if !removed {
-        return Err(anyhow!("not installed: {}", item.id));
-    }
-
-    let _lock = lock_saved_config_at(&saved_path)?;
-    let mut saved = load_saved_config_at(&saved_path);
-    clear_plugin_selection(config, &mut saved, &item.id);
-    crate::config::export_provider_env(config);
-    save_saved_config_at(&saved_path, &saved)?;
-
-    if let (Some(installed), Some(credential)) = (installed, credential)
-        && let Ok(runtime) = ProviderRuntime::start(installed.clone()).await
-    {
-        let request = gray_plugin::ProviderRevokeRequest {
-            provider: installed.provider.id.clone(),
-            auth_method: installed.auth_method.id.clone(),
-            profile_binding: profile_binding.clone(),
-            credential,
-        };
-        let _ = runtime.rpc().revoke(request).await;
-    }
-    Ok(item.name.clone())
-}
-
-struct ConnectAuthPlugin {
-    auth_ref: String,
-    profile_binding: String,
-}
-
-fn plugin_auth(item: &crate::setup::ConnectItem) -> anyhow::Result<ConnectAuthPlugin> {
-    match &item.auth {
-        crate::setup::ConnectAuth::Plugin {
-            auth_ref,
-            profile_binding,
-        } => Ok(ConnectAuthPlugin {
-            auth_ref: auth_ref.clone(),
-            profile_binding: profile_binding.clone(),
-        }),
-        _ => Err(anyhow!("not a plugin provider row")),
     }
 }

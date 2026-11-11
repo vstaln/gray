@@ -6,9 +6,8 @@ use async_trait::async_trait;
 use gray_core::credential::CredentialSource;
 use gray_plugin::{
     ProviderAuthPoll, ProviderAuthStart, ProviderChatRequest, ProviderChatResult,
-    ProviderHeaderDecl, ProviderHeaderSourceDecl, ProviderModel, ProviderModelCatalog,
-    ProviderModelsRequest, ProviderRefreshRequest, ProviderRevokeRequest, ProviderRevokeResult,
-    ProviderRpcError, ProviderUsageLimits, ProviderUsageRequest,
+    ProviderHeaderDecl, ProviderHeaderSourceDecl, ProviderModelCatalog, ProviderModelsRequest,
+    ProviderRefreshRequest, ProviderRevokeRequest, ProviderRevokeResult, ProviderRpcError,
 };
 use gray_provider::{
     OpenAiAuthorization, OpenAiHeader, OpenAiHeaderSource, OpenAiProviderProfile,
@@ -147,19 +146,6 @@ impl ProviderRpc for LazyProviderRpc {
     ) -> Result<ProviderChatResult, ProviderRpcError> {
         self.rpc().await?.chat(request).await
     }
-
-    async fn usage(
-        &self,
-        request: ProviderUsageRequest,
-    ) -> Result<ProviderUsageLimits, ProviderRpcError> {
-        self.rpc().await?.usage(request).await
-    }
-
-    async fn shutdown(&self) {
-        if let Some(runtime) = self.runtime.get() {
-            runtime.rpc().shutdown().await;
-        }
-    }
 }
 
 static LIVE_RUNTIME: std::sync::Mutex<Option<Arc<ProviderRuntime>>> = std::sync::Mutex::new(None);
@@ -267,80 +253,4 @@ fn declared_header(header: &ProviderHeaderDecl) -> Option<OpenAiHeader> {
         source,
         required: header.required,
     })
-}
-
-pub async fn fetch_models_for_config(config: &Config) -> Vec<(String, String)> {
-    if !config.uses_plugin_credentials() {
-        return Vec::new();
-    }
-    let home = match crate::setup::gray_home() {
-        Ok(home) => home,
-        Err(_) => return Vec::new(),
-    };
-    let Some(installed) = resolve_provider_connection(config, &home) else {
-        return Vec::new();
-    };
-    let Ok(runtime) = shared_runtime(installed.clone()).await else {
-        return Vec::new();
-    };
-
-    let is_relay = installed
-        .auth_method
-        .operations
-        .iter()
-        .any(|operation| operation == "chat");
-    let request = if is_relay {
-        ProviderModelsRequest {
-            provider: installed.provider.id.clone(),
-            auth_method: installed.auth_method.id.clone(),
-            profile_binding: installed.profile_binding.clone(),
-            credential: gray_core::credential::CredentialEnvelope::new(
-                installed.plugin.clone(),
-                installed.provider.id.clone(),
-                installed.auth_method.id.clone(),
-                installed.profile_binding.clone(),
-                gray_core::credential::CredentialMaterial::empty(),
-            )
-            .expect("relay models envelope"),
-        }
-    } else {
-        let store = CredentialStore::new(
-            crate::providers::registry::plugin_home(&home, &installed.plugin).join("auth.json"),
-        );
-        let source = shared_plugin_source_with_model(
-            installed.clone(),
-            store.clone(),
-            Arc::clone(&runtime.rpc()) as Arc<dyn ProviderRpc>,
-            crate::setup::wire_model_for(config).or_else(|| config.model.clone()),
-        );
-        if source.acquire().await.is_err() {
-            return Vec::new();
-        }
-        let Ok(Some(credential)) = store.read_plugin(&installed.auth_ref()) else {
-            return Vec::new();
-        };
-        ProviderModelsRequest {
-            provider: installed.provider.id.clone(),
-            auth_method: installed.auth_method.id.clone(),
-            profile_binding: installed.profile_binding.clone(),
-            credential,
-        }
-    };
-    match runtime.rpc().models(request).await {
-        Ok(catalog) => catalog
-            .models
-            .into_iter()
-            .map(model_tuple)
-            .collect::<Vec<_>>(),
-        Err(_) => Vec::new(),
-    }
-}
-
-fn model_tuple(model: ProviderModel) -> (String, String) {
-    let name = if model.name.trim().is_empty() {
-        model.id.clone()
-    } else {
-        model.name
-    };
-    (model.id, name)
 }

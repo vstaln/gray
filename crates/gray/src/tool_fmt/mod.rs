@@ -905,18 +905,6 @@ pub fn format_tool_call_lines(
     vec![head]
 }
 
-pub fn format_tool_call_header(
-    name: &str,
-    args: &serde_json::Value,
-    cwd: Option<&Path>,
-    preview_path: Option<&str>,
-) -> Line<'static> {
-    format_tool_call_lines(name, args, cwd, preview_path)
-        .into_iter()
-        .next()
-        .unwrap_or_default()
-}
-
 fn bash_header(
     args: &serde_json::Value,
     cwd: Option<&Path>,
@@ -1663,46 +1651,11 @@ fn drop_view_echo<'a>(args: Option<&serde_json::Value>, output: &'a str) -> &'a 
 mod plain;
 mod web;
 
-pub use plain::{
-    format_tool_call_header_plain, format_tool_call_lines_plain,
-    format_tool_result_plain_with_context,
-};
+pub use plain::{format_tool_call_lines_plain, format_tool_result_plain_with_context};
 
 #[cfg(test)]
 mod memory_label_tests {
-    use super::{MemoryLabel, format_tool_call_header, memory_label};
-
-    fn header_text(name: &str, args: serde_json::Value) -> String {
-        format_tool_call_header(name, &args, None, None)
-            .spans
-            .iter()
-            .map(|s| s.content.as_ref())
-            .collect()
-    }
-
-    #[test]
-    fn the_memory_tool_reads_as_remembered_not_raw_args() {
-        let args = serde_json::json!({
-            "key": "draft-growth",
-            "text": "Decision: the transcript scrolls up",
-            "why": "user saw a gap",
-        });
-        for name in ["memory", "mcp__gray__memory"] {
-            let got = header_text(name, args.clone());
-            assert!(
-                got.contains(
-                    "Remembered draft-growth \u{00b7} Decision: the transcript scrolls up"
-                ),
-                "{name}: {got:?}"
-            );
-            assert!(!got.contains("why="), "{name}: {got:?}");
-        }
-        let amend = header_text(
-            "memory",
-            serde_json::json!({"op": "amend", "key": "k", "text": "t"}),
-        );
-        assert!(amend.contains("Updated memory k"), "{amend:?}");
-    }
+    use super::{MemoryLabel, memory_label};
 
     #[test]
     fn a_memory_set_reads_as_remembered_key_and_text() {

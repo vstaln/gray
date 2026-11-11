@@ -765,15 +765,14 @@ pub(crate) fn dispatch_agent_event(
                     crate::setup::get_model_rate(model),
                 );
 
-                if let Some(miss) = t.note_cache_request(usage, model, wire_model) {
-                    totals.note_miss(&miss);
-                    if let Some(notice) = miss.notice() {
-                        t.flush_markdown();
-                        t.end_thinking();
-                        t.mark_stream_round_boundary();
-                        t.ensure_gap();
-                        t.push_warning(&notice);
-                    }
+                if let Some(miss) = t.note_cache_request(usage, model, wire_model)
+                    && let Some(notice) = miss.notice()
+                {
+                    t.flush_markdown();
+                    t.end_thinking();
+                    t.mark_stream_round_boundary();
+                    t.ensure_gap();
+                    t.push_warning(&notice);
                 }
             }
 

@@ -34,7 +34,6 @@ pub struct View {
     pub omitted_bytes: usize,
     pub omitted_range: Option<(u64, u64)>,
     pub total_lines: usize,
-    pub total_bytes: u64,
 
     pub has_cr: bool,
 }

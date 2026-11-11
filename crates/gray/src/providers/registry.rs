@@ -4,10 +4,9 @@ use std::path::{Path, PathBuf};
 use async_trait::async_trait;
 use gray_plugin::lock::LockEntry;
 use gray_plugin::{
-    AuthMethodDecl, Plugin, ProviderAuthPoll, ProviderAuthStart, ProviderChatRequest,
-    ProviderChatResult, ProviderDecl, ProviderModelCatalog, ProviderModelsRequest,
-    ProviderRefreshRequest, ProviderRevokeRequest, ProviderRevokeResult, ProviderRpcError,
-    ProviderUsageLimits, ProviderUsageRequest, SidecarPlugin,
+    AuthMethodDecl, ProviderAuthPoll, ProviderAuthStart, ProviderChatRequest, ProviderChatResult,
+    ProviderDecl, ProviderModelCatalog, ProviderModelsRequest, ProviderRefreshRequest,
+    ProviderRevokeRequest, ProviderRevokeResult, ProviderRpcError,
 };
 use serde::{Deserialize, Serialize};
 
@@ -230,39 +229,6 @@ fn spawn_argv(plugin: &str, home: &Path, entry: &LockEntry) -> anyhow::Result<Ve
     gray_plugin::builder::resolve_argv(&dir)
 }
 
-pub async fn refresh_plugin(home: &Path, entry: &LockEntry) -> anyhow::Result<ProviderCache> {
-    let plugin_name = entry_name(home, entry)?;
-    let path = cache_path(home);
-    let mut cache = ProviderCache::load(&path);
-    let mut cached = CachedProviderPlugin {
-        identity: lock_identity(&plugin_name, entry),
-        enabled: entry.enabled,
-        ..Default::default()
-    };
-    let argv = spawn_argv(&plugin_name, home, entry)?;
-    let plugin = SidecarPlugin::spawn(argv).await?;
-    plugin.set_capabilities(entry.granted_capabilities.clone());
-    let manifest = plugin.manifest();
-    plugin.shutdown(std::time::Duration::from_secs(2)).await;
-
-    cached.manifest_sha256 = lock_identity(&plugin_name, entry);
-    let granted_provider = provider_granted(entry, &manifest.capabilities);
-    if granted_provider {
-        cached.providers.extend(manifest.providers);
-    } else if !manifest.providers.is_empty() {
-        cached
-            .errors
-            .push("provider capability not granted; provider declarations hidden".to_string());
-    }
-    for error in manifest.provider_errors {
-        cached.errors.push(error.to_string());
-    }
-    cache.plugins.insert(plugin_name, cached);
-    cache.save(&path)?;
-    let _ = refresh_installed_argv(home, &mut cache);
-    Ok(cache)
-}
-
 /// Explicitly granted, or grandfathered: a plugin never asked for consent
 /// gets what it declares — the rule the runtime builder and `gray plugin
 /// capabilities` already apply. (Fresh index installs are never asked, so the
@@ -273,14 +239,6 @@ pub(crate) fn provider_granted(entry: &LockEntry, declared: &[String]) -> bool {
         .iter()
         .any(|capability| capability == PROVIDER_CAPABILITY)
         || gray_plugin::capabilities::granted_for(entry, declared).contains(PROVIDER_CAPABILITY)
-}
-
-fn entry_name(home: &Path, entry: &LockEntry) -> anyhow::Result<String> {
-    let lock = gray_plugin::lock::LockFile::load(&gray_plugin::lock::lock_path(home))?;
-    lock.plugins
-        .into_iter()
-        .find_map(|(name, candidate)| (candidate == *entry).then_some(name))
-        .ok_or_else(|| anyhow::anyhow!("provider plugin entry is not present in the sidecar lock"))
 }
 
 fn cached_from_manifest(home: &Path, name: &str, entry: &LockEntry) -> CachedProviderPlugin {
@@ -381,16 +339,6 @@ pub trait ProviderRpc: Send + Sync {
         &self,
         request: ProviderChatRequest,
     ) -> Result<ProviderChatResult, ProviderRpcError>;
-
-    async fn usage(
-        &self,
-        _request: ProviderUsageRequest,
-    ) -> Result<ProviderUsageLimits, ProviderRpcError> {
-        Err(ProviderRpcError::Protocol(
-            "provider/usage unsupported".into(),
-        ))
-    }
-    async fn shutdown(&self);
 }
 
 #[path = "tests.rs"]

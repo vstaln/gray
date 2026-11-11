@@ -34,15 +34,6 @@ fn line_to_ansi(l: &Line<'_>) -> String {
     line_str
 }
 
-pub fn format_tool_call_header_plain(
-    name: &str,
-    args: &serde_json::Value,
-    cwd: Option<&Path>,
-    preview_path: Option<&str>,
-) -> String {
-    line_to_ansi(&format_tool_call_header(name, args, cwd, preview_path))
-}
-
 pub fn format_tool_call_lines_plain(
     name: &str,
     args: &serde_json::Value,

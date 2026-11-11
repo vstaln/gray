@@ -1490,32 +1490,3 @@ pub async fn append_new_messages(
     }
     Ok(())
 }
-
-pub async fn save_session(
-    store: &JsonlSessionStore,
-    model: &str,
-    cwd: &Path,
-    messages: &[Message],
-) -> anyhow::Result<SessionId> {
-    let session_id = store.fresh_id().await;
-    let timestamp = now_millis();
-
-    let meta = SessionMeta::new(
-        session_id.clone(),
-        timestamp,
-        cwd.to_path_buf(),
-        model.to_string(),
-    )
-    .with_origin(crate::session_store::print_session_origin());
-    store.create(meta).await?;
-
-    for msg in messages {
-        let redacted = redact_message(msg);
-        store
-            .append(&session_id, &redacted)
-            .await
-            .map_err(|e| anyhow::anyhow!("failed to append message to session: {e}"))?;
-    }
-
-    Ok(session_id)
-}

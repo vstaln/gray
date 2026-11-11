@@ -128,10 +128,6 @@ impl PluginEnv {
             self.path_prepend.push(dir);
         }
     }
-
-    pub fn is_empty(&self) -> bool {
-        self.vars.is_empty() && self.path_prepend.is_empty()
-    }
 }
 
 fn shell_env(

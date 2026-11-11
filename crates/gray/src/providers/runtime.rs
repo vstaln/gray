@@ -5,7 +5,7 @@ use gray_plugin::sidecar::SidecarPlugin;
 use gray_plugin::{
     ProviderAuthPoll, ProviderAuthStart, ProviderChatRequest, ProviderChatResult,
     ProviderModelCatalog, ProviderModelsRequest, ProviderRefreshRequest, ProviderRevokeRequest,
-    ProviderRevokeResult, ProviderRpcError, ProviderUsageLimits, ProviderUsageRequest,
+    ProviderRevokeResult, ProviderRpcError,
 };
 
 use super::registry::{InstalledProvider, ProviderRpc};
@@ -69,19 +69,6 @@ impl ProviderRpc for SidecarProviderRpc {
         request: ProviderChatRequest,
     ) -> Result<ProviderChatResult, ProviderRpcError> {
         self.plugin.provider_chat(&request).await
-    }
-
-    async fn usage(
-        &self,
-        request: ProviderUsageRequest,
-    ) -> Result<ProviderUsageLimits, ProviderRpcError> {
-        self.plugin.provider_usage(&request).await
-    }
-
-    async fn shutdown(&self) {
-        self.plugin
-            .shutdown(std::time::Duration::from_secs(2))
-            .await;
     }
 }
 

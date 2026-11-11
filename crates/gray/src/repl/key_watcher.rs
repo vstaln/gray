@@ -39,39 +39,6 @@ pub(crate) fn is_turn_local_command(
     }
 }
 
-fn help_text(
-    cwd: &std::path::Path,
-    hooks: &[std::sync::Arc<dyn gray_core::agent::PluginHooks>],
-) -> String {
-    let mut out = String::new();
-    for d in super::REGISTRY.iter().chain(super::commands::TUI_COMMANDS) {
-        out.push_str(&super::commands::format_help_line(d));
-        out.push('\n');
-    }
-    let mut entries = crate::plugin_cli::completions("");
-    entries.extend(super::plugin_help_entries(hooks));
-    let mut seen: std::collections::HashSet<String> = super::REGISTRY
-        .iter()
-        .chain(super::commands::TUI_COMMANDS)
-        .map(|d| d.name.to_string())
-        .collect();
-    for (name, description) in entries {
-        if seen.insert(name.clone()) {
-            out.push_str(&format!("  /{name:<10} {description}\n"));
-        }
-    }
-    let templates = crate::prompt_templates::discover(cwd);
-    if !templates.is_empty() {
-        out.push_str("prompt templates:\n");
-        for t in templates {
-            if seen.insert(t.name.clone()) {
-                out.push_str(&format!("  /{:<10} {}\n", t.name, t.description));
-            }
-        }
-    }
-    out.trim_end().to_string()
-}
-
 fn run_turn_local_command(ctx: &TurnLocalCommands, text: &str) {
     let tui = Some(&ctx.tui);
     match super::parse_command(text) {
@@ -92,7 +59,7 @@ fn run_turn_local_command(ctx: &TurnLocalCommands, text: &str) {
         }
         super::ReplCommand::Help => {
             let mut t = ctx.tui.lock().expect("tui lock");
-            t.push_dim(help_text(&ctx.cwd, &ctx.hooks));
+            t.push_dim(super::dispatch::help_text(&ctx.cwd, &ctx.hooks));
             t.ensure_gap();
         }
         super::ReplCommand::Plugins => {

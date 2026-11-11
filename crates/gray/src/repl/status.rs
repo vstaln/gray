@@ -14,22 +14,6 @@ pub(crate) struct SessionTotals {
     pub(crate) cache_write: usize,
 
     pub(crate) saved: f64,
-
-    pub(crate) write_premium: f64,
-
-    pub(crate) cache_reported: bool,
-
-    pub(crate) misses: MissTally,
-}
-
-#[derive(Debug, Default, Clone)]
-pub(crate) struct MissTally {
-    pub(crate) count: usize,
-    pub(crate) tokens: usize,
-    pub(crate) cost: f64,
-    pub(crate) idle: usize,
-    pub(crate) model_switch: usize,
-    pub(crate) other: usize,
 }
 
 impl SessionTotals {
@@ -47,37 +31,21 @@ impl SessionTotals {
         let write = usage.cache_write_input_tokens;
         self.cache_read += read;
         self.cache_write += write;
-        self.cache_reported |= read + write > 0;
         if let Some(c) = crate::setup::turn_cost(usage, model) {
             self.cost += c;
         }
         if let Some(rate) = crate::setup::get_model_rate(model)
             && rate.has_cache_prices
-        {
-            if let (Some(full), Some(actual)) = (
+            && let (Some(full), Some(actual)) = (
                 crate::setup::uncached_cost(usage, model),
                 crate::setup::turn_cost(usage, model),
-            ) {
-                self.saved += full - actual;
-            }
-            self.write_premium += write as f64 * (rate.cache_write - rate.input);
+            )
+        {
+            self.saved += full - actual;
         }
         if let Some(ms) = duration_ms {
             self.total_duration_ms += ms;
             self.timed_turns += 1;
-        }
-    }
-
-    pub(crate) fn note_miss(&mut self, m: &crate::cache::CacheMiss) {
-        self.misses.count += 1;
-        self.misses.tokens += m.missed_tokens;
-        self.misses.cost += m.missed_cost;
-        if m.model_changed {
-            self.misses.model_switch += 1;
-        } else if m.idle >= crate::cache::cache_ttl() {
-            self.misses.idle += 1;
-        } else {
-            self.misses.other += 1;
         }
     }
 
