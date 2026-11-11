@@ -148,11 +148,9 @@ fn parse_clock_reset(text: &str) -> Option<(u64, Option<String>)> {
     let hour = if let Some(after) = rest.strip_prefix("am") {
         rest = after;
         hour % 12
-    } else if let Some(after) = rest.strip_prefix("pm") {
-        rest = after;
-        hour % 12 + 12
     } else {
-        return None;
+        rest = rest.strip_prefix("pm")?;
+        hour % 12 + 12
     };
     if minute > 59 {
         return None;
@@ -167,7 +165,7 @@ fn parse_clock_reset(text: &str) -> Option<(u64, Option<String>)> {
 }
 
 fn machine_zone() -> Option<String> {
-    if let Some(tz) = std::env::var("TZ").ok() {
+    if let Ok(tz) = std::env::var("TZ") {
         let tz = tz.trim_start_matches(':').trim();
         if !tz.is_empty() {
             return Some(tz.to_string());
@@ -331,14 +329,9 @@ fn context_source_key(text: &str) -> &str {
         .find(|line| !line.is_empty())
         .unwrap_or_default();
     if let Some(tag) = line.strip_prefix('<') {
-        return tag
-            .split(|c: char| c == ' ' || c == '>')
-            .next()
-            .unwrap_or(tag);
+        return tag.split([' ', '>']).next().unwrap_or(tag);
     }
-    let cut = line
-        .find(|c: char| c == ':' || c == '\u{2014}' || c == '\u{b7}')
-        .unwrap_or(line.len());
+    let cut = line.find([':', '\u{2014}', '\u{b7}']).unwrap_or(line.len());
     let key = line[..cut].trim();
     if key.is_empty() { line } else { key }
 }
