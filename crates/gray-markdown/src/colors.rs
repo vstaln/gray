@@ -29,6 +29,9 @@ pub fn detect_color_level() -> ColorLevel {
         }
 
         let level = match supports_color::on(supports_color::Stream::Stdout) {
+            None if !std::io::IsTerminal::is_terminal(&std::io::stdout()) => {
+                return ColorLevel::None;
+            }
             None => ColorLevel::TrueColor,
             Some(level) => {
                 if level.has_16m {
