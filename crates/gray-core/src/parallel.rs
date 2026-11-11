@@ -37,7 +37,10 @@ pub fn bash_is_batchable(command: &str) -> bool {
         })
         .filter(|t| !t.is_empty())
         .collect();
-    if toks.iter().any(|t| MUTATOR_WORDS.contains(t)) {
+    if toks
+        .iter()
+        .any(|t| MUTATOR_WORDS.contains(t) || SIDE_EFFECT_COMMANDS.contains(t))
+    {
         return false;
     }
     if toks.contains(&"sed") && sed_edits_in_place(&toks) {
@@ -53,12 +56,13 @@ pub fn bash_is_batchable(command: &str) -> bool {
     if inline_code_executes(&toks) || curl_writes_file(&toks) || shell_runs_script(&toks) {
         return false;
     }
+    let first = toks.iter().position(|t| !t.contains('=')).unwrap_or(0);
     for (i, t) in toks.iter().enumerate() {
         let ok = match *t {
             "git" => first_verb_allowed(&toks, i, GIT_READ_ONLY, &["-c", "--config", "-C"]),
             "cargo" => first_verb_allowed(&toks, i, CARGO_READ_ONLY, &[]),
             "npm" => first_verb_allowed(&toks, i, NPM_READ_ONLY, &[]),
-            _ => true,
+            _ => i != first || READ_ONLY_COMMANDS.contains(t),
         };
         if !ok {
             return false;
@@ -131,6 +135,81 @@ const CARGO_READ_ONLY: &[&str] = &["metadata"];
 
 const NPM_READ_ONLY: &[&str] = &[
     "ls", "list", "ll", "la", "view", "info", "show", "v", "ping", "whoami", "help",
+];
+
+const READ_ONLY_COMMANDS: &[&str] = &[
+    "ls",
+    "ll",
+    "la",
+    "pwd",
+    "cd",
+    "cat",
+    "bat",
+    "head",
+    "tail",
+    "wc",
+    "echo",
+    "printf",
+    "grep",
+    "egrep",
+    "fgrep",
+    "rg",
+    "ag",
+    "find",
+    "fd",
+    "tree",
+    "stat",
+    "file",
+    "du",
+    "df",
+    "cut",
+    "tr",
+    "nl",
+    "awk",
+    "sed",
+    "jq",
+    "yq",
+    "diff",
+    "cmp",
+    "comm",
+    "md5sum",
+    "sha1sum",
+    "sha256sum",
+    "shasum",
+    "basename",
+    "dirname",
+    "realpath",
+    "readlink",
+    "date",
+    "whoami",
+    "id",
+    "uname",
+    "hostname",
+    "env",
+    "printenv",
+    "which",
+    "type",
+    "ps",
+    "free",
+    "nproc",
+    "seq",
+    "column",
+    "xxd",
+    "od",
+    "strings",
+    "rev",
+    "fold",
+    "test",
+    "true",
+    "false",
+    "sleep",
+];
+
+const SIDE_EFFECT_COMMANDS: &[&str] = &[
+    "make", "cmake", "ninja", "meson", "bazel", "docker", "podman", "python", "python3", "node",
+    "deno", "bun", "go", "rustc", "gcc", "cc", "clang", "javac", "java", "gradle", "mvn", "dotnet",
+    "pytest", "tox", "jest", "mocha", "pnpm", "yarn", "pip", "pip3", "uv", "poetry", "bundle",
+    "rake", "webpack", "vite", "tsc", "esbuild",
 ];
 
 fn first_verb_allowed(toks: &[&str], at: usize, allowed: &[&str], takes_value: &[&str]) -> bool {
