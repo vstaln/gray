@@ -823,13 +823,14 @@ async fn plugin_command_result(
     name: &str,
     args: &[String],
 ) -> Result<Option<CommandResult>, CmdError> {
-    let Some((owner, argv)) = find_command_owner(home, name) else {
+    let Some((owner, argv, granted)) = find_command_owner(home, name) else {
         return Ok(None);
     };
     use gray_plugin::Plugin as _;
     let sidecar = gray_plugin::sidecar::SidecarPlugin::spawn(argv)
         .await
         .map_err(|e| CmdError::unavailable(format!("{owner} failed to spawn: {e:#}")))?;
+    sidecar.set_capabilities(granted);
     let outcome = sidecar
         .run_command(&format!("/{name}"), args.to_vec(), None)
         .await;
@@ -860,7 +861,7 @@ async fn plugin_command_result(
     }
 }
 
-fn find_command_owner(home: &Path, name: &str) -> Option<(String, Vec<String>)> {
+fn find_command_owner(home: &Path, name: &str) -> Option<(String, Vec<String>, Vec<String>)> {
     let mut homes = vec![(home.to_path_buf(), false)];
     if let Some(main) =
         gray_core::paths::gray_user_home().filter(|u| crate::providers::registry::differs(home, u))
@@ -905,7 +906,7 @@ fn find_command_owner(home: &Path, name: &str) -> Option<(String, Vec<String>)> 
                     Err(_) => continue,
                 }
             };
-            return Some((plugin.clone(), argv));
+            return Some((plugin.clone(), argv, entry.granted_capabilities.clone()));
         }
     }
     None
