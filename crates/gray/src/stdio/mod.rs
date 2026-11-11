@@ -3,7 +3,7 @@
 //! One long-lived `gray` process drives the same engine the interactive REPL
 //! uses — `repl::prompt_turn::run_prompt_turn` for turns and
 //! `repl::dispatch::dispatch_command` for slash commands — while embedding
-//! surfaces (gray-tui) speak NDJSON on stdin/stdout instead of a terminal.
+//! surfaces (gray-gui) speak NDJSON on stdin/stdout instead of a terminal.
 //!
 //! Wire shape is documented in `docs/stdio-protocol.md`. In short: requests
 //! arrive as `{"type": ..., "id": ...}`; every emitted row carries

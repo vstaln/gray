@@ -17,39 +17,51 @@ use gpui_kit::*;
 use std::path::PathBuf;
 
 pub fn data_dir() -> PathBuf {
-    std::env::var_os("GRAY_TUI_HOME")
+    std::env::var_os("GRAY_GUI_HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| {
             std::env::var_os("HOME")
                 .map(PathBuf::from)
                 .unwrap_or_else(|| PathBuf::from("."))
                 .join(".gray")
-                .join("tui")
+                .join("gui")
         })
 }
 
+fn migrate_legacy_home() {
+    let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
+        return;
+    };
+    let old = home.join(".gray").join("tui");
+    let new = home.join(".gray").join("gui");
+    if !new.exists() && old.is_dir() {
+        let _ = std::fs::rename(&old, &new);
+    }
+}
+
 fn main() {
+    migrate_legacy_home();
     let started = std::time::Instant::now();
     env_logger::init();
     match std::env::args().nth(1).as_deref() {
         Some("--version" | "-V") => {
-            println!("gray-tui {}", env!("CARGO_PKG_VERSION"));
+            println!("gray-gui {}", env!("CARGO_PKG_VERSION"));
             return;
         }
         Some("--help" | "-h") => {
             println!(
-                "usage: gray-tui [FOLDER]\n\nOpens FOLDER (default: the current directory) as a project."
+                "usage: gray-gui [FOLDER]\n\nOpens FOLDER (default: the current directory) as a project."
             );
             return;
         }
         Some(flag) if flag.starts_with('-') => {
-            eprintln!("gray-tui: unknown option {flag} (try --help)");
+            eprintln!("gray-gui: unknown option {flag} (try --help)");
             std::process::exit(2);
         }
         _ => {}
     }
     let initial = std::env::args().nth(1).map(PathBuf::from).or_else(|| {
-        if std::env::var_os("GRAY_TUI_NO_CWD").is_some() {
+        if std::env::var_os("GRAY_GUI_NO_CWD").is_some() {
             None
         } else {
             std::env::current_dir().ok()
@@ -94,11 +106,11 @@ fn main() {
             let opts = WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 titlebar: Some(TitlebarOptions {
-                    title: Some("Gray TUI".into()),
+                    title: Some("Gray GUI".into()),
                     ..Default::default()
                 }),
                 window_background: WindowBackgroundAppearance::Opaque,
-                app_id: Some("gray-tui".into()),
+                app_id: Some("gray-gui".into()),
                 ..Default::default()
             };
             gpui_kit::open_window(opts, cx, move |window, cx| {

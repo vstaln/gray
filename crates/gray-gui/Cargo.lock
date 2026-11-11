@@ -2761,7 +2761,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "gray-tui"
+name = "gray-gui"
 version = "0.1.0"
 dependencies = [
  "anyhow",

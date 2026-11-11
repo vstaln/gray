@@ -630,7 +630,7 @@ impl GrayApp {
             dock_slide_at: None,
             items_scroll: ScrollHandle::new(),
             scroll_target: None,
-            state_file: std::env::var_os("GRAY_TUI_STATE").map(PathBuf::from),
+            state_file: std::env::var_os("GRAY_GUI_STATE").map(PathBuf::from),
             last_snapshot: String::new(),
             home_intro_at: None,
             _subs: subs,
@@ -680,7 +680,7 @@ impl GrayApp {
         apply_brand(cx);
         app.refresh_workspace(cx);
         app.home_intro_at = (started_at.elapsed() >= Duration::from_millis(150)).then(Instant::now);
-        if std::env::var_os("GRAY_TUI_BOOT_TRACE").is_some() {
+        if std::env::var_os("GRAY_GUI_BOOT_TRACE").is_some() {
             eprintln!("boot {:?}", started_at.elapsed());
         }
         app.window_handle = Some(window.window_handle());
@@ -979,8 +979,8 @@ mod tests {
     fn file_ranking_prefers_names_and_drops_scatter() {
         let files = [
             "assets/app-icon.png",
-            "crates/gray-tui/assets/icons/g/settings.svg",
-            "crates/gray-tui/src/sessions.rs",
+            "crates/gray-gui/assets/icons/g/settings.svg",
+            "crates/gray-gui/src/sessions.rs",
             "crates/gray/src/repl/session.rs",
             "docs/session-store.md",
         ]
