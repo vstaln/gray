@@ -121,7 +121,7 @@ if [ "$SEED" = "auto" ]; then
 fi
 if [ "$SEED" != "0" ]; then
     FLAVOR="full"
-    DEFAULT_PLUGINS="account memory search skills gateway permissions"
+    DEFAULT_PLUGINS="account connect memory search skills gateway permissions"
     [ "$(uname -s)" = Linux ] && DEFAULT_PLUGINS="${DEFAULT_PLUGINS} fsearch"
     PLUGINS="${GRAY_PLUGINS:-$DEFAULT_PLUGINS}"
     FAILED=""
