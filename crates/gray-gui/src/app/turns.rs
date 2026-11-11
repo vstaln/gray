@@ -307,7 +307,7 @@ impl GrayApp {
             self.grep_rx = None;
             cx.notify();
         }
-        if let Some(path) = std::env::var_os("GRAY_TUI_CMDS")
+        if let Some(path) = std::env::var_os("GRAY_GUI_CMDS")
             && let Ok(text) = std::fs::read_to_string(&path)
             && !text.trim().is_empty()
         {

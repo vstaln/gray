@@ -68,12 +68,12 @@ fn static_provider(id: &str, label: &str, models: &[(&str, &[&str])]) -> Provide
     }
 }
 
-/// The external agent CLIs gray-tui drives directly: (id, label, binary env
+/// The external agent CLIs gray-gui drives directly: (id, label, binary env
 /// override, binary name). Only those whose binary resolves are offered, and
 /// their models come from the CLI itself (see `load_cli_providers`).
 const CLI_PROVIDERS: &[(&str, &str, &str, &str)] = &[
-    ("claude", "Claude", "GRAY_TUI_CLAUDE_BIN", "claude"),
-    ("codex", "Codex", "GRAY_TUI_CODEX_BIN", "codex"),
+    ("claude", "Claude", "GRAY_GUI_CLAUDE_BIN", "claude"),
+    ("codex", "Codex", "GRAY_GUI_CODEX_BIN", "codex"),
 ];
 
 /// How long a CLI gets to answer its model listing before we give up.
@@ -210,19 +210,19 @@ fn discover_claude(path: &Path) -> Option<Vec<ModelEntry>> {
         serde_json::json!({"type": "control_request", "request_id": id, "request": {"subtype": sub}})
             .to_string()
     };
-    let list = req("gray-tui-list-models", "list_models");
+    let list = req("gray-gui-list-models", "list_models");
     let mut asked = false;
-    probe(cmd, &[req("gray-tui-init", "initialize")], |v, stdin| {
+    probe(cmd, &[req("gray-gui-init", "initialize")], |v, stdin| {
         let resp = v
             .get("response")
             .filter(|_| v["type"] == "control_response");
         let rid = resp.and_then(|r| r["request_id"].as_str()).unwrap_or("");
-        if rid == "gray-tui-init" && !asked {
+        if rid == "gray-gui-init" && !asked {
             asked = true;
             let _ = writeln!(stdin, "{list}");
             return None;
         }
-        if rid != "gray-tui-list-models" {
+        if rid != "gray-gui-list-models" {
             return None;
         }
         let rows = resp?.get("response")?.get("models")?.as_array()?;
@@ -250,7 +250,7 @@ fn discover_codex(path: &Path) -> Option<Vec<ModelEntry>> {
         "id": 1,
         "method": "initialize",
         "params": {
-            "clientInfo": {"name": "gray-tui", "title": "Gray TUI", "version": env!("CARGO_PKG_VERSION")},
+            "clientInfo": {"name": "gray-gui", "title": "Gray GUI", "version": env!("CARGO_PKG_VERSION")},
             "capabilities": {"experimentalApi": true},
         },
     });
@@ -321,8 +321,8 @@ pub fn fallback_gray_provider() -> ProviderEntry {
 /// The fake provider is test scaffolding: only offer it when the harness opts
 /// in via env, never to users of the picker.
 pub fn fake_enabled() -> bool {
-    std::env::var_os("GRAY_TUI_FAKE").is_some()
-        || std::env::var_os("GRAY_TUI_FAKE_DELAY_MS").is_some()
+    std::env::var_os("GRAY_GUI_FAKE").is_some()
+        || std::env::var_os("GRAY_GUI_FAKE_DELAY_MS").is_some()
 }
 
 /// Providers that run through the gray CLI (`gray -p`) rather than an
@@ -365,7 +365,7 @@ pub fn mode_label(id: &str) -> &'static str {
 /// rail shows, in the same order. None when the installed gray is too old or
 /// fails — callers fall back to the static gray entry.
 pub fn load_model_catalog() -> Option<Vec<ProviderEntry>> {
-    let out = Command::new(bin("GRAY_TUI_GRAY_BIN", "gray"))
+    let out = Command::new(bin("GRAY_GUI_GRAY_BIN", "gray"))
         .arg("--dump-models")
         .stdin(Stdio::null())
         .output()
@@ -514,7 +514,7 @@ fn claude_command(req: &TurnRequest) -> Command {
         "edits" => "acceptEdits",
         _ => "bypassPermissions",
     };
-    let mut cmd = Command::new(bin("GRAY_TUI_CLAUDE_BIN", "claude"));
+    let mut cmd = Command::new(bin("GRAY_GUI_CLAUDE_BIN", "claude"));
     cmd.arg("-p")
         .arg(&req.prompt)
         .args(["--output-format", "stream-json", "--verbose"])
@@ -535,7 +535,7 @@ fn codex_command(req: &TurnRequest) -> Command {
         "edits" => "workspace-write",
         _ => "danger-full-access",
     };
-    let mut cmd = Command::new(bin("GRAY_TUI_CODEX_BIN", "codex"));
+    let mut cmd = Command::new(bin("GRAY_GUI_CODEX_BIN", "codex"));
     cmd.args(["exec", "--json", "--skip-git-repo-check"])
         .args(["--sandbox", sandbox]);
     if !req.model.is_empty() && req.model != "default" {
@@ -772,7 +772,7 @@ fn run_fake(
     pending: &Arc<Mutex<Option<Sender<bool>>>>,
 ) -> Result<(), String> {
     let delay = Duration::from_millis(
-        std::env::var("GRAY_TUI_FAKE_DELAY_MS")
+        std::env::var("GRAY_GUI_FAKE_DELAY_MS")
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(25),

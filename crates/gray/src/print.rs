@@ -379,12 +379,13 @@ pub fn write_structured_input_error(error: &InputError) {
 pub const EXIT_TURN_FAILED: i32 = 1;
 pub const EXIT_INFRA: i32 = 3;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PrintFailure {
     pub code: &'static str,
     pub retryable: bool,
     pub exit: i32,
     pub hint: Option<&'static str>,
+    pub detail: Option<String>,
 }
 
 impl PrintFailure {
@@ -398,6 +399,7 @@ impl PrintFailure {
                 retryable: true,
                 exit: EXIT_INFRA,
                 hint: Self::hint_for("session_locked"),
+                detail: None,
             };
         }
         let Some(core) = error.downcast_ref::<gray_core::error::CoreError>() else {
@@ -406,6 +408,7 @@ impl PrintFailure {
                 retryable: false,
                 exit: EXIT_TURN_FAILED,
                 hint: None,
+                detail: Self::detail_of(error),
             };
         };
         let retryable = core.retryable();
@@ -418,7 +421,26 @@ impl PrintFailure {
                 EXIT_TURN_FAILED
             },
             hint: Self::hint_for(core.code()),
+            detail: Self::detail_of(error),
         }
+    }
+
+    fn detail_of(error: &anyhow::Error) -> Option<String> {
+        let text = scrub_error_text(&format!("{error:#}"));
+        let compact = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        let trimmed = compact.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+        let mut shown = String::new();
+        for ch in trimmed.chars() {
+            if shown.chars().count() >= 700 {
+                shown.push('…');
+                break;
+            }
+            shown.push(ch);
+        }
+        Some(shown)
     }
 
     pub fn message(&self) -> &'static str {
@@ -469,6 +491,9 @@ impl PrintFailure {
 impl std::fmt::Display for PrintFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.message())?;
+        if let Some(detail) = &self.detail {
+            write!(f, "\n  detail: {detail}")?;
+        }
         if let Some(hint) = self.hint {
             write!(f, "\n  hint: {hint}")?;
         }

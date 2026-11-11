@@ -9,7 +9,7 @@ members = [
     "crates/gray-plugin",
     "crates/gray-pkg",
 ]
-exclude = ["crates/gray-tui"]
+exclude = ["crates/gray-gui"]
 [workspace.package]
 version = "0.2.18"
 edition = "2024"

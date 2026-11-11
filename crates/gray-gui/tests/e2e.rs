@@ -116,27 +116,27 @@ impl Gray {
         let xdg = self.root.join("xdg");
         fs::create_dir_all(&xdg).unwrap();
         let log = fs::File::create(self.root.join("app.log")).unwrap();
-        let child = Command::new(env!("CARGO_BIN_EXE_gray-tui"))
+        let child = Command::new(env!("CARGO_BIN_EXE_gray-gui"))
             .arg(&self.project)
             .envs(self.env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
             .env("DISPLAY", &self.display)
             .env("VK_ICD_FILENAMES", "/nonexistent.json")
             .env("XDG_RUNTIME_DIR", &xdg)
-            .env("GRAY_TUI_HOME", &self.home)
-            .env("GRAY_TUI_STATE", &self.state)
-            .env("GRAY_TUI_CMDS", self.root.join("cmds.txt"))
+            .env("GRAY_GUI_HOME", &self.home)
+            .env("GRAY_GUI_STATE", &self.state)
+            .env("GRAY_GUI_CMDS", self.root.join("cmds.txt"))
             .env(
-                "GRAY_TUI_FAKE_DELAY_MS",
+                "GRAY_GUI_FAKE_DELAY_MS",
                 self.env
                     .iter()
-                    .find(|(k, _)| k == "GRAY_TUI_FAKE_DELAY_MS")
+                    .find(|(k, _)| k == "GRAY_GUI_FAKE_DELAY_MS")
                     .map(|(_, v)| v.clone())
                     .unwrap_or_else(|| "5".into()),
             )
             .stdout(log.try_clone().unwrap())
             .stderr(log)
             .spawn()
-            .expect("start gray-tui");
+            .expect("start gray-gui");
         self.app = Some(child);
         self.wait_for("app ready", |s| s["ready"] == true);
         sleep(Duration::from_millis(600));
@@ -540,8 +540,8 @@ for line in sys.stdin:
         "palette_model",
         "fake",
         vec![
-            ("GRAY_TUI_CLAUDE_BIN".into(), stub.display().to_string()),
-            ("GRAY_TUI_CODEX_BIN".into(), "/nonexistent/codex".into()),
+            ("GRAY_GUI_CLAUDE_BIN".into(), stub.display().to_string()),
+            ("GRAY_GUI_CODEX_BIN".into(), "/nonexistent/codex".into()),
         ],
     ) else {
         return;
@@ -840,7 +840,7 @@ fn mock_llm() -> MockLlm {
 }
 
 fn gray_bin() -> Option<PathBuf> {
-    let path = std::env::var_os("GRAY_TUI_E2E_GRAY_BIN")
+    let path = std::env::var_os("GRAY_GUI_E2E_GRAY_BIN")
         .map(PathBuf::from)
         .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/debug/gray"));
     path.exists().then_some(path)
@@ -877,7 +877,7 @@ fn real_gray_cli_provider_streams_and_resumes_session() {
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(&root).unwrap();
     let env = vec![
-        ("GRAY_TUI_GRAY_BIN".to_string(), bin.display().to_string()),
+        ("GRAY_GUI_GRAY_BIN".to_string(), bin.display().to_string()),
         ("GRAY_HOME".to_string(), root.display().to_string()),
         ("GRAY_BASE_URL".to_string(), llm.url.clone()),
         ("GRAY_API_KEY".to_string(), "e2e-key".to_string()),
@@ -991,7 +991,7 @@ fn plugins_panel_browses_hub_and_manages_real_gray_plugins() {
     )
     .unwrap();
     let env = vec![
-        ("GRAY_TUI_GRAY_BIN".to_string(), bin.display().to_string()),
+        ("GRAY_GUI_GRAY_BIN".to_string(), bin.display().to_string()),
         (
             "GRAY_HOME".to_string(),
             root.join("gray-home").display().to_string(),
@@ -1055,7 +1055,7 @@ fn brand_logo_and_churning_loader_render() {
     let Some(g) = Gray::start_with(
         "brand",
         "fake",
-        vec![("GRAY_TUI_FAKE_DELAY_MS".into(), "40".into())],
+        vec![("GRAY_GUI_FAKE_DELAY_MS".into(), "40".into())],
     ) else {
         return;
     };
@@ -1164,7 +1164,7 @@ fn gray_command_registry_lists_and_runs_via_palette() {
         "gray_cmds",
         "fake",
         vec![
-            ("GRAY_TUI_GRAY_BIN".into(), bin.display().to_string()),
+            ("GRAY_GUI_GRAY_BIN".into(), bin.display().to_string()),
             ("GRAY_HOME".into(), "/tmp/gray-e2e-gc-home".into()),
         ],
     ) else {
@@ -1195,7 +1195,7 @@ fn turn_diff_shows_changes_since_checkpoint() {
     let Some(g) = Gray::start_with(
         "turn_diff",
         "fake",
-        vec![("GRAY_TUI_FAKE_DELAY_MS".into(), "5".into())],
+        vec![("GRAY_GUI_FAKE_DELAY_MS".into(), "5".into())],
     ) else {
         return;
     };
@@ -1224,7 +1224,7 @@ fn approval_gates_writes_in_readonly_mode() {
     let Some(g) = Gray::start_with(
         "approvals",
         "fake",
-        vec![("GRAY_TUI_FAKE_DELAY_MS".into(), "5".into())],
+        vec![("GRAY_GUI_FAKE_DELAY_MS".into(), "5".into())],
     ) else {
         return;
     };
@@ -1272,7 +1272,7 @@ fn settings_page_layouts_toggles_and_terminal_side() {
     let Some(mut g) = Gray::start_with(
         "settings-page",
         "fake",
-        vec![("GRAY_TUI_FAKE_DELAY_MS".into(), "5".into())],
+        vec![("GRAY_GUI_FAKE_DELAY_MS".into(), "5".into())],
     ) else {
         return;
     };
@@ -1379,7 +1379,7 @@ fn image_attachments_chip_send_and_clear() {
     let Some(g) = Gray::start_with(
         "attach",
         "fake",
-        vec![("GRAY_TUI_FAKE_DELAY_MS".into(), "5".into())],
+        vec![("GRAY_GUI_FAKE_DELAY_MS".into(), "5".into())],
     ) else {
         return;
     };
@@ -1418,7 +1418,7 @@ fn skills_panel_lists_and_pastes_skill() {
     let Some(g) = Gray::start_with(
         "skills",
         "fake",
-        vec![("GRAY_TUI_FAKE_DELAY_MS".into(), "5".into())],
+        vec![("GRAY_GUI_FAKE_DELAY_MS".into(), "5".into())],
     ) else {
         return;
     };
