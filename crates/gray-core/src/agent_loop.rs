@@ -323,6 +323,25 @@ fn is_blank_input(msg: &Message) -> bool {
     })
 }
 
+fn context_source_key(text: &str) -> &str {
+    let line = text
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or_default();
+    if let Some(tag) = line.strip_prefix('<') {
+        return tag
+            .split(|c: char| c == ' ' || c == '>')
+            .next()
+            .unwrap_or(tag);
+    }
+    let cut = line
+        .find(|c: char| c == ':' || c == '\u{2014}' || c == '\u{b7}')
+        .unwrap_or(line.len());
+    let key = line[..cut].trim();
+    if key.is_empty() { line } else { key }
+}
+
 impl Agent {
     fn collect_background_notifications(&mut self, ctx: &ToolContext) -> bool {
         let notices = self.executor.drain_notifications(ctx);
@@ -521,16 +540,27 @@ impl Agent {
             if let Some(text) = hook.prompt_context().await
                 && !text.trim().is_empty()
             {
-                let sent = self.messages.iter().any(|message| {
-                    message.injected
-                        && message.content.iter().any(|block| {
-                            matches!(block, ContentBlock::Text { text: seen }
-                                if seen.starts_with("[Context update]\n") && seen.contains(text.as_str()))
-                        })
+                let fresh = format!("[Context update]\n{text}");
+                let key = context_source_key(&text);
+                let existing = self.messages.iter_mut().rev().find_map(|message| {
+                    message.content.iter_mut().find_map(|block| match block {
+                        ContentBlock::Text { text: seen }
+                            if seen
+                                .strip_prefix("[Context update]\n")
+                                .is_some_and(|body| context_source_key(body) == key) =>
+                        {
+                            Some(seen)
+                        }
+                        _ => None,
+                    })
                 });
-                if !sent {
-                    self.messages
-                        .push(Message::user_injected(format!("[Context update]\n{text}")));
+                match existing {
+                    Some(seen) if seen.as_str() != fresh.as_str() => {
+                        *seen = fresh;
+                        self.prefix_guard.expect_change("context update refreshed");
+                    }
+                    Some(_) => {}
+                    None => self.messages.push(Message::user_injected(fresh)),
                 }
             }
         }
