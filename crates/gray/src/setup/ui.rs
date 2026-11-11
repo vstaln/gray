@@ -365,8 +365,15 @@ fn paint_dimmed_background(
             quality_of_life: bg.home_quality_of_life.as_deref(),
         };
         let chips = crate::composer::draw::attachment_cells(&bg.attachments, &bg.prompt_text);
-        let ibox =
-            crate::composer::draw::build_input_box(&bg.prompt_text, 0, w, None, Some(home), &chips);
+        let ibox = crate::composer::draw::build_input_box(
+            &bg.prompt_text,
+            0,
+            w,
+            None,
+            Some(home),
+            &chips,
+            None,
+        );
         let band = ibox.lines;
         let transcript_avail_h = h.saturating_sub(band.len() + 1);
         let tail: &[Line<'static>] = if transcript.len() <= transcript_avail_h {

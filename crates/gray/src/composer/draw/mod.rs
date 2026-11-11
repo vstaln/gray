@@ -263,7 +263,15 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
     let tail_est = stream_tail.len() as u16 + tail_gap;
 
     let chips = attachment_cells(&tui.attachments, &text);
-    let ibox = build_input_box(&text, cursor, w, ghost, home, &chips);
+    let ibox = build_input_box(
+        &text,
+        cursor,
+        w,
+        ghost,
+        home,
+        &chips,
+        tui.action.prompt_glyph(),
+    );
     // An approval/question prompt owns the bottom band: the input box (and
     // its cursor) step aside until it closes.
     let asking = tui.ask_modal.is_some();
@@ -627,6 +635,23 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
                 Paragraph::new(ibox.lines.clone()),
                 Rect::new(box_x, box_y, area.right() - box_x, rendered_box_h),
             );
+        }
+
+        if let Some((text, error)) = tui.action.banner() {
+            let th = crate::theme::theme();
+            let style = if error {
+                Style::default().fg(th.error)
+            } else {
+                Style::default().fg(th.accent).add_modifier(Modifier::BOLD)
+            };
+            let text: String = text.chars().take(ibox.width).collect();
+            let y = box_y.saturating_sub(1);
+            if y < area.bottom() {
+                frame.render_widget(
+                    chrome_row(Line::from(Span::styled(text, style))),
+                    Rect::new(area.x, y, area.width, 1),
+                );
+            }
         }
 
         if let Some(search) = &tui.search {

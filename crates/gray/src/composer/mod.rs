@@ -17,6 +17,7 @@ pub(crate) const PANEL_ROWS: usize = 6;
 
 pub(crate) const MIN_VIEWPORT_H: u16 = 4;
 
+pub(crate) mod action;
 pub(crate) mod cache_stats;
 mod glow;
 pub(crate) mod kitty;
@@ -109,6 +110,7 @@ pub struct Tui {
     pub(crate) muted_text: Option<String>,
     /// Active ctrl-r reverse-history-search state (None when not searching).
     pub(crate) search: Option<HistSearch>,
+    pub(crate) action: action::ActionState,
     pub(crate) sel: usize,
     status: Option<(Instant, String)>,
 
@@ -382,6 +384,7 @@ impl Tui {
             matches: Vec::new(),
             muted_text: None,
             search: None,
+            action: action::ActionState::Idle,
             sel: 0,
             status: None,
             gap_owed: false,

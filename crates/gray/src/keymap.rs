@@ -499,7 +499,8 @@ pub fn load_in(gray_home: &Path) -> Keymap {
 
 pub fn load_into_active(gray_home: &Path) -> Vec<String> {
     let km = load_in(gray_home);
-    let warnings = km.warnings.clone();
+    let mut warnings = km.warnings.clone();
     set_active(km);
+    warnings.extend(crate::composer::action::load(gray_home));
     warnings
 }

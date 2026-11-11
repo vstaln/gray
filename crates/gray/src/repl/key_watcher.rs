@@ -177,7 +177,15 @@ pub(crate) fn spawn_key_watcher_with_typing(
             }
             match poll(std::time::Duration::from_millis(50)) {
                 Ok(true) => {}
-                _ => continue,
+                _ => {
+                    if let Some(shared) = watcher_tui.as_ref() {
+                        let mut t = lock_tui(shared);
+                        if t.action_tick() {
+                            let _ = t.draw();
+                        }
+                    }
+                    continue;
+                }
             }
             let Ok(event) = read() else {
                 continue;

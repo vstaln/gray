@@ -78,7 +78,25 @@ pub(crate) fn draw_list_picker<T>(
     crate::setup::render_dimmed_background(frame, bg);
     let footer_lines = picker.footer.as_ref().map(|f| f()).unwrap_or_default();
     let inner_h = (list_h + 5 + footer_lines.len()) as u16;
-    let modal_w = 48.min(area.width.saturating_sub(2));
+    let widest = picker
+        .items
+        .iter()
+        .map(|item| {
+            let trailing: usize = picker
+                .trailing
+                .as_ref()
+                .map(|f| f(item))
+                .unwrap_or_default()
+                .iter()
+                .map(|s| s.content.chars().count())
+                .sum();
+            2 + (picker.label)(item).chars().count() + trailing
+        })
+        .max()
+        .unwrap_or(0);
+    let modal_w = 48u16
+        .max(widest as u16 + 9)
+        .min(area.width.saturating_sub(2));
     let modal_h = (inner_h + 2).min(area.height.saturating_sub(2));
     let modal_x = (area.width.saturating_sub(modal_w)) / 2;
     let modal_y = (area.height.saturating_sub(modal_h)) / 3;
