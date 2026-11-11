@@ -231,7 +231,7 @@ fn activate_plugin_connection_at(
     model: &str,
     path: &Path,
 ) -> anyhow::Result<()> {
-    let _lock = lock_saved_config_at(path).ok();
+    let _lock = lock_saved_config_at(path)?;
     let mut saved = load_saved_config_at(path);
     config.base_url = installed.provider.transport.base_url.to_string();
     config.api_key = None;
@@ -279,18 +279,17 @@ fn clear_plugin_identity(config: &mut Config, saved: &mut SavedConfig) {
     saved.auth_ref.clear();
 }
 
-fn api_key_selection_at(config: &mut Config, path: &Path) {
-    let _lock = lock_saved_config_at(path).ok();
+fn api_key_selection_at(config: &mut Config, path: &Path) -> anyhow::Result<()> {
+    let _lock = lock_saved_config_at(path)?;
     let mut saved = load_saved_config_at(path);
     clear_plugin_identity(config, &mut saved);
     crate::config::export_provider_env(config);
-    let _ = save_saved_config_at(path, &saved);
+    save_saved_config_at(path, &saved)
 }
 
 pub fn select_api_key_connection(config: &mut Config) -> anyhow::Result<()> {
     let path = saved_config_path()?;
-    api_key_selection_at(config, &path);
-    Ok(())
+    api_key_selection_at(config, &path)
 }
 
 pub(crate) fn connect_saved_key_at(
@@ -300,7 +299,7 @@ pub(crate) fn connect_saved_key_at(
     path: &Path,
     first_model: impl FnOnce() -> Option<String>,
 ) -> anyhow::Result<()> {
-    let _cfg_lock = lock_saved_config_at(path).ok();
+    let _cfg_lock = lock_saved_config_at(path)?;
     let mut saved = load_saved_config_at(path);
 
     let is_switching =
@@ -356,10 +355,14 @@ pub(crate) fn adopt_connection_effort(config: &mut Config) {
     let Ok(path) = saved_config_path() else {
         return;
     };
-    let _cfg_lock = lock_saved_config_at(&path).ok();
+    let _cfg_lock = lock_saved_config_at(&path)
+        .inspect_err(|e| log::warn!("cannot lock {} ({e:#})", path.display()))
+        .ok();
     let mut saved = load_saved_config_at(&path);
     apply_connection_effort(config, &mut saved);
-    let _ = save_saved_config_at(&path, &saved);
+    if let Err(e) = save_saved_config_at(&path, &saved) {
+        log::warn!("cannot save {} ({e:#})", path.display());
+    }
 }
 
 pub fn settle_connect_config(
@@ -447,7 +450,7 @@ pub async fn forget_plugin_connection(
         return Err(anyhow!("not installed: {}", item.id));
     }
 
-    let _lock = lock_saved_config_at(&saved_path).ok();
+    let _lock = lock_saved_config_at(&saved_path)?;
     let mut saved = load_saved_config_at(&saved_path);
     clear_plugin_selection(config, &mut saved, &item.id);
     crate::config::export_provider_env(config);

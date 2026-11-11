@@ -30,15 +30,16 @@ pub fn run_context_modal(
     use ratatui::widgets::{Block, Clear, Paragraph};
     use std::time::Duration;
 
-    fn persist(cfg: &Config) {
+    fn persist(cfg: &Config) -> anyhow::Result<()> {
         if let Ok(path) = saved_config_path() {
-            let _cfg_lock = crate::setup::lock_saved_config_at(&path).ok();
+            let _cfg_lock = crate::setup::lock_saved_config_at(&path)?;
             let mut saved = load_saved_config_at(&path);
             saved.context_window = cfg.context_window;
             saved.context_reserve = cfg.context_reserve;
             saved.context_keep = cfg.context_keep;
-            let _ = save_saved_config_at(&path, &saved);
+            save_saved_config_at(&path, &saved)?;
         }
+        Ok(())
     }
 
     fn compute_diffs(
@@ -443,7 +444,7 @@ pub fn run_context_modal(
                                 };
                                 match saved {
                                     Some(_) => {
-                                        persist(config);
+                                        persist(config)?;
                                         status = format!("{} updated", setting_labels[idx]);
                                         editing = None;
                                         buf.clear();

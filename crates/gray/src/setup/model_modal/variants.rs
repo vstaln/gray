@@ -235,7 +235,9 @@ pub(crate) fn canonicalize_effort_variant(
         }
         config.model_parts = v.parts.clone();
         if let Ok(path) = saved_config_path() {
-            let _cfg_lock = lock_saved_config_at(&path).ok();
+            let _cfg_lock = lock_saved_config_at(&path)
+                .inspect_err(|e| log::warn!("cannot lock {} ({e:#})", path.display()))
+                .ok();
             let mut saved = load_saved_config_at(&path);
             if saved.model.as_deref() == Some(model.as_str()) {
                 saved.model = Some(row.clone());
@@ -246,7 +248,9 @@ pub(crate) fn canonicalize_effort_variant(
                 }
                 saved.remember_parts(&key, &v.parts);
                 saved.fast_mode = config.fast_mode;
-                let _ = save_saved_config_at(&path, &saved);
+                if let Err(e) = save_saved_config_at(&path, &saved) {
+                    log::warn!("cannot save {} ({e:#})", path.display());
+                }
             }
         }
         return Some((row, v.effort, v.fast));
@@ -262,7 +266,9 @@ pub(crate) fn canonicalize_effort_variant(
         config.fast_mode = Some(true);
     }
     if let Ok(path) = saved_config_path() {
-        let _cfg_lock = lock_saved_config_at(&path).ok();
+        let _cfg_lock = lock_saved_config_at(&path)
+            .inspect_err(|e| log::warn!("cannot lock {} ({e:#})", path.display()))
+            .ok();
         let mut saved = load_saved_config_at(&path);
         if saved.model.as_deref() == Some(model.as_str()) {
             saved.model = Some(base.clone());
@@ -276,7 +282,9 @@ pub(crate) fn canonicalize_effort_variant(
             if fast {
                 saved.fast_mode = Some(true);
             }
-            let _ = save_saved_config_at(&path, &saved);
+            if let Err(e) = save_saved_config_at(&path, &saved) {
+                log::warn!("cannot save {} ({e:#})", path.display());
+            }
         }
     }
     Some((base, tier, fast))
@@ -286,7 +294,9 @@ pub(crate) fn recent_head_for(base_url: &str) -> (Option<String>, Vec<String>) {
     let Ok(path) = saved_config_path() else {
         return (None, Vec::new());
     };
-    let _cfg_lock = crate::setup::lock_saved_config_at(&path).ok();
+    let _cfg_lock = crate::setup::lock_saved_config_at(&path)
+        .inspect_err(|e| log::warn!("cannot lock {} ({e:#})", path.display()))
+        .ok();
     let saved = load_saved_config_at(&path);
     let base = normalize_custom_base_url(base_url);
     let current = saved

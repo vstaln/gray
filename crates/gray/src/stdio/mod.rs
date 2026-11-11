@@ -656,11 +656,11 @@ pub async fn run_stdio_mode(
     {
         config.thinking_effort = Some("high".to_string());
         if let Ok(path) = crate::setup::saved_config_path() {
-            let _cfg_lock = crate::setup::lock_saved_config_at(&path).ok();
+            let _cfg_lock = crate::setup::lock_saved_config_at(&path)?;
             let mut saved = crate::setup::load_saved_config_at(&path);
             if saved.thinking_effort.is_none() {
                 saved.thinking_effort = Some("high".to_string());
-                let _ = crate::setup::save_saved_config_at(&path, &saved);
+                crate::setup::save_saved_config_at(&path, &saved)?;
             }
         }
     }

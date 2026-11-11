@@ -34,7 +34,9 @@ pub(crate) fn picker_scope(
 pub(crate) fn saved_models_for(list_key: &str, sort_base: &str) -> Vec<(String, String)> {
     let mut models = super::context::load_provider_model_list(list_key);
     if let Ok(path) = saved_config_path() {
-        let _cfg_lock = crate::setup::lock_saved_config_at(&path).ok();
+        let _cfg_lock = crate::setup::lock_saved_config_at(&path)
+            .inspect_err(|e| log::warn!("cannot lock {} ({e:#})", &path.display()))
+            .ok();
         load_saved_config_at(&path).sort_models(sort_base, &mut models);
     }
     models
@@ -172,7 +174,9 @@ pub(crate) fn model_picker_loop(
 
     let effort_saved = saved_config_path()
         .map(|path| {
-            let _cfg_lock = crate::setup::lock_saved_config_at(&path).ok();
+            let _cfg_lock = crate::setup::lock_saved_config_at(&path)
+                .inspect_err(|e| log::warn!("cannot lock {} ({e:#})", &path.display()))
+                .ok();
             load_saved_config_at(&path)
         })
         .unwrap_or_default();
@@ -531,7 +535,7 @@ fn commit_selection(
 
     let variant = canonicalize_effort_variant(config, models);
     let path = saved_config_path()?;
-    let _cfg_lock = crate::setup::lock_saved_config_at(&path).ok();
+    let _cfg_lock = crate::setup::lock_saved_config_at(&path)?;
     let mut saved = load_saved_config_at(&path);
     saved.base_url = Some(config.base_url.clone());
     saved.model = config.model.clone();

@@ -267,7 +267,9 @@ pub(crate) fn clamp_thinking_to_model_name(
     let (old, new) = (current, clamped.to_string());
     config.thinking_effort = Some(new.clone());
     if let Ok(path) = crate::setup::saved_config_path() {
-        let _cfg_lock = crate::setup::lock_saved_config_at(&path).ok();
+        let _cfg_lock = crate::setup::lock_saved_config_at(&path)
+            .inspect_err(|e| log::warn!("cannot lock {} ({e:#})", path.display()))
+            .ok();
         let mut saved = crate::setup::load_saved_config_at(&path);
 
         saved.remember_effort(
@@ -278,7 +280,9 @@ pub(crate) fn clamp_thinking_to_model_name(
             ),
             &new,
         );
-        let _ = crate::setup::save_saved_config_at(&path, &saved);
+        if let Err(e) = crate::setup::save_saved_config_at(&path, &saved) {
+            log::warn!("cannot save {} ({e:#})", path.display());
+        }
     }
     Some((old, new))
 }
@@ -976,11 +980,11 @@ pub async fn run_repl_mode(
     {
         config.thinking_effort = Some("high".to_string());
         if let Ok(path) = crate::setup::saved_config_path() {
-            let _cfg_lock = crate::setup::lock_saved_config_at(&path).ok();
+            let _cfg_lock = crate::setup::lock_saved_config_at(&path)?;
             let mut saved = crate::setup::load_saved_config_at(&path);
             if saved.thinking_effort.is_none() {
                 saved.thinking_effort = Some("high".to_string());
-                let _ = crate::setup::save_saved_config_at(&path, &saved);
+                crate::setup::save_saved_config_at(&path, &saved)?;
             }
         }
     }

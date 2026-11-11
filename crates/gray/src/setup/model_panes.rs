@@ -606,7 +606,7 @@ fn commit_pick(
     }
     config.model = Some(model.to_string());
     let path = saved_config_path()?;
-    let _lock = lock_saved_config_at(&path).ok();
+    let _lock = lock_saved_config_at(&path)?;
     let mut saved = load_saved_config_at(&path);
     if p.installed.is_none() {
         save_key_connection(config, &mut saved);
@@ -635,7 +635,7 @@ fn delegate_pick(
         }
         None => {
             let path = saved_config_path()?;
-            let _lock = lock_saved_config_at(&path).ok();
+            let _lock = lock_saved_config_at(&path)?;
             let mut saved = load_saved_config_at(&path);
             save_key_connection(config, &mut saved);
             save_saved_config_at(&path, &saved)?;
@@ -1180,7 +1180,9 @@ pub(crate) fn run_model_panes(
     let committed = (|| -> anyhow::Result<PanesOutcome> {
         let saved = saved_config_path()
             .map(|path| {
-                let _cfg_lock = crate::setup::lock_saved_config_at(&path).ok();
+                let _cfg_lock = crate::setup::lock_saved_config_at(&path)
+                    .inspect_err(|e| log::warn!("cannot lock {} ({e:#})", &path.display()))
+                    .ok();
                 load_saved_config_at(&path)
             })
             .unwrap_or_default();
