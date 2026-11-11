@@ -265,9 +265,10 @@ pub(super) fn apply_models_dev(providers: ModelsDev) -> usize {
             if let Some(cost) = &entry.cost {
                 let per_m = |f: &Field| f.as_ref().and_then(json_rate).map(|v| v / 1_000_000.0);
                 let mut tiers: Vec<RateTier> = Vec::new();
-                for flat in [&cost.context_over_200k, &cost.experimental_over_200k]
-                    .into_iter()
-                    .flatten()
+                if let Some(flat) = cost
+                    .context_over_200k
+                    .as_ref()
+                    .or(cost.experimental_over_200k.as_ref())
                 {
                     tiers.push(RateTier {
                         size: 200_000,
