@@ -296,6 +296,54 @@ async fn confirm_yn() -> bool {
     )
 }
 
+pub(crate) fn run_modal_child(
+    prog: &str,
+    rest: &[String],
+    bg: Option<&crate::setup::BackgroundSnapshot>,
+) -> std::io::Result<std::process::ExitStatus> {
+    let bg = bg
+        .cloned()
+        .unwrap_or_else(crate::setup::BackgroundSnapshot::default_initial);
+    let (_session, mut terminal) = crate::setup::open_modal()?;
+    terminal.draw(|f| crate::setup::render_dimmed_background(f, &bg))?;
+    let mut child = std::process::Command::new(prog);
+    child.args(rest).env("GRAY_MODAL_THEME", modal_theme_env());
+    if let Ok(exe) = crate::update::exe_watch::on_disk_exe() {
+        child.env("GRAY_EXE", exe);
+    }
+    child.status()
+}
+
+fn modal_theme_env() -> String {
+    let th = crate::theme::theme();
+    let roles = [
+        ("surface_bg", th.surface_bg),
+        ("raised_bg", th.raised_bg),
+        ("input_bg", th.input_bg),
+        ("text_faint", th.text_faint),
+        ("text_dim", th.text_dim),
+        ("text_muted", th.text_muted),
+        ("text_body", th.text_body),
+        ("text_bright", th.text_bright),
+        ("accent", th.accent),
+        ("accent_soft", th.accent_soft),
+        ("success", th.success),
+        ("error", th.error),
+        ("rose", th.rose),
+        ("tool_accent", th.tool_accent),
+        ("tool_command", th.tool_command),
+        ("tool_dim", th.tool_dim),
+    ];
+    roles
+        .iter()
+        .filter_map(|(k, c)| match c {
+            ratatui::style::Color::Rgb(r, g, b) => Some(format!("{k}=#{r:02x}{g:02x}{b:02x}")),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
 pub(crate) fn with_terminal<T>(
     shared: Option<&crate::composer::SharedTui>,
     f: impl FnOnce() -> T,

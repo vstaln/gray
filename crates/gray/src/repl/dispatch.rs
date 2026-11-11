@@ -210,9 +210,18 @@ pub(crate) async fn dispatch_command(
                 });
             }
 
-            *agent = build_agent(config, cwd, new_sid.as_ref().map(|s| s.as_str()))
-                .await
-                .ok();
+            *agent = match build_agent(config, cwd, new_sid.as_ref().map(|s| s.as_str())).await {
+                Ok(built) => Some(built),
+                Err(e) if config.model.is_some() => {
+                    *agent = None;
+                    say(
+                        tui.as_ref().map(|(s, _)| s),
+                        &format!("new conversation failed: {e:#}"),
+                    );
+                    return Ok(Flow::Continue);
+                }
+                Err(_) => None,
+            };
 
             if let Some((shared, _)) = tui {
                 let mut t = shared.lock().expect("tui lock");
@@ -513,16 +522,28 @@ pub(crate) async fn dispatch_command(
                             {
                                 let before = gray_core::paths::gray_home()
                                     .map(|h| crate::plugin_cli::installed_names(&h));
-                                let status = with_modal_sync(shared, || {
-                                    super::maintenance::with_terminal(shared, || {
-                                        let mut child = std::process::Command::new(prog);
-                                        child.args(rest);
-                                        if let Ok(exe) = crate::update::exe_watch::on_disk_exe() {
-                                            child.env("GRAY_EXE", exe);
-                                        }
-                                        child.status()
+                                let modal =
+                                    shared.is_some() && rest.iter().any(|a| a == "--gray-modal");
+                                let bg = modal
+                                    .then(|| shared.map(|s| s.lock().expect("tui lock").snapshot()))
+                                    .flatten();
+                                let status = if modal {
+                                    with_modal_sync(shared, || {
+                                        super::maintenance::run_modal_child(prog, rest, bg.as_ref())
                                     })
-                                });
+                                } else {
+                                    with_modal_sync(shared, || {
+                                        super::maintenance::with_terminal(shared, || {
+                                            let mut child = std::process::Command::new(prog);
+                                            child.args(rest);
+                                            if let Ok(exe) = crate::update::exe_watch::on_disk_exe()
+                                            {
+                                                child.env("GRAY_EXE", exe);
+                                            }
+                                            child.status()
+                                        })
+                                    })
+                                };
                                 match status {
                                     Ok(s) if s.success() => {}
                                     Ok(s) => say(shared, &format!("{name} exited: {s}")),
