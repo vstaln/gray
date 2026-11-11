@@ -267,8 +267,11 @@ fn replace_archive(
 
 const MAX_DEP_DEPTH: usize = 8;
 
-fn installed_entries() -> BTreeMap<String, LockEntry> {
-    read_lock().map(|l| l.plugins).unwrap_or_default()
+fn installed_entries() -> anyhow::Result<BTreeMap<String, LockEntry>> {
+    let path = lock_path();
+    read_lock()
+        .map(|l| l.plugins)
+        .map_err(|e| anyhow::anyhow!("{}: {e:#}", path.display()))
 }
 
 async fn install_index(
@@ -312,7 +315,7 @@ async fn install_index(
     }
     visited.insert(name.to_string());
 
-    let installed = installed_entries();
+    let installed = installed_entries()?;
     let mut deps = Vec::new();
     for dep in &entry.requires_plugins {
         if installed.contains_key(dep) || visited.contains(dep) {
@@ -325,7 +328,7 @@ async fn install_index(
         deps.push(dep.clone());
     }
 
-    let installed = installed_entries();
+    let installed = installed_entries()?;
     let conflicts: Vec<String> = entry
         .conflicts
         .iter()
