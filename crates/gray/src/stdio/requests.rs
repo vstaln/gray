@@ -67,8 +67,15 @@ pub(crate) fn approve(v: &Value, id: &Value) {
         return;
     };
     let line = json!({"ask_id": ask_id, "answers": answers}).to_string();
-    crate::ask::deliver_json_answer(ask_id, &line);
-    emit_result(id, true, Value::Object(Default::default()));
+    if crate::ask::deliver_json_answer(ask_id, &line) {
+        emit_result(id, true, Value::Object(Default::default()));
+    } else {
+        emit_result(
+            id,
+            false,
+            json!({"error": "answer not delivered: no open ask with that ask_id, or the answers do not match its questions"}),
+        );
+    }
 }
 
 /// `status` — session/model/context/usage snapshot.

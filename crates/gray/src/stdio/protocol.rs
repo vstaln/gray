@@ -58,13 +58,13 @@ impl Request {
             Request::Approve => (
                 "approve",
                 "`ask_id`, `answers`",
-                "answer an `ask`; `answers` = `{question_id: [label, …]}`",
+                "answer an `ask`; `answers` = `{question_id: [label, …]}`; fails if no such ask is open",
             ),
             Request::ListCommands => ("list_commands", "—", "builtin registry + plugin commands"),
             Request::ListModels => (
                 "list_models",
                 "`live?`",
-                "same JSON as `gray --dump-models`",
+                "the catalog schema of `gray --dump-models`, with this session's effort levels",
             ),
             Request::SetModel => (
                 "set_model",
@@ -172,7 +172,10 @@ impl Event {
                 "turn_end",
                 "`ok`, `interrupted`, `usage`, `error?` (errors arrive as `say` before it)",
             ),
-            Event::Result => ("result", "`id`, `ok`, `error?`, payload"),
+            Event::Result => (
+                "result",
+                "`id`, `ok`, `error?` and the payload keys inline; `req` equals `id`, `turn_id` is set only when the result closes that turn",
+            ),
             Event::Error => ("error", "`code`, `message`"),
         }
     }
@@ -212,9 +215,10 @@ request id that produced the row (null = ambient); `turn_id` is null outside a
 turn. Clients should refuse a `protocol` they do not know.
 
 Requests are `{"type": "…", "id": <any JSON>}`. Every request gets exactly one
-`result`. Requests *queued* mid-turn first get `{"queued": true}`, then a
-second `result` when their work completes: `{"turn_id": …}` if they ran as
-their own turn, `{"steered": true}` if the running turn consumed them.
+`result`; a line that is not JSON gets an `error` row with code `bad_json`.
+Requests *queued* mid-turn first get `{"queued": true}`, then a second
+`result` when their work completes: `{"turn_id": …}` if they ran as their own
+turn, `{"steered": true}` if the running turn consumed them.
 
 ## Requests
 

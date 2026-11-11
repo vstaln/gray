@@ -155,25 +155,26 @@ pub fn set_demux() {
     }
 }
 
-pub fn deliver_json_answer(ask_id: u64, line: &str) {
+pub fn deliver_json_answer(ask_id: u64, line: &str) -> bool {
     let excerpt = crate::repl::format::truncate_chars(line.trim(), 120);
     let svc = SERVICE.lock().expect("ask service").clone();
     let Some(svc) = svc else {
         log::warn!("ask answer dropped: no ask service (ask_id {ask_id}): {excerpt}");
-        return;
+        return false;
     };
     let mut pending = svc.pending.lock().expect("ask pending");
     let Some(p) = pending.get(&ask_id) else {
         log::warn!("ask answer dropped: unknown or closed ask_id {ask_id}: {excerpt}");
-        return;
+        return false;
     };
     match parse_json_answer(line, ask_id, &p.questions) {
-        Some(answers) => {
-            if let Some(p) = pending.remove(&ask_id) {
-                let _ = p.tx.send(answers);
-            }
+        Some(answers) => pending
+            .remove(&ask_id)
+            .is_some_and(|p| p.tx.send(answers).is_ok()),
+        None => {
+            log::warn!("ask answer dropped: unparsable line for ask_id {ask_id}: {excerpt}");
+            false
         }
-        None => log::warn!("ask answer dropped: unparsable line for ask_id {ask_id}: {excerpt}"),
     }
 }
 

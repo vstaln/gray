@@ -188,7 +188,7 @@ fn command_line(v: &Value) -> String {
 }
 
 fn emit_result(id: &Value, ok: bool, extra: Value) {
-    let mut row = json!({"id": id, "ok": ok});
+    let mut row = json!({"id": id, "req": id, "turn_id": null, "ok": ok});
     if let (Some(dst), Some(src)) = (row.as_object_mut(), extra.as_object()) {
         for (k, v) in src {
             dst.insert(k.clone(), v.clone());
@@ -263,7 +263,7 @@ async fn run_turn(
     let turn_id = format!(
         "turn-{:x}-{:x}",
         gray_core::time::now_millis(),
-        SEQ.fetch_add(1, Ordering::Relaxed)
+        SEQ.load(Ordering::Relaxed)
     );
     *lock(&CURRENT_REQ) = Some(req.clone());
     begin_turn_state(turn_id.clone());

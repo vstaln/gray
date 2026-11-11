@@ -1007,7 +1007,7 @@ async fn run_print_inner(
                         let _ = tx.send(text.to_string());
                     }
                 } else if let Some(ask_id) = v.get("ask_id").and_then(|a| a.as_u64()) {
-                    crate::ask::deliver_json_answer(ask_id, line);
+                    let _ = crate::ask::deliver_json_answer(ask_id, line);
                 }
             }
         });

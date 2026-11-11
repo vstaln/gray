@@ -512,7 +512,9 @@ pub struct Cli {
         short = 'p',
         long = "print",
         value_name = "PROMPT",
-        help = "One-shot print mode: answer PROMPT ('-' reads stdin) and exit"
+        num_args = 0..=1,
+        default_missing_value = "-",
+        help = "One-shot print mode: answer PROMPT ('-' or no value reads stdin) and exit"
     )]
     pub print: Option<String>,
 

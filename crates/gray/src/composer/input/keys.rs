@@ -115,7 +115,11 @@ fn apply(tui: &mut Tui, a: Action) -> Option<KeyOutcome> {
         Action::Submit => {
             if let Some((name, _)) = tui.matches.get(tui.sel).cloned() {
                 let cur = tui.textarea.text();
-                if cur != format!("/{name}") && cur != format!("/{name} ") {
+                let typed = cur.trim_end().trim_start_matches('/');
+                let alias = crate::repl::commands::REGISTRY
+                    .iter()
+                    .any(|d| d.name == name && d.aliases.contains(&typed));
+                if !alias && cur != format!("/{name}") && cur != format!("/{name} ") {
                     fill_completion(tui, &name);
                     return edited;
                 }
