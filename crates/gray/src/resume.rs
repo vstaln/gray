@@ -609,20 +609,30 @@ fn run_picker_sync(
                 let th = crate::theme::theme();
                 let mut header_spans = vec![Span::styled(
                     title,
-                    Style::default().fg(th.text_bright).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(th.text_bright)
+                        .add_modifier(Modifier::BOLD),
                 )];
                 if let Some(name) = current.as_ref() {
                     header_spans.push(Span::styled("   this ", Style::default().fg(th.text_faint)));
-                    header_spans.push(Span::styled(name.to_string(), Style::default().fg(accent_peach)));
+                    header_spans.push(Span::styled(
+                        name.to_string(),
+                        Style::default().fg(accent_peach),
+                    ));
                 }
                 let filter_hint = if query.is_empty() {
-                    Line::from(Span::styled("type to filter", Style::default().fg(th.text_faint)))
+                    Line::from(Span::styled(
+                        "type to filter",
+                        Style::default().fg(th.text_faint),
+                    ))
                 } else {
                     Line::from(vec![
                         Span::styled("filter ", Style::default().fg(th.text_faint)),
                         Span::styled(
                             query.clone(),
-                            Style::default().fg(th.text_bright).add_modifier(Modifier::UNDERLINED),
+                            Style::default()
+                                .fg(th.text_bright)
+                                .add_modifier(Modifier::UNDERLINED),
                         ),
                     ])
                 };
@@ -839,7 +849,11 @@ fn run_picker_sync(
                 } else {
                     vec![
                         ("↑↓", "move", true),
-                        ("enter", if sel_running { "take over" } else { "resume" }, true),
+                        (
+                            "enter",
+                            if sel_running { "take over" } else { "resume" },
+                            true,
+                        ),
                         ("tab", if show_all { "this dir" } else { "all" }, true),
                         ("⇧tab", "status", true),
                         ("^g", "system", true),

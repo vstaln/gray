@@ -112,7 +112,10 @@ pub(crate) fn key_hints(
     let mut spans = vec![Span::raw(" ")];
     spans.extend(keys.into_iter().flat_map(|(k, label, live)| {
         [
-            Span::styled(k, Style::default().fg(if live { th.text_soft } else { th.text_faint })),
+            Span::styled(
+                k,
+                Style::default().fg(if live { th.text_soft } else { th.text_faint }),
+            ),
             Span::styled(
                 format!(" {label}   "),
                 Style::default().fg(if live { th.text_dim } else { th.text_faint }),
@@ -144,7 +147,11 @@ pub(crate) fn draw_list_picker<T>(
     crate::setup::render_dimmed_background(frame, bg);
     let footer_lines = picker.footer.as_ref().map(|f| f()).unwrap_or_default();
     // header, gap, list, gap, [detail lines, gap], keys
-    let detail_h = if footer_lines.is_empty() { 0 } else { footer_lines.len() + 1 };
+    let detail_h = if footer_lines.is_empty() {
+        0
+    } else {
+        footer_lines.len() + 1
+    };
     let inner_h = (list_h + 4 + detail_h) as u16;
     let widest = picker
         .items
@@ -203,7 +210,10 @@ pub(crate) fn draw_list_picker<T>(
     if filtered.len() > list_h {
         filter.insert(
             0,
-            Span::styled(format!("{}/{}  ", sel + 1, filtered.len()), fg(th.text_faint)),
+            Span::styled(
+                format!("{}/{}  ", sel + 1, filtered.len()),
+                fg(th.text_faint),
+            ),
         );
     }
     frame.render_widget(
@@ -269,7 +279,9 @@ pub(crate) fn draw_list_picker<T>(
             fg(if is_sel { th.on_selection } else { th.success }),
         )];
         spans.extend(underline_match(&label, query, text));
-        spans.push(Span::raw(" ".repeat(name_w.saturating_sub(label.chars().count()))));
+        spans.push(Span::raw(
+            " ".repeat(name_w.saturating_sub(label.chars().count())),
+        ));
         spans.extend(trailing);
         frame.render_widget(Paragraph::new(Line::from(spans)).style(base), row(y));
     }
@@ -284,7 +296,11 @@ pub(crate) fn draw_list_picker<T>(
     }
     frame.render_widget(
         Paragraph::new(key_hints(
-            vec![("↑↓", "move", true), ("enter", "select", true), ("esc", "close", true)],
+            vec![
+                ("↑↓", "move", true),
+                ("enter", "select", true),
+                ("esc", "close", true),
+            ],
             &[],
             inner.width as usize,
         )),
@@ -454,8 +470,11 @@ pub(crate) fn run_spec_picker(
                 .unwrap_or_default()
         })),
         footer: spec.footer.as_deref().map(|f| {
-            Box::new(move || f.lines().map(|l| Line::styled(l.to_string(), dim)).collect())
-                as Box<dyn Fn() -> Vec<Line<'static>>>
+            Box::new(move || {
+                f.lines()
+                    .map(|l| Line::styled(l.to_string(), dim))
+                    .collect()
+            }) as Box<dyn Fn() -> Vec<Line<'static>>>
         }),
         on_highlight: None,
         selected,

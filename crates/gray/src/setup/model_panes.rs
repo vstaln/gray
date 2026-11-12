@@ -711,7 +711,6 @@ pub(crate) fn model_label<'a>(id: &'a str, name: &'a str) -> &'a str {
     if name.is_empty() { id } else { name }
 }
 
-
 fn draw(frame: &mut Frame, bg: &BackgroundSnapshot, v: &PaneView) {
     let area = frame.area();
     if area.width < 40 || area.height < 10 {

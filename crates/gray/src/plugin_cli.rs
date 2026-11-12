@@ -1080,7 +1080,9 @@ pub async fn forward(home: &Path, name: &str, rest: &[String]) -> anyhow::Result
         "plugin command '{entry_name}' is disabled — {}",
         disabled_hint(home, &entry_home, project.as_ref(), &entry_name)
     );
-    let argv = entry.cli_argv.with_context(|| sidecar_usage(&entry_home, name))?;
+    let argv = entry
+        .cli_argv
+        .with_context(|| sidecar_usage(&entry_home, name))?;
     let (program, args) = argv
         .split_first()
         .context("plugin command has no entry point")?;
