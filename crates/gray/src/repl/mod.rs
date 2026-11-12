@@ -533,6 +533,13 @@ pub async fn run_repl_mode(
     crate::setup::set_user_context_window(config.context_window);
     crate::setup::set_user_reserve_tokens(config.context_reserve);
     crate::setup::set_user_keep_recent_tokens(config.context_keep);
+    if let Some(warning) = crate::setup::context::context_window_override_warning(
+        config.context_window,
+        config.model.as_deref(),
+    ) {
+        log::warn!(target: "gray_config", "{warning}");
+        say(None, &warning);
+    }
     crate::compact::init_auto_compact_from_env();
     crate::setup::set_active_model_provider(&config.base_url);
 
