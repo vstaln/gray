@@ -606,21 +606,64 @@ pub(crate) async fn dispatch_command(
                                                 &themes_dir,
                                                 &config_path,
                                             );
-                                            if let Some((theme, name)) = outcome.apply {
-                                                crate::theme::set_theme(theme, name.as_deref());
-                                                shared
-                                                    .lock()
-                                                    .expect("tui lock")
-                                                    .repaint_for_palette();
-                                            }
-                                            let mut t = shared.lock().expect("tui lock");
-                                            if outcome.message.starts_with('✓')
-                                                && !outcome.message.contains('\n')
-                                            {
-                                                t.set_hint(&outcome.message);
+                                            if let Some((theme, saved_name)) = outcome.apply {
+                                                crate::theme::set_theme(
+                                                    theme,
+                                                    saved_name.as_deref(),
+                                                );
+                                                use ratatui::style::{Modifier, Style};
+                                                use ratatui::text::{Line, Span};
+                                                let th = crate::theme::theme();
+                                                let header = Line::from(vec![
+                                                    Span::styled(
+                                                        format!(
+                                                            "{} ",
+                                                            crate::tui::glyph("\u{2b22}", "#")
+                                                        ),
+                                                        Style::default()
+                                                            .fg(th.success)
+                                                            .add_modifier(Modifier::BOLD),
+                                                    ),
+                                                    Span::styled(
+                                                        "Theme ",
+                                                        Style::default()
+                                                            .fg(th.text_body)
+                                                            .add_modifier(Modifier::BOLD),
+                                                    ),
+                                                    Span::styled(
+                                                        name.clone(),
+                                                        Style::default().fg(th.accent),
+                                                    ),
+                                                ]);
+                                                let mut body = vec![Line::from(
+                                                    crate::theme::swatch_spans(&th),
+                                                )];
+                                                body.extend(
+                                                    crate::setup::theme_modal::specimen_lines(),
+                                                );
+                                                body.extend(outcome.message.lines().skip(1).map(
+                                                    |l| {
+                                                        Line::styled(
+                                                            l.trim().to_string(),
+                                                            Style::default().fg(th.text_dim),
+                                                        )
+                                                    },
+                                                ));
+                                                if let Some(i) = outcome.message.find(" — ") {
+                                                    body.push(Line::styled(
+                                                        outcome.message[i + 5..]
+                                                            .lines()
+                                                            .next()
+                                                            .unwrap_or_default()
+                                                            .to_string(),
+                                                        Style::default().fg(th.error),
+                                                    ));
+                                                }
+                                                let mut t = shared.lock().expect("tui lock");
+                                                t.repaint_for_palette();
+                                                t.push_tool_box_lines(vec![header], body);
                                                 let _ = t.draw();
                                             } else {
-                                                drop(t);
                                                 say(tui_shared, &outcome.message);
                                             }
                                         }

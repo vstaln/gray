@@ -112,7 +112,7 @@ mod model_modal;
 mod model_panes;
 mod plugins_modal;
 pub(crate) mod presets;
-mod theme_modal;
+pub(crate) mod theme_modal;
 pub(crate) mod variants;
 
 pub use context_modal::{ContextModalExit, compaction_label, run_context_modal};
