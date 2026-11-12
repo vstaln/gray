@@ -147,6 +147,8 @@ pub(crate) enum ActionState {
         busy: String,
         chords: Vec<Chord>,
         status: Arc<Mutex<String>>,
+        inserts: Arc<Mutex<String>>,
+        inserted: bool,
     },
     Error(String),
 }
@@ -163,11 +165,15 @@ impl ActionState {
         {
             Ok(mut child) => {
                 let status = Arc::new(Mutex::new(String::new()));
+                let inserts = Arc::new(Mutex::new(String::new()));
                 if let Some(err) = child.stderr.take() {
                     let status = status.clone();
+                    let inserts = inserts.clone();
                     std::thread::spawn(move || {
                         for line in std::io::BufReader::new(err).lines().map_while(Result::ok) {
-                            if !line.trim().is_empty() {
+                            if let Some(text) = line.strip_prefix("insert\t") {
+                                inserts.lock().expect("inserts lock").push_str(text);
+                            } else if !line.trim().is_empty() {
                                 *status.lock().expect("status lock") = line;
                             }
                         }
@@ -179,6 +185,8 @@ impl ActionState {
                     busy: action.busy,
                     chords: action.chords,
                     status,
+                    inserts,
+                    inserted: false,
                 };
             }
             Err(e) => {
@@ -200,23 +208,35 @@ impl ActionState {
     }
 
     fn poll(&mut self) -> Option<String> {
-        let ActionState::Running { child, .. } = self else {
+        let ActionState::Running {
+            child,
+            inserts,
+            inserted,
+            ..
+        } = self
+        else {
             return None;
         };
-        match child.try_wait() {
+        let partial = std::mem::take(&mut *inserts.lock().expect("inserts lock"));
+        *inserted |= !partial.is_empty();
+        let rest = match child.try_wait() {
             Ok(Some(status)) => self.finish(status),
             Ok(None) => None,
             Err(e) => {
                 *self = ActionState::Error(e.to_string());
                 None
             }
-        }
+        };
+        let text = partial + rest.as_deref().unwrap_or_default();
+        (!text.is_empty()).then_some(text)
     }
 
     fn finish(&mut self, status: ExitStatus) -> Option<String> {
         let ActionState::Running {
             child,
             status: line,
+            inserts,
+            inserted,
             ..
         } = self
         else {
@@ -229,10 +249,12 @@ impl ActionState {
         // The stderr reader may still be draining the last line.
         std::thread::sleep(Duration::from_millis(20));
         let err = line.lock().expect("status lock").clone();
-        let text = out.trim().to_string();
-        if status.success() && !text.is_empty() {
+        let late = std::mem::take(&mut *inserts.lock().expect("inserts lock"));
+        let typed = *inserted || !late.is_empty();
+        let text = late + out.trim();
+        if status.success() && (typed || !text.is_empty()) {
             *self = ActionState::Idle;
-            return Some(text);
+            return (!text.is_empty()).then_some(text);
         }
         let detail = [err.trim(), text.as_str()]
             .into_iter()
