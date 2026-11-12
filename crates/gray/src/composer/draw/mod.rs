@@ -627,19 +627,36 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
             );
         }
 
-        if let Some((text, error)) = tui.action.banner() {
+        if let Some(banner) = tui.action.banner() {
             let th = crate::theme::theme();
-            let style = if error {
-                Style::default().fg(th.error)
-            } else {
-                Style::default().fg(th.accent).add_modifier(Modifier::BOLD)
+            let (text, style) = match banner {
+                crate::composer::action::ActionBanner::Error(e) => {
+                    (e, Style::default().fg(th.error))
+                }
+                crate::composer::action::ActionBanner::Running { text, hint } => {
+                    let hint_w = hint.chars().count();
+                    let hint_y = box_y + ibox.cur_row as u16;
+                    if !asking && ibox.cur_col + hint_w + 4 < ibox.width && hint_y < area.bottom() {
+                        let hint_x = area.x + (ibox.x + ibox.width - hint_w - 2) as u16;
+                        frame.render_widget(
+                            Paragraph::new(Span::styled(hint, Style::default().fg(th.text_dim))),
+                            Rect::new(hint_x, hint_y, hint_w as u16, 1),
+                        );
+                    }
+                    (format!(" {text}"), Style::default().fg(th.accent))
+                }
             };
             let text: String = text.chars().take(ibox.width).collect();
             let y = box_y.saturating_sub(1);
             if y < area.bottom() {
                 frame.render_widget(
                     chrome_row(Line::from(Span::styled(text, style))),
-                    Rect::new(area.x, y, area.width, 1),
+                    Rect::new(
+                        area.x + (ibox.x as u16).min(area.width),
+                        y,
+                        (ibox.width as u16).min(area.width),
+                        1,
+                    ),
                 );
             }
         }

@@ -130,6 +130,11 @@ fn for_event(ev: &KeyEvent) -> Option<PluginAction> {
         .cloned()
 }
 
+pub(crate) enum ActionBanner {
+    Running { text: String, hint: String },
+    Error(String),
+}
+
 #[derive(Default)]
 pub(crate) enum ActionState {
     #[default]
@@ -246,15 +251,28 @@ impl ActionState {
         Some(if on { "●" } else { "·" })
     }
 
-    pub(crate) fn banner(&self) -> Option<(String, bool)> {
+    pub(crate) fn banner(&self) -> Option<ActionBanner> {
         match self {
             ActionState::Idle => None,
             ActionState::Running { busy, status, .. } => {
                 let s = status.lock().expect("status lock");
-                let text = if s.is_empty() { busy } else { &*s };
-                Some((format!("{text}  (Esc to cancel)"), false))
+                let line = if s.is_empty() {
+                    busy.as_str()
+                } else {
+                    s.as_str()
+                };
+                let (text, hint) = line.split_once('\t').unwrap_or((line, ""));
+                let hint = [hint.trim(), "esc cancel"]
+                    .into_iter()
+                    .filter(|h| !h.is_empty())
+                    .collect::<Vec<_>>()
+                    .join(" \u{b7} ");
+                Some(ActionBanner::Running {
+                    text: text.trim_end().to_string(),
+                    hint,
+                })
             }
-            ActionState::Error(e) => Some((e.clone(), true)),
+            ActionState::Error(e) => Some(ActionBanner::Error(e.clone())),
         }
     }
 
