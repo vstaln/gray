@@ -487,6 +487,45 @@ pub(crate) fn run_spec_picker(
         selected,
         current: spec.selected_id.is_some().then_some(selected),
     };
-    let picked = super::with_modal_sync(Some(shared), || run_list_picker(&mut picker, &bg))?;
-    Ok(picked.map(|idx| spec.items[idx].id.clone()))
+    super::with_modal_sync(Some(shared), || {
+        let Some(idx) = run_list_picker(&mut picker, &bg)? else {
+            return Ok(None);
+        };
+        let item = &spec.items[idx];
+        let Some(prompt) = item.capture_key.as_deref() else {
+            return Ok(Some(item.id.clone()));
+        };
+        Ok(capture_key(prompt, &bg)?.map(|k| format!("{}:{k}", item.id)))
+    })
+}
+
+/// Wait for one key press and return it as a keymap chord (`ctrl+space`).
+/// Esc cancels.
+fn capture_key(prompt: &str, bg: &BackgroundSnapshot) -> anyhow::Result<Option<String>> {
+    use crossterm::event::{Event, KeyCode, KeyEventKind, read};
+    let (_session, mut terminal) = crate::setup::open_modal()?;
+    let items = ["Press a key, or Esc to cancel".to_string()];
+    let picker = ListPicker {
+        title: prompt,
+        items: &items,
+        label: Box::new(|s: &String| s.as_str()),
+        trailing: None,
+        footer: None,
+        on_highlight: None,
+        selected: 0,
+        current: None,
+    };
+    terminal.draw(|frame| draw_list_picker(frame, bg, &picker, &[0], 0, "", 1))?;
+    loop {
+        if let Event::Key(key) = read()?
+            && key.kind == KeyEventKind::Press
+        {
+            if key.code == KeyCode::Esc {
+                return Ok(None);
+            }
+            if let Some(chord) = crate::keymap::Chord::from_event(&key) {
+                return Ok(Some(chord.display()));
+            }
+        }
+    }
 }

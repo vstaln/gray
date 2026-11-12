@@ -421,6 +421,10 @@ pub struct PickerItem {
     pub label: String,
     #[serde(default)]
     pub description: Option<String>,
+    /// Picking this item asks the user to press a key (this text is the
+    /// prompt); the pick id becomes `<id>:<key>`, e.g. `hotkey:ctrl+space`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capture_key: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

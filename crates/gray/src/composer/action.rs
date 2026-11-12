@@ -1,7 +1,7 @@
-use std::io::Read;
+use std::io::{BufRead, Read, Write};
 use std::path::Path;
 use std::process::{Child, Command, ExitStatus, Stdio};
-use std::sync::RwLock;
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 use crossterm::event::KeyEvent;
@@ -134,10 +134,14 @@ fn for_event(ev: &KeyEvent) -> Option<PluginAction> {
 pub(crate) enum ActionState {
     #[default]
     Idle,
+    /// The child reads `down`/`up` lines on stdin as its key is pressed and
+    /// released, and its latest stderr line replaces `busy` as the status.
     Running {
         child: Child,
         started: Instant,
         busy: String,
+        chords: Vec<Chord>,
+        status: Arc<Mutex<String>>,
     },
     Error(String),
 }
@@ -147,16 +151,29 @@ impl ActionState {
         let (bin, args) = action.argv.split_first().expect("cli_argv is non-empty");
         match Command::new(bin)
             .args(args)
-            .stdin(Stdio::null())
+            .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
         {
-            Ok(child) => {
+            Ok(mut child) => {
+                let status = Arc::new(Mutex::new(String::new()));
+                if let Some(err) = child.stderr.take() {
+                    let status = status.clone();
+                    std::thread::spawn(move || {
+                        for line in std::io::BufReader::new(err).lines().map_while(Result::ok) {
+                            if !line.trim().is_empty() {
+                                *status.lock().expect("status lock") = line;
+                            }
+                        }
+                    });
+                }
                 *self = ActionState::Running {
                     child,
                     started: Instant::now(),
-                    busy: format!("{}  (Esc to cancel)", action.busy),
+                    busy: action.busy,
+                    chords: action.chords,
+                    status,
                 };
             }
             Err(e) => {
@@ -192,16 +209,21 @@ impl ActionState {
     }
 
     fn finish(&mut self, status: ExitStatus) -> Option<String> {
-        let ActionState::Running { child, .. } = self else {
+        let ActionState::Running {
+            child,
+            status: line,
+            ..
+        } = self
+        else {
             return None;
         };
-        let (mut out, mut err) = (String::new(), String::new());
+        let mut out = String::new();
         if let Some(pipe) = child.stdout.as_mut() {
             let _ = pipe.read_to_string(&mut out);
         }
-        if let Some(pipe) = child.stderr.as_mut() {
-            let _ = pipe.read_to_string(&mut err);
-        }
+        // The stderr reader may still be draining the last line.
+        std::thread::sleep(Duration::from_millis(20));
+        let err = line.lock().expect("status lock").clone();
         let text = out.trim().to_string();
         if status.success() && !text.is_empty() {
             *self = ActionState::Idle;
@@ -224,17 +246,40 @@ impl ActionState {
         Some(if on { "●" } else { "·" })
     }
 
-    pub(crate) fn banner(&self) -> Option<(&str, bool)> {
+    pub(crate) fn banner(&self) -> Option<(String, bool)> {
         match self {
             ActionState::Idle => None,
-            ActionState::Running { busy, .. } => Some((busy, false)),
-            ActionState::Error(e) => Some((e, true)),
+            ActionState::Running { busy, status, .. } => {
+                let s = status.lock().expect("status lock");
+                let text = if s.is_empty() { busy } else { &*s };
+                Some((format!("{text}  (Esc to cancel)"), false))
+            }
+            ActionState::Error(e) => Some((e.clone(), true)),
         }
+    }
+
+    /// Tell the running action its key went down or up. False when `ev`
+    /// is not that action's key.
+    fn key(&mut self, ev: &KeyEvent, down: bool) -> bool {
+        let ActionState::Running { child, chords, .. } = self else {
+            return false;
+        };
+        if !Chord::from_event(ev).is_some_and(|c| chords.contains(&c)) {
+            return false;
+        }
+        if let Some(stdin) = child.stdin.as_mut() {
+            let _ = stdin.write_all(if down { b"down\n" } else { b"up\n" });
+            let _ = stdin.flush();
+        }
+        true
     }
 }
 
 impl Tui {
     pub(crate) fn plugin_action_key(&mut self, ev: &KeyEvent) -> bool {
+        if self.action.key(ev, true) {
+            return true;
+        }
         let Some(action) = for_event(ev) else {
             return false;
         };
@@ -242,6 +287,10 @@ impl Tui {
             self.action.start(action);
         }
         true
+    }
+
+    pub(crate) fn plugin_action_key_up(&mut self, ev: &KeyEvent) {
+        self.action.key(ev, false);
     }
 
     /// Start the composer action bound to `key` (e.g. `f8`), as a key press
