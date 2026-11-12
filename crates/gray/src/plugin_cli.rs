@@ -931,7 +931,10 @@ fn user_home_lock(home: &Path) -> Option<(PathBuf, LockFile)> {
     Some((user, lock))
 }
 
-fn sidecar_usage(name: &str) -> String {
+fn sidecar_usage(home: &Path, name: &str) -> String {
+    if let Err(e) = gray_plugin::builder::resolve_argv(&home.join("plugins").join(name)) {
+        return format!("plugin '{name}' cannot start: {e:#}");
+    }
     format!(
         "'{name}' runs inside a Gray session, not as `gray {name}`: start `gray` and type /{name}, or run it headless with `gray cmd run {name} [args]`"
     )
@@ -1052,7 +1055,7 @@ pub async fn forward(home: &Path, name: &str, rest: &[String]) -> anyhow::Result
                 }
                 None => {
                     return Err(anyhow::anyhow!(if sidecar_named {
-                        sidecar_usage(name)
+                        sidecar_usage(home, name)
                     } else {
                         match index_owner_hint(name).await {
                             Some(hint) => hint,
@@ -1077,7 +1080,7 @@ pub async fn forward(home: &Path, name: &str, rest: &[String]) -> anyhow::Result
         "plugin command '{entry_name}' is disabled — {}",
         disabled_hint(home, &entry_home, project.as_ref(), &entry_name)
     );
-    let argv = entry.cli_argv.with_context(|| sidecar_usage(name))?;
+    let argv = entry.cli_argv.with_context(|| sidecar_usage(&entry_home, name))?;
     let (program, args) = argv
         .split_first()
         .context("plugin command has no entry point")?;

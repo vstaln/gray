@@ -198,10 +198,10 @@ pub fn resolve_argv(dir: &Path) -> anyhow::Result<Vec<String>> {
         1 => {
             if let Some(kind) = foreign_binary(&execs[0]) {
                 anyhow::bail!(
-                    "{} is a {kind} binary and cannot run on {}-{}; this plugin release has no build for this platform, update or reinstall it",
-                    execs[0].display(),
+                    "built for {kind}, cannot run on {}-{}: this release has no build for this platform, update or reinstall it ({})",
                     std::env::consts::OS,
-                    std::env::consts::ARCH
+                    std::env::consts::ARCH,
+                    execs[0].display()
                 );
             }
             Ok(vec![execs[0].to_string_lossy().into_owned()])

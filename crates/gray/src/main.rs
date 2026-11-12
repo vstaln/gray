@@ -256,12 +256,12 @@ async fn run() -> anyhow::Result<()> {
                 }
                 if everything {
                     let home = gray::plugin_cli::home()?;
-                    return gray::plugin_cli::forward(
-                        &home,
-                        "quality-of-life",
-                        &["update".to_string()],
-                    )
-                    .await;
+                    let name = if home.join("plugins/quality-of-life").exists() {
+                        "quality-of-life"
+                    } else {
+                        "qol"
+                    };
+                    return gray::plugin_cli::forward(&home, name, &["update".to_string()]).await;
                 }
                 return gray::update::update_now().await;
             }
