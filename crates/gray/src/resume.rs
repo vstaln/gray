@@ -509,7 +509,7 @@ fn run_picker_sync(
 
     let (_session, mut terminal) = crate::setup::open_modal()?;
 
-    let box_bg = crate::theme::theme().surface_bg;
+    let box_bg = crate::theme::theme().raised_bg;
     let accent_peach = crate::theme::theme().accent;
     let text_dim = crate::theme::theme().text_dim;
 
@@ -606,67 +606,34 @@ fn run_picker_sync(
                 } else {
                     "Sessions"
                 };
-                let esc_str = "esc";
-                let hints_str = "tab: all/cwd  shift-tab: status  ctrl-g: system  ";
-                let cur_name = current.as_ref().map(|c| c.as_str());
-                let name_len = cur_name.map_or(0, |n| n.chars().count() + 8);
-                let show_hints = cur_name.is_none()
-                    || title.chars().count()
-                        + name_len
-                        + hints_str.chars().count()
-                        + esc_str.chars().count()
-                        <= inner.width as usize;
-                let pad_len = if cur_name.is_some() {
-                    (inner.width as usize).saturating_sub(
-                        title.chars().count()
-                            + name_len
-                            + esc_str.chars().count()
-                            + if show_hints {
-                                hints_str.chars().count()
-                            } else {
-                                0
-                            },
-                    )
+                let th = crate::theme::theme();
+                let mut header_spans = vec![Span::styled(
+                    title,
+                    Style::default().fg(th.text_bright).add_modifier(Modifier::BOLD),
+                )];
+                if let Some(name) = current.as_ref() {
+                    header_spans.push(Span::styled("   this ", Style::default().fg(th.text_faint)));
+                    header_spans.push(Span::styled(name.to_string(), Style::default().fg(accent_peach)));
+                }
+                let filter_hint = if query.is_empty() {
+                    Line::from(Span::styled("type to filter", Style::default().fg(th.text_faint)))
                 } else {
-                    (inner.width as usize)
-                        .saturating_sub(title.chars().count() + esc_str.chars().count() + 8)
+                    Line::from(vec![
+                        Span::styled("filter ", Style::default().fg(th.text_faint)),
+                        Span::styled(
+                            query.clone(),
+                            Style::default().fg(th.text_bright).add_modifier(Modifier::UNDERLINED),
+                        ),
+                    ])
                 };
-                let mut header_spans = vec![
-                    Span::styled(
-                        title,
-                        Style::default()
-                            .fg(crate::theme::theme().text_bright)
-                            .add_modifier(Modifier::BOLD)
-                            .bg(box_bg),
-                    ),
-                    Span::styled(" ".repeat(pad_len), Style::default().bg(box_bg)),
-                ];
-                if let Some(name) = cur_name {
-                    header_spans.push(Span::styled(
-                        "this: ",
-                        Style::default().fg(text_dim).bg(box_bg),
-                    ));
-                    header_spans.push(Span::styled(
-                        name.to_string(),
-                        Style::default().fg(accent_peach).bg(box_bg),
-                    ));
-                    header_spans.push(Span::styled("  ", Style::default().fg(text_dim).bg(box_bg)));
+                let header_row = Rect::new(inner.x, inner.y, inner.width, 1);
+                frame.render_widget(Paragraph::new(Line::from(header_spans)), header_row);
+                if takeover.is_none() && rename.is_none() {
+                    frame.render_widget(
+                        Paragraph::new(filter_hint).alignment(ratatui::layout::Alignment::Right),
+                        header_row,
+                    );
                 }
-                if show_hints {
-                    header_spans.push(Span::styled(
-                        hints_str,
-                        Style::default().fg(text_dim).bg(box_bg),
-                    ));
-                }
-                header_spans.push(Span::styled(
-                    esc_str,
-                    Style::default().fg(text_dim).bg(box_bg),
-                ));
-                let header = Line::from(header_spans);
-                frame.render_widget(
-                    Paragraph::new(header),
-                    Rect::new(inner.x, inner.y, inner.width, 1),
-                );
 
                 let search_line = if let Some((id, pid)) = &takeover {
                     let who = match pid {
@@ -714,45 +681,9 @@ fn run_picker_sync(
                         ),
                         Span::styled("▎", Style::default().fg(accent_peach).bg(box_bg)),
                     ])
-                } else if query.is_empty() {
-                    Line::from(vec![
-                        Span::styled(
-                            "Search: ",
-                            Style::default()
-                                .fg(accent_peach)
-                                .add_modifier(Modifier::BOLD)
-                                .bg(box_bg),
-                        ),
-                        Span::styled(
-                            "Type to filter…",
-                            Style::default()
-                                .fg(crate::theme::theme().text_dim)
-                                .bg(box_bg),
-                        ),
-                    ])
                 } else {
-                    Line::from(vec![
-                        Span::styled(
-                            "Search: ",
-                            Style::default()
-                                .fg(accent_peach)
-                                .add_modifier(Modifier::BOLD)
-                                .bg(box_bg),
-                        ),
-                        Span::styled(
-                            query.clone(),
-                            Style::default()
-                                .fg(crate::theme::theme().text_bright)
-                                .add_modifier(Modifier::BOLD)
-                                .bg(box_bg),
-                        ),
-                        Span::styled("▎", Style::default().fg(accent_peach).bg(box_bg)),
-                    ])
+                    Line::default()
                 };
-                frame.render_widget(
-                    Paragraph::new(search_line),
-                    Rect::new(inner.x, inner.y + 1, inner.width, 1),
-                );
 
                 let mut filter_spans = if show_all {
                     vec![Span::styled(
@@ -782,10 +713,14 @@ fn run_picker_sync(
                         Style::default().fg(text_dim).bg(box_bg),
                     ));
                 }
-                let filter_line = Line::from(filter_spans);
+                let status_line = if search_line.spans.is_empty() {
+                    Line::from(filter_spans)
+                } else {
+                    search_line
+                };
                 frame.render_widget(
-                    Paragraph::new(filter_line),
-                    Rect::new(inner.x, inner.y + 2, inner.width, 1),
+                    Paragraph::new(status_line),
+                    Rect::new(inner.x, inner.y + 1, inner.width, 1),
                 );
 
                 let date_w = 9usize;
@@ -800,8 +735,8 @@ fn run_picker_sync(
                     .saturating_sub(1 + 2 + date_w + 2 + cwd_w + 2 + id_w + 2)
                     .max(12);
 
-                let list_y = inner.y + 4;
-                let list_h = inner.height.saturating_sub(6) as usize;
+                let list_y = inner.y + 3;
+                let list_h = inner.height.saturating_sub(5) as usize;
 
                 if filtered.is_empty() {
                     let msg = if summaries.is_empty() && !scan_done {
@@ -879,7 +814,7 @@ fn run_picker_sync(
                             ))
                         } else {
                             let base = Style::default()
-                                .fg(crate::theme::theme().text_bright)
+                                .fg(crate::theme::theme().text_body)
                                 .bg(box_bg);
                             Line::from(vec![
                                 Span::styled(" ", base),
@@ -897,45 +832,28 @@ fn run_picker_sync(
                 let sel_running = filtered.get(sel).is_some_and(|&i| {
                     session_state(&summaries[i], &running) == SessionState::Running
                 });
-                let hints: &[(&str, &str)] = if takeover.is_some() {
-                    &[("enter", "take over"), ("esc", "back")]
+                let keys = if takeover.is_some() {
+                    vec![("enter", "take over", true), ("esc", "back", true)]
                 } else if rename.is_some() {
-                    &[("enter", "save"), ("esc", "cancel")]
-                } else if sel_running {
-                    &[
-                        ("↑↓", "navigate"),
-                        ("enter", "take over"),
-                        ("ctrl-r", "rename"),
-                        ("ctrl-d", "dismiss"),
-                        ("esc", "cancel"),
-                    ]
+                    vec![("enter", "save", true), ("esc", "cancel", true)]
                 } else {
-                    &[
-                        ("↑↓", "navigate"),
-                        ("enter", "resume"),
-                        ("ctrl-r", "rename"),
-                        ("ctrl-d", "dismiss"),
-                        ("esc", "cancel"),
+                    vec![
+                        ("↑↓", "move", true),
+                        ("enter", if sel_running { "take over" } else { "resume" }, true),
+                        ("tab", if show_all { "this dir" } else { "all" }, true),
+                        ("⇧tab", "status", true),
+                        ("^g", "system", true),
+                        ("^r", "rename", true),
+                        ("^d", "dismiss", true),
+                        ("esc", "close", true),
                     ]
                 };
-                let mut footer_spans = Vec::new();
-                for (n, (key, label)) in hints.iter().enumerate() {
-                    let gap = if n + 1 < hints.len() { "  " } else { "" };
-                    footer_spans.push(Span::styled(
-                        format!("{key} "),
-                        Style::default()
-                            .fg(crate::theme::theme().text_bright)
-                            .add_modifier(Modifier::BOLD)
-                            .bg(box_bg),
-                    ));
-                    footer_spans.push(Span::styled(
-                        format!("{label}{gap}"),
-                        Style::default().fg(text_dim).bg(box_bg),
-                    ));
-                }
-                let footer = Line::from(footer_spans);
                 frame.render_widget(
-                    Paragraph::new(footer),
+                    Paragraph::new(crate::repl::picker::key_hints(
+                        keys,
+                        &["^g", "⇧tab", "tab", "^d"],
+                        inner.width as usize,
+                    )),
                     Rect::new(inner.x, inner.y + inner.height - 1, inner.width, 1),
                 );
             })?;
