@@ -613,8 +613,16 @@ pub(crate) async fn dispatch_command(
                                                     .expect("tui lock")
                                                     .repaint_for_palette();
                                             }
-                                            say(tui_shared, &outcome.message);
-                                            let _ = shared.lock().expect("tui lock").draw();
+                                            let mut t = shared.lock().expect("tui lock");
+                                            if outcome.message.starts_with('✓')
+                                                && !outcome.message.contains('\n')
+                                            {
+                                                t.set_hint(&outcome.message);
+                                                let _ = t.draw();
+                                            } else {
+                                                drop(t);
+                                                say(tui_shared, &outcome.message);
+                                            }
                                         }
                                         (Err(e), _) | (_, Err(e)) => {
                                             say(
