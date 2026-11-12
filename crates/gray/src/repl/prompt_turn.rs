@@ -677,7 +677,14 @@ fn steer_inbox(tui: Option<&crate::composer::SharedTui>, sid: Option<&str>) -> O
         t.end_thinking();
     }
     for d in &delivered {
-        say(tui, &d.card);
+        match (&d.cron, tui) {
+            (Some(c), Some(shared)) => {
+                let mut t = shared.lock().expect("tui lock");
+                let (header, body) = super::notice::cron_card_lines(c, t.width());
+                t.push_tool_box(header, body);
+            }
+            _ => say(tui, &d.card),
+        }
     }
     if let Some(shared) = tui {
         let _ = shared.lock().expect("tui lock").draw();
