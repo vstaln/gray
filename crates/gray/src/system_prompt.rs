@@ -66,6 +66,7 @@ pub fn plugins_block(
 ) -> String {
     let names: Vec<&str> = manifests
         .iter()
+        .filter(|m| m.tools.is_empty())
         .map(|m| m.name.as_str())
         .filter(|n| cli.contains(*n))
         .collect();
