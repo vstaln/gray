@@ -459,6 +459,16 @@ fn placeholder_text(args: &serde_json::Value, inner: &str) -> String {
         Some((path, filter)) => (path, filter.trim()),
         None => (inner, ""),
     };
+    if filter == "count" {
+        return path
+            .split('.')
+            .map(str::trim)
+            .filter(|k| !k.is_empty())
+            .try_fold(args, |cur, k| cur.get(k))
+            .and_then(|v| v.as_array())
+            .map(|a| a.len().to_string())
+            .unwrap_or_default();
+    }
     let raw = value_text(args, path);
     match filter {
         "model" => model_display_name(&one_line(&raw)),
@@ -1647,5 +1657,20 @@ mod memory_label_tests {
         assert_eq!(memory_label("gray memory set"), None);
         assert_eq!(memory_label("gray recall memory"), None);
         assert_eq!(memory_label("echo gray memory set k v"), None);
+    }
+}
+
+#[cfg(test)]
+mod template_tests {
+    #[test]
+    fn count_filter_sizes_arrays_and_drops_when_absent() {
+        let spec = "{name} · fan out {tasks|count}";
+        let batch = serde_json::json!({"tasks": [{"prompt": "a"}, {"prompt": "b"}]});
+        assert_eq!(
+            super::preview_at(&batch, spec).as_deref(),
+            Some("fan out 2")
+        );
+        let one = serde_json::json!({"name": "probe"});
+        assert_eq!(super::preview_at(&one, spec).as_deref(), Some("probe"));
     }
 }
