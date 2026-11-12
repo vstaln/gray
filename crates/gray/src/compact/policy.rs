@@ -27,7 +27,7 @@ pub fn compact_reason_note(reason: CompactReason) -> String {
     match reason {
         CompactReason::Window => String::new(),
         CompactReason::Overflow => " · overflow".to_string(),
-        CompactReason::UserCeiling => " · compact-at".to_string(),
+        CompactReason::UserCeiling => " · --compact-at".to_string(),
         CompactReason::PriceCliff { cliff } => {
             format!(
                 " · price cliff {}",
@@ -48,20 +48,12 @@ pub fn ceiling_for(
             Some(n.min(window.saturating_sub(reserve))).filter(|&c| c > 0),
             None,
         ),
-        _ => {
-            let cliff = price_cliff.and_then(|c| gray_core::price_cliff_ceiling(c, reserve));
-            let cap =
-                (window.saturating_sub(reserve) > DEFAULT_COMPACT_AT).then_some(DEFAULT_COMPACT_AT);
-            (cliff.into_iter().chain(cap).min(), price_cliff)
-        }
+        _ => (
+            price_cliff.and_then(|c| gray_core::price_cliff_ceiling(c, reserve)),
+            price_cliff,
+        ),
     }
 }
-
-/// Where compaction starts on a large-window model when nothing else is
-/// set. Past this, a 1M window costs more per turn and recalls worse, so
-/// waiting for the window to fill helps nobody. `compact_at_tokens` or
-/// `--compact-at` overrides it.
-pub const DEFAULT_COMPACT_AT: usize = 200_000;
 
 pub fn effective_compact_ceiling(config: &crate::Config) -> usize {
     let model = config.model.as_deref().unwrap_or("");
@@ -101,25 +93,5 @@ pub fn is_context_overflow_error(err: &CoreError) -> bool {
                 || gray_core::overflow::is_context_overflow_message(msg)
         }
         _ => false,
-    }
-}
-
-#[cfg(test)]
-mod ceiling_tests {
-    use super::*;
-    use crate::setup::CompactAt;
-
-    #[test]
-    fn large_windows_default_to_200k() {
-        assert_eq!(ceiling_for(None, 1_000_000, 61_000, None).0, Some(200_000));
-        assert_eq!(ceiling_for(None, 200_000, 20_000, None).0, None);
-        assert_eq!(
-            ceiling_for(None, 1_000_000, 61_000, Some(128_000))
-                .0
-                .map(|c| c < 200_000),
-            Some(true)
-        );
-        let full = Some(CompactAt::Tokens(1_000_000));
-        assert_eq!(ceiling_for(full, 1_000_000, 61_000, None).0, Some(939_000));
     }
 }
