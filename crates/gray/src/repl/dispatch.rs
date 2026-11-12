@@ -716,11 +716,15 @@ pub(crate) async fn dispatch_command(
                                     trailing: Some(Box::new(trailing)),
                                     footer: spec.footer.as_deref().map(|f| {
                                         Box::new(move || {
-                                            vec![ratatui::text::Line::styled(
-                                                f.to_string(),
-                                                ratatui::style::Style::default()
-                                                    .fg(crate::theme::theme().text_dim),
-                                            )]
+                                            f.lines()
+                                                .map(|l| {
+                                                    ratatui::text::Line::styled(
+                                                        l.to_string(),
+                                                        ratatui::style::Style::default()
+                                                            .fg(crate::theme::theme().text_dim),
+                                                    )
+                                                })
+                                                .collect()
                                         })
                                             as Box<dyn Fn() -> Vec<ratatui::text::Line<'static>>>
                                     }),
