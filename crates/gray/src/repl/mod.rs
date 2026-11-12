@@ -1172,7 +1172,7 @@ pub async fn run_repl_mode(
                     Some(r) if r <= EXPIRY_LEAD => {
                         if crate::compact::is_auto_compact_enabled() {
                             let started = std::time::Instant::now();
-                            match crate::compact::auto_compact_if_needed(agent).await {
+                            match crate::compact::compact_before_expiry(agent).await {
                                 Ok(true) => {
                                     status::push_compaction_card(
                                         tui.as_ref().map(|(s, _)| s),
