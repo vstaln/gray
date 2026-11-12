@@ -145,6 +145,7 @@ async fn pick_compaction_model(
             })),
             on_highlight: None,
             selected,
+            current: Some(selected),
         };
         crate::repl::picker::run_list_picker(&mut picker, &bg)
     });

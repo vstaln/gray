@@ -66,6 +66,7 @@ fn picker<'a>(
         footer: Some(Box::new(specimen_lines)),
         on_highlight,
         selected: sel,
+        current: Some(sel),
     }
 }
 

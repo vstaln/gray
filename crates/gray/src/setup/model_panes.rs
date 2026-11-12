@@ -711,34 +711,6 @@ pub(crate) fn model_label<'a>(id: &'a str, name: &'a str) -> &'a str {
     if name.is_empty() { id } else { name }
 }
 
-fn match_range(label: &str, filter: &str) -> Option<(usize, usize)> {
-    let lower = |c: char| c.to_lowercase().next().unwrap_or(c);
-    let needle: Vec<char> = filter.chars().map(lower).collect();
-    let chars: Vec<char> = label.chars().map(lower).collect();
-    if needle.is_empty() {
-        return None;
-    }
-    chars
-        .windows(needle.len())
-        .position(|w| w == needle.as_slice())
-        .map(|i| (i, i + needle.len()))
-}
-
-fn underline_match(label: &str, filter: &str, style: Style) -> Vec<Span<'static>> {
-    let Some((i, j)) = match_range(label, filter) else {
-        return vec![Span::styled(label.to_string(), style)];
-    };
-    let chars: Vec<char> = label.chars().collect();
-    [
-        (0, i, style),
-        (i, j, style.add_modifier(Modifier::UNDERLINED)),
-        (j, chars.len(), style),
-    ]
-    .into_iter()
-    .filter(|(a, b, _)| a < b)
-    .map(|(a, b, st)| Span::styled(chars[a..b].iter().collect::<String>(), st))
-    .collect()
-}
 
 fn draw(frame: &mut Frame, bg: &BackgroundSnapshot, v: &PaneView) {
     let area = frame.area();
@@ -978,7 +950,7 @@ fn draw(frame: &mut Frame, bg: &BackgroundSnapshot, v: &PaneView) {
                 if current { " ✓ " } else { "   " },
                 fg(if sel { t.on_selection } else { t.success }),
             )];
-            spans.extend(underline_match(&label, v.filter, text));
+            spans.extend(crate::repl::picker::underline_match(&label, v.filter, text));
             spans.push(Span::raw(
                 " ".repeat(name_w.saturating_sub(label.chars().count())),
             ));
@@ -1061,7 +1033,7 @@ fn draw(frame: &mut Frame, bg: &BackgroundSnapshot, v: &PaneView) {
         (true, Focus::Rail) => "open",
         (true, Focus::Models) => "select",
     };
-    let mut keys = if v.confirm_remove {
+    let keys = if v.confirm_remove {
         vec![("enter", "remove", true), ("esc", "cancel", true)]
     } else {
         let mut keys = vec![
@@ -1078,31 +1050,14 @@ fn draw(frame: &mut Frame, bg: &BackgroundSnapshot, v: &PaneView) {
         keys.push(("esc", "close", true));
         keys
     };
-    let keys_w = |keys: &[(&str, &str, bool)]| -> usize {
-        keys.iter()
-            .map(|(k, l, _)| k.chars().count() + l.chars().count() + 4)
-            .sum::<usize>()
-            + 1
-    };
     // ^r is the only way to hide/show thinking — keep it visible longest.
-    for drop in ["⇧↑↓", "tab", "del", "^r", "←→"] {
-        if keys_w(&keys) <= inner.width as usize {
-            break;
-        }
-        keys.retain(|(k, _, _)| *k != drop);
-    }
-    let mut footer = vec![Span::raw(" ")];
-    footer.extend(keys.into_iter().flat_map(|(k, label, live)| {
-        [
-            Span::styled(k, fg(if live { t.text_soft } else { t.text_faint })),
-            Span::styled(
-                format!(" {label}   "),
-                fg(if live { t.text_dim } else { t.text_faint }),
-            ),
-        ]
-    }));
+    let footer = crate::repl::picker::key_hints(
+        keys,
+        &["⇧↑↓", "tab", "del", "^r", "←→"],
+        inner.width as usize,
+    );
     frame.render_widget(
-        Paragraph::new(Line::from(footer)),
+        Paragraph::new(footer),
         row(inner.x, inner.y + inner.height - 1, inner.width),
     );
 }
