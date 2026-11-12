@@ -1654,6 +1654,13 @@ pub(crate) fn command_outcome(v: &Value, plugin_argv: &[String]) -> Option<Comma
             text: field("text").map(str::to_string),
         });
     }
+    if let Some(key) = field("composer_action") {
+        return Some(CommandOutcome::HostPicker {
+            kind: "action".into(),
+            arg: key.to_string(),
+            text: field("text").map(str::to_string),
+        });
+    }
     if let Some(args) = v.get("terminal").and_then(Value::as_array)
         && !plugin_argv.is_empty()
     {
@@ -1734,4 +1741,18 @@ pub async fn refresh_dynamic_tools() {
         idx += 1;
         keep
     });
+}
+
+#[cfg(test)]
+mod outcome_tests {
+    use super::*;
+
+    #[test]
+    fn composer_action_becomes_an_action_host_picker() {
+        let v = serde_json::json!({"composer_action": "f8"});
+        assert!(matches!(
+            command_outcome(&v, &[]),
+            Some(CommandOutcome::HostPicker { kind, arg, .. }) if kind == "action" && arg == "f8"
+        ));
+    }
 }

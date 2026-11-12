@@ -199,6 +199,26 @@ impl Tui {
         true
     }
 
+    /// Start the composer action bound to `key` (e.g. `f8`), as a key press
+    /// would. False when no plugin binds that key.
+    pub(crate) fn start_action_for_key(&mut self, key: &str) -> bool {
+        let Ok(chord) = Chord::parse(key) else {
+            return false;
+        };
+        let Some(action) = ACTIONS
+            .read()
+            .ok()
+            .and_then(|a| a.iter().find(|a| a.chords.contains(&chord)).cloned())
+        else {
+            return false;
+        };
+        if !matches!(self.action, ActionState::Running { .. }) {
+            self.action.start(action);
+        }
+        let _ = self.draw();
+        true
+    }
+
     pub(crate) fn action_tick(&mut self) -> bool {
         let running = matches!(self.action, ActionState::Running { .. });
         if let Some(text) = self.action.poll() {

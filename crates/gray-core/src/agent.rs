@@ -442,9 +442,9 @@ pub enum CommandOutcome {
 
     Picker(PickerSpec),
 
-    /// Open one of the host's own pickers (`kind` is `model` or `theme`).
-    /// The host draws these because they recolor or reconfigure the host
-    /// itself; `text` is the plain fallback when there is no TUI.
+    /// Open one of the host's own pickers (`kind` is `model` or `theme`), or
+    /// run the composer action bound to the key in `arg` (`kind` `action`),
+    /// as if that key were pressed. `text` is the fallback with no TUI.
     HostPicker {
         kind: String,
         arg: String,

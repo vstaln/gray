@@ -137,6 +137,9 @@ fn run_turn_local_command(ctx: &TurnLocalCommands, text: &str) {
                     CommandOutcome::HostPicker { kind, .. } if kind == "theme" => {
                         super::dispatch::theme_picker(&ctx.tui)
                     }
+                    CommandOutcome::HostPicker { kind, arg, text } if kind == "action" => {
+                        super::dispatch::composer_action(tui, &arg, text)
+                    }
                     CommandOutcome::HostPicker { .. }
                     | CommandOutcome::Panel(_)
                     | CommandOutcome::Terminal { .. } => {

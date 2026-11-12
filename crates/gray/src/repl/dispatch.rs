@@ -634,6 +634,10 @@ pub(crate) async fn dispatch_command(
                         }
                     }
 
+                    CommandOutcome::HostPicker { kind, arg, text } if kind == "action" => {
+                        composer_action(tui.as_ref().map(|(s, _)| s), &arg, text);
+                    }
+
                     CommandOutcome::HostPicker { kind, text, .. } => {
                         let msg = text.unwrap_or_else(|| format!("unknown host picker `{kind}`"));
                         say(tui.as_ref().map(|(s, _)| s), &msg);
@@ -810,5 +814,18 @@ pub(crate) fn theme_picker(shared: &crate::composer::SharedTui) {
         }
         Ok(None) => {}
         Err(e) => say(tui_shared, &format!("theme picker: {e}")),
+    }
+}
+
+/// Run the composer action a plugin command asked for, as its key would.
+pub(crate) fn composer_action(
+    tui: Option<&crate::composer::SharedTui>,
+    key: &str,
+    text: Option<String>,
+) {
+    let started = tui.is_some_and(|s| s.lock().expect("tui lock").start_action_for_key(key));
+    if !started {
+        let msg = text.unwrap_or_else(|| format!("no composer action is bound to {key}"));
+        say(tui, &msg);
     }
 }
