@@ -8,6 +8,7 @@
 
 use super::*;
 use crate::engine::{Engine, EngineMsg};
+use crate::provider::s;
 
 #[derive(Clone, Debug)]
 pub(super) struct GrayCmd {
@@ -77,13 +78,6 @@ pub(super) const GRAY_BUILTINS: &[&str] = &[
     "reset", "compact", "compress", "undo", "retry", "update", "upgrade", "restart", "reboot",
     "jobs", "reload", "agentsmd", "sys", "plugins", "hehe", "help", "quit", "exit",
 ];
-
-fn s(v: &serde_json::Value, key: &str) -> String {
-    v.get(key)
-        .and_then(|x| x.as_str())
-        .unwrap_or_default()
-        .to_string()
-}
 
 impl GrayApp {
     /// Lazily spawn (or respawn) the thread's engine and run the bootstrap

@@ -290,7 +290,10 @@ pub fn spawn_command_runner() {
 pub fn run_command(cmd: &str, facts: &serde_json::Value) -> Option<String> {
     use std::io::{Read, Write};
     use std::process::{Command, Stdio};
-    let cmd = expand_tilde(cmd);
+    let cmd = gray_core::paths::expand_tilde(cmd).map_or_else(
+        || cmd.to_string(),
+        |home| home.to_string_lossy().into_owned(),
+    );
     let mut child = Command::new("sh")
         .arg("-c")
         .arg(&cmd)
@@ -318,13 +321,6 @@ pub fn run_command(cmd: &str, facts: &serde_json::Value) -> Option<String> {
     let mut out = String::new();
     child.stdout.take()?.read_to_string(&mut out).ok()?;
     Some(out)
-}
-
-fn expand_tilde(cmd: &str) -> String {
-    match (cmd.strip_prefix("~/"), gray_core::paths::user_home()) {
-        (Some(rest), Some(home)) => format!("{}/{rest}", home.display()),
-        _ => cmd.to_string(),
-    }
 }
 
 type BranchCache = Option<(PathBuf, Instant, String)>;
@@ -374,11 +370,7 @@ pub fn read_branch(cwd: &Path) -> Option<String> {
 }
 
 pub fn short_cwd(cwd: &str) -> String {
-    if let Some(home) = gray_core::paths::user_home() {
-        let home = home.display().to_string();
-        if let Some(rest) = cwd.strip_prefix(&home) {
-            return format!("~{rest}");
-        }
-    }
-    cwd.to_string()
+    gray_core::paths::user_home()
+        .and_then(|home| gray_core::paths::tilde(Path::new(cwd), &home))
+        .unwrap_or_else(|| cwd.to_string())
 }

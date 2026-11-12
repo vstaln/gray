@@ -27,7 +27,7 @@ pub fn run_context_modal(
     use ratatui::layout::Rect;
     use ratatui::style::{Modifier, Style};
     use ratatui::text::{Line, Span};
-    use ratatui::widgets::{Block, Clear, Paragraph};
+    use ratatui::widgets::Paragraph;
     use std::time::Duration;
 
     fn persist(cfg: &Config) -> anyhow::Result<()> {
@@ -135,17 +135,10 @@ pub fn run_context_modal(
                     .min(area.height.saturating_sub(1))
                     .max(20)
                     .min(area.height);
-                let modal_x = (area.width.saturating_sub(modal_w)) / 2;
-                let modal_y = (area.height.saturating_sub(modal_h)) / 3;
-                let modal_rect = Rect::new(modal_x, modal_y, modal_w, modal_h);
-                frame.render_widget(Clear, modal_rect);
-                frame.render_widget(
-                    Block::default().style(Style::default().bg(box_bg)),
-                    modal_rect,
-                );
+                let modal_rect = centered_modal(frame, area, modal_w, modal_h, box_bg);
                 let inner = Rect::new(
-                    modal_x + 3,
-                    modal_y + 1,
+                    modal_rect.x + 3,
+                    modal_rect.y + 1,
                     modal_w.saturating_sub(6),
                     modal_h.saturating_sub(2),
                 );

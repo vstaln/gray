@@ -65,26 +65,27 @@ const MASKING_TAILS: [&str; 13] = [
     "tail", "head", "grep", "tee", "sort", "wc", "less", "cat", "awk", "sed", "tr", "cut", "column",
 ];
 
-pub fn masks_pipeline(command: &str) -> bool {
-    let segs = split_pipeline(command);
+fn masking_tail(segs: &[String]) -> Option<&str> {
     if segs.len() < 2 {
-        return false;
+        return None;
     }
-    MASKING_TAILS.contains(&base_head(&segs[segs.len() - 1]))
+    let last = base_head(&segs[segs.len() - 1]);
+    MASKING_TAILS.contains(&last).then_some(last)
+}
+
+pub fn masks_pipeline(command: &str) -> bool {
+    masking_tail(&split_pipeline(command)).is_some()
 }
 
 fn masked_note(command: &str, stages: Option<&[i32]>) -> Option<String> {
     let segs = split_pipeline(command);
-    let stages = stages.filter(|s| segs.len() >= 2 && s.len() == segs.len())?;
+    let last = masking_tail(&segs)?;
+    let stages = stages.filter(|s| s.len() == segs.len())?;
     let sigpipe = 128 + 13;
     if !stages[..stages.len() - 1]
         .iter()
         .any(|c| *c != 0 && *c != sigpipe)
     {
-        return None;
-    }
-    let last = base_head(&segs[segs.len() - 1]);
-    if !MASKING_TAILS.contains(&last) {
         return None;
     }
     if segs.len() > 2 {

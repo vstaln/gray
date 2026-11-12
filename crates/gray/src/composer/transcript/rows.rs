@@ -446,16 +446,7 @@ pub(crate) fn format_user_prompt_lines(
             }
         }
     }
-    let previews = attached
-        .iter()
-        .filter_map(|path| image_preview_lines(path, max_w))
-        .collect();
-    for band in tile_previews(previews, max_w) {
-        if !lines.is_empty() {
-            lines.push(margin_row());
-        }
-        lines.extend(band);
-    }
+    lines.extend(preview_bands(attached, max_w, margin_row()));
     lines.insert(0, margin_row());
     lines.push(margin_row());
     lines
@@ -512,6 +503,15 @@ pub(crate) fn attached_image_lines(
     paths: &[std::path::PathBuf],
     max_w: usize,
 ) -> Option<Vec<Line<'static>>> {
+    let lines = preview_bands(paths, max_w, Line::default());
+    (!lines.is_empty()).then_some(lines)
+}
+
+fn preview_bands(
+    paths: &[std::path::PathBuf],
+    max_w: usize,
+    sep: Line<'static>,
+) -> Vec<Line<'static>> {
     let previews = paths
         .iter()
         .filter_map(|path| image_preview_lines(path, max_w))
@@ -519,11 +519,11 @@ pub(crate) fn attached_image_lines(
     let mut lines: Vec<Line<'static>> = Vec::new();
     for band in tile_previews(previews, max_w) {
         if !lines.is_empty() {
-            lines.push(Line::default());
+            lines.push(sep.clone());
         }
         lines.extend(band);
     }
-    (!lines.is_empty()).then_some(lines)
+    lines
 }
 
 const PREVIEW_GAP: usize = 2;

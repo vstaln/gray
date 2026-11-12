@@ -552,11 +552,7 @@ pub async fn run_repl_mode(
                 .is_some_and(|m| crate::setup::get_cached_model_context(m).is_none())
         });
     if !offline && !config.uses_plugin_credentials() && !config.bare && needs_endpoint_probe {
-        let base = config.base_url.clone();
-        let key = config.api_key.clone();
-        tokio::task::spawn_blocking(move || {
-            crate::setup::fetch_live_provider_models(&base, key.as_deref());
-        });
+        crate::setup::warm_model_context_cache(config);
     }
     if !offline && !config.bare {
         tokio::spawn(crate::setup::fetch_models_dev_context());
@@ -603,11 +599,7 @@ pub async fn run_repl_mode(
             if let Some(m) = config.model.clone()
                 && crate::setup::get_cached_model_context(&m).is_none()
             {
-                let base = config.base_url.clone();
-                let key = config.api_key.clone();
-                tokio::task::spawn_blocking(move || {
-                    crate::setup::fetch_live_provider_models(&base, key.as_deref());
-                });
+                crate::setup::warm_model_context_cache(config);
             }
         }
     }

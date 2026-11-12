@@ -534,15 +534,7 @@ impl GrayApp {
             let _ = gray_cmd_tx.send(graycmds::list());
         });
         let (cli_tx, cli_rx) = channel();
-        let cli_tx2 = cli_tx.clone();
-        std::thread::spawn(move || {
-            let _ = cli_tx2.send(provider::load_cli_providers());
-        });
         let (model_cat_tx, model_cat_rx) = channel();
-        let cat_tx = model_cat_tx.clone();
-        std::thread::spawn(move || {
-            let _ = cat_tx.send(provider::load_model_catalog());
-        });
         let mut app = Self {
             focus: cx.focus_handle(),
             store,
@@ -570,12 +562,7 @@ impl GrayApp {
             model_scroll: ScrollHandle::new(),
             model_reveal: std::cell::Cell::new(false),
             model_closed_at: None,
-            model_catalog: CatalogState {
-                entries: None,
-                phase: CatalogPhase::Loading {
-                    last_loaded_at: None,
-                },
-            },
+            model_catalog: CatalogState::default(),
             model_catalog_tx: model_cat_tx,
             model_catalog_rx: model_cat_rx,
             cli_providers: Vec::new(),
@@ -663,6 +650,7 @@ impl GrayApp {
             grep_items: Vec::new(),
             grep_rx: None,
         };
+        app.refresh_model_catalog();
         if let Some(path) = initial {
             app.add_project(&path);
         }
@@ -700,8 +688,6 @@ impl GrayApp {
         app
     }
 }
-
-impl GrayApp {}
 
 impl Render for GrayApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {

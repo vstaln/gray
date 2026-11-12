@@ -205,6 +205,29 @@ pub fn render_dimmed_background(frame: &mut ratatui::Frame, bg: &BackgroundSnaps
     }
 }
 
+pub(crate) fn centered_modal(
+    frame: &mut ratatui::Frame,
+    area: ratatui::layout::Rect,
+    w: u16,
+    h: u16,
+    bg: ratatui::style::Color,
+) -> ratatui::layout::Rect {
+    use ratatui::widgets::{Block, Clear};
+
+    let rect = ratatui::layout::Rect::new(
+        area.width.saturating_sub(w) / 2,
+        area.height.saturating_sub(h) / 3,
+        w,
+        h,
+    );
+    frame.render_widget(Clear, rect);
+    frame.render_widget(
+        Block::default().style(ratatui::style::Style::default().bg(bg)),
+        rect,
+    );
+    rect
+}
+
 fn paint_last_frame(
     buf: &mut ratatui::buffer::Buffer,
     area: ratatui::layout::Rect,

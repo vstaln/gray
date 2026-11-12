@@ -31,11 +31,10 @@ fn parse_entry(entry: &str) -> Option<PluginEntry> {
 
         let path = unquote(v);
 
-        let expanded = match (path.strip_prefix("~/"), gray_core::paths::user_home()) {
-            (Some(rest), Some(home)) => home.join(rest).to_string_lossy().into_owned(),
-            (None, Some(home)) if path == "~" => home.to_string_lossy().into_owned(),
-            _ => path.to_string(),
-        };
+        let expanded = gray_core::paths::expand_tilde(path).map_or_else(
+            || path.to_string(),
+            |home| home.to_string_lossy().into_owned(),
+        );
         return (!expanded.is_empty()).then(|| PluginEntry::Sidecar(SidecarSpec(vec![expanded])));
     }
 

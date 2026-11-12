@@ -153,10 +153,7 @@ impl GrayApp {
         }
         // Only a new checkpoint when the tree changed since the thread's last
         // one; otherwise every turn repeated an identical restore point.
-        let last_checkpoint = thread.items.iter().rev().find_map(|i| match i {
-            Item::Activity { kind, detail, .. } if kind == "checkpoint" => Some(detail.clone()),
-            _ => None,
-        });
+        let last_checkpoint = self.last_checkpoint();
         if git::is_repo(&root)
             && let Some(tree) = git::checkpoint(&root)
             && last_checkpoint.as_deref() != Some(tree.as_str())

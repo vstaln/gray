@@ -159,14 +159,6 @@ pub fn quality_of_life_enabled() -> bool {
     subsystem_enabled(|s| s.quality_of_life)
 }
 
-pub fn quality_of_life_enabled_at(path: &Path) -> bool {
-    subsystem_enabled_at(path, |s| s.quality_of_life)
-}
-
-pub fn auto_update_enabled_at(path: &Path) -> bool {
-    subsystem_enabled_at(path, |s| s.auto_update)
-}
-
 fn subsystem_enabled(get: impl Fn(&SavedConfig) -> Option<bool>) -> bool {
     saved_config_path()
         .map(|p| load_saved_config_at(&p))
@@ -174,8 +166,17 @@ fn subsystem_enabled(get: impl Fn(&SavedConfig) -> Option<bool>) -> bool {
         .unwrap_or(true)
 }
 
-fn subsystem_enabled_at(path: &Path, get: impl Fn(&SavedConfig) -> Option<bool>) -> bool {
-    get(&load_saved_config_at(path)).unwrap_or(true)
+pub(crate) fn saved_config_locked() -> SavedConfig {
+    saved_config_path()
+        .map(|path| saved_config_locked_at(&path))
+        .unwrap_or_default()
+}
+
+pub(crate) fn saved_config_locked_at(path: &Path) -> SavedConfig {
+    let _cfg_lock = lock_saved_config_at(path)
+        .inspect_err(|e| log::warn!("cannot lock {} ({e:#})", path.display()))
+        .ok();
+    load_saved_config_at(path)
 }
 
 pub fn load_saved_config_at(path: &Path) -> SavedConfig {

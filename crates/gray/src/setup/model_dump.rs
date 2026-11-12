@@ -15,8 +15,7 @@ use crate::config::Config;
 
 use super::catalog::{ConnectAuth, load_saved_config_at, saved_config_path};
 use super::model_modal::{
-    RECOMMENDED_HEAD, composites_first, fetch_models_live, head_first, is_composite_id,
-    recent_head_for, recent_prefix_len, row_levels,
+    RowOrder, fetch_models_live, is_composite_id, picker_row_order, recent_head_for, row_levels,
 };
 use super::model_panes::{
     PaneProvider, Place, SavedLists, build_rail, cached_models, place, provider_is_active,
@@ -98,34 +97,21 @@ fn ordered_rows(p: &PaneProvider, config: &Config, models: &[(String, String)]) 
         current_id = None;
     }
     let matched: Vec<&(String, String)> = models.iter().collect();
-    let lead = matched.iter().filter(|(id, _)| is_composite_id(id)).count();
-    let mut ordered = composites_first(&matched);
-    let mut plain = ordered.split_off(lead);
-    let sep = recent_prefix_len(
+    let curated = super::context::curated_recommended(&p.item.id);
+    let RowOrder {
+        ordered,
+        lead,
+        sep,
+        div_at,
+        all_head,
+    } = picker_row_order(
+        &matched,
+        models,
         current_id.as_deref(),
         &recent_ids,
-        plain.iter().map(|(id, _)| id.as_str()),
+        curated.as_deref(),
+        true,
     );
-    let mut all_head = false;
-    let mut div_at = sep;
-    if sep == 0 {
-        let curated = super::context::curated_recommended(&p.item.id);
-        let head: Vec<String> = super::recommend::recommended_ids(
-            models,
-            curated.as_deref(),
-            super::context::model_meta,
-            RECOMMENDED_HEAD,
-        )
-        .into_iter()
-        .filter(|id| !is_composite_id(id))
-        .collect();
-        plain = head_first(&plain, &head);
-        if !head.is_empty() && head.len() < plain.len() {
-            div_at = head.len();
-            all_head = true;
-        }
-    }
-    ordered.extend(plain);
     ordered
         .iter()
         .enumerate()

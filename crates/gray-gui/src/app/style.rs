@@ -270,31 +270,20 @@ pub(super) fn provider_chip(
     cx: &App,
 ) -> Stateful<Div> {
     let t = cx.theme();
-    let mut c = h_flex()
-        .id(id)
-        .gap_1()
-        .h(px(20.))
-        .px(px(6.))
-        .text_size(px(11.5))
-        .text_color(t.muted_foreground.opacity(faint(t, 0.9)))
-        .cursor_pointer()
-        .hover(|s| s.bg(t.foreground.opacity(0.06)).text_color(t.foreground))
-        .active(|s| s.bg(t.foreground.opacity(0.10)));
-    c = match provider_brand(provider) {
-        Some(path) => c.child(
-            svg()
-                .path(path.to_string())
-                .size_3()
-                .text_color(t.muted_foreground),
-        ),
-        None => c.child(Icon::new(GIcon::Bot).xsmall()),
+    let icon = match provider_brand(provider) {
+        Some(path) => svg()
+            .path(path.to_string())
+            .size_3()
+            .text_color(t.muted_foreground)
+            .into_any_element(),
+        None => Icon::new(GIcon::Bot).xsmall().into_any_element(),
     };
-    c.child(label.into())
+    chip(id, icon, label, cx)
 }
 
 pub(super) fn chip(
     id: impl Into<ElementId>,
-    icon: GIcon,
+    icon: impl IntoElement,
     label: impl Into<SharedString>,
     cx: &App,
 ) -> Stateful<Div> {
@@ -309,7 +298,7 @@ pub(super) fn chip(
         .cursor_pointer()
         .hover(|s| s.bg(t.foreground.opacity(0.06)).text_color(t.foreground))
         .active(|s| s.bg(t.foreground.opacity(0.10)))
-        .child(Icon::new(icon).xsmall())
+        .child(icon)
         .child(label.into())
 }
 

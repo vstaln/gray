@@ -29,12 +29,10 @@ pub fn shorten_path(path_str: &str, cwd: Option<&Path>) -> String {
         }
     }
     if rel == path_str
-        && let Ok(home) = std::env::var("HOME")
+        && let Some(home) = gray_core::paths::user_home()
+        && let Some(short) = gray_core::paths::tilde(path, &home)
     {
-        let home_path = Path::new(&home);
-        if let Ok(stripped) = path.strip_prefix(home_path) {
-            rel = format!("~/{}", stripped.display());
-        }
+        rel = short;
     }
     const MAX: usize = 80;
     if rel.chars().count() <= MAX {
@@ -670,26 +668,13 @@ pub fn format_tool_call_lines(
                 Span::styled(span_detail, dim_style),
             ])
         }
-        "grep" => {
+        "grep" | "find" => {
+            let verb = if name == "find" { "Find " } else { "Grep " };
             let pattern = args.get("pattern").and_then(|v| v.as_str()).unwrap_or("");
             let raw_path = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
             let mut spans = vec![
                 bullet,
-                Span::styled("Grep ", action_style),
-                Span::styled(format!("\"{pattern}\""), cmd_style),
-            ];
-            if !raw_path.is_empty() && raw_path != "." {
-                spans.push(Span::styled(" in ", dim_style));
-                spans.push(Span::styled(shorten_path(raw_path, cwd), path_style));
-            }
-            Line::from(spans)
-        }
-        "find" => {
-            let pattern = args.get("pattern").and_then(|v| v.as_str()).unwrap_or("");
-            let raw_path = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
-            let mut spans = vec![
-                bullet,
-                Span::styled("Find ", action_style),
+                Span::styled(verb, action_style),
                 Span::styled(format!("\"{pattern}\""), cmd_style),
             ];
             if !raw_path.is_empty() && raw_path != "." {
@@ -720,12 +705,7 @@ pub fn format_tool_call_lines(
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .trim();
-            let cut = truncate_cmd(query);
-            let shown = if cut.len() < query.len() {
-                format!("{}{}", cut.trim_end(), "…")
-            } else {
-                cut.to_string()
-            };
+            let shown = ellipsize_cells(query);
             Line::from(vec![
                 bullet,
                 Span::styled("Searched ", action_style),
@@ -756,12 +736,7 @@ pub fn format_tool_call_lines(
                 .trim();
 
             let plain = strip_markup(content);
-            let cut = truncate_cmd(&plain);
-            let shown = if cut.len() < plain.len() {
-                format!("{}{}", cut.trim_end(), "…")
-            } else {
-                cut.to_string()
-            };
+            let shown = ellipsize_cells(&plain);
             Line::from(vec![
                 bullet,
                 Span::styled("Sent Discord ", action_style),
@@ -832,12 +807,7 @@ pub fn format_tool_call_lines(
             if let Some(preview_path) = declared
                 && let Some(text) = preview_at(args, preview_path)
             {
-                let cut = truncate_cmd(&text);
-                let shown = if cut.len() < text.len() {
-                    format!("{}\u{2026}", cut.trim_end())
-                } else {
-                    cut.to_string()
-                };
+                let shown = ellipsize_cells(&text);
                 return vec![Line::from(vec![
                     bullet,
                     Span::styled(headline.clone(), action_style),
@@ -864,12 +834,7 @@ pub fn format_tool_call_lines(
                 let mut spans = vec![bullet, Span::styled(headline.clone(), action_style)];
                 if let Some(i) = headline_idx {
                     let text = obj_args[i].1.as_str().unwrap().trim();
-                    let cut = truncate_cmd(text);
-                    let shown = if cut.len() < text.len() {
-                        format!("{}\u{2026}", cut.trim_end())
-                    } else {
-                        cut.to_string()
-                    };
+                    let shown = ellipsize_cells(text);
                     spans.push(Span::raw(" "));
                     spans.push(Span::styled(format!("\"{shown}\""), cmd_style));
                 }
@@ -1043,12 +1008,7 @@ fn memory_line(
         spans.push(Span::styled(key, cmd_style));
     }
     if let Some(text) = mem.text {
-        let cut = truncate_cmd(&text);
-        let text = if cut.len() < text.len() {
-            format!("{}\u{2026}", cut.trim_end())
-        } else {
-            text.clone()
-        };
+        let text = ellipsize_cells(&text);
         spans.push(Span::styled(format!(" \u{00b7} {text}"), dim_style));
     }
     Line::from(spans)
@@ -1120,12 +1080,7 @@ fn read_header(
             .collect::<Vec<_>>()
             .join(", "),
     };
-    let cut = truncate_cmd(&target);
-    let target = if cut.len() < target.len() {
-        format!("{}\u{2026}", cut.trim_end())
-    } else {
-        target
-    };
+    let target = ellipsize_cells(&target);
     let mut spans = vec![
         bullet,
         Span::styled(verb, action_style),
@@ -1287,12 +1242,7 @@ fn mcp_arg_preview(args: &serde_json::Value) -> String {
             _ => serde_json::to_string(args).unwrap_or_default(),
         },
     };
-    let cut = truncate_cmd(&text);
-    if cut.len() < text.len() {
-        format!("{}\u{2026}", cut.trim_end())
-    } else {
-        cut.to_string()
-    }
+    ellipsize_cells(&text)
 }
 
 pub(crate) fn humanize_tool_name(name: &str) -> String {

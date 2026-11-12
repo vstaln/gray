@@ -226,62 +226,6 @@ pub struct ProviderModelsRequest {
     pub credential: CredentialEnvelope,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct ProviderUsageRequest {
-    pub provider: String,
-    pub auth_method: String,
-    #[serde(default)]
-    pub profile_binding: String,
-    pub credential: CredentialEnvelope,
-}
-
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
-pub struct ProviderUsageWindow {
-    pub id: String,
-
-    pub label: String,
-
-    #[serde(default)]
-    pub kind: String,
-
-    #[serde(default)]
-    pub duration_mins: Option<u64>,
-
-    #[serde(default)]
-    pub used_percent: Option<f64>,
-
-    #[serde(default)]
-    pub used: Option<f64>,
-    #[serde(default)]
-    pub limit: Option<f64>,
-
-    #[serde(default)]
-    pub unit: Option<String>,
-
-    #[serde(default)]
-    pub resets_at: Option<String>,
-}
-
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
-pub struct ProviderUsageLimits {
-    #[serde(default)]
-    pub available: bool,
-
-    #[serde(default)]
-    pub plan: Option<String>,
-
-    #[serde(default)]
-    pub title: Option<String>,
-
-    #[serde(default)]
-    pub checked_at: Option<String>,
-
-    #[serde(default)]
-    pub note: Option<String>,
-    #[serde(default)]
-    pub windows: Vec<ProviderUsageWindow>,
-}
-
 #[derive(Clone, Serialize, Deserialize)]
 pub struct ProviderChatRequest {
     pub provider: String,

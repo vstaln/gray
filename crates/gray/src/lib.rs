@@ -53,22 +53,6 @@ pub use profile::{build_registry, take_profile_warnings};
 pub use repl::{ReplCommand, parse_command, run_repl_mode};
 pub use tui::{clear_screen, print_wrapped};
 
-pub const LEGACY_SYS_PROMPT: &str = r#"<!--
-Unreadable note: this HTML comment stays in the file but is stripped before
-the prompt reaches the model — only the text after this note reaches it.
-
-This file IS the stored system prompt, sent verbatim every turn with no
-runtime context appended. Only what the model can't already know: the
-tools describe themselves and the task says the rest.
-Per turn gray may append ephemeral context: <project_context>, the nearest
-AGENTS.md / CLAUDE.md above the working directory in a trusted project, and
-plugin docs. Lean mode — the default — keeps the project rules and skips
-plugin docs. Opt back in with "lean": false or GRAY_LEAN=0. Edit with `/agentsmd`
-(Ctrl-S save & apply, Ctrl-R reset to this default, Ctrl-X cancel).
--->
-You are Gray, running on the user's machine.
-"#;
-
 pub const DEFAULT_SYS_PROMPT: &str = r#"<!--
 Gray generated this file and refreshes it when the shipped default changes —
 but only while it stays byte-identical to a default it wrote (the managed
@@ -122,7 +106,7 @@ pub fn load_or_create_system_prompt_at(path: &Path) -> anyhow::Result<String> {
             }
             return Ok(body.to_string());
         }
-        if file == DEFAULT_SYS_PROMPT || file == LEGACY_SYS_PROMPT {
+        if file == DEFAULT_SYS_PROMPT {
             let _ = std::fs::write(path, stamped_system_prompt(&file));
         }
         return Ok(file);
@@ -388,7 +372,7 @@ async fn build_agent_inner(
         session_id: session_id.map(str::to_string),
         cwd: cwd.to_path_buf(),
 
-        system_prompt: gray_plugin::builder::SystemPrompt::Build({
+        system_prompt: {
             let session_cwd = cwd.to_path_buf();
             Box::new(
                 move |_registry: &gray_tools::Registry, manifests: &[gray_plugin::Manifest]| {
@@ -421,7 +405,7 @@ async fn build_agent_inner(
                     prompt
                 },
             )
-        }),
+        },
 
         extra_plugins: extra_surface_plugins(config, spawn_plugins),
 
@@ -429,7 +413,6 @@ async fn build_agent_inner(
         host_handler: Some(host::default_handler(cwd.to_path_buf())),
         profile_path: "gray.yml".to_string(),
         abort_on_spawn_failure: true,
-        wrap_executor: None,
         dynamic_provider_profile: dynamic.as_ref().map(|provider| provider.profile().clone()),
         dynamic_credential_source: dynamic
             .as_ref()

@@ -16,19 +16,16 @@ pub(crate) use widgets::{
     queued_preview_lines, shimmer_spans, status_dock_h, tail_block_h, tail_gap_h,
 };
 
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn desired_viewport_h(
     status_h: u16,
     queued_h: u16,
     live_h: u16,
     box_rows: u16,
     panel_h: u16,
-    attach_h: u16,
     footer_h: u16,
     max_h: u16,
 ) -> u16 {
-    (status_h + queued_h + live_h + box_rows + panel_h + attach_h + footer_h)
-        .clamp(MIN_VIEWPORT_H, max_h)
+    (status_h + queued_h + live_h + box_rows + panel_h + footer_h).clamp(MIN_VIEWPORT_H, max_h)
 }
 
 pub(crate) fn attachment_cells(attachments: &[std::path::PathBuf], text: &str) -> Vec<InputCell> {
@@ -211,7 +208,6 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
     });
     let home_mode = home.is_some();
 
-    let attach_h: u16 = 0;
     let footer_h: u16 = u16::from(!home_mode);
 
     let needs_seam = needs_seam(&tui.transcript);
@@ -297,7 +293,7 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
     } else {
         popup_rows(
             tui.matches.len(),
-            viewport_cap(rows).saturating_sub(status_h + box_h + attach_h + footer_h),
+            viewport_cap(rows).saturating_sub(status_h + box_h + footer_h),
         )
     };
     let panel_est: u16 = if panel_rows == 0 {
@@ -310,17 +306,14 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
 
     let box_rows_est: u16 = box_h;
     let widget_budget = rows
-        .saturating_sub(
-            box_h + status_h + queued_est + live_est + tail_est + panel_est + attach_h + 2,
-        )
+        .saturating_sub(box_h + status_h + queued_est + live_est + tail_est + panel_est + 2)
         .min(widget_row_cap(rows));
     let mut widget_rows = tui.plugin_widget.rows(widget_budget as usize, w);
     let max_viewport_h = viewport_cap(rows);
 
-    let mut band_allowance =
-        band_budget(max_viewport_h, status_h + box_h + attach_h + panel_est + 1)
-            .saturating_sub(2 * ask_gap)
-            .max(if asking { ask_est.min(6) } else { 0 });
+    let mut band_allowance = band_budget(max_viewport_h, status_h + box_h + panel_est + 1)
+        .saturating_sub(2 * ask_gap)
+        .max(if asking { ask_est.min(6) } else { 0 });
 
     let reserve_overflow_row = tui.live_tool_overflow() > 0 && band_allowance > 0;
     if reserve_overflow_row {
@@ -347,7 +340,6 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
         live_est + tail_est + widget_h + ask_est + 2 * ask_gap,
         box_rows_est,
         panel_est,
-        attach_h,
         footer_h,
         max_viewport_h,
     );
@@ -481,7 +473,6 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
         } else {
             search_h
         };
-        let panel_h: u16 = 0;
         let box_rows = box_h;
         let tail_y = status_y + seam_h;
         let queued_y = status_y + status_h + tail_h;
@@ -490,12 +481,11 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
         let widget_y = ask_y + ask_h + ask_gap;
         let box_y = widget_y + widget_h + panel_gap;
         let panel_y = if home_mode {
-            (area.y + area.height.saturating_sub(1)).saturating_sub(panel_h)
+            area.y + area.height.saturating_sub(1)
         } else {
             box_y + box_rows
         };
-        let attach_y = panel_y + panel_h;
-        let footer_y = attach_y + attach_h;
+        let footer_y = panel_y;
 
         if asking {
             // No status pill while a question owns the band (see status_h).
@@ -698,17 +688,7 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
             let pad_x: u16 = 2;
             let mut item_w = 24usize;
             for (name, desc) in tui.matches.iter().skip(start).take(visible_count) {
-                let sw = theme_row_swatch(name).map_or(0, |sw| {
-                    sw.iter()
-                        .map(|sp| display_width(sp.content.as_ref()))
-                        .sum::<usize>()
-                });
-                item_w = item_w.max(
-                    display_width(&format!(" /{name} "))
-                        + display_width(&format!(" {desc} "))
-                        + sw
-                        + 1,
-                );
+                item_w = item_w.max(match_row_width(name, desc) + 1);
             }
             let pop_w = (item_w as u16 + pad_x * 2)
                 .min(area.width.saturating_sub(4))
@@ -764,13 +744,7 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
                 let cmd_str = format!(" /{name} ");
                 let desc_str = format!(" {desc} ");
                 let swatch = theme_row_swatch(name);
-                let used_len = display_width(&cmd_str)
-                    + display_width(&desc_str)
-                    + swatch.as_ref().map_or(0, |s| {
-                        s.iter()
-                            .map(|sp| display_width(sp.content.as_ref()))
-                            .sum::<usize>()
-                    });
+                let used_len = match_row_width(name, desc);
 
                 let marker = match (
                     i == start && hidden_above > 0,
@@ -1151,6 +1125,15 @@ fn live_tool_row(line: Line<'static>) -> Paragraph<'static> {
 fn chrome_row(line: Line<'static>) -> Paragraph<'static> {
     Paragraph::new(line)
         .block(Block::default().style(Style::default().bg(crate::theme::theme().surface_bg)))
+}
+
+fn match_row_width(name: &str, desc: &str) -> usize {
+    let swatch = theme_row_swatch(name).map_or(0, |sw| {
+        sw.iter()
+            .map(|sp| display_width(sp.content.as_ref()))
+            .sum::<usize>()
+    });
+    display_width(&format!(" /{name} ")) + display_width(&format!(" {desc} ")) + swatch
 }
 
 fn theme_row_swatch(name: &str) -> Option<Vec<Span<'static>>> {

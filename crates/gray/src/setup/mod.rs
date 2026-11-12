@@ -70,11 +70,11 @@ pub(crate) use catalog::effort_memory_key;
 pub(crate) use catalog::save_auth_key;
 pub use catalog::{
     AUTH_MODE_API_KEY, AUTH_MODE_NONE, Catalog, CatalogProvider, ConnectAuth, ConnectItem,
-    SavedConfig, auto_update_enabled, auto_update_enabled_at, build_connect_items, gray_home,
-    intro_enabled, load_auth_keys, load_catalog, load_saved_config_at, lock_saved_config_at,
-    mask_key_pretty, normalize_custom_base_url, quality_of_life_enabled,
-    quality_of_life_enabled_at, save_saved_config_at, saved_config_path,
+    SavedConfig, auto_update_enabled, build_connect_items, gray_home, intro_enabled,
+    load_auth_keys, load_catalog, load_saved_config_at, lock_saved_config_at, mask_key_pretty,
+    normalize_custom_base_url, quality_of_life_enabled, save_saved_config_at, saved_config_path,
 };
+pub(crate) use catalog::{saved_config_locked, saved_config_locked_at};
 
 pub fn user_home() -> anyhow::Result<std::path::PathBuf> {
     gray_core::paths::user_home()
@@ -100,6 +100,7 @@ pub use context::{
 };
 
 pub mod ui;
+pub(crate) use ui::centered_modal;
 pub use ui::{BackgroundSnapshot, dim_color, render_dimmed_background};
 pub mod icons;
 pub use icons::icon;
@@ -158,6 +159,14 @@ pub async fn run_model_menu(
     focus: Option<&str>,
 ) -> anyhow::Result<bool> {
     run_model_modal(config, bg, focus)
+}
+
+pub fn warm_model_context_cache(config: &Config) {
+    let base = config.base_url.clone();
+    let key = config.api_key.clone();
+    tokio::task::spawn_blocking(move || {
+        fetch_live_provider_models(&base, key.as_deref());
+    });
 }
 
 pub async fn run_onboarding(config: &mut Config) -> anyhow::Result<bool> {

@@ -12,6 +12,7 @@ use gray_core::redaction::{redact_for_disclosure, redact_message};
 
 use crate::build_agent;
 use crate::config::Config;
+use crate::text_width::fit_chars;
 
 use gray_core::time::now_millis;
 
@@ -428,15 +429,7 @@ impl PrintFailure {
         if trimmed.is_empty() {
             return None;
         }
-        let mut shown = String::new();
-        for ch in trimmed.chars() {
-            if shown.chars().count() >= 700 {
-                shown.push('…');
-                break;
-            }
-            shown.push(ch);
-        }
-        Some(shown)
+        Some(fit_chars(trimmed, 700))
     }
 
     pub fn message(&self) -> &'static str {
@@ -755,12 +748,7 @@ impl JsonOutput {
 
 fn disclose(text: &str, cap: usize) -> String {
     let flat: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    let capped: String = flat.chars().take(cap).collect();
-    let capped = if flat.chars().count() > cap {
-        format!("{capped}…")
-    } else {
-        capped
-    };
+    let capped = fit_chars(&flat, cap);
     let redaction = redact_for_disclosure(&capped);
     if redaction.has_secret() {
         redaction.into_text()
@@ -784,7 +772,11 @@ fn disclose_output(text: &str, cap: usize) -> String {
     if !source_truncated && base.chars().count() <= cap {
         return base;
     }
-    format!("{}…", base.chars().take(cap).collect::<String>())
+    let mut capped = fit_chars(&base, cap);
+    if !capped.ends_with('…') {
+        capped.push('…');
+    }
+    capped
 }
 
 fn tool_detail(name: &str, args: &serde_json::Value, preview: Option<&str>) -> Option<String> {

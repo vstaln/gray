@@ -38,8 +38,7 @@ pub use provider::{
     ProviderChatResult, ProviderDecl, ProviderHeaderDecl, ProviderHeaderSourceDecl, ProviderModel,
     ProviderModelCatalog, ProviderModelsRequest, ProviderRefreshRequest, ProviderRequestPolicyDecl,
     ProviderRevokeRequest, ProviderRevokeResult, ProviderRpcError, ProviderRpcFailure,
-    ProviderTransportDecl, ProviderUsageLimits, ProviderUsageRequest, ProviderUsageWindow,
-    ProviderValidationError, SlotOption,
+    ProviderTransportDecl, ProviderValidationError, SlotOption,
 };
 
 #[derive(Debug, Clone)]

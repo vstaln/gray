@@ -1065,19 +1065,6 @@ impl SidecarPlugin {
             .map_err(|_| ProviderRpcError::Protocol("invalid provider model catalog".into()))
     }
 
-    pub async fn provider_usage(
-        &self,
-        request: &crate::ProviderUsageRequest,
-    ) -> Result<crate::ProviderUsageLimits, ProviderRpcError> {
-        let params = serde_json::to_value(request)
-            .map_err(|_| ProviderRpcError::Protocol("invalid provider usage request".into()))?;
-        let value = self
-            .provider_rpc("provider/usage", params, Duration::from_secs(60))
-            .await?;
-        serde_json::from_value(value)
-            .map_err(|_| ProviderRpcError::Protocol("invalid provider usage result".into()))
-    }
-
     pub async fn provider_chat(
         &self,
         request: &ProviderChatRequest,
@@ -1419,21 +1406,6 @@ fn restore_media(
 
 const MIN_STUB_BYTES: usize = 256;
 
-fn value_len_estimate(v: &serde_json::Value) -> usize {
-    match v {
-        serde_json::Value::Null | serde_json::Value::Bool(_) => 8,
-        serde_json::Value::Number(_) => 24,
-        serde_json::Value::String(s) => s.len(),
-        serde_json::Value::Array(a) => a.iter().map(value_len_estimate).sum::<usize>() + 8,
-        serde_json::Value::Object(o) => {
-            o.iter()
-                .map(|(k, v)| k.len() + value_len_estimate(v))
-                .sum::<usize>()
-                + 8
-        }
-    }
-}
-
 fn context_frame_floor(messages: &[Message]) -> usize {
     let mut total = 64usize;
     for m in messages {
@@ -1447,7 +1419,7 @@ fn context_frame_floor(messages: &[Message]) -> usize {
                     content.len().min(MIN_STUB_BYTES + 64)
                 }
                 gray_core::message::ContentBlock::ToolUse { args, .. } => {
-                    value_len_estimate(args).min(MIN_STUB_BYTES + 64)
+                    serialized_len(args).min(MIN_STUB_BYTES + 64)
                 }
                 gray_core::message::ContentBlock::Thinking { text, .. } => text.len() + 64,
                 _ => 128,

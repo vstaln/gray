@@ -4,7 +4,7 @@ pub mod openai;
 pub mod openai_profile;
 
 pub use anthropic::AnthropicProvider;
-pub use openai::{OpenAiProvider, QUOTA_VENDOR_CODE, is_quota_exhausted, quota_reset_in};
+pub use openai::{OpenAiProvider, QUOTA_VENDOR_CODE, is_quota_exhausted};
 pub use openai_profile::{
     OpenAiAuthorization, OpenAiHeader, OpenAiHeaderSource, OpenAiProviderProfile,
     OpenAiRequestPolicy, OpenAiWire,

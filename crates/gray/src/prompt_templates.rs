@@ -13,40 +13,6 @@ pub struct PromptTemplate {
     pub source: &'static str,
 }
 
-#[must_use]
-pub fn parse_args(s: &str) -> Vec<String> {
-    let mut args = Vec::new();
-    let mut cur = String::new();
-    let mut quote: Option<char> = None;
-    let mut started = false;
-    for ch in s.chars() {
-        match quote {
-            Some(q) if ch == q => quote = None,
-            Some(_) => cur.push(ch),
-            None if ch == '"' || ch == '\'' => {
-                quote = Some(ch);
-                started = true;
-            }
-            None if ch.is_whitespace() => {
-                if started || !cur.is_empty() {
-                    args.push(std::mem::take(&mut cur));
-                }
-                started = false;
-            }
-            None => {
-                cur.push(ch);
-                started = true;
-            }
-        }
-    }
-    if started || !cur.is_empty() {
-        args.push(cur);
-    }
-
-    args.retain(|a| !a.is_empty());
-    args
-}
-
 fn placeholder_re() -> &'static regex::Regex {
     static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
     RE.get_or_init(|| {
@@ -108,7 +74,9 @@ pub fn substitute_args(content: &str, args: &[String]) -> String {
 
 #[must_use]
 pub fn expand(template: &PromptTemplate, rest: &str) -> String {
-    let args = parse_args(rest);
+    let mut args =
+        shlex::split(rest).unwrap_or_else(|| rest.split_whitespace().map(str::to_string).collect());
+    args.retain(|a| !a.is_empty());
     let body = template.content.trim();
     if has_placeholders(body) {
         substitute_args(body, &args)

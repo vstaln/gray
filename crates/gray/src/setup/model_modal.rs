@@ -33,12 +33,7 @@ pub(crate) fn picker_scope(
 
 pub(crate) fn saved_models_for(list_key: &str, sort_base: &str) -> Vec<(String, String)> {
     let mut models = super::context::load_provider_model_list(list_key);
-    if let Ok(path) = saved_config_path() {
-        let _cfg_lock = crate::setup::lock_saved_config_at(&path)
-            .inspect_err(|e| log::warn!("cannot lock {} ({e:#})", path.display()))
-            .ok();
-        load_saved_config_at(&path).sort_models(sort_base, &mut models);
-    }
+    saved_config_locked().sort_models(sort_base, &mut models);
     models
 }
 
@@ -172,14 +167,7 @@ pub(crate) fn model_picker_loop(
     let mut place_on_current = true;
     let focus = focus.map(str::to_string);
 
-    let effort_saved = saved_config_path()
-        .map(|path| {
-            let _cfg_lock = crate::setup::lock_saved_config_at(&path)
-                .inspect_err(|e| log::warn!("cannot lock {} ({e:#})", path.display()))
-                .ok();
-            load_saved_config_at(&path)
-        })
-        .unwrap_or_default();
+    let effort_saved = saved_config_locked();
     let mut efforts = RowEfforts::default();
     let mut toggles = PickerToggles::from_config(config);
 
@@ -213,38 +201,23 @@ pub(crate) fn model_picker_loop(
                 })
                 .collect();
 
-            let lead = matched.iter().filter(|(id, _)| is_composite_id(id)).count();
-            let mut ordered = composites_first(&matched);
-            let mut plain = ordered.split_off(lead);
-
-            let sep = recent_prefix_len(
+            let RowOrder {
+                ordered: filtered_models,
+                lead,
+                div_at,
+                all_head,
+                ..
+            } = picker_row_order(
+                &matched,
+                &models,
                 current_id.as_deref(),
                 &recent_ids,
-                plain.iter().map(|(id, _)| id.as_str()),
+                curated.as_deref(),
+                f.is_empty(),
             );
 
-            let mut all_head = false;
-            let mut div_at = sep;
-            if sep == 0 && f.is_empty() {
-                let head: Vec<String> = super::recommend::recommended_ids(
-                    &models,
-                    curated.as_deref(),
-                    super::context::model_meta,
-                    RECOMMENDED_HEAD,
-                )
-                .into_iter()
-                .filter(|id| !is_composite_id(id))
-                .collect();
-                plain = head_first(&plain, &head);
-                if !head.is_empty() && head.len() < plain.len() {
-                    div_at = head.len();
-                    all_head = true;
-                }
-            }
-
-            let div = (div_at > 0 && div_at < plain.len()).then_some(lead + div_at);
-            ordered.extend(plain);
-            let filtered_models = ordered;
+            let div =
+                (div_at > 0 && div_at < filtered_models.len() - lead).then_some(lead + div_at);
             let mut rows: Vec<Row> = Vec::with_capacity(filtered_models.len() + 1);
             for i in 0..filtered_models.len() {
                 if div == Some(i) {

@@ -21,9 +21,3 @@ pub struct MarkdownRenderOutput {
 
     pub hyperlinks: Vec<HyperlinkTarget>,
 }
-
-impl MarkdownRenderOutput {
-    pub fn new() -> Self {
-        Self::default()
-    }
-}

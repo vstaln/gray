@@ -75,30 +75,6 @@ pub fn receipt_dir(home: &Path) -> PathBuf {
     home.join("cron").join("send-receipts")
 }
 
-fn private_dir(dir: &Path) -> std::io::Result<()> {
-    if dir.is_dir() {
-        return Ok(());
-    }
-    let mut b = std::fs::DirBuilder::new();
-    b.recursive(true);
-    #[cfg(unix)]
-    std::os::unix::fs::DirBuilderExt::mode(&mut b, 0o700);
-    b.create(dir)
-}
-
-fn write_private_file(dir: &Path, name: &str, body: &str) -> anyhow::Result<()> {
-    private_dir(dir)?;
-    let tmp = dir.join(format!(".{name}.tmp"));
-    let _ = std::fs::remove_file(&tmp);
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
-    std::io::Write::write_all(&mut options.open(&tmp)?, body.as_bytes())?;
-    std::fs::rename(&tmp, dir.join(name))?;
-    Ok(())
-}
-
 fn entry_json(
     id: &str,
     from: &str,
@@ -125,7 +101,7 @@ pub fn write_receipt(home: &Path, session: &str, id: &str, state: &str) -> anyho
         anyhow::bail!("unsafe send id {id:?}");
     }
     let body = serde_json::json!({ "id": id, "session": session, "state": state });
-    write_private_file(&receipt_dir(home), &format!("{id}.json"), &body.to_string())
+    crate::util::write_private(&receipt_dir(home), &format!("{id}.json"), &body.to_string())
         .context("write send receipt")
 }
 
@@ -246,7 +222,6 @@ pub fn hold_back(msgs: &[SendMsg]) {
 fn hold_back_one(home: &Path, m: &SendMsg) -> anyhow::Result<()> {
     let dir = session_mailbox::session_inbox(home, &m.session)
         .ok_or_else(|| anyhow::anyhow!("unsafe session id {:?}", m.session))?;
-    private_dir(&dir)?;
     let body = entry_json(
         &m.id,
         &m.from,

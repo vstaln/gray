@@ -266,7 +266,7 @@ pub(crate) fn run_plugins_manager(bg: Option<&BackgroundSnapshot>) -> anyhow::Re
     use ratatui::layout::Rect;
     use ratatui::style::{Modifier, Style};
     use ratatui::text::{Line, Span};
-    use ratatui::widgets::{Block, Clear, Paragraph};
+    use ratatui::widgets::Paragraph;
     use std::time::Duration;
 
     let mut rows = load_rows();
@@ -338,14 +338,7 @@ pub(crate) fn run_plugins_manager(bg: Option<&BackgroundSnapshot>) -> anyhow::Re
                 render_dimmed_background(frame, &bg_snapshot);
                 let modal_w = area.width.saturating_sub(4).min(110);
                 let modal_h = area.height.saturating_sub(4).min(28);
-                let modal_x = (area.width.saturating_sub(modal_w)) / 2;
-                let modal_y = (area.height.saturating_sub(modal_h)) / 3;
-                let modal = Rect::new(modal_x, modal_y, modal_w, modal_h);
-                frame.render_widget(Clear, modal);
-                frame.render_widget(
-                    Block::default().style(Style::default().bg(th.surface_bg)),
-                    modal,
-                );
+                let modal = centered_modal(frame, area, modal_w, modal_h, th.surface_bg);
                 let (ix, iw) = (modal.x + 1, modal.width.saturating_sub(2));
                 let w = iw as usize;
                 let at = |y: u16| Rect::new(ix, y, iw, 1);

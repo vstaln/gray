@@ -294,10 +294,7 @@ pub(crate) fn recent_head_for(base_url: &str) -> (Option<String>, Vec<String>) {
     let Ok(path) = saved_config_path() else {
         return (None, Vec::new());
     };
-    let _cfg_lock = crate::setup::lock_saved_config_at(&path)
-        .inspect_err(|e| log::warn!("cannot lock {} ({e:#})", path.display()))
-        .ok();
-    let saved = load_saved_config_at(&path);
+    let saved = saved_config_locked_at(&path);
     let base = normalize_custom_base_url(base_url);
     let current = saved
         .base_url

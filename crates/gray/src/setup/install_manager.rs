@@ -24,7 +24,7 @@ pub(crate) fn run_install_manager(
     use ratatui::layout::Rect;
     use ratatui::style::{Color, Modifier, Style};
     use ratatui::text::{Line, Span};
-    use ratatui::widgets::{Block, Clear, Paragraph};
+    use ratatui::widgets::Paragraph;
     use std::time::Duration;
 
     let mut items = load();
@@ -61,16 +61,9 @@ pub(crate) fn run_install_manager(
                     .clamp(10, 24)
                     .min(area.height.saturating_sub(2).max(10))
                     .min(area.height);
-                let modal_x = (area.width.saturating_sub(modal_w)) / 2;
-                let modal_y = (area.height.saturating_sub(modal_h)) / 3;
-                let modal_rect = Rect::new(modal_x, modal_y, modal_w, modal_h);
-                frame.render_widget(Clear, modal_rect);
-                frame.render_widget(
-                    Block::default().style(Style::default().bg(box_bg)),
-                    modal_rect,
-                );
+                let modal_rect = centered_modal(frame, area, modal_w, modal_h, box_bg);
                 let inner_h = modal_h.saturating_sub(2);
-                let inner = Rect::new(modal_x + pad_x, modal_y + 1, inner_w, inner_h);
+                let inner = Rect::new(modal_rect.x + pad_x, modal_rect.y + 1, inner_w, inner_h);
                 let title_str = spec.title;
                 let esc_str = "esc";
                 let pad_len = (inner.width as usize)

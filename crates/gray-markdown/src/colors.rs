@@ -14,12 +14,6 @@ pub enum ColorLevel {
     TrueColor,
 }
 
-impl ColorLevel {
-    pub fn has_256(self) -> bool {
-        self >= Self::Ansi256
-    }
-}
-
 static COLOR_LEVEL: OnceLock<ColorLevel> = OnceLock::new();
 
 pub fn detect_color_level() -> ColorLevel {

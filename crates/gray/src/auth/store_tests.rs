@@ -94,13 +94,6 @@ fn plugin_crud_is_namespaced_and_bound() {
             .get("access_token"),
         Some("rotated")
     );
-    assert_eq!(store.remove_plugin_owner("example-sub").unwrap(), 1);
-    assert!(
-        store
-            .read_plugin("plugin:example-sub:example:example-login")
-            .unwrap()
-            .is_none()
-    );
 }
 
 #[test]

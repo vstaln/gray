@@ -384,11 +384,7 @@ pub(crate) fn apply_context_arg(config: &mut Config, val: &str) -> (String, bool
         if let Some(m) = config.model.clone()
             && crate::setup::get_cached_model_context(&m).is_none()
         {
-            let base = config.base_url.clone();
-            let key = config.api_key.clone();
-            tokio::task::spawn_blocking(move || {
-                crate::setup::fetch_live_provider_models(&base, key.as_deref());
-            });
+            crate::setup::warm_model_context_cache(config);
         }
         let effective =
             crate::setup::resolve_model_context_length(config.model.as_deref().unwrap_or(""));

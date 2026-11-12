@@ -383,11 +383,7 @@ async fn finish_model_pick(
         && crate::setup::get_user_context_window().is_none()
         && crate::setup::get_cached_model_context(&m).is_none()
     {
-        let base = config.base_url.clone();
-        let key = config.api_key.clone();
-        tokio::task::spawn_blocking(move || {
-            crate::setup::fetch_live_provider_models(&base, key.as_deref());
-        });
+        crate::setup::warm_model_context_cache(config);
     }
     switch_agent_model(agent, config, cwd, session_id, tui).await;
 }
@@ -576,11 +572,7 @@ pub(crate) async fn handle_model(
         if crate::setup::get_user_context_window().is_none()
             && crate::setup::get_cached_model_context(&m).is_none()
         {
-            let base = config.base_url.clone();
-            let key = config.api_key.clone();
-            tokio::task::spawn_blocking(move || {
-                crate::setup::fetch_live_provider_models(&base, key.as_deref());
-            });
+            crate::setup::warm_model_context_cache(config);
         }
         switch_agent_model(agent, config, cwd, session_id, tui).await;
         return;

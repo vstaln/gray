@@ -63,23 +63,6 @@ pub fn is_quota_exhausted(err: &ProviderError) -> bool {
     matches!(err.class(), ProviderError::Auth(msg) | ProviderError::BadRequest(msg) | ProviderError::RateLimited(msg) if quota_hinted(&[msg.as_str()]))
 }
 
-pub fn quota_reset_in(err: &ProviderError) -> Option<Duration> {
-    if let Some(code) = err.detail().and_then(|d| d.vendor_code.as_deref())
-        && is_quota_code(code)
-    {
-        return code
-            .split(';')
-            .skip(1)
-            .find_map(|p| p.strip_prefix("reset_in="))
-            .and_then(|v| v.parse::<u64>().ok())
-            .map(Duration::from_secs);
-    }
-    if is_quota_exhausted(err) {
-        return parse_quota_reset_delay(&err.to_string());
-    }
-    None
-}
-
 pub(super) fn error_body_code(body: &str) -> Option<String> {
     let v: Value = serde_json::from_str(body.trim()).ok()?;
     v.pointer("/error/code")

@@ -281,73 +281,43 @@ fn provider_detail_text(d: &ProviderDetail) -> String {
     out
 }
 
-fn format_detailed_error(e: &CoreError, d: &ProviderDetail, base_url: &str) -> String {
-    let short = provider_detail_text(d);
+fn error_detail_text(e: &CoreError) -> Option<String> {
+    match e {
+        CoreError::Detailed { detail, .. } => Some(provider_detail_text(detail)),
+        CoreError::Connection(s)
+        | CoreError::Timeout(s)
+        | CoreError::Provider(s)
+        | CoreError::Auth(s)
+        | CoreError::RateLimited(s)
+        | CoreError::BadRequest(s)
+        | CoreError::ContextOverflow(s)
+        | CoreError::ServerError(s)
+        | CoreError::Stream(s) => Some(display_provider_detail(s)),
+        CoreError::LoopDetected(s) => Some(truncate_chars(s, 600).to_string()),
+        CoreError::Quota { message, .. } => Some(truncate_chars(message, 600).to_string()),
+        _ => None,
+    }
+}
+
+pub fn format_core_error(e: &CoreError, base_url: &str) -> String {
+    let class = e.class();
+    let Some(short) = error_detail_text(e) else {
+        return match class {
+            CoreError::Cancelled => "■ Cancelled.".to_string(),
+            _ => format!("agent error: {e}"),
+        };
+    };
     if let Some(message) = format_model_limit(&short) {
         return message;
     }
-    match e.class() {
+    match class {
         CoreError::Connection(_) => format!(
             "✗ Connection failed\n  Unable to reach {base_url}: {short}\n  Check your connection or run /models to configure the provider."
         ),
         CoreError::Timeout(_) => format!(
             "✗ Request timed out\n  {short}\n  Try again or run /models to check the provider settings."
         ),
-        CoreError::Auth(_) => format!(
-            "✗ Auth failed (not retryable):\n  {short}\n  Check API key or run /models to reconfigure provider."
-        ),
-        CoreError::Quota { .. } => format!(
-            "✗ Quota exhausted (not retryable):\n  {short}\n  Wait for the quota window to reset or switch model via /models."
-        ),
-        CoreError::RateLimited(_) => format!(
-            "✗ Rate limited (retryable):\n  {short}\n  Try again later or switch model via /models."
-        ),
-        CoreError::BadRequest(_) => format!(
-            "✗ Bad request (not retryable):\n  {short}\n  Check model/provider settings via /models."
-        ),
-        CoreError::ContextOverflow(_) => format!(
-            "✗ Context exhausted:\n  {short}\n  Start /new or compact the session to continue."
-        ),
-        CoreError::ServerError(_) => format!(
-            "✗ Provider server error (retryable):\n  {short}\n  Try again later or run /models to switch to another model."
-        ),
-        CoreError::Stream(_) => {
-            format!("✗ Stream broken (retryable):\n  {short}\n  Retry the turn.")
-        }
-        _ => format!(
-            "✗ Provider error:\n  {short}\n  Provider: {base_url} — try /models if this persists."
-        ),
-    }
-}
-
-pub fn format_core_error(e: &CoreError, base_url: &str) -> String {
-    if let Some(detail) = e.detail() {
-        return format_detailed_error(e, detail, base_url);
-    }
-    if let CoreError::Provider(detail)
-    | CoreError::BadRequest(detail)
-    | CoreError::Auth(detail)
-    | CoreError::RateLimited(detail)
-    | CoreError::ServerError(detail) = e
-        && let Some(message) = format_model_limit(detail)
-    {
-        return message;
-    }
-    match e {
-        CoreError::Connection(detail) => {
-            let short = display_provider_detail(detail);
-            format!(
-                "✗ Connection failed\n  Unable to reach {base_url}: {short}\n  Check your connection or run /models to configure the provider."
-            )
-        }
-        CoreError::Timeout(detail) => {
-            let short = display_provider_detail(detail);
-            format!(
-                "✗ Request timed out\n  {short}\n  Try again or run /models to check the provider settings."
-            )
-        }
-        CoreError::Provider(detail) => {
-            let short = display_provider_detail(detail);
+        CoreError::Provider(_) => {
             let lower = short.to_lowercase();
             if lower.contains("not supported")
                 || lower.contains("unsupported")
@@ -394,52 +364,32 @@ pub fn format_core_error(e: &CoreError, base_url: &str) -> String {
                 )
             }
         }
-        CoreError::Auth(detail) => {
-            let short = display_provider_detail(detail);
-            format!(
-                "✗ Auth failed (not retryable):\n  {short}\n  Run /models to sign in again or update your API key."
-            )
-        }
-        CoreError::BadRequest(detail) => {
-            let short = display_provider_detail(detail);
-            format!(
-                "✗ Bad request (not retryable):\n  {short}\n  Check model/provider settings via /models."
-            )
-        }
-        CoreError::RateLimited(detail) => {
-            let short = display_provider_detail(detail);
-            format!(
-                "✗ Rate limited (retryable):\n  {short}\n  Try again later or switch model via /models."
-            )
-        }
-        CoreError::ContextOverflow(detail) => {
-            let short = display_provider_detail(detail);
-            format!(
-                "✗ Context exhausted (not retryable):\n  {short}\n  Start /new or run /compact."
-            )
-        }
-        CoreError::ServerError(detail) => {
-            let short = display_provider_detail(detail);
-            format!(
-                "✗ Provider server error (retryable):\n  {short}\n  Try again later or run /models to switch to another model."
-            )
-        }
-        CoreError::Stream(detail) => {
-            let short = display_provider_detail(detail);
-            format!(
-                "✗ Stream broken (retryable):\n  {short}\n  Retrying the turn usually succeeds."
-            )
-        }
-        CoreError::LoopDetected(detail) => {
-            let short = truncate_chars(detail, 600);
-            format!("✗ Tool loop detected (not retryable): {short}")
-        }
-        CoreError::Quota { message, .. } => format!(
-            "✗ Quota exhausted (not retryable):\n  {}\n  Wait for the quota window to reset or switch model via /models.",
-            truncate_chars(message, 600)
+        CoreError::Auth(_) => format!(
+            "✗ Auth failed (not retryable):\n  {short}\n  Run /models to sign in again or update your API key."
         ),
+        CoreError::Quota { .. } => format!(
+            "✗ Quota exhausted (not retryable):\n  {short}\n  Wait for the quota window to reset or switch model via /models."
+        ),
+        CoreError::RateLimited(_) => format!(
+            "✗ Rate limited (retryable):\n  {short}\n  Try again later or switch model via /models."
+        ),
+        CoreError::BadRequest(_) => format!(
+            "✗ Bad request (not retryable):\n  {short}\n  Check model/provider settings via /models."
+        ),
+        CoreError::ContextOverflow(_) => format!(
+            "✗ Context exhausted (not retryable):\n  {short}\n  Start /new or run /compact."
+        ),
+        CoreError::ServerError(_) => format!(
+            "✗ Provider server error (retryable):\n  {short}\n  Try again later or run /models to switch to another model."
+        ),
+        CoreError::Stream(_) => format!(
+            "✗ Stream broken (retryable):\n  {short}\n  Retrying the turn usually succeeds."
+        ),
+        CoreError::LoopDetected(_) => format!("✗ Tool loop detected (not retryable): {short}"),
         CoreError::Cancelled => "■ Cancelled.".to_string(),
-        _ => format!("agent error: {e}"),
+        _ => format!(
+            "✗ Provider error:\n  {short}\n  Provider: {base_url} — try /models if this persists."
+        ),
     }
 }
 

@@ -101,15 +101,14 @@ pub(super) fn dynamic_headers(
             .map_err(|_| ProviderError::BadRequest("invalid provider header value".into()))?;
         headers.insert(name, value);
     }
-    if let OpenAiAuthorization::Bearer { secret_name } = &profile.authorization {
-        let bearer = lease
-            .secrets
-            .get(secret_name)
-            .ok_or_else(|| ProviderError::Auth("provider bearer credential missing".into()))?;
-        let value = HeaderValue::from_str(&format!("Bearer {bearer}"))
-            .map_err(|_| ProviderError::Auth("invalid provider bearer credential".into()))?;
-        headers.insert(AUTHORIZATION, value);
-    }
+    let OpenAiAuthorization::Bearer { secret_name } = &profile.authorization;
+    let bearer = lease
+        .secrets
+        .get(secret_name)
+        .ok_or_else(|| ProviderError::Auth("provider bearer credential missing".into()))?;
+    let value = HeaderValue::from_str(&format!("Bearer {bearer}"))
+        .map_err(|_| ProviderError::Auth("invalid provider bearer credential".into()))?;
+    headers.insert(AUTHORIZATION, value);
     Ok(headers)
 }
 
@@ -125,12 +124,8 @@ pub(super) async fn send_dynamic_json_once(
 ) -> Result<reqwest::Response, ProviderError> {
     let mut headers = dynamic_headers(profile, lease, session_id)?;
     mark_isolated(&mut headers, &lease.metadata, isolated);
-    let bearer = match &profile.authorization {
-        OpenAiAuthorization::Bearer { secret_name } => {
-            lease.secrets.get(secret_name).map(str::to_owned)
-        }
-        OpenAiAuthorization::None => None,
-    };
+    let OpenAiAuthorization::Bearer { secret_name } = &profile.authorization;
+    let bearer = lease.secrets.get(secret_name).map(str::to_owned);
     let response = send_with_retries("dynamic send", || {
         client
             .post(url.clone())

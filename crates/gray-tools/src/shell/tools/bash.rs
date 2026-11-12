@@ -506,18 +506,11 @@ fn image_command(command: &str, cwd: &Path) -> Option<ToolOutput> {
 }
 
 fn resolve_bare_path(cwd: &Path, raw: &str) -> Option<PathBuf> {
-    let expanded = expand_tilde(raw);
-    let full = resolve_path(cwd, expanded.as_deref().unwrap_or(raw));
+    let full = match gray_core::paths::expand_tilde(raw) {
+        Some(expanded) => resolve_path(cwd, &expanded.to_string_lossy()),
+        None => resolve_path(cwd, raw),
+    };
     full.is_file().then_some(full)
-}
-
-fn expand_tilde(raw: &str) -> Option<String> {
-    let home = std::env::var("HOME").ok().filter(|h| !h.is_empty())?;
-    if raw == "~" {
-        return Some(home);
-    }
-    let rest = raw.strip_prefix("~/")?;
-    Some(format!("{home}/{rest}"))
 }
 
 fn log_path(ctx: &ToolContext) -> PathBuf {
@@ -959,17 +952,14 @@ fn finish_inline(
         out.push_str(&fence(&view.body));
     }
     if let Some((start, end)) = view.omitted_range {
-        let path = log_path
-            .to_string_lossy()
-            .replace('\\', "/")
-            .replace('\'', "'\"'\"'");
+        let path = shell_quote_path(log_path);
         let command = if small_log_on_disk(log_path, summary) {
             let first = view.shown_lines.0.max(1);
             let last = first.saturating_add(199);
-            format!("sed -n '{first},{last}p;{last}q' '{path}' | head -c {READ_CHUNK}")
+            format!("sed -n '{first},{last}p;{last}q' {path} | head -c {READ_CHUNK}")
         } else {
             let count = end.saturating_sub(start).min(READ_CHUNK);
-            format!("dd if='{path}' bs=1 skip={start} count={count} 2>/dev/null")
+            format!("dd if={path} bs=1 skip={start} count={count} 2>/dev/null")
         };
 
         let next = start + READ_CHUNK;

@@ -47,7 +47,3 @@ pub fn list() -> Vec<ErrorEntry> {
     entries.reverse();
     entries
 }
-
-pub fn clear() {
-    let _ = std::fs::remove_file(errors_path());
-}

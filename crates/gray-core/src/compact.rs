@@ -528,7 +528,7 @@ fn truncate_text_to_budget(text: &str, max_tokens: usize) -> String {
     format!("{head}{TRUNCATION_MARKER}{tail}")
 }
 
-fn split_head_tail(s: &str, usable: usize) -> (&str, &str) {
+pub(crate) fn split_head_tail(s: &str, usable: usize) -> (&str, &str) {
     let right = usable - usable / 2;
     let head_end = s.floor_char_boundary((usable / 2).min(s.len()));
     let tail_start = s.ceil_char_boundary(s.len().saturating_sub(right));

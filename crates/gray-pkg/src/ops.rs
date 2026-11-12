@@ -42,12 +42,6 @@ fn read_lock() -> anyhow::Result<LockFile> {
 
 const REGISTRY_LOCK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
-pub fn hold_registry_lock_timeout(
-    timeout: std::time::Duration,
-) -> anyhow::Result<Option<std::fs::File>> {
-    hold_registry_lock_timeout_in(&crate::plugins_dir(), timeout)
-}
-
 pub fn hold_registry_lock_in(plugins_dir: &Path) -> anyhow::Result<Option<std::fs::File>> {
     hold_registry_lock_timeout_in(plugins_dir, REGISTRY_LOCK_TIMEOUT)
 }
@@ -96,7 +90,7 @@ fn hold_registry_lock_timeout_in(
 }
 
 pub fn hold_registry_lock() -> anyhow::Result<Option<std::fs::File>> {
-    hold_registry_lock_timeout(REGISTRY_LOCK_TIMEOUT)
+    hold_registry_lock_timeout_in(&crate::plugins_dir(), REGISTRY_LOCK_TIMEOUT)
 }
 
 fn write_lock(lock: &LockFile) -> anyhow::Result<()> {

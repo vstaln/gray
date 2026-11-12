@@ -22,7 +22,7 @@ use serde_json::Value;
 use std::sync::Arc;
 
 use crate::openai_profile::{
-    OpenAiAuthorization, OpenAiHeaderSource, OpenAiProviderProfile, OpenAiRequestPolicy, OpenAiWire,
+    OpenAiAuthorization, OpenAiHeaderSource, OpenAiProviderProfile, OpenAiRequestPolicy,
 };
 
 pub const DEFAULT_BASE_URL: &str = "https://openrouter.ai/api/v1";
@@ -171,14 +171,6 @@ impl Provider for OpenAiProvider {
         if let (Some(profile), Some(credential_source)) =
             (self.profile.clone(), self.credential_source.clone())
         {
-            if !matches!(profile.wire, OpenAiWire::Responses | OpenAiWire::Auto) {
-                return stream::once(async move {
-                    Err(ProviderError::BadRequest(
-                        "dynamic OpenAI chat completions profiles are not implemented".into(),
-                    ))
-                })
-                .boxed();
-            }
             return self.dynamic_stream(
                 req,
                 profile,

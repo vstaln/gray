@@ -32,12 +32,11 @@ pub fn project_rules_label(cwd: &Path) -> Option<String> {
     let home = gray_core::paths::user_home();
     let names: Vec<String> = project_rules_files(cwd)
         .iter()
-        .map(
-            |p| match home.as_deref().and_then(|h| p.strip_prefix(h).ok()) {
-                Some(rest) => format!("~/{}", rest.display()),
-                None => p.display().to_string(),
-            },
-        )
+        .map(|p| {
+            home.as_deref()
+                .and_then(|h| gray_core::paths::tilde(p, h))
+                .unwrap_or_else(|| p.display().to_string())
+        })
         .collect();
     (!names.is_empty()).then(|| names.join(" · "))
 }

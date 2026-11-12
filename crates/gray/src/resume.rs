@@ -4,6 +4,7 @@ use crate::session_store::{
     JsonlSessionStore, SessionEnd, SessionId, SessionScanEvent, SessionSummary,
 };
 
+use crate::text_width::fit_chars;
 use gray_core::time::now_millis;
 
 fn format_relative(ts: u64) -> String {
@@ -35,13 +36,9 @@ fn format_relative(ts: u64) -> String {
 }
 
 fn cwd_display(cwd: &Path, width: usize) -> String {
-    let s = cwd.display().to_string();
-    let home = std::env::var("HOME").unwrap_or_default();
-    let short = if !home.is_empty() && s.starts_with(&home) {
-        format!("~{}", &s[home.len()..])
-    } else {
-        s
-    };
+    let short = gray_core::paths::user_home()
+        .and_then(|home| gray_core::paths::tilde(cwd, &home))
+        .unwrap_or_else(|| cwd.display().to_string());
     if short.chars().count() <= width {
         short
     } else {
@@ -54,15 +51,6 @@ fn cwd_display(cwd: &Path, width: usize) -> String {
     }
 }
 
-fn fit_col(text: &str, width: usize) -> String {
-    if text.chars().count() <= width {
-        return text.to_string();
-    }
-    let mut t: String = text.chars().take(width.saturating_sub(1)).collect();
-    t.push('\u{2026}');
-    t
-}
-
 fn preview_text(s: &SessionSummary, width: usize) -> String {
     let raw = s
         .title
@@ -71,13 +59,7 @@ fn preview_text(s: &SessionSummary, width: usize) -> String {
         .or(s.first_user_text.as_deref())
         .unwrap_or("(no message yet)");
     let one_line = raw.split_whitespace().collect::<Vec<_>>().join(" ");
-    if one_line.chars().count() <= width {
-        one_line
-    } else {
-        let mut t: String = one_line.chars().take(width - 1).collect();
-        t.push('…');
-        t
-    }
+    fit_chars(&one_line, width)
 }
 
 pub(crate) fn short_id(id: &SessionId) -> String {
@@ -453,11 +435,9 @@ pub(crate) fn interrupted_hint(
     if n == 0 {
         return None;
     }
-    let shown = match home.and_then(|h| cwd.strip_prefix(h).ok()) {
-        Some(rest) if rest.as_os_str().is_empty() => "~".to_string(),
-        Some(rest) => format!("~/{}", rest.display()),
-        None => cwd.display().to_string(),
-    };
+    let shown = home
+        .and_then(|h| gray_core::paths::tilde(cwd, h))
+        .unwrap_or_else(|| cwd.display().to_string());
     let noun = if n == 1 { "session" } else { "sessions" };
     Some(format!(
         "\u{26a0} {n} interrupted {noun} in {shown} \u{b7} /sessions to pick up \u{b7} /sessions dismiss to clear"
@@ -875,7 +855,7 @@ fn run_picker_sync(
                             }
                             _ => short_id(&s.id),
                         };
-                        let right = fit_col(&right, id_w);
+                        let right = fit_chars(&right, id_w);
                         let rest = format!(
                             " {:>date_w$}  {:cwd_w$}  {:prev_w$}  {:>id_w$}",
                             date,

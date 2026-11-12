@@ -291,16 +291,6 @@ pub(crate) fn remove(
     home: &Path,
     name: &str,
 ) -> anyhow::Result<()> {
-    remove_with(exec, ctx, home, name, remove_wake)
-}
-
-fn remove_with(
-    exec: &dyn ToolExecutor,
-    ctx: &ToolContext,
-    home: &Path,
-    name: &str,
-    cron_rm: impl Fn(&Path, &str) -> anyhow::Result<bool>,
-) -> anyhow::Result<()> {
     if let Some(id) = name.strip_prefix("job:") {
         anyhow::ensure!(
             exec.cancel_background(ctx, id),
@@ -310,7 +300,7 @@ fn remove_with(
     }
     if let Some(id) = name.strip_prefix("wake:") {
         anyhow::ensure!(
-            cron_rm(home, id)?,
+            remove_wake(home, id)?,
             "unknown wake {id:?} \u{2014} it may have already fired"
         );
         return Ok(());
@@ -455,13 +445,20 @@ pub(crate) fn confirm_quit(exec: Option<&dyn ToolExecutor>, ctx: &ToolContext) -
     warning
 }
 
-pub(crate) async fn stop_all(exec: &dyn ToolExecutor, ctx: &ToolContext) {
+fn cancel_running(exec: &dyn ToolExecutor, ctx: &ToolContext) -> bool {
     let running = exec.background_jobs(ctx);
     if running.is_empty() {
-        return;
+        return false;
     }
     for job in &running {
         exec.cancel_background(ctx, &job.id);
+    }
+    true
+}
+
+pub(crate) async fn stop_all(exec: &dyn ToolExecutor, ctx: &ToolContext) {
+    if !cancel_running(exec, ctx) {
+        return;
     }
     let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
     while !exec.background_jobs(ctx).is_empty() && tokio::time::Instant::now() < deadline {
@@ -473,12 +470,8 @@ pub(crate) fn stop_all_blocking() {
     let Some((exec, ctx)) = crate::host::background_source() else {
         return;
     };
-    let running = exec.background_jobs(&ctx);
-    if running.is_empty() {
+    if !cancel_running(exec.as_ref(), &ctx) {
         return;
-    }
-    for job in &running {
-        exec.cancel_background(&ctx, &job.id);
     }
     let deadline = std::time::Instant::now() + Duration::from_millis(1500);
     while !exec.background_jobs(&ctx).is_empty() && std::time::Instant::now() < deadline {

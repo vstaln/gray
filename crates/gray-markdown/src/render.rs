@@ -10,6 +10,29 @@ use crate::output::{HyperlinkTarget, MarkdownRenderOutput};
 use crate::parse::ParsedMarkdown;
 use crate::style::{all_hidden, merge_styles};
 
+fn push_pairs<T>(
+    events: &mut Vec<RenderEvent>,
+    kind: RenderEventKind,
+    items: &[T],
+    range: impl Fn(&T) -> std::ops::Range<usize>,
+) {
+    for (index, item) in items.iter().enumerate() {
+        let r = range(item);
+        events.push(RenderEvent {
+            pos: r.start,
+            kind,
+            index,
+            is_end: false,
+        });
+        events.push(RenderEvent {
+            pos: r.end,
+            kind,
+            index,
+            is_end: true,
+        });
+    }
+}
+
 impl<'a, 'b> ParsedMarkdown<'a, 'b> {
     fn apply_transforms<'t>(&self, text: &'t str, start: usize, pretty: bool) -> Cow<'t, str> {
         if self.buffers.transforms.is_empty() {
@@ -64,48 +87,24 @@ impl<'a, 'b> ParsedMarkdown<'a, 'b> {
             + self.buffers.table_replaces.len() * 2;
         events.reserve(capacity);
 
-        for (i, hl) in self.buffers.highlights.iter().enumerate() {
-            events.push(RenderEvent {
-                pos: hl.range.start,
-                kind: RenderEventKind::Highlight,
-                index: i,
-                is_end: false,
-            });
-            events.push(RenderEvent {
-                pos: hl.range.end,
-                kind: RenderEventKind::Highlight,
-                index: i,
-                is_end: true,
-            });
-        }
-        for (i, r) in self.buffers.replaces.iter().enumerate() {
-            events.push(RenderEvent {
-                pos: r.range.start,
-                kind: RenderEventKind::Replace,
-                index: i,
-                is_end: false,
-            });
-            events.push(RenderEvent {
-                pos: r.range.end,
-                kind: RenderEventKind::Replace,
-                index: i,
-                is_end: true,
-            });
-        }
-        for (i, t) in self.buffers.table_replaces.iter().enumerate() {
-            events.push(RenderEvent {
-                pos: t.range.start,
-                kind: RenderEventKind::Table,
-                index: i,
-                is_end: false,
-            });
-            events.push(RenderEvent {
-                pos: t.range.end,
-                kind: RenderEventKind::Table,
-                index: i,
-                is_end: true,
-            });
-        }
+        push_pairs(
+            &mut events,
+            RenderEventKind::Highlight,
+            &self.buffers.highlights,
+            |h| h.range.clone(),
+        );
+        push_pairs(
+            &mut events,
+            RenderEventKind::Replace,
+            &self.buffers.replaces,
+            |r| r.range.clone(),
+        );
+        push_pairs(
+            &mut events,
+            RenderEventKind::Table,
+            &self.buffers.table_replaces,
+            |t| t.range.clone(),
+        );
 
         events.sort_unstable();
         events

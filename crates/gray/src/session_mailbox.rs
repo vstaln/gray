@@ -29,22 +29,12 @@ pub(crate) fn session_inbox(home: &std::path::Path, session: &str) -> Option<Pat
 }
 
 pub(crate) fn write_entry(dir: &std::path::Path, body: &str) -> anyhow::Result<()> {
-    std::fs::create_dir_all(dir)?;
-
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis())
         .unwrap_or(0);
     let name = format!("{stamp:020}-{}.json", uuid::Uuid::new_v4());
-    let tmp = dir.join(format!(".{name}.tmp"));
-
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
-    std::io::Write::write_all(&mut options.open(&tmp)?, body.as_bytes())?;
-    std::fs::rename(&tmp, dir.join(name))?;
-    Ok(())
+    crate::util::write_private(dir, &name, body)
 }
 
 pub fn session_inbox_pending(home: &std::path::Path, session: &str) -> bool {

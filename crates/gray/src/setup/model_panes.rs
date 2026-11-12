@@ -1185,14 +1185,7 @@ pub(crate) fn run_model_panes(
     };
 
     let committed = (|| -> anyhow::Result<PanesOutcome> {
-        let saved = saved_config_path()
-            .map(|path| {
-                let _cfg_lock = crate::setup::lock_saved_config_at(&path)
-                    .inspect_err(|e| log::warn!("cannot lock {} ({e:#})", path.display()))
-                    .ok();
-                load_saved_config_at(&path)
-            })
-            .unwrap_or_default();
+        let saved = catalog::saved_config_locked();
         let saved_lists = SavedLists::load();
         loop {
             if let Ok(up) = ollama_rx.try_recv()

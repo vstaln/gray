@@ -1,6 +1,7 @@
 use serde_json::Value;
 
 use crate::agent::ToolOutput;
+use crate::compact::split_head_tail;
 use crate::spill;
 
 pub const MAX_LINES: usize = 2000;
@@ -44,15 +45,8 @@ pub fn truncate_output(text: &str) -> String {
     if body.len() > MAX_BYTES {
         let dropped_bytes = body.len() - MAX_BYTES;
         notes.push(format!("{dropped_bytes} bytes"));
-        let half = MAX_BYTES / 2;
-        let head_end = body.floor_char_boundary(half);
-        let tail_start = body.ceil_char_boundary(body.len() - half);
-        format!(
-            "{}\n{}\n{}",
-            &body[..head_end],
-            annotation(&notes),
-            &body[tail_start..]
-        )
+        let (head, tail) = split_head_tail(&body, MAX_BYTES);
+        format!("{head}\n{}\n{tail}", annotation(&notes))
     } else if notes.is_empty() {
         body
     } else {

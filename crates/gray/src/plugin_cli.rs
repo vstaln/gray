@@ -29,29 +29,17 @@ fn migrate_commands_json(home: &Path) {
     }
 }
 
-/// Reconciles the live `plugins/commands.json` CLI registry with the plugin
+/// Reconciles a legacy `plugins/commands.json` CLI registry with the plugin
 /// lock. A row folds into the lock only once an entry of the same name
 /// exists — plugins write that entry themselves when their `setup` command
 /// registers a sidecar argv (gray-discord's register() refuses to overwrite
 /// a foreign argv, and the builder would spawn any non-empty `argv` as a
-/// sidecar). Rows with no lock counterpart stay in commands.json, which is
-/// still the registry `forward` reads for `gray <name>` dispatch.
+/// sidecar). Rows with no lock counterpart stay in commands.json.
 fn migrate_commands(home: &Path, commands: &Path) -> anyhow::Result<()> {
     let _guard = gray_pkg::ops::hold_registry_lock_in(&home.join("plugins"))?;
     let old = LockFile::load(commands)?;
     let path = gray_plugin::lock::lock_path(home);
     let mut lock = LockFile::load(&path)?;
-    let remaining = merge_command_entries(&mut lock, old);
-    lock.save(&path)?;
-    if remaining.plugins.is_empty() {
-        std::fs::rename(commands, commands.with_file_name("commands.json.migrated"))?;
-    } else {
-        remaining.save(commands)?;
-    }
-    Ok(())
-}
-
-fn merge_command_entries(lock: &mut LockFile, old: LockFile) -> LockFile {
     let mut remaining = LockFile::default();
     for (name, entry) in old.plugins {
         match lock.plugins.get_mut(&name) {
@@ -65,7 +53,13 @@ fn merge_command_entries(lock: &mut LockFile, old: LockFile) -> LockFile {
             }
         }
     }
-    remaining
+    lock.save(&path)?;
+    if remaining.plugins.is_empty() {
+        std::fs::rename(commands, commands.with_file_name("commands.json.migrated"))?;
+    } else {
+        remaining.save(commands)?;
+    }
+    Ok(())
 }
 
 fn validate_name(name: &str) -> anyhow::Result<()> {
@@ -283,39 +277,6 @@ pub async fn install_spec(home: &Path, spec: &str, force: bool, yes: bool) -> an
         println!("{line}");
     }
     Ok(())
-}
-
-fn commands_path(home: &Path) -> PathBuf {
-    home.join("plugins/commands.json")
-}
-
-fn commands_or_empty(home: &Path) -> LockFile {
-    load_commands(home).unwrap_or_else(|_| LockFile::default())
-}
-
-fn load_commands(home: &Path) -> anyhow::Result<LockFile> {
-    let registry = LockFile::load(&commands_path(home))?;
-    anyhow::ensure!(
-        registry.schema == 1,
-        "unsupported plugin command registry schema"
-    );
-    Ok(registry)
-}
-
-/// A commands.json row resolves `gray <name>` forwarding: its `argv` is the
-/// plugin's CLI argv. These rows are the live registry — unlike lock
-/// entries, their `argv` is never spawned as a sidecar, so no lock entry is
-/// created until the plugin writes one itself (e.g. `gray discord setup`).
-fn commands_cli_entry(registry: &LockFile, name: &str, global_only: bool) -> Option<LockEntry> {
-    registry
-        .plugins
-        .get(name)
-        .filter(|e| !global_only || e.global)
-        .map(|e| {
-            let mut e = e.clone();
-            e.cli_argv = Some(e.argv.clone());
-            e
-        })
 }
 
 pub async fn install(home: &Path, name: &str) -> anyhow::Result<()> {
@@ -675,7 +636,7 @@ pub struct ManagedPlugin {
     pub cli: bool,
 }
 
-/// Names of every managed plugin (lock file plus legacy command registry).
+/// Names of every managed plugin.
 pub fn installed_names(home: &Path) -> std::collections::BTreeSet<String> {
     list_managed(home)
         .map(|rows| rows.into_iter().map(|p| p.name).collect())
@@ -685,7 +646,7 @@ pub fn installed_names(home: &Path) -> std::collections::BTreeSet<String> {
 pub fn list_managed(home: &Path) -> anyhow::Result<Vec<ManagedPlugin>> {
     migrate_commands_json(home);
     let lock = load_lock(home)?;
-    let mut rows: Vec<ManagedPlugin> = lock
+    Ok(lock
         .plugins
         .iter()
         .map(|(name, entry)| ManagedPlugin {
@@ -693,19 +654,7 @@ pub fn list_managed(home: &Path) -> anyhow::Result<Vec<ManagedPlugin>> {
             entry: entry.clone(),
             cli: entry.cli_argv.is_some(),
         })
-        .collect();
-    if let Ok(commands) = load_commands(home) {
-        for (name, entry) in commands.plugins {
-            if !lock.plugins.contains_key(&name) {
-                rows.push(ManagedPlugin {
-                    name,
-                    entry,
-                    cli: true,
-                });
-            }
-        }
-    }
-    Ok(rows)
+        .collect())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -748,46 +697,13 @@ pub fn list_rows() -> anyhow::Result<Vec<ManagedRow>> {
         .collect())
 }
 
-fn update_commands_entry(
-    home: &Path,
-    name: &str,
-    f: impl FnOnce(&mut LockEntry),
-) -> anyhow::Result<()> {
-    let _guard = gray_pkg::ops::hold_registry_lock_in(&home.join("plugins"))?;
-    let path = commands_path(home);
-    let mut registry = LockFile::load(&path)?;
-    let Some(entry) = registry.plugins.get_mut(name) else {
-        anyhow::bail!("not installed: {name}");
-    };
-    f(entry);
-    registry.save(&path)?;
-    Ok(())
-}
-
-fn remove_commands_entry(home: &Path, name: &str) -> anyhow::Result<bool> {
-    let _guard = gray_pkg::ops::hold_registry_lock_in(&home.join("plugins"))?;
-    let path = commands_path(home);
-    let mut registry = LockFile::load(&path)?;
-    let removed = registry.remove(name);
-    if removed {
-        registry.save(&path)?;
-    }
-    Ok(removed)
-}
-
-fn commands_only(home: &Path, name: &str) -> bool {
-    load_commands(home).is_ok_and(|r| r.plugins.contains_key(name))
-        && load_lock(home).is_ok_and(|l| !l.plugins.contains_key(name))
-}
-
 pub fn remove_managed(name: &str) -> anyhow::Result<()> {
     let home = home()?;
     migrate_commands_json(&home);
     validate_name(name)?;
-    let mut removed = remove_commands_entry(&home, name)?;
-    if load_lock(&home)?.plugins.contains_key(name) {
+    let removed = load_lock(&home)?.plugins.contains_key(name);
+    if removed {
         gray_pkg::ops::remove(name)?;
-        removed = true;
     }
     let cli_root = home.join("plugins/cli");
     if cli_root.is_dir() {
@@ -820,23 +736,12 @@ pub fn remove_managed(name: &str) -> anyhow::Result<()> {
 pub fn set_managed_enabled(name: &str, on: bool) -> anyhow::Result<()> {
     let home = home()?;
     migrate_commands_json(&home);
-    if commands_only(&home, name) {
-        return update_commands_entry(&home, name, |e| {
-            e.enabled = on;
-            if !on {
-                e.global = false;
-            }
-        });
-    }
     gray_pkg::ops::set_enabled(name, on)
 }
 
 pub fn set_managed_global(name: &str, on: bool) -> anyhow::Result<()> {
     let home = home()?;
     migrate_commands_json(&home);
-    if commands_only(&home, name) {
-        return update_commands_entry(&home, name, |e| e.global = on);
-    }
     gray_pkg::ops::set_global(name, on)
 }
 
@@ -875,18 +780,11 @@ fn number_variant(name: &str) -> Option<String> {
 }
 
 /// Close-match hints for an unknown `gray <name>`: builtin subcommands and
-/// their aliases, installed plugin names, commands.json rows, and claimed
-/// /commands from manifests. Same jaro-winkler cutoff as gray-core's
-/// unknown-tool hint.
-fn command_suggestion(
-    home: &Path,
-    lock: &LockFile,
-    commands: &LockFile,
-    typed: &str,
-) -> Option<String> {
+/// their aliases, installed plugin names, and claimed /commands from
+/// manifests. Same jaro-winkler cutoff as gray-core's unknown-tool hint.
+fn command_suggestion(home: &Path, lock: &LockFile, typed: &str) -> Option<String> {
     use clap::CommandFactory;
     let mut names: std::collections::BTreeSet<String> = lock.plugins.keys().cloned().collect();
-    names.extend(commands.plugins.keys().cloned());
     for sub in crate::Cli::command().get_subcommands() {
         names.insert(sub.get_name().to_string());
         names.extend(sub.get_all_aliases().map(str::to_string));
@@ -1025,13 +923,12 @@ fn disabled_hint(home: &Path, entry_home: &Path, project: Option<&LockFile>, nam
     format!("re-enable with: gray plugin enable {name}")
 }
 
-fn user_home_lock(home: &Path) -> Option<(PathBuf, LockFile, LockFile)> {
+fn user_home_lock(home: &Path) -> Option<(PathBuf, LockFile)> {
     let user = gray_core::paths::gray_user_home()
         .filter(|u| crate::providers::registry::differs(home, u))?;
     migrate_commands_json(&user);
     let lock = load_lock(&user).ok()?;
-    let commands = commands_or_empty(&user);
-    Some((user, lock, commands))
+    Some((user, lock))
 }
 
 fn sidecar_usage(name: &str) -> String {
@@ -1071,7 +968,7 @@ pub(crate) fn forwardable_names() -> std::collections::BTreeSet<String> {
     if let Ok(lock) = load_lock(&home) {
         names.extend(lock.plugins.into_keys());
     }
-    if let Some((_, lock, _)) = user_home_lock(&home) {
+    if let Some((_, lock)) = user_home_lock(&home) {
         names.extend(lock.plugins.into_keys());
     }
     names
@@ -1081,7 +978,6 @@ pub async fn forward(home: &Path, name: &str, rest: &[String]) -> anyhow::Result
     validate_name(name)?;
     migrate_commands_json(home);
     let mut lock = load_lock(home)?;
-    let commands = load_commands(home)?;
     let project = std::env::current_dir()
         .ok()
         .and_then(|cwd| LockFile::load(&gray_plugin::lock::project_lock_path(&cwd)).ok());
@@ -1094,16 +990,15 @@ pub async fn forward(home: &Path, name: &str, rest: &[String]) -> anyhow::Result
     let names: Vec<&str> = std::iter::once(name).chain(alt.as_deref()).collect();
     for n in &names {
         lazy_adopt(home, n, &mut lock).await;
-        if let Some((u, l, _)) = user_home.as_mut() {
+        if let Some((u, l)) = user_home.as_mut() {
             lazy_adopt(u, n, l).await;
         }
     }
 
     let mut sidecar_named = false;
     let mut direct = None;
-    'scan: for (h, l, c, global_only) in
-        std::iter::once((home.to_path_buf(), &lock, &commands, false))
-            .chain(user_home.iter().map(|(u, l, c)| (u.clone(), l, c, true)))
+    'scan: for (h, l, global_only) in std::iter::once((home.to_path_buf(), &lock, false))
+        .chain(user_home.iter().map(|(u, l)| (u.clone(), l, true)))
     {
         for n in &names {
             match l.plugins.get(*n) {
@@ -1115,10 +1010,6 @@ pub async fn forward(home: &Path, name: &str, rest: &[String]) -> anyhow::Result
                     sidecar_named = true;
                 }
                 _ => {}
-            }
-            if let Some(e) = commands_cli_entry(c, n, global_only) {
-                direct = Some((e, h, (*n).to_string()));
-                break 'scan;
             }
         }
     }
@@ -1133,7 +1024,7 @@ pub async fn forward(home: &Path, name: &str, rest: &[String]) -> anyhow::Result
                         .map(|(h, o, e)| (h, o, e, (*n).to_string())),
                 );
             }
-            if let Some((u, l, _)) = &user_home {
+            if let Some((u, l)) = &user_home {
                 for n in &names {
                     claimers.extend(
                         owners_for_command(u, n, l, true)
@@ -1166,7 +1057,7 @@ pub async fn forward(home: &Path, name: &str, rest: &[String]) -> anyhow::Result
                         match index_owner_hint(name).await {
                             Some(hint) => hint,
                             None => removed_builtin(name).map(str::to_string).unwrap_or_else(
-                                || match command_suggestion(home, &lock, &commands, name) {
+                                || match command_suggestion(home, &lock, name) {
                                     Some(s) => {
                                         format!("no plugin command '{name}' — did you mean {s}?")
                                     }
@@ -1459,7 +1350,6 @@ pub async fn capture_slash(name: &str, args: &[String]) -> anyhow::Result<Option
     let home = home()?;
     migrate_commands_json(&home);
     let mut lock = load_lock(&home)?;
-    let commands = commands_or_empty(&home);
     let project = std::env::current_dir()
         .ok()
         .and_then(|cwd| LockFile::load(&gray_plugin::lock::project_lock_path(&cwd)).ok());
@@ -1470,7 +1360,7 @@ pub async fn capture_slash(name: &str, args: &[String]) -> anyhow::Result<Option
     let names: Vec<&str> = std::iter::once(name).chain(alt.as_deref()).collect();
     for n in &names {
         lazy_adopt(&home, n, &mut lock).await;
-        if let Some((u, l, _)) = user_home.as_mut() {
+        if let Some((u, l)) = user_home.as_mut() {
             lazy_adopt(u, n, l).await;
         }
     }
@@ -1481,18 +1371,11 @@ pub async fn capture_slash(name: &str, args: &[String]) -> anyhow::Result<Option
             selected = Some((home.clone(), (*n).to_string(), entry.clone(), None));
             break;
         }
-        if let Some(entry) = commands_cli_entry(&commands, n, false) {
-            selected = Some((home.clone(), (*n).to_string(), entry, None));
-            break;
-        }
-        let direct = user_home.as_ref().and_then(|(u, l, c)| {
+        let direct = user_home.as_ref().and_then(|(u, l)| {
             l.plugins
                 .get(*n)
                 .filter(|e| e.cli_argv.is_some() && e.global)
                 .map(|e| (u.clone(), (*n).to_string(), e.clone(), None))
-                .or_else(|| {
-                    commands_cli_entry(c, n, true).map(|e| (u.clone(), (*n).to_string(), e, None))
-                })
         });
         if direct.is_some() {
             selected = direct;
@@ -1508,7 +1391,7 @@ pub async fn capture_slash(name: &str, args: &[String]) -> anyhow::Result<Option
                     .map(|(h, o, e)| (h, o, e, (*n).to_string())),
             );
         }
-        if let Some((u, l, _)) = &user_home {
+        if let Some((u, l)) = &user_home {
             for n in &names {
                 claimers.extend(
                     owners_for_command(u, n, l, true)

@@ -11,6 +11,24 @@ pub fn user_home() -> Option<PathBuf> {
     }
 }
 
+pub fn tilde(path: &std::path::Path, home: &std::path::Path) -> Option<String> {
+    let rest = path.strip_prefix(home).ok()?;
+    Some(if rest.as_os_str().is_empty() {
+        "~".to_string()
+    } else {
+        format!("~/{}", rest.display())
+    })
+}
+
+pub fn expand_tilde(raw: &str) -> Option<PathBuf> {
+    let home = user_home().filter(|h| !h.as_os_str().is_empty())?;
+    if raw == "~" {
+        return Some(home);
+    }
+    let rest = raw.strip_prefix("~/")?;
+    Some(home.join(rest))
+}
+
 pub fn gray_home() -> Option<PathBuf> {
     std::env::var_os("GRAY_HOME")
         .filter(|v| !v.to_string_lossy().trim().is_empty())

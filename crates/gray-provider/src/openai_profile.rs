@@ -2,14 +2,11 @@ use reqwest::Url;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OpenAiWire {
-    Auto,
-    ChatCompletions,
     Responses,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum OpenAiAuthorization {
-    None,
     Bearer { secret_name: String },
 }
 

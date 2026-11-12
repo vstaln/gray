@@ -9,7 +9,6 @@ use std::path::{Path, PathBuf};
 pub enum Role {
     User,
     Assistant,
-    System,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]

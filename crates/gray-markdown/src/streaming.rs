@@ -30,38 +30,11 @@ pub struct StreamingMarkdownRenderer {
     highlighted: bool,
 }
 
-impl std::fmt::Debug for StreamingMarkdownRenderer {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("StreamingMarkdownRenderer")
-            .field("source_len", &self.source.len())
-            .field("frozen_lines", &self.frozen.lines_len)
-            .field("frozen_bytes", &self.frozen.source_bytes)
-            .field("output_lines", &self.output.lines.len())
-            .field("pretty", &self.pretty)
-            .finish()
-    }
-}
-
-impl Clone for StreamingMarkdownRenderer {
-    fn clone(&self) -> Self {
-        let mut new = Self::new(self.style, self.pretty);
-        new.set_max_table_width(self.max_table_width);
-        new.source.push_str(&self.source);
-
-        new.render(if self.highlighted {
-            Some(crate::get_syntect())
-        } else {
-            None
-        });
-        new
-    }
-}
-
 impl StreamingMarkdownRenderer {
     pub fn new(style: MarkdownStyle, pretty: bool) -> Self {
         Self {
             source: String::new(),
-            output: MarkdownRenderOutput::new(),
+            output: MarkdownRenderOutput::default(),
             frozen: FrozenState::default(),
             buffers: MarkdownBuffers::new(),
             style,
