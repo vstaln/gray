@@ -1,17 +1,9 @@
 use super::*;
 
-pub struct CompactionSettings {
-    pub reserve_tokens: usize,
-
-    pub ceiling_tokens: Option<usize>,
-
-    pub price_cliff_tokens: Option<usize>,
-}
-
 static AUTO_COMPACT_ENABLED: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(true);
 
-pub fn set_auto_compact_enabled(on: bool) {
+fn set_auto_compact_enabled(on: bool) {
     AUTO_COMPACT_ENABLED.store(on, std::sync::atomic::Ordering::Relaxed);
 }
 
@@ -29,20 +21,6 @@ pub fn init_auto_compact_from_env() {
         })
         .unwrap_or(false);
     set_auto_compact_enabled(!disabled);
-}
-
-pub fn should_compact(tokens: usize, window: usize, s: &CompactionSettings) -> bool {
-    tokens > window.saturating_sub(s.reserve_tokens)
-        || s.ceiling_tokens.is_some_and(|c| tokens >= c)
-}
-
-pub fn binding_reason(tokens: usize, s: &CompactionSettings) -> Option<CompactReason> {
-    s.ceiling_tokens
-        .filter(|&c| tokens >= c)
-        .map(|_| match s.price_cliff_tokens {
-            Some(cliff) => CompactReason::PriceCliff { cliff },
-            None => CompactReason::UserCeiling,
-        })
 }
 
 pub fn compact_reason_note(reason: CompactReason) -> String {
@@ -91,30 +69,8 @@ pub fn effective_compact_ceiling(config: &crate::Config) -> usize {
     .unwrap_or_else(|| window.saturating_sub(reserve))
 }
 
-pub fn compaction_settings_for(
-    window: usize,
-    ceiling: Option<usize>,
-    price_cliff: Option<usize>,
-) -> CompactionSettings {
-    CompactionSettings {
-        reserve_tokens: crate::setup::user_reserve_tokens_for(window),
-        ceiling_tokens: ceiling,
-        price_cliff_tokens: price_cliff,
-    }
-}
-
 pub fn estimate_tokens(msg: &Message) -> usize {
-    if msg.content.iter().any(|block| {
-        matches!(
-            block,
-            gray_core::message::ContentBlock::Image { .. }
-                | gray_core::message::ContentBlock::Media { .. }
-        )
-    }) {
-        gray_core::agent::estimate_message_tokens(msg)
-    } else {
-        msg.context_text_len().div_ceil(4)
-    }
+    gray_core::agent::estimate_message_tokens(msg)
 }
 
 pub fn estimate_context_tokens(messages: &[Message], last: Option<Usage>) -> usize {
@@ -127,14 +83,15 @@ pub fn estimate_context_tokens(messages: &[Message], last: Option<Usage>) -> usi
 }
 
 pub fn is_context_overflow_error(err: &CoreError) -> bool {
-    if let CoreError::Provider(msg) = err {
-        let lower = msg.to_lowercase();
-        lower.contains("context_length")
-            || lower.contains("context window")
-            || lower.contains("context length")
-            || lower.contains("max_tokens")
-            || gray_core::overflow::is_context_overflow_message(msg)
-    } else {
-        false
+    match err.class() {
+        CoreError::ContextOverflow(_) => true,
+        CoreError::Provider(msg) => {
+            let lower = msg.to_lowercase();
+            lower.contains("context_length")
+                || lower.contains("context window")
+                || lower.contains("context length")
+                || gray_core::overflow::is_context_overflow_message(msg)
+        }
+        _ => false,
     }
 }

@@ -378,6 +378,9 @@ pub(crate) fn read_line(
         };
 
         if !poll(timeout)? {
+            if shared.lock().expect("tui lock").action_tick() {
+                needs_draw = true;
+            }
             if crate::host::wake_requested() {
                 return Ok(Some((String::new(), Vec::new())));
             }
@@ -425,7 +428,8 @@ pub(crate) fn read_line(
             {
                 continue;
             }
-            Event::Key(ev) if ev.kind != KeyEventKind::Release => match keys::dispatch(tui, &ev) {
+            Event::Key(ev) if ev.kind == KeyEventKind::Release => tui.plugin_action_key_up(&ev),
+            Event::Key(ev) => match keys::dispatch(tui, &ev) {
                 KeyOutcome::Edited | KeyOutcome::Ignored => {
                     quit_arm = None;
                 }

@@ -267,38 +267,3 @@ pub(crate) fn merge_styles(styles: impl IntoIterator<Item = Option<Style>>) -> S
     }
     out.effects(out.get_effects().remove(Effects::HIDDEN))
 }
-
-#[cfg(any(test, fuzzing))]
-pub mod test_style {
-    use super::MarkdownStyle;
-    use anstyle::Style;
-
-    pub const STYLE: MarkdownStyle = MarkdownStyle {
-        heading_inner: [Style::new().bold(); 6],
-        heading_outer: [Style::new().dimmed().hidden(); 6],
-        strong_inner: Style::new().bold(),
-        strong_outer: Style::new().dimmed().hidden(),
-        emphasis_inner: Style::new().italic(),
-        emphasis_outer: Style::new().dimmed().hidden(),
-        strikethrough_inner: Style::new().strikethrough(),
-        strikethrough_outer: Style::new().dimmed().hidden(),
-        inline_code_inner: Style::new().bold(),
-        inline_code_outer: Style::new().dimmed().hidden(),
-        blockquote_outer: Style::new().dimmed(),
-        task_checked: Style::new(),
-        task_unchecked: Style::new().dimmed(),
-        list_item: Style::new().dimmed(),
-        rule: Style::new(),
-        link_outer: Style::new(),
-        link_text: Style::new().bold(),
-        link_url: Style::new().dimmed(),
-        link_title: Style::new(),
-        code_outer: Style::new().dimmed().hidden(),
-        code_language: Style::new().hidden(),
-        code_untagged: Style::new(),
-        code_background: Style::new(),
-        table_outer: Style::new().bold(),
-        text: Style::new(),
-        math: Style::new().italic(),
-    };
-}

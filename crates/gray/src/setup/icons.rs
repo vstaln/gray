@@ -22,17 +22,11 @@ pub fn has_nerd_font() -> bool {
 pub fn icon(name: &str) -> &'static str {
     if has_nerd_font() {
         match name {
-            "cell" => "⬢",
-            "cell_free" => "⬡",
-            "cell_buffer" => "✲",
             "arrow" => "❯",
             _ => "?",
         }
     } else {
         match name {
-            "cell" => "#",
-            "cell_free" => ".",
-            "cell_buffer" => "x",
             "arrow" => ">",
             _ => "?",
         }

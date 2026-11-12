@@ -61,18 +61,21 @@ fn retry_give_up(detail: &str, retries: u8, waited: Option<std::time::Duration>)
     ))
 }
 
-const QUOTA_WINDOW_HINTS: [&str; 6] = [
+const QUOTA_WINDOW_HINTS: [&str; 8] = [
     "quota",
     "usage limit",
     "session limit",
     "resets in ~",
     "insufficient balance",
     "insufficient credits",
+    "5-hour limit",
+    "hour limit",
 ];
 
 fn quota_flavored(e: &ProviderError) -> bool {
-    let ProviderError::Auth(msg) = e.class() else {
-        return false;
+    let msg = match e.class() {
+        ProviderError::Auth(msg) | ProviderError::Quota { message: msg, .. } => msg,
+        _ => return false,
     };
     if e.detail().is_some_and(|d| d.status == Some(429)) {
         return true;
@@ -118,7 +121,9 @@ fn routing_flavored(e: &ProviderError) -> bool {
 
 fn reset_hint_from_text(msg: &str) -> Option<std::time::Duration> {
     let lower = msg.to_lowercase();
-    let rest = &lower[lower.find("resets in ~")? + "resets in ~".len()..];
+    let Some(rest) = lower.split_once("resets in ~").map(|(_, rest)| rest) else {
+        return reset_clock_wait(&lower);
+    };
     let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
     let n: u64 = rest.get(..digits)?.parse().ok()?;
     Some(match rest.as_bytes().get(digits) {
@@ -126,6 +131,84 @@ fn reset_hint_from_text(msg: &str) -> Option<std::time::Duration> {
         Some(b's') => std::time::Duration::from_secs(n),
         _ => std::time::Duration::from_secs(n * 60),
     })
+}
+
+const QUOTA_CLOCK_FALLBACK: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+
+fn parse_clock_reset(text: &str) -> Option<(u64, Option<String>)> {
+    let rest = text.get(text.find("resets ")? + "resets ".len()..)?;
+    let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
+    let hour: u64 = rest.get(..digits)?.parse().ok()?;
+    let mut rest = rest.get(digits..)?;
+    let mut minute = 0;
+    if let Some(after) = rest.strip_prefix(':') {
+        minute = after.get(..2)?.parse().ok()?;
+        rest = after.get(2..)?;
+    }
+    let hour = if let Some(after) = rest.strip_prefix("am") {
+        rest = after;
+        hour % 12
+    } else {
+        rest = rest.strip_prefix("pm")?;
+        hour % 12 + 12
+    };
+    if minute > 59 {
+        return None;
+    }
+    let tz = rest
+        .trim_start()
+        .strip_prefix('(')
+        .and_then(|r| r.split_once(')'))
+        .map(|(tz, _)| tz.trim().to_string())
+        .filter(|tz| !tz.is_empty());
+    Some((hour * 60 + minute, tz))
+}
+
+fn machine_zone() -> Option<String> {
+    if let Ok(tz) = std::env::var("TZ") {
+        let tz = tz.trim_start_matches(':').trim();
+        if !tz.is_empty() {
+            return Some(tz.to_string());
+        }
+    }
+    let link = std::fs::read_link("/etc/localtime").ok()?;
+    let path = link.to_string_lossy().into_owned();
+    Some(path.split("zoneinfo/").nth(1).unwrap_or(&path).to_string())
+}
+
+fn local_clock_minutes(tz: Option<&str>) -> Option<u64> {
+    let zone = machine_zone()?;
+    if !zone.eq_ignore_ascii_case(tz?) {
+        return None;
+    }
+    let out = std::process::Command::new("date")
+        .arg("+%H:%M")
+        .output()
+        .ok()?;
+    let clock = String::from_utf8(out.stdout).ok()?;
+    let (hour, minute) = clock.trim().split_once(':')?;
+    Some(hour.parse::<u64>().ok()? % 24 * 60 + minute.parse::<u64>().ok()? % 60)
+}
+
+fn reset_clock_wait(text: &str) -> Option<std::time::Duration> {
+    let lower = text.to_lowercase();
+    let (target, tz) = parse_clock_reset(&lower)?;
+    let Some(now) = local_clock_minutes(tz.as_deref()) else {
+        return Some(QUOTA_CLOCK_FALLBACK);
+    };
+    Some(std::time::Duration::from_secs(
+        (target + 1440 - now) % 1440 * 60,
+    ))
+}
+
+fn terminal_error(e: ProviderError) -> CoreError {
+    match reset_clock_wait(&e.to_string()) {
+        Some(resets_in) => CoreError::Quota {
+            message: e.to_string(),
+            resets_in: Some(resets_in),
+        },
+        None => CoreError::from(e),
+    }
 }
 
 fn provider_reset_hint(e: &ProviderError) -> Option<std::time::Duration> {
@@ -149,7 +232,7 @@ fn turn_retry_detail(e: &ProviderError, attempt: u8, already_shown: bool) -> Str
         e.to_string()
     };
     let mut detail = format!("{what} · retry {attempt}/{MAX_TURN_RETRIES}");
-    if attempt >= 2 && silent_stall(e) {
+    if attempt >= MAX_STREAM_STALL_RETRIES && silent_stall(e) {
         detail.push_str(
             " — provider is holding the request but sending nothing; try /model to another route",
         );
@@ -162,6 +245,9 @@ fn turn_retry_wait(e: &ProviderError, attempt: u8) -> Option<std::time::Duration
         return None;
     }
     if silent_stall(e) && attempt >= MAX_STREAM_STALL_RETRIES {
+        return None;
+    }
+    if reset_clock_wait(&e.to_string()).is_some_and(|wait| wait > retry_budget()) {
         return None;
     }
     let hint = provider_reset_hint(e);
@@ -272,10 +358,7 @@ impl Agent {
         args: &serde_json::Value,
     ) -> Result<serde_json::Value, ToolOutput> {
         if !self.tools.iter().any(|t| t.name == name) {
-            let names: Vec<String> = self.tools.iter().map(|t| t.name.clone()).collect();
-            return Err(ToolOutput::error(crate::tool_out::unknown_tool(
-                name, &names,
-            )));
+            return Err(ToolOutput::error(crate::tool_out::unknown_tool(name)));
         }
         if !args.is_object() {
             let got = match args {
@@ -484,7 +567,7 @@ impl Agent {
             // (an 86k write to stub ~10k tokens); mask_stale_tool_output on a
             // cold cache and pre-turn compaction cover it instead.
             if self.prefix_rewrite_ok
-                && !self.warm_cache_reported
+                && self.warm_cache_reported == Some(false)
                 && needs_soft_elide(self.estimate_tokens(), self.context_window)
             {
                 let before = self.estimate_tokens();
@@ -600,7 +683,7 @@ impl Agent {
 
             if let Ok(mut hint) = self.warm_hint.lock() {
                 hint.prompt_tokens = self.estimate_tokens();
-                hint.cache_reported = self.warm_cache_reported;
+                hint.cache_reported = self.warm_cache_reported == Some(true);
             }
             let warm_off = self
                 .warm_hint
@@ -789,7 +872,7 @@ impl Agent {
                             return Err(if turn_retries >= MAX_TURN_RETRIES {
                                 retry_give_up(&e.to_string(), turn_retries, None)
                             } else {
-                                CoreError::from(e)
+                                terminal_error(e)
                             });
                         }
                         Some(Ok(StreamEvent::TextDelta { delta })) => {
@@ -1022,7 +1105,7 @@ impl Agent {
                                         let err = if turn_retries >= MAX_TURN_RETRIES {
                                             retry_give_up(&e.to_string(), turn_retries, None)
                                         } else {
-                                            CoreError::from(e)
+                                            terminal_error(e)
                                         };
                                         self.emit_turn_end(&billed).await;
                                         return Err(err);
@@ -1032,7 +1115,7 @@ impl Agent {
                             let err = if turn_retries >= MAX_TURN_RETRIES {
                                 retry_give_up(&e.to_string(), turn_retries, None)
                             } else {
-                                CoreError::from(e)
+                                terminal_error(e)
                             };
                             self.emit_turn_end(&billed).await;
                             return Err(err);
@@ -1119,23 +1202,25 @@ impl Agent {
 
             self.record_context_usage(&usage);
             self.maybe_start_background_compaction();
-            self.warm_cache_reported = self.warm_cache_reported
-                || usage.cache_read_input_tokens
-                    + usage.cached_tokens
-                    + usage.cache_write_input_tokens
-                    > 0;
+            let caching = usage.cache_read_input_tokens
+                + usage.cached_tokens
+                + usage.cache_write_input_tokens
+                > 0;
+            self.warm_cache_reported = Some(self.warm_cache_reported == Some(true) || caching);
             if let (true, Ok(mut hint)) = (usage.input_tokens > 0, self.warm_hint.lock()) {
                 hint.prompt_tokens = usage.input_tokens;
-                hint.cache_reported = self.warm_cache_reported;
+                hint.cache_reported = self.warm_cache_reported == Some(true);
             }
 
             let overflow_retry =
                 stop_reason == StopReason::MaxTokens && !overflow_recovery_attempted;
             let sent = crate::agent_compact::est_tokens(&self.messages);
-            let reducible = sent.saturating_sub(
-                self.compact_keep
-                    .unwrap_or(crate::compact::RETAINED_MESSAGE_TOKEN_BUDGET),
-            );
+            let reducible = sent.saturating_sub(crate::agent_compact::retained_message_budget(
+                self.compact_keep,
+                self.context_window,
+                self.compact_reserve,
+                self.compact_ceiling,
+            ));
             if self.context_window.is_some_and(|w| {
                 crate::overflow::is_silent_overflow(&usage, stop_reason, w)
                     && reducible >= usage.input_tokens.saturating_sub(w)
@@ -1230,6 +1315,7 @@ impl Agent {
                 {
                     billed.accumulate(&spent);
                 }
+                billed.accumulate(&std::mem::take(&mut self.unbilled));
                 log::info!(target: "gray_agent", "agent run end: session={} stop={stop_reason:?}, usage in={} out={} cached={} hit={:.0}%, {} messages", ctx.session_id.as_deref().unwrap_or("-"), total_usage.input_tokens, total_usage.output_tokens, total_usage.cached_tokens, hit, self.messages.len());
                 emit!(AgentEvent::turn_end(stop_reason, billed));
                 self.emit_turn_end(&billed).await;

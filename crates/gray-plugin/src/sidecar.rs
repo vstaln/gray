@@ -190,6 +190,16 @@ fn spawn_retrying_etxtbsy(
     }
 }
 
+fn knows_asks(protocol: Option<&str>) -> bool {
+    let Some(version) = protocol else {
+        return false;
+    };
+    let mut parts = version.split('.');
+    let major: u32 = parts.next().and_then(|p| p.parse().ok()).unwrap_or(0);
+    let minor: u32 = parts.next().and_then(|p| p.parse().ok()).unwrap_or(0);
+    (major, minor) >= (1, 1)
+}
+
 fn spawn_child(argv: &[String]) -> anyhow::Result<(Child, ChildStdin, ChildStdout)> {
     let (prog, args) = argv
         .split_first()
@@ -771,7 +781,7 @@ impl SidecarPlugin {
         let (child, stdin, stdout) = spawn_child(&argv)?;
         let transport = Transport::new(child, stdin, stdout, argv.clone());
         let result = transport
-            .request("plugin/manifest", None, Duration::from_secs(30))
+            .request("plugin/manifest", None, HOST_TTL)
             .await
             .map_err(|e| {
                 let prog = Path::new(&argv[0])
@@ -792,7 +802,7 @@ impl SidecarPlugin {
         }
         manifest.name = name;
         let dynamic = manifest.protocol.as_deref() == Some(DYNAMIC_PROTOCOL);
-        let asks = manifest.protocol.as_deref() == Some("1.1") || dynamic;
+        let asks = knows_asks(manifest.protocol.as_deref());
         let tools = Arc::new(std::sync::RwLock::new(build_tools(
             &transport,
             result.get("tools").unwrap_or(&Value::Null),
@@ -903,12 +913,10 @@ impl SidecarPlugin {
     }
 
     pub async fn shutdown(&self, grace: Duration) {
-        if self.manifest.protocol.is_some() {
-            let _ = self
-                .transport
-                .send_notification("plugin/shutdown", json!({"reason": "session_end"}))
-                .await;
-        }
+        let _ = self
+            .transport
+            .send_notification("plugin/shutdown", json!({"reason": "session_end"}))
+            .await;
         let mut child = self.transport.child.lock().await;
         let _ = timeout(grace, child.wait()).await;
         let _ = child.kill().await;
@@ -1057,19 +1065,6 @@ impl SidecarPlugin {
             .map_err(|_| ProviderRpcError::Protocol("invalid provider model catalog".into()))
     }
 
-    pub async fn provider_usage(
-        &self,
-        request: &crate::ProviderUsageRequest,
-    ) -> Result<crate::ProviderUsageLimits, ProviderRpcError> {
-        let params = serde_json::to_value(request)
-            .map_err(|_| ProviderRpcError::Protocol("invalid provider usage request".into()))?;
-        let value = self
-            .provider_rpc("provider/usage", params, Duration::from_secs(60))
-            .await?;
-        serde_json::from_value(value)
-            .map_err(|_| ProviderRpcError::Protocol("invalid provider usage result".into()))
-    }
-
     pub async fn provider_chat(
         &self,
         request: &ProviderChatRequest,
@@ -1093,10 +1088,6 @@ impl SidecarPlugin {
             .notify
             .lock()
             .unwrap_or_else(|e| e.into_inner()) = Some(handler);
-    }
-
-    fn claims(&self, hook: &str) -> bool {
-        self.manifest.hooks.iter().any(|h| h == hook)
     }
 }
 
@@ -1164,13 +1155,13 @@ impl Plugin for SidecarPlugin {
             .store(global, std::sync::atomic::Ordering::Relaxed);
     }
     async fn prompt_context(&self, cwd: &str) -> Option<String> {
-        if !self.claims("prompt/context") {
+        if !self.manifest.claims("prompt/context") {
             return None;
         }
         let params = json!({"cwd": cwd, "session": session_json(&self.pinned_sid(), cwd)});
         let v = self
             .transport
-            .request("prompt/context", Some(params), Duration::from_secs(30))
+            .request("prompt/context", Some(params), HOST_TTL)
             .await
             .ok()?;
         v.get("text")
@@ -1178,21 +1169,8 @@ impl Plugin for SidecarPlugin {
             .filter(|t| !t.is_empty())
             .map(|t| t.to_string())
     }
-    async fn compact_before(&self) {
-        if !self.claims("compact/before") {
-            return;
-        }
-        let params = json!({"session": session_json(&self.pinned_sid(), &self.cwd)});
-        if let Err(e) = self
-            .transport
-            .request("compact/before", Some(params), Duration::from_secs(20))
-            .await
-        {
-            log::warn!(target: "gray_plugin", "sidecar {} compact/before failed: {e}", self.manifest.name);
-        }
-    }
     async fn tool_before(&self, name: &str, args: &Value) -> ToolBefore {
-        if !self.claims("tool/before") {
+        if !self.manifest.claims("tool/before") {
             return ToolBefore::Allow;
         }
         let params = json!({"name": name, "args": args, "session": session_json(&self.pinned_sid(), &self.cwd)});
@@ -1221,7 +1199,7 @@ impl Plugin for SidecarPlugin {
         }
     }
     async fn input_submit(&self, text: &str) -> InputSubmit {
-        if !self.claims("input/submit") {
+        if !self.manifest.claims("input/submit") {
             return InputSubmit::Pass;
         }
         let params = json!({"text": text, "session": session_json(&self.pinned_sid(), &self.cwd)});
@@ -1240,7 +1218,7 @@ impl Plugin for SidecarPlugin {
         }
     }
     async fn agent_before_start(&self) -> Option<String> {
-        if !self.claims("agent/before_start") {
+        if !self.manifest.claims("agent/before_start") {
             return None;
         }
         let params = json!({"session": session_json(&self.pinned_sid(), &self.cwd)});
@@ -1256,7 +1234,7 @@ impl Plugin for SidecarPlugin {
             .map(|t| t.to_string())
     }
     async fn context_build(&self, messages: &[Message]) -> Option<Vec<Message>> {
-        if !self.claims("context/build") {
+        if !self.manifest.claims("context/build") {
             return None;
         }
 
@@ -1298,7 +1276,7 @@ impl Plugin for SidecarPlugin {
     }
 
     async fn tool_after(&self, name: &str, output: &ToolOutput) -> Option<ToolOutput> {
-        if !self.claims("tool/after") {
+        if !self.manifest.claims("tool/after") {
             return None;
         }
         let params = json!({"name": name, "content": output.content, "is_error": output.is_error, "session": session_json(&self.pinned_sid(), &self.cwd)});
@@ -1336,7 +1314,7 @@ impl Plugin for SidecarPlugin {
         let params = json!({"name": name, "argv": argv, "raw": raw, "session": session_json(&self.pinned_sid(), &self.cwd)});
         let v = self
             .transport
-            .request("command/run", Some(params), Duration::from_secs(30))
+            .request("command/run", Some(params), HOST_TTL)
             .await
             .ok()?;
         command_outcome(&v, &self.transport.argv)
@@ -1428,21 +1406,6 @@ fn restore_media(
 
 const MIN_STUB_BYTES: usize = 256;
 
-fn value_len_estimate(v: &serde_json::Value) -> usize {
-    match v {
-        serde_json::Value::Null | serde_json::Value::Bool(_) => 8,
-        serde_json::Value::Number(_) => 24,
-        serde_json::Value::String(s) => s.len(),
-        serde_json::Value::Array(a) => a.iter().map(value_len_estimate).sum::<usize>() + 8,
-        serde_json::Value::Object(o) => {
-            o.iter()
-                .map(|(k, v)| k.len() + value_len_estimate(v))
-                .sum::<usize>()
-                + 8
-        }
-    }
-}
-
 fn context_frame_floor(messages: &[Message]) -> usize {
     let mut total = 64usize;
     for m in messages {
@@ -1456,7 +1419,7 @@ fn context_frame_floor(messages: &[Message]) -> usize {
                     content.len().min(MIN_STUB_BYTES + 64)
                 }
                 gray_core::message::ContentBlock::ToolUse { args, .. } => {
-                    value_len_estimate(args).min(MIN_STUB_BYTES + 64)
+                    serialized_len(args).min(MIN_STUB_BYTES + 64)
                 }
                 gray_core::message::ContentBlock::Thinking { text, .. } => text.len() + 64,
                 _ => 128,
@@ -1691,6 +1654,13 @@ pub(crate) fn command_outcome(v: &Value, plugin_argv: &[String]) -> Option<Comma
             text: field("text").map(str::to_string),
         });
     }
+    if let Some(key) = field("composer_action") {
+        return Some(CommandOutcome::HostPicker {
+            kind: "action".into(),
+            arg: key.to_string(),
+            text: field("text").map(str::to_string),
+        });
+    }
     if let Some(args) = v.get("terminal").and_then(Value::as_array)
         && !plugin_argv.is_empty()
     {
@@ -1771,4 +1741,18 @@ pub async fn refresh_dynamic_tools() {
         idx += 1;
         keep
     });
+}
+
+#[cfg(test)]
+mod outcome_tests {
+    use super::*;
+
+    #[test]
+    fn composer_action_becomes_an_action_host_picker() {
+        let v = serde_json::json!({"composer_action": "f8"});
+        assert!(matches!(
+            command_outcome(&v, &[]),
+            Some(CommandOutcome::HostPicker { kind, arg, .. }) if kind == "action" && arg == "f8"
+        ));
+    }
 }

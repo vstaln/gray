@@ -101,15 +101,14 @@ pub(super) fn dynamic_headers(
             .map_err(|_| ProviderError::BadRequest("invalid provider header value".into()))?;
         headers.insert(name, value);
     }
-    if let OpenAiAuthorization::Bearer { secret_name } = &profile.authorization {
-        let bearer = lease
-            .secrets
-            .get(secret_name)
-            .ok_or_else(|| ProviderError::Auth("provider bearer credential missing".into()))?;
-        let value = HeaderValue::from_str(&format!("Bearer {bearer}"))
-            .map_err(|_| ProviderError::Auth("invalid provider bearer credential".into()))?;
-        headers.insert(AUTHORIZATION, value);
-    }
+    let OpenAiAuthorization::Bearer { secret_name } = &profile.authorization;
+    let bearer = lease
+        .secrets
+        .get(secret_name)
+        .ok_or_else(|| ProviderError::Auth("provider bearer credential missing".into()))?;
+    let value = HeaderValue::from_str(&format!("Bearer {bearer}"))
+        .map_err(|_| ProviderError::Auth("invalid provider bearer credential".into()))?;
+    headers.insert(AUTHORIZATION, value);
     Ok(headers)
 }
 
@@ -122,36 +121,21 @@ pub(super) async fn send_dynamic_json_once(
     body: &ResponsesRequest,
     session_id: Option<&str>,
     isolated: bool,
-    attempt: usize,
 ) -> Result<reqwest::Response, ProviderError> {
     let mut headers = dynamic_headers(profile, lease, session_id)?;
     mark_isolated(&mut headers, &lease.metadata, isolated);
-    let bearer = match &profile.authorization {
-        OpenAiAuthorization::Bearer { secret_name } => {
-            lease.secrets.get(secret_name).map(str::to_owned)
-        }
-        OpenAiAuthorization::None => None,
-    };
-    let mut response = None;
-    for send_attempt in 1..=MAX_SEND_ATTEMPTS {
-        let send = client
+    let OpenAiAuthorization::Bearer { secret_name } = &profile.authorization;
+    let bearer = lease.secrets.get(secret_name).map(str::to_owned);
+    let response = send_with_retries("dynamic send", || {
+        client
             .post(url.clone())
             .headers(headers.clone())
             .header(CONTENT_TYPE, "application/json")
             .header(ACCEPT, "text/event-stream")
-            .json(body);
-        match send.send().await {
-            Err(err) if send_attempt < MAX_SEND_ATTEMPTS && send_stage_retryable(&err) => {
-                log::warn!(target: "gray_provider", "dynamic send failed before a response ({err}); retrying on a fresh connection {send_attempt}/{MAX_SEND_ATTEMPTS}");
-            }
-            Err(err) => return Err(map_send_error(err)),
-            Ok(res) => {
-                response = Some(res);
-                break;
-            }
-        }
-    }
-    let response = response.expect("send loop always yields a response");
+            .json(body)
+    })
+    .await
+    .map_err(map_send_error)?;
     let status = response.status();
     if !status.is_success() {
         let mut snippet = String::new();
@@ -170,7 +154,7 @@ pub(super) async fn send_dynamic_json_once(
         let snippet = redact_lease(snippet, bearer.as_deref());
         return Err(classify_http_error(status, &snippet, None, None));
     }
-    log::debug!(target: "gray_provider", "dynamic Responses attempt {attempt} returned {status}");
+    log::debug!(target: "gray_provider", "dynamic Responses returned {status}");
     Ok(response)
 }
 
@@ -367,7 +351,7 @@ pub(super) fn process_dynamic_event(
                     call.done = true;
                     let index = call.index;
                     let name = call.name.clone();
-                    let args = call.args.clone();
+                    let args = normalize_tool_args(&call.args, index)?;
                     pending.push_back(StreamEvent::tool_call_delta(
                         index,
                         Some(id),
@@ -433,14 +417,13 @@ pub(super) fn stream_failure(event: &Value, detail: String) -> ProviderError {
         .and_then(Value::as_str)
         .unwrap_or("")
         .to_lowercase();
-    let lower = detail.to_lowercase();
-    if QUOTA_EXHAUSTED_HINTS
-        .iter()
-        .any(|h| code.contains(h) || lower.contains(h))
-    {
+    if quota_hinted(&[code.as_str(), detail.as_str()]) {
         let resets_in = parse_quota_reset_delay(&detail);
         return ProviderError::Detailed {
-            class: Box::new(ProviderError::Auth(detail.clone())),
+            class: Box::new(ProviderError::Quota {
+                message: detail.clone(),
+                resets_in,
+            }),
             detail: Box::new(gray_core::error::ProviderDetail {
                 status: None,
                 vendor_code: Some(quota_vendor_code(
@@ -480,7 +463,6 @@ pub(super) async fn dynamic_step(
                     &body,
                     session_id.as_deref(),
                     isolated,
-                    1,
                 )
                 .await
                 {
@@ -662,6 +644,8 @@ impl OpenAiProvider {
             self.reasoning_effort.as_deref(),
         );
         apply_dynamic_policy(&mut body, &profile.request, session_id.as_deref());
+        body.temperature = self.temperature;
+        body.top_p = self.top_p;
         if cache_off {
             body.prompt_cache_key = None;
         }

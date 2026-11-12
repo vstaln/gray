@@ -1,3 +1,4 @@
+use crate::provider;
 use std::process::Command;
 use std::sync::mpsc::Sender;
 use std::thread;
@@ -27,10 +28,6 @@ pub enum PluginMsg {
 }
 
 pub const DEFAULT_HUB: &str = "https://gray.alignment.id/hub/index.json";
-
-fn gray_bin() -> String {
-    std::env::var("GRAY_GUI_GRAY_BIN").unwrap_or_else(|_| "gray".into())
-}
 
 pub fn hub_url() -> String {
     std::env::var("GRAY_HUB_INDEX").unwrap_or_else(|_| DEFAULT_HUB.into())
@@ -99,7 +96,7 @@ pub fn parse_list(text: &str) -> Vec<Installed> {
 }
 
 fn list() -> Vec<Installed> {
-    Command::new(gray_bin())
+    Command::new(provider::gray_bin())
         .args(["plugin", "list"])
         .output()
         .map(|o| parse_list(&String::from_utf8_lossy(&o.stdout)))
@@ -117,7 +114,7 @@ pub fn refresh(tx: Sender<PluginMsg>) {
 
 pub fn run(tx: Sender<PluginMsg>, label: String, args: Vec<String>) {
     thread::spawn(move || {
-        let result = Command::new(gray_bin())
+        let result = Command::new(provider::gray_bin())
             .arg("plugin")
             .args(&args)
             .output()

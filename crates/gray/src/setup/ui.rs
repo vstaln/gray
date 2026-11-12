@@ -17,6 +17,7 @@ pub struct BackgroundSnapshot {
     pub home_quality_of_life: Option<String>,
     pub home_session: Option<String>,
     pub attachments: Vec<std::path::PathBuf>,
+    pub screen: Option<ratatui::buffer::Buffer>,
     /// Memoized `rebuild_transcript` keyed on (cols, rows). Modal loops
     /// repaint this backdrop every frame, but the snapshot is frozen —
     /// shared across clones so a modal's copy stays warm.
@@ -61,6 +62,7 @@ impl BackgroundSnapshot {
             home_quality_of_life: None,
             home_session: None,
             attachments: Vec::new(),
+            screen: None,
             transcript_cache: Default::default(),
             backdrop_cache: Default::default(),
         }
@@ -203,6 +205,65 @@ pub fn render_dimmed_background(frame: &mut ratatui::Frame, bg: &BackgroundSnaps
     }
 }
 
+pub(crate) fn centered_modal(
+    frame: &mut ratatui::Frame,
+    area: ratatui::layout::Rect,
+    w: u16,
+    h: u16,
+    bg: ratatui::style::Color,
+) -> ratatui::layout::Rect {
+    use ratatui::widgets::{Block, Clear};
+
+    let rect = ratatui::layout::Rect::new(
+        area.width.saturating_sub(w) / 2,
+        area.height.saturating_sub(h) / 3,
+        w,
+        h,
+    );
+    frame.render_widget(Clear, rect);
+    frame.render_widget(
+        Block::default().style(ratatui::style::Style::default().bg(bg)),
+        rect,
+    );
+    rect
+}
+
+fn paint_last_frame(
+    buf: &mut ratatui::buffer::Buffer,
+    area: ratatui::layout::Rect,
+    bg: &BackgroundSnapshot,
+    screen: &ratatui::buffer::Buffer,
+) {
+    use ratatui::layout::Rect;
+    use ratatui::style::Color;
+    use ratatui::widgets::{Paragraph, Widget};
+
+    let vp = screen.area;
+    let top = vp.y.min(area.height.saturating_sub(vp.height));
+    let transcript = bg.rebuild_transcript(area.width as usize);
+    let tail = &transcript[transcript.len().saturating_sub(top as usize)..];
+    for (i, line) in tail.iter().enumerate() {
+        Paragraph::new(line.clone())
+            .render(Rect::new(area.x, area.y + i as u16, area.width, 1), buf);
+    }
+    for y in 0..vp.height.min(area.height) {
+        for x in 0..vp.width.min(area.width) {
+            buf[(area.x + x, area.y + top + y)] = screen[(vp.x + x, vp.y + y)].clone();
+        }
+    }
+    let faint = crate::theme::theme().text_faint;
+    for cell in buf.content.iter_mut() {
+        cell.fg = match cell.fg {
+            Color::Reset => dim_color(faint),
+            c => dim_color(c),
+        };
+        cell.bg = match cell.bg {
+            Color::Reset => backdrop_bg(),
+            c => dim_color(c),
+        };
+    }
+}
+
 fn paint_dimmed_background(
     buf: &mut ratatui::buffer::Buffer,
     area: ratatui::layout::Rect,
@@ -217,6 +278,11 @@ fn paint_dimmed_background(
     let w = area.width as usize;
     let h = area.height as usize;
     if w == 0 || h == 0 {
+        return;
+    }
+
+    if let Some(screen) = &bg.screen {
+        paint_last_frame(buf, area, bg, screen);
         return;
     }
 
@@ -353,21 +419,33 @@ fn paint_dimmed_background(
     .style(Style::default().bg(backdrop_bg()));
 
     let transcript = bg.rebuild_transcript(w);
+    let effort_tail = if show_effort && !bg.thinking_effort.is_empty() {
+        format!(" {}", bg.thinking_effort)
+    } else {
+        String::new()
+    };
 
     if bg.home {
         let home = crate::composer::draw::HomeRows {
             notice: bg.home_notice.as_deref(),
             stats: bg.plugin_stats.as_deref(),
             model: Some(model_display.as_str()),
-            model_tail: None,
+            model_tail: Some(effort_tail.as_str()).filter(|t| !t.is_empty()),
             above: bg.home_update.as_deref(),
             session: bg.home_session.as_deref(),
             quality_of_life: bg.home_quality_of_life.as_deref(),
         };
         let chips = crate::composer::draw::attachment_cells(&bg.attachments, &bg.prompt_text);
-        let ibox =
-            crate::composer::draw::build_input_box(&bg.prompt_text, 0, w, None, Some(home), &chips);
-        let band = ibox.lines;
+        let ibox = crate::composer::draw::build_input_box(
+            &bg.prompt_text,
+            0,
+            w,
+            None,
+            Some(home),
+            &chips,
+            None,
+        );
+        let (band, band_x, band_w) = (ibox.lines, ibox.x, ibox.width);
         let transcript_avail_h = h.saturating_sub(band.len() + 1);
         let tail: &[Line<'static>] = if transcript.len() <= transcript_avail_h {
             &transcript
@@ -379,20 +457,22 @@ fn paint_dimmed_background(
         for l in tail {
             full_screen_lines.push(pad_backdrop_line(dim_line(l), w));
         }
-        // The composer's text is intentionally not painted: a dimmed `❯` or
-        // draft peeking out beside a centered modal reads as a stray glyph on
-        // the modal's rows. Keep the band's blank silhouette instead.
+        full_screen_lines.push(pad_backdrop_line(Line::from(""), w));
         for l in band {
-            let mut line = Line::from("").style(l.style);
-            if line.style.bg.is_none() {
-                line.style = line.style.bg(backdrop_bg());
-            }
-            full_screen_lines.push(pad_backdrop_line(line, w));
+            let line = pad_backdrop_line(dim_line(&l), band_w);
+            let mut spans = vec![Span::styled(
+                " ".repeat(band_x),
+                Style::default().bg(backdrop_bg()),
+            )];
+            spans.extend(line.spans.into_iter().map(|sp| {
+                let bg = sp.style.bg.or(line.style.bg);
+                Span::styled(sp.content, sp.style.bg(bg.unwrap_or(backdrop_bg())))
+            }));
+            full_screen_lines.push(pad_backdrop_line(Line::from(spans), w));
         }
-        while full_screen_lines.len() + 1 < h {
+        while full_screen_lines.len() < h {
             full_screen_lines.push(pad_backdrop_line(Line::from(""), w));
         }
-        full_screen_lines.push(pad_backdrop_line(footer_line, w));
         full_screen_lines.truncate(h);
 
         for (i, line) in full_screen_lines.into_iter().enumerate() {

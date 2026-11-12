@@ -2,6 +2,31 @@
 
 ## [Unreleased]
 
+## [0.2.20] - 2026-11-12
+
+### Added
+- **Plugins can bind keys in the prompt.** A plugin declares composer actions with default keys, `keybindings.json` can rebind them live, and a plugin command can run one as its key would. A running action shows its status above the prompt and its key hints beside it, and can type text into the prompt as it goes (`insert\t` lines on stderr; Gray sets `GRAY_ACTION_INSERT=1`). Voice dictation uses this to type each phrase as you pause.
+- **Plugin pickers** can open over a running turn, show a multi-line footer, capture a key, and leave a blank row above an item (`gap_before`).
+- **`gray -p -c`** continues the latest session from the current directory only.
+
+### Changed
+- **Every list picker uses the /models style**, including /help, /sessions and /jobs, with descriptions in one shared column. Modals keep the home screen visible behind them.
+- **A picked theme shows as a card** with its swatches and sample text, confirmed by a toast; the theme picker opens mid-turn instead of queueing.
+- **Default plugins install `voice` instead of `fsearch`.**
+- **The system prompt lists only plugins without their own tools as bash CLIs.**
+- **Context management has one owner for the budget.** Compaction is billed, runs before the cache expires even with a large `context_keep`, cache-miss notices use the provider's cache TTL, and a warning appears when a pinned context window forces needless compaction.
+- **Release builds are smaller:** stripped, thin LTO, one codegen unit.
+
+### Fixed
+- **Quota and payment errors** are reported as quota exhausted instead of an auth failure, and clock-form quota resets count as a quota window.
+- **Failures that were swallowed are reported:** config writes, model-part writes, an unreadable `lock.json`, and a responses stream that ends without `response.completed`.
+- **A wrong-platform plugin binary** is named instead of failing to start, and a plugin installed under an old or merged name updates to its index entry.
+- **The OpenAI stall timer** (120s) now fires before the read timeout.
+- **Unknown shell commands run serially;** only known read-only commands batch in parallel.
+- **Inbox entries reach the running turn** instead of waiting until after it.
+- **Markdown output** keeps non-ASCII characters in file links and drops color when stdout is not a terminal; `strip_ansi` no longer slices inside a multibyte character.
+- **The token estimate** no longer counts opaque thinking blobs.
+
 ## [0.2.18] - 2026-11-10
 
 ### Fixed

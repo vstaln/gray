@@ -6,6 +6,7 @@ use crate::compact::{
     trigger_message,
 };
 use crate::error::CoreError;
+use crate::event::Usage;
 use crate::message::{ContentBlock, Message, ToolDef};
 
 pub fn summary_message(summary: &str) -> Message {
@@ -82,14 +83,12 @@ impl Agent {
             crate::compact::shared_prefix_compaction_messages(self, &candidate, instructions);
         crate::compact::elide_media_over_payload_budget(&mut candidate);
 
-        let budget = retained_budget.unwrap_or(match self.context_window {
-            None => RETAINED_MESSAGE_TOKEN_BUDGET,
-            Some(w) => RETAINED_MESSAGE_TOKEN_BUDGET.min(w.saturating_sub(COMPACT_RESERVE_TOKENS)),
-        });
-        let budget = match self.compact_ceiling {
-            Some(ceiling) => budget.min(ceiling / PRICE_CLIFF_KEEP_DIVISOR),
-            None => budget,
-        };
+        let budget = retained_message_budget(
+            retained_budget,
+            self.context_window,
+            self.compact_reserve,
+            self.compact_ceiling,
+        );
         if est_tokens(&candidate) <= budget {
             return None;
         }
@@ -141,10 +140,13 @@ impl Agent {
         }
         next.push(summary_message(summary));
         next.extend(tail);
-        if est_tokens(&next) >= est_tokens(&self.messages) {
+        let (after, before) = (est_tokens(&next), est_tokens(&self.messages));
+        if after >= before {
+            log::info!(target: "gray_agent", "compaction: discarded reason=no_gain before={before} after={after}");
             return false;
         }
         self.set_messages(next);
+        self.background_failures = 0;
         true
     }
 
@@ -175,12 +177,10 @@ impl Agent {
                     held.started.elapsed().as_millis()
                 );
                 match result {
-                    Ok(Ok(summary)) if !summary.trim().is_empty() => {
+                    Ok(Ok((summary, spent))) if !summary.trim().is_empty() => {
+                        self.unbilled.accumulate(&spent);
                         let apply_started = std::time::Instant::now();
                         let tail = self.messages[held.covered..].to_vec();
-                        for hook in &self.hooks {
-                            hook.compact_before().await;
-                        }
                         if self
                             .apply_compaction(&summary, held.anchor.clone(), tail)
                             .await
@@ -196,7 +196,8 @@ impl Agent {
                         self.background_failures = self.background_failures.saturating_add(1);
                         log::info!(target: "gray_agent", "background compaction: discarded reason=no_gain");
                     }
-                    Ok(Ok(_)) => {
+                    Ok(Ok((_, spent))) => {
+                        self.unbilled.accumulate(&spent);
                         self.background_failures = self.background_failures.saturating_add(1);
                         log::info!(target: "gray_agent", "background compaction: discarded reason=empty");
                     }
@@ -221,11 +222,9 @@ impl Agent {
         else {
             return Ok(None);
         };
-        for hook in &self.hooks {
-            hook.compact_before().await;
-        }
         let tail = prepared.retained_tail(self.session_id.as_deref());
-        let summary = run_compaction_summary(prepared.request).await?;
+        let (summary, spent) = run_compaction_summary(prepared.request).await?;
+        self.unbilled.accumulate(&spent);
         if self.apply_compaction(&summary, prepared.anchor, tail).await {
             Ok(Some(summary))
         } else {
@@ -234,7 +233,9 @@ impl Agent {
     }
 }
 
-pub(crate) async fn run_compaction_summary(request: SummaryRequest) -> Result<String, CoreError> {
+pub(crate) async fn run_compaction_summary(
+    request: SummaryRequest,
+) -> Result<(String, Usage), CoreError> {
     let SummaryRequest {
         provider,
         session_id,
@@ -259,7 +260,7 @@ pub(crate) async fn run_compaction_summary(request: SummaryRequest) -> Result<St
         )
         .await
         {
-            Ok(summary) if !summary.trim().is_empty() => return Ok(summary),
+            Ok((summary, spent)) if !summary.trim().is_empty() => return Ok((summary, spent)),
             outcome => {
                 log::info!(
                     target: "gray_agent",
@@ -309,7 +310,7 @@ async fn fallback_compaction_summary(
     tools: Vec<ToolDef>,
     candidate: Vec<Message>,
     instructions: Option<String>,
-) -> Result<String, CoreError> {
+) -> Result<(String, Usage), CoreError> {
     let mut messages = candidate.clone();
     messages.push(trigger_message(instructions.as_deref()));
     match complete_isolated_detached(
@@ -362,6 +363,23 @@ pub(crate) fn est_tokens(msgs: &[Message]) -> usize {
 
 pub const COMPACT_RESERVE_TOKENS: usize = 16_000;
 
+pub(crate) fn retained_message_budget(
+    keep: Option<usize>,
+    context_window: Option<usize>,
+    reserve: Option<usize>,
+    ceiling: Option<usize>,
+) -> usize {
+    let budget = keep.unwrap_or(match context_window {
+        None => RETAINED_MESSAGE_TOKEN_BUDGET,
+        Some(window) => RETAINED_MESSAGE_TOKEN_BUDGET
+            .min(window.saturating_sub(reserve.unwrap_or(COMPACT_RESERVE_TOKENS))),
+    });
+    match ceiling {
+        Some(ceiling) => budget.min(ceiling / PRICE_CLIFF_KEEP_DIVISOR),
+        None => budget,
+    }
+}
+
 pub(crate) fn needs_pre_turn_compact(
     estimate: usize,
     window: Option<usize>,
@@ -395,7 +413,7 @@ impl Agent {
         if !crate::compact::media_over_budget(&self.messages) {
             return MediaPressure::Clear;
         }
-        if self.prefix_rewrite_ok && !self.warm_cache_reported {
+        if self.prefix_rewrite_ok && self.warm_cache_reported != Some(true) {
             MediaPressure::Stub
         } else {
             MediaPressure::Compact
@@ -418,9 +436,8 @@ impl Agent {
         if self.estimate_tokens() < self.soft_elide_rearm {
             return 0;
         }
-        let keep = self
-            .compact_keep
-            .unwrap_or_else(|| crate::compact::soft_elide_keep_budget(window));
+        let keep =
+            crate::compact::soft_elide_keep_budget(window).max(self.compact_keep.unwrap_or(0));
         let measured = self.estimate_tokens();
         let raw_before = est_tokens(&self.messages);
         let elided = crate::compact::elide_stale_tool_results(
@@ -431,6 +448,7 @@ impl Agent {
         if elided > 0 {
             let saved = raw_before.saturating_sub(est_tokens(&self.messages));
             self.history_rewritten();
+            self.prefix_guard.expect_change("soft elide");
             // Keep the provider-measured anchor minus what was stubbed: a
             // char/4 re-estimate counts opaque thinking blobs and overshot
             // a measured 154k as 236k.

@@ -14,22 +14,6 @@ pub(crate) struct SessionTotals {
     pub(crate) cache_write: usize,
 
     pub(crate) saved: f64,
-
-    pub(crate) write_premium: f64,
-
-    pub(crate) cache_reported: bool,
-
-    pub(crate) misses: MissTally,
-}
-
-#[derive(Debug, Default, Clone)]
-pub(crate) struct MissTally {
-    pub(crate) count: usize,
-    pub(crate) tokens: usize,
-    pub(crate) cost: f64,
-    pub(crate) idle: usize,
-    pub(crate) model_switch: usize,
-    pub(crate) other: usize,
 }
 
 impl SessionTotals {
@@ -47,37 +31,19 @@ impl SessionTotals {
         let write = usage.cache_write_input_tokens;
         self.cache_read += read;
         self.cache_write += write;
-        self.cache_reported |= read + write > 0;
-        if let Some(c) = crate::setup::turn_cost(usage, model) {
+        let cost = crate::setup::turn_cost(usage, model);
+        if let Some(c) = cost {
             self.cost += c;
         }
         if let Some(rate) = crate::setup::get_model_rate(model)
             && rate.has_cache_prices
+            && let (Some(full), Some(actual)) = (crate::setup::uncached_cost(usage, model), cost)
         {
-            if let (Some(full), Some(actual)) = (
-                crate::setup::uncached_cost(usage, model),
-                crate::setup::turn_cost(usage, model),
-            ) {
-                self.saved += full - actual;
-            }
-            self.write_premium += write as f64 * (rate.cache_write - rate.input);
+            self.saved += full - actual;
         }
         if let Some(ms) = duration_ms {
             self.total_duration_ms += ms;
             self.timed_turns += 1;
-        }
-    }
-
-    pub(crate) fn note_miss(&mut self, m: &crate::cache::CacheMiss) {
-        self.misses.count += 1;
-        self.misses.tokens += m.missed_tokens;
-        self.misses.cost += m.missed_cost;
-        if m.model_changed {
-            self.misses.model_switch += 1;
-        } else if m.idle >= crate::cache::cache_ttl() {
-            self.misses.idle += 1;
-        } else {
-            self.misses.other += 1;
         }
     }
 
@@ -178,7 +144,9 @@ async fn pick_compaction_model(
                 ))]
             })),
             on_highlight: None,
+            gap_before: None,
             selected,
+            current: Some(selected),
         };
         crate::repl::picker::run_list_picker(&mut picker, &bg)
     });
@@ -234,10 +202,8 @@ pub(crate) async fn handle_context_window(
     ) -> crate::setup::ContextParts {
         let messages: &[Message] = agent.as_ref().map(|a| a.messages()).unwrap_or(&[]);
         let latest = tui.and_then(|t| t.lock().ok().and_then(|g| g.latest_usage));
-        collect_context_parts(cwd, messages, latest)
-    }
-    fn breakdown_text(config: &Config, parts: &crate::setup::ContextParts) -> String {
-        context_breakdown_text(config, parts)
+        let tools = agent.as_ref().map(|a| a.tool_defs());
+        collect_context_parts(cwd, messages, latest, tools)
     }
     let Some(val) = direct else {
         if tui.is_some() {
@@ -280,7 +246,7 @@ pub(crate) async fn handle_context_window(
             }
         } else {
             emit(
-                breakdown_text(config, &collect_parts(cwd, agent, tui)),
+                context_breakdown_text(config, &collect_parts(cwd, agent, tui)),
                 tui,
                 false,
             );
@@ -290,7 +256,7 @@ pub(crate) async fn handle_context_window(
     let lower = val.trim().to_lowercase();
     if lower.is_empty() || lower == "status" || lower == "show" {
         emit(
-            breakdown_text(config, &collect_parts(cwd, agent, tui)),
+            context_breakdown_text(config, &collect_parts(cwd, agent, tui)),
             tui,
             false,
         );
@@ -300,14 +266,22 @@ pub(crate) async fn handle_context_window(
     emit(msg, tui, ok);
 }
 
-pub(crate) fn persist_context_window(config: &Config) {
-    if let Ok(path) = crate::setup::saved_config_path() {
-        let _cfg_lock = crate::setup::lock_saved_config_at(&path).ok();
-        let mut saved = crate::setup::load_saved_config_at(&path);
-        saved.context_window = config.context_window;
-        saved.context_reserve = config.context_reserve;
-        saved.context_keep = config.context_keep;
-        let _ = crate::setup::save_saved_config_at(&path, &saved);
+pub(crate) fn persist_context_window(config: &Config, field: usize) -> anyhow::Result<()> {
+    let path = crate::setup::saved_config_path()?;
+    let _cfg_lock = crate::setup::lock_saved_config_at(&path)?;
+    let mut saved = crate::setup::load_saved_config_at(&path);
+    match field {
+        0 => saved.context_window = config.context_window,
+        1 => saved.context_reserve = config.context_reserve,
+        _ => saved.context_keep = config.context_keep,
+    }
+    crate::setup::save_saved_config_at(&path, &saved)
+}
+
+fn persist_note(config: &Config, field: usize) -> String {
+    match persist_context_window(config, field) {
+        Ok(()) => String::new(),
+        Err(e) => format!(" — not saved for the next launch: {e:#}"),
     }
 }
 
@@ -315,15 +289,19 @@ pub(crate) fn collect_context_parts(
     cwd: &Path,
     messages: &[Message],
     latest: Option<gray_core::event::Usage>,
+    tools: Option<&[gray_core::message::ToolDef]>,
 ) -> crate::setup::ContextParts {
     let sys = crate::sys_prompt_path()
         .ok()
         .and_then(|p| load_or_create_system_prompt_at(&p).ok())
         .map(|s| crate::setup::estimate_str_tokens(&crate::system_prompt::strip_comments(&s)))
         .unwrap_or(0);
-    let tools_toks = serde_json::to_string(&crate::profile::builtin_registry().defs())
-        .map(|s| crate::setup::estimate_str_tokens(&s))
-        .unwrap_or(0);
+    let tools_toks = match tools {
+        Some(defs) => serde_json::to_string(defs),
+        None => serde_json::to_string(&crate::profile::builtin_registry().defs()),
+    }
+    .map(|s| crate::setup::estimate_str_tokens(&s))
+    .unwrap_or(0);
 
     let history_est = messages.iter().map(crate::compact::estimate_tokens).sum();
     let messages = match latest.map(|u| u.total()).filter(|t| *t > 0) {
@@ -405,22 +383,18 @@ pub(crate) fn apply_context_arg(config: &mut Config, val: &str) -> (String, bool
     if lower == "auto" || lower == "clear" || lower == "reset" || lower == "0" {
         config.context_window = None;
         crate::setup::set_user_context_window(None);
-        persist_context_window(config);
+        let note = persist_note(config, 0);
 
         if let Some(m) = config.model.clone()
             && crate::setup::get_cached_model_context(&m).is_none()
         {
-            let base = config.base_url.clone();
-            let key = config.api_key.clone();
-            tokio::task::spawn_blocking(move || {
-                crate::setup::fetch_live_provider_models(&base, key.as_deref());
-            });
+            crate::setup::warm_model_context_cache(config);
         }
         let effective =
             crate::setup::resolve_model_context_length(config.model.as_deref().unwrap_or(""));
         return (
             format!(
-                "window reset to auto ({} / {})",
+                "window reset to auto ({} / {}){note}",
                 effective,
                 crate::setup::format_context_length(effective)
             ),
@@ -458,14 +432,14 @@ pub(crate) fn apply_context_arg(config: &mut Config, val: &str) -> (String, bool
                 config.context_keep = None;
                 crate::setup::set_user_keep_recent_tokens(None);
             }
-            persist_context_window(config);
-            return (format!("{head} cleared → auto"), true);
+            let note = persist_note(config, if is_reserve { 1 } else { 2 });
+            return (format!("{head} cleared → auto{note}"), true);
         }
         if !is_reserve && (rest == "off" || rest == "0") {
             config.context_keep = Some(0);
             crate::setup::set_user_keep_recent_tokens(Some(0));
-            persist_context_window(config);
-            return ("keep set to 0 (summary only)".to_string(), true);
+            let note = persist_note(config, 2);
+            return (format!("keep set to 0 (summary only){note}"), true);
         }
         return match crate::setup::parse_context_window(rest) {
             Some(n) if n > 0 => {
@@ -476,10 +450,10 @@ pub(crate) fn apply_context_arg(config: &mut Config, val: &str) -> (String, bool
                     config.context_keep = Some(n);
                     crate::setup::set_user_keep_recent_tokens(Some(n));
                 }
-                persist_context_window(config);
+                let note = persist_note(config, if is_reserve { 1 } else { 2 });
                 (
                     format!(
-                        "{head} set to {n} tokens ({})",
+                        "{head} set to {n} tokens ({}){note}",
                         crate::setup::format_context_length(n)
                     ),
                     true,
@@ -498,17 +472,17 @@ pub(crate) fn apply_context_arg(config: &mut Config, val: &str) -> (String, bool
             let (final_n, clamped) = if n > max { (max, true) } else { (n, false) };
             config.context_window = Some(final_n);
             crate::setup::set_user_context_window(Some(final_n));
-            persist_context_window(config);
+            let note = persist_note(config, 0);
             let msg = if clamped {
                 format!(
-                    "window clamped to model max {} ({}) — requested {}",
+                    "window clamped to model max {} ({}) — requested {}{note}",
                     final_n,
                     crate::setup::format_context_length(final_n),
                     crate::setup::format_context_length(n)
                 )
             } else {
                 format!(
-                    "window set to {} tokens ({})",
+                    "window set to {} tokens ({}){note}",
                     final_n,
                     crate::setup::format_context_length(final_n)
                 )
@@ -637,11 +611,23 @@ pub(crate) async fn handle_compact(
 
     match compact_res {
         Ok(Some(summary)) => {
-            if let Some(state) = session_state {
-                let _ = state
+            if let Some(state) = session_state
+                && let Err(e) = state
                     .store
                     .append_compaction_replacement(&state.session_id, ag.messages())
-                    .await;
+                    .await
+            {
+                let message = format!(
+                    "compaction summary did not save: {e} — resuming this session will replay both halves"
+                );
+                if let Some(shared) = tui {
+                    shared
+                        .lock()
+                        .expect("tui lock")
+                        .push_dim(format!("■ {message}"));
+                } else {
+                    say(None, &message);
+                }
             }
 
             if let Some(shared) = tui {
@@ -677,13 +663,13 @@ pub(crate) async fn handle_compact(
                 super::notice::push_notice(
                     &mut shared.lock().expect("tui lock"),
                     "Nothing to compact",
-                    "conversation already fits in context",
+                    "a summary would not be smaller than the history it replaces",
                     false,
                 );
             } else {
                 say(
                     None,
-                    "nothing to compact (conversation already fits in context)",
+                    "nothing to compact (a summary would not be smaller than the history it replaces)",
                 );
             }
         }

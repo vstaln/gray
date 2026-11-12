@@ -42,12 +42,6 @@ fn read_lock() -> anyhow::Result<LockFile> {
 
 const REGISTRY_LOCK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
-pub fn hold_registry_lock_timeout(
-    timeout: std::time::Duration,
-) -> anyhow::Result<Option<std::fs::File>> {
-    hold_registry_lock_timeout_in(&crate::plugins_dir(), timeout)
-}
-
 pub fn hold_registry_lock_in(plugins_dir: &Path) -> anyhow::Result<Option<std::fs::File>> {
     hold_registry_lock_timeout_in(plugins_dir, REGISTRY_LOCK_TIMEOUT)
 }
@@ -96,7 +90,7 @@ fn hold_registry_lock_timeout_in(
 }
 
 pub fn hold_registry_lock() -> anyhow::Result<Option<std::fs::File>> {
-    hold_registry_lock_timeout(REGISTRY_LOCK_TIMEOUT)
+    hold_registry_lock_timeout_in(&crate::plugins_dir(), REGISTRY_LOCK_TIMEOUT)
 }
 
 fn write_lock(lock: &LockFile) -> anyhow::Result<()> {
@@ -267,8 +261,11 @@ fn replace_archive(
 
 const MAX_DEP_DEPTH: usize = 8;
 
-fn installed_entries() -> BTreeMap<String, LockEntry> {
-    read_lock().map(|l| l.plugins).unwrap_or_default()
+fn installed_entries() -> anyhow::Result<BTreeMap<String, LockEntry>> {
+    let path = lock_path();
+    read_lock()
+        .map(|l| l.plugins)
+        .map_err(|e| anyhow::anyhow!("{}: {e:#}", path.display()))
 }
 
 async fn install_index(
@@ -312,7 +309,7 @@ async fn install_index(
     }
     visited.insert(name.to_string());
 
-    let installed = installed_entries();
+    let installed = installed_entries()?;
     let mut deps = Vec::new();
     for dep in &entry.requires_plugins {
         if installed.contains_key(dep) || visited.contains(dep) {
@@ -325,7 +322,7 @@ async fn install_index(
         deps.push(dep.clone());
     }
 
-    let installed = installed_entries();
+    let installed = installed_entries()?;
     let conflicts: Vec<String> = entry
         .conflicts
         .iter()
@@ -571,6 +568,8 @@ pub async fn check_update(target: &str) -> anyhow::Result<Vec<UpdateRow>> {
     })
 }
 
+const RENAMED: &[(&str, &str)] = &[("qol", "quality-of-life"), ("cloud", "account")];
+
 async fn update_inner(target: &str, check: bool) -> anyhow::Result<Vec<UpdateRow>> {
     let lock = read_lock()?;
     let names: Vec<String> = if target == "all" {
@@ -587,6 +586,15 @@ async fn update_inner(target: &str, check: bool) -> anyhow::Result<Vec<UpdateRow
     let mut out = Vec::new();
     for name in &names {
         let installed = &lock.plugins[name];
+        if installed.ecosystem == "url" {
+            out.push(UpdateRow::new(
+                name,
+                UpdateAction::Skipped(
+                    "installed from a URL — reinstall the same URL to refresh".into(),
+                ),
+            ));
+            continue;
+        }
         if is_registered_executable(installed) {
             out.push(registered_exe_row(name, installed, check).await);
             continue;
@@ -594,13 +602,18 @@ async fn update_inner(target: &str, check: bool) -> anyhow::Result<Vec<UpdateRow
         if hub.is_none() && comm.is_none() {
             hub = crate::index::fetch_hub_index(&client).await.ok();
         }
-        let entry = match hub.as_ref().and_then(|i| i.plugins.get(name)) {
+        let renamed = RENAMED
+            .iter()
+            .find(|(old, _)| old == name)
+            .map(|(_, new)| *new);
+        let lookup = renamed.unwrap_or(name);
+        let entry = match hub.as_ref().and_then(|i| i.plugins.get(lookup)) {
             Some(e) => e,
             None => {
                 if comm.is_none() {
                     comm = Some(crate::index::fetch_index(&client).await?);
                 }
-                match comm.as_ref().unwrap().plugins.get(name) {
+                match comm.as_ref().unwrap().plugins.get(lookup) {
                     Some(e) => e,
                     None => {
                         out.push(UpdateRow::new(
@@ -620,7 +633,9 @@ async fn update_inner(target: &str, check: bool) -> anyhow::Result<Vec<UpdateRow
             continue;
         }
         let index_hash = entry.hash.primary().unwrap_or_default();
-        let drift = entry.version != installed.version || index_hash != installed.hash.as_str();
+        let drift = renamed.is_some()
+            || entry.version != installed.version
+            || index_hash != installed.hash.as_str();
         if !drift {
             out.push(UpdateRow::new(name, UpdateAction::Current));
             continue;
@@ -628,10 +643,10 @@ async fn update_inner(target: &str, check: bool) -> anyhow::Result<Vec<UpdateRow
         if check {
             out.push(UpdateRow::new(
                 name,
-                UpdateAction::Stale(format!(
-                    "{} -> {} (index)",
-                    installed.version, entry.version
-                )),
+                UpdateAction::Stale(match renamed {
+                    Some(new) => format!("renamed to {new} {} (index)", entry.version),
+                    None => format!("{} -> {} (index)", installed.version, entry.version),
+                }),
             ));
             continue;
         }
@@ -648,13 +663,18 @@ async fn update_inner(target: &str, check: bool) -> anyhow::Result<Vec<UpdateRow
         let scope = Some(installed.scope.clone());
         match install_index(
             &client,
-            name,
+            lookup,
             InstallOpts { argv, scope },
             &mut BTreeSet::new(),
         )
         .await
         {
             Ok(r) => {
+                if renamed.is_some()
+                    && let Err(e) = remove(name)
+                {
+                    log::warn!("renamed plugin {name}: old entry not removed: {e:#}");
+                }
                 let v = r.version.clone();
                 out.push(UpdateRow {
                     name: r.name,

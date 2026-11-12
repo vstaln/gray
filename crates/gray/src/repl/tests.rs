@@ -160,7 +160,6 @@ impl gray_core::agent::PluginHooks for EchoHook {
     fn commands(&self) -> Vec<gray_core::agent::PluginCommand> {
         vec![gray_core::agent::PluginCommand {
             name: "/echo".to_string(),
-            description: "echo back argv".to_string(),
             turn_local_verbs: Vec::new(),
         }]
     }
@@ -182,7 +181,6 @@ impl gray_core::agent::PluginHooks for PromptHook {
     fn commands(&self) -> Vec<gray_core::agent::PluginCommand> {
         vec![gray_core::agent::PluginCommand {
             name: "/ask".to_string(),
-            description: "submit argv as a prompt".to_string(),
             turn_local_verbs: Vec::new(),
         }]
     }

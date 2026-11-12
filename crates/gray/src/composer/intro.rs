@@ -85,14 +85,15 @@ pub(super) fn intro_frames() -> &'static [(Vec<String>, Vec<String>)] {
     static FRAMES: std::sync::OnceLock<Vec<(Vec<String>, Vec<String>)>> =
         std::sync::OnceLock::new();
     FRAMES.get_or_init(|| {
-        let mut frames: Vec<(Vec<String>, Vec<String>)> = INTRO_FRAMES_TXT
-            .replace("\r\n", "\n")
+        let text = INTRO_FRAMES_TXT.replace("\r\n", "\n");
+        let table: Vec<&str> = text.lines().filter_map(|l| l.strip_prefix("#|")).collect();
+        let mut frames: Vec<(Vec<String>, Vec<String>)> = text
             .split("\n---\n")
             .filter_map(|block| {
                 let rows: Vec<String> = block
                     .lines()
-                    .filter(|l| !l.starts_with('#'))
-                    .map(str::to_string)
+                    .filter_map(|l| l.trim().parse::<usize>().ok().and_then(|i| table.get(i)))
+                    .map(|r| r.to_string())
                     .collect();
                 (rows.len() == 24).then(|| {
                     let (mark, edge) = rows.split_at(12);

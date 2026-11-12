@@ -1,11 +1,11 @@
+use crate::provider;
 use std::process::Command;
 
-pub fn bin() -> String {
-    std::env::var("GRAY_GUI_GRAY_BIN").unwrap_or_else(|_| "gray".to_string())
-}
-
 pub fn list() -> Vec<(String, String)> {
-    let out = Command::new(bin()).args(["cmd", "list"]).output().ok();
+    let out = Command::new(provider::gray_bin())
+        .args(["cmd", "list"])
+        .output()
+        .ok();
     let Some(out) = out.filter(|o| o.status.success()) else {
         return Vec::new();
     };

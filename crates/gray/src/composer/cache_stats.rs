@@ -1,8 +1,7 @@
 use gray_core::event::Usage;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 const NOISE_FLOOR_TOKENS: usize = 1024;
-const CACHE_TTL: Duration = Duration::from_secs(5 * 60);
 
 #[derive(Default)]
 pub struct CacheStats {
@@ -60,7 +59,7 @@ impl CacheStats {
                     target: "gray_agent",
                     "cache miss: session={} missed_tokens={missed} missed_cost=${missed_cost:.4} idle_ms={idle_ms} ttl_expiry={} model_changed={model_changed}",
                     session.filter(|s| !s.is_empty()).unwrap_or("-"),
-                    idle_ms >= CACHE_TTL.as_millis(),
+                    idle_ms >= crate::cache::cache_ttl().as_millis(),
                 );
             }
         }

@@ -57,11 +57,8 @@ impl Tui {
                 1,
             );
             frame.render_widget(
-                Paragraph::new(Line::styled(
-                    "enter to skip · /intro disable to disable",
-                    dim,
-                ))
-                .alignment(ratatui::layout::Alignment::Center),
+                Paragraph::new(Line::styled("enter to skip · /intro off", dim))
+                    .alignment(ratatui::layout::Alignment::Center),
                 row,
             );
         });

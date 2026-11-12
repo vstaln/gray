@@ -195,6 +195,7 @@ pub(crate) fn build_input_box(
     ghost: Option<&str>,
     home: Option<HomeRows>,
     chips: &[InputCell],
+    glyph: Option<&'static str>,
 ) -> InputBox {
     let (x, w) = home.map_or((0, w), |_| crate::composer::home_column(w));
     let content_w = w.saturating_sub(4).max(1);
@@ -208,7 +209,7 @@ pub(crate) fn build_input_box(
     box_lines.push(Line::from(""));
 
     let arrow_span = Span::styled(
-        format!(" {} ", crate::tui::arrow_glyph()),
+        format!(" {} ", glyph.unwrap_or_else(crate::tui::arrow_glyph)),
         Style::default()
             .fg(prompt_color)
             .add_modifier(Modifier::BOLD),
@@ -441,6 +442,7 @@ pub(crate) fn home_band_h(w: usize) -> usize {
             ..HomeRows::default()
         }),
         &[],
+        None,
     )
     .lines
     .len()

@@ -30,7 +30,7 @@ pub use agent::{
     ToolExecutor, ToolOutput,
 };
 pub use compact::price_cliff_ceiling;
-pub use error::{CoreError, Result};
+pub use error::CoreError;
 pub use event::{AgentEvent, StopReason, StreamEvent, Usage};
 pub use message::{ChatRequest, ContentBlock, Message, Role, ToolDef};
 

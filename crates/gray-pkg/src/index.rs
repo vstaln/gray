@@ -48,16 +48,10 @@ pub struct Entry {
     pub kind: String,
 
     #[serde(default)]
-    pub author: Option<String>,
-
-    #[serde(default)]
     pub official: bool,
 
     #[serde(default)]
     pub verified: bool,
-
-    #[serde(default)]
-    pub license: String,
 
     #[serde(default)]
     pub requires_plugins: Vec<String>,

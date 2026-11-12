@@ -21,15 +21,3 @@ pub struct MarkdownRenderOutput {
 
     pub hyperlinks: Vec<HyperlinkTarget>,
 }
-
-impl MarkdownRenderOutput {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn clear(&mut self) {
-        self.lines.clear();
-        self.line_source_map.clear();
-        self.hyperlinks.clear();
-    }
-}

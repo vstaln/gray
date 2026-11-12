@@ -82,10 +82,8 @@ pub fn status(dir: &Path) -> Vec<(String, String)> {
     res
 }
 
-pub fn diff(dir: &Path) -> String {
-    let mut text = git(dir, &["diff", "HEAD", "--no-color"])
-        .or_else(|| git(dir, &["diff", "--no-color"]))
-        .unwrap_or_default();
+fn untracked_diff(dir: &Path) -> String {
+    let mut text = String::new();
     for (code, path) in status(dir) {
         if code == "??"
             && let Ok(d) = Command::new("git")
@@ -100,19 +98,17 @@ pub fn diff(dir: &Path) -> String {
     text
 }
 
+pub fn diff(dir: &Path) -> String {
+    let mut text = git(dir, &["diff", "HEAD", "--no-color"])
+        .or_else(|| git(dir, &["diff", "--no-color"]))
+        .unwrap_or_default();
+    text.push_str(&untracked_diff(dir));
+    text
+}
+
 pub fn diff_since(dir: &Path, base: &str) -> String {
     let mut text = git(dir, &["diff", base, "--no-color"]).unwrap_or_default();
-    for (code, path) in status(dir) {
-        if code == "??"
-            && let Ok(d) = Command::new("git")
-                .arg("-C")
-                .arg(dir)
-                .args(["diff", "--no-color", "--no-index", "/dev/null", &path])
-                .output()
-        {
-            text.push_str(&String::from_utf8_lossy(&d.stdout));
-        }
-    }
+    text.push_str(&untracked_diff(dir));
     text
 }
 

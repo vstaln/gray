@@ -14,7 +14,6 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
 
 use serde_json::{Value, json};
 
@@ -39,7 +38,7 @@ impl Engine {
     /// all three afterwards via `set_model` (effort is not a CLI flag and a
     /// `resume` may adopt the session's model).
     pub fn spawn(cwd: &Path, provider: &str, model: &str, effort: &str) -> Result<Self, String> {
-        let bin = std::env::var("GRAY_GUI_GRAY_BIN").unwrap_or_else(|_| "gray".into());
+        let bin = crate::provider::gray_bin();
         let mut cmd = Command::new(bin);
         cmd.arg("--stdio");
         if !provider.is_empty() && provider != "gray" {
@@ -116,20 +115,6 @@ impl Engine {
             .and_then(|_| w.flush())
             .map_err(|e| format!("gray --stdio write failed: {e}"))
     }
-
-    /// Ask the engine to exit gracefully, then kill it after a short grace
-    /// period if it is still around (hooks/shell tasks need a beat to drain).
-    pub fn shutdown(&self) {
-        let _ = self.send_line(&json!({"type": "shutdown"}));
-        let child = self.child.clone();
-        thread::spawn(move || {
-            thread::sleep(Duration::from_millis(800));
-            if let Ok(mut g) = child.lock() {
-                let _ = g.kill();
-                let _ = g.wait();
-            }
-        });
-    }
 }
 
 impl Drop for Engine {
@@ -153,9 +138,18 @@ fn pump_stdout(
         if t.is_empty() {
             continue;
         }
-        if let Ok(v) = serde_json::from_str::<Value>(t)
-            && tx.send(EngineMsg::Row(v)).is_err()
-        {
+        let Ok(v) = serde_json::from_str::<Value>(t) else {
+            continue;
+        };
+        if v["protocol"] != 2 {
+            dead.store(true, Ordering::SeqCst);
+            let _ = tx.send(EngineMsg::Died(format!(
+                "gray speaks protocol {}, this build understands 2; update gray or the IDE",
+                v["protocol"]
+            )));
+            return;
+        }
+        if tx.send(EngineMsg::Row(v)).is_err() {
             return;
         }
     }

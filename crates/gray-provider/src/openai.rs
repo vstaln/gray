@@ -22,7 +22,7 @@ use serde_json::Value;
 use std::sync::Arc;
 
 use crate::openai_profile::{
-    OpenAiAuthorization, OpenAiHeaderSource, OpenAiProviderProfile, OpenAiRequestPolicy, OpenAiWire,
+    OpenAiAuthorization, OpenAiHeaderSource, OpenAiProviderProfile, OpenAiRequestPolicy,
 };
 
 pub const DEFAULT_BASE_URL: &str = "https://openrouter.ai/api/v1";
@@ -31,13 +31,17 @@ const MAX_ATTEMPTS: usize = 5;
 
 const MAX_SEND_ATTEMPTS: usize = 3;
 
-const INITIAL_BACKOFF: Duration = Duration::from_secs(1);
+pub(crate) const INITIAL_BACKOFF: Duration = Duration::from_secs(1);
+
+pub(crate) const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
 
-const DEFAULT_STREAM_STALL: Duration = Duration::from_secs(300);
+const DEFAULT_STREAM_STALL: Duration = Duration::from_secs(120);
 
 const RETRY_STREAM_STALL: Duration = Duration::from_secs(75);
+
+const STREAM_STALL_READ_MARGIN: Duration = Duration::from_secs(30);
 
 const STREAM_STALL_MEMORY_SECS: i64 = 15 * 60;
 
@@ -57,8 +61,6 @@ pub struct OpenAiProvider {
     session_id: Option<String>,
 
     profile: Option<OpenAiProviderProfile>,
-
-    caps: ModelCaps,
 
     credential_source: Option<Arc<dyn CredentialSource>>,
 }
@@ -92,7 +94,6 @@ impl OpenAiProvider {
         let model = model.into();
 
         Ok(Self {
-            caps: ModelCaps::for_host(&base_url),
             base_url,
             api_key: api_key.into(),
             model,
@@ -107,9 +108,11 @@ impl OpenAiProvider {
     }
 
     fn http_client(follow_redirects: bool) -> reqwest::Client {
+        let read_timeout = env_secs("GRAY_PROVIDER_STALL_SECS").unwrap_or(DEFAULT_STREAM_STALL)
+            + STREAM_STALL_READ_MARGIN;
         reqwest::Client::builder()
-            .connect_timeout(Duration::from_secs(10))
-            .read_timeout(Duration::from_secs(120))
+            .connect_timeout(CONNECT_TIMEOUT)
+            .read_timeout(read_timeout)
             .redirect(if follow_redirects {
                 Policy::default()
             } else {
@@ -130,7 +133,6 @@ impl OpenAiProvider {
         let http = Self::http_client(profile.follow_redirects);
         let model = model.into();
         Ok(Self {
-            caps: ModelCaps::for_host(&base_url),
             base_url,
             api_key: String::new(),
             model,
@@ -169,14 +171,6 @@ impl Provider for OpenAiProvider {
         if let (Some(profile), Some(credential_source)) =
             (self.profile.clone(), self.credential_source.clone())
         {
-            if !matches!(profile.wire, OpenAiWire::Responses | OpenAiWire::Auto) {
-                return stream::once(async move {
-                    Err(ProviderError::BadRequest(
-                        "dynamic OpenAI chat completions profiles are not implemented".into(),
-                    ))
-                })
-                .boxed();
-            }
             return self.dynamic_stream(
                 req,
                 profile,
@@ -186,7 +180,8 @@ impl Provider for OpenAiProvider {
                 isolated,
             );
         }
-        if self.caps.prefer_responses {
+        let caps = ModelCaps::for_host(&self.base_url);
+        if caps.prefer_responses {
             let url = match responses_url(&self.base_url) {
                 Ok(u) => u,
                 Err(e) => return stream::once(async move { Err(e) }).boxed(),
@@ -197,6 +192,8 @@ impl Provider for OpenAiProvider {
                 session_id.as_deref(),
                 self.reasoning_effort.as_deref(),
             );
+            body.temperature = self.temperature;
+            body.top_p = self.top_p;
             if cache_off {
                 body.prompt_cache_key = None;
             }
@@ -210,7 +207,6 @@ impl Provider for OpenAiProvider {
                 retry_after: None,
                 stream_attempt: 1,
                 tools_by_call_id: BTreeMap::new(),
-                index_to_call_id: BTreeMap::new(),
             };
             return stream::unfold(init_state, stream_unfold_step).boxed();
         }
@@ -231,7 +227,7 @@ impl Provider for OpenAiProvider {
         };
         body.temperature = self.temperature;
         body.top_p = self.top_p;
-        if self.caps.cap_field == CapField::MaxCompletionTokens {
+        if caps.cap_field == CapField::MaxCompletionTokens {
             body.max_completion_tokens = body.max_tokens.take();
         }
         let init_state = StreamState::Init {

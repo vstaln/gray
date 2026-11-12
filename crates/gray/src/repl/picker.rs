@@ -7,6 +7,7 @@ use crate::setup::BackgroundSnapshot;
 
 pub(crate) type Trailing<'a, T> = Option<Box<dyn Fn(&T) -> Vec<Span<'static>> + 'a>>;
 pub(crate) type OnHighlight<'a, T> = Option<Box<dyn FnMut(&T) + 'a>>;
+pub(crate) type GapBefore<'a, T> = Option<Box<dyn Fn(&T) -> bool + 'a>>;
 
 pub(crate) struct ListPicker<'a, T> {
     pub(crate) title: &'a str,
@@ -15,7 +16,10 @@ pub(crate) struct ListPicker<'a, T> {
     pub(crate) trailing: Trailing<'a, T>,
     pub(crate) footer: Option<Box<dyn Fn() -> Vec<Line<'static>> + 'a>>,
     pub(crate) on_highlight: OnHighlight<'a, T>,
+    pub(crate) gap_before: GapBefore<'a, T>,
     pub(crate) selected: usize,
+    /// The item in effect now; drawn with a check mark.
+    pub(crate) current: Option<usize>,
 }
 
 pub(crate) fn list_rows_for(height: u16, n: usize, footer_rows: usize) -> usize {
@@ -39,6 +43,9 @@ pub(crate) fn spec_lines(spec: &PickerSpec) -> Vec<Line<'static>> {
             .add_modifier(Modifier::BOLD),
     ))];
     for it in &spec.items {
+        if it.gap_before {
+            out.push(Line::default());
+        }
         let mut spans = vec![Span::styled(
             it.label.clone(),
             Style::default().fg(th.text_body),
@@ -55,11 +62,72 @@ pub(crate) fn spec_lines(spec: &PickerSpec) -> Vec<Line<'static>> {
 }
 
 pub(crate) fn spec_plain(spec: &PickerSpec) -> String {
-    spec_lines(spec)
-        .iter()
-        .map(|l| l.to_string())
-        .collect::<Vec<_>>()
-        .join("\n")
+    super::pager::plain_lines(&spec_lines(spec))
+}
+
+fn match_range(label: &str, filter: &str) -> Option<(usize, usize)> {
+    let lower = |c: char| c.to_lowercase().next().unwrap_or(c);
+    let needle: Vec<char> = filter.chars().map(lower).collect();
+    let chars: Vec<char> = label.chars().map(lower).collect();
+    if needle.is_empty() {
+        return None;
+    }
+    chars
+        .windows(needle.len())
+        .position(|w| w == needle.as_slice())
+        .map(|i| (i, i + needle.len()))
+}
+
+pub(crate) fn underline_match(label: &str, filter: &str, style: Style) -> Vec<Span<'static>> {
+    let Some((i, j)) = match_range(label, filter) else {
+        return vec![Span::styled(label.to_string(), style)];
+    };
+    let chars: Vec<char> = label.chars().collect();
+    [
+        (0, i, style),
+        (i, j, style.add_modifier(Modifier::UNDERLINED)),
+        (j, chars.len(), style),
+    ]
+    .into_iter()
+    .filter(|(a, b, _)| a < b)
+    .map(|(a, b, st)| Span::styled(chars[a..b].iter().collect::<String>(), st))
+    .collect()
+}
+
+/// The `/models` key-hint row: `key label` pairs, dimmed when not live,
+/// dropping keys in `drop_order` until the row fits `width`.
+pub(crate) fn key_hints(
+    mut keys: Vec<(&'static str, &'static str, bool)>,
+    drop_order: &[&str],
+    width: usize,
+) -> Line<'static> {
+    let th = crate::theme::theme();
+    let keys_w = |keys: &[(&str, &str, bool)]| -> usize {
+        keys.iter()
+            .map(|(k, l, _)| k.chars().count() + l.chars().count() + 4)
+            .sum::<usize>()
+            + 1
+    };
+    for drop in drop_order {
+        if keys_w(&keys) <= width {
+            break;
+        }
+        keys.retain(|(k, _, _)| k != drop);
+    }
+    let mut spans = vec![Span::raw(" ")];
+    spans.extend(keys.into_iter().flat_map(|(k, label, live)| {
+        [
+            Span::styled(
+                k,
+                Style::default().fg(if live { th.text_soft } else { th.text_faint }),
+            ),
+            Span::styled(
+                format!(" {label}   "),
+                Style::default().fg(if live { th.text_dim } else { th.text_faint }),
+            ),
+        ]
+    }));
+    Line::from(spans)
 }
 
 pub(crate) fn draw_list_picker<T>(
@@ -71,138 +139,203 @@ pub(crate) fn draw_list_picker<T>(
     query: &str,
     list_h: usize,
 ) {
-    use ratatui::layout::Rect;
-    use ratatui::widgets::{Block, Clear, Paragraph};
+    use ratatui::layout::{Alignment, Rect};
+    use ratatui::widgets::{Clear, Paragraph};
 
     let th = crate::theme::theme();
+    let fg = |c| Style::default().fg(c);
+    let bold = |c| Style::default().fg(c).add_modifier(Modifier::BOLD);
     let area = frame.area();
     if area.width < 24 || area.height < 8 {
         return;
     }
     crate::setup::render_dimmed_background(frame, bg);
     let footer_lines = picker.footer.as_ref().map(|f| f()).unwrap_or_default();
-    let inner_h = (list_h + 5 + footer_lines.len()) as u16;
-    let modal_w = 48.min(area.width.saturating_sub(2));
-    let modal_h = (inner_h + 2).min(area.height.saturating_sub(2));
-    let modal_x = (area.width.saturating_sub(modal_w)) / 2;
-    let modal_y = (area.height.saturating_sub(modal_h)) / 3;
-    let modal = Rect::new(modal_x, modal_y, modal_w, modal_h);
-    frame.render_widget(Clear, modal);
-    let counter = if filtered.is_empty() {
-        "0/0".to_string()
+    // header, gap, list, gap, [detail lines, gap], keys
+    let detail_h = if footer_lines.is_empty() {
+        0
     } else {
-        format!("{}/{}", sel + 1, filtered.len())
+        footer_lines.len() + 1
     };
-
+    let gap_at = |vi: usize, idx: usize| {
+        vi > 0
+            && query.is_empty()
+            && filtered.len() <= list_h
+            && picker
+                .gap_before
+                .as_ref()
+                .is_some_and(|g| g(&picker.items[idx]))
+    };
+    let gaps = filtered
+        .iter()
+        .enumerate()
+        .filter(|&(vi, &idx)| gap_at(vi, idx))
+        .count();
+    let inner_h = (list_h + gaps + 4 + detail_h) as u16;
+    let trailing_w_of = |item: &T| -> usize {
+        picker
+            .trailing
+            .as_ref()
+            .map(|f| f(item))
+            .unwrap_or_default()
+            .iter()
+            .map(Span::width)
+            .sum()
+    };
+    let trailing_col = picker.items.iter().map(trailing_w_of).max().unwrap_or(0);
+    let label_max = picker
+        .items
+        .iter()
+        .map(|item| (picker.label)(item).chars().count())
+        .max()
+        .unwrap_or(0);
+    let widest = std::iter::once(3 + label_max + 2 + trailing_col)
+        .chain(footer_lines.iter().map(|l| l.width() + 1))
+        .chain(std::iter::once(picker.title.chars().count() + 20))
+        .max()
+        .unwrap_or(0);
+    let modal_w = 48u16
+        .max(widest as u16 + 3)
+        .min(area.width.saturating_sub(4));
+    let modal_h = (inner_h + 2).min(area.height.saturating_sub(2));
+    let modal = Rect::new(
+        (area.width.saturating_sub(modal_w)) / 2,
+        (area.height.saturating_sub(modal_h)) / 2,
+        modal_w,
+        modal_h,
+    );
+    frame.render_widget(Clear, modal);
     frame.render_widget(
-        Block::default().style(Style::default().bg(th.surface_bg)),
+        Paragraph::new("").style(Style::default().bg(th.raised_bg)),
         modal,
     );
     let inner = Rect::new(
-        modal.x + 3,
+        modal.x + 1,
         modal.y + 1,
-        modal.width.saturating_sub(6),
+        modal.width.saturating_sub(2),
         modal.height.saturating_sub(2),
     );
-    let inner_bottom = inner.y + inner.height;
+    let bottom = inner.y + inner.height;
+    let row = |y: u16| Rect::new(inner.x, y, inner.width, 1);
 
-    let y = inner.y;
-    if y < inner_bottom {
-        frame.render_widget(
-            Paragraph::new(Line::from(Span::styled(
-                picker.title,
-                Style::default()
-                    .fg(th.text_bright)
-                    .add_modifier(Modifier::BOLD),
-            ))),
-            Rect::new(inner.x, y, inner.width, 1),
+    let mut filter = if query.is_empty() {
+        vec![Span::styled("type to filter ", fg(th.text_faint))]
+    } else {
+        vec![
+            Span::styled("filter ", fg(th.text_faint)),
+            Span::styled(
+                query.to_string(),
+                fg(th.text_bright).add_modifier(Modifier::UNDERLINED),
+            ),
+            Span::raw(" "),
+        ]
+    };
+    if filtered.len() > list_h {
+        filter.insert(
+            0,
+            Span::styled(
+                format!("{}/{}  ", sel + 1, filtered.len()),
+                fg(th.text_faint),
+            ),
         );
     }
-    let mut y = inner.y + 2;
-    if y < inner_bottom {
-        let counter_w = (counter.chars().count() + 1) as u16;
-        frame.render_widget(
-            Paragraph::new(Line::from(vec![
-                Span::styled(query.to_string(), Style::default().fg(th.text_body)),
-                Span::styled("█", Style::default().fg(th.text_body)),
-            ])),
-            Rect::new(inner.x, y, inner.width.saturating_sub(counter_w), 1),
-        );
-        frame.render_widget(
-            Paragraph::new(Line::from(vec![Span::styled(
-                counter,
-                Style::default().fg(th.text_muted),
-            )]))
-            .alignment(ratatui::layout::Alignment::Right),
-            Rect::new(inner.x, y, inner.width, 1),
-        );
-    }
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::raw(" "),
+            Span::styled(picker.title.to_string(), bold(th.text_bright)),
+        ])),
+        row(inner.y),
+    );
+    frame.render_widget(
+        Paragraph::new(Line::from(filter)).alignment(Alignment::Right),
+        row(inner.y),
+    );
 
-    let list_y = inner.y + 4;
+    let list_y = inner.y + 2;
     let start = sel
         .saturating_sub(list_h.saturating_sub(1))
         .min(filtered.len().saturating_sub(list_h));
-    if filtered.is_empty() {
-        if list_y < inner_bottom {
-            frame.render_widget(
-                Paragraph::new(Line::from(Span::styled(
-                    "  no match",
-                    Style::default().fg(th.text_dim),
-                ))),
-                Rect::new(inner.x, list_y, inner.width, 1),
-            );
-        }
-    } else {
-        for (vi, &idx) in filtered.iter().enumerate().skip(start).take(list_h) {
-            let item = &picker.items[idx];
-            y = list_y + (vi - start) as u16;
-            if y >= inner_bottom {
-                break;
-            }
-            let is_sel = vi == sel;
-            let trailing = picker
-                .trailing
-                .as_ref()
-                .map(|f| f(item))
-                .unwrap_or_default();
-            let trailing_w: usize = trailing.iter().map(|s| s.content.chars().count()).sum();
-            let marker = if is_sel { "› " } else { "  " };
-            let label = (picker.label)(item);
-            let left_w = 2 + label.chars().count();
-            let pad = (inner.width as usize).saturating_sub(left_w + trailing_w + 1);
-            let mut spans = vec![
-                Span::styled(
-                    marker,
-                    Style::default().fg(if is_sel { th.accent } else { th.text_dim }),
-                ),
-                Span::styled(
-                    label.to_string(),
-                    if is_sel {
-                        Style::default()
-                            .fg(th.text_bright)
-                            .add_modifier(Modifier::BOLD)
-                    } else {
-                        Style::default().fg(th.text_dim)
-                    },
-                ),
-                Span::raw(" ".repeat(pad)),
-            ];
-            spans.extend(trailing);
-            frame.render_widget(
-                Paragraph::new(Line::from(spans)),
-                Rect::new(inner.x, y, inner.width, 1),
-            );
-        }
+    if filtered.is_empty() && list_y < bottom {
+        frame.render_widget(
+            Paragraph::new(Span::styled("   no match", fg(th.text_faint))),
+            row(list_y),
+        );
     }
-
-    let footer_y = list_y + list_h as u16 + 1;
-    for (i, line) in footer_lines.into_iter().enumerate() {
-        let y = footer_y + i as u16;
-        if y >= inner_bottom {
+    let mut gaps_above = 0u16;
+    for (vi, &idx) in filtered.iter().enumerate().skip(start).take(list_h) {
+        if gap_at(vi, idx) {
+            gaps_above += 1;
+        }
+        let y = list_y + (vi - start) as u16 + gaps_above;
+        if y >= bottom {
             break;
         }
-        frame.render_widget(Paragraph::new(line), Rect::new(inner.x, y, inner.width, 1));
+        let item = &picker.items[idx];
+        let is_sel = vi == sel;
+        let current = picker.current == Some(idx);
+        let base = if is_sel {
+            Style::default().bg(th.accent)
+        } else {
+            Style::default()
+        };
+        let text = base.patch(if is_sel {
+            bold(th.on_selection)
+        } else if current {
+            fg(th.text_bright)
+        } else {
+            fg(th.text_body)
+        });
+        let mut trailing = picker
+            .trailing
+            .as_ref()
+            .map(|f| f(item))
+            .unwrap_or_default();
+        if is_sel {
+            // Text recolors on the accent bar; swatches (a set bg) keep theirs.
+            for s in &mut trailing {
+                if s.style.bg.is_none() {
+                    s.style = s.style.fg(th.on_selection);
+                }
+            }
+        }
+        let trailing_w: usize = trailing.iter().map(Span::width).sum();
+        let col = trailing_col.min((inner.width as usize).saturating_sub(3 + 8 + 1));
+        let col = col.max(trailing_w);
+        let name_w = (inner.width as usize).saturating_sub(3 + col + 1);
+        let label = crate::text_width::fit_chars((picker.label)(item), name_w);
+        let mut spans = vec![Span::styled(
+            if current { " ✓ " } else { "   " },
+            fg(if is_sel { th.on_selection } else { th.success }),
+        )];
+        spans.extend(underline_match(&label, query, text));
+        spans.push(Span::raw(
+            " ".repeat(name_w.saturating_sub(label.chars().count())),
+        ));
+        spans.extend(trailing);
+        spans.push(Span::raw(" ".repeat(col - trailing_w)));
+        frame.render_widget(Paragraph::new(Line::from(spans)).style(base), row(y));
     }
+
+    for (y, line) in (list_y + list_h as u16 + 1..).zip(footer_lines) {
+        if y + 1 >= bottom {
+            break;
+        }
+        let mut spans = vec![Span::raw(" ")];
+        spans.extend(line.spans);
+        frame.render_widget(Paragraph::new(Line::from(spans)), row(y));
+    }
+    frame.render_widget(
+        Paragraph::new(key_hints(
+            vec![
+                ("↑↓", "move", true),
+                ("enter", "select", true),
+                ("esc", "close", true),
+            ],
+            &[],
+            inner.width as usize,
+        )),
+        row(bottom.saturating_sub(1)),
+    );
 }
 
 fn highlight<T>(picker: &mut ListPicker<'_, T>, filtered: &[usize], sel: usize) {
@@ -338,6 +471,86 @@ pub(crate) fn run_list_picker<T>(
                 }
             }
             _ => {}
+        }
+    }
+}
+
+/// A plugin's picker as a modal over the transcript: the picked item's id,
+/// `None` on esc, an error when no modal can open (no tty).
+pub(crate) fn run_spec_picker(
+    shared: &crate::composer::SharedTui,
+    spec: &PickerSpec,
+) -> anyhow::Result<Option<String>> {
+    let bg = shared.lock().expect("tui lock").snapshot();
+    let dim = Style::default().fg(crate::theme::theme().text_dim);
+    let selected = spec
+        .selected_id
+        .as_deref()
+        .and_then(|id| spec.items.iter().position(|i| i.id == id))
+        .unwrap_or(0);
+    let mut picker = ListPicker {
+        title: spec.title.as_str(),
+        items: &spec.items,
+        label: Box::new(|i: &gray_core::agent::PickerItem| i.label.as_str()),
+        trailing: Some(Box::new(move |i: &gray_core::agent::PickerItem| {
+            i.description
+                .as_deref()
+                .filter(|d| !d.is_empty())
+                .map(|d| vec![Span::styled(d.to_string(), dim)])
+                .unwrap_or_default()
+        })),
+        footer: spec.footer.as_deref().map(|f| {
+            Box::new(move || {
+                f.lines()
+                    .map(|l| Line::styled(l.to_string(), dim))
+                    .collect()
+            }) as Box<dyn Fn() -> Vec<Line<'static>>>
+        }),
+        on_highlight: None,
+        gap_before: Some(Box::new(|i: &gray_core::agent::PickerItem| i.gap_before)),
+        selected,
+        current: spec.selected_id.is_some().then_some(selected),
+    };
+    super::with_modal_sync(Some(shared), || {
+        let Some(idx) = run_list_picker(&mut picker, &bg)? else {
+            return Ok(None);
+        };
+        let item = &spec.items[idx];
+        let Some(prompt) = item.capture_key.as_deref() else {
+            return Ok(Some(item.id.clone()));
+        };
+        Ok(capture_key(prompt, &bg)?.map(|k| format!("{}:{k}", item.id)))
+    })
+}
+
+/// Wait for one key press and return it as a keymap chord (`ctrl+space`).
+/// Esc cancels.
+fn capture_key(prompt: &str, bg: &BackgroundSnapshot) -> anyhow::Result<Option<String>> {
+    use crossterm::event::{Event, KeyCode, KeyEventKind, read};
+    let (_session, mut terminal) = crate::setup::open_modal()?;
+    let items = ["Press a key, or Esc to cancel".to_string()];
+    let picker = ListPicker {
+        title: prompt,
+        items: &items,
+        label: Box::new(|s: &String| s.as_str()),
+        trailing: None,
+        footer: None,
+        on_highlight: None,
+        gap_before: None,
+        selected: 0,
+        current: None,
+    };
+    terminal.draw(|frame| draw_list_picker(frame, bg, &picker, &[0], 0, "", 1))?;
+    loop {
+        if let Event::Key(key) = read()?
+            && key.kind == KeyEventKind::Press
+        {
+            if key.code == KeyCode::Esc {
+                return Ok(None);
+            }
+            if let Some(chord) = crate::keymap::Chord::from_event(&key) {
+                return Ok(Some(chord.display()));
+            }
         }
     }
 }

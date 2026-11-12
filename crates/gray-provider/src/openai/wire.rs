@@ -214,6 +214,11 @@ pub(crate) struct ResponsesRequest {
     pub(super) stream: bool,
 
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) temperature: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) top_p: Option<f32>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) prompt_cache_key: Option<String>,
 
     pub(super) store: bool,

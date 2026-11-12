@@ -12,13 +12,13 @@ use reqwest::Url;
 use serde_json::{Value, json};
 
 use crate::openai::{
-    backoff_delay, classify_http_error, filter_valid_tools, parse_retry_after, wire_tool_output,
+    CONNECT_TIMEOUT, INITIAL_BACKOFF, backoff_delay, classify_http_error, filter_valid_tools,
+    parse_retry_after, wire_tool_output,
 };
 
 pub const DEFAULT_BASE_URL: &str = "https://api.anthropic.com/v1";
 const API_VERSION: &str = "2023-06-01";
 const MAX_ATTEMPTS: usize = 4;
-const INITIAL_BACKOFF: Duration = Duration::from_secs(1);
 
 pub const THINKING_ITEM_ID: &str = "anthropic";
 
@@ -63,7 +63,7 @@ impl AnthropicProvider {
         };
         let base_url = Url::parse(&raw).map_err(|e| format!("invalid base_url '{raw}': {e}"))?;
         let http = reqwest::Client::builder()
-            .connect_timeout(Duration::from_secs(10))
+            .connect_timeout(CONNECT_TIMEOUT)
             .read_timeout(Duration::from_secs(120))
             .build()
             .expect("reqwest client with timeouts");
@@ -408,8 +408,19 @@ impl Decoder {
         data: &str,
         out: &mut VecDeque<Result<StreamEvent, ProviderError>>,
     ) {
-        let Ok(ev) = serde_json::from_str::<Value>(data) else {
+        let trimmed = data.trim();
+        if trimmed.is_empty() || trimmed == "[DONE]" {
             return;
+        }
+        let ev: Value = match serde_json::from_str(data) {
+            Ok(ev) => ev,
+            Err(e) => {
+                self.finished = true;
+                out.push_back(Err(ProviderError::Stream(format!(
+                    "failed to parse Anthropic SSE event: {e}: {data}"
+                ))));
+                return;
+            }
         };
         let index = ev.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
         match ev.get("type").and_then(Value::as_str).unwrap_or("") {

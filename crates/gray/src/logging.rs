@@ -52,7 +52,9 @@ impl Log for FileLogger {
         }
 
         let rotated = {
-            let _guard = crate::rotation::rotation_guard(&self.path);
+            let Some(_guard) = crate::rotation::rotation_guard(&self.path) else {
+                return;
+            };
             let _ = std::fs::remove_file(self.path.with_extension("log.2"));
             let _ = std::fs::rename(
                 self.path.with_extension("log.1"),
@@ -153,7 +155,6 @@ pub fn init() {
             return;
         };
         let path = home.join("logs").join("gray.log");
-        crate::rotation::rotate_if_needed(&path);
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }

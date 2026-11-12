@@ -8,14 +8,13 @@
 
 use super::*;
 use crate::engine::{Engine, EngineMsg};
+use crate::provider::s;
 
 #[derive(Clone, Debug)]
 pub(super) struct GrayCmd {
     pub(super) name: String,
     pub(super) description: String,
     pub(super) aliases: Vec<String>,
-    #[allow(dead_code)]
-    pub(super) surface: String,
     pub(super) source: String,
 }
 
@@ -27,13 +26,9 @@ pub(super) enum ReqKind {
     Approve,
     Status,
     Commands,
-    #[allow(dead_code)]
-    Models,
     Sessions,
     Resume,
     SetModel,
-    #[allow(dead_code)]
-    Shutdown,
 }
 
 /// One question inside an `ask` event (the approval card's payload).
@@ -58,8 +53,6 @@ pub(super) struct PendingAsk {
 /// Live state of one thread's `gray --stdio` process.
 pub(super) struct Eng {
     pub(super) engine: Engine,
-    #[allow(dead_code)]
-    pub(super) hello: Option<serde_json::Value>,
     pub(super) session_id: Option<String>,
     pub(super) status: Option<serde_json::Value>,
     pub(super) last_usage: Option<serde_json::Value>,
@@ -83,16 +76,8 @@ impl Eng {
 pub(super) const GRAY_BUILTINS: &[&str] = &[
     "models", "model", "connect", "provider", "context", "sessions", "resume", "new", "clear",
     "reset", "compact", "compress", "undo", "retry", "update", "upgrade", "restart", "reboot",
-    "jobs", "reload", "agentsmd", "sys", "skills", "skill", "plugins", "hehe", "help", "quit",
-    "exit",
+    "jobs", "reload", "agentsmd", "sys", "plugins", "hehe", "help", "quit", "exit",
 ];
-
-fn s(v: &serde_json::Value, key: &str) -> String {
-    v.get(key)
-        .and_then(|x| x.as_str())
-        .unwrap_or_default()
-        .to_string()
-}
 
 impl GrayApp {
     /// Lazily spawn (or respawn) the thread's engine and run the bootstrap
@@ -118,7 +103,6 @@ impl GrayApp {
             Ok(engine) => {
                 let mut eng = Eng {
                     engine,
-                    hello: None,
                     session_id: thread.session.as_ref().map(|(_, sid)| sid.clone()),
                     status: None,
                     last_usage: None,
@@ -371,8 +355,7 @@ impl GrayApp {
         self.engine_command(&tid, cmd);
     }
 
-    /// The IDE-local command map, extracted from `slash` unchanged.
-    fn local_slash(&self, name: &str, arg: &str) -> Option<Cmd> {
+    pub(super) fn local_slash(&self, name: &str, arg: &str) -> Option<Cmd> {
         let arg = arg.to_string();
         Some(match name {
             "new" => Cmd::NewThread,
@@ -539,11 +522,6 @@ impl GrayApp {
             }
         }
         match s(&v, "type").as_str() {
-            "hello" => {
-                if let Some(e) = self.engines.get_mut(tid) {
-                    e.hello = Some(v);
-                }
-            }
             "turn_start" => {
                 if let Some(e) = self.engines.get_mut(tid) {
                     e.turn_active = true;
@@ -659,7 +637,7 @@ impl GrayApp {
                     cx,
                 );
             }
-            "result" => self.engine_result(tid, &v, window, cx),
+            "result" => self.engine_result(tid, &v),
             "error" => self.activity(tid, "error", "Error", &s(&v, "message")),
             _ => {}
         }
@@ -668,13 +646,7 @@ impl GrayApp {
 
     /// `result` rows: correlate to the request via `pending`. A `queued:true`
     /// ack keeps the pending entry for the deferred second result.
-    fn engine_result(
-        &mut self,
-        tid: &str,
-        v: &serde_json::Value,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    fn engine_result(&mut self, tid: &str, v: &serde_json::Value) {
         let ok = v.get("ok").and_then(|x| x.as_bool()).unwrap_or(false);
         if v.get("queued").and_then(|x| x.as_bool()) == Some(true) {
             // The request landed mid-turn: gray will steer it in or run it
@@ -721,7 +693,6 @@ impl GrayApp {
                                                 .collect()
                                         })
                                         .unwrap_or_default(),
-                                    surface: s(c, "surface"),
                                     source: s(c, "source"),
                                 })
                             })
@@ -730,14 +701,6 @@ impl GrayApp {
                     .unwrap_or_default();
                 if let Some(e) = self.engines.get_mut(tid) {
                     e.commands = cmds;
-                }
-            }
-            Some(ReqKind::Models) => {
-                if let Some(cat) = v.get("catalog")
-                    && let Some(list) = provider::parse_model_catalog(cat)
-                {
-                    self.model_catalog
-                        .finish_loading(Some(list), Instant::now());
                 }
             }
             Some(ReqKind::Sessions) => {
@@ -812,7 +775,7 @@ impl GrayApp {
                     self.toast(format!("Model not set: {}", s(v, "error")), true);
                 }
             }
-            Some(ReqKind::Approve) | Some(ReqKind::Interrupt) | Some(ReqKind::Shutdown) => {}
+            Some(ReqKind::Approve) | Some(ReqKind::Interrupt) => {}
             Some(ReqKind::Prompt) | Some(ReqKind::Command) | None => {
                 if !ok {
                     let err = s(v, "error");
@@ -822,8 +785,6 @@ impl GrayApp {
                 }
             }
         }
-        let _ = window;
-        let _ = cx;
     }
 
     /// `ask` event → the approval card. `answers` maps each question id to the

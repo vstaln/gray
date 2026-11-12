@@ -654,15 +654,11 @@ impl GrayApp {
             ));
         }
         items.push((k("Code viewer"), k("View"), Cmd::ToggleViewer));
-        for b in [
-            ("none", "None"),
-            ("andromeda", "Andromeda"),
-            ("bluemarble", "Blue Marble"),
-        ] {
+        for &(id, label) in BACKGROUNDS {
             items.push((
-                format!("Background: {}", b.1),
+                format!("Background: {label}"),
                 k("Theme"),
-                Cmd::SetBackground(b.0.into()),
+                Cmd::SetBackground(id.into()),
             ));
         }
         if let Some(root) = self.work_root() {
@@ -743,6 +739,8 @@ impl GrayApp {
             k("Settings"),
             Cmd::SetAutoAccept(false),
         ));
+        items.push((k("Autosave: On"), k("Settings"), Cmd::SetAutosave(true)));
+        items.push((k("Autosave: Off"), k("Settings"), Cmd::SetAutosave(false)));
         if self.pending_approval.is_some() {
             items.push((k("Approve pending action"), k("Action"), Cmd::Approve(true)));
             items.push((k("Reject pending action"), k("Action"), Cmd::Approve(false)));

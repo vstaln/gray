@@ -12,7 +12,7 @@ pub(crate) struct HeldSummary {
     pub(crate) model: String,
     pub(crate) anchor: Option<Message>,
     pub(crate) started: Instant,
-    pub(crate) task: tokio::task::JoinHandle<Result<String, CoreError>>,
+    pub(crate) task: tokio::task::JoinHandle<Result<(String, crate::event::Usage), CoreError>>,
 }
 
 impl Drop for HeldSummary {
@@ -35,7 +35,12 @@ impl HeldSummary {
             return Some("model");
         }
         let threshold = compaction_threshold(agent)?;
-        let keep = compaction_keep(agent);
+        let keep = crate::agent_compact::retained_message_budget(
+            agent.compact_keep,
+            agent.context_window,
+            agent.compact_reserve,
+            agent.compact_ceiling,
+        );
         let tail_limit = keep.saturating_mul(2).max(30_000).min(threshold / 4);
         (crate::agent_compact::est_tokens(&agent.messages[self.covered..]) > tail_limit)
             .then_some("tail")
@@ -115,17 +120,6 @@ fn compaction_threshold(agent: &Agent) -> Option<usize> {
             .compact_ceiling
             .map_or(threshold, |ceiling| threshold.min(ceiling)),
     )
-}
-
-fn compaction_keep(agent: &Agent) -> usize {
-    let budget = agent.compact_keep.unwrap_or(match agent.context_window {
-        None => crate::compact::RETAINED_MESSAGE_TOKEN_BUDGET,
-        Some(window) => crate::compact::RETAINED_MESSAGE_TOKEN_BUDGET
-            .min(window.saturating_sub(crate::agent_compact::COMPACT_RESERVE_TOKENS)),
-    });
-    agent.compact_ceiling.map_or(budget, |ceiling| {
-        budget.min(ceiling / crate::compact::PRICE_CLIFF_KEEP_DIVISOR)
-    })
 }
 
 fn prefix_digest(messages: &[Message]) -> u64 {

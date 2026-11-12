@@ -92,8 +92,11 @@ impl LazySidecarPlugin {
             .await
     }
 
-    fn claims(&self, hook: &str) -> bool {
-        self.manifest.hooks.iter().any(|h| h == hook)
+    async fn hook(&self, name: &str) -> Option<&SidecarPlugin> {
+        if !self.manifest.claims(name) {
+            return None;
+        }
+        self.live().await.ok()
     }
 
     pub fn set_capabilities(&self, granted: Vec<String>) {
@@ -157,23 +160,11 @@ impl Plugin for LazySidecarPlugin {
     }
 
     async fn prompt_context(&self, cwd: &str) -> Option<String> {
-        if !self.claims("prompt/context") {
-            return None;
-        }
-        self.live().await.ok()?.prompt_context(cwd).await
-    }
-
-    async fn compact_before(&self) {
-        if !self.claims("compact/before") {
-            return;
-        }
-        if let Ok(p) = self.live().await {
-            p.compact_before().await
-        }
+        self.hook("prompt/context").await?.prompt_context(cwd).await
     }
 
     async fn tool_before(&self, name: &str, args: &Value) -> ToolBefore {
-        if !self.claims("tool/before") {
+        if !self.manifest.claims("tool/before") {
             return ToolBefore::Allow;
         }
         match self.live().await {
@@ -191,34 +182,31 @@ impl Plugin for LazySidecarPlugin {
     }
 
     async fn input_submit(&self, text: &str) -> InputSubmit {
-        if !self.claims("input/submit") {
-            return InputSubmit::Pass;
-        }
-        match self.live().await {
-            Ok(p) => p.input_submit(text).await,
-            Err(_) => InputSubmit::Pass,
+        match self.hook("input/submit").await {
+            Some(p) => p.input_submit(text).await,
+            None => InputSubmit::Pass,
         }
     }
 
     async fn agent_before_start(&self) -> Option<String> {
-        if !self.claims("agent/before_start") {
-            return None;
-        }
-        self.live().await.ok()?.agent_before_start().await
+        self.hook("agent/before_start")
+            .await?
+            .agent_before_start()
+            .await
     }
 
     async fn context_build(&self, messages: &[Message]) -> Option<Vec<Message>> {
-        if !self.claims("context/build") {
-            return None;
-        }
-        self.live().await.ok()?.context_build(messages).await
+        self.hook("context/build")
+            .await?
+            .context_build(messages)
+            .await
     }
 
     async fn tool_after(&self, name: &str, output: &ToolOutput) -> Option<ToolOutput> {
-        if !self.claims("tool/after") {
-            return None;
-        }
-        self.live().await.ok()?.tool_after(name, output).await
+        self.hook("tool/after")
+            .await?
+            .tool_after(name, output)
+            .await
     }
 
     async fn run_command(

@@ -1,23 +1,6 @@
 use std::io::{IsTerminal, Write};
 
-pub(crate) fn strip_ansi(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut chars = s.chars();
-    while let Some(c) = chars.next() {
-        if c == '\x1b' {
-            if chars.next() == Some('[') {
-                for t in chars.by_ref() {
-                    if ('\u{40}'..='\u{7e}').contains(&t) {
-                        break;
-                    }
-                }
-            }
-        } else {
-            out.push(c);
-        }
-    }
-    out
-}
+pub(crate) use gray_tools::shell::view::strip_ansi;
 
 pub fn sanitize_user_text(text: &str) -> String {
     strip_ansi(text)

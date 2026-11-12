@@ -49,26 +49,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 pub use config::Config;
-pub use print::run_print_mode;
 pub use profile::{build_registry, take_profile_warnings};
 pub use repl::{ReplCommand, parse_command, run_repl_mode};
 pub use tui::{clear_screen, print_wrapped};
-
-pub const LEGACY_SYS_PROMPT: &str = r#"<!--
-Unreadable note: this HTML comment stays in the file but is stripped before
-the prompt reaches the model — only the text after this note reaches it.
-
-This file IS the stored system prompt, sent verbatim every turn with no
-runtime context appended. Only what the model can't already know: the
-tools describe themselves and the task says the rest.
-Per turn gray may append ephemeral context: <project_context>, the nearest
-AGENTS.md / CLAUDE.md above the working directory in a trusted project, and
-plugin docs. Lean mode — the default — keeps the project rules and skips
-plugin docs. Opt back in with "lean": false or GRAY_LEAN=0. Edit with `/agentsmd`
-(Ctrl-S save & apply, Ctrl-R reset to this default, Ctrl-X cancel).
--->
-You are Gray, running on the user's machine.
-"#;
 
 pub const DEFAULT_SYS_PROMPT: &str = r#"<!--
 Gray generated this file and refreshes it when the shipped default changes —
@@ -123,7 +106,7 @@ pub fn load_or_create_system_prompt_at(path: &Path) -> anyhow::Result<String> {
             }
             return Ok(body.to_string());
         }
-        if file == DEFAULT_SYS_PROMPT || file == LEGACY_SYS_PROMPT {
+        if file == DEFAULT_SYS_PROMPT {
             let _ = std::fs::write(path, stamped_system_prompt(&file));
         }
         return Ok(file);
@@ -199,6 +182,25 @@ fn cache_warm_policy(
             })
         }),
     })
+}
+
+pub(crate) fn sync_context_budget(agent: &mut gray_core::agent::Agent, config: &Config) {
+    let model = config.model.as_deref().unwrap_or("");
+    let window = crate::setup::context::resolve_model_context_length(model);
+    let reserve = crate::setup::context::user_reserve_tokens_for(window);
+    let (ceiling, price_cliff) = crate::compact::ceiling_for(
+        config.compact_at,
+        window,
+        reserve,
+        crate::setup::model_price_cliff(model).map(|c| c as usize),
+    );
+    agent.set_context_budget(
+        window,
+        reserve,
+        crate::setup::context::user_keep_for(window),
+        ceiling,
+        price_cliff,
+    );
 }
 
 pub async fn build_agent(
@@ -370,7 +372,7 @@ async fn build_agent_inner(
         session_id: session_id.map(str::to_string),
         cwd: cwd.to_path_buf(),
 
-        system_prompt: gray_plugin::builder::SystemPrompt::Build({
+        system_prompt: {
             let session_cwd = cwd.to_path_buf();
             Box::new(
                 move |_registry: &gray_tools::Registry, manifests: &[gray_plugin::Manifest]| {
@@ -403,7 +405,7 @@ async fn build_agent_inner(
                     prompt
                 },
             )
-        }),
+        },
 
         extra_plugins: extra_surface_plugins(config, spawn_plugins),
 
@@ -411,7 +413,6 @@ async fn build_agent_inner(
         host_handler: Some(host::default_handler(cwd.to_path_buf())),
         profile_path: "gray.yml".to_string(),
         abort_on_spawn_failure: true,
-        wrap_executor: None,
         dynamic_provider_profile: dynamic.as_ref().map(|provider| provider.profile().clone()),
         dynamic_credential_source: dynamic
             .as_ref()
@@ -433,20 +434,10 @@ async fn build_agent_inner(
         }
     }
 
-    let mut agent = if config.bare {
-        agent
-    } else {
-        let window = crate::setup::context::resolve_model_context_length(model);
-        let (ceiling, price_cliff) = crate::compact::ceiling_for(
-            config.compact_at,
-            window,
-            crate::setup::context::user_reserve_tokens_for(window),
-            crate::setup::model_price_cliff(model).map(|c| c as usize),
-        );
-        agent
-            .with_compaction_budget(config.context_reserve, config.context_keep)
-            .with_compact_ceiling(ceiling, price_cliff)
-    };
+    let mut agent = agent;
+    if !config.bare {
+        sync_context_budget(&mut agent, config);
+    }
 
     agent.set_prefix_rewrite_ok(!config.uses_plugin_credentials() || plugin_warm_replay);
 
@@ -504,7 +495,9 @@ pub struct Cli {
         short = 'p',
         long = "print",
         value_name = "PROMPT",
-        help = "One-shot print mode: answer PROMPT ('-' reads stdin) and exit"
+        num_args = 0..=1,
+        default_missing_value = "-",
+        help = "One-shot print mode: answer PROMPT ('-' or no value reads stdin) and exit"
     )]
     pub print: Option<String>,
 
@@ -587,6 +580,12 @@ pub struct Cli {
     pub dump_manifest: bool,
 
     #[arg(
+        long = "dump-protocol",
+        help = "Print the `gray --stdio` protocol reference as markdown and exit"
+    )]
+    pub dump_protocol: bool,
+
+    #[arg(
         long = "dump-models",
         value_name = "MODE",
         num_args = 0..=1,
@@ -604,7 +603,7 @@ pub struct Cli {
 
     #[arg(
         long,
-        conflicts_with_all = ["print", "input_json", "json", "dump_manifest", "dump_models", "skill"],
+        conflicts_with_all = ["print", "input_json", "json", "dump_manifest", "dump_protocol", "dump_models", "skill"],
         help = "Serve the persistent NDJSON machine protocol on stdin/stdout (for embedding surfaces like gray-gui)"
     )]
     pub stdio: bool,

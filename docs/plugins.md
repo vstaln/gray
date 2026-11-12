@@ -100,7 +100,7 @@ forms) lives in `PLUGIN-CONTRACT.md` at the root of the plugin source
 tree (`grayplugins/`).
 
 Protocol 2.0 adds mutating events, each claims-gated by `hooks` like the
-v1 methods (unclaimed = no IPC, pre-2.0 sidecars are never sent them):
+v1 methods (unclaimed = no IPC):
 
 - `input/submit` — `{"text","session"}` → `{text}` rewrite,
   `{handled: true}` swallow (no turn, nothing recorded), else pass.
@@ -208,6 +208,23 @@ For the args `{"name": "e2e-theme", "model": "claude-haiku-5-5",
 "effort": "max", "prompt": "verify the theme fixes\nmore"}` the header reads
 `Started agent e2e-theme · Haiku 5.5 · max`, with `verify the theme fixes` on
 the line under it.
+
+## Composer actions
+
+A manifest can bind keys in the input box to a plugin command:
+
+```json
+"composer_actions": [
+  {"keys": ["ctrl+space", "f8"], "argv": ["dictate", "6"], "busy": "listening, then transcribing"}
+]
+```
+
+Pressing a key runs the plugin's CLI argv followed by `argv`. While it runs,
+the input box shows `busy` above it and a blinking prompt glyph, and Esc
+kills it. Trimmed stdout is inserted at the caret. A non-zero exit or empty
+output shows the last line of stderr as an error. Keys already bound in
+`keybindings.json` win over plugin keys. The plugin needs a CLI entry
+(`cli_argv` in the lock), and actions load at startup.
 
 ## Semantics
 

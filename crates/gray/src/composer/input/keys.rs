@@ -31,6 +31,9 @@ pub(crate) fn dispatch_bindings(tui: &mut Tui, ev: &KeyEvent, bindings: &[Bindin
     {
         return out;
     }
+    if bindings.is_empty() && tui.plugin_action_key(ev) {
+        return KeyOutcome::Edited;
+    }
     for b in bindings {
         match b {
             Binding::Command(cmd) => return KeyOutcome::Command(cmd.clone()),
@@ -76,6 +79,9 @@ fn apply(tui: &mut Tui, a: Action) -> Option<KeyOutcome> {
             edited
         }
         Action::SelectCancel => {
+            if tui.action.cancel() {
+                return edited;
+            }
             if !popup {
                 return None;
             }
@@ -91,7 +97,12 @@ fn apply(tui: &mut Tui, a: Action) -> Option<KeyOutcome> {
         }
         Action::Clear => Some(Clear),
         Action::Exit => (!super::has_draft(tui)).then_some(Exit),
-        Action::Interrupt => Some(Interrupt),
+        Action::Interrupt => {
+            if tui.action.cancel() {
+                return edited;
+            }
+            Some(Interrupt)
+        }
         Action::PasteClipboard => {
             super::paste_from_system_clipboard(tui);
             tui.sel = 0;
@@ -104,7 +115,11 @@ fn apply(tui: &mut Tui, a: Action) -> Option<KeyOutcome> {
         Action::Submit => {
             if let Some((name, _)) = tui.matches.get(tui.sel).cloned() {
                 let cur = tui.textarea.text();
-                if cur != format!("/{name}") && cur != format!("/{name} ") {
+                let typed = cur.trim_end().trim_start_matches('/');
+                let alias = crate::repl::commands::REGISTRY
+                    .iter()
+                    .any(|d| d.name == name && d.aliases.contains(&typed));
+                if !alias && cur != format!("/{name}") && cur != format!("/{name} ") {
                     fill_completion(tui, &name);
                     return edited;
                 }

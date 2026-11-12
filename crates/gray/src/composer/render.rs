@@ -75,11 +75,7 @@ impl Tui {
         out
     }
 
-    pub(crate) fn insert_paragraph(
-        &mut self,
-        lines: &[Line<'static>],
-        bg: Option<ratatui::style::Color>,
-    ) {
+    pub(crate) fn insert_paragraph(&mut self, lines: &[Line<'static>], bg: ratatui::style::Color) {
         if self.modal_open {
             self.modal_pending
                 .push(PendingInsert::Rows(lines.to_vec(), bg));
@@ -93,10 +89,8 @@ impl Tui {
         self.atomic(|t| {
             let _ = draw::settle_band(t);
             let _ = t.terminal.insert_before(height, |buf| {
-                let mut p = Paragraph::new(lines.to_vec());
-                if let Some(bg) = bg {
-                    p = p.block(Block::default().style(Style::default().bg(bg)));
-                }
+                let p = Paragraph::new(lines.to_vec())
+                    .block(Block::default().style(Style::default().bg(bg)));
                 p.render(buf.area, buf);
             });
         });
@@ -162,22 +156,22 @@ impl Tui {
                 TranscriptEntry::Welcome => {
                     let lines = build_welcome_lines(w);
                     self.record_rows(lines.clone());
-                    self.insert_paragraph(&lines, Some(crate::theme::theme().window_bg));
+                    self.insert_paragraph(&lines, crate::theme::theme().window_bg);
                 }
                 TranscriptEntry::UserPrompt(text, attached) => {
                     let lines =
                         crate::composer::transcript::format_user_prompt_lines(text, attached, w);
-                    self.emit_rows(lines, Some(crate::theme::theme().surface_bg));
+                    self.emit_rows(lines, crate::theme::theme().surface_bg);
                 }
                 TranscriptEntry::ToolBox { header, body } => {
                     let lines =
                         crate::composer::transcript::format_tool_box_lines(header.clone(), body, w);
-                    self.emit_rows(lines, Some(crate::theme::theme().surface_bg));
+                    self.emit_rows(lines, crate::theme::theme().surface_bg);
                 }
                 TranscriptEntry::ToolBoxLines { header, body } => {
                     let lines =
                         crate::composer::transcript::format_tool_box_lines_multi(header, body, w);
-                    self.emit_rows(lines, Some(crate::theme::theme().surface_bg));
+                    self.emit_rows(lines, crate::theme::theme().surface_bg);
                 }
                 TranscriptEntry::StyledLines { lines, hyperlinks } => {
                     self.emit_styled(lines.clone(), hyperlinks.clone());
@@ -188,7 +182,7 @@ impl Tui {
                         crate::composer::transcript::prose_width(w),
                         false,
                     );
-                    self.emit_rows(rows, Some(crate::theme::theme().window_bg));
+                    self.emit_rows(rows, crate::theme::theme().window_bg);
                 }
                 TranscriptEntry::Gap(_) => self.gap_owed = true,
                 TranscriptEntry::Mascot => {

@@ -5,11 +5,7 @@ use gray_plugin::lock::{LockEntry, LockFile, lock_path};
 
 use crate::providers::registry::cache_path;
 
-use super::{ProviderRegistry, refresh_plugin};
-
-fn registry_argv() -> Vec<String> {
-    vec!["testdata/provider_registry_plugin.sh".to_string()]
-}
+use super::ProviderRegistry;
 
 fn lock_entry(argv: Vec<String>) -> LockEntry {
     LockEntry {
@@ -37,46 +33,6 @@ fn write_lock(home: &Path, entry: LockEntry) -> anyhow::Result<()> {
     let mut lock = LockFile::load(&path)?;
     lock.plugins.insert("provider-registry".to_string(), entry);
     lock.save(&path)
-}
-
-#[tokio::test]
-async fn malformed_peer_is_omitted_without_hiding_valid_provider() {
-    let home = tempfile::tempdir().unwrap();
-    write_lock(home.path(), lock_entry(registry_argv())).unwrap();
-    let cache = refresh_plugin(home.path(), &lock_entry(registry_argv()))
-        .await
-        .unwrap();
-    assert_eq!(cache.plugins["provider-registry"].providers.len(), 1);
-    assert_eq!(
-        cache.plugins["provider-registry"].providers[0].id,
-        "provider-good"
-    );
-    assert_eq!(cache.plugins["provider-registry"].errors.len(), 1);
-}
-
-#[tokio::test]
-async fn disabled_entry_hides_cached_provider() {
-    let home = tempfile::tempdir().unwrap();
-    let entry = lock_entry(registry_argv());
-    write_lock(home.path(), entry.clone()).unwrap();
-    refresh_plugin(home.path(), &entry).await.unwrap();
-    let auth_ref = "plugin:provider-registry:provider-good:example-login";
-    let registry = ProviderRegistry::load_cached(home.path());
-    let installed = registry
-        .resolve("provider-registry:provider-good", auth_ref)
-        .expect("provider resolves while enabled");
-    assert_eq!(installed.auth_ref(), auth_ref);
-
-    let mut disabled = entry;
-    disabled.enabled = false;
-    write_lock(home.path(), disabled.clone()).unwrap();
-    refresh_plugin(home.path(), &disabled).await.unwrap();
-    let registry = ProviderRegistry::load_cached(home.path());
-    assert!(
-        registry
-            .resolve("provider-registry:provider-good", auth_ref)
-            .is_none()
-    );
 }
 
 #[test]
@@ -127,24 +83,6 @@ fn provider_cache_shrinks_entries_for_removed_provider_plugins() {
 
     let reloaded = crate::providers::ProviderCache::load(&cache_path(home.path()));
     assert!(reloaded.plugins.is_empty());
-}
-
-#[tokio::test]
-async fn resolved_provider_carries_lock_spawn_argv() {
-    let home = tempfile::tempdir().unwrap();
-    let argv = registry_argv();
-    let entry = lock_entry(argv.clone());
-    write_lock(home.path(), entry.clone()).unwrap();
-    refresh_plugin(home.path(), &entry).await.unwrap();
-    let registry = ProviderRegistry::load_cached(home.path());
-    let installed = registry
-        .resolve(
-            "provider-registry:provider-good",
-            "plugin:provider-registry:provider-good:example-login",
-        )
-        .expect("provider resolves");
-    assert_eq!(installed.argv, argv);
-    assert!(!installed.argv.is_empty());
 }
 
 fn write_user_global_provider(user: &Path, global: bool) {

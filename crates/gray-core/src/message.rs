@@ -145,7 +145,7 @@ impl ContentBlock {
                     serde_json::to_string(protocol).unwrap_or_else(|_| "\"unknown\"".into());
                 let kind_json =
                     serde_json::to_string(kind).unwrap_or_else(|_| "\"unknown\"".into());
-                let payload_json = canonical_json(payload);
+                let payload_json = payload.to_string();
                 let body = format!(
                     "<gray_structured_input protocol={} version={} kind={}>\n{}\n</gray_structured_input>",
                     protocol_json, version, kind_json, payload_json
@@ -154,34 +154,6 @@ impl ContentBlock {
             }
             _ => None,
         }
-    }
-}
-
-fn canonical_json(value: &serde_json::Value) -> String {
-    match value {
-        serde_json::Value::Object(values) => {
-            let mut keys: Vec<&String> = values.keys().collect();
-            keys.sort();
-            let body = keys
-                .into_iter()
-                .map(|key| {
-                    let encoded_key = serde_json::to_string(key).unwrap_or_else(|_| "\"\"".into());
-                    let encoded_value = canonical_json(&values[key]);
-                    format!("{encoded_key}:{encoded_value}")
-                })
-                .collect::<Vec<_>>()
-                .join(",");
-            format!("{{{body}}}")
-        }
-        serde_json::Value::Array(values) => {
-            let body = values
-                .iter()
-                .map(canonical_json)
-                .collect::<Vec<_>>()
-                .join(",");
-            format!("[{body}]")
-        }
-        other => other.to_string(),
     }
 }
 
@@ -267,11 +239,7 @@ impl Message {
                 ContentBlock::ToolUse { name, args, .. } => {
                     name.len() + serde_json::to_string(args).map(|s| s.len()).unwrap_or(0)
                 }
-                ContentBlock::Thinking {
-                    text,
-                    encrypted_content,
-                    ..
-                } => text.len() + encrypted_content.as_deref().map_or(0, str::len),
+                ContentBlock::Thinking { text, .. } => text.len(),
                 ContentBlock::Image { data, .. } | ContentBlock::Media { data, .. } => data.len(),
             };
             if n > 0 {

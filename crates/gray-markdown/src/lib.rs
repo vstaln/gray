@@ -22,17 +22,6 @@ pub use style::{MarkdownStyle, Palette, TableBorders, ratatui_color_to_rgb, set_
 pub use syntax::{Syntect, get_syntect, syntect_to_ratatui_fg};
 pub use syntect;
 
-#[cfg(test)]
-pub fn render_markdown_ratatui_full(
-    text: &str,
-    ms: MarkdownStyle,
-    pretty: bool,
-    syntect: Option<&Syntect>,
-) -> (MarkdownRenderOutput, Option<Checkpoint>) {
-    let mut buffers = MarkdownBuffers::new();
-    render_markdown_ratatui_with_buffers_width(text, ms, pretty, &mut buffers, syntect, None)
-}
-
 pub fn render_markdown_ratatui_with_buffers_width(
     text: &str,
     ms: MarkdownStyle,
@@ -47,17 +36,7 @@ pub fn render_markdown_ratatui_with_buffers_width(
     let next_link_id = parsed.next_link_id;
     let (mut output, checkpoint) = parsed.render_ratatui(pretty);
 
-    let (extra_links, next_id) =
-        url_scan::detect_plain_urls(&output.lines, &output.hyperlinks, next_link_id);
-    output.hyperlinks.extend(extra_links);
-    let (file_links, _post_scan_next_id) =
-        url_scan::detect_file_paths(&output.lines, &output.hyperlinks, next_id);
-    output.hyperlinks.extend(file_links);
-    output
-        .hyperlinks
-        .sort_by_key(|h| (h.line_index, h.column_range.start));
-
-    url_scan::apply_link_styling(&mut output.lines, &output.hyperlinks);
+    url_scan::attach_links(&mut output, next_link_id);
     (output, checkpoint)
 }
 

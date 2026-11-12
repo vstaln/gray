@@ -52,7 +52,13 @@ async fn run() -> anyhow::Result<()> {
     gray::logging::init();
     install_panic_hook();
     let _ = crossterm::terminal::disable_raw_mode();
-    let cli = Cli::parse();
+    let mut cli = Cli::parse();
+    if cli.print.as_deref() == Some("-")
+        && let Some(gray::Commands::External(words)) = &cli.command
+    {
+        cli.print = Some(words.join(" "));
+        cli.command = None;
+    }
 
     if cli.skill {
         print!("{}", include_str!("../gray-skill.md"));
@@ -72,6 +78,10 @@ async fn run() -> anyhow::Result<()> {
 
     if let Some(gray::Commands::Spill { cmd }) = &cli.command {
         return gray::spill::run_cli(cmd);
+    }
+    if cli.dump_protocol {
+        print!("{}", gray::stdio::protocol::render());
+        return Ok(());
     }
     if cli.dump_manifest {
         match gray::build_registry().await {
@@ -246,7 +256,6 @@ async fn run() -> anyhow::Result<()> {
                 }
                 if everything {
                     let home = gray::plugin_cli::home()?;
-                    // Installs from before the rename still sit under "qol".
                     let name = if home.join("plugins/quality-of-life").exists() {
                         "quality-of-life"
                     } else {
@@ -300,11 +309,19 @@ async fn run() -> anyhow::Result<()> {
         gray::update::auto::spawn_background(config.bare);
         let piped;
         let prompt = if prompt == "-" {
+            if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+                eprintln!("gray: -p needs a prompt argument or piped stdin");
+                std::process::exit(2);
+            }
             piped = std::io::read_to_string(std::io::stdin())?;
             piped.as_str()
         } else {
             prompt
         };
+        if prompt.trim().is_empty() {
+            eprintln!("gray: -p got an empty prompt");
+            std::process::exit(2);
+        }
         let result = if cli.json {
             gray::print::run_print_mode_json(
                 &config,

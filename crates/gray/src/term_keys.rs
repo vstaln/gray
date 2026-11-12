@@ -7,16 +7,6 @@ use crossterm::event::{
 const MODIFY_OTHER_KEYS_ON: &str = "\x1b[>4;2m";
 const MODIFY_OTHER_KEYS_OFF: &str = "\x1b[>4;0m";
 
-pub fn push_sequence(flags: KeyboardEnhancementFlags) -> String {
-    use crossterm::Command as _;
-
-    let mut out = String::new();
-    PushKeyboardEnhancementFlags(flags)
-        .write_ansi(&mut out)
-        .expect("write to String cannot fail");
-    out
-}
-
 fn write_mode(seq: &str) {
     use std::io::Write as _;
     let mut out = stdout();
@@ -118,10 +108,6 @@ impl KeyboardEnhancementGuard {
             pushed,
             modify_other_keys,
         }
-    }
-
-    pub fn active(&self) -> bool {
-        self.pushed
     }
 }
 

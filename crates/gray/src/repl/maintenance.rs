@@ -36,7 +36,7 @@ pub(crate) async fn handle_update(tui: &TuiOpt, arg: Option<String>) {
     let latest = match check {
         Ok(Ok(v)) => v,
         Ok(Err(e)) => {
-            super::say(shared, &format!("update check failed: {e}"));
+            super::say_err(shared, &format!("update check failed: {e}"));
             return;
         }
         Err(_) => {
@@ -76,7 +76,7 @@ pub(crate) async fn handle_update(tui: &TuiOpt, arg: Option<String>) {
                 &format!("updated to {latest} — `/restart` to run it (the gateway too)"),
             );
         }
-        Err(e) => super::say(shared, &format!("update failed: {e}")),
+        Err(e) => super::say_err(shared, &format!("update failed: {e}")),
     }
 }
 
@@ -93,10 +93,12 @@ pub(crate) async fn restart_with(tui: &TuiOpt, resume: bool) {
             super::say(shared, "gateway is not running — nothing to restart there")
         }
         GatewayRestart::Skipped => super::say(shared, "gateway: skipped (scratch GRAY_HOME)"),
-        GatewayRestart::Failed(e) => super::say(shared, &format!("gateway restart failed: {e}")),
+        GatewayRestart::Failed(e) => {
+            super::say_err(shared, &format!("gateway restart failed: {e}"))
+        }
     }
 
-    super::drain_in_flight_turn(std::time::Duration::from_millis(1500)).await;
+    super::drain_in_flight_turn(super::TURN_DRAIN_TIMEOUT).await;
 
     let exe = match crate::update::exe_watch::on_disk_exe() {
         Ok(p) => p,
@@ -294,6 +296,56 @@ async fn confirm_yn() -> bool {
             ..
         }))
     )
+}
+
+pub(crate) fn run_modal_child(
+    prog: &str,
+    rest: &[String],
+    bg: Option<&crate::setup::BackgroundSnapshot>,
+) -> std::io::Result<std::process::ExitStatus> {
+    let bg = bg
+        .cloned()
+        .unwrap_or_else(crate::setup::BackgroundSnapshot::default_initial);
+    let (_session, mut terminal) = crate::setup::open_modal()?;
+    terminal.draw(|f| crate::setup::render_dimmed_background(f, &bg))?;
+    let mut child = std::process::Command::new(prog);
+    child.args(rest).env("GRAY_MODAL_THEME", modal_theme_env());
+    if let Ok(exe) = crate::update::exe_watch::on_disk_exe() {
+        child.env("GRAY_EXE", exe);
+    }
+    child.status()
+}
+
+/// Theme colors for a child that draws its own UI: `role=#rrggbb,...`.
+pub(crate) fn modal_theme_env() -> String {
+    let th = crate::theme::theme();
+    let roles = [
+        ("surface_bg", th.surface_bg),
+        ("raised_bg", th.raised_bg),
+        ("input_bg", th.input_bg),
+        ("text_faint", th.text_faint),
+        ("text_dim", th.text_dim),
+        ("text_muted", th.text_muted),
+        ("text_body", th.text_body),
+        ("text_bright", th.text_bright),
+        ("accent", th.accent),
+        ("accent_soft", th.accent_soft),
+        ("on_selection", th.on_selection),
+        ("success", th.success),
+        ("error", th.error),
+        ("rose", th.rose),
+        ("tool_accent", th.tool_accent),
+        ("tool_command", th.tool_command),
+        ("tool_dim", th.tool_dim),
+    ];
+    roles
+        .iter()
+        .filter_map(|(k, c)| match c {
+            ratatui::style::Color::Rgb(r, g, b) => Some(format!("{k}=#{r:02x}{g:02x}{b:02x}")),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 pub(crate) fn with_terminal<T>(

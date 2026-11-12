@@ -33,9 +33,11 @@ pub(super) fn is_quota_code(code: &str) -> bool {
     code.split(';').next() == Some(QUOTA_VENDOR_CODE)
 }
 
-pub(super) fn quota_hinted(text: &str) -> bool {
-    let lower = text.to_lowercase();
-    QUOTA_EXHAUSTED_HINTS.iter().any(|h| lower.contains(h))
+pub(super) fn quota_hinted(texts: &[&str]) -> bool {
+    let lowered: Vec<String> = texts.iter().map(|t| t.to_lowercase()).collect();
+    QUOTA_EXHAUSTED_HINTS
+        .iter()
+        .any(|h| lowered.iter().any(|t| t.contains(h)))
 }
 
 pub(super) fn quota_vendor_code(orig: Option<String>, resets_in: Option<Duration>) -> String {
@@ -55,24 +57,10 @@ pub fn is_quota_exhausted(err: &ProviderError) -> bool {
     {
         return true;
     }
-    matches!(err.class(), ProviderError::Auth(msg) | ProviderError::BadRequest(msg) | ProviderError::RateLimited(msg) if quota_hinted(msg))
-}
-
-pub fn quota_reset_in(err: &ProviderError) -> Option<Duration> {
-    if let Some(code) = err.detail().and_then(|d| d.vendor_code.as_deref())
-        && is_quota_code(code)
-    {
-        return code
-            .split(';')
-            .skip(1)
-            .find_map(|p| p.strip_prefix("reset_in="))
-            .and_then(|v| v.parse::<u64>().ok())
-            .map(Duration::from_secs);
+    if matches!(err.class(), ProviderError::Quota { .. }) {
+        return true;
     }
-    if is_quota_exhausted(err) {
-        return parse_quota_reset_delay(&err.to_string());
-    }
-    None
+    matches!(err.class(), ProviderError::Auth(msg) | ProviderError::BadRequest(msg) | ProviderError::RateLimited(msg) if quota_hinted(&[msg.as_str()]))
 }
 
 pub(super) fn error_body_code(body: &str) -> Option<String> {
@@ -93,20 +81,27 @@ pub(crate) fn classify_http_error(
     cf_ray: Option<&str>,
     req_id: Option<&str>,
 ) -> ProviderError {
-    let class = classify_http_error_inner(status, snippet, cf_ray, req_id);
+    let mut class = classify_http_error_inner(status, snippet, cf_ray, req_id);
     let vendor_message = error_body_message(snippet);
     let mut vendor_code = error_body_code(snippet);
     let mut resets_in = None;
-    if matches!(
-        class.class(),
-        ProviderError::Auth(_) | ProviderError::BadRequest(_)
-    ) && quota_hinted(snippet)
+    if matches!(class.class(), ProviderError::Quota { .. })
+        || (matches!(
+            class.class(),
+            ProviderError::Auth(_) | ProviderError::BadRequest(_)
+        ) && quota_hinted(&[snippet]))
     {
         resets_in = vendor_message
             .as_deref()
             .and_then(parse_quota_reset_delay)
             .or_else(|| parse_quota_reset_delay(snippet));
         vendor_code = Some(quota_vendor_code(vendor_code, resets_in));
+        if let ProviderError::Quota {
+            resets_in: slot, ..
+        } = &mut class
+        {
+            *slot = resets_in;
+        }
     }
     ProviderError::Detailed {
         class: Box::new(class),
@@ -177,12 +172,18 @@ pub(super) fn classify_http_error_inner(
     if is_unsupported {
         return ProviderError::BadRequest(msg);
     }
-    let quota_exhausted = QUOTA_EXHAUSTED_HINTS.iter().any(|h| lower.contains(h));
+    let quota_exhausted = quota_hinted(&[snippet]);
     match status.as_u16() {
         401 | 403 => ProviderError::Auth(msg),
 
-        402 => ProviderError::Auth(msg),
-        429 if quota_exhausted => ProviderError::Auth(msg),
+        402 => ProviderError::Quota {
+            message: msg,
+            resets_in: None,
+        },
+        429 if quota_exhausted => ProviderError::Quota {
+            message: msg,
+            resets_in: None,
+        },
         429 => ProviderError::RateLimited(msg),
 
         413 => ProviderError::ContextOverflow(format!(
@@ -195,15 +196,11 @@ pub(super) fn classify_http_error_inner(
     }
 }
 
-pub(crate) fn is_retryable_error(err: &ProviderError) -> bool {
-    err.retryable()
-}
-
 pub(super) fn should_retry_request(err: &ProviderError, http_status: u16, attempt: usize) -> bool {
     if is_quota_exhausted(err) {
         return false;
     }
-    if is_retryable_error(err) {
+    if err.retryable() {
         return true;
     }
     http_status == 403 && attempt == 1 && matches!(err.class(), ProviderError::Auth(_))

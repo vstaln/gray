@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use gray_core::agent::{BackgroundJob, ToolContext, ToolExecutor};
 
-use crate::setup::{ManagerItem, ManagerOutcome, ManagerSpec, run_install_manager};
+use crate::setup::{ManagerItem, ManagerSpec, run_install_manager};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Wake {
@@ -136,18 +136,13 @@ pub(crate) fn items(jobs: &[BackgroundJob], wakes: &[Wake], now: i64) -> Vec<Man
         name: format!("job:{}", j.id),
         row: job_row(j),
         lit: !j.stopping,
-        enabled: false,
-
         read_only: j.stopping,
-        needs_setup: false,
     });
     let wake_items = wakes.iter().map(|w| ManagerItem {
         name: format!("wake:{}", w.id),
         row: wake_row(w, now),
         lit: true,
-        enabled: false,
         read_only: false,
-        needs_setup: false,
     });
     job_items.chain(wake_items).collect()
 }
@@ -167,10 +162,7 @@ const JOBS_SPEC: ManagerSpec = ManagerSpec {
     title: "Background",
     empty_hint: "nothing pending \u{2014} no background jobs or scheduled wakes",
     error_verb: "stop failed",
-    supports_toggle: false,
-    supports_remove: true,
-    errors_tab: false,
-    keep_stale_on_relist_error: false,
+    action: "stop",
 };
 
 /// Hard cap on wake-list staleness; a changed jobs.json mtime usually forces
@@ -295,31 +287,21 @@ pub(crate) fn load_wakes(home: &Path, sid: Option<&str>) -> Vec<Wake> {
 }
 
 pub(crate) fn remove(
-    exec: &dyn ToolExecutor,
+    exec: Option<&dyn ToolExecutor>,
     ctx: &ToolContext,
     home: &Path,
     name: &str,
-) -> anyhow::Result<()> {
-    remove_with(exec, ctx, home, name, remove_wake)
-}
-
-fn remove_with(
-    exec: &dyn ToolExecutor,
-    ctx: &ToolContext,
-    home: &Path,
-    name: &str,
-    cron_rm: impl Fn(&Path, &str) -> anyhow::Result<bool>,
 ) -> anyhow::Result<()> {
     if let Some(id) = name.strip_prefix("job:") {
         anyhow::ensure!(
-            exec.cancel_background(ctx, id),
+            exec.is_some_and(|e| e.cancel_background(ctx, id)),
             "job {id} is not running \u{2014} it may have just finished"
         );
         return Ok(());
     }
     if let Some(id) = name.strip_prefix("wake:") {
         anyhow::ensure!(
-            cron_rm(home, id)?,
+            remove_wake(home, id)?,
             "unknown wake {id:?} \u{2014} it may have already fired"
         );
         return Ok(());
@@ -361,26 +343,54 @@ fn cron_remove(home: &Path, id: &str) -> anyhow::Result<bool> {
     anyhow::bail!("{detail}")
 }
 
+/// `/jobs`: the manager modal when there is a TUI and anything pending,
+/// otherwise the one-line dashboard.
+pub(crate) fn show(
+    shared: Option<&crate::composer::SharedTui>,
+    home: &Path,
+    exec: Option<Arc<dyn ToolExecutor>>,
+    ctx: ToolContext,
+) {
+    let jobs = exec
+        .as_ref()
+        .map(|e| e.background_jobs(&ctx))
+        .unwrap_or_default();
+    let wakes = load_wakes(home, ctx.session_id.as_deref());
+    let Some(tui) = shared.filter(|_| !(jobs.is_empty() && wakes.is_empty())) else {
+        super::say(
+            shared,
+            &dashboard(&jobs, &wakes, gray_core::time::now_secs() as i64),
+        );
+        return;
+    };
+    let bg = tui.lock().expect("tui lock").snapshot();
+    match super::with_modal_sync(shared, || run_jobs_modal(Some(&bg), home, exec, ctx)) {
+        Ok(true) => super::say(shared, "background work updated"),
+        Ok(false) => {}
+        Err(e) => super::say_err(shared, &format!("jobs picker failed: {e}")),
+    }
+}
+
 pub(crate) fn run_jobs_modal(
     bg: Option<&crate::setup::BackgroundSnapshot>,
     home: &Path,
-    exec: Arc<dyn ToolExecutor>,
+    exec: Option<Arc<dyn ToolExecutor>>,
     ctx: ToolContext,
 ) -> anyhow::Result<bool> {
     let sid = ctx.session_id.clone();
     run_install_manager(
         bg,
-        None,
         &JOBS_SPEC,
         || {
             let wakes = load_wakes(home, sid.as_deref());
-            let jobs = exec.background_jobs(&ctx);
-            Some(items(&jobs, &wakes, gray_core::time::now_secs() as i64))
+            let jobs = exec
+                .as_ref()
+                .map(|e| e.background_jobs(&ctx))
+                .unwrap_or_default();
+            items(&jobs, &wakes, gray_core::time::now_secs() as i64)
         },
-        |name| remove(exec.as_ref(), &ctx, home, name),
-        |_, _| anyhow::bail!("nothing to toggle here"),
+        |name| remove(exec.as_deref(), &ctx, home, name),
     )
-    .map(ManagerOutcome::into_changed)
 }
 
 pub(crate) fn spawn_footer_poller() {
@@ -467,13 +477,20 @@ pub(crate) fn confirm_quit(exec: Option<&dyn ToolExecutor>, ctx: &ToolContext) -
     warning
 }
 
-pub(crate) async fn stop_all(exec: &dyn ToolExecutor, ctx: &ToolContext) {
+fn cancel_running(exec: &dyn ToolExecutor, ctx: &ToolContext) -> bool {
     let running = exec.background_jobs(ctx);
     if running.is_empty() {
-        return;
+        return false;
     }
     for job in &running {
         exec.cancel_background(ctx, &job.id);
+    }
+    true
+}
+
+pub(crate) async fn stop_all(exec: &dyn ToolExecutor, ctx: &ToolContext) {
+    if !cancel_running(exec, ctx) {
+        return;
     }
     let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
     while !exec.background_jobs(ctx).is_empty() && tokio::time::Instant::now() < deadline {
@@ -485,12 +502,8 @@ pub(crate) fn stop_all_blocking() {
     let Some((exec, ctx)) = crate::host::background_source() else {
         return;
     };
-    let running = exec.background_jobs(&ctx);
-    if running.is_empty() {
+    if !cancel_running(exec.as_ref(), &ctx) {
         return;
-    }
-    for job in &running {
-        exec.cancel_background(&ctx, &job.id);
     }
     let deadline = std::time::Instant::now() + Duration::from_millis(1500);
     while !exec.background_jobs(&ctx).is_empty() && std::time::Instant::now() < deadline {

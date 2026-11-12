@@ -52,21 +52,9 @@ impl CredentialStore {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
             Err(e) => return Err(e.into()),
         };
-        if !raw.contains("\"plugin:") {
-            return Ok(false);
-        }
         // Only act when the raw JSON still holds single-envelope entries:
         // a `plugin:*` object with `credential` but no `accounts` is v1.
-        let Ok(values) = serde_json::from_str::<BTreeMap<String, serde_json::Value>>(&raw) else {
-            return Ok(false);
-        };
-        let has_v1 = values.iter().any(|(k, v)| {
-            k.starts_with("plugin:")
-                && v.is_object()
-                && v.get("credential").is_some()
-                && v.get("accounts").is_none()
-        });
-        if !has_v1 {
+        if !v1_entries(&raw) {
             return Ok(false);
         }
         self.backup_v1()?;
@@ -99,13 +87,7 @@ impl CredentialStore {
         // v1 file so nothing is lost.
         if next.values().any(|e| matches!(e, AuthEntry::PluginPool(_)))
             && let Ok(raw) = std::fs::read_to_string(&self.path)
-            && raw.contains("\"plugin:")
-            && let Ok(values) = serde_json::from_str::<BTreeMap<String, serde_json::Value>>(&raw)
-            && values.iter().any(|(k, v)| {
-                k.starts_with("plugin:")
-                    && v.get("credential").is_some()
-                    && v.get("accounts").is_none()
-            })
+            && v1_entries(&raw)
         {
             let _ = self.backup_v1();
         }
@@ -274,24 +256,6 @@ impl CredentialStore {
         Ok(removed)
     }
 
-    pub fn remove_plugin_owner(&self, plugin: &str) -> anyhow::Result<usize> {
-        let _lock = self.lock()?;
-        let mut store = self.load()?;
-        let prefix = format!("plugin:{plugin}:");
-        let keys: Vec<String> = store
-            .keys()
-            .filter(|key| key.starts_with(&prefix))
-            .cloned()
-            .collect();
-        for key in &keys {
-            store.remove(key);
-        }
-        if !keys.is_empty() {
-            self.replace_locked(&store)?;
-        }
-        Ok(keys.len())
-    }
-
     pub(crate) fn lock(&self) -> anyhow::Result<AuthLock> {
         let parent = self.path.parent().unwrap_or_else(|| Path::new("."));
         #[cfg(unix)]
@@ -329,6 +293,21 @@ impl CredentialStore {
 }
 
 const MAX_AUTH_BYTES: usize = 4 * 1024 * 1024;
+
+fn v1_entries(raw: &str) -> bool {
+    if !raw.contains("\"plugin:") {
+        return false;
+    }
+    let Ok(values) = serde_json::from_str::<BTreeMap<String, serde_json::Value>>(raw) else {
+        return false;
+    };
+    values.iter().any(|(k, v)| {
+        k.starts_with("plugin:")
+            && v.is_object()
+            && v.get("credential").is_some()
+            && v.get("accounts").is_none()
+    })
+}
 
 fn plugin_auth_ref(value: &StoredCredential) -> anyhow::Result<String> {
     let auth_ref = format!(
@@ -385,19 +364,6 @@ fn validate_parent(parent: &Path) -> anyhow::Result<()> {
 #[cfg(test)]
 #[path = "store_tests.rs"]
 mod tests;
-
-/// One pool row for the `/accounts` panel.
-#[derive(Clone, Debug)]
-pub struct PluginAccountRow {
-    pub label: String,
-    pub email: Option<String>,
-    pub cooling: bool,
-    pub cooldown_until: u64,
-    pub last_error: Option<String>,
-    pub request_count: u64,
-    pub last_used_at: u64,
-    pub pinned: bool,
-}
 
 /// The usable pick: pinned wins when it's not cooling, then `least_used`
 /// (oldest use) or `fill_first` (pool order). `None` when the pool is

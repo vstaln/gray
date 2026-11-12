@@ -4,12 +4,9 @@ use gray_core::agent::{AttachedImage, AttachedMedia};
 
 #[derive(Debug)]
 pub struct Shown {
-    pub path: PathBuf,
     pub media_type: String,
 
     pub data: String,
-
-    pub derived_from_video: bool,
 }
 
 #[derive(Debug)]
@@ -49,10 +46,8 @@ pub fn load(path: &Path) -> Result<Shown, ViewError> {
         .map_err(|e| ViewError::Media(path.to_path_buf(), e))?;
     use base64::Engine as _;
     Ok(Shown {
-        path: path.to_path_buf(),
         media_type,
         data: base64::engine::general_purpose::STANDARD.encode(&out),
-        derived_from_video: was_video,
     })
 }
 

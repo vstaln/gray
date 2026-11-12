@@ -65,7 +65,6 @@ pub(crate) fn rate_text(r: &super::super::context::ModelRate, room: usize) -> St
 }
 
 pub(crate) fn price_gradient(i: usize, w: usize) -> ratatui::style::Color {
-    use ratatui::style::Color;
     let t = crate::theme::theme();
     let stops = [t.success, t.accent, t.error_soft];
     let x = if w <= 1 {
@@ -75,13 +74,7 @@ pub(crate) fn price_gradient(i: usize, w: usize) -> ratatui::style::Color {
     };
     let seg = (x * 2.0).min(1.999);
     let (a, b, f) = (stops[seg as usize], stops[seg as usize + 1], seg.fract());
-    match (a, b) {
-        (Color::Rgb(r1, g1, b1), Color::Rgb(r2, g2, b2)) => {
-            let mix = |p: u8, q: u8| (p as f64 + (q as f64 - p as f64) * f).round() as u8;
-            Color::Rgb(mix(r1, r2), mix(g1, g2), mix(b1, b2))
-        }
-        _ => a,
-    }
+    crate::tui::blend_color(a, b, f as f32)
 }
 
 pub(crate) fn known_context(model: &str) -> Option<usize> {
@@ -92,14 +85,4 @@ pub(crate) fn known_context(model: &str) -> Option<usize> {
         .find_map(super::super::context::get_cached_model_context)
 }
 
-pub(crate) fn fit_chars(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
-        return s.to_string();
-    }
-    let keep = max.saturating_sub(1);
-    let mut out: String = s.chars().take(keep).collect();
-    if max > 0 {
-        out.push('…');
-    }
-    out
-}
+pub(crate) use crate::text_width::fit_chars;

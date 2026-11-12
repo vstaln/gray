@@ -26,7 +26,7 @@ impl Tui {
         let box_lines = format_tool_box_lines_multi(&header, &body, w);
         self.history_entries
             .push(crate::composer::TranscriptEntry::ToolBoxLines { header, body });
-        self.emit_rows(box_lines, Some(crate::theme::theme().surface_bg));
+        self.emit_rows(box_lines, crate::theme::theme().surface_bg);
     }
 
     fn insert_tool_box(&mut self, header: Line<'static>, body: Vec<Line<'static>>) {
@@ -36,7 +36,7 @@ impl Tui {
         let box_lines = format_tool_box_lines(header.clone(), &body, w);
         self.history_entries
             .push(crate::composer::TranscriptEntry::ToolBox { header, body });
-        self.emit_rows(box_lines, Some(crate::theme::theme().surface_bg));
+        self.emit_rows(box_lines, crate::theme::theme().surface_bg);
     }
 
     pub(crate) fn push_line_styled(&mut self, line: String, style: Style) {
@@ -144,7 +144,7 @@ impl Tui {
         if all_wrapped.is_empty() {
             return;
         }
-        let bg = Some(crate::theme::theme().window());
+        let bg = crate::theme::theme().window();
         let rows: Vec<crate::composer::BatchedInsert> = all_wrapped
             .into_iter()
             .map(|(line, hls)| (line, hls, bg))
@@ -482,9 +482,10 @@ impl Tui {
                     for block in &msg.content {
                         match block {
                             gray_core::ContentBlock::Thinking { text, .. } => {
-                                let rows = thinking_replay_lines(text);
-                                if !rows.is_empty() {
+                                if !text.trim().is_empty() {
                                     self.ensure_gap();
+                                    let rows =
+                                        thinking_run_rows(text, prose_width(self.width()), false);
                                     self.push_styled_lines_with_hyperlinks(rows, &[], 0);
                                 }
                             }

@@ -25,7 +25,6 @@ async fn run_streaming_cancellable(
     tokio::select! {
         res = &mut run_future => res,
         _ = cancel.cancelled() => {
-            cancel.cancel();
             let observed = tokio::time::timeout(TURN_CANCEL_GRACE, &mut run_future).await;
 
             let preempted = observed.is_err();
@@ -35,6 +34,20 @@ async fn run_streaming_cancellable(
             }
             Err(CoreError::Cancelled)
         }
+    }
+}
+
+fn turn_tool_context(
+    cwd: &std::path::Path,
+    cancel: &tokio_util::sync::CancellationToken,
+    session_state: &Option<SessionState>,
+) -> ToolContext {
+    ToolContext {
+        cwd: cwd.to_path_buf(),
+        cancel: cancel.clone(),
+        session_id: session_state
+            .as_ref()
+            .map(|s| s.session_id.as_str().to_string()),
     }
 }
 
@@ -62,11 +75,7 @@ pub(crate) async fn run_prompt_turn(
     resumable: &mut bool,
 ) -> anyhow::Result<()> {
     super::session::clear_resume_trailer();
-    let (shared, _) = if interactive {
-        (Some(tui.as_ref().expect("interactive implies tui")), ())
-    } else {
-        (None, ())
-    };
+    let shared = interactive.then(|| tui.as_ref().expect("interactive implies tui"));
     let tui_stream = shared.as_ref().map(|(s, _)| (*s).clone());
     if agent.is_none() {
         if *unconfigured {
@@ -166,6 +175,7 @@ pub(crate) async fn run_prompt_turn(
             crate::stdio::take_steer()
                 .or_else(|| steer_queued_input(steer_tui.as_ref()))
                 .or_else(|| steer_direct_send(steer_tui.as_ref(), steer_sid.as_deref()))
+                .or_else(|| steer_inbox(steer_tui.as_ref(), steer_sid.as_deref()))
         }));
         let out_tui = tui_stream.clone();
         ag.set_tool_output_hook(Some(std::sync::Arc::new(move |id: &str, chunk: &[u8]| {
@@ -182,13 +192,7 @@ pub(crate) async fn run_prompt_turn(
 
     let _turn_in_flight = super::mark_turn_in_flight();
     super::session::ensure_session_state(session_state, config, cwd).await;
-    let ctx = ToolContext {
-        cwd: cwd.to_path_buf(),
-        cancel: cancel.clone(),
-        session_id: session_state
-            .as_ref()
-            .map(|s| s.session_id.as_str().to_string()),
-    };
+    let ctx = turn_tool_context(cwd, &cancel, session_state);
     let mut images = std::mem::take(&mut *pending_images);
 
     let link_scan: String = {
@@ -238,24 +242,6 @@ pub(crate) async fn run_prompt_turn(
             )
         }
     };
-
-    {
-        let latest = tui
-            .as_ref()
-            .and_then(|(s, _)| s.lock().ok().and_then(|t| t.latest_usage));
-        tokio::select! {
-            _ = cancel.cancelled() => {}
-            _ = maybe_threshold_compact(
-                agent,
-                config,
-                &mut *session_state,
-                cwd,
-                tui.as_ref().map(|(s, _)| s),
-                latest,
-                &mut initial_count,
-            ) => {}
-        }
-    }
 
     if let Some(s) = &tui_stream {
         s.lock()
@@ -333,28 +319,7 @@ pub(crate) async fn run_prompt_turn(
         )));
     }
 
-    let turn_labels: std::collections::HashMap<String, String> = agent
-        .tool_defs()
-        .iter()
-        .filter_map(|t| {
-            t.label
-                .as_ref()
-                .map(|l| l.trim())
-                .filter(|l| !l.is_empty())
-                .map(|l| (t.name.clone(), l.to_string()))
-        })
-        .collect();
-    let turn_previews: std::collections::HashMap<String, String> = agent
-        .tool_defs()
-        .iter()
-        .filter_map(|t| {
-            t.preview
-                .as_ref()
-                .map(|x| x.trim())
-                .filter(|x| !x.is_empty())
-                .map(|x| (t.name.clone(), x.to_string()))
-        })
-        .collect();
+    let (turn_labels, turn_previews) = super::session::tool_display_maps(agent.tool_defs());
 
     let wire_model = crate::setup::wire_model_for(config)
         .unwrap_or_else(|| config.model.clone().unwrap_or_default());
@@ -444,13 +409,7 @@ pub(crate) async fn run_prompt_turn(
         if let Some(t) = &tui_stream {
             t.lock().expect("tui lock").clear_live_tools();
         }
-        let ctx2 = ToolContext {
-            cwd: cwd.to_path_buf(),
-            cancel: cancel.clone(),
-            session_id: session_state
-                .as_ref()
-                .map(|s| s.session_id.as_str().to_string()),
-        };
+        let ctx2 = turn_tool_context(cwd, &cancel, session_state);
         let mut on_event2 = |ev: &AgentEvent| {
             dispatch_agent_event(
                 ev,
@@ -702,6 +661,41 @@ fn steer_direct_send(
         }
     }
     msg.map(|m| crate::session_send::prompt_for(&m.from, &m.text))
+}
+
+/// Inbox deliveries (a finished subagent, a cron wake) that land mid-turn
+/// join the running turn instead of waiting for it to end.
+fn steer_inbox(tui: Option<&crate::composer::SharedTui>, sid: Option<&str>) -> Option<String> {
+    let home = crate::setup::gray_home().ok()?;
+    let delivered = crate::session_mailbox::drain_session_inbox(&home, sid?);
+    if delivered.is_empty() {
+        return None;
+    }
+    if let Some(shared) = tui {
+        let mut t = shared.lock().expect("tui lock");
+        t.flush_markdown();
+        t.end_thinking();
+    }
+    for d in &delivered {
+        match (&d.cron, tui) {
+            (Some(c), Some(shared)) => {
+                let mut t = shared.lock().expect("tui lock");
+                let (header, body) = super::notice::cron_card_lines(c, t.width());
+                t.push_tool_box(header, body);
+            }
+            _ => say(tui, &d.card),
+        }
+    }
+    if let Some(shared) = tui {
+        let _ = shared.lock().expect("tui lock").draw();
+    }
+    Some(
+        delivered
+            .into_iter()
+            .map(|d| d.prompt)
+            .collect::<Vec<_>>()
+            .join("\n\n"),
+    )
 }
 
 fn steer_queued_input(tui: Option<&crate::composer::SharedTui>) -> Option<String> {

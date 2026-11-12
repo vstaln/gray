@@ -1,6 +1,5 @@
 pub mod images;
 pub mod shell;
-pub mod truncate;
 pub mod video_sheet;
 pub mod view;
 
@@ -43,6 +42,12 @@ impl Registry {
         self.tools.iter().find(|t| t.def().name == name).cloned()
     }
 
+    fn bash(&self) -> Option<&BashTool> {
+        self.tools
+            .iter()
+            .find_map(|tool| tool.as_any().downcast_ref::<BashTool>())
+    }
+
     pub fn tool_names(&self) -> Vec<String> {
         self.tools.iter().map(|t| t.def().name.clone()).collect()
     }
@@ -63,32 +68,13 @@ static ALIASES: &[(&str, &str)] = &[
     ("code", "content"),
     ("body", "content"),
     ("data", "content"),
-    ("old_text", "oldText"),
-    ("new_text", "newText"),
-    ("TargetContent", "oldText"),
-    ("target_content", "oldText"),
-    ("targetContent", "oldText"),
-    ("search", "oldText"),
-    ("find", "oldText"),
-    ("ReplacementContent", "newText"),
-    ("replacement_content", "newText"),
-    ("replacementContent", "newText"),
-    ("replace", "newText"),
     ("cmd", "command"),
     ("script", "command"),
     ("shell_command", "command"),
     ("command_line", "command"),
-    ("run_in_background", "background"),
-    ("is_background", "background"),
-    ("detach", "background"),
-    ("bg", "background"),
     ("timeout_secs", "timeout"),
     ("timeout_seconds", "timeout"),
     ("timeoutSec", "timeout"),
-    ("yield_time_ms", "yield_ms"),
-    ("task", "task_id"),
-    ("taskId", "task_id"),
-    ("shell_id", "task_id"),
     ("duration", "seconds"),
     ("secs", "seconds"),
 ];
@@ -258,52 +244,30 @@ impl ToolExecutor for Registry {
         ctx: &ToolContext,
         timeout: std::time::Duration,
     ) -> BoxFuture<'static, Option<()>> {
-        for tool in &self.tools {
-            if tool.as_any().downcast_ref::<BashTool>().is_some() {
-                let ctx = ctx.clone();
-                let fut = tool
-                    .as_any()
-                    .downcast_ref::<BashTool>()
-                    .expect("checked above")
-                    .wait_any_job_fut(&ctx, timeout);
-                return Box::pin(async move { fut.await.then_some(()) });
-            }
-        }
-        Box::pin(std::future::ready(None))
+        let Some(bash) = self.bash() else {
+            return Box::pin(std::future::ready(None));
+        };
+        let fut = bash.wait_any_job_fut(ctx, timeout);
+        Box::pin(async move { fut.await.then_some(()) })
     }
 
     fn has_pending_background(&self, ctx: &ToolContext) -> bool {
-        self.tools.iter().any(|tool| {
-            tool.as_any()
-                .downcast_ref::<BashTool>()
-                .is_some_and(|bash| bash.has_unfinished_jobs(ctx))
-        })
+        self.bash()
+            .is_some_and(|bash| bash.has_unfinished_jobs(ctx))
     }
 
     fn background_jobs(&self, ctx: &ToolContext) -> Vec<gray_core::agent::BackgroundJob> {
-        self.tools
-            .iter()
-            .filter_map(|tool| tool.as_any().downcast_ref::<BashTool>())
-            .flat_map(|bash| bash.running_jobs(ctx))
-            .collect()
+        self.bash()
+            .map(|bash| bash.running_jobs(ctx))
+            .unwrap_or_default()
     }
 
     fn running_jobs_note(&self, ctx: &ToolContext) -> Option<String> {
-        let notes: Vec<String> = self
-            .tools
-            .iter()
-            .filter_map(|tool| tool.as_any().downcast_ref::<BashTool>())
-            .filter_map(|bash| bash.running_jobs_note(ctx))
-            .collect();
-        (!notes.is_empty()).then(|| notes.join("\n"))
+        self.bash().and_then(|bash| bash.running_jobs_note(ctx))
     }
 
     fn cancel_background(&self, ctx: &ToolContext, id: &str) -> bool {
-        self.tools.iter().any(|tool| {
-            tool.as_any()
-                .downcast_ref::<BashTool>()
-                .is_some_and(|bash| bash.cancel_job(ctx, id))
-        })
+        self.bash().is_some_and(|bash| bash.cancel_job(ctx, id))
     }
 
     fn execute(
@@ -317,7 +281,6 @@ impl ToolExecutor for Registry {
             Some(def) => coerce_args(&def, args),
             None => args,
         };
-        let available = self.tool_names();
         let ctx = ctx.clone();
         let name = name.to_string();
         Box::pin(async move {
@@ -325,7 +288,7 @@ impl ToolExecutor for Registry {
 
             let out = match tool {
                 Some(tool) => tool.execute(&ctx, coerced).await,
-                None => ToolOutput::error(gray_core::tool_out::unknown_tool(&name, &available)),
+                None => ToolOutput::error(gray_core::tool_out::unknown_tool(&name)),
             };
             if out.is_error {
                 log::warn!(target: "gray_tools", "tool {name} failed: {}", out.content);

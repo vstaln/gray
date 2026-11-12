@@ -60,7 +60,7 @@ pub(crate) async fn handle_plugin_command(raw: &str, tui: Option<&crate::compose
                     );
                 }
             }
-            Err(e) => say(tui, &format!("plugin list failed: {e:#}")),
+            Err(e) => say_err(tui, &format!("plugin list failed: {e:#}")),
         },
         PluginAction::Install(spec) => match crate::plugin_cli::home() {
             Ok(home) => match crate::plugin_cli::install_spec_lines(&home, &spec, false).await {
@@ -69,13 +69,13 @@ pub(crate) async fn handle_plugin_command(raw: &str, tui: Option<&crate::compose
                         say(tui, &line);
                     }
                 }
-                Err(e) => say(tui, &format!("install failed: {e:#}")),
+                Err(e) => say_err(tui, &format!("install failed: {e:#}")),
             },
-            Err(e) => say(tui, &format!("install failed: {e:#}")),
+            Err(e) => say_err(tui, &format!("install failed: {e:#}")),
         },
         PluginAction::Remove(name) => match crate::plugin_cli::remove_managed(&name) {
             Ok(()) => say(tui, &format!("removed {name}")),
-            Err(e) => say(tui, &format!("remove failed: {e:#}")),
+            Err(e) => say_err(tui, &format!("remove failed: {e:#}")),
         },
         PluginAction::Update(target) => {
             let mut check = false;
@@ -111,23 +111,23 @@ pub(crate) async fn handle_plugin_command(raw: &str, tui: Option<&crate::compose
                         say(tui, "up to date");
                     }
                 }
-                Err(e) => say(tui, &format!("update failed: {e:#}")),
+                Err(e) => say_err(tui, &format!("update failed: {e:#}")),
             }
         }
         PluginAction::Enable(name) => match crate::plugin_cli::set_managed_enabled(&name, true) {
             Ok(()) => say(tui, &format!("enabled {name}")),
-            Err(e) => say(tui, &format!("enable failed: {e:#}")),
+            Err(e) => say_err(tui, &format!("enable failed: {e:#}")),
         },
         PluginAction::Disable(name) => match crate::plugin_cli::set_managed_enabled(&name, false) {
             Ok(()) => say(tui, &format!("disabled {name}")),
-            Err(e) => say(tui, &format!("disable failed: {e:#}")),
+            Err(e) => say_err(tui, &format!("disable failed: {e:#}")),
         },
         PluginAction::Check(dir) => {
             // The conformance probe lives in the plugin-dev plugin now —
             // `gray plugin check` forwards to it.
             let exe = crate::update::exe_watch::on_disk_exe();
             match exe {
-                Err(e) => say(tui, &format!("cannot self-spawn: {e:#}")),
+                Err(e) => say_err(tui, &format!("cannot self-spawn: {e:#}")),
                 Ok(exe) => {
                     let out = tokio::time::timeout(
                         std::time::Duration::from_secs(60),
@@ -139,7 +139,7 @@ pub(crate) async fn handle_plugin_command(raw: &str, tui: Option<&crate::compose
                     .await;
                     match out {
                         Err(_) => say(tui, "plugin check timed out"),
-                        Ok(Err(e)) => say(tui, &format!("plugin check failed to start: {e}")),
+                        Ok(Err(e)) => say_err(tui, &format!("plugin check failed to start: {e}")),
                         Ok(Ok(o)) => {
                             let text = String::from_utf8_lossy(&o.stdout).trim_end().to_string();
                             if text.is_empty() {

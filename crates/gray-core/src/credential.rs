@@ -233,37 +233,3 @@ impl fmt::Debug for CredentialError {
 pub trait CredentialSource: Send + Sync {
     async fn acquire(&self) -> Result<CredentialLease, CredentialError>;
 }
-
-#[derive(Clone)]
-pub struct StaticCredentialSource {
-    secret_name: String,
-    secret: SecretString,
-}
-
-impl StaticCredentialSource {
-    pub fn new(secret_name: impl Into<String>, secret: impl Into<String>) -> Self {
-        Self {
-            secret_name: secret_name.into(),
-            secret: SecretString::new(secret),
-        }
-    }
-}
-
-impl fmt::Debug for StaticCredentialSource {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("StaticCredentialSource")
-            .field("secret_name", &self.secret_name)
-            .field("secret", &self.secret)
-            .finish()
-    }
-}
-
-#[async_trait]
-impl CredentialSource for StaticCredentialSource {
-    async fn acquire(&self) -> Result<CredentialLease, CredentialError> {
-        Ok(CredentialLease {
-            secrets: SecretMap::from_iter([(self.secret_name.as_str(), self.secret.as_str())]),
-            metadata: BTreeMap::new(),
-        })
-    }
-}

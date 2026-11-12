@@ -39,61 +39,25 @@ pub(crate) fn is_turn_local_command(
     }
 }
 
-fn help_text(
-    cwd: &std::path::Path,
-    hooks: &[std::sync::Arc<dyn gray_core::agent::PluginHooks>],
-) -> String {
-    let mut out = String::new();
-    for d in super::REGISTRY.iter().chain(super::commands::TUI_COMMANDS) {
-        out.push_str(&super::commands::format_help_line(d));
-        out.push('\n');
-    }
-    let mut entries = crate::plugin_cli::completions("");
-    entries.extend(super::plugin_help_entries(hooks));
-    let mut seen: std::collections::HashSet<String> = super::REGISTRY
-        .iter()
-        .chain(super::commands::TUI_COMMANDS)
-        .map(|d| d.name.to_string())
-        .collect();
-    for (name, description) in entries {
-        if seen.insert(name.clone()) {
-            out.push_str(&format!("  /{name:<10} {description}\n"));
-        }
-    }
-    let templates = crate::prompt_templates::discover(cwd);
-    if !templates.is_empty() {
-        out.push_str("prompt templates:\n");
-        for t in templates {
-            if seen.insert(t.name.clone()) {
-                out.push_str(&format!("  /{:<10} {}\n", t.name, t.description));
-            }
-        }
-    }
-    out.trim_end().to_string()
-}
-
 fn run_turn_local_command(ctx: &TurnLocalCommands, text: &str) {
     let tui = Some(&ctx.tui);
     match super::parse_command(text) {
-        super::ReplCommand::Jobs => {
-            let job_ctx = super::jobs::session_ctx(&ctx.cwd, ctx.session_id.as_deref());
-            let jobs = ctx
-                .executor
-                .as_ref()
-                .map(|exec| exec.background_jobs(&job_ctx))
-                .unwrap_or_default();
-            let text = crate::setup::gray_home()
-                .map(|home| {
-                    let wakes = super::jobs::load_wakes(&home, ctx.session_id.as_deref());
-                    super::jobs::dashboard(&jobs, &wakes, gray_core::time::now_secs() as i64)
-                })
-                .unwrap_or_else(|e| format!("jobs dashboard failed: {e}"));
-            super::say(tui, &text);
-        }
+        super::ReplCommand::Jobs => match crate::setup::gray_home() {
+            Ok(home) => super::jobs::show(
+                tui,
+                &home,
+                ctx.executor.clone(),
+                super::jobs::session_ctx(&ctx.cwd, ctx.session_id.as_deref()),
+            ),
+            Err(e) => super::say_err(tui, &format!("jobs dashboard failed: {e}")),
+        },
         super::ReplCommand::Help => {
-            let mut t = ctx.tui.lock().expect("tui lock");
-            t.push_dim(help_text(&ctx.cwd, &ctx.hooks));
-            t.ensure_gap();
+            // A command picked mid-turn runs after the turn, like any queued input.
+            if let Some(name) = super::dispatch::help_picker(&ctx.tui, &ctx.cwd, &ctx.hooks) {
+                let mut t = ctx.tui.lock().expect("tui lock");
+                t.queued_inputs.push_back((name, Vec::new()));
+                let _ = t.draw();
+            }
         }
         super::ReplCommand::Plugins => {
             let tui = Some(&ctx.tui);
@@ -104,7 +68,7 @@ fn run_turn_local_command(ctx: &TurnLocalCommands, text: &str) {
                 Ok(false) => {
                     let _ = ctx.tui.lock().expect("tui lock").draw();
                 }
-                Err(e) => super::say(tui, &format!("plugins manager failed: {e}")),
+                Err(e) => super::say_err(tui, &format!("plugins manager failed: {e}")),
             }
         }
         super::ReplCommand::Reload => {
@@ -132,33 +96,61 @@ fn run_turn_local_command(ctx: &TurnLocalCommands, text: &str) {
                 return;
             };
             use gray_core::agent::CommandOutcome;
-            let outcome = tokio::task::block_in_place(|| {
-                tokio::runtime::Handle::current().block_on(super::run_plugin_command(
-                    &ctx.hooks,
-                    &name,
-                    argv,
-                    Some(raw),
-                ))
-            });
-            match outcome {
-                Some(CommandOutcome::Say(text)) => super::say(tui, &text),
-                Some(CommandOutcome::Prompt(prompt)) => {
-                    let mut t = ctx.tui.lock().expect("tui lock");
-                    t.queued_inputs.push_back((prompt, Vec::new()));
-                    let _ = t.draw();
+            let run = |argv: Vec<String>, raw: String| {
+                tokio::task::block_in_place(|| {
+                    tokio::runtime::Handle::current().block_on(super::run_plugin_command(
+                        &ctx.hooks,
+                        &name,
+                        argv,
+                        Some(raw),
+                    ))
+                })
+            };
+            let mut outcome = run(argv.clone(), raw.clone());
+            while let Some(oc) = outcome.take() {
+                match oc {
+                    CommandOutcome::Say(text) => super::say(tui, &text),
+                    CommandOutcome::Prompt(prompt) => {
+                        let mut t = ctx.tui.lock().expect("tui lock");
+                        t.queued_inputs.push_back((prompt, Vec::new()));
+                        let _ = t.draw();
+                    }
+                    // A read-only list (a turn-local plugin declared it safe)
+                    // opens over the running turn; the pick runs mid-turn too.
+                    CommandOutcome::Picker(spec) if !spec.items.is_empty() => {
+                        match super::picker::run_spec_picker(&ctx.tui, &spec) {
+                            Ok(Some(id)) => {
+                                outcome = run(
+                                    super::picker::pick_argv(&argv, &id),
+                                    format!("{raw} --pick {id}").trim_start().to_string(),
+                                );
+                            }
+                            Ok(None) => {
+                                let _ = ctx.tui.lock().expect("tui lock").draw();
+                            }
+                            Err(_) => super::say_lines(tui, super::picker::spec_lines(&spec)),
+                        }
+                    }
+                    CommandOutcome::Picker(spec) => {
+                        super::say_lines(tui, super::picker::spec_lines(&spec))
+                    }
+                    CommandOutcome::HostPicker { kind, .. } if kind == "theme" => {
+                        super::dispatch::theme_picker(&ctx.tui)
+                    }
+                    CommandOutcome::HostPicker { kind, arg, text } if kind == "action" => {
+                        super::dispatch::composer_action(tui, &arg, text)
+                    }
+                    CommandOutcome::HostPicker { .. }
+                    | CommandOutcome::Panel(_)
+                    | CommandOutcome::Terminal { .. } => {
+                        // Host pickers, panels and terminal handoffs mutate
+                        // session state or own the screen: rerun through the
+                        // full dispatch once the turn ends.
+                        let mut t = ctx.tui.lock().expect("tui lock");
+                        t.queued_inputs.push_back((cmd.clone(), Vec::new()));
+                        let _ = t.draw();
+                    }
                 }
-                Some(CommandOutcome::HostPicker { .. })
-                | Some(CommandOutcome::Panel(_))
-                | Some(CommandOutcome::Picker(_))
-                | Some(CommandOutcome::Terminal { .. }) => {
-                    // Pickers and settings mutate session state and own the
-                    // modal surface — rerun through the full dispatch once
-                    // the turn ends instead of racing the running turn.
-                    let mut t = ctx.tui.lock().expect("tui lock");
-                    t.queued_inputs.push_back((cmd.clone(), Vec::new()));
-                    let _ = t.draw();
-                }
-                None => {}
             }
         }
         _ => {}
@@ -210,7 +202,15 @@ pub(crate) fn spawn_key_watcher_with_typing(
             }
             match poll(std::time::Duration::from_millis(50)) {
                 Ok(true) => {}
-                _ => continue,
+                _ => {
+                    if let Some(shared) = watcher_tui.as_ref() {
+                        let mut t = lock_tui(shared);
+                        if t.action_tick() {
+                            let _ = t.draw();
+                        }
+                    }
+                    continue;
+                }
             }
             let Ok(event) = read() else {
                 continue;
@@ -295,7 +295,7 @@ pub(crate) fn spawn_key_watcher_with_typing(
                     use crate::composer::input::keys::{KeyOutcome, dispatch_bindings};
                     match dispatch_bindings(&mut t, &ev, &bindings) {
                         KeyOutcome::Edited => {
-                            sync_matches(&mut t, &cwd_for_watcher);
+                            crate::composer::input::sync_completion(&mut t, &cwd_for_watcher);
                             let _ = t.draw();
                         }
                         KeyOutcome::Ignored | KeyOutcome::Exit => {}
@@ -400,15 +400,11 @@ pub(crate) fn spawn_key_watcher_with_typing(
                     }
                     t.search = None;
                     t.handle_paste(data);
-                    sync_matches(&mut t, &cwd_for_watcher);
+                    crate::composer::input::sync_completion(&mut t, &cwd_for_watcher);
                     let _ = t.draw();
                 }
                 _ => {}
             }
         }
     })
-}
-
-fn sync_matches(t: &mut crate::composer::Tui, cwd: &std::path::Path) {
-    crate::composer::input::sync_completion(t, cwd);
 }

@@ -548,28 +548,35 @@ impl SavedLists {
     }
 }
 
+pub(crate) fn cached_models(
+    lists: Option<&SavedLists>,
+    saved: &SavedConfig,
+    list_key: &str,
+    base_url: &str,
+) -> Vec<(String, String)> {
+    let load = |key: &str| match lists {
+        Some(l) => l.models(saved, key, base_url),
+        None => saved_models_for(key, base_url),
+    };
+    let mut models = load(list_key);
+    if models.is_empty() {
+        let alt = normalize_custom_base_url(base_url);
+        if alt != list_key {
+            models = load(&alt);
+        }
+    }
+    models
+}
+
 fn models_for<'a>(
     p: &PaneProvider,
     cache: &'a mut HashMap<String, Vec<(String, String)>>,
     lists: Option<&SavedLists>,
     saved: &SavedConfig,
 ) -> &'a [(String, String)] {
-    let load = |key: &str| match lists {
-        Some(l) => l.models(saved, key, &p.item.base_url),
-        None => saved_models_for(key, &p.item.base_url),
-    };
     cache
         .entry(p.list_key.clone())
-        .or_insert_with(|| {
-            let mut models = load(&p.list_key);
-            if models.is_empty() {
-                let alt = normalize_custom_base_url(&p.item.base_url);
-                if alt != p.list_key {
-                    models = load(&alt);
-                }
-            }
-            models
-        })
+        .or_insert_with(|| cached_models(lists, saved, &p.list_key, &p.item.base_url))
         .as_slice()
 }
 
@@ -606,7 +613,7 @@ fn commit_pick(
     }
     config.model = Some(model.to_string());
     let path = saved_config_path()?;
-    let _lock = lock_saved_config_at(&path).ok();
+    let _lock = lock_saved_config_at(&path)?;
     let mut saved = load_saved_config_at(&path);
     if p.installed.is_none() {
         save_key_connection(config, &mut saved);
@@ -635,7 +642,7 @@ fn delegate_pick(
         }
         None => {
             let path = saved_config_path()?;
-            let _lock = lock_saved_config_at(&path).ok();
+            let _lock = lock_saved_config_at(&path)?;
             let mut saved = load_saved_config_at(&path);
             save_key_connection(config, &mut saved);
             save_saved_config_at(&path, &saved)?;
@@ -700,37 +707,8 @@ fn fast_wire(model: &str, effort: Option<&str>, models: &[(String, String)]) -> 
     }
 }
 
-fn model_label<'a>(id: &'a str, name: &'a str) -> &'a str {
+pub(crate) fn model_label<'a>(id: &'a str, name: &'a str) -> &'a str {
     if name.is_empty() { id } else { name }
-}
-
-fn match_range(label: &str, filter: &str) -> Option<(usize, usize)> {
-    let lower = |c: char| c.to_lowercase().next().unwrap_or(c);
-    let needle: Vec<char> = filter.chars().map(lower).collect();
-    let chars: Vec<char> = label.chars().map(lower).collect();
-    if needle.is_empty() {
-        return None;
-    }
-    chars
-        .windows(needle.len())
-        .position(|w| w == needle.as_slice())
-        .map(|i| (i, i + needle.len()))
-}
-
-fn underline_match(label: &str, filter: &str, style: Style) -> Vec<Span<'static>> {
-    let Some((i, j)) = match_range(label, filter) else {
-        return vec![Span::styled(label.to_string(), style)];
-    };
-    let chars: Vec<char> = label.chars().collect();
-    [
-        (0, i, style),
-        (i, j, style.add_modifier(Modifier::UNDERLINED)),
-        (j, chars.len(), style),
-    ]
-    .into_iter()
-    .filter(|(a, b, _)| a < b)
-    .map(|(a, b, st)| Span::styled(chars[a..b].iter().collect::<String>(), st))
-    .collect()
 }
 
 fn draw(frame: &mut Frame, bg: &BackgroundSnapshot, v: &PaneView) {
@@ -971,7 +949,7 @@ fn draw(frame: &mut Frame, bg: &BackgroundSnapshot, v: &PaneView) {
                 if current { " ✓ " } else { "   " },
                 fg(if sel { t.on_selection } else { t.success }),
             )];
-            spans.extend(underline_match(&label, v.filter, text));
+            spans.extend(crate::repl::picker::underline_match(&label, v.filter, text));
             spans.push(Span::raw(
                 " ".repeat(name_w.saturating_sub(label.chars().count())),
             ));
@@ -1054,7 +1032,7 @@ fn draw(frame: &mut Frame, bg: &BackgroundSnapshot, v: &PaneView) {
         (true, Focus::Rail) => "open",
         (true, Focus::Models) => "select",
     };
-    let mut keys = if v.confirm_remove {
+    let keys = if v.confirm_remove {
         vec![("enter", "remove", true), ("esc", "cancel", true)]
     } else {
         let mut keys = vec![
@@ -1071,31 +1049,14 @@ fn draw(frame: &mut Frame, bg: &BackgroundSnapshot, v: &PaneView) {
         keys.push(("esc", "close", true));
         keys
     };
-    let keys_w = |keys: &[(&str, &str, bool)]| -> usize {
-        keys.iter()
-            .map(|(k, l, _)| k.chars().count() + l.chars().count() + 4)
-            .sum::<usize>()
-            + 1
-    };
     // ^r is the only way to hide/show thinking — keep it visible longest.
-    for drop in ["⇧↑↓", "tab", "del", "^r", "←→"] {
-        if keys_w(&keys) <= inner.width as usize {
-            break;
-        }
-        keys.retain(|(k, _, _)| *k != drop);
-    }
-    let mut footer = vec![Span::raw(" ")];
-    footer.extend(keys.into_iter().flat_map(|(k, label, live)| {
-        [
-            Span::styled(k, fg(if live { t.text_soft } else { t.text_faint })),
-            Span::styled(
-                format!(" {label}   "),
-                fg(if live { t.text_dim } else { t.text_faint }),
-            ),
-        ]
-    }));
+    let footer = crate::repl::picker::key_hints(
+        keys,
+        &["⇧↑↓", "tab", "del", "^r", "←→"],
+        inner.width as usize,
+    );
     frame.render_widget(
-        Paragraph::new(Line::from(footer)),
+        Paragraph::new(footer),
         row(inner.x, inner.y + inner.height - 1, inner.width),
     );
 }
@@ -1178,12 +1139,7 @@ pub(crate) fn run_model_panes(
     };
 
     let committed = (|| -> anyhow::Result<PanesOutcome> {
-        let saved = saved_config_path()
-            .map(|path| {
-                let _cfg_lock = crate::setup::lock_saved_config_at(&path).ok();
-                load_saved_config_at(&path)
-            })
-            .unwrap_or_default();
+        let saved = catalog::saved_config_locked();
         let saved_lists = SavedLists::load();
         loop {
             if let Ok(up) = ollama_rx.try_recv()

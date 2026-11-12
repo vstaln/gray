@@ -241,12 +241,16 @@ def main():
         frames[-1] = (old, ["0" * CELLS_X] * CELLS_Y)
         assert frames[-1][0] == old
 
+    table = list(dict.fromkeys(r for mark, edge in frames for r in mark + edge))
+    slot = {r: n for n, r in enumerate(table)}
     out = os.path.join(here, "logo-intro-frames.txt")
     with open(out, "w") as f:
         f.write(f"# gray mark intro, {N_FRAMES} frames at {FPS}fps — "
                 "baked by logo-intro-ascii.py from logo-intro-pens.py\n")
+        for r in table:
+            f.write("#|" + r + "\n")
         for mark, edge in frames:
-            f.write("\n".join(mark) + "\n" + "\n".join(edge) + "\n---\n")
+            f.write("\n".join(str(slot[r]) for r in mark + edge) + "\n---\n")
 
     dark = os.path.expanduser("~/content/gray/logo/logo-dark.svg")
     if os.path.exists(dark):

@@ -36,20 +36,20 @@ pub(crate) async fn handle_sys(
                     &format!("system prompt: {}\n---\n{body}\n---", path.display()),
                 );
             }
-            Err(e) => say(tui, &format!("failed to read {}: {e}", path.display())),
+            Err(e) => say_err(tui, &format!("failed to read {}: {e}", path.display())),
         },
         SysAction::Reset => {
             match crate::sys_editor::backup_before_overwrite(&path) {
                 Ok(Some(backup)) => say(tui, &format!("backup: {}", backup.display())),
                 Ok(None) => {}
                 Err(e) => {
-                    say(tui, &format!("backup failed ({e}) — reset aborted"));
+                    say_err(tui, &format!("backup failed ({e}) — reset aborted"));
                     return;
                 }
             }
             if let Err(e) = std::fs::write(&path, crate::stamped_system_prompt(DEFAULT_SYS_PROMPT))
             {
-                say(tui, &format!("failed to reset {}: {e}", path.display()));
+                say_err(tui, &format!("failed to reset {}: {e}", path.display()));
                 return;
             }
             say(
@@ -65,7 +65,12 @@ pub(crate) async fn handle_sys(
             }
             let initial = std::fs::read_to_string(&path).unwrap_or_default();
 
-            let _ = crate::sys_editor::backup_before_overwrite(&path);
+            if let Err(e) = crate::sys_editor::backup_before_overwrite(&path) {
+                say(
+                    tui,
+                    &format!("backup failed ({e}) — editing without a copy"),
+                );
+            }
             let tui_snap = tui.cloned();
             let editor_paused = if let Some(shared) = &tui_snap {
                 let mut t = shared.lock().expect("tui lock");
@@ -98,7 +103,7 @@ pub(crate) async fn handle_sys(
                     reload_agent(agent, config, cwd, session_id, tui).await;
                 }
                 Ok(None) => say(tui, "prompt unchanged"),
-                Err(e) => say(tui, &format!("editor error: {e}")),
+                Err(e) => say_err(tui, &format!("editor error: {e}")),
             }
         }
     }
@@ -136,7 +141,7 @@ pub(crate) async fn handle_undo(
     if let Some(state) = session_state
         && let Err(e) = state.store.rewind(&state.session_id, kept.len()).await
     {
-        say(tui, &format!("undo failed: {e}"));
+        say_err(tui, &format!("undo failed: {e}"));
         return None;
     }
     ag.set_messages(kept.clone());
@@ -276,12 +281,16 @@ pub(crate) fn apply_model_selection_at(
     } else {
         fast.or(id_fast.then_some(true))
     };
+    let _saved_lock = match saved_path {
+        Some(path) => Some(crate::setup::lock_saved_config_at(path).map_err(|e| format!("{e:#}"))?),
+        None => None,
+    };
+    let mut saved = saved_path.map(crate::setup::load_saved_config_at);
+
     if let Some(f) = fast {
         config.fast_mode = Some(f);
-        if let Some(path) = saved_path {
-            let mut saved = crate::setup::load_saved_config_at(path);
+        if let Some(saved) = saved.as_mut() {
             saved.fast_mode = Some(f);
-            let _ = crate::setup::save_saved_config_at(path, &saved);
         }
     }
     config.model = Some(m.clone());
@@ -290,34 +299,29 @@ pub(crate) fn apply_model_selection_at(
     match variant_tier.or_else(|| effort.map(str::to_string)) {
         Some(e) if std::env::var_os("GRAY_THINKING_EFFORT").is_none() => {
             config.thinking_effort = Some(e.clone());
-            if let Some(path) = saved_path {
-                let mut saved = crate::setup::load_saved_config_at(path);
+            if let Some(saved) = saved.as_mut() {
                 saved.remember_effort(
                     &crate::setup::effort_memory_key(&config.provider_id, &config.base_url, &m),
                     &e,
                 );
                 saved.thinking_effort = config.thinking_effort.clone();
-                let _ = crate::setup::save_saved_config_at(path, &saved);
             }
         }
         Some(_) => {}
         None => {
-            let _cfg_lock = saved_path.and_then(|p| crate::setup::lock_saved_config_at(p).ok());
-            let mut saved = saved_path.map(crate::setup::load_saved_config_at);
             crate::setup::apply_connection_effort(
                 config,
                 saved.get_or_insert_with(Default::default),
             );
-            if let (Some(path), Some(saved)) = (saved_path, saved) {
-                let _ = crate::setup::save_saved_config_at(path, &saved);
-            }
         }
     }
     let clamped = super::clamp_thinking_to_model(config);
-    if let Some(path) = saved_path {
-        let mut saved = crate::setup::load_saved_config_at(path);
+    if let Some(saved) = saved.as_mut() {
         saved.model = Some(m.clone());
-        let _ = crate::setup::save_saved_config_at(path, &saved);
+    }
+    if let (Some(path), Some(saved)) = (saved_path, saved.as_ref()) {
+        crate::setup::save_saved_config_at(path, saved)
+            .map_err(|e| format!("could not save the model choice: {e:#}"))?;
     }
     Ok(ModelApply {
         model: m,
@@ -379,11 +383,7 @@ async fn finish_model_pick(
         && crate::setup::get_user_context_window().is_none()
         && crate::setup::get_cached_model_context(&m).is_none()
     {
-        let base = config.base_url.clone();
-        let key = config.api_key.clone();
-        tokio::task::spawn_blocking(move || {
-            crate::setup::fetch_live_provider_models(&base, key.as_deref());
-        });
+        crate::setup::warm_model_context_cache(config);
     }
     switch_agent_model(agent, config, cwd, session_id, tui).await;
 }
@@ -400,14 +400,14 @@ async fn install_login_plugin(
     let home = match crate::plugin_cli::home() {
         Ok(home) => home,
         Err(e) => {
-            super::say(tui, &format!("install failed: {e:#}"));
+            super::say_err(tui, &format!("install failed: {e:#}"));
             return None;
         }
     };
     let lines = match crate::plugin_cli::install_spec_lines(&home, name, false).await {
         Ok(lines) => lines,
         Err(e) => {
-            super::say(tui, &format!("install failed: {e:#}"));
+            super::say_err(tui, &format!("install failed: {e:#}"));
             return None;
         }
     };
@@ -572,11 +572,7 @@ pub(crate) async fn handle_model(
         if crate::setup::get_user_context_window().is_none()
             && crate::setup::get_cached_model_context(&m).is_none()
         {
-            let base = config.base_url.clone();
-            let key = config.api_key.clone();
-            tokio::task::spawn_blocking(move || {
-                crate::setup::fetch_live_provider_models(&base, key.as_deref());
-            });
+            crate::setup::warm_model_context_cache(config);
         }
         switch_agent_model(agent, config, cwd, session_id, tui).await;
         return;

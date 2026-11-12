@@ -51,6 +51,54 @@ pub(crate) fn composites_first<'a>(list: &[&'a (String, String)]) -> Vec<&'a (St
     out
 }
 
+pub(crate) struct RowOrder<'a> {
+    pub(crate) ordered: Vec<&'a (String, String)>,
+    pub(crate) lead: usize,
+    pub(crate) sep: usize,
+    pub(crate) div_at: usize,
+    pub(crate) all_head: bool,
+}
+
+pub(crate) fn picker_row_order<'a>(
+    matched: &[&'a (String, String)],
+    models: &[(String, String)],
+    current: Option<&str>,
+    recents: &[String],
+    curated: Option<&[String]>,
+    filter_empty: bool,
+) -> RowOrder<'a> {
+    let lead = matched.iter().filter(|(id, _)| is_composite_id(id)).count();
+    let mut ordered = composites_first(matched);
+    let mut plain = ordered.split_off(lead);
+    let sep = recent_prefix_len(current, recents, plain.iter().map(|(id, _)| id.as_str()));
+    let mut all_head = false;
+    let mut div_at = sep;
+    if sep == 0 && filter_empty {
+        let head: Vec<String> = super::super::recommend::recommended_ids(
+            models,
+            curated,
+            super::super::context::model_meta,
+            RECOMMENDED_HEAD,
+        )
+        .into_iter()
+        .filter(|id| !is_composite_id(id))
+        .collect();
+        plain = head_first(&plain, &head);
+        if !head.is_empty() && head.len() < plain.len() {
+            div_at = head.len();
+            all_head = true;
+        }
+    }
+    ordered.extend(plain);
+    RowOrder {
+        ordered,
+        lead,
+        sep,
+        div_at,
+        all_head,
+    }
+}
+
 pub(super) fn gap_possible(models: &[(String, String)]) -> bool {
     let composites = models.iter().filter(|(id, _)| is_composite_id(id)).count();
     composites > 0 && composites < models.len()

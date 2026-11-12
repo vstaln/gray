@@ -18,6 +18,11 @@ pub enum ProviderError {
     RateLimited(String),
     #[error("auth failed: {0}")]
     Auth(String),
+    #[error("quota exhausted: {message}")]
+    Quota {
+        message: String,
+        resets_in: Option<Duration>,
+    },
     #[error("bad request: {0}")]
     BadRequest(String),
     #[error("context exhausted — start /new or compact: {0}")]
@@ -370,7 +375,6 @@ impl InputSubmit {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PluginCommand {
     pub name: String,
-    pub description: String,
     /// First-argv verbs the plugin allows to run while a turn is in
     /// flight (manifest `turn_local`); `""` covers the bare command and
     /// `"*"` allows any argv.
@@ -417,6 +421,12 @@ pub struct PickerItem {
     pub label: String,
     #[serde(default)]
     pub description: Option<String>,
+    /// Picking this item asks the user to press a key (this text is the
+    /// prompt); the pick id becomes `<id>:<key>`, e.g. `hotkey:ctrl+space`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capture_key: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub gap_before: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -425,6 +435,8 @@ pub struct PickerSpec {
     pub items: Vec<PickerItem>,
     #[serde(default)]
     pub selected_id: Option<String>,
+    #[serde(default)]
+    pub footer: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -436,9 +448,9 @@ pub enum CommandOutcome {
 
     Picker(PickerSpec),
 
-    /// Open one of the host's own pickers (`kind` is `model` or `theme`).
-    /// The host draws these because they recolor or reconfigure the host
-    /// itself; `text` is the plain fallback when there is no TUI.
+    /// Open one of the host's own pickers (`kind` is `model` or `theme`), or
+    /// run the composer action bound to the key in `arg` (`kind` `action`),
+    /// as if that key were pressed. `text` is the fallback with no TUI.
     HostPicker {
         kind: String,
         arg: String,
@@ -493,11 +505,6 @@ pub trait PluginHooks: Send + Sync {
     async fn post_tool(&self, _name: &str, _output: &ToolOutput) {}
     async fn turn_end(&self, _usage: &Usage) {}
 
-    /// History is about to be summarized away. Awaited before the summary
-    /// call, so a plugin (memory) can capture what is being dropped; must
-    /// never fail the compaction.
-    async fn compact_before(&self) {}
-
     /// The interactive REPL session came up — plugins use it for
     /// first-run/detection notices (the old core QoL hook).
     async fn session_start(&self, _interactive: bool) {}
@@ -514,6 +521,7 @@ impl From<ProviderError> for CoreError {
         match e {
             ProviderError::RateLimited(msg) => CoreError::RateLimited(msg),
             ProviderError::Auth(msg) => CoreError::Auth(msg),
+            ProviderError::Quota { message, resets_in } => CoreError::Quota { message, resets_in },
             ProviderError::BadRequest(msg) => CoreError::BadRequest(msg),
             ProviderError::ContextOverflow(msg) => CoreError::ContextOverflow(msg),
             ProviderError::Connection(msg) => CoreError::Connection(msg),
@@ -586,7 +594,7 @@ pub struct Agent {
 
     pub(crate) prefix_guard: crate::prefix_guard::PrefixGuard,
 
-    pub(crate) warm_cache_reported: bool,
+    pub(crate) warm_cache_reported: Option<bool>,
 
     pub(crate) prefix_rewrite_ok: bool,
 
@@ -600,6 +608,8 @@ pub struct Agent {
     pub(crate) held_summary: Option<crate::background_compact::HeldSummary>,
 
     pub(crate) background_failures: u8,
+
+    pub(crate) unbilled: Usage,
 
     /// A changed tool list held back because sending it now would re-bill
     /// the whole cached prefix (tools sit in front of it).
@@ -663,7 +673,7 @@ impl Agent {
             )),
             warm_refreshed: Default::default(),
             prefix_guard: crate::prefix_guard::PrefixGuard::default(),
-            warm_cache_reported: false,
+            warm_cache_reported: None,
             prefix_rewrite_ok: true,
             pending_tools: None,
             last_request_at: None,
@@ -672,6 +682,7 @@ impl Agent {
             compaction_provider: None,
             held_summary: None,
             background_failures: 0,
+            unbilled: Usage::default(),
         }
     }
 
@@ -897,20 +908,19 @@ impl Agent {
         self
     }
 
-    pub fn with_compaction_budget(mut self, reserve: Option<usize>, keep: Option<usize>) -> Self {
-        self.compact_reserve = reserve;
-        self.compact_keep = keep;
-        self
-    }
-
-    pub fn with_compact_ceiling(
-        mut self,
+    pub fn set_context_budget(
+        &mut self,
+        window: usize,
+        reserve: usize,
+        keep: usize,
         ceiling: Option<usize>,
         price_cliff: Option<usize>,
-    ) -> Self {
+    ) {
+        self.context_window = Some(window);
+        self.compact_reserve = Some(reserve);
+        self.compact_keep = Some(keep);
         self.compact_ceiling = ceiling;
         self.price_cliff = if ceiling.is_some() { price_cliff } else { None };
-        self
     }
 
     pub fn price_cliff(&self) -> Option<usize> {
@@ -999,22 +1009,13 @@ impl Agent {
                         .any(|b| matches!(b, ContentBlock::Text { text: seen } if seen == text))
             });
         if !text.is_empty() && !already_recorded {
-            let mut content = Vec::new();
-            if !thinking.is_empty() {
-                content.push(thinking_block(
-                    thinking.to_string(),
-                    &None,
-                    self.provider.model_id(),
-                ));
-            }
-            content.push(ContentBlock::Text {
-                text: text.to_string(),
-            });
-            self.messages.push(Message {
-                role: Role::Assistant,
-                injected: false,
-                content,
-            });
+            salvage_partial_text(
+                &mut self.messages,
+                thinking.to_string(),
+                text.to_string(),
+                &None,
+                self.provider.model_id(),
+            );
         }
     }
 
@@ -1034,7 +1035,7 @@ pub(crate) async fn complete_isolated_detached(
     messages: Vec<Message>,
     tools: Vec<ToolDef>,
     shared_cache: bool,
-) -> Result<String, CoreError> {
+) -> Result<(String, Usage), CoreError> {
     let req = ChatRequest {
         system,
         messages,
@@ -1062,8 +1063,9 @@ pub(crate) async fn complete_isolated_detached(
 async fn drain_reply_text(
     mut stream: ProviderStream,
     session: Option<&str>,
-) -> Result<String, CoreError> {
+) -> Result<(String, Usage), CoreError> {
     let mut result = String::new();
+    let mut spent = Usage::default();
     while let Some(event) = stream.next().await {
         match event? {
             StreamEvent::TextDelta { delta } => {
@@ -1075,13 +1077,14 @@ async fn drain_reply_text(
                 } else {
                     "compaction"
                 };
-                usage.unwrap_or_default().log_request(kind, session);
+                spent = usage.unwrap_or_default();
+                spent.log_request(kind, session);
                 break;
             }
             _ => {}
         }
     }
-    Ok(result)
+    Ok((result, spent))
 }
 
 pub(crate) fn thinking_block(

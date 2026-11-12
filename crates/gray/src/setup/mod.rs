@@ -70,11 +70,11 @@ pub(crate) use catalog::effort_memory_key;
 pub(crate) use catalog::save_auth_key;
 pub use catalog::{
     AUTH_MODE_API_KEY, AUTH_MODE_NONE, Catalog, CatalogProvider, ConnectAuth, ConnectItem,
-    SavedConfig, auto_update_enabled, auto_update_enabled_at, build_connect_items, gray_home,
-    gw_auto_enabled, gw_auto_enabled_at, intro_enabled, load_auth_keys, load_catalog,
-    load_saved_config_at, lock_saved_config_at, mask_key_pretty, normalize_custom_base_url,
-    quality_of_life_enabled, quality_of_life_enabled_at, save_saved_config_at, saved_config_path,
+    SavedConfig, auto_update_enabled, build_connect_items, gray_home, intro_enabled,
+    load_auth_keys, load_catalog, load_saved_config_at, lock_saved_config_at, mask_key_pretty,
+    normalize_custom_base_url, quality_of_life_enabled, save_saved_config_at, saved_config_path,
 };
+pub(crate) use catalog::{saved_config_locked, saved_config_locked_at};
 
 pub fn user_home() -> anyhow::Result<std::path::PathBuf> {
     gray_core::paths::user_home()
@@ -100,10 +100,10 @@ pub use context::{
 };
 
 pub mod ui;
+pub(crate) use ui::centered_modal;
 pub use ui::{BackgroundSnapshot, dim_color, render_dimmed_background};
 pub mod icons;
 pub use icons::icon;
-pub mod tabs;
 
 pub(crate) mod composite_rows;
 mod context_modal;
@@ -113,7 +113,7 @@ mod model_modal;
 mod model_panes;
 mod plugins_modal;
 pub(crate) mod presets;
-mod theme_modal;
+pub(crate) mod theme_modal;
 pub(crate) mod variants;
 
 pub use context_modal::{ContextModalExit, compaction_label, run_context_modal};
@@ -123,7 +123,6 @@ mod provider_auth;
 mod recommend;
 
 pub use connect::{ConnectOutcome, active_connect_id, run_connect_modal, run_connect_modal_for};
-pub use install_manager::ManagerOutcome;
 pub(crate) use install_manager::{ManagerItem, ManagerSpec, run_install_manager};
 pub use model_dump::{DumpModels, dump_model_catalog_json, select_cli_provider};
 pub(crate) use model_modal::{
@@ -138,8 +137,7 @@ pub(crate) use provider_auth::{
     PluginLoginProgress, adopt_connection_effort, apply_connection_effort, run_plugin_login,
 };
 pub use provider_auth::{
-    activate_plugin_connection, adopt_saved_key, connect_saved_key, forget_plugin_connection,
-    select_api_key_connection,
+    activate_plugin_connection, adopt_saved_key, connect_saved_key, select_api_key_connection,
 };
 pub(crate) use theme_modal::run_theme_picker;
 
@@ -161,6 +159,14 @@ pub async fn run_model_menu(
     focus: Option<&str>,
 ) -> anyhow::Result<bool> {
     run_model_modal(config, bg, focus)
+}
+
+pub fn warm_model_context_cache(config: &Config) {
+    let base = config.base_url.clone();
+    let key = config.api_key.clone();
+    tokio::task::spawn_blocking(move || {
+        fetch_live_provider_models(&base, key.as_deref());
+    });
 }
 
 pub async fn run_onboarding(config: &mut Config) -> anyhow::Result<bool> {

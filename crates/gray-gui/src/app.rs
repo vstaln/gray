@@ -215,6 +215,7 @@ enum Cmd {
     SetLayout(String),
     SetTerminalPlacement(String),
     SetAutoAccept(bool),
+    SetAutosave(bool),
     OpenMessage(String, Option<usize>),
     SetNotify(bool),
     SearchThreads,
@@ -412,7 +413,6 @@ pub struct GrayApp {
     home_intro_at: Option<Instant>,
     _subs: Vec<Subscription>,
     ticks: u64,
-    window_handle: Option<gpui::AnyWindowHandle>,
     pending_cmds: Vec<String>,
     hub: Vec<HubEntry>,
     hub_error: Option<String>,
@@ -534,15 +534,7 @@ impl GrayApp {
             let _ = gray_cmd_tx.send(graycmds::list());
         });
         let (cli_tx, cli_rx) = channel();
-        let cli_tx2 = cli_tx.clone();
-        std::thread::spawn(move || {
-            let _ = cli_tx2.send(provider::load_cli_providers());
-        });
         let (model_cat_tx, model_cat_rx) = channel();
-        let cat_tx = model_cat_tx.clone();
-        std::thread::spawn(move || {
-            let _ = cat_tx.send(provider::load_model_catalog());
-        });
         let mut app = Self {
             focus: cx.focus_handle(),
             store,
@@ -570,12 +562,7 @@ impl GrayApp {
             model_scroll: ScrollHandle::new(),
             model_reveal: std::cell::Cell::new(false),
             model_closed_at: None,
-            model_catalog: CatalogState {
-                entries: None,
-                phase: CatalogPhase::Loading {
-                    last_loaded_at: None,
-                },
-            },
+            model_catalog: CatalogState::default(),
             model_catalog_tx: model_cat_tx,
             model_catalog_rx: model_cat_rx,
             cli_providers: Vec::new(),
@@ -616,7 +603,6 @@ impl GrayApp {
             settings_query: String::new(),
             pane_sizes: Vec::new(),
             gray_cmd_rx,
-            window_handle: None,
             pending_cmds: Vec::new(),
             active_tab: None,
             diff: None,
@@ -664,6 +650,7 @@ impl GrayApp {
             grep_items: Vec::new(),
             grep_rx: None,
         };
+        app.refresh_model_catalog();
         if let Some(path) = initial {
             app.add_project(&path);
         }
@@ -683,7 +670,6 @@ impl GrayApp {
         if std::env::var_os("GRAY_GUI_BOOT_TRACE").is_some() {
             eprintln!("boot {:?}", started_at.elapsed());
         }
-        app.window_handle = Some(window.window_handle());
         app.composer.update(cx, |s, cx| s.focus(window, cx));
         cx.spawn_in(window, async move |this, cx| {
             loop {
@@ -702,8 +688,6 @@ impl GrayApp {
         app
     }
 }
-
-impl GrayApp {}
 
 impl Render for GrayApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {

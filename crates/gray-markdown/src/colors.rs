@@ -14,12 +14,6 @@ pub enum ColorLevel {
     TrueColor,
 }
 
-impl ColorLevel {
-    pub fn has_256(self) -> bool {
-        self >= Self::Ansi256
-    }
-}
-
 static COLOR_LEVEL: OnceLock<ColorLevel> = OnceLock::new();
 
 pub fn detect_color_level() -> ColorLevel {
@@ -29,6 +23,9 @@ pub fn detect_color_level() -> ColorLevel {
         }
 
         let level = match supports_color::on(supports_color::Stream::Stdout) {
+            None if !std::io::IsTerminal::is_terminal(&std::io::stdout()) => {
+                return ColorLevel::None;
+            }
             None => ColorLevel::TrueColor,
             Some(level) => {
                 if level.has_16m {

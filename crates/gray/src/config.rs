@@ -4,22 +4,6 @@ use crate::Cli;
 
 pub const DEFAULT_BASE_URL: &str = "https://openrouter.ai/api/v1";
 
-fn remembered_effort(
-    memory: &std::collections::BTreeMap<String, String>,
-    provider_id: &str,
-    base_url: &str,
-    model: Option<&str>,
-) -> Option<String> {
-    let model = nonempty(model)?;
-    memory
-        .get(&crate::setup::effort_memory_key(
-            provider_id,
-            base_url,
-            &model,
-        ))
-        .cloned()
-}
-
 fn nonempty(s: Option<&str>) -> Option<String> {
     s.map(str::trim)
         .filter(|s| !s.is_empty())
@@ -217,12 +201,16 @@ impl Config {
                 .map(|v| v.trim().to_string())
                 .unwrap_or_else(|| nonempty(Some(saved.provider_id.as_str())).unwrap_or_default())
         };
-        let target_effort = remembered_effort(
-            &saved.effort_memory,
-            &provider_id,
-            &base_url,
-            model.as_deref(),
-        );
+        let target_effort = nonempty(model.as_deref()).and_then(|model| {
+            saved
+                .effort_memory
+                .get(&crate::setup::effort_memory_key(
+                    &provider_id,
+                    &base_url,
+                    &model,
+                ))
+                .cloned()
+        });
 
         let api_key = resolve_api_key(cli, &base_url, &mut env, saved.api_key);
 

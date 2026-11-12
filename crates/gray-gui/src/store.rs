@@ -9,7 +9,6 @@ use std::path::{Path, PathBuf};
 pub enum Role {
     User,
     Assistant,
-    System,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -20,9 +19,6 @@ pub enum Event {
         name: String,
         path: String,
         at: i64,
-    },
-    ProjectRemoved {
-        id: String,
     },
     ThreadCreated {
         id: String,
@@ -163,10 +159,6 @@ impl State {
                         path: path.clone(),
                     });
                 }
-            }
-            Event::ProjectRemoved { id } => {
-                self.projects.retain(|p| &p.id != id);
-                self.threads.retain(|t| &t.project_id != id);
             }
             Event::ThreadCreated {
                 id,

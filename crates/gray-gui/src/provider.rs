@@ -365,7 +365,7 @@ pub fn mode_label(id: &str) -> &'static str {
 /// rail shows, in the same order. None when the installed gray is too old or
 /// fails — callers fall back to the static gray entry.
 pub fn load_model_catalog() -> Option<Vec<ProviderEntry>> {
-    let out = Command::new(bin("GRAY_GUI_GRAY_BIN", "gray"))
+    let out = Command::new(gray_bin())
         .arg("--dump-models")
         .stdin(Stdio::null())
         .output()
@@ -506,6 +506,10 @@ pub fn start(req: TurnRequest) -> Turn {
 
 fn bin(env: &str, default: &str) -> String {
     std::env::var(env).unwrap_or_else(|_| default.to_string())
+}
+
+pub(crate) fn gray_bin() -> String {
+    bin("GRAY_GUI_GRAY_BIN", "gray")
 }
 
 fn claude_command(req: &TurnRequest) -> Command {
@@ -659,7 +663,7 @@ impl ParseState {
     }
 }
 
-fn s(v: &serde_json::Value, key: &str) -> String {
+pub(crate) fn s(v: &serde_json::Value, key: &str) -> String {
     v.get(key)
         .and_then(|x| x.as_str())
         .unwrap_or_default()

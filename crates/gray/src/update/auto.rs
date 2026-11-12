@@ -24,7 +24,7 @@ fn stamp_due(path: &PathBuf) -> bool {
 
 pub(crate) fn set_enabled(on: bool) -> anyhow::Result<()> {
     let path = crate::setup::saved_config_path()?;
-    let _cfg_lock = crate::setup::lock_saved_config_at(&path).ok();
+    let _cfg_lock = crate::setup::lock_saved_config_at(&path)?;
     let mut saved = crate::setup::load_saved_config_at(&path);
     saved.auto_update = if on { None } else { Some(false) };
     crate::setup::save_saved_config_at(&path, &saved)

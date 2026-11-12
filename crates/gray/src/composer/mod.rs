@@ -17,6 +17,7 @@ pub(crate) const PANEL_ROWS: usize = 6;
 
 pub(crate) const MIN_VIEWPORT_H: u16 = 4;
 
+pub(crate) mod action;
 pub(crate) mod cache_stats;
 mod glow;
 pub(crate) mod kitty;
@@ -109,6 +110,7 @@ pub struct Tui {
     pub(crate) muted_text: Option<String>,
     /// Active ctrl-r reverse-history-search state (None when not searching).
     pub(crate) search: Option<HistSearch>,
+    pub(crate) action: action::ActionState,
     pub(crate) sel: usize,
     status: Option<(Instant, String)>,
 
@@ -201,8 +203,6 @@ pub struct Tui {
 
     pub(crate) turn_stream_ms: u64,
 
-    pub(crate) viewport_h: u16,
-
     live_tools: Vec<LiveTool>,
     plugin_widget: plugin_widget::Widget,
     pub(crate) ask_modal: Option<AskModal>,
@@ -253,15 +253,11 @@ const LIVE_TAIL_CARRY_MAX: usize = 4 * 1024;
 
 #[derive(Clone, Debug)]
 pub(crate) enum PendingInsert {
-    Rows(Vec<Line<'static>>, Option<ratatui::style::Color>),
+    Rows(Vec<Line<'static>>, ratatui::style::Color),
     Styled(Vec<(Line<'static>, Vec<HyperlinkTarget>)>),
 }
 
-pub(crate) type BatchedInsert = (
-    Line<'static>,
-    Vec<HyperlinkTarget>,
-    Option<ratatui::style::Color>,
-);
+pub(crate) type BatchedInsert = (Line<'static>, Vec<HyperlinkTarget>, ratatui::style::Color);
 
 #[derive(Clone, Debug)]
 pub enum TranscriptEntry {
@@ -388,6 +384,7 @@ impl Tui {
             matches: Vec::new(),
             muted_text: None,
             search: None,
+            action: action::ActionState::Idle,
             sel: 0,
             status: None,
             gap_owed: false,
@@ -449,7 +446,6 @@ impl Tui {
             streamed_bytes: 0,
             turn_output_accum: 0,
             turn_stream_ms: 0,
-            viewport_h: MIN_VIEWPORT_H,
             live_tools: Vec::new(),
             plugin_widget: plugin_widget::Widget::new(std::env::current_dir().unwrap_or_default()),
             status_line_seen: crate::statusline::version(),

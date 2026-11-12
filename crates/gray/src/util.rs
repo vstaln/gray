@@ -33,6 +33,30 @@ pub fn atomic_write_json(path: &Path, value: &impl serde::Serialize) -> anyhow::
     result
 }
 
+pub fn write_private(dir: &Path, name: &str, body: &str) -> anyhow::Result<()> {
+    use std::io::Write as _;
+    if !dir.is_dir() {
+        let mut builder = std::fs::DirBuilder::new();
+        builder.recursive(true);
+        #[cfg(unix)]
+        std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+        builder.create(dir)?;
+    }
+
+    let tmp = dir.join(format!(".{name}.{}.tmp", std::process::id()));
+    let _ = std::fs::remove_file(&tmp);
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    options.open(&tmp)?.write_all(body.as_bytes())?;
+    std::fs::rename(&tmp, dir.join(name))?;
+    Ok(())
+}
+
 /// Open `url` in the system browser, best-effort (device-flow OAuth
 /// verification pages; was `feedback::open_in_browser`).
 pub fn open_in_browser(url: &str) {

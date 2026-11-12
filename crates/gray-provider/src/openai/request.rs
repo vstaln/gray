@@ -799,6 +799,8 @@ pub(super) fn map_chat_to_responses(
         reasoning,
         include,
         max_output_tokens,
+        temperature: None,
+        top_p: None,
         previous_response_id: None,
         tool_choice: None,
         parallel_tool_calls: None,
@@ -817,11 +819,6 @@ pub(super) fn apply_dynamic_policy(
         None
     };
     body.store = policy.store;
-    body.previous_response_id = if policy.previous_response_id {
-        body.previous_response_id.clone()
-    } else {
-        None
-    };
     if policy.include_reasoning_encrypted {
         body.include = body
             .reasoning

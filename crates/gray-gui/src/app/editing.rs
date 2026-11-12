@@ -161,7 +161,7 @@ impl GrayApp {
     /// Autosave: dirty tabs idle for `AUTOSAVE_AFTER` are written, unless
     /// the file changed on disk underneath us (then we leave it alone).
     pub(super) fn autosave_tick(&mut self, cx: &mut Context<Self>) {
-        if self.store.state.setting("autosave", "on") != "on" {
+        if self.store.state.setting("autosave", "true") != "true" {
             return;
         }
         let Some(root) = self.work_root() else {

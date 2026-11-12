@@ -6,6 +6,90 @@ pub(crate) enum Flow {
     Break,
 }
 
+/// Every slash command the session knows: builtins, plugin commands, then
+/// prompt templates, as `("/name", description)`.
+pub(crate) fn help_entries(
+    cwd: &std::path::Path,
+    hooks: &[Arc<dyn PluginHooks>],
+) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = REGISTRY
+        .iter()
+        .map(|d| {
+            let aliases = d
+                .aliases
+                .iter()
+                .map(|a| format!("/{a}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let desc = if aliases.is_empty() {
+                d.desc.to_string()
+            } else {
+                format!("{} ({aliases})", d.desc)
+            };
+            (format!("/{}", d.name), desc)
+        })
+        .collect();
+    let mut seen: std::collections::HashSet<String> =
+        REGISTRY.iter().map(|d| d.name.to_string()).collect();
+    let mut entries = crate::plugin_cli::completions("");
+    entries.extend(plugin_help_entries(hooks));
+    for (name, description) in entries {
+        if seen.insert(name.clone()) {
+            out.push((format!("/{name}"), description));
+        }
+    }
+    for t in crate::prompt_templates::discover(cwd) {
+        if seen.insert(t.name.clone()) {
+            out.push((
+                format!("/{}", t.name),
+                format!("template · {}", t.description),
+            ));
+        }
+    }
+    out
+}
+
+pub(crate) fn help_text(cwd: &std::path::Path, hooks: &[Arc<dyn PluginHooks>]) -> String {
+    help_entries(cwd, hooks)
+        .into_iter()
+        .map(|(name, desc)| format!("  {name:<11} {desc}"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// `/help` in the TUI: the command list as a picker; the picked command name.
+pub(crate) fn help_picker(
+    shared: &crate::composer::SharedTui,
+    cwd: &std::path::Path,
+    hooks: &[Arc<dyn PluginHooks>],
+) -> Option<String> {
+    // One label per row, name then description, so the filter matches both.
+    let items: Vec<(String, String)> = help_entries(cwd, hooks)
+        .into_iter()
+        .map(|(name, desc)| {
+            let label = format!("{name:<13}{desc}");
+            (name, label)
+        })
+        .collect();
+    let bg = shared.lock().expect("tui lock").snapshot();
+    let mut picker = super::picker::ListPicker {
+        title: "Commands",
+        items: &items,
+        label: Box::new(|(_, label): &(String, String)| label.as_str()),
+        trailing: None,
+        footer: None,
+        on_highlight: None,
+        gap_before: None,
+        selected: 0,
+        current: None,
+    };
+    let picked = with_modal_sync(Some(shared), || {
+        super::picker::run_list_picker(&mut picker, &bg)
+    });
+    let _ = shared.lock().expect("tui lock").draw();
+    picked.ok().flatten().map(|i| items[i].0.clone())
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn dispatch_command(
     cmd: ReplCommand,
@@ -96,41 +180,16 @@ pub(crate) async fn dispatch_command(
             Flow::Continue
         }
         ReplCommand::Help => {
-            let mut out = String::new();
-            for d in REGISTRY.iter().chain(commands::TUI_COMMANDS) {
-                out.push_str(&commands::format_help_line(d));
-                out.push('\n');
-            }
-            let mut entries = crate::plugin_cli::completions("");
-            if let Some(a) = agent.as_ref() {
-                entries.extend(plugin_help_entries(a.hooks()));
-            }
-            let mut seen: std::collections::HashSet<String> = REGISTRY
-                .iter()
-                .chain(commands::TUI_COMMANDS)
-                .map(|d| d.name.to_string())
-                .collect();
-            for (name, description) in entries {
-                if seen.insert(name.clone()) {
-                    out.push_str(&format!("  /{name:<10} {description}\n"));
-                }
-            }
-            let templates = crate::prompt_templates::discover(cwd);
-            if !templates.is_empty() {
-                out.push_str("prompt templates:\n");
-                for t in templates {
-                    if seen.insert(t.name.clone()) {
-                        out.push_str(&format!("  /{:<10} {}\n", t.name, t.description));
-                    }
-                }
-            }
+            let hooks = agent.as_ref().map(|a| a.hooks()).unwrap_or_default();
             if let Some((shared, _)) = tui {
-                let mut t = shared.lock().expect("tui lock");
-                t.push_dim(out.trim_end().to_string());
-                t.ensure_gap();
+                shared.lock().expect("tui lock").retract_slash_echo("/help");
+                if let Some(name) = help_picker(shared, cwd, hooks) {
+                    *pending_command = Some(super::parse_command(&name));
+                }
             } else {
+                let out = help_text(cwd, hooks);
                 say(None, &crate::rule("commands"));
-                say(None, out.trim_end());
+                say(None, &out);
             }
             Flow::Continue
         }
@@ -175,44 +234,25 @@ pub(crate) async fn dispatch_command(
             *pending_history = std::sync::Arc::new(Vec::new());
             *session_totals = SessionTotals::default();
             *session_state = None;
-            let mut short_id = String::new();
-            let mut new_sid: Option<SessionId> = None;
-            if let Some(root) = default_root() {
-                let store = JsonlSessionStore::new(root);
-                let session_id = store.fresh_id().await;
-                let timestamp = gray_core::time::now_millis();
-                let meta = SessionMeta::new(
-                    session_id.clone(),
-                    timestamp,
-                    cwd.to_path_buf(),
-                    config.model.clone().unwrap_or_else(|| "unset".into()),
-                )
-                .with_origin(crate::session_store::session_origin_from_env());
-                if let Err(e) = store.create(meta).await {
-                    log::warn!(target: "gray_session", "session create failed: {e}");
+            super::session::ensure_session_state(session_state, config, cwd).await;
+            let short_id = session_state
+                .as_ref()
+                .map(|s| crate::resume::short_id(&s.session_id))
+                .unwrap_or_default();
+            let new_sid = session_state.as_ref().map(|s| s.session_id.clone());
+
+            *agent = match build_agent(config, cwd, new_sid.as_ref().map(|s| s.as_str())).await {
+                Ok(built) => Some(built),
+                Err(e) if config.model.is_some() => {
+                    *agent = None;
+                    say(
+                        tui.as_ref().map(|(s, _)| s),
+                        &format!("new conversation failed: {e:#}"),
+                    );
+                    return Ok(Flow::Continue);
                 }
-
-                let open_guard = match store.acquire_open(&session_id).await {
-                    Ok(guard) => Some(guard),
-                    Err(e) => {
-                        log::warn!(target: "gray_session", "session open-lock failed: {e}");
-                        None
-                    }
-                };
-                short_id = crate::resume::short_id(&session_id);
-                new_sid = Some(session_id.clone());
-                super::session::export_session_env(session_id.as_str());
-                *session_state = Some(SessionState {
-                    full_save_pending: false,
-                    store,
-                    session_id,
-                    _open_guard: open_guard,
-                });
-            }
-
-            *agent = build_agent(config, cwd, new_sid.as_ref().map(|s| s.as_str()))
-                .await
-                .ok();
+                Err(_) => None,
+            };
 
             if let Some((shared, _)) = tui {
                 let mut t = shared.lock().expect("tui lock");
@@ -279,36 +319,20 @@ pub(crate) async fn dispatch_command(
         }
         ReplCommand::ContextWindow(val) => {
             handle_context_window(config, cwd, agent, val, tui.as_ref().map(|(s, _)| s)).await;
+            if let Some(agent) = agent.as_mut()
+                && !config.bare
+            {
+                crate::sync_context_budget(agent, config);
+            }
             Flow::Continue
         }
         ReplCommand::Jobs => {
             let tui_shared = tui.as_ref().map(|(s, _)| s);
-            let sid = session_state
-                .as_ref()
-                .map(|s| s.session_id.as_str().to_string());
-            let ctx = super::jobs::session_ctx(cwd, sid.as_deref());
+            let sid = session_state.as_ref().map(|s| s.session_id.as_str());
+            let ctx = super::jobs::session_ctx(cwd, sid);
             let home = crate::setup::gray_home()?;
-            match (agent.as_ref().map(|a| a.executor_handle()), tui_shared) {
-                (Some(exec), Some(shared)) => {
-                    let bg = shared.lock().expect("tui lock").snapshot();
-                    let changed = with_modal_sync(tui_shared, || {
-                        super::jobs::run_jobs_modal(Some(&bg), &home, exec, ctx)
-                    });
-                    match changed {
-                        Ok(true) => say(tui_shared, "background work updated"),
-                        Ok(false) => {}
-                        Err(e) => say(tui_shared, &format!("jobs picker failed: {e}")),
-                    }
-                }
-                (exec, _) => {
-                    let jobs = exec.map(|e| e.background_jobs(&ctx)).unwrap_or_default();
-                    let wakes = super::jobs::load_wakes(&home, sid.as_deref());
-                    say(
-                        tui_shared,
-                        &super::jobs::dashboard(&jobs, &wakes, gray_core::time::now_secs() as i64),
-                    );
-                }
-            }
+            let exec = agent.as_ref().map(|a| a.executor_handle());
+            super::jobs::show(tui_shared, &home, exec, ctx);
             Flow::Continue
         }
 
@@ -316,7 +340,7 @@ pub(crate) async fn dispatch_command(
             if arg.as_deref().map(str::trim) == Some("everything") {
                 // Provider CLIs + plugins + gray: the qol plugin owns the
                 // update-everything flow now.
-                *pending_command = Some(ReplCommand::Plugin("/qol update".to_string()));
+                *pending_command = Some(ReplCommand::Unknown("/qol update".to_string()));
             } else {
                 super::maintenance::handle_update(tui, arg).await;
             }
@@ -452,7 +476,7 @@ pub(crate) async fn dispatch_command(
                             }
                         }
                     }
-                    Err(e) => say(tui_shared, &format!("plugins manager failed: {e}")),
+                    Err(e) => say_err(tui_shared, &format!("plugins manager failed: {e}")),
                 }
             }
             Flow::Continue
@@ -486,6 +510,20 @@ pub(crate) async fn dispatch_command(
             let mut handled = false;
             let mut outcome =
                 run_plugin_command(&hooks, &name, argv.clone(), Some(raw.clone())).await;
+            if matches!(
+                outcome,
+                Some(
+                    CommandOutcome::Panel(_)
+                        | CommandOutcome::Picker(_)
+                        | CommandOutcome::HostPicker { .. }
+                )
+            ) && let Some((shared, _)) = tui.as_ref()
+            {
+                shared
+                    .lock()
+                    .expect("tui lock")
+                    .retract_slash_echo(cmd.trim());
+            }
             while let Some(oc) = outcome.take() {
                 match oc {
                     CommandOutcome::Say(text) => {
@@ -513,16 +551,31 @@ pub(crate) async fn dispatch_command(
                             {
                                 let before = gray_core::paths::gray_home()
                                     .map(|h| crate::plugin_cli::installed_names(&h));
-                                let status = with_modal_sync(shared, || {
-                                    super::maintenance::with_terminal(shared, || {
-                                        let mut child = std::process::Command::new(prog);
-                                        child.args(rest);
-                                        if let Ok(exe) = crate::update::exe_watch::on_disk_exe() {
-                                            child.env("GRAY_EXE", exe);
-                                        }
-                                        child.status()
+                                let modal =
+                                    shared.is_some() && rest.iter().any(|a| a == "--gray-modal");
+                                let bg = modal
+                                    .then(|| shared.map(|s| s.lock().expect("tui lock").snapshot()))
+                                    .flatten();
+                                let status = if modal {
+                                    with_modal_sync(shared, || {
+                                        super::maintenance::run_modal_child(prog, rest, bg.as_ref())
                                     })
-                                });
+                                } else {
+                                    with_modal_sync(shared, || {
+                                        super::maintenance::with_terminal(shared, || {
+                                            let mut child = std::process::Command::new(prog);
+                                            child.args(rest).env(
+                                                "GRAY_MODAL_THEME",
+                                                super::maintenance::modal_theme_env(),
+                                            );
+                                            if let Ok(exe) = crate::update::exe_watch::on_disk_exe()
+                                            {
+                                                child.env("GRAY_EXE", exe);
+                                            }
+                                            child.status()
+                                        })
+                                    })
+                                };
                                 match status {
                                     Ok(s) if s.success() => {}
                                     Ok(s) => say(shared, &format!("{name} exited: {s}")),
@@ -576,47 +629,14 @@ pub(crate) async fn dispatch_command(
                     CommandOutcome::HostPicker { kind, text, .. } if kind == "theme" => {
                         let tui_shared = tui.as_ref().map(|(s, _)| s);
                         if let Some(shared) = tui_shared {
-                            let bg = shared.lock().expect("tui lock").snapshot();
-                            match with_modal_sync(tui_shared, || {
-                                crate::setup::run_theme_picker(Some(&bg))
-                            }) {
-                                Ok(Some(name)) => {
-                                    match (
-                                        crate::theme::themes_dir(),
-                                        crate::setup::saved_config_path(),
-                                    ) {
-                                        (Ok(themes_dir), Ok(config_path)) => {
-                                            let active = crate::theme::active_theme_name();
-                                            let outcome = super::customize::theme_command(
-                                                Some(&name),
-                                                active.as_deref(),
-                                                &themes_dir,
-                                                &config_path,
-                                            );
-                                            if let Some((theme, name)) = outcome.apply {
-                                                crate::theme::set_theme(theme, name.as_deref());
-                                                shared
-                                                    .lock()
-                                                    .expect("tui lock")
-                                                    .repaint_for_palette();
-                                            }
-                                            say(tui_shared, &outcome.message);
-                                            let _ = shared.lock().expect("tui lock").draw();
-                                        }
-                                        (Err(e), _) | (_, Err(e)) => {
-                                            say(
-                                                tui_shared,
-                                                &format!("could not resolve gray home: {e}"),
-                                            );
-                                        }
-                                    }
-                                }
-                                Ok(None) => {}
-                                Err(e) => say(tui_shared, &format!("theme picker: {e}")),
-                            }
+                            theme_picker(shared);
                         } else if let Some(text) = text {
                             say(None, &text);
                         }
+                    }
+
+                    CommandOutcome::HostPicker { kind, arg, text } if kind == "action" => {
+                        composer_action(tui.as_ref().map(|(s, _)| s), &arg, text);
                     }
 
                     CommandOutcome::HostPicker { kind, text, .. } => {
@@ -675,42 +695,9 @@ pub(crate) async fn dispatch_command(
                             if spec.items.is_empty() {
                                 say_lines(tui_shared, super::picker::spec_lines(&spec));
                             } else {
-                                let bg = shared.lock().expect("tui lock").snapshot();
-                                let sel = spec
-                                    .selected_id
-                                    .as_deref()
-                                    .and_then(|id| spec.items.iter().position(|i| i.id == id))
-                                    .unwrap_or(0);
-                                let trailing = |i: &gray_core::agent::PickerItem| {
-                                    i.description
-                                        .as_deref()
-                                        .filter(|d| !d.is_empty())
-                                        .map(|d| {
-                                            vec![ratatui::text::Span::styled(
-                                                d.to_string(),
-                                                ratatui::style::Style::default()
-                                                    .fg(crate::theme::theme().text_dim),
-                                            )]
-                                        })
-                                        .unwrap_or_default()
-                                };
-                                let mut picker = super::picker::ListPicker {
-                                    title: spec.title.as_str(),
-                                    items: &spec.items,
-                                    label: Box::new(|i: &gray_core::agent::PickerItem| {
-                                        i.label.as_str()
-                                    }),
-                                    trailing: Some(Box::new(trailing)),
-                                    footer: None,
-                                    on_highlight: None,
-                                    selected: sel,
-                                };
-                                match with_modal_sync(tui_shared, || {
-                                    super::picker::run_list_picker(&mut picker, &bg)
-                                }) {
-                                    Ok(Some(idx)) => {
-                                        let id = &spec.items[idx].id;
-                                        let picked = super::picker::pick_argv(&argv, id);
+                                match super::picker::run_spec_picker(shared, &spec) {
+                                    Ok(Some(id)) => {
+                                        let picked = super::picker::pick_argv(&argv, &id);
                                         let picked_raw =
                                             format!("{raw} --pick {id}").trim_start().to_string();
                                         outcome = run_plugin_command(
@@ -759,4 +746,87 @@ pub(crate) async fn dispatch_command(
             Flow::Continue
         }
     })
+}
+
+/// The host's live theme picker, opened by a plugin's `theme` host picker.
+/// Safe mid-turn: it only repaints and saves the theme.
+pub(crate) fn theme_picker(shared: &crate::composer::SharedTui) {
+    let tui_shared = Some(shared);
+    let bg = shared.lock().expect("tui lock").snapshot();
+    match with_modal_sync(tui_shared, || crate::setup::run_theme_picker(Some(&bg))) {
+        Ok(Some(name)) => {
+            match (
+                crate::theme::themes_dir(),
+                crate::setup::saved_config_path(),
+            ) {
+                (Ok(themes_dir), Ok(config_path)) => {
+                    let active = crate::theme::active_theme_name();
+                    let outcome = super::customize::theme_command(
+                        Some(&name),
+                        active.as_deref(),
+                        &themes_dir,
+                        &config_path,
+                    );
+                    if let Some((theme, saved_name)) = outcome.apply {
+                        crate::theme::set_theme(theme, saved_name.as_deref());
+                        use ratatui::style::{Modifier, Style};
+                        use ratatui::text::{Line, Span};
+                        let th = crate::theme::theme();
+                        let header = Line::from(vec![
+                            Span::styled(
+                                format!("{} ", crate::tui::glyph("\u{2b22}", "#")),
+                                Style::default().fg(th.success).add_modifier(Modifier::BOLD),
+                            ),
+                            Span::styled(
+                                "Theme ",
+                                Style::default()
+                                    .fg(th.text_body)
+                                    .add_modifier(Modifier::BOLD),
+                            ),
+                            Span::styled(name.clone(), Style::default().fg(th.accent)),
+                        ]);
+                        let mut body = vec![Line::from(crate::theme::swatch_spans(&th))];
+                        body.extend(crate::setup::theme_modal::specimen_lines());
+                        body.extend(outcome.message.lines().skip(1).map(|l| {
+                            Line::styled(l.trim().to_string(), Style::default().fg(th.text_dim))
+                        }));
+                        if let Some(i) = outcome.message.find(" — ") {
+                            body.push(Line::styled(
+                                outcome.message[i + 5..]
+                                    .lines()
+                                    .next()
+                                    .unwrap_or_default()
+                                    .to_string(),
+                                Style::default().fg(th.error),
+                            ));
+                        }
+                        let mut t = shared.lock().expect("tui lock");
+                        t.repaint_for_palette();
+                        t.push_tool_box_lines(vec![header], body);
+                        let _ = t.draw();
+                    } else {
+                        say(tui_shared, &outcome.message);
+                    }
+                }
+                (Err(e), _) | (_, Err(e)) => {
+                    say(tui_shared, &format!("could not resolve gray home: {e}"));
+                }
+            }
+        }
+        Ok(None) => {}
+        Err(e) => say(tui_shared, &format!("theme picker: {e}")),
+    }
+}
+
+/// Run the composer action a plugin command asked for, as its key would.
+pub(crate) fn composer_action(
+    tui: Option<&crate::composer::SharedTui>,
+    key: &str,
+    text: Option<String>,
+) {
+    let started = tui.is_some_and(|s| s.lock().expect("tui lock").start_action_for_key(key));
+    if !started {
+        let msg = text.unwrap_or_else(|| format!("no composer action is bound to {key}"));
+        say(tui, &msg);
+    }
 }

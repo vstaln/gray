@@ -2,14 +2,11 @@ use reqwest::Url;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OpenAiWire {
-    Auto,
-    ChatCompletions,
     Responses,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum OpenAiAuthorization {
-    None,
     Bearer { secret_name: String },
 }
 
@@ -36,20 +33,6 @@ pub struct OpenAiRequestPolicy {
     pub tool_choice: Option<String>,
     pub parallel_tool_calls: Option<bool>,
     pub text_verbosity: Option<String>,
-}
-
-impl Default for OpenAiRequestPolicy {
-    fn default() -> Self {
-        Self {
-            prompt_cache_key: true,
-            store: false,
-            include_reasoning_encrypted: true,
-            previous_response_id: true,
-            tool_choice: None,
-            parallel_tool_calls: None,
-            text_verbosity: None,
-        }
-    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

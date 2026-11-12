@@ -213,69 +213,33 @@ impl GrayApp {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let t = cx.theme().clone();
-        let header = h_flex()
-            .h(px(40.))
-            .px_2()
-            .gap_1()
-            .flex_none()
-            .child(
-                Button::new("panel-files")
+        let mut header = h_flex().h(px(40.)).px_2().gap_1().flex_none();
+        for (id, label, p) in [
+            ("panel-files", "Files", Panel::Files),
+            ("panel-sessions", "Sessions", Panel::Sessions),
+            ("panel-viewer", "Viewer", Panel::Viewer),
+            ("panel-plugins", "Plugins", Panel::Plugins),
+            ("panel-diff", "Diff", Panel::Diff),
+        ] {
+            header = header.child(
+                Button::new(id)
                     .ghost()
                     .small()
-                    .label("Files")
-                    .when(panel == Panel::Files, |b| b.primary())
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.panel = Some(Panel::Files);
+                    .label(label)
+                    .when(panel == p, |b| b.primary())
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.panel = Some(p);
+                        match p {
+                            Panel::Sessions => this.gray_sessions = sessions::list(),
+                            Panel::Plugins => plugins::refresh(this.plugin_tx.clone()),
+                            Panel::Diff => this.refresh_workspace(cx),
+                            _ => {}
+                        }
                         cx.notify();
                     })),
-            )
-            .child(
-                Button::new("panel-sessions")
-                    .ghost()
-                    .small()
-                    .label("Sessions")
-                    .when(panel == Panel::Sessions, |b| b.primary())
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.panel = Some(Panel::Sessions);
-                        this.gray_sessions = sessions::list();
-                        cx.notify();
-                    })),
-            )
-            .child(
-                Button::new("panel-viewer")
-                    .ghost()
-                    .small()
-                    .label("Viewer")
-                    .when(panel == Panel::Viewer, |b| b.primary())
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.panel = Some(Panel::Viewer);
-                        cx.notify();
-                    })),
-            )
-            .child(
-                Button::new("panel-plugins")
-                    .ghost()
-                    .small()
-                    .label("Plugins")
-                    .when(panel == Panel::Plugins, |b| b.primary())
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.panel = Some(Panel::Plugins);
-                        plugins::refresh(this.plugin_tx.clone());
-                        cx.notify();
-                    })),
-            )
-            .child(
-                Button::new("panel-diff")
-                    .ghost()
-                    .small()
-                    .label("Diff")
-                    .when(panel == Panel::Diff, |b| b.primary())
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.panel = Some(Panel::Diff);
-                        this.refresh_workspace(cx);
-                        cx.notify();
-                    })),
-            )
+            );
+        }
+        let header = header
             .child(div().flex_1())
             .child(
                 Button::new("panel-refresh")

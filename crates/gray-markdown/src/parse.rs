@@ -1317,10 +1317,6 @@ impl<'a, 'b, 'syn> MarkdownParser<'a, 'b, 'syn> {
         }
     }
 
-    pub(crate) fn wrap_cell_text(text: &str, width: usize) -> Vec<String> {
-        wrap_cell_text(text, width)
-    }
-
     #[allow(clippy::too_many_arguments)]
     fn format_styled_content_lines(
         &self,
@@ -1335,7 +1331,7 @@ impl<'a, 'b, 'syn> MarkdownParser<'a, 'b, 'syn> {
         let wrapped_cells: Vec<Vec<String>> = (0..col_widths.len())
             .map(|i| {
                 let text = cells.get(i).map(|c| c.plain_text()).unwrap_or_default();
-                Self::wrap_cell_text(&text, col_widths[i])
+                wrap_cell_text(&text, col_widths[i])
             })
             .collect();
 

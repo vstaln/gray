@@ -5,11 +5,11 @@
 //! is an `unbound` entry in the user's `settings.json`.
 //!
 //! `ensure_ctrl_v_passthrough` runs once at startup, only when actually inside
-//! Windows Terminal (`WT_SESSION`), and only rewrites settings files that
-//! parse as plain JSON — files with comments are left alone. Both the modern
-//! split model (`actions` + `keybindings` id refs) and the legacy unified
-//! model (`keys` inline on actions) are handled. Changes are idempotent and a
-//! one-time `settings.json.gray-backup` is kept next to the file.
+//! Windows Terminal (`WT_SESSION`). JSONC comments and trailing commas are
+//! stripped for parsing, the one-time `settings.json.gray-backup` keeps the
+//! original text, and a file that cannot be parsed is left untouched. Both the
+//! modern split model (`actions` + `keybindings` id refs) and the legacy
+//! unified model (`keys` inline on actions) are handled. Changes are idempotent.
 
 #[cfg(target_os = "windows")]
 use std::path::{Path, PathBuf};
@@ -225,9 +225,9 @@ fn update_settings_file(path: &Path) -> std::io::Result<()> {
     }
     let backup = path.with_extension("json.gray-backup");
     if !backup.exists() {
-        let _ = std::fs::copy(path, &backup);
+        std::fs::copy(path, &backup)?;
     }
-    let pretty = serde_json::to_string_pretty(&value).unwrap_or(body);
+    let pretty = serde_json::to_string_pretty(&value).map_err(std::io::Error::other)?;
     std::fs::write(path, format!("{pretty}\n"))
 }
 

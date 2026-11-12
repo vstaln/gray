@@ -1,8 +1,6 @@
 use std::collections::BTreeMap;
 
-use super::credential::{
-    CredentialEnvelope, CredentialMaterial, CredentialSource, SecretMap, StaticCredentialSource,
-};
+use super::credential::{CredentialEnvelope, CredentialMaterial, SecretMap};
 
 #[test]
 fn credential_material_round_trips_secret_values_without_debug_exposure() {
@@ -22,13 +20,6 @@ fn credential_material_round_trips_secret_values_without_debug_exposure() {
     assert!(!debug.contains("test-access"));
     assert!(!debug.contains("acct_test"));
     assert!(debug.contains("redacted"));
-}
-
-#[tokio::test]
-async fn static_credential_source_returns_a_lease() {
-    let source = StaticCredentialSource::new("access_token", "test-access");
-    let lease = source.acquire().await.unwrap();
-    assert_eq!(lease.secrets.get("access_token"), Some("test-access"));
 }
 
 #[test]

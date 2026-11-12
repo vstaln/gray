@@ -28,10 +28,7 @@ pub use sidecar::{
     SidecarPlugin,
 };
 
-pub use capabilities::{
-    CapabilitySpec, HOST_ASK as CAP_HOST_ASK, HOST_SAY as CAP_HOST_SAY, HOST_TURN, SHELL_ENV,
-    TOOL_OVERRIDE, WIDGET_OVERRIDE,
-};
+pub use capabilities::{CapabilitySpec, HOST_TURN, SHELL_ENV, TOOL_OVERRIDE, WIDGET_OVERRIDE};
 
 pub const DYNAMIC_PROTOCOL: &str = "1.3";
 
@@ -41,8 +38,7 @@ pub use provider::{
     ProviderChatResult, ProviderDecl, ProviderHeaderDecl, ProviderHeaderSourceDecl, ProviderModel,
     ProviderModelCatalog, ProviderModelsRequest, ProviderRefreshRequest, ProviderRequestPolicyDecl,
     ProviderRevokeRequest, ProviderRevokeResult, ProviderRpcError, ProviderRpcFailure,
-    ProviderTransportDecl, ProviderUsageLimits, ProviderUsageRequest, ProviderUsageWindow,
-    ProviderValidationError, SlotOption,
+    ProviderTransportDecl, ProviderValidationError, SlotOption,
 };
 
 #[derive(Debug, Clone)]
@@ -201,6 +197,10 @@ pub fn manifest_tools(v: &Value) -> Vec<ToolDef> {
 }
 
 impl Manifest {
+    pub fn claims(&self, hook: &str) -> bool {
+        self.hooks.iter().any(|h| h == hook)
+    }
+
     pub fn from_result(v: &Value) -> Self {
         let str_list = |key: &str| {
             v.get(key)
@@ -323,8 +323,6 @@ pub trait Plugin: Send + Sync {
         None
     }
 
-    async fn compact_before(&self) {}
-
     fn set_session_id(&self, _id: &str) {}
 
     async fn tool_before(&self, _name: &str, _args: &Value) -> ToolBefore {
@@ -425,9 +423,6 @@ impl PluginHooks for PluginHookAdapter {
     async fn prompt_context(&self) -> Option<String> {
         self.plugin.prompt_context(&self.cwd).await
     }
-    async fn compact_before(&self) {
-        self.plugin.compact_before().await
-    }
     async fn tool_before(&self, name: &str, args: &Value) -> ToolBefore {
         self.plugin.tool_before(name, args).await
     }
@@ -439,7 +434,6 @@ impl PluginHooks for PluginHookAdapter {
             .map(|name| PluginCommand {
                 turn_local_verbs: m.turn_local.get(name).cloned().unwrap_or_default(),
                 name: name.clone(),
-                description: String::new(),
             })
             .collect()
     }
@@ -452,9 +446,6 @@ impl PluginHooks for PluginHookAdapter {
         match self.plugin.run_command(name, argv, raw).await? {
             CommandOutcome::Say(s) if s.is_empty() => None,
             CommandOutcome::Prompt(s) if s.is_empty() => None,
-            CommandOutcome::HostPicker { kind, arg, .. } if kind == "model" && arg.is_empty() => {
-                None
-            }
             o => Some(o),
         }
     }

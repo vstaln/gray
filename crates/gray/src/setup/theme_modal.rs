@@ -31,7 +31,7 @@ fn apply(row: &Row) {
     );
 }
 
-fn specimen_lines() -> Vec<ratatui::text::Line<'static>> {
+pub(crate) fn specimen_lines() -> Vec<ratatui::text::Line<'static>> {
     use ratatui::style::Style;
     use ratatui::text::{Line, Span};
 
@@ -65,7 +65,9 @@ fn picker<'a>(
         trailing: Some(Box::new(|r: &Row| theme::swatch_spans(&r.theme))),
         footer: Some(Box::new(specimen_lines)),
         on_highlight,
+        gap_before: None,
         selected: sel,
+        current: Some(sel),
     }
 }
 

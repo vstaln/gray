@@ -252,10 +252,17 @@ impl TextArea {
         if start >= self.text.len() || end > self.text.len() || start >= end {
             return 0;
         }
-        self.text[start..end]
-            .chars()
-            .map(crate::text_width::char_width)
-            .sum()
+        crate::text_width::display_width(&self.text[start..end])
+    }
+    fn target_col_or_latch(&mut self, bol: usize) -> usize {
+        match self.preferred_col {
+            Some(c) => c,
+            None => {
+                let c = self.display_width_of_range(bol, self.cursor);
+                self.preferred_col = Some(c);
+                c
+            }
+        }
     }
     fn move_to_display_col_on_line(
         &mut self,
@@ -290,8 +297,6 @@ impl TextArea {
 
         if width < target_col {
             byte_pos = line_end;
-
-            if byte_pos > line_start {}
         }
         let mut new_pos = self.clamp_to_boundary(byte_pos);
 
@@ -309,14 +314,7 @@ impl TextArea {
             .map(|i| i + 1)
             .unwrap_or(0);
 
-        let target_col = match self.preferred_col {
-            Some(c) => c,
-            None => {
-                let c = self.display_width_of_range(bol, self.cursor);
-                self.preferred_col = Some(c);
-                c
-            }
-        };
+        let target_col = self.target_col_or_latch(bol);
         if bol == 0 {
             self.cursor = 0;
             self.preferred_col = None;
@@ -339,14 +337,7 @@ impl TextArea {
             .rfind('\n')
             .map(|i| i + 1)
             .unwrap_or(0);
-        let target_col = match self.preferred_col {
-            Some(c) => c,
-            None => {
-                let c = self.display_width_of_range(bol, self.cursor);
-                self.preferred_col = Some(c);
-                c
-            }
-        };
+        let target_col = self.target_col_or_latch(bol);
         if eol >= self.text.len() {
             self.cursor = self.text.len();
             self.preferred_col = None;

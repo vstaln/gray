@@ -12,6 +12,7 @@ use gray_core::redaction::{redact_for_disclosure, redact_message};
 
 use crate::build_agent;
 use crate::config::Config;
+use crate::text_width::fit_chars;
 
 use gray_core::time::now_millis;
 
@@ -202,7 +203,7 @@ pub fn render_event_with_context<W: Write>(
             write!(w, "\n\n")?;
             w.flush()
         }
-        AgentEvent::Steered { .. } | AgentEvent::Retract => Ok(()),
+        AgentEvent::Steered { .. } => Ok(()),
         AgentEvent::TurnEnd { usage, .. } => {
             if usage.total() > 0 {
                 meta(
@@ -217,10 +218,6 @@ pub fn render_event_with_context<W: Write>(
             w.flush()
         }
     }
-}
-
-pub async fn run_print_mode(config: &Config, prompt: &str) -> anyhow::Result<()> {
-    run_print_mode_with_session(config, prompt, None, false).await
 }
 
 pub async fn run_print_mode_with_session(
@@ -432,15 +429,7 @@ impl PrintFailure {
         if trimmed.is_empty() {
             return None;
         }
-        let mut shown = String::new();
-        for ch in trimmed.chars() {
-            if shown.chars().count() >= 700 {
-                shown.push('…');
-                break;
-            }
-            shown.push(ch);
-        }
-        Some(shown)
+        Some(fit_chars(trimmed, 700))
     }
 
     pub fn message(&self) -> &'static str {
@@ -626,15 +615,6 @@ impl JsonOutput {
             };
         }
 
-        if let AgentEvent::Retract = event {
-            let seg = self.segment.index;
-            self.segment = TextSegment {
-                index: seg + 1,
-                ..TextSegment::default()
-            };
-            return vec![serde_json::json!({"type": "retract", "segment": seg})];
-        }
-
         let mut rows = match event {
             AgentEvent::ToolCallStart { .. }
             | AgentEvent::MessageBoundary
@@ -768,12 +748,7 @@ impl JsonOutput {
 
 fn disclose(text: &str, cap: usize) -> String {
     let flat: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    let capped: String = flat.chars().take(cap).collect();
-    let capped = if flat.chars().count() > cap {
-        format!("{capped}…")
-    } else {
-        capped
-    };
+    let capped = fit_chars(&flat, cap);
     let redaction = redact_for_disclosure(&capped);
     if redaction.has_secret() {
         redaction.into_text()
@@ -797,7 +772,11 @@ fn disclose_output(text: &str, cap: usize) -> String {
     if !source_truncated && base.chars().count() <= cap {
         return base;
     }
-    format!("{}…", base.chars().take(cap).collect::<String>())
+    let mut capped = fit_chars(&base, cap);
+    if !capped.ends_with('…') {
+        capped.push('…');
+    }
+    capped
 }
 
 fn tool_detail(name: &str, args: &serde_json::Value, preview: Option<&str>) -> Option<String> {
@@ -1020,7 +999,7 @@ async fn run_print_inner(
                         let _ = tx.send(text.to_string());
                     }
                 } else if let Some(ask_id) = v.get("ask_id").and_then(|a| a.as_u64()) {
-                    crate::ask::deliver_json_answer(ask_id, line);
+                    let _ = crate::ask::deliver_json_answer(ask_id, line);
                 }
             }
         });
@@ -1048,7 +1027,7 @@ async fn run_print_inner(
             Some(crate::resume::resolve_session_strict(&store, raw, false).await?),
             false,
         ),
-        None if continue_last => (crate::resume::latest_session_anywhere(&store).await, false),
+        None if continue_last => (crate::resume::latest_session_here(&store).await, false),
         None => (
             crate::failed_turn::resume_session(&store, &cwd, &prompt_hash).await,
             false,
@@ -1109,10 +1088,8 @@ async fn run_print_inner(
         )
     });
 
-    if let Some(max) = config.max_wall_secs
-        && crate::turn_caps::process_start().elapsed().as_secs() >= max
-    {
-        anyhow::bail!("max wall time {max}s reached — stopping (--max-wall-secs SECS)");
+    if let Some(cap) = crate::turn_caps::check_caps(config, 0, 0.0) {
+        anyhow::bail!("{cap}");
     }
     let mut agent = build_agent(config, &cwd, Some(session_id.as_str())).await?;
     log::debug!(target: "gray_timing", "spawn agent_built elapsed_ms={}", crate::turn_caps::process_start().elapsed().as_millis());
@@ -1409,17 +1386,7 @@ async fn run_print_inner(
     };
     match &result {
         Ok(()) => crate::failed_turn::clear_checkpoint(&session_id, &cwd, &prompt_hash),
-        Err(e) => {
-            let failure = PrintFailure::of(e);
-            crate::failed_turn::record_failure(
-                &session_id,
-                &cwd,
-                &prompt_text,
-                &prompt_hash,
-                failure.code,
-                failure.exit,
-            );
-        }
+        Err(_) => crate::failed_turn::record_failure(&session_id, &cwd, &prompt_hash),
     }
     result
 }
@@ -1489,33 +1456,4 @@ pub async fn append_new_messages(
             .map_err(|e| anyhow::anyhow!("failed to append message to session: {e}"))?;
     }
     Ok(())
-}
-
-pub async fn save_session(
-    store: &JsonlSessionStore,
-    model: &str,
-    cwd: &Path,
-    messages: &[Message],
-) -> anyhow::Result<SessionId> {
-    let session_id = store.fresh_id().await;
-    let timestamp = now_millis();
-
-    let meta = SessionMeta::new(
-        session_id.clone(),
-        timestamp,
-        cwd.to_path_buf(),
-        model.to_string(),
-    )
-    .with_origin(crate::session_store::print_session_origin());
-    store.create(meta).await?;
-
-    for msg in messages {
-        let redacted = redact_message(msg);
-        store
-            .append(&session_id, &redacted)
-            .await
-            .map_err(|e| anyhow::anyhow!("failed to append message to session: {e}"))?;
-    }
-
-    Ok(session_id)
 }

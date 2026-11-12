@@ -153,10 +153,7 @@ impl GrayApp {
         }
         // Only a new checkpoint when the tree changed since the thread's last
         // one; otherwise every turn repeated an identical restore point.
-        let last_checkpoint = thread.items.iter().rev().find_map(|i| match i {
-            Item::Activity { kind, detail, .. } if kind == "checkpoint" => Some(detail.clone()),
-            _ => None,
-        });
+        let last_checkpoint = self.last_checkpoint();
         if git::is_repo(&root)
             && let Some(tree) = git::checkpoint(&root)
             && last_checkpoint.as_deref() != Some(tree.as_str())
@@ -239,58 +236,10 @@ impl GrayApp {
 
     pub(super) fn slash(&mut self, cmd: &str, window: &mut Window, cx: &mut Context<Self>) {
         let (name, arg) = cmd.split_once(' ').unwrap_or((cmd, ""));
-        let arg = arg.trim().to_string();
-        let c = match name {
-            "new" => Cmd::NewThread,
-            "model" => Cmd::Model(arg),
-            "provider" => Cmd::Provider(arg),
-            "mode" => Cmd::Mode(arg),
-            "rename" => Cmd::Rename(arg),
-            "branch" => Cmd::NewBranch(arg),
-            "checkout" => Cmd::Branch(arg),
-            "diff" => Cmd::ToggleDiff,
-            "terminal" => Cmd::ToggleTerminal,
-            "settings" => {
-                if arg.is_empty() {
-                    Cmd::Settings
-                } else {
-                    Cmd::SettingsSection(arg.to_lowercase())
-                }
-            }
-            "theme" => Cmd::ToggleTheme,
-            "pin" => Cmd::Pin,
-            "archive" => Cmd::Archive,
-            "checkpoint" => Cmd::Checkpoint,
-            "restore" => Cmd::Restore,
-            "discard" => Cmd::DiscardChanges,
-            "stop" => Cmd::Stop,
-            "settle" => Cmd::Settle,
-            "plugins" => Cmd::TogglePlugins,
-            "install" => Cmd::PluginInstall(arg),
-            "uninstall" => Cmd::PluginRemove(arg),
-            "enable" => Cmd::PluginEnable(arg, true),
-            "disable" => Cmd::PluginEnable(arg, false),
-            "snooze" => Cmd::Snooze(arg.parse().unwrap_or(60)),
-            "worktree" => Cmd::Worktree(arg),
-            "effort" => Cmd::Effort(arg),
-            "background" | "bg" => Cmd::SetBackground(arg),
-            "view" | "preview" => Cmd::PreviewFile(arg),
-            "sessions" => Cmd::ToggleSessions,
-            "skills" => Cmd::ToggleSkills,
-            "resume" => Cmd::ResumeSession(arg),
-            "gray" => Cmd::Gray(arg),
-            "approve" => Cmd::Approve(true),
-            "layout" => Cmd::SetLayout(arg),
-            "attach" | "image" => Cmd::AttachImage(arg),
-            "autoaccept" => Cmd::SetAutoAccept(matches!(arg.as_str(), "on" | "true" | "1")),
-            "reject" => Cmd::Approve(false),
-            "turndiff" | "changes" => Cmd::TurnDiff,
-            "headdiff" => Cmd::HeadDiff,
-            _ => {
-                self.toast(format!("Unknown command /{name}"), true);
-                cx.notify();
-                return;
-            }
+        let Some(c) = self.local_slash(name, arg.trim()) else {
+            self.toast(format!("Unknown command /{name}"), true);
+            cx.notify();
+            return;
         };
         self.run(c, window, cx);
     }

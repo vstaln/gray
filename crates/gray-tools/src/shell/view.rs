@@ -144,7 +144,6 @@ pub fn middle_out(log: &[u8], budget_bytes: usize, budget_lines: usize, base_off
             omitted_bytes: 0,
             omitted_range: None,
             total_lines,
-            total_bytes,
             has_cr,
         };
     }
@@ -168,7 +167,6 @@ pub fn middle_out(log: &[u8], budget_bytes: usize, budget_lines: usize, base_off
         omitted_bytes,
         omitted_range,
         total_lines,
-        total_bytes,
         has_cr,
     }
 }
@@ -184,6 +182,12 @@ pub fn strip_ansi(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut i = 0;
     while i < bytes.len() {
+        // An escape can end mid-character (ESC then a multibyte char); drop
+        // the rest of that character rather than slicing inside it.
+        if !s.is_char_boundary(i) {
+            i += 1;
+            continue;
+        }
         if bytes[i] != 0x1b {
             let start = i;
             i += 1;
@@ -308,4 +312,13 @@ pub fn header(
         out.push_str(" \u{00b7} no output");
     }
     out
+}
+
+#[cfg(test)]
+mod strip_ansi_tests {
+    #[test]
+    fn escape_before_multibyte_char_does_not_panic() {
+        assert_eq!(super::strip_ansi("a\x1b\u{25c6}b"), "ab");
+        assert_eq!(super::strip_ansi("\x1b[1m\u{25c6}\x1b[0m"), "\u{25c6}");
+    }
 }

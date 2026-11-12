@@ -13,15 +13,13 @@ use serde_json::{Value, json};
 
 use crate::config::Config;
 
-use super::catalog::{
-    ConnectAuth, load_saved_config_at, normalize_custom_base_url, saved_config_path,
-};
+use super::catalog::{ConnectAuth, load_saved_config_at, saved_config_path};
 use super::model_modal::{
-    RECOMMENDED_HEAD, composites_first, fetch_models_live, head_first, is_composite_id,
-    recent_head_for, recent_prefix_len, row_levels, saved_models_for,
+    RowOrder, fetch_models_live, is_composite_id, picker_row_order, recent_head_for, row_levels,
 };
 use super::model_panes::{
-    PaneProvider, Place, SavedLists, build_rail, place, provider_is_active, scoped_config,
+    PaneProvider, Place, SavedLists, build_rail, cached_models, place, provider_is_active,
+    scoped_config,
 };
 use super::variants::Parts;
 
@@ -89,25 +87,6 @@ fn env_key(
     })
 }
 
-fn load_cached(
-    lists: Option<&SavedLists>,
-    saved: &super::catalog::SavedConfig,
-    p: &PaneProvider,
-) -> Vec<(String, String)> {
-    let load = |key: &str| match lists {
-        Some(l) => l.models(saved, key, &p.item.base_url),
-        None => saved_models_for(key, &p.item.base_url),
-    };
-    let mut models = load(&p.list_key);
-    if models.is_empty() {
-        let alt = normalize_custom_base_url(&p.item.base_url);
-        if alt != p.list_key {
-            models = load(&alt);
-        }
-    }
-    models
-}
-
 /// The picker's row order for one provider, exactly as `model_picker_loop`
 /// composes it: composites first, then the recent/current prefix, then a
 /// recommended head (when no recents lead), then everything else. Each row is
@@ -118,34 +97,21 @@ fn ordered_rows(p: &PaneProvider, config: &Config, models: &[(String, String)]) 
         current_id = None;
     }
     let matched: Vec<&(String, String)> = models.iter().collect();
-    let lead = matched.iter().filter(|(id, _)| is_composite_id(id)).count();
-    let mut ordered = composites_first(&matched);
-    let mut plain = ordered.split_off(lead);
-    let sep = recent_prefix_len(
+    let curated = super::context::curated_recommended(&p.item.id);
+    let RowOrder {
+        ordered,
+        lead,
+        sep,
+        div_at,
+        all_head,
+    } = picker_row_order(
+        &matched,
+        models,
         current_id.as_deref(),
         &recent_ids,
-        plain.iter().map(|(id, _)| id.as_str()),
+        curated.as_deref(),
+        true,
     );
-    let mut all_head = false;
-    let mut div_at = sep;
-    if sep == 0 {
-        let curated = super::context::curated_recommended(&p.item.id);
-        let head: Vec<String> = super::recommend::recommended_ids(
-            models,
-            curated.as_deref(),
-            super::context::model_meta,
-            RECOMMENDED_HEAD,
-        )
-        .into_iter()
-        .filter(|id| !is_composite_id(id))
-        .collect();
-        plain = head_first(&plain, &head);
-        if !head.is_empty() && head.len() < plain.len() {
-            div_at = head.len();
-            all_head = true;
-        }
-    }
-    ordered.extend(plain);
     ordered
         .iter()
         .enumerate()
@@ -196,7 +162,12 @@ fn build_model_catalog(config: &Config, mode: DumpModels) -> Value {
 
     let mut models_of: HashMap<String, Vec<(String, String)>> = usable
         .iter()
-        .map(|p| (p.item.id.clone(), load_cached(lists.as_ref(), &saved, p)))
+        .map(|p| {
+            (
+                p.item.id.clone(),
+                cached_models(lists.as_ref(), &saved, &p.list_key, &p.item.base_url),
+            )
+        })
         .collect();
 
     let fetching: Vec<&&PaneProvider> = usable
@@ -355,7 +326,7 @@ pub fn select_cli_provider(
         .map(load_saved_config_at)
         .unwrap_or_default();
     let lists = SavedLists::load();
-    let models = load_cached(lists.as_ref(), &saved, p);
+    let models = cached_models(lists.as_ref(), &saved, &p.list_key, &p.item.base_url);
 
     if config.model.is_none() {
         config.model = models

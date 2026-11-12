@@ -10,7 +10,7 @@ use crate::config::Config;
 use crate::session_store::{JsonlSessionStore, default_root};
 
 use super::{
-    CURRENT_REQ, LAST_USAGE, Session, emit, emit_result, emit_say, is_turn_active, lock,
+    CURRENT_REQ, LAST_USAGE, Session, emit_result, emit_say, is_turn_active, lock,
     mark_turn_interrupted, sync_session,
 };
 
@@ -67,8 +67,15 @@ pub(crate) fn approve(v: &Value, id: &Value) {
         return;
     };
     let line = json!({"ask_id": ask_id, "answers": answers}).to_string();
-    crate::ask::deliver_json_answer(ask_id, &line);
-    emit_result(id, true, Value::Object(Default::default()));
+    if crate::ask::deliver_json_answer(ask_id, &line) {
+        emit_result(id, true, Value::Object(Default::default()));
+    } else {
+        emit_result(
+            id,
+            false,
+            json!({"error": "answer not delivered: no open ask with that ask_id, or the answers do not match its questions"}),
+        );
+    }
 }
 
 /// `status` — session/model/context/usage snapshot.
@@ -125,10 +132,7 @@ pub(crate) fn status(sess: &mut Session, config: &Config, cwd: &std::path::Path,
 pub(crate) fn list_commands(sess: &Session, id: &Value) {
     let mut out: Vec<Value> = Vec::new();
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-    for d in crate::repl::commands::REGISTRY
-        .iter()
-        .chain(crate::repl::commands::TUI_COMMANDS)
-    {
+    for d in crate::repl::commands::REGISTRY.iter() {
         seen.insert(d.name.to_string());
         out.push(json!({
             "name": d.name,
@@ -160,7 +164,7 @@ pub(crate) fn list_commands(sess: &Session, id: &Value) {
             if seen.insert(name.clone()) {
                 out.push(json!({
                     "name": name,
-                    "description": c.description,
+                    "description": "",
                     "turn_local_verbs": c.turn_local_verbs,
                     "source": "plugin",
                 }));
@@ -350,11 +354,4 @@ pub(crate) async fn resume(
             );
         }
     }
-}
-
-/// Surface a fatal condition as an event (used sparingly; most errors ride
-/// the `result`/`say` rows instead).
-#[allow(dead_code)]
-pub(crate) fn emit_protocol_error(code: &str, message: &str) {
-    emit(json!({"type": "error", "code": code, "message": message}));
 }

@@ -39,7 +39,7 @@ fn forget_provider_at(
             config.api_key = None;
             config.model = None;
         }
-        let _saved_lock = crate::setup::lock_saved_config_at(saved_path).ok();
+        let _saved_lock = crate::setup::lock_saved_config_at(saved_path)?;
         let mut saved = load_saved_config_at(saved_path);
         if saved.provider_id == item.id {
             saved.provider_id.clear();
@@ -61,7 +61,7 @@ fn forget_provider_at(
     let name = item.name.clone();
     if normalize_custom_base_url(&config.base_url) == normalize_custom_base_url(&item.base_url) {
         config.api_key = None;
-        let _cfg_lock = crate::setup::lock_saved_config_at(saved_path).ok();
+        let _cfg_lock = crate::setup::lock_saved_config_at(saved_path)?;
         let mut saved = load_saved_config_at(saved_path);
 
         if saved.api_key.take().is_some() {
@@ -377,7 +377,7 @@ fn connect_modal(
                                 );
                             }
                             let path = saved_config_path()?;
-                            let _cfg_lock = crate::setup::lock_saved_config_at(&path).ok();
+                            let _cfg_lock = crate::setup::lock_saved_config_at(&path)?;
                             let mut saved = load_saved_config_at(&path);
                             saved.base_url = Some(config.base_url.clone());
                             saved.api_key = config.api_key.clone();

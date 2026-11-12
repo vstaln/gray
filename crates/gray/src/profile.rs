@@ -33,8 +33,7 @@ fn drain_builder_warnings() {
 pub(crate) async fn active_plugins(
     handler: Option<gray_plugin::HostHandler>,
 ) -> anyhow::Result<(Vec<Arc<dyn Plugin>>, bool)> {
-    let active =
-        gray_plugin::builder::active_plugins(Vec::new(), &[], "gray.yml", handler, true).await?;
+    let active = gray_plugin::builder::active_plugins("gray.yml", handler, true).await?;
     drain_builder_warnings();
     Ok(active)
 }

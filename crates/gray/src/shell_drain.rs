@@ -4,10 +4,8 @@ pub const SHELL_TOOL_TIMEOUT: Duration = Duration::from_secs(3660);
 
 const LOG_SWEEP_AGE: Duration = Duration::from_secs(7 * 24 * 3600);
 
-const SHELL_LOG_MAX_BYTES: u64 = 10 * 1024 * 1024;
-
 fn sweep_due(len: u64, age: Option<Duration>) -> bool {
-    len > SHELL_LOG_MAX_BYTES || age.is_some_and(|a| a > LOG_SWEEP_AGE)
+    len > gray_tools::shell::pump::SHELL_LOG_MAX_BYTES || age.is_some_and(|a| a > LOG_SWEEP_AGE)
 }
 
 pub fn sweep_old_shell_logs() {

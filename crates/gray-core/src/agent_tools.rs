@@ -19,9 +19,7 @@ pub(crate) fn answer_pending_tools(
     from_idx: usize,
     reason: &str,
 ) {
-    for (id, _, _) in tool_uses.iter().skip(from_idx) {
-        push_synthetic(agent, id, reason);
-    }
+    answer_pending_range(agent, tool_uses, from_idx, usize::MAX, reason);
 }
 
 pub(crate) fn answer_pending_range(

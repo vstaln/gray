@@ -765,15 +765,14 @@ pub(crate) fn dispatch_agent_event(
                     crate::setup::get_model_rate(model),
                 );
 
-                if let Some(miss) = t.note_cache_request(usage, model, wire_model) {
-                    totals.note_miss(&miss);
-                    if let Some(notice) = miss.notice() {
-                        t.flush_markdown();
-                        t.end_thinking();
-                        t.mark_stream_round_boundary();
-                        t.ensure_gap();
-                        t.push_warning(&notice);
-                    }
+                if let Some(miss) = t.note_cache_request(usage, model, wire_model)
+                    && let Some(notice) = miss.notice()
+                {
+                    t.flush_markdown();
+                    t.end_thinking();
+                    t.mark_stream_round_boundary();
+                    t.ensure_gap();
+                    t.push_warning(&notice);
                 }
             }
 
@@ -956,8 +955,6 @@ pub(crate) fn dispatch_agent_event(
     }
 }
 
-static AUTO_COMPACT_ENV_ONCE: std::sync::OnceLock<()> = std::sync::OnceLock::new();
-
 pub(crate) async fn persist_compaction_tail(
     agent: &mut Agent,
     config: &Config,
@@ -1068,92 +1065,6 @@ async fn repair_and_retry_append(
         .append_with_usage_and_duration(&state.session_id, msg, usage, duration_ms)
         .await
         .is_ok()
-}
-
-pub(crate) async fn maybe_threshold_compact(
-    agent: &mut Agent,
-    config: &Config,
-    session_state: &mut Option<SessionState>,
-    cwd: &Path,
-    tui: Option<&crate::composer::SharedTui>,
-    latest: Option<gray_core::event::Usage>,
-    initial_count: &mut usize,
-) {
-    AUTO_COMPACT_ENV_ONCE.get_or_init(crate::compact::init_auto_compact_from_env);
-    let window = crate::setup::resolve_model_context_length(config.model.as_deref().unwrap_or(""));
-    let tokens = crate::compact::estimate_context_tokens(agent.messages(), latest);
-    let settings = crate::compact::compaction_settings_for(
-        window,
-        agent.compact_ceiling(),
-        agent.price_cliff(),
-    );
-    if !crate::compact::should_compact(tokens, window, &settings) {
-        return;
-    }
-    let local = crate::compact::estimate_context_tokens(agent.messages(), None);
-    let freeable = local.saturating_sub(config.context_keep.unwrap_or(20_000));
-    let threshold = settings
-        .ceiling_tokens
-        .unwrap_or(usize::MAX)
-        .min(window.saturating_sub(settings.reserve_tokens));
-    if freeable < tokens.saturating_sub(threshold) {
-        log::info!(target: "gray_compact", "threshold compaction skipped: frees ~{freeable} of {} over", tokens.saturating_sub(threshold));
-        return;
-    }
-    let reason = crate::compact::binding_reason(tokens, &settings);
-
-    let compaction_id = format!("auto-{}", uuid::Uuid::new_v4().as_simple());
-    if let Some(shared) = tui {
-        shared
-            .lock()
-            .expect("tui lock")
-            .begin_compaction(compaction_id.clone());
-    }
-    match crate::compact::auto_compact_if_needed(agent).await {
-        Ok(true) => {
-            let elapsed = tui
-                .and_then(|shared| {
-                    shared
-                        .lock()
-                        .expect("tui lock")
-                        .finish_compaction(&compaction_id, Some("Working"))
-                })
-                .unwrap_or_default();
-            let detail = format!(
-                "{}/{} tokens{}",
-                crate::setup::format_context_length(tokens),
-                crate::setup::format_context_length(window),
-                reason
-                    .map(crate::compact::compact_reason_note)
-                    .unwrap_or_default()
-            );
-            super::status::push_compaction_card(
-                tui,
-                &crate::composer::fmt_elapsed_compact(elapsed.as_secs()),
-                &detail,
-            );
-
-            persist_compaction_tail(agent, config, session_state, cwd, tui).await;
-            *initial_count = agent.messages().len();
-        }
-        Ok(false) => {
-            if let Some(shared) = tui {
-                shared
-                    .lock()
-                    .expect("tui lock")
-                    .finish_compaction(&compaction_id, None);
-            }
-        }
-        Err(e) => {
-            if let Some(shared) = tui {
-                shared
-                    .lock()
-                    .expect("tui lock")
-                    .finish_compaction(&compaction_id, None);
-            }
-            log::warn!(target: "gray_compact", "threshold auto-compact failed: {e}")
-        }
-    }
 }
 
 pub(crate) async fn maybe_overflow_compact(

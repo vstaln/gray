@@ -188,7 +188,7 @@ impl GrayApp {
                                     .child(
                                         chip(
                                             "composer-mode",
-                                            GIcon::TriangleAlert,
+                                            Icon::new(GIcon::TriangleAlert).xsmall(),
                                             provider::mode_label(&mode),
                                             cx,
                                         )
@@ -205,7 +205,13 @@ impl GrayApp {
                                     )
                                     .when_some(self.branch.clone(), |s, b| {
                                         s.child(
-                                            chip("composer-branch", GIcon::Github, b, cx).on_click(
+                                            chip(
+                                                "composer-branch",
+                                                Icon::new(GIcon::Github).xsmall(),
+                                                b,
+                                                cx,
+                                            )
+                                            .on_click(
                                                 cx.listener(|this, _, window, cx| {
                                                     this.open_palette(
                                                         PaletteMode::Commands,

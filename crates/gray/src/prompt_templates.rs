@@ -13,40 +13,6 @@ pub struct PromptTemplate {
     pub source: &'static str,
 }
 
-#[must_use]
-pub fn parse_args(s: &str) -> Vec<String> {
-    let mut args = Vec::new();
-    let mut cur = String::new();
-    let mut quote: Option<char> = None;
-    let mut started = false;
-    for ch in s.chars() {
-        match quote {
-            Some(q) if ch == q => quote = None,
-            Some(_) => cur.push(ch),
-            None if ch == '"' || ch == '\'' => {
-                quote = Some(ch);
-                started = true;
-            }
-            None if ch.is_whitespace() => {
-                if started || !cur.is_empty() {
-                    args.push(std::mem::take(&mut cur));
-                }
-                started = false;
-            }
-            None => {
-                cur.push(ch);
-                started = true;
-            }
-        }
-    }
-    if started || !cur.is_empty() {
-        args.push(cur);
-    }
-
-    args.retain(|a| !a.is_empty());
-    args
-}
-
 fn placeholder_re() -> &'static regex::Regex {
     static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
     RE.get_or_init(|| {
@@ -108,7 +74,9 @@ pub fn substitute_args(content: &str, args: &[String]) -> String {
 
 #[must_use]
 pub fn expand(template: &PromptTemplate, rest: &str) -> String {
-    let args = parse_args(rest);
+    let mut args =
+        shlex::split(rest).unwrap_or_else(|| rest.split_whitespace().map(str::to_string).collect());
+    args.retain(|a| !a.is_empty());
     let body = template.content.trim();
     if has_placeholders(body) {
         substitute_args(body, &args)
@@ -245,11 +213,7 @@ fn load_dir(dir: &Path, source: &'static str, out: &mut Vec<PromptTemplate>) {
 }
 
 #[must_use]
-pub fn search_dirs(
-    cwd: &Path,
-    gray_home: Option<&Path>,
-    _home: Option<&Path>,
-) -> Vec<(PathBuf, &'static str)> {
+pub fn search_dirs(cwd: &Path, gray_home: Option<&Path>) -> Vec<(PathBuf, &'static str)> {
     let mut dirs = Vec::new();
     let git_root = crate::project_trust::find_git_root(cwd);
     let mut cur = Some(cwd.to_path_buf());
@@ -293,8 +257,7 @@ pub fn discover(cwd: &Path) -> Vec<PromptTemplate> {
         return list.clone();
     }
     let gray_home = crate::setup::gray_home().ok();
-    let home = gray_core::paths::user_home();
-    let mut dirs = search_dirs(cwd, gray_home.as_deref(), home.as_deref());
+    let mut dirs = search_dirs(cwd, gray_home.as_deref());
 
     if !crate::project_trust::is_trusted(&gray_core::paths::gray_home_or_temp(), cwd) {
         dirs.retain(|(_, source)| *source != "project");
@@ -313,18 +276,6 @@ pub fn invalidate_cache() {
     if let Ok(mut guard) = CACHE.lock() {
         *guard = None;
     }
-}
-
-#[must_use]
-pub fn is_cached_name(name: &str) -> bool {
-    CACHE
-        .lock()
-        .ok()
-        .and_then(|g| {
-            g.as_ref()
-                .map(|(_, _, list)| list.iter().any(|t| t.name == name))
-        })
-        .unwrap_or(false)
 }
 
 #[must_use]

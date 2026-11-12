@@ -53,9 +53,6 @@ fn lock_held(open: &std::path::Path) -> bool {
 }
 
 pub fn sessions_dir() -> Option<PathBuf> {
-    if let Ok(h) = std::env::var("GRAY_USER_HOME") {
-        return Some(PathBuf::from(h).join("sessions"));
-    }
     if let Ok(h) = std::env::var("GRAY_HOME") {
         return Some(PathBuf::from(h).join("sessions"));
     }

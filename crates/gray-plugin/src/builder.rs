@@ -11,7 +11,7 @@ use crate::profile::{PluginEntry, load_entries};
 use crate::{HostHandler, Manifest, Plugin, PluginHookAdapter, SidecarPlugin, merge_manifests};
 
 fn is_live_plugin(p: &dyn Plugin) -> bool {
-    p.manifest().protocol.as_deref() == Some("1.3")
+    p.manifest().protocol.as_deref() == Some(crate::DYNAMIC_PROTOCOL)
 }
 
 pub fn dynamic_plugins(plugins: &[Arc<dyn Plugin>]) -> Vec<Arc<dyn Plugin>> {
@@ -195,7 +195,17 @@ pub fn resolve_argv(dir: &Path) -> anyhow::Result<Vec<String>> {
         }
     }
     match execs.len() {
-        1 => Ok(vec![execs[0].to_string_lossy().into_owned()]),
+        1 => {
+            if let Some(kind) = foreign_binary(&execs[0]) {
+                anyhow::bail!(
+                    "built for {kind}, cannot run on {}-{}: this release has no build for this platform, update or reinstall it ({})",
+                    std::env::consts::OS,
+                    std::env::consts::ARCH,
+                    execs[0].display()
+                );
+            }
+            Ok(vec![execs[0].to_string_lossy().into_owned()])
+        }
         0 => anyhow::bail!(
             "no executable in {} (expected plugin.sh or one executable)",
             dir.display()
@@ -205,6 +215,44 @@ pub fn resolve_argv(dir: &Path) -> anyhow::Result<Vec<String>> {
             dir.display()
         ),
     }
+}
+
+fn foreign_binary(path: &Path) -> Option<&'static str> {
+    use std::io::Read;
+    let mut head = [0u8; 20];
+    let n = std::fs::File::open(path).ok()?.read(&mut head).ok()?;
+    let head = &head[..n];
+    let kind = if head.starts_with(b"\x7fELF") {
+        match head.get(18..20) {
+            Some([0x3e, 0]) => "linux-x86_64",
+            Some([0xb7, 0]) => "linux-aarch64",
+            _ => "linux",
+        }
+    } else if head.starts_with(&[0xcf, 0xfa, 0xed, 0xfe])
+        || head.starts_with(&[0xce, 0xfa, 0xed, 0xfe])
+        || head.starts_with(&[0xca, 0xfe, 0xba, 0xbe])
+    {
+        "macos"
+    } else if head.starts_with(b"MZ") {
+        "windows"
+    } else {
+        return None;
+    };
+    let native = [
+        (
+            "linux-x86_64",
+            cfg!(all(target_os = "linux", target_arch = "x86_64")),
+        ),
+        (
+            "linux-aarch64",
+            cfg!(all(target_os = "linux", target_arch = "aarch64")),
+        ),
+        ("linux", cfg!(target_os = "linux")),
+        ("macos", cfg!(target_os = "macos")),
+        ("windows", cfg!(windows)),
+    ]
+    .contains(&(kind, true));
+    (!native).then_some(kind)
 }
 
 fn load_lock_files(cwd: &Path) -> (crate::lock::LockFile, crate::lock::LockFile, Vec<String>) {
@@ -233,8 +281,6 @@ fn load_lock_files(cwd: &Path) -> (crate::lock::LockFile, crate::lock::LockFile,
 }
 
 pub async fn active_plugins(
-    defaults: Vec<Arc<dyn Plugin>>,
-    default_names: &[&str],
     profile_path: &str,
     handler: Option<HostHandler>,
     abort_on_spawn_failure: bool,
@@ -295,24 +341,11 @@ pub async fn active_plugins(
         false
     };
 
-    let mut plugins = if entries.is_empty() {
-        defaults
-            .iter()
-            .filter(|p| default_names.contains(&p.manifest().name.as_str()))
-            .cloned()
-            .collect::<Vec<_>>()
-    } else {
-        Vec::new()
-    };
+    let mut plugins: Vec<Arc<dyn Plugin>> = Vec::new();
     for (i, e) in entries.iter().enumerate() {
         match e {
             PluginEntry::Builtin(n) => {
-                match defaults.iter().find(|p| p.manifest().name == *n).cloned() {
-                    Some(p) => plugins.push(p),
-                    None => push_builder_warning(format!(
-                        "unknown plugin {n:?} in {profile_path} — ignoring"
-                    )),
-                }
+                push_builder_warning(format!("unknown plugin {n:?} in {profile_path} — ignoring"))
             }
             PluginEntry::Sidecar(spec) => {
                 if spec.0.iter().any(|a| a == "-y" || a == "--yes")
@@ -420,11 +453,7 @@ pub async fn active_plugins(
     }
 
     if plugins.is_empty() {
-        let fallback: Vec<Arc<dyn Plugin>> = defaults
-            .into_iter()
-            .filter(|p| default_names.contains(&p.manifest().name.as_str()))
-            .collect();
-        return Ok((fallback, true));
+        return Ok((Vec::new(), true));
     }
 
     let mut deduped: Vec<Arc<dyn Plugin>> = Vec::new();
@@ -511,12 +540,7 @@ async fn spawn_lock_plugin(
             p.set_host_handler(h.clone()).await;
         }
 
-        let declared = p.manifest().capabilities.clone();
-        p.set_capabilities(
-            crate::capabilities::granted_for(entry, &declared)
-                .into_iter()
-                .collect(),
-        );
+        p.set_capabilities(p.manifest().capabilities.to_vec());
         outcomes.push(SpawnOutcome {
             name: name.to_string(),
             error: None,
@@ -529,12 +553,7 @@ async fn spawn_lock_plugin(
                 p.set_host_handler(h.clone()).await;
             }
 
-            let declared = p.manifest().capabilities.clone();
-            p.set_capabilities(
-                crate::capabilities::granted_for(entry, &declared)
-                    .into_iter()
-                    .collect(),
-            );
+            p.set_capabilities(p.manifest().capabilities.to_vec());
             outcomes.push(SpawnOutcome {
                 name: name.to_string(),
                 error: None,
@@ -579,14 +598,7 @@ pub fn provider_cache_key(session_id: Option<&str>) -> String {
         .clone()
 }
 
-pub enum SystemPrompt {
-    Literal(String),
-    Build(PromptBuilder),
-}
-
 pub type PromptBuilder = Box<dyn FnOnce(&Registry, &[Manifest]) -> String + Send>;
-
-pub type ExecutorWrap = Box<dyn FnOnce(Arc<dyn ToolExecutor>) -> Arc<dyn ToolExecutor> + Send>;
 
 pub struct BuilderOptions {
     pub model: String,
@@ -601,7 +613,7 @@ pub struct BuilderOptions {
 
     pub session_id: Option<String>,
     pub cwd: PathBuf,
-    pub system_prompt: SystemPrompt,
+    pub system_prompt: PromptBuilder,
 
     pub extra_plugins: Vec<Arc<dyn Plugin>>,
     pub host_handler: Option<HostHandler>,
@@ -609,7 +621,6 @@ pub struct BuilderOptions {
 
     pub bare: bool,
     pub abort_on_spawn_failure: bool,
-    pub wrap_executor: Option<ExecutorWrap>,
 
     pub dynamic_provider_profile: Option<OpenAiProviderProfile>,
 
@@ -634,7 +645,6 @@ pub async fn build_agent(opts: BuilderOptions) -> anyhow::Result<Agent> {
         profile_path,
         bare,
         abort_on_spawn_failure,
-        wrap_executor,
         dynamic_provider_profile,
         dynamic_credential_source,
         prebooted_plugins,
@@ -645,15 +655,9 @@ pub async fn build_agent(opts: BuilderOptions) -> anyhow::Result<Agent> {
     } else if bare {
         Vec::new()
     } else {
-        active_plugins(
-            Vec::new(),
-            &[],
-            &profile_path,
-            host_handler,
-            abort_on_spawn_failure,
-        )
-        .await?
-        .0
+        active_plugins(&profile_path, host_handler, abort_on_spawn_failure)
+            .await?
+            .0
     };
 
     for p in extra_plugins {
@@ -669,10 +673,7 @@ pub async fn build_agent(opts: BuilderOptions) -> anyhow::Result<Agent> {
     }
     let (registry, manifests) = from_plugins(&plugins);
     let dynamic = dynamic_plugins(&plugins);
-    let system = match system_prompt {
-        SystemPrompt::Literal(s) => s,
-        SystemPrompt::Build(f) => f(&registry, &manifests),
-    };
+    let system = (system_prompt)(&registry, &manifests);
     let provider: Box<dyn gray_core::agent::Provider> =
         match (dynamic_provider_profile, dynamic_credential_source) {
             (Some(profile), Some(source)) => Box::new(
@@ -732,14 +733,10 @@ pub async fn build_agent(opts: BuilderOptions) -> anyhow::Result<Agent> {
         .collect();
 
     let registry = Arc::new(registry);
-    let base: Arc<dyn ToolExecutor> = if dynamic.is_empty() {
+    let executor: Arc<dyn ToolExecutor> = if dynamic.is_empty() {
         registry
     } else {
         Arc::new(crate::LiveRegistry::new(registry, dynamic))
-    };
-    let executor: Arc<dyn ToolExecutor> = match wrap_executor {
-        Some(wrap) => wrap(base),
-        None => base,
     };
     let hooks = PluginHookAdapter::for_plugins(&plugins, &cwd.to_string_lossy());
     let agent = Agent::new(provider, executor);

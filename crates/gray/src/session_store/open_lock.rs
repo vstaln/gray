@@ -166,5 +166,4 @@ pub(super) fn read_open_holder(path: &Path) -> Option<u32> {
     serde_json::from_str::<OpenHolder>(content)
         .ok()
         .map(|h| h.pid)
-        .or_else(|| content.parse::<u32>().ok())
 }

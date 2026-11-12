@@ -11,6 +11,24 @@ pub fn user_home() -> Option<PathBuf> {
     }
 }
 
+pub fn tilde(path: &std::path::Path, home: &std::path::Path) -> Option<String> {
+    let rest = path.strip_prefix(home).ok()?;
+    Some(if rest.as_os_str().is_empty() {
+        "~".to_string()
+    } else {
+        format!("~/{}", rest.display())
+    })
+}
+
+pub fn expand_tilde(raw: &str) -> Option<PathBuf> {
+    let home = user_home().filter(|h| !h.as_os_str().is_empty())?;
+    if raw == "~" {
+        return Some(home);
+    }
+    let rest = raw.strip_prefix("~/")?;
+    Some(home.join(rest))
+}
+
 pub fn gray_home() -> Option<PathBuf> {
     std::env::var_os("GRAY_HOME")
         .filter(|v| !v.to_string_lossy().trim().is_empty())
@@ -47,12 +65,28 @@ pub fn materialize_media(media_type: &str, data: &str) -> Option<PathBuf> {
     std::fs::create_dir_all(&dir).ok()?;
     let path = dir.join(format!("{tag}.{}", media_extension(media_type)));
     if !path.exists() {
-        std::fs::write(&path, &bytes).ok()?;
         #[cfg(unix)]
         {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+            use std::io::Write as _;
+            use std::os::unix::fs::OpenOptionsExt;
+            match std::fs::OpenOptions::new()
+                .create_new(true)
+                .write(true)
+                .mode(0o600)
+                .open(&path)
+            {
+                Ok(mut f) => {
+                    if f.write_all(&bytes).is_err() {
+                        let _ = std::fs::remove_file(&path);
+                        return None;
+                    }
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(_) => return None,
+            }
         }
+        #[cfg(not(unix))]
+        std::fs::write(&path, &bytes).ok()?;
     }
     Some(path)
 }

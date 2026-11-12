@@ -94,11 +94,6 @@ pub struct SavedConfig {
     pub memory_auto: Option<bool>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub cron_auto: Option<bool>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub gw_auto: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub auto_update: Option<bool>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -152,14 +147,6 @@ pub fn saved_config_path() -> anyhow::Result<PathBuf> {
     Ok(gray_home()?.join("config.json"))
 }
 
-pub fn gw_auto_enabled() -> bool {
-    subsystem_enabled(|s| s.gw_auto)
-}
-
-pub fn gw_auto_enabled_at(path: &Path) -> bool {
-    subsystem_enabled_at(path, |s| s.gw_auto)
-}
-
 pub fn intro_enabled() -> bool {
     subsystem_enabled(|s| s.intro)
 }
@@ -172,14 +159,6 @@ pub fn quality_of_life_enabled() -> bool {
     subsystem_enabled(|s| s.quality_of_life)
 }
 
-pub fn quality_of_life_enabled_at(path: &Path) -> bool {
-    subsystem_enabled_at(path, |s| s.quality_of_life)
-}
-
-pub fn auto_update_enabled_at(path: &Path) -> bool {
-    subsystem_enabled_at(path, |s| s.auto_update)
-}
-
 fn subsystem_enabled(get: impl Fn(&SavedConfig) -> Option<bool>) -> bool {
     saved_config_path()
         .map(|p| load_saved_config_at(&p))
@@ -187,8 +166,17 @@ fn subsystem_enabled(get: impl Fn(&SavedConfig) -> Option<bool>) -> bool {
         .unwrap_or(true)
 }
 
-fn subsystem_enabled_at(path: &Path, get: impl Fn(&SavedConfig) -> Option<bool>) -> bool {
-    get(&load_saved_config_at(path)).unwrap_or(true)
+pub(crate) fn saved_config_locked() -> SavedConfig {
+    saved_config_path()
+        .map(|path| saved_config_locked_at(&path))
+        .unwrap_or_default()
+}
+
+pub(crate) fn saved_config_locked_at(path: &Path) -> SavedConfig {
+    let _cfg_lock = lock_saved_config_at(path)
+        .inspect_err(|e| log::warn!("cannot lock {} ({e:#})", path.display()))
+        .ok();
+    load_saved_config_at(path)
 }
 
 pub fn load_saved_config_at(path: &Path) -> SavedConfig {
@@ -244,8 +232,6 @@ fn partial_saved_config(obj: &serde_json::Map<String, serde_json::Value>) -> Sav
         compact_at: opt_field(obj, "compact_at_tokens"),
         exec_prefix: opt_field(obj, "exec_prefix"),
         memory_auto: opt_field(obj, "memory_auto"),
-        cron_auto: opt_field(obj, "cron_auto"),
-        gw_auto: opt_field(obj, "gw_auto"),
         auto_update: opt_field(obj, "auto_update"),
         lean: opt_field(obj, "lean"),
         background_compaction: opt_field(obj, "background_compaction"),

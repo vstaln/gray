@@ -11,7 +11,6 @@ pub(crate) const FRESH_MS: u64 = 60 * 60 * 1000;
 
 const FILE_PREFIX: &str = "gray-failed-turn-";
 const KEY_CHARS: usize = 24;
-const PROMPT_CAP: usize = 4000;
 const KEEP: usize = 8;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -19,10 +18,7 @@ pub(crate) struct FailedTurn {
     pub session: String,
     pub cwd: PathBuf,
     pub prompt_hash: String,
-    pub prompt: String,
     pub failed_at_ms: u64,
-    pub exit: i32,
-    pub code: String,
 }
 
 fn disabled() -> bool {
@@ -70,29 +66,6 @@ fn checkpoints_dir() -> Option<PathBuf> {
     )
 }
 
-fn private_dir(dir: &Path) -> std::io::Result<()> {
-    if dir.is_dir() {
-        return Ok(());
-    }
-    let mut b = std::fs::DirBuilder::new();
-    b.recursive(true);
-    #[cfg(unix)]
-    std::os::unix::fs::DirBuilderExt::mode(&mut b, 0o700);
-    b.create(dir)
-}
-
-fn write_file(dir: &Path, name: &str, body: &str) -> std::io::Result<()> {
-    private_dir(dir)?;
-    let tmp = dir.join(format!(".{name}.{}.tmp", std::process::id()));
-    let _ = std::fs::remove_file(&tmp);
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
-    std::io::Write::write_all(&mut options.open(&tmp)?, body.as_bytes())?;
-    std::fs::rename(&tmp, dir.join(name))
-}
-
 fn sweep(dir: &Path) {
     let now = now_millis();
     let mut fresh_files = Vec::new();
@@ -124,52 +97,30 @@ fn sweep(dir: &Path) {
     }
 }
 
-pub(crate) fn record_failure(
-    session_id: &SessionId,
-    cwd: &Path,
-    prompt_text: &str,
-    prompt_hash: &str,
-    code: &str,
-    exit: i32,
-) {
+pub(crate) fn record_failure(session_id: &SessionId, cwd: &Path, prompt_hash: &str) {
     if disabled() {
         return;
     }
     let Some(dir) = checkpoints_dir() else {
         return;
     };
-    record_failure_in(&dir, session_id, cwd, prompt_text, prompt_hash, code, exit);
-}
-
-pub(crate) fn record_failure_in(
-    dir: &Path,
-    session_id: &SessionId,
-    cwd: &Path,
-    prompt_text: &str,
-    prompt_hash: &str,
-    code: &str,
-    exit: i32,
-) {
     let cp = FailedTurn {
         session: session_id.as_str().to_string(),
         cwd: canonical(cwd),
         prompt_hash: prompt_hash.to_string(),
-        prompt: prompt_text.chars().take(PROMPT_CAP).collect(),
         failed_at_ms: now_millis(),
-        exit,
-        code: code.to_string(),
     };
     let Ok(body) = serde_json::to_string(&cp) else {
         return;
     };
-    let path = checkpoint_path(dir, cwd, prompt_hash);
+    let path = checkpoint_path(&dir, cwd, prompt_hash);
     let Some(name) = path.file_name().map(|n| n.to_string_lossy().into_owned()) else {
         return;
     };
-    if write_file(dir, &name, &body).is_err() {
+    if crate::util::write_private(&dir, &name, &body).is_err() {
         return;
     }
-    sweep(dir);
+    sweep(&dir);
 }
 
 pub(crate) async fn resume_session(
@@ -181,16 +132,7 @@ pub(crate) async fn resume_session(
         return None;
     }
     let dir = checkpoints_dir()?;
-    resume_session_in(&dir, store, cwd, prompt_hash).await
-}
-
-pub(crate) async fn resume_session_in(
-    dir: &Path,
-    store: &JsonlSessionStore,
-    cwd: &Path,
-    prompt_hash: &str,
-) -> Option<SessionId> {
-    let path = checkpoint_path(dir, cwd, prompt_hash);
+    let path = checkpoint_path(&dir, cwd, prompt_hash);
     let cp: FailedTurn = serde_json::from_str(&std::fs::read_to_string(&path).ok()?).ok()?;
     if now_millis().saturating_sub(cp.failed_at_ms) > FRESH_MS {
         let _ = std::fs::remove_file(&path);
@@ -211,16 +153,7 @@ pub(crate) fn clear_checkpoint(session_id: &SessionId, cwd: &Path, prompt_hash: 
     let Some(dir) = checkpoints_dir() else {
         return;
     };
-    clear_checkpoint_in(&dir, session_id, cwd, prompt_hash);
-}
-
-pub(crate) fn clear_checkpoint_in(
-    dir: &Path,
-    session_id: &SessionId,
-    cwd: &Path,
-    prompt_hash: &str,
-) {
-    let path = checkpoint_path(dir, cwd, prompt_hash);
+    let path = checkpoint_path(&dir, cwd, prompt_hash);
     let Ok(body) = std::fs::read_to_string(&path) else {
         return;
     };

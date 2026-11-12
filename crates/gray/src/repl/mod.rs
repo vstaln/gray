@@ -178,8 +178,8 @@ pub(crate) use handlers::{
 };
 pub(crate) use plugin_cmds::handle_plugin_command;
 pub(crate) use session::{
-    dispatch_agent_event, handle_resume, maybe_overflow_compact, maybe_threshold_compact,
-    persist_turn_messages, print_exit_hint,
+    dispatch_agent_event, handle_resume, maybe_overflow_compact, persist_turn_messages,
+    print_exit_hint,
 };
 pub(crate) use status::{
     SessionTotals, handle_compact, handle_context_window, turn_footer, turn_tokens_per_second,
@@ -233,20 +233,48 @@ pub(crate) fn say(tui: Option<&crate::composer::SharedTui>, msg: &str) {
 }
 
 pub(crate) fn say_err(tui: Option<&crate::composer::SharedTui>, msg: &str) {
+    log::warn!(target: "gray_repl", "{msg}");
+    if crate::stdio::is_active() && tui.is_none() {
+        crate::stdio::emit_say("error", msg);
+        return;
+    }
+    let text = error_text(msg);
     if let Some(t) = tui {
         let mut t = t.lock().expect("tui lock");
-
-        // One push: a multi-line reply stays a transcript block on home
-        // rather than toasting line by line.
-        let body: Vec<String> = msg.split('\n').map(|l| format!("  {l}")).collect();
-        t.push_dim(body.join("\n"));
-
+        t.push_error(&text);
         t.ensure_gap();
-    } else if crate::stdio::is_active() {
-        crate::stdio::emit_say("error", msg);
     } else {
-        eprintln!("{msg}");
+        eprintln!("{text}");
     }
+}
+
+/// The house error shape from `format.rs`: a `✗ Head` line, then the detail
+/// indented on one short line. The full text goes to the log.
+pub(crate) fn error_text(msg: &str) -> String {
+    let msg = msg.trim();
+    if msg.starts_with('\u{2717}') {
+        return msg.to_string();
+    }
+    if msg.contains('\n') {
+        return format!("\u{2717} {msg}");
+    }
+    let (head, detail) = msg.split_once(": ").unwrap_or((msg, ""));
+    let mut head_chars = head.chars();
+    let head: String = head_chars
+        .next()
+        .map(|c| c.to_uppercase().chain(head_chars).collect())
+        .unwrap_or_default();
+    if detail.is_empty() {
+        return format!("\u{2717} {head}");
+    }
+    const MAX: usize = 160;
+    let detail = if detail.chars().count() > MAX {
+        let cut: String = detail.chars().take(MAX).collect();
+        format!("{cut}\u{2026} (full error in ~/.gray/logs/gray.log)")
+    } else {
+        detail.to_string()
+    };
+    format!("\u{2717} {head}\n  {detail}")
 }
 
 pub(crate) fn clamp_thinking_to_model_name(
@@ -267,7 +295,9 @@ pub(crate) fn clamp_thinking_to_model_name(
     let (old, new) = (current, clamped.to_string());
     config.thinking_effort = Some(new.clone());
     if let Ok(path) = crate::setup::saved_config_path() {
-        let _cfg_lock = crate::setup::lock_saved_config_at(&path).ok();
+        let _cfg_lock = crate::setup::lock_saved_config_at(&path)
+            .inspect_err(|e| log::warn!("cannot lock {} ({e:#})", path.display()))
+            .ok();
         let mut saved = crate::setup::load_saved_config_at(&path);
 
         saved.remember_effort(
@@ -278,7 +308,9 @@ pub(crate) fn clamp_thinking_to_model_name(
             ),
             &new,
         );
-        let _ = crate::setup::save_saved_config_at(&path, &saved);
+        if let Err(e) = crate::setup::save_saved_config_at(&path, &saved) {
+            log::warn!("cannot save {} ({e:#})", path.display());
+        }
     }
     Some((old, new))
 }
@@ -405,7 +437,7 @@ fn plugin_help_entries(hooks: &[Arc<dyn PluginHooks>]) -> Vec<(String, String)> 
         .map(|c| {
             (
                 c.name.strip_prefix('/').unwrap_or(&c.name).to_string(),
-                c.description,
+                String::new(),
             )
         })
         .collect()
@@ -529,6 +561,14 @@ pub async fn run_repl_mode(
     crate::setup::set_user_context_window(config.context_window);
     crate::setup::set_user_reserve_tokens(config.context_reserve);
     crate::setup::set_user_keep_recent_tokens(config.context_keep);
+    if let Some(warning) = crate::setup::context::context_window_override_warning(
+        config.context_window,
+        config.model.as_deref(),
+    ) {
+        log::warn!(target: "gray_config", "{warning}");
+        say(None, &warning);
+    }
+    crate::compact::init_auto_compact_from_env();
     crate::setup::set_active_model_provider(&config.base_url);
 
     let offline = crate::config::offline();
@@ -547,11 +587,7 @@ pub async fn run_repl_mode(
                 .is_some_and(|m| crate::setup::get_cached_model_context(m).is_none())
         });
     if !offline && !config.uses_plugin_credentials() && !config.bare && needs_endpoint_probe {
-        let base = config.base_url.clone();
-        let key = config.api_key.clone();
-        tokio::task::spawn_blocking(move || {
-            crate::setup::fetch_live_provider_models(&base, key.as_deref());
-        });
+        crate::setup::warm_model_context_cache(config);
     }
     if !offline && !config.bare {
         tokio::spawn(crate::setup::fetch_models_dev_context());
@@ -598,11 +634,7 @@ pub async fn run_repl_mode(
             if let Some(m) = config.model.clone()
                 && crate::setup::get_cached_model_context(&m).is_none()
             {
-                let base = config.base_url.clone();
-                let key = config.api_key.clone();
-                tokio::task::spawn_blocking(move || {
-                    crate::setup::fetch_live_provider_models(&base, key.as_deref());
-                });
+                crate::setup::warm_model_context_cache(config);
             }
         }
     }
@@ -976,11 +1008,11 @@ pub async fn run_repl_mode(
     {
         config.thinking_effort = Some("high".to_string());
         if let Ok(path) = crate::setup::saved_config_path() {
-            let _cfg_lock = crate::setup::lock_saved_config_at(&path).ok();
+            let _cfg_lock = crate::setup::lock_saved_config_at(&path)?;
             let mut saved = crate::setup::load_saved_config_at(&path);
             if saved.thinking_effort.is_none() {
                 saved.thinking_effort = Some("high".to_string());
-                let _ = crate::setup::save_saved_config_at(&path, &saved);
+                crate::setup::save_saved_config_at(&path, &saved)?;
             }
         }
     }
@@ -1140,7 +1172,7 @@ pub async fn run_repl_mode(
                     Some(r) if r <= EXPIRY_LEAD => {
                         if crate::compact::is_auto_compact_enabled() {
                             let started = std::time::Instant::now();
-                            match crate::compact::auto_compact_if_needed(agent).await {
+                            match crate::compact::compact_before_expiry(agent).await {
                                 Ok(true) => {
                                     status::push_compaction_card(
                                         tui.as_ref().map(|(s, _)| s),

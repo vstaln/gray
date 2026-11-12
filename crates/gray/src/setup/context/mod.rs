@@ -295,6 +295,25 @@ pub fn model_context_info(model_name: &str) -> (usize, String) {
     (tokens, label)
 }
 
+pub fn context_window_override_warning(
+    pinned: Option<usize>,
+    model: Option<&str>,
+) -> Option<String> {
+    let pinned = pinned?;
+    let model = model.filter(|m| !m.is_empty())?;
+    let real = known_model_context(model)?;
+    (pinned.saturating_mul(2) < real).then(|| {
+        format!(
+            "context window pinned to {} for {model}, which takes {}: compaction rewrites the \
+             history (and drops the provider cache) about {}x more often than needed. Unpin it \
+             in ~/.gray/config.json (\"context_window\") to use the model's own window.",
+            format_context_length(pinned),
+            format_context_length(real),
+            real / pinned.max(1)
+        )
+    })
+}
+
 pub fn estimate_str_tokens(s: &str) -> usize {
     (s.len() as f64 / 4.0).ceil() as usize
 }

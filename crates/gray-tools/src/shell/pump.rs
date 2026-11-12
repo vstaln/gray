@@ -22,7 +22,7 @@ fn log_capped(file_bytes: u64, incoming: u64) -> bool {
     file_bytes.saturating_add(incoming) > SHELL_LOG_MAX_BYTES
 }
 
-struct MemView {
+pub(crate) struct MemView {
     head: Vec<u8>,
     tail: VecDeque<u8>,
     total_bytes: u64,
@@ -31,7 +31,7 @@ struct MemView {
 }
 
 impl MemView {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             head: Vec::with_capacity(MEM_HEAD_BYTES),
             tail: VecDeque::with_capacity(MEM_TAIL_BYTES),
@@ -41,7 +41,7 @@ impl MemView {
         }
     }
 
-    fn push(&mut self, chunk: &[u8]) {
+    pub(crate) fn push(&mut self, chunk: &[u8]) {
         if self.head.len() < MEM_HEAD_BYTES {
             let take = (MEM_HEAD_BYTES - self.head.len()).min(chunk.len());
             self.head.extend_from_slice(&chunk[..take]);
@@ -56,7 +56,7 @@ impl MemView {
         self.has_cr = self.has_cr || chunk.contains(&b'\r');
     }
 
-    fn into_summary(self, log_write_failed: bool) -> PumpSummary {
+    pub(crate) fn into_summary(self, log_write_failed: bool) -> PumpSummary {
         PumpSummary {
             total_bytes: self.total_bytes,
             total_lines: self.total_lines,
@@ -155,9 +155,11 @@ async fn pump_main(
 
         if !log_truncated && log.is_some() && log_capped(log_bytes, redacted.len() as u64) {
             if let Some(f) = log.as_mut() {
-                let _ = f
-                    .write_all(b"\n[gray: shell log truncated at 10MiB; memory view continues]\n")
-                    .await;
+                let marker = format!(
+                    "\n[gray: shell log truncated at {}MiB; memory view continues]\n",
+                    SHELL_LOG_MAX_BYTES / (1024 * 1024)
+                );
+                let _ = f.write_all(marker.as_bytes()).await;
                 let _ = f.flush().await;
             }
             log = None;

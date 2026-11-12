@@ -27,19 +27,8 @@ pub fn run_context_modal(
     use ratatui::layout::Rect;
     use ratatui::style::{Modifier, Style};
     use ratatui::text::{Line, Span};
-    use ratatui::widgets::{Block, Clear, Paragraph};
+    use ratatui::widgets::Paragraph;
     use std::time::Duration;
-
-    fn persist(cfg: &Config) {
-        if let Ok(path) = saved_config_path() {
-            let _cfg_lock = crate::setup::lock_saved_config_at(&path).ok();
-            let mut saved = load_saved_config_at(&path);
-            saved.context_window = cfg.context_window;
-            saved.context_reserve = cfg.context_reserve;
-            saved.context_keep = cfg.context_keep;
-            let _ = save_saved_config_at(&path, &saved);
-        }
-    }
 
     fn compute_diffs(
         cfg: &Config,
@@ -134,17 +123,10 @@ pub fn run_context_modal(
                     .min(area.height.saturating_sub(1))
                     .max(20)
                     .min(area.height);
-                let modal_x = (area.width.saturating_sub(modal_w)) / 2;
-                let modal_y = (area.height.saturating_sub(modal_h)) / 3;
-                let modal_rect = Rect::new(modal_x, modal_y, modal_w, modal_h);
-                frame.render_widget(Clear, modal_rect);
-                frame.render_widget(
-                    Block::default().style(Style::default().bg(box_bg)),
-                    modal_rect,
-                );
+                let modal_rect = centered_modal(frame, area, modal_w, modal_h, box_bg);
                 let inner = Rect::new(
-                    modal_x + 3,
-                    modal_y + 1,
+                    modal_rect.x + 3,
+                    modal_rect.y + 1,
                     modal_w.saturating_sub(6),
                     modal_h.saturating_sub(2),
                 );
@@ -443,7 +425,7 @@ pub fn run_context_modal(
                                 };
                                 match saved {
                                     Some(_) => {
-                                        persist(config);
+                                        crate::repl::status::persist_context_window(config, idx)?;
                                         status = format!("{} updated", setting_labels[idx]);
                                         editing = None;
                                         buf.clear();

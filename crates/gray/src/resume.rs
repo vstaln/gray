@@ -4,6 +4,7 @@ use crate::session_store::{
     JsonlSessionStore, SessionEnd, SessionId, SessionScanEvent, SessionSummary,
 };
 
+use crate::text_width::fit_chars;
 use gray_core::time::now_millis;
 
 fn format_relative(ts: u64) -> String {
@@ -35,13 +36,9 @@ fn format_relative(ts: u64) -> String {
 }
 
 fn cwd_display(cwd: &Path, width: usize) -> String {
-    let s = cwd.display().to_string();
-    let home = std::env::var("HOME").unwrap_or_default();
-    let short = if !home.is_empty() && s.starts_with(&home) {
-        format!("~{}", &s[home.len()..])
-    } else {
-        s
-    };
+    let short = gray_core::paths::user_home()
+        .and_then(|home| gray_core::paths::tilde(cwd, &home))
+        .unwrap_or_else(|| cwd.display().to_string());
     if short.chars().count() <= width {
         short
     } else {
@@ -54,15 +51,6 @@ fn cwd_display(cwd: &Path, width: usize) -> String {
     }
 }
 
-fn fit_col(text: &str, width: usize) -> String {
-    if text.chars().count() <= width {
-        return text.to_string();
-    }
-    let mut t: String = text.chars().take(width.saturating_sub(1)).collect();
-    t.push('\u{2026}');
-    t
-}
-
 fn preview_text(s: &SessionSummary, width: usize) -> String {
     let raw = s
         .title
@@ -71,13 +59,7 @@ fn preview_text(s: &SessionSummary, width: usize) -> String {
         .or(s.first_user_text.as_deref())
         .unwrap_or("(no message yet)");
     let one_line = raw.split_whitespace().collect::<Vec<_>>().join(" ");
-    if one_line.chars().count() <= width {
-        one_line
-    } else {
-        let mut t: String = one_line.chars().take(width - 1).collect();
-        t.push('…');
-        t
-    }
+    fit_chars(&one_line, width)
 }
 
 pub(crate) fn short_id(id: &SessionId) -> String {
@@ -376,17 +358,12 @@ pub async fn resolve_session_strict(
     }
 }
 
-pub async fn latest_session_anywhere(store: &JsonlSessionStore) -> Option<SessionId> {
-    let cwd = std::env::current_dir().ok();
-    if let Some(c) = cwd.as_deref()
-        && let Some(id) = store.recall_validated(c).await
-    {
+pub async fn latest_session_here(store: &JsonlSessionStore) -> Option<SessionId> {
+    let cwd = std::env::current_dir().ok()?;
+    if let Some(id) = store.recall_validated(&cwd).await {
         return Some(id);
     }
-    let summaries = store.list().await;
-    latest_summary(&summaries, cwd.as_deref())
-        .or_else(|| latest_summary(&summaries, None))
-        .map(|s| s.id.clone())
+    latest_summary(&store.list().await, Some(&cwd)).map(|s| s.id.clone())
 }
 
 pub fn effective_session_model(config_model: Option<&str>, meta_model: &str) -> Option<String> {
@@ -458,11 +435,9 @@ pub(crate) fn interrupted_hint(
     if n == 0 {
         return None;
     }
-    let shown = match home.and_then(|h| cwd.strip_prefix(h).ok()) {
-        Some(rest) if rest.as_os_str().is_empty() => "~".to_string(),
-        Some(rest) => format!("~/{}", rest.display()),
-        None => cwd.display().to_string(),
-    };
+    let shown = home
+        .and_then(|h| gray_core::paths::tilde(cwd, h))
+        .unwrap_or_else(|| cwd.display().to_string());
     let noun = if n == 1 { "session" } else { "sessions" };
     Some(format!(
         "\u{26a0} {n} interrupted {noun} in {shown} \u{b7} /sessions to pick up \u{b7} /sessions dismiss to clear"
@@ -534,7 +509,7 @@ fn run_picker_sync(
 
     let (_session, mut terminal) = crate::setup::open_modal()?;
 
-    let box_bg = crate::theme::theme().surface_bg;
+    let box_bg = crate::theme::theme().raised_bg;
     let accent_peach = crate::theme::theme().accent;
     let text_dim = crate::theme::theme().text_dim;
 
@@ -631,67 +606,44 @@ fn run_picker_sync(
                 } else {
                     "Sessions"
                 };
-                let esc_str = "esc";
-                let hints_str = "tab: all/cwd  shift-tab: status  ctrl-g: system  ";
-                let cur_name = current.as_ref().map(|c| c.as_str());
-                let name_len = cur_name.map_or(0, |n| n.chars().count() + 8);
-                let show_hints = cur_name.is_none()
-                    || title.chars().count()
-                        + name_len
-                        + hints_str.chars().count()
-                        + esc_str.chars().count()
-                        <= inner.width as usize;
-                let pad_len = if cur_name.is_some() {
-                    (inner.width as usize).saturating_sub(
-                        title.chars().count()
-                            + name_len
-                            + esc_str.chars().count()
-                            + if show_hints {
-                                hints_str.chars().count()
-                            } else {
-                                0
-                            },
-                    )
-                } else {
-                    (inner.width as usize)
-                        .saturating_sub(title.chars().count() + esc_str.chars().count() + 8)
-                };
-                let mut header_spans = vec![
-                    Span::styled(
-                        title,
-                        Style::default()
-                            .fg(crate::theme::theme().text_bright)
-                            .add_modifier(Modifier::BOLD)
-                            .bg(box_bg),
-                    ),
-                    Span::styled(" ".repeat(pad_len), Style::default().bg(box_bg)),
-                ];
-                if let Some(name) = cur_name {
-                    header_spans.push(Span::styled(
-                        "this: ",
-                        Style::default().fg(text_dim).bg(box_bg),
-                    ));
+                let th = crate::theme::theme();
+                let mut header_spans = vec![Span::styled(
+                    title,
+                    Style::default()
+                        .fg(th.text_bright)
+                        .add_modifier(Modifier::BOLD),
+                )];
+                if let Some(name) = current.as_ref() {
+                    header_spans.push(Span::styled("   this ", Style::default().fg(th.text_faint)));
                     header_spans.push(Span::styled(
                         name.to_string(),
-                        Style::default().fg(accent_peach).bg(box_bg),
-                    ));
-                    header_spans.push(Span::styled("  ", Style::default().fg(text_dim).bg(box_bg)));
-                }
-                if show_hints {
-                    header_spans.push(Span::styled(
-                        hints_str,
-                        Style::default().fg(text_dim).bg(box_bg),
+                        Style::default().fg(accent_peach),
                     ));
                 }
-                header_spans.push(Span::styled(
-                    esc_str,
-                    Style::default().fg(text_dim).bg(box_bg),
-                ));
-                let header = Line::from(header_spans);
-                frame.render_widget(
-                    Paragraph::new(header),
-                    Rect::new(inner.x, inner.y, inner.width, 1),
-                );
+                let filter_hint = if query.is_empty() {
+                    Line::from(Span::styled(
+                        "type to filter",
+                        Style::default().fg(th.text_faint),
+                    ))
+                } else {
+                    Line::from(vec![
+                        Span::styled("filter ", Style::default().fg(th.text_faint)),
+                        Span::styled(
+                            query.clone(),
+                            Style::default()
+                                .fg(th.text_bright)
+                                .add_modifier(Modifier::UNDERLINED),
+                        ),
+                    ])
+                };
+                let header_row = Rect::new(inner.x, inner.y, inner.width, 1);
+                frame.render_widget(Paragraph::new(Line::from(header_spans)), header_row);
+                if takeover.is_none() && rename.is_none() {
+                    frame.render_widget(
+                        Paragraph::new(filter_hint).alignment(ratatui::layout::Alignment::Right),
+                        header_row,
+                    );
+                }
 
                 let search_line = if let Some((id, pid)) = &takeover {
                     let who = match pid {
@@ -739,45 +691,9 @@ fn run_picker_sync(
                         ),
                         Span::styled("▎", Style::default().fg(accent_peach).bg(box_bg)),
                     ])
-                } else if query.is_empty() {
-                    Line::from(vec![
-                        Span::styled(
-                            "Search: ",
-                            Style::default()
-                                .fg(accent_peach)
-                                .add_modifier(Modifier::BOLD)
-                                .bg(box_bg),
-                        ),
-                        Span::styled(
-                            "Type to filter…",
-                            Style::default()
-                                .fg(crate::theme::theme().text_dim)
-                                .bg(box_bg),
-                        ),
-                    ])
                 } else {
-                    Line::from(vec![
-                        Span::styled(
-                            "Search: ",
-                            Style::default()
-                                .fg(accent_peach)
-                                .add_modifier(Modifier::BOLD)
-                                .bg(box_bg),
-                        ),
-                        Span::styled(
-                            query.clone(),
-                            Style::default()
-                                .fg(crate::theme::theme().text_bright)
-                                .add_modifier(Modifier::BOLD)
-                                .bg(box_bg),
-                        ),
-                        Span::styled("▎", Style::default().fg(accent_peach).bg(box_bg)),
-                    ])
+                    Line::default()
                 };
-                frame.render_widget(
-                    Paragraph::new(search_line),
-                    Rect::new(inner.x, inner.y + 1, inner.width, 1),
-                );
 
                 let mut filter_spans = if show_all {
                     vec![Span::styled(
@@ -807,10 +723,14 @@ fn run_picker_sync(
                         Style::default().fg(text_dim).bg(box_bg),
                     ));
                 }
-                let filter_line = Line::from(filter_spans);
+                let status_line = if search_line.spans.is_empty() {
+                    Line::from(filter_spans)
+                } else {
+                    search_line
+                };
                 frame.render_widget(
-                    Paragraph::new(filter_line),
-                    Rect::new(inner.x, inner.y + 2, inner.width, 1),
+                    Paragraph::new(status_line),
+                    Rect::new(inner.x, inner.y + 1, inner.width, 1),
                 );
 
                 let date_w = 9usize;
@@ -825,8 +745,8 @@ fn run_picker_sync(
                     .saturating_sub(1 + 2 + date_w + 2 + cwd_w + 2 + id_w + 2)
                     .max(12);
 
-                let list_y = inner.y + 4;
-                let list_h = inner.height.saturating_sub(6) as usize;
+                let list_y = inner.y + 3;
+                let list_h = inner.height.saturating_sub(5) as usize;
 
                 if filtered.is_empty() {
                     let msg = if summaries.is_empty() && !scan_done {
@@ -880,7 +800,7 @@ fn run_picker_sync(
                             }
                             _ => short_id(&s.id),
                         };
-                        let right = fit_col(&right, id_w);
+                        let right = fit_chars(&right, id_w);
                         let rest = format!(
                             " {:>date_w$}  {:cwd_w$}  {:prev_w$}  {:>id_w$}",
                             date,
@@ -904,7 +824,7 @@ fn run_picker_sync(
                             ))
                         } else {
                             let base = Style::default()
-                                .fg(crate::theme::theme().text_bright)
+                                .fg(crate::theme::theme().text_body)
                                 .bg(box_bg);
                             Line::from(vec![
                                 Span::styled(" ", base),
@@ -922,45 +842,32 @@ fn run_picker_sync(
                 let sel_running = filtered.get(sel).is_some_and(|&i| {
                     session_state(&summaries[i], &running) == SessionState::Running
                 });
-                let hints: &[(&str, &str)] = if takeover.is_some() {
-                    &[("enter", "take over"), ("esc", "back")]
+                let keys = if takeover.is_some() {
+                    vec![("enter", "take over", true), ("esc", "back", true)]
                 } else if rename.is_some() {
-                    &[("enter", "save"), ("esc", "cancel")]
-                } else if sel_running {
-                    &[
-                        ("↑↓", "navigate"),
-                        ("enter", "take over"),
-                        ("ctrl-r", "rename"),
-                        ("ctrl-d", "dismiss"),
-                        ("esc", "cancel"),
-                    ]
+                    vec![("enter", "save", true), ("esc", "cancel", true)]
                 } else {
-                    &[
-                        ("↑↓", "navigate"),
-                        ("enter", "resume"),
-                        ("ctrl-r", "rename"),
-                        ("ctrl-d", "dismiss"),
-                        ("esc", "cancel"),
+                    vec![
+                        ("↑↓", "move", true),
+                        (
+                            "enter",
+                            if sel_running { "take over" } else { "resume" },
+                            true,
+                        ),
+                        ("tab", if show_all { "this dir" } else { "all" }, true),
+                        ("⇧tab", "status", true),
+                        ("^g", "system", true),
+                        ("^r", "rename", true),
+                        ("^d", "dismiss", true),
+                        ("esc", "close", true),
                     ]
                 };
-                let mut footer_spans = Vec::new();
-                for (n, (key, label)) in hints.iter().enumerate() {
-                    let gap = if n + 1 < hints.len() { "  " } else { "" };
-                    footer_spans.push(Span::styled(
-                        format!("{key} "),
-                        Style::default()
-                            .fg(crate::theme::theme().text_bright)
-                            .add_modifier(Modifier::BOLD)
-                            .bg(box_bg),
-                    ));
-                    footer_spans.push(Span::styled(
-                        format!("{label}{gap}"),
-                        Style::default().fg(text_dim).bg(box_bg),
-                    ));
-                }
-                let footer = Line::from(footer_spans);
                 frame.render_widget(
-                    Paragraph::new(footer),
+                    Paragraph::new(crate::repl::picker::key_hints(
+                        keys,
+                        &["^g", "⇧tab", "tab", "^d"],
+                        inner.width as usize,
+                    )),
                     Rect::new(inner.x, inner.y + inner.height - 1, inner.width, 1),
                 );
             })?;

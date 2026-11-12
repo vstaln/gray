@@ -105,39 +105,6 @@ impl Action {
         ALL.iter().copied().find(|a| a.id() == id)
     }
 
-    pub fn describe(self) -> &'static str {
-        match self {
-            Action::SelectUp => "Move popup selection up",
-            Action::SelectDown => "Move popup selection down",
-            Action::SelectCancel => "Close the completion popup",
-            Action::Tab => "Complete the selected entry",
-            Action::Clear => "Clear the draft, or exit on an empty prompt",
-            Action::Exit => "Exit when the draft is empty",
-            Action::Interrupt => "Cancel the turn, or clear the draft",
-            Action::PasteClipboard => "Paste image or text from the clipboard",
-            Action::NewLine => "Insert a new line",
-            Action::Submit => "Send (queues while a turn runs)",
-            Action::HistoryPrevious => "Previous prompt from history",
-            Action::HistoryNext => "Next prompt from history",
-            Action::HistorySearch => "Reverse-search prompt history",
-            Action::CursorUp => "Cursor up, history at the top",
-            Action::CursorDown => "Cursor down, history at the bottom",
-            Action::CursorLeft => "Cursor left",
-            Action::CursorRight => "Cursor right",
-            Action::CursorWordLeft => "Cursor word left",
-            Action::CursorWordRight => "Cursor word right",
-            Action::CursorLineStart => "Cursor to line start",
-            Action::CursorLineEnd => "Cursor to line end",
-            Action::DeleteCharBackward => "Delete character backward",
-            Action::DeleteCharForward => "Delete character forward",
-            Action::DeleteWordBackward => "Delete word backward",
-            Action::DeleteWordForward => "Delete word forward",
-            Action::DeleteToLineStart => "Delete to line start",
-            Action::DeleteToLineEnd => "Delete to line end",
-            Action::Yank => "Yank back the last cleared draft",
-        }
-    }
-
     fn defaults(self) -> &'static [&'static str] {
         match self {
             Action::SelectUp => &["up", "ctrl+p"],
@@ -467,29 +434,14 @@ impl Keymap {
         }
         out
     }
-
-    pub fn keys_for(&self, a: Action) -> &[Chord] {
-        self.by_action.get(&a).map(Vec::as_slice).unwrap_or(&[])
-    }
-
-    pub fn commands(&self) -> &[(Chord, String)] {
-        &self.commands
-    }
 }
 
 fn is_known_pi_only(id: &str) -> bool {
-    id.starts_with("app.") || id.starts_with("tui.")
+    // `plugin.<name>.<id>` rebinds a plugin's composer action (composer/action.rs).
+    id.starts_with("app.") || id.starts_with("tui.") || id.starts_with("plugin.")
 }
 
 static ACTIVE: RwLock<Option<Keymap>> = RwLock::new(None);
-
-pub fn active() -> Keymap {
-    ACTIVE
-        .read()
-        .ok()
-        .and_then(|g| g.clone())
-        .unwrap_or_else(Keymap::defaults)
-}
 
 pub fn set_active(km: Keymap) {
     if let Ok(mut g) = ACTIVE.write() {
@@ -548,7 +500,8 @@ pub fn load_in(gray_home: &Path) -> Keymap {
 
 pub fn load_into_active(gray_home: &Path) -> Vec<String> {
     let km = load_in(gray_home);
-    let warnings = km.warnings.clone();
+    let mut warnings = km.warnings.clone();
     set_active(km);
+    warnings.extend(crate::composer::action::load(gray_home));
     warnings
 }

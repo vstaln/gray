@@ -1,10 +1,37 @@
 use super::*;
 
+fn file_editor(
+    rel: &str,
+    content: String,
+    window: &mut Window,
+    cx: &mut Context<GrayApp>,
+) -> Entity<EditorState> {
+    let lang = workspace::language_for(rel);
+    cx.new(|cx| {
+        let mut s = EditorState::new(window, cx)
+            .language(lang)
+            .line_number(true);
+        s.set_value(content, window, cx);
+        s
+    })
+}
+
 impl GrayApp {
     pub(super) fn persist(&mut self, e: Event) {
         if let Err(err) = self.store.append(e) {
             self.toast(format!("Couldn't save: {err}"), true);
         }
+    }
+
+    fn set_setting(&mut self, key: &str, value: String) {
+        self.persist(Event::SettingChanged {
+            key: key.into(),
+            value,
+        });
+    }
+
+    fn set_flag(&mut self, key: &str, on: bool) {
+        self.set_setting(key, if on { "true" } else { "false" }.into());
     }
 
     pub(super) fn dirty_tabs(&self, cx: &App) -> usize {
@@ -65,6 +92,20 @@ impl GrayApp {
             model,
             mode: mode.unwrap_or_default(),
         });
+    }
+
+    pub(super) fn last_checkpoint(&self) -> Option<String> {
+        self.active_thread
+            .as_ref()
+            .and_then(|t| self.store.state.thread(t))
+            .and_then(|t| {
+                t.items.iter().rev().find_map(|i| match i {
+                    Item::Activity { kind, detail, .. } if kind == "checkpoint" => {
+                        Some(detail.clone())
+                    }
+                    _ => None,
+                })
+            })
     }
 
     pub(super) fn run(&mut self, cmd: Cmd, window: &mut Window, cx: &mut Context<Self>) {
@@ -146,18 +187,7 @@ impl GrayApp {
                 }
             }
             Cmd::TurnDiff => {
-                let tree = self
-                    .active_thread
-                    .as_ref()
-                    .and_then(|t| self.store.state.thread(t))
-                    .and_then(|t| {
-                        t.items.iter().rev().find_map(|i| match i {
-                            Item::Activity { kind, detail, .. } if kind == "checkpoint" => {
-                                Some(detail.clone())
-                            }
-                            _ => None,
-                        })
-                    });
+                let tree = self.last_checkpoint();
                 match tree {
                     Some(tree) => {
                         self.diff_base = Some(tree);
@@ -181,24 +211,9 @@ impl GrayApp {
                 self.settings_section = section;
                 self.composer.update(cx, |s, cx| s.focus(window, cx));
             }
-            Cmd::SetLayout(v) => {
-                self.persist(Event::SettingChanged {
-                    key: "layout".into(),
-                    value: v,
-                });
-            }
-            Cmd::SetTerminalPlacement(v) => {
-                self.persist(Event::SettingChanged {
-                    key: "terminal_placement".into(),
-                    value: v,
-                });
-            }
-            Cmd::SetNotify(b) => {
-                self.persist(Event::SettingChanged {
-                    key: "notify".into(),
-                    value: if b { "true" } else { "false" }.into(),
-                });
-            }
+            Cmd::SetLayout(v) => self.set_setting("layout", v),
+            Cmd::SetTerminalPlacement(v) => self.set_setting("terminal_placement", v),
+            Cmd::SetNotify(b) => self.set_flag("notify", b),
             Cmd::SearchThreads => {
                 self.open_palette(PaletteMode::Search, "", window, cx);
                 return;
@@ -211,12 +226,8 @@ impl GrayApp {
                 self.focus_thread(&tid, cx);
                 self.scroll_target = ix.map(|ix| (tid, ix, 0));
             }
-            Cmd::SetAutoAccept(b) => {
-                self.persist(Event::SettingChanged {
-                    key: "auto_accept".into(),
-                    value: if b { "true" } else { "false" }.into(),
-                });
-            }
+            Cmd::SetAutoAccept(b) => self.set_flag("auto_accept", b),
+            Cmd::SetAutosave(b) => self.set_flag("autosave", b),
             Cmd::AttachImage(arg) => {
                 let rel = PathBuf::from(arg.trim());
                 let path = if rel.is_absolute() {
@@ -269,7 +280,7 @@ impl GrayApp {
             Cmd::AskSubmit => self.answer_ask(None),
             Cmd::Gray(name) => {
                 self.terminal_open = true;
-                self.run_terminal(format!("{} cmd run {name}", graycmds::bin()), cx);
+                self.run_terminal(format!("{} cmd run {name}", provider::gray_bin()), cx);
             }
             Cmd::DiscardChanges => {
                 let before = self.tabs.len();
@@ -342,9 +353,7 @@ impl GrayApp {
                     {
                         turn.cancel();
                     }
-                    if let Some(eng) = self.engines.remove(&id) {
-                        eng.engine.shutdown();
-                    }
+                    let _ = self.engines.remove(&id);
                     if self.pending_ask.as_ref().is_some_and(|a| a.tid == id) {
                         self.pending_ask = None;
                     }
@@ -379,18 +388,7 @@ impl GrayApp {
                     self.toast("Unsaved files — save (Ctrl+S) or /discard first", true);
                     return;
                 }
-                let tree = self
-                    .active_thread
-                    .as_ref()
-                    .and_then(|t| self.store.state.thread(t))
-                    .and_then(|t| {
-                        t.items.iter().rev().find_map(|i| match i {
-                            Item::Activity { kind, detail, .. } if kind == "checkpoint" => {
-                                Some(detail.clone())
-                            }
-                            _ => None,
-                        })
-                    });
+                let tree = self.last_checkpoint();
                 match (self.work_root(), tree) {
                     (Some(root), Some(tree)) => {
                         match git::restore(&root, &tree) {
@@ -732,15 +730,7 @@ impl GrayApp {
                 return;
             }
         };
-        let lang = workspace::language_for(rel);
-        let value = content.clone();
-        let editor = cx.new(|cx| {
-            let mut s = EditorState::new(window, cx)
-                .language(lang)
-                .line_number(true);
-            s.set_value(value, window, cx);
-            s
-        });
+        let editor = file_editor(rel, content.clone(), window, cx);
         editor.update(cx, |s, cx| s.focus(window, cx));
         let path = rel.to_string();
         let sub = cx.subscribe(&editor, move |this, _, ev: &InputEvent, _| {
@@ -780,19 +770,12 @@ impl GrayApp {
                 return;
             }
         };
-        let lang = workspace::language_for(rel);
         match &self.viewer {
             Some((p, st)) if p == rel => {
                 st.update(cx, |s, cx| s.set_value(content, window, cx));
             }
             _ => {
-                let st = cx.new(|cx| {
-                    let mut s = EditorState::new(window, cx)
-                        .language(lang)
-                        .line_number(true);
-                    s.set_value(content, window, cx);
-                    s
-                });
+                let st = file_editor(rel, content, window, cx);
                 self.viewer = Some((rel.to_string(), st));
             }
         }

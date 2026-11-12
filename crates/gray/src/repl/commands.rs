@@ -75,7 +75,7 @@ pub(crate) const REGISTRY: &[CmdDef] = &[
     },
     CmdDef {
         name: "update",
-        desc: "install a new gray build (everything: + plugins & provider CLIs)",
+        desc: "install a new gray build",
         aliases: &["upgrade"],
         scope: CmdScope::Global,
         surface: CmdSurface::Text,
@@ -156,20 +156,15 @@ pub(crate) fn format_help_line(d: &CmdDef) -> String {
 
 const HIDDEN_ALIASES: &[(&str, &str)] = &[("plugin", "plugins")];
 
-pub(crate) const TUI_COMMANDS: &[CmdDef] = &[];
-
 pub(crate) fn resolve(name: &str) -> Option<&'static CmdDef> {
     let n = name.strip_prefix('/').unwrap_or(name).to_lowercase();
-    if let Some(d) = REGISTRY.iter().chain(TUI_COMMANDS).find(|d| d.name == n) {
+    if let Some(d) = REGISTRY.iter().find(|d| d.name == n) {
         return Some(d);
     }
     if let Some(&(_, target)) = HIDDEN_ALIASES.iter().find(|(a, _)| *a == n) {
         return REGISTRY.iter().find(|d| d.name == target);
     }
-    REGISTRY
-        .iter()
-        .chain(TUI_COMMANDS)
-        .find(|d| d.aliases.iter().any(|a| *a == n))
+    REGISTRY.iter().find(|d| d.aliases.iter().any(|a| *a == n))
 }
 
 pub(crate) fn is_builtin_command(name: &str) -> bool {
@@ -202,7 +197,7 @@ pub(crate) fn provider_shortcuts() -> Vec<(String, String, String)> {
 pub(crate) fn completion_matches(filter: &str) -> Vec<(&'static str, &'static str)> {
     let f = filter.to_lowercase();
     let mut matches: Vec<(u8, &'static str, &'static str)> = Vec::new();
-    for d in REGISTRY.iter().chain(TUI_COMMANDS) {
+    for d in REGISTRY.iter() {
         let is_match = f.is_empty()
             || d.name.to_lowercase().contains(&f)
             || d.desc.to_lowercase().contains(&f)

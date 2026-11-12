@@ -8,7 +8,6 @@ pub enum MediaError {
     Decode(String),
     TooBig(String),
     Extract(String),
-    Unsupported(String),
 }
 
 impl std::fmt::Display for MediaError {
@@ -17,17 +16,13 @@ impl std::fmt::Display for MediaError {
             Self::Decode(e) => write!(f, "could not decode image: {e}"),
             Self::TooBig(e) => write!(f, "image over 20MB: {e}"),
             Self::Extract(e) => write!(f, "extract failed: {e}"),
-            Self::Unsupported(e) => write!(f, "{e}"),
         }
     }
 }
 
 pub fn is_image_extension(path: &Path) -> bool {
     matches!(
-        path.extension()
-            .and_then(|e| e.to_str())
-            .map(|e| e.to_ascii_lowercase())
-            .as_deref(),
+        lower_ext(path).as_deref(),
         Some("png")
             | Some("jpg")
             | Some("jpeg")
@@ -41,10 +36,7 @@ pub fn is_image_extension(path: &Path) -> bool {
 
 pub fn is_video_extension(path: &Path) -> bool {
     matches!(
-        path.extension()
-            .and_then(|e| e.to_str())
-            .map(|e| e.to_ascii_lowercase())
-            .as_deref(),
+        lower_ext(path).as_deref(),
         Some("mp4")
             | Some("m4v")
             | Some("mov")
@@ -117,12 +109,7 @@ pub fn pdf_text(path: &Path) -> Result<String, MediaError> {
 }
 
 pub fn video_media_type(path: &Path) -> &'static str {
-    match path
-        .extension()
-        .and_then(|e| e.to_str())
-        .map(|e| e.to_ascii_lowercase())
-        .as_deref()
-    {
+    match lower_ext(path).as_deref() {
         Some("webm") => "video/webm",
         Some("mov") => "video/quicktime",
         Some("mkv") => "video/x-matroska",

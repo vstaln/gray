@@ -1,4 +1,3 @@
-use std::collections::VecDeque;
 use std::io::{self, Write};
 
 use ratatui::backend::{Backend, ClearType, WindowSize};
@@ -54,10 +53,8 @@ where
     pub viewport_area: Rect,
     pub last_known_screen_size: Size,
     scrollback: Scrollback,
-    covered: u16,
-    /// The last screen-height of transcript rows, newest last; the final
-    /// `covered` of them sit hidden under the band.
-    tail: VecDeque<Vec<Cell>>,
+    /// Theme color the rows below the viewport were last erased in.
+    below_bg: Option<ratatui::style::Color>,
 }
 
 impl<B> Drop for CustomTerminal<B>
@@ -100,8 +97,7 @@ where
             viewport_area,
             last_known_screen_size: screen_size,
             scrollback,
-            covered: 0,
-            tail: VecDeque::new(),
+            below_bg: None,
         };
         term.set_viewport_area(viewport_area);
         term
@@ -113,51 +109,18 @@ where
         self.viewport_area = area;
     }
 
-    pub fn set_viewport_height(
-        &mut self,
-        height: u16,
-        overlay: u16,
-        screen_size: Size,
-    ) -> io::Result<()> {
+    pub fn set_viewport_height(&mut self, height: u16, screen_size: Size) -> io::Result<()> {
         let screen_shrank = screen_size.height < self.last_known_screen_size.height;
-        if screen_size != self.last_known_screen_size {
-            self.covered = 0;
-            self.tail.clear();
-        }
         self.last_known_screen_size = screen_size;
         let old = self.viewport_area;
         let mut area = old;
         area.height = height.min(screen_size.height);
         area.width = screen_size.width;
         let bottom = screen_size.height.saturating_sub(area.height);
-        // The band sits directly under the transcript tail; there is never
-        // a blank row between them. Growth extends it downward into free
-        // rows first, then rises — letting an overlay cover transcript rows
-        // it can repaint later, and scrolling history only for the rest.
-        // A shrink first gives back the rows an overlay was covering, then
-        // keeps its top row and frees rows *below* itself; the next insert
-        // pushes it back down. It never slides the transcript back down and
-        // never repaints pushed-off rows from `tail`: every tail row that is
-        // not on screen already sits in scrollback, which cannot be edited,
-        // so repainting it would scroll it into scrollback a second time.
-        let shrink = old.height.saturating_sub(area.height);
-        let uncover = if old.bottom() >= screen_size.height {
-            self.covered.min(shrink)
-        } else {
-            0
-        };
-        area.y = (old.y + uncover).min(bottom);
+        area.y = old.y.min(bottom);
         let rise = old.y.saturating_sub(area.y);
-        let history_end = old.y.saturating_add(self.covered);
-        let repaintable = u16::try_from(self.tail.len())
-            .unwrap_or(u16::MAX)
-            .min(history_end);
-        let hide = rise
-            .min(overlay.saturating_sub(self.covered))
-            .min(repaintable.saturating_sub(self.covered));
-        self.covered += hide;
-        if rise > hide && !screen_shrank {
-            self.scroll_history_up(old.y, rise - hide)?;
+        if rise > 0 && !screen_shrank {
+            self.scroll_history_up(old.y, rise)?;
         }
 
         if area != self.viewport_area {
@@ -169,24 +132,18 @@ where
             self.set_viewport_area(area);
             self.clear_after_position(Position::new(0, from))?;
         }
-        if uncover > 0 {
-            let start = self.tail.len() - usize::from(self.covered);
-            let rows: Vec<Vec<Cell>> = self
-                .tail
-                .range(start..start + usize::from(uncover))
-                .cloned()
-                .collect();
-            self.covered -= uncover;
-            let rows: Vec<&[Cell]> = rows.iter().map(Vec::as_slice).collect();
-            self.draw_rows(old.y, &rows)?;
-        }
         Ok(())
     }
 
     pub fn clear_after_position(&mut self, position: Position) -> io::Result<()> {
         if position.y < self.last_known_screen_size.height {
             self.backend.set_cursor_position(position)?;
+            // Erase in the theme's window color, so rows below a short
+            // viewport (the home screen) match the rows Gray paints.
+            let bg = crate::theme::theme().window_bg;
+            write!(self.backend, "{}", crate::tui::sgr_bg(bg))?;
             self.backend.clear_region(ClearType::AfterCursor)?;
+            write!(self.backend, "\x1b[0m")?;
         }
 
         self.buffers[1 - self.current].reset();
@@ -205,8 +162,6 @@ where
         crate::composer::kitty::reset_transmitted();
         Backend::flush(&mut self.backend)?;
         self.last_known_screen_size = screen_size;
-        self.covered = 0;
-        self.tail.clear();
         self.set_viewport_area(Rect::new(0, 0, screen_size.width, 0));
         self.buffers[1 - self.current].reset();
         Ok(())
@@ -228,6 +183,10 @@ where
         let position = position.into();
         self.backend.set_cursor_position(position)?;
         Ok(())
+    }
+
+    pub fn last_frame(&self) -> &Buffer {
+        &self.buffers[1 - self.current]
     }
 
     pub fn swap_buffers(&mut self) {
@@ -273,6 +232,18 @@ where
         if self.viewport_area.is_empty() {
             return Ok(());
         }
+        // A theme switch repaints the viewport; repaint the rows under it too.
+        let bg = crate::theme::theme().window_bg;
+        if self.below_bg != Some(bg) {
+            self.below_bg = Some(bg);
+            let below = self.viewport_area.bottom();
+            if below < self.last_known_screen_size.height {
+                self.backend.set_cursor_position(Position::new(0, below))?;
+                write!(self.backend, "{}", crate::tui::sgr_bg(bg))?;
+                self.backend.clear_region(ClearType::AfterCursor)?;
+                write!(self.backend, "\x1b[0m")?;
+            }
+        }
         let mut frame = self.get_frame();
         render_callback(&mut frame);
         // Uploads queued while composing this frame must land before the
@@ -308,21 +279,7 @@ where
         let mut buffer = Buffer::empty(Rect::new(0, 0, width, height));
         draw_fn(&mut buffer);
         crate::composer::kitty::flush_transmits();
-        let hidden: Vec<Vec<Cell>> = self
-            .tail
-            .drain(self.tail.len() - usize::from(self.covered)..)
-            .collect();
-        self.covered = 0;
-        let all_rows: Vec<&[Cell]> = hidden
-            .iter()
-            .map(Vec::as_slice)
-            .chain(buffer.content.chunks(width as usize))
-            .collect();
-        let keep = usize::from(self.last_known_screen_size.height);
-        let recent: Vec<Vec<Cell>> = all_rows[all_rows.len().saturating_sub(keep)..]
-            .iter()
-            .map(|row| row.to_vec())
-            .collect();
+        let all_rows: Vec<&[Cell]> = buffer.content.chunks(width as usize).collect();
         let mut rows = all_rows.as_slice();
 
         if self.scrollback == Scrollback::Regions {
@@ -358,9 +315,6 @@ where
             self.insert_full_screen(rows)?;
         }
         Backend::flush(&mut self.backend)?;
-        self.tail.extend(recent);
-        let excess = self.tail.len().saturating_sub(keep);
-        self.tail.drain(..excess);
         crate::composer::kitty::flush_transmits();
         Ok(())
     }
@@ -778,7 +732,7 @@ mod tests {
     fn shrink_after_growth_does_not_recommit_scrollback() {
         let size = Size::new(20, 10);
         let mut term = CustomTerminal::at_row(Emu::new(size), size, 7, Scrollback::Regions);
-        term.set_viewport_height(3, 0, size).unwrap();
+        term.set_viewport_height(3, size).unwrap();
 
         for i in 0..7 {
             let text = format!("t{i}");
@@ -789,9 +743,9 @@ mod tests {
         }
 
         // The draft grows by two rows: t0 and t1 scroll into scrollback.
-        term.set_viewport_height(5, 0, size).unwrap();
+        term.set_viewport_height(5, size).unwrap();
         // The user deletes those draft rows again.
-        term.set_viewport_height(3, 0, size).unwrap();
+        term.set_viewport_height(3, size).unwrap();
 
         // The shrink keeps the band's top row; the rows it freed sit blank
         // below until the next insert pushes the band back down. Nothing

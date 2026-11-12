@@ -1,6 +1,7 @@
 use serde_json::Value;
 
 use crate::agent::ToolOutput;
+use crate::compact::split_head_tail;
 use crate::spill;
 
 pub const MAX_LINES: usize = 2000;
@@ -9,8 +10,7 @@ pub const MAX_BYTES: usize = 12 * 1024;
 
 pub const MAX_ERROR_BYTES: usize = 2048;
 
-pub fn unknown_tool(name: &str, available: &[String]) -> String {
-    let _ = available;
+pub fn unknown_tool(name: &str) -> String {
     format!("Tool '{name}' does not exist.")
 }
 
@@ -45,15 +45,8 @@ pub fn truncate_output(text: &str) -> String {
     if body.len() > MAX_BYTES {
         let dropped_bytes = body.len() - MAX_BYTES;
         notes.push(format!("{dropped_bytes} bytes"));
-        let half = MAX_BYTES / 2;
-        let head_end = body.floor_char_boundary(half);
-        let tail_start = body.ceil_char_boundary(body.len() - half);
-        format!(
-            "{}\n{}\n{}",
-            &body[..head_end],
-            annotation(&notes),
-            &body[tail_start..]
-        )
+        let (head, tail) = split_head_tail(&body, MAX_BYTES);
+        format!("{head}\n{}\n{tail}", annotation(&notes))
     } else if notes.is_empty() {
         body
     } else {
