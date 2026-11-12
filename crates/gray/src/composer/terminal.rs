@@ -53,6 +53,8 @@ where
     pub viewport_area: Rect,
     pub last_known_screen_size: Size,
     scrollback: Scrollback,
+    /// Theme color the rows below the viewport were last erased in.
+    below_bg: Option<ratatui::style::Color>,
 }
 
 impl<B> Drop for CustomTerminal<B>
@@ -95,6 +97,7 @@ where
             viewport_area,
             last_known_screen_size: screen_size,
             scrollback,
+            below_bg: None,
         };
         term.set_viewport_area(viewport_area);
         term
@@ -135,7 +138,12 @@ where
     pub fn clear_after_position(&mut self, position: Position) -> io::Result<()> {
         if position.y < self.last_known_screen_size.height {
             self.backend.set_cursor_position(position)?;
+            // Erase in the theme's window color, so rows below a short
+            // viewport (the home screen) match the rows Gray paints.
+            let bg = crate::theme::theme().window_bg;
+            write!(self.backend, "{}", crate::tui::sgr_bg(bg))?;
             self.backend.clear_region(ClearType::AfterCursor)?;
+            write!(self.backend, "\x1b[0m")?;
         }
 
         self.buffers[1 - self.current].reset();
@@ -223,6 +231,18 @@ where
         // panics on index-out-of-bounds. Nothing can be painted anyway.
         if self.viewport_area.is_empty() {
             return Ok(());
+        }
+        // A theme switch repaints the viewport; repaint the rows under it too.
+        let bg = crate::theme::theme().window_bg;
+        if self.below_bg != Some(bg) {
+            self.below_bg = Some(bg);
+            let below = self.viewport_area.bottom();
+            if below < self.last_known_screen_size.height {
+                self.backend.set_cursor_position(Position::new(0, below))?;
+                write!(self.backend, "{}", crate::tui::sgr_bg(bg))?;
+                self.backend.clear_region(ClearType::AfterCursor)?;
+                write!(self.backend, "\x1b[0m")?;
+            }
         }
         let mut frame = self.get_frame();
         render_callback(&mut frame);
