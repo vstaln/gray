@@ -568,6 +568,8 @@ pub async fn check_update(target: &str) -> anyhow::Result<Vec<UpdateRow>> {
     })
 }
 
+const RENAMED: &[(&str, &str)] = &[("qol", "quality-of-life")];
+
 async fn update_inner(target: &str, check: bool) -> anyhow::Result<Vec<UpdateRow>> {
     let lock = read_lock()?;
     let names: Vec<String> = if target == "all" {
@@ -600,13 +602,15 @@ async fn update_inner(target: &str, check: bool) -> anyhow::Result<Vec<UpdateRow
         if hub.is_none() && comm.is_none() {
             hub = crate::index::fetch_hub_index(&client).await.ok();
         }
-        let entry = match hub.as_ref().and_then(|i| i.plugins.get(name)) {
+        let renamed = RENAMED.iter().find(|(old, _)| old == name).map(|(_, new)| *new);
+        let lookup = renamed.unwrap_or(name);
+        let entry = match hub.as_ref().and_then(|i| i.plugins.get(lookup)) {
             Some(e) => e,
             None => {
                 if comm.is_none() {
                     comm = Some(crate::index::fetch_index(&client).await?);
                 }
-                match comm.as_ref().unwrap().plugins.get(name) {
+                match comm.as_ref().unwrap().plugins.get(lookup) {
                     Some(e) => e,
                     None => {
                         out.push(UpdateRow::new(
@@ -626,7 +630,9 @@ async fn update_inner(target: &str, check: bool) -> anyhow::Result<Vec<UpdateRow
             continue;
         }
         let index_hash = entry.hash.primary().unwrap_or_default();
-        let drift = entry.version != installed.version || index_hash != installed.hash.as_str();
+        let drift = renamed.is_some()
+            || entry.version != installed.version
+            || index_hash != installed.hash.as_str();
         if !drift {
             out.push(UpdateRow::new(name, UpdateAction::Current));
             continue;
@@ -634,10 +640,10 @@ async fn update_inner(target: &str, check: bool) -> anyhow::Result<Vec<UpdateRow
         if check {
             out.push(UpdateRow::new(
                 name,
-                UpdateAction::Stale(format!(
-                    "{} -> {} (index)",
-                    installed.version, entry.version
-                )),
+                UpdateAction::Stale(match renamed {
+                    Some(new) => format!("renamed to {new} {} (index)", entry.version),
+                    None => format!("{} -> {} (index)", installed.version, entry.version),
+                }),
             ));
             continue;
         }
@@ -654,13 +660,18 @@ async fn update_inner(target: &str, check: bool) -> anyhow::Result<Vec<UpdateRow
         let scope = Some(installed.scope.clone());
         match install_index(
             &client,
-            name,
+            lookup,
             InstallOpts { argv, scope },
             &mut BTreeSet::new(),
         )
         .await
         {
             Ok(r) => {
+                if renamed.is_some()
+                    && let Err(e) = remove(name)
+                {
+                    log::warn!("renamed plugin {name}: old entry not removed: {e:#}");
+                }
                 let v = r.version.clone();
                 out.push(UpdateRow {
                     name: r.name,
