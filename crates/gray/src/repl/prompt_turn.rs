@@ -175,6 +175,7 @@ pub(crate) async fn run_prompt_turn(
             crate::stdio::take_steer()
                 .or_else(|| steer_queued_input(steer_tui.as_ref()))
                 .or_else(|| steer_direct_send(steer_tui.as_ref(), steer_sid.as_deref()))
+                .or_else(|| steer_inbox(steer_tui.as_ref(), steer_sid.as_deref()))
         }));
         let out_tui = tui_stream.clone();
         ag.set_tool_output_hook(Some(std::sync::Arc::new(move |id: &str, chunk: &[u8]| {
@@ -660,6 +661,34 @@ fn steer_direct_send(
         }
     }
     msg.map(|m| crate::session_send::prompt_for(&m.from, &m.text))
+}
+
+/// Inbox deliveries (a finished subagent, a cron wake) that land mid-turn
+/// join the running turn instead of waiting for it to end.
+fn steer_inbox(tui: Option<&crate::composer::SharedTui>, sid: Option<&str>) -> Option<String> {
+    let home = crate::setup::gray_home().ok()?;
+    let delivered = crate::session_mailbox::drain_session_inbox(&home, sid?);
+    if delivered.is_empty() {
+        return None;
+    }
+    if let Some(shared) = tui {
+        let mut t = shared.lock().expect("tui lock");
+        t.flush_markdown();
+        t.end_thinking();
+    }
+    for d in &delivered {
+        say(tui, &d.card);
+    }
+    if let Some(shared) = tui {
+        let _ = shared.lock().expect("tui lock").draw();
+    }
+    Some(
+        delivered
+            .into_iter()
+            .map(|d| d.prompt)
+            .collect::<Vec<_>>()
+            .join("\n\n"),
+    )
 }
 
 fn steer_queued_input(tui: Option<&crate::composer::SharedTui>) -> Option<String> {
