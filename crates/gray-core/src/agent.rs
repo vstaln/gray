@@ -425,6 +425,8 @@ pub struct PickerItem {
     /// prompt); the pick id becomes `<id>:<key>`, e.g. `hotkey:ctrl+space`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub capture_key: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub gap_before: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

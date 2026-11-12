@@ -144,6 +144,7 @@ async fn pick_compaction_model(
                 ))]
             })),
             on_highlight: None,
+            gap_before: None,
             selected,
             current: Some(selected),
         };

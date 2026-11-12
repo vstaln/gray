@@ -65,6 +65,7 @@ fn picker<'a>(
         trailing: Some(Box::new(|r: &Row| theme::swatch_spans(&r.theme))),
         footer: Some(Box::new(specimen_lines)),
         on_highlight,
+        gap_before: None,
         selected: sel,
         current: Some(sel),
     }

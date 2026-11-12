@@ -79,6 +79,7 @@ pub(crate) fn help_picker(
         trailing: None,
         footer: None,
         on_highlight: None,
+        gap_before: None,
         selected: 0,
         current: None,
     };

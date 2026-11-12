@@ -7,6 +7,7 @@ use crate::setup::BackgroundSnapshot;
 
 pub(crate) type Trailing<'a, T> = Option<Box<dyn Fn(&T) -> Vec<Span<'static>> + 'a>>;
 pub(crate) type OnHighlight<'a, T> = Option<Box<dyn FnMut(&T) + 'a>>;
+pub(crate) type GapBefore<'a, T> = Option<Box<dyn Fn(&T) -> bool + 'a>>;
 
 pub(crate) struct ListPicker<'a, T> {
     pub(crate) title: &'a str,
@@ -15,6 +16,7 @@ pub(crate) struct ListPicker<'a, T> {
     pub(crate) trailing: Trailing<'a, T>,
     pub(crate) footer: Option<Box<dyn Fn() -> Vec<Line<'static>> + 'a>>,
     pub(crate) on_highlight: OnHighlight<'a, T>,
+    pub(crate) gap_before: GapBefore<'a, T>,
     pub(crate) selected: usize,
     /// The item in effect now; drawn with a check mark.
     pub(crate) current: Option<usize>,
@@ -41,6 +43,9 @@ pub(crate) fn spec_lines(spec: &PickerSpec) -> Vec<Line<'static>> {
             .add_modifier(Modifier::BOLD),
     ))];
     for it in &spec.items {
+        if it.gap_before {
+            out.push(Line::default());
+        }
         let mut spans = vec![Span::styled(
             it.label.clone(),
             Style::default().fg(th.text_body),
@@ -152,7 +157,21 @@ pub(crate) fn draw_list_picker<T>(
     } else {
         footer_lines.len() + 1
     };
-    let inner_h = (list_h + 4 + detail_h) as u16;
+    let gap_at = |vi: usize, idx: usize| {
+        vi > 0
+            && query.is_empty()
+            && filtered.len() <= list_h
+            && picker
+                .gap_before
+                .as_ref()
+                .is_some_and(|g| g(&picker.items[idx]))
+    };
+    let gaps = filtered
+        .iter()
+        .enumerate()
+        .filter(|&(vi, &idx)| gap_at(vi, idx))
+        .count();
+    let inner_h = (list_h + gaps + 4 + detail_h) as u16;
     let trailing_w_of = |item: &T| -> usize {
         picker
             .trailing
@@ -242,8 +261,12 @@ pub(crate) fn draw_list_picker<T>(
             row(list_y),
         );
     }
+    let mut gaps_above = 0u16;
     for (vi, &idx) in filtered.iter().enumerate().skip(start).take(list_h) {
-        let y = list_y + (vi - start) as u16;
+        if gap_at(vi, idx) {
+            gaps_above += 1;
+        }
+        let y = list_y + (vi - start) as u16 + gaps_above;
         if y >= bottom {
             break;
         }
@@ -484,6 +507,7 @@ pub(crate) fn run_spec_picker(
             }) as Box<dyn Fn() -> Vec<Line<'static>>>
         }),
         on_highlight: None,
+        gap_before: Some(Box::new(|i: &gray_core::agent::PickerItem| i.gap_before)),
         selected,
         current: spec.selected_id.is_some().then_some(selected),
     };
@@ -512,6 +536,7 @@ fn capture_key(prompt: &str, bg: &BackgroundSnapshot) -> anyhow::Result<Option<S
         trailing: None,
         footer: None,
         on_highlight: None,
+        gap_before: None,
         selected: 0,
         current: None,
     };
