@@ -227,7 +227,7 @@ fn update_settings_file(path: &Path) -> std::io::Result<()> {
     if !backup.exists() {
         std::fs::copy(path, &backup)?;
     }
-    let pretty = serde_json::to_string_pretty(&value).map_err(|e| std::io::Error::other(e))?;
+    let pretty = serde_json::to_string_pretty(&value).map_err(std::io::Error::other)?;
     std::fs::write(path, format!("{pretty}\n"))
 }
 
