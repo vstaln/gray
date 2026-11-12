@@ -628,95 +628,7 @@ pub(crate) async fn dispatch_command(
                     CommandOutcome::HostPicker { kind, text, .. } if kind == "theme" => {
                         let tui_shared = tui.as_ref().map(|(s, _)| s);
                         if let Some(shared) = tui_shared {
-                            let bg = shared.lock().expect("tui lock").snapshot();
-                            match with_modal_sync(tui_shared, || {
-                                crate::setup::run_theme_picker(Some(&bg))
-                            }) {
-                                Ok(Some(name)) => {
-                                    match (
-                                        crate::theme::themes_dir(),
-                                        crate::setup::saved_config_path(),
-                                    ) {
-                                        (Ok(themes_dir), Ok(config_path)) => {
-                                            let active = crate::theme::active_theme_name();
-                                            let outcome = super::customize::theme_command(
-                                                Some(&name),
-                                                active.as_deref(),
-                                                &themes_dir,
-                                                &config_path,
-                                            );
-                                            if let Some((theme, saved_name)) = outcome.apply {
-                                                crate::theme::set_theme(
-                                                    theme,
-                                                    saved_name.as_deref(),
-                                                );
-                                                use ratatui::style::{Modifier, Style};
-                                                use ratatui::text::{Line, Span};
-                                                let th = crate::theme::theme();
-                                                let header = Line::from(vec![
-                                                    Span::styled(
-                                                        format!(
-                                                            "{} ",
-                                                            crate::tui::glyph("\u{2b22}", "#")
-                                                        ),
-                                                        Style::default()
-                                                            .fg(th.success)
-                                                            .add_modifier(Modifier::BOLD),
-                                                    ),
-                                                    Span::styled(
-                                                        "Theme ",
-                                                        Style::default()
-                                                            .fg(th.text_body)
-                                                            .add_modifier(Modifier::BOLD),
-                                                    ),
-                                                    Span::styled(
-                                                        name.clone(),
-                                                        Style::default().fg(th.accent),
-                                                    ),
-                                                ]);
-                                                let mut body = vec![Line::from(
-                                                    crate::theme::swatch_spans(&th),
-                                                )];
-                                                body.extend(
-                                                    crate::setup::theme_modal::specimen_lines(),
-                                                );
-                                                body.extend(outcome.message.lines().skip(1).map(
-                                                    |l| {
-                                                        Line::styled(
-                                                            l.trim().to_string(),
-                                                            Style::default().fg(th.text_dim),
-                                                        )
-                                                    },
-                                                ));
-                                                if let Some(i) = outcome.message.find(" — ") {
-                                                    body.push(Line::styled(
-                                                        outcome.message[i + 5..]
-                                                            .lines()
-                                                            .next()
-                                                            .unwrap_or_default()
-                                                            .to_string(),
-                                                        Style::default().fg(th.error),
-                                                    ));
-                                                }
-                                                let mut t = shared.lock().expect("tui lock");
-                                                t.repaint_for_palette();
-                                                t.push_tool_box_lines(vec![header], body);
-                                                let _ = t.draw();
-                                            } else {
-                                                say(tui_shared, &outcome.message);
-                                            }
-                                        }
-                                        (Err(e), _) | (_, Err(e)) => {
-                                            say(
-                                                tui_shared,
-                                                &format!("could not resolve gray home: {e}"),
-                                            );
-                                        }
-                                    }
-                                }
-                                Ok(None) => {}
-                                Err(e) => say(tui_shared, &format!("theme picker: {e}")),
-                            }
+                            theme_picker(shared);
                         } else if let Some(text) = text {
                             say(None, &text);
                         }
@@ -829,4 +741,74 @@ pub(crate) async fn dispatch_command(
             Flow::Continue
         }
     })
+}
+
+/// The host's live theme picker, opened by a plugin's `theme` host picker.
+/// Safe mid-turn: it only repaints and saves the theme.
+pub(crate) fn theme_picker(shared: &crate::composer::SharedTui) {
+    let tui_shared = Some(shared);
+    let bg = shared.lock().expect("tui lock").snapshot();
+    match with_modal_sync(tui_shared, || crate::setup::run_theme_picker(Some(&bg))) {
+        Ok(Some(name)) => {
+            match (
+                crate::theme::themes_dir(),
+                crate::setup::saved_config_path(),
+            ) {
+                (Ok(themes_dir), Ok(config_path)) => {
+                    let active = crate::theme::active_theme_name();
+                    let outcome = super::customize::theme_command(
+                        Some(&name),
+                        active.as_deref(),
+                        &themes_dir,
+                        &config_path,
+                    );
+                    if let Some((theme, saved_name)) = outcome.apply {
+                        crate::theme::set_theme(theme, saved_name.as_deref());
+                        use ratatui::style::{Modifier, Style};
+                        use ratatui::text::{Line, Span};
+                        let th = crate::theme::theme();
+                        let header = Line::from(vec![
+                            Span::styled(
+                                format!("{} ", crate::tui::glyph("\u{2b22}", "#")),
+                                Style::default().fg(th.success).add_modifier(Modifier::BOLD),
+                            ),
+                            Span::styled(
+                                "Theme ",
+                                Style::default()
+                                    .fg(th.text_body)
+                                    .add_modifier(Modifier::BOLD),
+                            ),
+                            Span::styled(name.clone(), Style::default().fg(th.accent)),
+                        ]);
+                        let mut body = vec![Line::from(crate::theme::swatch_spans(&th))];
+                        body.extend(crate::setup::theme_modal::specimen_lines());
+                        body.extend(outcome.message.lines().skip(1).map(|l| {
+                            Line::styled(l.trim().to_string(), Style::default().fg(th.text_dim))
+                        }));
+                        if let Some(i) = outcome.message.find(" — ") {
+                            body.push(Line::styled(
+                                outcome.message[i + 5..]
+                                    .lines()
+                                    .next()
+                                    .unwrap_or_default()
+                                    .to_string(),
+                                Style::default().fg(th.error),
+                            ));
+                        }
+                        let mut t = shared.lock().expect("tui lock");
+                        t.repaint_for_palette();
+                        t.push_tool_box_lines(vec![header], body);
+                        let _ = t.draw();
+                    } else {
+                        say(tui_shared, &outcome.message);
+                    }
+                }
+                (Err(e), _) | (_, Err(e)) => {
+                    say(tui_shared, &format!("could not resolve gray home: {e}"));
+                }
+            }
+        }
+        Ok(None) => {}
+        Err(e) => say(tui_shared, &format!("theme picker: {e}")),
+    }
 }
