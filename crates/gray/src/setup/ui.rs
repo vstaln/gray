@@ -353,13 +353,18 @@ fn paint_dimmed_background(
     .style(Style::default().bg(backdrop_bg()));
 
     let transcript = bg.rebuild_transcript(w);
+    let effort_tail = if show_effort && !bg.thinking_effort.is_empty() {
+        format!(" {}", bg.thinking_effort)
+    } else {
+        String::new()
+    };
 
     if bg.home {
         let home = crate::composer::draw::HomeRows {
             notice: bg.home_notice.as_deref(),
             stats: bg.plugin_stats.as_deref(),
             model: Some(model_display.as_str()),
-            model_tail: None,
+            model_tail: Some(effort_tail.as_str()).filter(|t| !t.is_empty()),
             above: bg.home_update.as_deref(),
             session: bg.home_session.as_deref(),
             quality_of_life: bg.home_quality_of_life.as_deref(),
@@ -374,7 +379,7 @@ fn paint_dimmed_background(
             &chips,
             None,
         );
-        let band = ibox.lines;
+        let (band, band_x, band_w) = (ibox.lines, ibox.x, ibox.width);
         let transcript_avail_h = h.saturating_sub(band.len() + 1);
         let tail: &[Line<'static>] = if transcript.len() <= transcript_avail_h {
             &transcript
@@ -386,20 +391,22 @@ fn paint_dimmed_background(
         for l in tail {
             full_screen_lines.push(pad_backdrop_line(dim_line(l), w));
         }
-        // The composer's text is intentionally not painted: a dimmed `❯` or
-        // draft peeking out beside a centered modal reads as a stray glyph on
-        // the modal's rows. Keep the band's blank silhouette instead.
+        full_screen_lines.push(pad_backdrop_line(Line::from(""), w));
         for l in band {
-            let mut line = Line::from("").style(l.style);
-            if line.style.bg.is_none() {
-                line.style = line.style.bg(backdrop_bg());
-            }
-            full_screen_lines.push(pad_backdrop_line(line, w));
+            let line = pad_backdrop_line(dim_line(&l), band_w);
+            let mut spans = vec![Span::styled(
+                " ".repeat(band_x),
+                Style::default().bg(backdrop_bg()),
+            )];
+            spans.extend(line.spans.into_iter().map(|sp| {
+                let bg = sp.style.bg.or(line.style.bg);
+                Span::styled(sp.content, sp.style.bg(bg.unwrap_or(backdrop_bg())))
+            }));
+            full_screen_lines.push(pad_backdrop_line(Line::from(spans), w));
         }
-        while full_screen_lines.len() + 1 < h {
+        while full_screen_lines.len() < h {
             full_screen_lines.push(pad_backdrop_line(Line::from(""), w));
         }
-        full_screen_lines.push(pad_backdrop_line(footer_line, w));
         full_screen_lines.truncate(h);
 
         for (i, line) in full_screen_lines.into_iter().enumerate() {

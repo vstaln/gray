@@ -92,6 +92,7 @@ pub(crate) fn draw_list_picker<T>(
                 .sum();
             2 + (picker.label)(item).chars().count() + trailing
         })
+        .chain(footer_lines.iter().map(|l| l.width()))
         .max()
         .unwrap_or(0);
     let modal_w = 48u16

@@ -700,7 +700,16 @@ pub(crate) async fn dispatch_command(
                                         i.label.as_str()
                                     }),
                                     trailing: Some(Box::new(trailing)),
-                                    footer: None,
+                                    footer: spec.footer.as_deref().map(|f| {
+                                        Box::new(move || {
+                                            vec![ratatui::text::Line::styled(
+                                                f.to_string(),
+                                                ratatui::style::Style::default()
+                                                    .fg(crate::theme::theme().text_dim),
+                                            )]
+                                        })
+                                            as Box<dyn Fn() -> Vec<ratatui::text::Line<'static>>>
+                                    }),
                                     on_highlight: None,
                                     selected: sel,
                                 };

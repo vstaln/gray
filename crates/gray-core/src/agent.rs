@@ -429,6 +429,8 @@ pub struct PickerSpec {
     pub items: Vec<PickerItem>,
     #[serde(default)]
     pub selected_id: Option<String>,
+    #[serde(default)]
+    pub footer: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
