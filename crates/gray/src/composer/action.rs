@@ -158,6 +158,7 @@ impl ActionState {
         let (bin, args) = action.argv.split_first().expect("cli_argv is non-empty");
         match Command::new(bin)
             .args(args)
+            .env("GRAY_ACTION_INSERT", "1")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
