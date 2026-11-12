@@ -473,6 +473,20 @@ pub(crate) async fn dispatch_command(
             let mut handled = false;
             let mut outcome =
                 run_plugin_command(&hooks, &name, argv.clone(), Some(raw.clone())).await;
+            if matches!(
+                outcome,
+                Some(
+                    CommandOutcome::Panel(_)
+                        | CommandOutcome::Picker(_)
+                        | CommandOutcome::HostPicker { .. }
+                )
+            ) && let Some((shared, _)) = tui.as_ref()
+            {
+                shared
+                    .lock()
+                    .expect("tui lock")
+                    .retract_slash_echo(cmd.trim());
+            }
             while let Some(oc) = outcome.take() {
                 match oc {
                     CommandOutcome::Say(text) => {

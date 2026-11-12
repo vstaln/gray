@@ -17,6 +17,7 @@ pub struct BackgroundSnapshot {
     pub home_quality_of_life: Option<String>,
     pub home_session: Option<String>,
     pub attachments: Vec<std::path::PathBuf>,
+    pub screen: Option<ratatui::buffer::Buffer>,
     /// Memoized `rebuild_transcript` keyed on (cols, rows). Modal loops
     /// repaint this backdrop every frame, but the snapshot is frozen —
     /// shared across clones so a modal's copy stays warm.
@@ -61,6 +62,7 @@ impl BackgroundSnapshot {
             home_quality_of_life: None,
             home_session: None,
             attachments: Vec::new(),
+            screen: None,
             transcript_cache: Default::default(),
             backdrop_cache: Default::default(),
         }
@@ -203,6 +205,42 @@ pub fn render_dimmed_background(frame: &mut ratatui::Frame, bg: &BackgroundSnaps
     }
 }
 
+fn paint_last_frame(
+    buf: &mut ratatui::buffer::Buffer,
+    area: ratatui::layout::Rect,
+    bg: &BackgroundSnapshot,
+    screen: &ratatui::buffer::Buffer,
+) {
+    use ratatui::layout::Rect;
+    use ratatui::style::Color;
+    use ratatui::widgets::{Paragraph, Widget};
+
+    let vp = screen.area;
+    let top = vp.y.min(area.height.saturating_sub(vp.height));
+    let transcript = bg.rebuild_transcript(area.width as usize);
+    let tail = &transcript[transcript.len().saturating_sub(top as usize)..];
+    for (i, line) in tail.iter().enumerate() {
+        Paragraph::new(line.clone())
+            .render(Rect::new(area.x, area.y + i as u16, area.width, 1), buf);
+    }
+    for y in 0..vp.height.min(area.height) {
+        for x in 0..vp.width.min(area.width) {
+            buf[(area.x + x, area.y + top + y)] = screen[(vp.x + x, vp.y + y)].clone();
+        }
+    }
+    let faint = crate::theme::theme().text_faint;
+    for cell in buf.content.iter_mut() {
+        cell.fg = match cell.fg {
+            Color::Reset => dim_color(faint),
+            c => dim_color(c),
+        };
+        cell.bg = match cell.bg {
+            Color::Reset => backdrop_bg(),
+            c => dim_color(c),
+        };
+    }
+}
+
 fn paint_dimmed_background(
     buf: &mut ratatui::buffer::Buffer,
     area: ratatui::layout::Rect,
@@ -217,6 +255,11 @@ fn paint_dimmed_background(
     let w = area.width as usize;
     let h = area.height as usize;
     if w == 0 || h == 0 {
+        return;
+    }
+
+    if let Some(screen) = &bg.screen {
+        paint_last_frame(buf, area, bg, screen);
         return;
     }
 

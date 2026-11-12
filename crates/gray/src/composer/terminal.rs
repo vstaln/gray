@@ -177,6 +177,10 @@ where
         Ok(())
     }
 
+    pub fn last_frame(&self) -> &Buffer {
+        &self.buffers[1 - self.current]
+    }
+
     pub fn swap_buffers(&mut self) {
         self.buffers[1 - self.current].reset();
         self.current = 1 - self.current;

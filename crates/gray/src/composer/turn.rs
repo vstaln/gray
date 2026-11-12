@@ -213,6 +213,7 @@ impl Tui {
             home_quality_of_life: self.home_quality_of_life.clone(),
             home_session: self.home_session.clone(),
             attachments: self.attachments.clone(),
+            screen: Some(self.terminal.last_frame().clone()).filter(|b| b.area.height > 0),
             transcript_cache: Default::default(),
             backdrop_cache: Default::default(),
         };
