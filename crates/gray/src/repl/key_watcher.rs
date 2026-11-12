@@ -42,21 +42,15 @@ pub(crate) fn is_turn_local_command(
 fn run_turn_local_command(ctx: &TurnLocalCommands, text: &str) {
     let tui = Some(&ctx.tui);
     match super::parse_command(text) {
-        super::ReplCommand::Jobs => {
-            let job_ctx = super::jobs::session_ctx(&ctx.cwd, ctx.session_id.as_deref());
-            let jobs = ctx
-                .executor
-                .as_ref()
-                .map(|exec| exec.background_jobs(&job_ctx))
-                .unwrap_or_default();
-            let text = crate::setup::gray_home()
-                .map(|home| {
-                    let wakes = super::jobs::load_wakes(&home, ctx.session_id.as_deref());
-                    super::jobs::dashboard(&jobs, &wakes, gray_core::time::now_secs() as i64)
-                })
-                .unwrap_or_else(|e| format!("jobs dashboard failed: {e}"));
-            super::say(tui, &text);
-        }
+        super::ReplCommand::Jobs => match crate::setup::gray_home() {
+            Ok(home) => super::jobs::show(
+                tui,
+                &home,
+                ctx.executor.clone(),
+                super::jobs::session_ctx(&ctx.cwd, ctx.session_id.as_deref()),
+            ),
+            Err(e) => super::say(tui, &format!("jobs dashboard failed: {e}")),
+        },
         super::ReplCommand::Help => {
             // A command picked mid-turn runs after the turn, like any queued input.
             if let Some(name) = super::dispatch::help_picker(&ctx.tui, &ctx.cwd, &ctx.hooks) {

@@ -162,6 +162,7 @@ const JOBS_SPEC: ManagerSpec = ManagerSpec {
     title: "Background",
     empty_hint: "nothing pending \u{2014} no background jobs or scheduled wakes",
     error_verb: "stop failed",
+    action: "stop",
 };
 
 /// Hard cap on wake-list staleness; a changed jobs.json mtime usually forces
@@ -286,14 +287,14 @@ pub(crate) fn load_wakes(home: &Path, sid: Option<&str>) -> Vec<Wake> {
 }
 
 pub(crate) fn remove(
-    exec: &dyn ToolExecutor,
+    exec: Option<&dyn ToolExecutor>,
     ctx: &ToolContext,
     home: &Path,
     name: &str,
 ) -> anyhow::Result<()> {
     if let Some(id) = name.strip_prefix("job:") {
         anyhow::ensure!(
-            exec.cancel_background(ctx, id),
+            exec.is_some_and(|e| e.cancel_background(ctx, id)),
             "job {id} is not running \u{2014} it may have just finished"
         );
         return Ok(());
@@ -342,10 +343,38 @@ fn cron_remove(home: &Path, id: &str) -> anyhow::Result<bool> {
     anyhow::bail!("{detail}")
 }
 
+/// `/jobs`: the manager modal when there is a TUI and anything pending,
+/// otherwise the one-line dashboard.
+pub(crate) fn show(
+    shared: Option<&crate::composer::SharedTui>,
+    home: &Path,
+    exec: Option<Arc<dyn ToolExecutor>>,
+    ctx: ToolContext,
+) {
+    let jobs = exec
+        .as_ref()
+        .map(|e| e.background_jobs(&ctx))
+        .unwrap_or_default();
+    let wakes = load_wakes(home, ctx.session_id.as_deref());
+    let Some(tui) = shared.filter(|_| !(jobs.is_empty() && wakes.is_empty())) else {
+        super::say(
+            shared,
+            &dashboard(&jobs, &wakes, gray_core::time::now_secs() as i64),
+        );
+        return;
+    };
+    let bg = tui.lock().expect("tui lock").snapshot();
+    match super::with_modal_sync(shared, || run_jobs_modal(Some(&bg), home, exec, ctx)) {
+        Ok(true) => super::say(shared, "background work updated"),
+        Ok(false) => {}
+        Err(e) => super::say(shared, &format!("jobs picker failed: {e}")),
+    }
+}
+
 pub(crate) fn run_jobs_modal(
     bg: Option<&crate::setup::BackgroundSnapshot>,
     home: &Path,
-    exec: Arc<dyn ToolExecutor>,
+    exec: Option<Arc<dyn ToolExecutor>>,
     ctx: ToolContext,
 ) -> anyhow::Result<bool> {
     let sid = ctx.session_id.clone();
@@ -354,10 +383,13 @@ pub(crate) fn run_jobs_modal(
         &JOBS_SPEC,
         || {
             let wakes = load_wakes(home, sid.as_deref());
-            let jobs = exec.background_jobs(&ctx);
+            let jobs = exec
+                .as_ref()
+                .map(|e| e.background_jobs(&ctx))
+                .unwrap_or_default();
             items(&jobs, &wakes, gray_core::time::now_secs() as i64)
         },
-        |name| remove(exec.as_ref(), &ctx, home, name),
+        |name| remove(exec.as_deref(), &ctx, home, name),
     )
 }
 

@@ -40,7 +40,10 @@ pub(crate) fn help_entries(
     }
     for t in crate::prompt_templates::discover(cwd) {
         if seen.insert(t.name.clone()) {
-            out.push((format!("/{}", t.name), format!("template · {}", t.description)));
+            out.push((
+                format!("/{}", t.name),
+                format!("template · {}", t.description),
+            ));
         }
     }
     out
@@ -324,32 +327,11 @@ pub(crate) async fn dispatch_command(
         }
         ReplCommand::Jobs => {
             let tui_shared = tui.as_ref().map(|(s, _)| s);
-            let sid = session_state
-                .as_ref()
-                .map(|s| s.session_id.as_str().to_string());
-            let ctx = super::jobs::session_ctx(cwd, sid.as_deref());
+            let sid = session_state.as_ref().map(|s| s.session_id.as_str());
+            let ctx = super::jobs::session_ctx(cwd, sid);
             let home = crate::setup::gray_home()?;
-            match (agent.as_ref().map(|a| a.executor_handle()), tui_shared) {
-                (Some(exec), Some(shared)) => {
-                    let bg = shared.lock().expect("tui lock").snapshot();
-                    let changed = with_modal_sync(tui_shared, || {
-                        super::jobs::run_jobs_modal(Some(&bg), &home, exec, ctx)
-                    });
-                    match changed {
-                        Ok(true) => say(tui_shared, "background work updated"),
-                        Ok(false) => {}
-                        Err(e) => say(tui_shared, &format!("jobs picker failed: {e}")),
-                    }
-                }
-                (exec, _) => {
-                    let jobs = exec.map(|e| e.background_jobs(&ctx)).unwrap_or_default();
-                    let wakes = super::jobs::load_wakes(&home, sid.as_deref());
-                    say(
-                        tui_shared,
-                        &super::jobs::dashboard(&jobs, &wakes, gray_core::time::now_secs() as i64),
-                    );
-                }
-            }
+            let exec = agent.as_ref().map(|a| a.executor_handle());
+            super::jobs::show(tui_shared, &home, exec, ctx);
             Flow::Continue
         }
 
@@ -581,7 +563,10 @@ pub(crate) async fn dispatch_command(
                                     with_modal_sync(shared, || {
                                         super::maintenance::with_terminal(shared, || {
                                             let mut child = std::process::Command::new(prog);
-                                            child.args(rest);
+                                            child.args(rest).env(
+                                                "GRAY_MODAL_THEME",
+                                                super::maintenance::modal_theme_env(),
+                                            );
                                             if let Ok(exe) = crate::update::exe_watch::on_disk_exe()
                                             {
                                                 child.env("GRAY_EXE", exe);

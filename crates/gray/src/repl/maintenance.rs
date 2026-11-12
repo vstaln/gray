@@ -314,7 +314,8 @@ pub(crate) fn run_modal_child(
     child.status()
 }
 
-fn modal_theme_env() -> String {
+/// Theme colors for a child that draws its own UI: `role=#rrggbb,...`.
+pub(crate) fn modal_theme_env() -> String {
     let th = crate::theme::theme();
     let roles = [
         ("surface_bg", th.surface_bg),
@@ -327,6 +328,7 @@ fn modal_theme_env() -> String {
         ("text_bright", th.text_bright),
         ("accent", th.accent),
         ("accent_soft", th.accent_soft),
+        ("on_selection", th.on_selection),
         ("success", th.success),
         ("error", th.error),
         ("rose", th.rose),
