@@ -6,31 +6,84 @@ pub(crate) enum Flow {
     Break,
 }
 
-pub(crate) fn help_text(cwd: &std::path::Path, hooks: &[Arc<dyn PluginHooks>]) -> String {
-    let mut out = String::new();
-    for d in REGISTRY.iter() {
-        out.push_str(&commands::format_help_line(d));
-        out.push('\n');
-    }
-    let mut entries = crate::plugin_cli::completions("");
-    entries.extend(plugin_help_entries(hooks));
+/// Every slash command the session knows: builtins, plugin commands, then
+/// prompt templates, as `("/name", description)`.
+pub(crate) fn help_entries(
+    cwd: &std::path::Path,
+    hooks: &[Arc<dyn PluginHooks>],
+) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = REGISTRY
+        .iter()
+        .map(|d| {
+            let aliases = d
+                .aliases
+                .iter()
+                .map(|a| format!("/{a}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let desc = if aliases.is_empty() {
+                d.desc.to_string()
+            } else {
+                format!("{} ({aliases})", d.desc)
+            };
+            (format!("/{}", d.name), desc)
+        })
+        .collect();
     let mut seen: std::collections::HashSet<String> =
         REGISTRY.iter().map(|d| d.name.to_string()).collect();
+    let mut entries = crate::plugin_cli::completions("");
+    entries.extend(plugin_help_entries(hooks));
     for (name, description) in entries {
         if seen.insert(name.clone()) {
-            out.push_str(&format!("  /{name:<10} {description}\n"));
+            out.push((format!("/{name}"), description));
         }
     }
-    let templates = crate::prompt_templates::discover(cwd);
-    if !templates.is_empty() {
-        out.push_str("prompt templates:\n");
-        for t in templates {
-            if seen.insert(t.name.clone()) {
-                out.push_str(&format!("  /{:<10} {}\n", t.name, t.description));
-            }
+    for t in crate::prompt_templates::discover(cwd) {
+        if seen.insert(t.name.clone()) {
+            out.push((format!("/{}", t.name), format!("template · {}", t.description)));
         }
     }
-    out.trim_end().to_string()
+    out
+}
+
+pub(crate) fn help_text(cwd: &std::path::Path, hooks: &[Arc<dyn PluginHooks>]) -> String {
+    help_entries(cwd, hooks)
+        .into_iter()
+        .map(|(name, desc)| format!("  {name:<11} {desc}"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// `/help` in the TUI: the command list as a picker; the picked command name.
+pub(crate) fn help_picker(
+    shared: &crate::composer::SharedTui,
+    cwd: &std::path::Path,
+    hooks: &[Arc<dyn PluginHooks>],
+) -> Option<String> {
+    // One label per row, name then description, so the filter matches both.
+    let items: Vec<(String, String)> = help_entries(cwd, hooks)
+        .into_iter()
+        .map(|(name, desc)| {
+            let label = format!("{name:<13}{desc}");
+            (name, label)
+        })
+        .collect();
+    let bg = shared.lock().expect("tui lock").snapshot();
+    let mut picker = super::picker::ListPicker {
+        title: "Commands",
+        items: &items,
+        label: Box::new(|(_, label): &(String, String)| label.as_str()),
+        trailing: None,
+        footer: None,
+        on_highlight: None,
+        selected: 0,
+        current: None,
+    };
+    let picked = with_modal_sync(Some(shared), || {
+        super::picker::run_list_picker(&mut picker, &bg)
+    });
+    let _ = shared.lock().expect("tui lock").draw();
+    picked.ok().flatten().map(|i| items[i].0.clone())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -124,12 +177,13 @@ pub(crate) async fn dispatch_command(
         }
         ReplCommand::Help => {
             let hooks = agent.as_ref().map(|a| a.hooks()).unwrap_or_default();
-            let out = help_text(cwd, hooks);
             if let Some((shared, _)) = tui {
-                let mut t = shared.lock().expect("tui lock");
-                t.push_dim(out);
-                t.ensure_gap();
+                shared.lock().expect("tui lock").retract_slash_echo("/help");
+                if let Some(name) = help_picker(shared, cwd, hooks) {
+                    *pending_command = Some(super::parse_command(&name));
+                }
             } else {
+                let out = help_text(cwd, hooks);
                 say(None, &crate::rule("commands"));
                 say(None, &out);
             }

@@ -58,9 +58,12 @@ fn run_turn_local_command(ctx: &TurnLocalCommands, text: &str) {
             super::say(tui, &text);
         }
         super::ReplCommand::Help => {
-            let mut t = ctx.tui.lock().expect("tui lock");
-            t.push_dim(super::dispatch::help_text(&ctx.cwd, &ctx.hooks));
-            t.ensure_gap();
+            // A command picked mid-turn runs after the turn, like any queued input.
+            if let Some(name) = super::dispatch::help_picker(&ctx.tui, &ctx.cwd, &ctx.hooks) {
+                let mut t = ctx.tui.lock().expect("tui lock");
+                t.queued_inputs.push_back((name, Vec::new()));
+                let _ = t.draw();
+            }
         }
         super::ReplCommand::Plugins => {
             let tui = Some(&ctx.tui);
