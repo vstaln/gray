@@ -153,20 +153,24 @@ pub(crate) fn draw_list_picker<T>(
         footer_lines.len() + 1
     };
     let inner_h = (list_h + 4 + detail_h) as u16;
-    let widest = picker
+    let trailing_w_of = |item: &T| -> usize {
+        picker
+            .trailing
+            .as_ref()
+            .map(|f| f(item))
+            .unwrap_or_default()
+            .iter()
+            .map(Span::width)
+            .sum()
+    };
+    let trailing_col = picker.items.iter().map(trailing_w_of).max().unwrap_or(0);
+    let label_max = picker
         .items
         .iter()
-        .map(|item| {
-            let trailing: usize = picker
-                .trailing
-                .as_ref()
-                .map(|f| f(item))
-                .unwrap_or_default()
-                .iter()
-                .map(Span::width)
-                .sum();
-            3 + (picker.label)(item).chars().count() + 2 + trailing
-        })
+        .map(|item| (picker.label)(item).chars().count())
+        .max()
+        .unwrap_or(0);
+    let widest = std::iter::once(3 + label_max + 2 + trailing_col)
         .chain(footer_lines.iter().map(|l| l.width() + 1))
         .chain(std::iter::once(picker.title.chars().count() + 20))
         .max()
@@ -272,7 +276,9 @@ pub(crate) fn draw_list_picker<T>(
             }
         }
         let trailing_w: usize = trailing.iter().map(Span::width).sum();
-        let name_w = (inner.width as usize).saturating_sub(3 + trailing_w + 1);
+        let col = trailing_col.min((inner.width as usize).saturating_sub(3 + 8 + 1));
+        let col = col.max(trailing_w);
+        let name_w = (inner.width as usize).saturating_sub(3 + col + 1);
         let label = crate::text_width::fit_chars((picker.label)(item), name_w);
         let mut spans = vec![Span::styled(
             if current { " ✓ " } else { "   " },
@@ -283,6 +289,7 @@ pub(crate) fn draw_list_picker<T>(
             " ".repeat(name_w.saturating_sub(label.chars().count())),
         ));
         spans.extend(trailing);
+        spans.push(Span::raw(" ".repeat(col - trailing_w)));
         frame.render_widget(Paragraph::new(Line::from(spans)).style(base), row(y));
     }
 
