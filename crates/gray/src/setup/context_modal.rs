@@ -150,10 +150,11 @@ pub fn run_context_modal(
                     Rect::new(inner.x, inner.y, inner.width, 1),
                 );
                 let head = format!(
-                    "{} · {} / {} tokens · {pct}% used",
+                    "{} · {} / {} tokens · {pct}% used · compacts at {}",
                     if model.is_empty() { "no model" } else { model },
                     format_context_length(used),
                     format_context_length(window),
+                    format_context_length(crate::compact::effective_compact_ceiling(config)),
                 );
                 frame.render_widget(
                     Paragraph::new(Line::from(Span::styled(
