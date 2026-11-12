@@ -99,33 +99,55 @@ fn run_turn_local_command(ctx: &TurnLocalCommands, text: &str) {
                 return;
             };
             use gray_core::agent::CommandOutcome;
-            let outcome = tokio::task::block_in_place(|| {
-                tokio::runtime::Handle::current().block_on(super::run_plugin_command(
-                    &ctx.hooks,
-                    &name,
-                    argv,
-                    Some(raw),
-                ))
-            });
-            match outcome {
-                Some(CommandOutcome::Say(text)) => super::say(tui, &text),
-                Some(CommandOutcome::Prompt(prompt)) => {
-                    let mut t = ctx.tui.lock().expect("tui lock");
-                    t.queued_inputs.push_back((prompt, Vec::new()));
-                    let _ = t.draw();
+            let run = |argv: Vec<String>, raw: String| {
+                tokio::task::block_in_place(|| {
+                    tokio::runtime::Handle::current().block_on(super::run_plugin_command(
+                        &ctx.hooks,
+                        &name,
+                        argv,
+                        Some(raw),
+                    ))
+                })
+            };
+            let mut outcome = run(argv.clone(), raw.clone());
+            while let Some(oc) = outcome.take() {
+                match oc {
+                    CommandOutcome::Say(text) => super::say(tui, &text),
+                    CommandOutcome::Prompt(prompt) => {
+                        let mut t = ctx.tui.lock().expect("tui lock");
+                        t.queued_inputs.push_back((prompt, Vec::new()));
+                        let _ = t.draw();
+                    }
+                    // A read-only list (a turn-local plugin declared it safe)
+                    // opens over the running turn; the pick runs mid-turn too.
+                    CommandOutcome::Picker(spec) if !spec.items.is_empty() => {
+                        match super::picker::run_spec_picker(&ctx.tui, &spec) {
+                            Ok(Some(id)) => {
+                                outcome = run(
+                                    super::picker::pick_argv(&argv, &id),
+                                    format!("{raw} --pick {id}").trim_start().to_string(),
+                                );
+                            }
+                            Ok(None) => {
+                                let _ = ctx.tui.lock().expect("tui lock").draw();
+                            }
+                            Err(_) => super::say_lines(tui, super::picker::spec_lines(&spec)),
+                        }
+                    }
+                    CommandOutcome::Picker(spec) => {
+                        super::say_lines(tui, super::picker::spec_lines(&spec))
+                    }
+                    CommandOutcome::HostPicker { .. }
+                    | CommandOutcome::Panel(_)
+                    | CommandOutcome::Terminal { .. } => {
+                        // Host pickers, panels and terminal handoffs mutate
+                        // session state or own the screen: rerun through the
+                        // full dispatch once the turn ends.
+                        let mut t = ctx.tui.lock().expect("tui lock");
+                        t.queued_inputs.push_back((cmd.clone(), Vec::new()));
+                        let _ = t.draw();
+                    }
                 }
-                Some(CommandOutcome::HostPicker { .. })
-                | Some(CommandOutcome::Panel(_))
-                | Some(CommandOutcome::Picker(_))
-                | Some(CommandOutcome::Terminal { .. }) => {
-                    // Pickers and settings mutate session state and own the
-                    // modal surface — rerun through the full dispatch once
-                    // the turn ends instead of racing the running turn.
-                    let mut t = ctx.tui.lock().expect("tui lock");
-                    t.queued_inputs.push_back((cmd.clone(), Vec::new()));
-                    let _ = t.draw();
-                }
-                None => {}
             }
         }
         _ => {}

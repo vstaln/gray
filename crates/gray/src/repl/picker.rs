@@ -356,3 +356,38 @@ pub(crate) fn run_list_picker<T>(
         }
     }
 }
+
+/// A plugin's picker as a modal over the transcript: the picked item's id,
+/// `None` on esc, an error when no modal can open (no tty).
+pub(crate) fn run_spec_picker(
+    shared: &crate::composer::SharedTui,
+    spec: &PickerSpec,
+) -> anyhow::Result<Option<String>> {
+    let bg = shared.lock().expect("tui lock").snapshot();
+    let dim = Style::default().fg(crate::theme::theme().text_dim);
+    let selected = spec
+        .selected_id
+        .as_deref()
+        .and_then(|id| spec.items.iter().position(|i| i.id == id))
+        .unwrap_or(0);
+    let mut picker = ListPicker {
+        title: spec.title.as_str(),
+        items: &spec.items,
+        label: Box::new(|i: &gray_core::agent::PickerItem| i.label.as_str()),
+        trailing: Some(Box::new(move |i: &gray_core::agent::PickerItem| {
+            i.description
+                .as_deref()
+                .filter(|d| !d.is_empty())
+                .map(|d| vec![Span::styled(d.to_string(), dim)])
+                .unwrap_or_default()
+        })),
+        footer: spec.footer.as_deref().map(|f| {
+            Box::new(move || f.lines().map(|l| Line::styled(l.to_string(), dim)).collect())
+                as Box<dyn Fn() -> Vec<Line<'static>>>
+        }),
+        on_highlight: None,
+        selected,
+    };
+    let picked = super::with_modal_sync(Some(shared), || run_list_picker(&mut picker, &bg))?;
+    Ok(picked.map(|idx| spec.items[idx].id.clone()))
+}

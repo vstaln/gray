@@ -739,55 +739,9 @@ pub(crate) async fn dispatch_command(
                             if spec.items.is_empty() {
                                 say_lines(tui_shared, super::picker::spec_lines(&spec));
                             } else {
-                                let bg = shared.lock().expect("tui lock").snapshot();
-                                let sel = spec
-                                    .selected_id
-                                    .as_deref()
-                                    .and_then(|id| spec.items.iter().position(|i| i.id == id))
-                                    .unwrap_or(0);
-                                let trailing = |i: &gray_core::agent::PickerItem| {
-                                    i.description
-                                        .as_deref()
-                                        .filter(|d| !d.is_empty())
-                                        .map(|d| {
-                                            vec![ratatui::text::Span::styled(
-                                                d.to_string(),
-                                                ratatui::style::Style::default()
-                                                    .fg(crate::theme::theme().text_dim),
-                                            )]
-                                        })
-                                        .unwrap_or_default()
-                                };
-                                let mut picker = super::picker::ListPicker {
-                                    title: spec.title.as_str(),
-                                    items: &spec.items,
-                                    label: Box::new(|i: &gray_core::agent::PickerItem| {
-                                        i.label.as_str()
-                                    }),
-                                    trailing: Some(Box::new(trailing)),
-                                    footer: spec.footer.as_deref().map(|f| {
-                                        Box::new(move || {
-                                            f.lines()
-                                                .map(|l| {
-                                                    ratatui::text::Line::styled(
-                                                        l.to_string(),
-                                                        ratatui::style::Style::default()
-                                                            .fg(crate::theme::theme().text_dim),
-                                                    )
-                                                })
-                                                .collect()
-                                        })
-                                            as Box<dyn Fn() -> Vec<ratatui::text::Line<'static>>>
-                                    }),
-                                    on_highlight: None,
-                                    selected: sel,
-                                };
-                                match with_modal_sync(tui_shared, || {
-                                    super::picker::run_list_picker(&mut picker, &bg)
-                                }) {
-                                    Ok(Some(idx)) => {
-                                        let id = &spec.items[idx].id;
-                                        let picked = super::picker::pick_argv(&argv, id);
+                                match super::picker::run_spec_picker(shared, &spec) {
+                                    Ok(Some(id)) => {
+                                        let picked = super::picker::pick_argv(&argv, &id);
                                         let picked_raw =
                                             format!("{raw} --pick {id}").trim_start().to_string();
                                         outcome = run_plugin_command(
