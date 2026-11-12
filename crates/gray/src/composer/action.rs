@@ -21,8 +21,36 @@ struct PluginAction {
 
 static ACTIONS: RwLock<Vec<PluginAction>> = RwLock::new(Vec::new());
 
+/// The gray home the actions came from and the keybindings.json mtime they
+/// saw, so an edited keymap (e.g. a plugin changing its hotkey) applies live.
+static SOURCE: RwLock<Option<(std::path::PathBuf, Option<std::time::SystemTime>)>> =
+    RwLock::new(None);
+
+fn keymap_mtime(home: &Path) -> Option<std::time::SystemTime> {
+    std::fs::metadata(crate::keymap::path_in(home))
+        .and_then(|m| m.modified())
+        .ok()
+}
+
+fn refresh() {
+    let Some((home, seen)) = SOURCE.read().ok().and_then(|g| g.clone()) else {
+        return;
+    };
+    if keymap_mtime(&home) != seen {
+        load(&home);
+    }
+}
+
 pub(crate) fn load(home: &Path) -> Vec<String> {
     let mut warnings = Vec::new();
+    if let Ok(mut g) = SOURCE.write() {
+        *g = Some((home.to_path_buf(), keymap_mtime(home)));
+    }
+    let overrides: serde_json::Map<String, serde_json::Value> =
+        std::fs::read_to_string(crate::keymap::path_in(home))
+            .ok()
+            .and_then(|t| serde_json::from_str(&t).ok())
+            .unwrap_or_default();
     let Ok(lock) = gray_plugin::lock::LockFile::load(&gray_plugin::lock::lock_path(home)) else {
         return warnings;
     };
@@ -50,8 +78,24 @@ pub(crate) fn load(home: &Path) -> Vec<String> {
                     })
                     .unwrap_or_default()
             };
+            let mut keys = strs("keys");
+            if let Some(user) = a
+                .get("id")
+                .and_then(|id| id.as_str())
+                .and_then(|id| overrides.get(&format!("plugin.{name}.{id}")))
+            {
+                keys = match user {
+                    serde_json::Value::String(k) => vec![k.clone()],
+                    v => v
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|k| k.as_str().map(str::to_string))
+                        .collect(),
+                };
+            }
             let mut chords = Vec::new();
-            for key in strs("keys") {
+            for key in keys {
                 match Chord::parse(&key) {
                     Ok(c) => chords.push(c),
                     Err(e) => warnings.push(format!("plugin {name}: composer action key: {e}")),
@@ -77,6 +121,7 @@ pub(crate) fn load(home: &Path) -> Vec<String> {
 
 fn for_event(ev: &KeyEvent) -> Option<PluginAction> {
     let chord = Chord::from_event(ev)?;
+    refresh();
     ACTIONS
         .read()
         .ok()?
@@ -205,6 +250,7 @@ impl Tui {
         let Ok(chord) = Chord::parse(key) else {
             return false;
         };
+        refresh();
         let Some(action) = ACTIONS
             .read()
             .ok()

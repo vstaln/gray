@@ -437,7 +437,8 @@ impl Keymap {
 }
 
 fn is_known_pi_only(id: &str) -> bool {
-    id.starts_with("app.") || id.starts_with("tui.")
+    // `plugin.<name>.<id>` rebinds a plugin's composer action (composer/action.rs).
+    id.starts_with("app.") || id.starts_with("tui.") || id.starts_with("plugin.")
 }
 
 static ACTIVE: RwLock<Option<Keymap>> = RwLock::new(None);
