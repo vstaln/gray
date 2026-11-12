@@ -238,13 +238,20 @@ fn foreign_binary(path: &Path) -> Option<&'static str> {
     } else {
         return None;
     };
-    let native = match kind {
-        "linux-x86_64" => cfg!(all(target_os = "linux", target_arch = "x86_64")),
-        "linux-aarch64" => cfg!(all(target_os = "linux", target_arch = "aarch64")),
-        "linux" => cfg!(target_os = "linux"),
-        "macos" => cfg!(target_os = "macos"),
-        _ => cfg!(windows),
-    };
+    let native = [
+        (
+            "linux-x86_64",
+            cfg!(all(target_os = "linux", target_arch = "x86_64")),
+        ),
+        (
+            "linux-aarch64",
+            cfg!(all(target_os = "linux", target_arch = "aarch64")),
+        ),
+        ("linux", cfg!(target_os = "linux")),
+        ("macos", cfg!(target_os = "macos")),
+        ("windows", cfg!(windows)),
+    ]
+    .contains(&(kind, true));
     (!native).then_some(kind)
 }
 

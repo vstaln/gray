@@ -602,7 +602,10 @@ async fn update_inner(target: &str, check: bool) -> anyhow::Result<Vec<UpdateRow
         if hub.is_none() && comm.is_none() {
             hub = crate::index::fetch_hub_index(&client).await.ok();
         }
-        let renamed = RENAMED.iter().find(|(old, _)| old == name).map(|(_, new)| *new);
+        let renamed = RENAMED
+            .iter()
+            .find(|(old, _)| old == name)
+            .map(|(_, new)| *new);
         let lookup = renamed.unwrap_or(name);
         let entry = match hub.as_ref().and_then(|i| i.plugins.get(lookup)) {
             Some(e) => e,
