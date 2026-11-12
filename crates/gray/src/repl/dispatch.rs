@@ -475,7 +475,7 @@ pub(crate) async fn dispatch_command(
                             }
                         }
                     }
-                    Err(e) => say(tui_shared, &format!("plugins manager failed: {e}")),
+                    Err(e) => say_err(tui_shared, &format!("plugins manager failed: {e}")),
                 }
             }
             Flow::Continue

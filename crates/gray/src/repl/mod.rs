@@ -233,20 +233,48 @@ pub(crate) fn say(tui: Option<&crate::composer::SharedTui>, msg: &str) {
 }
 
 pub(crate) fn say_err(tui: Option<&crate::composer::SharedTui>, msg: &str) {
+    log::warn!(target: "gray_repl", "{msg}");
+    if crate::stdio::is_active() && tui.is_none() {
+        crate::stdio::emit_say("error", msg);
+        return;
+    }
+    let text = error_text(msg);
     if let Some(t) = tui {
         let mut t = t.lock().expect("tui lock");
-
-        // One push: a multi-line reply stays a transcript block on home
-        // rather than toasting line by line.
-        let body: Vec<String> = msg.split('\n').map(|l| format!("  {l}")).collect();
-        t.push_dim(body.join("\n"));
-
+        t.push_error(&text);
         t.ensure_gap();
-    } else if crate::stdio::is_active() {
-        crate::stdio::emit_say("error", msg);
     } else {
-        eprintln!("{msg}");
+        eprintln!("{text}");
     }
+}
+
+/// The house error shape from `format.rs`: a `✗ Head` line, then the detail
+/// indented on one short line. The full text goes to the log.
+pub(crate) fn error_text(msg: &str) -> String {
+    let msg = msg.trim();
+    if msg.starts_with('\u{2717}') {
+        return msg.to_string();
+    }
+    if msg.contains('\n') {
+        return format!("\u{2717} {msg}");
+    }
+    let (head, detail) = msg.split_once(": ").unwrap_or((msg, ""));
+    let mut head_chars = head.chars();
+    let head: String = head_chars
+        .next()
+        .map(|c| c.to_uppercase().chain(head_chars).collect())
+        .unwrap_or_default();
+    if detail.is_empty() {
+        return format!("\u{2717} {head}");
+    }
+    const MAX: usize = 160;
+    let detail = if detail.chars().count() > MAX {
+        let cut: String = detail.chars().take(MAX).collect();
+        format!("{cut}\u{2026} (full error in ~/.gray/logs/gray.log)")
+    } else {
+        detail.to_string()
+    };
+    format!("\u{2717} {head}\n  {detail}")
 }
 
 pub(crate) fn clamp_thinking_to_model_name(

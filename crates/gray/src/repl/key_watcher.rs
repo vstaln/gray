@@ -49,7 +49,7 @@ fn run_turn_local_command(ctx: &TurnLocalCommands, text: &str) {
                 ctx.executor.clone(),
                 super::jobs::session_ctx(&ctx.cwd, ctx.session_id.as_deref()),
             ),
-            Err(e) => super::say(tui, &format!("jobs dashboard failed: {e}")),
+            Err(e) => super::say_err(tui, &format!("jobs dashboard failed: {e}")),
         },
         super::ReplCommand::Help => {
             // A command picked mid-turn runs after the turn, like any queued input.
@@ -68,7 +68,7 @@ fn run_turn_local_command(ctx: &TurnLocalCommands, text: &str) {
                 Ok(false) => {
                     let _ = ctx.tui.lock().expect("tui lock").draw();
                 }
-                Err(e) => super::say(tui, &format!("plugins manager failed: {e}")),
+                Err(e) => super::say_err(tui, &format!("plugins manager failed: {e}")),
             }
         }
         super::ReplCommand::Reload => {

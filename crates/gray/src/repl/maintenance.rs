@@ -36,7 +36,7 @@ pub(crate) async fn handle_update(tui: &TuiOpt, arg: Option<String>) {
     let latest = match check {
         Ok(Ok(v)) => v,
         Ok(Err(e)) => {
-            super::say(shared, &format!("update check failed: {e}"));
+            super::say_err(shared, &format!("update check failed: {e}"));
             return;
         }
         Err(_) => {
@@ -76,7 +76,7 @@ pub(crate) async fn handle_update(tui: &TuiOpt, arg: Option<String>) {
                 &format!("updated to {latest} — `/restart` to run it (the gateway too)"),
             );
         }
-        Err(e) => super::say(shared, &format!("update failed: {e}")),
+        Err(e) => super::say_err(shared, &format!("update failed: {e}")),
     }
 }
 
@@ -93,7 +93,9 @@ pub(crate) async fn restart_with(tui: &TuiOpt, resume: bool) {
             super::say(shared, "gateway is not running — nothing to restart there")
         }
         GatewayRestart::Skipped => super::say(shared, "gateway: skipped (scratch GRAY_HOME)"),
-        GatewayRestart::Failed(e) => super::say(shared, &format!("gateway restart failed: {e}")),
+        GatewayRestart::Failed(e) => {
+            super::say_err(shared, &format!("gateway restart failed: {e}"))
+        }
     }
 
     super::drain_in_flight_turn(super::TURN_DRAIN_TIMEOUT).await;

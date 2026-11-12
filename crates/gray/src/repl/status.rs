@@ -265,18 +265,20 @@ pub(crate) async fn handle_context_window(
     emit(msg, tui, ok);
 }
 
-pub(crate) fn persist_context_window(config: &Config) -> anyhow::Result<()> {
+pub(crate) fn persist_context_window(config: &Config, field: usize) -> anyhow::Result<()> {
     let path = crate::setup::saved_config_path()?;
-    let _cfg_lock = crate::setup::lock_saved_config_at(&path).ok();
+    let _cfg_lock = crate::setup::lock_saved_config_at(&path)?;
     let mut saved = crate::setup::load_saved_config_at(&path);
-    saved.context_window = config.context_window;
-    saved.context_reserve = config.context_reserve;
-    saved.context_keep = config.context_keep;
+    match field {
+        0 => saved.context_window = config.context_window,
+        1 => saved.context_reserve = config.context_reserve,
+        _ => saved.context_keep = config.context_keep,
+    }
     crate::setup::save_saved_config_at(&path, &saved)
 }
 
-fn persist_note(config: &Config) -> String {
-    match persist_context_window(config) {
+fn persist_note(config: &Config, field: usize) -> String {
+    match persist_context_window(config, field) {
         Ok(()) => String::new(),
         Err(e) => format!(" — not saved for the next launch: {e:#}"),
     }
@@ -380,7 +382,7 @@ pub(crate) fn apply_context_arg(config: &mut Config, val: &str) -> (String, bool
     if lower == "auto" || lower == "clear" || lower == "reset" || lower == "0" {
         config.context_window = None;
         crate::setup::set_user_context_window(None);
-        let note = persist_note(config);
+        let note = persist_note(config, 0);
 
         if let Some(m) = config.model.clone()
             && crate::setup::get_cached_model_context(&m).is_none()
@@ -429,13 +431,13 @@ pub(crate) fn apply_context_arg(config: &mut Config, val: &str) -> (String, bool
                 config.context_keep = None;
                 crate::setup::set_user_keep_recent_tokens(None);
             }
-            let note = persist_note(config);
+            let note = persist_note(config, if is_reserve { 1 } else { 2 });
             return (format!("{head} cleared → auto{note}"), true);
         }
         if !is_reserve && (rest == "off" || rest == "0") {
             config.context_keep = Some(0);
             crate::setup::set_user_keep_recent_tokens(Some(0));
-            let note = persist_note(config);
+            let note = persist_note(config, 2);
             return (format!("keep set to 0 (summary only){note}"), true);
         }
         return match crate::setup::parse_context_window(rest) {
@@ -447,7 +449,7 @@ pub(crate) fn apply_context_arg(config: &mut Config, val: &str) -> (String, bool
                     config.context_keep = Some(n);
                     crate::setup::set_user_keep_recent_tokens(Some(n));
                 }
-                let note = persist_note(config);
+                let note = persist_note(config, if is_reserve { 1 } else { 2 });
                 (
                     format!(
                         "{head} set to {n} tokens ({}){note}",
@@ -469,7 +471,7 @@ pub(crate) fn apply_context_arg(config: &mut Config, val: &str) -> (String, bool
             let (final_n, clamped) = if n > max { (max, true) } else { (n, false) };
             config.context_window = Some(final_n);
             crate::setup::set_user_context_window(Some(final_n));
-            let note = persist_note(config);
+            let note = persist_note(config, 0);
             let msg = if clamped {
                 format!(
                     "window clamped to model max {} ({}) — requested {}{note}",

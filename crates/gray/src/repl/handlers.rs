@@ -36,20 +36,20 @@ pub(crate) async fn handle_sys(
                     &format!("system prompt: {}\n---\n{body}\n---", path.display()),
                 );
             }
-            Err(e) => say(tui, &format!("failed to read {}: {e}", path.display())),
+            Err(e) => say_err(tui, &format!("failed to read {}: {e}", path.display())),
         },
         SysAction::Reset => {
             match crate::sys_editor::backup_before_overwrite(&path) {
                 Ok(Some(backup)) => say(tui, &format!("backup: {}", backup.display())),
                 Ok(None) => {}
                 Err(e) => {
-                    say(tui, &format!("backup failed ({e}) — reset aborted"));
+                    say_err(tui, &format!("backup failed ({e}) — reset aborted"));
                     return;
                 }
             }
             if let Err(e) = std::fs::write(&path, crate::stamped_system_prompt(DEFAULT_SYS_PROMPT))
             {
-                say(tui, &format!("failed to reset {}: {e}", path.display()));
+                say_err(tui, &format!("failed to reset {}: {e}", path.display()));
                 return;
             }
             say(
@@ -103,7 +103,7 @@ pub(crate) async fn handle_sys(
                     reload_agent(agent, config, cwd, session_id, tui).await;
                 }
                 Ok(None) => say(tui, "prompt unchanged"),
-                Err(e) => say(tui, &format!("editor error: {e}")),
+                Err(e) => say_err(tui, &format!("editor error: {e}")),
             }
         }
     }
@@ -141,7 +141,7 @@ pub(crate) async fn handle_undo(
     if let Some(state) = session_state
         && let Err(e) = state.store.rewind(&state.session_id, kept.len()).await
     {
-        say(tui, &format!("undo failed: {e}"));
+        say_err(tui, &format!("undo failed: {e}"));
         return None;
     }
     ag.set_messages(kept.clone());
@@ -400,14 +400,14 @@ async fn install_login_plugin(
     let home = match crate::plugin_cli::home() {
         Ok(home) => home,
         Err(e) => {
-            super::say(tui, &format!("install failed: {e:#}"));
+            super::say_err(tui, &format!("install failed: {e:#}"));
             return None;
         }
     };
     let lines = match crate::plugin_cli::install_spec_lines(&home, name, false).await {
         Ok(lines) => lines,
         Err(e) => {
-            super::say(tui, &format!("install failed: {e:#}"));
+            super::say_err(tui, &format!("install failed: {e:#}"));
             return None;
         }
     };

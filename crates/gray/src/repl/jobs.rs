@@ -367,7 +367,7 @@ pub(crate) fn show(
     match super::with_modal_sync(shared, || run_jobs_modal(Some(&bg), home, exec, ctx)) {
         Ok(true) => super::say(shared, "background work updated"),
         Ok(false) => {}
-        Err(e) => super::say(shared, &format!("jobs picker failed: {e}")),
+        Err(e) => super::say_err(shared, &format!("jobs picker failed: {e}")),
     }
 }
 
