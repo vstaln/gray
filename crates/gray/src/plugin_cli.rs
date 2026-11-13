@@ -103,6 +103,21 @@ pub(crate) fn declared_commands(home: &Path, name: &str) -> Vec<String> {
         .collect()
 }
 
+pub(crate) fn command_description(home: &Path, name: &str, command: &str) -> Option<String> {
+    description_in(&metadata(home, name).ok()?, command)
+}
+
+fn description_in(manifest: &serde_json::Value, command: &str) -> Option<String> {
+    let map = manifest["command_descriptions"].as_object()?;
+    let bare = command.trim_start_matches('/');
+    map.get(&format!("/{bare}"))
+        .or_else(|| map.get(bare))
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|d| !d.is_empty())
+        .map(str::to_string)
+}
+
 fn metadata(home: &Path, name: &str) -> anyhow::Result<serde_json::Value> {
     validate_name(name)?;
     Ok(serde_json::from_slice(&std::fs::read(
@@ -1459,6 +1474,7 @@ pub async fn capture_slash(name: &str, args: &[String]) -> anyhow::Result<Option
 
 struct CompletionRow {
     command: String,
+    description: Option<String>,
 
     plugin: String,
     /// Argument completions after the command, with an optional description.
@@ -1578,6 +1594,7 @@ fn scan_lock_completions(
             }
             rows.push(CompletionRow {
                 command: command.to_string(),
+                description: description_in(&m, command),
                 plugin: name.clone(),
                 args: args.clone(),
             });
@@ -1674,7 +1691,12 @@ pub(crate) fn completions(query: &str) -> Vec<(String, String)> {
     };
     for row in &table.rows {
         if !query.contains(' ') && row.command.starts_with(query) {
-            out.push((row.command.clone(), format!("{} plugin", row.plugin)));
+            out.push((
+                row.command.clone(),
+                row.description
+                    .clone()
+                    .unwrap_or_else(|| format!("{} plugin", row.plugin)),
+            ));
         }
         for (arg, desc) in &row.args {
             let full = format!("{} {arg}", row.command);
