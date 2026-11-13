@@ -110,6 +110,15 @@ fn more_suffix(repeats: u32) -> String {
     }
 }
 
+fn status_phrase(status: &str, outcome: &str) -> String {
+    let friendly = gray_plugin::friendly_exit_status(status);
+    if friendly == "interrupted" {
+        format!("interrupted, {outcome}")
+    } else {
+        format!("crashed ({friendly}), {outcome}")
+    }
+}
+
 fn crash_notice_line(crashes: Vec<CrashNotice>) -> Line<'static> {
     let dim = Style::new().add_modifier(Modifier::DIM);
     let bang = Style::new().fg(crate::theme::theme().error);
@@ -131,8 +140,8 @@ fn crash_notice_line(crashes: Vec<CrashNotice>) -> Line<'static> {
             }
             let names = names.join(", ");
             format!(
-                "{names} crashed ({}), restarted{}",
-                gray_plugin::friendly_exit_status(status),
+                "{names} {}{}",
+                status_phrase(status, "restarted"),
                 more_suffix(repeats)
             )
         } else {
@@ -179,9 +188,9 @@ fn crash_notice_line(crashes: Vec<CrashNotice>) -> Line<'static> {
             .map(|e| format!(": {e}"))
             .unwrap_or_default();
         segments.push(format!(
-            "{} crashed ({}), restart failed{why}{}",
+            "{} {}{why}{}",
             plugin_short_name(&c.plugin),
-            gray_plugin::friendly_exit_status(&c.status),
+            status_phrase(&c.status, "restart failed"),
             more_suffix(c.repeats)
         ));
     }

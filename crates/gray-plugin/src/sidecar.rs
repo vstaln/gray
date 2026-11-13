@@ -226,7 +226,8 @@ fn spawn_child(argv: &[String]) -> anyhow::Result<(Child, ChildStdin, ChildStdou
             .arg("exec \"$@\"")
             .arg("sh")
             .arg(script)
-            .args(args);
+            .args(args)
+            .creation_flags(0x0000_0200);
         let child = spawn_retrying_etxtbsy(|| {
             cmd.stdin(std::process::Stdio::piped())
                 .stdout(std::process::Stdio::piped())
@@ -237,10 +238,12 @@ fn spawn_child(argv: &[String]) -> anyhow::Result<(Child, ChildStdin, ChildStdou
         .map_err(|e| anyhow::anyhow!(crate::friendly_spawn_error(&e)))?;
         return finish_spawn(child);
     }
+    let mut cmd = Command::new(prog);
+    cmd.args(args);
+    #[cfg(windows)]
+    cmd.creation_flags(0x0000_0200);
     let child = spawn_retrying_etxtbsy(|| {
-        Command::new(prog)
-            .args(args)
-            .stdin(std::process::Stdio::piped())
+        cmd.stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(sidecar_stderr(prog))
             .kill_on_drop(true)

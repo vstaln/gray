@@ -1716,6 +1716,8 @@ pub(crate) async fn capture(
     ttl: std::time::Duration,
 ) -> anyhow::Result<Vec<u8>> {
     use tokio::io::AsyncReadExt;
+    #[cfg(windows)]
+    command.creation_flags(0x0000_0200);
     let mut child = command
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
