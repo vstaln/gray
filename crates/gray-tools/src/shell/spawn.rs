@@ -210,19 +210,16 @@ pub fn spawn(
 }
 
 pub fn pipestatus_shell() -> bool {
-    if std::env::var(EXEC_PREFIX_ENV)
+    let prefixed = std::env::var(EXEC_PREFIX_ENV)
         .map(|v| !v.trim().is_empty())
-        .unwrap_or(false)
-    {
-        return false;
-    }
+        .unwrap_or(false);
     #[cfg(windows)]
     {
-        true
+        !prefixed
     }
     #[cfg(not(windows))]
     {
-        bash_available()
+        !prefixed && bash_available()
     }
 }
 
