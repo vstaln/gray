@@ -189,6 +189,15 @@ pub(crate) fn is_ask_live() -> bool {
         })
 }
 
+pub(crate) fn drop_pending() {
+    let svc = SERVICE.lock().expect("ask service").clone();
+    if let Some(svc) = svc {
+        for (_, ask) in svc.pending.lock().expect("ask pending").drain() {
+            let _ = ask.tx.send(Vec::new());
+        }
+    }
+}
+
 pub fn shutdown() {
     let mut guard = SERVICE.lock().expect("ask service");
     if let Some(svc) = guard.take() {

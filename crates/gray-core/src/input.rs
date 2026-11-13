@@ -32,7 +32,7 @@ impl fmt::Display for InputError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::TooLarge => f.write_str("structured input exceeds the 1 MiB limit"),
-            Self::Json(_) => f.write_str("structured input is not valid JSON"),
+            Self::Json(detail) => write!(f, "structured input is not valid JSON: {detail}"),
             Self::UnsupportedProtocol => f.write_str("unsupported structured input protocol"),
             Self::UnsupportedVersion => f.write_str("unsupported structured input version"),
             Self::InvalidKind => f.write_str("structured input kind is invalid"),
@@ -49,10 +49,8 @@ impl InputEnvelope {
         if bytes.len() > MAX_INPUT_BYTES {
             return Err(InputError::TooLarge);
         }
-        let value: serde_json::Value =
-            serde_json::from_slice(bytes).map_err(|error| InputError::Json(error.to_string()))?;
         let envelope: Self =
-            serde_json::from_value(value).map_err(|error| InputError::Json(error.to_string()))?;
+            serde_json::from_slice(bytes).map_err(|error| InputError::Json(error.to_string()))?;
         envelope.validate()?;
         Ok(envelope)
     }

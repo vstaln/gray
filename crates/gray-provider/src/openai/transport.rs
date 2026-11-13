@@ -1,12 +1,5 @@
 use super::*;
 
-pub(super) fn session_affinity_headers(session_id: Option<&str>) -> Vec<(&'static str, &str)> {
-    let Some(sid) = session_id.filter(|s| !s.is_empty()) else {
-        return Vec::new();
-    };
-    vec![("x-opencode-session", sid)]
-}
-
 pub(super) fn send_stage_retryable(err: &reqwest::Error) -> bool {
     err.is_connect() || err.is_request()
 }
@@ -33,7 +26,6 @@ pub(super) async fn send_json_once(
     api_key: &str,
     body: &Value,
     attempt: usize,
-    session_id: Option<&str>,
 ) -> Result<reqwest::Response, (ProviderError, Option<Duration>, u16)> {
     let res_result = send_with_retries("send", || {
         let base = if api_key.is_empty() {
@@ -43,13 +35,6 @@ pub(super) async fn send_json_once(
                 .post(url.clone())
                 .header("Authorization", format!("Bearer {api_key}"))
         };
-        let base = session_affinity_headers(if url.as_str().contains("opencode.ai/zen") {
-            session_id
-        } else {
-            None
-        })
-        .into_iter()
-        .fold(base, |b, (name, value)| b.header(name, value));
         base.header("Content-Type", "application/json").json(body)
     })
     .await;

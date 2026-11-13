@@ -31,17 +31,23 @@ fn expiry_keep(estimate: usize, user_keep: usize) -> Option<usize> {
     (estimate >= EXPIRY_MIN_TOKENS).then(|| user_keep.min(estimate / 4))
 }
 
-/// Compaction fired just before the prompt cache expires on an idle session.
-pub async fn compact_before_expiry(agent: &mut Agent) -> Result<bool, CoreError> {
+pub fn expiry_keep_for(agent: &Agent) -> Option<usize> {
     if !is_auto_compact_enabled() {
-        return Ok(false);
+        return None;
     }
     let estimate: usize = agent.messages().iter().map(estimate_tokens).sum();
-    let Some(keep) = expiry_keep(estimate, crate::setup::user_keep_recent_tokens()) else {
-        log::info!(target: "gray_agent", "expiry compaction: skipped est={estimate}");
+    let keep = expiry_keep(estimate, crate::setup::user_keep_recent_tokens());
+    match keep {
+        Some(k) => log::info!(target: "gray_agent", "expiry compaction: est={estimate} keep={k}"),
+        None => log::info!(target: "gray_agent", "expiry compaction: skipped est={estimate}"),
+    }
+    keep
+}
+
+pub async fn compact_before_expiry(agent: &mut Agent) -> Result<bool, CoreError> {
+    let Some(keep) = expiry_keep_for(agent) else {
         return Ok(false);
     };
-    log::info!(target: "gray_agent", "expiry compaction: est={estimate} keep={keep}");
     Ok(compact_with_keep(agent, None, keep).await?.is_some())
 }
 

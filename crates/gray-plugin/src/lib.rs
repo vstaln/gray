@@ -390,6 +390,7 @@ pub fn friendly_spawn_error(e: &std::io::Error) -> String {
 pub fn friendly_exit_status(status: &str) -> String {
     match status {
         "signal 15" | "signal 9" => "killed".to_string(),
+        "exit -1073741510" | "exit 3221225786" | "signal 2" => "interrupted".to_string(),
         _ => status.to_string(),
     }
 }
@@ -417,6 +418,9 @@ impl PluginHookAdapter {
 
 #[async_trait]
 impl PluginHooks for PluginHookAdapter {
+    fn repin_session(&self, id: &str) {
+        self.plugin.set_session_id(id);
+    }
     fn is_global(&self) -> bool {
         self.plugin.is_global()
     }

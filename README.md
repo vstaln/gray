@@ -53,7 +53,7 @@ cargo build --release -p gray                                     # from source
 irm https://gray.alignment.id/install.ps1 | iex
 ```
 
-No WSL needed — Git for Windows supplies the shell. For an offline install keep `dist/install.ps1` and the zip together and run `.\dist\install.ps1 -ArchivePath .\gray-stable-x86_64-windows.zip -Sha256 <digest>`. Beta, offline and WSL installs: [Windows guide](docs/windows-preview.md).
+No WSL needed — Git for Windows supplies the shell. For an offline install keep `dist/install.ps1` and the zip together and run `.\dist\install.ps1 -ArchivePath .\gray-stable-x86_64-windows.zip -Sha256 <digest>`. Beta, offline and WSL installs: [Windows guide](docs/windows.md).
 
 ## Quick start
 
@@ -103,6 +103,7 @@ CLI: `gray resume`, `gray gateway`, `gray plugin`, `gray sessions`, `gray update
 **Skills** — not in bare gray. `gray plugin install skills` adds `SKILL.md` discovery across `~/.gray`, Claude Code, opencode and agents locations, a per-turn listing, and `/skills`.
 
 **Plugins** — sidecar processes speaking NDJSON over stdio. More in [docs/plugins.md](docs/plugins.md).
+Themes, keybindings, prompt templates and the status line: [docs/customization.md](docs/customization.md).
 
 ## Safety
 

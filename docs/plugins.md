@@ -1,13 +1,12 @@
-# Sidecar plugins: questions + permissions (`host/ask`)
+# Plugins
 
-Thin Rust sidecars own schema/policy; the gray host owns user I/O via
-`host/ask`. Two first-party examples:
-
-- `questions` (`vstaln/gray-questions`): the AI asking you clarifying
-  questions (`request_user_input`, 1–3 questions, options + free-form notes).
-- `permissions` (`vstaln/gray-permissions`): the guard on tool calls
-  ("hey, can I run this command?") via `tool/before` plus
-  `/permissions` (`/perms`, `/access`).
+Plugins are sidecar processes that speak NDJSON over stdio, in any
+language. Gray keeps only the host side (protocol, loader, installer);
+every plugin is its own repository under
+[github.com/vstaln](https://github.com/vstaln), and the index of
+published plugins is served from
+`https://gray.alignment.id/plugins/index.json` (source: `vstaln/graysite`,
+`public/plugins/index.json`).
 
 ## Install
 
@@ -31,46 +30,17 @@ Index entries are `gray-native`/`tarball` with `sha256:<hex>`:
  "hash": "sha256:<hex>", "scope": ""}
 ```
 
-## Where plugins live
+## Writing your own
 
-Plugins are not developed in this repo — gray keeps only the host side
-(protocol, loader, installer) plus test fixtures. Each plugin is its own
-repository under [github.com/vstaln](https://github.com/vstaln):
-
-- [gray-account](https://github.com/vstaln/gray-account)
-- [gray-antigravity-sub](https://github.com/vstaln/gray-antigravity-sub)
-- [gray-background](https://github.com/vstaln/gray-background)
-- [gray-claude-sub](https://github.com/vstaln/gray-claude-sub)
-- [gray-codex-sub](https://github.com/vstaln/gray-codex-sub)
-- gray-devin-sub (local only — no GitHub remote yet)
-- [gray-discord-plugin](https://github.com/vstaln/gray-discord-plugin)
-- [gray-ledger](https://github.com/vstaln/gray-ledger)
-- gray-memory (local only — no GitHub remote yet): curated cross-session
-  memory, extracted from core. Serves the per-session snapshot through
-  `prompt/context` (`session.id` pins the freeze), owns `/memory` over
-  `command/run`, and keeps `gray memory …` through `cli_argv` forwarding.
-  `/memory off` writes its own marker (`<home>/memory/enabled`) seeded once
-  from the legacy `memory_auto` config key.
-- [gray-permissions](https://github.com/vstaln/gray-permissions)
-- [gray-questions](https://github.com/vstaln/gray-questions)
-- [graysearch](https://github.com/vstaln/graysearch)
-- [gray-subagents](https://github.com/vstaln/gray-subagents)
-
-Install one by building it so `gray-<name>` is on PATH, then registering:
+A plugin may be Rust, Python, a shell script, or anything else that runs:
+`gray plugin install /path/to/my-plugin` registers any executable, and a
+plugin directory containing a `plugin.sh` is spawned as-is. To build a
+plugin from source so `gray-<name>` is on PATH, then register it:
 
 ```sh
 cargo install --git https://github.com/vstaln/<repo> --locked
 gray plugin install <name>
 ```
-
-or, for plugins published in the index, `gray plugin install <index-name>`.
-The live index is served from
-`https://gray.alignment.id/plugins/index.json` (source:
-`vstaln/graysite`, `public/plugins/index.json`) — it is not kept here.
-
-User-written plugins may be Python, a shell script, or anything else that
-runs: `gray plugin install /path/to/my-plugin` registers any executable,
-and a plugin directory containing a `plugin.sh` is spawned as-is.
 
 ## Wire (v1)
 
@@ -111,8 +81,22 @@ v1 methods (unclaimed = no IPC):
   transcript is never touched. Hooks chain in claim order.
 - `tool/after` — `{"name","content","is_error","session"}` →
   `{content?, is_error?}` replaces the tool result before observers and
-  history see it (pi `tool_result`; e.g. hermes `security-guidance`
-  warnings on dangerous writes). Sidecar→host asking is one method:
+  history see it.
+
+## Host calls
+
+A sidecar can call back into the host. Each call needs the matching
+capability, which the user grants at install (`gray plugin capabilities`):
+
+- `host/ask`: a blocking question in the middle of a tool call (below).
+- `host/say`: print a line into the conversation.
+- `host/run`: run an agent turn as the user, with their model, credentials
+  and budget.
+- `host/sessions`: list running gray sessions (ids and pids).
+- `host/restart`: restart gray on the binary on disk, resuming the
+  conversation.
+
+`host/ask` looks like this:
 
 ```json
 {"id": "q1", "method": "host/ask",
@@ -128,8 +112,8 @@ The host replies `{"id": "q1", "result": {"answers": …}}` or
 
 ## TTLs
 
-- Plugin inner TTL: 300s (both sidecars `recv_timeout(300s)` so the plugin
-  reports its own timeout, never the host's generic one).
+- Plugin inner TTL: an asking plugin should give up on its own wait at
+  300s, so it reports its own timeout instead of the host's generic one.
 - Host handler TTL (`ASK_HANDLER_TTL`): 300s per `host/ask` task.
 - Host outer TTL (`ASK_TTL`): 330s on `tool/call`/`tool/before` for
   protocol-1.1 sidecars; everything else keeps `HOST_TTL` 30s.
@@ -226,20 +210,20 @@ output shows the last line of stderr as an error. Keys already bound in
 `keybindings.json` win over plugin keys. The plugin needs a CLI entry
 (`cli_argv` in the lock), and actions load at startup.
 
-## Semantics
+## `host/ask` semantics
 
 - `blocking: false` resolves empty immediately in v1 (no follow-up
   message injection).
 - Bad tool args are rejected without asking.
 - No host handler is a loud `{"error": …}`, never a hang.
-- Empty/timeout answers deny: permissions fails closed, `request_user_input`
-  reports no user reachable.
+- An empty or timed-out answer means no user answered. A guard plugin
+  (like `gray-permissions`) should treat it as a denial.
 
 ## Headless (cron/gateway, piped stdin, `-p`)
 
 No TTY prompt exists there: piped stdin takes one number-or-free-text
 line per question (blank/EOF skips); anything else resolves empty
-immediately. Permissions denies; questions reports no user reachable.
+immediately.
 
 ## App setup
 
@@ -250,100 +234,16 @@ privately, runs its own `doctor`, and installs the daemon under whatever
 init the box has). Gray core keeps the picker and the forwarding — the
 flow itself is plugin code.
 
-## ChatGPT subscription provider
+## Provider plugins
 
-The ChatGPT/Codex subscription provider lives outside this repo, in
-[`vstaln/gray-codex-sub`](https://github.com/vstaln/gray-codex-sub), as the
-standalone `gray-codex-sub` protocol-1.2 sidecar. Build it there, then register
-the binary:
+Subscription providers (`gray-codex-sub`, `gray-claude-sub`, `gray-devin-sub`
+and the rest) are protocol-1.2 sidecars. Build one, then register the binary:
 
 ```sh
-gray plugin install /path/to/gray-codex-sub
+gray plugin install /path/to/gray-<name>-sub
 ```
 
 A sidecar that does not answer `<bin> manifest` is probed over the sidecar
 wire instead, and the install asks for the `provider.credentials` capability.
 Declined consent hides the provider row; grant it later with
 `gray plugin capabilities <name> --all`. Removal: `gray plugin remove <name>`.
-
-## Port candidates (hermes + pi)
-
-Consolidated 2026-10-08 from `customization.md` (pi parity plan), the
-pi example catalog (`reference/pi-mono/packages/coding-agent/examples/extensions/`,
-79 examples) and the hermes plugin dir (`~/.hermes/hermes-agent/plugins/`,
-18 plugins).
-
-### The genuine count
-
-- **pi:** 79 example extensions. ~13 are toys/demos/test fixtures
-  (snake, tic-tac-toe, space-invaders, doom-overlay, pirate,
-  rainbow-editor, hello, overlay-test, overlay-qa-tests, rpc-demo,
-  working-message-test, qna, mac-system-theme on this Linux box).
-  ~9 already have a gray equivalent (protected-paths + project-trust →
-  gray-permissions/trust; question + questionnaire → gray-questions;
-  subagent → gray-subagents; custom-footer + working-indicator +
-  minimal-mode → Level-0 status_line/lean; reload-runtime → `/reload`).
-  **9 are the named protocol-2.0 drivers** below; the remaining ~48 are
-  meant to run *unmodified* through gray-pi-compat, not be ported one
-  by one.
-- **hermes:** 18 plugins. 4 already covered or partially covered
-  (memory → gray-memory; platforms → gray-discord-plugin, discord only;
-  model-providers → the `gray-*-sub` provider sidecars; cron_providers →
-  core `gray cron`). **14 genuine candidates** below.
-
-Genuinely new port units: **23 named** (9 pi drivers + 14 hermes),
-plus ~48 pi extensions absorbed wholesale by pi-compat.
-
-### pi — protocol-2.0 drivers (port in this order, per customization.md)
-
-1. `permission-gate` — confirm dangerous bash commands (partly covered
-   by gray-permissions; port for the prompt UX)
-2. `plan-mode/` — read-only exploration mode with `/plan`
-3. `todo` — todo tool + `/todos` with custom rendering + persistence
-4. `custom-compaction` — custom summarize-everything compaction
-5. `input-transform` — rewrite submitted input
-6. `status-line` — live turn progress in the footer
-7. `handoff` — `/handoff <goal>` into a fresh focused session
-8. `git-checkpoint` — stash checkpoint per turn, restore on fork
-9. `notify` — OSC 777 desktop notification when the agent settles
-
-### pi — absorbed by gray-pi-compat (no individual port)
-
-Real value once protocol 2.0 + the compat sidecar exist:
-auto-commit-on-exit, bash-spawn-hook, bookmark, border-status-editor,
-built-in-tool-renderer, claude-rules, commands, confirm-destructive,
-custom-header, custom-provider-anthropic, custom-provider-gitlab-duo,
-debug-provider, dirty-repo-guard, dynamic-resources, dynamic-tools,
-entry-renderer, event-bus, file-trigger, github-issue-autocomplete,
-git-merge-and-resolve, gondolin, hidden-thinking-label, inline-bash,
-input-transform-streaming, interactive-shell, jev-router,
-message-renderer, modal-editor, model-status, preset,
-prompt-customizer, provider-payload, sandbox, send-user-message,
-session-name, shutdown-command, ssh, structured-output, summarize,
-system-prompt-header, timed-confirm, titlebar-spinner, tool-override,
-tools, trigger-compact, truncated-tool, widget-placement, with-deps. (48)
-
-### hermes — 14 candidates
-
-| plugin | what it is | note |
-|---|---|---|
-| `browser` | browser automation tool | high value, big surface |
-| `web` | web search/fetch tools | overlaps graysearch? check first |
-| `image_gen` | image generation (openrouter etc.) | straight tool port |
-| `video_gen` | video generation | straight tool port |
-| `spotify` | 7 playback/queue/search tools, PKCE OAuth | self-contained |
-| `kanban` | kanban board tool | self-contained |
-| `disk-cleanup` | auto-clean ephemeral session files via hooks | needs lifecycle hooks |
-| `security-guidance` | appends warnings to dangerous file writes | maps to `tool/after` |
-| `observability` | turn tracing/telemetry | design first |
-| `context_engine` | pluggable context engine provider | needs provider iface |
-| `dashboard_auth` | auth for a web dashboard | only with a dashboard |
-| `google_meet` | join/transcribe/speak in Meet calls | heavy, v1 transcribe-only |
-| `teams_pipeline` | Teams transcript-first meeting summaries | heavy, Graph-backed |
-| `hermes-achievements` | achievement system | novelty, low |
-
-Not candidates: `memory` (gray-memory), `platforms`
-(gray-discord-plugin covers the pattern; other platforms = new sidecars
-of the same shape), `model-providers` (gray `*-sub` sidecars cover
-subscriptions; generic profiles would be provider-plugin work),
-`cron_providers` (core `gray cron` exists).
