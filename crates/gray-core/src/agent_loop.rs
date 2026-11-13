@@ -521,12 +521,12 @@ impl Agent {
                 let sent = self.messages.iter().any(|message| {
                     message.content.iter().any(|block| {
                         matches!(block, ContentBlock::Text { text: seen }
-                            if seen
-                                .strip_prefix("[Context update]\n")
-                                .is_some_and(|old| {
-                                    let old = old.trim_end();
-                                    old == body || old.contains(body)
-                                }))
+                        if seen
+                            .strip_prefix("[Context update]\n")
+                            .is_some_and(|old| {
+                                let old = old.trim_end();
+                                old == body || old.contains(body)
+                            }))
                     })
                 });
                 if !sent {

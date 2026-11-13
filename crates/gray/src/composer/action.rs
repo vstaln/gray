@@ -135,6 +135,17 @@ pub(crate) enum ActionBanner {
     Error(String),
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AfterAction {
+    Insert,
+    Submit,
+}
+
+pub(crate) struct ActionTick {
+    pub(crate) running: bool,
+    pub(crate) submit: bool,
+}
+
 #[derive(Default)]
 pub(crate) enum ActionState {
     #[default]
@@ -149,6 +160,7 @@ pub(crate) enum ActionState {
         status: Arc<Mutex<String>>,
         inserts: Arc<Mutex<String>>,
         inserted: bool,
+        after: AfterAction,
     },
     Error(String),
 }
@@ -188,6 +200,7 @@ impl ActionState {
                     status,
                     inserts,
                     inserted: false,
+                    after: AfterAction::Insert,
                 };
             }
             Err(e) => {
@@ -208,28 +221,53 @@ impl ActionState {
         }
     }
 
-    fn poll(&mut self) -> Option<String> {
+    pub(crate) fn clear_error(&mut self) {
+        if matches!(self, ActionState::Error(_)) {
+            *self = ActionState::Idle;
+        }
+    }
+
+    pub(crate) fn stop_to_submit(&mut self) -> bool {
+        let ActionState::Running { child, after, .. } = self else {
+            return false;
+        };
+        if *after == AfterAction::Insert {
+            *after = AfterAction::Submit;
+            if let Some(stdin) = child.stdin.as_mut() {
+                let _ = stdin.write_all(b"stop\n");
+                let _ = stdin.flush();
+            }
+        }
+        true
+    }
+
+    fn poll(&mut self) -> (Option<String>, bool) {
         let ActionState::Running {
             child,
             inserts,
             inserted,
+            after,
             ..
         } = self
         else {
-            return None;
+            return (None, false);
         };
+        let submit_on_exit = *after == AfterAction::Submit;
         let partial = std::mem::take(&mut *inserts.lock().expect("inserts lock"));
         *inserted |= !partial.is_empty();
-        let rest = match child.try_wait() {
-            Ok(Some(status)) => self.finish(status),
-            Ok(None) => None,
+        let (rest, finished) = match child.try_wait() {
+            Ok(Some(status)) => (self.finish(status), true),
+            Ok(None) => (None, false),
             Err(e) => {
                 *self = ActionState::Error(e.to_string());
-                None
+                (None, true)
             }
         };
         let text = partial + rest.as_deref().unwrap_or_default();
-        (!text.is_empty()).then_some(text)
+        (
+            (!text.is_empty()).then_some(text),
+            finished && submit_on_exit,
+        )
     }
 
     fn finish(&mut self, status: ExitStatus) -> Option<String> {
@@ -355,13 +393,18 @@ impl Tui {
         true
     }
 
-    pub(crate) fn action_tick(&mut self) -> bool {
-        let running = matches!(self.action, ActionState::Running { .. });
-        if let Some(text) = self.action.poll() {
+    pub(crate) fn action_running(&self) -> bool {
+        matches!(self.action, ActionState::Running { .. })
+    }
+
+    pub(crate) fn action_tick(&mut self) -> ActionTick {
+        let running = self.action_running();
+        let (text, submit) = self.action.poll();
+        if let Some(text) = text {
             self.textarea.insert_str(&text);
             self.history_idx = None;
             self.sel = 0;
         }
-        running
+        ActionTick { running, submit }
     }
 }

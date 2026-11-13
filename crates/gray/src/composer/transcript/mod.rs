@@ -304,14 +304,50 @@ impl Tui {
     }
 
     pub(crate) fn emit_rows(&mut self, rows: Vec<Line<'static>>, bg: Color) {
+        self.emit_rows_with_hyperlinks(rows, Vec::new(), bg);
+    }
+
+    pub(crate) fn emit_rows_with_hyperlinks(
+        &mut self,
+        rows: Vec<Line<'static>>,
+        hyperlinks: Vec<HyperlinkTarget>,
+        bg: Color,
+    ) {
         self.drain_reveal();
-        let shaped = margins::shape_block(rows, Vec::new());
+        let shaped = margins::shape_block(rows, hyperlinks);
         self.atomic(|t| {
             if margins::admit(&mut t.gap_owed, &t.transcript, &shaped) {
                 t.write_gap();
             }
             if !shaped.lines.is_empty() {
-                t.insert_paragraph(&shaped.lines, bg);
+                if shaped.hyperlinks.is_empty() {
+                    t.insert_paragraph(&shaped.lines, bg);
+                } else {
+                    let mut by_line: HashMap<usize, Vec<HyperlinkTarget>> = HashMap::new();
+                    for h in &shaped.hyperlinks {
+                        by_line.entry(h.line_index).or_default().push(h.clone());
+                    }
+                    let batch_rows: Vec<crate::composer::BatchedInsert> = shaped
+                        .lines
+                        .iter()
+                        .enumerate()
+                        .map(|(i, l)| (l.clone(), by_line.remove(&i).unwrap_or_default(), bg))
+                        .collect();
+                    if let Some(batch) = &mut t.insert_batch {
+                        batch.extend(batch_rows);
+                    } else if t.modal_open {
+                        t.modal_pending.push(crate::composer::PendingInsert::Rows(
+                            shaped.lines.clone(),
+                            bg,
+                        ));
+                    } else {
+                        let height = batch_rows.len() as u16;
+                        let _ = crate::composer::draw::settle_band(t);
+                        let _ = t.terminal.insert_before(height, |buf| {
+                            paint_insert_rows(buf, &batch_rows);
+                        });
+                    }
+                }
                 t.record_rows(shaped.lines);
             }
         });

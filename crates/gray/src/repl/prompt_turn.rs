@@ -25,6 +25,7 @@ async fn run_streaming_cancellable(
     tokio::select! {
         res = &mut run_future => res,
         _ = cancel.cancelled() => {
+            crate::ask::drop_pending();
             let observed = tokio::time::timeout(TURN_CANCEL_GRACE, &mut run_future).await;
 
             let preempted = observed.is_err();
@@ -575,24 +576,8 @@ pub(crate) async fn run_prompt_turn(
             .end_turn(stream_clock.streamed_ms().unwrap_or(0));
     }
 
-    if interactive && let Some((shared, _)) = tui {
-        let mut t = shared.lock().expect("tui lock");
-        if let Some(text) = t.local_command.take() {
-            let parsed = parse_command(&text);
-            if !parsed.runs_local() {
-                t.push_user_prompt(&text, &[], false);
-            }
-            drop(t);
-            *pending_command = Some(expand_prompt_template(parsed, cwd, true));
-        } else if let Some((qtext, qimages)) = pop_actionable(&mut t.queued_inputs) {
-            let parsed = parse_command(&qtext);
-            if !parsed.runs_local() {
-                t.push_user_prompt(&qtext, &qimages, !qtext.starts_with('/'));
-            }
-            drop(t);
-            *pending_command = Some(expand_prompt_template(parsed, cwd, false));
-            *pending_images = qimages;
-        }
+    if interactive {
+        drain_queued_input(tui, cwd, pending_command, pending_images);
     }
     if pending_command.is_none()
         && let Some(id) = auth_relogin
@@ -600,6 +585,37 @@ pub(crate) async fn run_prompt_turn(
         *pending_command = Some(ReplCommand::ProviderLogin(id));
     }
     Ok(())
+}
+
+pub(crate) fn drain_queued_input(
+    tui: &Option<(
+        crate::composer::SharedTui,
+        std::sync::Arc<std::sync::atomic::AtomicBool>,
+    )>,
+    cwd: &std::path::Path,
+    pending_command: &mut Option<ReplCommand>,
+    pending_images: &mut Vec<std::path::PathBuf>,
+) {
+    let Some((shared, _)) = tui else {
+        return;
+    };
+    let mut t = shared.lock().expect("tui lock");
+    if let Some(text) = t.local_command.take() {
+        let parsed = parse_command(&text);
+        if !parsed.runs_local() {
+            t.push_user_prompt(&text, &[], false);
+        }
+        drop(t);
+        *pending_command = Some(expand_prompt_template(parsed, cwd, true));
+    } else if let Some((qtext, qimages)) = pop_actionable(&mut t.queued_inputs) {
+        let parsed = parse_command(&qtext);
+        if !parsed.runs_local() {
+            t.push_user_prompt(&qtext, &qimages, !qtext.starts_with('/'));
+        }
+        drop(t);
+        *pending_command = Some(expand_prompt_template(parsed, cwd, false));
+        *pending_images = qimages;
+    }
 }
 
 fn pop_actionable(

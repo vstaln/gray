@@ -561,13 +561,6 @@ pub async fn run_repl_mode(
     crate::setup::set_user_context_window(config.context_window);
     crate::setup::set_user_reserve_tokens(config.context_reserve);
     crate::setup::set_user_keep_recent_tokens(config.context_keep);
-    if let Some(warning) = crate::setup::context::context_window_override_warning(
-        config.context_window,
-        config.model.as_deref(),
-    ) {
-        log::warn!(target: "gray_config", "{warning}");
-        say(None, &warning);
-    }
     crate::compact::init_auto_compact_from_env();
     crate::setup::set_active_model_provider(&config.base_url);
 
@@ -1024,6 +1017,7 @@ pub async fn run_repl_mode(
 
     let mut bg_wake: Option<tokio::task::JoinHandle<()>> = None;
     let mut ttl_wake: Option<tokio::task::JoinHandle<()>> = None;
+    let mut expiry_compact_tried = false;
 
     if interactive {
         jobs::spawn_footer_poller();
@@ -1169,16 +1163,58 @@ pub async fn run_repl_mode(
                     .as_ref()
                     .and_then(|(s, _)| s.lock().ok().and_then(|t| t.cache_remaining()));
                 match remaining {
-                    Some(r) if r <= EXPIRY_LEAD => {
-                        if crate::compact::is_auto_compact_enabled() {
-                            let started = std::time::Instant::now();
-                            match crate::compact::compact_before_expiry(agent).await {
-                                Ok(true) => {
+                    Some(r) if r <= EXPIRY_LEAD && !expiry_compact_tried => {
+                        expiry_compact_tried = true;
+                        if let Some(keep) = crate::compact::expiry_keep_for(agent) {
+                            let compaction_id =
+                                format!("expiry-{}", uuid::Uuid::new_v4().as_simple());
+                            if let Some((shared, _)) = tui.as_ref() {
+                                shared
+                                    .lock()
+                                    .expect("tui lock")
+                                    .begin_compaction(compaction_id.clone());
+                            }
+                            let watch_cancel = tokio_util::sync::CancellationToken::new();
+                            let watch_stop =
+                                std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                            let key_watcher = tui.as_ref().map(|(shared, _)| {
+                                key_watcher::spawn_key_watcher_with_typing(
+                                    watch_cancel.clone(),
+                                    watch_stop.clone(),
+                                    Some(shared.clone()),
+                                    cwd.clone(),
+                                    None,
+                                )
+                            });
+                            let compact_res = tokio::select! {
+                                _ = watch_cancel.cancelled() => None,
+                                r = crate::compact::compact_with_keep(agent, None, keep) => Some(r),
+                            };
+                            watch_stop.store(true, std::sync::atomic::Ordering::Relaxed);
+                            if let Some(watcher) = key_watcher {
+                                let _ = watcher.await;
+                            }
+                            let elapsed = tui
+                                .as_ref()
+                                .and_then(|(shared, _)| {
+                                    shared
+                                        .lock()
+                                        .expect("tui lock")
+                                        .finish_compaction(&compaction_id, None)
+                                })
+                                .unwrap_or_default();
+                            match compact_res {
+                                None => {
+                                    if let Some((shared, _)) = tui.as_ref() {
+                                        let mut t = shared.lock().expect("tui lock");
+                                        t.push_dim("■ compaction cancelled".to_string());
+                                        t.ensure_gap();
+                                    }
+                                }
+                                Some(Ok(Some(_))) => {
                                     status::push_compaction_card(
                                         tui.as_ref().map(|(s, _)| s),
-                                        &crate::composer::fmt_elapsed_compact(
-                                            started.elapsed().as_secs(),
-                                        ),
+                                        &crate::composer::fmt_elapsed_compact(elapsed.as_secs()),
                                         "before cache expiry",
                                     );
                                     session::persist_compaction_tail(
@@ -1194,22 +1230,33 @@ pub async fn run_repl_mode(
                                     {
                                         t.rearm_cache();
                                     }
+                                    expiry_compact_tried = false;
                                 }
-                                Ok(false) => {}
-                                Err(e) => log::warn!(
+                                Some(Ok(None)) => {}
+                                Some(Err(e)) => log::warn!(
                                     target: "gray_agent",
                                     "idle compaction failed: {e}"
                                 ),
                             }
+                            prompt_turn::drain_queued_input(
+                                &tui,
+                                &cwd,
+                                &mut pending_command,
+                                &mut pending_images,
+                            );
+                            if pending_command.is_some() {
+                                continue;
+                            }
                         }
                     }
-                    Some(r) => {
+                    Some(r) if r > EXPIRY_LEAD => {
+                        expiry_compact_tried = false;
                         ttl_wake = Some(tokio::spawn(async move {
                             tokio::time::sleep(r - EXPIRY_LEAD).await;
                             crate::host::request_wake();
                         }));
                     }
-                    None => {}
+                    _ => {}
                 }
             }
         }

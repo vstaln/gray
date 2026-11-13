@@ -205,7 +205,7 @@ pub(crate) fn spawn_key_watcher_with_typing(
                 _ => {
                     if let Some(shared) = watcher_tui.as_ref() {
                         let mut t = lock_tui(shared);
-                        if t.action_tick() {
+                        if t.action_tick().running {
                             let _ = t.draw();
                         }
                     }
