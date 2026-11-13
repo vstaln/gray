@@ -517,12 +517,17 @@ impl Agent {
             if let Some(text) = hook.prompt_context().await
                 && !text.trim().is_empty()
             {
+                let body = text.trim_end();
                 let sent = self.messages.iter().any(|message| {
-                    message.injected
-                        && message.content.iter().any(|block| {
-                            matches!(block, ContentBlock::Text { text: seen }
-                                if seen.starts_with("[Context update]\n") && seen.contains(text.as_str()))
-                        })
+                    message.content.iter().any(|block| {
+                        matches!(block, ContentBlock::Text { text: seen }
+                            if seen
+                                .strip_prefix("[Context update]\n")
+                                .is_some_and(|old| {
+                                    let old = old.trim_end();
+                                    old == body || old.contains(body)
+                                }))
+                    })
                 });
                 if !sent {
                     self.messages
