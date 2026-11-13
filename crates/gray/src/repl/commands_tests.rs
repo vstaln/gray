@@ -421,13 +421,6 @@ fn sessions_is_canonical_and_resume_stays_an_alias() {
 }
 
 #[test]
-fn connect_completes_to_models_not_gateway() {
-    // "/connect" used to fuzzy-match the old /gateway "connections" description.
-    let got = super::completion_matches("connect");
-    assert_eq!(got.first().map(|(n, _)| *n), Some("models"), "{got:?}");
-}
-
-#[test]
 fn exact_name_outranks_description_match() {
     let mut rows = vec![
         (
