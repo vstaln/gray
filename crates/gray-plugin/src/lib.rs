@@ -417,6 +417,9 @@ impl PluginHookAdapter {
 
 #[async_trait]
 impl PluginHooks for PluginHookAdapter {
+    fn repin_session(&self, id: &str) {
+        self.plugin.set_session_id(id);
+    }
     fn is_global(&self) -> bool {
         self.plugin.is_global()
     }

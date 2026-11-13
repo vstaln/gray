@@ -496,6 +496,12 @@ pub(crate) async fn dispatch_command(
                     }
                 }
             }
+            if let Some(a) = agent.as_ref() {
+                super::session::ensure_session_state(session_state, config, cwd).await;
+                if let Some(state) = session_state.as_ref() {
+                    a.repin_session_id(state.session_id.as_str());
+                }
+            }
             let hooks: Vec<Arc<dyn PluginHooks>> = agent
                 .as_ref()
                 .map(|a| a.hooks().to_vec())
