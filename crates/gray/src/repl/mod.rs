@@ -58,6 +58,7 @@ fn signal_exit_text(session_id: Option<&str>, styled: bool) -> String {
 fn exit_from_signal(code: i32, clear_band: bool) -> ! {
     use std::io::IsTerminal as _;
 
+    crate::term_signals::repl_exit();
     jobs::stop_all_blocking();
     gray_tools::shell::kill::kill_tracked_groups();
     if session::exit_hint_printed() {
@@ -557,6 +558,7 @@ pub async fn run_repl_mode(
     if interactive {
         gray_plugin::builder::set_autostart(true);
     }
+    crate::term_signals::repl_start(interactive, &cwd);
 
     crate::setup::set_user_context_window(config.context_window);
     crate::setup::set_user_reserve_tokens(config.context_reserve);
@@ -1027,6 +1029,7 @@ pub async fn run_repl_mode(
 
     loop {
         crate::host::clear_wake();
+        crate::term_signals::idle(&cwd);
         if interactive {
             crate::away::maybe_recap(agent.as_ref());
         }
@@ -1452,6 +1455,7 @@ pub async fn run_repl_mode(
         }
     }
 
+    crate::term_signals::repl_exit();
     Ok(())
 }
 

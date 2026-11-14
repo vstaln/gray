@@ -193,6 +193,7 @@ pub(crate) async fn run_prompt_turn(
     *TURN_STATE.lock().unwrap_or_else(|e| e.into_inner()) = Some(cancel.clone());
 
     let _turn_in_flight = super::mark_turn_in_flight();
+    crate::term_signals::turn_start(cwd);
     super::session::ensure_session_state(session_state, config, cwd).await;
     let ctx = turn_tool_context(cwd, &cancel, session_state);
     let mut images = std::mem::take(&mut *pending_images);
@@ -433,6 +434,11 @@ pub(crate) async fn run_prompt_turn(
         run_result =
             run_streaming_cancellable(agent, retry_msg, ctx2, &cancel, &mut on_event2).await;
     }
+    let turn_end_state = match &run_result {
+        Ok(_) => crate::term_signals::TurnEnd::Ok,
+        Err(CoreError::Cancelled) => crate::term_signals::TurnEnd::Cancelled,
+        Err(_) => crate::term_signals::TurnEnd::Failed,
+    };
     TURN_STATE.lock().unwrap_or_else(|e| e.into_inner()).take();
     agent.set_checkpoint(None);
 
@@ -598,6 +604,18 @@ pub(crate) async fn run_prompt_turn(
     {
         *pending_command = Some(ReplCommand::ProviderLogin(id));
     }
+    let final_text = agent
+        .messages()
+        .iter()
+        .rev()
+        .find(|m| m.role == gray_core::message::Role::Assistant)
+        .map(Message::text_content);
+    crate::term_signals::turn_end(
+        cwd,
+        turn_end_state,
+        turn_start.elapsed(),
+        final_text.as_deref(),
+    );
     Ok(())
 }
 
