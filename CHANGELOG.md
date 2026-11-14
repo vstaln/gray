@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Fixed
+- **A composer action's message no longer runs into the text already on that row.** The banner above the prompt painted only its own inset, so a plugin notice or the home toast kept its first few characters to the left of the message (`pluginNo whisper model · enter to download`). It now blanks the whole row first.
+
 ## [0.2.23] - 2026-11-15
 
 ### Fixed
@@ -36,6 +39,9 @@
 - **Only real auth failures read as login expired;** quota and payment answers do not.
 - **Compaction sizes its pre-expiry check from the real API token count**, so a large `context_keep` no longer forces needless work before the cache expires.
 - **Smaller fixes:** issue links, prompt suggestions and vim operator counts; deduped injected context; a chat/completions fallback for a model the Responses route rejects; `quinn-udp` bumped for RUSTSEC-2026-0538.
+### Fixed
+- **A composer action's message no longer runs into the text already on that row.** The banner above the prompt painted only its own inset, so a plugin notice or the home toast kept its first few characters to the left of the message (`pluginNo whisper model · enter to download`). It now blanks the whole row first.
+
 
 ## [0.2.20] - 2026-11-12
 
