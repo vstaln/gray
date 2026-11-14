@@ -418,6 +418,13 @@ pub(crate) fn read_line(
             crate::away::focus(matches!(ev, Event::FocusGained));
             continue;
         }
+        if match &ev {
+            Event::Key(key) => key.kind != KeyEventKind::Release,
+            Event::Paste(_) => true,
+            _ => false,
+        } {
+            crate::away::key(tui.is_task_running);
+        }
         // Typing during the band fade-in lands it at once.
         tui.home_reveal = None;
         if tui.intro_started.is_some() {

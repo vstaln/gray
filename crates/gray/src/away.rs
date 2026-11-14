@@ -13,14 +13,32 @@ Plain text only, no preamble.";
 
 static LOST_AT: Mutex<Option<Instant>> = Mutex::new(None);
 static RETURNED: AtomicBool = AtomicBool::new(false);
+static SAW_FOCUS: AtomicBool = AtomicBool::new(false);
+static LAST_INPUT: Mutex<Option<Instant>> = Mutex::new(None);
 
 pub(crate) fn focus(gained: bool) {
+    SAW_FOCUS.store(true, Ordering::Relaxed);
     let mut lost = LOST_AT.lock().unwrap_or_else(|e| e.into_inner());
     if !gained {
         lost.get_or_insert_with(Instant::now);
         return;
     }
     if lost.take().is_some_and(|t| t.elapsed() >= AWAY_AFTER) && crate::settings::away_recap() {
+        RETURNED.store(true, Ordering::Relaxed);
+        crate::host::request_wake();
+    }
+}
+
+pub(crate) fn key(turn_running: bool) {
+    let now = Instant::now();
+    let gap = LAST_INPUT
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .replace(now);
+    if turn_running || SAW_FOCUS.load(Ordering::Relaxed) || !crate::settings::away_recap() {
+        return;
+    }
+    if gap.is_some_and(|t| now.saturating_duration_since(t) >= AWAY_AFTER) {
         RETURNED.store(true, Ordering::Relaxed);
         crate::host::request_wake();
     }
