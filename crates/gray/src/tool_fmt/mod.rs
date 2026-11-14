@@ -1514,6 +1514,10 @@ pub fn format_tool_result_lines_with_context(
         return lines;
     }
 
+    if let Some(lines) = subagent::subagent_body(tool_name, output) {
+        return lines;
+    }
+
     let raw_path = args.map(arg_path).unwrap_or("");
     let path_buf = if !raw_path.is_empty() {
         Some(if let Some(c) = cwd {
@@ -1609,6 +1613,7 @@ fn drop_view_echo<'a>(args: Option<&serde_json::Value>, output: &'a str) -> &'a 
 }
 
 mod plain;
+mod subagent;
 mod web;
 
 pub use plain::{format_tool_call_lines_plain, format_tool_result_plain_with_context};
