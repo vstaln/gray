@@ -474,6 +474,10 @@ impl Logins {
         }
     }
 
+    pub(crate) fn signed_out(&self, plugin: &str, label: &str) -> bool {
+        matches!(self.login_usage(plugin, Some(label)), LoginUsage::Failed(e) if e.contains("signed out"))
+    }
+
     pub(crate) fn has_cli(&self, plugin: &str) -> Option<Vec<String>> {
         self.plugins.get(plugin).map(|s| s.argv.clone())
     }
@@ -626,6 +630,9 @@ impl Logins {
         let dim = |s: &str, c: Color| Line::from(Span::styled(format!("     {s}"), fg(c)));
         match usage {
             Some(LoginUsage::Pending) => out.push(dim("…", t.text_faint)),
+            Some(LoginUsage::Failed(e)) if e.contains("signed out") => {
+                out.push(dim("signed out · enter to log in", RED))
+            }
             Some(LoginUsage::Failed(e)) if auth_error(e) => out.push(dim("login expired", RED)),
             Some(LoginUsage::Failed(_)) => out.push(dim("usage unavailable", t.text_faint)),
             Some(LoginUsage::Card(card)) => out.extend(gauge_lines(&gauges(card), w)),

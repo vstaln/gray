@@ -886,17 +886,13 @@ fn draw(frame: &mut Frame, bg: &BackgroundSnapshot, v: &PaneView) {
                 let under_portal = r > 0
                     && matches!(v.rows[r - 1], RailRow::Provider(j)
                         if v.rail[j].item.id == catalog::GRAY_PORTAL_ID);
-                if under_portal {
-                    let mut spans = if v.portal_in {
-                        vec![
-                            Span::styled("   ● ", fg(t.success)),
-                            Span::styled("signed in", fg(t.text_body)),
-                        ]
-                    } else {
-                        vec![Span::styled("   sign in", fg(t.accent))]
-                    };
+                if under_portal && v.portal_in {
+                    let mut spans = vec![
+                        Span::styled("   ● ", fg(t.success)),
+                        Span::styled("signed in", fg(t.text_body)),
+                    ];
                     let used: usize = spans.iter().map(Span::width).sum();
-                    if let Some(who) = v.portal_who.filter(|_| v.portal_in) {
+                    if let Some(who) = v.portal_who {
                         let room = (rail_w as usize).saturating_sub(used + 2);
                         if room >= 4 {
                             spans.push(Span::styled(
@@ -1762,6 +1758,36 @@ pub(crate) fn run_model_panes(
                     }
                     KeyCode::Enter if can_add && st.items.get(strip_sel) == Some(&Item::Add) => {
                         adding = Some(String::new());
+                    }
+                    KeyCode::Enter
+                        if sel_label
+                            .as_deref()
+                            .zip(st.plugin())
+                            .is_some_and(|(l, p)| logins.signed_out(p, l)) =>
+                    {
+                        let (Some(label), Some(plugin)) = (sel_label.clone(), st.plugin()) else {
+                            continue;
+                        };
+                        let Some(argv) = logins.has_cli(plugin) else {
+                            continue;
+                        };
+                        let pane = geo(term_area, PTY_EXTRA).pane;
+                        let inner = Rect::new(
+                            pane.x + 1,
+                            pane.y + 1,
+                            pane.width.saturating_sub(2),
+                            pane.height.saturating_sub(2),
+                        );
+                        match super::login_pty::PtyPane::spawn(
+                            plugin,
+                            format!("log in · {label}"),
+                            &argv,
+                            &["account", "login", &label],
+                            inner,
+                        ) {
+                            Ok(p) => pty = Some(p),
+                            Err(e) => notice = Some(format!("log in failed: {e}")),
+                        }
                     }
                     KeyCode::Char('a') => {
                         notice = Some("no account CLI for this provider".to_string());

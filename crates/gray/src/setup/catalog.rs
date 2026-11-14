@@ -938,7 +938,7 @@ pub fn build_connect_items(
 
     items.push(ConnectItem {
         id: GRAY_PORTAL_ID.to_string(),
-        name: "Gray portal".to_string(),
+        name: "Gray".to_string(),
         sublabel: "(models hosted by Gray)".to_string(),
         base_url: gray_portal_base_url(),
         no_auth: false,
