@@ -1,15 +1,23 @@
 use super::*;
 
 impl Tui {
-    pub(crate) fn upsert_live_tool(&mut self, id: &str, header: Vec<Line<'static>>, running: bool) {
+    pub(crate) fn upsert_live_tool(
+        &mut self,
+        id: &str,
+        header: Vec<Line<'static>>,
+        running: bool,
+        verbless: bool,
+    ) {
         if let Some(slot) = self.live_tools.iter_mut().find(|t| t.id == id) {
             slot.header = header;
             slot.running = running;
+            slot.verbless = verbless;
         } else {
             self.live_tools.push(LiveTool {
                 id: id.to_string(),
                 header,
                 running,
+                verbless,
                 tail: LiveToolTail::default(),
             });
         }
