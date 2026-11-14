@@ -650,7 +650,7 @@ fn replay_tool_result(
         .remove(id)
         .map(|(n, a)| (n, Some(a)))
         .unwrap_or_else(|| ("tool".to_string(), None));
-    let header = match args.as_ref() {
+    let mut header = match args.as_ref() {
         Some(a) => crate::tool_fmt::format_tool_card_lines(
             &name,
             a,
@@ -666,6 +666,9 @@ fn replay_tool_result(
             display.preview(&name),
         ),
     };
+    if is_error {
+        header.truncate(1);
+    }
     let mut lines = crate::tool_fmt::format_tool_result_lines_with_context(
         &name,
         args.as_ref(),
