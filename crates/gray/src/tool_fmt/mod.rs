@@ -472,6 +472,11 @@ fn placeholder_text(args: &serde_json::Value, inner: &str) -> String {
     let raw = value_text(args, path);
     match filter {
         "model" => model_display_name(&one_line(&raw)),
+        "verb" => one_line(&raw)
+            .split('_')
+            .find(|w| !w.is_empty())
+            .unwrap_or_default()
+            .to_string(),
         "firstline" => raw
             .lines()
             .map(str::trim)
