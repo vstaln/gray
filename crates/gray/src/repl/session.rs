@@ -646,7 +646,7 @@ pub(crate) fn dispatch_agent_event(
                     display.preview(name),
                 );
                 t.atomic(|t| {
-                    t.upsert_live_tool(id, header, false);
+                    t.upsert_live_tool(id, header, false, false);
                     t.set_status(Some(&format!("Preparing tool: {name}")));
                 });
             }
@@ -667,7 +667,7 @@ pub(crate) fn dispatch_agent_event(
                 let preview = crate::repl::format::truncate_chars(&preview, 60);
 
                 t.atomic(|t| {
-                    t.upsert_live_tool(id, header, false);
+                    t.upsert_live_tool(id, header, false, false);
                     if preview.is_empty() {
                         t.set_status(Some(&format!("Preparing tool: {name}")));
                     } else {
@@ -692,8 +692,9 @@ pub(crate) fn dispatch_agent_event(
                     .or_insert((name.clone(), Some(args.clone())));
 
                 let header = tool_header(display, &name, args, Some(cwd));
+                let verbless = crate::tool_fmt::verbless_card(&name, args);
                 t.atomic(|t| {
-                    t.upsert_live_tool(id, header, true);
+                    t.upsert_live_tool(id, header, true, verbless);
                     t.set_status(Some("Working"));
                 });
             }
