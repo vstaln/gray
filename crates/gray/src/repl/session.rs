@@ -739,7 +739,7 @@ pub(crate) fn dispatch_agent_event(
                         if host_drew_ask {
                             return;
                         }
-                        let header = match args.as_ref() {
+                        let mut header = match args.as_ref() {
                             Some(a) => tool_header(display, &name, a, Some(cwd)),
                             None => crate::tool_fmt::format_live_tool_header(
                                 &name,
@@ -749,6 +749,9 @@ pub(crate) fn dispatch_agent_event(
                                 display.preview(&name),
                             ),
                         };
+                        if *is_error {
+                            header.truncate(1);
+                        }
                         t.push_tool_box_lines(header, lines);
                     });
                 }

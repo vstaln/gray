@@ -169,12 +169,25 @@ fn spawn_body(text: &str) -> Option<Vec<Line<'static>>> {
             return None;
         }
         let id = handle.get("id").and_then(|n| n.as_str()).unwrap_or("");
-        lines.push(spawn_row(name, spawn_model(id, cli).as_deref()));
+        let model = handle
+            .get("model")
+            .and_then(|m| m.as_str())
+            .map(str::trim)
+            .filter(|m| !m.is_empty())
+            .map(str::to_string)
+            .or_else(|| spawn_model(id, cli));
+        let effort = handle
+            .get("effort")
+            .and_then(|e| e.as_str())
+            .map(str::trim)
+            .filter(|e| !e.is_empty())
+            .map(str::to_string);
+        lines.push(spawn_row(name, model.as_deref(), effort.as_deref()));
     }
     Some(lines)
 }
 
-fn spawn_row(name: &str, model: Option<&str>) -> Line<'static> {
+fn spawn_row(name: &str, model: Option<&str>, effort: Option<&str>) -> Line<'static> {
     let theme = crate::theme::theme();
     let mut spans = vec![
         Span::raw(INDENT),
@@ -184,10 +197,9 @@ fn spawn_row(name: &str, model: Option<&str>) -> Line<'static> {
         ),
         Span::styled(name.to_string(), Style::default().fg(theme.text_body)),
     ];
-    if let Some(model) = model {
-        spans.push(Span::raw(ROW_GAP));
+    for part in [model, effort].into_iter().flatten() {
         spans.push(Span::styled(
-            model.to_string(),
+            format!("{MODEL_SEP}{part}"),
             Style::default().fg(theme.tool_dim),
         ));
     }
