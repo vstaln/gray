@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+## [0.2.22] - 2026-11-15
+
+### Fixed
+- **A plugin update keeps its lock entry and its manifest cache.** When the new build's `manifest` verb could not be read, the update still recorded the plugin — with an empty `argv`, no `cli_argv` and no `<name>-manifest.json` — and reported it as updated. A provider plugin like claude then disappeared from `/models` with "selected provider connection is not installed or enabled" until `gray plugin install <name>` repaired it. The update now writes the runnable argv and `cli_argv` the install path writes, keeps the previous manifest cache when the probe cannot run, and reports the plugin as failed instead of updated.
+
 ## [0.2.21] - 2026-11-15
 
 ### Added

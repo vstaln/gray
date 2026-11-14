@@ -778,15 +778,20 @@ pub fn set_managed_global(name: &str, on: bool) -> anyhow::Result<()> {
 pub async fn update_managed(target: &str) -> anyhow::Result<Vec<gray_pkg::ops::UpdateRow>> {
     let home = home()?;
     ensure_installed(&home, target)?;
-    let reports = gray_pkg::ops::update(target).await?;
-    for r in &reports {
-        if let (Some(path), gray_pkg::ops::UpdateAction::Installed(_)) = (&r.path, &r.action)
-            && let Err(e) = adopt_cli(&home, &r.name, path).await
-        {
+    let mut reports = gray_pkg::ops::update(target).await?;
+    for r in &mut reports {
+        if !matches!(&r.action, gray_pkg::ops::UpdateAction::Installed(_)) {
+            continue;
+        }
+        let Some(path) = r.path.clone() else {
+            continue;
+        };
+        if let Err(e) = adopt_cli(&home, &r.name, &path).await {
             eprintln!(
                 "warning: could not set up `gray {}` forwarding: {e:#}",
                 r.name
             );
+            r.action = gray_pkg::ops::UpdateAction::Failed(format!("not adopted: {e:#}"));
         }
     }
     if let Err(e) = crate::providers::ProviderRegistry::refresh(&home) {
@@ -1182,14 +1187,22 @@ pub async fn forward(home: &Path, name: &str, rest: &[String]) -> anyhow::Result
     }
 }
 
-async fn cli_manifest(binary: &Path) -> Option<Value> {
+async fn cli_manifest(binary: &Path) -> anyhow::Result<Option<Value>> {
     let mut command = tokio::process::Command::new(binary);
     command.arg("manifest");
-    capture(command, std::time::Duration::from_secs(10))
+    let output = tokio::time::timeout(std::time::Duration::from_secs(10), command.output())
         .await
+        .context("plugin manifest probe timed out")??;
+    if !output.status.success() {
+        return Ok(None);
+    }
+    match serde_json::from_slice::<Value>(&output.stdout)
         .ok()
-        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
         .filter(|m| m["name"].is_string())
+    {
+        Some(manifest) => Ok(Some(manifest)),
+        None => anyhow::bail!("`{} manifest` printed no plugin manifest", binary.display()),
+    }
 }
 
 pub async fn register_native(
@@ -1214,7 +1227,7 @@ async fn register_native_gated(
     gate: TrustGate,
 ) -> anyhow::Result<Vec<String>> {
     let binary = std::fs::canonicalize(binary)?;
-    let cli_probe = cli_manifest(&binary).await;
+    let cli_probe = cli_manifest(&binary).await.ok().flatten();
     let (manifest, wire_only) = match cli_probe {
         Some(m) => (m, false),
         None => {
@@ -1352,7 +1365,7 @@ pub(crate) async fn adopt_cli(home: &Path, name: &str, dir: &Path) -> anyhow::Re
         .ok()
         .and_then(|argv| argv.into_iter().next());
     let manifest = match exe.as_deref() {
-        Some(exe) => cli_manifest(Path::new(exe)).await,
+        Some(exe) => cli_manifest(Path::new(exe)).await?,
         None => None,
     };
     let plugins = home.join("plugins");
@@ -1387,18 +1400,9 @@ pub(crate) async fn adopt_cli(home: &Path, name: &str, dir: &Path) -> anyhow::Re
             Ok(true)
         }
         None => {
-            if !entry.hash.is_empty() {
-                let mut changed = entry.cli_argv.take().is_some();
-                let manifest_path = plugins.join(format!("{name}-manifest.json"));
-                match std::fs::remove_file(&manifest_path) {
-                    Ok(()) => changed = true,
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                    Err(e) => return Err(e.into()),
-                }
-                if changed {
-                    lock.save(&lock_path)?;
-                    crate::providers::ProviderRegistry::refresh(home)?;
-                }
+            if !entry.hash.is_empty() && entry.cli_argv.take().is_some() {
+                lock.save(&lock_path)?;
+                crate::providers::ProviderRegistry::refresh(home)?;
             }
             Ok(false)
         }
