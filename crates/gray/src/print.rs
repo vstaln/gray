@@ -936,6 +936,15 @@ fn quota_resume_wait(error: &anyhow::Error) -> Option<Duration> {
     }
 }
 
+fn observe_quota(provider: &str, error: &anyhow::Error) {
+    let Some(core) = error.downcast_ref::<gray_core::error::CoreError>() else {
+        return;
+    };
+    if let gray_core::error::CoreError::Quota { message, resets_in } = core.class() {
+        crate::usage_cache::note_quota(provider, message, *resets_in);
+    }
+}
+
 fn quota_span(secs: u64) -> String {
     if secs >= 3600 {
         format!("{}h {:02}m", secs / 3600, secs % 3600 / 60)
@@ -1313,6 +1322,7 @@ async fn run_print_inner(
             break;
         }
         if let Err(error) = &run_result {
+            observe_quota(&config.provider_id, error);
             let Some(reset_in) = quota_resume_wait(error) else {
                 break;
             };

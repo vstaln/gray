@@ -540,6 +540,9 @@ pub(crate) async fn run_prompt_turn(
             )
             .await;
             let msg = format_core_error(&e, &config.base_url);
+            if let gray_core::error::CoreError::Quota { message, resets_in } = e.class() {
+                crate::usage_cache::note_quota(&config.provider_id, message, *resets_in);
+            }
 
             let previous_key = config.api_key.clone();
             let mut reloaded = matches!(e.class(), gray_core::error::CoreError::Auth(_))

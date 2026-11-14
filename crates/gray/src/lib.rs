@@ -45,6 +45,7 @@ pub mod tool_fmt;
 pub mod tui;
 pub mod turn_caps;
 pub mod update;
+pub(crate) mod usage_cache;
 pub(crate) mod util;
 pub mod win_paste;
 
