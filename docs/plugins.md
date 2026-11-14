@@ -210,6 +210,23 @@ output shows the last line of stderr as an error. Keys already bound in
 `keybindings.json` win over plugin keys. The plugin needs a CLI entry
 (`cli_argv` in the lock), and actions load at startup.
 
+## Settings
+
+A manifest can add rows to `/settings`:
+
+```json
+"settings": [
+  {"key": "auto_copy", "label": "Copy answers automatically", "type": "bool", "default": false},
+  {"key": "style", "label": "Answer style", "type": "choice", "choices": ["short", "long"], "default": "short"}
+]
+```
+
+Rows appear under the plugin's `display_name` (or name). Enter flips a `bool` or
+moves to the next `choice`. Gray writes the values to
+`$GRAY_HOME/plugin-settings/<plugin>.json` as a flat object, e.g.
+`{"auto_copy": true}`; keys you never changed are absent, so fall back to your
+default. Read the file when you need a value; there is no change notification.
+
 ## `host/ask` semantics
 
 - `blocking: false` resolves empty immediately in v1 (no follow-up
