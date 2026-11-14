@@ -649,15 +649,17 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
             let text: String = text.chars().take(ibox.width).collect();
             let y = box_y.saturating_sub(1);
             if y < area.bottom() {
+                // The banner borrows the row above the box, which the transcript
+                // band and the home toast also write to. Paint the whole row
+                // first: bounding the banner to its own inset leaves the head of
+                // whatever was there stuck to the left, so a notice or toast
+                // runs straight into the message ("pluginNo whisper model ...").
+                let (row, inset) = banner_rects(area, ibox.x, ibox.width, y);
                 frame.render_widget(
-                    chrome_row(Line::from(Span::styled(text, style))),
-                    Rect::new(
-                        area.x + (ibox.x as u16).min(area.width),
-                        y,
-                        (ibox.width as u16).min(area.width),
-                        1,
-                    ),
+                    chrome_row(Line::from(Span::raw(" ".repeat(row.width as usize)))),
+                    row,
                 );
+                frame.render_widget(chrome_row(Line::from(Span::styled(text, style))), inset);
             }
         }
 
@@ -1139,6 +1141,17 @@ fn live_tool_row(line: Line<'static>) -> Paragraph<'static> {
     )
 }
 
+/// The composer action banner paints the row above the box twice: once to
+/// blank it and once for the message. The blank must span the whole row — the
+/// transcript band and the home toast also write there, and a banner bounded to
+/// its own inset leaves the head of their line stuck to the left of the
+/// message (`pluginNo whisper model ...`). The message keeps the box inset.
+fn banner_rects(area: Rect, ibox_x: usize, ibox_w: usize, y: u16) -> (Rect, Rect) {
+    let x = area.x + (ibox_x as u16).min(area.width);
+    let w = (ibox_w as u16).min(area.right().saturating_sub(x));
+    (Rect::new(area.x, y, area.width, 1), Rect::new(x, y, w, 1))
+}
+
 fn chrome_row(line: Line<'static>) -> Paragraph<'static> {
     Paragraph::new(line)
         .block(Block::default().style(Style::default().bg(crate::theme::theme().surface_bg)))
@@ -1167,3 +1180,7 @@ fn theme_row_swatch(name: &str) -> Option<Vec<Span<'static>>> {
     spans.extend(crate::theme::swatch_spans(&t));
     Some(spans)
 }
+
+#[cfg(test)]
+#[path = "mod_tests.rs"]
+mod tests;
