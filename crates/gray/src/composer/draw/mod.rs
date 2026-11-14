@@ -659,10 +659,10 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
                     })
                     .unwrap_or(0);
                 let y = box_y + ibox.lead_h as u16 + 1;
-                if used + bw + 1 <= box_w
+                if used + bw < box_w
                     && y < box_y + rendered_box_h
                     && y < area.bottom()
-                    && box_w >= bw + 1
+                    && box_w > bw
                 {
                     let th = crate::theme::theme();
                     frame.render_widget(
