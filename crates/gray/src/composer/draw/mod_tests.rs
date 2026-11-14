@@ -26,3 +26,26 @@ fn banner_message_clamps_to_the_edge_of_the_area() {
     assert_eq!(past, Rect::new(25, 3, 0, 1));
     assert!(past.right() <= area.right());
 }
+
+#[test]
+fn blanking_the_row_erases_the_glyphs_a_bare_block_would_keep() {
+    use ratatui::buffer::Buffer;
+    use ratatui::text::{Line, Span};
+    use ratatui::widgets::{Paragraph, Widget};
+
+    let area = Rect::new(0, 0, 26, 1);
+    let stale = "pluginNo whisper model xx";
+
+    let mut buf = Buffer::empty(area);
+    for (i, ch) in stale.chars().enumerate() {
+        buf[(i as u16, 0)].set_char(ch);
+    }
+
+    // What the banner renders first: spaces across the whole row. A Block only
+    // sets cell styles, so an empty Line would leave the stale glyphs in place
+    // and the row would still read "pluginNo whisper model ...".
+    Paragraph::new(Line::from(Span::raw(" ".repeat(area.width as usize)))).render(area, &mut buf);
+
+    let row: String = (0..area.width).map(|x| buf[(x, 0)].symbol()).collect();
+    assert_eq!(row, " ".repeat(area.width as usize));
+}
