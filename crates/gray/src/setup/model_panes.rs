@@ -260,6 +260,7 @@ pub(crate) fn build_rail(
 enum RailRow {
     Provider(usize),
     Group(GroupId),
+    Spacer,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -387,6 +388,7 @@ fn rail_rows(rail: &[PaneProvider], groups: &GroupStates) -> Vec<RailRow> {
     }
     if let Some(i) = portal_row {
         rows.insert(0, RailRow::Provider(i));
+        rows.insert(1, RailRow::Spacer);
     }
     rows
 }
@@ -414,7 +416,7 @@ fn rail_rows_for(rail: &[PaneProvider], groups: &GroupStates, filter: &str) -> V
                 out.extend(header.take());
                 out.push(r);
             }
-            RailRow::Provider(_) => {}
+            RailRow::Provider(_) | RailRow::Spacer => {}
         }
     }
     out
@@ -454,10 +456,20 @@ fn row_provider<'a>(
 
 /// Move the rail cursor one row.
 fn rail_step(rows: &[RailRow], sel: usize, up: bool) -> usize {
-    if up {
-        sel.saturating_sub(1)
-    } else {
-        (sel + 1).min(rows.len().saturating_sub(1))
+    let mut at = sel;
+    loop {
+        let next = if up {
+            at.checked_sub(1)
+        } else {
+            (at + 1 < rows.len()).then_some(at + 1)
+        };
+        let Some(next) = next else {
+            return sel;
+        };
+        if !matches!(rows[next], RailRow::Spacer) {
+            return next;
+        }
+        at = next;
     }
 }
 
