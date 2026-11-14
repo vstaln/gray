@@ -37,6 +37,7 @@ pub mod stdio;
 pub mod sys_editor;
 pub mod system_prompt;
 pub mod term_keys;
+pub(crate) mod term_signals;
 pub(crate) mod text_width;
 pub mod theme;
 pub mod tool_fmt;
