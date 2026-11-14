@@ -226,6 +226,7 @@ pub struct Tui {
     pub(crate) replay_queue: Option<Box<ReplayQueue>>,
 
     status_line_seen: u64,
+    auto_continue_secs: Option<u64>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -451,6 +452,7 @@ impl Tui {
             live_tools: Vec::new(),
             plugin_widget: plugin_widget::Widget::new(std::env::current_dir().unwrap_or_default()),
             status_line_seen: crate::statusline::version(),
+            auto_continue_secs: None,
             ask_modal: None,
             home_notice: None,
             plugin_stats: None,

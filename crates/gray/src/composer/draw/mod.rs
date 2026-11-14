@@ -213,7 +213,9 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
     let footer_h: u16 = u16::from(!home_mode);
 
     let needs_seam = needs_seam(&tui.transcript);
-    let dock_live = tui.status.is_some() || tui.hint_active().is_some();
+    let dock_live = tui.status.is_some()
+        || tui.hint_active().is_some()
+        || crate::settings::auto_continue_secs().is_some();
     // Home keeps one fixed toast row above the box, so a hint appearing or
     // expiring never shifts the centered box.
     let status_h: u16 = if home_mode {
@@ -551,6 +553,15 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
             frame.render_widget(
                 Paragraph::new(line),
                 Rect::new(x, status_y + seam_h + tail_h, area.right() - x, 1),
+            );
+        } else if let Some(countdown) = crate::settings::auto_continue_status() {
+            let line = Line::from(Span::styled(
+                format!(" {countdown}"),
+                Style::default().fg(crate::theme::theme().tool_dim),
+            ));
+            frame.render_widget(
+                Paragraph::new(line),
+                Rect::new(area.x, status_y + seam_h + tail_h, area.width, 1),
             );
         }
 

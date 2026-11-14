@@ -391,6 +391,11 @@ pub(crate) fn read_line(
         if !poll(timeout)? {
             let tick = {
                 let mut guard = shared.lock().expect("tui lock");
+                let countdown = crate::settings::auto_continue_secs();
+                if countdown != guard.auto_continue_secs {
+                    guard.auto_continue_secs = countdown;
+                    needs_draw = true;
+                }
                 let tick = guard.action_tick();
                 if tick.submit {
                     if let Some(sub) = try_submit(&mut guard) {
@@ -424,6 +429,7 @@ pub(crate) fn read_line(
             _ => false,
         } {
             crate::away::key(tui.is_task_running);
+            crate::settings::cancel_auto_continue();
         }
         // Typing during the band fade-in lands it at once.
         tui.home_reveal = None;

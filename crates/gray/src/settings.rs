@@ -1,6 +1,6 @@
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use serde_json::Value;
 
@@ -96,12 +96,37 @@ pub(crate) fn turn_started() {
 const CONTINUE_AFTER_LIMIT: &str =
     "Your usage limit has reset. Continue the task where you left off.";
 
+const CONTINUE_GRACE: Duration = Duration::from_secs(60);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AutoContinue {
+    Off,
+    Armed { fire_at: Instant },
+}
+
+static AUTO_CONTINUE: Mutex<AutoContinue> = Mutex::new(AutoContinue::Off);
+
+fn auto_continue_slot() -> std::sync::MutexGuard<'static, AutoContinue> {
+    AUTO_CONTINUE.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 pub(crate) fn arm_auto_continue(session: &str, wait: Duration) -> String {
     let gen_at_arm = TURN_GEN.load(Ordering::Relaxed);
     let session = session.to_string();
-    let wait = wait + Duration::from_secs(60);
+    let wait = wait + CONTINUE_GRACE;
+    let fire_at = Instant::now() + wait;
+    *auto_continue_slot() = AutoContinue::Armed { fire_at };
     tokio::spawn(async move {
-        tokio::time::sleep(wait).await;
+        tokio::time::sleep_until(tokio::time::Instant::from_std(fire_at)).await;
+        {
+            let mut slot = auto_continue_slot();
+            match *slot {
+                AutoContinue::Armed { fire_at: armed } if armed == fire_at => {
+                    *slot = AutoContinue::Off;
+                }
+                _ => return,
+            }
+        }
         if TURN_GEN.load(Ordering::Relaxed) != gen_at_arm {
             return;
         }
@@ -121,10 +146,37 @@ pub(crate) fn arm_auto_continue(session: &str, wait: Duration) -> String {
         }
     });
     let at = chrono::Local::now() + chrono::Duration::from_std(wait).unwrap_or_default();
+    let clock = at.format("%I:%M %p").to_string();
     format!(
-        "continuing at {} · /settings to turn off",
-        at.format("%H:%M")
+        "\u{b7} continuing automatically at {}",
+        clock.strip_prefix('0').unwrap_or(&clock)
     )
+}
+
+pub(crate) fn auto_continue_secs() -> Option<u64> {
+    match *auto_continue_slot() {
+        AutoContinue::Off => None,
+        AutoContinue::Armed { fire_at } => {
+            Some(fire_at.saturating_duration_since(Instant::now()).as_secs())
+        }
+    }
+}
+
+pub(crate) fn auto_continue_status() -> Option<String> {
+    let secs = auto_continue_secs()?;
+    let left = if secs >= 3600 {
+        format!("{}h {:02}m", secs / 3600, secs % 3600 / 60)
+    } else {
+        format!("{}:{:02}", secs / 60, secs % 60)
+    };
+    Some(format!("continuing in {left} \u{b7} esc to cancel"))
+}
+
+pub(crate) fn cancel_auto_continue() {
+    let mut slot = auto_continue_slot();
+    if matches!(*slot, AutoContinue::Armed { .. }) {
+        *slot = AutoContinue::Off;
+    }
 }
 
 const PRUNE_STAMP: &str = ".last-prune";
