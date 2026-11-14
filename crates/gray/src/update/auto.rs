@@ -176,8 +176,7 @@ pub(crate) async fn maybe_run(bare: bool) -> Option<Outcome> {
                 match r.action {
                     gray_pkg::ops::UpdateAction::Installed(_) => updated += 1,
                     gray_pkg::ops::UpdateAction::Rebuilt => rebuilt += 1,
-                    gray_pkg::ops::UpdateAction::Failed(_)
-                    | gray_pkg::ops::UpdateAction::NeedsUpdate(_) => failed += 1,
+                    gray_pkg::ops::UpdateAction::Failed(_) => failed += 1,
                     _ => {}
                 }
             }
