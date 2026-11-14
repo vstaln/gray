@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Fixed
+- **A composer action's message no longer runs into the text already on that row.** The banner above the prompt painted only its own inset, so a plugin notice or the home toast kept its first few characters to the left of the message (`pluginNo whisper model · enter to download`). It now blanks the whole row first.
+
 ## [0.2.20] - 2026-11-12
 
 ### Added
