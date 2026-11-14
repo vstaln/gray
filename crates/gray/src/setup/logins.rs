@@ -267,6 +267,79 @@ enum LoginUsage<'a> {
     Unknown,
 }
 
+fn account_head(
+    pinned: bool,
+    label: Option<&str>,
+    email: Option<&str>,
+    org: Option<&str>,
+    lit: bool,
+    w: usize,
+) -> Vec<Span<'static>> {
+    let t = crate::theme::theme();
+    let pick = |c: Color| {
+        if lit {
+            Style::default().fg(t.on_selection)
+        } else {
+            Style::default().fg(c)
+        }
+    };
+    let mut head = vec![Span::styled(
+        if pinned { " ● " } else { "   " },
+        pick(t.accent),
+    )];
+    let mut used = 3;
+    match label.filter(|l| !l.is_empty()) {
+        Some(l) => {
+            let l = fit_chars(l, 16);
+            used += l.chars().count() + 2;
+            head.push(Span::styled(
+                l,
+                pick(t.text_body).add_modifier(Modifier::BOLD),
+            ));
+            head.push(Span::raw("  "));
+        }
+        None if label.is_none() => {
+            let who = email.unwrap_or("signed in").to_string();
+            head.push(Span::styled(
+                fit_chars(&who, w.saturating_sub(used)),
+                pick(t.text_body),
+            ));
+            used = w;
+        }
+        None => {}
+    }
+    if used < w {
+        let who = match (email, org) {
+            (Some(e), Some(o)) => format!("{e} · {o}"),
+            (Some(e), None) => e.to_string(),
+            (None, Some(o)) => o.to_string(),
+            (None, None) => String::new(),
+        };
+        head.push(Span::styled(
+            fit_chars(&who, w.saturating_sub(used)),
+            pick(t.text_dim),
+        ));
+    }
+    head
+}
+
+pub(crate) fn portal_section(name: &str, who: Option<&str>, w: usize) -> Vec<Line<'static>> {
+    let t = crate::theme::theme();
+    let fg = |c: Color| Style::default().fg(c);
+    let meta = "  ·  signed in";
+    vec![
+        Line::from(vec![
+            Span::raw(" "),
+            Span::styled(
+                fit_chars(name, w.saturating_sub(meta.chars().count() + 1)),
+                fg(t.text_bright).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(meta, fg(t.text_dim)),
+        ]),
+        Line::from(account_head(true, None, who, None, false, w)),
+    ]
+}
+
 pub(crate) struct Logins {
     plugins: HashMap<String, PluginState>,
     vault: BTreeMap<String, PluginAuthPool>,
@@ -557,7 +630,6 @@ impl Logins {
     ) -> Vec<Line<'static>> {
         let t = crate::theme::theme();
         let fg = |c: Color| Style::default().fg(c);
-        let pick = |c: Color| if lit { fg(t.on_selection) } else { fg(c) };
         let bar = if lit {
             Style::default().bg(t.accent)
         } else {
@@ -597,43 +669,7 @@ impl Logins {
                 )
             }
         };
-        let mut head = vec![Span::styled(
-            if pinned { " ● " } else { "   " },
-            pick(t.accent),
-        )];
-        let mut used = 3;
-        match label.filter(|l| !l.is_empty()) {
-            Some(l) => {
-                let l = fit_chars(l, 16);
-                used += l.chars().count() + 2;
-                head.push(Span::styled(
-                    l,
-                    pick(t.text_body).add_modifier(Modifier::BOLD),
-                ));
-                head.push(Span::raw("  "));
-            }
-            None if label.is_none() => {
-                let who = email.clone().unwrap_or_else(|| "signed in".to_string());
-                head.push(Span::styled(
-                    fit_chars(&who, w.saturating_sub(used)),
-                    pick(t.text_body),
-                ));
-                used = w;
-            }
-            None => {}
-        }
-        if used < w {
-            let who = match (&email, &org) {
-                (Some(e), Some(o)) => format!("{e} · {o}"),
-                (Some(e), None) => e.clone(),
-                (None, Some(o)) => o.clone(),
-                (None, None) => String::new(),
-            };
-            head.push(Span::styled(
-                fit_chars(&who, w.saturating_sub(used)),
-                pick(t.text_dim),
-            ));
-        }
+        let head = account_head(pinned, label, email.as_deref(), org.as_deref(), lit, w);
         let mut out = vec![Line::from(head).style(bar)];
         let dim = |s: &str, c: Color| Line::from(Span::styled(format!("     {s}"), fg(c)));
         match usage {

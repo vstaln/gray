@@ -260,7 +260,6 @@ pub(crate) fn build_rail(
 enum RailRow {
     Provider(usize),
     Group(GroupId),
-    Spacer,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -387,7 +386,6 @@ fn rail_rows(rail: &[PaneProvider], groups: &GroupStates) -> Vec<RailRow> {
         }
     }
     if let Some(i) = portal_row {
-        rows.insert(0, RailRow::Spacer);
         rows.insert(0, RailRow::Provider(i));
     }
     rows
@@ -416,7 +414,7 @@ fn rail_rows_for(rail: &[PaneProvider], groups: &GroupStates, filter: &str) -> V
                 out.extend(header.take());
                 out.push(r);
             }
-            RailRow::Provider(_) | RailRow::Spacer => {}
+            RailRow::Provider(_) => {}
         }
     }
     out
@@ -454,18 +452,12 @@ fn row_provider<'a>(
     }
 }
 
-/// Move the rail cursor one row, skipping spacer rows.
+/// Move the rail cursor one row.
 fn rail_step(rows: &[RailRow], sel: usize, up: bool) -> usize {
-    let mut s = sel;
-    loop {
-        s = if up {
-            s.saturating_sub(1)
-        } else {
-            (s + 1).min(rows.len().saturating_sub(1))
-        };
-        if !matches!(rows.get(s), Some(RailRow::Spacer)) || s == 0 || s + 1 >= rows.len() {
-            return s;
-        }
+    if up {
+        sel.saturating_sub(1)
+    } else {
+        (sel + 1).min(rows.len().saturating_sub(1))
     }
 }
 
@@ -748,10 +740,10 @@ struct PaneView<'a> {
     notice: Option<&'a str>,
     logins: &'a super::logins::Logins,
     strip_lines: &'a [Line<'static>],
+    strip_live: bool,
     pty: Option<&'a super::login_pty::PtyPane>,
     portal: Option<&'a PortalBox>,
     portal_in: bool,
-    portal_who: Option<&'a str>,
     adding: bool,
     extra: u16,
 }
@@ -769,6 +761,30 @@ impl PaneView<'_> {
     fn shown(&self, id: &str) -> Option<&'static str> {
         self.provider()
             .and_then(|p| self.efforts.shown(self.scoped, self.saved, p, id))
+    }
+}
+
+enum PaneSection<'a> {
+    None,
+    Portal,
+    Logins(&'a super::logins::Strip),
+}
+
+fn pane_section<'a>(
+    provider: Option<&PaneProvider>,
+    strip: Option<&'a super::logins::Strip>,
+    boxed: bool,
+    portal_in: bool,
+) -> PaneSection<'a> {
+    if boxed {
+        return PaneSection::None;
+    }
+    if let Some(st) = strip {
+        return PaneSection::Logins(st);
+    }
+    match provider {
+        Some(p) if portal_in && p.item.id == catalog::GRAY_PORTAL_ID => PaneSection::Portal,
+        _ => PaneSection::None,
     }
 }
 
@@ -883,26 +899,6 @@ fn draw(frame: &mut Frame, bg: &BackgroundSnapshot, v: &PaneView) {
         let y = list_y + (r - v.rail_top) as u16;
         let RailRow::Provider(i) = *kind else {
             let RailRow::Group(g) = *kind else {
-                let under_portal = r > 0
-                    && matches!(v.rows[r - 1], RailRow::Provider(j)
-                        if v.rail[j].item.id == catalog::GRAY_PORTAL_ID);
-                if under_portal && v.portal_in {
-                    let mut spans = vec![
-                        Span::styled("   ● ", fg(t.success)),
-                        Span::styled("signed in", fg(t.text_body)),
-                    ];
-                    let used: usize = spans.iter().map(Span::width).sum();
-                    if let Some(who) = v.portal_who {
-                        let room = (rail_w as usize).saturating_sub(used + 2);
-                        if room >= 4 {
-                            spans.push(Span::styled(
-                                format!(" {}", fit_chars(who, room)),
-                                fg(t.text_dim),
-                            ));
-                        }
-                    }
-                    frame.render_widget(Paragraph::new(Line::from(spans)), row(inner.x, y, rail_w));
-                }
                 continue;
             };
             // A provider-name filter force-opens groups: show what's on screen.
@@ -1207,7 +1203,7 @@ fn draw(frame: &mut Frame, bg: &BackgroundSnapshot, v: &PaneView) {
         (true, Focus::Rail) => "open",
         (true, Focus::Models | Focus::Logins) => "select",
     };
-    let has_strip = !v.strip_lines.is_empty();
+    let has_strip = v.strip_live;
     let portal_row = provider.is_some_and(|p| p.item.id == catalog::GRAY_PORTAL_ID);
     let keys = if let Some(pty) = v.pty {
         if pty.exited() {
@@ -1534,15 +1530,32 @@ pub(crate) fn run_model_panes(
                     }
                 }
             }
-            let strip_lines = match (&strip, provider) {
-                (Some(st), Some(p)) if pty.is_none() && portal.is_none() => logins.lines(
-                    &p.item.name,
-                    st,
-                    (focus == Focus::Logins).then_some(strip_sel),
-                    adding.as_deref(),
-                    geo(term_area, 0).pane.width as usize,
+            let pane_w = geo(term_area, 0).pane.width as usize;
+            let (strip_lines, strip_live) = match pane_section(
+                provider,
+                strip.as_ref(),
+                pty.is_some() || portal.is_some(),
+                portal_in && portal_who.is_some(),
+            ) {
+                PaneSection::Logins(st) => (
+                    logins.lines(
+                        provider.map_or("", |p| p.item.name.as_str()),
+                        st,
+                        (focus == Focus::Logins).then_some(strip_sel),
+                        adding.as_deref(),
+                        pane_w,
+                    ),
+                    true,
                 ),
-                _ => Vec::new(),
+                PaneSection::Portal => (
+                    super::logins::portal_section(
+                        provider.map_or("Gray", |p| p.item.name.as_str()),
+                        portal_who.as_deref(),
+                        pane_w,
+                    ),
+                    false,
+                ),
+                PaneSection::None => (Vec::new(), false),
             };
             let extra = if pty.is_some() {
                 PTY_EXTRA
@@ -1614,10 +1627,10 @@ pub(crate) fn run_model_panes(
                             notice: notice.as_deref(),
                             logins: &logins,
                             strip_lines: &strip_lines,
+                            strip_live,
                             pty: pty.as_ref(),
                             portal: portal.as_ref(),
                             portal_in,
-                            portal_who: portal_who.as_deref(),
                             adding: adding.is_some(),
                             extra,
                         },
