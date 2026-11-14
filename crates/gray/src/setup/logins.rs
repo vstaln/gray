@@ -112,9 +112,17 @@ fn fetch_usage(argv: &[String]) -> Result<Vec<UsageEntry>, String> {
 
 fn auth_error(e: &str) -> bool {
     let e = e.to_lowercase();
-    ["401", "403", "unauthorized", "expired", "login", "auth"]
-        .iter()
-        .any(|w| e.contains(w))
+    [
+        "401",
+        "403",
+        "unauthorized",
+        "expired",
+        "not logged in",
+        "login required",
+        "invalid token",
+    ]
+    .iter()
+    .any(|w| e.contains(w))
 }
 
 fn now_secs() -> i64 {
