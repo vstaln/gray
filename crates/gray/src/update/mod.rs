@@ -594,7 +594,8 @@ async fn update_plugins_after_gray() {
                 match row.action {
                     gray_pkg::ops::UpdateAction::Installed(_) => updated += 1,
                     gray_pkg::ops::UpdateAction::Rebuilt => rebuilt += 1,
-                    gray_pkg::ops::UpdateAction::Failed(_) => failed += 1,
+                    gray_pkg::ops::UpdateAction::Failed(_)
+                    | gray_pkg::ops::UpdateAction::NeedsUpdate(_) => failed += 1,
                     _ => {}
                 }
             }
