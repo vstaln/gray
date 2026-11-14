@@ -596,7 +596,14 @@ async fn update_inner(target: &str, check: bool) -> anyhow::Result<Vec<UpdateRow
             continue;
         }
         if is_registered_executable(installed) {
-            out.push(registered_exe_row(name, installed, check).await);
+            let row = match registered_exe_row(name, installed, check).await {
+                Some(row) => row,
+                None => {
+                    let entry = index_entry(&client, &mut hub, &mut comm, name).await;
+                    registered_vs_index(name, installed, entry)
+                }
+            };
+            out.push(row);
             continue;
         }
         if hub.is_none() && comm.is_none() {
@@ -839,19 +846,97 @@ fn rebuild_command() -> std::process::Command {
     c
 }
 
-async fn registered_exe_row(name: &str, installed: &LockEntry, check: bool) -> UpdateRow {
-    let Some(exe) = registered_exe_path(installed) else {
+/// Index entry for `name`, fetching the hub then community index lazily.
+/// Network failures degrade to `None` so one registered plugin can't fail
+/// the whole update run.
+async fn index_entry(
+    client: &reqwest::Client,
+    hub: &mut Option<crate::index::Index>,
+    comm: &mut Option<crate::index::Index>,
+    name: &str,
+) -> Option<crate::index::Entry> {
+    if hub.is_none() && comm.is_none() {
+        *hub = crate::index::fetch_hub_index(client).await.ok();
+    }
+    if let Some(e) = hub.as_ref().and_then(|i| i.plugins.get(name)) {
+        return Some(e.clone());
+    }
+    if comm.is_none() {
+        *comm = crate::index::fetch_index(client).await.ok();
+    }
+    comm.as_ref().and_then(|i| i.plugins.get(name)).cloned()
+}
+
+/// Numeric dotted-version compare (`0.1.10 > 0.1.9`); pre-release/build
+/// suffixes are ignored. Missing components count as 0.
+fn version_newer(candidate: &str, current: &str) -> bool {
+    fn parts(v: &str) -> Vec<u64> {
+        v.trim()
+            .trim_start_matches('v')
+            .split(['-', '+'])
+            .next()
+            .unwrap_or("")
+            .split('.')
+            .map(|p| p.parse().unwrap_or(0))
+            .collect()
+    }
+    let (a, b) = (parts(candidate), parts(current));
+    let n = a.len().max(b.len());
+    for i in 0..n {
+        let (x, y) = (
+            a.get(i).copied().unwrap_or(0),
+            b.get(i).copied().unwrap_or(0),
+        );
+        if x != y {
+            return x > y;
+        }
+    }
+    false
+}
+
+/// A registered executable that isn't a cargo `target/` build has no repo
+/// to rebuild from; judge freshness against the index version instead.
+/// Never auto-installs over it: the index tarball may be older than the
+/// locally built binary, and the lock's `cli_argv` points at the binary.
+fn registered_vs_index(
+    name: &str,
+    installed: &LockEntry,
+    entry: Option<crate::index::Entry>,
+) -> UpdateRow {
+    let Some(entry) = entry else {
         return UpdateRow::new(
+            name,
+            UpdateAction::Skipped("local build, not in index (no repo to rebuild)".into()),
+        );
+    };
+    if version_newer(&entry.version, &installed.version) {
+        UpdateRow::new(
+            name,
+            UpdateAction::Stale(format!(
+                "{} -> {} (index); run `gray install plugin {name}` to switch to the index build",
+                installed.version, entry.version
+            )),
+        )
+    } else {
+        UpdateRow::new(name, UpdateAction::Current)
+    }
+}
+
+/// `None` when the executable isn't a repo `target/` build — the caller
+/// falls back to comparing against the index.
+async fn registered_exe_row(name: &str, installed: &LockEntry, check: bool) -> Option<UpdateRow> {
+    let Some(exe) = registered_exe_path(installed) else {
+        return Some(UpdateRow::new(
             name,
             UpdateAction::Skipped("registered without argv".into()),
-        );
+        ));
     };
-    let Some(repo) = target_repo(&exe) else {
-        return UpdateRow::new(
-            name,
-            UpdateAction::Skipped("registered executable is not a repo target/ build".into()),
-        );
-    };
+    let repo = target_repo(&exe)?;
+    Some(registered_repo_row(name, &exe, repo, check).await)
+}
+
+async fn registered_repo_row(name: &str, exe: &Path, repo: PathBuf, check: bool) -> UpdateRow {
+    let exe = exe.to_path_buf();
     let head = match head_commit_secs(&repo) {
         Ok(t) => t,
         Err(e) => return UpdateRow::new(name, UpdateAction::Failed(e)),
@@ -887,5 +972,66 @@ async fn registered_exe_row(name: &str, installed: &LockEntry, check: bool) -> U
         }
         Ok(Err(e)) => UpdateRow::new(name, UpdateAction::Failed(e)),
         Err(e) => UpdateRow::new(name, UpdateAction::Failed(format!("{e}"))),
+    }
+}
+
+#[cfg(test)]
+mod registered_update_tests {
+    use super::*;
+
+    fn entry(version: &str) -> crate::index::Entry {
+        serde_json::from_value(serde_json::json!({
+            "ecosystem": "gray-native",
+            "version": version,
+            "source": {"type": "tarball", "url": "https://example.invalid/x.tar.gz"},
+            "hash": "sha256:00",
+        }))
+        .unwrap()
+    }
+
+    fn local(version: &str) -> LockEntry {
+        LockEntry {
+            version: version.into(),
+            ..LockEntry::default()
+        }
+    }
+
+    #[test]
+    fn version_newer_is_numeric() {
+        assert!(version_newer("0.1.10", "0.1.9"));
+        assert!(version_newer("v1.0.0", "0.9.9"));
+        assert!(version_newer("0.2", "0.1.9"));
+        assert!(!version_newer("0.1.0", "0.1.2"));
+        assert!(!version_newer("0.1.2", "0.1.2"));
+        assert!(!version_newer("0.1.2-rc1", "0.1.2"));
+    }
+
+    #[test]
+    fn local_build_at_or_ahead_of_index_is_current() {
+        let row = registered_vs_index("themes", &local("0.1.2"), Some(entry("0.1.0")));
+        assert!(matches!(row.action, UpdateAction::Current));
+        let row = registered_vs_index("themes", &local("0.1.0"), Some(entry("0.1.0")));
+        assert!(matches!(row.action, UpdateAction::Current));
+    }
+
+    #[test]
+    fn index_ahead_of_local_build_is_stale_not_installed() {
+        let row = registered_vs_index("themes", &local("0.1.0"), Some(entry("0.2.0")));
+        match &row.action {
+            UpdateAction::Stale(why) => assert!(why.contains("gray install plugin themes")),
+            other => panic!("expected stale, got {other:?}"),
+        }
+        assert!(!row.changed());
+    }
+
+    #[test]
+    fn local_build_missing_from_index_is_skipped() {
+        let row = registered_vs_index("mine", &local("0.1.0"), None);
+        assert!(matches!(row.action, UpdateAction::Skipped(_)));
+    }
+
+    #[test]
+    fn non_target_exe_has_no_repo() {
+        assert!(target_repo(Path::new("/home/u/.gray/plugins/themes/gray-themes")).is_none());
     }
 }
