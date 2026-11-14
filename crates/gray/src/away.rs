@@ -39,7 +39,7 @@ pub(crate) fn maybe_recap(agent: Option<&Agent>) {
         if let Some(text) = crate::auto_title::complete(provider, req).await {
             let text = text.trim();
             if !text.is_empty() {
-                crate::host::queue_say(format!("※ recap: {text}"));
+                crate::host::queue_recap(text.to_string());
             }
         }
     });

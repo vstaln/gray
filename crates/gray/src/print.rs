@@ -1344,8 +1344,8 @@ async fn run_print_inner(
         let msgs = crate::host::take_host_say();
         if !msgs.is_empty() {
             let mut out = stdout.lock();
-            'say: for msg in &msgs {
-                for line in msg {
+            'say: for msg in msgs {
+                for line in msg.into_lines() {
                     if writeln!(out, "{line}").is_err() {
                         break 'say;
                     }

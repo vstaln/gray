@@ -216,6 +216,16 @@ pub(crate) fn say_lines(
     }
 }
 
+pub(crate) fn say_block(tui: Option<&crate::composer::SharedTui>, block: crate::host::SayBlock) {
+    match block {
+        crate::host::SayBlock::Lines(lines) => say_lines(tui, lines),
+        crate::host::SayBlock::Recap(text) => match tui {
+            Some(t) => t.lock().expect("tui lock").push_recap(&text),
+            None => say_lines(None, crate::host::SayBlock::Recap(text).into_lines()),
+        },
+    }
+}
+
 pub(crate) fn say(tui: Option<&crate::composer::SharedTui>, msg: &str) {
     if let Some(t) = tui {
         let mut t = t.lock().expect("tui lock");
@@ -1037,8 +1047,8 @@ pub async fn run_repl_mode(
 
         session::remember_exit_session(session_state.as_ref().map(|s| s.session_id.as_str()));
 
-        for lines in crate::host::take_host_say() {
-            say_lines(tui.as_ref().map(|(s, _)| s), lines);
+        for block in crate::host::take_host_say() {
+            say_block(tui.as_ref().map(|(s, _)| s), block);
         }
 
         if let Some(resume) = crate::host::take_restart_request() {

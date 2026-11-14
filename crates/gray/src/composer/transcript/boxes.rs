@@ -270,6 +270,42 @@ impl Tui {
         self.push_styled_lines_with_hyperlinks(vec![line], &[], 0);
     }
 
+    pub fn push_recap(&mut self, summary: &str) {
+        let theme = crate::theme::theme();
+        let avail = prose_width(self.width().max(10)).saturating_sub(2).max(1);
+        let mut lines = vec![Line::from(vec![
+            Span::styled(
+                "\u{203b} ",
+                Style::default()
+                    .fg(theme.text_muted)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                "Recap",
+                Style::default()
+                    .fg(theme.text_bright)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ])];
+        for para in summary.lines().filter(|l| !l.trim().is_empty()) {
+            let dim = Line::from(Span::styled(
+                para.trim().to_string(),
+                Style::default().fg(theme.text_muted),
+            ));
+            for mut row in wrap_styled_line(dim, avail) {
+                row.spans.insert(0, Span::raw("  "));
+                lines.push(row);
+            }
+        }
+        let lines = lines
+            .into_iter()
+            .map(|l| self.indent_home_receipt(l))
+            .collect();
+        self.flush_markdown();
+        self.ensure_gap();
+        self.push_styled_lines_with_hyperlinks(lines, &[], 0);
+    }
+
     fn indent_home_receipt(&self, mut line: Line<'static>) -> Line<'static> {
         let indent = home_receipt_indent(self.is_home(), self.width());
         if indent > 0 {
