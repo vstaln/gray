@@ -67,10 +67,6 @@ pub(crate) fn terminal_progress() -> bool {
     flag(|s| &mut s.terminal_progress, true)
 }
 
-pub(crate) fn show_turn_duration() -> bool {
-    flag(|s| &mut s.show_turn_duration, false)
-}
-
 pub(crate) fn issue_links() -> bool {
     flag(|s| &mut s.issue_links, true)
 }
@@ -199,10 +195,6 @@ const CORE: &[CoreRow] = &[
     CoreRow {
         label: "Progress bar in the terminal tab",
         kind: Kind::Bool(|s| &mut s.terminal_progress, true),
-    },
-    CoreRow {
-        label: "Show how long each turn took",
-        kind: Kind::Bool(|s| &mut s.show_turn_duration, false),
     },
     CoreRow {
         label: "Link #123 to the repo's issues and PRs",

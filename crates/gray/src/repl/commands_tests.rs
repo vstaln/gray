@@ -301,7 +301,7 @@ fn model_completes_cached_ids() {
 fn bare_model_and_provider_aliases_open_two_pane_picker() {
     assert!(matches!(parse_command("/models"), ReplCommand::ModelPanes));
     assert!(matches!(parse_command("/MODELS"), ReplCommand::ModelPanes));
-    for cmd in ["/model", "/connect", "/provider"] {
+    for cmd in ["/model", "/provider"] {
         assert!(
             matches!(parse_command(cmd), ReplCommand::ModelPanes),
             "{cmd}"

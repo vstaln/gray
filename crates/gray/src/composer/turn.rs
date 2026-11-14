@@ -202,14 +202,6 @@ impl Tui {
             let line = turn_footer_line(had_thinking, elapsed, turn_toks, stream_ms);
             self.ensure_gap();
             self.push_dim(line);
-            if crate::settings::show_turn_duration() {
-                self.push_dim(format!(
-                    "✻ took {}",
-                    crate::repl::format::fmt_duration_ms(
-                        elapsed.as_millis().min(u128::from(u64::MAX)) as u64
-                    )
-                ));
-            }
             self.ensure_gap();
         }
         let _ = std::io::stdout().flush();

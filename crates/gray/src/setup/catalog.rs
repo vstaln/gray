@@ -125,9 +125,6 @@ pub struct SavedConfig {
     pub terminal_progress: Option<bool>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub show_turn_duration: Option<bool>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub issue_links: Option<bool>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -278,7 +275,6 @@ fn partial_saved_config(obj: &serde_json::Map<String, serde_json::Value>) -> Sav
         notify_on_finish: opt_field(obj, "notify_on_finish"),
         terminal_title: opt_field(obj, "terminal_title"),
         terminal_progress: opt_field(obj, "terminal_progress"),
-        show_turn_duration: opt_field(obj, "show_turn_duration"),
         issue_links: opt_field(obj, "issue_links"),
         vim_mode: opt_field(obj, "vim_mode"),
         prompt_suggestions: opt_field(obj, "prompt_suggestions"),
