@@ -1021,11 +1021,15 @@ pub async fn run_repl_mode(
 
     if interactive {
         jobs::spawn_footer_poller();
+        crate::settings::spawn_session_cleanup();
         crate::host::set_repl_active(true);
     }
 
     loop {
         crate::host::clear_wake();
+        if interactive {
+            crate::away::maybe_recap(agent.as_ref());
+        }
 
         session::remember_exit_session(session_state.as_ref().map(|s| s.session_id.as_str()));
 

@@ -329,7 +329,11 @@ pub(crate) fn read_line(
 
     {
         let mut _tui = shared.lock().unwrap_or_else(|e| e.into_inner());
-        let _ = crossterm::execute!(std::io::stdout(), crossterm::event::EnableBracketedPaste);
+        let _ = crossterm::execute!(
+            std::io::stdout(),
+            crossterm::event::EnableBracketedPaste,
+            crossterm::event::EnableFocusChange
+        );
         crossterm::terminal::enable_raw_mode()?;
         crossterm::execute!(std::io::stdout(), crossterm::cursor::Show)?;
     }
@@ -409,6 +413,10 @@ pub(crate) fn read_line(
         let mut guard = shared.lock().expect("tui lock");
         let tui: &mut super::Tui = &mut guard;
         let ev = read()?;
+        if let Event::FocusGained | Event::FocusLost = ev {
+            crate::away::focus(matches!(ev, Event::FocusGained));
+            continue;
+        }
         // Typing during the band fade-in lands it at once.
         tui.home_reveal = None;
         if tui.intro_started.is_some() {

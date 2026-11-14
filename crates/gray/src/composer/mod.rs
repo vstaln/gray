@@ -468,7 +468,11 @@ impl Drop for Tui {
         crate::composer::kitty::flush_transmits();
         let _ = self.hide_background();
         let _ = crossterm::terminal::disable_raw_mode();
-        let _ = crossterm::execute!(std::io::stdout(), crossterm::event::DisableBracketedPaste);
+        let _ = crossterm::execute!(
+            std::io::stdout(),
+            crossterm::event::DisableBracketedPaste,
+            crossterm::event::DisableFocusChange
+        );
         let _ = crossterm::execute!(std::io::stdout(), crossterm::cursor::Show);
     }
 }

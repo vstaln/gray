@@ -76,6 +76,7 @@ pub(crate) async fn run_prompt_turn(
     resumable: &mut bool,
 ) -> anyhow::Result<()> {
     super::session::clear_resume_trailer();
+    crate::settings::turn_started();
     let shared = interactive.then(|| tui.as_ref().expect("interactive implies tui"));
     let tui_stream = shared.as_ref().map(|(s, _)| (*s).clone());
     if agent.is_none() {
@@ -559,6 +560,19 @@ pub(crate) async fn run_prompt_turn(
                     t.push_error(&msg);
                     if reloaded {
                         super::notice::push_notice(&mut t, "API key reloaded", RELOADED, false);
+                    }
+                    if let (
+                        gray_core::error::CoreError::Quota {
+                            resets_in: Some(wait),
+                            ..
+                        },
+                        Some(state),
+                    ) = (e.class(), session_state.as_ref())
+                        && crate::settings::auto_continue()
+                    {
+                        let when =
+                            crate::settings::arm_auto_continue(state.session_id.as_str(), *wait);
+                        super::notice::push_notice(&mut t, "Usage limit", &when, false);
                     }
                 }
             } else {

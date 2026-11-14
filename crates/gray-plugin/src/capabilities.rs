@@ -69,7 +69,7 @@ const SPECS: &[CapabilitySpec] = &[
     CapabilitySpec {
         id: PROVIDER_CREDENTIALS,
         host_method: None,
-        description: "contribute /connect providers and receive stored credentials for auth RPCs",
+        description: "contribute /models providers and receive stored credentials for auth RPCs",
     },
     CapabilitySpec {
         id: SHELL_ENV,

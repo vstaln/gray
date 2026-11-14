@@ -1,6 +1,7 @@
 pub mod ask;
 pub mod auth;
 pub mod auto_title;
+pub(crate) mod away;
 pub mod cache;
 pub mod cmd;
 pub mod compact;
@@ -27,6 +28,7 @@ mod rotation;
 pub mod session_mailbox;
 pub mod session_send;
 pub mod session_store;
+pub(crate) mod settings;
 pub mod setup;
 pub mod shell_drain;
 pub mod spill;

@@ -74,7 +74,7 @@ impl Eng {
 /// Used to route `/x` to the engine before its `list_commands` reply lands —
 /// gray wins collisions with IDE-local commands.
 pub(super) const GRAY_BUILTINS: &[&str] = &[
-    "models", "model", "connect", "provider", "context", "sessions", "resume", "new", "clear",
+    "models", "model", "provider", "context", "sessions", "resume", "new", "clear",
     "reset", "compact", "compress", "undo", "retry", "update", "upgrade", "restart", "reboot",
     "jobs", "reload", "agentsmd", "sys", "plugins", "hehe", "help", "quit", "exit",
 ];
@@ -278,7 +278,7 @@ impl GrayApp {
         cx: &mut Context<Self>,
     ) -> bool {
         match name {
-            "models" | "model" | "connect" | "provider" => {
+            "models" | "model" | "provider" => {
                 if arg.is_empty() {
                     self.open_model_picker(window, cx);
                 } else if let Some(tid) = self.active_thread.clone() {

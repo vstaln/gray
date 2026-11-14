@@ -326,6 +326,10 @@ pub(crate) async fn dispatch_command(
             }
             Flow::Continue
         }
+        ReplCommand::Settings => {
+            crate::settings::run_settings_picker(tui.as_ref().map(|(s, _)| s), cwd);
+            Flow::Continue
+        }
         ReplCommand::Jobs => {
             let tui_shared = tui.as_ref().map(|(s, _)| s);
             let sid = session_state.as_ref().map(|s| s.session_id.as_str());

@@ -109,6 +109,13 @@ pub(crate) const REGISTRY: &[CmdDef] = &[
         surface: CmdSurface::Text,
     },
     CmdDef {
+        name: "settings",
+        desc: "auto-continue, away recap, session cleanup",
+        aliases: &[],
+        scope: CmdScope::Global,
+        surface: CmdSurface::Interactive,
+    },
+    CmdDef {
         name: "plugins",
         desc: "plugin manager (list, enable, update)",
         aliases: &[],
@@ -483,6 +490,7 @@ pub enum ReplCommand {
 
     Restart,
 
+    Settings,
     Jobs,
 
     Hehe,
@@ -600,6 +608,7 @@ pub fn parse_command(line: &str) -> ReplCommand {
         Some("restart") => ReplCommand::Restart,
 
         Some("jobs") => ReplCommand::Jobs,
+        Some("settings") => ReplCommand::Settings,
 
         Some("help") => ReplCommand::Help,
         Some("hehe") => ReplCommand::Hehe,

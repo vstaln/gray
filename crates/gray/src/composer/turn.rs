@@ -281,7 +281,11 @@ impl Tui {
         self.pay_gap();
         let _ = self.terminal.clear();
         let _ = crossterm::terminal::disable_raw_mode();
-        let _ = crossterm::execute!(std::io::stdout(), crossterm::event::DisableBracketedPaste);
+        let _ = crossterm::execute!(
+            std::io::stdout(),
+            crossterm::event::DisableBracketedPaste,
+            crossterm::event::DisableFocusChange
+        );
         let _ = crossterm::execute!(
             std::io::stdout(),
             crossterm::cursor::Show,
