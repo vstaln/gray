@@ -89,7 +89,7 @@ pub(crate) fn declared_subcommands(home: &Path, name: &str) -> Vec<String> {
         .and_then(|m| m["completion"].as_array().cloned())
         .unwrap_or_default()
         .into_iter()
-        .filter_map(|v| v.as_str().map(str::to_string))
+        .filter_map(|v| completion_entry(&v).map(|(arg, _)| arg))
         .collect()
 }
 
@@ -105,6 +105,18 @@ pub(crate) fn declared_commands(home: &Path, name: &str) -> Vec<String> {
 
 pub(crate) fn command_description(home: &Path, name: &str, command: &str) -> Option<String> {
     description_in(&metadata(home, name).ok()?, command)
+}
+
+pub(crate) fn plugin_description(home: &Path, name: &str) -> Option<String> {
+    blurb(&metadata(home, name).ok()?)
+}
+
+fn blurb(manifest: &serde_json::Value) -> Option<String> {
+    manifest["description"]
+        .as_str()
+        .map(str::trim)
+        .filter(|d| !d.is_empty())
+        .map(str::to_string)
 }
 
 fn description_in(manifest: &serde_json::Value, command: &str) -> Option<String> {
@@ -1476,7 +1488,7 @@ struct CompletionRow {
     command: String,
     description: Option<String>,
 
-    plugin: String,
+    plugin_description: Option<String>,
     /// Argument completions after the command, with an optional description.
     args: Vec<(String, Option<String>)>,
 }
@@ -1595,7 +1607,7 @@ fn scan_lock_completions(
             rows.push(CompletionRow {
                 command: command.to_string(),
                 description: description_in(&m, command),
-                plugin: name.clone(),
+                plugin_description: blurb(&m),
                 args: args.clone(),
             });
         }
@@ -1695,7 +1707,8 @@ pub(crate) fn completions(query: &str) -> Vec<(String, String)> {
                 row.command.clone(),
                 row.description
                     .clone()
-                    .unwrap_or_else(|| format!("{} plugin", row.plugin)),
+                    .or_else(|| row.plugin_description.clone())
+                    .unwrap_or_default(),
             ));
         }
         for (arg, desc) in &row.args {
@@ -1703,7 +1716,8 @@ pub(crate) fn completions(query: &str) -> Vec<(String, String)> {
             if query.contains(' ') && full.starts_with(query) {
                 let desc = desc
                     .clone()
-                    .unwrap_or_else(|| format!("{} plugin command", row.plugin));
+                    .or_else(|| row.plugin_description.clone())
+                    .unwrap_or_default();
                 out.push((full, desc));
             }
         }
