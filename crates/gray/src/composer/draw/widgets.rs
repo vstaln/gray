@@ -449,13 +449,20 @@ pub(crate) fn home_band_h(w: usize) -> usize {
         + 2
 }
 
+fn row_is_blank(line: &Line<'static>) -> bool {
+    line.style.bg.is_none()
+        && line
+            .spans
+            .iter()
+            .all(|s| s.style.bg.is_none() && s.content.trim().is_empty())
+}
+
 pub(crate) fn transcript_ends_blank(transcript: &[Line<'static>]) -> bool {
-    transcript.last().is_some_and(|l| {
-        l.style.bg.is_none()
-            && l.spans
-                .iter()
-                .all(|s| s.style.bg.is_none() && s.content.trim().is_empty())
-    })
+    transcript.last().is_some_and(row_is_blank)
+}
+
+pub(crate) fn tail_starts_blank(tail: &[Line<'static>]) -> bool {
+    tail.first().is_some_and(row_is_blank)
 }
 
 pub(crate) fn status_dock_h(has_status: bool, needs_seam: bool) -> u16 {

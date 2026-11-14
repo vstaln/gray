@@ -90,7 +90,7 @@ pub(crate) fn title_from_reply(raw: &str) -> Option<String> {
     crate::session_store::clean_title(&words.join(" "))
 }
 
-async fn complete(provider: Arc<dyn Provider>, req: ChatRequest) -> Option<String> {
+pub(crate) async fn complete(provider: Arc<dyn Provider>, req: ChatRequest) -> Option<String> {
     let mut stream = provider.stream(req);
     let drain = async {
         let mut text = String::new();

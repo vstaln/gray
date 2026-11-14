@@ -20,7 +20,7 @@ pub fn build_system_prompt(custom_prompt: Option<String>) -> String {
         .to_string()
 }
 
-fn git_field(cwd: &Path, args: &[&str]) -> Option<String> {
+pub(crate) fn git_field(cwd: &Path, args: &[&str]) -> Option<String> {
     let out = std::process::Command::new("git")
         .args(["-C"])
         .arg(cwd)
@@ -98,4 +98,11 @@ pub fn harness_facts(cache_ttl: Option<std::time::Duration>) -> String {
         ));
     }
     out
+}
+
+pub fn commit_attribution(model_id: &str) -> String {
+    format!(
+        "When you write a git commit message, end it with a blank line followed by \
+         `Co-Authored-By: gray ({model_id}) <noreply@gray.alignment.id>`."
+    )
 }

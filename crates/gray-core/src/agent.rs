@@ -465,6 +465,7 @@ pub enum CommandOutcome {
 
 #[async_trait]
 pub trait PluginHooks: Send + Sync {
+    fn repin_session(&self, _id: &str) {}
     async fn prompt_context(&self) -> Option<String> {
         None
     }
@@ -848,6 +849,9 @@ impl Agent {
 
     pub fn repin_session_id(&self, id: &str) {
         self.executor.repin_session(id);
+        for h in &self.hooks {
+            h.repin_session(id);
+        }
     }
 
     pub fn with_tool_labels(
@@ -931,7 +935,7 @@ impl Agent {
         self.compact_ceiling
     }
 
-    pub(crate) fn estimate_tokens(&self) -> usize {
+    pub fn estimate_tokens(&self) -> usize {
         match self.context_usage {
             Some((tokens, covered)) if covered <= self.messages.len() => {
                 tokens + crate::agent_compact::est_tokens(&self.messages[covered..])

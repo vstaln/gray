@@ -7,7 +7,7 @@ INSTALL = (DIST / 'install.ps1').read_text(encoding='utf-8')
 NATIVE = (DIST / 'install-native.ps1').read_text(encoding='utf-8')
 REPO = DIST.parent
 README = (REPO / 'README.md').read_text(encoding='utf-8')
-PREVIEW = (REPO / 'docs' / 'windows-preview.md').read_text(encoding='utf-8')
+PREVIEW = (REPO / 'docs' / 'windows.md').read_text(encoding='utf-8')
 RELEASE = (REPO / '.github' / 'workflows' / 'release.yml').read_text(encoding='utf-8')
 
 class NativeIsTheDefaultRoute(unittest.TestCase):

@@ -7,6 +7,7 @@ use super::Tui;
 mod attach;
 mod clipboard;
 pub(crate) mod keys;
+pub(crate) mod vim;
 
 use keys::KeyOutcome;
 
@@ -329,7 +330,11 @@ pub(crate) fn read_line(
 
     {
         let mut _tui = shared.lock().unwrap_or_else(|e| e.into_inner());
-        let _ = crossterm::execute!(std::io::stdout(), crossterm::event::EnableBracketedPaste);
+        let _ = crossterm::execute!(
+            std::io::stdout(),
+            crossterm::event::EnableBracketedPaste,
+            crossterm::event::EnableFocusChange
+        );
         crossterm::terminal::enable_raw_mode()?;
         crossterm::execute!(std::io::stdout(), crossterm::cursor::Show)?;
     }
@@ -371,14 +376,37 @@ pub(crate) fn read_line(
                 needs_draw = false;
             }
 
-            tui.pending_resize
-                .map_or(Duration::from_millis(250), |(_, deadline)| {
-                    deadline.saturating_duration_since(std::time::Instant::now())
-                })
+            let base = if tui.action_running() {
+                Duration::from_millis(50)
+            } else {
+                Duration::from_millis(250)
+            };
+            tui.pending_resize.map_or(base, |(_, deadline)| {
+                deadline
+                    .saturating_duration_since(std::time::Instant::now())
+                    .min(base)
+            })
         };
 
         if !poll(timeout)? {
-            if shared.lock().expect("tui lock").action_tick() {
+            let tick = {
+                let mut guard = shared.lock().expect("tui lock");
+                let countdown = crate::settings::auto_continue_secs();
+                if countdown != guard.auto_continue_secs {
+                    guard.auto_continue_secs = countdown;
+                    needs_draw = true;
+                }
+                let tick = guard.action_tick();
+                if tick.submit {
+                    if let Some(sub) = try_submit(&mut guard) {
+                        guard.action.clear_error();
+                        return Ok(Some(sub));
+                    }
+                    needs_draw = true;
+                }
+                tick
+            };
+            if tick.running {
                 needs_draw = true;
             }
             if crate::host::wake_requested() {
@@ -391,6 +419,18 @@ pub(crate) fn read_line(
         let mut guard = shared.lock().expect("tui lock");
         let tui: &mut super::Tui = &mut guard;
         let ev = read()?;
+        if let Event::FocusGained | Event::FocusLost = ev {
+            crate::away::focus(matches!(ev, Event::FocusGained));
+            continue;
+        }
+        if match &ev {
+            Event::Key(key) => key.kind != KeyEventKind::Release,
+            Event::Paste(_) => true,
+            _ => false,
+        } {
+            crate::away::key(tui.is_task_running);
+            crate::settings::cancel_auto_continue();
+        }
         // Typing during the band fade-in lands it at once.
         tui.home_reveal = None;
         if tui.intro_started.is_some() {
@@ -406,6 +446,15 @@ pub(crate) fn read_line(
             if swallow {
                 continue;
             }
+        }
+        let tab_accept = matches!(&ev, Event::Key(k)
+            if k.kind != KeyEventKind::Release
+                && matches!(k.code, KeyCode::Tab)
+                && !k
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER));
+        if tab_accept && tui.accept_suggestion() {
+            continue;
         }
         match ev {
             Event::Resize(cols, rows) => {
@@ -468,46 +517,12 @@ pub(crate) fn read_line(
                 }
                 KeyOutcome::Submit => {
                     quit_arm = None;
-                    let mut text = tui.textarea.text().to_string();
-                    for (ph, full) in &tui.pending_pastes {
-                        text = text.replace(ph, full);
-                    }
-                    let trimmed = text.trim().to_string();
-                    if trimmed.is_empty() && tui.attachments.is_empty() && !tui.allow_empty_submit {
-                        tui.pending_pastes.clear();
+                    if tui.action.stop_to_submit() {
                         continue;
                     }
-                    if needs_cold_confirm(tui, &trimmed) {
-                        continue;
+                    if let Some(sub) = try_submit(tui) {
+                        return Ok(Some(sub));
                     }
-                    tui.pending_pastes.clear();
-                    crate::prompt_history::record(&mut tui.history, &trimmed);
-                    tui.history_idx = None;
-                    tui.draft.clear();
-                    attach::sync_attachment_markers(tui);
-                    let attached: Vec<PathBuf> = std::mem::take(&mut tui.attachments);
-                    tui.textarea.set_text("");
-                    if tui.is_task_running {
-                        if !crate::tui::sanitize_user_text(&trimmed).trim().is_empty()
-                            || !attached.is_empty()
-                        {
-                            tui.queued_inputs
-                                .push_back((trimmed.clone(), attached.clone()));
-                        }
-                        tui.matches.clear();
-                        tui.sel = 0;
-                        let _ = tui.draw();
-                        continue;
-                    }
-                    tui.matches.clear();
-                    tui.sel = 0;
-
-                    if trimmed.is_empty() && attached.is_empty() {
-                        return Ok(Some((trimmed, attached)));
-                    }
-
-                    echo_submit(tui, &trimmed, &attached);
-                    return Ok(Some((trimmed, attached)));
                 }
             },
             _ => {}
@@ -518,6 +533,47 @@ pub(crate) fn read_line(
 /// First Enter on a cold, expensive cache: keep the draft and say what
 /// sending costs; Enter again on the same draft sends. Commands, queued
 /// input and empty submits never ask.
+fn try_submit(tui: &mut Tui) -> Option<(String, Vec<PathBuf>)> {
+    let mut text = tui.textarea.text().to_string();
+    for (ph, full) in &tui.pending_pastes {
+        text = text.replace(ph, full);
+    }
+    let trimmed = text.trim().to_string();
+    if trimmed.is_empty() && tui.attachments.is_empty() && !tui.allow_empty_submit {
+        tui.pending_pastes.clear();
+        return None;
+    }
+    if needs_cold_confirm(tui, &trimmed) {
+        return None;
+    }
+    tui.pending_pastes.clear();
+    crate::prompt_history::record(&mut tui.history, &trimmed);
+    tui.history_idx = None;
+    tui.draft.clear();
+    attach::sync_attachment_markers(tui);
+    let attached: Vec<PathBuf> = std::mem::take(&mut tui.attachments);
+    tui.textarea.set_text("");
+    if tui.is_task_running {
+        if !crate::tui::sanitize_user_text(&trimmed).trim().is_empty() || !attached.is_empty() {
+            tui.queued_inputs
+                .push_back((trimmed.clone(), attached.clone()));
+        }
+        tui.matches.clear();
+        tui.sel = 0;
+        let _ = tui.draw();
+        return None;
+    }
+    tui.matches.clear();
+    tui.sel = 0;
+
+    if trimmed.is_empty() && attached.is_empty() {
+        return Some((trimmed, attached));
+    }
+
+    echo_submit(tui, &trimmed, &attached);
+    Some((trimmed, attached))
+}
+
 fn needs_cold_confirm(tui: &mut Tui, text: &str) -> bool {
     if tui.is_task_running || text.is_empty() || text.starts_with('/') {
         tui.cold_confirm_armed = None;

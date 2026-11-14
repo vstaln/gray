@@ -60,8 +60,15 @@ pub fn write_private(dir: &Path, name: &str, body: &str) -> anyhow::Result<()> {
 /// Open `url` in the system browser, best-effort (device-flow OAuth
 /// verification pages; was `feedback::open_in_browser`).
 pub fn open_in_browser(url: &str) {
-    let spawn =
-        |prog: &str, args: &[&str]| std::process::Command::new(prog).args(args).spawn().is_ok();
+    let spawn = |prog: &str, args: &[&str]| {
+        std::process::Command::new(prog)
+            .args(args)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .is_ok()
+    };
     if cfg!(target_os = "macos") {
         let _ = spawn("open", &[url]);
     } else if cfg!(target_os = "windows") {

@@ -128,7 +128,7 @@ pub(crate) fn live_tool_rows(
         .flat_map(|t| {
             let mut headers = t.header.clone();
 
-            if let Some(line) = headers.first_mut().filter(|_| t.running) {
+            if let Some(line) = headers.first_mut().filter(|_| t.running && !t.verbless) {
                 let filled = format!("{} ", crate::tui::glyph("\u{2b22}", "#"));
                 let prefix = usize::from(
                     line.spans

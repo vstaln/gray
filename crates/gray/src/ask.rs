@@ -189,6 +189,15 @@ pub(crate) fn is_ask_live() -> bool {
         })
 }
 
+pub(crate) fn drop_pending() {
+    let svc = SERVICE.lock().expect("ask service").clone();
+    if let Some(svc) = svc {
+        for (_, ask) in svc.pending.lock().expect("ask pending").drain() {
+            let _ = ask.tx.send(Vec::new());
+        }
+    }
+}
+
 pub fn shutdown() {
     let mut guard = SERVICE.lock().expect("ask service");
     if let Some(svc) = guard.take() {
@@ -508,11 +517,11 @@ fn ask_stdin_multi(stdin: &std::io::Stdin, q: &AskQuestion) -> AskAnswer {
 
 fn stdin_has_data() -> bool {
     use std::io::IsTerminal;
-    if std::io::stdin().is_terminal() {
-        return true;
-    }
     #[cfg(unix)]
     {
+        if std::io::stdin().is_terminal() {
+            return true;
+        }
         use std::os::fd::AsFd;
         let stdin = std::io::stdin();
         let fd = stdin.as_fd();
@@ -528,7 +537,7 @@ fn stdin_has_data() -> bool {
     }
     #[cfg(not(unix))]
     {
-        false
+        std::io::stdin().is_terminal()
     }
 }
 

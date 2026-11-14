@@ -657,7 +657,7 @@ impl JsonlSessionStore {
     pub async fn prune_before(&self, cutoff_ms: u64) -> Result<Vec<SessionId>> {
         let mut removed = Vec::new();
         for summary in self.list().await {
-            if summary.started_at < cutoff_ms {
+            if summary.started_at.max(summary.last_message_at) < cutoff_ms {
                 match self.delete(&summary.id).await {
                     Ok(()) => removed.push(summary.id),
 

@@ -131,6 +131,14 @@ pub fn spawn_outcomes() -> Option<Vec<SpawnOutcome>> {
     SPAWN_OUTCOMES.lock().ok().and_then(|s| s.clone())
 }
 
+const TARGET_TRIPLES: [&str; 5] = [
+    "x86_64-unknown-linux-musl",
+    "aarch64-unknown-linux-musl",
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin",
+    "x86_64-pc-windows-msvc",
+];
+
 pub fn resolve_argv(dir: &Path) -> anyhow::Result<Vec<String>> {
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
@@ -197,19 +205,47 @@ pub fn resolve_argv(dir: &Path) -> anyhow::Result<Vec<String>> {
     match execs.len() {
         1 => {
             if let Some(kind) = foreign_binary(&execs[0]) {
+                let available: Vec<&str> = TARGET_TRIPLES
+                    .into_iter()
+                    .filter(|t| dir.join(t).is_dir())
+                    .collect();
+                let builds = if available.is_empty() {
+                    "a single flat binary (no per-platform builds)".to_string()
+                } else {
+                    available.join(", ")
+                };
+                let name = dir
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| dir.display().to_string());
                 anyhow::bail!(
-                    "built for {kind}, cannot run on {}-{}: this release has no build for this platform, update or reinstall it ({})",
-                    std::env::consts::OS,
-                    std::env::consts::ARCH,
+                    "built for {kind}, cannot run on {triple}: this release has no build for this platform ({})\nthis release ships: {builds}\nrun `gray plugin update {name}` to fetch a release built for {triple}",
                     execs[0].display()
                 );
             }
             Ok(vec![execs[0].to_string_lossy().into_owned()])
         }
-        0 => anyhow::bail!(
-            "no executable in {} (expected plugin.sh or one executable)",
-            dir.display()
-        ),
+        0 => {
+            let available: Vec<&str> = TARGET_TRIPLES
+                .into_iter()
+                .filter(|t| dir.join(t).is_dir())
+                .collect();
+            let name = dir
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| dir.display().to_string());
+            if available.is_empty() {
+                anyhow::bail!(
+                    "no executable in {} (expected plugin.sh or one executable)",
+                    dir.display()
+                );
+            }
+            anyhow::bail!(
+                "this release has no build for {triple} ({}), it ships: {builds}\nrun `gray plugin update {name}` to fetch a release built for {triple}",
+                dir.display(),
+                builds = available.join(", ")
+            )
+        }
         _ => anyhow::bail!(
             "ambiguous plugin dir {}: several executables, add plugin.sh",
             dir.display()

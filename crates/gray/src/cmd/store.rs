@@ -71,9 +71,28 @@ pub(crate) fn put(home: &Path, doc: &PendingDoc) -> std::io::Result<String> {
         b.mode(0o700);
     }
     b.create(&dir)?;
+    sweep_expired(&dir);
     let token = uuid::Uuid::new_v4().simple().to_string();
     write_doc(&doc_path(home, &token), doc)?;
     Ok(token)
+}
+
+fn sweep_expired(dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let ttl = std::time::Duration::from_secs(PENDING_TTL_SECS as u64);
+    for entry in entries.flatten() {
+        let stale = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.elapsed().ok())
+            .is_some_and(|age| age > ttl);
+        if stale {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
 }
 
 pub(crate) fn get(home: &Path, token: &str, now: i64) -> Result<PendingDoc, CmdError> {

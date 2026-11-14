@@ -14,6 +14,7 @@ pub(crate) mod widgets;
 pub(crate) use widgets::{
     HomeRows, InputCell, build_input_box, chip_cells, home_band_h, needs_seam,
     queued_preview_lines, shimmer_spans, status_dock_h, tail_block_h, tail_gap_h,
+    tail_starts_blank,
 };
 
 pub(crate) fn desired_viewport_h(
@@ -141,7 +142,9 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
     let text = tui.textarea.text().to_string();
     let cursor = tui.textarea.cursor().min(text.len());
 
-    let ghost = continue_ghost(tui.allow_empty_submit, tui.is_task_running, &text);
+    let suggestion = crate::suggest::ghost(&text, tui.is_task_running);
+    let ghost = continue_ghost(tui.allow_empty_submit, tui.is_task_running, &text)
+        .or(suggestion.as_deref());
     let model_display = tui
         .model_label
         .clone()
@@ -210,8 +213,11 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
 
     let footer_h: u16 = u16::from(!home_mode);
 
-    let needs_seam = needs_seam(&tui.transcript);
-    let dock_live = tui.status.is_some() || tui.hint_active().is_some();
+    let stream_tail: Vec<Line<'static>> = tui.stream_tail_rows(w);
+    let needs_seam = needs_seam(&tui.transcript) && !tail_starts_blank(&stream_tail);
+    let dock_live = tui.status.is_some()
+        || tui.hint_active().is_some()
+        || crate::settings::auto_continue_secs().is_some();
     // Home keeps one fixed toast row above the box, so a hint appearing or
     // expiring never shifts the centered box.
     let status_h: u16 = if home_mode {
@@ -253,8 +259,6 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
         })
         .sum::<u16>()
         .saturating_add(u16::from(tui.live_tool_overflow() > 0));
-    let stream_tail: Vec<Line<'static>> = tui.stream_tail_rows(w);
-
     let tail_gap = tail_gap_h(dock_live, &stream_tail);
     let tail_est = stream_tail.len() as u16 + tail_gap;
 
@@ -373,20 +377,38 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
     let pill_streamed = tui.streamed_bytes;
     let pill_tok_suffix = super::live_pill_suffix(pill_turn_output, pill_streamed);
 
-    let cache_timer = tui.cache_remaining().map(|left| {
-        (
-            format!(
-                "{} {}",
-                crate::tui::glyph("\u{25f7}", "*"),
-                crate::cache::format_remaining(left)
-            ),
-            if left < Duration::from_secs(60) {
-                crate::theme::theme().text_dim
-            } else {
-                crate::theme::theme().cache_hit
-            },
-        )
-    });
+    let uncached = (!is_task_running && tui.cache_is_cold())
+        .then(|| tui.latest_usage.or(tui.cumulative_usage))
+        .flatten()
+        .map(|u| super::live_context_total(Some(u), 0))
+        .filter(|t| *t >= crate::cache::WARN_MISS_TOKENS);
+    let cache_timer = tui
+        .cache_remaining()
+        .map(|left| {
+            (
+                format!(
+                    "{} {}",
+                    crate::tui::glyph("\u{25f7}", "*"),
+                    crate::cache::format_remaining(left)
+                ),
+                if left < Duration::from_secs(60) {
+                    crate::theme::theme().text_dim
+                } else {
+                    crate::theme::theme().cache_hit
+                },
+            )
+        })
+        .or_else(|| {
+            uncached.map(|t| {
+                (
+                    format!(
+                        "~{} uncached \u{b7} /new to start fresh",
+                        crate::setup::format_context_length(t)
+                    ),
+                    crate::theme::theme().hue_orange,
+                )
+            })
+        });
 
     let reveal = tui.home_reveal_alpha();
     let res = tui.terminal.draw(|frame| {
@@ -532,6 +554,15 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
                 Paragraph::new(line),
                 Rect::new(x, status_y + seam_h + tail_h, area.right() - x, 1),
             );
+        } else if let Some(countdown) = crate::settings::auto_continue_status() {
+            let line = Line::from(Span::styled(
+                format!(" {countdown}"),
+                Style::default().fg(crate::theme::theme().tool_dim),
+            ));
+            frame.render_widget(
+                Paragraph::new(line),
+                Rect::new(area.x, status_y + seam_h + tail_h, area.width, 1),
+            );
         }
 
         for (i, line) in queued_preview.iter().enumerate() {
@@ -625,6 +656,38 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
                 Paragraph::new(ibox.lines.clone()),
                 Rect::new(box_x, box_y, area.right() - box_x, rendered_box_h),
             );
+            if crate::settings::vim_mode() && tui.vim.is_normal() {
+                let badge = " NORMAL ";
+                let bw = display_width(badge) as u16;
+                let used: u16 = ibox
+                    .lines
+                    .get(ibox.lead_h + 1)
+                    .map(|l| {
+                        l.spans
+                            .iter()
+                            .map(|s| display_width(&s.content))
+                            .sum::<usize>() as u16
+                    })
+                    .unwrap_or(0);
+                let y = box_y + ibox.lead_h as u16 + 1;
+                if used + bw < box_w
+                    && y < box_y + rendered_box_h
+                    && y < area.bottom()
+                    && box_w > bw
+                {
+                    let th = crate::theme::theme();
+                    frame.render_widget(
+                        Paragraph::new(Span::styled(
+                            badge,
+                            Style::default()
+                                .fg(th.accent_soft)
+                                .bg(th.surface_bg)
+                                .add_modifier(Modifier::DIM),
+                        )),
+                        Rect::new(box_x + box_w - bw - 1, y, bw, 1),
+                    );
+                }
+            }
         }
 
         if let Some(banner) = tui.action.banner() {
@@ -924,7 +987,7 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
                     },
                     "context" if level.get() > 2 => Seg::new(ctx_compact.clone(), muted),
                     "context" => Seg::new(ctx_display.clone(), muted),
-                    "cache" if !has_usage => Seg::new("", muted),
+                    "cache" if !has_usage || uncached.is_some() => Seg::new("", muted),
                     "cache" => Seg::new(cache_display.clone(), cache_color),
                     "timer" => cache_timer
                         .as_ref()

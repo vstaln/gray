@@ -14,12 +14,16 @@ use super::Tui;
 
 mod boxes;
 mod cards;
+mod links;
 mod margins;
 pub(crate) mod rows;
 
 pub(crate) use crate::tui::strip_ansi;
 pub(crate) use boxes::render_markdown_lines;
 pub(crate) use cards::{format_tool_box_lines, format_tool_box_lines_multi};
+pub(crate) use links::{
+    begin_turn as reset_issue_links, flush as flush_issue_links, rewrite as rewrite_issue_links,
+};
 pub(crate) use rows::{
     GUTTER, format_user_prompt_lines, left_pad, prose_width, thinking_paint_text,
     thinking_run_rows, thinking_style, transcript_row_is_blank, word_flush_cut, wrap_styled_line,
@@ -304,14 +308,50 @@ impl Tui {
     }
 
     pub(crate) fn emit_rows(&mut self, rows: Vec<Line<'static>>, bg: Color) {
+        self.emit_rows_with_hyperlinks(rows, Vec::new(), bg);
+    }
+
+    pub(crate) fn emit_rows_with_hyperlinks(
+        &mut self,
+        rows: Vec<Line<'static>>,
+        hyperlinks: Vec<HyperlinkTarget>,
+        bg: Color,
+    ) {
         self.drain_reveal();
-        let shaped = margins::shape_block(rows, Vec::new());
+        let shaped = margins::shape_block(rows, hyperlinks);
         self.atomic(|t| {
             if margins::admit(&mut t.gap_owed, &t.transcript, &shaped) {
                 t.write_gap();
             }
             if !shaped.lines.is_empty() {
-                t.insert_paragraph(&shaped.lines, bg);
+                if shaped.hyperlinks.is_empty() {
+                    t.insert_paragraph(&shaped.lines, bg);
+                } else {
+                    let mut by_line: HashMap<usize, Vec<HyperlinkTarget>> = HashMap::new();
+                    for h in &shaped.hyperlinks {
+                        by_line.entry(h.line_index).or_default().push(h.clone());
+                    }
+                    let batch_rows: Vec<crate::composer::BatchedInsert> = shaped
+                        .lines
+                        .iter()
+                        .enumerate()
+                        .map(|(i, l)| (l.clone(), by_line.remove(&i).unwrap_or_default(), bg))
+                        .collect();
+                    if let Some(batch) = &mut t.insert_batch {
+                        batch.extend(batch_rows);
+                    } else if t.modal_open {
+                        t.modal_pending.push(crate::composer::PendingInsert::Rows(
+                            shaped.lines.clone(),
+                            bg,
+                        ));
+                    } else {
+                        let height = batch_rows.len() as u16;
+                        let _ = crate::composer::draw::settle_band(t);
+                        let _ = t.terminal.insert_before(height, |buf| {
+                            paint_insert_rows(buf, &batch_rows);
+                        });
+                    }
+                }
                 t.record_rows(shaped.lines);
             }
         });
@@ -486,6 +526,9 @@ impl Tui {
     }
 
     fn feed_markdown(&mut self, clean: &str) {
+        let cwd = std::path::PathBuf::from(&self.cwd);
+        let linked = links::rewrite(&cwd, clean);
+        let clean = linked.as_str();
         let was_feeding = self.feeding_markdown;
         self.feeding_markdown = true;
         let tw = prose_width(self.live_width());
@@ -617,37 +660,89 @@ const NUDGE_LINE_PREFIXES: &[&str] = &[
     "Continue the pending user request",
 ];
 
+pub(crate) enum SyntheticNotice {
+    Dim(String),
+    Subagent(Box<crate::session_mailbox::CronCard>),
+}
+
 /// Split a stored user prompt into the part worth replaying as a prompt
-/// block and one-line summaries of any injected-notification segments.
+/// block and the notices of any injected-notification segments.
 /// `↳ from` session sends stay visible — they carry real user text.
-pub(crate) fn split_synthetic_prompt(text: &str) -> (String, Vec<String>) {
+pub(crate) fn split_synthetic_prompt(text: &str) -> (String, Vec<SyntheticNotice>) {
     let mut visible: Vec<&str> = Vec::new();
-    let mut notices: Vec<String> = Vec::new();
+    let mut notices: Vec<SyntheticNotice> = Vec::new();
     let mut in_notice = false;
     let mut captured = false;
+    let mut hidden = false;
+    let mut report: Option<Vec<&str>> = None;
     for line in text.lines() {
         if is_notice_marker(line) {
+            finish_report(&mut report, &mut notices);
             in_notice = true;
             captured = false;
+            hidden = line.starts_with(CONTEXT_UPDATE_MARKER) || line.starts_with(BG_JOBS_MARKER);
+            if line.starts_with(SUBAGENT_DONE_MARKER) {
+                report = Some(Vec::new());
+            }
             continue;
         }
         if NUDGE_LINE_PREFIXES.iter().any(|p| line.starts_with(p)) {
+            finish_report(&mut report, &mut notices);
             in_notice = true;
             captured = true;
-            notices.push(line.trim().to_string());
+            hidden = false;
+            notices.push(SyntheticNotice::Dim(line.trim().to_string()));
             continue;
         }
         if line.starts_with(crate::session_send::SEND_FROM_PREFIX) {
             in_notice = false;
         }
-        if in_notice {
-            if !captured && !line.trim().is_empty() {
-                notices.push(line.trim().to_string());
+        if let Some(lines) = report.as_mut() {
+            lines.push(line);
+        } else if in_notice {
+            if !hidden && !captured && !line.trim().is_empty() {
+                notices.push(SyntheticNotice::Dim(line.trim().to_string()));
                 captured = true;
             }
         } else {
             visible.push(line);
         }
     }
+    finish_report(&mut report, &mut notices);
     (visible.join("\n").trim_end().to_string(), notices)
+}
+
+fn finish_report(report: &mut Option<Vec<&str>>, notices: &mut Vec<SyntheticNotice>) {
+    if let Some(lines) = report.take() {
+        notices.push(SyntheticNotice::Subagent(Box::new(subagent_card(&lines))));
+    }
+}
+
+fn subagent_card(lines: &[&str]) -> crate::session_mailbox::CronCard {
+    let mut head = None;
+    let mut body: Vec<&str> = Vec::new();
+    for line in lines {
+        match head {
+            None if line.trim().is_empty() => {}
+            None => head = Some(line.trim()),
+            Some(_) => body.push(line.strip_prefix("  ").unwrap_or(line)),
+        }
+    }
+    let head = head.unwrap_or_default();
+    let (handle, rest) = head.split_once(" [").unwrap_or((head, ""));
+    let (status, _) = rest.split_once(']').unwrap_or((rest, ""));
+    let elapsed_ms = head
+        .split(" · ")
+        .find_map(|part| Some(part.strip_suffix('s')?.parse::<f64>().ok()? * 1000.0))
+        .map_or(0, |ms| ms as u64);
+    crate::session_mailbox::CronCard {
+        name: format!(
+            "subagent/{}",
+            if handle.is_empty() { "run" } else { handle }
+        ),
+        body: body.join("\n").trim().to_string(),
+        failed: !matches!(status, "completed" | "stopped"),
+        reminder: false,
+        elapsed_ms,
+    }
 }

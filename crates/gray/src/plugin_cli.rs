@@ -89,7 +89,7 @@ pub(crate) fn declared_subcommands(home: &Path, name: &str) -> Vec<String> {
         .and_then(|m| m["completion"].as_array().cloned())
         .unwrap_or_default()
         .into_iter()
-        .filter_map(|v| v.as_str().map(str::to_string))
+        .filter_map(|v| completion_entry(&v).map(|(arg, _)| arg))
         .collect()
 }
 
@@ -101,6 +101,33 @@ pub(crate) fn declared_commands(home: &Path, name: &str) -> Vec<String> {
         .into_iter()
         .filter_map(|v| v.as_str().map(str::to_string))
         .collect()
+}
+
+pub(crate) fn command_description(home: &Path, name: &str, command: &str) -> Option<String> {
+    description_in(&metadata(home, name).ok()?, command)
+}
+
+pub(crate) fn plugin_description(home: &Path, name: &str) -> Option<String> {
+    blurb(&metadata(home, name).ok()?)
+}
+
+fn blurb(manifest: &serde_json::Value) -> Option<String> {
+    manifest["description"]
+        .as_str()
+        .map(str::trim)
+        .filter(|d| !d.is_empty())
+        .map(str::to_string)
+}
+
+fn description_in(manifest: &serde_json::Value, command: &str) -> Option<String> {
+    let map = manifest["command_descriptions"].as_object()?;
+    let bare = command.trim_start_matches('/');
+    map.get(&format!("/{bare}"))
+        .or_else(|| map.get(bare))
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|d| !d.is_empty())
+        .map(str::to_string)
 }
 
 fn metadata(home: &Path, name: &str) -> anyhow::Result<serde_json::Value> {
@@ -701,6 +728,7 @@ pub fn remove_managed(name: &str) -> anyhow::Result<()> {
     let home = home()?;
     migrate_commands_json(&home);
     validate_name(name)?;
+    ensure_installed(&home, name)?;
     let removed = load_lock(&home)?.plugins.contains_key(name);
     if removed {
         gray_pkg::ops::remove(name)?;
@@ -736,18 +764,21 @@ pub fn remove_managed(name: &str) -> anyhow::Result<()> {
 pub fn set_managed_enabled(name: &str, on: bool) -> anyhow::Result<()> {
     let home = home()?;
     migrate_commands_json(&home);
+    ensure_installed(&home, name)?;
     gray_pkg::ops::set_enabled(name, on)
 }
 
 pub fn set_managed_global(name: &str, on: bool) -> anyhow::Result<()> {
     let home = home()?;
     migrate_commands_json(&home);
+    ensure_installed(&home, name)?;
     gray_pkg::ops::set_global(name, on)
 }
 
 pub async fn update_managed(target: &str) -> anyhow::Result<Vec<gray_pkg::ops::UpdateRow>> {
-    let reports = gray_pkg::ops::update(target).await?;
     let home = home()?;
+    ensure_installed(&home, target)?;
+    let reports = gray_pkg::ops::update(target).await?;
     for r in &reports {
         if let (Some(path), gray_pkg::ops::UpdateAction::Installed(_)) = (&r.path, &r.action)
             && let Err(e) = adopt_cli(&home, &r.name, path).await
@@ -765,6 +796,7 @@ pub async fn update_managed(target: &str) -> anyhow::Result<Vec<gray_pkg::ops::U
 }
 
 pub async fn check_managed(target: &str) -> anyhow::Result<Vec<gray_pkg::ops::UpdateRow>> {
+    ensure_installed(&home()?, target)?;
     gray_pkg::ops::check_update(target).await
 }
 
@@ -818,6 +850,44 @@ fn command_suggestion(home: &Path, lock: &LockFile, typed: &str) -> Option<Strin
     } else {
         format!("{}, {}", first, rest.join(", "))
     })
+}
+
+fn not_installed_message(home: &Path, name: &str) -> String {
+    let names: Vec<String> = load_lock(home)
+        .map(|l| l.plugins.keys().cloned().collect())
+        .unwrap_or_default();
+    if names.is_empty() {
+        return format!("not installed: {name} (no plugins installed)");
+    }
+    let mut scored: Vec<(String, f64)> = names
+        .iter()
+        .map(|n| (n.clone(), strsim::jaro_winkler(name, n)))
+        .filter(|(n, s)| *s >= 0.87 && n != name)
+        .collect();
+    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    let near: Vec<String> = scored
+        .into_iter()
+        .take(3)
+        .map(|(n, _)| format!("'{n}'"))
+        .collect();
+    if near.is_empty() {
+        format!("not installed: {name} (installed: {})", names.join(", "))
+    } else {
+        format!("not installed: {name} — did you mean {}?", near.join(", "))
+    }
+}
+
+fn ensure_installed(home: &Path, name: &str) -> anyhow::Result<()> {
+    if name == "all" {
+        return Ok(());
+    }
+    let lock = load_lock(home)?;
+    anyhow::ensure!(
+        lock.plugins.contains_key(name),
+        "{}",
+        not_installed_message(home, name)
+    );
+    Ok(())
 }
 
 fn removed_builtin(name: &str) -> Option<&'static str> {
@@ -1459,8 +1529,9 @@ pub async fn capture_slash(name: &str, args: &[String]) -> anyhow::Result<Option
 
 struct CompletionRow {
     command: String,
+    description: Option<String>,
 
-    plugin: String,
+    plugin_description: Option<String>,
     /// Argument completions after the command, with an optional description.
     args: Vec<(String, Option<String>)>,
 }
@@ -1578,7 +1649,8 @@ fn scan_lock_completions(
             }
             rows.push(CompletionRow {
                 command: command.to_string(),
-                plugin: name.clone(),
+                description: description_in(&m, command),
+                plugin_description: blurb(&m),
                 args: args.clone(),
             });
         }
@@ -1674,14 +1746,21 @@ pub(crate) fn completions(query: &str) -> Vec<(String, String)> {
     };
     for row in &table.rows {
         if !query.contains(' ') && row.command.starts_with(query) {
-            out.push((row.command.clone(), format!("{} plugin", row.plugin)));
+            out.push((
+                row.command.clone(),
+                row.description
+                    .clone()
+                    .or_else(|| row.plugin_description.clone())
+                    .unwrap_or_default(),
+            ));
         }
         for (arg, desc) in &row.args {
             let full = format!("{} {arg}", row.command);
             if query.contains(' ') && full.starts_with(query) {
                 let desc = desc
                     .clone()
-                    .unwrap_or_else(|| format!("{} plugin command", row.plugin));
+                    .or_else(|| row.plugin_description.clone())
+                    .unwrap_or_default();
                 out.push((full, desc));
             }
         }
@@ -1694,6 +1773,8 @@ pub(crate) async fn capture(
     ttl: std::time::Duration,
 ) -> anyhow::Result<Vec<u8>> {
     use tokio::io::AsyncReadExt;
+    #[cfg(windows)]
+    command.creation_flags(0x0000_0200);
     let mut child = command
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())

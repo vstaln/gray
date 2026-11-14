@@ -9,6 +9,9 @@ impl Tui {
         self.left_home = true;
         let now = Instant::now();
 
+        crate::suggest::discard();
+        crate::composer::transcript::reset_issue_links();
+
         self.allow_empty_submit = false;
 
         self.turn_show_effort = Some(footer_badge_visible(&self.model_name, None));
@@ -34,6 +37,21 @@ impl Tui {
         self.is_task_running = true;
         self.status = Some((now, label.to_string()));
         let _ = self.draw();
+    }
+
+    pub fn accept_suggestion(&mut self) -> bool {
+        if self.is_task_running
+            || !crate::settings::prompt_suggestions()
+            || !self.textarea.text().trim().is_empty()
+        {
+            return false;
+        }
+        let Some(text) = crate::suggest::take() else {
+            return false;
+        };
+        self.textarea.insert_str(&text);
+        let _ = self.draw();
+        true
     }
 
     pub(crate) fn take_status(&mut self) -> Option<(Instant, String)> {
@@ -281,7 +299,11 @@ impl Tui {
         self.pay_gap();
         let _ = self.terminal.clear();
         let _ = crossterm::terminal::disable_raw_mode();
-        let _ = crossterm::execute!(std::io::stdout(), crossterm::event::DisableBracketedPaste);
+        let _ = crossterm::execute!(
+            std::io::stdout(),
+            crossterm::event::DisableBracketedPaste,
+            crossterm::event::DisableFocusChange
+        );
         let _ = crossterm::execute!(
             std::io::stdout(),
             crossterm::cursor::Show,

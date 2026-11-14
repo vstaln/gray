@@ -17,6 +17,7 @@ struct PluginAction {
     chords: Vec<Chord>,
     argv: Vec<String>,
     busy: String,
+    on: Option<String>,
 }
 
 static ACTIONS: RwLock<Vec<PluginAction>> = RwLock::new(Vec::new());
@@ -110,6 +111,7 @@ pub(crate) fn load(home: &Path) -> Vec<String> {
                     .and_then(|b| b.as_str())
                     .unwrap_or(name)
                     .to_string(),
+                on: a.get("on").and_then(|o| o.as_str()).map(str::to_string),
             });
         }
     }
@@ -135,6 +137,17 @@ pub(crate) enum ActionBanner {
     Error(String),
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AfterAction {
+    Insert,
+    Submit,
+}
+
+pub(crate) struct ActionTick {
+    pub(crate) running: bool,
+    pub(crate) submit: bool,
+}
+
 #[derive(Default)]
 pub(crate) enum ActionState {
     #[default]
@@ -149,16 +162,26 @@ pub(crate) enum ActionState {
         status: Arc<Mutex<String>>,
         inserts: Arc<Mutex<String>>,
         inserted: bool,
+        after: AfterAction,
+        auto: bool,
     },
     Error(String),
 }
 
 impl ActionState {
-    fn start(&mut self, action: PluginAction) {
+    fn start(&mut self, action: PluginAction, turn_text: Option<String>) {
         let (bin, args) = action.argv.split_first().expect("cli_argv is non-empty");
-        match Command::new(bin)
-            .args(args)
-            .env("GRAY_ACTION_INSERT", "1")
+        let auto = turn_text.is_some();
+        let mut command = Command::new(bin);
+        command.args(args).env("GRAY_ACTION_INSERT", "1");
+        if let Some(text) = turn_text {
+            let end = (0..=text.len().min(100_000))
+                .rev()
+                .find(|i| text.is_char_boundary(*i))
+                .unwrap_or(0);
+            command.env("GRAY_TURN_TEXT", &text[..end]);
+        }
+        match command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -188,6 +211,8 @@ impl ActionState {
                     status,
                     inserts,
                     inserted: false,
+                    after: AfterAction::Insert,
+                    auto,
                 };
             }
             Err(e) => {
@@ -208,28 +233,59 @@ impl ActionState {
         }
     }
 
-    fn poll(&mut self) -> Option<String> {
+    pub(crate) fn cancel_auto(&mut self) {
+        if matches!(self, ActionState::Running { auto: true, .. }) {
+            self.cancel();
+        }
+    }
+
+    pub(crate) fn clear_error(&mut self) {
+        if matches!(self, ActionState::Error(_)) {
+            *self = ActionState::Idle;
+        }
+    }
+
+    pub(crate) fn stop_to_submit(&mut self) -> bool {
+        let ActionState::Running { child, after, .. } = self else {
+            return false;
+        };
+        if *after == AfterAction::Insert {
+            *after = AfterAction::Submit;
+            if let Some(stdin) = child.stdin.as_mut() {
+                let _ = stdin.write_all(b"stop\n");
+                let _ = stdin.flush();
+            }
+        }
+        true
+    }
+
+    fn poll(&mut self) -> (Option<String>, bool) {
         let ActionState::Running {
             child,
             inserts,
             inserted,
+            after,
             ..
         } = self
         else {
-            return None;
+            return (None, false);
         };
+        let submit_on_exit = *after == AfterAction::Submit;
         let partial = std::mem::take(&mut *inserts.lock().expect("inserts lock"));
         *inserted |= !partial.is_empty();
-        let rest = match child.try_wait() {
-            Ok(Some(status)) => self.finish(status),
-            Ok(None) => None,
+        let (rest, finished) = match child.try_wait() {
+            Ok(Some(status)) => (self.finish(status), true),
+            Ok(None) => (None, false),
             Err(e) => {
                 *self = ActionState::Error(e.to_string());
-                None
+                (None, true)
             }
         };
         let text = partial + rest.as_deref().unwrap_or_default();
-        (!text.is_empty()).then_some(text)
+        (
+            (!text.is_empty()).then_some(text),
+            finished && submit_on_exit,
+        )
     }
 
     fn finish(&mut self, status: ExitStatus) -> Option<String> {
@@ -238,11 +294,13 @@ impl ActionState {
             status: line,
             inserts,
             inserted,
+            auto,
             ..
         } = self
         else {
             return None;
         };
+        let auto = *auto;
         let mut out = String::new();
         if let Some(pipe) = child.stdout.as_mut() {
             let _ = pipe.read_to_string(&mut out);
@@ -253,7 +311,7 @@ impl ActionState {
         let late = std::mem::take(&mut *inserts.lock().expect("inserts lock"));
         let typed = *inserted || !late.is_empty();
         let text = late + out.trim();
-        if status.success() && (typed || !text.is_empty()) {
+        if status.success() && (typed || auto || !text.is_empty()) {
             *self = ActionState::Idle;
             return (!text.is_empty()).then_some(text);
         }
@@ -325,9 +383,25 @@ impl Tui {
             return false;
         };
         if !matches!(self.action, ActionState::Running { .. }) {
-            self.action.start(action);
+            self.action.start(action, None);
         }
         true
+    }
+
+    pub(crate) fn start_turn_end_action(&mut self, text: &str) {
+        if matches!(self.action, ActionState::Running { .. }) || text.trim().is_empty() {
+            return;
+        }
+        refresh();
+        let Some(action) = ACTIONS.read().ok().and_then(|a| {
+            a.iter()
+                .find(|a| a.on.as_deref() == Some("turn_end"))
+                .cloned()
+        }) else {
+            return;
+        };
+        self.action.start(action, Some(text.to_string()));
+        let _ = self.draw();
     }
 
     pub(crate) fn plugin_action_key_up(&mut self, ev: &KeyEvent) {
@@ -349,19 +423,24 @@ impl Tui {
             return false;
         };
         if !matches!(self.action, ActionState::Running { .. }) {
-            self.action.start(action);
+            self.action.start(action, None);
         }
         let _ = self.draw();
         true
     }
 
-    pub(crate) fn action_tick(&mut self) -> bool {
-        let running = matches!(self.action, ActionState::Running { .. });
-        if let Some(text) = self.action.poll() {
+    pub(crate) fn action_running(&self) -> bool {
+        matches!(self.action, ActionState::Running { .. })
+    }
+
+    pub(crate) fn action_tick(&mut self) -> ActionTick {
+        let running = self.action_running();
+        let (text, submit) = self.action.poll();
+        if let Some(text) = text {
             self.textarea.insert_str(&text);
             self.history_idx = None;
             self.sel = 0;
         }
-        running
+        ActionTick { running, submit }
     }
 }

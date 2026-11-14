@@ -202,7 +202,9 @@ pub async fn install(spec: NameOrUrl, opts: InstallOpts) -> anyhow::Result<Repor
 async fn install_inner(spec: NameOrUrl, opts: InstallOpts) -> anyhow::Result<Report> {
     let client = crate::fetch::client()?;
     match spec {
-        NameOrUrl::Name(name) => install_index(&client, &name, opts, &mut BTreeSet::new()).await,
+        NameOrUrl::Name(name) => {
+            install_index(&client, &name, opts, false, &mut BTreeSet::new()).await
+        }
         NameOrUrl::Url(url) => install_url(&client, &url, opts).await,
     }
 }
@@ -210,6 +212,7 @@ async fn install_inner(spec: NameOrUrl, opts: InstallOpts) -> anyhow::Result<Rep
 fn replace_archive(
     archive: &Path,
     name: &str,
+    backup: bool,
     record: impl FnOnce() -> anyhow::Result<()>,
 ) -> anyhow::Result<PathBuf> {
     validate_install_key(name)?;
@@ -256,6 +259,13 @@ fn replace_archive(
         }
         return Err(error);
     }
+    if backup && had_previous {
+        let bak = root.join(format!("{name}.bak"));
+        if bak.symlink_metadata().is_ok() {
+            std::fs::remove_dir_all(&bak)?;
+        }
+        std::fs::rename(&previous, &bak)?;
+    }
     Ok(dest)
 }
 
@@ -272,6 +282,7 @@ async fn install_index(
     client: &reqwest::Client,
     name: &str,
     opts: InstallOpts,
+    backup: bool,
     visited: &mut BTreeSet<String>,
 ) -> anyhow::Result<Report> {
     validate_install_key(name)?;
@@ -315,7 +326,7 @@ async fn install_index(
         if installed.contains_key(dep) || visited.contains(dep) {
             continue;
         }
-        let report = Box::pin(install_index(client, dep, opts.clone(), visited))
+        let report = Box::pin(install_index(client, dep, opts.clone(), backup, visited))
             .await
             .map_err(|e| anyhow::anyhow!("{name} requires plugin '{dep}': {e:#}"))?;
         deps.extend(report.deps.iter().cloned());
@@ -374,14 +385,16 @@ async fn install_index(
     } else {
         entry.scope.clone()
     };
-    let dest = replace_archive(&archive, name, || {
+    let dest = replace_archive(&archive, name, backup, || {
         // Register only a dir spawn_lock_plugin can resolve; an empty or
         // wrong-platform payload must roll back instead of churning respawns.
-        if opts.argv.is_empty() {
+        let argv = if opts.argv.is_empty() {
             gray_plugin::builder::resolve_argv(&crate::plugins_dir().join(name)).map_err(|e| {
                 anyhow::anyhow!("package '{name}' has no runnable plugin on this platform: {e:#}")
-            })?;
-        }
+            })?
+        } else {
+            opts.argv.clone()
+        };
         record_install(
             name,
             &entry.ecosystem,
@@ -389,7 +402,7 @@ async fn install_index(
             entry.hash.primary().unwrap_or_default(),
             &entry.source.url,
             scope,
-            opts.argv.clone(),
+            argv,
         )
     })?;
     Ok(Report {
@@ -418,7 +431,7 @@ async fn install_url(
     }
     validate_install_key(&name)?;
     let archive = crate::fetch::download(client, url, None).await?;
-    let dest = replace_archive(&archive, &name, || {
+    let dest = replace_archive(&archive, &name, false, || {
         if opts.argv.is_empty() {
             gray_plugin::builder::resolve_argv(&crate::plugins_dir().join(&name)).map_err(|e| {
                 anyhow::anyhow!("package '{name}' has no runnable plugin on this platform: {e:#}")
@@ -517,6 +530,7 @@ pub enum UpdateAction {
     Stale(String),
     Current,
     Skipped(String),
+    NeedsUpdate(String),
     Failed(String),
 }
 
@@ -542,6 +556,7 @@ impl UpdateRow {
             UpdateAction::Stale(why) => format!("stale: {why}"),
             UpdateAction::Current => "up to date".to_string(),
             UpdateAction::Skipped(why) => format!("skipped: {why}"),
+            UpdateAction::NeedsUpdate(why) => format!("needs update: {why}"),
             UpdateAction::Failed(e) => format!("failed: {e}"),
         }
     }
@@ -550,6 +565,13 @@ impl UpdateRow {
         matches!(
             self.action,
             UpdateAction::Installed(_) | UpdateAction::Rebuilt
+        )
+    }
+
+    pub fn obstructed(&self) -> bool {
+        matches!(
+            self.action,
+            UpdateAction::Failed(_) | UpdateAction::NeedsUpdate(_)
         )
     }
 }
@@ -586,18 +608,29 @@ async fn update_inner(target: &str, check: bool) -> anyhow::Result<Vec<UpdateRow
     let mut out = Vec::new();
     for name in &names {
         let installed = &lock.plugins[name];
-        if installed.ecosystem == "url" {
-            out.push(UpdateRow::new(
-                name,
-                UpdateAction::Skipped(
-                    "installed from a URL — reinstall the same URL to refresh".into(),
-                ),
-            ));
-            continue;
-        }
-        if is_registered_executable(installed) {
-            out.push(registered_exe_row(name, installed, check).await);
-            continue;
+        let mode = update_mode(name, installed);
+        match &mode {
+            UpdateMode::Url => {
+                out.push(UpdateRow::new(
+                    name,
+                    UpdateAction::Skipped(
+                        "installed from a URL — reinstall the same URL to refresh".into(),
+                    ),
+                ));
+                continue;
+            }
+            UpdateMode::NoExecutable => {
+                out.push(UpdateRow::new(
+                    name,
+                    UpdateAction::Skipped("registered without argv".into()),
+                ));
+                continue;
+            }
+            UpdateMode::RepoBuild { exe, repo } => {
+                out.push(repo_build_row(name, exe, repo, check).await);
+                continue;
+            }
+            UpdateMode::Index | UpdateMode::Prebuilt | UpdateMode::Foreign { .. } => {}
         }
         if hub.is_none() && comm.is_none() {
             hub = crate::index::fetch_hub_index(&client).await.ok();
@@ -616,16 +649,22 @@ async fn update_inner(target: &str, check: bool) -> anyhow::Result<Vec<UpdateRow
                 match comm.as_ref().unwrap().plugins.get(lookup) {
                     Some(e) => e,
                     None => {
+                        let near = crate::index::near_names(comm.as_ref().unwrap(), lookup);
                         out.push(UpdateRow::new(
                             name,
-                            UpdateAction::Skipped("not in index".into()),
+                            UpdateAction::Skipped(if near.is_empty() {
+                                "not in index".to_string()
+                            } else {
+                                format!("not in index — did you mean {}?", near.join(", "))
+                            }),
                         ));
                         continue;
                     }
                 }
             }
         };
-        if installed.ecosystem != entry.ecosystem || !supported_index_entry(entry) {
+        let prebuilt = matches!(mode, UpdateMode::Prebuilt);
+        if (!prebuilt && installed.ecosystem != entry.ecosystem) || !supported_index_entry(entry) {
             out.push(UpdateRow::new(
                 name,
                 UpdateAction::Skipped("non-index source".into()),
@@ -636,6 +675,20 @@ async fn update_inner(target: &str, check: bool) -> anyhow::Result<Vec<UpdateRow
         let drift = renamed.is_some()
             || entry.version != installed.version
             || index_hash != installed.hash.as_str();
+        if let UpdateMode::Foreign { exe } = &mode {
+            out.push(if drift {
+                UpdateRow::new(
+                    name,
+                    UpdateAction::NeedsUpdate(format!(
+                        "registered executable {} is not gray's copy — reinstall it from the index to let gray update it",
+                        exe.display()
+                    )),
+                )
+            } else {
+                UpdateRow::new(name, UpdateAction::Current)
+            });
+            continue;
+        }
         if !drift {
             out.push(UpdateRow::new(name, UpdateAction::Current));
             continue;
@@ -665,6 +718,7 @@ async fn update_inner(target: &str, check: bool) -> anyhow::Result<Vec<UpdateRow
             &client,
             lookup,
             InstallOpts { argv, scope },
+            prebuilt,
             &mut BTreeSet::new(),
         )
         .await
@@ -839,24 +893,41 @@ fn rebuild_command() -> std::process::Command {
     c
 }
 
-async fn registered_exe_row(name: &str, installed: &LockEntry, check: bool) -> UpdateRow {
-    let Some(exe) = registered_exe_path(installed) else {
-        return UpdateRow::new(
-            name,
-            UpdateAction::Skipped("registered without argv".into()),
-        );
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum UpdateMode {
+    Index,
+    Prebuilt,
+    RepoBuild { exe: PathBuf, repo: PathBuf },
+    Foreign { exe: PathBuf },
+    NoExecutable,
+    Url,
+}
+
+fn update_mode(name: &str, e: &LockEntry) -> UpdateMode {
+    if e.ecosystem == "url" {
+        return UpdateMode::Url;
+    }
+    if !is_registered_executable(e) {
+        return UpdateMode::Index;
+    }
+    let Some(exe) = registered_exe_path(e) else {
+        return UpdateMode::NoExecutable;
     };
-    let Some(repo) = target_repo(&exe) else {
-        return UpdateRow::new(
-            name,
-            UpdateAction::Skipped("registered executable is not a repo target/ build".into()),
-        );
-    };
-    let head = match head_commit_secs(&repo) {
+    if exe.starts_with(crate::plugins_dir().join(name)) {
+        return UpdateMode::Prebuilt;
+    }
+    match target_repo(&exe) {
+        Some(repo) => UpdateMode::RepoBuild { exe, repo },
+        None => UpdateMode::Foreign { exe },
+    }
+}
+
+async fn repo_build_row(name: &str, exe: &Path, repo: &Path, check: bool) -> UpdateRow {
+    let head = match head_commit_secs(repo) {
         Ok(t) => t,
         Err(e) => return UpdateRow::new(name, UpdateAction::Failed(e)),
     };
-    let mtime = match std::fs::metadata(&exe).and_then(|m| m.modified()) {
+    let mtime = match std::fs::metadata(exe).and_then(|m| m.modified()) {
         Ok(t) => t,
         Err(e) => return UpdateRow::new(name, UpdateAction::Failed(format!("stat {exe:?}: {e}"))),
     };
@@ -873,16 +944,16 @@ async fn registered_exe_row(name: &str, installed: &LockEntry, check: bool) -> U
             UpdateAction::Stale(format!("repo HEAD newer than binary ({})", repo.display())),
         );
     }
-    let repo2 = repo.clone();
+    let repo2 = repo.to_path_buf();
     let name2 = name.to_string();
     let built = tokio::task::spawn_blocking(move || rebuild_registered(&name2, &repo2)).await;
     match built {
         Ok(Ok(())) => {
-            reconcile_mtime(&exe, head);
+            reconcile_mtime(exe, head);
             UpdateRow {
                 name: name.to_string(),
                 action: UpdateAction::Rebuilt,
-                path: Some(exe),
+                path: Some(exe.to_path_buf()),
             }
         }
         Ok(Err(e)) => UpdateRow::new(name, UpdateAction::Failed(e)),

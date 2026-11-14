@@ -21,8 +21,7 @@ pub(crate) struct ModelCaps {
 impl ModelCaps {
     pub(crate) fn for_host(base_url: &Url) -> Self {
         Self {
-            prefer_responses: base_url.as_str().contains("opencode.ai/zen")
-                || base_url.as_str().contains("commandcode.ai"),
+            prefer_responses: base_url.as_str().contains("commandcode.ai"),
             cap_field: if names_cap_max_completion_tokens(base_url) {
                 CapField::MaxCompletionTokens
             } else {

@@ -5,7 +5,7 @@ Windows supplies the shell for tool calls; Gray does not install it or WSL. The
 installer's default route is native — `-Wsl` is the explicit compatibility
 route that installs the Linux build inside WSL.
 
-Known limitation, unchanged by this release: credential and transcript files are
+Known limitation: credential and transcript files are
 created with standard user-profile permissions and are **not** ACL-hardened
 (`std` has no portable way to do it). Keep that in mind before storing sensitive
 material in `%USERPROFILE%\.gray`.

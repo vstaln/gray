@@ -468,17 +468,17 @@ fn first_gray_in(entries: &[PathBuf]) -> Option<PathBuf> {
 }
 
 fn is_launcher(path: &Path) -> bool {
-    if !path.is_file() {
-        return false;
-    }
     #[cfg(unix)]
     {
+        if !path.is_file() {
+            return false;
+        }
         use std::os::unix::fs::PermissionsExt as _;
         std::fs::metadata(path).is_ok_and(|m| m.permissions().mode() & 0o111 != 0)
     }
     #[cfg(not(unix))]
     {
-        true
+        path.is_file()
     }
 }
 
@@ -594,7 +594,8 @@ async fn update_plugins_after_gray() {
                 match row.action {
                     gray_pkg::ops::UpdateAction::Installed(_) => updated += 1,
                     gray_pkg::ops::UpdateAction::Rebuilt => rebuilt += 1,
-                    gray_pkg::ops::UpdateAction::Failed(_) => failed += 1,
+                    gray_pkg::ops::UpdateAction::Failed(_)
+                    | gray_pkg::ops::UpdateAction::NeedsUpdate(_) => failed += 1,
                     _ => {}
                 }
             }

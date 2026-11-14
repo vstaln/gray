@@ -136,7 +136,7 @@ pub(crate) fn format_delivery_plain(
     format!("{title}\n\n{}", body.trim())
 }
 
-pub(super) fn cron_card_lines(
+pub(crate) fn cron_card_lines(
     card: &crate::session_mailbox::CronCard,
     width: usize,
 ) -> (

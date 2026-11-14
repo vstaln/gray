@@ -48,6 +48,8 @@ libc = { workspace = true }
 unicode-width = { workspace = true }
 regex = { workspace = true }
 rayon = "1.12"
+portable-pty = "0.9"
+vt100 = "0.15"
 
 
 [target.'cfg(windows)'.dependencies]

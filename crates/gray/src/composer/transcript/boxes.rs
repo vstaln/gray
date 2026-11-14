@@ -24,9 +24,10 @@ impl Tui {
         self.ensure_gap();
         let w = self.width().max(10);
         let box_lines = format_tool_box_lines_multi(&header, &body, w);
+        let hyperlinks = extract_tool_hyperlinks(&box_lines);
         self.history_entries
             .push(crate::composer::TranscriptEntry::ToolBoxLines { header, body });
-        self.emit_rows(box_lines, crate::theme::theme().surface_bg);
+        self.emit_rows_with_hyperlinks(box_lines, hyperlinks, crate::theme::theme().surface_bg);
     }
 
     fn insert_tool_box(&mut self, header: Line<'static>, body: Vec<Line<'static>>) {
@@ -34,9 +35,10 @@ impl Tui {
         self.ensure_gap();
         let w = self.width().max(10);
         let box_lines = format_tool_box_lines(header.clone(), &body, w);
+        let hyperlinks = extract_tool_hyperlinks(&box_lines);
         self.history_entries
             .push(crate::composer::TranscriptEntry::ToolBox { header, body });
-        self.emit_rows(box_lines, crate::theme::theme().surface_bg);
+        self.emit_rows_with_hyperlinks(box_lines, hyperlinks, crate::theme::theme().surface_bg);
     }
 
     pub(crate) fn push_line_styled(&mut self, line: String, style: Style) {
@@ -268,6 +270,42 @@ impl Tui {
         self.push_styled_lines_with_hyperlinks(vec![line], &[], 0);
     }
 
+    pub fn push_recap(&mut self, summary: &str) {
+        let theme = crate::theme::theme();
+        let avail = prose_width(self.width().max(10)).saturating_sub(2).max(1);
+        let mut lines = vec![Line::from(vec![
+            Span::styled(
+                "\u{203b} ",
+                Style::default()
+                    .fg(theme.text_muted)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                "Recap",
+                Style::default()
+                    .fg(theme.text_bright)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ])];
+        for para in summary.lines().filter(|l| !l.trim().is_empty()) {
+            let dim = Line::from(Span::styled(
+                para.trim().to_string(),
+                Style::default().fg(theme.text_muted),
+            ));
+            for mut row in wrap_styled_line(dim, avail) {
+                row.spans.insert(0, Span::raw("  "));
+                lines.push(row);
+            }
+        }
+        let lines = lines
+            .into_iter()
+            .map(|l| self.indent_home_receipt(l))
+            .collect();
+        self.flush_markdown();
+        self.ensure_gap();
+        self.push_styled_lines_with_hyperlinks(lines, &[], 0);
+    }
+
     fn indent_home_receipt(&self, mut line: Line<'static>) -> Line<'static> {
         let indent = home_receipt_indent(self.is_home(), self.width());
         if indent > 0 {
@@ -382,6 +420,7 @@ impl Tui {
             match msg.role {
                 gray_core::Role::User => {
                     let mut user_text = String::new();
+                    let mut boundary = false;
                     let mut attached: Vec<std::path::PathBuf> = Vec::new();
                     let mut media_stubs: Vec<String> = Vec::new();
                     let has_tool_result = msg
@@ -409,10 +448,15 @@ impl Tui {
                                         Some(saved) => attached.push(saved),
                                         None => media_stubs.push(text.trim().to_string()),
                                     }
+                                    boundary =
+                                        !crate::repl::attachments::attachment_markers(&user_text)
+                                            .last()
+                                            .is_some_and(|(range, _)| range.end == user_text.len());
                                     continue;
                                 }
-                                if !user_text.is_empty() {
+                                if boundary {
                                     user_text.push('\n');
+                                    boundary = false;
                                 }
                                 user_text.push_str(text);
                             }
@@ -428,6 +472,9 @@ impl Tui {
                             | gray_core::ContentBlock::Media {
                                 media_type, data, ..
                             } => {
+                                if has_tool_result {
+                                    continue;
+                                }
                                 if let Some(p) =
                                     gray_core::paths::materialize_media(media_type, data)
                                 {
@@ -464,7 +511,16 @@ impl Tui {
                             self.push_user_prompt(&visible, &attached, true);
                         }
                         for notice in notices {
-                            self.push_dim(format!("\u{2b22} {notice}"));
+                            match notice {
+                                super::SyntheticNotice::Dim(line) => {
+                                    self.push_dim(format!("\u{2b22} {line}"));
+                                }
+                                super::SyntheticNotice::Subagent(card) => {
+                                    let (header, body) =
+                                        crate::repl::notice::cron_card_lines(&card, self.width());
+                                    self.push_tool_box(header, body);
+                                }
+                            }
                         }
                         for stub in &media_stubs {
                             self.push_dim(format!("\u{2b22} {stub}"));
@@ -594,7 +650,7 @@ fn replay_tool_result(
         .remove(id)
         .map(|(n, a)| (n, Some(a)))
         .unwrap_or_else(|| ("tool".to_string(), None));
-    let header = match args.as_ref() {
+    let mut header = match args.as_ref() {
         Some(a) => crate::tool_fmt::format_tool_card_lines(
             &name,
             a,
@@ -610,6 +666,9 @@ fn replay_tool_result(
             display.preview(&name),
         ),
     };
+    if is_error {
+        header.truncate(1);
+    }
     let mut lines = crate::tool_fmt::format_tool_result_lines_with_context(
         &name,
         args.as_ref(),
@@ -700,6 +759,75 @@ pub(crate) fn render_markdown_lines(
         Some(tw),
     );
     (output.lines, output.hyperlinks)
+}
+
+fn extract_tool_hyperlinks(lines: &[Line<'static>]) -> Vec<HyperlinkTarget> {
+    use unicode_width::UnicodeWidthStr;
+    let mut out = Vec::new();
+    let mut next_id = 1u32;
+    let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+    let cwd = std::env::current_dir().ok();
+    for (line_index, line) in lines.iter().enumerate() {
+        let content: String = line
+            .spans
+            .iter()
+            .skip(1)
+            .map(|s| s.content.as_ref())
+            .collect();
+        let mut i = 0usize;
+        let bytes = content.as_bytes();
+        while i < bytes.len() {
+            let is_delim = |b: u8| {
+                matches!(
+                    b,
+                    b' ' | b'\t' | b',' | b'"' | b'\'' | b'(' | b')' | b'[' | b']' | b'<' | b'>'
+                )
+            };
+            if is_delim(bytes[i]) {
+                i += 1;
+                continue;
+            }
+            let start = i;
+            while i < bytes.len() && !is_delim(bytes[i]) {
+                i += 1;
+            }
+            let tok = &content[start..i];
+            let tok = tok.trim_end_matches(['.', ':', ';']);
+            if tok.is_empty() {
+                continue;
+            }
+            let url = if tok.starts_with("http://")
+                || tok.starts_with("https://")
+                || tok.starts_with("file://")
+            {
+                Some(tok.to_string())
+            } else if tok.starts_with('/') && tok.len() > 1 {
+                Some(format!("file://{tok}"))
+            } else if let Some(rest) = tok.strip_prefix("~/") {
+                home.as_ref()
+                    .map(|h| format!("file://{}", h.join(rest).display()))
+            } else if (tok.contains('/') || tok.contains('.'))
+                && cwd.as_ref().is_some_and(|c| c.join(tok).exists())
+            {
+                cwd.as_ref()
+                    .map(|c| format!("file://{}", c.join(tok).display()))
+            } else {
+                None
+            };
+            if let Some(url) = url {
+                let col_start = content[..start].width();
+                let col_end = col_start + tok.width();
+                out.push(HyperlinkTarget {
+                    line_index,
+                    column_range: col_start..col_end,
+                    url,
+                    id: next_id,
+                });
+                next_id += 1;
+            }
+        }
+    }
+    out
 }
 
 #[cfg(test)]
