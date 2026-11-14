@@ -2,6 +2,31 @@
 
 ## [Unreleased]
 
+## [0.2.21] - 2026-11-15
+
+### Added
+- **`/settings`**, with rows a plugin declares for itself.
+- **`/models` lists every provider account.** Provider logins sit under the model list with the Gray account above it, a signed-out Claude login can be signed in again from its row, and each account's quota state is cached so the picker shows it without a fresh call.
+- **A usage-limited turn continues by itself.** The REPL resumes 30 seconds after the reset with a countdown you can cancel, `gray -p` waits the reset out and keeps going, and both can run without the prompt.
+- **Plugins declare command descriptions in the manifest**, and the slash menu shows the declared description for commands and subcommands instead of the plugin name.
+- **Plugin actions can run on `turn_end`** with the answer in `GRAY_TURN_TEXT`.
+
+### Changed
+- **Resuming a session replays its prompt rows, context updates and subagent notices** the way they appeared live.
+- **Tool cards lead with one thing:** subagent spawn cards show each child's model and effort, `subagent_check` and spawn bodies render as rows, error and stop cards keep a single header line, and a bash card that runs a gray CLI invocation drops the Ran/Running verb.
+- **The away recap is a card under the compaction card**, and it triggers from the first key press when the terminal sends no focus events.
+- **The composer widget holds its last good snapshot** instead of flashing a poll error over a running turn.
+- **A new stream tail no longer draws a blank seam row above it.**
+
+### Fixed
+- **Plugin sidecars survive Ctrl+C** (#316): they run in their own process group on Windows, and a sidecar interrupted by the signal restarts quietly instead of reporting a crash.
+- **`gray plugin update` updates prebuilt plugins from the registry** (#317), and a plugin name that is not installed gets the close installed names suggested.
+- **A plugin release names the builds it does ship** when the current platform has none, and a self-managed plugin binary is no longer counted as a failed update.
+- **The agent nudges itself once** when a tool-free turn promises an action and then stops.
+- **Only real auth failures read as login expired;** quota and payment answers do not.
+- **Compaction sizes its pre-expiry check from the real API token count**, so a large `context_keep` no longer forces needless work before the cache expires.
+- **Smaller fixes:** issue links, prompt suggestions and vim operator counts; deduped injected context; a chat/completions fallback for a model the Responses route rejects; `quinn-udp` bumped for RUSTSEC-2026-0538.
+
 ## [0.2.20] - 2026-11-12
 
 ### Added
