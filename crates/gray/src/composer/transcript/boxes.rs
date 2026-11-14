@@ -691,10 +691,13 @@ pub(crate) fn render_markdown_lines(
     if clean.trim().is_empty() {
         return (Vec::new(), Vec::new());
     }
+    let cwd = std::env::current_dir().unwrap_or_default();
+    let linked = super::links::rewrite(&cwd, &clean);
+    let clean = linked.as_str();
     let tw = prose_width(width.unwrap_or(80).max(10));
     let mut buffers = gray_markdown::MarkdownBuffers::new();
     let (output, _) = gray_markdown::render_markdown_ratatui_with_buffers_width(
-        &clean,
+        clean,
         gray_markdown::gray_markdown_style(),
         true,
         &mut buffers,

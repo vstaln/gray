@@ -1360,6 +1360,7 @@ pub async fn run_repl_mode(
                         &mut last_turn_resumable,
                     )
                     .await?;
+                    crate::suggest::maybe_suggest(agent.as_ref(), interactive);
                 } else if last_turn_resumable && agent.is_some() {
                     if let Some(msg) = crate::turn_caps::check_caps(
                         config,
@@ -1398,6 +1399,7 @@ pub async fn run_repl_mode(
                         &mut last_turn_resumable,
                     )
                     .await?;
+                    crate::suggest::maybe_suggest(agent.as_ref(), interactive);
                 }
             }
             ReplCommand::Prompt(prompt_text) => {
@@ -1424,6 +1426,7 @@ pub async fn run_repl_mode(
                     &mut last_turn_resumable,
                 )
                 .await?;
+                crate::suggest::maybe_suggest(agent.as_ref(), interactive);
             }
             other => {
                 if matches!(

@@ -433,6 +433,15 @@ pub(crate) fn read_line(
                 continue;
             }
         }
+        let tab_accept = matches!(&ev, Event::Key(k)
+            if k.kind != KeyEventKind::Release
+                && matches!(k.code, KeyCode::Tab)
+                && !k
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER));
+        if tab_accept && tui.accept_suggestion() {
+            continue;
+        }
         match ev {
             Event::Resize(cols, rows) => {
                 if cols != tui.last_width || rows != tui.last_height {
