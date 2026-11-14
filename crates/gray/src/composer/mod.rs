@@ -241,6 +241,7 @@ pub(crate) struct LiveTool {
     pub(crate) id: String,
     pub(crate) header: Vec<Line<'static>>,
     pub(crate) running: bool,
+    pub(crate) verbless: bool,
     pub(crate) tail: LiveToolTail,
 }
 

@@ -420,6 +420,7 @@ impl Tui {
             match msg.role {
                 gray_core::Role::User => {
                     let mut user_text = String::new();
+                    let mut boundary = false;
                     let mut attached: Vec<std::path::PathBuf> = Vec::new();
                     let mut media_stubs: Vec<String> = Vec::new();
                     let has_tool_result = msg
@@ -447,10 +448,15 @@ impl Tui {
                                         Some(saved) => attached.push(saved),
                                         None => media_stubs.push(text.trim().to_string()),
                                     }
+                                    boundary =
+                                        !crate::repl::attachments::attachment_markers(&user_text)
+                                            .last()
+                                            .is_some_and(|(range, _)| range.end == user_text.len());
                                     continue;
                                 }
-                                if !user_text.is_empty() {
+                                if boundary {
                                     user_text.push('\n');
+                                    boundary = false;
                                 }
                                 user_text.push_str(text);
                             }
@@ -466,6 +472,9 @@ impl Tui {
                             | gray_core::ContentBlock::Media {
                                 media_type, data, ..
                             } => {
+                                if has_tool_result {
+                                    continue;
+                                }
                                 if let Some(p) =
                                     gray_core::paths::materialize_media(media_type, data)
                                 {
@@ -502,7 +511,16 @@ impl Tui {
                             self.push_user_prompt(&visible, &attached, true);
                         }
                         for notice in notices {
-                            self.push_dim(format!("\u{2b22} {notice}"));
+                            match notice {
+                                super::SyntheticNotice::Dim(line) => {
+                                    self.push_dim(format!("\u{2b22} {line}"));
+                                }
+                                super::SyntheticNotice::Subagent(card) => {
+                                    let (header, body) =
+                                        crate::repl::notice::cron_card_lines(&card, self.width());
+                                    self.push_tool_box(header, body);
+                                }
+                            }
                         }
                         for stub in &media_stubs {
                             self.push_dim(format!("\u{2b22} {stub}"));

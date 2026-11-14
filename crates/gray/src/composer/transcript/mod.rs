@@ -660,37 +660,89 @@ const NUDGE_LINE_PREFIXES: &[&str] = &[
     "Continue the pending user request",
 ];
 
+pub(crate) enum SyntheticNotice {
+    Dim(String),
+    Subagent(Box<crate::session_mailbox::CronCard>),
+}
+
 /// Split a stored user prompt into the part worth replaying as a prompt
-/// block and one-line summaries of any injected-notification segments.
+/// block and the notices of any injected-notification segments.
 /// `↳ from` session sends stay visible — they carry real user text.
-pub(crate) fn split_synthetic_prompt(text: &str) -> (String, Vec<String>) {
+pub(crate) fn split_synthetic_prompt(text: &str) -> (String, Vec<SyntheticNotice>) {
     let mut visible: Vec<&str> = Vec::new();
-    let mut notices: Vec<String> = Vec::new();
+    let mut notices: Vec<SyntheticNotice> = Vec::new();
     let mut in_notice = false;
     let mut captured = false;
+    let mut hidden = false;
+    let mut report: Option<Vec<&str>> = None;
     for line in text.lines() {
         if is_notice_marker(line) {
+            finish_report(&mut report, &mut notices);
             in_notice = true;
             captured = false;
+            hidden = line.starts_with(CONTEXT_UPDATE_MARKER) || line.starts_with(BG_JOBS_MARKER);
+            if line.starts_with(SUBAGENT_DONE_MARKER) {
+                report = Some(Vec::new());
+            }
             continue;
         }
         if NUDGE_LINE_PREFIXES.iter().any(|p| line.starts_with(p)) {
+            finish_report(&mut report, &mut notices);
             in_notice = true;
             captured = true;
-            notices.push(line.trim().to_string());
+            hidden = false;
+            notices.push(SyntheticNotice::Dim(line.trim().to_string()));
             continue;
         }
         if line.starts_with(crate::session_send::SEND_FROM_PREFIX) {
             in_notice = false;
         }
-        if in_notice {
-            if !captured && !line.trim().is_empty() {
-                notices.push(line.trim().to_string());
+        if let Some(lines) = report.as_mut() {
+            lines.push(line);
+        } else if in_notice {
+            if !hidden && !captured && !line.trim().is_empty() {
+                notices.push(SyntheticNotice::Dim(line.trim().to_string()));
                 captured = true;
             }
         } else {
             visible.push(line);
         }
     }
+    finish_report(&mut report, &mut notices);
     (visible.join("\n").trim_end().to_string(), notices)
+}
+
+fn finish_report(report: &mut Option<Vec<&str>>, notices: &mut Vec<SyntheticNotice>) {
+    if let Some(lines) = report.take() {
+        notices.push(SyntheticNotice::Subagent(Box::new(subagent_card(&lines))));
+    }
+}
+
+fn subagent_card(lines: &[&str]) -> crate::session_mailbox::CronCard {
+    let mut head = None;
+    let mut body: Vec<&str> = Vec::new();
+    for line in lines {
+        match head {
+            None if line.trim().is_empty() => {}
+            None => head = Some(line.trim()),
+            Some(_) => body.push(line.strip_prefix("  ").unwrap_or(line)),
+        }
+    }
+    let head = head.unwrap_or_default();
+    let (handle, rest) = head.split_once(" [").unwrap_or((head, ""));
+    let (status, _) = rest.split_once(']').unwrap_or((rest, ""));
+    let elapsed_ms = head
+        .split(" · ")
+        .find_map(|part| Some(part.strip_suffix('s')?.parse::<f64>().ok()? * 1000.0))
+        .map_or(0, |ms| ms as u64);
+    crate::session_mailbox::CronCard {
+        name: format!(
+            "subagent/{}",
+            if handle.is_empty() { "run" } else { handle }
+        ),
+        body: body.join("\n").trim().to_string(),
+        failed: !matches!(status, "completed" | "stopped"),
+        reminder: false,
+        elapsed_ms,
+    }
 }
