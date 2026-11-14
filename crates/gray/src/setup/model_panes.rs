@@ -988,6 +988,10 @@ fn draw(frame: &mut Frame, bg: &BackgroundSnapshot, v: &PaneView) {
                 super::logins::Tag::Pct(pct) => {
                     (format!("{pct:.0}%"), super::logins::pct_color(pct))
                 }
+                super::logins::Tag::Limit(Some(resets)) if name_room >= 13 + 1 + 11 => {
+                    (format!("limit {resets}"), super::logins::RED)
+                }
+                super::logins::Tag::Limit(_) => ("limit".to_string(), super::logins::RED),
                 super::logins::Tag::Expired if name_room >= 13 + 1 + 6 => {
                     ("login expired".to_string(), super::logins::RED)
                 }

@@ -540,6 +540,9 @@ pub(crate) async fn run_prompt_turn(
             )
             .await;
             let msg = format_core_error(&e, &config.base_url);
+            if let gray_core::error::CoreError::Quota { message, resets_in } = e.class() {
+                crate::usage_cache::note_quota(&config.provider_id, message, *resets_in);
+            }
 
             let previous_key = config.api_key.clone();
             let mut reloaded = matches!(e.class(), gray_core::error::CoreError::Auth(_))
@@ -590,7 +593,7 @@ pub(crate) async fn run_prompt_turn(
                     {
                         let when =
                             crate::settings::arm_auto_continue(state.session_id.as_str(), *wait);
-                        super::notice::push_notice(&mut t, "Usage limit hit", &when, false);
+                        super::notice::push_notice(&mut t, "Usage limit reached", &when, false);
                     }
                 }
             } else {

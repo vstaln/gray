@@ -44,7 +44,7 @@ fn number(field: NumField) -> Option<u32> {
 }
 
 pub(crate) fn auto_continue() -> bool {
-    flag(|s| &mut s.auto_continue, false)
+    flag(|s| &mut s.auto_continue, true)
 }
 
 pub(crate) fn away_recap() -> bool {
@@ -96,7 +96,7 @@ pub(crate) fn turn_started() {
 const CONTINUE_AFTER_LIMIT: &str =
     "Your usage limit has reset. Continue the task where you left off.";
 
-const CONTINUE_GRACE: Duration = Duration::from_secs(60);
+const CONTINUE_GRACE: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AutoContinue {
@@ -146,11 +146,19 @@ pub(crate) fn arm_auto_continue(session: &str, wait: Duration) -> String {
         }
     });
     let at = chrono::Local::now() + chrono::Duration::from_std(wait).unwrap_or_default();
-    let clock = at.format("%I:%M %p").to_string();
     format!(
-        "\u{b7} continuing automatically at {}",
-        clock.strip_prefix('0').unwrap_or(&clock)
+        "\u{b7} resuming at {} (in {}) \u{b7} esc to cancel",
+        at.format("%H:%M"),
+        span(wait.as_secs())
     )
+}
+
+fn span(secs: u64) -> String {
+    if secs >= 3600 {
+        format!("{}h {:02}m", secs / 3600, secs % 3600 / 60)
+    } else {
+        format!("{}m", secs.div_ceil(60))
+    }
 }
 
 pub(crate) fn auto_continue_secs() -> Option<u64> {
@@ -165,11 +173,12 @@ pub(crate) fn auto_continue_secs() -> Option<u64> {
 pub(crate) fn auto_continue_status() -> Option<String> {
     let secs = auto_continue_secs()?;
     let left = if secs >= 3600 {
-        format!("{}h {:02}m", secs / 3600, secs % 3600 / 60)
+        let (m, s) = (secs % 3600 / 60, secs % 60);
+        format!("{}h {m:02}:{s:02}", secs / 3600)
     } else {
         format!("{}:{:02}", secs / 60, secs % 60)
     };
-    Some(format!("continuing in {left} \u{b7} esc to cancel"))
+    Some(format!("resuming in {left} \u{b7} esc to cancel"))
 }
 
 pub(crate) fn cancel_auto_continue() {
