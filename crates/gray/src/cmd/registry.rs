@@ -100,7 +100,8 @@ fn plugin_commands(home: &Path) -> Vec<(String, PluginRow)> {
                     json: json!({
                         "name": name,
                         "description": crate::plugin_cli::command_description(home, plugin, &name)
-                            .unwrap_or_else(|| format!("{plugin} plugin")),
+                            .or_else(|| crate::plugin_cli::plugin_description(home, plugin))
+                            .unwrap_or_default(),
                         "aliases": Vec::<String>::new(),
                         "args": hint_arg(hint.clone()),
                         "scope": "conversation",
