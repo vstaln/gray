@@ -9,11 +9,13 @@ type Fence = (u8, usize);
 struct Scan {
     fence: Option<Fence>,
     partial: String,
+    resume: usize,
 }
 
 static SCAN: Mutex<Scan> = Mutex::new(Scan {
     fence: None,
     partial: String::new(),
+    resume: 0,
 });
 
 static REMOTES: Mutex<Option<HashMap<String, Option<String>>>> = Mutex::new(None);
@@ -153,9 +155,9 @@ fn rewrite_line(
     code: &[Range<usize>],
     base: &str,
     hold_tail: bool,
-) -> String {
+) -> (String, Option<usize>) {
     if emit_from >= line.len() {
-        return String::new();
+        return (String::new(), None);
     }
     let b = line.as_bytes();
     let mut out = String::with_capacity(line.len() - emit_from + 16);
@@ -166,7 +168,10 @@ fn rewrite_line(
             while e < b.len() && b[e].is_ascii_digit() {
                 e += 1;
             }
-            if e > i + 1 && issue_ref(line, i, e, code) && !(hold_tail && e == b.len()) {
+            if hold_tail && e == b.len() {
+                return (out, Some(i));
+            }
+            if e > i + 1 && issue_ref(line, i, e, code) {
                 out.push('[');
                 out.push_str(&line[i..e]);
                 out.push_str("](");
@@ -182,10 +187,14 @@ fn rewrite_line(
         out.push(ch);
         i += ch.len_utf8();
     }
-    out
+    (out, None)
 }
 
 pub(crate) fn rewrite(cwd: &Path, chunk: &str) -> String {
+    if !crate::settings::issue_links() {
+        begin_turn();
+        return chunk.to_string();
+    }
     let Some(base) = remote_base(cwd) else {
         begin_turn();
         return chunk.to_string();
@@ -195,12 +204,17 @@ pub(crate) fn rewrite(cwd: &Path, chunk: &str) -> String {
     }
     let mut st = SCAN.lock().unwrap_or_else(|e| e.into_inner());
     let carried = std::mem::take(&mut st.partial);
+    let resume = std::mem::take(&mut st.resume);
     let mut out = String::with_capacity(chunk.len() + 32);
     for (i, piece) in chunk.split_inclusive('\n').enumerate() {
         let complete = piece.ends_with('\n');
         let body = piece.strip_suffix('\n').unwrap_or(piece);
-        let prefix = if i == 0 { carried.len() } else { 0 };
-        let line = if prefix > 0 {
+        let prefix = if i == 0 && !carried.is_empty() {
+            resume
+        } else {
+            0
+        };
+        let line = if i == 0 && !carried.is_empty() {
             format!("{carried}{body}")
         } else {
             body.to_string()
@@ -218,16 +232,38 @@ pub(crate) fn rewrite(cwd: &Path, chunk: &str) -> String {
                     out.push_str(piece);
                 } else {
                     let code = code_ranges(&line);
-                    out.push_str(&rewrite_line(&line, prefix, &code, &base, !complete));
+                    let (text, held) = rewrite_line(&line, prefix, &code, &base, !complete);
+                    out.push_str(&text);
                     if complete {
                         out.push('\n');
+                    }
+                    if !complete {
+                        let next = held.unwrap_or(line.len());
+                        st.partial = line;
+                        st.resume = next;
                     }
                 }
             }
         }
-        if !complete {
-            st.partial = line;
-        }
     }
     out
+}
+
+pub(crate) fn flush(cwd: &Path) -> String {
+    let mut st = SCAN.lock().unwrap_or_else(|e| e.into_inner());
+    let partial = std::mem::take(&mut st.partial);
+    let resume = std::mem::take(&mut st.resume);
+    let fenced = st.fence.take().is_some();
+    if partial.is_empty() {
+        return String::new();
+    }
+    let start = resume.min(partial.len());
+    if fenced || !crate::settings::issue_links() {
+        return partial[start..].to_string();
+    }
+    let Some(base) = remote_base(cwd) else {
+        return partial[start..].to_string();
+    };
+    let code = code_ranges(&partial);
+    rewrite_line(&partial, start, &code, &base, false).0
 }

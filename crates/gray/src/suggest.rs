@@ -36,23 +36,18 @@ pub(crate) fn maybe_suggest(agent: Option<&Agent>, interactive: bool) {
         return;
     }
     let Some(agent) = agent else {
-        log::info!(target: "gray_suggest", "dbg: no agent");
         return;
     };
     let Some(req) = suggest_request(agent.messages()) else {
-        log::info!(target: "gray_suggest", "dbg: no request");
         return;
     };
-    log::info!(target: "gray_suggest", "dbg: spawning suggestion call");
     *PENDING.lock().unwrap_or_else(|e| e.into_inner()) = None;
     let stamped = GEN.load(Ordering::Relaxed);
     let provider = agent.provider_handle();
     tokio::spawn(async move {
         let Some(raw) = crate::auto_title::complete(provider, req).await else {
-            log::info!(target: "gray_suggest", "dbg: side call failed");
             return;
         };
-        log::info!(target: "gray_suggest", "dbg: side call raw={raw:?}");
         let Some(text) = clean_reply(&raw) else {
             return;
         };
@@ -110,6 +105,6 @@ fn suggest_request(messages: &[Message]) -> Option<ChatRequest> {
             tail(&reply)
         ))],
         tools: Vec::new(),
-        max_tokens: Some(40),
+        max_tokens: Some(320),
     })
 }

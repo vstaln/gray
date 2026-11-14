@@ -100,16 +100,16 @@ fn normal_key(tui: &mut Tui, ev: &KeyEvent) -> Option<KeyOutcome> {
         };
     };
 
+    if c.is_ascii_digit() && (c != '0' || tui.vim.count.is_some()) {
+        tui.vim.push_digit(c);
+        return Some(KeyOutcome::Ignored);
+    }
+
     if let Some(op) = tui.vim.op {
         tui.vim.op = None;
         let n = tui.vim.take_count().saturating_mul(tui.vim.op_count.max(1));
         tui.vim.op_count = 1;
         return Some(op_key(tui, op, c, n));
-    }
-
-    if c.is_ascii_digit() && (c != '0' || tui.vim.count.is_some()) {
-        tui.vim.push_digit(c);
-        return Some(KeyOutcome::Ignored);
     }
 
     if matches!(c, 'd' | 'c' | 'y') {

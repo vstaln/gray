@@ -17,10 +17,13 @@ impl Tui {
     pub(super) fn commit_markdown_tail(&mut self) {
         self.drain_reveal();
 
-        if !self.stream_punct_hold.is_empty() {
-            let held = std::mem::take(&mut self.stream_punct_hold);
+        let cwd = std::path::PathBuf::from(&self.cwd);
+        let mut held = crate::composer::transcript::flush_issue_links(&cwd);
+        held.push_str(&std::mem::take(&mut self.stream_punct_hold));
+        if !held.is_empty() {
+            let linked = crate::composer::transcript::rewrite_issue_links(&cwd, &held);
             self.markdown_renderer
-                .push_and_render(&held, Some(gray_markdown::get_syntect()));
+                .push_and_render(&linked, Some(gray_markdown::get_syntect()));
         }
         let output = std::mem::replace(
             &mut self.markdown_renderer,
