@@ -7,6 +7,7 @@ use super::Tui;
 mod attach;
 mod clipboard;
 pub(crate) mod keys;
+pub(crate) mod vim;
 
 use keys::KeyOutcome;
 
