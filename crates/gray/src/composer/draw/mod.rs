@@ -14,6 +14,7 @@ pub(crate) mod widgets;
 pub(crate) use widgets::{
     HomeRows, InputCell, build_input_box, chip_cells, home_band_h, needs_seam,
     queued_preview_lines, shimmer_spans, status_dock_h, tail_block_h, tail_gap_h,
+    tail_starts_blank,
 };
 
 pub(crate) fn desired_viewport_h(
@@ -212,7 +213,8 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
 
     let footer_h: u16 = u16::from(!home_mode);
 
-    let needs_seam = needs_seam(&tui.transcript);
+    let stream_tail: Vec<Line<'static>> = tui.stream_tail_rows(w);
+    let needs_seam = needs_seam(&tui.transcript) && !tail_starts_blank(&stream_tail);
     let dock_live = tui.status.is_some()
         || tui.hint_active().is_some()
         || crate::settings::auto_continue_secs().is_some();
@@ -257,8 +259,6 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
         })
         .sum::<u16>()
         .saturating_add(u16::from(tui.live_tool_overflow() > 0));
-    let stream_tail: Vec<Line<'static>> = tui.stream_tail_rows(w);
-
     let tail_gap = tail_gap_h(dock_live, &stream_tail);
     let tail_est = stream_tail.len() as u16 + tail_gap;
 
