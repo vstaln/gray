@@ -35,7 +35,7 @@ pub fn expiry_keep_for(agent: &Agent) -> Option<usize> {
     if !is_auto_compact_enabled() {
         return None;
     }
-    let estimate: usize = agent.messages().iter().map(estimate_tokens).sum();
+    let estimate = agent.estimate_tokens();
     let keep = expiry_keep(estimate, crate::setup::user_keep_recent_tokens());
     match keep {
         Some(k) => log::info!(target: "gray_agent", "expiry compaction: est={estimate} keep={k}"),

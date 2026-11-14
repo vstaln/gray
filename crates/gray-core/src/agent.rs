@@ -935,7 +935,7 @@ impl Agent {
         self.compact_ceiling
     }
 
-    pub(crate) fn estimate_tokens(&self) -> usize {
+    pub fn estimate_tokens(&self) -> usize {
         match self.context_usage {
             Some((tokens, covered)) if covered <= self.messages.len() => {
                 tokens + crate::agent_compact::est_tokens(&self.messages[covered..])
