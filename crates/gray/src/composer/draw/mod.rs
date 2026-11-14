@@ -141,7 +141,9 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
     let text = tui.textarea.text().to_string();
     let cursor = tui.textarea.cursor().min(text.len());
 
-    let ghost = continue_ghost(tui.allow_empty_submit, tui.is_task_running, &text);
+    let suggestion = crate::suggest::ghost(&text, tui.is_task_running);
+    let ghost = continue_ghost(tui.allow_empty_submit, tui.is_task_running, &text)
+        .or(suggestion.as_deref());
     let model_display = tui
         .model_label
         .clone()

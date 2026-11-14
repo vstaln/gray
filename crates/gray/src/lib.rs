@@ -34,6 +34,7 @@ pub mod shell_drain;
 pub mod spill;
 pub mod statusline;
 pub mod stdio;
+pub(crate) mod suggest;
 pub mod sys_editor;
 pub mod system_prompt;
 pub mod term_keys;
@@ -351,6 +352,8 @@ async fn build_agent_inner(
             &provider,
         )
     };
+    let attribution = (!config.bare && crate::settings::commit_attribution())
+        .then(|| system_prompt::commit_attribution(model));
     let prebooted_plugins = if !config.bare && spawn_plugins {
         match crate::plugin_status::take_boot().await {
             Some(Ok(plugins)) => Some(plugins),
@@ -401,6 +404,11 @@ async fn build_agent_inner(
                         if !plugins.is_empty() {
                             prompt.push_str("\n\n");
                             prompt.push_str(&plugins);
+                        }
+
+                        if let Some(attribution) = &attribution {
+                            prompt.push_str("\n\n");
+                            prompt.push_str(attribution);
                         }
                     }
 

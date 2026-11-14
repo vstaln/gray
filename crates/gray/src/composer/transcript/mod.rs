@@ -14,12 +14,14 @@ use super::Tui;
 
 mod boxes;
 mod cards;
+mod links;
 mod margins;
 pub(crate) mod rows;
 
 pub(crate) use crate::tui::strip_ansi;
 pub(crate) use boxes::render_markdown_lines;
 pub(crate) use cards::{format_tool_box_lines, format_tool_box_lines_multi};
+pub(crate) use links::begin_turn as reset_issue_links;
 pub(crate) use rows::{
     GUTTER, format_user_prompt_lines, left_pad, prose_width, thinking_paint_text,
     thinking_run_rows, thinking_style, transcript_row_is_blank, word_flush_cut, wrap_styled_line,
@@ -522,6 +524,9 @@ impl Tui {
     }
 
     fn feed_markdown(&mut self, clean: &str) {
+        let cwd = std::path::PathBuf::from(&self.cwd);
+        let linked = links::rewrite(&cwd, clean);
+        let clean = linked.as_str();
         let was_feeding = self.feeding_markdown;
         self.feeding_markdown = true;
         let tw = prose_width(self.live_width());
