@@ -30,6 +30,7 @@ pub struct Report {
     pub version: String,
     pub path: PathBuf,
     pub deps: Vec<String>,
+    pub description: Option<String>,
 }
 
 fn lock_path() -> PathBuf {
@@ -143,6 +144,11 @@ fn record_install(
         },
     );
     write_lock(&lock)
+}
+
+fn description_of(entry: &crate::index::Entry) -> Option<String> {
+    let description = entry.description.trim();
+    (!description.is_empty()).then(|| description.to_string())
 }
 
 pub fn is_registered_executable(e: &LockEntry) -> bool {
@@ -406,6 +412,7 @@ async fn install_index(
         version: entry.version.clone(),
         path: dest,
         deps,
+        description: description_of(&entry),
     })
 }
 
@@ -448,6 +455,7 @@ async fn install_url(
         version: "0.0.0".to_string(),
         path: dest,
         deps: Vec::new(),
+        description: None,
     })
 }
 
@@ -534,6 +542,7 @@ pub struct UpdateRow {
     pub name: String,
     pub action: UpdateAction,
     pub path: Option<PathBuf>,
+    pub description: Option<String>,
 }
 
 impl UpdateRow {
@@ -542,6 +551,7 @@ impl UpdateRow {
             name: name.to_string(),
             action,
             path: None,
+            description: None,
         }
     }
 
@@ -730,6 +740,7 @@ async fn update_inner(target: &str, check: bool) -> anyhow::Result<Vec<UpdateRow
                     name: r.name,
                     action: UpdateAction::Installed(v),
                     path: Some(r.path),
+                    description: r.description,
                 });
             }
             Err(e) => out.push(UpdateRow::new(name, UpdateAction::Failed(format!("{e:#}")))),
@@ -950,6 +961,7 @@ async fn repo_build_row(name: &str, exe: &Path, repo: &Path, check: bool) -> Upd
                 name: name.to_string(),
                 action: UpdateAction::Rebuilt,
                 path: Some(exe.to_path_buf()),
+                description: None,
             }
         }
         Ok(Err(e)) => UpdateRow::new(name, UpdateAction::Failed(e)),

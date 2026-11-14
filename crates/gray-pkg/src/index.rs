@@ -48,6 +48,9 @@ pub struct Entry {
     pub kind: String,
 
     #[serde(default)]
+    pub description: String,
+
+    #[serde(default)]
     pub official: bool,
 
     #[serde(default)]

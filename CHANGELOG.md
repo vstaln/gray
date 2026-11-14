@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+## [0.2.23] - 2026-11-15
+
+### Fixed
+- **An installed plugin's commands carry their description in the slash menu.** The installer copied only what the plugin's own manifest declared, so 93 of the 154 registry plugins installed with no description and every one of their slash commands rendered blank; the index already published one for each of them. Install and update now fill a missing top-level `description` from the index entry, so `gray cmd list` and the slash menu show it.
+
 ## [0.2.22] - 2026-11-15
 
 ### Fixed
