@@ -890,6 +890,7 @@ pub async fn run_repl_mode(
                                 t.set_home_update(Some(notice));
                             } else {
                                 t.push_dim(notice);
+                                t.ensure_gap();
                             }
                         }
                     }

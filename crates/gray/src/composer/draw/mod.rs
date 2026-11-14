@@ -976,7 +976,7 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
                     },
                     "context" if level.get() > 2 => Seg::new(ctx_compact.clone(), muted),
                     "context" => Seg::new(ctx_display.clone(), muted),
-                    "cache" if !has_usage => Seg::new("", muted),
+                    "cache" if !has_usage || uncached.is_some() => Seg::new("", muted),
                     "cache" => Seg::new(cache_display.clone(), cache_color),
                     "timer" => cache_timer
                         .as_ref()
