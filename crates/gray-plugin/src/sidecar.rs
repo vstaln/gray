@@ -455,6 +455,26 @@ fn spawn_reader(
     });
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SidecarExit {
+    Clean,
+    Interrupted,
+    Crashed,
+}
+
+impl SidecarExit {
+    fn of(status: &std::process::ExitStatus) -> Self {
+        if status.success() {
+            return Self::Clean;
+        }
+        if crate::friendly_exit_status(&short_exit_status(status)) == "interrupted" {
+            Self::Interrupted
+        } else {
+            Self::Crashed
+        }
+    }
+}
+
 fn short_exit_status(status: &std::process::ExitStatus) -> String {
     if let Some(code) = status.code() {
         return format!("exit {code}");
@@ -515,10 +535,14 @@ impl Transport {
 
     async fn ensure_alive(&self) -> bool {
         let mut child = self.child.lock().await;
-        let (status, clean, wait_err) = match child.try_wait() {
+        let (status, exit, wait_err) = match child.try_wait() {
             Ok(None) => return true,
-            Ok(Some(s)) => (short_exit_status(&s), s.success(), None),
-            Err(e) => ("unknown".to_string(), false, Some(e.to_string())),
+            Ok(Some(s)) => (short_exit_status(&s), SidecarExit::of(&s), None),
+            Err(e) => (
+                "unknown".to_string(),
+                SidecarExit::Crashed,
+                Some(e.to_string()),
+            ),
         };
         let name = Self::name_of(&self.argv);
         {
@@ -531,10 +555,16 @@ impl Transport {
                 return false;
             }
         }
-        if clean {
-            log::info!(target: "gray_plugin", "sidecar {name} exited cleanly, respawning");
-        } else {
-            log::warn!(target: "gray_plugin", "sidecar {name} exited ({status}), respawning");
+        match exit {
+            SidecarExit::Clean => {
+                log::info!(target: "gray_plugin", "sidecar {name} exited cleanly, respawning");
+            }
+            SidecarExit::Interrupted => {
+                log::debug!(target: "gray_plugin", "sidecar {name} interrupted ({status}), respawning");
+            }
+            SidecarExit::Crashed => {
+                log::warn!(target: "gray_plugin", "sidecar {name} exited ({status}), respawning");
+            }
         }
         match spawn_child(&self.argv) {
             Ok((new_child, stdin, stdout)) => {
@@ -555,7 +585,7 @@ impl Transport {
                     p.epoch,
                 );
                 *self.respawn.lock().unwrap_or_else(|e| e.into_inner()) = RespawnState::default();
-                if !clean {
+                if exit == SidecarExit::Crashed {
                     self.say(&name, &status, true, wait_err).await;
                 }
                 true

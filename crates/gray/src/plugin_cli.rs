@@ -716,6 +716,7 @@ pub fn remove_managed(name: &str) -> anyhow::Result<()> {
     let home = home()?;
     migrate_commands_json(&home);
     validate_name(name)?;
+    ensure_installed(&home, name)?;
     let removed = load_lock(&home)?.plugins.contains_key(name);
     if removed {
         gray_pkg::ops::remove(name)?;
@@ -751,18 +752,21 @@ pub fn remove_managed(name: &str) -> anyhow::Result<()> {
 pub fn set_managed_enabled(name: &str, on: bool) -> anyhow::Result<()> {
     let home = home()?;
     migrate_commands_json(&home);
+    ensure_installed(&home, name)?;
     gray_pkg::ops::set_enabled(name, on)
 }
 
 pub fn set_managed_global(name: &str, on: bool) -> anyhow::Result<()> {
     let home = home()?;
     migrate_commands_json(&home);
+    ensure_installed(&home, name)?;
     gray_pkg::ops::set_global(name, on)
 }
 
 pub async fn update_managed(target: &str) -> anyhow::Result<Vec<gray_pkg::ops::UpdateRow>> {
-    let reports = gray_pkg::ops::update(target).await?;
     let home = home()?;
+    ensure_installed(&home, target)?;
+    let reports = gray_pkg::ops::update(target).await?;
     for r in &reports {
         if let (Some(path), gray_pkg::ops::UpdateAction::Installed(_)) = (&r.path, &r.action)
             && let Err(e) = adopt_cli(&home, &r.name, path).await
@@ -780,6 +784,7 @@ pub async fn update_managed(target: &str) -> anyhow::Result<Vec<gray_pkg::ops::U
 }
 
 pub async fn check_managed(target: &str) -> anyhow::Result<Vec<gray_pkg::ops::UpdateRow>> {
+    ensure_installed(&home()?, target)?;
     gray_pkg::ops::check_update(target).await
 }
 
@@ -833,6 +838,44 @@ fn command_suggestion(home: &Path, lock: &LockFile, typed: &str) -> Option<Strin
     } else {
         format!("{}, {}", first, rest.join(", "))
     })
+}
+
+fn not_installed_message(home: &Path, name: &str) -> String {
+    let names: Vec<String> = load_lock(home)
+        .map(|l| l.plugins.keys().cloned().collect())
+        .unwrap_or_default();
+    if names.is_empty() {
+        return format!("not installed: {name} (no plugins installed)");
+    }
+    let mut scored: Vec<(String, f64)> = names
+        .iter()
+        .map(|n| (n.clone(), strsim::jaro_winkler(name, n)))
+        .filter(|(n, s)| *s >= 0.87 && n != name)
+        .collect();
+    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    let near: Vec<String> = scored
+        .into_iter()
+        .take(3)
+        .map(|(n, _)| format!("'{n}'"))
+        .collect();
+    if near.is_empty() {
+        format!("not installed: {name} (installed: {})", names.join(", "))
+    } else {
+        format!("not installed: {name} — did you mean {}?", near.join(", "))
+    }
+}
+
+fn ensure_installed(home: &Path, name: &str) -> anyhow::Result<()> {
+    if name == "all" {
+        return Ok(());
+    }
+    let lock = load_lock(home)?;
+    anyhow::ensure!(
+        lock.plugins.contains_key(name),
+        "{}",
+        not_installed_message(home, name)
+    );
+    Ok(())
 }
 
 fn removed_builtin(name: &str) -> Option<&'static str> {
