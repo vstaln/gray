@@ -590,7 +590,7 @@ pub(crate) async fn run_prompt_turn(
                     {
                         let when =
                             crate::settings::arm_auto_continue(state.session_id.as_str(), *wait);
-                        super::notice::push_notice(&mut t, "Usage limit hit", &when, false);
+                        super::notice::push_notice(&mut t, "Usage limit reached", &when, false);
                     }
                 }
             } else {
