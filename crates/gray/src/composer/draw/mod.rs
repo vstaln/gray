@@ -645,6 +645,38 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
                 Paragraph::new(ibox.lines.clone()),
                 Rect::new(box_x, box_y, area.right() - box_x, rendered_box_h),
             );
+            if crate::settings::vim_mode() && tui.vim.is_normal() {
+                let badge = " NORMAL ";
+                let bw = display_width(badge) as u16;
+                let used: u16 = ibox
+                    .lines
+                    .get(ibox.lead_h + 1)
+                    .map(|l| {
+                        l.spans
+                            .iter()
+                            .map(|s| display_width(&s.content))
+                            .sum::<usize>() as u16
+                    })
+                    .unwrap_or(0);
+                let y = box_y + ibox.lead_h as u16 + 1;
+                if used + bw + 1 <= box_w
+                    && y < box_y + rendered_box_h
+                    && y < area.bottom()
+                    && box_w >= bw + 1
+                {
+                    let th = crate::theme::theme();
+                    frame.render_widget(
+                        Paragraph::new(Span::styled(
+                            badge,
+                            Style::default()
+                                .fg(th.accent_soft)
+                                .bg(th.surface_bg)
+                                .add_modifier(Modifier::DIM),
+                        )),
+                        Rect::new(box_x + box_w - bw - 1, y, bw, 1),
+                    );
+                }
+            }
         }
 
         if let Some(banner) = tui.action.banner() {

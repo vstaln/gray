@@ -110,6 +110,7 @@ pub struct Tui {
     pub(crate) muted_text: Option<String>,
     /// Active ctrl-r reverse-history-search state (None when not searching).
     pub(crate) search: Option<HistSearch>,
+    pub(crate) vim: input::vim::Vim,
     pub(crate) action: action::ActionState,
     pub(crate) sel: usize,
     status: Option<(Instant, String)>,
@@ -384,6 +385,7 @@ impl Tui {
             matches: Vec::new(),
             muted_text: None,
             search: None,
+            vim: input::vim::Vim::default(),
             action: action::ActionState::Idle,
             sel: 0,
             status: None,
