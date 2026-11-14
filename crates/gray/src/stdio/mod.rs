@@ -425,8 +425,8 @@ async fn idle_tick(
     cwd: &std::path::Path,
     tui: &repl::TuiOpt,
 ) -> anyhow::Result<()> {
-    for lines in crate::host::take_host_say() {
-        emit_say_lines(&lines);
+    for block in crate::host::take_host_say() {
+        emit_say_lines(&block.into_lines());
     }
     if !cfg!(windows)
         && let Ok(home) = crate::setup::gray_home()

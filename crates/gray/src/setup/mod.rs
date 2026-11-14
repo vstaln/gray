@@ -108,6 +108,8 @@ pub use icons::icon;
 pub(crate) mod composite_rows;
 mod context_modal;
 mod install_manager;
+mod login_pty;
+mod logins;
 mod model_dump;
 mod model_modal;
 mod model_panes;

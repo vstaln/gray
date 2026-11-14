@@ -22,10 +22,16 @@ pub(crate) enum KeyOutcome {
 
 pub(crate) fn dispatch(tui: &mut Tui, ev: &KeyEvent) -> KeyOutcome {
     let bindings = crate::keymap::resolve_event(ev);
+    if tui.search.is_none()
+        && let Some(out) = super::vim::dispatch(tui, ev)
+    {
+        return out;
+    }
     dispatch_bindings(tui, ev, &bindings)
 }
 
 pub(crate) fn dispatch_bindings(tui: &mut Tui, ev: &KeyEvent, bindings: &[Binding]) -> KeyOutcome {
+    tui.action.cancel_auto();
     if tui.search.is_some()
         && let Some(out) = dispatch_in_search(tui, ev, bindings)
     {
@@ -58,7 +64,7 @@ pub(crate) fn dispatch_bindings(tui: &mut Tui, ev: &KeyEvent, bindings: &[Bindin
     KeyOutcome::Ignored
 }
 
-fn apply(tui: &mut Tui, a: Action) -> Option<KeyOutcome> {
+pub(super) fn apply(tui: &mut Tui, a: Action) -> Option<KeyOutcome> {
     use KeyOutcome::*;
     let popup = !tui.matches.is_empty();
     let multi = tui.matches.len() > 1;

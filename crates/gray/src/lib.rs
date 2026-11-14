@@ -1,6 +1,7 @@
 pub mod ask;
 pub mod auth;
 pub mod auto_title;
+pub(crate) mod away;
 pub mod cache;
 pub mod cmd;
 pub mod compact;
@@ -27,20 +28,24 @@ mod rotation;
 pub mod session_mailbox;
 pub mod session_send;
 pub mod session_store;
+pub(crate) mod settings;
 pub mod setup;
 pub mod shell_drain;
 pub mod spill;
 pub mod statusline;
 pub mod stdio;
+pub(crate) mod suggest;
 pub mod sys_editor;
 pub mod system_prompt;
 pub mod term_keys;
+pub(crate) mod term_signals;
 pub(crate) mod text_width;
 pub mod theme;
 pub mod tool_fmt;
 pub mod tui;
 pub mod turn_caps;
 pub mod update;
+pub(crate) mod usage_cache;
 pub(crate) mod util;
 pub mod win_paste;
 
@@ -349,6 +354,8 @@ async fn build_agent_inner(
             &provider,
         )
     };
+    let attribution = (!config.bare && crate::settings::commit_attribution())
+        .then(|| system_prompt::commit_attribution(model));
     let prebooted_plugins = if !config.bare && spawn_plugins {
         match crate::plugin_status::take_boot().await {
             Some(Ok(plugins)) => Some(plugins),
@@ -399,6 +406,11 @@ async fn build_agent_inner(
                         if !plugins.is_empty() {
                             prompt.push_str("\n\n");
                             prompt.push_str(&plugins);
+                        }
+
+                        if let Some(attribution) = &attribution {
+                            prompt.push_str("\n\n");
+                            prompt.push_str(attribution);
                         }
                     }
 

@@ -301,7 +301,7 @@ fn model_completes_cached_ids() {
 fn bare_model_and_provider_aliases_open_two_pane_picker() {
     assert!(matches!(parse_command("/models"), ReplCommand::ModelPanes));
     assert!(matches!(parse_command("/MODELS"), ReplCommand::ModelPanes));
-    for cmd in ["/model", "/connect", "/provider"] {
+    for cmd in ["/model", "/provider"] {
         assert!(
             matches!(parse_command(cmd), ReplCommand::ModelPanes),
             "{cmd}"
@@ -418,13 +418,6 @@ fn sessions_is_canonical_and_resume_stays_an_alias() {
             .iter()
             .any(|(n, _)| n == "resume dismiss")
     );
-}
-
-#[test]
-fn connect_completes_to_models_not_gateway() {
-    // "/connect" used to fuzzy-match the old /gateway "connections" description.
-    let got = super::completion_matches("connect");
-    assert_eq!(got.first().map(|(n, _)| *n), Some("models"), "{got:?}");
 }
 
 #[test]

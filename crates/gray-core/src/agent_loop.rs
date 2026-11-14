@@ -14,6 +14,51 @@ use crate::message::{ChatRequest, ContentBlock, Message, Role, ThoughtSignature}
 
 const MAX_EMPTY_RETRIES: u8 = 1;
 
+const MAX_ANNOUNCE_NUDGES: u8 = 1;
+
+const ANNOUNCE_NUDGE: &str = "You described what you were about to do but sent no tool call, so nothing ran. If the work is not finished, make the tool call now in whatever form this provider expects -- a native tool call where tools are native, otherwise the provider's own tool-call block. If it is finished, say so plainly and stop promising further steps.";
+
+const DEFERRAL_HINTS: [&str; 6] = [
+    "let me know",
+    "would you like",
+    "want me to",
+    "should i ",
+    "here's the plan",
+    "i can revert",
+];
+
+const ANNOUNCE_LEADS: [&str; 14] = [
+    "i'll ",
+    "i will ",
+    "let me ",
+    "i'm going to ",
+    "i am going to ",
+    "i'm about to ",
+    "i am about to ",
+    "next, i'll ",
+    "first, i'll ",
+    "then i'll ",
+    "now i'll ",
+    "checking ",
+    "looking at ",
+    "running ",
+];
+
+fn announces_action(text: &str) -> bool {
+    let plain = text
+        .to_lowercase()
+        .replace(['\u{2019}', '\u{2018}'], "'")
+        .replace(['\u{201c}', '\u{201d}'], "\"");
+    let body = plain.trim();
+    if body.is_empty() || body.ends_with('?') {
+        return false;
+    }
+    if DEFERRAL_HINTS.iter().any(|h| body.contains(h)) {
+        return false;
+    }
+    ANNOUNCE_LEADS.iter().any(|lead| body.contains(lead))
+}
+
 const MAX_TURN_RETRIES: u8 = 8;
 
 const MAX_STREAM_STALL_RETRIES: u8 = 2;
@@ -498,6 +543,8 @@ impl Agent {
         let mut billed = Usage::default();
         let mut empty_retries: u8 = 0;
 
+        let mut announce_nudges: u8 = 0;
+
         let mut turn_retries: u8 = 0;
 
         // When consecutive retrying began; cleared as soon as the stream makes
@@ -517,12 +564,17 @@ impl Agent {
             if let Some(text) = hook.prompt_context().await
                 && !text.trim().is_empty()
             {
+                let body = text.trim_end();
                 let sent = self.messages.iter().any(|message| {
-                    message.injected
-                        && message.content.iter().any(|block| {
-                            matches!(block, ContentBlock::Text { text: seen }
-                                if seen.starts_with("[Context update]\n") && seen.contains(text.as_str()))
-                        })
+                    message.content.iter().any(|block| {
+                        matches!(block, ContentBlock::Text { text: seen }
+                        if seen
+                            .strip_prefix("[Context update]\n")
+                            .is_some_and(|old| {
+                                let old = old.trim_end();
+                                old == body || old.contains(body)
+                            }))
+                    })
                 });
                 if !sent {
                     self.messages
@@ -1300,6 +1352,19 @@ impl Agent {
 
             if tool_uses.is_empty() {
                 if self.collect_background_notifications(&ctx) {
+                    emit!(AgentEvent::MessageBoundary);
+                    continue 'turn;
+                }
+
+                if announce_nudges < MAX_ANNOUNCE_NUDGES
+                    && announces_action(&assistant.text_content())
+                {
+                    announce_nudges += 1;
+                    log::info!(
+                        target: "gray_agent",
+                        "turn ended with no tool call while announcing an action; nudging once"
+                    );
+                    self.messages.push(Message::user_injected(ANNOUNCE_NUDGE));
                     emit!(AgentEvent::MessageBoundary);
                     continue 'turn;
                 }

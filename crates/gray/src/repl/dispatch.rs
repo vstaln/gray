@@ -326,6 +326,10 @@ pub(crate) async fn dispatch_command(
             }
             Flow::Continue
         }
+        ReplCommand::Settings => {
+            crate::settings::run_settings_picker(tui.as_ref().map(|(s, _)| s), cwd);
+            Flow::Continue
+        }
         ReplCommand::Jobs => {
             let tui_shared = tui.as_ref().map(|(s, _)| s);
             let sid = session_state.as_ref().map(|s| s.session_id.as_str());
@@ -494,6 +498,12 @@ pub(crate) async fn dispatch_command(
                         say(tui.as_ref().map(|(s, _)| s), &format!("{e:#}"));
                         return Ok(Flow::Continue);
                     }
+                }
+            }
+            if let Some(a) = agent.as_ref() {
+                super::session::ensure_session_state(session_state, config, cwd).await;
+                if let Some(state) = session_state.as_ref() {
+                    a.repin_session_id(state.session_id.as_str());
                 }
             }
             let hooks: Vec<Arc<dyn PluginHooks>> = agent

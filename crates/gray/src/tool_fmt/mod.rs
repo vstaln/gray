@@ -472,6 +472,11 @@ fn placeholder_text(args: &serde_json::Value, inner: &str) -> String {
     let raw = value_text(args, path);
     match filter {
         "model" => model_display_name(&one_line(&raw)),
+        "verb" => one_line(&raw)
+            .split('_')
+            .find(|w| !w.is_empty())
+            .unwrap_or_default()
+            .to_string(),
         "firstline" => raw
             .lines()
             .map(str::trim)
@@ -947,18 +952,19 @@ fn bash_header(
             if !background && let Some(mem) = memory_label(core.command) {
                 return memory_line(mem, bullet, action_style, cmd_style, dim_style);
             }
-            let cut = truncate_cmd(core.command);
+            let shown = gray_cli_command(core.command).unwrap_or(core.command);
+            let cut = truncate_cmd(shown);
 
-            let cmd = if cut.len() < core.command.len() || full.lines().nth(1).is_some() {
+            let cmd = if cut.len() < shown.len() || full.lines().nth(1).is_some() {
                 format!("{}\u{2026}", cut.trim_end())
             } else {
                 cut.to_string()
             };
-            let mut spans = vec![
-                bullet,
-                verb(if background { "Started " } else { "Ran " }),
-                Span::styled(cmd, cmd_style),
-            ];
+            let mut spans = vec![bullet];
+            if gray_cli_command(core.command).is_none() {
+                spans.push(verb(if background { "Started " } else { "Ran " }));
+            }
+            spans.push(Span::styled(cmd, cmd_style));
             if let Some(dir) = core.cwd.filter(|d| !d.trim().is_empty()) {
                 spans.push(Span::styled(format!(" \u{00b7} {dir}"), dim_style));
             }
@@ -968,6 +974,47 @@ fn bash_header(
             Line::from(spans)
         }
     }
+}
+
+fn gray_cli_command(command: &str) -> Option<&str> {
+    let head = command.split_whitespace().next()?;
+    if head.rsplit('/').next() != Some("gray") {
+        return None;
+    }
+    let rest = command.get(head.len()..)?.trim_start();
+    let sub = rest.split_whitespace().next()?;
+    if sub.starts_with('-')
+        || !sub
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+    {
+        return None;
+    }
+    Some(rest)
+}
+
+pub(crate) fn verbless_card(name: &str, args: &serde_json::Value) -> bool {
+    if name != "bash" {
+        return false;
+    }
+    let action = args.get("action").and_then(|v| v.as_str()).unwrap_or("run");
+    if matches!(action, "output" | "status" | "cancel" | "list") {
+        return false;
+    }
+    let background = args.get("background").and_then(|v| v.as_bool()) == Some(true);
+    let full = args
+        .get("command")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim();
+    let core = gray_tools::shell::label::core_command(full);
+    if !background && gray_tools::shell::label::read_only(full).is_some() {
+        return false;
+    }
+    if !background && memory_label(core.command).is_some() {
+        return false;
+    }
+    gray_cli_command(core.command).is_some()
 }
 
 /// A `gray memory …` shell call, labeled like a tool row ("Remembered KEY ·
@@ -1514,6 +1561,10 @@ pub fn format_tool_result_lines_with_context(
         return lines;
     }
 
+    if let Some(lines) = subagent::subagent_body(tool_name, output) {
+        return lines;
+    }
+
     let raw_path = args.map(arg_path).unwrap_or("");
     let path_buf = if !raw_path.is_empty() {
         Some(if let Some(c) = cwd {
@@ -1609,6 +1660,7 @@ fn drop_view_echo<'a>(args: Option<&serde_json::Value>, output: &'a str) -> &'a 
 }
 
 mod plain;
+mod subagent;
 mod web;
 
 pub use plain::{format_tool_call_lines_plain, format_tool_result_plain_with_context};

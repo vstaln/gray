@@ -1,7 +1,7 @@
 use ratatui::text::Line;
 use std::time::{Duration, Instant};
 
-#[derive(Debug, Default, PartialEq, serde::Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, serde::Deserialize)]
 pub(crate) struct Snapshot {
     pub version: u32,
     pub text: String,
@@ -88,9 +88,9 @@ pub(crate) fn lines(
 }
 
 pub(crate) struct Widget {
-    latest: std::sync::mpsc::Receiver<Snapshot>,
+    latest: std::sync::mpsc::Receiver<State>,
     stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    snapshot: Snapshot,
+    state: State,
     started: Instant,
 }
 impl Widget {
@@ -108,33 +108,34 @@ impl Widget {
             rt.block_on(async move {
                 let mut gate = SpecGate {
                     stamps: [None; 3],
-                    argv: None,
+                    spec: None,
                 };
-                let mut active = false;
+                let mut state = State::Fresh(Snapshot::default());
                 let mut last_spawn = Instant::now() - IDLE_POLL;
                 while !flag.load(std::sync::atomic::Ordering::Relaxed) {
                     if let Ok(home) = crate::plugin_cli::home() {
                         let resolved_fresh = gate.refresh(&home);
-                        let interval = if active { TICK } else { IDLE_POLL };
-                        if let Some(argv) = gate.argv() {
+                        let interval = state.poll_interval();
+                        if let Some(spec) = gate.spec().cloned() {
                             if resolved_fresh || last_spawn.elapsed() >= interval {
                                 last_spawn = Instant::now();
-                                let snapshot =
-                                    spawn_widget(argv, &cwd).await.unwrap_or_else(|e| Snapshot {
-                                        version: 1,
-                                        text: format!("widget error: {e:#}"),
-                                        ..Default::default()
-                                    });
-                                active = !snapshot.text.is_empty();
-                                if tx.try_send(snapshot).is_err()
+                                let next = match spawn_widget(&spec.argv, &cwd).await {
+                                    Ok(snapshot) => State::Fresh(snapshot),
+                                    Err(e) => {
+                                        log::debug!("widget poll failed: {e:#}");
+                                        state.failed(spec.name.clone(), format!("{e:#}"))
+                                    }
+                                };
+                                state = next;
+                                if tx.try_send(state.clone()).is_err()
                                     && flag.load(std::sync::atomic::Ordering::Relaxed)
                                 {
                                     break;
                                 }
                             }
                         } else if resolved_fresh {
-                            active = false;
-                            if tx.try_send(Snapshot::default()).is_err()
+                            state = State::Fresh(Snapshot::default());
+                            if tx.try_send(state.clone()).is_err()
                                 && flag.load(std::sync::atomic::Ordering::Relaxed)
                             {
                                 break;
@@ -148,23 +149,105 @@ impl Widget {
         Self {
             latest: rx,
             stop,
-            snapshot: Snapshot::default(),
+            state: State::Fresh(Snapshot::default()),
             started: Instant::now(),
         }
     }
     pub(crate) fn refresh(&mut self) -> bool {
-        if let Ok(snapshot) = self.latest.try_recv() {
-            let changed = self.snapshot != snapshot;
-            self.snapshot = snapshot;
+        if let Ok(state) = self.latest.try_recv() {
+            let changed = self.state != state;
+            self.state = state;
             return changed;
         }
         false
     }
     pub(crate) fn active(&self) -> bool {
-        !self.snapshot.text.is_empty()
+        self.state.active()
     }
     pub(crate) fn rows(&self, max_rows: usize, width: usize) -> Vec<Line<'static>> {
-        lines(&self.snapshot, self.started.elapsed(), max_rows, width)
+        self.state.rows(self.started.elapsed(), max_rows, width)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+enum State {
+    Fresh(Snapshot),
+    Stale {
+        content: Snapshot,
+        failures: u32,
+    },
+    Failed {
+        owner: String,
+        reason: String,
+        failures: u32,
+    },
+}
+
+const FAILURE_LIMIT: u32 = 3;
+
+impl State {
+    fn failed(self, owner: String, reason: String) -> Self {
+        match self {
+            State::Fresh(content) => Self::degraded(content, owner, reason, 1),
+            State::Stale { content, failures } => {
+                Self::degraded(content, owner, reason, failures.saturating_add(1))
+            }
+            State::Failed { failures, .. } => State::Failed {
+                owner,
+                reason,
+                failures: failures.saturating_add(1),
+            },
+        }
+    }
+
+    fn degraded(content: Snapshot, owner: String, reason: String, failures: u32) -> Self {
+        if failures < FAILURE_LIMIT {
+            State::Stale { content, failures }
+        } else {
+            State::Failed {
+                owner,
+                reason,
+                failures,
+            }
+        }
+    }
+
+    fn active(&self) -> bool {
+        match self {
+            State::Fresh(content) | State::Stale { content, .. } => !content.text.is_empty(),
+            State::Failed { .. } => true,
+        }
+    }
+
+    fn poll_interval(&self) -> Duration {
+        match self {
+            State::Fresh(content) | State::Stale { content, .. } => {
+                if content.text.is_empty() {
+                    IDLE_POLL
+                } else {
+                    TICK
+                }
+            }
+            State::Failed { .. } => IDLE_POLL,
+        }
+    }
+
+    fn rows(&self, elapsed: Duration, max_rows: usize, width: usize) -> Vec<Line<'static>> {
+        match self {
+            State::Fresh(content) | State::Stale { content, .. } => {
+                lines(content, elapsed, max_rows, width)
+            }
+            State::Failed { owner, reason, .. } => lines(
+                &Snapshot {
+                    version: 1,
+                    text: format!("{owner} widget unavailable ({reason})"),
+                    ..Default::default()
+                },
+                elapsed,
+                max_rows,
+                width,
+            ),
+        }
     }
 }
 impl Drop for Widget {
@@ -177,9 +260,17 @@ const TICK: Duration = Duration::from_millis(500);
 
 const IDLE_POLL: Duration = Duration::from_secs(5);
 
+const POLL_TIMEOUT: Duration = Duration::from_secs(10);
+
 struct SpecGate {
     stamps: [Option<std::time::SystemTime>; 3],
-    argv: Option<Vec<String>>,
+    spec: Option<WidgetSpec>,
+}
+
+#[derive(Clone)]
+struct WidgetSpec {
+    name: String,
+    argv: Vec<String>,
 }
 
 impl SpecGate {
@@ -199,16 +290,16 @@ impl SpecGate {
             return false;
         }
         self.stamps = stamps;
-        self.argv = resolve_widget_argv(home).ok();
+        self.spec = resolve_widget(home).ok();
         true
     }
 
-    fn argv(&self) -> Option<&[String]> {
-        self.argv.as_deref()
+    fn spec(&self) -> Option<&WidgetSpec> {
+        self.spec.as_ref()
     }
 }
 
-fn resolve_widget_argv(home: &std::path::Path) -> anyhow::Result<Vec<String>> {
+fn resolve_widget(home: &std::path::Path) -> anyhow::Result<WidgetSpec> {
     let raw = std::fs::read(home.join("plugins/widgets.json"))?;
     let spec: serde_json::Value = serde_json::from_slice(&raw)?;
     let name = spec["name"]
@@ -223,7 +314,10 @@ fn resolve_widget_argv(home: &std::path::Path) -> anyhow::Result<Vec<String>> {
         crate::plugin_cli::enabled(home, name, entry),
         "widget owner is disabled"
     );
-    Ok(entry.cli_argv.clone().unwrap_or_else(|| entry.argv.clone()))
+    Ok(WidgetSpec {
+        name: name.to_string(),
+        argv: entry.cli_argv.clone().unwrap_or_else(|| entry.argv.clone()),
+    })
 }
 
 async fn spawn_widget(argv: &[String], cwd: &std::path::Path) -> anyhow::Result<Snapshot> {
@@ -232,7 +326,7 @@ async fn spawn_widget(argv: &[String], cwd: &std::path::Path) -> anyhow::Result<
         .ok_or_else(|| anyhow::anyhow!("empty widget argv"))?;
     let mut command = tokio::process::Command::new(program);
     command.args(args).arg("widget").current_dir(cwd);
-    let bytes = crate::plugin_cli::capture(command, Duration::from_secs(2)).await?;
+    let bytes = crate::plugin_cli::capture(command, POLL_TIMEOUT).await?;
     let snapshot: Snapshot = serde_json::from_slice(&bytes)?;
     anyhow::ensure!(snapshot.version == 1, "unsupported widget snapshot version");
     Ok(snapshot)

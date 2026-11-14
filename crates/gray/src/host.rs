@@ -61,7 +61,33 @@ impl CrashNotice {
 #[derive(Debug)]
 enum SayEntry {
     Lines(Vec<Line<'static>>),
+    Recap(String),
     Crash(CrashNotice),
+}
+
+pub enum SayBlock {
+    Lines(Vec<Line<'static>>),
+    Recap(String),
+}
+
+impl SayBlock {
+    pub(crate) fn into_lines(self) -> Vec<Line<'static>> {
+        match self {
+            Self::Lines(lines) => lines,
+            Self::Recap(text) => recap_plain_lines(&text),
+        }
+    }
+}
+
+fn recap_plain_lines(text: &str) -> Vec<Line<'static>> {
+    let dim = Style::new().add_modifier(Modifier::DIM);
+    let mut out = vec![Line::from(Span::styled("\u{203b} Recap", dim))];
+    out.extend(
+        text.lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(|l| Line::from(Span::styled(format!("  {l}"), dim))),
+    );
+    out
 }
 
 static SAY_QUEUE: Mutex<Vec<SayEntry>> = Mutex::new(Vec::new());
@@ -70,7 +96,7 @@ static SAY_QUEUE: Mutex<Vec<SayEntry>> = Mutex::new(Vec::new());
 /// since; survives drains so a crash loop folds instead of refilling.
 static CRASH_TAIL: Mutex<Option<(CrashNotice, u32)>> = Mutex::new(None);
 
-pub fn take_host_say() -> Vec<Vec<Line<'static>>> {
+pub fn take_host_say() -> Vec<SayBlock> {
     let entries = SAY_QUEUE
         .lock()
         .map(|mut q| std::mem::take(&mut *q))
@@ -78,22 +104,32 @@ pub fn take_host_say() -> Vec<Vec<Line<'static>>> {
     drain_say_entries(entries)
 }
 
-fn drain_say_entries(entries: Vec<SayEntry>) -> Vec<Vec<Line<'static>>> {
-    let mut out: Vec<Vec<Line<'static>>> = Vec::new();
+fn drain_say_entries(entries: Vec<SayEntry>) -> Vec<SayBlock> {
+    let mut out: Vec<SayBlock> = Vec::new();
     let mut crashes: Vec<CrashNotice> = Vec::new();
     for e in entries {
         match e {
             SayEntry::Crash(c) => crashes.push(c),
+            SayEntry::Recap(text) => {
+                if !crashes.is_empty() {
+                    out.push(SayBlock::Lines(vec![crash_notice_line(std::mem::take(
+                        &mut crashes,
+                    ))]));
+                }
+                out.push(SayBlock::Recap(text));
+            }
             SayEntry::Lines(lines) => {
                 if !crashes.is_empty() {
-                    out.push(vec![crash_notice_line(std::mem::take(&mut crashes))]);
+                    out.push(SayBlock::Lines(vec![crash_notice_line(std::mem::take(
+                        &mut crashes,
+                    ))]));
                 }
-                out.push(lines);
+                out.push(SayBlock::Lines(lines));
             }
         }
     }
     if !crashes.is_empty() {
-        out.push(vec![crash_notice_line(crashes)]);
+        out.push(SayBlock::Lines(vec![crash_notice_line(crashes)]));
     }
     out
 }
@@ -107,6 +143,15 @@ fn more_suffix(repeats: u32) -> String {
         format!(" ({repeats} more)")
     } else {
         String::new()
+    }
+}
+
+fn status_phrase(status: &str, outcome: &str) -> String {
+    let friendly = gray_plugin::friendly_exit_status(status);
+    if friendly == "interrupted" {
+        format!("interrupted, {outcome}")
+    } else {
+        format!("crashed ({friendly}), {outcome}")
     }
 }
 
@@ -131,8 +176,8 @@ fn crash_notice_line(crashes: Vec<CrashNotice>) -> Line<'static> {
             }
             let names = names.join(", ");
             format!(
-                "{names} crashed ({}), restarted{}",
-                gray_plugin::friendly_exit_status(status),
+                "{names} {}{}",
+                status_phrase(status, "restarted"),
                 more_suffix(repeats)
             )
         } else {
@@ -179,9 +224,9 @@ fn crash_notice_line(crashes: Vec<CrashNotice>) -> Line<'static> {
             .map(|e| format!(": {e}"))
             .unwrap_or_default();
         segments.push(format!(
-            "{} crashed ({}), restart failed{why}{}",
+            "{} {}{why}{}",
             plugin_short_name(&c.plugin),
-            gray_plugin::friendly_exit_status(&c.status),
+            status_phrase(&c.status, "restart failed"),
             more_suffix(c.repeats)
         ));
     }
@@ -226,6 +271,10 @@ pub(crate) fn queue_say(text: String) {
             })
             .collect(),
     ));
+}
+
+pub(crate) fn queue_recap(text: String) {
+    queue_say_inner(SayEntry::Recap(text));
 }
 
 fn queue_crash_inner(

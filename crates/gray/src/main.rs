@@ -536,6 +536,17 @@ async fn run_plugin_inner(cmd: gray::PluginCmd) -> anyhow::Result<()> {
             if !printed {
                 println!("up to date");
             }
+            let obstructed: Vec<&str> = reports
+                .iter()
+                .filter(|r| r.obstructed())
+                .map(|r| r.name.as_str())
+                .collect();
+            anyhow::ensure!(
+                obstructed.is_empty(),
+                "{} plugin(s) could not be updated: {}",
+                obstructed.len(),
+                obstructed.join(", ")
+            );
             Ok(())
         }
         PluginCmd::Enable { name, global } => {

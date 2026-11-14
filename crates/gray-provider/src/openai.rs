@@ -181,7 +181,9 @@ impl Provider for OpenAiProvider {
             );
         }
         let caps = ModelCaps::for_host(&self.base_url);
-        if caps.prefer_responses {
+        let wire_key = (self.base_url.to_string(), self.model.clone());
+        if caps.prefer_responses && !chat_wire_models().contains(&wire_key) {
+            let chat = self.chat_stream(req.clone(), caps, session_id.clone(), cache_off);
             let url = match responses_url(&self.base_url) {
                 Ok(u) => u,
                 Err(e) => return stream::once(async move { Err(e) }).boxed(),
@@ -208,8 +210,49 @@ impl Provider for OpenAiProvider {
                 stream_attempt: 1,
                 tools_by_call_id: BTreeMap::new(),
             };
-            return stream::unfold(init_state, stream_unfold_step).boxed();
+            let responses = stream::unfold(init_state, stream_unfold_step).boxed();
+            return stream::once(async move {
+                let (first, rest) = responses.into_future().await;
+                match first {
+                    Some(Err(e)) if names_chat_wire(&e) => {
+                        log::info!(
+                            target: "gray_provider",
+                            "{} serves {} on chat/completions only; switching wire",
+                            wire_key.0,
+                            wire_key.1
+                        );
+                        chat_wire_models().insert(wire_key);
+                        chat
+                    }
+                    Some(item) => stream::once(async move { item }).chain(rest).boxed(),
+                    None => stream::empty().boxed(),
+                }
+            })
+            .flatten()
+            .boxed();
         }
+        self.chat_stream(req, caps, session_id, cache_off)
+    }
+}
+
+fn chat_wire_models() -> std::sync::MutexGuard<'static, HashSet<(String, String)>> {
+    static MODELS: std::sync::LazyLock<std::sync::Mutex<HashSet<(String, String)>>> =
+        std::sync::LazyLock::new(Default::default);
+    MODELS.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+fn names_chat_wire(err: &ProviderError) -> bool {
+    matches!(err.class(), ProviderError::BadRequest(msg) if msg.contains("/chat/completions"))
+}
+
+impl OpenAiProvider {
+    fn chat_stream(
+        &self,
+        req: ChatRequest,
+        caps: ModelCaps,
+        session_id: Option<String>,
+        cache_off: bool,
+    ) -> BoxStream<'static, Result<StreamEvent, ProviderError>> {
         let url = match chat_completions_url(&self.base_url) {
             Ok(u) => u,
             Err(e) => return stream::once(async move { Err(e) }).boxed(),

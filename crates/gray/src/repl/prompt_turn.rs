@@ -25,6 +25,7 @@ async fn run_streaming_cancellable(
     tokio::select! {
         res = &mut run_future => res,
         _ = cancel.cancelled() => {
+            crate::ask::drop_pending();
             let observed = tokio::time::timeout(TURN_CANCEL_GRACE, &mut run_future).await;
 
             let preempted = observed.is_err();
@@ -75,6 +76,7 @@ pub(crate) async fn run_prompt_turn(
     resumable: &mut bool,
 ) -> anyhow::Result<()> {
     super::session::clear_resume_trailer();
+    crate::settings::turn_started();
     let shared = interactive.then(|| tui.as_ref().expect("interactive implies tui"));
     let tui_stream = shared.as_ref().map(|(s, _)| (*s).clone());
     if agent.is_none() {
@@ -191,6 +193,7 @@ pub(crate) async fn run_prompt_turn(
     *TURN_STATE.lock().unwrap_or_else(|e| e.into_inner()) = Some(cancel.clone());
 
     let _turn_in_flight = super::mark_turn_in_flight();
+    crate::term_signals::turn_start(cwd);
     super::session::ensure_session_state(session_state, config, cwd).await;
     let ctx = turn_tool_context(cwd, &cancel, session_state);
     let mut images = std::mem::take(&mut *pending_images);
@@ -431,6 +434,11 @@ pub(crate) async fn run_prompt_turn(
         run_result =
             run_streaming_cancellable(agent, retry_msg, ctx2, &cancel, &mut on_event2).await;
     }
+    let turn_end_state = match &run_result {
+        Ok(_) => crate::term_signals::TurnEnd::Ok,
+        Err(CoreError::Cancelled) => crate::term_signals::TurnEnd::Cancelled,
+        Err(_) => crate::term_signals::TurnEnd::Failed,
+    };
     TURN_STATE.lock().unwrap_or_else(|e| e.into_inner()).take();
     agent.set_checkpoint(None);
 
@@ -480,6 +488,18 @@ pub(crate) async fn run_prompt_turn(
             if let Some(state) = &*session_state {
                 crate::auto_title::maybe_start(state, &*agent);
             }
+            if interactive && let Some((shared, _)) = tui {
+                let answer = agent
+                    .messages()
+                    .last()
+                    .filter(|m| m.role == gray_core::message::Role::Assistant)
+                    .map(|m| m.text_content())
+                    .unwrap_or_default();
+                shared
+                    .lock()
+                    .expect("tui lock")
+                    .start_turn_end_action(&answer);
+            }
         }
         Err(CoreError::Cancelled) => {
             *resumable = true;
@@ -520,6 +540,9 @@ pub(crate) async fn run_prompt_turn(
             )
             .await;
             let msg = format_core_error(&e, &config.base_url);
+            if let gray_core::error::CoreError::Quota { message, resets_in } = e.class() {
+                crate::usage_cache::note_quota(&config.provider_id, message, *resets_in);
+            }
 
             let previous_key = config.api_key.clone();
             let mut reloaded = matches!(e.class(), gray_core::error::CoreError::Auth(_))
@@ -559,6 +582,19 @@ pub(crate) async fn run_prompt_turn(
                     if reloaded {
                         super::notice::push_notice(&mut t, "API key reloaded", RELOADED, false);
                     }
+                    if let (
+                        gray_core::error::CoreError::Quota {
+                            resets_in: Some(wait),
+                            ..
+                        },
+                        Some(state),
+                    ) = (e.class(), session_state.as_ref())
+                        && crate::settings::auto_continue()
+                    {
+                        let when =
+                            crate::settings::arm_auto_continue(state.session_id.as_str(), *wait);
+                        super::notice::push_notice(&mut t, "Usage limit reached", &when, false);
+                    }
                 }
             } else {
                 say_err(None, &format!("{msg}\n(press Enter to continue)"));
@@ -575,31 +611,58 @@ pub(crate) async fn run_prompt_turn(
             .end_turn(stream_clock.streamed_ms().unwrap_or(0));
     }
 
-    if interactive && let Some((shared, _)) = tui {
-        let mut t = shared.lock().expect("tui lock");
-        if let Some(text) = t.local_command.take() {
-            let parsed = parse_command(&text);
-            if !parsed.runs_local() {
-                t.push_user_prompt(&text, &[], false);
-            }
-            drop(t);
-            *pending_command = Some(expand_prompt_template(parsed, cwd, true));
-        } else if let Some((qtext, qimages)) = pop_actionable(&mut t.queued_inputs) {
-            let parsed = parse_command(&qtext);
-            if !parsed.runs_local() {
-                t.push_user_prompt(&qtext, &qimages, !qtext.starts_with('/'));
-            }
-            drop(t);
-            *pending_command = Some(expand_prompt_template(parsed, cwd, false));
-            *pending_images = qimages;
-        }
+    if interactive {
+        drain_queued_input(tui, cwd, pending_command, pending_images);
     }
     if pending_command.is_none()
         && let Some(id) = auth_relogin
     {
         *pending_command = Some(ReplCommand::ProviderLogin(id));
     }
+    let final_text = agent
+        .messages()
+        .iter()
+        .rev()
+        .find(|m| m.role == gray_core::message::Role::Assistant)
+        .map(Message::text_content);
+    crate::term_signals::turn_end(
+        cwd,
+        turn_end_state,
+        turn_start.elapsed(),
+        final_text.as_deref(),
+    );
     Ok(())
+}
+
+pub(crate) fn drain_queued_input(
+    tui: &Option<(
+        crate::composer::SharedTui,
+        std::sync::Arc<std::sync::atomic::AtomicBool>,
+    )>,
+    cwd: &std::path::Path,
+    pending_command: &mut Option<ReplCommand>,
+    pending_images: &mut Vec<std::path::PathBuf>,
+) {
+    let Some((shared, _)) = tui else {
+        return;
+    };
+    let mut t = shared.lock().expect("tui lock");
+    if let Some(text) = t.local_command.take() {
+        let parsed = parse_command(&text);
+        if !parsed.runs_local() {
+            t.push_user_prompt(&text, &[], false);
+        }
+        drop(t);
+        *pending_command = Some(expand_prompt_template(parsed, cwd, true));
+    } else if let Some((qtext, qimages)) = pop_actionable(&mut t.queued_inputs) {
+        let parsed = parse_command(&qtext);
+        if !parsed.runs_local() {
+            t.push_user_prompt(&qtext, &qimages, !qtext.starts_with('/'));
+        }
+        drop(t);
+        *pending_command = Some(expand_prompt_template(parsed, cwd, false));
+        *pending_images = qimages;
+    }
 }
 
 fn pop_actionable(

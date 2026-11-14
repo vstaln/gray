@@ -1,4 +1,5 @@
 use super::*;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DiffTag {
@@ -203,7 +204,7 @@ pub(crate) fn wrap_styled_spans(
                 }
             }
 
-            let word_w = word.chars().count();
+            let word_w = word.width();
             let avail = get_avail(is_first_line);
 
             if cur_w + word_w <= avail {
@@ -217,11 +218,18 @@ pub(crate) fn wrap_styled_spans(
                     is_first_line = false;
                     cur_w = 0;
                 }
-                let line_cap = get_avail(is_first_line);
-                let wchars: Vec<char> = word.chars().collect();
-                for chunk in wchars.chunks(line_cap) {
-                    let chunk_str: String = chunk.iter().collect();
-                    let chunk_len = chunk_str.chars().count();
+                let line_cap = get_avail(is_first_line).max(1);
+                let mut chunks: Vec<String> = Vec::new();
+                let mut chunk = String::new();
+                for c in word.chars() {
+                    if !chunk.is_empty() && chunk.width() + c.width().unwrap_or(0) > line_cap {
+                        chunks.push(std::mem::take(&mut chunk));
+                    }
+                    chunk.push(c);
+                }
+                chunks.push(chunk);
+                for chunk_str in chunks {
+                    let chunk_len = chunk_str.width();
                     if cur_w + chunk_len > get_avail(is_first_line) && cur_w > 0 {
                         result.push(std::mem::take(&mut cur_line));
                         is_first_line = false;
@@ -290,7 +298,19 @@ pub fn render_diff_hunks(
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
-                format!(" with {additions} additions and {deletions} removals"),
+                format!(
+                    " with {additions} {} and {deletions} {}",
+                    if additions == 1 {
+                        "addition"
+                    } else {
+                        "additions"
+                    },
+                    if deletions == 1 {
+                        "removal"
+                    } else {
+                        "removals"
+                    },
+                ),
                 Style::default().fg(crate::theme::theme().text_soft),
             ),
         ]));

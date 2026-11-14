@@ -110,6 +110,7 @@ pub struct Tui {
     pub(crate) muted_text: Option<String>,
     /// Active ctrl-r reverse-history-search state (None when not searching).
     pub(crate) search: Option<HistSearch>,
+    pub(crate) vim: input::vim::Vim,
     pub(crate) action: action::ActionState,
     pub(crate) sel: usize,
     status: Option<(Instant, String)>,
@@ -225,6 +226,7 @@ pub struct Tui {
     pub(crate) replay_queue: Option<Box<ReplayQueue>>,
 
     status_line_seen: u64,
+    auto_continue_secs: Option<u64>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -239,6 +241,7 @@ pub(crate) struct LiveTool {
     pub(crate) id: String,
     pub(crate) header: Vec<Line<'static>>,
     pub(crate) running: bool,
+    pub(crate) verbless: bool,
     pub(crate) tail: LiveToolTail,
 }
 
@@ -384,6 +387,7 @@ impl Tui {
             matches: Vec::new(),
             muted_text: None,
             search: None,
+            vim: input::vim::Vim::default(),
             action: action::ActionState::Idle,
             sel: 0,
             status: None,
@@ -449,6 +453,7 @@ impl Tui {
             live_tools: Vec::new(),
             plugin_widget: plugin_widget::Widget::new(std::env::current_dir().unwrap_or_default()),
             status_line_seen: crate::statusline::version(),
+            auto_continue_secs: None,
             ask_modal: None,
             home_notice: None,
             plugin_stats: None,
@@ -468,7 +473,11 @@ impl Drop for Tui {
         crate::composer::kitty::flush_transmits();
         let _ = self.hide_background();
         let _ = crossterm::terminal::disable_raw_mode();
-        let _ = crossterm::execute!(std::io::stdout(), crossterm::event::DisableBracketedPaste);
+        let _ = crossterm::execute!(
+            std::io::stdout(),
+            crossterm::event::DisableBracketedPaste,
+            crossterm::event::DisableFocusChange
+        );
         let _ = crossterm::execute!(std::io::stdout(), crossterm::cursor::Show);
     }
 }

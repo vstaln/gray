@@ -646,7 +646,7 @@ pub(crate) fn dispatch_agent_event(
                     display.preview(name),
                 );
                 t.atomic(|t| {
-                    t.upsert_live_tool(id, header, false);
+                    t.upsert_live_tool(id, header, false, false);
                     t.set_status(Some(&format!("Preparing tool: {name}")));
                 });
             }
@@ -667,7 +667,7 @@ pub(crate) fn dispatch_agent_event(
                 let preview = crate::repl::format::truncate_chars(&preview, 60);
 
                 t.atomic(|t| {
-                    t.upsert_live_tool(id, header, false);
+                    t.upsert_live_tool(id, header, false, false);
                     if preview.is_empty() {
                         t.set_status(Some(&format!("Preparing tool: {name}")));
                     } else {
@@ -692,8 +692,9 @@ pub(crate) fn dispatch_agent_event(
                     .or_insert((name.clone(), Some(args.clone())));
 
                 let header = tool_header(display, &name, args, Some(cwd));
+                let verbless = crate::tool_fmt::verbless_card(&name, args);
                 t.atomic(|t| {
-                    t.upsert_live_tool(id, header, true);
+                    t.upsert_live_tool(id, header, true, verbless);
                     t.set_status(Some("Working"));
                 });
             }
@@ -738,7 +739,7 @@ pub(crate) fn dispatch_agent_event(
                         if host_drew_ask {
                             return;
                         }
-                        let header = match args.as_ref() {
+                        let mut header = match args.as_ref() {
                             Some(a) => tool_header(display, &name, a, Some(cwd)),
                             None => crate::tool_fmt::format_live_tool_header(
                                 &name,
@@ -748,6 +749,9 @@ pub(crate) fn dispatch_agent_event(
                                 display.preview(&name),
                             ),
                         };
+                        if *is_error {
+                            header.truncate(1);
+                        }
                         t.push_tool_box_lines(header, lines);
                     });
                 }

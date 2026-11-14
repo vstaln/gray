@@ -53,7 +53,7 @@ cargo build --release -p gray                                     # from source
 irm https://gray.alignment.id/install.ps1 | iex
 ```
 
-No WSL needed — Git for Windows supplies the shell. For an offline install keep `dist/install.ps1` and the zip together and run `.\dist\install.ps1 -ArchivePath .\gray-stable-x86_64-windows.zip -Sha256 <digest>`. Beta, offline and WSL installs: [Windows guide](docs/windows-preview.md).
+No WSL needed — Git for Windows supplies the shell. For an offline install keep `dist/install.ps1` and the zip together and run `.\dist\install.ps1 -ArchivePath .\gray-stable-x86_64-windows.zip -Sha256 <digest>`. Beta, offline and WSL installs: [Windows guide](docs/windows.md).
 
 ## Quick start
 
@@ -63,8 +63,7 @@ gray                 # drops you at the prompt
 
 | | |
 |---|---|
-| `/connect` | pick a provider and paste a key — keys already in your environment are detected |
-| `/model` | searchable model picker |
+| `/models` | sign in to a provider or paste a key (keys already in your environment are detected), then pick a model |
 | `gray -p "fix the failing test"` | one-shot, non-interactive (`--json` for machine-readable events) |
 
 An account at [gray.alignment.id](https://gray.alignment.id/account) is optional — it lives in the [gray-account](https://github.com/vstaln/gray-account) plugin (`gray account login` / `whoami` / `logout`), and nothing in gray is gated on it.
@@ -86,7 +85,7 @@ Slash commands autocomplete — Enter completes and fires, Tab inserts.
 | | |
 |---|---|
 | `/new` · `/sessions [id\|--last\|--all]` | fresh conversation, or reopen one |
-| `/model` · `/connect` | switch without leaving the chat |
+| `/models` | switch provider, model & effort without leaving the chat |
 | `/compact [instructions]` | summarize context (also automatic) |
 | `/undo` · `/retry` | drop the last exchange · drop it and ask again (files are git's job) |
 | type during a turn | steers the running turn at its next step |
@@ -103,6 +102,7 @@ CLI: `gray resume`, `gray gateway`, `gray plugin`, `gray sessions`, `gray update
 **Skills** — not in bare gray. `gray plugin install skills` adds `SKILL.md` discovery across `~/.gray`, Claude Code, opencode and agents locations, a per-turn listing, and `/skills`.
 
 **Plugins** — sidecar processes speaking NDJSON over stdio. More in [docs/plugins.md](docs/plugins.md).
+Themes, keybindings, prompt templates and the status line: [docs/customization.md](docs/customization.md).
 
 ## Safety
 

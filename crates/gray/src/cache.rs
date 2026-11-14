@@ -49,7 +49,7 @@ pub struct ColdResend {
 impl ColdResend {
     pub fn confirm_line(&self) -> String {
         format!(
-            "Cache cold after {}m idle: sending re-bills {} tokens (~{}). Enter again to send, or /compact first",
+            "Cache cold after {}m idle: sending re-bills {} tokens (~{}). Enter again to send",
             self.idle.as_secs() / 60,
             crate::setup::format_context_length(self.tokens),
             crate::setup::format_cost(self.cost),

@@ -125,7 +125,7 @@ pub fn lookup<'a>(index: &'a Index, name: &str) -> anyhow::Result<&'a Entry> {
 /// Index keys a user plausibly meant: the repo is `gray-<typed>` (e.g.
 /// `devin-sub` → key `devin`, repo gray-devin-sub), or the typed name is the
 /// key plus a suffix / the key's prefix.
-fn near_names(index: &Index, name: &str) -> Vec<String> {
+pub(crate) fn near_names(index: &Index, name: &str) -> Vec<String> {
     let typed = name.trim().to_lowercase();
     if typed.len() < 3 {
         return Vec::new();

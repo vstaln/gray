@@ -918,6 +918,62 @@ fn read_bounded_line<R: std::io::BufRead>(
     Ok(BoundedLine::TooLong)
 }
 
+const MAX_QUOTA_RESUMES: u8 = 2;
+
+const QUOTA_MARGIN: Duration = Duration::from_secs(30);
+
+const CONTINUE_AFTER_QUOTA: &str =
+    "Your usage limit has reset. Continue the task where you left off.";
+
+fn quota_resume_wait(error: &anyhow::Error) -> Option<Duration> {
+    let core = error.downcast_ref::<gray_core::error::CoreError>()?;
+    match core.class() {
+        gray_core::error::CoreError::Quota {
+            resets_in: Some(wait),
+            ..
+        } => Some(*wait),
+        _ => None,
+    }
+}
+
+fn observe_quota(provider: &str, error: &anyhow::Error) {
+    let Some(core) = error.downcast_ref::<gray_core::error::CoreError>() else {
+        return;
+    };
+    if let gray_core::error::CoreError::Quota { message, resets_in } = core.class() {
+        crate::usage_cache::note_quota(provider, message, *resets_in);
+    }
+}
+
+fn quota_span(secs: u64) -> String {
+    if secs >= 3600 {
+        format!("{}h {:02}m", secs / 3600, secs % 3600 / 60)
+    } else {
+        format!("{}m", secs.div_ceil(60))
+    }
+}
+
+fn quota_row(
+    phase: &str,
+    when: &str,
+    resume_at: u64,
+    session: &str,
+    turn: Option<&str>,
+) -> serde_json::Value {
+    let mut row = serde_json::json!({
+        "protocol": 1,
+        "type": "progress",
+        "phase": phase,
+        "session_id": session,
+        "resume_at": resume_at,
+        "detail": when,
+    });
+    if let Some(turn) = turn {
+        row["turn_id"] = turn.into();
+    }
+    row
+}
+
 async fn run_print_inner(
     config: &Config,
     prompt: Option<&str>,
@@ -965,6 +1021,7 @@ async fn run_print_inner(
         crate::setup::context::warm_plugin_model_context(config).await;
     }
 
+    let json_turn = json.as_deref().map(|output| output.turn_id.clone());
     let steering = json.is_some() && steer_enabled();
     match json.as_deref() {
         Some(output) if crate::ask::json_enabled() || steering => {
@@ -1259,7 +1316,70 @@ async fn run_print_inner(
     // the job and reporting "I'll resume when it wakes me" as its answer.
     let wait_background = background_wait_enabled();
     let exec = agent.executor_handle();
-    while run_result.is_ok() && !cancel.is_cancelled() {
+    let mut quota_resumes: u8 = 0;
+    loop {
+        if cancel.is_cancelled() {
+            break;
+        }
+        if let Err(error) = &run_result {
+            observe_quota(&config.provider_id, error);
+            let Some(reset_in) = quota_resume_wait(error) else {
+                break;
+            };
+            if quota_resumes >= MAX_QUOTA_RESUMES {
+                break;
+            }
+            quota_resumes += 1;
+            let wait = reset_in + QUOTA_MARGIN;
+            let resume_at = std::time::SystemTime::now() + wait;
+            let at: chrono::DateTime<chrono::Local> = resume_at.into();
+            let when = format!(
+                "resuming at {} (in {})",
+                at.format("%H:%M"),
+                quota_span(wait.as_secs())
+            );
+            let epoch = resume_at
+                .duration_since(std::time::SystemTime::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or_default();
+            if json_turn.is_some() {
+                let row = quota_row(
+                    "quota_wait",
+                    &when,
+                    epoch,
+                    session_id.as_str(),
+                    json_turn.as_deref(),
+                );
+                println!("{row}");
+            } else {
+                eprintln!("Usage limit reached \u{b7} {when}");
+            }
+            tokio::select! {
+                _ = tokio::time::sleep(wait) => {}
+                _ = cancel.cancelled() => break,
+            }
+            if json_turn.is_some() {
+                let row = quota_row(
+                    "quota_resume",
+                    "usage limit reset",
+                    epoch,
+                    session_id.as_str(),
+                    json_turn.as_deref(),
+                );
+                println!("{row}");
+            } else {
+                eprintln!("Usage limit reset \u{b7} continuing the session");
+            }
+            run_result = agent
+                .run_streaming(
+                    gray_core::message::Message::user(CONTINUE_AFTER_QUOTA),
+                    ctx.clone(),
+                    &mut on_event,
+                )
+                .await
+                .map_err(map_err);
+            continue;
+        }
         if let Some(rx) = &steer_rx
             && let Some(text) = rx.lock().ok().and_then(|mut r| r.try_recv().ok())
         {
@@ -1344,8 +1464,8 @@ async fn run_print_inner(
         let msgs = crate::host::take_host_say();
         if !msgs.is_empty() {
             let mut out = stdout.lock();
-            'say: for msg in &msgs {
-                for line in msg {
+            'say: for msg in msgs {
+                for line in msg.into_lines() {
                     if writeln!(out, "{line}").is_err() {
                         break 'say;
                     }

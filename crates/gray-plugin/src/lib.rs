@@ -189,6 +189,21 @@ pub fn parse_tool_entry(v: &Value) -> Option<ToolDef> {
     Some(def)
 }
 
+pub fn completion_args(v: &Value) -> Vec<String> {
+    v.get("completion")
+        .and_then(|t| t.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|e| {
+                    e.as_str()
+                        .or_else(|| e.get("arg").and_then(Value::as_str))
+                        .map(str::to_string)
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 pub fn manifest_tools(v: &Value) -> Vec<ToolDef> {
     v.get("tools")
         .and_then(|t| t.as_array())
@@ -287,7 +302,7 @@ impl Manifest {
                 .unwrap_or(false),
             protocol: v.get("protocol").and_then(|s| s.as_str()).map(|s| s.into()),
             subcommands: str_list("subcommands"),
-            completion: str_list("completion"),
+            completion: completion_args(v),
             capabilities: crate::capabilities::parse_declared(&str_list("capabilities")),
             shell_env: v.get("shell_env").and_then(|raw| {
                 serde_json::from_value(raw.clone())
@@ -390,6 +405,7 @@ pub fn friendly_spawn_error(e: &std::io::Error) -> String {
 pub fn friendly_exit_status(status: &str) -> String {
     match status {
         "signal 15" | "signal 9" => "killed".to_string(),
+        "exit -1073741510" | "exit 3221225786" | "signal 2" => "interrupted".to_string(),
         _ => status.to_string(),
     }
 }
@@ -417,6 +433,9 @@ impl PluginHookAdapter {
 
 #[async_trait]
 impl PluginHooks for PluginHookAdapter {
+    fn repin_session(&self, id: &str) {
+        self.plugin.set_session_id(id);
+    }
     fn is_global(&self) -> bool {
         self.plugin.is_global()
     }
