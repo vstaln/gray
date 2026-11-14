@@ -517,11 +517,11 @@ fn ask_stdin_multi(stdin: &std::io::Stdin, q: &AskQuestion) -> AskAnswer {
 
 fn stdin_has_data() -> bool {
     use std::io::IsTerminal;
-    if std::io::stdin().is_terminal() {
-        return true;
-    }
     #[cfg(unix)]
     {
+        if std::io::stdin().is_terminal() {
+            return true;
+        }
         use std::os::fd::AsFd;
         let stdin = std::io::stdin();
         let fd = stdin.as_fd();
@@ -537,7 +537,7 @@ fn stdin_has_data() -> bool {
     }
     #[cfg(not(unix))]
     {
-        false
+        std::io::stdin().is_terminal()
     }
 }
 

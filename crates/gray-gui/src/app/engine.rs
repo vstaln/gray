@@ -74,9 +74,9 @@ impl Eng {
 /// Used to route `/x` to the engine before its `list_commands` reply lands —
 /// gray wins collisions with IDE-local commands.
 pub(super) const GRAY_BUILTINS: &[&str] = &[
-    "models", "model", "provider", "context", "sessions", "resume", "new", "clear",
-    "reset", "compact", "compress", "undo", "retry", "update", "upgrade", "restart", "reboot",
-    "jobs", "reload", "agentsmd", "sys", "plugins", "hehe", "help", "quit", "exit",
+    "models", "model", "provider", "context", "sessions", "resume", "new", "clear", "reset",
+    "compact", "compress", "undo", "retry", "update", "upgrade", "restart", "reboot", "jobs",
+    "reload", "agentsmd", "sys", "plugins", "hehe", "help", "quit", "exit",
 ];
 
 impl GrayApp {
