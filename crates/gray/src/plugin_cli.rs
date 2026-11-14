@@ -257,14 +257,14 @@ async fn install_spec_gated(
     // Dependencies are installed without a cached manifest; adopt them now so
     // they start lazily like the plugin that pulled them in.
     for dep in &r.deps {
-        if let Err(e) = adopt_cli(home, dep, &home.join("plugins").join(dep)).await {
+        if let Err(e) = adopt_cli(home, dep, &home.join("plugins").join(dep), None).await {
             lines.push(format!(
                 "warning: could not set up `gray {dep}` forwarding: {e:#}"
             ));
         }
     }
 
-    match adopt_cli(home, &r.name, &r.path).await {
+    match adopt_cli(home, &r.name, &r.path, r.description.as_deref()).await {
         Ok(true) => lines.push(format!(
             "installed {} {} at {}. Run: gray {} --help",
             r.name,
@@ -786,7 +786,7 @@ pub async fn update_managed(target: &str) -> anyhow::Result<Vec<gray_pkg::ops::U
         let Some(path) = r.path.clone() else {
             continue;
         };
-        if let Err(e) = adopt_cli(&home, &r.name, &path).await {
+        if let Err(e) = adopt_cli(&home, &r.name, &path, r.description.as_deref()).await {
             eprintln!(
                 "warning: could not set up `gray {}` forwarding: {e:#}",
                 r.name
@@ -1026,7 +1026,7 @@ async fn lazy_adopt(home: &Path, name: &str, lock: &mut LockFile) {
         .get(name)
         .is_some_and(|e| e.cli_argv.is_none() && enabled(home, name, e));
     if needs_probe
-        && adopt_cli(home, name, &home.join("plugins").join(name))
+        && adopt_cli(home, name, &home.join("plugins").join(name), None)
             .await
             .unwrap_or(false)
         && let Ok(fresh) = load_lock(home)
@@ -1359,7 +1359,12 @@ async fn register_native_gated(
     Ok(lines)
 }
 
-pub(crate) async fn adopt_cli(home: &Path, name: &str, dir: &Path) -> anyhow::Result<bool> {
+pub(crate) async fn adopt_cli(
+    home: &Path,
+    name: &str,
+    dir: &Path,
+    description: Option<&str>,
+) -> anyhow::Result<bool> {
     validate_name(name)?;
     let exe = gray_plugin::builder::resolve_argv(dir)
         .ok()
@@ -1376,8 +1381,13 @@ pub(crate) async fn adopt_cli(home: &Path, name: &str, dir: &Path) -> anyhow::Re
         return Ok(false);
     };
     match manifest {
-        Some(manifest) => {
+        Some(mut manifest) => {
             let exe = exe.expect("a manifest implies an executable");
+            if blurb(&manifest).is_none()
+                && let Some(description) = description
+            {
+                manifest["description"] = Value::String(description.to_string());
+            }
 
             entry.argv = std::iter::once(exe.clone())
                 .chain(
