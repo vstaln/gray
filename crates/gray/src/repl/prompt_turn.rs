@@ -488,6 +488,18 @@ pub(crate) async fn run_prompt_turn(
             if let Some(state) = &*session_state {
                 crate::auto_title::maybe_start(state, &*agent);
             }
+            if interactive && let Some((shared, _)) = tui {
+                let answer = agent
+                    .messages()
+                    .last()
+                    .filter(|m| m.role == gray_core::message::Role::Assistant)
+                    .map(|m| m.text_content())
+                    .unwrap_or_default();
+                shared
+                    .lock()
+                    .expect("tui lock")
+                    .start_turn_end_action(&answer);
+            }
         }
         Err(CoreError::Cancelled) => {
             *resumable = true;

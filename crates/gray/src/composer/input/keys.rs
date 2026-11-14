@@ -31,6 +31,7 @@ pub(crate) fn dispatch(tui: &mut Tui, ev: &KeyEvent) -> KeyOutcome {
 }
 
 pub(crate) fn dispatch_bindings(tui: &mut Tui, ev: &KeyEvent, bindings: &[Binding]) -> KeyOutcome {
+    tui.action.cancel_auto();
     if tui.search.is_some()
         && let Some(out) = dispatch_in_search(tui, ev, bindings)
     {

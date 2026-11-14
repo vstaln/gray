@@ -207,7 +207,9 @@ Pressing a key runs the plugin's CLI argv followed by `argv`. While it runs,
 the input box shows `busy` above it and a blinking prompt glyph, and Esc
 kills it. Trimmed stdout is inserted at the caret. A non-zero exit or empty
 output shows the last line of stderr as an error. Keys already bound in
-`keybindings.json` win over plugin keys. The plugin needs a CLI entry
+`keybindings.json` win over plugin keys. An action with `"on": "turn_end"`
+also starts by itself after each finished answer, with the answer text in
+`GRAY_TURN_TEXT`; it ends silently on exit 0, and any key press kills it. The plugin needs a CLI entry
 (`cli_argv` in the lock), and actions load at startup.
 
 ## Settings
