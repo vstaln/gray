@@ -373,20 +373,38 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
     let pill_streamed = tui.streamed_bytes;
     let pill_tok_suffix = super::live_pill_suffix(pill_turn_output, pill_streamed);
 
-    let cache_timer = tui.cache_remaining().map(|left| {
-        (
-            format!(
-                "{} {}",
-                crate::tui::glyph("\u{25f7}", "*"),
-                crate::cache::format_remaining(left)
-            ),
-            if left < Duration::from_secs(60) {
-                crate::theme::theme().text_dim
-            } else {
-                crate::theme::theme().cache_hit
-            },
-        )
-    });
+    let uncached = (!is_task_running && tui.cache_is_cold())
+        .then(|| tui.latest_usage.or(tui.cumulative_usage))
+        .flatten()
+        .map(|u| super::live_context_total(Some(u), 0))
+        .filter(|t| *t >= crate::cache::WARN_MISS_TOKENS);
+    let cache_timer = tui
+        .cache_remaining()
+        .map(|left| {
+            (
+                format!(
+                    "{} {}",
+                    crate::tui::glyph("\u{25f7}", "*"),
+                    crate::cache::format_remaining(left)
+                ),
+                if left < Duration::from_secs(60) {
+                    crate::theme::theme().text_dim
+                } else {
+                    crate::theme::theme().cache_hit
+                },
+            )
+        })
+        .or_else(|| {
+            uncached.map(|t| {
+                (
+                    format!(
+                        "~{} uncached \u{b7} /new to start fresh",
+                        crate::setup::format_context_length(t)
+                    ),
+                    crate::theme::theme().hue_orange,
+                )
+            })
+        });
 
     let reveal = tui.home_reveal_alpha();
     let res = tui.terminal.draw(|frame| {
