@@ -1837,10 +1837,10 @@ where
     R: tokio::io::AsyncRead + Unpin,
 {
     use tokio::io::AsyncReadExt;
-    let mut buf = [0u8; 8192];
+    let mut buf = vec![0u8; 8192];
     let mut tail: Vec<u8> = Vec::new();
     loop {
-        let n = reader.read(&mut buf).await?;
+        let n = reader.read(&mut buf[..]).await?;
         if n == 0 {
             break;
         }
