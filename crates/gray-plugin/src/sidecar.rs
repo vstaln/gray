@@ -227,6 +227,7 @@ fn spawn_child(argv: &[String]) -> anyhow::Result<(Child, ChildStdin, ChildStdou
             .arg("sh")
             .arg(script)
             .args(args)
+            .env("GRAY_HOME", gray_core::paths::gray_home_or_temp())
             .creation_flags(0x0000_0200);
         let child = spawn_retrying_etxtbsy(|| {
             cmd.stdin(std::process::Stdio::piped())
@@ -239,7 +240,8 @@ fn spawn_child(argv: &[String]) -> anyhow::Result<(Child, ChildStdin, ChildStdou
         return finish_spawn(child);
     }
     let mut cmd = Command::new(prog);
-    cmd.args(args);
+    cmd.args(args)
+        .env("GRAY_HOME", gray_core::paths::gray_home_or_temp());
     #[cfg(windows)]
     cmd.creation_flags(0x0000_0200);
     let child = spawn_retrying_etxtbsy(|| {
