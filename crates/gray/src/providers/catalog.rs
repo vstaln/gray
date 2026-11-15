@@ -47,15 +47,30 @@ pub fn resolve_provider_connection(config: &Config, home: &Path) -> Option<Insta
     ProviderRegistry::load_cached(home).resolve(&config.provider_id, &config.auth_ref)
 }
 
+pub(crate) fn not_installed_error(registry: &ProviderRegistry, provider_id: &str) -> anyhow::Error {
+    let installed: Vec<String> = registry
+        .installed()
+        .into_iter()
+        .map(|installed| installed.provider_id())
+        .collect();
+    if installed.is_empty() {
+        anyhow!(
+            "selected provider connection is not installed or enabled: {provider_id} (no plugin provides a connection)"
+        )
+    } else {
+        anyhow!(
+            "selected provider connection is not installed or enabled: {provider_id} (installed: {})",
+            installed.join(", ")
+        )
+    }
+}
+
 pub async fn connect_dynamic_provider(
     config: &Config,
     home: &Path,
 ) -> anyhow::Result<DynamicProvider> {
     let installed = resolve_provider_connection(config, home).ok_or_else(|| {
-        anyhow!(
-            "selected provider connection is not installed or enabled: {}",
-            config.provider_id
-        )
+        not_installed_error(&ProviderRegistry::load_cached(home), &config.provider_id)
     })?;
     let profile = profile_for_provider(&installed)?;
     let runtime: Arc<dyn ProviderRpc> = Arc::new(LazyProviderRpc::new(installed.clone()));
