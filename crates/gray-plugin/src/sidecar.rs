@@ -467,12 +467,25 @@ impl SidecarExit {
         if status.success() {
             return Self::Clean;
         }
-        if crate::friendly_exit_status(&short_exit_status(status)) == "interrupted" {
+        if interrupted_by_signal_or_console(status) {
             Self::Interrupted
         } else {
             Self::Crashed
         }
     }
+}
+
+const STATUS_CONTROL_C_EXIT: i32 = -1073741510;
+
+fn interrupted_by_signal_or_console(status: &std::process::ExitStatus) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        if matches!(status.signal(), Some(2 | 15)) {
+            return true;
+        }
+    }
+    matches!(status.code(), Some(130 | 143 | STATUS_CONTROL_C_EXIT))
 }
 
 fn short_exit_status(status: &std::process::ExitStatus) -> String {
