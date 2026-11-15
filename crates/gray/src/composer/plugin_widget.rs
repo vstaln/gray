@@ -326,8 +326,9 @@ async fn spawn_widget(argv: &[String], cwd: &std::path::Path) -> anyhow::Result<
         .ok_or_else(|| anyhow::anyhow!("empty widget argv"))?;
     let mut command = tokio::process::Command::new(program);
     command.args(args).arg("widget").current_dir(cwd);
-    let bytes = crate::plugin_cli::capture(command, POLL_TIMEOUT).await?;
-    let snapshot: Snapshot = serde_json::from_slice(&bytes)?;
+    let output = crate::plugin_cli::capture_output(command, POLL_TIMEOUT).await?;
+    anyhow::ensure!(output.status.success(), "{}", output.failure());
+    let snapshot: Snapshot = serde_json::from_slice(&output.stdout)?;
     anyhow::ensure!(snapshot.version == 1, "unsupported widget snapshot version");
     Ok(snapshot)
 }

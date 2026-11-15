@@ -1804,10 +1804,64 @@ pub(crate) fn completions(query: &str) -> Vec<(String, String)> {
     out
 }
 
-pub(crate) async fn capture(
+pub(crate) struct PluginOutput {
+    pub stdout: Vec<u8>,
+    pub stderr: Vec<u8>,
+    pub status: std::process::ExitStatus,
+}
+
+impl PluginOutput {
+    pub(crate) fn failure(&self) -> String {
+        fn tail(bytes: &[u8]) -> String {
+            let text = String::from_utf8_lossy(bytes);
+            let text = text.trim_end();
+            let mut start = text.len().saturating_sub(500);
+            while start < text.len() && !text.is_char_boundary(start) {
+                start += 1;
+            }
+            text.get(start..).unwrap_or(text).to_string()
+        }
+        let stderr = tail(&self.stderr);
+        let stdout = tail(&self.stdout);
+        let said = match (stderr.is_empty(), stdout.is_empty()) {
+            (false, false) => format!("{stderr} (stdout: {stdout})"),
+            (false, true) => stderr,
+            (true, false) => stdout,
+            (true, true) => return format!("plugin exited {}", self.status),
+        };
+        format!("plugin exited {} — last output: {said}", self.status)
+    }
+}
+
+const STDERR_TAIL: usize = 4096;
+
+async fn read_tail<R>(reader: &mut R, keep: usize) -> std::io::Result<Vec<u8>>
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
+    use tokio::io::AsyncReadExt;
+    let mut buf = vec![0u8; 8192];
+    let mut tail: Vec<u8> = Vec::new();
+    loop {
+        let n = reader.read(&mut buf[..]).await?;
+        if n == 0 {
+            break;
+        }
+        tail.extend_from_slice(&buf[..n]);
+        if tail.len() > keep * 2 {
+            tail.drain(..tail.len() - keep);
+        }
+    }
+    if tail.len() > keep {
+        tail.drain(..tail.len() - keep);
+    }
+    Ok(tail)
+}
+
+pub(crate) async fn capture_output(
     mut command: tokio::process::Command,
     ttl: std::time::Duration,
-) -> anyhow::Result<Vec<u8>> {
+) -> anyhow::Result<PluginOutput> {
     use tokio::io::AsyncReadExt;
     #[cfg(windows)]
     command.creation_flags(0x0000_0200);
@@ -1815,29 +1869,30 @@ pub(crate) async fn capture(
         .env("GRAY_HOME", gray_core::paths::gray_home_or_temp())
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
         .kill_on_drop(true)
         .spawn()?;
     let mut stdout = child.stdout.take().context("missing stdout")?.take(65537);
+    let mut stderr = child.stderr.take().context("missing stderr")?;
     let result = tokio::time::timeout(ttl, async {
         let mut bytes = Vec::new();
-        stdout.read_to_end(&mut bytes).await?;
+        let (out, err) = tokio::join!(
+            stdout.read_to_end(&mut bytes),
+            read_tail(&mut stderr, STDERR_TAIL)
+        );
+        out?;
+        let errors = err?;
         anyhow::ensure!(bytes.len() <= 65536, "plugin output exceeds 64 KiB");
         let status = child.wait().await?;
-        if !status.success() {
-            let tail = String::from_utf8_lossy(&bytes);
-            let tail = tail.trim_end();
-            let tail = tail.get(tail.len().saturating_sub(500)..).unwrap_or(tail);
-            if tail.is_empty() {
-                anyhow::bail!("plugin exited {status}");
-            }
-            anyhow::bail!("plugin exited {status} — last output: {tail}");
-        }
-        Ok::<_, anyhow::Error>(bytes)
+        Ok::<_, anyhow::Error>(PluginOutput {
+            stdout: bytes,
+            stderr: errors,
+            status,
+        })
     })
     .await;
     match result {
-        Ok(Ok(bytes)) => Ok(bytes),
+        Ok(Ok(output)) => Ok(output),
         other => {
             let _ = child.kill().await;
             let _ = child.wait().await;
@@ -1848,6 +1903,15 @@ pub(crate) async fn capture(
             }
         }
     }
+}
+
+pub(crate) async fn capture(
+    command: tokio::process::Command,
+    ttl: std::time::Duration,
+) -> anyhow::Result<Vec<u8>> {
+    let output = capture_output(command, ttl).await?;
+    anyhow::ensure!(output.status.success(), "{}", output.failure());
+    Ok(output.stdout)
 }
 
 #[cfg(test)]
