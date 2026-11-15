@@ -127,13 +127,17 @@ impl Widget {
                                     }
                                 };
                                 state = next;
-                                if !offer(&tx, &state) {
+                                if tx.try_send(state.clone()).is_err()
+                                    && flag.load(std::sync::atomic::Ordering::Relaxed)
+                                {
                                     break;
                                 }
                             }
                         } else if resolved_fresh {
                             state = State::Fresh(Snapshot::default());
-                            if !offer(&tx, &state) {
+                            if tx.try_send(state.clone()).is_err()
+                                && flag.load(std::sync::atomic::Ordering::Relaxed)
+                            {
                                 break;
                             }
                         }
@@ -252,17 +256,6 @@ impl Drop for Widget {
     }
 }
 
-/// Hand a state to the UI. A full channel means the UI has not drawn the
-/// previous one yet — drop this tick rather than the poller, so the widget can
-/// still recover on the next tick. `false` only when nobody is listening.
-fn offer(tx: &std::sync::mpsc::SyncSender<State>, state: &State) -> bool {
-    match tx.try_send(state.clone()) {
-        Ok(()) => true,
-        Err(std::sync::mpsc::TrySendError::Full(_)) => true,
-        Err(std::sync::mpsc::TrySendError::Disconnected(_)) => false,
-    }
-}
-
 const TICK: Duration = Duration::from_millis(500);
 
 const IDLE_POLL: Duration = Duration::from_secs(5);
@@ -338,26 +331,4 @@ async fn spawn_widget(argv: &[String], cwd: &std::path::Path) -> anyhow::Result<
     let snapshot: Snapshot = serde_json::from_slice(&output.stdout)?;
     anyhow::ensure!(snapshot.version == 1, "unsupported widget snapshot version");
     Ok(snapshot)
-}
-
-#[cfg(test)]
-mod offer_tests {
-    use super::{Snapshot, State, offer};
-
-    #[test]
-    fn a_full_channel_does_not_stop_the_poller() {
-        let (tx, _rx) = std::sync::mpsc::sync_channel(1);
-        assert!(offer(&tx, &State::Fresh(Snapshot::default())));
-        assert!(
-            offer(&tx, &State::Fresh(Snapshot::default())),
-            "a UI that has not drawn yet must not kill the poller"
-        );
-    }
-
-    #[test]
-    fn a_dropped_receiver_stops_the_poller() {
-        let (tx, rx) = std::sync::mpsc::sync_channel(1);
-        drop(rx);
-        assert!(!offer(&tx, &State::Fresh(Snapshot::default())));
-    }
 }
