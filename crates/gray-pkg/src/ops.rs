@@ -596,7 +596,15 @@ pub async fn check_update(target: &str) -> anyhow::Result<Vec<UpdateRow>> {
     })
 }
 
-const RENAMED: &[(&str, &str)] = &[("qol", "quality-of-life"), ("cloud", "account")];
+pub const RENAMED: &[(&str, &str)] = &[
+    ("qol", "quality-of-life"),
+    ("cloud", "account"),
+    ("claude-sub", "claude"),
+    ("codex-sub", "codex"),
+    ("antigravity-sub", "antigravity"),
+    ("devin-sub", "devin"),
+    ("zai-sub", "zai"),
+];
 
 async fn update_inner(target: &str, check: bool) -> anyhow::Result<Vec<UpdateRow>> {
     let lock = read_lock()?;

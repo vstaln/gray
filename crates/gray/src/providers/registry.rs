@@ -145,8 +145,31 @@ impl ProviderRegistry {
     }
 
     pub fn resolve(&self, provider_id: &str, auth_ref: &str) -> Option<InstalledProvider> {
-        self.installed().into_iter().find(|installed| {
+        let all = self.installed();
+        if let Some(hit) = all.iter().find(|installed| {
             installed.provider_id() == provider_id && installed.auth_ref() == auth_ref
+        }) {
+            return Some(hit.clone());
+        }
+        let (plug, rest) = provider_id.split_once(':')?;
+        let alt = gray_pkg::ops::RENAMED.iter().find_map(|&(o, n)| {
+            if o == plug {
+                Some(n)
+            } else if n == plug {
+                Some(o)
+            } else {
+                None
+            }
+        })?;
+        let alt_pid = format!("{alt}:{rest}");
+        let alt_auth = auth_ref
+            .strip_prefix(&format!("plugin:{plug}:"))
+            .map(|tail| format!("plugin:{alt}:{tail}"));
+        all.into_iter().find(|installed| {
+            installed.provider_id() == alt_pid
+                && alt_auth
+                    .as_deref()
+                    .is_none_or(|a| installed.auth_ref() == a)
         })
     }
 }

@@ -1818,6 +1818,11 @@ pub(crate) fn run_model_panes(
                             Err(e) => notice = Some(format!("log in failed: {e}")),
                         }
                     }
+                    KeyCode::Enter => {
+                        if let Some(l) = &sel_label {
+                            notice = Some(logins.act(st, Verb::Pin(l)));
+                        }
+                    }
                     KeyCode::Char('a') => {
                         notice = Some("no account CLI for this provider".to_string());
                     }

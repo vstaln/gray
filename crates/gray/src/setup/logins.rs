@@ -600,14 +600,34 @@ impl Logins {
         }
     }
 
+    /// Worst window of one account's usage card, as a percentage.
+    fn card_pct(card: &Value) -> Option<f64> {
+        gauges(card).iter().map(|g| g.pct).reduce(f64::max)
+    }
+
+    /// Average pressure across the provider's accounts, so the rail reads the
+    /// pool (100% and 0% -> 50%) instead of whichever login happens to serve.
+    /// Only applies when more than one account reports usage.
+    fn pool_pct(&self, plugin: &str) -> Option<f64> {
+        let entries = self.plugins.get(plugin)?.usage.as_ref()?.as_ref().ok()?;
+        let seen: Vec<f64> = entries
+            .iter()
+            .filter_map(|e| e.card.as_ref().and_then(Self::card_pct))
+            .collect();
+        (seen.len() > 1).then(|| seen.iter().sum::<f64>() / seen.len() as f64)
+    }
+
     pub(crate) fn rail_tag(&self, installed: &InstalledProvider) -> Option<Tag> {
         let doc = self.doc(&installed.plugin)?;
         let label = Self::serving(doc);
         if label.is_none() && doc["ambient"] != true {
             return None;
         }
+        if let Some(pct) = self.pool_pct(&installed.plugin) {
+            return Some(Tag::Pct(pct));
+        }
         if let LoginUsage::Card(card) = self.login_usage(&installed.plugin, label.as_deref())
-            && let Some(pct) = gauges(card).iter().map(|g| g.pct).reduce(f64::max)
+            && let Some(pct) = Self::card_pct(card)
         {
             return Some(Tag::Pct(pct));
         }
@@ -677,7 +697,8 @@ impl Logins {
             .count();
         let mut meta = String::from("  ·  ");
         if logins > 1 {
-            meta.push_str(&format!("{} · ", self.strategy(&strip.source)));
+            let strategy = crate::tool_fmt::humanize_tool_name(&self.strategy(&strip.source));
+            meta.push_str(&format!("{strategy} · "));
         }
         meta.push_str(&format!(
             "{logins} login{}",
@@ -838,7 +859,9 @@ impl Logins {
                     (Ok(()), Verb::Pin(l)) => format!("pinned {l}"),
                     (Ok(()), Verb::Unpin) => "pin cleared".to_string(),
                     (Ok(()), Verb::Remove(l)) => format!("removed {l}"),
-                    (Ok(()), Verb::Strategy) => format!("strategy: {next}"),
+                    (Ok(()), Verb::Strategy) => {
+                        format!("strategy: {}", crate::tool_fmt::humanize_tool_name(next))
+                    }
                 }
             }
         }
