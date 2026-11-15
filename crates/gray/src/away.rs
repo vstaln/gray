@@ -15,6 +15,7 @@ static LOST_AT: Mutex<Option<Instant>> = Mutex::new(None);
 static RETURNED: AtomicBool = AtomicBool::new(false);
 static SAW_FOCUS: AtomicBool = AtomicBool::new(false);
 static LAST_INPUT: Mutex<Option<Instant>> = Mutex::new(None);
+static RECAPPED_AT: Mutex<Option<usize>> = Mutex::new(None);
 
 pub(crate) fn focus(gained: bool) {
     SAW_FOCUS.store(true, Ordering::Relaxed);
@@ -49,6 +50,15 @@ pub(crate) fn maybe_recap(agent: Option<&Agent>) {
         return;
     }
     let Some(agent) = agent else { return };
+    let seen = agent.messages().len();
+    if RECAPPED_AT
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .replace(seen)
+        == Some(seen)
+    {
+        return;
+    }
     let Some(req) = recap_request(agent.messages()) else {
         return;
     };
