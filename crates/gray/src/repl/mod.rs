@@ -959,6 +959,7 @@ pub async fn run_repl_mode(
     }
 
     if interactive {
+        crate::host::set_repl_active(true);
         let sid = session_state
             .as_ref()
             .map(|s| s.session_id.as_str().to_string());
@@ -1062,7 +1063,6 @@ pub async fn run_repl_mode(
 
     if interactive {
         jobs::spawn_footer_poller();
-        crate::host::set_repl_active(true);
     }
 
     loop {
