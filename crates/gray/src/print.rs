@@ -1228,7 +1228,10 @@ async fn run_print_inner(
     crate::host::set_live_provider(Some(agent.provider_handle()));
     if !config.bare {
         for h in agent.hooks() {
-            h.session_start(false).await;
+            let h = h.clone();
+            tokio::spawn(async move {
+                h.session_start(false).await;
+            });
         }
     }
 
