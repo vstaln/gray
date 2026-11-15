@@ -189,10 +189,10 @@ struct Gauge {
 
 fn gauge(w: &Value, now: i64) -> Option<Gauge> {
     Some(Gauge {
-        label: w["label"]
-            .as_str()
-            .or_else(|| w["id"].as_str())?
-            .to_string(),
+        label: match w["label"].as_str() {
+            Some(label) => label.to_string(),
+            None => crate::usage_cache::window_label(w["id"].as_str()?),
+        },
         pct: w["used_percent"].as_f64()?,
         reset: w["resets_at"].as_str().and_then(|at| countdown(at, now)),
     })
@@ -234,6 +234,7 @@ struct PluginState {
 
 pub(crate) enum Tag {
     Pct(f64),
+    Loading(Option<f64>),
     Limit(Option<String>),
     Expired,
 }
@@ -271,14 +272,27 @@ enum LoginUsage<'a> {
     Unknown,
 }
 
-fn cached_tag(provider: &str, account: Option<&str>, serving: bool) -> Option<Tag> {
+fn window_pct(window: &crate::usage_cache::Window) -> f64 {
+    window.last_seen_pct.unwrap_or(100.0)
+}
+
+fn age_ago(seen_at: i64) -> String {
+    if seen_at <= 0 {
+        return "age unknown".to_string();
+    }
+    crate::resume::format_relative(seen_at as u64 * 1000)
+}
+
+fn cached_tag(provider: &str, account: Option<&str>, serving: bool, loading: bool) -> Option<Tag> {
     let now = now_secs();
     let mut limit: Option<Option<String>> = None;
     let mut worst: Option<f64> = None;
     for window in crate::usage_cache::for_row(provider, account, serving) {
+        let pct = window_pct(&window);
         match crate::usage_cache::state(&window, now) {
             crate::usage_cache::WindowState::Limit { resets } => {
                 limit = Some(resets);
+                worst = Some(worst.map_or(pct, |seen: f64| seen.max(pct)));
             }
             crate::usage_cache::WindowState::Percent(pct) => {
                 worst = Some(worst.map_or(pct, |seen: f64| seen.max(pct)));
@@ -288,56 +302,127 @@ fn cached_tag(provider: &str, account: Option<&str>, serving: bool) -> Option<Ta
     }
     match (limit, worst) {
         (Some(resets), _) => Some(Tag::Limit(resets)),
+        (None, Some(pct)) if loading => Some(Tag::Loading(Some(pct))),
         (None, Some(pct)) => Some(Tag::Pct(pct)),
+        (None, None) if loading => Some(Tag::Loading(None)),
         (None, None) => None,
     }
 }
 
-fn cached_lines(windows: &[crate::usage_cache::Window], w: usize) -> Vec<Line<'static>> {
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CacheNote {
+    Loading,
+    Aged,
+    Failed,
+}
+
+struct CachedRow {
+    label: String,
+    pct: f64,
+    note: String,
+    limit: bool,
+    dim: bool,
+}
+
+fn cached_lines(
+    windows: &[crate::usage_cache::Window],
+    mode: CacheNote,
+    w: usize,
+) -> Vec<Line<'static>> {
     let t = crate::theme::theme();
     let fg = |c: Color| Style::default().fg(c);
     let now = now_secs();
     let fixed = 5 + 2 + CELLS + 2 + 4;
-    let note_w = 2 + 18 + 5;
-    let max_label = windows
+    let mut rows: Vec<CachedRow> = Vec::new();
+    for window in windows {
+        let (pct, head, limit, shows_age) = match crate::usage_cache::state(window, now) {
+            crate::usage_cache::WindowState::Limit { resets } => match resets {
+                Some(resets) => (
+                    window_pct(window),
+                    format!("limit · resets {resets}"),
+                    true,
+                    false,
+                ),
+                None => (
+                    window_pct(window),
+                    if mode == CacheNote::Loading {
+                        "limit".to_string()
+                    } else {
+                        format!("limit · seen {}", age_ago(window.seen_at))
+                    },
+                    true,
+                    mode != CacheNote::Loading,
+                ),
+            },
+            crate::usage_cache::WindowState::Percent(pct) => (pct, String::new(), false, false),
+            crate::usage_cache::WindowState::Unknown => continue,
+        };
+        let mut parts: Vec<String> = Vec::new();
+        if !head.is_empty() {
+            parts.push(head);
+        }
+        match mode {
+            CacheNote::Loading => parts.push("loading".to_string()),
+            CacheNote::Aged | CacheNote::Failed if !shows_age => {
+                parts.push(age_ago(window.seen_at))
+            }
+            CacheNote::Aged | CacheNote::Failed => {}
+        }
+        if mode == CacheNote::Failed {
+            parts.push("refresh failed".to_string());
+        }
+        let note = parts.join(" · ");
+        let stale = window.seen_at > 0 && now.saturating_sub(window.seen_at) >= 86_400;
+        rows.push(CachedRow {
+            label: crate::usage_cache::window_label(&window.window),
+            pct,
+            note,
+            limit,
+            dim: stale || mode == CacheNote::Loading,
+        });
+    }
+    if rows.is_empty() {
+        return Vec::new();
+    }
+    let max_label = rows
         .iter()
-        .map(|g| crate::usage_cache::window_label(&g.window).chars().count())
+        .map(|r| r.label.chars().count())
         .max()
         .unwrap_or(0);
-    let with_note = w >= fixed + note_w + 6;
-    let lw = max_label.min(w.saturating_sub(fixed + if with_note { note_w } else { 0 }));
-    windows
-        .iter()
-        .filter_map(|window| {
-            let (pct, note) = match crate::usage_cache::state(window, now) {
-                crate::usage_cache::WindowState::Limit { resets } => (
-                    window.last_seen_pct.unwrap_or(100.0),
-                    Some(match resets {
-                        Some(resets) => format!("limit · resets {resets}"),
-                        None => "limit".to_string(),
-                    }),
-                ),
-                crate::usage_cache::WindowState::Percent(pct) => (pct, None),
-                crate::usage_cache::WindowState::Unknown => return None,
-            };
-            let label = crate::usage_cache::window_label(&window.window);
-            let label = fit_chars(&label, lw);
+    let lw = max_label.min(w.saturating_sub(fixed + 2));
+    rows.iter()
+        .map(|row| {
+            let (pct, note, limit, dim) = (row.pct, &row.note, row.limit, row.dim);
+            let label = fit_chars(&row.label, lw);
             let pad = lw.saturating_sub(label.chars().count());
             let filled =
                 ((pct.clamp(0.0, 100.0) * CELLS as f64 / 100.0).round() as usize).min(CELLS);
-            let color = pct_color(pct);
+            let color = if dim { t.text_faint } else { pct_color(pct) };
+            let label_fg = if dim { t.text_faint } else { t.text_dim };
+            let note_fg = if dim || !limit { t.text_faint } else { RED };
             let mut spans = vec![
-                Span::styled(format!("     {label}{}  ", " ".repeat(pad)), fg(t.text_dim)),
+                Span::styled(format!("     {label}{}  ", " ".repeat(pad)), fg(label_fg)),
                 Span::styled("━".repeat(filled), fg(color)),
                 Span::styled("─".repeat(CELLS - filled), fg(t.text_faint)),
                 Span::styled(format!("  {:>3.0}%", pct), fg(color)),
             ];
-            if with_note && let Some(note) = note {
-                let left = fixed + lw + 2;
-                let gap = w.saturating_sub(left + note.chars().count());
-                spans.push(Span::styled(format!("{}{note}", " ".repeat(gap)), fg(RED)));
+            if !note.is_empty() {
+                let room = w.saturating_sub(fixed + lw + 2);
+                let width = note.chars().count();
+                if room >= width + 2 {
+                    spans.push(Span::styled(
+                        format!("{}{note}", " ".repeat(room - width)),
+                        fg(note_fg),
+                    ));
+                } else {
+                    let left = w.saturating_sub(fixed + lw).max(1);
+                    spans.push(Span::styled(
+                        fit_chars(&format!(" · {note}"), left),
+                        fg(note_fg),
+                    ));
+                }
             }
-            Some(Line::from(spans))
+            Line::from(spans)
         })
         .collect()
 }
@@ -626,18 +711,20 @@ impl Logins {
         if let Some(pct) = self.pool_pct(&installed.plugin) {
             return Some(Tag::Pct(pct));
         }
-        if let LoginUsage::Card(card) = self.login_usage(&installed.plugin, label.as_deref())
+        let usage = self.login_usage(&installed.plugin, label.as_deref());
+        if let LoginUsage::Card(card) = &usage
             && let Some(pct) = Self::card_pct(card)
         {
             return Some(Tag::Pct(pct));
         }
-        if let LoginUsage::Failed(e) = self.login_usage(&installed.plugin, label.as_deref())
+        if let LoginUsage::Failed(e) = &usage
             && auth_error(e)
         {
             return Some(Tag::Expired);
         }
+        let loading = matches!(usage, LoginUsage::Pending);
         let provider = self.provider_of(&installed.plugin);
-        cached_tag(&provider, label.as_deref(), true)
+        cached_tag(&provider, label.as_deref(), true, loading)
     }
 
     fn provider_of(&self, plugin: &str) -> String {
@@ -794,19 +881,35 @@ impl Logins {
             Some(LoginUsage::Card(card)) => gauges(card),
             _ => Vec::new(),
         };
-        match usage {
-            Some(LoginUsage::Pending) => out.push(dim("…", t.text_faint)),
+        let cached = if live.is_empty() {
+            strip
+                .plugin()
+                .map(|plugin| self.cached_windows(plugin, label))
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        let mode = match &usage {
+            Some(LoginUsage::Pending) => Some(CacheNote::Loading),
+            Some(LoginUsage::Failed(e)) if e.contains("signed out") || auth_error(e) => None,
+            Some(LoginUsage::Failed(_)) => Some(CacheNote::Failed),
+            _ => Some(CacheNote::Aged),
+        };
+        match &usage {
+            Some(LoginUsage::Pending) if cached.is_empty() => out.push(dim("…", t.text_faint)),
             Some(LoginUsage::Failed(e)) if e.contains("signed out") => {
                 out.push(dim("signed out · enter to log in", RED))
             }
             Some(LoginUsage::Failed(e)) if auth_error(e) => out.push(dim("login expired", RED)),
-            Some(LoginUsage::Failed(_)) => out.push(dim("usage unavailable", t.text_faint)),
-            Some(LoginUsage::Card(_)) | Some(LoginUsage::Unknown) | None => {}
+            Some(LoginUsage::Failed(_)) if cached.is_empty() => {
+                out.push(dim("usage unavailable", t.text_faint))
+            }
+            _ => {}
         }
         if !live.is_empty() {
             out.extend(gauge_lines(&live, w));
-        } else if let Some(plugin) = strip.plugin() {
-            out.extend(cached_lines(&self.cached_windows(plugin, label), w));
+        } else if let Some(mode) = mode {
+            out.extend(cached_lines(&cached, mode, w));
         }
         out
     }

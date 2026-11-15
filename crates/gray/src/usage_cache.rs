@@ -5,7 +5,7 @@ use serde_json::Value;
 
 const VERSION: u32 = 1;
 const KEEP_SECS: i64 = 30 * 86_400;
-const LIMIT_HOLD_SECS: i64 = 86_400;
+const LIMIT_UNKNOWN_RESET_SECS: i64 = 6 * 3_600;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct Window {
@@ -245,13 +245,19 @@ pub(crate) fn for_row(provider: &str, account: Option<&str>, serving: bool) -> V
 
 pub(crate) fn state(window: &Window, now: i64) -> WindowState {
     let exhausted = window.limit.is_some() || window.last_seen_pct.is_some_and(|pct| pct >= 100.0);
-    let until = window
-        .resets_at
-        .or_else(|| window.limit.map(|seen| seen + LIMIT_HOLD_SECS));
-    if exhausted && until.is_some_and(|at| at > now) {
-        return WindowState::Limit {
-            resets: window.resets_at.map(clock),
-        };
+    match window.resets_at {
+        Some(at) if exhausted && at > now => {
+            return WindowState::Limit {
+                resets: Some(clock(at)),
+            };
+        }
+        None if exhausted => {
+            let seen = window.limit.unwrap_or(window.seen_at);
+            if seen > 0 && now - seen < LIMIT_UNKNOWN_RESET_SECS {
+                return WindowState::Limit { resets: None };
+            }
+        }
+        _ => {}
     }
     match window.last_seen_pct {
         Some(pct) => WindowState::Percent(pct),
@@ -271,7 +277,8 @@ pub(crate) fn window_label(id: &str) -> String {
         "seven_day" | "weekly" => "Weekly".to_string(),
         "daily" => "Daily".to_string(),
         other => {
-            let mut chars = other.chars();
+            let words = other.replace(['_', '-'], " ");
+            let mut chars = words.trim().chars();
             match chars.next() {
                 Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
                 None => String::new(),

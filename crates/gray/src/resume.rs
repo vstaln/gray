@@ -7,7 +7,7 @@ use crate::session_store::{
 use crate::text_width::fit_chars;
 use gray_core::time::now_millis;
 
-fn format_relative(ts: u64) -> String {
+pub(crate) fn format_relative(ts: u64) -> String {
     let now = now_millis();
     let diff = now.saturating_sub(ts);
     let secs = diff / 1000;

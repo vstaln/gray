@@ -988,6 +988,13 @@ fn draw(frame: &mut Frame, bg: &BackgroundSnapshot, v: &PaneView) {
                 super::logins::Tag::Pct(pct) => {
                     (format!("{pct:.0}%"), super::logins::pct_color(pct))
                 }
+                super::logins::Tag::Loading(pct) => (
+                    match pct {
+                        Some(pct) => format!("{pct:.0}%…"),
+                        None => "loading".to_string(),
+                    },
+                    t.text_faint,
+                ),
                 super::logins::Tag::Limit(Some(resets)) if name_room >= 13 + 1 + 11 => {
                     (format!("limit {resets}"), super::logins::RED)
                 }
