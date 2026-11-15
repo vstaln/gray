@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+## [0.2.25] - 2026-11-15
+
+### Changed
+- **Subagent cards show the full prompt.** Tool-card templates gain a `full` filter that renders a field's whole text, wrapped, and a dotted path into an array (`tasks.prompt`) joins every item, so a fan-out shows each child's prompt instead of the first line cut off.
+
+### Fixed
+- **Images viewed with `cat` show a thumbnail and an underlined path.** A `~/` path was joined onto the working directory, so the image was never found; the Viewed path now uses the same underlined path style as other file cards.
+- **Subscription providers no longer time out while the sidecar checks its accounts.** `provider/chat` setup had 30s, which a cold probe of two pooled accounts already exceeds; it now has 180s, and the error says "provider unavailable" instead of blaming the credential twice.
+
 ## [0.2.24] - 2026-11-15
 
 ### Added
