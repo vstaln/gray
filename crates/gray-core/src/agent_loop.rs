@@ -574,7 +574,7 @@ impl Agent {
             error: out.as_ref().err().map(crate::agent::TurnEndInfo::error_for),
         };
         if self.turn_end_deferred {
-            self.pending_turn_end = Some((usage, info));
+            self.stash_turn_end(usage, info);
         } else {
             for hook in &self.hooks {
                 hook.turn_end(&usage, &info).await;

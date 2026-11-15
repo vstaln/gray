@@ -803,6 +803,32 @@ impl Agent {
         self.turn_end_deferred = true;
     }
 
+    pub(crate) fn stash_turn_end(&mut self, usage: crate::event::Usage, info: TurnEndInfo) {
+        let merged = match self.pending_turn_end.take() {
+            Some((mut pending, _)) => {
+                pending.accumulate(&usage);
+                pending
+            }
+            None => usage,
+        };
+        self.pending_turn_end = Some((merged, info));
+    }
+
+    pub fn record_cancelled_turn_end(&mut self, took_ms: u64) {
+        let usage = *self.turn_billed.lock().unwrap_or_else(|e| e.into_inner());
+        let info = TurnEndInfo {
+            session_id: self.session_id.clone(),
+            interactive: INTERACTIVE_SESSION.load(std::sync::atomic::Ordering::Relaxed),
+            focused: TERMINAL_FOCUSED.load(std::sync::atomic::Ordering::Relaxed),
+            took_ms,
+            error: Some(TurnError {
+                kind: "cancelled",
+                resets_at: None,
+            }),
+        };
+        self.stash_turn_end(usage, info);
+    }
+
     pub async fn flush_turn_end(&mut self) {
         let Some((usage, info)) = self.pending_turn_end.take() else {
             return;

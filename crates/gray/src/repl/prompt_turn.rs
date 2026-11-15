@@ -11,6 +11,7 @@ async fn run_streaming_cancellable(
     cancel: &tokio_util::sync::CancellationToken,
     on_event: &mut dyn FnMut(&AgentEvent),
 ) -> Result<Vec<AgentEvent>, CoreError> {
+    let started = std::time::Instant::now();
     let mut seen_thinking = String::new();
     let mut seen_text = String::new();
     let mut sink = |ev: &AgentEvent| {
@@ -32,6 +33,9 @@ async fn run_streaming_cancellable(
             drop(run_future);
             if preempted {
                 agent.repair_dropped_cancel(&seen_thinking, &seen_text);
+                agent.record_cancelled_turn_end(
+                    started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
+                );
             }
             Err(CoreError::Cancelled)
         }
