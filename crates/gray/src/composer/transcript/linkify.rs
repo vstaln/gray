@@ -35,6 +35,9 @@ pub(crate) fn begin_turn() {
 pub(crate) fn set_rules(owner: &str, rules: &[(String, String)]) -> Result<(), String> {
     let mut compiled = Vec::new();
     for (pattern, url) in rules {
+        if !(url.starts_with("http://") || url.starts_with("https://")) {
+            return Err(format!("link url must be http(s): {url}"));
+        }
         let pattern = regex::Regex::new(pattern).map_err(|e| format!("bad pattern: {e}"))?;
         compiled.push(Rule {
             owner: owner.to_string(),

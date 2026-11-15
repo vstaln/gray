@@ -10,6 +10,8 @@ pub const HOST_ASK: &str = "host.ask";
 
 pub const HOST_SAY: &str = "host.say";
 
+pub const HOST_LINKS: &str = "host.links";
+
 pub const HOST_RESTART: &str = "host.restart";
 
 pub const HOST_SESSIONS: &str = "host.sessions";
@@ -42,7 +44,7 @@ const SPECS: &[CapabilitySpec] = &[
     CapabilitySpec {
         id: HOST_TURN,
         host_methods: &["host/run", "host/complete", "host/inject"],
-        description: "run an agent turn as you (your model, your credentials, your budget)",
+        description: "run an agent turn as you (your model, your credentials, your budget), complete text with your model, or inject a message into the conversation",
     },
     CapabilitySpec {
         id: HOST_ASK,
@@ -51,8 +53,13 @@ const SPECS: &[CapabilitySpec] = &[
     },
     CapabilitySpec {
         id: HOST_SAY,
-        host_methods: &["host/say", "host/notice", "host/link_rules", "host/notify"],
-        description: "print a line into the conversation on its own",
+        host_methods: &["host/say", "host/notice", "host/notify"],
+        description: "print a line into the conversation on its own (host/notice) and send notifications",
+    },
+    CapabilitySpec {
+        id: HOST_LINKS,
+        host_methods: &["host/link_rules"],
+        description: "turn matching transcript text into links",
     },
     CapabilitySpec {
         id: HOST_RESTART,
@@ -62,7 +69,7 @@ const SPECS: &[CapabilitySpec] = &[
     CapabilitySpec {
         id: HOST_SESSIONS,
         host_methods: &["host/sessions"],
-        description: "see which gray sessions are running (ids and pids)",
+        description: "see which gray sessions are running (ids, pids, cwd and title)",
     },
     CapabilitySpec {
         id: SESSION_READ,
@@ -153,6 +160,14 @@ pub fn consent_hash(declared: &[String]) -> String {
     for id in sorted {
         hasher.update(id.as_bytes());
         hasher.update(b"\n");
+        if let Some(spec) = spec(id) {
+            for method in spec.host_methods {
+                hasher.update(method.as_bytes());
+                hasher.update(b"\n");
+            }
+            hasher.update(spec.description.as_bytes());
+            hasher.update(b"\n");
+        }
     }
     let digest = hasher.finalize();
 
