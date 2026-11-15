@@ -205,9 +205,7 @@ pub(crate) use commands::{REGISTRY, completion_fill, completion_matches_dyn, is_
 pub use commands::{ReplCommand, ResumeArgs, SysAction, parse_command};
 pub(crate) use format::build_user_message_with_attachments;
 pub use format::{THINKING_STYLE, fmt_usage, format_core_error};
-pub(crate) use handlers::{
-    expand_prompt_template, handle_model, handle_sys, handle_undo, reload_agent,
-};
+pub(crate) use handlers::{handle_model, handle_sys, handle_undo, reload_agent};
 pub(crate) use plugin_cmds::handle_plugin_command;
 pub(crate) use session::{
     dispatch_agent_event, handle_resume, maybe_overflow_compact, persist_turn_messages,
@@ -250,9 +248,9 @@ pub(crate) fn say_lines(
 pub(crate) fn say_block(tui: Option<&crate::composer::SharedTui>, block: crate::host::SayBlock) {
     match block {
         crate::host::SayBlock::Lines(lines) => say_lines(tui, lines),
-        crate::host::SayBlock::Recap(text) => match tui {
-            Some(t) => t.lock().expect("tui lock").push_recap(&text),
-            None => say_lines(None, crate::host::SayBlock::Recap(text).into_lines()),
+        crate::host::SayBlock::Card(title, text) => match tui {
+            Some(t) => t.lock().expect("tui lock").push_card(&title, &text),
+            None => say_lines(None, crate::host::SayBlock::Card(title, text).into_lines()),
         },
     }
 }
@@ -787,14 +785,6 @@ pub async fn run_repl_mode(
         );
     }
 
-    let startup_hint = if interactive && resumed_session_info.is_none() {
-        let cwd2 = cwd.clone();
-        Some(tokio::spawn(async move {
-            crate::resume::startup_interrupted_hint(&cwd2).await
-        }))
-    } else {
-        None
-    };
     log::debug!(target: "gray_timing", "repl pre_tui elapsed_ms={}", crate::turn_caps::process_start().elapsed().as_millis());
     let tui: TuiOpt = if interactive {
         use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
@@ -885,21 +875,6 @@ pub async fn run_repl_mode(
         }
         let shared = std::sync::Arc::new(std::sync::Mutex::new(t));
         crate::host::register_tui(&shared);
-        if let Some(task) = startup_hint {
-            let shared = shared.clone();
-            tokio::spawn(async move {
-                if let Ok(Some(h)) = task.await
-                    && let Ok(mut t) = shared.lock()
-                {
-                    if t.is_home() {
-                        t.set_home_notice(Some(h));
-                    } else {
-                        t.push_dim(h);
-                        t.ensure_gap();
-                    }
-                }
-            });
-        }
 
         crate::ask::install(Some(shared.clone()), interactive);
         if let Ok(mut t) = shared.lock() {
@@ -1078,15 +1053,22 @@ pub async fn run_repl_mode(
 
     if interactive {
         jobs::spawn_footer_poller();
-        crate::settings::spawn_session_cleanup();
         crate::host::set_repl_active(true);
     }
 
     loop {
         crate::host::clear_wake();
         crate::term_signals::idle(&cwd);
-        if interactive {
-            crate::away::maybe_recap(agent.as_ref());
+        if interactive
+            && let Some(away_secs) = crate::presence::take_return()
+            && let Some(a) = agent.as_ref()
+        {
+            let hooks = a.hooks().to_vec();
+            tokio::spawn(async move {
+                for h in hooks {
+                    h.user_return(away_secs).await;
+                }
+            });
         }
 
         session::remember_exit_session(session_state.as_ref().map(|s| s.session_id.as_str()));
@@ -1104,6 +1086,7 @@ pub async fn run_repl_mode(
                 .as_ref()
                 .map(|s| s.session_id.as_str().to_string());
             crate::host::set_live_session(sid.as_deref());
+            crate::host::set_live_provider(agent.as_ref().map(|a| a.provider_handle()));
             crate::host::set_background_source(
                 agent
                     .as_ref()
@@ -1328,7 +1311,6 @@ pub async fn run_repl_mode(
                             }
                             prompt_turn::drain_queued_input(
                                 &tui,
-                                &cwd,
                                 &mut pending_command,
                                 &mut pending_images,
                             );
@@ -1409,7 +1391,7 @@ pub async fn run_repl_mode(
                     .expect("tui lock")
                     .retract_slash_echo(&line_text);
             }
-            expand_prompt_template(parsed, cwd.as_path(), false)
+            parsed
         };
 
         if !matches!(&cmd, ReplCommand::Prompt(_) | ReplCommand::Empty) {
@@ -1434,7 +1416,6 @@ pub async fn run_repl_mode(
                         &mut last_turn_resumable,
                     )
                     .await?;
-                    crate::suggest::maybe_suggest(agent.as_ref(), interactive);
                 } else if last_turn_resumable && agent.is_some() {
                     if let Some(msg) = crate::turn_caps::check_caps(
                         config,
@@ -1473,7 +1454,6 @@ pub async fn run_repl_mode(
                         &mut last_turn_resumable,
                     )
                     .await?;
-                    crate::suggest::maybe_suggest(agent.as_ref(), interactive);
                 }
             }
             ReplCommand::Prompt(prompt_text) => {
@@ -1500,7 +1480,6 @@ pub async fn run_repl_mode(
                     &mut last_turn_resumable,
                 )
                 .await?;
-                crate::suggest::maybe_suggest(agent.as_ref(), interactive);
             }
             other => {
                 if matches!(

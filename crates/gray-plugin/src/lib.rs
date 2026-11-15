@@ -53,12 +53,28 @@ pub enum CoreEvent {
     },
     TurnEnd {
         usage: Usage,
+        info: gray_core::agent::TurnEndInfo,
     },
     /// The REPL session is up and interactive — plugins use it for
     /// first-run/detection notices (the old core QoL hook).
     SessionStart {
         interactive: bool,
     },
+    UserReturn {
+        away_secs: u64,
+    },
+}
+
+impl CoreEvent {
+    pub fn hook_name(&self) -> &'static str {
+        match self {
+            Self::PreTool { .. } => "pre_tool",
+            Self::PostTool { .. } => "post_tool",
+            Self::TurnEnd { .. } => "turn_end",
+            Self::SessionStart { .. } => "session_start",
+            Self::UserReturn { .. } => "user_return",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, serde::Serialize)]
@@ -410,6 +426,46 @@ pub fn friendly_exit_status(status: &str) -> String {
     }
 }
 
+static DYNAMIC_COMMANDS: std::sync::RwLock<Vec<(String, String, String)>> =
+    std::sync::RwLock::new(Vec::new());
+
+pub fn set_dynamic_commands(plugin: &str, params: &Value) {
+    let rows: Vec<(String, String, String)> = params
+        .get("commands")
+        .and_then(|c| c.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|c| {
+            let (name, desc) = match c {
+                Value::String(n) => (n.as_str(), ""),
+                Value::Object(o) => (
+                    o.get("name")?.as_str()?,
+                    o.get("description").and_then(|d| d.as_str()).unwrap_or(""),
+                ),
+                _ => return None,
+            };
+            let name = name.trim().trim_start_matches('/');
+            (!name.is_empty() && !name.contains(char::is_whitespace)).then(|| {
+                (
+                    plugin.to_string(),
+                    name.to_string(),
+                    desc.trim().to_string(),
+                )
+            })
+        })
+        .collect();
+    let mut all = DYNAMIC_COMMANDS.write().unwrap_or_else(|e| e.into_inner());
+    all.retain(|(p, _, _)| p != plugin);
+    all.extend(rows);
+}
+
+pub fn dynamic_commands() -> Vec<(String, String, String)> {
+    DYNAMIC_COMMANDS
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+}
+
 pub struct PluginHookAdapter {
     plugin: Arc<dyn Plugin>,
     cwd: String,
@@ -447,14 +503,25 @@ impl PluginHooks for PluginHookAdapter {
     }
     fn commands(&self) -> Vec<PluginCommand> {
         let m = self.plugin.manifest();
-        m.commands
+        let mut out: Vec<PluginCommand> = m
+            .commands
             .iter()
             .chain(m.subcommands.iter())
             .map(|name| PluginCommand {
                 turn_local_verbs: m.turn_local.get(name).cloned().unwrap_or_default(),
                 name: name.clone(),
             })
-            .collect()
+            .collect();
+        for (plugin, name, _) in dynamic_commands() {
+            let slashed = format!("/{name}");
+            if plugin == m.name && !out.iter().any(|c| c.name == slashed || c.name == name) {
+                out.push(PluginCommand {
+                    name: slashed,
+                    turn_local_verbs: Vec::new(),
+                });
+            }
+        }
+        out
     }
     async fn run_command(
         &self,
@@ -484,9 +551,17 @@ impl PluginHooks for PluginHookAdapter {
             })
             .await;
     }
-    async fn turn_end(&self, usage: &Usage) {
+    async fn turn_end(&self, usage: &Usage, info: &gray_core::agent::TurnEndInfo) {
         self.plugin
-            .on_event(CoreEvent::TurnEnd { usage: *usage })
+            .on_event(CoreEvent::TurnEnd {
+                usage: *usage,
+                info: info.clone(),
+            })
+            .await;
+    }
+    async fn user_return(&self, away_secs: u64) {
+        self.plugin
+            .on_event(CoreEvent::UserReturn { away_secs })
             .await;
     }
     async fn session_start(&self, interactive: bool) {

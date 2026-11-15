@@ -76,7 +76,6 @@ pub(crate) async fn run_prompt_turn(
     resumable: &mut bool,
 ) -> anyhow::Result<()> {
     super::session::clear_resume_trailer();
-    crate::settings::turn_started();
     let shared = interactive.then(|| tui.as_ref().expect("interactive implies tui"));
     let tui_stream = shared.as_ref().map(|(s, _)| (*s).clone());
     if agent.is_none() {
@@ -434,11 +433,6 @@ pub(crate) async fn run_prompt_turn(
         run_result =
             run_streaming_cancellable(agent, retry_msg, ctx2, &cancel, &mut on_event2).await;
     }
-    let turn_end_state = match &run_result {
-        Ok(_) => crate::term_signals::TurnEnd::Ok,
-        Err(CoreError::Cancelled) => crate::term_signals::TurnEnd::Cancelled,
-        Err(_) => crate::term_signals::TurnEnd::Failed,
-    };
     turn_cancel.release();
     agent.set_checkpoint(None);
 
@@ -485,9 +479,6 @@ pub(crate) async fn run_prompt_turn(
                 turn_duration_ms,
             )
             .await;
-            if let Some(state) = &*session_state {
-                crate::auto_title::maybe_start(state, &*agent);
-            }
             if interactive && let Some((shared, _)) = tui {
                 let answer = agent
                     .messages()
@@ -582,19 +573,6 @@ pub(crate) async fn run_prompt_turn(
                     if reloaded {
                         super::notice::push_notice(&mut t, "API key reloaded", RELOADED, false);
                     }
-                    if let (
-                        gray_core::error::CoreError::Quota {
-                            resets_in: Some(wait),
-                            ..
-                        },
-                        Some(state),
-                    ) = (e.class(), session_state.as_ref())
-                        && crate::settings::auto_continue()
-                    {
-                        let when =
-                            crate::settings::arm_auto_continue(state.session_id.as_str(), *wait);
-                        super::notice::push_notice(&mut t, "Usage limit reached", &when, false);
-                    }
                 }
             } else {
                 say_err(None, &format!("{msg}\n(press Enter to continue)"));
@@ -612,25 +590,14 @@ pub(crate) async fn run_prompt_turn(
     }
 
     if interactive {
-        drain_queued_input(tui, cwd, pending_command, pending_images);
+        drain_queued_input(tui, pending_command, pending_images);
     }
     if pending_command.is_none()
         && let Some(id) = auth_relogin
     {
         *pending_command = Some(ReplCommand::ProviderLogin(id));
     }
-    let final_text = agent
-        .messages()
-        .iter()
-        .rev()
-        .find(|m| m.role == gray_core::message::Role::Assistant)
-        .map(Message::text_content);
-    crate::term_signals::turn_end(
-        cwd,
-        turn_end_state,
-        turn_start.elapsed(),
-        final_text.as_deref(),
-    );
+    crate::term_signals::turn_end(cwd);
     Ok(())
 }
 
@@ -639,7 +606,6 @@ pub(crate) fn drain_queued_input(
         crate::composer::SharedTui,
         std::sync::Arc<std::sync::atomic::AtomicBool>,
     )>,
-    cwd: &std::path::Path,
     pending_command: &mut Option<ReplCommand>,
     pending_images: &mut Vec<std::path::PathBuf>,
 ) {
@@ -653,14 +619,14 @@ pub(crate) fn drain_queued_input(
             t.push_user_prompt(&text, &[], false);
         }
         drop(t);
-        *pending_command = Some(expand_prompt_template(parsed, cwd, true));
+        *pending_command = Some(parsed);
     } else if let Some((qtext, qimages)) = pop_actionable(&mut t.queued_inputs) {
         let parsed = parse_command(&qtext);
         if !parsed.runs_local() {
             t.push_user_prompt(&qtext, &qimages, !qtext.starts_with('/'));
         }
         drop(t);
-        *pending_command = Some(expand_prompt_template(parsed, cwd, false));
+        *pending_command = Some(parsed);
         *pending_images = qimages;
     }
 }

@@ -72,7 +72,7 @@ pub use catalog::{
     AUTH_MODE_API_KEY, AUTH_MODE_NONE, Catalog, CatalogProvider, ConnectAuth, ConnectItem,
     SavedConfig, auto_update_enabled, build_connect_items, gray_home, intro_enabled,
     load_auth_keys, load_catalog, load_saved_config_at, lock_saved_config_at, mask_key_pretty,
-    normalize_custom_base_url, quality_of_life_enabled, save_saved_config_at, saved_config_path,
+    normalize_custom_base_url, save_saved_config_at, saved_config_path,
 };
 pub(crate) use catalog::{saved_config_locked, saved_config_locked_at};
 

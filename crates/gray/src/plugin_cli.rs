@@ -144,6 +144,8 @@ enum TrustGate {
     Quiet,
 
     Lines,
+
+    Consent,
 }
 
 /// A local `gray-<name>` on PATH, for plugins the catalog does not carry.
@@ -234,6 +236,28 @@ async fn install_spec_gated(
                 );
             }
             TrustGate::Quiet => eprintln!("{warning}"),
+            TrustGate::Consent => {
+                let reply = crate::ask::handle_ask(serde_json::json!({
+                    "questions": [{
+                        "id": "install",
+                        "header": "Plugin",
+                        "question": format!("A plugin wants to install '{name}', an unverified community plugin. Install it?"),
+                        "options": [
+                            {"label": "Install", "description": "runs third-party code with your permissions"},
+                            {"label": "Cancel", "description": "leave it uninstalled"}
+                        ],
+                        "no_other": true
+                    }]
+                }))
+                .await;
+                let granted = reply["answers"]["install"]["answers"]
+                    .as_array()
+                    .is_some_and(|a| a.iter().any(|v| v.as_str() == Some("Install")));
+                anyhow::ensure!(
+                    granted,
+                    "install cancelled: '{name}' is an unverified community plugin"
+                );
+            }
             TrustGate::Ask => {
                 eprintln!("{warning}");
 
@@ -292,6 +316,10 @@ async fn install_spec_gated(
         }
     }
     Ok(lines)
+}
+
+pub(crate) async fn install_spec_consent(home: &Path, spec: &str) -> anyhow::Result<Vec<String>> {
+    install_spec_gated(home, spec, false, TrustGate::Consent).await
 }
 
 pub async fn install_spec(home: &Path, spec: &str, force: bool, yes: bool) -> anyhow::Result<()> {
@@ -1780,6 +1808,17 @@ pub(crate) fn completions(query: &str) -> Vec<(String, String)> {
     let Some(table) = completion_table(&home, user_home.as_deref(), &mut guard) else {
         return Vec::new();
     };
+    if !query.contains(' ') {
+        for (_, name, desc) in gray_plugin::dynamic_commands() {
+            if name.starts_with(query)
+                && !crate::repl::is_builtin_command(&name)
+                && !table.rows.iter().any(|r| r.command == name)
+                && !out.iter().any(|(n, _): &(String, String)| *n == name)
+            {
+                out.push((name, desc));
+            }
+        }
+    }
     for row in &table.rows {
         if !query.contains(' ') && row.command.starts_with(query) {
             out.push((

@@ -61,27 +61,27 @@ impl CrashNotice {
 #[derive(Debug)]
 enum SayEntry {
     Lines(Vec<Line<'static>>),
-    Recap(String),
+    Card(String, String),
     Crash(CrashNotice),
 }
 
 pub enum SayBlock {
     Lines(Vec<Line<'static>>),
-    Recap(String),
+    Card(String, String),
 }
 
 impl SayBlock {
     pub(crate) fn into_lines(self) -> Vec<Line<'static>> {
         match self {
             Self::Lines(lines) => lines,
-            Self::Recap(text) => recap_plain_lines(&text),
+            Self::Card(title, text) => card_plain_lines(&title, &text),
         }
     }
 }
 
-fn recap_plain_lines(text: &str) -> Vec<Line<'static>> {
+fn card_plain_lines(title: &str, text: &str) -> Vec<Line<'static>> {
     let dim = Style::new().add_modifier(Modifier::DIM);
-    let mut out = vec![Line::from(Span::styled("\u{203b} Recap", dim))];
+    let mut out = vec![Line::from(Span::styled(format!("\u{203b} {title}"), dim))];
     out.extend(
         text.lines()
             .filter(|l| !l.trim().is_empty())
@@ -110,13 +110,13 @@ fn drain_say_entries(entries: Vec<SayEntry>) -> Vec<SayBlock> {
     for e in entries {
         match e {
             SayEntry::Crash(c) => crashes.push(c),
-            SayEntry::Recap(text) => {
+            SayEntry::Card(title, text) => {
                 if !crashes.is_empty() {
                     out.push(SayBlock::Lines(vec![crash_notice_line(std::mem::take(
                         &mut crashes,
                     ))]));
                 }
-                out.push(SayBlock::Recap(text));
+                out.push(SayBlock::Card(title, text));
             }
             SayEntry::Lines(lines) => {
                 if !crashes.is_empty() {
@@ -273,8 +273,8 @@ pub(crate) fn queue_say(text: String) {
     ));
 }
 
-pub(crate) fn queue_recap(text: String) {
-    queue_say_inner(SayEntry::Recap(text));
+pub(crate) fn queue_card(title: String, text: String) {
+    queue_say_inner(SayEntry::Card(title, text));
 }
 
 fn queue_crash_inner(
@@ -355,6 +355,7 @@ static RESTART: Mutex<Option<bool>> = Mutex::new(None);
 
 pub(crate) fn set_repl_active(on: bool) {
     REPL_ACTIVE.store(on, std::sync::atomic::Ordering::Relaxed);
+    gray_core::agent::INTERACTIVE_SESSION.store(on, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// A plugin's `host/restart`, picked up by the REPL loop between turns.
@@ -375,18 +376,302 @@ fn request_restart(params: &serde_json::Value) -> serde_json::Value {
     serde_json::json!({"ok": true})
 }
 
-async fn list_sessions() -> serde_json::Value {
+fn session_kind(origin: Option<&str>) -> &'static str {
+    match origin {
+        None => "tui",
+        Some("print" | "subagent" | "nested") => "print",
+        Some(_) => "gateway",
+    }
+}
+
+async fn list_sessions(params: &serde_json::Value) -> serde_json::Value {
     let Some(root) = crate::session_store::default_root() else {
         return serde_json::json!({"sessions": []});
     };
-    let live = tokio::task::spawn_blocking(move || crate::session_store::running_sessions(&root))
-        .await
-        .unwrap_or_default();
-    let sessions: Vec<_> = live
-        .into_iter()
-        .map(|(id, pid)| serde_json::json!({"id": id, "running": true, "pid": pid}))
-        .collect();
+    let limit = params
+        .get("limit")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(200)
+        .clamp(1, 1000) as usize;
+    let cwd_filter = params
+        .get("cwd")
+        .and_then(|v| v.as_str())
+        .map(PathBuf::from);
+    let scan_root = root.clone();
+    let live =
+        tokio::task::spawn_blocking(move || crate::session_store::running_sessions(&scan_root))
+            .await
+            .unwrap_or_default();
+    let store = crate::session_store::JsonlSessionStore::new(root);
+    let mut summaries = match &cwd_filter {
+        Some(c) => store.list_in(c).await,
+        None => store.list().await,
+    };
+    summaries.retain(|s| cwd_filter.as_ref().is_none_or(|c| s.cwd == *c));
+    summaries.sort_by_key(|s| std::cmp::Reverse(s.last_message_at));
+    let running: std::collections::HashSet<String> =
+        live.iter().map(|(id, _)| id.clone()).collect();
+    let pid_of = |id: &str| live.iter().find(|(i, _)| i == id).and_then(|(_, p)| *p);
+    let mut sessions: Vec<serde_json::Value> = Vec::new();
+    for s in summaries
+        .iter()
+        .filter(|s| !crate::resume::is_empty_session(s) || running.contains(s.id.as_str()))
+    {
+        if sessions.len() >= limit {
+            break;
+        }
+        let id = s.id.as_str();
+        let is_running = running.contains(id);
+        let interrupted = crate::resume::session_state(s, &running)
+            == crate::resume::SessionState::Interrupted
+            && crate::resume::system_tag(s).is_none();
+        sessions.push(serde_json::json!({
+            "id": id,
+            "running": is_running,
+            "pid": pid_of(id),
+            "cwd": s.cwd.display().to_string(),
+            "kind": session_kind(s.origin.as_deref()),
+            "last_active": s.last_message_at / 1000,
+            "interrupted": interrupted,
+            "title": s.title,
+        }));
+    }
+    for (id, pid) in &live {
+        if sessions.len() >= limit {
+            break;
+        }
+        if !summaries.iter().any(|s| s.id.as_str() == id) && cwd_filter.is_none() {
+            sessions.push(
+                serde_json::json!({"id": id, "running": true, "pid": pid, "interrupted": false}),
+            );
+        }
+    }
     serde_json::json!({"sessions": sessions})
+}
+
+static LIVE_PROVIDER: Mutex<Option<std::sync::Arc<dyn gray_core::agent::Provider>>> =
+    Mutex::new(None);
+static HEADLESS_SESSION: Mutex<Option<String>> = Mutex::new(None);
+
+pub(crate) fn set_live_provider(p: Option<std::sync::Arc<dyn gray_core::agent::Provider>>) {
+    *LIVE_PROVIDER.lock().unwrap_or_else(|e| e.into_inner()) = p;
+}
+
+pub(crate) fn set_headless_session(sid: Option<&str>) {
+    *HEADLESS_SESSION.lock().unwrap_or_else(|e| e.into_inner()) = sid.map(str::to_string);
+}
+
+fn current_session() -> Option<String> {
+    live_session().or_else(|| {
+        HEADLESS_SESSION
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    })
+}
+
+fn interactive() -> bool {
+    REPL_ACTIVE.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+fn str_param<'a>(params: &'a serde_json::Value, key: &str) -> &'a str {
+    params.get(key).and_then(|v| v.as_str()).unwrap_or("")
+}
+
+fn plugin_of(params: &serde_json::Value) -> String {
+    let p = str_param(params, "_plugin");
+    if p.is_empty() { "plugin" } else { p }.to_string()
+}
+
+fn notice(params: &serde_json::Value) -> serde_json::Value {
+    let text = str_param(params, "text").trim();
+    let action = str_param(params, "action").trim();
+    let id = str_param(params, "id").trim();
+    let line = if action.is_empty() {
+        text.to_string()
+    } else {
+        format!("{text} \u{b7} {action}")
+    };
+    if !interactive() {
+        return serde_json::json!({"shown": false});
+    }
+    match str_param(params, "slot") {
+        "home" => {
+            let Some(tui) = registered_tui() else {
+                return serde_json::json!({"shown": false});
+            };
+            let key = format!("{}:{id}", plugin_of(params));
+            let row = (!text.is_empty()).then_some(line);
+            let shown = tui
+                .lock()
+                .map(|mut t| t.set_home_row(key, row))
+                .unwrap_or(false);
+            request_wake();
+            serde_json::json!({"shown": shown && !text.is_empty()})
+        }
+        "transcript" | "" => {
+            if text.is_empty() {
+                return serde_json::json!({"shown": false});
+            }
+            queue_say(line);
+            request_wake();
+            serde_json::json!({"shown": true})
+        }
+        other => serde_json::json!({"error": format!("host/notice: unknown slot {other}")}),
+    }
+}
+
+async fn transcript(params: &serde_json::Value) -> serde_json::Value {
+    let last = params
+        .get("last")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(20)
+        .clamp(1, 500) as usize;
+    let Some(sid) = current_session() else {
+        return serde_json::json!({"error": "host/transcript: no active session"});
+    };
+    let Some(root) = crate::session_store::default_root() else {
+        return serde_json::json!({"error": "host/transcript: no session store"});
+    };
+    let store = crate::session_store::JsonlSessionStore::new(root);
+    let entries = match store
+        .load(&crate::session_store::SessionId::new(sid.clone()))
+        .await
+    {
+        Ok((_, entries)) => entries,
+        Err(_) => Vec::new(),
+    };
+    let mut messages: Vec<serde_json::Value> = entries
+        .iter()
+        .map(|e| &e.message)
+        .filter(|m| !m.injected)
+        .filter_map(|m| {
+            let role = match m.role {
+                gray_core::message::Role::User => "user",
+                gray_core::message::Role::Assistant => "assistant",
+                _ => return None,
+            };
+            let text = m.text_content();
+            let text = text.trim();
+            if text.is_empty() {
+                return None;
+            }
+            let capped: String = text.chars().take(4000).collect();
+            Some(serde_json::json!({"role": role, "text": capped}))
+        })
+        .collect();
+    let skip = messages.len().saturating_sub(last);
+    messages.drain(..skip);
+    serde_json::json!({"session_id": sid, "messages": messages})
+}
+
+async fn complete(params: &serde_json::Value) -> serde_json::Value {
+    let prompt = str_param(params, "prompt");
+    if prompt.trim().is_empty() {
+        return serde_json::json!({"error": "host/complete: missing prompt"});
+    }
+    let provider = LIVE_PROVIDER
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+    let Some(provider) = provider else {
+        return serde_json::json!({"error": "host/complete: no model configured"});
+    };
+    let system = str_param(params, "system");
+    let req = gray_core::message::ChatRequest {
+        system: (!system.trim().is_empty()).then(|| system.to_string()),
+        messages: vec![gray_core::message::Message::user(prompt.to_string())],
+        tools: Vec::new(),
+        max_tokens: Some(
+            params
+                .get("max_tokens")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(512)
+                .clamp(1, 8192) as u32,
+        ),
+    };
+    match crate::oneshot::complete(provider, req).await {
+        Ok(text) => serde_json::json!({"text": text}),
+        Err(e) => serde_json::json!({"error": e}),
+    }
+}
+
+fn session_title(params: &serde_json::Value) -> serde_json::Value {
+    let title = str_param(params, "title").trim();
+    let (Some(sid), Some(root)) = (current_session(), crate::session_store::default_root()) else {
+        return serde_json::json!({"ok": false});
+    };
+    if title.is_empty() {
+        return serde_json::json!({"ok": false});
+    }
+    let id = crate::session_store::SessionId::new(sid);
+    if !crate::session_store::claim_auto_title(&root, &id) {
+        return serde_json::json!({"ok": false});
+    }
+    let ok = crate::session_store::set_auto_title(&root, &id, title).unwrap_or(false);
+    serde_json::json!({"ok": ok})
+}
+
+fn inject(params: &serde_json::Value) -> serde_json::Value {
+    let text = str_param(params, "text").trim();
+    if text.is_empty() || !interactive() {
+        return serde_json::json!({"ok": false});
+    }
+    let (Some(sid), Ok(home)) = (live_session(), crate::setup::gray_home()) else {
+        return serde_json::json!({"ok": false});
+    };
+    let Some(dir) = crate::session_mailbox::session_inbox(&home, &sid) else {
+        return serde_json::json!({"ok": false});
+    };
+    let body = serde_json::json!({"card": plugin_of(params), "prompt": text}).to_string();
+    let ok = crate::session_mailbox::write_entry(&dir, &body).is_ok();
+    request_wake();
+    serde_json::json!({"ok": ok})
+}
+
+fn ghost(params: &serde_json::Value) -> serde_json::Value {
+    if !interactive() {
+        return serde_json::json!({"ok": false});
+    }
+    crate::ghost::set(str_param(params, "text"));
+    serde_json::json!({"ok": true})
+}
+
+fn link_rules(params: &serde_json::Value) -> serde_json::Value {
+    let rules: Vec<(String, String)> = params
+        .get("rules")
+        .and_then(|r| r.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|r| {
+            Some((
+                r.get("pattern")?.as_str()?.to_string(),
+                r.get("url")?.as_str()?.to_string(),
+            ))
+        })
+        .collect();
+    match crate::composer::transcript::linkify::set_rules(&plugin_of(params), &rules) {
+        Ok(()) => serde_json::json!({"ok": true}),
+        Err(e) => serde_json::json!({"ok": false, "error": format!("host/link_rules: {e}")}),
+    }
+}
+
+async fn plugin_install(params: &serde_json::Value) -> serde_json::Value {
+    let spec = str_param(params, "spec").trim().to_string();
+    if !interactive() {
+        return serde_json::json!({"ok": false, "message": "needs an interactive session"});
+    }
+    if spec.is_empty() {
+        return serde_json::json!({"ok": false, "message": "missing spec"});
+    }
+    let home = match crate::plugin_cli::home() {
+        Ok(h) => h,
+        Err(e) => return serde_json::json!({"ok": false, "message": format!("{e:#}")}),
+    };
+    match crate::plugin_cli::install_spec_consent(&home, &spec).await {
+        Ok(lines) => serde_json::json!({"ok": true, "message": lines.join("\n")}),
+        Err(e) => serde_json::json!({"ok": false, "message": format!("install failed: {e:#}")}),
+    }
 }
 
 static LIVE_SESSION: Mutex<Option<String>> = Mutex::new(None);
@@ -437,12 +722,32 @@ pub fn default_handler(cwd: PathBuf) -> HostHandler {
                         } else if let Some(text) = params.get("text").and_then(|t| t.as_str())
                             && !text.trim().is_empty()
                         {
-                            queue_say(text.to_string());
+                            match params.get("card").and_then(|c| c.as_str()) {
+                                Some(title) if !title.trim().is_empty() => {
+                                    queue_card(title.trim().to_string(), text.to_string())
+                                }
+                                _ => queue_say(text.to_string()),
+                            }
                         }
                         serde_json::json!({"ok": true})
                     }
                     "host/restart" => request_restart(&params),
-                    "host/sessions" => list_sessions().await,
+                    "host/sessions" => list_sessions(&params).await,
+                    "host/notice" => notice(&params),
+                    "host/transcript" => transcript(&params).await,
+                    "host/complete" => complete(&params).await,
+                    "host/session_title" => session_title(&params),
+                    "host/inject" => inject(&params),
+                    "host/ghost" => ghost(&params),
+                    "host/link_rules" => link_rules(&params),
+                    "host/notify" => {
+                        let ok = crate::term_signals::notify(
+                            str_param(&params, "title"),
+                            str_param(&params, "body"),
+                        );
+                        serde_json::json!({"ok": ok})
+                    }
+                    "host/plugin_install" => plugin_install(&params).await,
                     HOST_ASK => crate::ask::handle_ask(params).await,
                     HOST_RUN => {
                         let prompt = params

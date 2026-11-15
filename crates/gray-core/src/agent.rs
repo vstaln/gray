@@ -463,6 +463,49 @@ pub enum CommandOutcome {
     },
 }
 
+pub static TERMINAL_FOCUSED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(true);
+
+pub static INTERACTIVE_SESSION: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct TurnError {
+    pub kind: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resets_at: Option<u64>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct TurnEndInfo {
+    pub session_id: Option<String>,
+    pub interactive: bool,
+    pub focused: bool,
+    pub took_ms: u64,
+    pub error: Option<TurnError>,
+}
+
+impl TurnEndInfo {
+    pub fn error_for(e: &crate::error::CoreError) -> TurnError {
+        match e.class() {
+            crate::error::CoreError::Quota { resets_in, .. } => TurnError {
+                kind: "usage_limit",
+                resets_at: resets_in.map(|d| {
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|now| now.as_secs())
+                        .unwrap_or(0)
+                        + d.as_secs()
+                }),
+            },
+            _ => TurnError {
+                kind: "other",
+                resets_at: None,
+            },
+        }
+    }
+}
+
 #[async_trait]
 pub trait PluginHooks: Send + Sync {
     fn repin_session(&self, _id: &str) {}
@@ -504,7 +547,9 @@ pub trait PluginHooks: Send + Sync {
     }
     async fn pre_tool(&self, _name: &str, _args: &serde_json::Value) {}
     async fn post_tool(&self, _name: &str, _output: &ToolOutput) {}
-    async fn turn_end(&self, _usage: &Usage) {}
+    async fn turn_end(&self, _usage: &Usage, _info: &TurnEndInfo) {}
+
+    async fn user_return(&self, _away_secs: u64) {}
 
     /// The interactive REPL session came up — plugins use it for
     /// first-run/detection notices (the old core QoL hook).
@@ -617,6 +662,8 @@ pub struct Agent {
     pub(crate) pending_tools: Option<Vec<ToolDef>>,
 
     pub(crate) last_request_at: Option<std::time::Instant>,
+
+    pub(crate) turn_billed: std::sync::Mutex<Usage>,
 }
 
 /// Below this many prompt tokens a full cache rewrite is cheap enough to
@@ -684,6 +731,7 @@ impl Agent {
             held_summary: None,
             background_failures: 0,
             unbilled: Usage::default(),
+            turn_billed: std::sync::Mutex::new(Usage::default()),
         }
     }
 

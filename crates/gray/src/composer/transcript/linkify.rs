@@ -1,7 +1,9 @@
-use std::collections::HashMap;
 use std::ops::Range;
-use std::path::Path;
-use std::sync::Mutex;
+use std::sync::{Mutex, RwLock};
+
+use gray_markdown::HyperlinkTarget;
+use ratatui::text::Line;
+use unicode_width::UnicodeWidthStr;
 
 type Fence = (u8, usize);
 
@@ -18,47 +20,72 @@ static SCAN: Mutex<Scan> = Mutex::new(Scan {
     resume: 0,
 });
 
-static REMOTES: Mutex<Option<HashMap<String, Option<String>>>> = Mutex::new(None);
+struct Rule {
+    owner: String,
+    pattern: regex::Regex,
+    url: String,
+}
+
+static RULES: RwLock<Vec<Rule>> = RwLock::new(Vec::new());
 
 pub(crate) fn begin_turn() {
     *SCAN.lock().unwrap_or_else(|e| e.into_inner()) = Scan::default();
 }
 
-fn remote_base(cwd: &Path) -> Option<String> {
-    let key = cwd.to_string_lossy().to_string();
-    {
-        let cache = REMOTES.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(hit) = cache.as_ref().and_then(|m| m.get(&key)) {
-            return hit.clone();
-        }
+pub(crate) fn set_rules(owner: &str, rules: &[(String, String)]) -> Result<(), String> {
+    let mut compiled = Vec::new();
+    for (pattern, url) in rules {
+        let pattern = regex::Regex::new(pattern).map_err(|e| format!("bad pattern: {e}"))?;
+        compiled.push(Rule {
+            owner: owner.to_string(),
+            pattern,
+            url: url.clone(),
+        });
     }
-    let base = crate::system_prompt::git_field(cwd, &["remote", "get-url", "origin"])
-        .as_deref()
-        .and_then(normalize_remote);
-    let mut cache = REMOTES.lock().unwrap_or_else(|e| e.into_inner());
-    cache
-        .get_or_insert_with(HashMap::new)
-        .insert(key, base.clone());
-    base
+    let mut all = RULES.write().unwrap_or_else(|e| e.into_inner());
+    all.retain(|r| r.owner != owner);
+    all.extend(compiled);
+    Ok(())
 }
 
-fn normalize_remote(remote: &str) -> Option<String> {
-    let r = remote.trim().trim_end_matches('/');
-    let r = r.strip_suffix(".git").unwrap_or(r);
-    let (host, path) = if let Some(rest) = r.strip_prefix("git@") {
-        rest.split_once(':')?
-    } else {
-        let rest = r.split_once("://").map(|(_, rest)| rest).unwrap_or(r);
-        if rest == r && !rest.contains('/') {
-            return None;
+fn has_rules() -> bool {
+    !RULES.read().unwrap_or_else(|e| e.into_inner()).is_empty()
+}
+
+struct Hit {
+    range: Range<usize>,
+    url: String,
+}
+
+fn hits(line: &str, code: &[Range<usize>]) -> Vec<Hit> {
+    let rules = RULES.read().unwrap_or_else(|e| e.into_inner());
+    let mut out: Vec<Hit> = Vec::new();
+    for rule in rules.iter() {
+        for caps in rule.pattern.captures_iter(line) {
+            let Some(m) = caps.get(0) else { continue };
+            if m.is_empty() {
+                continue;
+            }
+            let r = m.range();
+            if code.iter().any(|c| c.start < r.end && r.start < c.end)
+                || after_url(line, r.start)
+                || in_link_syntax(line, r.start)
+                || out
+                    .iter()
+                    .any(|h| h.range.start < r.end && r.start < h.range.end)
+            {
+                continue;
+            }
+            let mut url = String::new();
+            caps.expand(&rule.url, &mut url);
+            if url.trim().is_empty() {
+                continue;
+            }
+            out.push(Hit { range: r, url });
         }
-        let rest = rest.split_once('@').map(|(_, rest)| rest).unwrap_or(rest);
-        rest.split_once('/')?
-    };
-    if host.is_empty() || path.is_empty() || !path.contains('/') {
-        return None;
     }
-    Some(format!("https://{host}/{path}"))
+    out.sort_by_key(|h| h.range.start);
+    out
 }
 
 fn fence_open(line: &str) -> Option<Fence> {
@@ -135,70 +162,59 @@ fn in_link_syntax(line: &str, i: usize) -> bool {
     }
 }
 
-fn issue_ref(line: &str, i: usize, bytes_end: usize, code: &[Range<usize>]) -> bool {
-    if code.iter().any(|r| r.start <= i && i < r.end) {
-        return false;
-    }
-    let prev_ok = i == 0 || matches!(line.as_bytes()[i - 1], b' ' | b'\t' | b'(' | b'\r' | b'\n');
-    if !prev_ok || after_url(line, i) || in_link_syntax(line, i) {
-        return false;
-    }
-    match line.as_bytes().get(bytes_end) {
-        Some(c) => !(c.is_ascii_alphanumeric() || *c == b'_'),
-        None => true,
-    }
-}
-
 fn rewrite_line(
     line: &str,
     emit_from: usize,
     code: &[Range<usize>],
-    base: &str,
     hold_tail: bool,
 ) -> (String, Option<usize>) {
     if emit_from >= line.len() {
         return (String::new(), None);
     }
-    let b = line.as_bytes();
-    let mut out = String::with_capacity(line.len() - emit_from + 16);
-    let mut i = emit_from;
-    while i < b.len() {
-        if b[i] == b'#' {
-            let mut e = i + 1;
-            while e < b.len() && b[e].is_ascii_digit() {
-                e += 1;
-            }
-            if hold_tail && e == b.len() {
-                return (out, Some(i));
-            }
-            if e > i + 1 && issue_ref(line, i, e, code) {
-                out.push('[');
-                out.push_str(&line[i..e]);
-                out.push_str("](");
-                out.push_str(base);
-                out.push_str("/issues/");
-                out.push_str(&line[i + 1..e]);
-                out.push(')');
-                i = e;
-                continue;
-            }
-        }
-        let ch = line[i..].chars().next().unwrap_or(' ');
-        out.push(ch);
-        i += ch.len_utf8();
+    let mut cut = line.len();
+    if hold_tail {
+        cut = line[emit_from..]
+            .rfind(char::is_whitespace)
+            .map(|p| {
+                let at = emit_from + p;
+                at + line[at..].chars().next().map_or(1, char::len_utf8)
+            })
+            .unwrap_or(emit_from);
     }
-    (out, None)
+    let found = hits(line, code);
+    if let Some(h) = found
+        .iter()
+        .find(|h| h.range.start < cut && h.range.end > cut && h.range.start >= emit_from)
+    {
+        cut = h.range.start;
+    }
+    let mut out = String::with_capacity(cut.saturating_sub(emit_from) + 16);
+    let mut i = emit_from;
+    for h in found
+        .iter()
+        .filter(|h| h.range.start >= emit_from && h.range.end <= cut)
+    {
+        out.push_str(&line[i..h.range.start]);
+        out.push('[');
+        out.push_str(&line[h.range.clone()]);
+        out.push_str("](");
+        out.push_str(&h.url);
+        out.push(')');
+        i = h.range.end;
+    }
+    if i < cut {
+        out.push_str(&line[i..cut]);
+    }
+    (out, hold_tail.then_some(cut))
 }
 
-pub(crate) fn rewrite(cwd: &Path, chunk: &str) -> String {
-    if !crate::settings::issue_links() {
-        begin_turn();
-        return chunk.to_string();
+pub(crate) fn rewrite(chunk: &str) -> String {
+    if !has_rules() {
+        let st = SCAN.lock().unwrap_or_else(|e| e.into_inner());
+        if st.partial.is_empty() && st.fence.is_none() {
+            return chunk.to_string();
+        }
     }
-    let Some(base) = remote_base(cwd) else {
-        begin_turn();
-        return chunk.to_string();
-    };
     if chunk.is_empty() {
         return String::new();
     }
@@ -232,7 +248,7 @@ pub(crate) fn rewrite(cwd: &Path, chunk: &str) -> String {
                     out.push_str(piece);
                 } else {
                     let code = code_ranges(&line);
-                    let (text, held) = rewrite_line(&line, prefix, &code, &base, !complete);
+                    let (text, held) = rewrite_line(&line, prefix, &code, !complete);
                     out.push_str(&text);
                     if complete {
                         out.push('\n');
@@ -249,7 +265,7 @@ pub(crate) fn rewrite(cwd: &Path, chunk: &str) -> String {
     out
 }
 
-pub(crate) fn flush(cwd: &Path) -> String {
+pub(crate) fn flush() -> String {
     let mut st = SCAN.lock().unwrap_or_else(|e| e.into_inner());
     let partial = std::mem::take(&mut st.partial);
     let resume = std::mem::take(&mut st.resume);
@@ -258,12 +274,39 @@ pub(crate) fn flush(cwd: &Path) -> String {
         return String::new();
     }
     let start = resume.min(partial.len());
-    if fenced || !crate::settings::issue_links() {
+    if fenced || !has_rules() {
         return partial[start..].to_string();
     }
-    let Some(base) = remote_base(cwd) else {
-        return partial[start..].to_string();
-    };
+    drop(st);
     let code = code_ranges(&partial);
-    rewrite_line(&partial, start, &code, &base, false).0
+    rewrite_line(&partial, start, &code, false).0
+}
+
+pub(crate) fn rewrite_final(chunk: &str) -> String {
+    let mut out = rewrite(chunk);
+    out.push_str(&flush());
+    out
+}
+
+pub(crate) fn plain_links(lines: &[Line<'static>], first_id: u32) -> Vec<HyperlinkTarget> {
+    if !has_rules() {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    let mut id = first_id;
+    for (line_index, line) in lines.iter().enumerate() {
+        let content: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        for h in hits(&content, &[]) {
+            let start = content[..h.range.start].width();
+            let end = start + content[h.range.clone()].width();
+            out.push(HyperlinkTarget {
+                line_index,
+                column_range: start..end,
+                url: h.url,
+                id,
+            });
+            id += 1;
+        }
+    }
+    out
 }

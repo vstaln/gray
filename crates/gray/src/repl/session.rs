@@ -106,32 +106,6 @@ pub(crate) async fn handle_resume(
     tui: Option<&crate::composer::SharedTui>,
     hide_thinking: &mut bool,
 ) {
-    if args.dismiss {
-        let scope = if args.all { None } else { Some(cwd) };
-        let n = crate::resume::dismiss_interrupted(scope).await;
-
-        if let Some(shared) = &tui {
-            let hint = crate::resume::startup_interrupted_hint(cwd).await;
-            shared.lock().expect("tui lock").set_home_notice(hint);
-        }
-        let msg = match (n, args.all) {
-            (0, _) => "no interrupted sessions to dismiss".to_string(),
-            (n, false) => format!("dismissed {n} interrupted session{}", plural(n)),
-            (n, true) => format!(
-                "dismissed {n} interrupted session{} in every directory",
-                plural(n)
-            ),
-        };
-        if let Some(shared) = &tui {
-            shared
-                .lock()
-                .expect("tui lock")
-                .push_dim(format!("\u{2514} {msg}"));
-        } else {
-            say(None, &msg);
-        }
-        return;
-    }
     if args.target.is_none() {
         let at_home = tui.is_some_and(|s| s.lock().expect("tui lock").is_home());
         if !at_home
@@ -1152,8 +1126,4 @@ pub(crate) async fn recovery_compact(
             false
         }
     }
-}
-
-fn plural(n: usize) -> &'static str {
-    if n == 1 { "" } else { "s" }
 }

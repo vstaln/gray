@@ -391,11 +391,6 @@ pub(crate) fn read_line(
         if !poll(timeout)? {
             let tick = {
                 let mut guard = shared.lock().expect("tui lock");
-                let countdown = crate::settings::auto_continue_secs();
-                if countdown != guard.auto_continue_secs {
-                    guard.auto_continue_secs = countdown;
-                    needs_draw = true;
-                }
                 let tick = guard.action_tick();
                 if tick.submit {
                     if let Some(sub) = try_submit(&mut guard) {
@@ -420,7 +415,7 @@ pub(crate) fn read_line(
         let tui: &mut super::Tui = &mut guard;
         let ev = read()?;
         if let Event::FocusGained | Event::FocusLost = ev {
-            crate::away::focus(matches!(ev, Event::FocusGained));
+            crate::presence::focus(matches!(ev, Event::FocusGained), tui.is_task_running);
             continue;
         }
         if match &ev {
@@ -428,8 +423,7 @@ pub(crate) fn read_line(
             Event::Paste(_) => true,
             _ => false,
         } {
-            crate::away::key(tui.is_task_running);
-            crate::settings::cancel_auto_continue();
+            crate::presence::key(tui.is_task_running);
         }
         // Typing during the band fade-in lands it at once.
         tui.home_reveal = None;
@@ -447,14 +441,19 @@ pub(crate) fn read_line(
                 continue;
             }
         }
-        let tab_accept = matches!(&ev, Event::Key(k)
+        let accept_key = matches!(&ev, Event::Key(k)
             if k.kind != KeyEventKind::Release
-                && matches!(k.code, KeyCode::Tab)
+                && matches!(k.code, KeyCode::Tab | KeyCode::Enter)
                 && !k
                     .modifiers
-                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER));
-        if tab_accept && tui.accept_suggestion() {
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER | KeyModifiers::SHIFT));
+        if accept_key && tui.accept_ghost() {
             continue;
+        }
+        if matches!(&ev, Event::Key(k) if k.kind != KeyEventKind::Release)
+            || matches!(ev, Event::Paste(_))
+        {
+            crate::ghost::discard();
         }
         match ev {
             Event::Resize(cols, rows) => {

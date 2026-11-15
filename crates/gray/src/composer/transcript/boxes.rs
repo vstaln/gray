@@ -270,7 +270,7 @@ impl Tui {
         self.push_styled_lines_with_hyperlinks(vec![line], &[], 0);
     }
 
-    pub fn push_recap(&mut self, summary: &str) {
+    pub fn push_card(&mut self, title: &str, summary: &str) {
         let theme = crate::theme::theme();
         let avail = prose_width(self.width().max(10)).saturating_sub(2).max(1);
         let mut lines = vec![Line::from(vec![
@@ -281,7 +281,7 @@ impl Tui {
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
-                "Recap",
+                title.to_string(),
                 Style::default()
                     .fg(theme.text_bright)
                     .add_modifier(Modifier::BOLD),

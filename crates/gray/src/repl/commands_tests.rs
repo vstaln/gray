@@ -388,15 +388,6 @@ fn jobs_command_opens_the_background_work_list() {
 }
 
 #[test]
-fn resume_dismiss_parses_alone_and_with_all() {
-    let a = super::parse_resume_args("dismiss");
-    assert!(a.dismiss && !a.all && a.target.is_none());
-    let b = super::parse_resume_args("dismiss all");
-    assert!(b.dismiss && b.all);
-    assert!(!super::parse_resume_args("--last").dismiss);
-}
-
-#[test]
 fn sessions_is_canonical_and_resume_stays_an_alias() {
     assert_eq!(super::resolve("/sessions").unwrap().name, "sessions");
     assert_eq!(super::resolve("/resume").unwrap().name, "sessions");
@@ -406,18 +397,6 @@ fn sessions_is_canonical_and_resume_stays_an_alias() {
             _ => panic!("{line} did not parse as the sessions command"),
         }
     }
-
-    let cwd = std::path::Path::new("/tmp");
-    assert!(
-        super::complete_command_args("sessions", "", cwd)
-            .iter()
-            .any(|(n, _)| n == "sessions dismiss")
-    );
-    assert!(
-        super::complete_command_args("resume", "", cwd)
-            .iter()
-            .any(|(n, _)| n == "resume dismiss")
-    );
 }
 
 #[test]

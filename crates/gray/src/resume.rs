@@ -77,7 +77,7 @@ fn paths_match(a: &Path, b: &Path) -> bool {
     ca == cb
 }
 
-fn is_empty_session(s: &SessionSummary) -> bool {
+pub(crate) fn is_empty_session(s: &SessionSummary) -> bool {
     let has = |o: &Option<String>| o.as_deref().is_some_and(|t| !t.trim().is_empty());
     !(has(&s.first_user_text) || has(&s.last_user_text))
 }
@@ -86,7 +86,7 @@ fn is_auxiliary_session(s: &SessionSummary) -> bool {
     s.origin.is_some() || system_tag(s).is_some()
 }
 
-fn system_tag(s: &SessionSummary) -> Option<String> {
+pub(crate) fn system_tag(s: &SessionSummary) -> Option<String> {
     if let Some(o) = &s.origin {
         return Some(o.clone());
     }
@@ -104,7 +104,10 @@ pub(crate) enum SessionState {
     Running,
 }
 
-fn session_state(s: &SessionSummary, running: &std::collections::HashSet<String>) -> SessionState {
+pub(crate) fn session_state(
+    s: &SessionSummary,
+    running: &std::collections::HashSet<String>,
+) -> SessionState {
     if running.contains(s.id.as_str()) {
         SessionState::Running
     } else if s.last_end != SessionEnd::Done
@@ -410,69 +413,6 @@ pub fn locked_session_card(id: &SessionId, pid: Option<u32>) -> String {
         }
     }
     out
-}
-
-fn interrupted_sessions<'a>(
-    summaries: &'a [SessionSummary],
-    running: &std::collections::HashSet<String>,
-    cwd: Option<&Path>,
-) -> Vec<&'a SessionSummary> {
-    summaries
-        .iter()
-        .filter(|s| cwd.is_none_or(|c| s.cwd == c))
-        .filter(|s| !is_empty_session(s) && system_tag(s).is_none())
-        .filter(|s| session_state(s, running) == SessionState::Interrupted)
-        .collect()
-}
-
-pub(crate) fn interrupted_hint(
-    summaries: &[SessionSummary],
-    running: &std::collections::HashSet<String>,
-    cwd: &std::path::Path,
-    home: Option<&std::path::Path>,
-) -> Option<String> {
-    let n = interrupted_sessions(summaries, running, Some(cwd)).len();
-    if n == 0 {
-        return None;
-    }
-    let shown = home
-        .and_then(|h| gray_core::paths::tilde(cwd, h))
-        .unwrap_or_else(|| cwd.display().to_string());
-    let noun = if n == 1 { "session" } else { "sessions" };
-    Some(format!(
-        "\u{26a0} {n} interrupted {noun} in {shown} \u{b7} /sessions to pick up \u{b7} /sessions dismiss to clear"
-    ))
-}
-
-pub(crate) async fn dismiss_interrupted(cwd: Option<&Path>) -> usize {
-    let Some(root) = crate::session_store::default_root() else {
-        return 0;
-    };
-    let store = JsonlSessionStore::new(root.clone());
-    let summaries = store.list().await;
-    let running = store
-        .held_open_locks(summaries.iter().map(|s| s.id.clone()).collect())
-        .await;
-    interrupted_sessions(&summaries, &running, cwd)
-        .into_iter()
-        .filter(|s| crate::session_store::write_dismissal(&root, &s.id, s.last_message_at).is_ok())
-        .count()
-}
-
-pub(crate) async fn startup_interrupted_hint(cwd: &std::path::Path) -> Option<String> {
-    let store = JsonlSessionStore::new(crate::session_store::default_root()?);
-    let summaries = store.list_in(cwd).await;
-    let running = store
-        .held_open_locks(
-            summaries
-                .iter()
-                .filter(|s| s.cwd == cwd)
-                .map(|s| s.id.clone())
-                .collect(),
-        )
-        .await;
-    let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
-    interrupted_hint(&summaries, &running, cwd, home.as_deref())
 }
 
 pub async fn run_resume_picker(

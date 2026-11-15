@@ -215,6 +215,7 @@ pub struct Tui {
 
     pub(crate) home_update: Option<String>,
     pub(crate) home_quality_of_life: Option<String>,
+    home_rows: Vec<(String, String)>,
 
     pub(crate) home_session: Option<String>,
 
@@ -227,7 +228,6 @@ pub struct Tui {
     pub(crate) replay_queue: Option<Box<ReplayQueue>>,
 
     status_line_seen: u64,
-    auto_continue_secs: Option<u64>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -454,12 +454,12 @@ impl Tui {
             live_tools: Vec::new(),
             plugin_widget: plugin_widget::Widget::new(std::env::current_dir().unwrap_or_default()),
             status_line_seen: crate::statusline::version(),
-            auto_continue_secs: None,
             ask_modal: None,
             home_notice: None,
             plugin_stats: None,
             home_update: None,
             home_quality_of_life: None,
+            home_rows: Vec::new(),
             home_session: None,
             left_home: false,
             intro_started: intro,

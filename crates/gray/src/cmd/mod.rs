@@ -154,17 +154,6 @@ fn help_result() -> CommandResult {
             out.push_str(&format!("  /{name:<10} {description}\n"));
         }
     }
-    if let Ok(cwd) = std::env::current_dir() {
-        let templates = crate::prompt_templates::discover(&cwd);
-        if !templates.is_empty() {
-            out.push_str("prompt templates:\n");
-            for t in templates {
-                if seen.insert(t.name.clone()) {
-                    out.push_str(&format!("  /{:<10} {}\n", t.name, t.description));
-                }
-            }
-        }
-    }
     CommandResult::text(out.trim_end())
 }
 

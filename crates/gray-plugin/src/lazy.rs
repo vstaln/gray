@@ -217,6 +217,9 @@ impl Plugin for LazySidecarPlugin {
     ) -> Option<CommandOutcome> {
         if !self.manifest.commands.iter().any(|c| c == name)
             && !self.manifest.subcommands.iter().any(|c| c == name)
+            && !crate::dynamic_commands()
+                .iter()
+                .any(|(p, n, _)| *p == self.manifest.name && name.trim_start_matches('/') == n)
         {
             return None;
         }
@@ -230,7 +233,7 @@ impl Plugin for LazySidecarPlugin {
     }
 
     async fn on_event(&self, e: CoreEvent) {
-        if self.live.get().is_none() && self.manifest.hooks.is_empty() {
+        if !self.manifest.claims(e.hook_name()) {
             return;
         }
         if let Ok(p) = self.live().await {
