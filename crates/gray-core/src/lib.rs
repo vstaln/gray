@@ -14,6 +14,7 @@ pub mod overflow;
 pub mod parallel;
 pub mod paths;
 pub mod prefix_guard;
+pub mod records;
 pub mod redaction;
 pub mod spill;
 pub mod time;

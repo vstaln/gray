@@ -81,11 +81,12 @@ impl Agent {
         if covered == 0 {
             return;
         }
-        let Some(prepared) =
+        let Some(mut prepared) =
             self.prepare_compaction(&self.messages[..covered], None, self.compact_keep)
         else {
             return;
         };
+        prepared.attach_records(crate::records::build(&self.messages[..covered], &[]).index());
         let prefix_digest = prefix_digest(&self.messages[..covered]);
         let system_digest = system_digest(self.system_text());
         let model = self.provider.model_id().to_string();

@@ -67,7 +67,16 @@ pub(crate) const CONTINUE_TAIL: &str =
     "Continue the pending user request using the retained context and summary.";
 
 pub(crate) fn trigger_message(instructions: Option<&str>) -> Message {
+    trigger_message_with(instructions, None)
+}
+
+pub(crate) fn trigger_message_with(instructions: Option<&str>, records: Option<&str>) -> Message {
     let mut trigger = COMPACTION_TRIGGER.to_string();
+    if let Some(index) = records.map(str::trim).filter(|s| !s.is_empty()) {
+        trigger.push_str(&format!(
+            "\n\n<records>\nThese ids name the turns (M#), tool calls (T#) and earlier checkpoints (L#) this checkpoint replaces; their user messages and final replies are kept word for word next to it. Cite the ids next to the facts they support. Exact values (paths, `code`, versions, numbers) are checked against the records, and what cannot be confirmed is tagged for re-checking.\n{index}\n</records>"
+        ));
+    }
     if let Some(instructions) = instructions.map(str::trim).filter(|s| !s.is_empty()) {
         trigger.push_str(&format!(
             "\n\n<user-instructions>\nThe user provided these instructions for this summary. Follow them with high priority:\n{instructions}\n</user-instructions>"
