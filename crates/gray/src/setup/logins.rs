@@ -956,8 +956,13 @@ impl Logins {
                         vec!["account", "strategy", next]
                     }
                 };
-                let msg = run(&argv, &args, CMD_TIMEOUT).unwrap_or_else(|e| e);
-                self.refresh(plugin);
+                let msg = match run(&argv, &args, CMD_TIMEOUT) {
+                    Ok(msg) => {
+                        self.refresh(plugin);
+                        msg
+                    }
+                    Err(e) => e,
+                };
                 msg.lines().next().unwrap_or_default().to_string()
             }
             Source::Vault(auth_ref) => {
