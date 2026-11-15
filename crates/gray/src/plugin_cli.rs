@@ -1801,39 +1801,74 @@ pub(crate) fn completions(query: &str) -> Vec<(String, String)> {
     out
 }
 
-pub(crate) async fn capture(
+/// What a plugin process produced: the reply a caller parses, and what it said
+/// on stderr, which is where an `Err` returned from the plugin's main lands.
+pub(crate) struct PluginOutput {
+    pub stdout: Vec<u8>,
+    pub stderr: Vec<u8>,
+    pub status: std::process::ExitStatus,
+}
+
+impl PluginOutput {
+    /// Why the call failed, quoting the plugin: its own error text if it wrote
+    /// one, else whatever it printed — a bare exit code tells nobody anything.
+    pub(crate) fn failure(&self) -> String {
+        fn tail(bytes: &[u8]) -> String {
+            let text = String::from_utf8_lossy(bytes);
+            let text = text.trim_end();
+            text.get(text.len().saturating_sub(500)..)
+                .unwrap_or(text)
+                .to_string()
+        }
+        let stderr = tail(&self.stderr);
+        let said = if stderr.is_empty() {
+            tail(&self.stdout)
+        } else {
+            stderr
+        };
+        if said.is_empty() {
+            format!("plugin exited {}", self.status)
+        } else {
+            format!("plugin exited {} — last output: {said}", self.status)
+        }
+    }
+}
+
+pub(crate) async fn capture_output(
     mut command: tokio::process::Command,
     ttl: std::time::Duration,
-) -> anyhow::Result<Vec<u8>> {
+) -> anyhow::Result<PluginOutput> {
     use tokio::io::AsyncReadExt;
     #[cfg(windows)]
     command.creation_flags(0x0000_0200);
     let mut child = command
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
         .kill_on_drop(true)
         .spawn()?;
     let mut stdout = child.stdout.take().context("missing stdout")?.take(65537);
+    let mut stderr = child.stderr.take().context("missing stderr")?.take(65537);
     let result = tokio::time::timeout(ttl, async {
         let mut bytes = Vec::new();
-        stdout.read_to_end(&mut bytes).await?;
+        let mut errors = Vec::new();
+        let (out, err) = tokio::join!(
+            stdout.read_to_end(&mut bytes),
+            stderr.read_to_end(&mut errors)
+        );
+        out?;
+        err?;
         anyhow::ensure!(bytes.len() <= 65536, "plugin output exceeds 64 KiB");
         let status = child.wait().await?;
-        if !status.success() {
-            let tail = String::from_utf8_lossy(&bytes);
-            let tail = tail.trim_end();
-            let tail = tail.get(tail.len().saturating_sub(500)..).unwrap_or(tail);
-            if tail.is_empty() {
-                anyhow::bail!("plugin exited {status}");
-            }
-            anyhow::bail!("plugin exited {status} — last output: {tail}");
-        }
-        Ok::<_, anyhow::Error>(bytes)
+        Ok::<_, anyhow::Error>(PluginOutput {
+            stdout: bytes,
+            stderr: errors,
+            status,
+        })
     })
     .await;
     match result {
-        Ok(Ok(bytes)) => Ok(bytes),
+        Ok(Ok(output)) => Ok(output),
         other => {
             let _ = child.kill().await;
             let _ = child.wait().await;
@@ -1843,6 +1878,42 @@ pub(crate) async fn capture(
                 _ => unreachable!(),
             }
         }
+    }
+}
+
+pub(crate) async fn capture(
+    command: tokio::process::Command,
+    ttl: std::time::Duration,
+) -> anyhow::Result<Vec<u8>> {
+    let output = capture_output(command, ttl).await?;
+    anyhow::ensure!(output.status.success(), "{}", output.failure());
+    Ok(output.stdout)
+}
+
+#[cfg(test)]
+mod capture_output_tests {
+    use super::capture_output;
+    use std::time::Duration;
+
+    /// A failing plugin's own message is what makes the failure diagnosable;
+    /// it lands on stderr and used to be thrown away.
+    #[tokio::test]
+    async fn a_failed_call_keeps_what_the_plugin_said() {
+        let command = if cfg!(windows) {
+            let mut command = tokio::process::Command::new("cmd");
+            command.args(["/C", "echo boom 1>&2 & exit 3"]);
+            command
+        } else {
+            let mut command = tokio::process::Command::new("sh");
+            command.args(["-c", "echo boom >&2; exit 3"]);
+            command
+        };
+        let output = capture_output(command, Duration::from_secs(20))
+            .await
+            .expect("a process that runs and exits is not an error");
+        assert!(!output.status.success());
+        let failure = output.failure();
+        assert!(failure.contains("boom"), "{failure}");
     }
 }
 
