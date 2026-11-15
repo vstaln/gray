@@ -952,7 +952,8 @@ fn bash_header(
             if !background && let Some(mem) = memory_label(core.command) {
                 return memory_line(mem, bullet, action_style, cmd_style, dim_style);
             }
-            let shown = gray_cli_command(core.command).unwrap_or(core.command);
+            let gray_cli = gray_cli_command(core.command);
+            let shown = gray_cli.unwrap_or(core.command);
             let cut = truncate_cmd(shown);
 
             let cmd = if cut.len() < shown.len() || full.lines().nth(1).is_some() {
@@ -961,10 +962,16 @@ fn bash_header(
                 cut.to_string()
             };
             let mut spans = vec![bullet];
-            if gray_cli_command(core.command).is_none() {
+            if gray_cli.is_some() {
+                let (sub, rest) = cmd.split_once(char::is_whitespace).unwrap_or((&cmd, ""));
+                spans.push(Span::styled(humanize_tool_name(sub), action_style));
+                if !rest.is_empty() {
+                    spans.push(Span::styled(format!(" {rest}"), cmd_style));
+                }
+            } else {
                 spans.push(verb(if background { "Started " } else { "Ran " }));
+                spans.push(Span::styled(cmd, cmd_style));
             }
-            spans.push(Span::styled(cmd, cmd_style));
             if let Some(dir) = core.cwd.filter(|d| !d.trim().is_empty()) {
                 spans.push(Span::styled(format!(" \u{00b7} {dir}"), dim_style));
             }
@@ -1305,9 +1312,6 @@ fn mcp_arg_preview(args: &serde_json::Value) -> String {
 pub(crate) fn humanize_tool_name(name: &str) -> String {
     if let Some((server, tool)) = mcp_parts(name) {
         return format!("{server} \u{b7} {}", tool.replace(['_', '-'], " "));
-    }
-    if !name.contains('_') && !name.contains('-') {
-        return name.to_string();
     }
     let mut out = String::with_capacity(name.len());
     let mut capitalize = true;

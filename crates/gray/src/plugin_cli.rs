@@ -775,8 +775,25 @@ pub fn set_managed_global(name: &str, on: bool) -> anyhow::Result<()> {
     gray_pkg::ops::set_global(name, on)
 }
 
+fn resolve_update_target<'a>(home: &Path, target: &'a str) -> &'a str {
+    if target == "all" {
+        return target;
+    }
+    let Ok(lock) = load_lock(home) else {
+        return target;
+    };
+    if lock.plugins.contains_key(target) {
+        return target;
+    }
+    gray_pkg::ops::RENAMED
+        .iter()
+        .find(|(old, new)| *new == target && lock.plugins.contains_key(*old))
+        .map_or(target, |(old, _)| *old)
+}
+
 pub async fn update_managed(target: &str) -> anyhow::Result<Vec<gray_pkg::ops::UpdateRow>> {
     let home = home()?;
+    let target = resolve_update_target(&home, target);
     ensure_installed(&home, target)?;
     let mut reports = gray_pkg::ops::update(target).await?;
     for r in &mut reports {
@@ -801,7 +818,9 @@ pub async fn update_managed(target: &str) -> anyhow::Result<Vec<gray_pkg::ops::U
 }
 
 pub async fn check_managed(target: &str) -> anyhow::Result<Vec<gray_pkg::ops::UpdateRow>> {
-    ensure_installed(&home()?, target)?;
+    let home = home()?;
+    let target = resolve_update_target(&home, target);
+    ensure_installed(&home, target)?;
     gray_pkg::ops::check_update(target).await
 }
 
