@@ -10,45 +10,23 @@ use crate::config::Config;
 use crate::session_store::{JsonlSessionStore, default_root};
 
 use super::{
-    CURRENT_REQ, LAST_USAGE, Session, emit_result, emit_say, is_turn_active, lock,
-    mark_turn_interrupted, sync_session,
+    CURRENT_REQ, LAST_USAGE, Session, emit_result, emit_say, lock, mark_turn_interrupted,
+    sync_session,
 };
 
 /// `interrupt` — cancel the running turn, same token SIGINT cancels in the
-/// REPL. Answers immediately (it's serviced from the reader thread too).
+/// REPL. The turn arms its token before any agent build or session init, so
+/// this answers immediately: a live token means a live turn.
 pub(crate) fn interrupt(id: &Value) {
     let taken = lock(&crate::repl::TURN_STATE).take();
-    if let Some(token) = taken {
-        mark_turn_interrupted();
-        token.cancel();
-        emit_result(id, true, json!({"interrupted": true}));
-        return;
-    }
-    if !is_turn_active() {
-        emit_result(id, true, json!({"interrupted": false}));
-        return;
-    }
-    // A turn is running but hasn't registered its cancel token yet (agent
-    // build / session init come first in run_prompt_turn). Watch for the
-    // token on a plain thread — same Ctrl+C semantics: cancel as soon as
-    // it exists, while the turn is still live.
-    let id = id.clone();
-    std::thread::spawn(move || {
-        for _ in 0..200 {
-            std::thread::sleep(std::time::Duration::from_millis(25));
-            let taken = lock(&crate::repl::TURN_STATE).take();
-            if let Some(token) = taken {
-                mark_turn_interrupted();
-                token.cancel();
-                emit_result(&id, true, json!({"interrupted": true}));
-                return;
-            }
-            if !is_turn_active() {
-                break;
-            }
+    match taken {
+        Some(token) => {
+            mark_turn_interrupted();
+            token.cancel();
+            emit_result(id, true, json!({"interrupted": true}));
         }
-        emit_result(&id, true, json!({"interrupted": false}));
-    });
+        None => emit_result(id, true, json!({"interrupted": false})),
+    }
 }
 
 /// `approve` — answer a pending `ask` event. `answers` maps each question

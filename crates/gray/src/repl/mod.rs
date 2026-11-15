@@ -14,6 +14,40 @@ use std::sync::Mutex as StdMutex;
 pub(crate) static TURN_STATE: StdMutex<Option<tokio_util::sync::CancellationToken>> =
     StdMutex::new(None);
 
+pub(crate) struct TurnCancel {
+    token: tokio_util::sync::CancellationToken,
+    armed: bool,
+}
+
+impl TurnCancel {
+    pub(crate) fn arm() -> Self {
+        let token = TURN_STATE
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+            .unwrap_or_default();
+        *TURN_STATE.lock().unwrap_or_else(|e| e.into_inner()) = Some(token.clone());
+        Self { token, armed: true }
+    }
+
+    pub(crate) fn token(&self) -> tokio_util::sync::CancellationToken {
+        self.token.clone()
+    }
+
+    pub(crate) fn release(mut self) {
+        self.armed = false;
+        TURN_STATE.lock().unwrap_or_else(|e| e.into_inner()).take();
+    }
+}
+
+impl Drop for TurnCancel {
+    fn drop(&mut self) {
+        if self.armed {
+            TURN_STATE.lock().unwrap_or_else(|e| e.into_inner()).take();
+        }
+    }
+}
+
 pub(crate) static TURN_IN_FLIGHT: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 

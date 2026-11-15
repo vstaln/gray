@@ -189,8 +189,8 @@ pub(crate) async fn run_prompt_turn(
         })));
     }
     let agent = agent.as_mut().expect("agent built above");
-    let cancel = tokio_util::sync::CancellationToken::new();
-    *TURN_STATE.lock().unwrap_or_else(|e| e.into_inner()) = Some(cancel.clone());
+    let turn_cancel = super::TurnCancel::arm();
+    let cancel = turn_cancel.token();
 
     let _turn_in_flight = super::mark_turn_in_flight();
     crate::term_signals::turn_start(cwd);
@@ -439,7 +439,7 @@ pub(crate) async fn run_prompt_turn(
         Err(CoreError::Cancelled) => crate::term_signals::TurnEnd::Cancelled,
         Err(_) => crate::term_signals::TurnEnd::Failed,
     };
-    TURN_STATE.lock().unwrap_or_else(|e| e.into_inner()).take();
+    turn_cancel.release();
     agent.set_checkpoint(None);
 
     if checkpoint_failed.load(std::sync::atomic::Ordering::Relaxed) {

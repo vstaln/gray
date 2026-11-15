@@ -266,6 +266,7 @@ async fn run_turn(
         SEQ.load(Ordering::Relaxed)
     );
     *lock(&CURRENT_REQ) = Some(req.clone());
+    let turn_cancel = repl::TurnCancel::arm();
     begin_turn_state(turn_id.clone());
 
     emit(
@@ -307,6 +308,7 @@ async fn run_turn(
     .await;
 
     let interrupted = end_turn_state();
+    turn_cancel.release();
     if let Err(e) = &r {
         emit_say("error", &format!("{e:#}"));
     }
