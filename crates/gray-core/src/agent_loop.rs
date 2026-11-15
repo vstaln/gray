@@ -44,6 +44,49 @@ const ANNOUNCE_LEADS: [&str; 14] = [
     "running ",
 ];
 
+const ANNOUNCE_MAX_CHARS: usize = 600;
+
+fn numbered_item(line: &str) -> bool {
+    let digits = line.chars().take_while(char::is_ascii_digit).count();
+    digits > 0 && matches!(line[digits..].chars().next(), Some('.' | ')'))
+}
+
+fn delivered_answer(body: &str) -> bool {
+    body.lines().any(|line| {
+        let t = line.trim_start();
+        t.starts_with("- ")
+            || t.starts_with("* ")
+            || t.starts_with("+ ")
+            || t.starts_with('|')
+            || t.starts_with("```")
+            || numbered_item(t)
+    })
+}
+
+fn last_line(body: &str) -> &str {
+    body.lines()
+        .rev()
+        .find(|line| !line.trim().is_empty())
+        .unwrap_or(body)
+        .trim()
+}
+
+fn last_sentence(line: &str) -> &str {
+    let line = line.trim();
+    let bytes = line.as_bytes();
+    let mut start = 0;
+    for (i, byte) in bytes.iter().enumerate() {
+        if *byte != b'.' || !(i + 1 == bytes.len() || bytes[i + 1].is_ascii_whitespace()) {
+            continue;
+        }
+        let rest = line[i + 1..].trim_start();
+        if !rest.is_empty() {
+            start = line.len() - rest.len();
+        }
+    }
+    &line[start..]
+}
+
 fn announces_action(text: &str) -> bool {
     let plain = text
         .to_lowercase()
@@ -53,10 +96,14 @@ fn announces_action(text: &str) -> bool {
     if body.is_empty() || body.ends_with('?') {
         return false;
     }
+    if body.chars().count() > ANNOUNCE_MAX_CHARS || delivered_answer(body) {
+        return false;
+    }
     if DEFERRAL_HINTS.iter().any(|h| body.contains(h)) {
         return false;
     }
-    ANNOUNCE_LEADS.iter().any(|lead| body.contains(lead))
+    let tail = last_line(body);
+    ANNOUNCE_LEADS.iter().any(|lead| tail.contains(lead)) || last_sentence(tail).ends_with(':')
 }
 
 const MAX_TURN_RETRIES: u8 = 8;
