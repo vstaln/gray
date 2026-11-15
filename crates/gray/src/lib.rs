@@ -476,7 +476,7 @@ async fn build_agent_inner(
             && match std::env::var("GRAY_TOOLBOX").ok().as_deref().map(str::trim) {
                 Some("1") => true,
                 Some("0") => false,
-                _ => saved.toolbox.unwrap_or(false),
+                _ => saved.toolbox.unwrap_or(true),
             },
     );
     agent.set_background_compaction(config.background_compaction);
