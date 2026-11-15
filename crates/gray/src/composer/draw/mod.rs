@@ -712,6 +712,12 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
             let text: String = text.chars().take(ibox.width).collect();
             let y = box_y.saturating_sub(1);
             if y < area.bottom() {
+                let row = Rect::new(area.x, y, area.width, 1);
+                frame.render_widget(ratatui::widgets::Clear, row);
+                frame.render_widget(
+                    Block::default().style(Style::default().bg(crate::theme::theme().surface_bg)),
+                    row,
+                );
                 frame.render_widget(
                     chrome_row(Line::from(Span::styled(text, style))),
                     Rect::new(
