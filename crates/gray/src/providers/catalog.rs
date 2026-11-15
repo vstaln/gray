@@ -70,10 +70,7 @@ pub async fn connect_dynamic_provider(
     home: &Path,
 ) -> anyhow::Result<DynamicProvider> {
     let installed = resolve_provider_connection(config, home).ok_or_else(|| {
-        not_installed_error(
-            &ProviderRegistry::load_cached(home),
-            &config.provider_id,
-        )
+        not_installed_error(&ProviderRegistry::load_cached(home), &config.provider_id)
     })?;
     let profile = profile_for_provider(&installed)?;
     let runtime: Arc<dyn ProviderRpc> = Arc::new(LazyProviderRpc::new(installed.clone()));
