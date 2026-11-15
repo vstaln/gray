@@ -261,15 +261,39 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
     let tail_est = stream_tail.len() as u16 + tail_gap;
 
     let chips = attachment_cells(&tui.attachments, &text);
+    let bottom_notes: Vec<String> = home
+        .and_then(|h| h.quality_of_life)
+        .map(|q| q.lines().map(str::to_string).collect())
+        .unwrap_or_default();
     let ibox = build_input_box(
         &text,
         cursor,
         w,
         ghost,
-        home,
+        home.map(|h| HomeRows {
+            quality_of_life: None,
+            ..h
+        }),
         &chips,
         tui.action.prompt_glyph(),
     );
+    let viewport_y = tui.terminal.viewport_area.y;
+    let notes_at_bottom = !bottom_notes.is_empty()
+        && viewport_y as usize + status_h as usize + ibox.lines.len() + 1 + bottom_notes.len()
+            <= rows as usize;
+    let ibox = if bottom_notes.is_empty() || notes_at_bottom {
+        ibox
+    } else {
+        build_input_box(
+            &text,
+            cursor,
+            w,
+            ghost,
+            home,
+            &chips,
+            tui.action.prompt_glyph(),
+        )
+    };
     // An approval/question prompt owns the bottom band: the input box (and
     // its cursor) step aside until it closes.
     let asking = tui.ask_modal.is_some();
@@ -345,6 +369,11 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
         footer_h,
         max_viewport_h,
     );
+    let desired = if notes_at_bottom {
+        desired.max(rows.saturating_sub(viewport_y))
+    } else {
+        desired
+    };
 
     tui.begin_sync();
 
@@ -645,6 +674,23 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
                 Paragraph::new(ibox.lines.clone()),
                 Rect::new(box_x, box_y, area.right() - box_x, rendered_box_h),
             );
+            if notes_at_bottom {
+                let n = bottom_notes.len() as u16;
+                let note_x = box_x;
+                for (i, note) in bottom_notes.iter().enumerate() {
+                    let y = area.bottom().saturating_sub(n) + i as u16;
+                    if y < box_y + rendered_box_h || y >= area.bottom() {
+                        continue;
+                    }
+                    frame.render_widget(
+                        Paragraph::new(Span::styled(
+                            note.clone(),
+                            Style::default().fg(crate::theme::theme().text_muted),
+                        )),
+                        Rect::new(note_x, y, area.right() - note_x, 1),
+                    );
+                }
+            }
             if crate::settings::vim_mode() && tui.vim.is_normal() {
                 let badge = " NORMAL ";
                 let bw = display_width(badge) as u16;
