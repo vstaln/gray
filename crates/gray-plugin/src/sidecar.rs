@@ -846,6 +846,26 @@ fn build_tools(transport: &Arc<Transport>, tools: &Value, asks: bool) -> Vec<Arc
         .unwrap_or_default()
 }
 
+fn manifest_commands(manifest: &Value) -> Value {
+    let known = manifest.get("command_descriptions");
+    let commands: Vec<Value> = manifest
+        .get("commands")
+        .and_then(|c| c.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|c| c.as_str())
+        .map(|name| {
+            let stripped = name.trim().trim_start_matches('/');
+            let description = known
+                .and_then(|d| d.get(name).or_else(|| d.get(stripped)))
+                .and_then(|d| d.as_str())
+                .unwrap_or("");
+            json!({"name": stripped, "description": description})
+        })
+        .collect();
+    json!({"commands": commands})
+}
+
 async fn refresh_tools_into(
     transport: &Arc<Transport>,
     tools: &std::sync::RwLock<Vec<Arc<dyn Tool>>>,
@@ -985,9 +1005,28 @@ impl SidecarPlugin {
         let asks = self.asks;
         let name = self.manifest.name.clone();
         let pending = Arc::new(AtomicBool::new(false));
-        self.set_notify_handler(Arc::new(move |method, params| {
+        let commands_pending = Arc::new(AtomicBool::new(false));
+        self.set_notify_handler(Arc::new(move |method, _params| {
             if method == HOST_COMMANDS_CHANGED {
-                crate::set_dynamic_commands(&name, &params);
+                if commands_pending.swap(true, Ordering::SeqCst) {
+                    return;
+                }
+                let Some(transport) = transport.upgrade() else {
+                    return;
+                };
+                let (commands_pending, name) = (commands_pending.clone(), name.clone());
+                rt.spawn(async move {
+                    tokio::time::sleep(TOOLS_CHANGED_DEBOUNCE).await;
+                    commands_pending.store(false, Ordering::SeqCst);
+                    match transport.request("plugin/manifest", None, HOST_TTL).await {
+                        Ok(manifest) => {
+                            crate::set_dynamic_commands(&name, &manifest_commands(&manifest))
+                        }
+                        Err(e) => {
+                            log::warn!(target: "gray_plugin", "{name}: command refresh failed: {e}");
+                        }
+                    }
+                });
                 return;
             }
             if method != HOST_TOOLS_CHANGED || !dynamic {

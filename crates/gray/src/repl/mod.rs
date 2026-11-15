@@ -958,6 +958,14 @@ pub async fn run_repl_mode(
         });
     }
 
+    if interactive {
+        let sid = session_state
+            .as_ref()
+            .map(|s| s.session_id.as_str().to_string());
+        crate::host::set_live_session(sid.as_deref());
+        crate::host::set_live_provider(agent.as_ref().map(|a| a.provider_handle()));
+    }
+
     // Plugin-owned quality-of-life detection: gray-qol's session_start
     // hook hears this and says what it found (the old core QoL spawn).
     if interactive

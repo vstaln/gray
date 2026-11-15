@@ -620,6 +620,8 @@ pub struct Agent {
     pub(crate) steer: Option<SteerHook>,
 
     pub(crate) checkpoint: Option<CheckpointHook>,
+    pub(crate) turn_end_deferred: bool,
+    pub(crate) pending_turn_end: Option<(crate::event::Usage, TurnEndInfo)>,
     pub(crate) tool_output_hook: Option<ToolOutputHook>,
 
     pub(crate) session_id: Option<String>,
@@ -710,6 +712,8 @@ impl Agent {
             prefix_fp_sink: None,
             steer: None,
             checkpoint: None,
+            turn_end_deferred: false,
+            pending_turn_end: None,
             tool_output_hook: None,
             session_id: None,
             contaminated: std::collections::BTreeSet::new(),
@@ -793,6 +797,19 @@ impl Agent {
 
     pub fn set_checkpoint(&mut self, hook: Option<CheckpointHook>) {
         self.checkpoint = hook;
+    }
+
+    pub fn defer_turn_end(&mut self) {
+        self.turn_end_deferred = true;
+    }
+
+    pub async fn flush_turn_end(&mut self) {
+        let Some((usage, info)) = self.pending_turn_end.take() else {
+            return;
+        };
+        for hook in &self.hooks {
+            hook.turn_end(&usage, &info).await;
+        }
     }
 
     pub fn set_tool_output_hook(&mut self, hook: Option<ToolOutputHook>) {

@@ -573,8 +573,12 @@ impl Agent {
             took_ms: started.elapsed().as_millis() as u64,
             error: out.as_ref().err().map(crate::agent::TurnEndInfo::error_for),
         };
-        for hook in &self.hooks {
-            hook.turn_end(&usage, &info).await;
+        if self.turn_end_deferred {
+            self.pending_turn_end = Some((usage, info));
+        } else {
+            for hook in &self.hooks {
+                hook.turn_end(&usage, &info).await;
+            }
         }
         out
     }

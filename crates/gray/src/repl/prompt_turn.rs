@@ -332,6 +332,8 @@ pub(crate) async fn run_prompt_turn(
     if let Some(state) = session_state.as_ref() {
         super::session::wire_prefix_fingerprint(agent, state);
     }
+    agent.defer_turn_end();
+
     let mut run_result = {
         let mut on_event = |ev: &AgentEvent| {
             dispatch_agent_event(
@@ -586,6 +588,7 @@ pub(crate) async fn run_prompt_turn(
             }
         }
     }
+    agent.flush_turn_end().await;
     slow_turn_end_step("run end to end_turn", run_returned);
     if let Some(s) = &tui_stream {
         s.lock()
