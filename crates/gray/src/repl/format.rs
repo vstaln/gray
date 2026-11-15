@@ -281,7 +281,7 @@ fn provider_detail_text(d: &ProviderDetail) -> String {
     out
 }
 
-fn error_detail_text(e: &CoreError) -> Option<String> {
+pub(crate) fn error_detail_text(e: &CoreError) -> Option<String> {
     match e {
         CoreError::Detailed { detail, .. } => Some(provider_detail_text(detail)),
         CoreError::Connection(s)

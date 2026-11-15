@@ -173,6 +173,17 @@ pub(crate) mod status;
 pub(crate) use commands::{REGISTRY, completion_fill, completion_matches_dyn, is_builtin_command};
 pub use commands::{ReplCommand, ResumeArgs, SysAction, parse_command};
 pub(crate) use format::build_user_message_with_attachments;
+
+fn short_core_error(e: &gray_core::error::CoreError) -> String {
+    let text = format::error_detail_text(e).unwrap_or_else(|| e.to_string());
+    let one = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let cut: String = one.chars().take(160).collect();
+    if one.chars().count() > 160 {
+        format!("{cut}\u{2026}")
+    } else {
+        cut
+    }
+}
 pub use format::{THINKING_STYLE, fmt_usage, format_core_error};
 pub(crate) use handlers::{
     expand_prompt_template, handle_model, handle_sys, handle_undo, reload_agent,
@@ -1031,6 +1042,7 @@ pub async fn run_repl_mode(
     let mut bg_wake: Option<tokio::task::JoinHandle<()>> = None;
     let mut ttl_wake: Option<tokio::task::JoinHandle<()>> = None;
     let mut expiry_compact_tried = false;
+    let mut expiry_compact_attempts: u8 = 0;
 
     if interactive {
         jobs::spawn_footer_poller();
@@ -1176,12 +1188,26 @@ pub async fn run_repl_mode(
             // before TTL. Self-limiting — post-compact the estimate drops
             // under budget so it can't loop every TTL cycle.
             const EXPIRY_LEAD: std::time::Duration = std::time::Duration::from_secs(20);
+            const EXPIRY_RETRY: std::time::Duration = std::time::Duration::from_secs(20);
+            const EXPIRY_ATTEMPTS: u8 = 2;
             if let Some(agent) = agent.as_mut() {
                 let remaining = tui
                     .as_ref()
                     .and_then(|(s, _)| s.lock().ok().and_then(|t| t.cache_remaining()));
+                let expiry_due = match remaining {
+                    Some(r) => r <= EXPIRY_LEAD,
+                    None => expiry_compact_attempts > 0,
+                };
                 match remaining {
-                    Some(r) if r <= EXPIRY_LEAD && !expiry_compact_tried => {
+                    Some(r) if r > EXPIRY_LEAD => {
+                        expiry_compact_tried = false;
+                        expiry_compact_attempts = 0;
+                        ttl_wake = Some(tokio::spawn(async move {
+                            tokio::time::sleep(r - EXPIRY_LEAD).await;
+                            crate::host::request_wake();
+                        }));
+                    }
+                    _ if expiry_due && !expiry_compact_tried => {
                         expiry_compact_tried = true;
                         if let Some(keep) = crate::compact::expiry_keep_for(agent) {
                             let compaction_id =
@@ -1249,12 +1275,28 @@ pub async fn run_repl_mode(
                                         t.rearm_cache();
                                     }
                                     expiry_compact_tried = false;
+                                    expiry_compact_attempts = 0;
                                 }
                                 Some(Ok(None)) => {}
-                                Some(Err(e)) => log::warn!(
-                                    target: "gray_agent",
-                                    "idle compaction failed: {e}"
-                                ),
+                                Some(Err(e)) => {
+                                    log::warn!(target: "gray_agent", "idle compaction failed: {e}");
+                                    expiry_compact_attempts =
+                                        expiry_compact_attempts.saturating_add(1);
+                                    if expiry_compact_attempts < EXPIRY_ATTEMPTS {
+                                        expiry_compact_tried = false;
+                                        ttl_wake = Some(tokio::spawn(async move {
+                                            tokio::time::sleep(EXPIRY_RETRY).await;
+                                            crate::host::request_wake();
+                                        }));
+                                    } else if let Some((shared, _)) = tui.as_ref() {
+                                        let mut t = shared.lock().expect("tui lock");
+                                        t.push_dim(format!(
+                                            "\u{25a0} compaction before cache expiry failed: {}",
+                                            short_core_error(&e)
+                                        ));
+                                        t.ensure_gap();
+                                    }
+                                }
                             }
                             prompt_turn::drain_queued_input(
                                 &tui,
@@ -1266,13 +1308,6 @@ pub async fn run_repl_mode(
                                 continue;
                             }
                         }
-                    }
-                    Some(r) if r > EXPIRY_LEAD => {
-                        expiry_compact_tried = false;
-                        ttl_wake = Some(tokio::spawn(async move {
-                            tokio::time::sleep(r - EXPIRY_LEAD).await;
-                            crate::host::request_wake();
-                        }));
                     }
                     _ => {}
                 }
