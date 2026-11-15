@@ -159,6 +159,8 @@ struct Transport {
     respawn: std::sync::Mutex<RespawnState>,
 
     spawned_mtime: std::sync::Mutex<Option<std::time::SystemTime>>,
+
+    on_respawn: std::sync::Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
 
 fn program_mtime(argv: &[String]) -> Option<std::time::SystemTime> {
@@ -585,6 +587,7 @@ impl Transport {
             grants,
             respawn: std::sync::Mutex::new(RespawnState::default()),
             spawned_mtime: std::sync::Mutex::new(program_mtime(&argv)),
+            on_respawn: std::sync::Mutex::new(None),
             argv,
         })
     }
@@ -661,6 +664,16 @@ impl Transport {
                 *self.respawn.lock().unwrap_or_else(|e| e.into_inner()) = RespawnState::default();
                 *self.spawned_mtime.lock().unwrap_or_else(|e| e.into_inner()) =
                     program_mtime(&self.argv);
+                if upgraded {
+                    let handler = self
+                        .on_respawn
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .clone();
+                    if let Some(handler) = handler {
+                        handler();
+                    }
+                }
                 if exit == SidecarExit::Crashed {
                     self.say(&name, &status, true, wait_err).await;
                 }
@@ -948,6 +961,33 @@ impl SidecarPlugin {
             context_oversize_logged: std::sync::atomic::AtomicBool::new(false),
         };
         plugin.install_notify_handler(dynamic);
+        if let Ok(rt) = tokio::runtime::Handle::try_current() {
+            let transport = Arc::downgrade(&plugin.transport);
+            let tools = Arc::downgrade(&plugin.tools);
+            let asks = plugin.asks;
+            let name = plugin.manifest.name.clone();
+            plugin.set_on_respawn(Arc::new(move || {
+                let (Some(transport), Some(tools)) = (transport.upgrade(), tools.upgrade()) else {
+                    return;
+                };
+                let name = name.clone();
+                rt.spawn(async move {
+                    match transport.request("plugin/manifest", None, HOST_TTL).await {
+                        Ok(manifest) => {
+                            crate::set_dynamic_commands(&name, &manifest_commands(&manifest))
+                        }
+                        Err(e) => {
+                            log::warn!(target: "gray_plugin", "{name}: manifest refresh after restart failed: {e}");
+                        }
+                    }
+                    if dynamic
+                        && let Err(e) = refresh_tools_into(&transport, &tools, asks).await
+                    {
+                        log::warn!(target: "gray_plugin", "{name}: plugin/tools refresh after restart failed: {e}");
+                    }
+                });
+            }));
+        }
         if dynamic {
             {
                 let transport = Arc::downgrade(&plugin.transport);
@@ -1235,6 +1275,14 @@ impl SidecarPlugin {
         *self
             .transport
             .notify
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(handler);
+    }
+
+    pub fn set_on_respawn(&self, handler: Arc<dyn Fn() + Send + Sync>) {
+        *self
+            .transport
+            .on_respawn
             .lock()
             .unwrap_or_else(|e| e.into_inner()) = Some(handler);
     }
