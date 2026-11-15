@@ -150,8 +150,18 @@ pub(crate) fn live_tool_rows(
                     draw::shimmer_spans(live.unwrap_or("Running "), elapsed),
                 );
             }
-            headers
-                .into_iter()
+            let mut rows: Vec<Line<'static>> = Vec::new();
+            for (i, line) in headers.into_iter().enumerate() {
+                if i == 0 {
+                    rows.push(line);
+                } else {
+                    rows.extend(crate::composer::transcript::wrap_styled_line(
+                        line,
+                        text_budget,
+                    ));
+                }
+            }
+            rows.into_iter()
                 .chain(t.tail.rows().into_iter().map(|text| {
                     let chars: Vec<char> = text.chars().collect();
                     let text =

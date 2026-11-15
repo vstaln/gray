@@ -483,14 +483,29 @@ fn placeholder_text(args: &serde_json::Value, inner: &str) -> String {
             .find(|l| !l.is_empty())
             .map(ellipsize_cells)
             .unwrap_or_default(),
+        "full" => full_text(&raw),
         _ => one_line(&raw),
     }
 }
 
 fn value_text(args: &serde_json::Value, path: &str) -> String {
+    let keys: Vec<&str> = path
+        .split('.')
+        .map(str::trim)
+        .filter(|k| !k.is_empty())
+        .collect();
     let mut cur = args;
-    for key in path.split('.').map(str::trim).filter(|k| !k.is_empty()) {
-        match cur.as_object().and_then(|obj| obj.get(key)) {
+    for (i, key) in keys.iter().enumerate() {
+        if let Some(items) = cur.as_array() {
+            let rest = keys[i..].join(".");
+            return items
+                .iter()
+                .map(|item| value_text(item, &rest))
+                .filter(|text| !text.is_empty())
+                .collect::<Vec<_>>()
+                .join("\n\n");
+        }
+        match cur.as_object().and_then(|obj| obj.get(*key)) {
             Some(next) => cur = next,
             None => return String::new(),
         }
@@ -516,6 +531,20 @@ fn scalar_item_text(item: &serde_json::Value) -> Option<String> {
         _ => return None,
     };
     (!text.is_empty()).then_some(text)
+}
+
+fn full_text(text: &str) -> String {
+    let mut kept: Vec<&str> = Vec::new();
+    for line in text.lines().map(str::trim) {
+        if line.is_empty() && kept.last().is_none_or(|l| l.is_empty()) {
+            continue;
+        }
+        kept.push(line);
+    }
+    while kept.last().is_some_and(|l| l.is_empty()) {
+        kept.pop();
+    }
+    kept.join("\n")
 }
 
 fn one_line(text: &str) -> String {
@@ -566,12 +595,41 @@ fn template_header_lines(
     }
     let mut lines = vec![Line::from(first)];
     if let Some(detail) = detail {
-        lines.push(Line::from(vec![
-            Span::raw(indent),
-            Span::styled(ellipsize_cells(&detail), dim_style),
-        ]));
+        if detail_is_full(template) || detail.contains('\n') {
+            for text in detail.lines() {
+                lines.push(Line::from(vec![
+                    Span::raw(indent.clone()),
+                    Span::styled(text.trim_end().to_string(), dim_style),
+                ]));
+            }
+        } else {
+            lines.push(Line::from(vec![
+                Span::raw(indent),
+                Span::styled(ellipsize_cells(&detail), dim_style),
+            ]));
+        }
     }
     lines
+}
+
+fn detail_is_full(template: &str) -> bool {
+    let Some(detail) = split_template_lines(template).1 else {
+        return false;
+    };
+    let mut rest = detail.as_str();
+    while let Some(open) = rest.find('{') {
+        let Some(close) = rest[open + 1..].find('}').map(|c| open + 1 + c) else {
+            return false;
+        };
+        if rest[open + 1..close]
+            .split_once('|')
+            .is_some_and(|(_, filter)| filter.trim() == "full")
+        {
+            return true;
+        }
+        rest = &rest[close + 1..];
+    }
+    false
 }
 
 pub fn with_tool_label(args: &serde_json::Value, label: Option<&str>) -> serde_json::Value {
