@@ -1191,7 +1191,8 @@ pub async fn forward(home: &Path, name: &str, rest: &[String]) -> anyhow::Result
     }
     command
         .args(rest)
-        .env("GRAY_BIN", crate::update::exe_watch::on_disk_exe()?);
+        .env("GRAY_BIN", crate::update::exe_watch::on_disk_exe()?)
+        .env("GRAY_HOME", gray_core::paths::gray_home_or_temp());
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -1208,7 +1209,9 @@ pub async fn forward(home: &Path, name: &str, rest: &[String]) -> anyhow::Result
 
 async fn cli_manifest(binary: &Path) -> anyhow::Result<Option<Value>> {
     let mut command = tokio::process::Command::new(binary);
-    command.arg("manifest");
+    command
+        .arg("manifest")
+        .env("GRAY_HOME", gray_core::paths::gray_home_or_temp());
     let output = tokio::time::timeout(std::time::Duration::from_secs(10), command.output())
         .await
         .context("plugin manifest probe timed out")??;
@@ -1809,6 +1812,7 @@ pub(crate) async fn capture(
     #[cfg(windows)]
     command.creation_flags(0x0000_0200);
     let mut child = command
+        .env("GRAY_HOME", gray_core::paths::gray_home_or_temp())
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
