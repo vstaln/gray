@@ -1144,11 +1144,17 @@ fn read_header(
             .collect::<Vec<_>>()
             .join(", "),
     };
+    let target_style = match read.look {
+        Look::Viewed => Style::default()
+            .fg(crate::theme::theme().tool_path)
+            .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+        _ => cmd_style,
+    };
     let target = ellipsize_cells(&target);
     let mut spans = vec![
         bullet,
         Span::styled(verb, action_style),
-        Span::styled(target, cmd_style),
+        Span::styled(target, target_style),
     ];
     if let Some(detail) = &read.detail {
         spans.push(Span::styled(format!(" \u{00b7} {detail}"), dim_style));

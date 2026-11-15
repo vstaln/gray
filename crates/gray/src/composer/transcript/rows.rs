@@ -486,9 +486,10 @@ pub(crate) fn viewed_image_lines(
     let raw_paths = collected.into_iter().take(MAX_PREVIEWS);
     let mut paths = Vec::new();
     for raw in raw_paths {
-        let path = std::path::Path::new(&raw);
+        let path =
+            gray_core::paths::expand_tilde(&raw).unwrap_or_else(|| std::path::PathBuf::from(&raw));
         let path = if path.is_absolute() {
-            path.to_path_buf()
+            path
         } else {
             cwd.join(path)
         };
