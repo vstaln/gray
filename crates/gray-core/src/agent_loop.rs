@@ -447,6 +447,9 @@ impl Agent {
         name: &str,
         args: &serde_json::Value,
     ) -> Result<serde_json::Value, ToolOutput> {
+        if self.toolbox && name == crate::toolbox::NAME {
+            return Err(crate::toolbox::answer(&self.tools, args));
+        }
         if !self.tools.iter().any(|t| t.name == name) {
             return Err(ToolOutput::error(crate::tool_out::unknown_tool(name)));
         }
@@ -769,6 +772,8 @@ impl Agent {
                 self.surface_running_jobs(&ctx);
             }
 
+            self.toolbox_prepare();
+
             let mut request_messages = self.scrubbed_messages();
             if request_messages
                 .last()
@@ -789,6 +794,7 @@ impl Agent {
                 tools: self.request_tools(),
                 max_tokens: None,
             };
+            log::debug!(target: "gray_agent", "request tools: {} defs, {} bytes json", req.tools.len(), serde_json::to_vec(&req.tools).map_or(0, |v| v.len()));
             let prev_len = self.prefix_guard.last().map_or(0, |fp| fp.message_count());
             if let Some((change, announced)) =
                 self.prefix_guard.observe(self.provider.model_id(), &req)
@@ -1381,7 +1387,13 @@ impl Agent {
                 .iter()
                 .filter_map(|block| match block {
                     ContentBlock::ToolUse { id, name, args, .. } => {
-                        Some((id.clone(), name.clone(), args.clone()))
+                        match (self.toolbox && name == crate::toolbox::NAME)
+                            .then(|| crate::toolbox::run_target(&self.tools, args))
+                            .flatten()
+                        {
+                            Some((real, real_args)) => Some((id.clone(), real, real_args)),
+                            None => Some((id.clone(), name.clone(), args.clone())),
+                        }
                     }
                     _ => None,
                 })

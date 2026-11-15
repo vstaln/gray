@@ -471,6 +471,14 @@ async fn build_agent_inner(
     agent.set_prefix_rewrite_ok(!config.uses_plugin_credentials() || plugin_warm_replay);
 
     agent.set_lean_prompt(config.lean);
+    agent.set_toolbox(
+        !config.bare
+            && match std::env::var("GRAY_TOOLBOX").ok().as_deref().map(str::trim) {
+                Some("1") => true,
+                Some("0") => false,
+                _ => saved.toolbox.unwrap_or(false),
+            },
+    );
     agent.set_background_compaction(config.background_compaction);
 
     Ok(agent
