@@ -189,10 +189,10 @@ struct Gauge {
 
 fn gauge(w: &Value, now: i64) -> Option<Gauge> {
     Some(Gauge {
-        label: w["label"]
-            .as_str()
-            .or_else(|| w["id"].as_str())?
-            .to_string(),
+        label: match w["label"].as_str() {
+            Some(label) => label.to_string(),
+            None => crate::usage_cache::window_label(w["id"].as_str()?),
+        },
         pct: w["used_percent"].as_f64()?,
         reset: w["resets_at"].as_str().and_then(|at| countdown(at, now)),
     })

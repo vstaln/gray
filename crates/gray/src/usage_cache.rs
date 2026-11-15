@@ -277,7 +277,8 @@ pub(crate) fn window_label(id: &str) -> String {
         "seven_day" | "weekly" => "Weekly".to_string(),
         "daily" => "Daily".to_string(),
         other => {
-            let mut chars = other.chars();
+            let words = other.replace(['_', '-'], " ");
+            let mut chars = words.trim().chars();
             match chars.next() {
                 Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
                 None => String::new(),
