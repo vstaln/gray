@@ -8,6 +8,7 @@ impl Tui {
     pub fn begin_turn(&mut self, label: &str) {
         self.left_home = true;
         self.home_rows.clear();
+        self.home_actions.clear();
         self.home_quality_of_life = None;
         let now = Instant::now();
 

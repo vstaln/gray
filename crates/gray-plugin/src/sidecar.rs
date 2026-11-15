@@ -1897,6 +1897,13 @@ pub(crate) fn command_outcome(v: &Value, plugin_argv: &[String]) -> Option<Comma
             text: None,
         });
     }
+    if let Some(cmd) = field("slash").filter(|c| c.starts_with('/')) {
+        return Some(CommandOutcome::HostPicker {
+            kind: "slash".into(),
+            arg: cmd.to_string(),
+            text: field("text").map(str::to_string),
+        });
+    }
     if let Some(p) = field("prompt") {
         return Some(CommandOutcome::Prompt(p.to_string()));
     }

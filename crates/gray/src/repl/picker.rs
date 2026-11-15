@@ -22,6 +22,12 @@ pub(crate) struct ListPicker<'a, T> {
     pub(crate) current: Option<usize>,
 }
 
+#[derive(Default)]
+pub(crate) struct PickKeys<'a> {
+    pub(crate) enter: Option<&'a str>,
+    pub(crate) keys: Vec<(char, &'a str)>,
+}
+
 pub(crate) fn list_rows_for(height: u16, n: usize, footer_rows: usize) -> usize {
     let room = usize::from(height).saturating_sub(9 + footer_rows).max(1);
     n.clamp(1, 12).min(room)
@@ -96,8 +102,8 @@ pub(crate) fn underline_match(label: &str, filter: &str, style: Style) -> Vec<Sp
 
 /// The `/models` key-hint row: `key label` pairs, dimmed when not live,
 /// dropping keys in `drop_order` until the row fits `width`.
-pub(crate) fn key_hints(
-    mut keys: Vec<(&'static str, &'static str, bool)>,
+pub(crate) fn key_hints<'k>(
+    mut keys: Vec<(&'k str, &'k str, bool)>,
     drop_order: &[&str],
     width: usize,
 ) -> Line<'static> {
@@ -118,7 +124,7 @@ pub(crate) fn key_hints(
     spans.extend(keys.into_iter().flat_map(|(k, label, live)| {
         [
             Span::styled(
-                k,
+                k.to_string(),
                 Style::default().fg(if live { th.text_soft } else { th.text_faint }),
             ),
             Span::styled(
@@ -130,6 +136,7 @@ pub(crate) fn key_hints(
     Line::from(spans)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn draw_list_picker<T>(
     frame: &mut ratatui::Frame,
     bg: &BackgroundSnapshot,
@@ -138,6 +145,7 @@ pub(crate) fn draw_list_picker<T>(
     sel: usize,
     query: &str,
     list_h: usize,
+    pick_keys: &PickKeys,
 ) {
     use ratatui::layout::{Alignment, Rect};
     use ratatui::widgets::{Clear, Paragraph};
@@ -189,7 +197,25 @@ pub(crate) fn draw_list_picker<T>(
         .map(|item| (picker.label)(item).chars().count())
         .max()
         .unwrap_or(0);
+    let letters: Vec<String> = pick_keys.keys.iter().map(|(c, _)| c.to_string()).collect();
+    let mut hints = vec![
+        ("↑↓", "move", true),
+        ("enter", pick_keys.enter.unwrap_or("select"), true),
+    ];
+    hints.extend(
+        letters
+            .iter()
+            .zip(&pick_keys.keys)
+            .map(|(k, (_, label))| (k.as_str(), *label, true)),
+    );
+    hints.push(("esc", "close", true));
+    let hints_w: usize = hints
+        .iter()
+        .map(|(k, l, _)| k.chars().count() + l.chars().count() + 4)
+        .sum::<usize>()
+        + 1;
     let widest = std::iter::once(3 + label_max + 2 + trailing_col)
+        .chain(std::iter::once(hints_w))
         .chain(footer_lines.iter().map(|l| l.width() + 1))
         .chain(std::iter::once(picker.title.chars().count() + 20))
         .max()
@@ -311,8 +337,13 @@ pub(crate) fn draw_list_picker<T>(
         spans.push(Span::raw(
             " ".repeat(name_w.saturating_sub(label.chars().count())),
         ));
-        spans.extend(trailing);
-        spans.push(Span::raw(" ".repeat(col - trailing_w)));
+        if pick_keys.keys.is_empty() {
+            spans.extend(trailing);
+            spans.push(Span::raw(" ".repeat(col - trailing_w)));
+        } else {
+            spans.push(Span::raw(" ".repeat(col - trailing_w)));
+            spans.extend(trailing);
+        }
         frame.render_widget(Paragraph::new(Line::from(spans)).style(base), row(y));
     }
 
@@ -325,15 +356,7 @@ pub(crate) fn draw_list_picker<T>(
         frame.render_widget(Paragraph::new(Line::from(spans)), row(y));
     }
     frame.render_widget(
-        Paragraph::new(key_hints(
-            vec![
-                ("↑↓", "move", true),
-                ("enter", "select", true),
-                ("esc", "close", true),
-            ],
-            &[],
-            inner.width as usize,
-        )),
+        Paragraph::new(key_hints(hints, &[], inner.width as usize)),
         row(bottom.saturating_sub(1)),
     );
 }
@@ -370,6 +393,14 @@ pub(crate) fn run_list_picker<T>(
     picker: &mut ListPicker<'_, T>,
     bg: &BackgroundSnapshot,
 ) -> anyhow::Result<Option<usize>> {
+    Ok(run_list_picker_keys(picker, bg, &PickKeys::default())?.map(|(idx, _)| idx))
+}
+
+pub(crate) fn run_list_picker_keys<T>(
+    picker: &mut ListPicker<'_, T>,
+    bg: &BackgroundSnapshot,
+    pick_keys: &PickKeys,
+) -> anyhow::Result<Option<(usize, Option<char>)>> {
     use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, poll, read};
     use std::time::Duration;
 
@@ -390,8 +421,9 @@ pub(crate) fn run_list_picker<T>(
         let footer_n = picker.footer.as_ref().map(|f| f().len()).unwrap_or(0);
         let list_h = list_rows_for(terminal.size()?.height, filtered.len(), footer_n);
 
-        terminal
-            .draw(|frame| draw_list_picker(frame, bg, picker, &filtered, sel, &query, list_h))?;
+        terminal.draw(|frame| {
+            draw_list_picker(frame, bg, picker, &filtered, sel, &query, list_h, pick_keys)
+        })?;
 
         if !poll(Duration::from_millis(100))? {
             continue;
@@ -445,7 +477,16 @@ pub(crate) fn run_list_picker<T>(
                 match code {
                     KeyCode::Enter => {
                         if let Some(&idx) = filtered.get(sel) {
-                            return Ok(Some(idx));
+                            return Ok(Some((idx, None)));
+                        }
+                    }
+                    KeyCode::Char(c)
+                        if query.is_empty()
+                            && modifiers.is_empty()
+                            && pick_keys.keys.iter().any(|(k, _)| *k == c) =>
+                    {
+                        if let Some(&idx) = filtered.get(sel) {
+                            return Ok(Some((idx, Some(c))));
                         }
                     }
                     KeyCode::Esc => {
@@ -511,11 +552,22 @@ pub(crate) fn run_spec_picker(
         selected,
         current: spec.selected_id.is_some().then_some(selected),
     };
+    let pick_keys = PickKeys {
+        enter: spec.enter.as_deref(),
+        keys: spec
+            .keys
+            .iter()
+            .map(|k| (k.key, k.label.as_str()))
+            .collect(),
+    };
     super::with_modal_sync(Some(shared), || {
-        let Some(idx) = run_list_picker(&mut picker, &bg)? else {
+        let Some((idx, key)) = run_list_picker_keys(&mut picker, &bg, &pick_keys)? else {
             return Ok(None);
         };
         let item = &spec.items[idx];
+        if let Some(c) = key {
+            return Ok(Some(format!("{}:{c}", item.id)));
+        }
         let Some(prompt) = item.capture_key.as_deref() else {
             return Ok(Some(item.id.clone()));
         };
@@ -540,7 +592,8 @@ fn capture_key(prompt: &str, bg: &BackgroundSnapshot) -> anyhow::Result<Option<S
         selected: 0,
         current: None,
     };
-    terminal.draw(|frame| draw_list_picker(frame, bg, &picker, &[0], 0, "", 1))?;
+    terminal
+        .draw(|frame| draw_list_picker(frame, bg, &picker, &[0], 0, "", 1, &PickKeys::default()))?;
     loop {
         if let Event::Key(key) = read()?
             && key.kind == KeyEventKind::Press

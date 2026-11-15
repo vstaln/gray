@@ -553,6 +553,10 @@ pub(crate) async fn dispatch_command(
                         *pending_command = Some(ReplCommand::ModelFocus(arg));
                     }
 
+                    CommandOutcome::HostPicker { kind, arg, .. } if kind == "slash" => {
+                        *pending_command = Some(super::parse_command(&arg));
+                    }
+
                     CommandOutcome::Terminal {
                         argv: cmd_argv,
                         text,

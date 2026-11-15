@@ -423,7 +423,7 @@ fn home_rows(home: HomeRows, w: usize) -> Vec<Line<'static>> {
         if rows.is_empty() {
             rows.push(Line::default());
         }
-        rows.push(notice_strip(quality_of_life, w));
+        rows.push(notice_strip(quality_of_life, w).0);
     }
     rows
 }
@@ -443,20 +443,23 @@ fn segment_spans(seg: &str, muted: Style, body: Style) -> Vec<Span<'static>> {
     ]
 }
 
-pub(crate) fn notice_strip(notes: &str, w: usize) -> Line<'static> {
+pub(crate) type StripHit = (usize, usize, Option<usize>);
+
+pub(crate) fn notice_strip(notes: &str, w: usize) -> (Line<'static>, Vec<StripHit>) {
     let t = crate::theme::theme();
     let muted = Style::default().fg(t.text_muted);
     let body = Style::default().fg(t.text_body);
     let sep = "  \u{b7}  ";
     let tail = "/qol";
-    let segs: Vec<&str> = notes
+    let segs: Vec<(usize, &str)> = notes
         .lines()
         .map(str::trim)
-        .filter(|l| !l.is_empty())
+        .enumerate()
+        .filter(|(_, l)| !l.is_empty())
         .collect();
     let more = |n: usize| (n < segs.len()).then(|| format!("+{} more", segs.len() - n));
     let width_of = |n: usize| {
-        let mut parts: Vec<usize> = segs[..n].iter().map(|s| display_width(s)).collect();
+        let mut parts: Vec<usize> = segs[..n].iter().map(|(_, s)| display_width(s)).collect();
         parts.extend(more(n).map(|m| display_width(&m)));
         parts.iter().sum::<usize>() + display_width(sep) * parts.len().saturating_sub(1)
     };
@@ -466,22 +469,29 @@ pub(crate) fn notice_strip(notes: &str, w: usize) -> Line<'static> {
         shown -= 1;
     }
     let mut spans: Vec<Span<'static>> = Vec::new();
-    for (i, seg) in segs[..shown].iter().enumerate() {
+    let mut hits: Vec<StripHit> = Vec::new();
+    for (i, (idx, seg)) in segs[..shown].iter().enumerate() {
         if i > 0 {
             spans.push(Span::styled(sep, muted));
         }
+        let x = spans_width(&spans);
         spans.extend(segment_spans(seg, muted, body));
+        hits.push((x, spans_width(&spans), Some(*idx)));
     }
     if let Some(m) = more(shown) {
         if shown > 0 {
             spans.push(Span::styled(sep, muted));
         }
+        let x = spans_width(&spans);
         spans.push(Span::styled(m, muted));
+        hits.push((x, spans_width(&spans), None));
     }
     let pad = w.saturating_sub(spans_width(&spans) + display_width(tail));
     spans.push(Span::raw(" ".repeat(pad.max(2))));
+    let x = spans_width(&spans);
     spans.push(Span::styled(tail, muted.add_modifier(Modifier::DIM)));
-    Line::from(spans)
+    hits.push((x, spans_width(&spans), None));
+    (Line::from(spans), hits)
 }
 
 pub(crate) fn home_band_h(w: usize) -> usize {

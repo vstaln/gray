@@ -434,6 +434,8 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
         });
 
     let reveal = tui.home_reveal_alpha();
+    let mut strip_hits: Vec<(u16, u16, u16, String)> = Vec::new();
+    let home_actions = tui.home_actions.clone();
     let res = tui.terminal.draw(|frame| {
         let area = frame.area();
 
@@ -670,13 +672,31 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
                 Paragraph::new(ibox.lines.clone()),
                 Rect::new(box_x, box_y, area.right() - box_x, rendered_box_h),
             );
-            if let Some(notes) = bottom_notes.as_deref().filter(|_| notes_at_bottom) {
-                let y = area.bottom().saturating_sub(1);
-                if y >= box_y + rendered_box_h {
-                    frame.render_widget(
-                        Paragraph::new(widgets::notice_strip(notes, box_w as usize)),
-                        Rect::new(box_x, y, box_w, 1),
-                    );
+            let strip_at = match bottom_notes.as_deref() {
+                Some(notes) if notes_at_bottom => {
+                    let y = area.bottom().saturating_sub(1);
+                    (y >= box_y + rendered_box_h).then(|| {
+                        let (line, hits) = widgets::notice_strip(notes, box_w as usize);
+                        frame.render_widget(Paragraph::new(line), Rect::new(box_x, y, box_w, 1));
+                        (y, hits)
+                    })
+                }
+                Some(notes) => {
+                    let row = ibox.lines.len().saturating_sub(1) as u16;
+                    (row < rendered_box_h)
+                        .then(|| (box_y + row, widgets::notice_strip(notes, ibox.width).1))
+                }
+                None => None,
+            };
+            if let Some((y, hits)) = strip_at {
+                for (x0, x1, idx) in hits {
+                    let action = match idx {
+                        Some(i) => home_actions.get(i).cloned().unwrap_or_default(),
+                        None => "/qol".to_string(),
+                    };
+                    if action.starts_with('/') {
+                        strip_hits.push((y, box_x + x0 as u16, box_x + x1 as u16, action));
+                    }
                 }
             }
             if crate::settings::vim_mode() && tui.vim.is_normal() {
@@ -1208,6 +1228,9 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
             crate::composer::fade_buffer(frame.buffer, alpha);
         }
     });
+    if res.is_ok() {
+        tui.strip_hits = strip_hits;
+    }
     let background_result = if res.is_ok() {
         if let super::BackgroundSlot::Loaded(bg) = &mut tui.background {
             bg.draw(&mut std::io::stdout().lock(), cols, rows)
