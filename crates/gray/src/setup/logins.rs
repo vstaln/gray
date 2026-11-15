@@ -324,6 +324,7 @@ struct CachedRow {
     label: String,
     pct: f64,
     note: String,
+    short: String,
     limit: bool,
     dim: bool,
 }
@@ -343,7 +344,7 @@ fn cached_lines(
             crate::usage_cache::WindowState::Limit { resets } => match resets {
                 Some(resets) => (
                     window_pct(window),
-                    format!("limit · resets {resets}"),
+                    format!("limit \u{b7} resets {resets}"),
                     true,
                     false,
                 ),
@@ -363,7 +364,7 @@ fn cached_lines(
         };
         let mut parts: Vec<String> = Vec::new();
         if !head.is_empty() {
-            parts.push(head);
+            parts.push(head.clone());
         }
         match mode {
             CacheNote::Loading => parts.push("loading".to_string()),
@@ -375,12 +376,24 @@ fn cached_lines(
         if mode == CacheNote::Failed {
             parts.push("refresh failed".to_string());
         }
-        let note = parts.join(" · ");
+        let note = parts.join(" \u{b7} ");
+        let short = if limit {
+            match &head {
+                h if h.starts_with("limit") => h
+                    .split_once("resets ")
+                    .map(|(_, r)| format!("limit \u{b7} {r}"))
+                    .unwrap_or_else(|| "limit".to_string()),
+                _ => "limit".to_string(),
+            }
+        } else {
+            String::new()
+        };
         let stale = window.seen_at > 0 && now.saturating_sub(window.seen_at) >= 86_400;
         rows.push(CachedRow {
             label: crate::usage_cache::window_label(&window.window),
             pct,
             note,
+            short,
             limit,
             dim: stale || mode == CacheNote::Loading,
         });
@@ -396,7 +409,8 @@ fn cached_lines(
     let lw = max_label.min(w.saturating_sub(fixed + 2));
     rows.iter()
         .map(|row| {
-            let (pct, note, limit, dim) = (row.pct, &row.note, row.limit, row.dim);
+            let (pct, note, short, limit, dim) =
+                (row.pct, &row.note, &row.short, row.limit, row.dim);
             let label = fit_chars(&row.label, lw);
             let pad = lw.saturating_sub(label.chars().count());
             let filled =
@@ -413,9 +427,17 @@ fn cached_lines(
             if !note.is_empty() {
                 let room = w.saturating_sub(fixed + lw + 2);
                 let width = note.chars().count();
-                if room >= width + 2 {
+                let pick = if room >= width + 2 {
+                    Some(note.clone())
+                } else if !short.is_empty() && room >= short.chars().count() + 2 {
+                    Some(short.clone())
+                } else {
+                    None
+                };
+                if let Some(text) = pick {
+                    let pad = room - text.chars().count();
                     spans.push(Span::styled(
-                        format!("{}{note}", " ".repeat(room - width)),
+                        format!("{}{text}", " ".repeat(pad)),
                         fg(note_fg),
                     ));
                 } else {
