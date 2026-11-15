@@ -44,19 +44,55 @@ pub fn resolve_provider_connection(config: &Config, home: &Path) -> Option<Insta
     if !config.uses_plugin_credentials() {
         return None;
     }
-    ProviderRegistry::load_cached(home).resolve(&config.provider_id, &config.auth_ref)
+    resolve_connection(
+        &ProviderRegistry::load_cached(home),
+        &config.provider_id,
+        &config.auth_ref,
+    )
+}
+
+pub(crate) fn resolve_connection(
+    registry: &ProviderRegistry,
+    provider_id: &str,
+    auth_ref: &str,
+) -> Option<InstalledProvider> {
+    if let Some(installed) = registry.resolve(provider_id, auth_ref) {
+        return Some(installed);
+    }
+    let adopted = registry.resolve_renamed(provider_id, auth_ref)?;
+    log::warn!(
+        target: "gray_provider",
+        "provider connection {provider_id} is no longer installed; using {} for the same provider, because the plugin was renamed - re-select the model to make the new id stick",
+        adopted.provider_id()
+    );
+    Some(adopted)
+}
+
+pub(crate) fn not_installed_error(registry: &ProviderRegistry, provider_id: &str) -> anyhow::Error {
+    let installed: Vec<String> = registry
+        .installed()
+        .into_iter()
+        .map(|installed| installed.provider_id())
+        .collect();
+    if installed.is_empty() {
+        anyhow!(
+            "selected provider connection is not installed or enabled: {provider_id} (no plugin provides a connection)"
+        )
+    } else {
+        anyhow!(
+            "selected provider connection is not installed or enabled: {provider_id} (installed: {})",
+            installed.join(", ")
+        )
+    }
 }
 
 pub async fn connect_dynamic_provider(
     config: &Config,
     home: &Path,
 ) -> anyhow::Result<DynamicProvider> {
-    let installed = resolve_provider_connection(config, home).ok_or_else(|| {
-        anyhow!(
-            "selected provider connection is not installed or enabled: {}",
-            config.provider_id
-        )
-    })?;
+    let registry = ProviderRegistry::load_cached(home);
+    let installed = resolve_connection(&registry, &config.provider_id, &config.auth_ref)
+        .ok_or_else(|| not_installed_error(&registry, &config.provider_id))?;
     let profile = profile_for_provider(&installed)?;
     let runtime: Arc<dyn ProviderRpc> = Arc::new(LazyProviderRpc::new(installed.clone()));
     let store = CredentialStore::new(

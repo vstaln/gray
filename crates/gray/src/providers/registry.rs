@@ -149,6 +149,43 @@ impl ProviderRegistry {
             installed.provider_id() == provider_id && installed.auth_ref() == auth_ref
         })
     }
+
+    /// Resolve a connection whose plugin was renamed.
+    ///
+    /// A connection id is built from the plugin's *install key*, and the install
+    /// key is whatever the index (or URL) calls the package, which need not be
+    /// the name the plugin gives itself: `claude` can hold a manifest that says
+    /// `claude-sub`. A rename therefore orphans every id already written down by
+    /// a session, the saved config or the environment, and the model stops
+    /// resolving. When the exact id is gone, adopt the one installed connection
+    /// that still declares the same provider and auth method; two candidates is
+    /// ambiguity, not a rename, so it resolves to nothing.
+    pub fn resolve_renamed(&self, provider_id: &str, auth_ref: &str) -> Option<InstalledProvider> {
+        let (plugin, provider) = provider_id.split_once(':')?;
+        let (ref_plugin, ref_provider, auth_method) = split_auth_ref(auth_ref)?;
+        if ref_plugin != plugin || ref_provider != provider {
+            return None;
+        }
+        let mut matches = self.installed().into_iter().filter(|installed| {
+            installed.plugin != plugin
+                && installed.provider.id == provider
+                && installed.auth_method.id == auth_method
+        });
+        let first = matches.next()?;
+        matches.next().is_none().then_some(first)
+    }
+}
+
+/// `plugin:{plugin}:{provider}:{auth_method}` -> its three parts.
+fn split_auth_ref(auth_ref: &str) -> Option<(&str, &str, &str)> {
+    let rest = auth_ref.strip_prefix("plugin:")?;
+    let (plugin, rest) = rest.split_once(':')?;
+    let (provider, auth_method) = rest.rsplit_once(':')?;
+    (!plugin.is_empty() && !provider.is_empty() && !auth_method.is_empty()).then_some((
+        plugin,
+        provider,
+        auth_method,
+    ))
 }
 
 pub fn plugin_home(home: &Path, plugin: &str) -> PathBuf {
