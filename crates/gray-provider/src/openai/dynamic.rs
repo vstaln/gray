@@ -667,7 +667,16 @@ impl OpenAiProvider {
                     gray_core::credential::CredentialError::Unavailable(_) => {
                         ProviderError::Connection(format!("{e:#}"))
                     }
-                    _ => ProviderError::Auth(format!("provider credential unavailable: {e:#}")),
+                    _ => {
+                        let text = format!("provider credential unavailable: {e:#}");
+                        match super::errors::parse_quota_reset_delay(&text) {
+                            Some(resets_in) => ProviderError::Quota {
+                                message: text,
+                                resets_in: Some(resets_in),
+                            },
+                            None => ProviderError::Auth(text),
+                        }
+                    }
                 })
                 .and_then(|lease| {
                     let url = match lease.metadata.get("relay_url") {
