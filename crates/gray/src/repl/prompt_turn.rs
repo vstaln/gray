@@ -141,6 +141,10 @@ pub(crate) async fn run_prompt_turn(
         let built = build_agent(config, cwd, sid.as_deref()).await;
         match built {
             Ok(built) => {
+                if tui_stream.is_some() {
+                    crate::host::set_live_session(sid.as_deref());
+                    crate::host::set_live_provider(Some(built.provider_handle()));
+                }
                 if !pending_history.is_empty() {
                     *agent =
                         Some(built.with_messages(super::take_pending_history(pending_history)));

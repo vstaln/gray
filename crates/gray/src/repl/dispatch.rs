@@ -492,6 +492,10 @@ pub(crate) async fn dispatch_command(
                 let sid = session_state.as_ref().map(|s| s.session_id.as_str());
                 match build_agent(config, cwd, sid).await {
                     Ok(built) => {
+                        if tui.is_some() {
+                            crate::host::set_live_session(sid);
+                            crate::host::set_live_provider(Some(built.provider_handle()));
+                        }
                         *agent =
                             Some(built.with_messages(super::take_pending_history(pending_history)));
                     }
