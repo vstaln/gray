@@ -3,11 +3,21 @@ use std::sync::Arc;
 use crate::agent::{Agent, Provider, complete_isolated_detached};
 use crate::compact::{
     PRICE_CLIFF_KEEP_DIVISOR, RETAINED_MESSAGE_TOKEN_BUDGET, SUMMARY_ENVELOPE_PREFIX,
-    trigger_message,
 };
 use crate::error::CoreError;
 use crate::event::Usage;
 use crate::message::{ContentBlock, Message, ToolDef};
+
+pub fn summary_with_records(summary: &str, records: &crate::records::Records) -> Message {
+    if records.is_empty() {
+        return summary_message(summary);
+    }
+    let s = records.lint(summary.trim());
+    Message::user_injected(format!(
+        "{SUMMARY_ENVELOPE_PREFIX}\n\n<summary>\n{s}\n</summary>\n\n<records>\n{}</records>",
+        records.render()
+    ))
+}
 
 pub fn summary_message(summary: &str) -> Message {
     let s = summary.trim();
@@ -31,6 +41,7 @@ pub(crate) struct SummaryRequest {
     shared_messages: Option<Vec<Message>>,
     candidate: Vec<Message>,
     instructions: Option<String>,
+    records_index: Option<String>,
     /// Chat-model provider to retry on when `provider` is a separate
     /// compaction model and its call fails.
     fallback: Option<Arc<dyn Provider>>,
@@ -44,6 +55,24 @@ pub(crate) struct PreparedCompaction {
 }
 
 impl PreparedCompaction {
+    pub(crate) fn attach_records(&mut self, index: String) {
+        if index.is_empty() {
+            return;
+        }
+        if let Some(last) = self
+            .request
+            .shared_messages
+            .as_mut()
+            .and_then(|m| m.last_mut())
+        {
+            *last = crate::compact::trigger_message_with(
+                self.request.instructions.as_deref(),
+                Some(&index),
+            );
+        }
+        self.request.records_index = Some(index);
+    }
+
     pub(crate) fn retained_tail(&self, session_id: Option<&str>) -> Vec<Message> {
         let walk = if self.anchor.is_some() {
             &self.candidate[1..]
@@ -118,6 +147,7 @@ impl Agent {
                 shared_messages,
                 candidate: candidate.clone(),
                 instructions: instructions.map(str::to_string),
+                records_index: None,
             },
             candidate,
             anchor,
@@ -130,6 +160,7 @@ impl Agent {
         summary: &str,
         anchor: Option<Message>,
         tail: Vec<Message>,
+        cut: usize,
     ) -> bool {
         if summary.trim().is_empty() {
             return false;
@@ -138,9 +169,16 @@ impl Agent {
         if let Some(anchor) = anchor {
             next.push(anchor);
         }
-        next.push(summary_message(summary));
+        let cut = cut.min(self.messages.len());
+        let records = crate::records::build(&self.messages[..cut], &tail);
+        let at = next.len();
+        next.push(summary_with_records(summary, &records));
         next.extend(tail);
-        let (after, before) = (est_tokens(&next), est_tokens(&self.messages));
+        let before = est_tokens(&self.messages);
+        if est_tokens(&next) >= before {
+            next[at] = summary_message(summary);
+        }
+        let after = est_tokens(&next);
         if after >= before {
             log::info!(target: "gray_agent", "compaction: discarded reason=no_gain before={before} after={after}");
             return false;
@@ -184,7 +222,7 @@ impl Agent {
                         let apply_started = std::time::Instant::now();
                         let tail = self.messages[held.covered..].to_vec();
                         if self
-                            .apply_compaction(&summary, held.anchor.clone(), tail)
+                            .apply_compaction(&summary, held.anchor.clone(), tail, held.covered)
                             .await
                         {
                             log::info!(
@@ -238,10 +276,16 @@ impl Agent {
         else {
             return Ok(None);
         };
-        let tail = prepared.retained_tail(self.session_id.as_deref());
+        let mut prepared = prepared;
+        let mut tail = prepared.retained_tail(self.session_id.as_deref());
+        let cut = crate::records::cut_for_tail(&self.messages, &mut tail);
+        prepared.attach_records(crate::records::build(&self.messages[..cut], &tail).index());
         let (summary, spent) = run_compaction_summary(prepared.request).await?;
         self.unbilled.accumulate(&spent);
-        if self.apply_compaction(&summary, prepared.anchor, tail).await {
+        if self
+            .apply_compaction(&summary, prepared.anchor, tail, cut)
+            .await
+        {
             Ok(Some(summary))
         } else {
             Ok(None)
@@ -260,6 +304,7 @@ pub(crate) async fn run_compaction_summary(
         shared_messages,
         candidate,
         instructions,
+        records_index,
         fallback,
     } = request;
     if let Some(chat) = fallback {
@@ -273,6 +318,7 @@ pub(crate) async fn run_compaction_summary(
             tools.clone(),
             candidate.clone(),
             instructions.clone(),
+            records_index.clone(),
         )
         .await
         {
@@ -293,6 +339,7 @@ pub(crate) async fn run_compaction_summary(
             shared_messages,
             candidate,
             instructions,
+            records_index,
             fallback: None,
         }))
         .await;
@@ -314,7 +361,16 @@ pub(crate) async fn run_compaction_summary(
             result => return result,
         }
     }
-    fallback_compaction_summary(provider, session_id, system, tools, candidate, instructions).await
+    fallback_compaction_summary(
+        provider,
+        session_id,
+        system,
+        tools,
+        candidate,
+        instructions,
+        records_index,
+    )
+    .await
 }
 
 /// The summary call carries the whole history, so a payload 413 that sent
@@ -326,9 +382,13 @@ async fn fallback_compaction_summary(
     tools: Vec<ToolDef>,
     candidate: Vec<Message>,
     instructions: Option<String>,
+    records_index: Option<String>,
 ) -> Result<(String, Usage), CoreError> {
     let mut messages = candidate.clone();
-    messages.push(trigger_message(instructions.as_deref()));
+    messages.push(crate::compact::trigger_message_with(
+        instructions.as_deref(),
+        records_index.as_deref(),
+    ));
     match complete_isolated_detached(
         provider.clone(),
         session_id.clone(),
@@ -353,7 +413,10 @@ async fn fallback_compaction_summary(
         {
             let mut text_only = candidate;
             crate::compact::stub_all_media(&mut text_only);
-            text_only.push(trigger_message(instructions.as_deref()));
+            text_only.push(crate::compact::trigger_message_with(
+                instructions.as_deref(),
+                records_index.as_deref(),
+            ));
             complete_isolated_detached(provider, session_id, system, text_only, tools, false).await
         }
         result => result,

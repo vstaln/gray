@@ -12,8 +12,8 @@ use tokio::task::JoinHandle;
 #[cfg(unix)]
 use crate::shell::contract::EXIT_STDIO_GRACE_MS;
 use crate::shell::contract::{
-    DEFAULT_TIMEOUT_SECS, DETACHED_DRAIN_TIMEOUT, INLINE_BUDGET_BYTES, MAX_TIMEOUT_SECS,
-    PUMP_DRAIN_TIMEOUT, PumpSummary, SLEEP_SLACK_SECS, TERM_KILL_GRACE, VIEW_BUDGET_LINES, View,
+    DEFAULT_TIMEOUT_SECS, DETACHED_DRAIN_TIMEOUT, MAX_TIMEOUT_SECS, PUMP_DRAIN_TIMEOUT,
+    PumpSummary, SLEEP_SLACK_SECS, TERM_KILL_GRACE, VIEW_BUDGET_LINES, View, inline_budget_bytes,
 };
 use crate::shell::exit::exit_report;
 use crate::shell::fence::fence;
@@ -975,14 +975,14 @@ fn finish_inline(
 
 fn small_log_on_disk(log_path: &std::path::Path, summary: &PumpSummary) -> bool {
     let file_len = std::fs::metadata(log_path).map(|m| m.len()).unwrap_or(0);
-    summary.total_bytes <= INLINE_BUDGET_BYTES as u64 && file_len <= INLINE_BUDGET_BYTES as u64
+    summary.total_bytes <= inline_budget_bytes() as u64 && file_len <= inline_budget_bytes() as u64
 }
 
 fn build_view(log_path: &std::path::Path, summary: &PumpSummary) -> View {
     let use_disk = small_log_on_disk(log_path, summary);
 
     if use_disk && let Ok(bytes) = std::fs::read(log_path) {
-        let mut view = middle_out(&bytes, INLINE_BUDGET_BYTES, VIEW_BUDGET_LINES, 0);
+        let mut view = middle_out(&bytes, inline_budget_bytes(), VIEW_BUDGET_LINES, 0);
         if view.omitted_range.is_some() {
             let hint = resume_hint(&view, log_path);
             view.body = view.body.replace("{{MARKER}}", &hint);
@@ -1003,7 +1003,7 @@ fn build_view(log_path: &std::path::Path, summary: &PumpSummary) -> View {
     if omitted_lines == 0 && omitted_bytes == 0 {
         let mut cat = summary.head.clone();
         cat.extend_from_slice(&summary.tail);
-        return middle_out(&cat, INLINE_BUDGET_BYTES, VIEW_BUDGET_LINES, 0);
+        return middle_out(&cat, inline_budget_bytes(), VIEW_BUDGET_LINES, 0);
     }
 
     let omitted_range = Some((

@@ -673,6 +673,12 @@ pub struct Agent {
     /// the whole cached prefix (tools sit in front of it).
     pub(crate) pending_tools: Option<Vec<ToolDef>>,
 
+    pub(crate) toolbox: bool,
+
+    pub(crate) toolbox_frozen: Option<Vec<ToolDef>>,
+
+    pub(crate) toolbox_announced: std::collections::BTreeSet<String>,
+
     pub(crate) last_request_at: Option<std::time::Instant>,
 
     pub(crate) turn_billed: std::sync::Mutex<Usage>,
@@ -738,6 +744,9 @@ impl Agent {
             warm_cache_reported: None,
             prefix_rewrite_ok: true,
             pending_tools: None,
+            toolbox: false,
+            toolbox_frozen: None,
+            toolbox_announced: Default::default(),
             last_request_at: None,
             lean_prompt: false,
             background_compaction: false,
@@ -752,6 +761,12 @@ impl Agent {
     /// Cell stamped each time a warm ping refreshes the cache.
     pub fn warm_refreshed(&self) -> crate::cache_warm::WarmRefreshed {
         self.warm_refreshed.clone()
+    }
+
+    pub fn set_idle_cache_warm(&mut self, idle: bool) {
+        if let Some(policy) = self.cache_warm.as_mut() {
+            policy.idle = idle;
+        }
     }
 
     pub fn with_cache_warm(mut self, policy: Option<crate::cache_warm::CacheWarmPolicy>) -> Self {
@@ -872,6 +887,7 @@ impl Agent {
         if let Some(tools) = self.pending_tools.take() {
             self.tools = tools;
         }
+        self.toolbox_announced.clear();
         self.history_revision = self.history_revision.wrapping_add(1);
         self.warm_run = None;
     }
@@ -907,7 +923,31 @@ impl Agent {
     }
 
     pub fn request_tools(&self) -> Vec<ToolDef> {
-        self.tools.clone()
+        if !self.toolbox {
+            return self.tools.clone();
+        }
+        self.toolbox_frozen
+            .clone()
+            .unwrap_or_else(|| crate::toolbox::request_tools(&self.tools))
+    }
+
+    pub fn set_toolbox(&mut self, on: bool) {
+        self.toolbox = on;
+        self.toolbox_frozen = None;
+        self.toolbox_announced.clear();
+    }
+
+    pub(crate) fn toolbox_prepare(&mut self) {
+        if !self.toolbox {
+            return;
+        }
+        if self.toolbox_frozen.is_none() {
+            self.toolbox_frozen = Some(crate::toolbox::request_tools(&self.tools));
+        }
+        if let Some(text) = crate::toolbox::announcement(&self.tools, &self.toolbox_announced) {
+            self.toolbox_announced = crate::toolbox::hidden_names(&self.tools);
+            self.messages.push(Message::user_injected(text));
+        }
     }
 
     /// Adopt the executor's live tool list, unless doing so would throw
@@ -919,6 +959,11 @@ impl Agent {
             return;
         };
         if defs == self.tools {
+            self.pending_tools = None;
+            return;
+        }
+        if self.toolbox {
+            self.tools = defs;
             self.pending_tools = None;
             return;
         }

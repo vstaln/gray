@@ -1156,6 +1156,7 @@ async fn run_print_inner(
         anyhow::bail!("{cap}");
     }
     let mut agent = build_agent(config, &cwd, Some(session_id.as_str())).await?;
+    agent.set_idle_cache_warm(false);
     log::debug!(target: "gray_timing", "spawn agent_built elapsed_ms={}", crate::turn_caps::process_start().elapsed().as_millis());
 
     if !config.bare

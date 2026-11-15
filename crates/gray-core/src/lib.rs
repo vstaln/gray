@@ -14,10 +14,12 @@ pub mod overflow;
 pub mod parallel;
 pub mod paths;
 pub mod prefix_guard;
+pub mod records;
 pub mod redaction;
 pub mod spill;
 pub mod time;
 pub mod tool_out;
+pub mod toolbox;
 
 /// `skip_serializing_if` predicate for `bool` fields that default to false.
 pub fn is_false(b: &bool) -> bool {

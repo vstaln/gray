@@ -9,7 +9,7 @@ use tokio::process::{ChildStderr, ChildStdout};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
-use super::contract::{MEM_HEAD_BYTES, MEM_TAIL_BYTES, PumpSummary};
+use super::contract::{PumpSummary, mem_head_bytes, mem_tail_bytes};
 
 const READ_BUF_BYTES: usize = 8 * 1024;
 const PUMP_CHANNEL_CHUNKS: usize = 64;
@@ -33,8 +33,8 @@ pub(crate) struct MemView {
 impl MemView {
     pub(crate) fn new() -> Self {
         Self {
-            head: Vec::with_capacity(MEM_HEAD_BYTES),
-            tail: VecDeque::with_capacity(MEM_TAIL_BYTES),
+            head: Vec::with_capacity(mem_head_bytes()),
+            tail: VecDeque::with_capacity(mem_tail_bytes()),
             total_bytes: 0,
             total_lines: 0,
             has_cr: false,
@@ -42,12 +42,13 @@ impl MemView {
     }
 
     pub(crate) fn push(&mut self, chunk: &[u8]) {
-        if self.head.len() < MEM_HEAD_BYTES {
-            let take = (MEM_HEAD_BYTES - self.head.len()).min(chunk.len());
+        let head_cap = mem_head_bytes();
+        if self.head.len() < head_cap {
+            let take = (head_cap - self.head.len()).min(chunk.len());
             self.head.extend_from_slice(&chunk[..take]);
         }
         self.tail.extend(chunk.iter().copied());
-        let excess = self.tail.len().saturating_sub(MEM_TAIL_BYTES);
+        let excess = self.tail.len().saturating_sub(mem_tail_bytes());
         if excess > 0 {
             self.tail.drain(..excess);
         }
