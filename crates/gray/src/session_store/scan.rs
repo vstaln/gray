@@ -14,6 +14,33 @@ pub(super) enum SessionFileRead {
     Corrupt(PathBuf),
 }
 
+const SYNTHETIC_USER_PREFIXES: &[&str] = &[
+    crate::composer::transcript::CONTEXT_UPDATE_MARKER,
+    "<system-reminder>",
+    crate::composer::transcript::SUBAGENT_DONE_MARKER,
+    "[Harness note]",
+    "The conversation history before this point was compacted",
+];
+
+pub(crate) fn real_user_text(message: &Message) -> Option<String> {
+    if message.role != Role::User || message.injected {
+        return None;
+    }
+    if message
+        .content
+        .iter()
+        .any(|b| matches!(b, ContentBlock::ToolResult { .. }))
+    {
+        return None;
+    }
+    let text = user_summary_text(message);
+    let head = text.trim_start();
+    if head.is_empty() || SYNTHETIC_USER_PREFIXES.iter().any(|p| head.starts_with(p)) {
+        return None;
+    }
+    Some(text)
+}
+
 pub(super) fn user_summary_text(message: &Message) -> String {
     let text = message.text_content();
     if !text.is_empty() {
@@ -95,14 +122,11 @@ pub(super) fn summarize_session_file(
                 Role::User => SessionEnd::UserUnanswered,
                 Role::System => last_end,
             };
-            if entry.message.role == Role::User && !entry.message.injected {
-                let text = user_summary_text(&entry.message);
-                if !text.is_empty() {
-                    if first_user_text.is_none() && !in_tail {
-                        first_user_text = Some(text.clone());
-                    }
-                    last_user_text = Some(text);
+            if let Some(text) = real_user_text(&entry.message) {
+                if first_user_text.is_none() && !in_tail {
+                    first_user_text = Some(text.clone());
                 }
+                last_user_text = Some(text);
             }
         }
     }

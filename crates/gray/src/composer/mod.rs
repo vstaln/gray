@@ -188,6 +188,7 @@ pub struct Tui {
 
     /// Draft the cold-cache confirm was shown for; Enter on the same draft sends.
     pub(crate) cold_confirm_armed: Option<String>,
+
     pub(crate) cache_stats: crate::composer::cache_stats::CacheStats,
     markdown_renderer: gray_markdown::StreamingMarkdownRenderer,
     committed_markdown_lines: usize,

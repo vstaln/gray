@@ -568,6 +568,7 @@ mod scan;
 pub(crate) use scan::*;
 mod persist;
 mod title;
+pub(crate) use title::read_title;
 pub use title::*;
 mod open_lock;
 pub use open_lock::*;

@@ -99,6 +99,10 @@ impl Tui {
         self.cache.rearm(Instant::now());
     }
 
+    pub(crate) fn context_tokens(&self) -> usize {
+        super::live_context_total(self.latest_usage.or(self.cumulative_usage), 0)
+    }
+
     pub(crate) fn set_turn_stream_ms(&mut self, ms: u64) {
         self.turn_stream_ms = ms;
     }

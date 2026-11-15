@@ -26,7 +26,7 @@ pub(crate) fn clean_title(raw: &str) -> Option<String> {
     (!t.is_empty()).then_some(t)
 }
 
-pub(super) fn read_title(root: &Path, id: &str) -> Option<String> {
+pub(crate) fn read_title(root: &Path, id: &str) -> Option<String> {
     clean_title(&std::fs::read_to_string(root.join(format!("{id}.title"))).ok()?)
 }
 

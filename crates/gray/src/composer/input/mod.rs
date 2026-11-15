@@ -588,7 +588,7 @@ fn needs_cold_confirm(tui: &mut Tui, text: &str) -> bool {
         return false;
     }
     tui.cold_confirm_armed = Some(text.to_string());
-    let line = resend.confirm_line();
+    let line = format!("{} · /continue for a fresh chat", resend.confirm_line());
     if !tail_line_is(tui, &line) {
         tui.push_dim(line);
     }
