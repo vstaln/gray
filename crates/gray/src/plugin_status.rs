@@ -46,12 +46,16 @@ pub(crate) fn kickoff(shared: crate::composer::SharedTui, handler: gray_plugin::
         return;
     };
     tokio::spawn(async move {
-        let _ = boot.await;
+        let booted = boot.await;
         if let Ok(mut t) = shared.lock() {
             t.set_plugin_stats(stats_line());
             if !t.modal_open {
                 let _ = t.draw();
             }
+        }
+        for p in booted.into_iter().flatten() {
+            p.on_event(gray_plugin::CoreEvent::SessionStart { interactive: true })
+                .await;
         }
     });
 }
