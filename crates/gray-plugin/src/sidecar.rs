@@ -54,6 +54,8 @@ pub const HOST_PLUGIN_INSTALL: &str = "host/plugin_install";
 
 pub const HOST_COMPLETE_TTL: Duration = Duration::from_secs(45);
 
+pub const PROVIDER_CHAT_TTL: Duration = Duration::from_secs(180);
+
 pub const TOOLS_CHANGED_DEBOUNCE: Duration = Duration::from_millis(200);
 
 pub const ASK_TTL: Duration = Duration::from_secs(330);
@@ -1261,7 +1263,7 @@ impl SidecarPlugin {
         let params = serde_json::to_value(request)
             .map_err(|_| ProviderRpcError::Protocol("invalid provider chat request".into()))?;
         let value = self
-            .provider_rpc("provider/chat", params, Duration::from_secs(30))
+            .provider_rpc("provider/chat", params, PROVIDER_CHAT_TTL)
             .await?;
         serde_json::from_value(value)
             .map_err(|_| ProviderRpcError::Protocol("invalid provider chat result".into()))

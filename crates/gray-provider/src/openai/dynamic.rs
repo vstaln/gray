@@ -665,7 +665,7 @@ impl OpenAiProvider {
                     // transient, so the turn retries instead of telling
                     // the user to sign in again.
                     gray_core::credential::CredentialError::Unavailable(_) => {
-                        ProviderError::Connection(format!("provider credential unavailable: {e:#}"))
+                        ProviderError::Connection(format!("{e:#}"))
                     }
                     _ => ProviderError::Auth(format!("provider credential unavailable: {e:#}")),
                 })

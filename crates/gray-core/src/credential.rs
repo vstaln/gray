@@ -210,7 +210,7 @@ impl fmt::Debug for CredentialLease {
 pub enum CredentialError {
     #[error("provider login required: {0}")]
     ReauthRequired(String),
-    #[error("credential provider unavailable: {0}")]
+    #[error("provider unavailable: {0}")]
     Unavailable(String),
     #[error("credential store rejected: {0}")]
     Store(String),
