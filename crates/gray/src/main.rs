@@ -47,7 +47,6 @@ async fn gray_main() -> anyhow::Result<()> {
 }
 
 async fn run() -> anyhow::Result<()> {
-    gray_core::paths::export_gray_home();
     gray::turn_caps::init_process_start();
     gray::session_store::capture_inherited_session_env();
     gray::logging::init();
