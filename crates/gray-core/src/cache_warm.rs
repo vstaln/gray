@@ -48,6 +48,7 @@ pub struct Prices {
 #[derive(Clone)]
 pub struct CacheWarmPolicy {
     pub ttl: Duration,
+    pub idle: bool,
     pub prices: Arc<dyn Fn() -> Option<Prices> + Send + Sync>,
 }
 
@@ -55,6 +56,7 @@ impl std::fmt::Debug for CacheWarmPolicy {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("CacheWarmPolicy")
             .field("ttl", &self.ttl)
+            .field("idle", &self.idle)
             .finish_non_exhaustive()
     }
 }
@@ -137,6 +139,9 @@ pub(crate) async fn keep_warm(
         }
 
         let idle = phase.lock().map(|p| *p == WarmPhase::Idle).unwrap_or(true);
+        if idle && !policy.idle {
+            return;
+        }
         let horizon = sent
             + if idle {
                 MAX_IDLE_WARMING_AGE
@@ -181,8 +186,9 @@ pub(crate) async fn keep_warm(
                     }
                     let cached = usage.cached_tokens.max(usage.cache_read_input_tokens);
                     if cache_reported
-                        && usage.input_tokens >= MIN_WARM_TOKENS
-                        && cached * 2 < usage.input_tokens
+                        && (cached == 0
+                            || (usage.input_tokens >= MIN_WARM_TOKENS
+                                && cached * 2 < usage.input_tokens))
                     {
                         log::warn!(target: "gray_agent", "cache warm: refresh read {cached} of {} prompt tokens from cache; warming off for this session", usage.input_tokens);
                         if let Ok(mut h) = hint.lock() {
@@ -195,8 +201,8 @@ pub(crate) async fn keep_warm(
                     }
                 }
                 Err(e) => {
-                    log::debug!(target: "gray_agent", "cache warm: refresh failed: {e}");
-                    break;
+                    log::debug!(target: "gray_agent", "cache warm: refresh failed, disarming until the next request: {e}");
+                    return;
                 }
                 _ => {}
             }

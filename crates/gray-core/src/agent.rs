@@ -754,6 +754,12 @@ impl Agent {
         self.warm_refreshed.clone()
     }
 
+    pub fn set_idle_cache_warm(&mut self, idle: bool) {
+        if let Some(policy) = self.cache_warm.as_mut() {
+            policy.idle = idle;
+        }
+    }
+
     pub fn with_cache_warm(mut self, policy: Option<crate::cache_warm::CacheWarmPolicy>) -> Self {
         self.cache_warm = policy;
         self

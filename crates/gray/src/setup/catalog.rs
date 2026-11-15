@@ -110,6 +110,9 @@ pub struct SavedConfig {
     pub tool_inline_bytes: Option<usize>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_warming: Option<bool>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub terminal_title: Option<bool>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -245,6 +248,7 @@ fn partial_saved_config(obj: &serde_json::Map<String, serde_json::Value>) -> Sav
         background_compaction: opt_field(obj, "background_compaction"),
         cold_confirm_usd: opt_field(obj, "cold_confirm_usd"),
         tool_inline_bytes: opt_field(obj, "tool_inline_bytes"),
+        cache_warming: opt_field(obj, "cache_warming"),
         terminal_title: opt_field(obj, "terminal_title"),
         terminal_progress: opt_field(obj, "terminal_progress"),
         vim_mode: opt_field(obj, "vim_mode"),

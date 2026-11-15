@@ -162,6 +162,7 @@ fn cache_warm_policy(
     model: &str,
     plugin_warm_replay: bool,
     cache_ttl_secs: u64,
+    enabled: bool,
 ) -> Option<gray_core::cache_warm::CacheWarmPolicy> {
     let cacheable = !config.uses_plugin_credentials() || plugin_warm_replay;
     if !cacheable {
@@ -177,6 +178,7 @@ fn cache_warm_policy(
     let model = model.to_string();
     Some(gray_core::cache_warm::CacheWarmPolicy {
         ttl: std::time::Duration::from_secs(cache_ttl_secs),
+        idle: true,
         prices: std::sync::Arc::new(move || {
             let r = crate::setup::get_model_rate(&model)?;
             r.has_cache_prices.then_some(gray_core::cache_warm::Prices {
@@ -345,7 +347,13 @@ async fn build_agent_inner(
             .cold_confirm_usd
             .unwrap_or(crate::cache::COLD_CONFIRM_USD)
     });
-    let cache_warm = cache_warm_policy(config, &wire_model, plugin_warm_replay, cache_ttl_secs);
+    let cache_warm = cache_warm_policy(
+        config,
+        &wire_model,
+        plugin_warm_replay,
+        cache_ttl_secs,
+        saved.cache_warming.unwrap_or(true),
+    );
 
     let identity = if config.bare {
         String::new()
