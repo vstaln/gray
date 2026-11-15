@@ -782,7 +782,7 @@ pub fn remove_managed(name: &str) -> anyhow::Result<()> {
         }
     }
     anyhow::ensure!(removed, "not installed: {name}");
-    if crate::default_plugins::DEFAULT_PLUGINS
+    if crate::default_plugins::MIGRATED_PLUGINS
         .iter()
         .any(|d| *d == name || gray_pkg::ops::canonical_name(d) == name)
     {

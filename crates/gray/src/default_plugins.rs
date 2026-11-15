@@ -1,26 +1,26 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 use gray_plugin::lock::{LockFile, lock_path};
 
-pub(crate) const DEFAULT_PLUGINS: &[&str] = &["qol"];
+pub(crate) const MIGRATED_PLUGINS: &[&str] = &["qol"];
 
 const RETRY: Duration = Duration::from_secs(24 * 60 * 60);
 
-fn missing(home: &Path) -> Vec<&'static str> {
+const MARKER: &str = ".qol-migration";
+
+fn marker(home: &Path) -> PathBuf {
+    home.join("plugins").join(MARKER)
+}
+
+fn needed(home: &Path, name: &str) -> bool {
     let Ok(lock) = LockFile::load(&lock_path(home)) else {
-        return Vec::new();
+        return true;
     };
-    DEFAULT_PLUGINS
+    let canonical = gray_pkg::ops::canonical_name(name);
+    [name, canonical]
         .iter()
-        .copied()
-        .filter(|name| {
-            let canonical = gray_pkg::ops::canonical_name(name);
-            [*name, canonical]
-                .iter()
-                .all(|n| !lock.plugins.contains_key(*n) && !lock.is_tombstoned(n))
-        })
-        .collect()
+        .all(|n| !lock.plugins.contains_key(*n) && !lock.is_tombstoned(n))
 }
 
 fn attempt_due(stamp: &Path) -> bool {
@@ -32,16 +32,51 @@ fn attempt_due(stamp: &Path) -> bool {
     !recent
 }
 
-pub(crate) async fn ensure_installed() {
+fn mtime(path: impl AsRef<Path>) -> Option<SystemTime> {
+    std::fs::metadata(path).and_then(|m| m.modified()).ok()
+}
+
+fn existing_user(home: &Path) -> bool {
+    if std::fs::read_dir(home.join("sessions")).is_ok_and(|mut d| d.next().is_some()) {
+        return true;
+    }
+    let Some(config) = mtime(home.join("config.json")) else {
+        return false;
+    };
+    std::env::current_exe()
+        .ok()
+        .and_then(mtime)
+        .is_some_and(|binary| config < binary)
+}
+
+fn write_marker(marker: &Path, state: &str) {
+    if let Some(parent) = marker.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::write(marker, state);
+}
+
+pub(crate) async fn migrate_once() {
     let Ok(home) = crate::plugin_cli::home() else {
         return;
     };
-    for name in missing(&home) {
+    let marker = marker(&home);
+    if marker.exists() {
+        return;
+    }
+    if !existing_user(&home) {
+        write_marker(&marker, "fresh");
+        return;
+    }
+    for name in MIGRATED_PLUGINS {
+        if !needed(&home, name) {
+            continue;
+        }
         let stamp = home
             .join("plugins")
             .join(format!(".default-{name}.attempt"));
         if !attempt_due(&stamp) {
-            continue;
+            return;
         }
         if let Some(parent) = stamp.parent() {
             let _ = std::fs::create_dir_all(parent);
@@ -52,11 +87,17 @@ pub(crate) async fn ensure_installed() {
             Ok(()) => {
                 let _ = std::fs::remove_file(&stamp);
             }
-            Err(e) => log::warn!("default plugin {name}: install failed: {e:#}"),
+            Err(e) => {
+                log::warn!("migrated plugin {name}: install failed: {e:#}");
+                return;
+            }
         }
+    }
+    if MIGRATED_PLUGINS.iter().all(|name| !needed(&home, name)) {
+        write_marker(&marker, "installed");
     }
 }
 
-pub(crate) fn spawn_ensure_installed() {
-    tokio::spawn(ensure_installed());
+pub(crate) fn spawn_migrate() {
+    tokio::spawn(migrate_once());
 }

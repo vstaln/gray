@@ -3,7 +3,7 @@
 ## [Unreleased]
 
 ### Changed
-- **Quality-of-life conveniences moved into the `quality-of-life` plugin 0.2.0.** Recap, auto-continue, the break reminder, notifications, auto-title, suggestions, templates, issue links, the interrupted hint and session cleanup now run on the plugin host API instead of in core; core keeps only the generic host methods they need.
+- **Quality-of-life conveniences moved into the `quality-of-life` plugin 0.2.0.** Recap, auto-continue, the break reminder, notifications, auto-title, suggestions, templates, issue links, the interrupted hint and session cleanup now run on the plugin host API instead of in core; core keeps only the generic host methods they need. Upgrading installs the quality-of-life plugin once so the moved features keep working; new installs can add it with `gray plugin install quality-of-life`.
 
 ### Fixed
 - **A composer action's message no longer runs into the text already on that row.** The banner above the prompt painted only its own inset, so a plugin notice or the home toast kept its first few characters to the left of the message (`pluginNo whisper model · enter to download`). It now blanks the whole row first.
