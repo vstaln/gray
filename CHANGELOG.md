@@ -2,10 +2,24 @@
 
 ## [Unreleased]
 
+## [0.2.24] - 2026-11-15
+
+### Added
+- **`/continue`.** Picks a chat back up in place, or hands it off to a fresh chat when the cache is cold and the context is large. `/continue <session> <message>` continues a named session; a first word only counts as a session on an exact id match.
+- **Plugins reload after an update without restarting gray.** When a plugin's binary is replaced on disk, the next request shuts the old process down, starts the new one and re-reads its commands and tools.
+- **`/models` says when usage numbers are cached, and how old they are.**
+
 ### Changed
 - **Quality-of-life conveniences moved into the `quality-of-life` plugin 0.2.0.** Recap, auto-continue, the break reminder, notifications, auto-title, suggestions, templates, issue links, the interrupted hint and session cleanup now run on the plugin host API instead of in core; core keeps only the generic host methods they need. Upgrading installs the quality-of-life plugin once so the moved features keep working; new installs can add it with `gray plugin install quality-of-life`.
+- **The "you announced work but stopped" nudge only fires when the turn's last line announces work.**
 
 ### Fixed
+- **Plugins get `GRAY_HOME`.** Plugin, command and provider processes now receive gray's home directory, so plugins on Windows resolve it; other child processes no longer inherit it.
+- **A missing provider connection names the installed ones**, so a renamed plugin's new id is visible instead of guessed.
+- **A failed plugin widget says why**, quoting the plugin's last output, and a plugin that writes a lot to stderr no longer hangs.
+- **Interrupting a turn over `--stdio` stops it immediately** instead of retrying the provider until it gives up.
+- **No `gray cron` polling for users without scheduled jobs**, and a failed check retries in 30s instead of every 5s.
+- **Token-expiry retry, compaction failure counting and the plugin-boot timeout message** were replaced with root-cause fixes.
 - **A composer action's message no longer runs into the text already on that row.** The banner above the prompt painted only its own inset, so a plugin notice or the home toast kept its first few characters to the left of the message (`pluginNo whisper model · enter to download`). It now blanks the whole row first.
 
 ## [0.2.23] - 2026-11-15
