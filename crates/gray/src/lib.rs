@@ -171,7 +171,7 @@ fn cache_warm_policy(
     if config.uses_plugin_credentials() && plugin_warm_replay {
         log::info!(target: "gray_agent", "cache warm enabled: plugin declares request.warm_replay");
     }
-    if config.bare || !cacheable || std::env::var_os("GRAY_NO_CACHE_WARM").is_some() {
+    if config.bare || !enabled || !cacheable || std::env::var_os("GRAY_NO_CACHE_WARM").is_some() {
         return None;
     }
     let model = model.to_string();
@@ -325,15 +325,24 @@ async fn build_agent_inner(
         .and_then(|p| p.installed().provider.transport.request.cache_ttl_secs)
         .unwrap_or(300);
     crate::cache::set_cache_ttl(std::time::Duration::from_secs(cache_ttl_secs));
+    let saved = crate::setup::catalog::saved_config_path()
+        .ok()
+        .map(|p| crate::setup::catalog::load_saved_config_at(&p))
+        .unwrap_or_default();
+    gray_core::tool_out::set_inline_bytes(
+        std::env::var("GRAY_TOOL_INLINE_BYTES")
+            .ok()
+            .and_then(|v| v.trim().parse::<usize>().ok())
+            .or(saved.tool_inline_bytes)
+            .unwrap_or(gray_core::tool_out::DEFAULT_INLINE_BYTES),
+    );
     // Plugin-credentialed providers are subscription logins: a cold resend
     // isn't re-billed, so there is nothing to confirm.
     crate::cache::set_cold_confirm_usd(if config.uses_plugin_credentials() {
         0.0
     } else {
-        crate::setup::catalog::saved_config_path()
-            .ok()
-            .map(|p| crate::setup::catalog::load_saved_config_at(&p))
-            .and_then(|s| s.cold_confirm_usd)
+        saved
+            .cold_confirm_usd
             .unwrap_or(crate::cache::COLD_CONFIRM_USD)
     });
     let cache_warm = cache_warm_policy(config, &wire_model, plugin_warm_replay, cache_ttl_secs);

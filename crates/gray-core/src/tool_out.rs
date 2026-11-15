@@ -1,3 +1,5 @@
+use std::sync::atomic::{AtomicUsize, Ordering};
+
 use serde_json::Value;
 
 use crate::agent::ToolOutput;
@@ -6,7 +8,19 @@ use crate::spill;
 
 pub const MAX_LINES: usize = 2000;
 
-pub const MAX_BYTES: usize = 12 * 1024;
+pub const DEFAULT_INLINE_BYTES: usize = 32 * 1024;
+
+pub const MIN_INLINE_BYTES: usize = 1024;
+
+static INLINE_BYTES: AtomicUsize = AtomicUsize::new(DEFAULT_INLINE_BYTES);
+
+pub fn set_inline_bytes(bytes: usize) {
+    INLINE_BYTES.store(bytes.max(MIN_INLINE_BYTES), Ordering::Relaxed);
+}
+
+pub fn inline_bytes() -> usize {
+    INLINE_BYTES.load(Ordering::Relaxed)
+}
 
 pub const MAX_ERROR_BYTES: usize = 2048;
 
@@ -42,10 +56,11 @@ pub fn truncate_output(text: &str) -> String {
         text.to_string()
     };
 
-    if body.len() > MAX_BYTES {
-        let dropped_bytes = body.len() - MAX_BYTES;
+    let max_bytes = inline_bytes();
+    if body.len() > max_bytes {
+        let dropped_bytes = body.len() - max_bytes;
         notes.push(format!("{dropped_bytes} bytes"));
-        let (head, tail) = split_head_tail(&body, MAX_BYTES);
+        let (head, tail) = split_head_tail(&body, max_bytes);
         format!("{head}\n{}\n{tail}", annotation(&notes))
     } else if notes.is_empty() {
         body

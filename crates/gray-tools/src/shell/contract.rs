@@ -9,10 +9,17 @@ pub const MAX_TIMEOUT_SECS: u64 = 3600;
 pub const SLEEP_SLACK_SECS: u64 = 30;
 pub const VIEW_BUDGET_LINES: usize = 2000;
 pub const VIEW_HEAD_FRACTION: f32 = 0.25;
-pub const MEM_HEAD_BYTES: usize = 6 * 1024;
-pub const MEM_TAIL_BYTES: usize = 6 * 1024;
+pub fn mem_head_bytes() -> usize {
+    gray_core::tool_out::inline_bytes() / 2
+}
 
-pub const INLINE_BUDGET_BYTES: usize = MEM_HEAD_BYTES + MEM_TAIL_BYTES;
+pub fn mem_tail_bytes() -> usize {
+    gray_core::tool_out::inline_bytes() - mem_head_bytes()
+}
+
+pub fn inline_budget_bytes() -> usize {
+    gray_core::tool_out::inline_bytes()
+}
 
 pub const PUMP_DRAIN_TIMEOUT: Duration = Duration::from_secs(30);
 
