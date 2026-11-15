@@ -178,6 +178,8 @@ struct WakesCache {
 }
 
 static WAKES_CACHE: Mutex<Option<WakesCache>> = Mutex::new(None);
+static WAKES_FETCH_FAILED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 
 fn jobs_stamp(home: &Path) -> Option<std::time::SystemTime> {
     std::fs::metadata(home.join("cron").join("jobs.json"))
@@ -275,7 +277,23 @@ pub(crate) fn load_wakes(home: &Path, sid: Option<&str>) -> Vec<Wake> {
             }
         }
     }
-    let wakes = wakes_from_json(&cron_list_json(home).unwrap_or_default(), sid);
+    let Some(body) = cron_list_json(home) else {
+        if !WAKES_FETCH_FAILED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            log::warn!(
+                target: "gray_agent",
+                "cron list unavailable — keeping the last known wakes and retrying next poll"
+            );
+        }
+        return WAKES_CACHE
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .filter(|c| c.home == home && c.sid == sid)
+            .map(|c| c.wakes.clone())
+            .unwrap_or_default();
+    };
+    WAKES_FETCH_FAILED.store(false, std::sync::atomic::Ordering::Relaxed);
+    let wakes = wakes_from_json(&body, sid);
     *WAKES_CACHE.lock().unwrap_or_else(|e| e.into_inner()) = Some(WakesCache {
         home: home.to_path_buf(),
         sid: sid.to_string(),
