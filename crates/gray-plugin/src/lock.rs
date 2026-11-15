@@ -23,6 +23,9 @@ pub struct LockEntry {
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub global: bool,
 
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub removed: bool,
+
     /// Fields this build doesn't model, kept so a rewrite by an older or
     /// newer gray never drops them.
     #[serde(flatten)]
@@ -46,6 +49,7 @@ impl Default for LockEntry {
             runtime_role: None,
             cli_argv: None,
             global: false,
+            removed: false,
             extra: serde_json::Map::new(),
         }
     }
@@ -59,6 +63,8 @@ pub struct LockFile {
     /// read-modify-write never deletes a plugin this build can't read.
     #[serde(skip)]
     invalid: BTreeMap<String, serde_json::Value>,
+    #[serde(skip)]
+    tombstones: BTreeMap<String, LockEntry>,
 }
 
 impl Default for LockFile {
@@ -67,6 +73,7 @@ impl Default for LockFile {
             schema: 1,
             plugins: BTreeMap::new(),
             invalid: BTreeMap::new(),
+            tombstones: BTreeMap::new(),
         }
     }
 }
@@ -110,6 +117,27 @@ impl LockFile {
         self.invalid.remove(name).is_some() || parsed
     }
 
+    pub fn is_tombstoned(&self, name: &str) -> bool {
+        !self.plugins.contains_key(name) && self.tombstones.contains_key(name)
+    }
+
+    pub fn tombstone(&mut self, name: &str) {
+        let entry = self.plugins.remove(name).unwrap_or_default();
+        self.invalid.remove(name);
+        self.tombstones.insert(
+            name.to_string(),
+            LockEntry {
+                removed: true,
+                enabled: false,
+                ..entry
+            },
+        );
+    }
+
+    pub fn clear_tombstone(&mut self, name: &str) -> bool {
+        self.tombstones.remove(name).is_some()
+    }
+
     pub fn load(path: &Path) -> anyhow::Result<Self> {
         Self::load_with_errors(path).map(|(lf, _)| lf)
     }
@@ -135,9 +163,13 @@ impl LockFile {
         let raw: Raw = serde_json::from_str(text)?;
         let mut plugins = BTreeMap::new();
         let mut invalid = BTreeMap::new();
+        let mut tombstones = BTreeMap::new();
         let mut errors = Vec::new();
         for (name, value) in raw.plugins {
             match serde_path_to_error::deserialize::<_, LockEntry>(value.clone()) {
+                Ok(entry) if entry.removed => {
+                    tombstones.insert(name, entry);
+                }
                 Ok(entry) => {
                     plugins.insert(name, entry);
                 }
@@ -152,6 +184,7 @@ impl LockFile {
                 schema: raw.schema,
                 plugins,
                 invalid,
+                tombstones,
             },
             errors,
         ))
@@ -172,6 +205,11 @@ impl LockFile {
             .unwrap_or_else(|| PathBuf::from("."));
         let mut tmp = tempfile::NamedTempFile::new_in(&dir)?;
         let mut doc = serde_json::to_value(&out)?;
+        for (name, entry) in &self.tombstones {
+            if !self.plugins.contains_key(name) && !self.invalid.contains_key(name) {
+                doc["plugins"][name] = serde_json::to_value(entry)?;
+            }
+        }
         for (name, raw) in &self.invalid {
             if !self.plugins.contains_key(name) {
                 doc["plugins"][name] = raw.clone();

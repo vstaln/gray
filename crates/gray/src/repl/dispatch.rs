@@ -8,10 +8,7 @@ pub(crate) enum Flow {
 
 /// Every slash command the session knows: builtins, plugin commands, then
 /// prompt templates, as `("/name", description)`.
-pub(crate) fn help_entries(
-    cwd: &std::path::Path,
-    hooks: &[Arc<dyn PluginHooks>],
-) -> Vec<(String, String)> {
+pub(crate) fn help_entries(hooks: &[Arc<dyn PluginHooks>]) -> Vec<(String, String)> {
     let mut out: Vec<(String, String)> = REGISTRY
         .iter()
         .map(|d| {
@@ -38,19 +35,11 @@ pub(crate) fn help_entries(
             out.push((format!("/{name}"), description));
         }
     }
-    for t in crate::prompt_templates::discover(cwd) {
-        if seen.insert(t.name.clone()) {
-            out.push((
-                format!("/{}", t.name),
-                format!("template · {}", t.description),
-            ));
-        }
-    }
     out
 }
 
-pub(crate) fn help_text(cwd: &std::path::Path, hooks: &[Arc<dyn PluginHooks>]) -> String {
-    help_entries(cwd, hooks)
+pub(crate) fn help_text(hooks: &[Arc<dyn PluginHooks>]) -> String {
+    help_entries(hooks)
         .into_iter()
         .map(|(name, desc)| format!("  {name:<11} {desc}"))
         .collect::<Vec<_>>()
@@ -60,11 +49,10 @@ pub(crate) fn help_text(cwd: &std::path::Path, hooks: &[Arc<dyn PluginHooks>]) -
 /// `/help` in the TUI: the command list as a picker; the picked command name.
 pub(crate) fn help_picker(
     shared: &crate::composer::SharedTui,
-    cwd: &std::path::Path,
     hooks: &[Arc<dyn PluginHooks>],
 ) -> Option<String> {
     // One label per row, name then description, so the filter matches both.
-    let items: Vec<(String, String)> = help_entries(cwd, hooks)
+    let items: Vec<(String, String)> = help_entries(hooks)
         .into_iter()
         .map(|(name, desc)| {
             let label = format!("{name:<13}{desc}");
@@ -183,11 +171,11 @@ pub(crate) async fn dispatch_command(
             let hooks = agent.as_ref().map(|a| a.hooks()).unwrap_or_default();
             if let Some((shared, _)) = tui {
                 shared.lock().expect("tui lock").retract_slash_echo("/help");
-                if let Some(name) = help_picker(shared, cwd, hooks) {
+                if let Some(name) = help_picker(shared, hooks) {
                     *pending_command = Some(super::parse_command(&name));
                 }
             } else {
-                let out = help_text(cwd, hooks);
+                let out = help_text(hooks);
                 say(None, &crate::rule("commands"));
                 say(None, &out);
             }
@@ -504,6 +492,10 @@ pub(crate) async fn dispatch_command(
                 let sid = session_state.as_ref().map(|s| s.session_id.as_str());
                 match build_agent(config, cwd, sid).await {
                     Ok(built) => {
+                        if tui.is_some() {
+                            crate::host::set_live_session(sid);
+                            crate::host::set_live_provider(Some(built.provider_handle()));
+                        }
                         *agent =
                             Some(built.with_messages(super::take_pending_history(pending_history)));
                     }
@@ -628,7 +620,6 @@ pub(crate) async fn dispatch_command(
                                                 target: Some(sid),
                                                 last: false,
                                                 all: true,
-                                                dismiss: false,
                                             },
                                             &mut *agent,
                                             &mut *session_state,

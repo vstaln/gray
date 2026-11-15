@@ -153,8 +153,6 @@ pub(crate) fn handle_reload(tui: Option<&crate::composer::SharedTui>) {
         }
         Err(e) => lines.push(format!("keybindings not reloaded: {e}")),
     }
-    crate::prompt_templates::invalidate_cache();
-    lines.push("✓ prompt templates re-read on next use".to_string());
     lines.push(if crate::statusline::init_from_saved_config() {
         "✓ status line reloaded from config.json".to_string()
     } else {

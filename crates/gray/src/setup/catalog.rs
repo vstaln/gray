@@ -107,37 +107,16 @@ pub struct SavedConfig {
     pub cold_confirm_usd: Option<f64>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub auto_continue: Option<bool>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub away_recap: Option<bool>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub cleanup_period_days: Option<u32>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub notify_on_finish: Option<bool>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub terminal_title: Option<bool>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub terminal_progress: Option<bool>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub issue_links: Option<bool>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub vim_mode: Option<bool>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub prompt_suggestions: Option<bool>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub commit_attribution: Option<bool>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub break_reminder_minutes: Option<u32>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub compaction_model: Option<String>,
@@ -162,9 +141,6 @@ pub struct SavedConfig {
 
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub effort_memory: BTreeMap<String, String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[serde(alias = "qol")]
-    pub quality_of_life: Option<bool>,
 }
 
 pub const AUTH_MODE_API_KEY: &str = "api_key";
@@ -186,10 +162,6 @@ pub fn intro_enabled() -> bool {
 
 pub fn auto_update_enabled() -> bool {
     subsystem_enabled(|s| s.auto_update)
-}
-
-pub fn quality_of_life_enabled() -> bool {
-    subsystem_enabled(|s| s.quality_of_life)
 }
 
 fn subsystem_enabled(get: impl Fn(&SavedConfig) -> Option<bool>) -> bool {
@@ -269,17 +241,10 @@ fn partial_saved_config(obj: &serde_json::Map<String, serde_json::Value>) -> Sav
         lean: opt_field(obj, "lean"),
         background_compaction: opt_field(obj, "background_compaction"),
         cold_confirm_usd: opt_field(obj, "cold_confirm_usd"),
-        auto_continue: opt_field(obj, "auto_continue"),
-        away_recap: opt_field(obj, "away_recap"),
-        cleanup_period_days: opt_field(obj, "cleanup_period_days"),
-        notify_on_finish: opt_field(obj, "notify_on_finish"),
         terminal_title: opt_field(obj, "terminal_title"),
         terminal_progress: opt_field(obj, "terminal_progress"),
-        issue_links: opt_field(obj, "issue_links"),
         vim_mode: opt_field(obj, "vim_mode"),
-        prompt_suggestions: opt_field(obj, "prompt_suggestions"),
         commit_attribution: opt_field(obj, "commit_attribution"),
-        break_reminder_minutes: opt_field(obj, "break_reminder_minutes"),
         compaction_model: opt_field(obj, "compaction_model"),
         intro: opt_field(obj, "intro"),
         theme: opt_field(obj, "theme"),
@@ -288,7 +253,6 @@ fn partial_saved_config(obj: &serde_json::Map<String, serde_json::Value>) -> Sav
         credential_source: string_field(obj, "credential_source"),
         auth_ref: string_field(obj, "auth_ref"),
         effort_memory: opt_field(obj, "effort_memory").unwrap_or_default(),
-        quality_of_life: opt_field(obj, "quality_of_life").or_else(|| opt_field(obj, "qol")),
     }
 }
 

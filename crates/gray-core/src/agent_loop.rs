@@ -438,9 +438,7 @@ impl Agent {
         if let Some(warm) = &self.warm_run {
             warm.settle();
         }
-        for hook in &self.hooks {
-            hook.turn_end(usage).await;
-        }
+        *self.turn_billed.lock().unwrap_or_else(|e| e.into_inner()) = *usage;
     }
 
     async fn preflight(
@@ -558,6 +556,34 @@ impl Agent {
     }
 
     async fn run_inner(
+        &mut self,
+        ctx: ToolContext,
+        sink: Option<&mut dyn FnMut(&AgentEvent)>,
+    ) -> Result<Vec<AgentEvent>, CoreError> {
+        let started = std::time::Instant::now();
+        let session_id = ctx.session_id.clone();
+        *self.turn_billed.lock().unwrap_or_else(|e| e.into_inner()) = Usage::default();
+        let out = self.run_turn_body(ctx, sink).await;
+        let usage = *self.turn_billed.lock().unwrap_or_else(|e| e.into_inner());
+        let info = crate::agent::TurnEndInfo {
+            session_id,
+            interactive: crate::agent::INTERACTIVE_SESSION
+                .load(std::sync::atomic::Ordering::Relaxed),
+            focused: crate::agent::TERMINAL_FOCUSED.load(std::sync::atomic::Ordering::Relaxed),
+            took_ms: started.elapsed().as_millis() as u64,
+            error: out.as_ref().err().map(crate::agent::TurnEndInfo::error_for),
+        };
+        if self.turn_end_deferred {
+            self.stash_turn_end(usage, info);
+        } else {
+            for hook in &self.hooks {
+                hook.turn_end(&usage, &info).await;
+            }
+        }
+        out
+    }
+
+    async fn run_turn_body(
         &mut self,
         ctx: ToolContext,
         mut sink: Option<&mut dyn FnMut(&AgentEvent)>,

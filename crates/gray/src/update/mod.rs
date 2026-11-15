@@ -587,6 +587,7 @@ pub(crate) async fn ensure_skills_plugin() {
 
 async fn update_plugins_after_gray() {
     ensure_skills_plugin().await;
+    crate::default_plugins::migrate_once().await;
     match crate::plugin_cli::update_managed("all").await {
         Ok(rows) => {
             let (mut updated, mut rebuilt, mut failed) = (0usize, 0usize, 0usize);

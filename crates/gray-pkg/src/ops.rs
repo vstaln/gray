@@ -123,6 +123,7 @@ fn record_install(
         prior => prior,
     };
     let prior = lock.plugins.get(name).cloned().unwrap_or_default();
+    lock.clear_tombstone(name);
     lock.plugins.insert(
         name.to_string(),
         LockEntry {
@@ -137,6 +138,7 @@ fn record_install(
             enabled,
             cli_argv,
             global: lock.plugins.get(name).is_some_and(|e| e.global),
+            removed: false,
             granted_capabilities: prior.granted_capabilities,
             capabilities_hash: prior.capabilities_hash,
             runtime_role: prior.runtime_role,
@@ -606,6 +608,14 @@ pub const RENAMED: &[(&str, &str)] = &[
     ("zai-sub", "zai"),
 ];
 
+pub fn canonical_name(name: &str) -> &str {
+    RENAMED
+        .iter()
+        .find(|(old, _)| *old == name)
+        .map(|(_, new)| *new)
+        .unwrap_or(name)
+}
+
 async fn update_inner(target: &str, check: bool) -> anyhow::Result<Vec<UpdateRow>> {
     let lock = read_lock()?;
     let names: Vec<String> = if target == "all" {
@@ -649,11 +659,8 @@ async fn update_inner(target: &str, check: bool) -> anyhow::Result<Vec<UpdateRow
         if hub.is_none() && comm.is_none() {
             hub = crate::index::fetch_hub_index(&client).await.ok();
         }
-        let renamed = RENAMED
-            .iter()
-            .find(|(old, _)| old == name)
-            .map(|(_, new)| *new);
-        let lookup = renamed.unwrap_or(name);
+        let lookup = canonical_name(name);
+        let renamed = (lookup != name.as_str()).then_some(lookup);
         let entry = match hub.as_ref().and_then(|i| i.plugins.get(lookup)) {
             Some(e) => e,
             None => {

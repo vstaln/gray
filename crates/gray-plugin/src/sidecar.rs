@@ -46,6 +46,14 @@ pub const HOST_TTL: Duration = Duration::from_secs(30);
 
 pub const HOST_TOOLS_CHANGED: &str = "host/tools_changed";
 
+pub const HOST_COMMANDS_CHANGED: &str = "host/commands_changed";
+
+pub const HOST_COMPLETE: &str = "host/complete";
+
+pub const HOST_PLUGIN_INSTALL: &str = "host/plugin_install";
+
+pub const HOST_COMPLETE_TTL: Duration = Duration::from_secs(45);
+
 pub const TOOLS_CHANGED_DEBOUNCE: Duration = Duration::from_millis(200);
 
 pub const ASK_TTL: Duration = Duration::from_secs(330);
@@ -151,6 +159,8 @@ struct Transport {
     respawn: std::sync::Mutex<RespawnState>,
 
     spawned_mtime: std::sync::Mutex<Option<std::time::SystemTime>>,
+
+    on_respawn: std::sync::Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
 
 fn program_mtime(argv: &[String]) -> Option<std::time::SystemTime> {
@@ -374,7 +384,15 @@ fn spawn_reader(
             ) && id.is_string()
                 && method.starts_with("host/")
             {
-                let params = v.get("params").cloned().unwrap_or(Value::Null);
+                let mut params = v.get("params").cloned().unwrap_or(Value::Null);
+                if matches!(method, "host/notice" | "host/link_rules" | "host/inject") {
+                    if params.is_null() {
+                        params = json!({});
+                    }
+                    if let Some(obj) = params.as_object_mut() {
+                        obj.insert("_plugin".to_string(), json!(plugin_name.as_str()));
+                    }
+                }
                 let method_owned = method.to_string();
                 let stdin = stdin.clone();
                 let host_handler = host_handler.clone();
@@ -415,10 +433,10 @@ fn spawn_reader(
                     continue;
                 };
 
-                let handler_ttl = if method_owned == HOST_ASK {
-                    ASK_HANDLER_TTL
-                } else {
-                    HOST_TTL
+                let handler_ttl = match method_owned.as_str() {
+                    HOST_ASK | HOST_PLUGIN_INSTALL => ASK_HANDLER_TTL,
+                    HOST_COMPLETE => HOST_COMPLETE_TTL,
+                    _ => HOST_TTL,
                 };
                 tokio::spawn(async move {
                     let _permit = _permit;
@@ -569,6 +587,7 @@ impl Transport {
             grants,
             respawn: std::sync::Mutex::new(RespawnState::default()),
             spawned_mtime: std::sync::Mutex::new(program_mtime(&argv)),
+            on_respawn: std::sync::Mutex::new(None),
             argv,
         })
     }
@@ -645,6 +664,16 @@ impl Transport {
                 *self.respawn.lock().unwrap_or_else(|e| e.into_inner()) = RespawnState::default();
                 *self.spawned_mtime.lock().unwrap_or_else(|e| e.into_inner()) =
                     program_mtime(&self.argv);
+                if upgraded {
+                    let handler = self
+                        .on_respawn
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .clone();
+                    if let Some(handler) = handler {
+                        handler();
+                    }
+                }
                 if exit == SidecarExit::Crashed {
                     self.say(&name, &status, true, wait_err).await;
                 }
@@ -830,6 +859,26 @@ fn build_tools(transport: &Arc<Transport>, tools: &Value, asks: bool) -> Vec<Arc
         .unwrap_or_default()
 }
 
+fn manifest_commands(manifest: &Value) -> Value {
+    let known = manifest.get("command_descriptions");
+    let commands: Vec<Value> = manifest
+        .get("commands")
+        .and_then(|c| c.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|c| c.as_str())
+        .map(|name| {
+            let stripped = name.trim().trim_start_matches('/');
+            let description = known
+                .and_then(|d| d.get(name).or_else(|| d.get(stripped)))
+                .and_then(|d| d.as_str())
+                .unwrap_or("");
+            json!({"name": stripped, "description": description})
+        })
+        .collect();
+    json!({"commands": commands})
+}
+
 async fn refresh_tools_into(
     transport: &Arc<Transport>,
     tools: &std::sync::RwLock<Vec<Arc<dyn Tool>>>,
@@ -911,8 +960,35 @@ impl SidecarPlugin {
             global: std::sync::atomic::AtomicBool::new(false),
             context_oversize_logged: std::sync::atomic::AtomicBool::new(false),
         };
+        plugin.install_notify_handler(dynamic);
+        if let Ok(rt) = tokio::runtime::Handle::try_current() {
+            let transport = Arc::downgrade(&plugin.transport);
+            let tools = Arc::downgrade(&plugin.tools);
+            let asks = plugin.asks;
+            let name = plugin.manifest.name.clone();
+            plugin.set_on_respawn(Arc::new(move || {
+                let (Some(transport), Some(tools)) = (transport.upgrade(), tools.upgrade()) else {
+                    return;
+                };
+                let name = name.clone();
+                rt.spawn(async move {
+                    match transport.request("plugin/manifest", None, HOST_TTL).await {
+                        Ok(manifest) => {
+                            crate::set_dynamic_commands(&name, &manifest_commands(&manifest))
+                        }
+                        Err(e) => {
+                            log::warn!(target: "gray_plugin", "{name}: manifest refresh after restart failed: {e}");
+                        }
+                    }
+                    if dynamic
+                        && let Err(e) = refresh_tools_into(&transport, &tools, asks).await
+                    {
+                        log::warn!(target: "gray_plugin", "{name}: plugin/tools refresh after restart failed: {e}");
+                    }
+                });
+            }));
+        }
         if dynamic {
-            plugin.install_tools_changed_handler();
             {
                 let transport = Arc::downgrade(&plugin.transport);
                 let tools = Arc::downgrade(&plugin.tools);
@@ -959,7 +1035,7 @@ impl SidecarPlugin {
         refresh_tools_into(&self.transport, &self.tools, self.asks).await
     }
 
-    fn install_tools_changed_handler(&self) {
+    fn install_notify_handler(&self, dynamic: bool) {
         let Ok(rt) = tokio::runtime::Handle::try_current() else {
             return;
         };
@@ -969,8 +1045,31 @@ impl SidecarPlugin {
         let asks = self.asks;
         let name = self.manifest.name.clone();
         let pending = Arc::new(AtomicBool::new(false));
+        let commands_pending = Arc::new(AtomicBool::new(false));
         self.set_notify_handler(Arc::new(move |method, _params| {
-            if method != HOST_TOOLS_CHANGED {
+            if method == HOST_COMMANDS_CHANGED {
+                if commands_pending.swap(true, Ordering::SeqCst) {
+                    return;
+                }
+                let Some(transport) = transport.upgrade() else {
+                    return;
+                };
+                let (commands_pending, name) = (commands_pending.clone(), name.clone());
+                rt.spawn(async move {
+                    tokio::time::sleep(TOOLS_CHANGED_DEBOUNCE).await;
+                    commands_pending.store(false, Ordering::SeqCst);
+                    match transport.request("plugin/manifest", None, HOST_TTL).await {
+                        Ok(manifest) => {
+                            crate::set_dynamic_commands(&name, &manifest_commands(&manifest))
+                        }
+                        Err(e) => {
+                            log::warn!(target: "gray_plugin", "{name}: command refresh failed: {e}");
+                        }
+                    }
+                });
+                return;
+            }
+            if method != HOST_TOOLS_CHANGED || !dynamic {
                 return;
             }
             if transport.upgrade().is_none() || tools.upgrade().is_none() {
@@ -1176,6 +1275,14 @@ impl SidecarPlugin {
         *self
             .transport
             .notify
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(handler);
+    }
+
+    pub fn set_on_respawn(&self, handler: Arc<dyn Fn() + Send + Sync>) {
+        *self
+            .transport
+            .on_respawn
             .lock()
             .unwrap_or_else(|e| e.into_inner()) = Some(handler);
     }
@@ -1398,6 +1505,9 @@ impl Plugin for SidecarPlugin {
     ) -> Option<CommandOutcome> {
         if !self.manifest.commands.iter().any(|c| c == name)
             && !self.manifest.subcommands.iter().any(|c| c == name)
+            && !crate::dynamic_commands()
+                .iter()
+                .any(|(p, n, _)| *p == self.manifest.name && name.trim_start_matches('/') == n)
         {
             return None;
         }
@@ -1410,6 +1520,9 @@ impl Plugin for SidecarPlugin {
         command_outcome(&v, &self.transport.argv)
     }
     async fn on_event(&self, e: CoreEvent) {
+        if !self.manifest.claims(e.hook_name()) {
+            return;
+        }
         let session = session_json(&self.pinned_sid(), &self.cwd);
         let params = match &e {
             CoreEvent::PreTool { name, args } => {
@@ -1418,11 +1531,26 @@ impl Plugin for SidecarPlugin {
             CoreEvent::PostTool { name, output } => {
                 json!({"type": "post_tool", "name": name, "content": output.content, "is_error": output.is_error, "session": session})
             }
-            CoreEvent::TurnEnd { usage } => {
-                json!({"type": "turn_end", "usage": usage, "session": session})
+            CoreEvent::TurnEnd { usage, info } => {
+                let mut v = json!({
+                    "type": "turn_end",
+                    "usage": usage,
+                    "session": session,
+                    "session_id": info.session_id,
+                    "interactive": info.interactive,
+                    "focused": info.focused,
+                    "took_ms": info.took_ms,
+                });
+                if let Some(err) = &info.error {
+                    v["error"] = json!(err);
+                }
+                v
             }
             CoreEvent::SessionStart { interactive } => {
                 json!({"type": "session_start", "interactive": interactive, "session": session})
+            }
+            CoreEvent::UserReturn { away_secs } => {
+                json!({"type": "user_return", "away_secs": away_secs, "session": session})
             }
         };
         let name = self.manifest.name.clone();

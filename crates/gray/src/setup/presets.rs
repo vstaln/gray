@@ -5,9 +5,6 @@ use crate::setup::catalog::{
 };
 
 pub(crate) fn preset_catalog() -> anyhow::Result<Catalog> {
-    if !crate::setup::quality_of_life_enabled() {
-        return Ok(Catalog::new());
-    }
     Ok(crate::setup::context::provider_meta().catalog.clone())
 }
 
@@ -19,21 +16,16 @@ pub(crate) fn is_popular_preset(id: &str) -> bool {
 }
 
 pub(crate) fn is_known_preset_base(normalized_base: &str, catalog: &Catalog) -> bool {
-    crate::setup::quality_of_life_enabled()
-        && (crate::setup::context::provider_meta()
-            .popular
-            .iter()
+    crate::setup::context::provider_meta()
+        .popular
+        .iter()
+        .any(|p| normalize_custom_base_url(&p.base_url) == normalized_base)
+        || catalog
+            .values()
             .any(|p| normalize_custom_base_url(&p.base_url) == normalized_base)
-            || catalog
-                .values()
-                .any(|p| normalize_custom_base_url(&p.base_url) == normalized_base))
 }
 
 pub(crate) fn append_connect_presets(items: &mut Vec<ConnectItem>, catalog: &Catalog) {
-    if !crate::setup::quality_of_life_enabled() {
-        return;
-    }
-
     let meta = crate::setup::context::provider_meta();
     let mut popular_ids = std::collections::HashSet::new();
     popular_ids.insert("custom".to_string());
@@ -105,9 +97,6 @@ pub(crate) fn detect_connect_candidates(
     env: impl Fn(&str) -> Option<String>,
 ) -> BTreeMap<String, Detected> {
     let mut found = BTreeMap::new();
-    if !crate::setup::quality_of_life_enabled() {
-        return found;
-    }
     for id in crate::setup::context::provider_meta().env_keys.keys() {
         if let Some((var, value)) = detected_env_key(id, &env) {
             found.insert(

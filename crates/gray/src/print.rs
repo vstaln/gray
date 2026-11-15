@@ -1224,6 +1224,16 @@ async fn run_print_inner(
     for w in crate::take_profile_warnings() {
         eprintln!("warning: {w}");
     }
+    crate::host::set_headless_session(Some(session_id.as_str()));
+    crate::host::set_live_provider(Some(agent.provider_handle()));
+    if !config.bare {
+        for h in agent.hooks() {
+            let h = h.clone();
+            tokio::spawn(async move {
+                h.session_start(false).await;
+            });
+        }
+    }
 
     let history_revision = agent.history_revision();
 

@@ -1,18 +1,5 @@
 use super::*;
 
-pub(crate) fn expand_prompt_template(cmd: ReplCommand, cwd: &Path, local: bool) -> ReplCommand {
-    let ReplCommand::Unknown(raw) = &cmd else {
-        return cmd;
-    };
-    let body = raw.trim().trim_start_matches('/');
-    let (name, rest) = body.split_once(char::is_whitespace).unwrap_or((body, ""));
-    match crate::prompt_templates::find(cwd, name) {
-        Some(_) if local => ReplCommand::Empty,
-        Some(t) => ReplCommand::Prompt(crate::prompt_templates::expand(&t, rest)),
-        None => cmd,
-    }
-}
-
 pub(crate) async fn handle_sys(
     config: &Config,
     cwd: &Path,

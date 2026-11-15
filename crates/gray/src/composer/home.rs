@@ -16,6 +16,28 @@ impl Tui {
         self.home_notice = notice;
     }
 
+    pub(crate) fn set_home_row(&mut self, key: String, text: Option<String>) -> bool {
+        if !self.is_home() {
+            return false;
+        }
+        match (self.home_rows.iter().position(|(k, _)| *k == key), text) {
+            (Some(i), Some(t)) => self.home_rows[i].1 = t,
+            (None, Some(t)) => self.home_rows.push((key, t)),
+            (Some(i), None) => {
+                self.home_rows.remove(i);
+            }
+            (None, None) => {}
+        }
+        self.home_quality_of_life = (!self.home_rows.is_empty()).then(|| {
+            self.home_rows
+                .iter()
+                .map(|(_, t)| t.as_str())
+                .collect::<Vec<_>>()
+                .join("\n")
+        });
+        true
+    }
+
     pub fn set_plugin_stats(&mut self, stats: Option<String>) {
         self.plugin_stats = stats;
     }

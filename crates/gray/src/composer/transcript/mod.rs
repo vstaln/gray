@@ -14,16 +14,13 @@ use super::Tui;
 
 mod boxes;
 mod cards;
-mod links;
+pub(crate) mod linkify;
 mod margins;
 pub(crate) mod rows;
 
 pub(crate) use crate::tui::strip_ansi;
 pub(crate) use boxes::render_markdown_lines;
 pub(crate) use cards::{format_tool_box_lines, format_tool_box_lines_multi};
-pub(crate) use links::{
-    begin_turn as reset_issue_links, flush as flush_issue_links, rewrite as rewrite_issue_links,
-};
 pub(crate) use rows::{
     GUTTER, format_user_prompt_lines, left_pad, prose_width, thinking_paint_text,
     thinking_run_rows, thinking_style, transcript_row_is_blank, word_flush_cut, wrap_styled_line,
@@ -526,8 +523,7 @@ impl Tui {
     }
 
     fn feed_markdown(&mut self, clean: &str) {
-        let cwd = std::path::PathBuf::from(&self.cwd);
-        let linked = links::rewrite(&cwd, clean);
+        let linked = linkify::rewrite(clean);
         let clean = linked.as_str();
         let was_feeding = self.feeding_markdown;
         self.feeding_markdown = true;
@@ -610,7 +606,8 @@ impl Tui {
                 text.to_string(),
                 attached.to_vec(),
             ));
-            t.emit_rows(lines, crate::theme::theme().surface_bg);
+            let links = linkify::plain_links(&lines, 1 << 30);
+            t.emit_rows_with_hyperlinks(lines, links, crate::theme::theme().surface_bg);
             if trailing_gap {
                 t.ensure_gap();
             }

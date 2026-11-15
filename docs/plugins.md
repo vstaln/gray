@@ -89,12 +89,16 @@ A sidecar can call back into the host. Each call needs the matching
 capability, which the user grants at install (`gray plugin capabilities`):
 
 - `host/ask`: a blocking question in the middle of a tool call (below).
-- `host/say`: print a line into the conversation.
+- `host/say`: print a line into the conversation, or a notification
+  (`host/notice`, `host/notify`).
 - `host/run`: run an agent turn as the user, with their model, credentials
-  and budget.
-- `host/sessions`: list running gray sessions (ids and pids).
+  and budget; `host/complete` completes text with their model and
+  `host/inject` puts a message in the conversation.
+- `host/sessions`: list running gray sessions (ids, pids, cwd and title).
 - `host/restart`: restart gray on the binary on disk, resuming the
   conversation.
+- `host/link_rules` (capability `host.links`): turn matching transcript
+  text into links; a rule's URL must start with `http://` or `https://`.
 
 `host/ask` looks like this:
 

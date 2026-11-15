@@ -10,9 +10,19 @@ pub const HOST_ASK: &str = "host.ask";
 
 pub const HOST_SAY: &str = "host.say";
 
+pub const HOST_LINKS: &str = "host.links";
+
 pub const HOST_RESTART: &str = "host.restart";
 
 pub const HOST_SESSIONS: &str = "host.sessions";
+
+pub const SESSION_READ: &str = "session.read";
+
+pub const SESSION_WRITE: &str = "session.write";
+
+pub const COMPOSER_GHOST: &str = "composer.ghost";
+
+pub const PLUGINS_MANAGE: &str = "plugins.manage";
 
 pub const TOOL_OVERRIDE: &str = "tool.override";
 
@@ -25,7 +35,7 @@ pub const SHELL_ENV: &str = "shell.env";
 pub struct CapabilitySpec {
     pub id: &'static str,
 
-    pub host_method: Option<&'static str>,
+    pub host_methods: &'static [&'static str],
 
     pub description: &'static str,
 }
@@ -33,47 +43,72 @@ pub struct CapabilitySpec {
 const SPECS: &[CapabilitySpec] = &[
     CapabilitySpec {
         id: HOST_TURN,
-        host_method: Some("host/run"),
-        description: "run an agent turn as you (your model, your credentials, your budget)",
+        host_methods: &["host/run", "host/complete", "host/inject"],
+        description: "run an agent turn as you (your model, your credentials, your budget), complete text with your model, or inject a message into the conversation",
     },
     CapabilitySpec {
         id: HOST_ASK,
-        host_method: Some("host/ask"),
+        host_methods: &["host/ask"],
         description: "ask you a blocking question in the middle of a tool call",
     },
     CapabilitySpec {
         id: HOST_SAY,
-        host_method: Some("host/say"),
-        description: "print a line into the conversation on its own",
+        host_methods: &["host/say", "host/notice", "host/notify"],
+        description: "print a line into the conversation on its own (host/notice) and send notifications",
+    },
+    CapabilitySpec {
+        id: HOST_LINKS,
+        host_methods: &["host/link_rules"],
+        description: "turn matching transcript text into links",
     },
     CapabilitySpec {
         id: HOST_RESTART,
-        host_method: Some("host/restart"),
+        host_methods: &["host/restart"],
         description: "restart gray on the binary on disk (resuming this conversation)",
     },
     CapabilitySpec {
         id: HOST_SESSIONS,
-        host_method: Some("host/sessions"),
-        description: "see which gray sessions are running (ids and pids)",
+        host_methods: &["host/sessions"],
+        description: "see which gray sessions are running (ids, pids, cwd and title)",
+    },
+    CapabilitySpec {
+        id: SESSION_READ,
+        host_methods: &["host/transcript"],
+        description: "read the text of this conversation",
+    },
+    CapabilitySpec {
+        id: SESSION_WRITE,
+        host_methods: &["host/session_title"],
+        description: "name this session when you haven't",
+    },
+    CapabilitySpec {
+        id: COMPOSER_GHOST,
+        host_methods: &["host/ghost"],
+        description: "suggest text as a ghost in the prompt box",
+    },
+    CapabilitySpec {
+        id: PLUGINS_MANAGE,
+        host_methods: &["host/plugin_install"],
+        description: "install plugins (with the usual trust prompts)",
     },
     CapabilitySpec {
         id: TOOL_OVERRIDE,
-        host_method: None,
+        host_methods: &[],
         description: "replace a built-in tool (an override intercepts everything routed through it)",
     },
     CapabilitySpec {
         id: WIDGET_OVERRIDE,
-        host_method: None,
+        host_methods: &[],
         description: "own the one above-editor widget slot",
     },
     CapabilitySpec {
         id: PROVIDER_CREDENTIALS,
-        host_method: None,
+        host_methods: &[],
         description: "contribute /models providers and receive stored credentials for auth RPCs",
     },
     CapabilitySpec {
         id: SHELL_ENV,
-        host_method: None,
+        host_methods: &[],
         description: "contribute environment variables and PATH prepends to the bash tool's shell",
     },
 ];
@@ -89,7 +124,7 @@ pub fn spec(id: &str) -> Option<&'static CapabilitySpec> {
 pub fn capability_for_host_method(method: &str) -> Option<&'static str> {
     SPECS
         .iter()
-        .find(|s| s.host_method == Some(method))
+        .find(|s| s.host_methods.contains(&method))
         .map(|s| s.id)
 }
 
@@ -125,6 +160,14 @@ pub fn consent_hash(declared: &[String]) -> String {
     for id in sorted {
         hasher.update(id.as_bytes());
         hasher.update(b"\n");
+        if let Some(spec) = spec(id) {
+            for method in spec.host_methods {
+                hasher.update(method.as_bytes());
+                hasher.update(b"\n");
+            }
+            hasher.update(spec.description.as_bytes());
+            hasher.update(b"\n");
+        }
     }
     let digest = hasher.finalize();
 
@@ -162,6 +205,7 @@ mod tests {
             capabilities_hash: hash.map(str::to_string),
             cli_argv: None,
             global: false,
+            removed: false,
             extra: Default::default(),
         }
     }

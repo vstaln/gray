@@ -103,7 +103,7 @@ pub(crate) const REGISTRY: &[CmdDef] = &[
     },
     CmdDef {
         name: "reload",
-        desc: "re-read theme, keybindings and prompt templates",
+        desc: "re-read theme and keybindings",
         aliases: &[],
         scope: CmdScope::Global,
         surface: CmdSurface::Text,
@@ -268,28 +268,6 @@ pub(crate) fn completion_matches_dyn(
             .map(|(a, b)| (a.to_string(), b.to_string()))
             .collect();
         let f = inner.to_lowercase();
-
-        let templates = crate::prompt_templates::discover(cwd);
-        let mut tpl_rows: Vec<(u8, String, String)> = templates
-            .iter()
-            .filter_map(|t| {
-                let n = t.name.to_lowercase();
-                let rank = if n.starts_with(&f) {
-                    0
-                } else if n.contains(&f) || t.description.to_lowercase().contains(&f) {
-                    1
-                } else {
-                    return None;
-                };
-                let desc = match &t.argument_hint {
-                    Some(h) => format!("{} {h}", t.description),
-                    None => t.description.clone(),
-                };
-                Some((rank, t.name.clone(), desc))
-            })
-            .collect();
-        tpl_rows.sort_by_key(|(rank, _, _)| *rank);
-        matches.extend(tpl_rows.into_iter().map(|(_, n, d)| (n, d)));
         let shortcuts = provider_shortcuts();
         matches.extend(
             shortcuts
@@ -361,7 +339,6 @@ fn complete_resume_args(cmd: &str, arg_text: &str) -> Vec<(String, String)> {
         ("--last", "resume most recent session"),
         ("--all", "include other directories"),
         ("all", "every directory"),
-        ("dismiss", "stop flagging interrupted sessions here"),
     ];
     complete_from_table(cmd, arg_text, FLAGS)
 }
@@ -536,8 +513,6 @@ pub struct ResumeArgs {
     pub target: Option<String>,
     pub last: bool,
     pub all: bool,
-
-    pub dismiss: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -554,10 +529,8 @@ pub(crate) fn parse_resume_args(rest: &str) -> ResumeArgs {
     let mut target: Option<String> = None;
     let mut last = false;
     let mut all = false;
-    let mut dismiss = false;
     for tok in tokens {
         match tok {
-            "dismiss" => dismiss = true,
             "all" | "--all" => all = true,
             "--last" => last = true,
             s if s.starts_with("--") => {}
@@ -568,12 +541,7 @@ pub(crate) fn parse_resume_args(rest: &str) -> ResumeArgs {
             }
         }
     }
-    ResumeArgs {
-        target,
-        last,
-        all,
-        dismiss,
-    }
+    ResumeArgs { target, last, all }
 }
 
 pub fn parse_command(line: &str) -> ReplCommand {
@@ -597,7 +565,6 @@ pub fn parse_command(line: &str) -> ReplCommand {
                 target: None,
                 last: false,
                 all: false,
-                dismiss: false,
             }
         } else {
             parse_resume_args(rest)

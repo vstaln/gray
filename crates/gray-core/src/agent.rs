@@ -463,6 +463,49 @@ pub enum CommandOutcome {
     },
 }
 
+pub static TERMINAL_FOCUSED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(true);
+
+pub static INTERACTIVE_SESSION: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct TurnError {
+    pub kind: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resets_at: Option<u64>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct TurnEndInfo {
+    pub session_id: Option<String>,
+    pub interactive: bool,
+    pub focused: bool,
+    pub took_ms: u64,
+    pub error: Option<TurnError>,
+}
+
+impl TurnEndInfo {
+    pub fn error_for(e: &crate::error::CoreError) -> TurnError {
+        match e.class() {
+            crate::error::CoreError::Quota { resets_in, .. } => TurnError {
+                kind: "usage_limit",
+                resets_at: resets_in.map(|d| {
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|now| now.as_secs())
+                        .unwrap_or(0)
+                        + d.as_secs()
+                }),
+            },
+            _ => TurnError {
+                kind: "other",
+                resets_at: None,
+            },
+        }
+    }
+}
+
 #[async_trait]
 pub trait PluginHooks: Send + Sync {
     fn repin_session(&self, _id: &str) {}
@@ -504,7 +547,9 @@ pub trait PluginHooks: Send + Sync {
     }
     async fn pre_tool(&self, _name: &str, _args: &serde_json::Value) {}
     async fn post_tool(&self, _name: &str, _output: &ToolOutput) {}
-    async fn turn_end(&self, _usage: &Usage) {}
+    async fn turn_end(&self, _usage: &Usage, _info: &TurnEndInfo) {}
+
+    async fn user_return(&self, _away_secs: u64) {}
 
     /// The interactive REPL session came up — plugins use it for
     /// first-run/detection notices (the old core QoL hook).
@@ -575,6 +620,8 @@ pub struct Agent {
     pub(crate) steer: Option<SteerHook>,
 
     pub(crate) checkpoint: Option<CheckpointHook>,
+    pub(crate) turn_end_deferred: bool,
+    pub(crate) pending_turn_end: Option<(crate::event::Usage, TurnEndInfo)>,
     pub(crate) tool_output_hook: Option<ToolOutputHook>,
 
     pub(crate) session_id: Option<String>,
@@ -617,6 +664,8 @@ pub struct Agent {
     pub(crate) pending_tools: Option<Vec<ToolDef>>,
 
     pub(crate) last_request_at: Option<std::time::Instant>,
+
+    pub(crate) turn_billed: std::sync::Mutex<Usage>,
 }
 
 /// Below this many prompt tokens a full cache rewrite is cheap enough to
@@ -663,6 +712,8 @@ impl Agent {
             prefix_fp_sink: None,
             steer: None,
             checkpoint: None,
+            turn_end_deferred: false,
+            pending_turn_end: None,
             tool_output_hook: None,
             session_id: None,
             contaminated: std::collections::BTreeSet::new(),
@@ -684,6 +735,7 @@ impl Agent {
             held_summary: None,
             background_failures: 0,
             unbilled: Usage::default(),
+            turn_billed: std::sync::Mutex::new(Usage::default()),
         }
     }
 
@@ -745,6 +797,45 @@ impl Agent {
 
     pub fn set_checkpoint(&mut self, hook: Option<CheckpointHook>) {
         self.checkpoint = hook;
+    }
+
+    pub fn defer_turn_end(&mut self) {
+        self.turn_end_deferred = true;
+    }
+
+    pub(crate) fn stash_turn_end(&mut self, usage: crate::event::Usage, info: TurnEndInfo) {
+        let merged = match self.pending_turn_end.take() {
+            Some((mut pending, _)) => {
+                pending.accumulate(&usage);
+                pending
+            }
+            None => usage,
+        };
+        self.pending_turn_end = Some((merged, info));
+    }
+
+    pub fn record_cancelled_turn_end(&mut self, took_ms: u64) {
+        let usage = *self.turn_billed.lock().unwrap_or_else(|e| e.into_inner());
+        let info = TurnEndInfo {
+            session_id: self.session_id.clone(),
+            interactive: INTERACTIVE_SESSION.load(std::sync::atomic::Ordering::Relaxed),
+            focused: TERMINAL_FOCUSED.load(std::sync::atomic::Ordering::Relaxed),
+            took_ms,
+            error: Some(TurnError {
+                kind: "cancelled",
+                resets_at: None,
+            }),
+        };
+        self.stash_turn_end(usage, info);
+    }
+
+    pub async fn flush_turn_end(&mut self) {
+        let Some((usage, info)) = self.pending_turn_end.take() else {
+            return;
+        };
+        for hook in &self.hooks {
+            hook.turn_end(&usage, &info).await;
+        }
     }
 
     pub fn set_tool_output_hook(&mut self, hook: Option<ToolOutputHook>) {

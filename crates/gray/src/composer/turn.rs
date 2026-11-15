@@ -7,10 +7,12 @@ impl Tui {
 
     pub fn begin_turn(&mut self, label: &str) {
         self.left_home = true;
+        self.home_rows.clear();
+        self.home_quality_of_life = None;
         let now = Instant::now();
 
-        crate::suggest::discard();
-        crate::composer::transcript::reset_issue_links();
+        crate::ghost::discard();
+        crate::composer::transcript::linkify::begin_turn();
 
         self.allow_empty_submit = false;
 
@@ -39,14 +41,14 @@ impl Tui {
         let _ = self.draw();
     }
 
-    pub fn accept_suggestion(&mut self) -> bool {
+    pub fn accept_ghost(&mut self) -> bool {
         if self.is_task_running
-            || !crate::settings::prompt_suggestions()
+            || self.allow_empty_submit
             || !self.textarea.text().trim().is_empty()
         {
             return false;
         }
-        let Some(text) = crate::suggest::take() else {
+        let Some(text) = crate::ghost::take() else {
             return false;
         };
         self.textarea.insert_str(&text);

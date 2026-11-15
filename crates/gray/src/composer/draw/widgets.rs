@@ -423,10 +423,12 @@ fn home_rows(home: HomeRows, w: usize) -> Vec<Line<'static>> {
         if rows.is_empty() {
             rows.push(Line::default());
         }
-        rows.push(Line::from(Span::styled(
-            quality_of_life.to_string(),
-            Style::default().fg(t.text_muted),
-        )));
+        for row in quality_of_life.lines() {
+            rows.push(Line::from(Span::styled(
+                row.to_string(),
+                Style::default().fg(t.text_muted),
+            )));
+        }
     }
     rows
 }
