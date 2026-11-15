@@ -700,10 +700,7 @@ impl Transport {
 
     async fn send_notification(&self, method: &str, params: Value) -> bool {
         let req = json!({"method": method, "params": params});
-        if !self
-            .ensure_alive(method != "plugin/shutdown")
-            .await
-        {
+        if !self.ensure_alive(method != "plugin/shutdown").await {
             return false;
         }
 
