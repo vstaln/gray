@@ -38,9 +38,14 @@ pub fn clean_provider_detail(detail: &str) -> String {
         .get("message")
         .and_then(|v| v.as_str())
         .or_else(|| err_obj.as_str())
-        .or_else(|| err_obj.get("code").and_then(|v| v.as_str()))
-        .unwrap_or("Provider returned an error without a readable message.")
-        .trim();
+        .or_else(|| err_obj.get("code").and_then(|v| v.as_str()));
+    let message = match message {
+        Some(m) => m.trim(),
+        None if parsed.get("error").is_some() => {
+            "Provider returned an error without a readable message."
+        }
+        None => return detail.to_string(),
+    };
     let typ = err_obj.get("type").and_then(|v| v.as_str()).unwrap_or("");
     let code = err_obj
         .get("code")

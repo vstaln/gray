@@ -84,6 +84,8 @@ fn active_model() -> Option<Value> {
 
 const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 
+const UPGRADE_GRACE: Duration = Duration::from_secs(2);
+
 enum FrameWrite {
     Ok,
     Failed(String),
@@ -147,6 +149,28 @@ struct Transport {
     grants: Arc<std::sync::Mutex<BTreeSet<String>>>,
 
     respawn: std::sync::Mutex<RespawnState>,
+
+    spawned_mtime: std::sync::Mutex<Option<std::time::SystemTime>>,
+}
+
+fn program_mtime(argv: &[String]) -> Option<std::time::SystemTime> {
+    std::fs::metadata(argv.first()?).ok()?.modified().ok()
+}
+
+fn binary_replaced(child: &Child, argv: &[String], spawned: Option<std::time::SystemTime>) -> bool {
+    #[cfg(target_os = "linux")]
+    if let Some(pid) = child.id()
+        && let Ok(exe) = std::fs::read_link(format!("/proc/{pid}/exe"))
+        && exe.to_string_lossy().ends_with(" (deleted)")
+    {
+        return true;
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = child;
+    match (spawned, program_mtime(argv)) {
+        (Some(then), Some(now)) => now != then,
+        _ => false,
+    }
 }
 
 #[derive(Default)]
@@ -526,19 +550,39 @@ impl Transport {
             stdin,
             pending,
             next_id: AtomicU64::new(1),
-            argv,
             host_handler,
             notify,
             host_slots,
             grants,
             respawn: std::sync::Mutex::new(RespawnState::default()),
+            spawned_mtime: std::sync::Mutex::new(program_mtime(&argv)),
+            argv,
         })
     }
 
-    async fn ensure_alive(&self) -> bool {
+    async fn ensure_alive(&self, allow_upgrade: bool) -> bool {
         let mut child = self.child.lock().await;
+        let mut pending = self.pending.lock().await;
+        let mut upgraded = false;
+        if matches!(child.try_wait(), Ok(None)) {
+            let spawned = *self.spawned_mtime.lock().unwrap_or_else(|e| e.into_inner());
+            if !allow_upgrade
+                || !pending.map.is_empty()
+                || !binary_replaced(&child, &self.argv, spawned)
+            {
+                return true;
+            }
+            log::info!(target: "gray_plugin", "sidecar {} updated on disk, restarting it", Self::name_of(&self.argv));
+            let bye = json!({"method": "plugin/shutdown", "params": {"reason": "upgrade"}});
+            let _ = try_write_frame(&self.stdin, &format!("{bye}\n")).await;
+            if timeout(UPGRADE_GRACE, child.wait()).await.is_err() {
+                let _ = child.kill().await;
+            }
+            upgraded = true;
+        }
         let (status, exit, wait_err) = match child.try_wait() {
             Ok(None) => return true,
+            Ok(Some(_)) if upgraded => ("upgraded".to_string(), SidecarExit::Interrupted, None),
             Ok(Some(s)) => (short_exit_status(&s), SidecarExit::of(&s), None),
             Err(e) => (
                 "unknown".to_string(),
@@ -572,9 +616,8 @@ impl Transport {
             Ok((new_child, stdin, stdout)) => {
                 *child = new_child;
                 *self.stdin.lock().await = stdin;
-                let mut p = self.pending.lock().await;
-                p.epoch += 1;
-                p.map.clear();
+                pending.epoch += 1;
+                pending.map.clear();
                 spawn_reader(
                     stdout,
                     self.stdin.clone(),
@@ -584,9 +627,11 @@ impl Transport {
                     self.host_slots.clone(),
                     self.grants.clone(),
                     Self::name_of(&self.argv),
-                    p.epoch,
+                    pending.epoch,
                 );
                 *self.respawn.lock().unwrap_or_else(|e| e.into_inner()) = RespawnState::default();
+                *self.spawned_mtime.lock().unwrap_or_else(|e| e.into_inner()) =
+                    program_mtime(&self.argv);
                 if exit == SidecarExit::Crashed {
                     self.say(&name, &status, true, wait_err).await;
                 }
@@ -657,7 +702,7 @@ impl Transport {
 
     async fn send_notification(&self, method: &str, params: Value) -> bool {
         let req = json!({"method": method, "params": params});
-        if !self.ensure_alive().await {
+        if !self.ensure_alive(method != "plugin/shutdown").await {
             return false;
         }
 
@@ -709,15 +754,12 @@ impl Transport {
             return Err(error);
         }
 
+        if !self.ensure_alive(true).await {
+            anyhow::bail!("sidecar child dead and respawn failed");
+        }
         let outcome = timeout(ttl, async {
-            if !self.ensure_alive().await {
-                anyhow::bail!("sidecar child dead and respawn failed");
-            }
-            {
-                let pending = self.pending.lock().await;
-                if pending.map.len() >= MAX_PENDING {
-                    anyhow::bail!("sidecar overloaded: too many in-flight requests");
-                }
+            if self.pending.lock().await.map.len() >= MAX_PENDING {
+                anyhow::bail!("sidecar overloaded: too many in-flight requests");
             }
             let (tx, rx) = oneshot::channel();
             self.pending.lock().await.map.insert(id, tx);
