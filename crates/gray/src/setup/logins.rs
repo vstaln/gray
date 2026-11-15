@@ -95,8 +95,12 @@ pub(crate) struct UsageEntry {
     error: Option<String>,
 }
 
-fn fetch_usage(argv: &[String]) -> Result<Vec<UsageEntry>, String> {
-    let doc = run_json(argv, &["account", "usage", "--json"], USAGE_TIMEOUT)?;
+fn fetch_usage(argv: &[String], fresh: bool) -> Result<Vec<UsageEntry>, String> {
+    let mut args = vec!["account", "usage", "--json"];
+    if fresh {
+        args.push("--fresh");
+    }
+    let doc = run_json(argv, &args, USAGE_TIMEOUT)?;
     if let Some(provider) = doc["provider"].as_str().or_else(|| doc["plugin"].as_str()) {
         crate::usage_cache::record_usage(provider, &doc["accounts"]);
     }
@@ -579,7 +583,7 @@ impl Logins {
             let ok = list.is_ok();
             let _ = tx.send((plugin.clone(), generation, Msg::List(list)));
             if ok {
-                let _ = tx.send((plugin, generation, Msg::Usage(fetch_usage(&argv))));
+                let _ = tx.send((plugin, generation, Msg::Usage(fetch_usage(&argv, true))));
             }
         });
     }
