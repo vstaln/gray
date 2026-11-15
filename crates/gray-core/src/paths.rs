@@ -38,6 +38,33 @@ pub fn gray_home() -> Option<PathBuf> {
 
 /// `gray_home`, or `$TMP/.gray` when no home resolves — for callers that
 /// must keep working without one. Always absolute: never the cwd.
+/// Publish the home Gray resolved, so the processes it spawns agree with it.
+///
+/// Plugins read `$GRAY_HOME`, and most fall back to `$HOME` — which does not
+/// exist on Windows at all (only `USERPROFILE` does). A plugin that resolves
+/// neither dies with `cannot resolve Gray home` and exits 1, which the host can
+/// only render as a bare exit code: that is exactly how a widget slot turns
+/// into `subagents widget unavailable (plugin exited exit code: 1)` on a
+/// Windows install started from Explorer or a terminal. A no-op when the user
+/// already set it.
+pub fn export_gray_home() {
+    let Some(home) = publish_home(std::env::var_os("GRAY_HOME"), gray_home()) else {
+        return;
+    };
+    // Edition 2024 makes environment mutation unsafe: another thread could be
+    // reading it. This runs before anything is spawned or started.
+    unsafe { std::env::set_var("GRAY_HOME", home) };
+}
+
+/// The home worth publishing, or `None` when the caller already named one.
+fn publish_home(current: Option<std::ffi::OsString>, resolved: Option<PathBuf>) -> Option<PathBuf> {
+    let already_set = current.is_some_and(|value| !value.to_string_lossy().trim().is_empty());
+    if already_set {
+        return None;
+    }
+    resolved
+}
+
 pub fn gray_home_or_temp() -> PathBuf {
     gray_home().unwrap_or_else(|| std::env::temp_dir().join(".gray"))
 }
@@ -109,5 +136,43 @@ fn media_extension(media_type: &str) -> &'static str {
         "video/webm" => "webm",
         "video/quicktime" => "mov",
         _ => "bin",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::publish_home;
+    use std::path::PathBuf;
+
+    #[test]
+    fn a_named_home_is_left_alone() {
+        assert_eq!(
+            publish_home(
+                Some(PathBuf::from(r"D:\scratch\.gray").into_os_string()),
+                Some(PathBuf::from(r"C:\Users\me\.gray"))
+            ),
+            None,
+            "an explicit GRAY_HOME is the user's, not ours to overwrite"
+        );
+    }
+
+    #[test]
+    fn an_empty_home_is_replaced_by_the_resolved_one() {
+        assert_eq!(
+            publish_home(
+                Some("   ".into()),
+                Some(PathBuf::from(r"C:\Users\me\.gray"))
+            ),
+            Some(PathBuf::from(r"C:\Users\me\.gray"))
+        );
+        assert_eq!(
+            publish_home(None, Some(PathBuf::from("/home/me/.gray"))),
+            Some(PathBuf::from("/home/me/.gray"))
+        );
+    }
+
+    #[test]
+    fn an_unresolvable_home_publishes_nothing() {
+        assert_eq!(publish_home(None, None), None);
     }
 }
