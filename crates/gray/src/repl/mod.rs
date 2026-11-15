@@ -851,10 +851,10 @@ pub async fn run_repl_mode(
             let _ = t.draw();
             log::debug!(target: "gray_timing", "repl first_draw elapsed_ms={}", crate::turn_caps::process_start().elapsed().as_millis());
 
-            let tool_defs = if config.bare {
-                Vec::new()
+            let (tool_defs, tool_defs_error) = if config.bare {
+                (Vec::new(), None)
             } else {
-                tokio::time::timeout(
+                match tokio::time::timeout(
                     std::time::Duration::from_millis(500),
                     crate::plugin_status::booted_tool_defs(
                         Some(crate::host::default_handler(cwd.to_path_buf())),
@@ -862,9 +862,20 @@ pub async fn run_repl_mode(
                     ),
                 )
                 .await
-                .ok()
-                .flatten()
-                .unwrap_or_default()
+                {
+                    Ok(Ok(defs)) => (defs, None),
+                    Ok(Err(e)) => (Vec::new(), Some(format!("tool details unavailable: {e}"))),
+                    Err(_) => {
+                        log::warn!(
+                            target: "gray_plugin",
+                            "tool defs unavailable: plugin boot still running after 500ms, replaying without tool labels"
+                        );
+                        (
+                            Vec::new(),
+                            Some("tool details unavailable: plugins still starting".to_string()),
+                        )
+                    }
+                }
             };
             let (tool_labels, tool_previews) = session::tool_display_maps(&tool_defs);
             let replay_started = std::time::Instant::now();
@@ -883,6 +894,10 @@ pub async fn run_repl_mode(
                     n_entries
                 )],
             );
+            if let Some(error) = tool_defs_error {
+                t.push_dim(error);
+                t.ensure_gap();
+            }
             log::debug!(target: "gray_timing", "repl history_replay elapsed_ms={} entries={}", replay_started.elapsed().as_millis(), n_entries);
         }
         let shared = std::sync::Arc::new(std::sync::Mutex::new(t));
