@@ -137,6 +137,7 @@ fn record_install(
             enabled,
             cli_argv,
             global: lock.plugins.get(name).is_some_and(|e| e.global),
+            removed: false,
             granted_capabilities: prior.granted_capabilities,
             capabilities_hash: prior.capabilities_hash,
             runtime_role: prior.runtime_role,
@@ -605,6 +606,14 @@ pub const RENAMED: &[(&str, &str)] = &[
     ("devin-sub", "devin"),
     ("zai-sub", "zai"),
 ];
+
+pub fn canonical_name(name: &str) -> &str {
+    RENAMED
+        .iter()
+        .find(|(old, _)| *old == name)
+        .map(|(_, new)| *new)
+        .unwrap_or(name)
+}
 
 async fn update_inner(target: &str, check: bool) -> anyhow::Result<Vec<UpdateRow>> {
     let lock = read_lock()?;

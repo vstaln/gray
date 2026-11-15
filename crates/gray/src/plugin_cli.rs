@@ -318,6 +318,12 @@ async fn install_spec_gated(
     Ok(lines)
 }
 
+pub(crate) async fn install_spec_default(home: &Path, spec: &str) -> anyhow::Result<()> {
+    install_spec_gated(home, spec, false, TrustGate::Lines)
+        .await
+        .map(|_| ())
+}
+
 pub(crate) async fn install_spec_consent(home: &Path, spec: &str) -> anyhow::Result<Vec<String>> {
     install_spec_gated(home, spec, false, TrustGate::Consent).await
 }
@@ -776,6 +782,10 @@ pub fn remove_managed(name: &str) -> anyhow::Result<()> {
         }
     }
     anyhow::ensure!(removed, "not installed: {name}");
+    let lock_file = gray_plugin::lock::lock_path(&home);
+    let mut lock = load_lock(&home)?;
+    lock.tombstone(name);
+    lock.save(&lock_file)?;
     let _ = std::fs::remove_file(home.join("plugins").join(format!("{name}-manifest.json")));
     let widgets = home.join("plugins/widgets.json");
     if let Ok(raw) = std::fs::read(&widgets)
@@ -1359,6 +1369,7 @@ async fn register_native_gated(
             scope: "user".into(),
             enabled: true,
             global: lock.plugins.get(&name).is_some_and(|e| e.global),
+            removed: false,
             granted_capabilities: granted.clone(),
             capabilities_hash,
             extra: lock

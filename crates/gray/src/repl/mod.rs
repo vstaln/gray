@@ -627,6 +627,7 @@ pub async fn run_repl_mode(
         tokio::spawn(crate::setup::fetch_models_dev_context());
         tokio::spawn(crate::setup::fetch_provider_metadata());
         tokio::spawn(crate::setup::fetch_recommended_models());
+        crate::default_plugins::spawn_ensure_installed();
         if crate::setup::get_user_context_window().is_none() {
             tokio::spawn(crate::setup::fetch_litellm_context_windows());
             tokio::spawn(crate::setup::fetch_openrouter_rates());
