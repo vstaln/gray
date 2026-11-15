@@ -286,7 +286,18 @@ fn provider_detail_text(d: &ProviderDetail) -> String {
     out
 }
 
-fn error_detail_text(e: &CoreError) -> Option<String> {
+pub(crate) fn short_core_error(e: &CoreError) -> String {
+    let text = error_detail_text(e).unwrap_or_else(|| e.to_string());
+    let one = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let cut: String = one.chars().take(160).collect();
+    if one.chars().count() > 160 {
+        format!("{cut}\u{2026}")
+    } else {
+        cut
+    }
+}
+
+pub(crate) fn error_detail_text(e: &CoreError) -> Option<String> {
     match e {
         CoreError::Detailed { detail, .. } => Some(provider_detail_text(detail)),
         CoreError::Connection(s)

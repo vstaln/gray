@@ -936,6 +936,13 @@ fn quota_resume_wait(error: &anyhow::Error) -> Option<Duration> {
     }
 }
 
+fn is_cancelled(error: &anyhow::Error) -> bool {
+    error.chain().any(|e| {
+        e.downcast_ref::<gray_core::error::CoreError>()
+            .is_some_and(|e| matches!(e.class(), gray_core::error::CoreError::Cancelled))
+    })
+}
+
 fn observe_quota(provider: &str, error: &anyhow::Error) {
     let Some(core) = error.downcast_ref::<gray_core::error::CoreError>() else {
         return;
@@ -1479,7 +1486,7 @@ async fn run_print_inner(
         match (&run_result, &persist_result) {
             (_, Err(p)) => Err(anyhow::anyhow!("{p:#}")),
             (Ok(_), Ok(_)) => Ok(()),
-            (Err(r), Ok(_)) if r.to_string().to_lowercase().contains("cancel") => Ok(()),
+            (Err(r), Ok(_)) if is_cancelled(r) => Ok(()),
             (Err(_), Ok(_)) => run_result.map(|_| ()),
         }
     } else if let Some(e) = render_err {

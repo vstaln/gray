@@ -167,7 +167,9 @@ impl Agent {
         let before = self.estimate_tokens();
         if let Some(mut held) = self.held_summary.take() {
             if let Some(reason) = held.discard_reason(self) {
-                self.background_failures = self.background_failures.saturating_add(1);
+                if reason != "digest" && reason != "system" && reason != "model" {
+                    self.background_failures = self.background_failures.saturating_add(1);
+                }
                 log::info!(target: "gray_agent", "background compaction: discarded reason={reason}");
             } else {
                 let result = (&mut held.task).await;
@@ -201,9 +203,23 @@ impl Agent {
                         self.background_failures = self.background_failures.saturating_add(1);
                         log::info!(target: "gray_agent", "background compaction: discarded reason=empty");
                     }
-                    Ok(Err(_)) | Err(_) => {
+                    Ok(Err(e)) => {
                         self.background_failures = self.background_failures.saturating_add(1);
-                        log::info!(target: "gray_agent", "background compaction: discarded reason=error");
+                        log::warn!(
+                            target: "gray_agent",
+                            "background compaction: failed ({}/{}): {e}",
+                            self.background_failures,
+                            crate::background_compact::MAX_BACKGROUND_FAILURES
+                        );
+                    }
+                    Err(e) => {
+                        self.background_failures = self.background_failures.saturating_add(1);
+                        log::warn!(
+                            target: "gray_agent",
+                            "background compaction: task failed ({}/{}): {e}",
+                            self.background_failures,
+                            crate::background_compact::MAX_BACKGROUND_FAILURES
+                        );
                     }
                 }
             }

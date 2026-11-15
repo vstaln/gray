@@ -14,6 +14,36 @@ use std::sync::Mutex as StdMutex;
 pub(crate) static TURN_STATE: StdMutex<Option<tokio_util::sync::CancellationToken>> =
     StdMutex::new(None);
 
+pub(crate) struct TurnCancel {
+    token: tokio_util::sync::CancellationToken,
+    armed: bool,
+}
+
+impl TurnCancel {
+    pub(crate) fn arm() -> Self {
+        let mut slot = TURN_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        let token = slot.get_or_insert_with(Default::default).clone();
+        Self { token, armed: true }
+    }
+
+    pub(crate) fn token(&self) -> tokio_util::sync::CancellationToken {
+        self.token.clone()
+    }
+
+    pub(crate) fn release(mut self) {
+        self.armed = false;
+        TURN_STATE.lock().unwrap_or_else(|e| e.into_inner()).take();
+    }
+}
+
+impl Drop for TurnCancel {
+    fn drop(&mut self) {
+        if self.armed {
+            TURN_STATE.lock().unwrap_or_else(|e| e.into_inner()).take();
+        }
+    }
+}
+
 pub(crate) static TURN_IN_FLIGHT: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
@@ -806,10 +836,10 @@ pub async fn run_repl_mode(
             let _ = t.draw();
             log::debug!(target: "gray_timing", "repl first_draw elapsed_ms={}", crate::turn_caps::process_start().elapsed().as_millis());
 
-            let tool_defs = if config.bare {
-                Vec::new()
+            let (tool_defs, tool_defs_error) = if config.bare {
+                (Vec::new(), None)
             } else {
-                tokio::time::timeout(
+                match tokio::time::timeout(
                     std::time::Duration::from_millis(500),
                     crate::plugin_status::booted_tool_defs(
                         Some(crate::host::default_handler(cwd.to_path_buf())),
@@ -817,9 +847,17 @@ pub async fn run_repl_mode(
                     ),
                 )
                 .await
-                .ok()
-                .flatten()
-                .unwrap_or_default()
+                {
+                    Ok(Ok(defs)) => (defs, None),
+                    Ok(Err(e)) => (Vec::new(), Some(format!("tool details unavailable: {e}"))),
+                    Err(_) => {
+                        log::warn!(
+                            target: "gray_plugin",
+                            "tool defs unavailable: plugin boot still running after 500ms, replaying without tool labels"
+                        );
+                        (Vec::new(), None)
+                    }
+                }
             };
             let (tool_labels, tool_previews) = session::tool_display_maps(&tool_defs);
             let replay_started = std::time::Instant::now();
@@ -838,6 +876,10 @@ pub async fn run_repl_mode(
                     n_entries
                 )],
             );
+            if let Some(error) = tool_defs_error {
+                t.push_dim(error);
+                t.ensure_gap();
+            }
             log::debug!(target: "gray_timing", "repl history_replay elapsed_ms={} entries={}", replay_started.elapsed().as_millis(), n_entries);
         }
         let shared = std::sync::Arc::new(std::sync::Mutex::new(t));
@@ -1031,6 +1073,7 @@ pub async fn run_repl_mode(
     let mut bg_wake: Option<tokio::task::JoinHandle<()>> = None;
     let mut ttl_wake: Option<tokio::task::JoinHandle<()>> = None;
     let mut expiry_compact_tried = false;
+    let mut expiry_compact_attempts: u8 = 0;
 
     if interactive {
         jobs::spawn_footer_poller();
@@ -1176,11 +1219,21 @@ pub async fn run_repl_mode(
             // before TTL. Self-limiting — post-compact the estimate drops
             // under budget so it can't loop every TTL cycle.
             const EXPIRY_LEAD: std::time::Duration = std::time::Duration::from_secs(20);
+            const EXPIRY_RETRY: std::time::Duration = std::time::Duration::from_secs(8);
+            const EXPIRY_ATTEMPTS: u8 = 2;
             if let Some(agent) = agent.as_mut() {
                 let remaining = tui
                     .as_ref()
                     .and_then(|(s, _)| s.lock().ok().and_then(|t| t.cache_remaining()));
                 match remaining {
+                    Some(r) if r > EXPIRY_LEAD => {
+                        expiry_compact_tried = false;
+                        expiry_compact_attempts = 0;
+                        ttl_wake = Some(tokio::spawn(async move {
+                            tokio::time::sleep(r - EXPIRY_LEAD).await;
+                            crate::host::request_wake();
+                        }));
+                    }
                     Some(r) if r <= EXPIRY_LEAD && !expiry_compact_tried => {
                         expiry_compact_tried = true;
                         if let Some(keep) = crate::compact::expiry_keep_for(agent) {
@@ -1249,12 +1302,28 @@ pub async fn run_repl_mode(
                                         t.rearm_cache();
                                     }
                                     expiry_compact_tried = false;
+                                    expiry_compact_attempts = 0;
                                 }
                                 Some(Ok(None)) => {}
-                                Some(Err(e)) => log::warn!(
-                                    target: "gray_agent",
-                                    "idle compaction failed: {e}"
-                                ),
+                                Some(Err(e)) => {
+                                    log::warn!(target: "gray_agent", "idle compaction failed: {e}");
+                                    expiry_compact_attempts =
+                                        expiry_compact_attempts.saturating_add(1);
+                                    if expiry_compact_attempts < EXPIRY_ATTEMPTS {
+                                        expiry_compact_tried = false;
+                                        ttl_wake = Some(tokio::spawn(async move {
+                                            tokio::time::sleep(EXPIRY_RETRY).await;
+                                            crate::host::request_wake();
+                                        }));
+                                    } else if let Some((shared, _)) = tui.as_ref() {
+                                        let mut t = shared.lock().expect("tui lock");
+                                        t.push_dim(format!(
+                                            "\u{25a0} compaction before cache expiry failed: {}",
+                                            format::short_core_error(&e)
+                                        ));
+                                        t.ensure_gap();
+                                    }
+                                }
                             }
                             prompt_turn::drain_queued_input(
                                 &tui,
@@ -1266,13 +1335,6 @@ pub async fn run_repl_mode(
                                 continue;
                             }
                         }
-                    }
-                    Some(r) if r > EXPIRY_LEAD => {
-                        expiry_compact_tried = false;
-                        ttl_wake = Some(tokio::spawn(async move {
-                            tokio::time::sleep(r - EXPIRY_LEAD).await;
-                            crate::host::request_wake();
-                        }));
                     }
                     _ => {}
                 }

@@ -70,9 +70,17 @@ pub(crate) fn drop_boot() {
 pub(crate) async fn booted_tool_defs(
     handler: Option<gray_plugin::HostHandler>,
     extra: Vec<Arc<dyn Plugin>>,
-) -> Option<Vec<gray_core::message::ToolDef>> {
-    let boot = ensure_boot(handler)?;
-    let mut plugins = boot.await.ok()?;
+) -> Result<Vec<gray_core::message::ToolDef>, String> {
+    let Some(boot) = ensure_boot(handler) else {
+        return Err("plugin registry unavailable".to_string());
+    };
+    let mut plugins = match boot.await {
+        Ok(plugins) => plugins,
+        Err(e) => {
+            log::warn!(target: "gray_plugin", "tool defs unavailable: plugin boot failed: {e}");
+            return Err(e);
+        }
+    };
     for p in extra {
         let name = p.manifest().name.clone();
         if let Some(pos) = plugins.iter().position(|e| e.manifest().name == name) {
@@ -81,7 +89,7 @@ pub(crate) async fn booted_tool_defs(
         plugins.push(p);
     }
     let (registry, _) = gray_plugin::builder::from_plugins(&plugins);
-    Some(registry.defs())
+    Ok(registry.defs())
 }
 
 fn recent_updated() -> Option<u64> {

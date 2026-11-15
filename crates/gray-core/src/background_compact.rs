@@ -47,11 +47,13 @@ impl HeldSummary {
     }
 }
 
+pub(crate) const MAX_BACKGROUND_FAILURES: u8 = 3;
+
 impl Agent {
     pub(crate) fn maybe_start_background_compaction(&mut self) {
         if !self.background_compaction
             || self.held_summary.is_some()
-            || self.background_failures >= 2
+            || self.background_failures >= MAX_BACKGROUND_FAILURES
         {
             return;
         }
