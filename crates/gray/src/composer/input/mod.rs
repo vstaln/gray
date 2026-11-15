@@ -581,7 +581,6 @@ fn needs_cold_confirm(tui: &mut Tui, text: &str) -> bool {
     }
     let Some(resend) = tui.cold_resend_to_confirm() else {
         tui.cold_confirm_armed = None;
-        cold_hint(tui);
         return false;
     };
     if tui.cold_confirm_armed.as_deref() == Some(text) {
@@ -595,22 +594,6 @@ fn needs_cold_confirm(tui: &mut Tui, text: &str) -> bool {
     }
     let _ = tui.draw();
     true
-}
-
-const COLD_HINT_TOKENS: usize = 40_000;
-
-fn cold_hint(tui: &mut Tui) {
-    let hint = tui.cache_is_cold() && tui.context_tokens() >= COLD_HINT_TOKENS;
-    if !hint {
-        tui.cold_hint_shown = false;
-        return;
-    }
-    if tui.cold_hint_shown {
-        return;
-    }
-    tui.cold_hint_shown = true;
-    tui.push_dim("cache is cold · /continue starts a fresh chat from here".to_string());
-    let _ = tui.draw();
 }
 
 fn echo_submit(tui: &mut Tui, text: &str, attached: &[PathBuf]) {

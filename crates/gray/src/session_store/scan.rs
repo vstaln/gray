@@ -15,9 +15,9 @@ pub(super) enum SessionFileRead {
 }
 
 const SYNTHETIC_USER_PREFIXES: &[&str] = &[
-    "[Context update]",
+    crate::composer::transcript::CONTEXT_UPDATE_MARKER,
     "<system-reminder>",
-    "Subagent finished",
+    crate::composer::transcript::SUBAGENT_DONE_MARKER,
     "[Harness note]",
     "The conversation history before this point was compacted",
 ];

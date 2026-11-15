@@ -1,8 +1,9 @@
 use super::*;
-use crate::session_store::{SessionEntry, real_user_text};
+use crate::session_store::real_user_text;
 use gray_core::message::Role;
 
 const REQUEST_CHARS: usize = 400;
+const COLD_HINT_TOKENS: usize = 40_000;
 const REPLY_CHARS: usize = 1_200;
 const TITLE_CHARS: usize = 60;
 
@@ -32,16 +33,28 @@ pub(crate) async fn start(
 
     let has_messages = agent.as_ref().is_some_and(|a| !a.messages().is_empty());
     if has_messages {
-        let cold = tui.is_some_and(|s| s.lock().expect("tui lock").cache_is_cold());
+        let cold = tui.is_some_and(|s| {
+            let mut t = s.lock().expect("tui lock");
+            t.cache_is_cold() && t.context_tokens() >= COLD_HINT_TOKENS
+        });
         if cold {
             super::session::ensure_session_state(session_state, config, cwd).await;
             let current = session_state.as_ref().map(|s| s.session_id.clone());
-            if let Some(id) = current
-                && let Some(text) = build(&store, &id).await
-            {
+            let text = match current {
+                Some(id) => build(&store, &id).await,
+                None => None,
+            };
+            if let Some(text) = text {
                 *pending_command = Some(ReplCommand::New(Some(with_extra(text, extra))));
                 return;
             }
+            let text = extra.unwrap_or_else(|| CONTINUE_PROMPT.to_string());
+            if !confirm_in_place(tui, &text) {
+                return;
+            }
+            echo_prompt(tui, &text);
+            *pending_command = Some(ReplCommand::Prompt(text));
+            return;
         }
         let text = extra.unwrap_or_else(|| CONTINUE_PROMPT.to_string());
         echo_prompt(tui, &text);
@@ -84,23 +97,21 @@ async fn split_source(
         None => (rest, ""),
     };
     let tail = (!tail.is_empty()).then(|| tail.to_string());
-    if let Some(id) = crate::resume::resolve_prefix(store, token, true).await {
-        return (Some(id), tail);
-    }
-    let exact = SessionId::new(token);
+    let exact = SessionId::new(token.to_lowercase());
     if store.load(&exact).await.is_ok() {
         return (Some(exact), tail);
+    }
+    if token.chars().count() >= 8
+        && token.contains('-')
+        && let Some(id) = crate::resume::resolve_prefix(store, token, true).await
+    {
+        return (Some(id), tail);
     }
     (None, Some(rest.to_string()))
 }
 
 pub(crate) async fn build(store: &JsonlSessionStore, id: &SessionId) -> Option<String> {
     let (_, entries) = store.load(id).await.ok()?;
-    let entries = if entries.is_empty() {
-        raw_entries(store, id).unwrap_or_default()
-    } else {
-        entries
-    };
     let start = match entries.iter().rposition(|e| e.compaction_boundary) {
         Some(i) if i + 1 < entries.len() => i + 1,
         _ => 0,
@@ -141,17 +152,6 @@ pub(crate) async fn build(store: &JsonlSessionStore, id: &SessionId) -> Option<S
         quoted_something = true;
     }
     quoted_something.then_some(out)
-}
-
-fn raw_entries(store: &JsonlSessionStore, id: &SessionId) -> Option<Vec<SessionEntry>> {
-    let text =
-        std::fs::read_to_string(store.root_dir().join(format!("{}.jsonl", id.as_str()))).ok()?;
-    Some(
-        text.lines()
-            .skip(1)
-            .filter_map(|l| serde_json::from_str(l).ok())
-            .collect(),
-    )
 }
 
 fn short_title(text: &str) -> String {
@@ -201,6 +201,25 @@ fn quoted(body: &str, leading_ellipsis: bool, trailing_ellipsis: bool) -> String
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+fn confirm_in_place(tui: Option<&crate::composer::SharedTui>, text: &str) -> bool {
+    let Some(shared) = tui else {
+        return true;
+    };
+    let mut t = shared.lock().expect("tui lock");
+    if t.cold_confirm_armed.as_deref() == Some(text) {
+        t.cold_confirm_armed = None;
+        let _ = t.draw();
+        return true;
+    }
+    t.cold_confirm_armed = Some(text.to_string());
+    t.push_dim(
+        "cache is cold and this chat has no earlier turns to summarise · /continue again to send it here"
+            .to_string(),
+    );
+    let _ = t.draw();
+    false
 }
 
 fn with_extra(text: String, extra: Option<String>) -> String {
