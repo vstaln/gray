@@ -32,6 +32,7 @@ impl Tui {
 
         self.cache.reset();
         self.cache_stats.reset();
+        self.cold_hint_shown = false;
     }
 
     pub fn note_cache_request(
@@ -85,10 +86,12 @@ impl Tui {
 
     pub fn reset_cache(&mut self) {
         self.cache.reset();
+        self.cold_hint_shown = false;
     }
 
     pub(crate) fn resume_cache(&mut self) {
         self.cache.resume(Instant::now());
+        self.cold_hint_shown = false;
     }
 
     pub(crate) fn note_cache_reconnect(&mut self) {
@@ -97,6 +100,11 @@ impl Tui {
 
     pub(crate) fn rearm_cache(&mut self) {
         self.cache.rearm(Instant::now());
+        self.cold_hint_shown = false;
+    }
+
+    pub(crate) fn context_tokens(&self) -> usize {
+        super::live_context_total(self.latest_usage.or(self.cumulative_usage), 0)
     }
 
     pub(crate) fn set_turn_stream_ms(&mut self, ms: u64) {
