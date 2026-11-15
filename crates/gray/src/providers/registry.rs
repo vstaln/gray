@@ -167,7 +167,9 @@ impl ProviderRegistry {
             .map(|tail| format!("plugin:{alt}:{tail}"));
         all.into_iter().find(|installed| {
             installed.provider_id() == alt_pid
-                && alt_auth.as_deref().is_none_or(|a| installed.auth_ref() == a)
+                && alt_auth
+                    .as_deref()
+                    .is_none_or(|a| installed.auth_ref() == a)
         })
     }
 }
