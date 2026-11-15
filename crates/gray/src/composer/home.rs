@@ -16,13 +16,16 @@ impl Tui {
         self.home_notice = notice;
     }
 
-    pub(crate) fn set_home_row(&mut self, key: String, text: Option<String>) -> bool {
+    pub(crate) fn set_home_row(&mut self, key: String, row: Option<(String, String)>) -> bool {
         if !self.is_home() {
             return false;
         }
-        match (self.home_rows.iter().position(|(k, _)| *k == key), text) {
-            (Some(i), Some(t)) => self.home_rows[i].1 = t,
-            (None, Some(t)) => self.home_rows.push((key, t)),
+        match (self.home_rows.iter().position(|(k, _, _)| *k == key), row) {
+            (Some(i), Some((t, a))) => {
+                self.home_rows[i].1 = t;
+                self.home_rows[i].2 = a;
+            }
+            (None, Some((t, a))) => self.home_rows.push((key, t, a)),
             (Some(i), None) => {
                 self.home_rows.remove(i);
             }
@@ -31,10 +34,11 @@ impl Tui {
         self.home_quality_of_life = (!self.home_rows.is_empty()).then(|| {
             self.home_rows
                 .iter()
-                .map(|(_, t)| t.as_str())
+                .map(|(_, t, _)| t.as_str())
                 .collect::<Vec<_>>()
                 .join("\n")
         });
+        self.home_actions = self.home_rows.iter().map(|(_, _, a)| a.clone()).collect();
         true
     }
 

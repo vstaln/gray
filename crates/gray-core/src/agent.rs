@@ -437,6 +437,16 @@ pub struct PickerSpec {
     pub selected_id: Option<String>,
     #[serde(default)]
     pub footer: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enter: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub keys: Vec<PickerKey>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PickerKey {
+    pub key: char,
+    pub label: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -255,6 +255,35 @@ pub(crate) use crate::term_keys::KeyboardEnhancementGuard;
 /// The keyboard-enhancement push/pop writes raw escapes to stdout; on this
 /// thread they race the composer's draws and a torn `\x1b[>5u` leaks its
 /// tail as literal text. Run both under the tui lock.
+#[derive(Default)]
+struct MouseReport {
+    on: bool,
+}
+
+impl MouseReport {
+    fn set(&mut self, on: bool) {
+        use std::io::Write as _;
+        if on == self.on {
+            return;
+        }
+        self.on = on;
+        let seq: &[u8] = if on {
+            b"\x1b[?1000h\x1b[?1006h"
+        } else {
+            b"\x1b[?1006l\x1b[?1000l"
+        };
+        let mut out = std::io::stdout();
+        let _ = out.write_all(seq);
+        let _ = out.flush();
+    }
+}
+
+impl Drop for MouseReport {
+    fn drop(&mut self) {
+        self.set(false);
+    }
+}
+
 pub(crate) struct LockedEnhancement {
     inner: Option<crate::term_keys::KeyboardEnhancementGuard>,
     tui: Option<super::SharedTui>,
@@ -343,6 +372,7 @@ pub(crate) fn read_line(
     watch_dead_stdin();
     let mut needs_draw = true;
     let mut quit_arm: QuitArm = None;
+    let mut mouse = MouseReport::default();
     loop {
         if stdin_gone_confirmed() {
             return Ok(None);
@@ -352,6 +382,7 @@ pub(crate) fn read_line(
             let mut guard = shared.lock().expect("tui lock");
             let tui: &mut super::Tui = &mut guard;
             if tui.ask_modal.is_some() || tui.modal_open {
+                mouse.set(false);
                 drop(guard);
                 std::thread::sleep(Duration::from_millis(30));
                 needs_draw = true;
@@ -375,6 +406,7 @@ pub(crate) fn read_line(
                 tui.draw()?;
                 needs_draw = false;
             }
+            mouse.set(!tui.strip_hits.is_empty());
 
             let base = if tui.action_running() {
                 Duration::from_millis(50)
@@ -468,6 +500,31 @@ pub(crate) fn read_line(
             Event::Paste(data) => {
                 tui.search = None;
                 handle_paste(tui, data);
+            }
+            Event::Mouse(m) => {
+                needs_draw = false;
+                if !matches!(
+                    m.kind,
+                    crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left)
+                ) {
+                    continue;
+                }
+                let hit = tui
+                    .strip_hits
+                    .iter()
+                    .find(|(y, x0, x1, _)| m.row == *y && m.column >= *x0 && m.column < *x1)
+                    .map(|(_, _, _, cmd)| cmd.clone());
+                let Some(cmd) = hit else {
+                    continue;
+                };
+                quit_arm = None;
+                if tui.is_task_running {
+                    tui.queued_inputs.push_back((cmd, Vec::new()));
+                    let _ = tui.draw();
+                    continue;
+                }
+                echo_submit(tui, &cmd, &[]);
+                return Ok(Some((cmd, Vec::new())));
             }
             Event::Key(ev)
                 if ev.kind != KeyEventKind::Release

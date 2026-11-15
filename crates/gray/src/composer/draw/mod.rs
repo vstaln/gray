@@ -261,10 +261,7 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
     let tail_est = stream_tail.len() as u16 + tail_gap;
 
     let chips = attachment_cells(&tui.attachments, &text);
-    let bottom_notes: Vec<String> = home
-        .and_then(|h| h.quality_of_life)
-        .map(|q| q.lines().map(str::to_string).collect())
-        .unwrap_or_default();
+    let bottom_notes: Option<String> = home.and_then(|h| h.quality_of_life).map(str::to_string);
     let ibox = build_input_box(
         &text,
         cursor,
@@ -278,10 +275,9 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
         tui.action.prompt_glyph(),
     );
     let viewport_y = tui.terminal.viewport_area.y;
-    let notes_at_bottom = !bottom_notes.is_empty()
-        && viewport_y as usize + status_h as usize + ibox.lines.len() + 1 + bottom_notes.len()
-            <= rows as usize;
-    let ibox = if bottom_notes.is_empty() || notes_at_bottom {
+    let notes_at_bottom = bottom_notes.is_some()
+        && viewport_y as usize + status_h as usize + ibox.lines.len() + 2 <= rows as usize;
+    let ibox = if bottom_notes.is_none() || notes_at_bottom {
         ibox
     } else {
         build_input_box(
@@ -438,6 +434,8 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
         });
 
     let reveal = tui.home_reveal_alpha();
+    let mut strip_hits: Vec<(u16, u16, u16, String)> = Vec::new();
+    let home_actions = tui.home_actions.clone();
     let res = tui.terminal.draw(|frame| {
         let area = frame.area();
 
@@ -674,21 +672,31 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
                 Paragraph::new(ibox.lines.clone()),
                 Rect::new(box_x, box_y, area.right() - box_x, rendered_box_h),
             );
-            if notes_at_bottom {
-                let n = bottom_notes.len() as u16;
-                let note_x = box_x;
-                for (i, note) in bottom_notes.iter().enumerate() {
-                    let y = area.bottom().saturating_sub(n) + i as u16;
-                    if y < box_y + rendered_box_h || y >= area.bottom() {
-                        continue;
+            let strip_at = match bottom_notes.as_deref() {
+                Some(notes) if notes_at_bottom => {
+                    let y = area.bottom().saturating_sub(1);
+                    (y >= box_y + rendered_box_h).then(|| {
+                        let (line, hits) = widgets::notice_strip(notes, box_w as usize);
+                        frame.render_widget(Paragraph::new(line), Rect::new(box_x, y, box_w, 1));
+                        (y, hits)
+                    })
+                }
+                Some(notes) => {
+                    let row = ibox.lines.len().saturating_sub(1) as u16;
+                    (row < rendered_box_h)
+                        .then(|| (box_y + row, widgets::notice_strip(notes, ibox.width).1))
+                }
+                None => None,
+            };
+            if let Some((y, hits)) = strip_at {
+                for (x0, x1, idx) in hits {
+                    let action = match idx {
+                        Some(i) => home_actions.get(i).cloned().unwrap_or_default(),
+                        None => "/qol".to_string(),
+                    };
+                    if action.starts_with('/') {
+                        strip_hits.push((y, box_x + x0 as u16, box_x + x1 as u16, action));
                     }
-                    frame.render_widget(
-                        Paragraph::new(Span::styled(
-                            note.clone(),
-                            Style::default().fg(crate::theme::theme().text_muted),
-                        )),
-                        Rect::new(note_x, y, area.right() - note_x, 1),
-                    );
                 }
             }
             if crate::settings::vim_mode() && tui.vim.is_normal() {
@@ -1220,6 +1228,9 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
             crate::composer::fade_buffer(frame.buffer, alpha);
         }
     });
+    if res.is_ok() {
+        tui.strip_hits = strip_hits;
+    }
     let background_result = if res.is_ok() {
         if let super::BackgroundSlot::Loaded(bg) = &mut tui.background {
             bg.draw(&mut std::io::stdout().lock(), cols, rows)

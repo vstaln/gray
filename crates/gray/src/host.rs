@@ -501,7 +501,7 @@ fn notice(params: &serde_json::Value) -> serde_json::Value {
                 return serde_json::json!({"shown": false});
             };
             let key = format!("{}:{id}", plugin_of(params));
-            let row = (!text.is_empty()).then_some(line);
+            let row = (!text.is_empty()).then(|| (text.replace('\n', " "), action.to_string()));
             let shown = tui
                 .lock()
                 .map(|mut t| t.set_home_row(key, row))

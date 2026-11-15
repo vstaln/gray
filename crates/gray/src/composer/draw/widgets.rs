@@ -423,14 +423,75 @@ fn home_rows(home: HomeRows, w: usize) -> Vec<Line<'static>> {
         if rows.is_empty() {
             rows.push(Line::default());
         }
-        for row in quality_of_life.lines() {
-            rows.push(Line::from(Span::styled(
-                row.to_string(),
-                Style::default().fg(t.text_muted),
-            )));
-        }
+        rows.push(notice_strip(quality_of_life, w).0);
     }
     rows
+}
+
+fn segment_spans(seg: &str, muted: Style, body: Style) -> Vec<Span<'static>> {
+    let Some(start) = seg.find(|c: char| c.is_ascii_digit()) else {
+        return vec![Span::styled(seg.to_string(), muted)];
+    };
+    let len = seg[start..]
+        .find(|c: char| !c.is_ascii_digit() && c != '.')
+        .unwrap_or(seg.len() - start);
+    let end = start + seg[start..start + len].trim_end_matches('.').len();
+    vec![
+        Span::styled(seg[..start].to_string(), muted),
+        Span::styled(seg[start..end].to_string(), body),
+        Span::styled(seg[end..].to_string(), muted),
+    ]
+}
+
+pub(crate) type StripHit = (usize, usize, Option<usize>);
+
+pub(crate) fn notice_strip(notes: &str, w: usize) -> (Line<'static>, Vec<StripHit>) {
+    let t = crate::theme::theme();
+    let muted = Style::default().fg(t.text_muted);
+    let body = Style::default().fg(t.text_body);
+    let sep = "  \u{b7}  ";
+    let tail = "/qol";
+    let segs: Vec<(usize, &str)> = notes
+        .lines()
+        .map(str::trim)
+        .enumerate()
+        .filter(|(_, l)| !l.is_empty())
+        .collect();
+    let more = |n: usize| (n < segs.len()).then(|| format!("+{} more", segs.len() - n));
+    let width_of = |n: usize| {
+        let mut parts: Vec<usize> = segs[..n].iter().map(|(_, s)| display_width(s)).collect();
+        parts.extend(more(n).map(|m| display_width(&m)));
+        parts.iter().sum::<usize>() + display_width(sep) * parts.len().saturating_sub(1)
+    };
+    let room = w.saturating_sub(display_width(tail) + 2);
+    let mut shown = segs.len();
+    while shown > 0 && width_of(shown) > room {
+        shown -= 1;
+    }
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    let mut hits: Vec<StripHit> = Vec::new();
+    for (i, (idx, seg)) in segs[..shown].iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::styled(sep, muted));
+        }
+        let x = spans_width(&spans);
+        spans.extend(segment_spans(seg, muted, body));
+        hits.push((x, spans_width(&spans), Some(*idx)));
+    }
+    if let Some(m) = more(shown) {
+        if shown > 0 {
+            spans.push(Span::styled(sep, muted));
+        }
+        let x = spans_width(&spans);
+        spans.push(Span::styled(m, muted));
+        hits.push((x, spans_width(&spans), None));
+    }
+    let pad = w.saturating_sub(spans_width(&spans) + display_width(tail));
+    spans.push(Span::raw(" ".repeat(pad.max(2))));
+    let x = spans_width(&spans);
+    spans.push(Span::styled(tail, muted.add_modifier(Modifier::DIM)));
+    hits.push((x, spans_width(&spans), None));
+    (Line::from(spans), hits)
 }
 
 pub(crate) fn home_band_h(w: usize) -> usize {

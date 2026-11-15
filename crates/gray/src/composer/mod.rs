@@ -215,7 +215,9 @@ pub struct Tui {
 
     pub(crate) home_update: Option<String>,
     pub(crate) home_quality_of_life: Option<String>,
-    home_rows: Vec<(String, String)>,
+    home_rows: Vec<(String, String, String)>,
+    pub(crate) home_actions: Vec<String>,
+    pub(crate) strip_hits: Vec<(u16, u16, u16, String)>,
 
     pub(crate) home_session: Option<String>,
 
@@ -460,6 +462,8 @@ impl Tui {
             home_update: None,
             home_quality_of_life: None,
             home_rows: Vec::new(),
+            home_actions: Vec::new(),
+            strip_hits: Vec::new(),
             home_session: None,
             left_home: false,
             intro_started: intro,
@@ -479,6 +483,7 @@ impl Drop for Tui {
             crossterm::event::DisableBracketedPaste,
             crossterm::event::DisableFocusChange
         );
+        let _ = std::io::Write::write_all(&mut std::io::stdout(), b"\x1b[?1006l\x1b[?1000l");
         let _ = crossterm::execute!(std::io::stdout(), crossterm::cursor::Show);
     }
 }
