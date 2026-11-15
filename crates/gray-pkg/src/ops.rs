@@ -123,6 +123,7 @@ fn record_install(
         prior => prior,
     };
     let prior = lock.plugins.get(name).cloned().unwrap_or_default();
+    lock.clear_tombstone(name);
     lock.plugins.insert(
         name.to_string(),
         LockEntry {
@@ -658,11 +659,8 @@ async fn update_inner(target: &str, check: bool) -> anyhow::Result<Vec<UpdateRow
         if hub.is_none() && comm.is_none() {
             hub = crate::index::fetch_hub_index(&client).await.ok();
         }
-        let renamed = RENAMED
-            .iter()
-            .find(|(old, _)| old == name)
-            .map(|(_, new)| *new);
-        let lookup = renamed.unwrap_or(name);
+        let lookup = canonical_name(name);
+        let renamed = (lookup != name.as_str()).then_some(lookup);
         let entry = match hub.as_ref().and_then(|i| i.plugins.get(lookup)) {
             Some(e) => e,
             None => {

@@ -782,10 +782,15 @@ pub fn remove_managed(name: &str) -> anyhow::Result<()> {
         }
     }
     anyhow::ensure!(removed, "not installed: {name}");
-    let lock_file = gray_plugin::lock::lock_path(&home);
-    let mut lock = load_lock(&home)?;
-    lock.tombstone(name);
-    lock.save(&lock_file)?;
+    if crate::default_plugins::DEFAULT_PLUGINS
+        .iter()
+        .any(|d| *d == name || gray_pkg::ops::canonical_name(d) == name)
+    {
+        let lock_file = gray_plugin::lock::lock_path(&home);
+        let mut lock = load_lock(&home)?;
+        lock.tombstone(name);
+        lock.save(&lock_file)?;
+    }
     let _ = std::fs::remove_file(home.join("plugins").join(format!("{name}-manifest.json")));
     let widgets = home.join("plugins/widgets.json");
     if let Ok(raw) = std::fs::read(&widgets)
