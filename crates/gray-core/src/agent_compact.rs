@@ -167,6 +167,9 @@ impl Agent {
         let before = self.estimate_tokens();
         if let Some(mut held) = self.held_summary.take() {
             if let Some(reason) = held.discard_reason(self) {
+                if reason != "digest" && reason != "system" && reason != "model" {
+                    self.background_failures = self.background_failures.saturating_add(1);
+                }
                 log::info!(target: "gray_agent", "background compaction: discarded reason={reason}");
             } else {
                 let result = (&mut held.task).await;
@@ -184,7 +187,6 @@ impl Agent {
                             .apply_compaction(&summary, held.anchor.clone(), tail)
                             .await
                         {
-                            self.background_failures = 0;
                             log::info!(
                                 target: "gray_agent",
                                 "compaction: ok=true before={before} after={} source=background elapsed_ms={}",
@@ -193,10 +195,12 @@ impl Agent {
                             );
                             return Ok(true);
                         }
+                        self.background_failures = self.background_failures.saturating_add(1);
                         log::info!(target: "gray_agent", "background compaction: discarded reason=no_gain");
                     }
                     Ok(Ok((_, spent))) => {
                         self.unbilled.accumulate(&spent);
+                        self.background_failures = self.background_failures.saturating_add(1);
                         log::info!(target: "gray_agent", "background compaction: discarded reason=empty");
                     }
                     Ok(Err(e)) => {

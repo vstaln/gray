@@ -15,11 +15,10 @@ use super::{
 };
 
 /// `interrupt` — cancel the running turn, same token SIGINT cancels in the
-/// REPL. The turn arms its token before any agent build or session init, so
-/// this answers immediately: a live token means a live turn.
+/// REPL. Answers immediately (it's serviced from the reader thread too).
 pub(crate) fn interrupt(id: &Value) {
-    let taken = lock(&crate::repl::TURN_STATE).take();
-    match taken {
+    let token = lock(&crate::repl::TURN_STATE).as_ref().cloned();
+    match token {
         Some(token) => {
             mark_turn_interrupted();
             token.cancel();

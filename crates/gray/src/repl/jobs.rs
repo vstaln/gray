@@ -169,6 +169,8 @@ const JOBS_SPEC: ManagerSpec = ManagerSpec {
 /// a refetch sooner, so this only bounds the same-mtime corner.
 const WAKES_STALE_AFTER: Duration = Duration::from_secs(60);
 
+const WAKES_FAILED_RETRY: Duration = Duration::from_secs(30);
+
 struct WakesCache {
     home: PathBuf,
     sid: String,
@@ -267,6 +269,9 @@ pub(crate) fn load_wakes(home: &Path, sid: Option<&str>) -> Vec<Wake> {
         return Vec::new();
     };
     let stamp = jobs_stamp(home);
+    if stamp.is_none() {
+        return Vec::new();
+    }
     {
         let cache = WAKES_CACHE.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(c) = cache.as_ref() {
@@ -281,16 +286,25 @@ pub(crate) fn load_wakes(home: &Path, sid: Option<&str>) -> Vec<Wake> {
         if !WAKES_FETCH_FAILED.swap(true, std::sync::atomic::Ordering::Relaxed) {
             log::warn!(
                 target: "gray_agent",
-                "cron list unavailable — keeping the last known wakes and retrying next poll"
+                "cron list unavailable — keeping the last known wakes and retrying shortly"
             );
         }
-        return WAKES_CACHE
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
+        let mut cache = WAKES_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+        let wakes = cache
             .as_ref()
             .filter(|c| c.home == home && c.sid == sid)
             .map(|c| c.wakes.clone())
             .unwrap_or_default();
+        *cache = Some(WakesCache {
+            home: home.to_path_buf(),
+            sid: sid.to_string(),
+            stamp,
+            fetched: Instant::now()
+                .checked_sub(WAKES_STALE_AFTER.saturating_sub(WAKES_FAILED_RETRY))
+                .unwrap_or_else(Instant::now),
+            wakes: wakes.clone(),
+        });
+        return wakes;
     };
     WAKES_FETCH_FAILED.store(false, std::sync::atomic::Ordering::Relaxed);
     let wakes = wakes_from_json(&body, sid);
