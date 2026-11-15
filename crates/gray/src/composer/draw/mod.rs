@@ -261,10 +261,7 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
     let tail_est = stream_tail.len() as u16 + tail_gap;
 
     let chips = attachment_cells(&tui.attachments, &text);
-    let bottom_notes: Vec<String> = home
-        .and_then(|h| h.quality_of_life)
-        .map(|q| q.lines().map(str::to_string).collect())
-        .unwrap_or_default();
+    let bottom_notes: Option<String> = home.and_then(|h| h.quality_of_life).map(str::to_string);
     let ibox = build_input_box(
         &text,
         cursor,
@@ -278,10 +275,9 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
         tui.action.prompt_glyph(),
     );
     let viewport_y = tui.terminal.viewport_area.y;
-    let notes_at_bottom = !bottom_notes.is_empty()
-        && viewport_y as usize + status_h as usize + ibox.lines.len() + 1 + bottom_notes.len()
-            <= rows as usize;
-    let ibox = if bottom_notes.is_empty() || notes_at_bottom {
+    let notes_at_bottom = bottom_notes.is_some()
+        && viewport_y as usize + status_h as usize + ibox.lines.len() + 2 <= rows as usize;
+    let ibox = if bottom_notes.is_none() || notes_at_bottom {
         ibox
     } else {
         build_input_box(
@@ -674,20 +670,12 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
                 Paragraph::new(ibox.lines.clone()),
                 Rect::new(box_x, box_y, area.right() - box_x, rendered_box_h),
             );
-            if notes_at_bottom {
-                let n = bottom_notes.len() as u16;
-                let note_x = box_x;
-                for (i, note) in bottom_notes.iter().enumerate() {
-                    let y = area.bottom().saturating_sub(n) + i as u16;
-                    if y < box_y + rendered_box_h || y >= area.bottom() {
-                        continue;
-                    }
+            if let Some(notes) = bottom_notes.as_deref().filter(|_| notes_at_bottom) {
+                let y = area.bottom().saturating_sub(1);
+                if y >= box_y + rendered_box_h {
                     frame.render_widget(
-                        Paragraph::new(Span::styled(
-                            note.clone(),
-                            Style::default().fg(crate::theme::theme().text_muted),
-                        )),
-                        Rect::new(note_x, y, area.right() - note_x, 1),
+                        Paragraph::new(widgets::notice_strip(notes, box_w as usize)),
+                        Rect::new(box_x, y, box_w, 1),
                     );
                 }
             }
