@@ -265,16 +265,12 @@ impl Config {
             .compact_at
             .or(env("GRAY_COMPACT_AT").and_then(|s| crate::setup::parse_compact_at(&s)))
             .or(if bare { None } else { saved.compact_at });
-        let context_keep = (!bare)
-            .then(|| {
-                cli.context_keep
-                    .or_else(|| {
-                        env("GRAY_CONTEXT_KEEP")
-                            .and_then(|s| crate::setup::parse_context_window(&s))
-                    })
-                    .or(saved.context_keep)
+        let context_keep = cli
+            .context_keep
+            .or_else(|| {
+                env("GRAY_CONTEXT_KEEP").and_then(|s| crate::setup::parse_context_window(&s))
             })
-            .flatten();
+            .or(if bare { None } else { saved.context_keep });
 
         let exec_prefix = nonempty(env("GRAY_EXEC_PREFIX").as_deref()).or(saved.exec_prefix);
 
