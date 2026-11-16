@@ -91,6 +91,11 @@ impl Tui {
         self.cache.resume(Instant::now());
     }
 
+    pub(crate) fn note_model_change(&mut self) {
+        self.cache.note_model_change();
+        self.cold_confirm_armed = None;
+    }
+
     pub(crate) fn note_cache_reconnect(&mut self) {
         self.cache.note_reconnect();
     }
