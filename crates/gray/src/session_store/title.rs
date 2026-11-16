@@ -18,6 +18,30 @@ pub fn write_dismissal(root: &Path, id: &SessionId, last_message_at: u64) -> std
     )
 }
 
+pub(super) fn read_turn_end(root: &Path, id: &str) -> Option<u64> {
+    std::fs::read_to_string(root.join(format!("{id}.ended")))
+        .ok()?
+        .trim()
+        .parse()
+        .ok()
+}
+
+pub fn clear_turn_end(root: &Path, id: &SessionId) {
+    if valid_session_id(id.as_str()) {
+        let _ = std::fs::remove_file(root.join(format!("{}.ended", id.as_str())));
+    }
+}
+
+pub fn write_turn_end(root: &Path, id: &SessionId) -> std::io::Result<()> {
+    if !valid_session_id(id.as_str()) {
+        return Err(std::io::Error::other("invalid session id"));
+    }
+    std::fs::write(
+        root.join(format!("{}.ended", id.as_str())),
+        gray_core::time::now_millis().to_string(),
+    )
+}
+
 pub(super) const MAX_TITLE_CHARS: usize = 80;
 
 pub(crate) fn clean_title(raw: &str) -> Option<String> {

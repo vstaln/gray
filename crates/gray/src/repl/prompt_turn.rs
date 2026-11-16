@@ -56,6 +56,18 @@ fn turn_tool_context(
     }
 }
 
+fn mark_turn_ended(session_state: &Option<SessionState>) {
+    if let Some(state) = session_state {
+        let _ = crate::session_store::write_turn_end(state.store.root_dir(), &state.session_id);
+    }
+}
+
+fn mark_turn_started(session_state: &Option<SessionState>) {
+    if let Some(state) = session_state {
+        crate::session_store::clear_turn_end(state.store.root_dir(), &state.session_id);
+    }
+}
+
 fn slow_turn_end_step(step: &str, since: std::time::Instant) {
     let took = since.elapsed();
     if took > std::time::Duration::from_secs(5) {
@@ -292,6 +304,7 @@ pub(crate) async fn run_prompt_turn(
     let history_revision = agent.history_revision();
 
     super::session::ensure_session_state(&mut *session_state, config, cwd).await;
+    mark_turn_started(&*session_state);
 
     if let Some(sid) = session_state.as_ref().map(|s| s.session_id.as_str()) {
         agent.repin_session_id(sid);
@@ -514,6 +527,7 @@ pub(crate) async fn run_prompt_turn(
                 turn_duration_ms,
             )
             .await;
+            mark_turn_ended(&*session_state);
             if interactive {
                 if let Some((shared, _)) = tui {
                     let mut t = shared.lock().expect("tui lock");
@@ -540,6 +554,7 @@ pub(crate) async fn run_prompt_turn(
                 turn_duration_ms,
             )
             .await;
+            mark_turn_ended(&*session_state);
             let msg = format_core_error(&e, &config.base_url);
             if let gray_core::error::CoreError::Quota { message, resets_in } = e.class() {
                 crate::usage_cache::note_quota(&config.provider_id, message, *resets_in);
