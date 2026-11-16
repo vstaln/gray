@@ -239,7 +239,6 @@ struct PluginState {
 pub(crate) enum Tag {
     Pct(f64),
     Loading(Option<f64>),
-    Limit(Option<String>),
     Expired,
 }
 
@@ -287,29 +286,46 @@ fn age_ago(seen_at: i64) -> String {
     crate::resume::format_relative(seen_at as u64 * 1000)
 }
 
-fn cached_tag(provider: &str, account: Option<&str>, serving: bool, loading: bool) -> Option<Tag> {
-    let now = now_secs();
-    let mut limit: Option<Option<String>> = None;
-    let mut worst: Option<f64> = None;
-    for window in crate::usage_cache::for_row(provider, account, serving) {
-        let pct = window_pct(&window);
-        match crate::usage_cache::state(&window, now) {
-            crate::usage_cache::WindowState::Limit { resets } => {
-                limit = Some(resets);
-                worst = Some(worst.map_or(pct, |seen: f64| seen.max(pct)));
-            }
-            crate::usage_cache::WindowState::Percent(pct) => {
-                worst = Some(worst.map_or(pct, |seen: f64| seen.max(pct)));
-            }
-            crate::usage_cache::WindowState::Unknown => {}
+fn family_pct(seen: Vec<(Option<String>, f64)>) -> Option<f64> {
+    let worst = seen.iter().map(|(_, pct)| *pct).reduce(f64::max)?;
+    if seen.iter().any(|(family, _)| family.is_none()) {
+        return Some(worst);
+    }
+    let mut families: Vec<(String, f64)> = Vec::new();
+    for (family, pct) in seen {
+        let family = family.unwrap_or_default();
+        match families.iter_mut().find(|(f, _)| *f == family) {
+            Some((_, max)) => *max = max.max(pct),
+            None => families.push((family, pct)),
         }
     }
-    match (limit, worst) {
-        (Some(resets), _) => Some(Tag::Limit(resets)),
-        (None, Some(pct)) if loading => Some(Tag::Loading(Some(pct))),
-        (None, Some(pct)) => Some(Tag::Pct(pct)),
-        (None, None) if loading => Some(Tag::Loading(None)),
-        (None, None) => None,
+    if families.len() < 2 {
+        return Some(worst);
+    }
+    Some(families.iter().map(|(_, pct)| pct).sum::<f64>() / families.len() as f64)
+}
+
+fn window_family(id: &str) -> Option<String> {
+    let (family, span) = id.rsplit_once('-')?;
+    matches!(span, "weekly" | "5h" | "daily" | "monthly").then(|| family.to_string())
+}
+
+fn cached_tag(provider: &str, account: Option<&str>, serving: bool, loading: bool) -> Option<Tag> {
+    let now = now_secs();
+    let mut seen = Vec::new();
+    for window in crate::usage_cache::for_row(provider, account, serving) {
+        let pct = match crate::usage_cache::state(&window, now) {
+            crate::usage_cache::WindowState::Limit { .. } => window_pct(&window),
+            crate::usage_cache::WindowState::Percent(pct) => pct,
+            crate::usage_cache::WindowState::Unknown => continue,
+        };
+        seen.push((window_family(&window.window), pct));
+    }
+    match family_pct(seen) {
+        Some(pct) if loading => Some(Tag::Loading(Some(pct))),
+        Some(pct) => Some(Tag::Pct(pct)),
+        None if loading => Some(Tag::Loading(None)),
+        None => None,
     }
 }
 
@@ -711,9 +727,18 @@ impl Logins {
         }
     }
 
-    /// Worst window of one account's usage card, as a percentage.
+    /// One account's usage card as a percentage: the worst window, or the
+    /// average of each model family's worst window when the card splits them.
     fn card_pct(card: &Value) -> Option<f64> {
-        gauges(card).iter().map(|g| g.pct).reduce(f64::max)
+        family_pct(
+            gauges(card)
+                .into_iter()
+                .map(|g| {
+                    let family = g.label.split_once(" · ").map(|(_, f)| f.to_string());
+                    (family, g.pct)
+                })
+                .collect(),
+        )
     }
 
     /// Average pressure across the provider's accounts, so the rail reads the

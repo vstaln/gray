@@ -995,10 +995,6 @@ fn draw(frame: &mut Frame, bg: &BackgroundSnapshot, v: &PaneView) {
                     },
                     t.text_faint,
                 ),
-                super::logins::Tag::Limit(Some(resets)) if name_room >= 13 + 1 + 11 => {
-                    (format!("limit {resets}"), super::logins::RED)
-                }
-                super::logins::Tag::Limit(_) => ("limit".to_string(), super::logins::RED),
                 super::logins::Tag::Expired if name_room >= 13 + 1 + 6 => {
                     ("login expired".to_string(), super::logins::RED)
                 }
