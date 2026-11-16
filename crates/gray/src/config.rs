@@ -171,9 +171,10 @@ impl Config {
         );
 
         let saved_model = saved.model.clone();
-        let model = nonempty(cli.model.as_deref())
-            .or_else(|| nonempty(env("GRAY_MODEL").as_deref()))
-            .or(saved.model);
+        let model_explicit =
+            nonempty(cli.model.as_deref()).or_else(|| nonempty(env("GRAY_MODEL").as_deref()));
+        let from_saved_model = model_explicit.is_none();
+        let model = model_explicit.or(saved.model);
 
         let base_url = nonempty(cli.base_url.as_deref())
             .or_else(|| nonempty(env("GRAY_BASE_URL").as_deref()))
@@ -194,6 +195,9 @@ impl Config {
                 "explicit API key given: ignoring plugin provider selection");
         }
 
+        let inherited_provider = env("GRAY_PROVIDER_ID")
+            .map(|v| v.trim().to_string())
+            .unwrap_or_default();
         let provider_id = if drop_plugin {
             String::new()
         } else if let Some(p) = nonempty(cli.provider.as_deref()) {
@@ -204,6 +208,35 @@ impl Config {
             env("GRAY_PROVIDER_ID")
                 .map(|v| v.trim().to_string())
                 .unwrap_or_else(|| nonempty(Some(saved.provider_id.as_str())).unwrap_or_default())
+        };
+        // A pin inherited from the parent session names a different provider
+        // than the saved config, so the saved model belongs to a provider we
+        // are not talking to. Pairing them sends (say) a deepseek id to a
+        // claude endpoint, which answers 404 "model may not exist" and is
+        // indistinguishable from a real entitlement problem. Drop the stale
+        // saved model and let the provider pick its own default.
+        let model =
+            if from_saved_model && !provider_id.is_empty() && provider_id != saved.provider_id {
+                None
+            } else {
+                model
+            };
+        // An inherited pin with no inherited model is a half-pair from an old
+        // parent: trust the saved provider and model instead of pairing a
+        // foreign model with it.
+        let provider_id = if from_saved_model
+            && !saved.provider_id.is_empty()
+            && provider_id != saved.provider_id
+            && env("GRAY_MODEL").is_none()
+        {
+            saved.provider_id.clone()
+        } else {
+            provider_id
+        };
+        let model = if model.is_none() {
+            saved_model.clone()
+        } else {
+            model
         };
         let target_effort = nonempty(model.as_deref()).and_then(|model| {
             saved
@@ -321,15 +354,23 @@ impl Config {
             .map(|m| m.trim().to_string())
             .filter(|m| !m.is_empty());
 
-        let credential_source = if drop_plugin {
+        // A fallback to the saved provider must take the saved credential
+        // source with it: keeping an inherited "plugin" source makes a
+        // key-based provider like commandcode look like a missing plugin.
+        let fell_back_to_saved = !saved.provider_id.is_empty()
+            && provider_id == saved.provider_id
+            && provider_id != inherited_provider;
+        let credential_source = if drop_plugin || provider_id.is_empty() {
             String::new()
-        } else if provider_id.is_empty() {
-            String::new()
+        } else if fell_back_to_saved {
+            saved.credential_source.clone()
         } else {
             inherited_source
         };
         let auth_ref = if drop_plugin || provider_id.is_empty() {
             String::new()
+        } else if fell_back_to_saved {
+            saved.auth_ref.clone()
         } else {
             env("GRAY_AUTH_REF")
                 .map(|v| v.trim().to_string())
@@ -426,9 +467,20 @@ pub(crate) fn export_provider_env(config: &Config) {
             std::env::set_var("GRAY_PROVIDER_ID", &config.provider_id);
             std::env::set_var("GRAY_AUTH_REF", &config.auth_ref);
             std::env::set_var("GRAY_CREDENTIAL_SOURCE", "plugin");
+            // Pin the model too. A provider pin without its model is a
+            // half-pair: the child resolves the provider from the parent and
+            // the model from the saved config, which may belong to a
+            // different provider and comes back 404 "model may not exist".
+            match config.model.as_deref() {
+                Some(m) if !m.is_empty() => std::env::set_var("GRAY_MODEL", m),
+                _ => std::env::remove_var("GRAY_MODEL"),
+            }
+            std::env::set_var("GRAY_BASE_URL", &config.base_url);
         } else {
             std::env::remove_var("GRAY_PROVIDER_ID");
             std::env::remove_var("GRAY_AUTH_REF");
+            std::env::remove_var("GRAY_MODEL");
+            std::env::remove_var("GRAY_BASE_URL");
             if std::env::var("GRAY_CREDENTIAL_SOURCE").as_deref() == Ok("plugin") {
                 std::env::remove_var("GRAY_CREDENTIAL_SOURCE");
             }
