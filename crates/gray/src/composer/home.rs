@@ -9,6 +9,10 @@ impl Tui {
     }
 
     pub fn set_model(&mut self, model: String) {
+        if !self.model_name.is_empty() && self.model_name != model {
+            self.reset_cache();
+            self.cold_confirm_armed = None;
+        }
         self.model_name = model;
     }
 
