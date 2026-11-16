@@ -247,45 +247,30 @@ impl Config {
 
         let bare = cli.bare || env("GRAY_BARE").is_some_and(|v| v.trim() == "1");
 
-        let context_window = (!bare)
-            .then(|| {
-                cli.context_window
-                    .or_else(|| {
-                        env("GRAY_CONTEXT_WINDOW")
-                            .and_then(|s| crate::setup::parse_context_window(&s))
-                    })
-                    .or(saved.context_window)
+        let context_window = cli
+            .context_window
+            .or_else(|| {
+                env("GRAY_CONTEXT_WINDOW").and_then(|s| crate::setup::parse_context_window(&s))
             })
-            .flatten();
+            .or(if bare { None } else { saved.context_window });
 
-        let context_reserve = (!bare)
-            .then(|| {
-                cli.context_reserve
-                    .or_else(|| {
-                        env("GRAY_CONTEXT_RESERVE")
-                            .and_then(|s| crate::setup::parse_context_window(&s))
-                    })
-                    .or(saved.context_reserve)
+        let context_reserve = cli
+            .context_reserve
+            .or_else(|| {
+                env("GRAY_CONTEXT_RESERVE").and_then(|s| crate::setup::parse_context_window(&s))
             })
-            .flatten();
+            .or(if bare { None } else { saved.context_reserve });
 
-        let compact_at = (!bare)
-            .then(|| {
-                cli.compact_at
-                    .or(env("GRAY_COMPACT_AT").and_then(|s| crate::setup::parse_compact_at(&s)))
-                    .or(saved.compact_at)
+        let compact_at = cli
+            .compact_at
+            .or(env("GRAY_COMPACT_AT").and_then(|s| crate::setup::parse_compact_at(&s)))
+            .or(if bare { None } else { saved.compact_at });
+        let context_keep = cli
+            .context_keep
+            .or_else(|| {
+                env("GRAY_CONTEXT_KEEP").and_then(|s| crate::setup::parse_context_window(&s))
             })
-            .flatten();
-        let context_keep = (!bare)
-            .then(|| {
-                cli.context_keep
-                    .or_else(|| {
-                        env("GRAY_CONTEXT_KEEP")
-                            .and_then(|s| crate::setup::parse_context_window(&s))
-                    })
-                    .or(saved.context_keep)
-            })
-            .flatten();
+            .or(if bare { None } else { saved.context_keep });
 
         let exec_prefix = nonempty(env("GRAY_EXEC_PREFIX").as_deref()).or(saved.exec_prefix);
 

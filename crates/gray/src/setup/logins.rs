@@ -401,12 +401,19 @@ fn cached_lines(
                     .unwrap_or_else(|| "limit".to_string()),
                 _ => "limit".to_string(),
             }
+        } else if mode == CacheNote::Failed {
+            age_ago(window.seen_at)
         } else {
             String::new()
         };
         let stale = window.seen_at > 0 && now.saturating_sub(window.seen_at) >= 86_400;
         rows.push(CachedRow {
-            label: crate::usage_cache::window_label(&window.window),
+            label: window
+                .label
+                .as_deref()
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+                .unwrap_or_else(|| crate::usage_cache::window_label(&window.window)),
             pct,
             note,
             short,
@@ -1103,4 +1110,71 @@ pub(crate) fn account_argv() -> Option<Vec<String>> {
 pub(crate) fn portal_cmd(args: &[&str]) -> Result<String, String> {
     let argv = account_argv().ok_or("the account plugin is not installed")?;
     run(&argv, args, CMD_TIMEOUT)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn line_text(line: &Line<'_>) -> String {
+        line.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    #[test]
+    fn cached_lines_uses_clean_labels_and_unclipped_limit_note() {
+        let now = now_secs();
+        let windows = vec![
+            crate::usage_cache::Window {
+                provider: "antigravity-subscription".into(),
+                account: None,
+                window: "gemini-weekly".into(),
+                label: None,
+                last_seen_pct: Some(10.0),
+                resets_at: Some(now + 86_400),
+                limit: None,
+                seen_at: now - 7200,
+            },
+            crate::usage_cache::Window {
+                provider: "antigravity-subscription".into(),
+                account: None,
+                window: "3p-weekly".into(),
+                label: None,
+                last_seen_pct: Some(100.0),
+                resets_at: Some(now + 86_400),
+                limit: Some(now - 7200),
+                seen_at: now - 7200,
+            },
+            crate::usage_cache::Window {
+                provider: "antigravity-subscription".into(),
+                account: None,
+                window: "gemini-argon-wtu-weekly".into(),
+                label: None,
+                last_seen_pct: Some(1.0),
+                resets_at: Some(now + 86_400),
+                limit: None,
+                seen_at: now - 7200,
+            },
+        ];
+        let rendered: Vec<String> = cached_lines(&windows, CacheNote::Failed, 60)
+            .iter()
+            .map(line_text)
+            .collect();
+        assert_eq!(rendered.len(), 3);
+        assert!(
+            rendered[0].contains("Weekly \u{b7} Gemini"),
+            "{}",
+            rendered[0]
+        );
+        assert!(
+            rendered[1].contains("Weekly \u{b7} Claude/GPT"),
+            "{}",
+            rendered[1]
+        );
+        assert!(
+            rendered[2].contains("Weekly \u{b7} Argon"),
+            "{}",
+            rendered[2]
+        );
+        assert!(!rendered[1].contains("limit \u{b7} r"), "{}", rendered[1]);
+    }
 }
