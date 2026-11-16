@@ -176,11 +176,6 @@ impl Config {
         let from_saved_model = model_explicit.is_none();
         let model = model_explicit.or(saved.model);
 
-        let base_url = nonempty(cli.base_url.as_deref())
-            .or_else(|| nonempty(env("GRAY_BASE_URL").as_deref()))
-            .or(saved.base_url)
-            .unwrap_or_else(|| DEFAULT_BASE_URL.to_string());
-
         let explicit_key = nonempty(cli.api_key.as_deref())
             .or_else(|| nonempty(env("GRAY_API_KEY").as_deref()))
             .is_some();
@@ -203,7 +198,7 @@ impl Config {
         } else if let Some(p) = nonempty(cli.provider.as_deref()) {
             p.trim().to_string()
         } else if cli.model.is_some() && env("GRAY_PROVIDER_ID").is_some() {
-            String::new()
+            saved.provider_id.trim().to_string()
         } else {
             env("GRAY_PROVIDER_ID")
                 .map(|v| v.trim().to_string())
@@ -238,6 +233,17 @@ impl Config {
         } else {
             model
         };
+        let left_inherited = !inherited_provider.is_empty() && provider_id != inherited_provider;
+        let base_url = nonempty(cli.base_url.as_deref())
+            .or_else(|| {
+                if left_inherited {
+                    None
+                } else {
+                    nonempty(env("GRAY_BASE_URL").as_deref())
+                }
+            })
+            .or(saved.base_url)
+            .unwrap_or_else(|| DEFAULT_BASE_URL.to_string());
         let target_effort = nonempty(model.as_deref()).and_then(|model| {
             saved
                 .effort_memory
