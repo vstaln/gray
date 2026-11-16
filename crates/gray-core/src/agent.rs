@@ -441,6 +441,8 @@ pub struct PickerSpec {
     pub enter: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub keys: Vec<PickerKey>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub cursor_only: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

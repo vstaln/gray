@@ -550,7 +550,7 @@ pub(crate) fn run_spec_picker(
         on_highlight: None,
         gap_before: Some(Box::new(|i: &gray_core::agent::PickerItem| i.gap_before)),
         selected,
-        current: spec.selected_id.is_some().then_some(selected),
+        current: (spec.selected_id.is_some() && !spec.cursor_only).then_some(selected),
     };
     let pick_keys = PickKeys {
         enter: spec.enter.as_deref(),
