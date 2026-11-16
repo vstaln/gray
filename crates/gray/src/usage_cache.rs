@@ -258,6 +258,9 @@ pub(crate) fn for_row(provider: &str, account: Option<&str>, serving: bool) -> V
 
 pub(crate) fn state(window: &Window, now: i64) -> WindowState {
     let exhausted = window.limit.is_some() || window.last_seen_pct.is_some_and(|pct| pct >= 100.0);
+    if exhausted && window.resets_at.is_some_and(|at| at <= now) {
+        return WindowState::Percent(0.0);
+    }
     match window.resets_at {
         Some(at) if exhausted && at > now => {
             return WindowState::Limit {
@@ -370,5 +373,30 @@ mod tests {
             Some("Weekly \u{b7} Claude/GPT")
         );
         assert_eq!(windows[0].limit, Some(150));
+    }
+}
+
+#[cfg(test)]
+mod state_tests {
+    use super::*;
+
+    fn exhausted(resets_at: Option<i64>) -> Window {
+        Window {
+            provider: "p".into(),
+            account: None,
+            window: "weekly".into(),
+            label: None,
+            last_seen_pct: Some(100.0),
+            resets_at,
+            limit: Some(1_000),
+            seen_at: 1_000,
+        }
+    }
+
+    #[test]
+    fn a_window_past_its_reset_stops_reporting_limited() {
+        let w = exhausted(Some(1_500));
+        assert!(matches!(state(&w, 1_400), WindowState::Limit { .. }));
+        assert!(matches!(state(&w, 1_600), WindowState::Percent(_)));
     }
 }
