@@ -922,6 +922,12 @@ const MAX_QUOTA_RESUMES: u8 = 2;
 
 const QUOTA_MARGIN: Duration = Duration::from_secs(30);
 
+const QUOTA_PROBE_FIRST: Duration = Duration::from_secs(30);
+
+const QUOTA_PROBE_EVERY: Duration = Duration::from_secs(15 * 60);
+
+const MAX_QUOTA_PROBES: u16 = 1000;
+
 const CONTINUE_AFTER_QUOTA: &str =
     "Your usage limit has reset. Continue the task where you left off.";
 
@@ -1335,6 +1341,7 @@ async fn run_print_inner(
     let wait_background = background_wait_enabled();
     let exec = agent.executor_handle();
     let mut quota_resumes: u8 = 0;
+    let mut quota_probes: u16 = 0;
     loop {
         if cancel.is_cancelled() {
             break;
@@ -1344,11 +1351,25 @@ async fn run_print_inner(
             let Some(reset_in) = quota_resume_wait(error) else {
                 break;
             };
-            if quota_resumes >= MAX_QUOTA_RESUMES {
-                break;
-            }
-            quota_resumes += 1;
-            let wait = reset_in + QUOTA_MARGIN;
+            let full = reset_in + QUOTA_MARGIN;
+            let cap = if quota_probes == 0 {
+                QUOTA_PROBE_FIRST
+            } else {
+                QUOTA_PROBE_EVERY
+            };
+            let wait = if full > cap {
+                if quota_probes >= MAX_QUOTA_PROBES {
+                    break;
+                }
+                quota_probes += 1;
+                cap
+            } else {
+                if quota_resumes >= MAX_QUOTA_RESUMES {
+                    break;
+                }
+                quota_resumes += 1;
+                full
+            };
             let resume_at = std::time::SystemTime::now() + wait;
             let at: chrono::DateTime<chrono::Local> = resume_at.into();
             let when = format!(
