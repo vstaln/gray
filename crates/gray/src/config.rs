@@ -196,6 +196,10 @@ impl Config {
 
         let provider_id = if drop_plugin {
             String::new()
+        } else if let Some(p) = nonempty(cli.provider.as_deref()) {
+            p.trim().to_string()
+        } else if cli.model.is_some() && env("GRAY_PROVIDER_ID").is_some() {
+            String::new()
         } else {
             env("GRAY_PROVIDER_ID")
                 .map(|v| v.trim().to_string())
@@ -319,10 +323,12 @@ impl Config {
 
         let credential_source = if drop_plugin {
             String::new()
+        } else if provider_id.is_empty() {
+            String::new()
         } else {
             inherited_source
         };
-        let auth_ref = if drop_plugin {
+        let auth_ref = if drop_plugin || provider_id.is_empty() {
             String::new()
         } else {
             env("GRAY_AUTH_REF")
