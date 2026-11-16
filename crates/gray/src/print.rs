@@ -1131,7 +1131,6 @@ async fn run_print_inner(
     if let Some(output) = json.as_deref_mut() {
         output.session_id = Some(session_id.as_str().to_owned());
     }
-    let initial_count = history.len();
     let cancel = tokio_util::sync::CancellationToken::new();
     let ctx = ToolContext {
         cwd: cwd.clone(),
@@ -1227,7 +1226,9 @@ async fn run_print_inner(
     }
     if !history.is_empty() {
         agent = agent.with_messages(history);
+        agent.repair_orphaned_tool_calls();
     }
+    let initial_count = agent.messages().len();
     for w in crate::take_profile_warnings() {
         eprintln!("warning: {w}");
     }

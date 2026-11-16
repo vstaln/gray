@@ -306,7 +306,9 @@ pub(crate) async fn handle_resume(
                             .map(|e| e.message)
                             .collect::<Vec<Message>>(),
                     );
-                    *agent = Some(built.with_messages((*shared_history).clone()));
+                    let mut resumed = built.with_messages((*shared_history).clone());
+                    resumed.repair_orphaned_tool_calls();
+                    *agent = Some(resumed);
 
                     *session_state = Some(SessionState {
                         full_save_pending: false,

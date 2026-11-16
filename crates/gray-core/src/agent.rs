@@ -1132,23 +1132,45 @@ impl Agent {
         self.history_rewritten();
     }
 
-    pub fn repair_dropped_cancel(&mut self, thinking: &str, text: &str) {
+    pub fn repair_orphaned_tool_calls(&mut self) {
+        self.answer_orphaned_tool_calls("interrupted before this tool call completed");
+    }
+
+    fn answer_orphaned_tool_calls(&mut self, reason: &str) {
         let mut answered = std::collections::HashSet::new();
-        let mut orphaned: Vec<String> = Vec::new();
         for message in &self.messages {
             for block in &message.content {
-                match block {
-                    ContentBlock::ToolUse { id, .. } => orphaned.push(id.clone()),
-                    ContentBlock::ToolResult { id, .. } => {
-                        answered.insert(id.clone());
-                    }
-                    _ => {}
+                if let ContentBlock::ToolResult { id, .. } = block {
+                    answered.insert(id.clone());
                 }
             }
         }
-        for id in orphaned.into_iter().filter(|id| !answered.contains(id)) {
-            crate::agent_tools::push_synthetic(self, &id, "cancelled by user");
+        let mut at = 0usize;
+        while at < self.messages.len() {
+            let orphaned: Vec<String> = if self.messages[at].role == Role::Assistant {
+                self.messages[at]
+                    .content
+                    .iter()
+                    .filter_map(|block| match block {
+                        ContentBlock::ToolUse { id, .. } if !answered.contains(id) => {
+                            Some(id.clone())
+                        }
+                        _ => None,
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            at += 1;
+            for id in orphaned {
+                crate::agent_tools::insert_synthetic(self, at, &id, reason);
+                at += 1;
+            }
         }
+    }
+
+    pub fn repair_dropped_cancel(&mut self, thinking: &str, text: &str) {
+        self.answer_orphaned_tool_calls("cancelled by user");
 
         let already_recorded = self.messages[current_turn_start(&self.messages)..]
             .iter()
