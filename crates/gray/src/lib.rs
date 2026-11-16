@@ -391,8 +391,11 @@ async fn build_agent_inner(
         temperature: config.temperature,
         top_p: config.top_p,
 
-        context_window: (!config.bare)
-            .then(|| crate::setup::context::resolve_model_context_length(model)),
+        context_window: (!config.bare
+            || config.context_window.is_some()
+            || config.context_reserve.is_some()
+            || config.compact_at.is_some())
+        .then(|| crate::setup::context::resolve_model_context_length(model)),
         session_id: session_id.map(str::to_string),
         cwd: cwd.to_path_buf(),
 
@@ -464,7 +467,11 @@ async fn build_agent_inner(
     }
 
     let mut agent = agent;
-    if !config.bare {
+    if !config.bare
+        || config.context_window.is_some()
+        || config.context_reserve.is_some()
+        || config.compact_at.is_some()
+    {
         sync_context_budget(&mut agent, config);
     }
 
