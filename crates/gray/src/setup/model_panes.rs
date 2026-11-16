@@ -883,7 +883,7 @@ fn draw(frame: &mut Frame, bg: &BackgroundSnapshot, v: &PaneView) {
             ));
         }
         if v.toggles.fast {
-            head.push(Span::styled(" · fast", fg(t.accent)));
+            head.push(Span::styled(" · Fast", fg(t.accent)));
         }
     }
     let filter_w: usize = filter.iter().map(Span::width).sum();
@@ -1260,14 +1260,12 @@ fn draw(frame: &mut Frame, bg: &BackgroundSnapshot, v: &PaneView) {
             ("↑↓", "move", true),
             ("⇧↑↓", "provider", true),
             ("←→", "effort", has_effort),
-            if has_strip {
-                ("tab", "logins", true)
-            } else {
-                ("tab", "fast", has_fast)
-            },
-            ("^r", "reasoning", true),
-            ("enter", enter, true),
         ];
+        if has_strip {
+            keys.push(("tab", "logins", true));
+        }
+        keys.push(("^f", "fast", has_fast));
+        keys.push(("enter", enter, true));
         if portal_row && v.portal_in {
             keys.push(("L", "log out", true));
         }
@@ -1277,13 +1275,12 @@ fn draw(frame: &mut Frame, bg: &BackgroundSnapshot, v: &PaneView) {
         keys.push(("esc", "close", true));
         keys
     };
-    // ^r is the only way to hide/show thinking — keep it visible longest.
     let footer = crate::repl::picker::key_hints(
         keys,
         if has_strip {
-            &["⇧↑↓", "r", "c", "del", "tab", "^r", "←→"]
+            &["⇧↑↓", "r", "c", "del", "tab", "^f", "←→"]
         } else {
-            &["⇧↑↓", "tab", "del", "^r", "←→"]
+            &["⇧↑↓", "del", "^f", "←→"]
         },
         inner.width as usize,
     );
@@ -1887,6 +1884,7 @@ pub(crate) fn run_model_panes(
                 KeyCode::Esc => return Ok(PanesOutcome::Dismissed),
                 KeyCode::Char('c') if ctrl => return Ok(PanesOutcome::Dismissed),
                 KeyCode::Char('r') if ctrl => toggles.toggle_reasoning(),
+                KeyCode::Char('f') if ctrl => toggles.toggle_fast(fast_supported),
                 KeyCode::Delete => confirm_remove = provider.is_some_and(|p| p.removable),
                 KeyCode::Char('d') if ctrl => {
                     confirm_remove = provider.is_some_and(|p| p.removable);
