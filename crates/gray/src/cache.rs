@@ -126,8 +126,6 @@ pub struct CacheTracker {
     reconnected: bool,
 
     prefix_cause: Option<String>,
-
-    model_switched: bool,
 }
 
 impl CacheTracker {
@@ -199,7 +197,6 @@ impl CacheTracker {
             .unwrap_or(false)
             || reported;
         if prompt_tokens > 0 {
-            self.model_switched = false;
             let was_paused = self.paused_at.is_some();
             self.last = Some(LastRequest {
                 at: now,
@@ -254,7 +251,7 @@ impl CacheTracker {
 
     /// The resend a cold cache would cost now; `None` while warm or unpriced.
     pub fn cold_resend(&self, now: Instant) -> Option<ColdResend> {
-        if self.model_switched || !self.is_cold(now) {
+        if !self.is_cold(now) {
             return None;
         }
         let last = self.last.as_ref()?;
@@ -292,15 +289,10 @@ impl CacheTracker {
         self.reconnected = true;
     }
 
-    pub(crate) fn note_model_change(&mut self) {
-        self.model_switched = true;
-    }
-
     pub fn reset(&mut self) {
         self.last = None;
         self.reconnected = false;
         self.prefix_cause = None;
-        self.model_switched = false;
     }
 }
 
