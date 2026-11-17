@@ -53,6 +53,9 @@ async fn run() -> anyhow::Result<()> {
     install_panic_hook();
     let _ = crossterm::terminal::disable_raw_mode();
     let mut cli = Cli::parse();
+    if let Some(d) = &cli.file_tools {
+        unsafe { std::env::set_var(gray_tools::fs::ENV, d) };
+    }
     if cli.print.as_deref() == Some("-")
         && let Some(gray::Commands::External(words)) = &cli.command
     {

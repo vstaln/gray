@@ -113,7 +113,10 @@ const BARE_SHELL_EXAMPLES: &str = "Useful commands:
 - View lines with numbers: nl -ba path | sed -n '10,20p'";
 
 pub fn bare_sys_prompt() -> String {
-    format!("{BARE_CORE}\n\n{BARE_SHELL_EXAMPLES}")
+    match gray_tools::fs::guidance() {
+        Some(g) => format!("{BARE_CORE}\n\n{g}"),
+        None => format!("{BARE_CORE}\n\n{BARE_SHELL_EXAMPLES}"),
+    }
 }
 
 pub fn sys_prompt_path() -> anyhow::Result<PathBuf> {
@@ -673,6 +676,16 @@ pub struct Cli {
         help = "Bare mode: no plugins, memory, background jobs or auto-compact"
     )]
     pub bare: bool,
+    #[arg(
+        long,
+        value_name = "DIALECT",
+        num_args = 0..=1,
+        default_missing_value = "auto",
+        require_equals = true,
+        help = "Add file tools: plain, claude (Read/Edit/Write/Grep/Glob), codex (apply_patch) or auto by model (env GRAY_FILE_TOOLS)"
+    )]
+    pub file_tools: Option<String>,
+
     #[arg(long, help = "Lean system prompt: skip plugin-provided prompt extras")]
     pub lean: bool,
 

@@ -1,3 +1,4 @@
+pub mod fs;
 pub mod images;
 pub mod shell;
 pub mod video_sheet;
