@@ -164,7 +164,7 @@ pub(super) fn glob(ctx: &ToolContext, args: &Value) -> R {
     if found.is_empty() {
         return Ok("No files found.".into());
     }
-    found.sort_by(|a, b| b.0.cmp(&a.0));
+    found.sort_by_key(|f| std::cmp::Reverse(f.0));
     let total = found.len();
     let mut out: Vec<String> = found
         .iter()
