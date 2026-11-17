@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+## [0.2.26] - 2026-11-17
+
+### Added
+- **Per-model file tool dialects (`--file-tools[=plain|claude|codex|auto]`, `GRAY_FILE_TOOLS`).** Exposes `Read`/`Edit`/`Write`/`Grep`/`Glob` in Claude Code shapes (`claude`), Codex's all-or-nothing `apply_patch` grammar (`codex`), or chooses per model family (`auto`).
+- **Opt-in harness controls for long runs.** `GRAY_PRUNE_TOOL_OUTPUT=1` trims older tool results to head/tail with a spill file before compaction, `GRAY_BASH_YIELD_SECS=N` yields long commands to a background job, and `-p` gains `GRAY_FINISH_CHECK=1` and `GRAY_ENV_SNAPSHOT=1`.
+- **Idle cache warming and verifiable compaction.** `cache_warming` keeps prompt caches warm while idle (off for `-p`, disarms on failed ping or cache miss), and compaction keeps the last 4 turns with `M`/`T`/`L` records and summary linting.
+- **Anthropic adaptive thinking.** Uses adaptive thinking and `output_config.effort` on Claude 4.6+ and 5.x while keeping `budget_tokens` on older and non-Claude models.
+
+### Changed
+- **Toolbox is on by default and inline tool output grows to 32 KiB (`tool_inline_bytes`).** Keeps the plugin/MCP long tail behind `toolbox` while fitting larger inline tool results.
+- **Harness loop reliability.** Adds cutoff recovery nudges, schema-guided tool-argument repair, per-call repeat nudges, context-edge output caps, gitignore-aware directory trees, and `~/.gray/prompt/custom.md` in the system prompt.
+- **Home layout and Fast mode UI.** Pins home notice rows to the bottom of the screen with a single clickable notice strip under the prompt, and updates the model picker Fast mode toggle (`Ctrl+F`) and labels.
+
+### Fixed
+- **Responses API tool calls stay adjacent to their outputs.** Hoists each `function_call_output` directly after its `function_call` run and inserts in-place stubs for missing outputs so strict upstreams accept the turn.
+- **Refreshed plugin manifests, cleaner resume, and explicit flag overrides.** Refreshes a cached `<name>-manifest.json` when the plugin binary is newer, records `.ended` sidecars and answers orphaned tool calls in place on resume, and honors explicit `--model`, `--provider`, and context flags over inherited pins or `--bare` defaults.
+- **Cooling accounts and logins.** Treats cooling-account credential errors as quota waits, refreshes usage only after a successful account switch (`r` refreshes for real), pins long usage notes to a short fallback, and probes early on quota errors in `-p` mode.
+
 ## [0.2.25] - 2026-11-15
 
 ### Changed
