@@ -43,7 +43,6 @@ this row; no verbatim upstream text ships in gray.
 | `crates/gray/src/compact/`, `crates/gray/src/composer/input/` (paste-collapse rule) | https://github.com/badlogic/pi-mono (MIT, Copyright (c) 2025 Mario Zechner) and `reference/prime-agent` (MIT, Copyright (c) 2025 Mario Zechner, (c) 2026 Prime Intellect) | MIT | parity: collapse rule (>10 lines or >1000 chars), own code |
 | `crates/gray-core/src/parallel.rs` (parallel batch lane; `MAX_BATCH`/`MAX_WORKERS` constants parity, no verbatim code) | https://github.com/OnlyTerp/toolrush (MIT, Copyright (c) 2026 OnlyTerp) | MIT | constants parity only |
 | `crates/gray/src/repl/attachments.rs`, `crates/gray/src/repl/format.rs`, skills-dir interop | https://github.com/sst/opencode (MIT, Copyright (c) 2025 opencode) | MIT | parity targets, own code |
-| `crates/gray-tools/src/fs/` (read, edit, write, grep, glob tools) | https://github.com/earendil-works/pi 1.5.2 (MIT, Copyright (c) 2025 Mario Zechner) and https://github.com/anomalyco/opencode 2.2.7 (MIT, Copyright (c) 2025 opencode) | MIT | port: tool semantics and edge cases rewritten in Rust |
 
 ---
 

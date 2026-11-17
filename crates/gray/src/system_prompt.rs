@@ -168,9 +168,6 @@ and its completion wakes you later, so keep working or end your turn instead of 
 
 pub fn harness_facts(cache_ttl: Option<std::time::Duration>) -> String {
     let mut out = format!("{LEAN_GUIDANCE}\n\n{TOOL_BATCHING_GUIDANCE}");
-    if let Some(g) = gray_tools::fs::guidance() {
-        out.push_str(&format!("\n\n{g}"));
-    }
     if let Some(ttl) = cache_ttl.filter(|t| *t <= std::time::Duration::from_secs(20 * 60)) {
         let mins = ttl.as_secs().div_ceil(60).max(1);
         out.push_str(&format!(
