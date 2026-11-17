@@ -26,6 +26,37 @@ pub fn cached_manifest(path: &std::path::Path, lock_name: &str) -> Option<Manife
     Some(m)
 }
 
+pub fn manifest_path(plugins_dir: &std::path::Path, name: &str) -> std::path::PathBuf {
+    plugins_dir.join(format!("{name}-manifest.json"))
+}
+
+fn plugin_binary(argv: &[String]) -> Option<&std::path::Path> {
+    let prog = argv.first()?;
+    let path = std::path::Path::new(prog);
+    if path.is_file() { Some(path) } else { None }
+}
+
+pub fn cache_is_stale(cache: &std::path::Path, argv: &[String]) -> Option<bool> {
+    let binary = plugin_binary(argv)?;
+    let bin_mtime = std::fs::metadata(binary).ok()?.modified().ok()?;
+    let cache_mtime = match std::fs::metadata(cache)
+        .ok()
+        .and_then(|m| m.modified().ok())
+    {
+        Some(t) => t,
+        None => return Some(true),
+    };
+    Some(bin_mtime > cache_mtime)
+}
+
+pub fn persist_manifest(path: &std::path::Path, manifest: &Value) -> std::io::Result<()> {
+    let dir = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+    let mut tmp = tempfile::NamedTempFile::new_in(dir)?;
+    use std::io::Write;
+    writeln!(tmp, "{manifest}")?;
+    tmp.persist(path).map(|_| ()).map_err(|e| e.error)
+}
+
 pub struct LazySidecarPlugin {
     argv: Vec<String>,
     manifest: Manifest,

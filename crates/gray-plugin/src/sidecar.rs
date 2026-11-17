@@ -199,6 +199,7 @@ fn respawn_backoff(failures: u32) -> std::time::Duration {
 
 pub struct SidecarPlugin {
     manifest: Manifest,
+    raw_manifest: Value,
 
     tools: Arc<std::sync::RwLock<Vec<Arc<dyn Tool>>>>,
     transport: Arc<Transport>,
@@ -909,6 +910,10 @@ impl SidecarPlugin {
         }
     }
 
+    pub fn raw_manifest(&self) -> &Value {
+        &self.raw_manifest
+    }
+
     pub async fn spawn(argv: Vec<String>) -> anyhow::Result<Self> {
         let started = std::time::Instant::now();
         let spawned = Self::spawn_inner(argv).await;
@@ -954,6 +959,7 @@ impl SidecarPlugin {
             .unwrap_or_else(|_| ".".to_string());
         let plugin = Self {
             manifest,
+            raw_manifest: result,
             tools,
             transport,
             cwd,

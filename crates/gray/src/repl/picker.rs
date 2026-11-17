@@ -504,6 +504,9 @@ pub(crate) fn run_list_picker_keys<T>(
                         }
                     }
                     KeyCode::Char(c) if !modifiers.contains(KeyModifiers::ALT) => {
+                        if c == ' ' && query.is_empty() {
+                            continue;
+                        }
                         query.push(c);
                         sel = 0;
                         highlight_match(picker, &query);
