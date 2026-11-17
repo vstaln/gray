@@ -29,6 +29,7 @@ pub fn from_plugins(plugins: &[Arc<dyn Plugin>]) -> (Registry, Vec<Manifest>) {
     let mut tools: Vec<Arc<dyn Tool>> = vec![Arc::new(
         gray_tools::BashTool::default().with_plugin_env(merged_shell_env(plugins)),
     )];
+    tools.extend(gray_tools::fs::tools());
     for p in plugins {
         let owner_name = p.manifest().name;
 

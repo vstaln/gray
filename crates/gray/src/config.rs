@@ -144,6 +144,7 @@ impl Config {
         {
             unsafe { std::env::set_var(gray_tools::shell::spawn::EXEC_PREFIX_ENV, prefix) };
         }
+        gray_tools::fs::resolve_auto(config.model.as_deref().unwrap_or(""));
         if config.bare {
             unsafe {
                 std::env::set_var("GRAY_NO_JOBS", "1");
