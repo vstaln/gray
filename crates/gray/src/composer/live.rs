@@ -153,12 +153,7 @@ pub(crate) fn live_tool_rows(
             if let Some(line) = headers.first_mut().filter(|_| t.running)
                 && let Some(started) = t.started
             {
-                let d = started.elapsed();
-                let dur = if d.as_secs() < 60 {
-                    format!("{:.1}s", d.as_secs_f64())
-                } else {
-                    fmt_elapsed_compact(d.as_secs())
-                };
+                let dur = gray_tools::shell::view::format_elapsed(started.elapsed());
                 line.spans.push(Span::styled(
                     format!(" \u{00b7} {dur}"),
                     Style::default().fg(crate::theme::theme().tool_dim),

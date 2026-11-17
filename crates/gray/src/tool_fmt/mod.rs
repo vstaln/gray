@@ -1232,15 +1232,13 @@ pub fn is_background_bash(name: &str, args: Option<&serde_json::Value>) -> bool 
 }
 
 pub fn append_tool_duration(headers: &mut [Line<'static>], elapsed: std::time::Duration) {
-    let ms = elapsed.as_millis().min(u128::from(u64::MAX)) as u64;
-    let dur = crate::repl::format::fmt_duration_ms(ms);
-    append_tool_duration_str(headers, &dur);
+    append_tool_duration_str(headers, &gray_tools::shell::view::format_elapsed(elapsed));
 }
 
 pub fn append_tool_duration_str(headers: &mut [Line<'static>], dur: &str) {
     if let Some(line) = headers.first_mut() {
         line.spans.push(Span::styled(
-            format!(" \u{00b7} ran for {dur}"),
+            format!(" \u{00b7} {dur}"),
             Style::default().fg(crate::theme::theme().tool_dim),
         ));
     }
