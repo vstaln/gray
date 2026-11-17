@@ -109,6 +109,37 @@ fn derived_budget(effort: Option<&str>, max_tokens: u32) -> Option<u32> {
         .filter(|b| *b >= 1024)
 }
 
+fn adaptive_thinking(model: &str) -> bool {
+    let id = model
+        .rsplit('/')
+        .next()
+        .unwrap_or(model)
+        .to_ascii_lowercase();
+    let id = id.strip_prefix("claude-").unwrap_or(&id);
+    let Some(rest) = ["opus-", "sonnet-", "haiku-", "fable-"]
+        .iter()
+        .find_map(|p| id.strip_prefix(p))
+    else {
+        return false;
+    };
+    let mut nums = rest.split(['-', '.', '[']).map(|s| s.parse::<u32>().ok());
+    match (nums.next().flatten(), nums.next().flatten()) {
+        (Some(major), _) if major >= 5 => true,
+        (Some(4), Some(minor)) => (6..100).contains(&minor),
+        _ => false,
+    }
+}
+
+fn adaptive_effort(effort: Option<&str>) -> Option<&'static str> {
+    match effort? {
+        "off" => None,
+        "minimal" | "low" => Some("low"),
+        "medium" => Some("medium"),
+        "max" => Some("max"),
+        _ => Some("high"),
+    }
+}
+
 fn ephemeral() -> Value {
     json!({"type": "ephemeral"})
 }
@@ -280,15 +311,22 @@ pub(crate) fn map_request(
     if !tools.is_empty() {
         body["tools"] = Value::Array(tools);
     }
-    match budget {
-        Some(b) => body["thinking"] = json!({"type": "enabled", "budget_tokens": b}),
+    if adaptive_thinking(model)
+        && let Some(effort) = adaptive_effort(reasoning_effort)
+    {
+        body["thinking"] = json!({"type": "adaptive", "display": "summarized"});
+        body["output_config"] = json!({"effort": effort});
+    } else {
+        match budget {
+            Some(b) => body["thinking"] = json!({"type": "enabled", "budget_tokens": b}),
 
-        None => {
-            if let Some(t) = temperature {
-                body["temperature"] = json!(t.min(1.0));
-            }
-            if let Some(p) = top_p {
-                body["top_p"] = json!(p);
+            None => {
+                if let Some(t) = temperature {
+                    body["temperature"] = json!(t.min(1.0));
+                }
+                if let Some(p) = top_p {
+                    body["top_p"] = json!(p);
+                }
             }
         }
     }
