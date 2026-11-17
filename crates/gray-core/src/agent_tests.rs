@@ -473,10 +473,16 @@ async fn context_overflow_surfaces_actionable_error_when_compact_fails() {
 
 #[tokio::test]
 async fn reasoning_only_maxtokens_is_not_retried_as_empty() {
-    let provider = FakeProvider::new(vec![vec![
-        StreamEvent::thinking_delta("deep reasoning..."),
-        StreamEvent::message_complete(Some(StopReason::MaxTokens), None),
-    ]]);
+    let provider = FakeProvider::new(vec![
+        vec![
+            StreamEvent::thinking_delta("deep reasoning..."),
+            StreamEvent::message_complete(Some(StopReason::MaxTokens), None),
+        ],
+        vec![
+            StreamEvent::text_delta("done"),
+            StreamEvent::message_complete(Some(StopReason::EndTurn), None),
+        ],
+    ]);
     let executor = FakeExecutor::new(ToolOutput::ok("unused"));
     let mut agent = Agent::new(Box::new(provider), Arc::new(executor));
 
@@ -485,24 +491,24 @@ async fn reasoning_only_maxtokens_is_not_retried_as_empty() {
         .await
         .unwrap();
 
-    let empty_ends = events
+    let ends = events
         .iter()
         .filter(|e| matches!(e, AgentEvent::TurnEnd { .. }))
         .count();
-    assert_eq!(empty_ends, 1, "exactly one turn end: {events:?}");
-    let thinking = agent
-        .messages()
-        .last()
-        .map(|m| {
-            m.content
-                .iter()
-                .any(|b| matches!(b, ContentBlock::Thinking { .. }))
+    assert_eq!(ends, 1, "one turn end after the continuation: {events:?}");
+    let msgs = agent.messages();
+    let cut = msgs
+        .iter()
+        .position(|m| {
+            m.role == Role::Assistant
+                && m.content
+                    .iter()
+                    .any(|b| matches!(b, ContentBlock::Thinking { .. }))
         })
-        .unwrap_or(false);
+        .expect("truncated reasoning must persist");
     assert!(
-        thinking,
-        "truncated reasoning must persist: {:?}",
-        agent.messages().last()
+        msgs.get(cut + 1).is_some_and(|m| m.role == Role::User),
+        "continuation nudge follows the cutoff: {msgs:?}"
     );
 }
 
