@@ -771,8 +771,6 @@ impl Agent {
                 hook(&self.messages, self.history_revision()).await;
             }
 
-            self.prune_tool_output();
-
             // A caching provider re-bills the whole prefix after a rewrite
             // (an 86k write to stub ~10k tokens); mask_stale_tool_output on a
             // cold cache and pre-turn compaction cover it instead.

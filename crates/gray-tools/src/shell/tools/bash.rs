@@ -140,8 +140,7 @@ impl Tool for BashTool {
 
         let detach = jobs_enabled();
         let secs = if detach {
-            let bound = explicit.unwrap_or_else(|| block_bound(&command));
-            Some(bound.min(yield_secs().unwrap_or(bound)))
+            Some(explicit.unwrap_or_else(|| block_bound(&command)))
         } else {
             explicit
         };
@@ -346,14 +345,6 @@ fn read_pipestatus(path: Option<&std::path::Path>) -> Option<Vec<i32>> {
 
 fn jobs_enabled() -> bool {
     std::env::var_os("GRAY_NO_JOBS").is_none()
-}
-
-fn yield_secs() -> Option<u64> {
-    std::env::var("GRAY_BASH_YIELD_SECS")
-        .ok()
-        .and_then(|v| v.trim().parse::<u64>().ok())
-        .filter(|&s| s > 0)
-        .map(|s| s.min(MAX_TIMEOUT_SECS))
 }
 
 fn session_key(ctx: &ToolContext) -> String {
@@ -884,11 +875,6 @@ fn handoff_notice(id: &str, secs: u64, handle: &str, stop: &str, log: &Path) -> 
         let view = build_view(log, &summary);
         text.push_str("\nPartial output (snapshot):\n");
         text.push_str(&fence(&squeeze_view(&view.body)));
-    }
-    if yield_secs().is_some() {
-        text.push_str(&format!(
-            "\n[still running after {secs}s as job {id}; its completion will wake you. Keep working or end your turn; do not poll or sleep.]"
-        ));
     }
     ToolOutput::ok(text)
 }

@@ -6,7 +6,6 @@ pub mod compact;
 pub mod composer;
 pub mod config;
 pub(crate) mod default_plugins;
-pub(crate) mod env_snapshot;
 pub(crate) mod failed_turn;
 pub(crate) mod ghost;
 pub mod host;
