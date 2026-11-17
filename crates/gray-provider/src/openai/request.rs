@@ -35,6 +35,17 @@ pub(super) fn is_deepseek_model(model: &str) -> bool {
     model.to_lowercase().contains("deepseek")
 }
 
+pub(super) fn replay_reasoning_all() -> bool {
+    std::env::var("GRAY_REASONING_REPLAY")
+        .map(|s| {
+            !matches!(
+                s.trim().to_ascii_lowercase().as_str(),
+                "0" | "false" | "no" | "off"
+            )
+        })
+        .unwrap_or(true)
+}
+
 pub(crate) fn chat_accepts(media_type: &str) -> bool {
     media_type.starts_with("image/")
         || media_type.starts_with("video/")
@@ -239,7 +250,7 @@ pub(super) fn map_chat_request(
 
                 let joined_thinking = thinking_parts.join("\n");
                 let reasoning_content = (is_deepseek_model(model)
-                    || !joined_thinking.trim().is_empty())
+                    || (replay_reasoning_all() && !joined_thinking.trim().is_empty()))
                 .then_some(joined_thinking);
 
                 messages.push(OpenAiMessageRequest {
