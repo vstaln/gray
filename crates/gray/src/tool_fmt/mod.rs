@@ -1223,6 +1223,44 @@ fn read_header(
     Line::from(spans)
 }
 
+pub fn is_background_bash(name: &str, args: Option<&serde_json::Value>) -> bool {
+    name == "bash"
+        && args
+            .and_then(|a| a.get("background"))
+            .and_then(|v| v.as_bool())
+            == Some(true)
+}
+
+pub fn append_tool_duration(headers: &mut [Line<'static>], elapsed: std::time::Duration) {
+    let ms = elapsed.as_millis().min(u128::from(u64::MAX)) as u64;
+    let dur = crate::repl::format::fmt_duration_ms(ms);
+    append_tool_duration_str(headers, &dur);
+}
+
+pub fn append_tool_duration_str(headers: &mut [Line<'static>], dur: &str) {
+    if let Some(line) = headers.first_mut() {
+        line.spans.push(Span::styled(
+            format!(" \u{00b7} ran for {dur}"),
+            Style::default().fg(crate::theme::theme().tool_dim),
+        ));
+    }
+}
+
+pub fn bash_output_elapsed(output: &str) -> Option<&str> {
+    let line = output.trim_start().lines().next()?.trim();
+    if line.starts_with("still running ") || line.starts_with("job ") {
+        return None;
+    }
+    let field = line.split(" \u{00b7} ").nth(1)?.trim();
+    let valid = !field.is_empty()
+        && field.as_bytes()[0].is_ascii_digit()
+        && (field.ends_with('s') || field.ends_with('m'))
+        && field
+            .bytes()
+            .all(|b| b.is_ascii_digit() || matches!(b, b'.' | b's' | b'm' | b'h'));
+    valid.then_some(field)
+}
+
 pub(crate) fn live_bash_verb(done: &str) -> Option<&'static str> {
     Some(match done {
         "Remembered " => "Remembering ",

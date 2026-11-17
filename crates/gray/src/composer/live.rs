@@ -150,6 +150,20 @@ pub(crate) fn live_tool_rows(
                     draw::shimmer_spans(live.unwrap_or("Running "), elapsed),
                 );
             }
+            if let Some(line) = headers.first_mut().filter(|_| t.running)
+                && let Some(started) = t.started
+            {
+                let d = started.elapsed();
+                let dur = if d.as_secs() < 60 {
+                    format!("{:.1}s", d.as_secs_f64())
+                } else {
+                    fmt_elapsed_compact(d.as_secs())
+                };
+                line.spans.push(Span::styled(
+                    format!(" \u{00b7} {dur}"),
+                    Style::default().fg(crate::theme::theme().tool_dim),
+                ));
+            }
             let mut rows: Vec<Line<'static>> = Vec::new();
             for (i, line) in headers.into_iter().enumerate() {
                 if i == 0 {

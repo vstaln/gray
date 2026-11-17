@@ -669,6 +669,12 @@ fn replay_tool_result(
     if is_error {
         header.truncate(1);
     }
+    if name == "bash"
+        && !crate::tool_fmt::is_background_bash(&name, args.as_ref())
+        && let Some(dur) = crate::tool_fmt::bash_output_elapsed(content)
+    {
+        crate::tool_fmt::append_tool_duration_str(&mut header, dur);
+    }
     let mut lines = crate::tool_fmt::format_tool_result_lines_with_context(
         &name,
         args.as_ref(),

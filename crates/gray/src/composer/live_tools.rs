@@ -10,6 +10,9 @@ impl Tui {
     ) {
         if let Some(slot) = self.live_tools.iter_mut().find(|t| t.id == id) {
             slot.header = header;
+            if running && !slot.running {
+                slot.started = Some(std::time::Instant::now());
+            }
             slot.running = running;
             slot.verbless = verbless;
         } else {
@@ -18,6 +21,7 @@ impl Tui {
                 header,
                 running,
                 verbless,
+                started: running.then(std::time::Instant::now),
                 tail: LiveToolTail::default(),
             });
         }
