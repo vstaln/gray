@@ -763,26 +763,7 @@ pub(super) fn map_chat_to_responses(
         input.push(serde_json::json!({"role":"user","content":""}));
     }
 
-    let answered: std::collections::HashSet<&str> = input
-        .iter()
-        .filter(|v| v.get("type").and_then(Value::as_str) == Some("function_call_output"))
-        .filter_map(|v| v.get("call_id").and_then(Value::as_str))
-        .collect();
-    let orphan_ids: Vec<String> = input
-        .iter()
-        .filter(|v| v.get("type").and_then(Value::as_str) == Some("function_call"))
-        .filter_map(|v| v.get("call_id").and_then(Value::as_str))
-        .filter(|id| !answered.contains(*id))
-        .map(|id| id.to_string())
-        .collect();
-    for id in orphan_ids {
-        log::warn!(target: "gray_provider", "synthesizing missing tool output for orphaned function call {id}");
-        input.push(serde_json::json!({
-            "type": "function_call_output",
-            "call_id": id,
-            "output": "[no tool output — call was interrupted]",
-        }));
-    }
+    let input = pair_tool_outputs(input);
     let tools: Vec<ResponsesTool> = filter_valid_tools(req.tools)
         .into_iter()
         .map(|t| ResponsesTool {
@@ -842,6 +823,84 @@ pub(super) fn apply_dynamic_policy(
         .text_verbosity
         .clone()
         .map(|verbosity| serde_json::json!({"verbosity": verbosity}));
+}
+
+fn is_function_call(item: &Option<Value>) -> bool {
+    item.as_ref()
+        .is_some_and(|v| v.get("type").and_then(Value::as_str) == Some("function_call"))
+}
+
+fn pair_tool_outputs(input: Vec<Value>) -> Vec<Value> {
+    use std::collections::{HashMap, VecDeque};
+
+    let mut items: Vec<Option<Value>> = Vec::with_capacity(input.len());
+    let mut pending: HashMap<String, VecDeque<(usize, Value)>> = HashMap::new();
+    let mut seq = 0usize;
+    for item in input {
+        let output_id = item
+            .get("type")
+            .and_then(Value::as_str)
+            .is_some_and(|t| t == "function_call_output")
+            .then(|| {
+                item.get("call_id")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            })
+            .flatten();
+        match output_id {
+            Some(id) => {
+                pending.entry(id).or_default().push_back((seq, item));
+                items.push(None);
+                seq += 1;
+            }
+            None => items.push(Some(item)),
+        }
+    }
+
+    let mut out: Vec<Value> = Vec::with_capacity(items.len() + 8);
+    let mut i = 0;
+    while i < items.len() {
+        if !is_function_call(&items[i]) {
+            if let Some(item) = items[i].take() {
+                out.push(item);
+            }
+            i += 1;
+            continue;
+        }
+        let mut calls = Vec::new();
+        while i < items.len() && is_function_call(&items[i]) {
+            let item = items[i].take().expect("function_call item");
+            if let Some(id) = item.get("call_id").and_then(Value::as_str) {
+                calls.push(id.to_string());
+            }
+            out.push(item);
+            i += 1;
+        }
+        for id in calls {
+            match pending.get_mut(&id).and_then(VecDeque::pop_front) {
+                Some((_, item)) => out.push(item),
+                None => {
+                    log::warn!(target: "gray_provider", "synthesizing missing tool output for orphaned function call {id}");
+                    out.push(serde_json::json!({
+                        "type": "function_call_output",
+                        "call_id": id,
+                        "output": "[no tool output — call was interrupted]",
+                    }));
+                }
+            }
+        }
+    }
+
+    let mut leftover: Vec<(usize, Value)> = pending.into_values().flatten().collect();
+    if !leftover.is_empty() {
+        leftover.sort_by_key(|(seq, _)| *seq);
+        log::warn!(
+            target: "gray_provider",
+            "dropping {} tool output(s) with no matching call",
+            leftover.len()
+        );
+    }
+    out
 }
 
 pub(super) fn map_responses_reasoning(reasoning_effort: Option<&str>) -> Option<Value> {
