@@ -373,7 +373,6 @@ pub(crate) async fn run_prompt_turn(
         run_streaming_cancellable(agent, user_msg, ctx, &cancel, &mut on_event).await
     };
 
-    let mut retry_msg = user_msg_for_retry.clone();
     let recover = match &run_result {
         Err(e) => {
             tokio::select! {
@@ -388,44 +387,6 @@ pub(crate) async fn run_prompt_turn(
                     e,
                 ) => r,
             }
-        }
-        Ok(evs)
-            if evs.iter().rev().any(|e| {
-                matches!(
-                    e,
-                    AgentEvent::TurnEnd {
-                        stop_reason: gray_core::event::StopReason::MaxTokens,
-                        ..
-                    }
-                )
-            }) =>
-        {
-            let recovered = tokio::select! {
-                _ = cancel.cancelled() => false,
-                r = super::session::recovery_compact(
-                    agent,
-                    config,
-                    &mut *session_state,
-                    cwd,
-                    tui.as_ref().map(|(s, _)| s),
-                    &mut initial_count,
-                    "after truncated response",
-                ) => r,
-            };
-            if recovered {
-                let mut msgs = agent.messages().to_vec();
-                if msgs
-                    .last()
-                    .is_some_and(|m| m.role == gray_core::message::Role::Assistant)
-                {
-                    msgs.pop();
-                    agent.set_messages(msgs);
-                }
-                retry_msg = Message::user_injected(
-                    "the previous response hit the output token limit before completing; context was compacted — continue where you left off",
-                );
-            }
-            recovered
         }
         _ => false,
     };
@@ -454,7 +415,8 @@ pub(crate) async fn run_prompt_turn(
             );
         };
         run_result =
-            run_streaming_cancellable(agent, retry_msg, ctx2, &cancel, &mut on_event2).await;
+            run_streaming_cancellable(agent, user_msg_for_retry, ctx2, &cancel, &mut on_event2)
+                .await;
     }
     turn_cancel.release();
     agent.set_checkpoint(None);

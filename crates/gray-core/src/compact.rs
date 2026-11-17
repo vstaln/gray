@@ -545,6 +545,74 @@ pub(crate) fn split_head_tail(s: &str, usable: usize) -> (&str, &str) {
     (&s[..head_end], &s[tail_start..])
 }
 
+pub(crate) const PRUNE_KEEP_ASSISTANT_MESSAGES: usize = 6;
+
+pub(crate) const PRUNE_MIN_BYTES: usize = 4096;
+
+pub(crate) const PRUNE_KEEP_HEAD_BYTES: usize = 1024;
+
+pub(crate) const PRUNE_KEEP_TAIL_BYTES: usize = 1024;
+
+pub(crate) const PRUNE_FALLBACK_WINDOW: usize = 100_000;
+
+pub(crate) fn needs_prune(estimate: usize, window: Option<usize>, rearm: usize) -> bool {
+    if !std::env::var("GRAY_PRUNE_TOOL_OUTPUT")
+        .is_ok_and(|v| matches!(v.trim(), "1" | "true" | "yes" | "on"))
+    {
+        return false;
+    }
+    let over_ratio = match window {
+        Some(w) => estimate > w / 2,
+        None => estimate > PRUNE_FALLBACK_WINDOW,
+    };
+    over_ratio && estimate > rearm
+}
+
+pub(crate) fn prune_step(window: Option<usize>) -> usize {
+    window.unwrap_or(PRUNE_FALLBACK_WINDOW) / 4
+}
+
+pub(crate) fn prune_old_tool_results(messages: &mut [Message]) -> usize {
+    let mut seen = 0;
+    let mut boundary = 0;
+    for (i, m) in messages.iter().enumerate().rev() {
+        if m.role == Role::Assistant {
+            seen += 1;
+            if seen == PRUNE_KEEP_ASSISTANT_MESSAGES {
+                boundary = i;
+                break;
+            }
+        }
+    }
+    let mut saved = 0;
+    for m in messages[..boundary].iter_mut() {
+        for b in m.content.iter_mut() {
+            let ContentBlock::ToolResult { content, .. } = b else {
+                continue;
+            };
+            if content.len() <= PRUNE_MIN_BYTES {
+                continue;
+            }
+            let Some(handle) = crate::spill::store(content) else {
+                continue;
+            };
+            let Ok(path) = crate::spill::path(&handle) else {
+                continue;
+            };
+            let head = &content[..content.floor_char_boundary(PRUNE_KEEP_HEAD_BYTES)];
+            let tail =
+                &content[content.ceil_char_boundary(content.len() - PRUNE_KEEP_TAIL_BYTES)..];
+            let pruned = content.len() - head.len() - tail.len();
+            *content = format!(
+                "{head}\n[... pruned {pruned} bytes; full output: {} ...]\n{tail}",
+                path.display()
+            );
+            saved += pruned;
+        }
+    }
+    saved
+}
+
 pub(crate) fn anchor_message(messages: &[Message]) -> Option<Message> {
     let first = messages.first()?;
     if first.role != Role::User {

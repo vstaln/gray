@@ -25,6 +25,16 @@ pub fn project_rules_files(cwd: &Path) -> Vec<PathBuf> {
         files.push(global);
     }
     files.reverse();
+    if let Some(custom) = gray_core::paths::gray_home()
+        .map(|h| h.join("prompt").join("custom.md"))
+        .filter(|p| p.is_file())
+    {
+        files.insert(0, custom);
+    }
+    let legacy = cwd.join(".gray-prompt.md");
+    if legacy.is_file() {
+        files.push(legacy);
+    }
     files
 }
 

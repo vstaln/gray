@@ -12,7 +12,88 @@ use crate::event::{
 };
 use crate::message::{ChatRequest, ContentBlock, Message, Role, ThoughtSignature};
 
-const MAX_EMPTY_RETRIES: u8 = 1;
+const MAX_EMPTY_RETRIES: u8 = 2;
+
+const MAX_CUTOFFS: u8 = 3;
+
+const CUTOFF_NUDGE: &str = "Your last response hit the output token limit. Do not apologize, recap, or repeat yourself. Continue in smaller pieces and end with a tool call.";
+
+const OUTPUT_ROOM_CAP: usize = 32_000;
+
+fn sorted_json(value: &serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::Object(map) => {
+            let mut keys: Vec<&String> = map.keys().collect();
+            keys.sort();
+            serde_json::Value::Object(
+                keys.into_iter()
+                    .map(|k| (k.clone(), sorted_json(&map[k])))
+                    .collect(),
+            )
+        }
+        serde_json::Value::Array(items) => {
+            serde_json::Value::Array(items.iter().map(sorted_json).collect())
+        }
+        other => other.clone(),
+    }
+}
+
+fn repeat_nudge(name: &str, count: usize) -> Option<String> {
+    match count {
+        3 => Some(format!("\n\n[gray] This is the 3rd identical {name} call with the same arguments. Read the earlier result; if the task isn't done, change the approach or the arguments.")),
+        5 => Some(format!("\n\n[gray] 5 identical {name} calls in a row. The same call will keep giving the same result: try something different.")),
+        8 => Some("\n\n[gray] 8 identical calls in a row. Stop calling tools and reply with what you have and where you are stuck.".to_string()),
+        _ => None,
+    }
+}
+
+fn repair_args(schema: &serde_json::Value, args: serde_json::Value) -> serde_json::Value {
+    use serde_json::Value;
+    let Value::Object(mut map) = args else {
+        return args;
+    };
+    let required: Vec<&str> = schema
+        .get("required")
+        .and_then(Value::as_array)
+        .map(|r| r.iter().filter_map(Value::as_str).collect())
+        .unwrap_or_default();
+    map.retain(|key, value| !value.is_null() || required.contains(&key.as_str()));
+    let props = schema.get("properties").and_then(Value::as_object);
+    for (key, value) in map.iter_mut() {
+        let Some(ty) = props
+            .and_then(|p| p.get(key))
+            .and_then(|p| p.get("type"))
+            .and_then(Value::as_str)
+        else {
+            continue;
+        };
+        let Value::String(text) = value else {
+            continue;
+        };
+        let parsed = match ty {
+            "integer" => text.trim().parse::<i64>().ok().map(Value::from),
+            "number" => serde_json::from_str::<serde_json::Number>(text.trim())
+                .ok()
+                .map(Value::Number),
+            "boolean" => match text.trim() {
+                "true" => Some(Value::Bool(true)),
+                "false" => Some(Value::Bool(false)),
+                _ => None,
+            },
+            "object" => serde_json::from_str::<Value>(text)
+                .ok()
+                .filter(Value::is_object),
+            "array" => serde_json::from_str::<Value>(text)
+                .ok()
+                .filter(Value::is_array),
+            _ => None,
+        };
+        if let Some(parsed) = parsed {
+            *value = parsed;
+        }
+    }
+    Value::Object(map)
+}
 
 const MAX_ANNOUNCE_NUDGES: u8 = 1;
 
@@ -597,8 +678,9 @@ impl Agent {
         log::info!(target: "gray_agent", "agent run start ({} messages)", self.messages.len());
         let mut events = Vec::new();
 
-        let mut last_sig: Option<String> = None;
-        let mut repeat: usize = 0;
+        let mut call_counts: std::collections::HashMap<String, usize> =
+            std::collections::HashMap::new();
+        let mut cutoffs: u8 = 0;
 
         let mut poll_rounds: usize = 0;
 
@@ -690,6 +772,8 @@ impl Agent {
             if let Some(hook) = self.checkpoint.clone() {
                 hook(&self.messages, self.history_revision()).await;
             }
+
+            self.prune_tool_output();
 
             // A caching provider re-bills the whole prefix after a rewrite
             // (an 86k write to stub ~10k tokens); mask_stale_tool_output on a
@@ -792,7 +876,10 @@ impl Agent {
                 system: (!self.system_text().is_empty()).then(|| self.system_text().to_string()),
                 messages: request_messages,
                 tools: self.request_tools(),
-                max_tokens: None,
+                max_tokens: self.context_window.and_then(|window| {
+                    let room = window.saturating_sub(self.estimate_tokens() + 4096);
+                    (room < OUTPUT_ROOM_CAP).then(|| room.max(1024) as u32)
+                }),
             };
             log::debug!(target: "gray_agent", "request tools: {} defs, {} bytes json", req.tools.len(), serde_json::to_vec(&req.tools).map_or(0, |v| v.len()));
             let prev_len = self.prefix_guard.last().map_or(0, |fp| fp.message_count());
@@ -1398,6 +1485,15 @@ impl Agent {
                     _ => None,
                 })
                 .collect();
+            let tool_uses: Vec<(String, String, serde_json::Value)> = tool_uses
+                .into_iter()
+                .map(
+                    |(id, name, args)| match self.tools.iter().find(|t| t.name == name) {
+                        Some(def) => (id, name, repair_args(&def.parameters, args)),
+                        None => (id, name, args),
+                    },
+                )
+                .collect();
 
             if stop_reason == StopReason::MaxTokens && !tool_uses.is_empty() {
                 for (id, name, args) in &tool_uses {
@@ -1433,6 +1529,17 @@ impl Agent {
                 )));
             } else if !text_is_empty || !tool_uses.is_empty() {
                 empty_retries = 0;
+            }
+
+            if stop_reason == StopReason::MaxTokens && tool_uses.is_empty() {
+                cutoffs += 1;
+                if cutoffs < MAX_CUTOFFS {
+                    self.messages.push(Message::user_injected(CUTOFF_NUDGE));
+                    emit!(AgentEvent::MessageBoundary);
+                    continue 'turn;
+                }
+            } else {
+                cutoffs = 0;
             }
 
             if tool_uses.is_empty() {
@@ -1473,23 +1580,28 @@ impl Agent {
             }
 
             const SIGNATURE_ABORT_REPEATS: usize = 12;
+            let mut nudges: std::collections::HashMap<String, String> =
+                std::collections::HashMap::new();
             {
-                let sig = tool_uses
-                    .iter()
-                    .map(|(_, n, a)| format!("{n}:{a}"))
-                    .collect::<Vec<_>>()
-                    .join("|");
-                if last_sig.as_deref() == Some(&sig) {
-                    repeat += 1;
-                } else {
-                    last_sig = Some(sig.clone());
-                    repeat = 1;
+                let mut next = std::collections::HashMap::new();
+                for (id, name, args) in &tool_uses {
+                    let key = format!("{name}:{}", sorted_json(args));
+                    let count = call_counts.get(&key).copied().unwrap_or(0) + 1;
+                    next.insert(key, count);
+                    if let Some(text) = repeat_nudge(name, count) {
+                        nudges.insert(id.clone(), text);
+                    }
                 }
-                if repeat >= SIGNATURE_ABORT_REPEATS {
+                call_counts = next;
+                if let Some((key, count)) = call_counts
+                    .iter()
+                    .max_by_key(|(_, count)| **count)
+                    .filter(|(_, count)| **count >= SIGNATURE_ABORT_REPEATS)
+                {
                     answer_pending_tools(self, &tool_uses, 0, "aborted: tool loop detected");
                     self.emit_turn_end(&billed).await;
                     return Err(CoreError::LoopDetected(format!(
-                        "same tool call {repeat}× in a row: {sig}"
+                        "same tool call {count}× in a row: {key}"
                     )));
                 }
             }
@@ -1775,6 +1887,19 @@ impl Agent {
                 });
             }
 
+            if !nudges.is_empty() {
+                for block in self.messages[round_start..]
+                    .iter_mut()
+                    .flat_map(|m| m.content.iter_mut())
+                {
+                    if let ContentBlock::ToolResult { id, content, .. } = block
+                        && let Some(text) = nudges.get(id.as_str())
+                    {
+                        content.push_str(text);
+                    }
+                }
+            }
+
             let poll_round = !self.messages[round_start..].is_empty()
                 && self.messages[round_start..].iter().all(|m| {
                     !m.content.is_empty()
@@ -1792,8 +1917,7 @@ impl Agent {
                         "job polling exceeded {poll_rounds} consecutive rounds"
                     )));
                 }
-                repeat = 0;
-                last_sig = None;
+                call_counts.clear();
             } else {
                 poll_rounds = 0;
             }

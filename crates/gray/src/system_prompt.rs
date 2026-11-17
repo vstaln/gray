@@ -34,6 +34,76 @@ pub(crate) fn git_field(cwd: &Path, args: &[&str]) -> Option<String> {
     (!s.is_empty()).then_some(s)
 }
 
+fn git_ignored(cwd: &Path) -> std::collections::HashSet<String> {
+    std::process::Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args([
+            "ls-files",
+            "-z",
+            "-o",
+            "-i",
+            "--exclude-standard",
+            "--directory",
+        ])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .split('\0')
+                .map(|s| s.trim_end_matches('/').to_string())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn dir_tree(cwd: &Path) -> Option<String> {
+    if cwd == Path::new("/") || gray_core::paths::user_home().as_deref() == Some(cwd) {
+        return None;
+    }
+    let ignored = git_ignored(cwd);
+    let list = |rel: &str| -> Vec<(String, bool)> {
+        let mut v: Vec<(String, bool)> = std::fs::read_dir(cwd.join(rel))
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter_map(|e| {
+                let name = e.file_name().into_string().ok()?;
+                let skip = name.starts_with('.')
+                    || name == "target"
+                    || name == "node_modules"
+                    || ignored.contains(&format!("{rel}{name}"));
+                (!skip).then(|| (name, e.path().is_dir()))
+            })
+            .collect();
+        v.sort();
+        v
+    };
+    let top = list("");
+    let shown = top.len().min(15);
+    let mut room = 60 - shown;
+    let mut lines = Vec::new();
+    for (name, is_dir) in &top[..shown] {
+        lines.push(format!("{name}{}", if *is_dir { "/" } else { "" }));
+        if *is_dir && room > 0 {
+            let kids = list(&format!("{name}/"));
+            let n = kids.len().min(15).min(room);
+            room -= n;
+            for (kid, kid_dir) in &kids[..n] {
+                lines.push(format!("  {kid}{}", if *kid_dir { "/" } else { "" }));
+            }
+            if kids.len() > n {
+                lines.push(format!("  ... and {} more", kids.len() - n));
+            }
+        }
+    }
+    if top.len() > shown {
+        lines.push(format!("... and {} more", top.len() - shown));
+    }
+    (!lines.is_empty()).then(|| lines.join("\n"))
+}
+
 pub fn session_card(cwd: &Path) -> String {
     let mut card = format!("Working directory: {}", cwd.display());
     if let Some(root) = git_field(cwd, &["rev-parse", "--show-toplevel"]) {
@@ -41,6 +111,9 @@ pub fn session_card(cwd: &Path) -> String {
         if let Some(branch) = git_field(cwd, &["rev-parse", "--abbrev-ref", "HEAD"]) {
             card.push_str(&format!("  Branch: {branch}"));
         }
+    }
+    if let Some(tree) = dir_tree(cwd) {
+        card.push_str(&format!("\nDirectory listing:\n{tree}"));
     }
     card
 }
@@ -79,6 +152,13 @@ pub fn plugins_block(
     )
 }
 
+const LEAN_GUIDANCE: &str = "\
+Treat a request that could be either a question or a task as a task, and keep going until it is fully resolved; don't give up early or guess at an answer you could check. When you have enough information to act, act: don't re-derive facts already established, re-read a file you just edited, or survey options you won't pursue. Verify by running the change the way it will be used, sized to the change: a check that runs in seconds beats a long sweep, and a check that has passed doesn't need re-running at a larger scale. Once it passes, report briefly and stop.
+
+Before writing new code, check whether the codebase, the standard library, the platform or an installed dependency already does it, and use that. Build what was asked, once: no alternative versions, interfaces with a single implementation, settings for values that never change, or dependencies the task doesn't need. Touch as few files as the change allows. When fixing a bug, find every caller of the code you're changing and fix it where they all pass through. Keep input validation, error handling that prevents data loss, and security checks, even when they cost lines.
+
+Before you finish, re-read the request and check every explicit requirement: names, formats, paths, and each \"must\".";
+
 const TOOL_BATCHING_GUIDANCE: &str = "\
 Tool batching: calls made in one turn all run, possibly concurrently, and their results \
 arrive together, so independent calls (several reads, build and tests) cost one round \
@@ -87,7 +167,10 @@ command still running at its timeout is not killed: it keeps running as a backgr
 and its completion wakes you later, so keep working or end your turn instead of polling.";
 
 pub fn harness_facts(cache_ttl: Option<std::time::Duration>) -> String {
-    let mut out = TOOL_BATCHING_GUIDANCE.to_string();
+    let mut out = format!("{LEAN_GUIDANCE}\n\n{TOOL_BATCHING_GUIDANCE}");
+    if let Some(g) = gray_tools::fs::guidance() {
+        out.push_str(&format!("\n\n{g}"));
+    }
     if let Some(ttl) = cache_ttl.filter(|t| *t <= std::time::Duration::from_secs(20 * 60)) {
         let mins = ttl.as_secs().div_ceil(60).max(1);
         out.push_str(&format!(
