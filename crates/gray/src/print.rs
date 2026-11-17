@@ -556,6 +556,15 @@ fn background_wait_enabled() -> bool {
     )
 }
 
+fn finish_check_enabled() -> bool {
+    std::env::var("GRAY_FINISH_CHECK").is_ok_and(|v| {
+        matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        )
+    })
+}
+
 fn steer_enabled() -> bool {
     std::env::var("GRAY_STDIN_STEER").is_ok_and(|v| {
         matches!(
@@ -931,6 +940,8 @@ const MAX_QUOTA_PROBES: u16 = 1000;
 const CONTINUE_AFTER_QUOTA: &str =
     "Your usage limit has reset. Continue the task where you left off.";
 
+const FINISH_CHECK: &str = "Before you finish: list each explicit requirement in the task (names, paths, formats, numbers, every \"must\") and the evidence that it is met. If any is unmet or unverified, fix or verify it now; otherwise give your final answer.";
+
 fn quota_resume_wait(error: &anyhow::Error) -> Option<Duration> {
     let core = error.downcast_ref::<gray_core::error::CoreError>()?;
     match core.class() {
@@ -1284,6 +1295,9 @@ async fn run_print_inner(
             user_msg.content = content;
         }
     }
+    if resume_target.is_none() {
+        crate::env_snapshot::seed(&mut user_msg, &cwd).await;
+    }
     log::debug!(target: "gray_timing", "spawn_to_ready_ms={}", crate::turn_caps::process_start().elapsed().as_millis());
 
     let sigint_cancel = cancel.clone();
@@ -1297,9 +1311,13 @@ async fn run_print_inner(
     let mut in_flight: HashMap<String, ActiveToolCall> = HashMap::new();
     let mut render_err: Option<std::io::Error> = None;
     let mut turn_usage: Option<gray_core::event::Usage> = None;
+    let stop_reason = std::cell::Cell::new(None::<gray_core::event::StopReason>);
     let turn_start = std::time::Instant::now();
     let render_cancel = cancel.clone();
     let mut on_event = |ev: &AgentEvent| {
+        if let AgentEvent::TurnEnd { stop_reason: r, .. } = ev {
+            stop_reason.set(Some(*r));
+        }
         if let AgentEvent::TurnEnd { usage, .. } = ev {
             match turn_usage.as_mut() {
                 Some(u) => u.accumulate(usage),
@@ -1343,6 +1361,7 @@ async fn run_print_inner(
     let exec = agent.executor_handle();
     let mut quota_resumes: u8 = 0;
     let mut quota_probes: u16 = 0;
+    let mut finish_checked = false;
     loop {
         if cancel.is_cancelled() {
             break;
@@ -1427,6 +1446,24 @@ async fn run_print_inner(
             run_result = agent
                 .run_streaming(
                     gray_core::message::Message::user(text),
+                    ctx.clone(),
+                    &mut on_event,
+                )
+                .await
+                .map_err(map_err);
+            continue;
+        }
+        if !finish_checked
+            && finish_check_enabled()
+            && run_result.is_ok()
+            && stop_reason.get() == Some(gray_core::event::StopReason::EndTurn)
+            && !exec.has_pending_background(&ctx)
+        {
+            finish_checked = true;
+            on_event(&AgentEvent::MessageBoundary);
+            run_result = agent
+                .run_streaming(
+                    gray_core::message::Message::user(FINISH_CHECK),
                     ctx.clone(),
                     &mut on_event,
                 )
