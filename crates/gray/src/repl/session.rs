@@ -571,6 +571,16 @@ pub(crate) struct PendingTool {
     pub(crate) started: Option<std::time::Instant>,
 }
 
+impl PendingTool {
+    pub(crate) fn new(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            args: None,
+            started: None,
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn dispatch_agent_event(
     ev: &AgentEvent,
@@ -618,14 +628,7 @@ pub(crate) fn dispatch_agent_event(
                 t.flush_markdown();
                 t.end_thinking();
                 t.mark_stream_round_boundary();
-                pending_tools.insert(
-                    id.clone(),
-                    PendingTool {
-                        name: name.clone(),
-                        args: None,
-                        started: None,
-                    },
-                );
+                pending_tools.insert(id.clone(), PendingTool::new(name.clone()));
 
                 let header = crate::tool_fmt::format_live_tool_header(
                     name,
@@ -646,11 +649,7 @@ pub(crate) fn dispatch_agent_event(
             } => {
                 pending_tools
                     .entry(id.clone())
-                    .or_insert_with(|| PendingTool {
-                        name: name.clone(),
-                        args: None,
-                        started: None,
-                    });
+                    .or_insert_with(|| PendingTool::new(name.clone()));
                 let header = crate::tool_fmt::format_live_tool_header(
                     name,
                     args_so_far,
@@ -690,8 +689,7 @@ pub(crate) fn dispatch_agent_event(
                     })
                     .or_insert(PendingTool {
                         name: name.clone(),
-                        args: Some(args.clone()),
-                        started: Some(now),
+                        ..PendingTool::new("")
                     });
 
                 let header = tool_header(display, &name, args, Some(cwd));
@@ -875,25 +873,13 @@ pub(crate) fn dispatch_agent_event(
                 print!("{THINKING_STYLE}{delta}\x1b[0m");
             }
             AgentEvent::ToolCallStart { id, name } => {
-                pending_tools.insert(
-                    id.clone(),
-                    PendingTool {
-                        name: name.clone(),
-                        args: None,
-                        started: None,
-                    },
-                );
+                pending_tools.insert(id.clone(), PendingTool::new(name.clone()));
             }
             AgentEvent::ToolCallEnd { id, args } => {
-                let entry = pending_tools.entry(id.clone()).or_insert(PendingTool {
-                    name: String::new(),
-                    args: None,
-                    started: None,
-                });
+                let entry = pending_tools
+                    .entry(id.clone())
+                    .or_insert_with(|| PendingTool::new(""));
                 entry.args = Some(args.clone());
-                if entry.started.is_none() {
-                    entry.started = Some(std::time::Instant::now());
-                }
                 let name = if entry.name.is_empty() {
                     "tool"
                 } else {

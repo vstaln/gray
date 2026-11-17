@@ -460,7 +460,7 @@ impl Config {
 }
 
 pub(crate) fn offline() -> bool {
-    std::env::var("GRAY_OFFLINE").is_ok_and(|v| matches!(v.trim(), "1" | "true" | "yes" | "on"))
+    gray_core::env_flag("GRAY_OFFLINE")
 }
 
 /// Children spawned under this process — plugin sidecars, `gray -p`

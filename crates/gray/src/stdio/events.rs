@@ -132,11 +132,7 @@ pub(crate) fn on_agent_event(
         AgentEvent::ToolCallStart { id, name } => {
             pending_tools.insert(
                 id.clone(),
-                crate::repl::session::PendingTool {
-                    name: name.clone(),
-                    args: None,
-                    started: None,
-                },
+                crate::repl::session::PendingTool::new(name.clone()),
             );
             emit(Event::ToolStart, json!({"id": id, "name": name}));
         }
@@ -147,11 +143,7 @@ pub(crate) fn on_agent_event(
         } => {
             pending_tools
                 .entry(id.clone())
-                .or_insert_with(|| crate::repl::session::PendingTool {
-                    name: name.clone(),
-                    args: None,
-                    started: None,
-                });
+                .or_insert_with(|| crate::repl::session::PendingTool::new(name.clone()));
             emit(
                 Event::ToolProgress,
                 json!({
@@ -162,17 +154,10 @@ pub(crate) fn on_agent_event(
             );
         }
         AgentEvent::ToolCallEnd { id, args } => {
-            let entry = pending_tools.entry(id.clone()).or_insert_with(|| {
-                crate::repl::session::PendingTool {
-                    name: String::new(),
-                    args: None,
-                    started: None,
-                }
-            });
+            let entry = pending_tools
+                .entry(id.clone())
+                .or_insert_with(|| crate::repl::session::PendingTool::new(""));
             entry.args = Some(args.clone());
-            if entry.started.is_none() {
-                entry.started = Some(Instant::now());
-            }
             let name = if entry.name.is_empty() {
                 "tool".to_string()
             } else {

@@ -1,11 +1,6 @@
 use crate::agent::Agent;
 use crate::message::{ContentBlock, Message, Role};
 
-pub(crate) fn push_synthetic(agent: &mut Agent, id: &str, reason: &str) {
-    let at = agent.messages.len();
-    insert_synthetic(agent, at, id, reason);
-}
-
 pub(crate) fn insert_synthetic(agent: &mut Agent, at: usize, id: &str, reason: &str) {
     let at = at.min(agent.messages.len());
     agent.messages.insert(
@@ -43,7 +38,7 @@ pub(crate) fn answer_pending_range(
         .skip(from_idx)
         .take(to_idx.saturating_sub(from_idx))
     {
-        push_synthetic(agent, id, reason);
+        insert_synthetic(agent, agent.messages.len(), id, reason);
     }
 }
 

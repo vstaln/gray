@@ -18,24 +18,6 @@ const CUTOFF_NUDGE: &str = "Your last response hit the output token limit. Do no
 
 const OUTPUT_ROOM_CAP: usize = 32_000;
 
-fn sorted_json(value: &serde_json::Value) -> serde_json::Value {
-    match value {
-        serde_json::Value::Object(map) => {
-            let mut keys: Vec<&String> = map.keys().collect();
-            keys.sort();
-            serde_json::Value::Object(
-                keys.into_iter()
-                    .map(|k| (k.clone(), sorted_json(&map[k])))
-                    .collect(),
-            )
-        }
-        serde_json::Value::Array(items) => {
-            serde_json::Value::Array(items.iter().map(sorted_json).collect())
-        }
-        other => other.clone(),
-    }
-}
-
 fn repeat_nudge(name: &str, count: usize) -> Option<String> {
     match count {
         3 => Some(format!("\n\n[gray] This is the 3rd identical {name} call with the same arguments. Read the earlier result; if the task isn't done, change the approach or the arguments.")),
@@ -1581,7 +1563,7 @@ impl Agent {
             {
                 let mut next = std::collections::HashMap::new();
                 for (id, name, args) in &tool_uses {
-                    let key = format!("{name}:{}", sorted_json(args));
+                    let key = format!("{name}:{args}");
                     let count = call_counts.get(&key).copied().unwrap_or(0) + 1;
                     next.insert(key, count);
                     if let Some(text) = repeat_nudge(name, count) {
@@ -1764,7 +1746,12 @@ impl Agent {
                             }
                             _ => {
                                 shortfall = true;
-                                crate::agent_tools::push_synthetic(self, id, "cancelled by user");
+                                crate::agent_tools::insert_synthetic(
+                                    self,
+                                    self.messages.len(),
+                                    id,
+                                    "cancelled by user",
+                                );
                             }
                         }
                     }

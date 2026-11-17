@@ -540,12 +540,7 @@ fn scrub(text: &str) -> String {
 }
 
 fn stream_text_enabled() -> bool {
-    std::env::var("GRAY_STREAM_TEXT").is_ok_and(|v| {
-        matches!(
-            v.trim().to_ascii_lowercase().as_str(),
-            "1" | "true" | "yes" | "on"
-        )
-    })
+    gray_core::env_flag("GRAY_STREAM_TEXT")
 }
 
 /// `GRAY_PRINT_WAIT_BACKGROUND=0` restores exit-at-turn-end for `-p`.
@@ -557,12 +552,7 @@ fn background_wait_enabled() -> bool {
 }
 
 fn steer_enabled() -> bool {
-    std::env::var("GRAY_STDIN_STEER").is_ok_and(|v| {
-        matches!(
-            v.trim().to_ascii_lowercase().as_str(),
-            "1" | "true" | "yes" | "on"
-        )
-    })
+    gray_core::env_flag("GRAY_STDIN_STEER")
 }
 
 impl JsonOutput {
