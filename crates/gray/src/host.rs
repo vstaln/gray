@@ -422,9 +422,8 @@ async fn list_sessions(params: &serde_json::Value) -> serde_json::Value {
         }
         let id = s.id.as_str();
         let is_running = running.contains(id);
-        let interrupted = crate::resume::session_state(s, &running)
-            == crate::resume::SessionState::Interrupted
-            && crate::resume::system_tag(s).is_none();
+        let interrupted =
+            crate::resume::session_state(s, &running) == crate::resume::SessionState::Interrupted;
         sessions.push(serde_json::json!({
             "id": id,
             "running": is_running,

@@ -117,7 +117,7 @@ pub(crate) const REGISTRY: &[CmdDef] = &[
     },
     CmdDef {
         name: "settings",
-        desc: "auto-continue, away recap, session cleanup",
+        desc: "core toggles & plugin options",
         aliases: &[],
         scope: CmdScope::Global,
         surface: CmdSurface::Interactive,

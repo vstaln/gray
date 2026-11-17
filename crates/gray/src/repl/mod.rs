@@ -394,7 +394,7 @@ pub(crate) fn push_provider_connected(
     }
 
     if let Some(eff) = &config.thinking_effort {
-        t.set_thinking_effort(eff.clone());
+        t.set_thinking_effort(crate::setup::effort_chip(eff, config));
         t.set_hide_thinking(config.reasoning_hidden());
     }
 
@@ -421,7 +421,7 @@ pub(crate) fn model_receipt_label(config: &Config) -> Option<String> {
             crate::setup::composite_label_for(config),
         ) {
             (_, Some(composite)) if config.fast_mode == Some(true) => {
-                format!("{composite} · fast")
+                format!("{composite} · Fast")
             }
             (_, Some(composite)) => composite,
             (Some(eff), None) if crate::setup::supported_thinking_levels(m).len() > 1 => {
@@ -818,7 +818,7 @@ pub async fn run_repl_mode(
 
         let _ = clamp_thinking_to_model(config);
         if let Some(eff) = &config.thinking_effort {
-            t.set_thinking_effort(eff.clone());
+            t.set_thinking_effort(crate::setup::effort_chip(eff, config));
         }
         t.set_hide_thinking(config.reasoning_hidden());
         t.set_cwd(cwd.display().to_string());

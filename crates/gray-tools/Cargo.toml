@@ -16,6 +16,12 @@ uuid = { workspace = true }
 libc = { workspace = true }
 base64 = { workspace = true }
 image = { workspace = true }
+ignore = { workspace = true }
+globset = { workspace = true }
+grep-regex = "0.1"
+grep-searcher = "0.1"
+similar = "2"
+unicode-normalization = "0.1"
 
 # Job Objects own native shell descendants; POSIX process groups cannot model
 # Windows cancellation. Keep Win32 APIs out of Unix builds.

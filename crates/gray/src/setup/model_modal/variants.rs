@@ -188,10 +188,14 @@ pub(super) struct ModelVariantRef {
 }
 
 pub(crate) fn effort_chip(eff: &str, config: &Config) -> String {
-    if config.fast_mode == Some(true) && eff != "off" {
-        format!("{eff}·fast")
+    if eff == "off" {
+        return eff.to_string();
+    }
+    let word = super::super::variants::effort_word(eff);
+    if config.fast_mode == Some(true) {
+        format!("{word} · Fast")
     } else {
-        eff.to_string()
+        word
     }
 }
 

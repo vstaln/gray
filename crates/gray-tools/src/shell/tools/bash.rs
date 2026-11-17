@@ -140,7 +140,8 @@ impl Tool for BashTool {
 
         let detach = jobs_enabled();
         let secs = if detach {
-            Some(explicit.unwrap_or_else(|| block_bound(&command)))
+            let bound = explicit.unwrap_or_else(|| block_bound(&command));
+            Some(bound.min(yield_secs().unwrap_or(bound)))
         } else {
             explicit
         };
@@ -187,8 +188,15 @@ impl Tool for BashTool {
         self.adopt_reported_cwd(ctx, &cwd_report);
 
         if let Some(footer) = self.jobs.footer(ctx, &running_before) {
-            out.content.push('\n');
-            out.content.push_str(&footer);
+            let at = out
+                .content
+                .rfind("\n[")
+                .filter(|&i| {
+                    let line = &out.content[i + 1..];
+                    line.starts_with("[exit code:") || line.starts_with("[killed:")
+                })
+                .unwrap_or(out.content.len());
+            out.content.insert_str(at, &format!("\n{footer}"));
         }
         out
     }
@@ -338,6 +346,14 @@ fn read_pipestatus(path: Option<&std::path::Path>) -> Option<Vec<i32>> {
 
 fn jobs_enabled() -> bool {
     std::env::var_os("GRAY_NO_JOBS").is_none()
+}
+
+fn yield_secs() -> Option<u64> {
+    std::env::var("GRAY_BASH_YIELD_SECS")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .filter(|&s| s > 0)
+        .map(|s| s.min(MAX_TIMEOUT_SECS))
 }
 
 fn session_key(ctx: &ToolContext) -> String {
@@ -748,6 +764,7 @@ async fn settle_command(
         start,
         first,
         pipe_stages,
+        timed_out.then(|| format!("[killed: timeout after {}s]", secs.unwrap_or_default())),
     ))
 }
 
@@ -868,6 +885,11 @@ fn handoff_notice(id: &str, secs: u64, handle: &str, stop: &str, log: &Path) -> 
         text.push_str("\nPartial output (snapshot):\n");
         text.push_str(&fence(&squeeze_view(&view.body)));
     }
+    if yield_secs().is_some() {
+        text.push_str(&format!(
+            "\n[still running after {secs}s as job {id}; its completion will wake you. Keep working or end your turn; do not poll or sleep.]"
+        ));
+    }
     ToolOutput::ok(text)
 }
 
@@ -935,6 +957,7 @@ fn finish_inline(
     start: Instant,
     first_line: Option<String>,
     pipe_stages: Option<Vec<i32>>,
+    killed: Option<String>,
 ) -> ToolOutput {
     let elapsed = start.elapsed();
     let report = exit_report(status, command, pipe_stages.as_deref());
@@ -970,6 +993,12 @@ fn finish_inline(
         }
         out.push_str(&format!("\nRead more: {command}"));
     }
+    out.push('\n');
+    out.push_str(
+        &killed.unwrap_or_else(|| {
+            format!("[exit code: {}, {}]", report.code, format_elapsed(elapsed))
+        }),
+    );
     ToolOutput::ok(out)
 }
 

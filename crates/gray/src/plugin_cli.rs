@@ -1385,10 +1385,10 @@ async fn register_native_gated(
         },
     );
 
-    let mut metadata = tempfile::NamedTempFile::new_in(home.join("plugins"))?;
-    use std::io::Write;
-    writeln!(metadata, "{}", manifest)?;
-    metadata.persist(home.join("plugins").join(format!("{name}-manifest.json")))?;
+    gray_plugin::lazy::persist_manifest(
+        &gray_plugin::lazy::manifest_path(&home.join("plugins"), &name),
+        &manifest,
+    )?;
     lock.save(&gray_plugin::lock::lock_path(home))?;
     if !(manifest["widget"].as_bool() == Some(true) && !wire_only) {
         let widgets = home.join("plugins/widgets.json");
@@ -1466,10 +1466,10 @@ pub(crate) async fn adopt_cli(
                 .collect();
             entry.cli_argv = Some(vec![exe]);
 
-            let mut metadata = tempfile::NamedTempFile::new_in(&plugins)?;
-            use std::io::Write;
-            writeln!(metadata, "{manifest}")?;
-            metadata.persist(plugins.join(format!("{name}-manifest.json")))?;
+            gray_plugin::lazy::persist_manifest(
+                &gray_plugin::lazy::manifest_path(&plugins, name),
+                &manifest,
+            )?;
             lock.save(&lock_path)?;
 
             crate::providers::ProviderRegistry::refresh(home)?;

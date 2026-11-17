@@ -131,6 +131,12 @@ pub(super) fn summarize_session_file(
         }
     }
 
+    if last_end != SessionEnd::Done
+        && read_turn_end(root, stem).is_some_and(|at| at >= last_message_at)
+    {
+        last_end = SessionEnd::Done;
+    }
+
     Some(SessionFileRead::Summary(SessionSummary {
         id: header.id,
         started_at: header.timestamp,

@@ -35,7 +35,11 @@ pub fn exit_report(
     } else {
         None
     };
-    ExitReport { label, note }
+    ExitReport {
+        label,
+        note,
+        code: effective,
+    }
 }
 
 fn signal_name(sig: i32) -> String {

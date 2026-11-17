@@ -13,6 +13,8 @@ pub(crate) struct Window {
     #[serde(default)]
     pub(crate) account: Option<String>,
     pub(crate) window: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) label: Option<String>,
     #[serde(default)]
     pub(crate) last_seen_pct: Option<f64>,
     #[serde(default)]
@@ -110,6 +112,9 @@ fn upsert(windows: &mut Vec<Window>, next: Window) {
         if next.limit.is_some() {
             slot.limit = next.limit;
         }
+        if next.label.is_some() {
+            slot.label = next.label;
+        }
         slot.seen_at = next.seen_at;
         return;
     }
@@ -126,6 +131,11 @@ pub(crate) fn record_usage(provider: &str, accounts: &Value) {
             let Some(id) = window["id"].as_str().or_else(|| window["label"].as_str()) else {
                 continue;
             };
+            let display_label = window["label"]
+                .as_str()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string);
             let pct = window["used_percent"].as_f64();
             upsert(
                 &mut windows,
@@ -133,6 +143,7 @@ pub(crate) fn record_usage(provider: &str, accounts: &Value) {
                     provider: provider.clone(),
                     account: label.clone(),
                     window: id.to_lowercase(),
+                    label: display_label,
                     last_seen_pct: pct,
                     resets_at: window["resets_at"].as_str().and_then(iso_epoch),
                     limit: pct.filter(|pct| *pct >= 100.0).map(|_| now),
@@ -165,6 +176,7 @@ pub(crate) fn record_health(provider: &str, accounts: &Value) {
                 provider: provider.clone(),
                 account: Some(label.to_string()),
                 window,
+                label: None,
                 last_seen_pct: None,
                 resets_at: Some(until),
                 limit: Some(now),
@@ -189,6 +201,7 @@ pub(crate) fn note_quota(provider: &str, message: &str, resets_in: Option<std::t
             provider: provider_key(provider).to_string(),
             account: None,
             window,
+            label: None,
             last_seen_pct: None,
             resets_at,
             limit: Some(now),
@@ -245,6 +258,9 @@ pub(crate) fn for_row(provider: &str, account: Option<&str>, serving: bool) -> V
 
 pub(crate) fn state(window: &Window, now: i64) -> WindowState {
     let exhausted = window.limit.is_some() || window.last_seen_pct.is_some_and(|pct| pct >= 100.0);
+    if exhausted && window.resets_at.is_some_and(|at| at <= now) {
+        return WindowState::Percent(0.0);
+    }
     match window.resets_at {
         Some(at) if exhausted && at > now => {
             return WindowState::Limit {
@@ -276,7 +292,24 @@ pub(crate) fn window_label(id: &str) -> String {
         "five_hour" => "Session".to_string(),
         "seven_day" | "weekly" => "Weekly".to_string(),
         "daily" => "Daily".to_string(),
+        "iguana_necktie" => "Monthly overage".to_string(),
+        "gemini-weekly" => "Weekly \u{b7} Gemini".to_string(),
+        "gemini-5h" => "5h \u{b7} Gemini".to_string(),
+        "3p-weekly" => "Weekly \u{b7} Claude/GPT".to_string(),
+        "3p-5h" => "5h \u{b7} Claude/GPT".to_string(),
+        "gemini-argon-wtu-weekly" => "Weekly \u{b7} Argon".to_string(),
+        "gemini-argon-wtu-5h" => "5h \u{b7} Argon".to_string(),
         other => {
+            if let Some(rest) = other.strip_prefix("seven_day_") {
+                let mut chars = rest.replace('_', " ").chars().collect::<Vec<_>>();
+                if let Some(first) = chars.first_mut() {
+                    *first = first.to_ascii_uppercase();
+                }
+                let model: String = chars.into_iter().collect();
+                if !model.is_empty() {
+                    return format!("Weekly \u{b7} {model}");
+                }
+            }
             let words = other.replace(['_', '-'], " ");
             let mut chars = words.trim().chars();
             match chars.next() {
@@ -284,5 +317,86 @@ pub(crate) fn window_label(id: &str) -> String {
                 None => String::new(),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn window_label_cleans_antigravity_and_claude_ids() {
+        assert_eq!(window_label("gemini-weekly"), "Weekly \u{b7} Gemini");
+        assert_eq!(window_label("gemini-5h"), "5h \u{b7} Gemini");
+        assert_eq!(window_label("3p-weekly"), "Weekly \u{b7} Claude/GPT");
+        assert_eq!(window_label("3p-5h"), "5h \u{b7} Claude/GPT");
+        assert_eq!(
+            window_label("gemini-argon-wtu-weekly"),
+            "Weekly \u{b7} Argon"
+        );
+        assert_eq!(window_label("seven_day_fable"), "Weekly \u{b7} Fable");
+        assert_eq!(window_label("iguana_necktie"), "Monthly overage");
+    }
+
+    #[test]
+    fn upsert_preserves_display_label_when_later_update_has_none() {
+        let mut windows = Vec::new();
+        upsert(
+            &mut windows,
+            Window {
+                provider: "antigravity-subscription".into(),
+                account: None,
+                window: "3p-weekly".into(),
+                label: Some("Weekly \u{b7} Claude/GPT".into()),
+                last_seen_pct: Some(50.0),
+                resets_at: None,
+                limit: None,
+                seen_at: 100,
+            },
+        );
+        upsert(
+            &mut windows,
+            Window {
+                provider: "antigravity-subscription".into(),
+                account: None,
+                window: "3p-weekly".into(),
+                label: None,
+                last_seen_pct: None,
+                resets_at: Some(200),
+                limit: Some(150),
+                seen_at: 150,
+            },
+        );
+        assert_eq!(windows.len(), 1);
+        assert_eq!(
+            windows[0].label.as_deref(),
+            Some("Weekly \u{b7} Claude/GPT")
+        );
+        assert_eq!(windows[0].limit, Some(150));
+    }
+}
+
+#[cfg(test)]
+mod state_tests {
+    use super::*;
+
+    fn exhausted(resets_at: Option<i64>) -> Window {
+        Window {
+            provider: "p".into(),
+            account: None,
+            window: "weekly".into(),
+            label: None,
+            last_seen_pct: Some(100.0),
+            resets_at,
+            limit: Some(1_000),
+            seen_at: 1_000,
+        }
+    }
+
+    #[test]
+    fn a_window_past_its_reset_stops_reporting_limited() {
+        let w = exhausted(Some(1_500));
+        assert!(matches!(state(&w, 1_400), WindowState::Limit { .. }));
+        assert!(matches!(state(&w, 1_600), WindowState::Percent(_)));
     }
 }

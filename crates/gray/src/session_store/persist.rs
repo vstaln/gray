@@ -647,7 +647,7 @@ impl JsonlSessionStore {
             Err(e) => return Err(SessionError::Io(e)),
         }
 
-        for ext in ["dismissed", "title", "autotitle", "prefix"] {
+        for ext in ["dismissed", "ended", "title", "autotitle", "prefix"] {
             let sidecar = self.root_dir.join(format!("{}.{ext}", id.as_str()));
             let _ = tokio::fs::remove_file(&sidecar).await;
         }

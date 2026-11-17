@@ -33,6 +33,7 @@ pub const EXIT_STDIO_GRACE_MS: u64 = 100;
 pub struct ExitReport {
     pub label: String,
     pub note: Option<String>,
+    pub code: i32,
 }
 
 pub struct View {

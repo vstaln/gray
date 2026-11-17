@@ -56,6 +56,18 @@ fn turn_tool_context(
     }
 }
 
+fn mark_turn_ended(session_state: &Option<SessionState>) {
+    if let Some(state) = session_state {
+        let _ = crate::session_store::write_turn_end(state.store.root_dir(), &state.session_id);
+    }
+}
+
+fn mark_turn_started(session_state: &Option<SessionState>) {
+    if let Some(state) = session_state {
+        crate::session_store::clear_turn_end(state.store.root_dir(), &state.session_id);
+    }
+}
+
 fn slow_turn_end_step(step: &str, since: std::time::Instant) {
     let took = since.elapsed();
     if took > std::time::Duration::from_secs(5) {
@@ -292,6 +304,7 @@ pub(crate) async fn run_prompt_turn(
     let history_revision = agent.history_revision();
 
     super::session::ensure_session_state(&mut *session_state, config, cwd).await;
+    mark_turn_started(&*session_state);
 
     if let Some(sid) = session_state.as_ref().map(|s| s.session_id.as_str()) {
         agent.repin_session_id(sid);
@@ -360,7 +373,6 @@ pub(crate) async fn run_prompt_turn(
         run_streaming_cancellable(agent, user_msg, ctx, &cancel, &mut on_event).await
     };
 
-    let mut retry_msg = user_msg_for_retry.clone();
     let recover = match &run_result {
         Err(e) => {
             tokio::select! {
@@ -375,44 +387,6 @@ pub(crate) async fn run_prompt_turn(
                     e,
                 ) => r,
             }
-        }
-        Ok(evs)
-            if evs.iter().rev().any(|e| {
-                matches!(
-                    e,
-                    AgentEvent::TurnEnd {
-                        stop_reason: gray_core::event::StopReason::MaxTokens,
-                        ..
-                    }
-                )
-            }) =>
-        {
-            let recovered = tokio::select! {
-                _ = cancel.cancelled() => false,
-                r = super::session::recovery_compact(
-                    agent,
-                    config,
-                    &mut *session_state,
-                    cwd,
-                    tui.as_ref().map(|(s, _)| s),
-                    &mut initial_count,
-                    "after truncated response",
-                ) => r,
-            };
-            if recovered {
-                let mut msgs = agent.messages().to_vec();
-                if msgs
-                    .last()
-                    .is_some_and(|m| m.role == gray_core::message::Role::Assistant)
-                {
-                    msgs.pop();
-                    agent.set_messages(msgs);
-                }
-                retry_msg = Message::user_injected(
-                    "the previous response hit the output token limit before completing; context was compacted — continue where you left off",
-                );
-            }
-            recovered
         }
         _ => false,
     };
@@ -441,7 +415,8 @@ pub(crate) async fn run_prompt_turn(
             );
         };
         run_result =
-            run_streaming_cancellable(agent, retry_msg, ctx2, &cancel, &mut on_event2).await;
+            run_streaming_cancellable(agent, user_msg_for_retry, ctx2, &cancel, &mut on_event2)
+                .await;
     }
     turn_cancel.release();
     agent.set_checkpoint(None);
@@ -514,6 +489,7 @@ pub(crate) async fn run_prompt_turn(
                 turn_duration_ms,
             )
             .await;
+            mark_turn_ended(&*session_state);
             if interactive {
                 if let Some((shared, _)) = tui {
                     let mut t = shared.lock().expect("tui lock");
@@ -540,6 +516,7 @@ pub(crate) async fn run_prompt_turn(
                 turn_duration_ms,
             )
             .await;
+            mark_turn_ended(&*session_state);
             let msg = format_core_error(&e, &config.base_url);
             if let gray_core::error::CoreError::Quota { message, resets_in } = e.class() {
                 crate::usage_cache::note_quota(&config.provider_id, message, *resets_in);

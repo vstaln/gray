@@ -29,6 +29,7 @@ pub fn from_plugins(plugins: &[Arc<dyn Plugin>]) -> (Registry, Vec<Manifest>) {
     let mut tools: Vec<Arc<dyn Tool>> = vec![Arc::new(
         gray_tools::BashTool::default().with_plugin_env(merged_shell_env(plugins)),
     )];
+    tools.extend(gray_tools::fs::tools());
     for p in plugins {
         let owner_name = p.manifest().name;
 
@@ -560,13 +561,18 @@ async fn spawn_lock_plugin(
         }
     };
 
+    let lazy_cache = pdir.map(|pd| crate::lazy::manifest_path(pd, name));
+    let cache_stale = lazy_cache
+        .as_deref()
+        .and_then(|cache| crate::lazy::cache_is_stale(cache, &argv));
     let lazy_manifest = if crate::lazy::lazy_enabled() {
-        pdir.and_then(|pd| {
-            crate::lazy::cached_manifest(&pd.join(format!("{name}-manifest.json")), name)
-        })
-        // autostart plugins own background work the session needs (cron
-        // ticks); they spawn eagerly like profile sidecars
-        .filter(|m| !(m.autostart && AUTOSTART.load(std::sync::atomic::Ordering::Relaxed)))
+        lazy_cache
+            .as_deref()
+            .filter(|_| cache_stale != Some(true))
+            .and_then(|cache| crate::lazy::cached_manifest(cache, name))
+            // autostart plugins own background work the session needs (cron
+            // ticks); they spawn eagerly like profile sidecars
+            .filter(|m| !(m.autostart && AUTOSTART.load(std::sync::atomic::Ordering::Relaxed)))
     } else {
         None
     };
@@ -590,6 +596,14 @@ async fn spawn_lock_plugin(
             }
 
             p.set_capabilities(p.manifest().capabilities.to_vec());
+            if cache_stale == Some(true)
+                && p.manifest().name == name
+                && p.manifest().protocol.as_deref() != Some(crate::DYNAMIC_PROTOCOL)
+                && let Some(cache) = lazy_cache.as_deref()
+                && let Err(e) = crate::lazy::persist_manifest(cache, p.raw_manifest())
+            {
+                log::debug!(target: "gray_plugin", "could not refresh cached manifest for {name:?}: {e}");
+            }
             outcomes.push(SpawnOutcome {
                 name: name.to_string(),
                 error: None,

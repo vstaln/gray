@@ -144,6 +144,7 @@ impl Config {
         {
             unsafe { std::env::set_var(gray_tools::shell::spawn::EXEC_PREFIX_ENV, prefix) };
         }
+        gray_tools::fs::resolve_auto(config.model.as_deref().unwrap_or(""));
         if config.bare {
             unsafe {
                 std::env::set_var("GRAY_NO_JOBS", "1");
@@ -171,14 +172,10 @@ impl Config {
         );
 
         let saved_model = saved.model.clone();
-        let model = nonempty(cli.model.as_deref())
-            .or_else(|| nonempty(env("GRAY_MODEL").as_deref()))
-            .or(saved.model);
-
-        let base_url = nonempty(cli.base_url.as_deref())
-            .or_else(|| nonempty(env("GRAY_BASE_URL").as_deref()))
-            .or(saved.base_url)
-            .unwrap_or_else(|| DEFAULT_BASE_URL.to_string());
+        let model_explicit =
+            nonempty(cli.model.as_deref()).or_else(|| nonempty(env("GRAY_MODEL").as_deref()));
+        let from_saved_model = model_explicit.is_none();
+        let model = model_explicit.or(saved.model);
 
         let explicit_key = nonempty(cli.api_key.as_deref())
             .or_else(|| nonempty(env("GRAY_API_KEY").as_deref()))
@@ -194,13 +191,60 @@ impl Config {
                 "explicit API key given: ignoring plugin provider selection");
         }
 
+        let inherited_provider = env("GRAY_PROVIDER_ID")
+            .map(|v| v.trim().to_string())
+            .unwrap_or_default();
         let provider_id = if drop_plugin {
             String::new()
+        } else if let Some(p) = nonempty(cli.provider.as_deref()) {
+            p.trim().to_string()
+        } else if cli.model.is_some() && env("GRAY_PROVIDER_ID").is_some() {
+            saved.provider_id.trim().to_string()
         } else {
             env("GRAY_PROVIDER_ID")
                 .map(|v| v.trim().to_string())
                 .unwrap_or_else(|| nonempty(Some(saved.provider_id.as_str())).unwrap_or_default())
         };
+        // A pin inherited from the parent session names a different provider
+        // than the saved config, so the saved model belongs to a provider we
+        // are not talking to. Pairing them sends (say) a deepseek id to a
+        // claude endpoint, which answers 404 "model may not exist" and is
+        // indistinguishable from a real entitlement problem. Drop the stale
+        // saved model and let the provider pick its own default.
+        let model =
+            if from_saved_model && !provider_id.is_empty() && provider_id != saved.provider_id {
+                None
+            } else {
+                model
+            };
+        // An inherited pin with no inherited model is a half-pair from an old
+        // parent: trust the saved provider and model instead of pairing a
+        // foreign model with it.
+        let provider_id = if from_saved_model
+            && !saved.provider_id.is_empty()
+            && provider_id != saved.provider_id
+            && env("GRAY_MODEL").is_none()
+        {
+            saved.provider_id.clone()
+        } else {
+            provider_id
+        };
+        let model = if model.is_none() {
+            saved_model.clone()
+        } else {
+            model
+        };
+        let left_inherited = !inherited_provider.is_empty() && provider_id != inherited_provider;
+        let base_url = nonempty(cli.base_url.as_deref())
+            .or_else(|| {
+                if left_inherited {
+                    None
+                } else {
+                    nonempty(env("GRAY_BASE_URL").as_deref())
+                }
+            })
+            .or(saved.base_url)
+            .unwrap_or_else(|| DEFAULT_BASE_URL.to_string());
         let target_effort = nonempty(model.as_deref()).and_then(|model| {
             saved
                 .effort_memory
@@ -247,45 +291,30 @@ impl Config {
 
         let bare = cli.bare || env("GRAY_BARE").is_some_and(|v| v.trim() == "1");
 
-        let context_window = (!bare)
-            .then(|| {
-                cli.context_window
-                    .or_else(|| {
-                        env("GRAY_CONTEXT_WINDOW")
-                            .and_then(|s| crate::setup::parse_context_window(&s))
-                    })
-                    .or(saved.context_window)
+        let context_window = cli
+            .context_window
+            .or_else(|| {
+                env("GRAY_CONTEXT_WINDOW").and_then(|s| crate::setup::parse_context_window(&s))
             })
-            .flatten();
+            .or(if bare { None } else { saved.context_window });
 
-        let context_reserve = (!bare)
-            .then(|| {
-                cli.context_reserve
-                    .or_else(|| {
-                        env("GRAY_CONTEXT_RESERVE")
-                            .and_then(|s| crate::setup::parse_context_window(&s))
-                    })
-                    .or(saved.context_reserve)
+        let context_reserve = cli
+            .context_reserve
+            .or_else(|| {
+                env("GRAY_CONTEXT_RESERVE").and_then(|s| crate::setup::parse_context_window(&s))
             })
-            .flatten();
+            .or(if bare { None } else { saved.context_reserve });
 
-        let compact_at = (!bare)
-            .then(|| {
-                cli.compact_at
-                    .or(env("GRAY_COMPACT_AT").and_then(|s| crate::setup::parse_compact_at(&s)))
-                    .or(saved.compact_at)
+        let compact_at = cli
+            .compact_at
+            .or(env("GRAY_COMPACT_AT").and_then(|s| crate::setup::parse_compact_at(&s)))
+            .or(if bare { None } else { saved.compact_at });
+        let context_keep = cli
+            .context_keep
+            .or_else(|| {
+                env("GRAY_CONTEXT_KEEP").and_then(|s| crate::setup::parse_context_window(&s))
             })
-            .flatten();
-        let context_keep = (!bare)
-            .then(|| {
-                cli.context_keep
-                    .or_else(|| {
-                        env("GRAY_CONTEXT_KEEP")
-                            .and_then(|s| crate::setup::parse_context_window(&s))
-                    })
-                    .or(saved.context_keep)
-            })
-            .flatten();
+            .or(if bare { None } else { saved.context_keep });
 
         let exec_prefix = nonempty(env("GRAY_EXEC_PREFIX").as_deref()).or(saved.exec_prefix);
 
@@ -332,13 +361,23 @@ impl Config {
             .map(|m| m.trim().to_string())
             .filter(|m| !m.is_empty());
 
-        let credential_source = if drop_plugin {
+        // A fallback to the saved provider must take the saved credential
+        // source with it: keeping an inherited "plugin" source makes a
+        // key-based provider like commandcode look like a missing plugin.
+        let fell_back_to_saved = !saved.provider_id.is_empty()
+            && provider_id == saved.provider_id
+            && provider_id != inherited_provider;
+        let credential_source = if drop_plugin || provider_id.is_empty() {
             String::new()
+        } else if fell_back_to_saved {
+            saved.credential_source.clone()
         } else {
             inherited_source
         };
-        let auth_ref = if drop_plugin {
+        let auth_ref = if drop_plugin || provider_id.is_empty() {
             String::new()
+        } else if fell_back_to_saved {
+            saved.auth_ref.clone()
         } else {
             env("GRAY_AUTH_REF")
                 .map(|v| v.trim().to_string())
@@ -435,9 +474,20 @@ pub(crate) fn export_provider_env(config: &Config) {
             std::env::set_var("GRAY_PROVIDER_ID", &config.provider_id);
             std::env::set_var("GRAY_AUTH_REF", &config.auth_ref);
             std::env::set_var("GRAY_CREDENTIAL_SOURCE", "plugin");
+            // Pin the model too. A provider pin without its model is a
+            // half-pair: the child resolves the provider from the parent and
+            // the model from the saved config, which may belong to a
+            // different provider and comes back 404 "model may not exist".
+            match config.model.as_deref() {
+                Some(m) if !m.is_empty() => std::env::set_var("GRAY_MODEL", m),
+                _ => std::env::remove_var("GRAY_MODEL"),
+            }
+            std::env::set_var("GRAY_BASE_URL", &config.base_url);
         } else {
             std::env::remove_var("GRAY_PROVIDER_ID");
             std::env::remove_var("GRAY_AUTH_REF");
+            std::env::remove_var("GRAY_MODEL");
+            std::env::remove_var("GRAY_BASE_URL");
             if std::env::var("GRAY_CREDENTIAL_SOURCE").as_deref() == Ok("plugin") {
                 std::env::remove_var("GRAY_CREDENTIAL_SOURCE");
             }

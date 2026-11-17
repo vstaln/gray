@@ -111,6 +111,7 @@ pub(crate) fn session_state(
     if running.contains(s.id.as_str()) {
         SessionState::Running
     } else if s.last_end != SessionEnd::Done
+        && system_tag(s).is_none()
         && s.dismissed_at != Some(s.last_message_at)
         && s.last_message_at.saturating_sub(s.started_at) >= MIN_INTERRUPTED_SPAN_MS
     {

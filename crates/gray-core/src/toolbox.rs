@@ -9,6 +9,17 @@ pub const NAME: &str = "toolbox";
 
 pub const DIRECT: &[&str] = &[
     "bash",
+    "read",
+    "edit",
+    "write",
+    "grep",
+    "glob",
+    "Read",
+    "Edit",
+    "Write",
+    "Grep",
+    "Glob",
+    "apply_patch",
     "memory",
     "skill",
     "skills_install",

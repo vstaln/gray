@@ -2,15 +2,24 @@ use crate::agent::Agent;
 use crate::message::{ContentBlock, Message, Role};
 
 pub(crate) fn push_synthetic(agent: &mut Agent, id: &str, reason: &str) {
-    agent.messages.push(Message {
-        role: Role::User,
-        injected: false,
-        content: vec![ContentBlock::ToolResult {
-            id: id.to_string(),
-            content: format!("[{reason}]"),
-            is_error: true,
-        }],
-    });
+    let at = agent.messages.len();
+    insert_synthetic(agent, at, id, reason);
+}
+
+pub(crate) fn insert_synthetic(agent: &mut Agent, at: usize, id: &str, reason: &str) {
+    let at = at.min(agent.messages.len());
+    agent.messages.insert(
+        at,
+        Message {
+            role: Role::User,
+            injected: false,
+            content: vec![ContentBlock::ToolResult {
+                id: id.to_string(),
+                content: format!("[{reason}]"),
+                is_error: true,
+            }],
+        },
+    );
 }
 
 pub(crate) fn answer_pending_tools(

@@ -95,12 +95,11 @@ pub(crate) fn trim_to_allowance(counts: &mut [u16], allowance: u16) {
 }
 
 /// The footer's `effort` segment. A composite (Fusion) label already names
-/// the lead's effort, so the segment keeps only the `hidden` marker there.
-fn effort_segment_text(effort_display: &str, composite: bool, hide_thinking: bool) -> String {
-    match (composite, hide_thinking) {
-        (false, _) => effort_display.to_string(),
-        (true, true) if !effort_display.is_empty() => "hidden".to_string(),
-        (true, _) => String::new(),
+/// the lead's effort, so the segment stays empty there.
+fn effort_segment_text(effort_display: &str, composite: bool) -> String {
+    match composite {
+        false => effort_display.to_string(),
+        true => String::new(),
     }
 }
 
@@ -158,12 +157,6 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
     let show_effort = footer_badge_visible(&tui.model_name, tui.turn_show_effort);
     let effort_display = if !show_effort || tui.thinking_effort == "off" {
         String::new()
-    } else if tui.hide_thinking {
-        if tui.thinking_effort.is_empty() {
-            "hidden".to_string()
-        } else {
-            format!("{} · hidden", tui.thinking_effort)
-        }
     } else {
         tui.thinking_effort.clone()
     };
@@ -274,8 +267,10 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
         &chips,
         tui.action.prompt_glyph(),
     );
-    let viewport_y = tui.terminal.viewport_area.y;
+    let viewport = tui.terminal.viewport_area;
+    let viewport_y = viewport.y;
     let notes_at_bottom = bottom_notes.is_some()
+        && !viewport.is_empty()
         && viewport_y as usize + status_h as usize + ibox.lines.len() + 2 <= rows as usize;
     let ibox = if bottom_notes.is_none() || notes_at_bottom {
         ibox
@@ -1061,11 +1056,7 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
                         seg
                     }
                     "effort" => Seg::new(
-                        effort_segment_text(
-                            &effort_display,
-                            tui.model_label_parts.is_some(),
-                            tui.hide_thinking,
-                        ),
+                        effort_segment_text(&effort_display, tui.model_label_parts.is_some()),
                         muted,
                     ),
                     "cwd" => Seg::new(crate::statusline::short_cwd(&tui.cwd), muted),

@@ -347,7 +347,7 @@ impl PickerToggles {
     }
 
     pub(crate) fn toggle_fast(&mut self, supported: bool) {
-        if supported {
+        if supported || self.fast {
             self.fast = !self.fast;
         }
     }
@@ -395,6 +395,7 @@ pub(super) fn picker_key(
     if modifiers.contains(KeyModifiers::CONTROL) {
         return match code {
             KeyCode::Char('c') => Some(PickerKey::Cancel),
+            KeyCode::Char('f') => Some(PickerKey::ToggleFast),
             KeyCode::Char('r') => Some(PickerKey::ToggleReasoning),
             _ => None,
         };

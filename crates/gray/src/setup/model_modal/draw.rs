@@ -486,39 +486,33 @@ pub(super) fn footer_tiers<'a>(
     has_effort: bool,
     enter: &'a str,
     esc: &'a str,
-    reasoning: &'a str,
 ) -> [Vec<(&'static str, &'a str, bool)>; 4] {
     [
         vec![
             ("↑↓", "select", true),
-            ("tab", "fast mode", has_fast),
+            ("^f", "fast mode", has_fast),
             ("←→", "effort", has_effort),
             ("↵", enter, true),
             ("esc", esc, true),
-            ("ctrl+r", reasoning, true),
         ],
         vec![
             ("↑↓", "select", true),
-            ("tab", "fast", has_fast),
+            ("^f", "fast", has_fast),
             ("←→", "effort", has_effort),
             ("↵", enter, true),
             ("esc", "", true),
-            ("ctrl+r", "reasoning", true),
         ],
         vec![
             ("↑↓", "", true),
-            ("tab", "fast", has_fast),
+            ("^f", "fast", has_fast),
             ("←→", "effort", has_effort),
             ("↵", "", true),
             ("esc", "", true),
-            ("^r", "reasoning", true),
         ],
         vec![
             ("↑↓", "", true),
-            ("tab", "fast", has_fast),
+            ("^f", "fast", has_fast),
             ("←→", "effort", has_effort),
-            ("↵", "", true),
-            ("esc", "", true),
         ],
     ]
 }
@@ -531,7 +525,7 @@ pub(super) fn footer_width(segs: &[(&str, &str, bool)]) -> usize {
 }
 
 pub(super) fn footer_floor_width() -> usize {
-    footer_width(&footer_tiers(true, true, "confirm", "cancel", "show reasoning")[1])
+    footer_width(&footer_tiers(true, true, "confirm", "cancel")[1])
 }
 
 pub(super) fn picker_footer(
@@ -543,7 +537,7 @@ pub(super) fn picker_footer(
     use ratatui::text::{Line, Span};
     let t = crate::theme::theme();
     let highlighted = v.highlighted(sel);
-    let has_fast = highlighted.is_some_and(|id| v.fast_variant(id).is_some());
+    let has_fast = v.toggles.fast || highlighted.is_some_and(|id| v.fast_variant(id).is_some());
 
     let has_effort = highlighted.is_some_and(|id| {
         let parts = v.live_parts(id);
@@ -571,12 +565,7 @@ pub(super) fn picker_footer(
         (None, _) => ("confirm".to_string(), "cancel"),
     };
     let (enter, esc) = (enter.as_str(), esc);
-    let reasoning = if v.toggles.show_reasoning {
-        "hide reasoning"
-    } else {
-        "show reasoning"
-    };
-    let [first, second, third, last] = footer_tiers(has_fast, has_effort, enter, esc, reasoning);
+    let [first, second, third, last] = footer_tiers(has_fast, has_effort, enter, esc);
     let segs = [first, second, third]
         .into_iter()
         .find(|segs| footer_width(segs) <= w)

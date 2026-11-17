@@ -6,6 +6,7 @@ pub mod compact;
 pub mod composer;
 pub mod config;
 pub(crate) mod default_plugins;
+pub(crate) mod env_snapshot;
 pub(crate) mod failed_turn;
 pub(crate) mod ghost;
 pub mod host;
@@ -95,7 +96,29 @@ fn managed_body(file: &str) -> Option<&str> {
     (first == managed_stamp(rest)).then_some(rest)
 }
 
-pub const BARE_SYS_PROMPT: &str = "You are a helpful assistant that can interact with a computer.";
+const BARE_CORE: &str = "You are a helpful assistant that can interact with a computer.
+
+Work through the task step by step, iterating on problems as they appear:
+1. Find and read the files that matter.
+2. Reproduce the problem or check the current behaviour with a small script.
+3. Change the source to fix it.
+4. Run the script again to confirm the fix.
+5. Try the edge cases.
+6. When it works, stop and reply with a short summary and no tool call.
+
+Until you are done, each reply should say briefly what you are doing and include at least one tool call.";
+
+const BARE_SHELL_EXAMPLES: &str = "Useful commands:
+- Create a file: cat <<'EOF' > path ... EOF
+- Replace text: sed -i 's/old/new/' path (first match per line; add g for all; prefix 10,20 for a line range)
+- View lines with numbers: nl -ba path | sed -n '10,20p'";
+
+pub fn bare_sys_prompt() -> String {
+    match gray_tools::fs::guidance() {
+        Some(g) => format!("{BARE_CORE}\n\n{g}"),
+        None => format!("{BARE_CORE}\n\n{BARE_SHELL_EXAMPLES}"),
+    }
+}
 
 pub fn sys_prompt_path() -> anyhow::Result<PathBuf> {
     Ok(crate::setup::gray_home()?.join("AGENTS.md"))
@@ -291,7 +314,7 @@ async fn build_agent_inner(
     let api_key = config.api_key.as_deref().unwrap_or("");
 
     let body = if config.bare {
-        BARE_SYS_PROMPT.to_string()
+        bare_sys_prompt()
     } else {
         load_or_create_system_prompt_at(&sys_prompt_path()?)?
     };
@@ -391,8 +414,11 @@ async fn build_agent_inner(
         temperature: config.temperature,
         top_p: config.top_p,
 
-        context_window: (!config.bare)
-            .then(|| crate::setup::context::resolve_model_context_length(model)),
+        context_window: (!config.bare
+            || config.context_window.is_some()
+            || config.context_reserve.is_some()
+            || config.compact_at.is_some())
+        .then(|| crate::setup::context::resolve_model_context_length(model)),
         session_id: session_id.map(str::to_string),
         cwd: cwd.to_path_buf(),
 
@@ -464,7 +490,11 @@ async fn build_agent_inner(
     }
 
     let mut agent = agent;
-    if !config.bare {
+    if !config.bare
+        || config.context_window.is_some()
+        || config.context_reserve.is_some()
+        || config.compact_at.is_some()
+    {
         sync_context_budget(&mut agent, config);
     }
 
@@ -476,7 +506,7 @@ async fn build_agent_inner(
             && match std::env::var("GRAY_TOOLBOX").ok().as_deref().map(str::trim) {
                 Some("1") => true,
                 Some("0") => false,
-                _ => saved.toolbox.unwrap_or(false),
+                _ => saved.toolbox.unwrap_or(true),
             },
     );
     agent.set_background_compaction(config.background_compaction);
@@ -650,6 +680,15 @@ pub struct Cli {
         help = "Bare mode: no plugins, memory, background jobs or auto-compact"
     )]
     pub bare: bool,
+    #[arg(
+        long,
+        value_name = "DIALECT",
+        num_args = 0..=1,
+        default_missing_value = "auto",
+        require_equals = true,
+        help = "Add file tools: plain, claude (Read/Edit/Write/Grep/Glob), codex (apply_patch) or auto by model (env GRAY_FILE_TOOLS)"
+    )]
+    pub file_tools: Option<String>,
 
     #[arg(long, help = "Lean system prompt: skip plugin-provided prompt extras")]
     pub lean: bool,
