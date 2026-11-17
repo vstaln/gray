@@ -7,9 +7,7 @@ use crate::agent::{
 use crate::agent_compact::{needs_pre_turn_compact, needs_soft_elide};
 use crate::agent_tools::{PendingToolCall, answer_pending_tools};
 use crate::error::CoreError;
-use crate::event::{
-    AgentEvent, CompactReason, StopReason, StreamEvent, Usage, append_thinking_chunk,
-};
+use crate::event::{AgentEvent, CompactReason, StopReason, StreamEvent, Usage};
 use crate::message::{ChatRequest, ContentBlock, Message, Role, ThoughtSignature};
 
 const MAX_EMPTY_RETRIES: u8 = 2;
@@ -1102,7 +1100,7 @@ impl Agent {
                         Some(Ok(StreamEvent::ThinkingDelta { delta })) => {
                             if !delta.is_empty() {
                                 emit!(AgentEvent::thinking_delta(delta.clone()));
-                                append_thinking_chunk(&mut thinking_text, &delta);
+                                thinking_text.push_str(&delta);
                             }
                         }
                         Some(Ok(StreamEvent::ReasoningItem {
