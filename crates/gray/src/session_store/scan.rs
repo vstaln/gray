@@ -292,7 +292,7 @@ pub(super) fn list_session_files(
         }
         files.push((modified, path));
     }
-    files.sort_by(|a, b| b.0.cmp(&a.0));
+    files.sort_by_key(|f| std::cmp::Reverse(f.0));
     if since.is_some() {
         let listed: std::collections::HashSet<&std::ffi::OsStr> =
             files.iter().filter_map(|(_, p)| p.file_stem()).collect();
