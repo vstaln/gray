@@ -619,14 +619,102 @@ impl JsonlSessionStore {
         summaries
     }
 
+    pub async fn session_ids(&self) -> Vec<SessionId> {
+        let root = self.root_dir.clone();
+        tokio::task::spawn_blocking(move || {
+            let Ok(entries) = std::fs::read_dir(&root) else {
+                return Vec::new();
+            };
+            entries
+                .flatten()
+                .filter_map(|e| {
+                    let path = e.path();
+                    if path.extension().and_then(|x| x.to_str()) != Some("jsonl") {
+                        return None;
+                    }
+                    let stem = path.file_stem()?.to_str()?;
+                    valid_session_id(stem).then(|| SessionId::new(stem))
+                })
+                .collect()
+        })
+        .await
+        .unwrap_or_default()
+    }
+
+    pub async fn latest_where(
+        &self,
+        cwd: Option<PathBuf>,
+        keep: impl Fn(&SessionSummary) -> bool + Send + 'static,
+    ) -> Option<SessionSummary> {
+        let root = self.root_dir.clone();
+        tokio::task::spawn_blocking(move || {
+            let (files, _) = list_session_files(&root, None, false).ok()?;
+            let cwd = cwd.map(|c| c.canonicalize().unwrap_or(c));
+            let mut best: Option<SessionSummary> = None;
+            for (modified, path) in files {
+                let modified_ms = modified
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| d.as_millis() as u64);
+                if best
+                    .as_ref()
+                    .is_some_and(|b| modified_ms < b.last_message_at)
+                {
+                    break;
+                }
+                let Some(SessionFileRead::Summary(s)) =
+                    summarize_session_file(&root, &path, cwd.as_deref())
+                else {
+                    continue;
+                };
+                if keep(&s)
+                    && best
+                        .as_ref()
+                        .is_none_or(|b| s.last_message_at > b.last_message_at)
+                {
+                    best = Some(s);
+                }
+            }
+            best
+        })
+        .await
+        .ok()
+        .flatten()
+    }
+
+    pub async fn summaries_of(&self, ids: Vec<SessionId>) -> Vec<SessionSummary> {
+        let root = self.root_dir.clone();
+        tokio::task::spawn_blocking(move || {
+            ids.iter()
+                .filter_map(|id| {
+                    let path = root.join(format!("{}.jsonl", id.as_str()));
+                    match summarize_session_file(&root, &path, None)? {
+                        SessionFileRead::Summary(s) => Some(s),
+                        SessionFileRead::Corrupt(_) => None,
+                    }
+                })
+                .collect()
+        })
+        .await
+        .unwrap_or_default()
+    }
+
     pub(crate) fn scan(
         &self,
         cwd: Option<PathBuf>,
         probe_locks: bool,
     ) -> tokio::sync::mpsc::UnboundedReceiver<SessionScanEvent> {
+        self.scan_since(cwd, None, probe_locks)
+    }
+
+    pub(crate) fn scan_since(
+        &self,
+        cwd: Option<PathBuf>,
+        since: Option<std::time::SystemTime>,
+        probe_locks: bool,
+    ) -> tokio::sync::mpsc::UnboundedReceiver<SessionScanEvent> {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         let root = self.root_dir.clone();
-        tokio::spawn(scan_session_dir(root, cwd, probe_locks, tx));
+        tokio::spawn(scan_session_dir(root, cwd, since, probe_locks, tx));
         rx
     }
 

@@ -185,6 +185,7 @@ impl Tui {
         self.is_task_running = false;
         self.status = None;
         self.turn_show_effort = None;
+        crate::presence::activity();
 
         let _ = self.draw();
 

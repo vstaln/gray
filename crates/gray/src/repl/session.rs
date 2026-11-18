@@ -126,7 +126,7 @@ pub(crate) async fn handle_resume(
         let store = JsonlSessionStore::new(root);
         if let Some(c) = std::env::current_dir().ok()
             && let Some(rid) = store.recall_validated(&c).await
-            && store.load(&rid).await.is_ok()
+            && store.exists_on_disk(&rid).await
         {
             recalled_id = Some(rid);
         }
@@ -167,9 +167,8 @@ pub(crate) async fn handle_resume(
         };
         let store = JsonlSessionStore::new(root);
         let cwd_now = std::env::current_dir().ok();
-        let summaries = store.list().await;
         let filt = if args.all { None } else { cwd_now.as_deref() };
-        match crate::resume::latest_summary(&summaries, filt) {
+        match crate::resume::latest_session(&store, filt, None).await {
             Some(s) => Some(s.id.clone()),
             None => {
                 let msg = if args.all {
@@ -212,6 +211,7 @@ pub(crate) async fn handle_resume(
             tui,
             crate::resume::run_resume_picker(
                 args.all,
+                args.window.unwrap_or(crate::resume::SessionWindow::DEFAULT),
                 bg.as_ref(),
                 session_state.as_ref().map(|s| s.session_id.clone()),
             ),

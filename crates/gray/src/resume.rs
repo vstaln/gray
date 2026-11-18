@@ -55,8 +55,8 @@ fn preview_text(s: &SessionSummary, width: usize) -> String {
     let raw = s
         .title
         .as_deref()
-        .or(s.last_user_text.as_deref())
         .or(s.first_user_text.as_deref())
+        .or(s.last_user_text.as_deref())
         .unwrap_or("(no message yet)");
     let one_line = raw.split_whitespace().collect::<Vec<_>>().join(" ");
     fit_chars(&one_line, width)
@@ -127,6 +127,58 @@ fn end_label(e: SessionEnd) -> &'static str {
         SessionEnd::ToolResult => "tool result",
         SessionEnd::UserUnanswered => "you, unanswered",
         SessionEnd::Done => "",
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionWindow {
+    Full,
+    Hours(u64),
+}
+
+impl SessionWindow {
+    pub const DEFAULT: Self = Self::Hours(7 * 24);
+    const PRESETS: [u64; 5] = [24, 3 * 24, 7 * 24, 30 * 24, 90 * 24];
+
+    pub fn parse(raw: &str) -> Option<Self> {
+        let raw = raw.trim().to_ascii_lowercase();
+        if raw == "full" {
+            return Some(Self::Full);
+        }
+        let unit = match raw.chars().last()? {
+            'h' => 1,
+            'd' => 24,
+            'w' => 24 * 7,
+            _ => return None,
+        };
+        let n: u64 = raw[..raw.len() - 1].parse().ok().filter(|n| *n > 0)?;
+        Some(Self::Hours(n.checked_mul(unit)?))
+    }
+
+    fn next(self) -> Self {
+        match self {
+            Self::Full => Self::Hours(Self::PRESETS[0]),
+            Self::Hours(h) => Self::PRESETS
+                .iter()
+                .find(|p| **p > h)
+                .map_or(Self::Full, |p| Self::Hours(*p)),
+        }
+    }
+
+    fn since(self) -> Option<std::time::SystemTime> {
+        match self {
+            Self::Full => None,
+            Self::Hours(h) => std::time::SystemTime::now()
+                .checked_sub(std::time::Duration::from_secs(h.saturating_mul(3600))),
+        }
+    }
+
+    fn label(self) -> String {
+        match self {
+            Self::Full => "full history".to_string(),
+            Self::Hours(h) if h % 24 == 0 => format!("last {}d", h / 24),
+            Self::Hours(h) => format!("last {h}h"),
+        }
     }
 }
 
@@ -238,12 +290,26 @@ pub fn latest_summary<'a>(
         .max_by_key(|s| s.last_message_at)
 }
 
+pub async fn latest_session(
+    store: &JsonlSessionStore,
+    cwd: Option<&Path>,
+    skip: Option<SessionId>,
+) -> Option<SessionSummary> {
+    store
+        .latest_where(cwd.map(Path::to_path_buf), move |s| {
+            !is_empty_session(s) && !is_auxiliary_session(s) && skip.as_ref() != Some(&s.id)
+        })
+        .await
+}
+
 pub async fn recent_summaries(store: &JsonlSessionStore, all: bool) -> Vec<SessionSummary> {
     let cwd = std::env::current_dir().ok();
     let filt = if all { None } else { cwd.as_deref() };
-    let mut out: Vec<SessionSummary> = store
-        .list()
-        .await
+    let listed = match filt {
+        Some(c) => store.list_in(c).await,
+        None => store.list().await,
+    };
+    let mut out: Vec<SessionSummary> = listed
         .into_iter()
         .filter(|s| filt.is_none_or(|c| paths_match(&s.cwd, c)))
         .filter(|s| !is_empty_session(s) && !is_auxiliary_session(s))
@@ -269,18 +335,27 @@ pub async fn resolve_prefix(
     all: bool,
 ) -> Option<SessionId> {
     let cwd = std::env::current_dir().ok();
-    let summaries = store.list().await;
     let lower = input.trim().to_lowercase();
     if lower.is_empty() {
         return None;
     }
 
-    if let Some(s) = summaries
+    let mut matches: Vec<SessionId> = store
+        .session_ids()
+        .await
+        .into_iter()
+        .filter(|id| id.as_str().to_lowercase().starts_with(&lower))
+        .collect();
+    if let Some(exact) = matches
         .iter()
-        .find(|s| s.id.as_str().to_lowercase() == lower)
+        .find(|id| id.as_str().to_lowercase() == lower)
     {
-        return Some(s.id.clone());
+        return Some(exact.clone());
     }
+    if matches.len() == 1 {
+        return matches.pop();
+    }
+    let summaries = store.summaries_of(matches).await;
 
     if !all && let Some(c) = cwd.as_deref() {
         let cwd_matches: Vec<&SessionSummary> = summaries
@@ -367,7 +442,7 @@ pub async fn latest_session_here(store: &JsonlSessionStore) -> Option<SessionId>
     if let Some(id) = store.recall_validated(&cwd).await {
         return Some(id);
     }
-    latest_summary(&store.list().await, Some(&cwd)).map(|s| s.id.clone())
+    latest_session(store, Some(&cwd), None).await.map(|s| s.id)
 }
 
 pub fn effective_session_model(config_model: Option<&str>, meta_model: &str) -> Option<String> {
@@ -418,6 +493,7 @@ pub fn locked_session_card(id: &SessionId, pid: Option<u32>) -> String {
 
 pub async fn run_resume_picker(
     show_all: bool,
+    window: SessionWindow,
     bg: Option<&crate::setup::BackgroundSnapshot>,
     current: Option<SessionId>,
 ) -> anyhow::Result<Option<SessionId>> {
@@ -425,13 +501,12 @@ pub async fn run_resume_picker(
         .ok_or_else(|| anyhow::anyhow!("cannot resolve home"))?;
     let store = JsonlSessionStore::new(root);
 
-    let scan = store.scan(None, true);
-    run_picker_sync(show_all, scan, &store, bg, current)
+    run_picker_sync(show_all, window, &store, bg, current)
 }
 
 fn run_picker_sync(
     mut show_all: bool,
-    mut scan: tokio::sync::mpsc::UnboundedReceiver<SessionScanEvent>,
+    mut window: SessionWindow,
     store: &JsonlSessionStore,
     bg: Option<&crate::setup::BackgroundSnapshot>,
     current: Option<SessionId>,
@@ -454,11 +529,16 @@ fn run_picker_sync(
     let accent_peach = crate::theme::theme().accent;
     let text_dim = crate::theme::theme().text_dim;
 
+    let start_scan = |show_all: bool, window: SessionWindow| {
+        store.scan_since((!show_all).then(|| cwd.clone()), window.since(), true)
+    };
+    let mut scan = start_scan(show_all, window);
     let mut summaries: Vec<SessionSummary> = Vec::new();
     let mut running = std::collections::HashSet::new();
     let mut filtered: Vec<usize> = Vec::new();
     let mut dirty = true;
     let mut scan_done = false;
+    let mut rescan = false;
 
     let mut query = String::new();
     let mut show_hidden = false;
@@ -474,6 +554,16 @@ fn run_picker_sync(
 
     let result: anyhow::Result<Option<SessionId>> = (|| {
         loop {
+            if rescan {
+                rescan = false;
+                scan = start_scan(show_all, window);
+                summaries.clear();
+                running.clear();
+                scan_done = false;
+                sel = 0;
+                scroll_top = 0;
+                dirty = true;
+            }
             while let Ok(event) = scan.try_recv() {
                 match event {
                     SessionScanEvent::Running(set) => running = set,
@@ -489,7 +579,7 @@ fn run_picker_sync(
             if scan.is_closed() {
                 scan_done = true;
             }
-            if scan_done && summaries.is_empty() {
+            if scan_done && summaries.is_empty() && show_all && window == SessionWindow::Full {
                 return Err(anyhow::anyhow!("no saved sessions"));
             }
             if dirty {
@@ -638,7 +728,7 @@ fn run_picker_sync(
 
                 let mut filter_spans = if show_all {
                     vec![Span::styled(
-                        "Showing all sessions",
+                        "All directories",
                         Style::default().fg(text_dim).bg(box_bg),
                     )]
                 } else {
@@ -652,6 +742,16 @@ fn run_picker_sync(
                         ),
                     ]
                 };
+                filter_spans.push(Span::styled(
+                    format!("  ·  {}", window.label()),
+                    Style::default().fg(text_dim).bg(box_bg),
+                ));
+                if !scan_done {
+                    filter_spans.push(Span::styled(
+                        "  ·  loading…",
+                        Style::default().fg(th.text_faint).bg(box_bg),
+                    ));
+                }
                 if state_filter != StateFilter::All {
                     filter_spans.push(Span::styled(
                         format!("  ·  {} ({})", state_filter.label(), filtered.len()),
@@ -796,6 +896,7 @@ fn run_picker_sync(
                             true,
                         ),
                         ("tab", if show_all { "this dir" } else { "all" }, true),
+                        ("^t", "older", true),
                         ("⇧tab", "status", true),
                         ("^g", "system", true),
                         ("^r", "rename", true),
@@ -806,7 +907,7 @@ fn run_picker_sync(
                 frame.render_widget(
                     Paragraph::new(crate::repl::picker::key_hints(
                         keys,
-                        &["^g", "⇧tab", "tab", "^d"],
+                        &["^g", "⇧tab", "^d", "^t", "tab"],
                         inner.width as usize,
                     )),
                     Rect::new(inner.x, inner.y + inner.height - 1, inner.width, 1),
@@ -915,8 +1016,11 @@ fn run_picker_sync(
                     }
                     KeyCode::Tab => {
                         show_all = !show_all;
-                        sel = 0;
-                        scroll_top = 0;
+                        rescan = true;
+                    }
+                    KeyCode::Char('t') if modifiers.contains(KeyModifiers::CONTROL) => {
+                        window = window.next();
+                        rescan = true;
                     }
                     KeyCode::BackTab => {
                         state_filter = state_filter.next();

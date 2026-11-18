@@ -249,7 +249,7 @@ async fn compaction_replacement_reloads_as_active_transcript() {
 
     let summaries = store.list().await;
     assert_eq!(summaries.len(), 1);
-    assert_eq!(summaries[0].first_user_text.as_deref(), Some("summary"));
+    assert_eq!(summaries[0].first_user_text.as_deref(), Some("one"));
 
     store.append(&id, &Message::user("after")).await.unwrap();
     let (_, entries) = store.load(&id).await.unwrap();

@@ -405,13 +405,12 @@ async fn run_resume_subcommand(
         if !all
             && let Some(c) = cwd.as_deref()
             && let Some(rid) = store.recall_validated(c).await
-            && store.load(&rid).await.is_ok()
+            && store.exists_on_disk(&rid).await
         {
             rid
         } else {
-            let summaries = store.list().await;
             let cwd_filter = if all { None } else { cwd.as_deref() };
-            match gray::resume::latest_summary(&summaries, cwd_filter) {
+            match gray::resume::latest_session(&store, cwd_filter, None).await {
                 Some(s) => s.id.clone(),
                 None => {
                     if all {
@@ -438,7 +437,9 @@ async fn run_resume_subcommand(
             }
             return Ok(());
         }
-        match gray::resume::run_resume_picker(all, None, None).await? {
+        match gray::resume::run_resume_picker(all, gray::resume::SessionWindow::DEFAULT, None, None)
+            .await?
+        {
             Some(id) => id,
             None => return Ok(()),
         }

@@ -339,6 +339,10 @@ fn complete_resume_args(cmd: &str, arg_text: &str) -> Vec<(String, String)> {
         ("--last", "resume most recent session"),
         ("--all", "include other directories"),
         ("all", "every directory"),
+        ("1d", "sessions from the last day (any Nh, Nd or Nw)"),
+        ("7d", "sessions from the last week"),
+        ("30d", "sessions from the last 30 days"),
+        ("full", "every session ever"),
     ];
     complete_from_table(cmd, arg_text, FLAGS)
 }
@@ -513,6 +517,7 @@ pub struct ResumeArgs {
     pub target: Option<String>,
     pub last: bool,
     pub all: bool,
+    pub window: Option<crate::resume::SessionWindow>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -529,11 +534,15 @@ pub(crate) fn parse_resume_args(rest: &str) -> ResumeArgs {
     let mut target: Option<String> = None;
     let mut last = false;
     let mut all = false;
+    let mut window = None;
     for tok in tokens {
         match tok {
             "all" | "--all" => all = true,
             "--last" => last = true,
             s if s.starts_with("--") => {}
+            s if window.is_none() && crate::resume::SessionWindow::parse(s).is_some() => {
+                window = crate::resume::SessionWindow::parse(s);
+            }
             s => {
                 if target.is_none() {
                     target = Some(s.to_string());
@@ -541,7 +550,12 @@ pub(crate) fn parse_resume_args(rest: &str) -> ResumeArgs {
             }
         }
     }
-    ResumeArgs { target, last, all }
+    ResumeArgs {
+        target,
+        last,
+        all,
+        window,
+    }
 }
 
 pub fn parse_command(line: &str) -> ReplCommand {
@@ -565,6 +579,7 @@ pub fn parse_command(line: &str) -> ReplCommand {
                 target: None,
                 last: false,
                 all: false,
+                window: None,
             }
         } else {
             parse_resume_args(rest)

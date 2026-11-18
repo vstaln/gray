@@ -1,5 +1,7 @@
 use super::*;
 
+const REPLAY_TAIL_MESSAGES: usize = 200;
+
 impl Tui {
     pub fn push_tool_box(&mut self, header: Line<'static>, body: Vec<Line<'static>>) {
         self.atomic(|t| {
@@ -343,9 +345,24 @@ impl Tui {
     ) {
         self.left_home = true;
         let estimate: usize = history.iter().map(crate::compact::estimate_tokens).sum();
+        let start = history
+            .len()
+            .checked_sub(REPLAY_TAIL_MESSAGES)
+            .and_then(|cut| {
+                history[..=cut]
+                    .iter()
+                    .rposition(|m| crate::session_store::real_user_text(m).is_some())
+            })
+            .unwrap_or(0);
+        if start > 0 {
+            self.push_dim(format!(
+                "{start} earlier messages not shown · the agent still has the full history"
+            ));
+            self.ensure_gap();
+        }
         self.replay_queue = Some(Box::new(crate::composer::ReplayQueue {
             history,
-            next: 0,
+            next: start,
             tail,
             tool_calls: HashMap::new(),
             labels: display.labels.cloned(),
@@ -353,14 +370,18 @@ impl Tui {
             cwd: cwd.to_path_buf(),
             estimate,
         }));
-        self.tick_replay();
+        self.replay_for(std::time::Duration::from_secs(2));
     }
 
     pub(crate) fn tick_replay(&mut self) {
+        self.replay_for(std::time::Duration::from_millis(4));
+    }
+
+    fn replay_for(&mut self, budget: std::time::Duration) {
         let Some(mut q) = self.replay_queue.take() else {
             return;
         };
-        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(4);
+        let deadline = std::time::Instant::now() + budget;
         self.begin_insert_batch();
         while q.next < q.history.len() {
             let display = crate::tool_fmt::ToolDisplay {

@@ -65,11 +65,13 @@ pub(crate) async fn start(
     let current = session_state.as_ref().map(|s| s.session_id.clone());
     let source = match store.recall_validated(cwd).await {
         Some(id) => Some(id),
-        None => crate::resume::recent_summaries(&store, false)
-            .await
-            .into_iter()
-            .find(|s| Some(&s.id) != current.as_ref())
-            .map(|s| s.id),
+        None => crate::resume::latest_session(
+            &store,
+            std::env::current_dir().ok().as_deref(),
+            current.clone(),
+        )
+        .await
+        .map(|s| s.id),
     };
     let Some(id) = source else {
         say(tui, "nothing to continue");
@@ -98,7 +100,7 @@ async fn split_source(
     };
     let tail = (!tail.is_empty()).then(|| tail.to_string());
     let exact = SessionId::new(token.to_lowercase());
-    if store.load(&exact).await.is_ok() {
+    if store.exists_on_disk(&exact).await {
         return (Some(exact), tail);
     }
     if token.chars().count() >= 8

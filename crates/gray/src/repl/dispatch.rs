@@ -624,6 +624,7 @@ pub(crate) async fn dispatch_command(
                                                 target: Some(sid),
                                                 last: false,
                                                 all: true,
+                                                window: None,
                                             },
                                             &mut *agent,
                                             &mut *session_state,
