@@ -455,7 +455,7 @@ pub(crate) fn read_line(
             Event::Paste(_) => true,
             _ => false,
         } {
-            crate::presence::key(tui.is_task_running);
+            crate::presence::activity();
         }
         // Typing during the band fade-in lands it at once.
         tui.home_reveal = None;
