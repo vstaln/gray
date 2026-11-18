@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+## [0.2.27] - 2026-11-19
+
+### Added
+- **Tool run times.** Finished tool cards show `· ran for <duration>` in their header, including bash cards in resumed sessions, and the `Running …` row above the input shows a live timer. Background bash starts are skipped.
+- **Session picker time window.** The picker scans newest-first within a time window; `^t` widens it, and `/sessions Nd` sets it directly.
+
+### Changed
+- **Resumed chats open at the latest message.** Gray finds the latest session newest-first and stops early, replays only the tail of a resumed chat, and paints it in one pass; a 116 MB session now shows its last messages after 1.8 s instead of 12 s.
+- **Faster session lookup.** Session ids resolve from file names instead of summarizing every session, and existence checks no longer load a session twice.
+- **The session picker previews the session name or its first message**, never the latest one, and keeps the original first message after compaction.
+- **Presence reports raw time since last activity** when focus returns; recap logic now lives in the quality-of-life plugin.
+- **Edit results are one line.** A successful edit reports the path and edit count without a diff, and bash output keeps mostly the tail.
+- **Reasoning is stored exactly as streamed** and non-empty reasoning is replayed; `GRAY_REASONING_REPLAY=0` still opts out.
+
+### Removed
+- **The opt-in harness controls from 0.2.26:** `GRAY_PRUNE_TOOL_OUTPUT`, `GRAY_BASH_YIELD_SECS`, `GRAY_FINISH_CHECK` and `GRAY_ENV_SNAPSHOT`. `--file-tools` dialects stay, opt-in.
+- **The directory listing on the session card.**
+
 ## [0.2.26] - 2026-11-17
 
 ### Added
