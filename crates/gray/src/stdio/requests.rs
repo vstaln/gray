@@ -301,6 +301,7 @@ pub(crate) async fn resume(
             target: target.clone(),
             last,
             all,
+            window: None,
         }),
         &mut sess.agent,
         config,

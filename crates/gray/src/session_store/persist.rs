@@ -624,9 +624,18 @@ impl JsonlSessionStore {
         cwd: Option<PathBuf>,
         probe_locks: bool,
     ) -> tokio::sync::mpsc::UnboundedReceiver<SessionScanEvent> {
+        self.scan_since(cwd, None, probe_locks)
+    }
+
+    pub(crate) fn scan_since(
+        &self,
+        cwd: Option<PathBuf>,
+        since: Option<std::time::SystemTime>,
+        probe_locks: bool,
+    ) -> tokio::sync::mpsc::UnboundedReceiver<SessionScanEvent> {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         let root = self.root_dir.clone();
-        tokio::spawn(scan_session_dir(root, cwd, probe_locks, tx));
+        tokio::spawn(scan_session_dir(root, cwd, since, probe_locks, tx));
         rx
     }
 

@@ -212,6 +212,7 @@ pub(crate) async fn handle_resume(
             tui,
             crate::resume::run_resume_picker(
                 args.all,
+                args.window.unwrap_or(crate::resume::SessionWindow::DEFAULT),
                 bg.as_ref(),
                 session_state.as_ref().map(|s| s.session_id.clone()),
             ),

@@ -131,6 +131,13 @@ pub(super) fn summarize_session_file(
         }
     }
 
+    if first_user_text.is_none() {
+        first_user_text = slices.head_cut_text;
+    }
+    if slices.tail_cut {
+        last_message_at = last_message_at.max(slices.modified_ms);
+    }
+
     if last_end != SessionEnd::Done
         && read_turn_end(root, stem).is_some_and(|at| at >= last_message_at)
     {
@@ -158,57 +165,29 @@ pub(super) fn summarize_session_file(
 pub(super) async fn scan_session_dir(
     root: PathBuf,
     cwd: Option<PathBuf>,
+    since: Option<std::time::SystemTime>,
     probe_locks: bool,
     tx: tokio::sync::mpsc::UnboundedSender<SessionScanEvent>,
 ) {
-    let mut read_dir = match tokio::fs::read_dir(&root).await {
-        Ok(rd) => rd,
-        Err(e) => {
+    let listing = {
+        let root = root.clone();
+        tokio::task::spawn_blocking(move || list_session_files(&root, since, probe_locks)).await
+    };
+    let (paths, open_paths) = match listing {
+        Ok(Ok(found)) => found,
+        Ok(Err(e)) => {
             if e.kind() != std::io::ErrorKind::NotFound {
                 log::warn!("failed to read session directory {}: {}", root.display(), e);
             }
             let _ = tx.send(SessionScanEvent::Done);
             return;
         }
+        Err(_) => {
+            let _ = tx.send(SessionScanEvent::Done);
+            return;
+        }
     };
-
-    let mut paths = Vec::new();
-    let mut open_paths = Vec::new();
-    while let Ok(Some(entry)) = read_dir.next_entry().await {
-        let path = entry.path();
-        let ext = path.extension().and_then(|ext| ext.to_str());
-        if ext == Some("open") {
-            if probe_locks
-                && path
-                    .file_stem()
-                    .and_then(|s| s.to_str())
-                    .is_some_and(valid_session_id)
-            {
-                open_paths.push(path);
-            }
-            continue;
-        }
-        if ext != Some("jsonl") {
-            continue;
-        }
-
-        if !entry
-            .file_type()
-            .await
-            .map(|t| t.is_file())
-            .unwrap_or(false)
-        {
-            continue;
-        }
-        let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
-            continue;
-        };
-        if !valid_session_id(stem) {
-            log::warn!("skipping session with invalid id: {}", path.display());
-            continue;
-        }
-        paths.push(path);
-    }
+    let cwd = cwd.map(|c| c.canonicalize().unwrap_or(c));
 
     if probe_locks {
         let probe_tx = tx.clone();
@@ -246,7 +225,7 @@ pub(super) async fn scan_session_dir(
                 .await
             }
         })
-        .buffer_unordered(64);
+        .buffered(64);
     while let Some(joined) = reads.next().await {
         let Ok(Some(read)) = joined else {
             continue;
@@ -267,9 +246,102 @@ pub(super) async fn scan_session_dir(
 
 pub(super) const SUMMARY_END_BYTES: u64 = 16 * 1024;
 
+const SUMMARY_LINE_CAP: u64 = 1 << 20;
+
+type SessionFiles = (Vec<PathBuf>, Vec<PathBuf>);
+
+fn list_session_files(
+    root: &Path,
+    since: Option<std::time::SystemTime>,
+    probe_locks: bool,
+) -> std::io::Result<SessionFiles> {
+    let mut files = Vec::new();
+    let mut open_paths = Vec::new();
+    for entry in std::fs::read_dir(root)?.flatten() {
+        let path = entry.path();
+        let ext = path.extension().and_then(|ext| ext.to_str());
+        if ext == Some("open") {
+            if probe_locks
+                && path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .is_some_and(valid_session_id)
+            {
+                open_paths.push(path);
+            }
+            continue;
+        }
+        if ext != Some("jsonl") {
+            continue;
+        }
+        let Ok(meta) = entry.metadata() else {
+            continue;
+        };
+        if !meta.is_file() {
+            continue;
+        }
+        let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        if !valid_session_id(stem) {
+            log::warn!("skipping session with invalid id: {}", path.display());
+            continue;
+        }
+        let modified = meta.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+        if since.is_some_and(|cutoff| modified < cutoff) {
+            continue;
+        }
+        files.push((modified, path));
+    }
+    files.sort_by(|a, b| b.0.cmp(&a.0));
+    if since.is_some() {
+        let listed: std::collections::HashSet<&std::ffi::OsStr> =
+            files.iter().filter_map(|(_, p)| p.file_stem()).collect();
+        open_paths.retain(|p| p.file_stem().is_some_and(|s| listed.contains(s)));
+    }
+    Ok((files.into_iter().map(|(_, p)| p).collect(), open_paths))
+}
+
 pub(super) struct SessionSlices {
     pub(super) head: String,
     pub(super) tail: String,
+    pub(super) tail_cut: bool,
+    pub(super) head_cut_text: Option<String>,
+    pub(super) modified_ms: u64,
+}
+
+fn cut_line_user_text(line: &[u8]) -> Option<String> {
+    const PATTERN: &str = "\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"";
+    const KEEP: usize = 2000;
+    let prefix = String::from_utf8_lossy(&line[..line.len().min(64 * 1024)]);
+    let body = &prefix[prefix.find(PATTERN)? + PATTERN.len() - 1..];
+    let mut escaped = false;
+    let mut end = body.len();
+    for (i, c) in body.char_indices().skip(1) {
+        if i > KEEP {
+            end = i;
+            break;
+        }
+        if escaped {
+            escaped = false;
+        } else if c == '\\' {
+            escaped = true;
+        } else if c == '"' {
+            end = i;
+            break;
+        }
+    }
+    let literal = &body[..end];
+    let text = (0..6).find_map(|k| {
+        let cut = literal.len().checked_sub(k)?;
+        let piece = literal.get(..cut)?;
+        serde_json::from_str::<String>(&format!("{piece}\"")).ok()
+    })?;
+    let head = text.trim_start();
+    if head.is_empty() || SYNTHETIC_USER_PREFIXES.iter().any(|p| head.starts_with(p)) {
+        return None;
+    }
+    Some(text)
 }
 
 pub(super) fn read_session_ends(path: &Path, cwd: Option<&Path>) -> Option<SessionSlices> {
@@ -279,11 +351,18 @@ pub(super) fn read_session_ends(path: &Path, cwd: Option<&Path>) -> Option<Sessi
         log::warn!("failed to open session file {}", path.display());
         None
     })?;
-    let len = file.metadata().ok()?.len();
+    let meta = file.metadata().ok()?;
+    let len = meta.len();
+    let modified_ms = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map_or(0, |d| d.as_millis() as u64);
     if len == 0 {
         return None;
     }
 
+    let mut head_cut_text = None;
     let head_len = SUMMARY_END_BYTES.min(len);
     let mut head_bytes = vec![0u8; head_len as usize];
     file.read_exact(&mut head_bytes).ok()?;
@@ -291,21 +370,29 @@ pub(super) fn read_session_ends(path: &Path, cwd: Option<&Path>) -> Option<Sessi
         && let Some(end) = head_bytes.iter().position(|b| *b == b'\n')
         && let Ok(header) = serde_json::from_slice::<Header>(&head_bytes[..end])
         && header.cwd != cwd
+        && header.cwd.canonicalize().ok().as_deref() != Some(cwd)
     {
         return None;
     }
     if head_len < len && !head_bytes.last().is_some_and(|b| *b == b'\n') {
         std::io::BufRead::read_until(
-            &mut std::io::BufReader::new(&mut file),
+            &mut std::io::BufReader::new((&mut file).take(SUMMARY_LINE_CAP)),
             b'\n',
             &mut head_bytes,
         )
         .ok()?;
+        if head_bytes.last() != Some(&b'\n')
+            && let Some(at) = head_bytes.iter().rposition(|b| *b == b'\n')
+        {
+            head_cut_text = cut_line_user_text(&head_bytes[at + 1..]);
+            head_bytes.truncate(at + 1);
+        }
     }
     let head = String::from_utf8_lossy(&head_bytes).into_owned();
 
     let head_end = head_bytes.len() as u64;
     let mut back = SUMMARY_END_BYTES.min(len.saturating_sub(head_end));
+    let mut tail_cut = false;
     let tail = loop {
         let start = len - back;
         file.seek(SeekFrom::Start(start)).ok()?;
@@ -317,8 +404,18 @@ pub(super) fn read_session_ends(path: &Path, cwd: Option<&Path>) -> Option<Sessi
         let body = &tail_bytes[..tail_bytes.len().saturating_sub(1)];
         match body.iter().position(|b| *b == b'\n') {
             Some(at) => break String::from_utf8_lossy(&tail_bytes[at + 1..]).into_owned(),
+            None if back >= SUMMARY_LINE_CAP => {
+                tail_cut = true;
+                break String::new();
+            }
             None => back = back.saturating_mul(4).min(len - head_end),
         }
     };
-    Some(SessionSlices { head, tail })
+    Some(SessionSlices {
+        head,
+        tail,
+        tail_cut,
+        head_cut_text,
+        modified_ms,
+    })
 }
