@@ -7,8 +7,6 @@ use unicode_normalization::{UnicodeNormalization, char::canonical_combining_clas
 
 use super::{R, err, not_found, write_atomic};
 
-const DIFF_BYTES: usize = 4000;
-
 type Span = (usize, usize);
 
 pub(super) fn run(cwd: &Path, args: &Value) -> R {
@@ -105,19 +103,10 @@ pub(super) fn run(cwd: &Path, args: &Value) -> R {
     write_atomic(&path, format!("{bom}{out}").as_bytes())
         .map_err(|e| ToolOutput::error(format!("{p}: {e}")))?;
 
-    let mut diff = similar::TextDiff::from_lines(content, out.as_str())
-        .unified_diff()
-        .context_radius(2)
-        .to_string();
-    if diff.len() > DIFF_BYTES {
-        diff.truncate(diff.floor_char_boundary(DIFF_BYTES));
-        diff.push_str("\n[diff truncated]");
-    }
     let n = found.len();
     Ok(format!(
-        "Edited {p}: {n} edit{}.\n{}",
-        if n == 1 { "" } else { "s" },
-        diff.trim_end()
+        "Edited {p}: {n} edit{}.",
+        if n == 1 { "" } else { "s" }
     ))
 }
 

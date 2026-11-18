@@ -7,9 +7,7 @@ use crate::agent::{
 use crate::agent_compact::{needs_pre_turn_compact, needs_soft_elide};
 use crate::agent_tools::{PendingToolCall, answer_pending_tools};
 use crate::error::CoreError;
-use crate::event::{
-    AgentEvent, CompactReason, StopReason, StreamEvent, Usage, append_thinking_chunk,
-};
+use crate::event::{AgentEvent, CompactReason, StopReason, StreamEvent, Usage};
 use crate::message::{ChatRequest, ContentBlock, Message, Role, ThoughtSignature};
 
 const MAX_EMPTY_RETRIES: u8 = 2;
@@ -19,24 +17,6 @@ const MAX_CUTOFFS: u8 = 3;
 const CUTOFF_NUDGE: &str = "Your last response hit the output token limit. Do not apologize, recap, or repeat yourself. Continue in smaller pieces and end with a tool call.";
 
 const OUTPUT_ROOM_CAP: usize = 32_000;
-
-fn sorted_json(value: &serde_json::Value) -> serde_json::Value {
-    match value {
-        serde_json::Value::Object(map) => {
-            let mut keys: Vec<&String> = map.keys().collect();
-            keys.sort();
-            serde_json::Value::Object(
-                keys.into_iter()
-                    .map(|k| (k.clone(), sorted_json(&map[k])))
-                    .collect(),
-            )
-        }
-        serde_json::Value::Array(items) => {
-            serde_json::Value::Array(items.iter().map(sorted_json).collect())
-        }
-        other => other.clone(),
-    }
-}
 
 fn repeat_nudge(name: &str, count: usize) -> Option<String> {
     match count {
@@ -773,8 +753,6 @@ impl Agent {
                 hook(&self.messages, self.history_revision()).await;
             }
 
-            self.prune_tool_output();
-
             // A caching provider re-bills the whole prefix after a rewrite
             // (an 86k write to stub ~10k tokens); mask_stale_tool_output on a
             // cold cache and pre-turn compaction cover it instead.
@@ -1102,7 +1080,7 @@ impl Agent {
                         Some(Ok(StreamEvent::ThinkingDelta { delta })) => {
                             if !delta.is_empty() {
                                 emit!(AgentEvent::thinking_delta(delta.clone()));
-                                append_thinking_chunk(&mut thinking_text, &delta);
+                                thinking_text.push_str(&delta);
                             }
                         }
                         Some(Ok(StreamEvent::ReasoningItem {
@@ -1585,7 +1563,7 @@ impl Agent {
             {
                 let mut next = std::collections::HashMap::new();
                 for (id, name, args) in &tool_uses {
-                    let key = format!("{name}:{}", sorted_json(args));
+                    let key = format!("{name}:{args}");
                     let count = call_counts.get(&key).copied().unwrap_or(0) + 1;
                     next.insert(key, count);
                     if let Some(text) = repeat_nudge(name, count) {
@@ -1768,7 +1746,12 @@ impl Agent {
                             }
                             _ => {
                                 shortfall = true;
-                                crate::agent_tools::push_synthetic(self, id, "cancelled by user");
+                                crate::agent_tools::insert_synthetic(
+                                    self,
+                                    self.messages.len(),
+                                    id,
+                                    "cancelled by user",
+                                );
                             }
                         }
                     }

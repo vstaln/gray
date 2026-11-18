@@ -295,7 +295,7 @@ pub(crate) async fn run_prompt_turn(
         s.lock().expect("tui lock").begin_turn("Working");
     }
 
-    let mut pending_tools: HashMap<String, (String, Option<serde_json::Value>)> = HashMap::new();
+    let mut pending_tools: HashMap<String, super::session::PendingTool> = HashMap::new();
     let mut turn_usage: Option<gray_core::event::Usage> = None;
     let turn_start = std::time::Instant::now();
     let mut turn_duration_ms: Option<u64> = None;

@@ -132,13 +132,16 @@ fn console_font_fallback() -> bool {
 }
 
 pub fn unicode_safe() -> bool {
-    match std::env::var("GRAY_ASCII_ART")
-        .map(|v| v.trim().to_lowercase())
-        .as_deref()
-    {
-        Ok("1" | "true" | "yes" | "on") => return false,
-        Ok("0" | "false" | "no" | "off") => return true,
-        _ => {}
+    if std::env::var("GRAY_ASCII_ART").is_ok_and(|v| {
+        matches!(
+            v.trim().to_lowercase().as_str(),
+            "0" | "false" | "no" | "off"
+        )
+    }) {
+        return true;
+    }
+    if gray_core::env_flag("GRAY_ASCII_ART") {
+        return false;
     }
     if !std::io::stdout().is_terminal() {
         return true;

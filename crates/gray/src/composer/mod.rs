@@ -245,6 +245,7 @@ pub(crate) struct LiveTool {
     pub(crate) header: Vec<Line<'static>>,
     pub(crate) running: bool,
     pub(crate) verbless: bool,
+    pub(crate) started: Option<std::time::Instant>,
     pub(crate) tail: LiveToolTail,
 }
 

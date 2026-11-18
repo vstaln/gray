@@ -113,7 +113,7 @@ fn disclose(text: &str, cap: usize) -> String {
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn on_agent_event(
     ev: &AgentEvent,
-    pending_tools: &mut HashMap<String, (String, Option<Value>)>,
+    pending_tools: &mut HashMap<String, crate::repl::session::PendingTool>,
     turn_usage: &mut Option<Usage>,
     model: &str,
     totals: &mut super::SessionTotals,
@@ -130,7 +130,10 @@ pub(crate) fn on_agent_event(
             emit(Event::Thinking, json!({"delta": delta}));
         }
         AgentEvent::ToolCallStart { id, name } => {
-            pending_tools.insert(id.clone(), (name.clone(), None));
+            pending_tools.insert(
+                id.clone(),
+                crate::repl::session::PendingTool::new(name.clone()),
+            );
             emit(Event::ToolStart, json!({"id": id, "name": name}));
         }
         AgentEvent::ToolCallProgress {
@@ -140,7 +143,7 @@ pub(crate) fn on_agent_event(
         } => {
             pending_tools
                 .entry(id.clone())
-                .or_insert((name.clone(), None));
+                .or_insert_with(|| crate::repl::session::PendingTool::new(name.clone()));
             emit(
                 Event::ToolProgress,
                 json!({
@@ -153,12 +156,12 @@ pub(crate) fn on_agent_event(
         AgentEvent::ToolCallEnd { id, args } => {
             let entry = pending_tools
                 .entry(id.clone())
-                .or_insert((String::new(), None));
-            entry.1 = Some(args.clone());
-            let name = if entry.0.is_empty() {
+                .or_insert_with(|| crate::repl::session::PendingTool::new(""));
+            entry.args = Some(args.clone());
+            let name = if entry.name.is_empty() {
                 "tool".to_string()
             } else {
-                entry.0.clone()
+                entry.name.clone()
             };
             emit(
                 Event::ToolCall,
@@ -176,7 +179,14 @@ pub(crate) fn on_agent_event(
         } => {
             let (name, args) = pending_tools
                 .remove(id)
-                .map(|(n, a)| (if n.is_empty() { "tool".to_string() } else { n }, a))
+                .map(|p| {
+                    let name = if p.name.is_empty() {
+                        "tool".to_string()
+                    } else {
+                        p.name
+                    };
+                    (name, p.args)
+                })
                 .unwrap_or_else(|| ("tool".to_string(), None));
             emit(
                 Event::ToolResult,

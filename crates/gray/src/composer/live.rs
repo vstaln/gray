@@ -150,6 +150,12 @@ pub(crate) fn live_tool_rows(
                     draw::shimmer_spans(live.unwrap_or("Running "), elapsed),
                 );
             }
+            if t.running
+                && let Some(started) = t.started
+            {
+                let dur = gray_tools::shell::view::format_elapsed(started.elapsed());
+                crate::tool_fmt::append_tool_duration_str(&mut headers, &dur);
+            }
             let mut rows: Vec<Line<'static>> = Vec::new();
             for (i, line) in headers.into_iter().enumerate() {
                 if i == 0 {

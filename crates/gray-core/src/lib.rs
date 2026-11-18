@@ -26,6 +26,15 @@ pub fn is_false(b: &bool) -> bool {
     !*b
 }
 
+pub fn env_flag(name: &str) -> bool {
+    std::env::var(name).is_ok_and(|v| {
+        matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        )
+    })
+}
+
 pub use agent::{
     Agent, CommandOutcome, PanelPage, PanelSpan, PanelSpec, PanelStyle, PickerItem, PickerSpec,
     PluginCommand, PluginHooks, Provider, ProviderError, ProviderStream, ToolBefore, ToolContext,

@@ -129,12 +129,7 @@ pub fn install_json(turn_id: String) {
 }
 
 pub fn json_enabled() -> bool {
-    std::env::var("GRAY_JSON_ASK").is_ok_and(|v| {
-        matches!(
-            v.trim().to_ascii_lowercase().as_str(),
-            "1" | "true" | "yes" | "on"
-        )
-    })
+    gray_core::env_flag("GRAY_JSON_ASK")
 }
 
 fn install_service(driver: AskDriver) {

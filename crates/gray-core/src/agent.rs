@@ -624,8 +624,6 @@ pub struct Agent {
 
     pub(crate) soft_elide_rearm: usize,
 
-    pub(crate) prune_rearm: usize,
-
     pub(crate) context_usage: Option<(usize, usize)>,
     history_revision: u64,
 
@@ -727,7 +725,6 @@ impl Agent {
             price_cliff: None,
             compact_ceiling: None,
             soft_elide_rearm: 0,
-            prune_rearm: 0,
             context_usage: None,
             history_revision: 0,
             prefix_fp_sink: None,
@@ -884,7 +881,6 @@ impl Agent {
         self.context_usage = None;
 
         self.soft_elide_rearm = 0;
-        self.prune_rearm = 0;
 
         self.contaminated.clear();
 

@@ -22,12 +22,7 @@ pub(crate) struct FailedTurn {
 }
 
 fn disabled() -> bool {
-    std::env::var("GRAY_NO_RESUME").is_ok_and(|v| {
-        matches!(
-            v.trim().to_ascii_lowercase().as_str(),
-            "1" | "true" | "yes" | "on"
-        )
-    })
+    gray_core::env_flag("GRAY_NO_RESUME")
 }
 
 pub(crate) fn prompt_text(prompt: Option<&str>, message: &Message) -> String {

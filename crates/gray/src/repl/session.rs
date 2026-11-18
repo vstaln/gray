@@ -565,12 +565,28 @@ pub(crate) fn tool_display_maps(
     (labels, previews)
 }
 
+pub(crate) struct PendingTool {
+    pub(crate) name: String,
+    pub(crate) args: Option<serde_json::Value>,
+    pub(crate) started: Option<std::time::Instant>,
+}
+
+impl PendingTool {
+    pub(crate) fn new(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            args: None,
+            started: None,
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn dispatch_agent_event(
     ev: &AgentEvent,
     tui_stream: Option<&crate::composer::SharedTui>,
     interactive: bool,
-    pending_tools: &mut HashMap<String, (String, Option<serde_json::Value>)>,
+    pending_tools: &mut HashMap<String, PendingTool>,
     turn_usage: &mut Option<gray_core::event::Usage>,
     cwd: &Path,
     model: &str,
@@ -612,7 +628,7 @@ pub(crate) fn dispatch_agent_event(
                 t.flush_markdown();
                 t.end_thinking();
                 t.mark_stream_round_boundary();
-                pending_tools.insert(id.clone(), (name.clone(), None));
+                pending_tools.insert(id.clone(), PendingTool::new(name.clone()));
 
                 let header = crate::tool_fmt::format_live_tool_header(
                     name,
@@ -631,7 +647,9 @@ pub(crate) fn dispatch_agent_event(
                 name,
                 args_so_far,
             } => {
-                pending_tools.insert(id.clone(), (name.clone(), None));
+                pending_tools
+                    .entry(id.clone())
+                    .or_insert_with(|| PendingTool::new(name.clone()));
                 let header = crate::tool_fmt::format_live_tool_header(
                     name,
                     args_so_far,
@@ -653,19 +671,26 @@ pub(crate) fn dispatch_agent_event(
             }
             AgentEvent::ToolCallEnd { id, args } => {
                 t.end_thinking();
+                let now = std::time::Instant::now();
                 let name = pending_tools
                     .get(id)
-                    .map(|(n, _)| n.clone())
+                    .map(|p| p.name.clone())
                     .unwrap_or_default();
                 pending_tools
                     .entry(id.clone())
                     .and_modify(|e| {
-                        if e.0.is_empty() {
-                            e.0 = name.clone();
+                        if e.name.is_empty() {
+                            e.name = name.clone();
                         }
-                        e.1 = Some(args.clone());
+                        e.args = Some(args.clone());
+                        if e.started.is_none() {
+                            e.started = Some(now);
+                        }
                     })
-                    .or_insert((name.clone(), Some(args.clone())));
+                    .or_insert(PendingTool {
+                        name: name.clone(),
+                        ..PendingTool::new("")
+                    });
 
                 let header = tool_header(display, &name, args, Some(cwd));
                 let verbless = crate::tool_fmt::verbless_card(&name, args);
@@ -680,10 +705,17 @@ pub(crate) fn dispatch_agent_event(
                 is_error,
                 ..
             } => {
-                let (name, args) = pending_tools
+                let (name, args, started) = pending_tools
                     .remove(id)
-                    .map(|(n, a)| (if n.is_empty() { "tool".to_string() } else { n }, a))
-                    .unwrap_or_else(|| ("tool".to_string(), None));
+                    .map(|p| {
+                        let name = if p.name.is_empty() {
+                            "tool".to_string()
+                        } else {
+                            p.name
+                        };
+                        (name, p.args, p.started)
+                    })
+                    .unwrap_or_else(|| ("tool".to_string(), None, None));
                 {
                     let mut lines = crate::tool_fmt::format_tool_result_lines_with_context(
                         &name,
@@ -727,6 +759,11 @@ pub(crate) fn dispatch_agent_event(
                         };
                         if *is_error {
                             header.truncate(1);
+                        }
+                        if let Some(started) = started
+                            && !crate::tool_fmt::is_background_bash(&name, args.as_ref())
+                        {
+                            crate::tool_fmt::append_tool_duration(&mut header, started.elapsed());
                         }
                         t.push_tool_box_lines(header, lines);
                     });
@@ -836,17 +873,17 @@ pub(crate) fn dispatch_agent_event(
                 print!("{THINKING_STYLE}{delta}\x1b[0m");
             }
             AgentEvent::ToolCallStart { id, name } => {
-                pending_tools.insert(id.clone(), (name.clone(), None));
+                pending_tools.insert(id.clone(), PendingTool::new(name.clone()));
             }
             AgentEvent::ToolCallEnd { id, args } => {
                 let entry = pending_tools
                     .entry(id.clone())
-                    .or_insert((String::new(), None));
-                entry.1 = Some(args.clone());
-                let name = if entry.0.is_empty() {
+                    .or_insert_with(|| PendingTool::new(""));
+                entry.args = Some(args.clone());
+                let name = if entry.name.is_empty() {
                     "tool"
                 } else {
-                    entry.0.as_str()
+                    entry.name.as_str()
                 };
                 {
                     let owned;
@@ -876,7 +913,14 @@ pub(crate) fn dispatch_agent_event(
             } => {
                 let (name, args) = pending_tools
                     .remove(id)
-                    .map(|(n, a)| (if n.is_empty() { "tool".to_string() } else { n }, a))
+                    .map(|p| {
+                        let name = if p.name.is_empty() {
+                            "tool".to_string()
+                        } else {
+                            p.name
+                        };
+                        (name, p.args)
+                    })
                     .unwrap_or_else(|| ("tool".to_string(), None));
                 let res = crate::tool_fmt::format_tool_result_plain_with_context(
                     &name,

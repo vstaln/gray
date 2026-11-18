@@ -538,31 +538,6 @@ impl Agent {
         }
         elided
     }
-
-    pub(crate) fn prune_tool_output(&mut self) -> usize {
-        if !crate::compact::needs_prune(
-            self.estimate_tokens(),
-            self.context_window,
-            self.prune_rearm,
-        ) {
-            return 0;
-        }
-        let before = self.estimate_tokens();
-        let saved = crate::compact::prune_old_tool_results(&mut self.messages);
-        if saved == 0 {
-            return 0;
-        }
-        self.history_edited_in_place("tool output pruned");
-        log::info!(
-            target: "gray_agent",
-            "tool output pruned: {saved} bytes saved, {before} -> {} tokens",
-            self.estimate_tokens()
-        );
-        self.prune_rearm = self
-            .estimate_tokens()
-            .saturating_add(crate::compact::prune_step(self.context_window));
-        saved
-    }
 }
 
 #[path = "compact_tests.rs"]
