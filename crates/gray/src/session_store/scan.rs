@@ -105,7 +105,6 @@ pub(super) fn summarize_session_file(
             };
             last_message_at = last_message_at.max(entry.timestamp);
             if entry.compaction_boundary {
-                first_user_text = None;
                 last_user_text = None;
                 continue;
             }

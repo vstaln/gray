@@ -55,8 +55,8 @@ fn preview_text(s: &SessionSummary, width: usize) -> String {
     let raw = s
         .title
         .as_deref()
-        .or(s.last_user_text.as_deref())
         .or(s.first_user_text.as_deref())
+        .or(s.last_user_text.as_deref())
         .unwrap_or("(no message yet)");
     let one_line = raw.split_whitespace().collect::<Vec<_>>().join(" ");
     fit_chars(&one_line, width)
