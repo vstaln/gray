@@ -98,7 +98,7 @@ async fn split_source(
     };
     let tail = (!tail.is_empty()).then(|| tail.to_string());
     let exact = SessionId::new(token.to_lowercase());
-    if store.load(&exact).await.is_ok() {
+    if store.exists_on_disk(&exact).await {
         return (Some(exact), tail);
     }
     if token.chars().count() >= 8

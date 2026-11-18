@@ -329,7 +329,7 @@ impl JsonlSessionStore {
         let _ = tokio::fs::remove_file(self.remember_path_for_cwd(cwd)).await;
     }
 
-    pub(crate) async fn exists_on_disk(&self, id: &SessionId) -> bool {
+    pub async fn exists_on_disk(&self, id: &SessionId) -> bool {
         let Ok(path) = self.session_path(id) else {
             return false;
         };

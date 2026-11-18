@@ -323,18 +323,27 @@ pub async fn resolve_prefix(
     all: bool,
 ) -> Option<SessionId> {
     let cwd = std::env::current_dir().ok();
-    let summaries = store.list().await;
     let lower = input.trim().to_lowercase();
     if lower.is_empty() {
         return None;
     }
 
-    if let Some(s) = summaries
+    let mut matches: Vec<SessionId> = store
+        .session_ids()
+        .await
+        .into_iter()
+        .filter(|id| id.as_str().to_lowercase().starts_with(&lower))
+        .collect();
+    if let Some(exact) = matches
         .iter()
-        .find(|s| s.id.as_str().to_lowercase() == lower)
+        .find(|id| id.as_str().to_lowercase() == lower)
     {
-        return Some(s.id.clone());
+        return Some(exact.clone());
     }
+    if matches.len() == 1 {
+        return matches.pop();
+    }
+    let summaries = store.summaries_of(matches).await;
 
     if !all && let Some(c) = cwd.as_deref() {
         let cwd_matches: Vec<&SessionSummary> = summaries

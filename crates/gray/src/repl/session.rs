@@ -126,7 +126,7 @@ pub(crate) async fn handle_resume(
         let store = JsonlSessionStore::new(root);
         if let Some(c) = std::env::current_dir().ok()
             && let Some(rid) = store.recall_validated(&c).await
-            && store.load(&rid).await.is_ok()
+            && store.exists_on_disk(&rid).await
         {
             recalled_id = Some(rid);
         }

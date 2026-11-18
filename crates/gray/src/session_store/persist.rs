@@ -619,6 +619,45 @@ impl JsonlSessionStore {
         summaries
     }
 
+    pub async fn session_ids(&self) -> Vec<SessionId> {
+        let root = self.root_dir.clone();
+        tokio::task::spawn_blocking(move || {
+            let Ok(entries) = std::fs::read_dir(&root) else {
+                return Vec::new();
+            };
+            entries
+                .flatten()
+                .filter_map(|e| {
+                    let path = e.path();
+                    if path.extension().and_then(|x| x.to_str()) != Some("jsonl") {
+                        return None;
+                    }
+                    let stem = path.file_stem()?.to_str()?;
+                    valid_session_id(stem).then(|| SessionId::new(stem))
+                })
+                .collect()
+        })
+        .await
+        .unwrap_or_default()
+    }
+
+    pub async fn summaries_of(&self, ids: Vec<SessionId>) -> Vec<SessionSummary> {
+        let root = self.root_dir.clone();
+        tokio::task::spawn_blocking(move || {
+            ids.iter()
+                .filter_map(|id| {
+                    let path = root.join(format!("{}.jsonl", id.as_str()));
+                    match summarize_session_file(&root, &path, None)? {
+                        SessionFileRead::Summary(s) => Some(s),
+                        SessionFileRead::Corrupt(_) => None,
+                    }
+                })
+                .collect()
+        })
+        .await
+        .unwrap_or_default()
+    }
+
     pub(crate) fn scan(
         &self,
         cwd: Option<PathBuf>,

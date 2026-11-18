@@ -405,7 +405,7 @@ async fn run_resume_subcommand(
         if !all
             && let Some(c) = cwd.as_deref()
             && let Some(rid) = store.recall_validated(c).await
-            && store.load(&rid).await.is_ok()
+            && store.exists_on_disk(&rid).await
         {
             rid
         } else {
