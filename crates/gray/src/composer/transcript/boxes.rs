@@ -370,14 +370,18 @@ impl Tui {
             cwd: cwd.to_path_buf(),
             estimate,
         }));
-        self.tick_replay();
+        self.replay_for(std::time::Duration::from_secs(2));
     }
 
     pub(crate) fn tick_replay(&mut self) {
+        self.replay_for(std::time::Duration::from_millis(4));
+    }
+
+    fn replay_for(&mut self, budget: std::time::Duration) {
         let Some(mut q) = self.replay_queue.take() else {
             return;
         };
-        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(4);
+        let deadline = std::time::Instant::now() + budget;
         self.begin_insert_batch();
         while q.next < q.history.len() {
             let display = crate::tool_fmt::ToolDisplay {

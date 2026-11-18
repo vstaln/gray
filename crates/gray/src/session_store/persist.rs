@@ -641,6 +641,46 @@ impl JsonlSessionStore {
         .unwrap_or_default()
     }
 
+    pub async fn latest_where(
+        &self,
+        cwd: Option<PathBuf>,
+        keep: impl Fn(&SessionSummary) -> bool + Send + 'static,
+    ) -> Option<SessionSummary> {
+        let root = self.root_dir.clone();
+        tokio::task::spawn_blocking(move || {
+            let (files, _) = list_session_files(&root, None, false).ok()?;
+            let cwd = cwd.map(|c| c.canonicalize().unwrap_or(c));
+            let mut best: Option<SessionSummary> = None;
+            for (modified, path) in files {
+                let modified_ms = modified
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| d.as_millis() as u64);
+                if best
+                    .as_ref()
+                    .is_some_and(|b| modified_ms < b.last_message_at)
+                {
+                    break;
+                }
+                let Some(SessionFileRead::Summary(s)) =
+                    summarize_session_file(&root, &path, cwd.as_deref())
+                else {
+                    continue;
+                };
+                if keep(&s)
+                    && best
+                        .as_ref()
+                        .is_none_or(|b| s.last_message_at > b.last_message_at)
+                {
+                    best = Some(s);
+                }
+            }
+            best
+        })
+        .await
+        .ok()
+        .flatten()
+    }
+
     pub async fn summaries_of(&self, ids: Vec<SessionId>) -> Vec<SessionSummary> {
         let root = self.root_dir.clone();
         tokio::task::spawn_blocking(move || {

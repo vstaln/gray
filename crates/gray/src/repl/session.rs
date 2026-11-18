@@ -167,9 +167,8 @@ pub(crate) async fn handle_resume(
         };
         let store = JsonlSessionStore::new(root);
         let cwd_now = std::env::current_dir().ok();
-        let summaries = store.list().await;
         let filt = if args.all { None } else { cwd_now.as_deref() };
-        match crate::resume::latest_summary(&summaries, filt) {
+        match crate::resume::latest_session(&store, filt, None).await {
             Some(s) => Some(s.id.clone()),
             None => {
                 let msg = if args.all {

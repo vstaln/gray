@@ -723,9 +723,11 @@ pub async fn run_repl_mode(
         let best: Option<Best> = match recalled {
             Some(hit) => Some(hit),
             None => {
-                let summaries = store.list().await;
-                let latest = crate::resume::latest_summary(&summaries, cwd_now.as_deref())
-                    .or_else(|| crate::resume::latest_summary(&summaries, None));
+                let latest =
+                    match crate::resume::latest_session(&store, cwd_now.as_deref(), None).await {
+                        Some(l) => Some(l),
+                        None => crate::resume::latest_session(&store, None, None).await,
+                    };
                 match latest {
                     Some(l) => match store.load(&l.id).await {
                         Ok((meta, entries)) => Some((l.id.clone(), meta, entries)),

@@ -290,6 +290,18 @@ pub fn latest_summary<'a>(
         .max_by_key(|s| s.last_message_at)
 }
 
+pub async fn latest_session(
+    store: &JsonlSessionStore,
+    cwd: Option<&Path>,
+    skip: Option<SessionId>,
+) -> Option<SessionSummary> {
+    store
+        .latest_where(cwd.map(Path::to_path_buf), move |s| {
+            !is_empty_session(s) && !is_auxiliary_session(s) && skip.as_ref() != Some(&s.id)
+        })
+        .await
+}
+
 pub async fn recent_summaries(store: &JsonlSessionStore, all: bool) -> Vec<SessionSummary> {
     let cwd = std::env::current_dir().ok();
     let filt = if all { None } else { cwd.as_deref() };
@@ -430,7 +442,7 @@ pub async fn latest_session_here(store: &JsonlSessionStore) -> Option<SessionId>
     if let Some(id) = store.recall_validated(&cwd).await {
         return Some(id);
     }
-    latest_summary(&store.list().await, Some(&cwd)).map(|s| s.id.clone())
+    latest_session(store, Some(&cwd), None).await.map(|s| s.id)
 }
 
 pub fn effective_session_model(config_model: Option<&str>, meta_model: &str) -> Option<String> {

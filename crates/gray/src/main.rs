@@ -409,9 +409,8 @@ async fn run_resume_subcommand(
         {
             rid
         } else {
-            let summaries = store.list().await;
             let cwd_filter = if all { None } else { cwd.as_deref() };
-            match gray::resume::latest_summary(&summaries, cwd_filter) {
+            match gray::resume::latest_session(&store, cwd_filter, None).await {
                 Some(s) => s.id.clone(),
                 None => {
                     if all {

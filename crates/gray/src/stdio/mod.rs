@@ -620,9 +620,11 @@ pub async fn run_stdio_mode(
             best = Some((rid, meta, entries));
         }
         if best.is_none() {
-            let summaries = store.list().await;
-            let latest = crate::resume::latest_summary(&summaries, cwd_now.as_deref())
-                .or_else(|| crate::resume::latest_summary(&summaries, None));
+            let latest = match crate::resume::latest_session(&store, cwd_now.as_deref(), None).await
+            {
+                Some(l) => Some(l),
+                None => crate::resume::latest_session(&store, None, None).await,
+            };
             if let Some(l) = latest
                 && let Ok((meta, entries)) = store.load(&l.id).await
             {

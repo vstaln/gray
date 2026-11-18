@@ -214,7 +214,7 @@ pub(super) async fn scan_session_dir(
 
     use futures::StreamExt as _;
     let mut reads = futures::stream::iter(paths)
-        .map(|path| {
+        .map(|(_, path)| {
             let root = root.clone();
             let cwd = cwd.clone();
             async move {
@@ -247,9 +247,9 @@ pub(super) const SUMMARY_END_BYTES: u64 = 16 * 1024;
 
 const SUMMARY_LINE_CAP: u64 = 1 << 20;
 
-type SessionFiles = (Vec<PathBuf>, Vec<PathBuf>);
+type SessionFiles = (Vec<(std::time::SystemTime, PathBuf)>, Vec<PathBuf>);
 
-fn list_session_files(
+pub(super) fn list_session_files(
     root: &Path,
     since: Option<std::time::SystemTime>,
     probe_locks: bool,
@@ -298,7 +298,7 @@ fn list_session_files(
             files.iter().filter_map(|(_, p)| p.file_stem()).collect();
         open_paths.retain(|p| p.file_stem().is_some_and(|s| listed.contains(s)));
     }
-    Ok((files.into_iter().map(|(_, p)| p).collect(), open_paths))
+    Ok((files, open_paths))
 }
 
 pub(super) struct SessionSlices {
