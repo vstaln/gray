@@ -671,6 +671,14 @@ fn replay_tool_result(
         .remove(id)
         .map(|(n, a)| (n, Some(a)))
         .unwrap_or_else(|| ("tool".to_string(), None));
+    let (name, args) = if name == gray_core::toolbox::NAME
+        && let Some((target, inner_args)) = args.as_ref().and_then(gray_core::toolbox::run_request)
+        && !(is_error && content == gray_core::toolbox::unknown_tool_message(&target))
+    {
+        (target, Some(inner_args))
+    } else {
+        (name, args)
+    };
     let mut header = match args.as_ref() {
         Some(a) => crate::tool_fmt::format_tool_card_lines(
             &name,

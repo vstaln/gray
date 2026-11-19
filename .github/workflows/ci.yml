@@ -52,7 +52,6 @@ jobs:
       CODE: ${{ needs.changes.outputs.code }}
     permissions:
       contents: read
-      checks: write
     strategy:
       # A macOS failure must not cancel the independent Linux evidence.
       fail-fast: false
@@ -116,9 +115,12 @@ jobs:
         name: Run doctests
         run: cargo test --locked --workspace --doc
       - if: env.CODE == 'true' && matrix.os == 'ubuntu-latest'
-        uses: rustsec/audit-check@v2
+        uses: taiki-e/install-action@v2
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          tool: cargo-audit
+      - if: env.CODE == 'true' && matrix.os == 'ubuntu-latest'
+        name: Audit dependencies
+        run: cargo audit
 
   perf-floor:
     # The numbers gray sells itself on — one binary, a small dependency

@@ -151,11 +151,18 @@ pub fn hidden_names(all: &[ToolDef]) -> BTreeSet<String> {
 }
 
 pub fn run_target(all: &[ToolDef], args: &Value) -> Option<(String, Value)> {
+    let (target, arguments) = run_request(args)?;
+    all.iter()
+        .any(|t| t.name == target)
+        .then_some((target, arguments))
+}
+
+pub fn run_request(args: &Value) -> Option<(String, Value)> {
     if args.get("action").and_then(Value::as_str) != Some("run") {
         return None;
     }
     let target = args.get("target").and_then(Value::as_str)?.trim();
-    if target == NAME || !all.iter().any(|t| t.name == target) {
+    if target.is_empty() || target == NAME {
         return None;
     }
     let arguments = match args.get("arguments") {
@@ -164,6 +171,10 @@ pub fn run_target(all: &[ToolDef], args: &Value) -> Option<(String, Value)> {
         Some(v) => v.clone(),
     };
     Some((target.to_string(), arguments))
+}
+
+pub fn unknown_tool_message(target: &str) -> String {
+    format!("No tool named '{target}'. Use action=search to find one.")
 }
 
 pub fn answer(all: &[ToolDef], args: &Value) -> ToolOutput {
@@ -183,9 +194,7 @@ pub fn answer(all: &[ToolDef], args: &Value) -> ToolOutput {
                 }))
                 .unwrap_or_default(),
             ),
-            None => ToolOutput::error(format!(
-                "No tool named '{target}'. Use action=search to find one."
-            )),
+            None => ToolOutput::error(unknown_tool_message(target)),
         },
         "search" => {
             let limit = args
@@ -221,9 +230,7 @@ pub fn answer(all: &[ToolDef], args: &Value) -> ToolOutput {
             }
             ToolOutput::ok(lines(scored.into_iter().take(limit).map(|(_, t)| t)))
         }
-        "run" => ToolOutput::error(format!(
-            "No tool named '{target}'. Use action=search to find one."
-        )),
+        "run" => ToolOutput::error(unknown_tool_message(target)),
         _ => ToolOutput::error("toolbox: action must be search, open or run".to_string()),
     }
 }

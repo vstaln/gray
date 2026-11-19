@@ -1158,11 +1158,17 @@ impl Agent {
                             {
                                 let live_id = slot.id.clone().unwrap();
                                 let live_name = slot.name.clone().unwrap();
-                                emit!(AgentEvent::tool_call_start(live_id, live_name));
+                                if !self.toolbox || live_name != crate::toolbox::NAME {
+                                    emit!(AgentEvent::tool_call_start(live_id, live_name));
+                                }
                                 slot.started = true;
                             }
 
-                            if slot.started && !arguments_delta.is_empty() {
+                            if slot.started
+                                && !arguments_delta.is_empty()
+                                && !(self.toolbox
+                                    && slot.name.as_deref() == Some(crate::toolbox::NAME))
+                            {
                                 let live_id = slot.id.clone().unwrap();
                                 let live_name = slot.name.clone().unwrap();
                                 let ev = AgentEvent::tool_call_progress(
@@ -1342,7 +1348,9 @@ impl Agent {
                     if !slot.started {
                         let id = slot.id.clone().unwrap();
                         let name = slot.name.clone().unwrap();
-                        emit!(AgentEvent::tool_call_start(id, name));
+                        if !self.toolbox || name != crate::toolbox::NAME {
+                            emit!(AgentEvent::tool_call_start(id, name));
+                        }
                         slot.started = true;
                     }
                 }
@@ -1452,12 +1460,13 @@ impl Agent {
                 .iter()
                 .filter_map(|block| match block {
                     ContentBlock::ToolUse { id, name, args, .. } => {
-                        match (self.toolbox && name == crate::toolbox::NAME)
-                            .then(|| crate::toolbox::run_target(&self.tools, args))
-                            .flatten()
-                        {
-                            Some((real, real_args)) => Some((id.clone(), real, real_args)),
-                            None => Some((id.clone(), name.clone(), args.clone())),
+                        if self.toolbox && name == crate::toolbox::NAME {
+                            let (name, args) = crate::toolbox::run_target(&self.tools, args)
+                                .unwrap_or_else(|| (name.clone(), args.clone()));
+                            emit!(AgentEvent::tool_call_start(id.clone(), name.clone()));
+                            Some((id.clone(), name, args))
+                        } else {
+                            Some((id.clone(), name.clone(), args.clone()))
                         }
                     }
                     _ => None,
