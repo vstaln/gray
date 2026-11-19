@@ -99,10 +99,6 @@ impl Tui {
     }
 
     pub(crate) fn drain_inflight_for_reflow(&mut self) {
-        if self.thinking && !self.pending.is_empty() {
-            let rest = std::mem::take(&mut self.pending);
-            self.append_thinking_text(&rest, false);
-        }
         // Do NOT commit the markdown tail here: finishing the renderer
         // mid-stream freezes the still-growing paragraph into history and the
         // rest of the reply continues in a fresh renderer as a second block —

@@ -80,13 +80,13 @@ impl Tui {
         let mid_line = self.thinking_run_mid_line();
         self.append_thinking_text(fragment, terminated);
         if let Some(text) = thinking_paint_text(fragment, mid_line) {
-            self.paint_thinking_fragment(text.to_string());
+            self.paint_thinking_fragment(text);
         }
     }
 
-    pub(crate) fn paint_thinking_fragment(&mut self, fragment: String) {
-        let line = Line::from(vec![Span::styled(fragment, thinking_style())]);
-        self.emit_styled(vec![line], Vec::new());
+    pub(crate) fn paint_thinking_fragment(&mut self, fragment: &str) {
+        let lines = thinking_fragment_rows(fragment, prose_width(self.width()));
+        self.emit_styled(lines, Vec::new());
         let _ = std::io::stdout().flush();
     }
 

@@ -149,14 +149,13 @@ impl Tui {
     pub fn flush_markdown(&mut self) {
         if !self.pending.is_empty() {
             let rest = std::mem::take(&mut self.pending);
-            let style = if self.thinking {
-                crate::composer::transcript::thinking_style()
+            if self.thinking {
+                self.flush_thinking_fragment(&rest, false);
             } else {
-                Style::default()
-            };
-            for line in rest.split('\n') {
-                if !line.is_empty() {
-                    self.push_line_styled(line.to_string(), style);
+                for line in rest.split('\n') {
+                    if !line.is_empty() {
+                        self.push_line_styled(line.to_string(), Style::default());
+                    }
                 }
             }
         }
