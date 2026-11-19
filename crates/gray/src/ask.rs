@@ -75,9 +75,6 @@ fn parse_params(v: &serde_json::Value) -> anyhow::Result<(Vec<AskQuestion>, bool
     let questions: Vec<AskQuestion> =
         serde_json::from_value(v.get("questions").cloned().unwrap_or(serde_json::json!([])))
             .map_err(|e| anyhow::anyhow!("host/ask: bad questions: {e}"))?;
-    if questions.len() > 3 {
-        anyhow::bail!("host/ask: at most 3 questions");
-    }
     let blocking = v.get("blocking").and_then(|b| b.as_bool()).unwrap_or(true);
     Ok((questions, blocking))
 }
@@ -579,6 +576,9 @@ async fn drive_tui(svc: &Arc<Service>, tui: crate::composer::SharedTui, id: u64)
     .ok();
 }
 
+/// Option rows drawn at once; longer lists scroll with the cursor.
+const MAX_OPTION_ROWS: usize = 10;
+
 pub(crate) struct AskModalState {
     id: u64,
     pub(crate) questions: Vec<AskQuestion>,
@@ -619,14 +619,16 @@ impl AskModalState {
             .iter()
             .map(|q| vec![0; q.options.len()])
             .collect();
-        self.checked = self
-            .questions
-            .iter()
-            .map(|q| {
-                q.options
+        self.checked = (0..n)
+            .map(|qi| {
+                let q = &self.questions[qi];
+                let mut checked: Vec<bool> = q
+                    .options
                     .iter()
                     .map(|o| q.is_multi() && q.default_all && !o.opt_in)
-                    .collect()
+                    .collect();
+                checked.resize(self.options_len_of(qi), false);
+                checked
             })
             .collect();
     }
@@ -636,19 +638,35 @@ impl AskModalState {
     }
 
     fn options_len(&self) -> usize {
-        let q = &self.questions[self.idx];
-        if q.is_multi() || q.no_other {
+        self.options_len_of(self.idx)
+    }
+
+    fn options_len_of(&self, qi: usize) -> usize {
+        let q = &self.questions[qi];
+        if q.no_other {
             return q.options.len();
         }
         q.options.len() + 1
     }
 
+    fn option_window(&self) -> (usize, usize) {
+        option_window(self.options_len(), self.cursor[self.idx])
+    }
+
+    /// The option row a digit key picks: the window's rows are numbered
+    /// from 1, so `3` is the third row on screen, not the third option.
+    fn option_at_key(&self, digit: usize) -> Option<usize> {
+        let (first, last) = self.option_window();
+        let at = first + digit.checked_sub(1)?;
+        (at < last).then_some(at)
+    }
+
     fn option_label(&self, q: usize, i: usize) -> &str {
-        self.questions[q]
-            .options
-            .get(i)
-            .map(|o| o.label.as_str())
-            .unwrap_or("Other")
+        match self.questions[q].options.get(i) {
+            Some(o) => o.label.as_str(),
+            None if self.questions[q].options.is_empty() => "Your answer",
+            None => "Other",
+        }
     }
 
     fn is_freeform(&self, q: usize, i: usize) -> bool {
@@ -661,6 +679,15 @@ impl AskModalState {
     fn advance(&mut self) -> bool {
         if self.idx + 1 < self.questions.len() {
             self.idx += 1;
+            false
+        } else {
+            true
+        }
+    }
+
+    fn retreat(&mut self) -> bool {
+        if self.idx > 0 {
+            self.idx -= 1;
             false
         } else {
             true
@@ -721,6 +748,17 @@ fn edit_subject(q: &AskQuestion) -> String {
         .join("\n")
 }
 
+/// The option rows the modal can afford to draw: `MAX_OPTION_ROWS` at a
+/// time, scrolled so the cursor stays visible. Returns `[first, last)`.
+fn option_window(total: usize, cursor: usize) -> (usize, usize) {
+    if total <= MAX_OPTION_ROWS {
+        return (0, total);
+    }
+    let half = MAX_OPTION_ROWS / 2;
+    let first = cursor.saturating_sub(half).min(total - MAX_OPTION_ROWS);
+    (first, first + MAX_OPTION_ROWS)
+}
+
 /// Rows of the inline question prompt as `(kind, label, text)` plus the
 /// index of the highlighted option row. Kinds the drawer styles
 /// (`composer::draw::ask`):
@@ -756,13 +794,16 @@ pub(crate) fn ask_rows(state: &AskModalState) -> (Vec<(String, String, String)>,
         rows.push(row("\u{2502}", String::new(), l.trim_end().to_string()));
     }
     rows.push(row(" ", String::new(), String::new()));
-    let cursor = rows.len() + state.cursor[qi];
+    let mut cursor = rows.len();
     let multi = state.multi();
     let editing = state.editing[qi];
     let note = state.notes[qi].trim().to_string();
     if q.compact() {
         for (i, o) in q.options.iter().enumerate() {
             let here = i == state.cursor[qi];
+            if here {
+                cursor = rows.len();
+            }
             if here && (editing || !note.is_empty()) {
                 rows.push(("*".to_string(), o.label.clone(), state.notes[qi].clone()));
                 continue;
@@ -794,17 +835,26 @@ pub(crate) fn ask_rows(state: &AskModalState) -> (Vec<(String, String, String)>,
         rows.push(row("\u{b7}", String::new(), hint));
         return (rows, cursor);
     }
-    for i in 0..state.options_len() {
+    let total = state.options_len();
+    let (first, last) = option_window(total, state.cursor[qi]);
+    if first > 0 {
+        rows.push(row("~", String::new(), format!("\u{2026} {first} above")));
+    }
+    for i in first..last {
+        if i == state.cursor[qi] {
+            cursor = rows.len();
+        }
         let freeform = state.is_freeform(qi, i);
         let label = state.option_label(qi, i).to_string();
         if freeform && (editing || !note.is_empty()) {
             rows.push(("*".to_string(), label, state.notes[qi].clone()));
             continue;
         }
+        let shown = i - first;
         let glyph = if multi {
             if state.checked[qi][i] { "[x]" } else { "[ ]" }.to_string()
-        } else if i < 9 {
-            format!("{}.", i + 1)
+        } else if shown < 9 {
+            format!("{}.", shown + 1)
         } else {
             String::new()
         };
@@ -815,16 +865,24 @@ pub(crate) fn ask_rows(state: &AskModalState) -> (Vec<(String, String, String)>,
             .unwrap_or_else(|| "type a note".to_string());
         rows.push((glyph, label, desc));
     }
+    if last < total {
+        rows.push(row(
+            "~",
+            String::new(),
+            format!("\u{2026} {} below", total - last),
+        ));
+    }
     let arrows = crate::tui::glyph("\u{2191}\u{2193}", "up/down");
-    let keys = match state.options_len().min(9) {
-        1 => "1".to_string(),
+    let keys = match (last - first).min(9) {
+        0 | 1 => "1".to_string(),
         n => format!("1-{n}"),
     };
+    let back = if qi > 0 { " \u{b7} shift-tab back" } else { "" };
     let hint = if editing {
         "enter submit \u{b7} esc back".to_string()
     } else if multi {
         format!(
-            "{arrows} move \u{b7} space or {keys} toggle \u{b7} enter confirm \u{b7} esc cancel"
+            "{arrows} move \u{b7} space or {keys} toggle{back} \u{b7} enter confirm \u{b7} esc cancel"
         )
     } else {
         let edit = if state.questions[qi].editable {
@@ -832,7 +890,9 @@ pub(crate) fn ask_rows(state: &AskModalState) -> (Vec<(String, String, String)>,
         } else {
             ""
         };
-        format!("{arrows} select \u{b7} {keys} choose{edit} \u{b7} enter confirm \u{b7} esc cancel")
+        format!(
+            "{arrows} select \u{b7} {keys} choose{edit}{back} \u{b7} enter confirm \u{b7} esc cancel"
+        )
     };
     rows.push(row(" ", String::new(), String::new()));
     rows.push(row("\u{b7}", String::new(), hint));
@@ -963,6 +1023,12 @@ fn run_ask_modal(
             draw_ask_modal(tui, state);
             continue;
         }
+        if key.code == KeyCode::BackTab {
+            state.editing[i] = false;
+            state.retreat();
+            draw_ask_modal(tui, state);
+            continue;
+        }
         if let Some(up) = crate::keymap::select_move(&key) {
             state.cursor[i] = if up {
                 state.cursor[i].saturating_sub(1)
@@ -989,17 +1055,27 @@ fn run_ask_modal(
             }
             KeyCode::Char(' ') if multi => {
                 let c = state.cursor[i];
-                state.checked[i][c] = !state.checked[i][c];
+                if state.is_freeform(i, c) {
+                    state.editing[i] = true;
+                } else {
+                    state.checked[i][c] = !state.checked[i][c];
+                }
             }
             KeyCode::Char(c)
                 if multi
-                    && c.to_digit(10).is_some_and(|d| {
-                        (1..=9).contains(&d) && (d as usize) <= state.options_len()
-                    }) =>
+                    && c.to_digit(10)
+                        .and_then(|d| state.option_at_key(d as usize))
+                        .is_some() =>
             {
-                let d = c.to_digit(10).unwrap_or(1) as usize - 1;
-                state.cursor[i] = d;
-                state.checked[i][d] = !state.checked[i][d];
+                let d = c.to_digit(10).unwrap_or(1) as usize;
+                if let Some(at) = state.option_at_key(d) {
+                    state.cursor[i] = at;
+                    if state.is_freeform(i, at) {
+                        state.editing[i] = true;
+                    } else {
+                        state.checked[i][at] = !state.checked[i][at];
+                    }
+                }
             }
             KeyCode::Char('e')
                 if state.questions[i].editable
@@ -1017,12 +1093,12 @@ fn run_ask_modal(
                 if !key.modifiers.contains(KeyModifiers::CONTROL)
                     && !key.modifiers.contains(KeyModifiers::ALT) =>
             {
-                if let Some(d) = c.to_digit(10)
-                    && !multi
-                    && (1..=9).contains(&d)
-                    && (d as usize) <= state.options_len()
+                if let Some(at) = c
+                    .to_digit(10)
+                    .filter(|_| !multi)
+                    .and_then(|d| state.option_at_key(d as usize))
                 {
-                    state.cursor[i] = d as usize - 1;
+                    state.cursor[i] = at;
                     if state.is_freeform(i, state.cursor[i]) {
                         state.editing[i] = true;
                     } else {
