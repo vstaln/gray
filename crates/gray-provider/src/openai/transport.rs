@@ -1,4 +1,53 @@
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
+
 use super::*;
+
+const SESSION_ID_HEADER: &str = "session_id";
+const TURN_STATE_HEADER: &str = "x-codex-turn-state";
+const MAX_TURN_STATES: usize = 64;
+
+fn turn_states() -> &'static Mutex<HashMap<String, String>> {
+    static STATES: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
+    STATES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+pub(super) fn attach_sticky_routing_headers(headers: &mut HeaderMap, key: Option<&str>) {
+    let Some(key) = key.filter(|s| !s.is_empty()) else {
+        return;
+    };
+    if !headers.contains_key(SESSION_ID_HEADER)
+        && let Ok(val) = HeaderValue::from_str(key)
+    {
+        headers.insert(HeaderName::from_static(SESSION_ID_HEADER), val);
+    }
+    if !headers.contains_key(TURN_STATE_HEADER)
+        && let Ok(states) = turn_states().lock()
+        && let Some(state) = states.get(key)
+        && let Ok(val) = HeaderValue::from_str(state)
+    {
+        headers.insert(HeaderName::from_static(TURN_STATE_HEADER), val);
+    }
+}
+
+pub(super) fn record_turn_state(key: Option<&str>, response_headers: &HeaderMap) {
+    let Some(key) = key.filter(|s| !s.is_empty()) else {
+        return;
+    };
+    let Some(val) = response_headers
+        .get(TURN_STATE_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .filter(|v| !v.is_empty())
+    else {
+        return;
+    };
+    if let Ok(mut states) = turn_states().lock() {
+        if states.len() >= MAX_TURN_STATES && !states.contains_key(key) {
+            states.clear();
+        }
+        states.insert(key.to_string(), val.to_string());
+    }
+}
 
 pub(super) fn send_stage_retryable(err: &reqwest::Error) -> bool {
     err.is_connect() || err.is_request()
@@ -26,7 +75,10 @@ pub(super) async fn send_json_once(
     api_key: &str,
     body: &Value,
     attempt: usize,
+    sticky_key: Option<&str>,
 ) -> Result<reqwest::Response, (ProviderError, Option<Duration>, u16)> {
+    let mut sticky_headers = HeaderMap::new();
+    attach_sticky_routing_headers(&mut sticky_headers, sticky_key);
     let res_result = send_with_retries("send", || {
         let base = if api_key.is_empty() {
             client.post(url.clone())
@@ -34,6 +86,11 @@ pub(super) async fn send_json_once(
             client
                 .post(url.clone())
                 .header("Authorization", format!("Bearer {api_key}"))
+        };
+        let base = if sticky_headers.is_empty() {
+            base
+        } else {
+            base.headers(sticky_headers.clone())
         };
         base.header("Content-Type", "application/json").json(body)
     })
@@ -43,6 +100,7 @@ pub(super) async fn send_json_once(
         Ok(res) => {
             let status = res.status();
             if status.is_success() {
+                record_turn_state(sticky_key, res.headers());
                 return Ok(res);
             }
             let retry_after = parse_retry_after(res.headers());

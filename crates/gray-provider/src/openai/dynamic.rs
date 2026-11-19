@@ -124,6 +124,10 @@ pub(super) async fn send_dynamic_json_once(
 ) -> Result<reqwest::Response, ProviderError> {
     let mut headers = dynamic_headers(profile, lease, session_id)?;
     mark_isolated(&mut headers, &lease.metadata, isolated);
+    let sticky_key = (!isolated)
+        .then_some(body.prompt_cache_key.as_deref())
+        .flatten();
+    attach_sticky_routing_headers(&mut headers, sticky_key);
     let OpenAiAuthorization::Bearer { secret_name } = &profile.authorization;
     let bearer = lease.secrets.get(secret_name).map(str::to_owned);
     let response = send_with_retries("dynamic send", || {
@@ -154,6 +158,7 @@ pub(super) async fn send_dynamic_json_once(
         let snippet = redact_lease(snippet, bearer.as_deref());
         return Err(classify_http_error(status, &snippet, None, None));
     }
+    record_turn_state(sticky_key, response.headers());
     log::debug!(target: "gray_provider", "dynamic Responses returned {status}");
     Ok(response)
 }
