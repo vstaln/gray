@@ -576,8 +576,13 @@ async fn drive_tui(svc: &Arc<Service>, tui: crate::composer::SharedTui, id: u64)
     .ok();
 }
 
-/// Option rows drawn at once; longer lists scroll with the cursor.
 const MAX_OPTION_ROWS: usize = 10;
+
+fn option_rows_for(screen_h: u16) -> usize {
+    usize::from(screen_h)
+        .saturating_sub(9)
+        .clamp(1, MAX_OPTION_ROWS)
+}
 
 pub(crate) struct AskModalState {
     id: u64,
@@ -590,6 +595,7 @@ pub(crate) struct AskModalState {
     edited: Vec<bool>,
     checked: Vec<Vec<bool>>,
     scope: Vec<Vec<usize>>,
+    room: usize,
 }
 
 impl AskModalState {
@@ -604,6 +610,7 @@ impl AskModalState {
             edited: Vec::new(),
             checked: Vec::new(),
             scope: Vec::new(),
+            room: MAX_OPTION_ROWS,
         }
     }
 
@@ -650,7 +657,7 @@ impl AskModalState {
     }
 
     fn option_window(&self) -> (usize, usize) {
-        option_window(self.options_len(), self.cursor[self.idx])
+        option_window(self.options_len(), self.cursor[self.idx], self.room)
     }
 
     /// The option row a digit key picks: the window's rows are numbered
@@ -748,15 +755,14 @@ fn edit_subject(q: &AskQuestion) -> String {
         .join("\n")
 }
 
-/// The option rows the modal can afford to draw: `MAX_OPTION_ROWS` at a
-/// time, scrolled so the cursor stays visible. Returns `[first, last)`.
-fn option_window(total: usize, cursor: usize) -> (usize, usize) {
-    if total <= MAX_OPTION_ROWS {
+fn option_window(total: usize, cursor: usize, room: usize) -> (usize, usize) {
+    let room = room.max(1).min(total.max(1));
+    if total <= room {
         return (0, total);
     }
-    let half = MAX_OPTION_ROWS / 2;
-    let first = cursor.saturating_sub(half).min(total - MAX_OPTION_ROWS);
-    (first, first + MAX_OPTION_ROWS)
+    let half = room / 2;
+    let first = cursor.saturating_sub(half).min(total - room);
+    (first, first + room)
 }
 
 /// Rows of the inline question prompt as `(kind, label, text)` plus the
@@ -836,7 +842,7 @@ pub(crate) fn ask_rows(state: &AskModalState) -> (Vec<(String, String, String)>,
         return (rows, cursor);
     }
     let total = state.options_len();
-    let (first, last) = option_window(total, state.cursor[qi]);
+    let (first, last) = option_window(total, state.cursor[qi], state.room);
     if first > 0 {
         rows.push(row("~", String::new(), format!("\u{2026} {first} above")));
     }
@@ -899,8 +905,11 @@ pub(crate) fn ask_rows(state: &AskModalState) -> (Vec<(String, String, String)>,
     (rows, cursor)
 }
 
-fn draw_ask_modal(tui: &crate::composer::SharedTui, state: &AskModalState) {
+fn draw_ask_modal(tui: &crate::composer::SharedTui, state: &mut AskModalState) {
     let mut t = t_lock(tui);
+    if let Ok((_, screen_h)) = crossterm::terminal::size() {
+        state.room = option_rows_for(screen_h);
+    }
     let (rows, cursor) = ask_rows(state);
     t.ask_modal = Some(crate::composer::AskModal { rows, cursor });
     let _ = t.draw();
