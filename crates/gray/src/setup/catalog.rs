@@ -632,6 +632,75 @@ pub(crate) struct Detected {
     pub env: Option<(String, String)>,
 }
 
+type ProviderActivity = BTreeMap<u64, BTreeMap<String, u64>>;
+
+fn activity_day() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+        / 86_400
+}
+
+fn load_provider_activity(path: &Path) -> ProviderActivity {
+    std::fs::read(path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_default()
+}
+
+pub(crate) fn provider_activity_key(id: &str, base_url: &str, plugin: bool) -> String {
+    if plugin {
+        return id.to_owned();
+    }
+    use sha2::{Digest, Sha256};
+    let base = normalize_custom_base_url(base_url);
+    if base.is_empty() {
+        return String::new();
+    }
+    format!("{:x}", Sha256::digest(base.as_bytes()))
+}
+
+pub(crate) fn record_provider_turn(config: &crate::config::Config) {
+    let Ok(home) = gray_home() else { return };
+    let path = home.join("provider-activity.json");
+    let key = provider_activity_key(
+        &config.provider_id,
+        &config.base_url,
+        config.credential_source == "plugin",
+    );
+    if key.is_empty() {
+        return;
+    }
+    let Ok(_lock) = lock_saved_config_at(&path) else {
+        return;
+    };
+    let day = activity_day();
+    let mut history = load_provider_activity(&path);
+    history.retain(|date, _| (day.saturating_sub(29)..=day).contains(date));
+    let count = history.entry(day).or_default().entry(key).or_default();
+    *count = count.saturating_add(1);
+    if let Ok(value) = serde_json::to_value(history) {
+        let _ = save_private_json(&path, &value);
+    }
+}
+
+pub(crate) fn provider_activity() -> BTreeMap<String, u64> {
+    let Ok(home) = gray_home() else {
+        return BTreeMap::new();
+    };
+    let day = activity_day();
+    let history = load_provider_activity(&home.join("provider-activity.json"));
+    let mut totals = BTreeMap::<String, u64>::new();
+    for (_, counts) in history.range(day.saturating_sub(29)..=day) {
+        for (key, count) in counts {
+            let total = totals.entry(key.clone()).or_default();
+            *total = total.saturating_add(*count);
+        }
+    }
+    totals
+}
+
 pub(crate) fn sort_connect_items(
     items: &mut [ConnectItem],
     config: &crate::config::Config,

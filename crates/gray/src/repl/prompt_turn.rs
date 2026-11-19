@@ -453,6 +453,7 @@ pub(crate) async fn run_prompt_turn(
     let mut auth_relogin: Option<String> = None;
     match run_result {
         Ok(_) => {
+            crate::setup::catalog::record_provider_turn(config);
             *resumable = false;
             persist_turn_messages(
                 &mut *session_state,
