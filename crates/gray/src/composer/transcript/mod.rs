@@ -8,8 +8,6 @@ use ratatui::widgets::{Paragraph, Widget};
 
 use gray_markdown::HyperlinkTarget;
 
-use crate::text_width::display_width;
-
 use super::Tui;
 
 mod boxes;
@@ -22,9 +20,9 @@ pub(crate) use crate::tui::strip_ansi;
 pub(crate) use boxes::render_markdown_lines;
 pub(crate) use cards::{format_tool_box_lines, format_tool_box_lines_multi};
 pub(crate) use rows::{
-    GUTTER, format_user_prompt_lines, left_pad, prose_width, thinking_paint_text,
-    thinking_run_rows, thinking_style, transcript_row_is_blank, word_flush_cut, wrap_styled_line,
-    wrap_styled_line_with_ranges,
+    GUTTER, format_user_prompt_lines, left_pad, prose_width, thinking_fragment_rows,
+    thinking_paint_text, thinking_run_rows, thinking_style, transcript_row_is_blank,
+    wrap_styled_line, wrap_styled_line_with_ranges,
 };
 
 pub(crate) fn paint_insert_rows(
@@ -399,8 +397,7 @@ impl Tui {
         self.thinking = true;
 
         gray_core::event::append_thinking_chunk(&mut self.pending, &clean);
-        let w = self.live_width();
-        let max_w = prose_width(w);
+        self.live_width();
         while let Some(idx) = self.pending.find('\n') {
             let line: String = self.pending.drain(..=idx).collect();
             let trimmed = line.trim_end_matches('\n').trim_end_matches('\r');
@@ -408,13 +405,6 @@ impl Tui {
             self.flush_thinking_fragment(trimmed, true);
         }
 
-        if display_width(&self.pending) > max_w {
-            let chars: Vec<char> = self.pending.chars().collect();
-            let cut = word_flush_cut(&chars, max_w);
-            let line: String = chars[..cut].iter().collect();
-            self.pending = chars[cut..].iter().collect();
-            self.flush_thinking_fragment(&line, false);
-        }
         let _ = self.draw();
     }
 

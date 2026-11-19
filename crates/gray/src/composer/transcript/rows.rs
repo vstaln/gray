@@ -354,11 +354,27 @@ pub(crate) fn split_thinking_run(text: &str, mut tail_blank: bool) -> Vec<String
     out
 }
 
+pub(crate) fn thinking_fragment_rows(text: &str, max_w: usize) -> Vec<Line<'static>> {
+    if !text.contains("**") {
+        return vec![Line::from(Span::styled(text.to_owned(), thinking_style()))];
+    }
+    let (mut lines, _) =
+        super::boxes::render_markdown_lines(text, Some(max_w + GUTTER + RIGHT_MARGIN));
+    for line in &mut lines {
+        for span in &mut line.spans {
+            span.style = span.style.patch(thinking_style());
+        }
+    }
+    lines
+}
+
 pub(crate) fn thinking_run_rows(text: &str, max_w: usize, tail_blank: bool) -> Vec<Line<'static>> {
     let mut out = Vec::new();
     for logical in split_thinking_run(text, tail_blank) {
-        let line = Line::from(vec![Span::styled(logical, thinking_style())]);
-        for mut row in wrap_styled_line(line, max_w) {
+        for mut row in thinking_fragment_rows(&logical, max_w)
+            .into_iter()
+            .flat_map(|line| wrap_styled_line(line, max_w))
+        {
             if !row.spans.is_empty() {
                 row.spans.insert(0, left_pad());
             }
@@ -366,18 +382,6 @@ pub(crate) fn thinking_run_rows(text: &str, max_w: usize, tail_blank: bool) -> V
         }
     }
     out
-}
-
-pub(crate) fn word_flush_cut(chars: &[char], max_w: usize) -> usize {
-    let fit = fit_char_count(chars, max_w).min(chars.len());
-    if fit > 0 && chars.get(fit) == Some(&' ') {
-        let mut end = fit;
-        while chars.get(end) == Some(&' ') {
-            end += 1;
-        }
-        return end;
-    }
-    word_window_end(chars, 0, max_w)
 }
 
 pub(crate) fn thinking_paint_text(fragment: &str, mid_line: bool) -> Option<&str> {

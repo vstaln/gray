@@ -51,6 +51,13 @@ impl Tui {
     }
 
     pub(crate) fn stream_tail_rows(&self, w: usize) -> Vec<Line<'static>> {
+        if self.thinking && !self.hide_thinking {
+            return if self.pending.trim().is_empty() {
+                Vec::new()
+            } else {
+                transcript::thinking_run_rows(&self.pending, transcript::prose_width(w), false)
+            };
+        }
         let view = self.markdown_renderer.view();
         let start = self.committed_markdown_lines.min(view.lines.len());
         let lines = &view.lines[start..];
