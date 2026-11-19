@@ -869,7 +869,7 @@ impl Logins {
                 Item::Add => {
                     let line = match adding {
                         Some(buf) => Line::from(vec![
-                            Span::styled("   label  ", pick(t.text_dim)),
+                            Span::styled("   Name  ", pick(t.text_dim)),
                             Span::styled(format!("{buf}▌"), pick(t.text_bright)),
                         ]),
                         None => Line::from(Span::styled("   + add login", pick(t.accent))),

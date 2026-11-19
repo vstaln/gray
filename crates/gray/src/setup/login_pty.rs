@@ -19,6 +19,7 @@ pub(crate) struct PtyPane {
     size: (u16, u16),
     exited: Option<String>,
     esc_armed: bool,
+    details: bool,
 }
 
 pub(crate) enum PtyKey {
@@ -85,6 +86,7 @@ impl PtyPane {
             size: (size.rows, size.cols),
             exited: None,
             esc_armed: false,
+            details: false,
         })
     }
 
@@ -138,6 +140,10 @@ impl PtyPane {
     }
 
     pub(crate) fn key(&mut self, key: KeyEvent) -> PtyKey {
+        if key.code == KeyCode::F(2) {
+            self.details = !self.details;
+            return PtyKey::Stay;
+        }
         if self.exited.is_some() {
             return match key.code {
                 KeyCode::Enter | KeyCode::Esc => PtyKey::Close,
@@ -209,6 +215,26 @@ impl PtyPane {
             return;
         };
         let screen = parser.screen();
+        if !self.details {
+            let output = screen.contents().to_ascii_lowercase();
+            let message = match self.exited.as_deref() {
+                Some("done") => "Signed in".to_string(),
+                Some(status) => format!("Sign-in failed ({status}). Return to try again."),
+                None if (output.contains("paste") || output.contains("enter"))
+                    && output.contains("code") =>
+                {
+                    "Paste the code, then press Enter.".to_string()
+                }
+                None => "Waiting for browser sign-in…".to_string(),
+            };
+            frame.render_widget(
+                Paragraph::new(message)
+                    .style(Style::default().fg(t.text_body))
+                    .wrap(Wrap { trim: true }),
+                inner,
+            );
+            return;
+        }
         if let Some(status) = &self.exited {
             let room = inner.height.saturating_sub(2) as usize;
             let text = screen.contents();

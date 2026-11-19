@@ -114,6 +114,7 @@ pub(crate) struct PaneProvider {
     pub(crate) item: ConnectItem,
     pub(crate) list_key: String,
     pub(crate) connected: bool,
+    native_connected: bool,
     removable: bool,
     pub(crate) installed: Option<InstalledProvider>,
     pub(crate) detected: bool,
@@ -214,6 +215,7 @@ pub(crate) fn build_rail(
             };
             PaneProvider {
                 connected: item.is_connected(config, &auth),
+                native_connected: false,
                 removable: super::connect::is_removable(&item, config, &auth),
                 list_key: PaneProvider::list_key(&item),
                 detected: detected.contains_key(&item.id),
@@ -246,6 +248,7 @@ pub(crate) fn build_rail(
                 },
                 list_key: format!("plugin:{key}"),
                 connected: false,
+                native_connected: false,
                 removable: false,
                 installed: None,
                 detected: false,
@@ -268,16 +271,16 @@ pub(crate) enum GroupId {
     Logins,
     OAuth,
     ApiKey,
+    NotConnected,
 }
 
 impl GroupId {
-    const ALL: [GroupId; 3] = [GroupId::Logins, GroupId::OAuth, GroupId::ApiKey];
-
     fn index(self) -> usize {
         match self {
             GroupId::Logins => 0,
             GroupId::OAuth => 1,
             GroupId::ApiKey => 2,
+            GroupId::NotConnected => 3,
         }
     }
 
@@ -286,17 +289,16 @@ impl GroupId {
             GroupId::Logins => "Logins",
             GroupId::OAuth => "OAuth",
             GroupId::ApiKey => "API keys",
+            GroupId::NotConnected => "Not connected",
         }
     }
 }
 
-/// Collapse state per rail group: the login/oauth sections stay open (they're
-/// short and show what's set up); the API-key catalog starts closed.
-struct GroupStates([bool; 3]);
+struct GroupStates([bool; 4]);
 
 impl Default for GroupStates {
     fn default() -> Self {
-        GroupStates([true, true, false])
+        GroupStates([true, true, false, false])
     }
 }
 
@@ -354,41 +356,33 @@ pub(crate) fn place(p: &PaneProvider) -> Place {
     }
 }
 
-/// Display rows for the rail: usable providers first, the "+ Custom endpoint"
-/// toggle after them, then the collapsible groups. Closed groups collapse to
-/// just their header.
+fn rail_available(p: &PaneProvider) -> bool {
+    p.install.is_none()
+        && (p.connected || p.native_connected || (p.item.id == "ollama" && p.detected))
+}
+
 fn rail_rows(rail: &[PaneProvider], groups: &GroupStates) -> Vec<RailRow> {
     let mut rows = Vec::new();
-    let mut members: [Vec<usize>; 3] = Default::default();
-    let mut custom_row = None;
-    let mut portal_row = None;
+    let mut unavailable = Vec::new();
+    let mut custom = None;
     for (i, p) in rail.iter().enumerate() {
-        if p.item.id == catalog::GRAY_PORTAL_ID {
-            portal_row = Some(i);
-        } else if p.item.id == "custom" {
-            custom_row = Some(i);
-        } else {
-            match place(p) {
-                Place::Flat => rows.push(RailRow::Provider(i)),
-                Place::Group(g) => members[g.index()].push(i),
+        let row = RailRow::Provider(i);
+        match p.item.id.as_str() {
+            catalog::GRAY_PORTAL_ID => {
+                rows.insert(0, row);
+                rows.insert(1, RailRow::Spacer);
             }
+            "custom" => custom = Some(row),
+            _ if rail_available(p) => rows.push(row),
+            _ => unavailable.push(row),
         }
     }
-    if let Some(i) = custom_row {
-        rows.push(RailRow::Provider(i));
-    }
-    for g in GroupId::ALL {
-        if members[g.index()].is_empty() {
-            continue;
+    if !unavailable.is_empty() || custom.is_some() {
+        rows.push(RailRow::Group(GroupId::NotConnected));
+        if groups.get(GroupId::NotConnected) {
+            rows.extend(unavailable);
+            rows.extend(custom);
         }
-        rows.push(RailRow::Group(g));
-        if groups.get(g) {
-            rows.extend(members[g.index()].iter().map(|&i| RailRow::Provider(i)));
-        }
-    }
-    if let Some(i) = portal_row {
-        rows.insert(0, RailRow::Provider(i));
-        rows.insert(1, RailRow::Spacer);
     }
     rows
 }
@@ -409,10 +403,13 @@ fn rail_rows_for(rail: &[PaneProvider], groups: &GroupStates, filter: &str) -> V
     let f = filter.trim().to_lowercase();
     let mut out = Vec::new();
     let mut header = None;
-    for r in rail_rows(rail, &GroupStates([true; 3])) {
+    for r in rail_rows(rail, &GroupStates([true; 4])) {
         match r {
             RailRow::Group(_) => header = Some(r),
-            RailRow::Provider(i) if rail[i].item.name.to_lowercase().contains(&f) => {
+            RailRow::Provider(i)
+                if rail[i].item.id == catalog::GRAY_PORTAL_ID
+                    || rail[i].item.name.to_lowercase().contains(&f) =>
+            {
                 out.extend(header.take());
                 out.push(r);
             }
@@ -423,9 +420,14 @@ fn rail_rows_for(rail: &[PaneProvider], groups: &GroupStates, filter: &str) -> V
 }
 
 fn group_count(rail: &[PaneProvider], g: GroupId) -> usize {
-    rail.iter()
-        .filter(|p| matches!(place(p), Place::Group(id) if id == g))
-        .count()
+    if g == GroupId::NotConnected {
+        return rail
+            .iter()
+            .filter(|p| p.item.id != catalog::GRAY_PORTAL_ID)
+            .filter(|p| p.item.id == "custom" || !rail_available(p))
+            .count();
+    }
+    0
 }
 
 /// Index of the group header that owns `sel`, if `sel` sits inside an open
@@ -953,7 +955,7 @@ fn draw(frame: &mut Frame, bg: &BackgroundSnapshot, v: &PaneView) {
         } else if on {
             bold(t.text_bright)
         } else {
-            fg(if p.connected {
+            fg(if rail_available(p) {
                 t.text_body
             } else {
                 t.text_faint
@@ -965,7 +967,7 @@ fn draw(frame: &mut Frame, bg: &BackgroundSnapshot, v: &PaneView) {
                 " + "
             } else if p.install.is_some() {
                 " ○ "
-            } else if p.connected {
+            } else if rail_available(p) {
                 " ✓ "
             } else {
                 "   "
@@ -1226,12 +1228,9 @@ fn draw(frame: &mut Frame, bg: &BackgroundSnapshot, v: &PaneView) {
     let portal_row = provider.is_some_and(|p| p.item.id == catalog::GRAY_PORTAL_ID);
     let keys = if let Some(pty) = v.pty {
         if pty.exited() {
-            vec![("enter", "return", true)]
+            vec![("enter", "return", true), ("F2", "details", true)]
         } else {
-            vec![
-                ("keys", "go to the login", true),
-                ("esc", "interrupt · esc esc close", true),
-            ]
+            vec![("esc", "cancel", true), ("F2", "details", true)]
         }
     } else if v.portal.is_some() {
         vec![("enter", "sign in", true), ("esc", "cancel", true)]
@@ -1324,7 +1323,20 @@ pub(crate) fn run_model_panes(
     let mut provider_index: Option<gray_pkg::index::Index> = None;
     let mut first_draw = true;
     let mut before = config.clone();
-    let (mut rail, mut keys) = build_rail(config, ollama, None);
+    let activity = catalog::provider_activity();
+    let ranked_rail = |config: &Config, ollama, index: Option<&gray_pkg::index::Index>| {
+        let (mut rail, keys) = build_rail(config, ollama, index);
+        rail.sort_by_cached_key(|p| {
+            let key = catalog::provider_activity_key(
+                &p.item.id,
+                &p.item.base_url,
+                matches!(p.item.auth, ConnectAuth::Plugin { .. }),
+            );
+            std::cmp::Reverse(activity.get(&key).copied().unwrap_or(0))
+        });
+        (rail, keys)
+    };
+    let (mut rail, mut keys) = ranked_rail(config, ollama, None);
     let mut groups = GroupStates::default();
     let mut rows = rail_rows(&rail, &groups);
     let mut model_cache: HashMap<String, Vec<(String, String)>> = HashMap::new();
@@ -1395,7 +1407,7 @@ pub(crate) fn run_model_panes(
             {
                 ollama = up;
                 let keep = row_provider(&rail, &rows, rail_sel).map(|p| p.item.id.clone());
-                (rail, keys) = build_rail(config, ollama, provider_index.as_ref());
+                (rail, keys) = ranked_rail(config, ollama, provider_index.as_ref());
                 logins.start(installed_of(&rail));
                 rows = rail_rows(&rail, &groups);
                 rail_sel = keep
@@ -1407,7 +1419,7 @@ pub(crate) fn run_model_panes(
             if let Ok(index) = index_rx.try_recv() {
                 provider_index = index;
                 let keep = row_provider(&rail, &rows, rail_sel).map(|p| p.item.id.clone());
-                (rail, keys) = build_rail(config, ollama, provider_index.as_ref());
+                (rail, keys) = ranked_rail(config, ollama, provider_index.as_ref());
                 logins.start(installed_of(&rail));
                 rows = rail_rows(&rail, &groups);
                 rail_sel = keep
@@ -1448,7 +1460,7 @@ pub(crate) fn run_model_panes(
                 if reload {
                     portal_in = catalog::load_registry_token().is_some();
                     let keep = row_provider(&rail, &rows, rail_sel).map(|p| p.item.id.clone());
-                    (rail, keys) = build_rail(config, ollama, provider_index.as_ref());
+                    (rail, keys) = ranked_rail(config, ollama, provider_index.as_ref());
                     rows = rail_rows(&rail, &groups);
                     rail_sel = reselect(&rail, &rows, keep.as_deref(), rail_sel);
                 }
@@ -1467,7 +1479,7 @@ pub(crate) fn run_model_panes(
                 let id = p.item.id.clone();
                 let name = super::connect::forget_provider(&p.item, config)?;
                 before = config.clone();
-                (rail, keys) = build_rail(config, ollama, provider_index.as_ref());
+                (rail, keys) = ranked_rail(config, ollama, provider_index.as_ref());
                 logins.start(installed_of(&rail));
                 rows = rail_rows(&rail, &groups);
                 rail_sel = rail
@@ -1481,6 +1493,17 @@ pub(crate) fn run_model_panes(
                 notice = Some(format!("Removed {name}"));
                 removed = Some(name);
             }
+            for p in &mut rail {
+                p.native_connected = p.installed.as_ref().is_some_and(|installed| {
+                    installed.auth_method.kind != "oauth"
+                        && logins.strip(installed).is_some_and(|strip| {
+                            strip
+                                .items
+                                .iter()
+                                .any(|item| matches!(item, super::logins::Item::Login(_)))
+                        })
+                });
+            }
             let sel_provider = match rows.get(rail_sel) {
                 Some(RailRow::Provider(i)) => Some(*i),
                 _ => None,
@@ -1489,7 +1512,8 @@ pub(crate) fn run_model_panes(
             rows = rail_rows_for(&rail, &groups, &filter);
             rail_sel = if std::mem::take(&mut filter_moved) && rail_filtered {
                 rows.iter()
-                    .position(|r| matches!(r, RailRow::Provider(_)))
+                    .position(|r| matches!(r, RailRow::Provider(i)
+                        if rail[*i].item.name.to_lowercase().contains(&filter.trim().to_lowercase())))
                     .unwrap_or(0)
             } else {
                 sel_provider
