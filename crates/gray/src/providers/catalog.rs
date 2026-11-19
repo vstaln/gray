@@ -77,6 +77,9 @@ pub async fn connect_dynamic_provider(
     let store = CredentialStore::new(
         crate::providers::registry::plugin_home(home, &installed.plugin).join("auth.json"),
     );
+    if installed.is_bundled_chatgpt_plan() {
+        store.migrate_chatgpt_plan(&installed)?;
+    }
     let source: Arc<dyn CredentialSource> = shared_plugin_source_with_model(
         installed.clone(),
         store,
