@@ -209,7 +209,8 @@ pub(super) fn stream_unfold_step(
                             return Some((Err(err), StreamState::Done));
                         }
                     };
-                    match send_json_once(&client, &url, &api_key, &body_value, attempt).await {
+                    match send_json_once(&client, &url, &api_key, &body_value, attempt, None).await
+                    {
                         Ok(response) => {
                             let event_stream: BoxedEventStream = guarded_sse_event_stream(response);
                             state = StreamState::Streaming {
@@ -322,7 +323,16 @@ pub(super) fn stream_unfold_step(
                             return Some((Err(err), StreamState::Done));
                         }
                     };
-                    match send_json_once(&client, &url, &api_key, &body_value, attempt).await {
+                    match send_json_once(
+                        &client,
+                        &url,
+                        &api_key,
+                        &body_value,
+                        attempt,
+                        body.prompt_cache_key.as_deref(),
+                    )
+                    .await
+                    {
                         Ok(response) => {
                             let event_stream: BoxedEventStream = guarded_sse_event_stream(response);
 

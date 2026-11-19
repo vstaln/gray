@@ -11,6 +11,8 @@ use gray_plugin::{
 use serde::{Deserialize, Serialize};
 
 pub const PROVIDER_CAPABILITY: &str = "provider.credentials";
+pub(crate) const LEGACY_CHATGPT_PROVIDER: &str = "chatgpt:chatgpt";
+pub(crate) const LEGACY_CHATGPT_AUTH: &str = "plugin:chatgpt:chatgpt:chatgpt-plan";
 const PROVIDER_CACHE_SCHEMA: u32 = 1;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -23,6 +25,12 @@ pub struct InstalledProvider {
 }
 
 impl InstalledProvider {
+    pub(crate) fn is_bundled_chatgpt_plan(&self) -> bool {
+        matches!(self.plugin.as_str(), "codex" | "codex-sub")
+            && self.provider.id == "chatgpt"
+            && self.auth_method.id == "chatgpt-plan"
+    }
+
     pub fn provider_id(&self) -> String {
         format!("{}:{}", self.plugin, self.provider.id)
     }
@@ -150,6 +158,11 @@ impl ProviderRegistry {
             installed.provider_id() == provider_id && installed.auth_ref() == auth_ref
         }) {
             return Some(hit.clone());
+        }
+        if provider_id == LEGACY_CHATGPT_PROVIDER && auth_ref == LEGACY_CHATGPT_AUTH {
+            return all
+                .into_iter()
+                .find(InstalledProvider::is_bundled_chatgpt_plan);
         }
         let (plug, rest) = provider_id.split_once(':')?;
         let alt = gray_pkg::ops::RENAMED.iter().find_map(|&(o, n)| {

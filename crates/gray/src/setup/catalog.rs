@@ -607,9 +607,24 @@ impl ConnectItem {
 }
 
 pub(crate) fn load_connect_auth() -> BTreeMap<String, AuthEntry> {
-    auth_store_path()
-        .map(|path| load_mixed_store(&path))
-        .unwrap_or_default()
+    use crate::providers::registry::{
+        LEGACY_CHATGPT_AUTH, LEGACY_CHATGPT_PROVIDER, ProviderRegistry,
+    };
+    let Ok(path) = auth_store_path() else {
+        return BTreeMap::new();
+    };
+    let auth = load_mixed_store(&path);
+    if auth.contains_key(LEGACY_CHATGPT_AUTH)
+        && let Ok(home) = gray_home()
+        && let Some(installed) = ProviderRegistry::load_cached(&home)
+            .resolve(LEGACY_CHATGPT_PROVIDER, LEGACY_CHATGPT_AUTH)
+        && installed.is_bundled_chatgpt_plan()
+        && let Ok(()) =
+            crate::auth::CredentialStore::new(path.clone()).migrate_chatgpt_plan(&installed)
+    {
+        return load_mixed_store(&path);
+    }
+    auth
 }
 
 pub(crate) struct Detected {

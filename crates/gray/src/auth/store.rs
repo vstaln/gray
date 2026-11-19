@@ -99,6 +99,36 @@ impl CredentialStore {
         catalog::save_private_json(&self.path, &value)
     }
 
+    pub(crate) fn migrate_chatgpt_plan(
+        &self,
+        installed: &crate::providers::registry::InstalledProvider,
+    ) -> anyhow::Result<()> {
+        let old = crate::providers::registry::LEGACY_CHATGPT_AUTH;
+        let new = installed.auth_ref();
+        let store = self.load()?;
+        if store.contains_key(&new) || !store.contains_key(old) {
+            return Ok(());
+        }
+        let _lock = self.lock()?;
+        let mut store = self.load()?;
+        if !store.contains_key(&new)
+            && let Some(AuthEntry::PluginPool(mut pool)) = store.get(old).cloned()
+            && pool.plugin == "chatgpt"
+            && pool.provider == installed.provider.id
+            && pool.auth_method == installed.auth_method.id
+            && pool
+                .accounts
+                .iter()
+                .all(|account| account.profile_binding == installed.profile_binding)
+        {
+            pool.plugin = installed.plugin.clone();
+            store.insert(new, AuthEntry::PluginPool(pool));
+            store.remove(old);
+            self.replace_locked(&store)?;
+        }
+        Ok(())
+    }
+
     pub fn put_plugin(
         &self,
         value: StoredCredential,

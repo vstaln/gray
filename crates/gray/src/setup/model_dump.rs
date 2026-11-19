@@ -285,6 +285,17 @@ pub fn select_cli_provider(
         .find(|p| p.item.id == want)
         .or_else(|| rail.iter().find(|p| p.item.id.to_lowercase() == want_l))
         .or_else(|| rail.iter().find(|p| p.item.name.to_lowercase() == want_l))
+        .or_else(|| {
+            (want_l == crate::providers::registry::LEGACY_CHATGPT_PROVIDER)
+                .then(|| {
+                    rail.iter().find(|p| {
+                        p.installed.as_ref().is_some_and(
+                            crate::providers::InstalledProvider::is_bundled_chatgpt_plan,
+                        )
+                    })
+                })
+                .flatten()
+        })
     else {
         let mut ids: Vec<&str> = rail
             .iter()
