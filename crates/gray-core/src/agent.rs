@@ -237,7 +237,7 @@ pub fn current_isolated_stream() -> Option<IsolatedStream> {
     ISOLATED_STREAM.try_with(Clone::clone).ok()
 }
 
-pub(crate) async fn scope_isolated_stream<T>(
+pub async fn scope_isolated_stream<T>(
     iso: IsolatedStream,
     fut: impl std::future::Future<Output = T>,
 ) -> T {
