@@ -204,6 +204,9 @@ fn redact_token(
             .iter()
             .any(|marker| lowered.contains(marker));
         if secret_name {
+            if is_placeholder(name, value) {
+                return TokenOutcome::keep();
+            }
             if is_auth_scheme(value) {
                 return TokenOutcome::keep_and_arm(if is_canonical_auth_scheme(value) {
                     CredentialArm::Certain
@@ -280,6 +283,17 @@ fn not_a_secret_value(value: &str) -> bool {
         v.to_ascii_lowercase().as_str(),
         "none" | "null" | "nil" | "true" | "false" | "undefined"
     )
+}
+
+fn is_placeholder(name: &str, value: &str) -> bool {
+    let close = match name.trim_start_matches(['(', '[', '"', '\'', '`']) {
+        "{{secret" => "}}",
+        "<secret" => ">",
+        _ => return false,
+    };
+    value.split_once(close).is_some_and(|(id, _)| {
+        (1..=64).contains(&id.len()) && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+    })
 }
 
 fn unwrap_token(token: &str) -> &str {

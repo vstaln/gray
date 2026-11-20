@@ -43,6 +43,8 @@ pub const HOST_SAY: &str = "host/say";
 
 pub const HOST_ASK: &str = "host/ask";
 
+pub const HOST_SECRET: &str = "host/secret";
+
 pub const HOST_TTL: Duration = Duration::from_secs(30);
 
 pub const HOST_TOOLS_CHANGED: &str = "host/tools_changed";
@@ -442,7 +444,7 @@ fn spawn_reader(
                 };
 
                 let handler_ttl = match method_owned.as_str() {
-                    HOST_ASK | HOST_PLUGIN_INSTALL => ASK_HANDLER_TTL,
+                    HOST_ASK | HOST_SECRET | HOST_PLUGIN_INSTALL => ASK_HANDLER_TTL,
                     HOST_COMPLETE => HOST_COMPLETE_TTL,
                     _ => HOST_TTL,
                 };
@@ -1513,11 +1515,22 @@ impl Plugin for SidecarPlugin {
         }
         let params = json!({"name": name, "content": output.content, "is_error": output.is_error, "session": session_json(&self.pinned_sid(), &self.cwd)});
         let ttl = if self.asks { ASK_TTL } else { HOST_TTL };
-        let v = self
+        let required = self.manifest.requires("tool/after");
+        let v = match self
             .transport
             .request("tool/after", Some(params), ttl)
             .await
-            .ok()?;
+        {
+            Ok(v) => v,
+            Err(e) if required => return Some(self.manifest.tool_after_withheld(&e.to_string())),
+            Err(_) => return None,
+        };
+        if required && (v.is_null() || v.get("error").is_some()) {
+            let reason = v
+                .get("error")
+                .map_or("no result".to_string(), Value::to_string);
+            return Some(self.manifest.tool_after_withheld(&reason));
+        }
         let content = v.get("content").and_then(|c| c.as_str());
         let is_error = v.get("is_error").and_then(|e| e.as_bool());
         if content.is_none() && is_error.is_none() {

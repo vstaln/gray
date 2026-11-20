@@ -25,8 +25,8 @@ pub use live::LiveRegistry;
 pub use sidecar::{refresh_dynamic_tools, set_active_model};
 
 pub use sidecar::{
-    ASK_HANDLER_TTL, ASK_TOOL_TTL, ASK_TTL, HOST_ASK, HOST_RUN, HOST_SAY, HOST_TTL, HostHandler,
-    SidecarPlugin,
+    ASK_HANDLER_TTL, ASK_TOOL_TTL, ASK_TTL, HOST_ASK, HOST_RUN, HOST_SAY, HOST_SECRET, HOST_TTL,
+    HostHandler, SidecarPlugin,
 };
 
 pub use capabilities::{CapabilitySpec, HOST_TURN, SHELL_ENV, TOOL_OVERRIDE, WIDGET_OVERRIDE};
@@ -87,6 +87,9 @@ pub struct Manifest {
     pub commands: Vec<String>,
     #[serde(default)]
     pub hooks: Vec<String>,
+
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub required_hooks: Vec<String>,
 
     /// First-argv verbs each declared command may run mid-turn; `""` is
     /// the bare command and `"*"` allows any argv. Keys that are not
@@ -233,6 +236,17 @@ impl Manifest {
         self.hooks.iter().any(|h| h == hook)
     }
 
+    pub fn requires(&self, hook: &str) -> bool {
+        self.claims(hook) && self.required_hooks.iter().any(|h| h == hook)
+    }
+
+    pub fn tool_after_withheld(&self, reason: &str) -> ToolOutput {
+        ToolOutput::error(format!(
+            "plugin '{}' tool/after is required and failed ({reason:.160}); output withheld",
+            self.name
+        ))
+    }
+
     pub fn from_result(v: &Value) -> Self {
         let str_list = |key: &str| {
             v.get(key)
@@ -313,6 +327,7 @@ impl Manifest {
             commands,
             turn_local,
             hooks: str_list("hooks"),
+            required_hooks: str_list("required_hooks"),
             autostart: v
                 .get("autostart")
                 .and_then(|x| x.as_bool())
