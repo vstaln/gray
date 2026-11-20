@@ -803,6 +803,8 @@ pub(crate) fn dispatch_agent_event(
                 t.flush_markdown();
                 t.end_thinking();
                 t.mark_stream_round_boundary();
+                t.reset_cache();
+                t.cache_stats.reset();
                 t.push_dim(format!(
                     "↻ compacted {} → {} tok ({} → {} messages){}",
                     crate::repl::fmt_usage(*tokens_before),

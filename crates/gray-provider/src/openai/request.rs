@@ -53,9 +53,7 @@ pub(crate) fn chat_accepts(media_type: &str) -> bool {
 }
 
 pub(crate) fn responses_accepts(media_type: &str) -> bool {
-    media_type == "application/pdf"
-        || media_type.starts_with("image/")
-        || media_type.starts_with("video/")
+    media_type == "application/pdf" || media_type.starts_with("image/")
 }
 
 pub(crate) fn wire_tool_output(content: &str, is_error: bool) -> String {
@@ -654,12 +652,7 @@ pub(super) fn map_chat_to_responses(
                                 input.push(serde_json::json!({"role": role_str, "content": text_parts.join("\n")}));
                                 text_parts.clear();
                             }
-                            let part = if media_type == "application/pdf" {
-                                serde_json::json!({"type":"input_file","filename":"document.pdf","file_data": url})
-                            } else {
-                                serde_json::json!({"type":"input_video","video_url": url})
-                            };
-                            input.push(serde_json::json!({"role": "user", "content": [part]}));
+                            input.push(serde_json::json!({"role": "user", "content": [{"type":"input_file","filename":"document.pdf","file_data": url}]}));
                         }
                         ContentBlock::ToolResult {
                             id,

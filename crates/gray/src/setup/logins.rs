@@ -499,13 +499,11 @@ fn account_head(
     let mut used = 3;
     match label.filter(|l| !l.is_empty()) {
         Some(l) => {
-            let l = fit_chars(l, 16);
-            used += l.chars().count() + 2;
             head.push(Span::styled(
-                l,
+                fit_chars(l, w.saturating_sub(used)),
                 pick(t.text_body).add_modifier(Modifier::BOLD),
             ));
-            head.push(Span::raw("  "));
+            return head;
         }
         None if label.is_none() => {
             let who = email.unwrap_or("signed in").to_string();

@@ -258,6 +258,14 @@ pub(super) fn process_dynamic_event(
                 pending.push_back(StreamEvent::text_delta(delta));
             }
         }
+        "response.reasoning_summary_part.added"
+            if value
+                .get("summary_index")
+                .and_then(|v| v.as_u64())
+                .is_some_and(|i| i > 0) =>
+        {
+            pending.push_back(StreamEvent::thinking_delta("\n\n"));
+        }
         "response.reasoning_summary_text.delta" | "response.reasoning_text.delta" => {
             if typ.ends_with("summary_text.delta")
                 && let Some(id) = value.get("item_id").and_then(|v| v.as_str())
