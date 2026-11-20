@@ -287,7 +287,11 @@ fn warned_path() -> Option<PathBuf> {
     gray_core::paths::gray_home().map(|home| home.join("usage-warned.json"))
 }
 
-pub(crate) fn take_warnings(provider: &str, account: Option<&str>) -> Vec<String> {
+pub(crate) fn take_warnings(
+    provider: &str,
+    account: Option<&str>,
+    title: Option<&str>,
+) -> Vec<String> {
     let provider = provider_key(provider);
     let now = now();
     let Some(path) = warned_path() else {
@@ -319,11 +323,14 @@ pub(crate) fn take_warnings(provider: &str, account: Option<&str>) -> Vec<String
             w.resets_at.unwrap_or_default()
         );
         if prev.get(&key).is_none_or(|&p| p < at) {
-            let name = w
-                .label
-                .clone()
-                .unwrap_or_else(|| window_label(&w.window))
-                .to_lowercase();
+            let label = w.label.clone().unwrap_or_else(|| window_label(&w.window));
+            let (period, scope) = label.split_once(" \u{b7} ").unwrap_or((&label, ""));
+            let mut name = title.map(|t| format!("{t} ")).unwrap_or_default();
+            name.push_str(&period.to_lowercase());
+            name.push_str(" limit");
+            if !scope.is_empty() {
+                name.push_str(&format!(" for {scope}"));
+            }
             let who = account.map(|a| format!(" on {a}")).unwrap_or_default();
             let resets = match w.resets_at {
                 Some(at) if at - now > 20 * 3_600 => chrono::DateTime::from_timestamp(at, 0)
@@ -338,7 +345,7 @@ pub(crate) fn take_warnings(provider: &str, account: Option<&str>) -> Vec<String
                 None => String::new(),
             };
             out.push(format!(
-                "Heads up, you've used over {at:.0}% of your {name} limit{who}.{resets}"
+                "Heads up, you've used over {at:.0}% of your {name}{who}.{resets}"
             ));
         }
         next.insert(key, at);
