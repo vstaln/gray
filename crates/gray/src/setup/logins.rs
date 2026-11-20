@@ -89,17 +89,55 @@ fn run_json(argv: &[String], args: &[&str], timeout: Duration) -> Result<Value, 
     serde_json::from_str(&out).map_err(|e| format!("bad account json: {e}"))
 }
 
+pub(crate) fn usage_warnings(provider_id: &str) -> Vec<String> {
+    static LAST: std::sync::Mutex<Option<(String, Instant)>> = std::sync::Mutex::new(None);
+    {
+        let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((id, at)) = last.as_ref()
+            && id == provider_id
+            && at.elapsed() < Duration::from_secs(300)
+        {
+            return Vec::new();
+        }
+        *last = Some((provider_id.to_string(), Instant::now()));
+    }
+    let plugin = provider_id.split(':').next().unwrap_or_default();
+    let Some(argv) = cli_argvs().remove(plugin) else {
+        return Vec::new();
+    };
+    let Ok(list) = run_json(&argv, &["account", "list", "--json"], LIST_TIMEOUT) else {
+        return Vec::new();
+    };
+    let serving = Logins::serving(&list);
+    let Ok(entries) = fetch_usage(&argv, false, serving.as_deref()) else {
+        return Vec::new();
+    };
+    let title = entries
+        .iter()
+        .find_map(|e| e.card.as_ref()?["title"].as_str().map(str::to_string));
+    let provider = list["provider"]
+        .as_str()
+        .or_else(|| list["plugin"].as_str())
+        .unwrap_or(plugin);
+    crate::usage_cache::take_warnings(provider, serving.as_deref(), title.as_deref())
+}
+
 pub(crate) struct UsageEntry {
     label: Option<String>,
     card: Option<Value>,
     error: Option<String>,
 }
 
-fn fetch_usage(argv: &[String], fresh: bool) -> Result<Vec<UsageEntry>, String> {
+fn fetch_usage(
+    argv: &[String],
+    fresh: bool,
+    label: Option<&str>,
+) -> Result<Vec<UsageEntry>, String> {
     let mut args = vec!["account", "usage", "--json"];
     if fresh {
         args.push("--fresh");
     }
+    args.extend(label);
     let doc = run_json(argv, &args, USAGE_TIMEOUT)?;
     if let Some(provider) = doc["provider"].as_str().or_else(|| doc["plugin"].as_str()) {
         crate::usage_cache::record_usage(provider, &doc["accounts"]);
@@ -499,13 +537,11 @@ fn account_head(
     let mut used = 3;
     match label.filter(|l| !l.is_empty()) {
         Some(l) => {
-            let l = fit_chars(l, 16);
-            used += l.chars().count() + 2;
             head.push(Span::styled(
-                l,
+                fit_chars(l, w.saturating_sub(used)),
                 pick(t.text_body).add_modifier(Modifier::BOLD),
             ));
-            head.push(Span::raw("  "));
+            return head;
         }
         None if label.is_none() => {
             let who = email.unwrap_or("signed in").to_string();
@@ -628,7 +664,11 @@ impl Logins {
             let ok = list.is_ok();
             let _ = tx.send((plugin.clone(), generation, Msg::List(list)));
             if ok {
-                let _ = tx.send((plugin, generation, Msg::Usage(fetch_usage(&argv, true))));
+                let _ = tx.send((
+                    plugin,
+                    generation,
+                    Msg::Usage(fetch_usage(&argv, true, None)),
+                ));
             }
         });
     }

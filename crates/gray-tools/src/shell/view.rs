@@ -29,7 +29,9 @@ fn fmt_num_u64(n: u64) -> String {
 
 pub fn format_elapsed(d: Duration) -> String {
     let secs = d.as_secs();
-    if secs < 10 {
+    if secs < 1 {
+        format!("{}ms", d.as_millis())
+    } else if secs < 10 {
         format!("{:.1}s", d.as_secs_f64())
     } else if secs < 60 {
         format!("{secs}s")

@@ -12,6 +12,14 @@ pub(crate) async fn complete(
     provider: Arc<dyn Provider>,
     req: ChatRequest,
 ) -> Result<String, String> {
+    let iso = gray_core::agent::IsolatedStream {
+        session_id: Some(uuid::Uuid::new_v4().to_string()),
+        cache_off: true,
+    };
+    gray_core::agent::scope_isolated_stream(iso, drain_text(provider, req)).await
+}
+
+async fn drain_text(provider: Arc<dyn Provider>, req: ChatRequest) -> Result<String, String> {
     let mut stream = provider.stream(req);
     let drain = async {
         let mut text = String::new();

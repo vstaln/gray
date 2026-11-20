@@ -281,6 +281,92 @@ pub(crate) fn state(window: &Window, now: i64) -> WindowState {
     }
 }
 
+const WARN_AT: [f64; 3] = [75.0, 90.0, 95.0];
+
+fn warned_path() -> Option<PathBuf> {
+    gray_core::paths::gray_home().map(|home| home.join("usage-warned.json"))
+}
+
+pub(crate) fn take_warnings(
+    provider: &str,
+    account: Option<&str>,
+    title: Option<&str>,
+) -> Vec<String> {
+    let provider = provider_key(provider);
+    let now = now();
+    let Some(path) = warned_path() else {
+        return Vec::new();
+    };
+    let prev: std::collections::BTreeMap<String, f64> = std::fs::read(&path)
+        .ok()
+        .and_then(|raw| serde_json::from_slice(&raw).ok())
+        .unwrap_or_default();
+    let mut next = std::collections::BTreeMap::new();
+    let mut out = Vec::new();
+    for w in load()
+        .iter()
+        .filter(|w| w.provider == provider && w.account.as_deref() == account)
+    {
+        let WindowState::Percent(pct) = state(w, now) else {
+            continue;
+        };
+        if pct >= 100.0 {
+            continue;
+        }
+        let Some(&at) = WARN_AT.iter().rev().find(|&&t| pct >= t) else {
+            continue;
+        };
+        let key = format!(
+            "{provider}|{}|{}|{}",
+            account.unwrap_or(""),
+            w.window,
+            w.resets_at.unwrap_or_default()
+        );
+        if prev.get(&key).is_none_or(|&p| p < at) {
+            let label = w.label.clone().unwrap_or_else(|| window_label(&w.window));
+            let (period, scope) = label.split_once(" \u{b7} ").unwrap_or((&label, ""));
+            let mut name = title.map(|t| format!("{t} ")).unwrap_or_default();
+            match period
+                .strip_suffix('h')
+                .filter(|n| n.parse::<u32>().is_ok())
+            {
+                Some(hours) => name.push_str(&format!("{hours}-hour")),
+                None => name.push_str(&period.to_lowercase()),
+            }
+            name.push_str(" limit");
+            if !scope.is_empty() {
+                name.push_str(&format!(" for {scope}"));
+            }
+            let who = account.map(|a| format!(" on {a}")).unwrap_or_default();
+            let resets = match w.resets_at {
+                Some(at) if at - now > 20 * 3_600 => chrono::DateTime::from_timestamp(at, 0)
+                    .map(|t| {
+                        format!(
+                            " It resets {}.",
+                            t.with_timezone(&chrono::Local).format("%a %H:%M")
+                        )
+                    })
+                    .unwrap_or_default(),
+                Some(at) => format!(" It resets at {}.", clock(at)),
+                None => String::new(),
+            };
+            out.push(format!(
+                "Heads up, you've used over {at:.0}% of your {name}{who}.{resets}"
+            ));
+        }
+        next.insert(key, at);
+    }
+    if next != prev
+        && let Ok(bytes) = serde_json::to_vec(&next)
+    {
+        let tmp = path.with_extension("json.tmp");
+        if std::fs::write(&tmp, &bytes).is_ok() {
+            let _ = std::fs::rename(&tmp, &path);
+        }
+    }
+    out
+}
+
 pub(crate) fn clock(epoch: i64) -> String {
     chrono::DateTime::from_timestamp(epoch, 0)
         .map(|at| at.with_timezone(&chrono::Local).format("%H:%M").to_string())
