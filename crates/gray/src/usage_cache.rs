@@ -326,7 +326,13 @@ pub(crate) fn take_warnings(
             let label = w.label.clone().unwrap_or_else(|| window_label(&w.window));
             let (period, scope) = label.split_once(" \u{b7} ").unwrap_or((&label, ""));
             let mut name = title.map(|t| format!("{t} ")).unwrap_or_default();
-            name.push_str(&period.to_lowercase());
+            match period
+                .strip_suffix('h')
+                .filter(|n| n.parse::<u32>().is_ok())
+            {
+                Some(hours) => name.push_str(&format!("{hours}-hour")),
+                None => name.push_str(&period.to_lowercase()),
+            }
             name.push_str(" limit");
             if !scope.is_empty() {
                 name.push_str(&format!(" for {scope}"));
