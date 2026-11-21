@@ -97,6 +97,8 @@ pub(super) struct OpenAiChunk {
     pub(super) choices: Vec<OpenAiChoiceChunk>,
     #[serde(default)]
     pub(super) usage: Option<OpenAiUsageChunk>,
+    #[serde(default)]
+    pub(super) error: Option<Value>,
 }
 
 #[derive(Debug, Deserialize)]
