@@ -97,6 +97,10 @@ pub(super) struct OpenAiChunk {
     pub(super) choices: Vec<OpenAiChoiceChunk>,
     #[serde(default)]
     pub(super) usage: Option<OpenAiUsageChunk>,
+    /// Some OpenAI-compatible proxies report upstream failures in-band as
+    /// `data: {"error": {...}}` on an HTTP 200 stream.
+    #[serde(default)]
+    pub(super) error: Option<Value>,
 }
 
 #[derive(Debug, Deserialize)]

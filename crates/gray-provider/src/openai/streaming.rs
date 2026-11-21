@@ -93,6 +93,9 @@ pub(super) struct AccumulatedToolCall {
     pub(super) thought_signature: Option<String>,
 }
 
+const CONTENT_FILTER_STREAM_HINTS: [&str; 3] =
+    ["content_filter", "content-filter", "usage policies"];
+
 pub(super) fn emit_tool_calls_and_completion(
     accumulated_tools: &mut BTreeMap<usize, AccumulatedToolCall>,
     stop_reason: Option<StopReason>,
@@ -497,6 +500,19 @@ pub(super) fn stream_unfold_step(
                             let data = sse_event.data.trim();
                             if data == "[DONE]" {
                                 if !completed {
+                                    if !emitted
+                                        && accumulated_tools.is_empty()
+                                        && last_finish_reason.is_none()
+                                    {
+                                        log::error!(target: "gray_provider", "chat stream sent [DONE] with no content, tool calls or finish reason");
+                                        return Some((
+                                            Err(ProviderError::Stream(
+                                                "Chat stream ended with [DONE] without any content or finish reason"
+                                                    .into(),
+                                            )),
+                                            StreamState::Done,
+                                        ));
+                                    }
                                     completed = true;
                                     if let Err(err) = emit_tool_calls_and_completion(
                                         &mut accumulated_tools,
@@ -510,6 +526,50 @@ pub(super) fn stream_unfold_step(
                             } else {
                                 match serde_json::from_str::<OpenAiChunk>(data) {
                                     Ok(chunk) => {
+                                        if let Some(err_val) =
+                                            chunk.error.as_ref().filter(|v| !v.is_null())
+                                        {
+                                            let (code, msg) = match err_val {
+                                                Value::String(s) => (String::new(), s.clone()),
+                                                other => (
+                                                    other
+                                                        .get("code")
+                                                        .or_else(|| other.get("type"))
+                                                        .and_then(|v| {
+                                                            v.as_str().map(str::to_string).or_else(
+                                                                || {
+                                                                    v.as_u64()
+                                                                        .map(|n| n.to_string())
+                                                                },
+                                                            )
+                                                        })
+                                                        .unwrap_or_default(),
+                                                    other
+                                                        .get("message")
+                                                        .and_then(Value::as_str)
+                                                        .map(str::to_string)
+                                                        .unwrap_or_else(|| other.to_string()),
+                                                ),
+                                            };
+                                            let detail = format!(
+                                                "chat stream failed: {}",
+                                                format!("{code} {msg}").trim()
+                                            );
+                                            log::error!(target: "gray_provider", "{detail}");
+                                            let lowered = detail.to_lowercase();
+                                            let err = if CONTENT_FILTER_STREAM_HINTS
+                                                .iter()
+                                                .any(|h| lowered.contains(h))
+                                            {
+                                                ProviderError::BadRequest(detail)
+                                            } else {
+                                                stream_failure(
+                                                    &serde_json::json!({ "error": err_val }),
+                                                    detail,
+                                                )
+                                            };
+                                            return Some((Err(err), StreamState::Done));
+                                        }
                                         if let Some(u) = chunk.usage {
                                             last_usage = Some(map_usage(&u));
                                         }
@@ -594,6 +654,19 @@ pub(super) fn stream_unfold_step(
                                             }
 
                                             if let Some(reason_str) = choice.finish_reason {
+                                                if reason_str == "content_filter"
+                                                    && !emitted
+                                                    && accumulated_tools.is_empty()
+                                                {
+                                                    log::error!(target: "gray_provider", "chat stream finished with content_filter and no output");
+                                                    return Some((
+                                                        Err(ProviderError::BadRequest(
+                                                            "provider content filter blocked the response (finish_reason=content_filter)"
+                                                                .into(),
+                                                        )),
+                                                        StreamState::Done,
+                                                    ));
+                                                }
                                                 last_finish_reason = map_finish_reason(&reason_str);
                                             }
                                         }
