@@ -69,38 +69,6 @@ pub fn expand_tabs(s: &str) -> String {
     result
 }
 
-fn strip_markup(s: &str) -> String {
-    let mut out = s.to_string();
-    for (open, close) in [("**", "**"), ("__", "__"), ("~~", "~~")] {
-        while let Some(a) = out.find(open) {
-            let after = a + open.len();
-            let Some(rel) = out[after..].find(close) else {
-                break;
-            };
-            let b = after + rel;
-            let inner = out[after..b].to_string();
-            if inner.trim().is_empty() {
-                break;
-            }
-            out.replace_range(a..b + close.len(), &inner);
-        }
-    }
-
-    let mut res = String::with_capacity(out.len());
-    let mut chars = out.chars().peekable();
-    while let Some(ch) = chars.next() {
-        if ch == '`' {
-            if chars.peek() == Some(&'`') {
-                res.push('`');
-                chars.next();
-            }
-            continue;
-        }
-        res.push(ch);
-    }
-    res
-}
-
 fn truncate_cmd(cmd: &str) -> &str {
     let line = cmd.lines().next().unwrap_or(cmd);
     if crate::text_width::display_width(line) <= 80 {
@@ -136,7 +104,7 @@ pub fn format_live_tool_header(
         return format_tool_card_lines(name, &v, cwd, label, preview);
     }
 
-    match extract_partial_scalar(name, trimmed, RAW_CAP) {
+    match extract_partial_scalar(name, trimmed, RAW_CAP, preview) {
         Some(partial) => format_tool_card_lines(name, &partial, cwd, label, preview),
         None => vec![tool_name_line(name, label)],
     }
@@ -175,11 +143,19 @@ fn tool_name_line(name: &str, label: Option<&str>) -> Line<'static> {
     ])
 }
 
-fn extract_partial_scalar(name: &str, raw: &str, cap: usize) -> Option<serde_json::Value> {
+fn extract_partial_scalar(
+    name: &str,
+    raw: &str,
+    cap: usize,
+    preview: Option<&str>,
+) -> Option<serde_json::Value> {
     let key = match name {
         "bash" => "command",
         "skill" => "name",
-        _ => scalar_key(name, raw),
+        _ => preview
+            .and_then(first_placeholder_key)
+            .filter(|key| find_key_value_start(raw, key).is_some())
+            .unwrap_or_else(|| scalar_key(name, raw)),
     };
     let from = find_key_value_start(raw, key)?;
     let (value, _closed) = decode_partial_string(&raw[from..], cap)?;
@@ -188,12 +164,22 @@ fn extract_partial_scalar(name: &str, raw: &str, cap: usize) -> Option<serde_jso
     Some(serde_json::Value::Object(obj))
 }
 
+/// The argument a declared preview template reads first, so a streaming call
+/// shows the same field the finished card will.
+fn first_placeholder_key(spec: &str) -> Option<&str> {
+    let open = spec.find('{')?;
+    let inner = &spec[open + 1..spec[open + 1..].find('}')? + open + 1];
+    let path = inner.split('|').next()?.trim();
+    path.split('.')
+        .next()
+        .map(str::trim)
+        .filter(|k| !k.is_empty())
+}
+
 fn scalar_key(name: &str, raw: &str) -> &'static str {
     match name {
         "read" | "write" | "edit" | "ls" => "path",
         "grep" | "find" => "pattern",
-        "web_search" => "query",
-        "web_fetch" => "url",
         _ => {
             let path_pos = raw.find("\"path\"").map(|i| (i, "path"));
             let pattern_pos = raw.find("\"pattern\"").map(|i| (i, "pattern"));
@@ -698,12 +684,6 @@ pub fn format_tool_call_lines(
         .add_modifier(Modifier::BOLD);
     let dim_style = Style::default().fg(crate::theme::theme().tool_dim);
 
-    let bare = mcp_parts(name).map_or(name, |(_, tool)| tool);
-    if bare == "memory"
-        && let Some(mem) = memory_tool_label(args)
-    {
-        return vec![memory_line(mem, bullet, action_style, cmd_style, dim_style)];
-    }
     let head = match name {
         "bash" => bash_header(args, cwd, bullet, action_style, cmd_style, dim_style),
         "write" => {
@@ -772,19 +752,6 @@ pub fn format_tool_call_lines(
                 Span::styled(format!("\"{skill_name}\""), cmd_style),
             ])
         }
-        "web_search" => {
-            let query = args
-                .get("query")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .trim();
-            let shown = ellipsize_cells(query);
-            Line::from(vec![
-                bullet,
-                Span::styled("Searched ", action_style),
-                Span::styled(format!("\"{shown}\""), cmd_style),
-            ])
-        }
         "request_user_input" => {
             let n = args
                 .get("questions")
@@ -792,57 +759,6 @@ pub fn format_tool_call_lines(
                 .map_or(0, |a| a.len());
             ask_card::asked_header(n)
         }
-        "web_fetch" => {
-            let url = args.get("url").and_then(|v| v.as_str()).unwrap_or("");
-            let cut = truncate_cmd(url.trim());
-            Line::from(vec![
-                bullet,
-                Span::styled("Fetched ", action_style),
-                Span::styled(cut.to_string(), path_style),
-            ])
-        }
-        "discord_send" => {
-            let content = args
-                .get("content")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .trim();
-
-            let plain = strip_markup(content);
-            let shown = ellipsize_cells(&plain);
-            Line::from(vec![
-                bullet,
-                Span::styled("Sent Discord ", action_style),
-                Span::styled(format!("\"{shown}\""), cmd_style),
-            ])
-        }
-        "discord_send_ui" => {
-            Line::from(vec![bullet, Span::styled("Sent Discord UI", action_style)])
-        }
-        "discord_open_modal" => Line::from(vec![
-            bullet,
-            Span::styled("Opened Discord modal", action_style),
-        ]),
-        "discord_file" => {
-            let desc = args.get("action").and_then(|v| v.as_str()).unwrap_or("");
-            let target = args
-                .get("path")
-                .or_else(|| args.get("file_id"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            let mut spans = vec![bullet, Span::styled("Shared Discord file", action_style)];
-            if !target.is_empty() {
-                spans.push(Span::raw(" "));
-                spans.push(Span::styled(shorten_path(target.trim(), cwd), path_style));
-            } else if !desc.is_empty() {
-                spans.push(Span::styled(format!(" ({desc})"), dim_style));
-            }
-            Line::from(spans)
-        }
-        "discord_ui_schema" => Line::from(vec![
-            bullet,
-            Span::styled("Read Discord UI schema", action_style),
-        ]),
         n if mcp_parts(n).is_some() => {
             let (server, tool) = mcp_parts(n).unwrap_or_default();
             let mut spans = vec![
@@ -1089,33 +1005,6 @@ struct MemoryLabel {
     verb: &'static str,
     key: Option<String>,
     text: Option<String>,
-}
-
-/// The native `memory` tool's args (`op`, `key`, `text`) as a label.
-fn memory_tool_label(args: &serde_json::Value) -> Option<MemoryLabel> {
-    let key = args.get("key")?.as_str()?.trim();
-    if key.is_empty() {
-        return None;
-    }
-    let verb = match args
-        .get("op")
-        .and_then(|v| v.as_str())
-        .unwrap_or("remember")
-    {
-        "remember" => "Remembered ",
-        "amend" => "Updated memory ",
-        _ => return None,
-    };
-    let text = args
-        .get("text")
-        .and_then(|v| v.as_str())
-        .map(|t| t.lines().next().unwrap_or("").trim().to_string())
-        .filter(|t| !t.is_empty());
-    Some(MemoryLabel {
-        verb,
-        key: Some(key.to_string()),
-        text,
-    })
 }
 
 fn memory_line(
