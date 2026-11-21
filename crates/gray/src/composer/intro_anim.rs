@@ -46,10 +46,25 @@ impl Tui {
         let dim = Style::default().fg(faded(crate::theme::theme().text_dim, hint_alpha));
         let _ = self.terminal.draw(|frame| {
             let area = frame.area();
-            frame.render_widget(
-                Paragraph::new(welcome_lines_at(w, progress, Some(elapsed))),
-                area,
-            );
+            let bg = crate::theme::theme().window();
+            let lines: Vec<Line<'static>> = welcome_lines_at(w, progress, Some(elapsed))
+                .into_iter()
+                .map(|line| {
+                    let used = line.width();
+                    let mut spans = line.spans;
+                    for span in &mut spans {
+                        span.style.bg = Some(bg);
+                    }
+                    if used < area.width as usize {
+                        spans.push(Span::styled(
+                            " ".repeat(area.width as usize - used),
+                            Style::default().bg(bg),
+                        ));
+                    }
+                    Line::from(spans)
+                })
+                .collect();
+            frame.render_widget(Paragraph::new(lines), area);
             let row = ratatui::layout::Rect::new(
                 area.x,
                 area.y + area.height.saturating_sub(1),

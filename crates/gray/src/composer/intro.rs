@@ -431,19 +431,13 @@ pub(super) fn intro_stage(
     if overflow > y0 {
         return None;
     }
-    let start = y0 - overflow;
     if overflow > 0 {
         let mut out = std::io::stdout().lock();
         let _ = write!(out, "\x1b[{h};1H{}", "\n".repeat(overflow));
         let _ = out.flush();
     }
 
-    terminal.set_viewport_area(ratatui::layout::Rect::new(
-        0,
-        start as u16,
-        w as u16,
-        (h - start) as u16,
-    ));
+    terminal.set_viewport_area(ratatui::layout::Rect::new(0, 0, w as u16, h as u16));
 
     for _ in 0..64 {
         match crossterm::event::poll(Duration::ZERO) {
@@ -453,5 +447,5 @@ pub(super) fn intro_stage(
             _ => break,
         }
     }
-    Some(start as u16)
+    Some(0)
 }

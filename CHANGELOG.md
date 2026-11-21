@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+## [0.2.28] - 2026-11-21
+
+### Added
+- **Inline slash commands in the terminal composer.** Type `hello /skills` and press Tab to open Skills without losing `hello`. Enter still sends the draft. Run commands that take arguments on their own, for example `/sessions 2d`.
+- **Subscription usage warnings** at 75%, 90%, and 95% of a usage window, scoped to the login serving the request.
+
+### Changed
+- Connected providers appear first in the model picker, and ChatGPT plan credentials migrate to the bundled Codex provider.
+- Question dialogs support free-text questions, more options as screen space allows, and Shift+Tab to go back.
+- Responses models receive attached videos as contact sheets. Host one-shot completions run in isolation.
+
+### Fixed
+- Toolbox run cards show the actual tool name, and sub-second tool times display in milliseconds.
+- Live thinking no longer stalls on asterisks, and in-turn compaction no longer triggers a misleading cache-miss warning.
+- Separate reasoning summaries render as separate paragraphs, and the intro uses the active theme background.
+- The model picker clears its usage-refresh indicator when the request finishes. Plugin commands can declare their own completions instead of sharing the plugin-wide list.
+- The Sessions picker keeps `Ctrl+D` visible on narrow terminals, and quota waits show one status line instead of repeated warnings.
+
 ## [0.2.27] - 2026-11-19
 
 ### Added

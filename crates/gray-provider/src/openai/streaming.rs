@@ -912,7 +912,8 @@ pub(super) fn stream_unfold_step(
                                     if value
                                         .get("summary_index")
                                         .and_then(|v| v.as_u64())
-                                        .is_some_and(|i| i > 0) =>
+                                        .is_some_and(|i| i > 0)
+                                        || !reasoning_deltas.is_empty() =>
                                 {
                                     pending_events.push_back(StreamEvent::ThinkingDelta {
                                         delta: "\n\n".to_string(),

@@ -233,6 +233,25 @@ fn tail_line_is(tui: &Tui, text: &str) -> bool {
     }
 }
 
+fn inline_slash(text: &str, cursor: usize) -> Option<std::ops::Range<usize>> {
+    if text.trim_start().starts_with('/') {
+        return None;
+    }
+    let (start, space) = text[..cursor]
+        .char_indices()
+        .rfind(|(_, c)| c.is_whitespace())?;
+    let start = start + space.len_utf8();
+    let end = text[cursor..]
+        .find(char::is_whitespace)
+        .map_or(text.len(), |i| cursor + i);
+    let name = text[start..end].strip_prefix('/')?;
+    (start < cursor
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_')))
+    .then_some(start..end)
+}
+
 /// Recompute the slash-completion popup from the draft. While a history
 /// search is live the popup stays closed, and `muted_text` keeps it closed
 /// for the exact draft it was dismissed on (esc) until the text changes.
@@ -244,7 +263,20 @@ pub(crate) fn sync_completion(tui: &mut Tui, cwd: &Path) {
         return;
     }
     tui.muted_text = None;
-    tui.matches = crate::repl::completion_matches_dyn(&cur_text, cwd);
+    tui.matches = if let Some(range) = inline_slash(&cur_text, tui.textarea.cursor()) {
+        let token = &cur_text[range.start..tui.textarea.cursor()];
+        let prefix = token[1..].to_ascii_lowercase();
+        let mut matches = crate::repl::completion_matches_dyn(token, cwd);
+        matches.retain(|(name, _)| {
+            name.starts_with(&prefix)
+                || crate::repl::commands::REGISTRY.iter().any(|d| {
+                    d.name == name && d.aliases.iter().any(|alias| alias.starts_with(&prefix))
+                })
+        });
+        matches
+    } else {
+        crate::repl::completion_matches_dyn(&cur_text, cwd)
+    };
     if tui.sel >= tui.matches.len() {
         tui.sel = tui.matches.len().saturating_sub(1);
     }
@@ -479,7 +511,7 @@ pub(crate) fn read_line(
                 && !k
                     .modifiers
                     .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER | KeyModifiers::SHIFT));
-        if accept_key && tui.accept_ghost() {
+        if accept_key && tui.matches.is_empty() && tui.accept_ghost() {
             continue;
         }
         if matches!(&ev, Event::Key(k) if k.kind != KeyEventKind::Release)
@@ -559,7 +591,7 @@ pub(crate) fn read_line(
                     quit_arm = None;
                     clear_draft(tui);
                 }
-                KeyOutcome::Command(cmd) => {
+                KeyOutcome::Command(cmd) | KeyOutcome::InlineCommand(cmd) => {
                     quit_arm = None;
                     tui.matches.clear();
                     tui.sel = 0;

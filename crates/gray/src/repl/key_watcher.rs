@@ -324,6 +324,20 @@ pub(crate) fn spawn_key_watcher_with_typing(
                             watch_cancel.cancel();
                             return;
                         }
+                        KeyOutcome::InlineCommand(cmd) => {
+                            let local = turn_locals
+                                .as_ref()
+                                .filter(|l| is_turn_local_command(&cmd, &l.hooks));
+                            if local.is_none() {
+                                t.queued_inputs.push_back((cmd.clone(), Vec::new()));
+                            }
+                            crate::composer::input::sync_completion(&mut t, &cwd_for_watcher);
+                            let _ = t.draw();
+                            drop(t);
+                            if let Some(locals) = local {
+                                run_turn_local_command(locals, &cmd);
+                            }
+                        }
                         KeyOutcome::Command(cmd) => {
                             if t.attachments.is_empty()
                                 && let Some(locals) = turn_locals.as_ref()

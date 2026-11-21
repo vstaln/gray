@@ -18,6 +18,8 @@ pub(crate) enum KeyOutcome {
     Interrupt,
 
     Command(String),
+
+    InlineCommand(String),
 }
 
 pub(crate) fn dispatch(tui: &mut Tui, ev: &KeyEvent) -> KeyOutcome {
@@ -98,6 +100,23 @@ pub(super) fn apply(tui: &mut Tui, a: Action) -> Option<KeyOutcome> {
         }
         Action::Tab => {
             let (name, _) = tui.matches.get(tui.sel)?.clone();
+            let cur = tui.textarea.text();
+            if let Some(mut range) = super::inline_slash(cur, tui.textarea.cursor()) {
+                let typed = &cur[range.clone()];
+                let command = format!("/{name}");
+                if typed.eq_ignore_ascii_case(&command)
+                    || crate::repl::commands::resolve(typed).is_some_and(|d| d.name == name)
+                {
+                    if cur[range.end..].starts_with(' ') {
+                        range.end += 1;
+                    } else if range.end == cur.len() && cur[..range.start].ends_with(' ') {
+                        range.start -= 1;
+                    }
+                    tui.textarea.replace_range(range, "");
+                    tui.history_idx = None;
+                    return Some(InlineCommand(command));
+                }
+            }
             fill_completion(tui, &name);
             edited
         }
@@ -119,8 +138,11 @@ pub(super) fn apply(tui: &mut Tui, a: Action) -> Option<KeyOutcome> {
             edited
         }
         Action::Submit => {
+            let cur = tui.textarea.text();
+            if super::inline_slash(cur, tui.textarea.cursor()).is_some() {
+                return Some(Submit);
+            }
             if let Some((name, _)) = tui.matches.get(tui.sel).cloned() {
-                let cur = tui.textarea.text();
                 let typed = cur.trim_end().trim_start_matches('/');
                 let alias = crate::repl::commands::REGISTRY
                     .iter()
@@ -255,8 +277,13 @@ fn edit(tui: &mut Tui, f: impl FnOnce(&mut Tui)) -> Option<KeyOutcome> {
 
 fn fill_completion(tui: &mut Tui, name: &str) {
     let fill = crate::repl::completion_fill(name);
-    tui.textarea.set_text(&fill);
-    tui.textarea.move_to_end();
+    if let Some(range) = super::inline_slash(tui.textarea.text(), tui.textarea.cursor()) {
+        tui.textarea.replace_range(range, fill.trim_end());
+        tui.history_idx = None;
+    } else {
+        tui.textarea.set_text(&fill);
+        tui.textarea.move_to_end();
+    }
 }
 
 fn history_prev(tui: &mut Tui) {

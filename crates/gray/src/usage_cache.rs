@@ -323,20 +323,11 @@ pub(crate) fn take_warnings(
             w.resets_at.unwrap_or_default()
         );
         if prev.get(&key).is_none_or(|&p| p < at) {
-            let label = w.label.clone().unwrap_or_else(|| window_label(&w.window));
-            let (period, scope) = label.split_once(" \u{b7} ").unwrap_or((&label, ""));
-            let mut name = title.map(|t| format!("{t} ")).unwrap_or_default();
-            match period
-                .strip_suffix('h')
-                .filter(|n| n.parse::<u32>().is_ok())
-            {
-                Some(hours) => name.push_str(&format!("{hours}-hour")),
-                None => name.push_str(&period.to_lowercase()),
-            }
-            name.push_str(" limit");
-            if !scope.is_empty() {
-                name.push_str(&format!(" for {scope}"));
-            }
+            let label = w.label.as_deref().unwrap_or(&w.window);
+            let name = match title {
+                Some(t) => format!("{t} limit ({label})"),
+                None => format!("{label} limit"),
+            };
             let who = account.map(|a| format!(" on {a}")).unwrap_or_default();
             let resets = match w.resets_at {
                 Some(at) if at - now > 20 * 3_600 => chrono::DateTime::from_timestamp(at, 0)
@@ -373,56 +364,9 @@ pub(crate) fn clock(epoch: i64) -> String {
         .unwrap_or_default()
 }
 
-pub(crate) fn window_label(id: &str) -> String {
-    match id {
-        "five_hour" => "Session".to_string(),
-        "seven_day" | "weekly" => "Weekly".to_string(),
-        "daily" => "Daily".to_string(),
-        "iguana_necktie" => "Monthly overage".to_string(),
-        "gemini-weekly" => "Weekly \u{b7} Gemini".to_string(),
-        "gemini-5h" => "5h \u{b7} Gemini".to_string(),
-        "3p-weekly" => "Weekly \u{b7} Claude/GPT".to_string(),
-        "3p-5h" => "5h \u{b7} Claude/GPT".to_string(),
-        "gemini-argon-wtu-weekly" => "Weekly \u{b7} Argon".to_string(),
-        "gemini-argon-wtu-5h" => "5h \u{b7} Argon".to_string(),
-        other => {
-            if let Some(rest) = other.strip_prefix("seven_day_") {
-                let mut chars = rest.replace('_', " ").chars().collect::<Vec<_>>();
-                if let Some(first) = chars.first_mut() {
-                    *first = first.to_ascii_uppercase();
-                }
-                let model: String = chars.into_iter().collect();
-                if !model.is_empty() {
-                    return format!("Weekly \u{b7} {model}");
-                }
-            }
-            let words = other.replace(['_', '-'], " ");
-            let mut chars = words.trim().chars();
-            match chars.next() {
-                Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
-                None => String::new(),
-            }
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn window_label_cleans_antigravity_and_claude_ids() {
-        assert_eq!(window_label("gemini-weekly"), "Weekly \u{b7} Gemini");
-        assert_eq!(window_label("gemini-5h"), "5h \u{b7} Gemini");
-        assert_eq!(window_label("3p-weekly"), "Weekly \u{b7} Claude/GPT");
-        assert_eq!(window_label("3p-5h"), "5h \u{b7} Claude/GPT");
-        assert_eq!(
-            window_label("gemini-argon-wtu-weekly"),
-            "Weekly \u{b7} Argon"
-        );
-        assert_eq!(window_label("seven_day_fable"), "Weekly \u{b7} Fable");
-        assert_eq!(window_label("iguana_necktie"), "Monthly overage");
-    }
 
     #[test]
     fn upsert_preserves_display_label_when_later_update_has_none() {
