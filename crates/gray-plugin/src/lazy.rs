@@ -7,7 +7,10 @@ use gray_core::agent::{Tool, ToolContext, ToolOutput};
 use gray_core::message::{Message, ToolDef};
 
 use crate::sidecar::HostHandler;
-use crate::{CommandOutcome, CoreEvent, InputSubmit, Manifest, Plugin, SidecarPlugin, ToolBefore};
+use crate::{
+    CommandOutcome, CoreEvent, InputSubmit, KeyPress, KeyReply, Manifest, Plugin, SidecarPlugin,
+    ToolBefore,
+};
 
 pub fn lazy_enabled() -> bool {
     match std::env::var("GRAY_LAZY_PLUGINS") {
@@ -217,6 +220,10 @@ impl Plugin for LazySidecarPlugin {
             Some(p) => p.input_submit(text).await,
             None => InputSubmit::Pass,
         }
+    }
+
+    async fn input_key(&self, press: &KeyPress) -> Option<KeyReply> {
+        self.hook("input/key").await?.input_key(press).await
     }
 
     async fn agent_before_start(&self) -> Option<String> {

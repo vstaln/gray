@@ -336,7 +336,38 @@ impl Manifest {
     }
 }
 
-pub use gray_core::agent::{CommandOutcome, InputSubmit, ToolBefore};
+pub use gray_core::agent::{CommandOutcome, InputSubmit, KeyPress, KeyReply, ToolBefore};
+
+static INPUT_KEY_HOOKS: std::sync::Mutex<Vec<Arc<dyn PluginHooks>>> =
+    std::sync::Mutex::new(Vec::new());
+static INPUT_KEY_ANY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Cache the plugins that claim `input/key`, so a keypress with nobody
+/// listening costs one relaxed load instead of a plugin round trip. Kept
+/// here rather than in the host so the composer can ask without holding the
+/// agent: `build_agent` republishes on every rebuild.
+pub fn set_input_key_hooks(hooks: &[Arc<dyn PluginHooks>]) {
+    let claiming: Vec<Arc<dyn PluginHooks>> = hooks
+        .iter()
+        .filter(|h| h.claims("input/key"))
+        .cloned()
+        .collect();
+    INPUT_KEY_ANY.store(!claiming.is_empty(), std::sync::atomic::Ordering::Relaxed);
+    *INPUT_KEY_HOOKS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner()) = claiming;
+}
+
+pub fn has_input_key_hook() -> bool {
+    INPUT_KEY_ANY.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+pub fn input_key_hooks() -> Vec<Arc<dyn PluginHooks>> {
+    INPUT_KEY_HOOKS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+}
 
 #[async_trait]
 pub trait Plugin: Send + Sync {
@@ -371,6 +402,10 @@ pub trait Plugin: Send + Sync {
 
     async fn input_submit(&self, _text: &str) -> InputSubmit {
         InputSubmit::Pass
+    }
+
+    async fn input_key(&self, _press: &KeyPress) -> Option<KeyReply> {
+        None
     }
 
     async fn agent_before_start(&self) -> Option<String> {
@@ -480,10 +515,12 @@ impl PluginHookAdapter {
     }
 
     pub fn for_plugins(plugins: &[Arc<dyn Plugin>], cwd: &str) -> Vec<Arc<dyn PluginHooks>> {
-        plugins
+        let hooks: Vec<Arc<dyn PluginHooks>> = plugins
             .iter()
             .map(|p| Arc::new(Self::new(p.clone(), cwd)) as Arc<dyn PluginHooks>)
-            .collect()
+            .collect();
+        set_input_key_hooks(&hooks);
+        hooks
     }
 }
 
@@ -491,6 +528,9 @@ impl PluginHookAdapter {
 impl PluginHooks for PluginHookAdapter {
     fn repin_session(&self, id: &str) {
         self.plugin.set_session_id(id);
+    }
+    fn claims(&self, hook: &str) -> bool {
+        self.plugin.manifest().claims(hook)
     }
     fn is_global(&self) -> bool {
         self.plugin.is_global()
@@ -571,6 +611,9 @@ impl PluginHooks for PluginHookAdapter {
     }
     async fn input_submit(&self, text: &str) -> InputSubmit {
         self.plugin.input_submit(text).await
+    }
+    async fn input_key(&self, press: &KeyPress) -> Option<KeyReply> {
+        self.plugin.input_key(press).await
     }
     async fn agent_before_start(&self) -> Option<String> {
         self.plugin.agent_before_start().await

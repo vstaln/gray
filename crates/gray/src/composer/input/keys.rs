@@ -25,7 +25,7 @@ pub(crate) enum KeyOutcome {
 pub(crate) fn dispatch(tui: &mut Tui, ev: &KeyEvent) -> KeyOutcome {
     let bindings = crate::keymap::resolve_event(ev);
     if tui.search.is_none()
-        && let Some(out) = super::vim::dispatch(tui, ev)
+        && let Some(out) = super::plugin_key::dispatch(tui, ev)
     {
         return out;
     }
