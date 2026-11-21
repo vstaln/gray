@@ -151,6 +151,71 @@ impl OpenAiProvider {
         self.top_p = top_p;
         self
     }
+
+    /// Serve each request from `source`'s current credential: one key per
+    /// request, with a failed key parked and the request retried on the next
+    /// usable one. A provider built with a profile already has a source, so
+    /// this only arms plain key providers.
+    pub fn with_credential_source(mut self, source: Arc<dyn CredentialSource>) -> Self {
+        if self.profile.is_none() {
+            self.credential_source = Some(source);
+        }
+        self
+    }
+
+    /// Pool rotation applies to a key provider that was handed a source; a
+    /// profile provider streams through its own dynamic path.
+    fn pooled(&self) -> Option<Arc<dyn CredentialSource>> {
+        match (&self.profile, &self.credential_source) {
+            (None, Some(source)) => Some(source.clone()),
+            _ => None,
+        }
+    }
+
+    /// One request, keyed by `api_key` instead of the provider's own.
+    pub(crate) fn chat_stream_with_key(
+        &self,
+        req: ChatRequest,
+        caps: ModelCaps,
+        session_id: Option<String>,
+        cache_off: bool,
+        api_key: &str,
+    ) -> BoxStream<'static, Result<StreamEvent, ProviderError>> {
+        let mut keyed = self.clone();
+        keyed.api_key = api_key.to_string();
+        keyed.credential_source = None;
+        keyed.chat_stream(req, caps, session_id, cache_off, true)
+    }
+
+    fn pool_stream(
+        &self,
+        req: ChatRequest,
+        source: Arc<dyn CredentialSource>,
+        session_id: Option<String>,
+        cache_off: bool,
+    ) -> BoxStream<'static, Result<StreamEvent, ProviderError>> {
+        let caps = ModelCaps::for_host(&self.base_url);
+        let mut provider = self.clone();
+        provider.credential_source = None;
+        stream::unfold(
+            PoolDrive {
+                provider,
+                request: req,
+                caps,
+                session_id,
+                cache_off,
+                source,
+                inner: None,
+                lease: None,
+                tried: Vec::new(),
+                failed: None,
+                emitted: false,
+                done: false,
+            },
+            pool_step,
+        )
+        .boxed()
+    }
 }
 
 #[async_trait]
@@ -180,10 +245,13 @@ impl Provider for OpenAiProvider {
                 isolated,
             );
         }
+        if let Some(source) = self.pooled() {
+            return self.pool_stream(req, source, session_id, cache_off);
+        }
         let caps = ModelCaps::for_host(&self.base_url);
         let wire_key = (self.base_url.to_string(), self.model.clone());
         if caps.prefer_responses && !chat_wire_models().contains(&wire_key) {
-            let chat = self.chat_stream(req.clone(), caps, session_id.clone(), cache_off);
+            let chat = self.chat_stream(req.clone(), caps, session_id.clone(), cache_off, false);
             let url = match responses_url(&self.base_url) {
                 Ok(u) => u,
                 Err(e) => return stream::once(async move { Err(e) }).boxed(),
@@ -210,7 +278,8 @@ impl Provider for OpenAiProvider {
                 stream_attempt: 1,
                 tools_by_call_id: BTreeMap::new(),
             };
-            let responses = stream::unfold(init_state, stream_unfold_step).boxed();
+            let responses =
+                stream::unfold(init_state, move |state| stream_unfold_step(state, false)).boxed();
             return stream::once(async move {
                 let (first, rest) = responses.into_future().await;
                 match first {
@@ -231,7 +300,7 @@ impl Provider for OpenAiProvider {
             .flatten()
             .boxed();
         }
-        self.chat_stream(req, caps, session_id, cache_off)
+        self.chat_stream(req, caps, session_id, cache_off, false)
     }
 }
 
@@ -252,6 +321,7 @@ impl OpenAiProvider {
         caps: ModelCaps,
         session_id: Option<String>,
         cache_off: bool,
+        pooled: bool,
     ) -> BoxStream<'static, Result<StreamEvent, ProviderError>> {
         let url = match chat_completions_url(&self.base_url) {
             Ok(u) => u,
@@ -283,7 +353,7 @@ impl OpenAiProvider {
             retry_after: None,
         };
 
-        stream::unfold(init_state, stream_unfold_step).boxed()
+        stream::unfold(init_state, move |state| stream_unfold_step(state, pooled)).boxed()
     }
 }
 
@@ -295,6 +365,8 @@ mod errors;
 pub use errors::*;
 mod transport;
 use transport::*;
+mod pool;
+use pool::*;
 mod dynamic;
 pub(crate) use dynamic::*;
 mod streaming;

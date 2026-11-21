@@ -372,6 +372,78 @@ impl InputSubmit {
     }
 }
 
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct KeyPress {
+    pub text: String,
+    pub cursor: usize,
+    pub completing: bool,
+    pub code: String,
+    pub ctrl: bool,
+    pub alt: bool,
+    pub shift: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyAction {
+    HistoryPrevious,
+    HistoryNext,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct KeyReply {
+    pub text: Option<String>,
+    pub cursor: Option<usize>,
+    pub badge: Option<String>,
+    pub action: Option<KeyAction>,
+    pub clear_badge: bool,
+}
+
+impl KeyReply {
+    pub fn from_result(v: &serde_json::Value) -> Option<Self> {
+        if v.get("handled").and_then(|h| h.as_bool()) != Some(true) {
+            return None;
+        }
+        let action = match v.get("action").and_then(|a| a.as_str()) {
+            Some("history_prev") => Some(KeyAction::HistoryPrevious),
+            Some("history_next") => Some(KeyAction::HistoryNext),
+            _ => None,
+        };
+        let badge = match v.get("badge") {
+            Some(serde_json::Value::String(s)) if !s.is_empty() => Some(s.clone()),
+            _ => None,
+        };
+        Some(Self {
+            text: v.get("text").and_then(|t| t.as_str()).map(str::to_string),
+            cursor: v.get("cursor").and_then(|c| c.as_u64()).map(|c| c as usize),
+            badge,
+            action,
+            clear_badge: v.get("badge").is_some_and(|b| b.is_null()),
+        })
+    }
+}
+
+impl KeyPress {
+    pub fn to_json(&self) -> serde_json::Value {
+        let mut key = serde_json::Map::new();
+        key.insert("code".into(), serde_json::Value::String(self.code.clone()));
+        for (name, on) in [
+            ("ctrl", self.ctrl),
+            ("alt", self.alt),
+            ("shift", self.shift),
+        ] {
+            if on {
+                key.insert(name.into(), serde_json::Value::Bool(true));
+            }
+        }
+        serde_json::json!({
+            "key": serde_json::Value::Object(key),
+            "text": self.text,
+            "cursor": self.cursor,
+            "completing": self.completing,
+        })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PluginCommand {
     pub name: String,
@@ -521,6 +593,12 @@ impl TurnEndInfo {
 #[async_trait]
 pub trait PluginHooks: Send + Sync {
     fn repin_session(&self, _id: &str) {}
+
+    /// Whether this plugin declared `hook` in its manifest. Callers on a hot
+    /// path (every keystroke) ask this before paying for a round trip.
+    fn claims(&self, _hook: &str) -> bool {
+        false
+    }
     async fn prompt_context(&self) -> Option<String> {
         None
     }
@@ -544,6 +622,10 @@ pub trait PluginHooks: Send + Sync {
 
     async fn input_submit(&self, _text: &str) -> InputSubmit {
         InputSubmit::Pass
+    }
+
+    async fn input_key(&self, _press: &KeyPress) -> Option<KeyReply> {
+        None
     }
 
     async fn agent_before_start(&self) -> Option<String> {

@@ -10,15 +10,36 @@ fn nonempty(s: Option<&str>) -> Option<String> {
         .map(ToString::to_string)
 }
 
+/// The key a provider's stored entry serves: a plain string as-is, or a
+/// key pool's current pick. `--api-key` / `GRAY_API_KEY` still win over it.
+fn stored_api_key(provider_id: &str, base_url: &str) -> Option<String> {
+    let path = crate::setup::catalog::auth_store_path().ok()?;
+    let store = crate::setup::catalog::load_mixed_store(&path);
+    let id = if provider_id.is_empty() {
+        crate::setup::catalog::custom_key_id(base_url)
+    } else {
+        provider_id.to_string()
+    };
+    match store.get(&id) {
+        Some(crate::setup::catalog::AuthEntry::Key(key)) => nonempty(Some(key.as_str())),
+        Some(crate::setup::catalog::AuthEntry::KeyPool(pool)) => {
+            pool.first_key().map(str::to_string)
+        }
+        _ => None,
+    }
+}
+
 fn resolve_api_key(
     cli: &Cli,
     base_url: &str,
+    provider_id: &str,
     env: &mut impl FnMut(&str) -> Option<String>,
     saved_key: Option<String>,
 ) -> Option<String> {
     nonempty(cli.api_key.as_deref())
         .or_else(|| nonempty(env("GRAY_API_KEY").as_deref()))
         .or(saved_key)
+        .or_else(|| stored_api_key(provider_id, base_url))
         .or_else(|| {
             let default_base = crate::setup::normalize_custom_base_url(base_url)
                 == crate::setup::normalize_custom_base_url(DEFAULT_BASE_URL);
@@ -256,7 +277,7 @@ impl Config {
                 .cloned()
         });
 
-        let api_key = resolve_api_key(cli, &base_url, &mut env, saved.api_key);
+        let api_key = resolve_api_key(cli, &base_url, &provider_id, &mut env, saved.api_key);
 
         let thinking_effort = nonempty(env("GRAY_THINKING_EFFORT").as_deref())
             .or(target_effort)

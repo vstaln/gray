@@ -694,8 +694,9 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
                     }
                 }
             }
-            if crate::settings::vim_mode() && tui.vim.is_normal() {
-                let badge = " NORMAL ";
+            if let Some(badge) = tui.input_badge.as_deref() {
+                let badge = format!(" {badge} ");
+                let badge = badge.as_str();
                 let bw = display_width(badge) as u16;
                 let used: u16 = ibox
                     .lines
@@ -1065,7 +1066,10 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
                         crate::statusline::git_branch(std::path::Path::new(&tui.cwd)),
                         t.tool_dim,
                     ),
-                    "command" => Seg::new(crate::statusline::command_output(), muted),
+                    "command" => Seg::new(
+                        crate::statusline::status("command").unwrap_or_default(),
+                        muted,
+                    ),
                     "status" => Seg::new(crate::statusline::all_statuses(&sep), muted),
                     other => match other.strip_prefix("status:") {
                         Some(key) => {
@@ -1126,41 +1130,6 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
             }
             let left_segs =
                 crate::statusline::clip(left_segs, w.saturating_sub(seg_width(&right_segs) + 5));
-            if line_cfg.command.is_some() {
-                static LAST_FACTS_KEY: std::sync::Mutex<Option<String>> =
-                    std::sync::Mutex::new(None);
-                let branch = crate::statusline::git_branch(std::path::Path::new(&tui.cwd));
-                let key = format!(
-                    "{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}",
-                    tui.cwd,
-                    tui.model_name,
-                    model_display,
-                    tui.thinking_effort,
-                    used_tokens,
-                    max_label,
-                    hit_rate.to_bits(),
-                    branch,
-                );
-                let fresh = match LAST_FACTS_KEY.lock() {
-                    Ok(mut g) if g.as_deref() != Some(key.as_str()) => {
-                        *g = Some(key);
-                        true
-                    }
-                    _ => false,
-                };
-                if fresh {
-                    crate::statusline::publish_facts(serde_json::json!({
-                        "cwd": tui.cwd,
-                        "workspace": { "current_dir": tui.cwd },
-                        "model": { "id": tui.model_name, "display_name": model_display },
-                        "effort": tui.thinking_effort,
-                        "context": { "used_tokens": used_tokens, "max": max_label },
-                        "cache_hit_rate": hit_rate,
-                        "branch": branch,
-                        "version": env!("CARGO_PKG_VERSION"),
-                    }));
-                }
-            }
             let left_len = 1 + seg_width(&left_segs);
             let right_len = seg_width(&right_segs) + 1;
             let pad_len = w.saturating_sub(left_len + right_len);

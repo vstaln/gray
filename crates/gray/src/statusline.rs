@@ -12,9 +12,6 @@ pub const DEFAULT_RIGHT: &[&str] = &["context", "cache", "timer", "work", "statu
 pub const DEFAULT_SEPARATOR: &str = " ";
 
 pub const DEFAULT_RIGHT_SEPARATOR: &str = "  ";
-const DEFAULT_INTERVAL_MS: u64 = 5_000;
-const MIN_INTERVAL_MS: u64 = 500;
-const COMMAND_TIMEOUT: Duration = Duration::from_secs(3);
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StatusLineConfig {
@@ -51,13 +48,6 @@ impl StatusLineConfig {
         self.separator
             .clone()
             .unwrap_or_else(|| DEFAULT_RIGHT_SEPARATOR.to_string())
-    }
-    pub fn interval(&self) -> Duration {
-        Duration::from_millis(
-            self.interval_ms
-                .unwrap_or(DEFAULT_INTERVAL_MS)
-                .max(MIN_INTERVAL_MS),
-        )
     }
 }
 
@@ -180,8 +170,6 @@ pub fn render_template(tpl: &str, known: &dyn Fn(&str) -> Option<Seg>) -> String
 
 static CONFIG: RwLock<Option<StatusLineConfig>> = RwLock::new(None);
 static PLUGIN_STATUS: Mutex<BTreeMap<String, String>> = Mutex::new(BTreeMap::new());
-static COMMAND_OUT: Mutex<String> = Mutex::new(String::new());
-static FACTS: Mutex<Option<serde_json::Value>> = Mutex::new(None);
 static VERSION: AtomicU64 = AtomicU64::new(0);
 
 fn bump() {
@@ -204,9 +192,6 @@ pub fn set_config(cfg: Option<StatusLineConfig>) {
     if let Ok(mut g) = CONFIG.write() {
         *g = cfg;
     }
-    if let Ok(mut o) = COMMAND_OUT.lock() {
-        o.clear();
-    }
     bump();
 }
 
@@ -215,14 +200,7 @@ pub fn init_from_saved_config() -> bool {
         .ok()
         .and_then(|p| crate::setup::load_saved_config_at(&p).status_line);
     let custom = cfg.is_some();
-    let wants_runner = cfg
-        .as_ref()
-        .and_then(|c| c.command.as_deref())
-        .is_some_and(|c| !c.trim().is_empty());
     set_config(cfg);
-    if wants_runner {
-        spawn_command_runner();
-    }
     custom
 }
 
@@ -237,90 +215,28 @@ pub fn all_statuses(sep: &str) -> String {
         .unwrap_or_default()
 }
 
-pub fn command_output() -> String {
-    COMMAND_OUT.lock().map(|o| o.clone()).unwrap_or_default()
-}
-
-pub fn publish_facts(facts: serde_json::Value) {
-    if let Ok(mut f) = FACTS.lock() {
-        *f = Some(facts);
+pub fn set_status(key: &str, text: &str) {
+    let key = key.trim().to_string();
+    if key.is_empty() {
+        return;
     }
-}
-
-fn one_line(s: &str) -> String {
-    let s = crate::tui::strip_ansi(s);
-    s.lines()
-        .map(str::trim)
-        .find(|l| !l.is_empty())
-        .unwrap_or("")
-        .to_string()
-}
-
-pub fn spawn_command_runner() {
-    static STARTED: std::sync::Once = std::sync::Once::new();
-    STARTED.call_once(|| {
-        let _ = std::thread::Builder::new()
-            .name("gray-statusline".into())
-            .spawn(|| {
-                loop {
-                    let cfg = config();
-                    let Some(cmd) = cfg.command.clone().filter(|c| !c.trim().is_empty()) else {
-                        std::thread::sleep(Duration::from_secs(1));
-                        continue;
-                    };
-                    let facts = FACTS
-                        .lock()
-                        .ok()
-                        .and_then(|f| f.clone())
-                        .unwrap_or(serde_json::Value::Null);
-                    let out = run_command(&cmd, &facts).unwrap_or_default();
-                    let line = one_line(&out);
-                    if let Ok(mut o) = COMMAND_OUT.lock()
-                        && *o != line
-                    {
-                        *o = line;
-                        bump();
-                    }
-                    std::thread::sleep(cfg.interval());
+    let changed = match PLUGIN_STATUS.lock() {
+        Ok(mut map) => {
+            let same = map.get(&key).is_some_and(|t| t == text);
+            if !same {
+                if text.is_empty() {
+                    map.remove(&key);
+                } else {
+                    map.insert(key, text.to_string());
                 }
-            });
-    });
-}
-
-pub fn run_command(cmd: &str, facts: &serde_json::Value) -> Option<String> {
-    use std::io::{Read, Write};
-    use std::process::{Command, Stdio};
-    let cmd = gray_core::paths::expand_tilde(cmd).map_or_else(
-        || cmd.to_string(),
-        |home| home.to_string_lossy().into_owned(),
-    );
-    let mut child = Command::new("sh")
-        .arg("-c")
-        .arg(&cmd)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .ok()?;
-    if let Some(mut stdin) = child.stdin.take() {
-        let _ = stdin.write_all(facts.to_string().as_bytes());
-    }
-    let started = Instant::now();
-    loop {
-        match child.try_wait() {
-            Ok(Some(_)) => break,
-            Ok(None) if started.elapsed() > COMMAND_TIMEOUT => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return None;
             }
-            Ok(None) => std::thread::sleep(Duration::from_millis(20)),
-            Err(_) => return None,
+            !same
         }
+        Err(_) => false,
+    };
+    if changed {
+        bump();
     }
-    let mut out = String::new();
-    child.stdout.take()?.read_to_string(&mut out).ok()?;
-    Some(out)
 }
 
 type BranchCache = Option<(PathBuf, Instant, String)>;

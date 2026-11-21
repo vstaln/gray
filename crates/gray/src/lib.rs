@@ -298,6 +298,23 @@ pub(crate) async fn compaction_provider(
     }
 }
 
+/// The key-pool credential source for a key-based provider that holds more
+/// than one API key. A single key (or a plugin login) keeps the plain key
+/// path, so nothing but a real pool pays for a source.
+fn key_pool_source(
+    config: &Config,
+) -> Option<std::sync::Arc<dyn gray_core::credential::CredentialSource>> {
+    if config.uses_plugin_credentials() {
+        return None;
+    }
+    let home = crate::setup::gray_home().ok()?;
+    let path = home.join("auth.json");
+    let provider_id = crate::setup::catalog::key_pool_id(config);
+    crate::auth::has_multiple_keys(&provider_id, &path)
+        .then(|| crate::auth::key_pool_source(provider_id, path.clone()))
+        .map(|source| source as std::sync::Arc<dyn gray_core::credential::CredentialSource>)
+}
+
 async fn build_agent_inner(
     config: &Config,
     cwd: &Path,
@@ -472,6 +489,7 @@ async fn build_agent_inner(
         dynamic_credential_source: dynamic
             .as_ref()
             .map(|provider| provider.credential_source()),
+        key_pool_credential_source: key_pool_source(config),
         prebooted_plugins,
     })
     .await?;

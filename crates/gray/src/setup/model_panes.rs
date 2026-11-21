@@ -38,7 +38,6 @@ pub(crate) enum PanesOutcome {
 enum Focus {
     Rail,
     Models,
-    Logins,
 }
 
 #[derive(Default)]
@@ -55,11 +54,6 @@ enum Job {
 }
 
 const PORTAL_URL: &str = "https://gray.alignment.id/account";
-const PTY_EXTRA: u16 = 10;
-
-fn installed_of(rail: &[PaneProvider]) -> impl Iterator<Item = &InstalledProvider> {
-    rail.iter().filter_map(|p| p.installed.as_ref())
-}
 
 fn reselect(rail: &[PaneProvider], rows: &[RailRow], id: Option<&str>, fallback: usize) -> usize {
     id.and_then(|id| rail.iter().position(|p| p.item.id == id))
@@ -99,14 +93,6 @@ fn geo(area: Rect, extra: u16) -> Geo {
         rail_w,
         pane,
         detail_y,
-    }
-}
-
-fn strip_rows(list_h: usize, lines: usize) -> usize {
-    if lines == 0 {
-        0
-    } else {
-        lines.min(list_h.saturating_sub(4)) + 1
     }
 }
 
@@ -268,7 +254,6 @@ enum RailRow {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum GroupId {
-    Logins,
     OAuth,
     ApiKey,
     NotConnected,
@@ -277,16 +262,14 @@ pub(crate) enum GroupId {
 impl GroupId {
     fn index(self) -> usize {
         match self {
-            GroupId::Logins => 0,
-            GroupId::OAuth => 1,
-            GroupId::ApiKey => 2,
-            GroupId::NotConnected => 3,
+            GroupId::OAuth => 0,
+            GroupId::ApiKey => 1,
+            GroupId::NotConnected => 2,
         }
     }
 
     pub(crate) fn label(self) -> &'static str {
         match self {
-            GroupId::Logins => "Logins",
             GroupId::OAuth => "OAuth",
             GroupId::ApiKey => "API keys",
             GroupId::NotConnected => "Not connected",
@@ -294,11 +277,11 @@ impl GroupId {
     }
 }
 
-struct GroupStates([bool; 4]);
+struct GroupStates([bool; 3]);
 
 impl Default for GroupStates {
     fn default() -> Self {
-        GroupStates([true, true, false, false])
+        GroupStates([true, true, false])
     }
 }
 
@@ -323,11 +306,11 @@ pub(crate) enum Place {
 }
 
 /// Where a provider lives on the rail: ready-to-use key/no-auth entries stay
-/// flat up top; plugin logins and unused API-key catalog entries fold into
-/// labeled groups so the sections don't mix.
+/// flat up top; ready plugin OAuth and unused API-key catalog entries fold
+/// into labeled groups so the sections don't mix.
 pub(crate) fn place(p: &PaneProvider) -> Place {
     if p.install.is_some() {
-        return Place::Group(GroupId::Logins);
+        return Place::Flat;
     }
     match &p.item.auth {
         ConnectAuth::Plugin { .. } => {
@@ -335,11 +318,11 @@ pub(crate) fn place(p: &PaneProvider) -> Place {
                 .installed
                 .as_ref()
                 .is_some_and(|i| i.auth_method.kind == "oauth");
-            Place::Group(if oauth {
-                GroupId::OAuth
+            if oauth {
+                Place::Group(GroupId::OAuth)
             } else {
-                GroupId::Logins
-            })
+                Place::Flat
+            }
         }
         ConnectAuth::ApiKey => {
             if p.item.id == "custom"
@@ -353,6 +336,15 @@ pub(crate) fn place(p: &PaneProvider) -> Place {
             }
         }
         ConnectAuth::None => Place::Flat,
+    }
+}
+
+impl Place {
+    pub(crate) fn group(self) -> Option<GroupId> {
+        match self {
+            Place::Group(g) => Some(g),
+            Place::Flat => None,
+        }
     }
 }
 
@@ -403,7 +395,7 @@ fn rail_rows_for(rail: &[PaneProvider], groups: &GroupStates, filter: &str) -> V
     let f = filter.trim().to_lowercase();
     let mut out = Vec::new();
     let mut header = None;
-    for r in rail_rows(rail, &GroupStates([true; 4])) {
+    for r in rail_rows(rail, &GroupStates([true; 3])) {
         match r {
             RailRow::Group(_) => header = Some(r),
             RailRow::Provider(i)
@@ -752,14 +744,9 @@ struct PaneView<'a> {
     config: &'a Config,
     confirm_remove: bool,
     notice: Option<&'a str>,
-    logins: &'a super::logins::Logins,
-    strip_lines: &'a [Line<'static>],
-    strip_live: bool,
-    usage_plugin: Option<&'a str>,
-    pty: Option<&'a super::login_pty::PtyPane>,
+    header_lines: &'a [Line<'static>],
     portal: Option<&'a PortalBox>,
     portal_in: bool,
-    adding: bool,
     extra: u16,
 }
 
@@ -779,28 +766,8 @@ impl PaneView<'_> {
     }
 }
 
-enum PaneSection<'a> {
-    None,
-    Portal,
-    Logins(&'a super::logins::Strip),
-}
-
-fn pane_section<'a>(
-    provider: Option<&PaneProvider>,
-    strip: Option<&'a super::logins::Strip>,
-    boxed: bool,
-    portal_in: bool,
-) -> PaneSection<'a> {
-    if boxed {
-        return PaneSection::None;
-    }
-    if let Some(st) = strip {
-        return PaneSection::Logins(st);
-    }
-    match provider {
-        Some(p) if portal_in && p.item.id == catalog::GRAY_PORTAL_ID => PaneSection::Portal,
-        _ => PaneSection::None,
-    }
+fn portal_header(provider: Option<&PaneProvider>, portal_in: bool) -> bool {
+    portal_in && provider.is_some_and(|p| p.item.id == catalog::GRAY_PORTAL_ID)
 }
 
 fn fast_wire(model: &str, effort: Option<&str>, models: &[(String, String)]) -> Option<String> {
@@ -838,9 +805,9 @@ fn draw(frame: &mut Frame, bg: &BackgroundSnapshot, v: &PaneView) {
     let list_y = g.pane.y;
     let pane_x = g.pane.x;
     let pane_w = g.pane.width;
-    let strip_h = strip_rows(list_h, v.strip_lines.len());
-    let model_y = list_y + strip_h as u16;
-    let model_h = list_h - strip_h;
+    let header_rows = header_h(v.header_lines.len(), list_h);
+    let model_y = list_y + header_rows as u16;
+    let model_h = list_h - header_rows;
     let row = |x: u16, y: u16, w: u16| Rect::new(x, y, w, 1);
     let provider = v.provider();
     let highlighted = v.highlighted();
@@ -982,56 +949,23 @@ fn draw(frame: &mut Frame, bg: &BackgroundSnapshot, v: &PaneView) {
             }),
         );
         let name_room = rail_w.saturating_sub(if in_group { 6 } else { 4 }) as usize;
-        let tag = p
-            .installed
-            .as_ref()
-            .filter(|_| in_group)
-            .and_then(|i| v.logins.rail_tag(i))
-            .map(|tag| match tag {
-                super::logins::Tag::Pct(pct) => {
-                    (format!("{pct:.0}%"), super::logins::pct_color(pct))
-                }
-                super::logins::Tag::Loading(pct) => (
-                    match pct {
-                        Some(pct) => format!("{pct:.0}%…"),
-                        None => "loading".to_string(),
-                    },
-                    t.text_faint,
-                ),
-                super::logins::Tag::Expired if name_room >= 13 + 1 + 6 => {
-                    ("login expired".to_string(), super::logins::RED)
-                }
-                super::logins::Tag::Expired => ("expired".to_string(), super::logins::RED),
-            });
-        let tag_w = tag.as_ref().map_or(0, |(s, _)| s.chars().count() + 1);
         let name = if p.item.id == "custom" {
             "Custom endpoint".to_string()
         } else {
-            fit_chars(&p.item.name, name_room.saturating_sub(tag_w))
+            fit_chars(&p.item.name, name_room)
         };
         let mut spans = vec![mark];
         if in_group {
             spans.push(Span::raw(" "));
         }
-        let used = spans.iter().map(Span::width).sum::<usize>() + name.chars().count();
         spans.push(Span::styled(name, text));
-        if let Some((s, color)) = tag {
-            let pad = (rail_w as usize).saturating_sub(used + tag_w);
-            spans.push(Span::raw(" ".repeat(pad)));
-            spans.push(Span::styled(
-                s,
-                fg(if lit { t.on_selection } else { color }),
-            ));
-        }
         frame.render_widget(
             Paragraph::new(Line::from(spans)).style(bar),
             row(inner.x, y, rail_w),
         );
     }
 
-    if let Some(pty) = v.pty {
-        pty.draw(frame, g.pane);
-    } else if let Some(pb) = v.portal {
+    if let Some(pb) = v.portal {
         let w = pane_w as usize;
         let mut lines = vec![
             Line::from(Span::styled(
@@ -1068,14 +1002,14 @@ fn draw(frame: &mut Frame, bg: &BackgroundSnapshot, v: &PaneView) {
         }
         frame.render_widget(Paragraph::new(lines), g.pane);
     } else if let Some(p) = provider {
-        let shown = strip_h.saturating_sub(1);
-        for (k, line) in v.strip_lines.iter().take(shown).enumerate() {
+        let shown = header_h(v.header_lines.len(), list_h).saturating_sub(1);
+        for (k, line) in v.header_lines.iter().take(shown).enumerate() {
             frame.render_widget(
                 Paragraph::new(line.clone()).style(line.style),
                 row(pane_x, list_y + k as u16, pane_w),
             );
         }
-        if strip_h > 0 {
+        if !v.header_lines.is_empty() {
             frame.render_widget(
                 Paragraph::new(Span::styled(
                     "─".repeat(pane_w.saturating_sub(1) as usize),
@@ -1167,9 +1101,6 @@ fn draw(frame: &mut Frame, bg: &BackgroundSnapshot, v: &PaneView) {
             }
         }
         _ if v.notice.is_some() => detail.extend(v.notice.map(|n| dim(n.to_string()))),
-        _ if v.usage_plugin.is_some_and(|p| v.logins.refreshing(p)) => {
-            detail.push(dim("refreshing usage…".into()))
-        }
         _ if provider.is_some_and(|p| p.install.is_some()) => {
             detail.push(dim("not installed — enter to install".into()))
         }
@@ -1226,46 +1157,19 @@ fn draw(frame: &mut Frame, bg: &BackgroundSnapshot, v: &PaneView) {
         (false, _) if provider.is_some_and(|p| p.install.is_some()) => "install",
         (false, _) => "sign in",
         (true, Focus::Rail) => "open",
-        (true, Focus::Models | Focus::Logins) => "select",
+        (true, Focus::Models) => "select",
     };
-    let has_strip = v.strip_live;
     let portal_row = provider.is_some_and(|p| p.item.id == catalog::GRAY_PORTAL_ID);
-    let keys = if let Some(pty) = v.pty {
-        if pty.exited() {
-            vec![("enter", "return", true), ("F2", "details", true)]
-        } else {
-            vec![("esc", "cancel", true), ("F2", "details", true)]
-        }
-    } else if v.portal.is_some() {
+    let keys = if v.portal.is_some() {
         vec![("enter", "sign in", true), ("esc", "cancel", true)]
-    } else if v.adding {
-        vec![("enter", "add login", true), ("esc", "cancel", true)]
     } else if v.confirm_remove {
         vec![("enter", "remove", true), ("esc", "cancel", true)]
-    } else if v.focus == Focus::Logins {
-        let mut keys = vec![
-            ("↑↓", "move", true),
-            ("tab", "models", true),
-            ("a", "add", true),
-            ("p", "pin", true),
-            ("c", "unpin", true),
-            ("d", "remove", true),
-            ("s", "strategy", true),
-        ];
-        if v.usage_plugin.is_some() {
-            keys.push(("r", "refresh", true));
-        }
-        keys.push(("esc", "back", true));
-        keys
     } else {
         let mut keys = vec![
             ("↑↓", "move", true),
             ("⇧↑↓", "provider", true),
             ("←→", "effort", has_effort),
         ];
-        if has_strip {
-            keys.push(("tab", "logins", true));
-        }
         keys.push(("^f", "fast", has_fast));
         keys.push(("enter", enter, true));
         if portal_row && v.portal_in {
@@ -1277,15 +1181,8 @@ fn draw(frame: &mut Frame, bg: &BackgroundSnapshot, v: &PaneView) {
         keys.push(("esc", "close", true));
         keys
     };
-    let footer = crate::repl::picker::key_hints(
-        keys,
-        if has_strip {
-            &["⇧↑↓", "r", "c", "del", "tab", "^f", "←→"]
-        } else {
-            &["⇧↑↓", "del", "^f", "←→"]
-        },
-        inner.width as usize,
-    );
+    let footer =
+        crate::repl::picker::key_hints(keys, &["⇧↑↓", "del", "^f", "←→"], inner.width as usize);
     frame.render_widget(
         Paragraph::new(footer),
         row(inner.x, inner.y + inner.height - 1, inner.width),
@@ -1302,6 +1199,14 @@ fn list_rows(inner_h: u16) -> usize {
 
 fn list_height(term_h: u16, extra: u16) -> usize {
     list_rows(modal_h(term_h, extra).saturating_sub(2))
+}
+
+fn header_h(lines: usize, list_h: usize) -> usize {
+    if lines == 0 {
+        0
+    } else {
+        lines.min(list_h.saturating_sub(4)) + 1
+    }
 }
 
 fn clamp_sel(sel: usize, len: usize) -> usize {
@@ -1361,13 +1266,7 @@ pub(crate) fn run_model_panes(
     let mut do_remove = false;
     let mut notice: Option<String> = None;
     let mut removed: Option<String> = None;
-    let mut logins = super::logins::Logins::new();
-    logins.start(installed_of(&rail));
-    let mut strip_sel = 0usize;
-    let mut adding: Option<String> = None;
-    let mut confirm_login: Option<String> = None;
     let mut confirm_logout = false;
-    let mut pty: Option<super::login_pty::PtyPane> = None;
     let mut portal: Option<PortalBox> = None;
     let mut portal_opened = false;
     let mut portal_in = catalog::load_registry_token().is_some();
@@ -1415,7 +1314,6 @@ pub(crate) fn run_model_panes(
                 ollama = up;
                 let keep = row_provider(&rail, &rows, rail_sel).map(|p| p.item.id.clone());
                 (rail, keys) = ranked_rail(config, ollama, provider_index.as_ref());
-                logins.start(installed_of(&rail));
                 rows = rail_rows(&rail, &groups);
                 rail_sel = keep
                     .and_then(|id| rail.iter().position(|p| p.item.id == id))
@@ -1427,7 +1325,6 @@ pub(crate) fn run_model_panes(
                 provider_index = index;
                 let keep = row_provider(&rail, &rows, rail_sel).map(|p| p.item.id.clone());
                 (rail, keys) = ranked_rail(config, ollama, provider_index.as_ref());
-                logins.start(installed_of(&rail));
                 rows = rail_rows(&rail, &groups);
                 rail_sel = keep
                     .and_then(|id| rail.iter().position(|p| p.item.id == id))
@@ -1435,7 +1332,6 @@ pub(crate) fn run_model_panes(
                     .unwrap_or(rail_sel)
                     .min(rows.len().saturating_sub(1));
             }
-            logins.pump();
             while let Ok(job) = job_rx.try_recv() {
                 let reload = match job {
                     Job::Login(Ok(_)) => {
@@ -1487,7 +1383,6 @@ pub(crate) fn run_model_panes(
                 let name = super::connect::forget_provider(&p.item, config)?;
                 before = config.clone();
                 (rail, keys) = ranked_rail(config, ollama, provider_index.as_ref());
-                logins.start(installed_of(&rail));
                 rows = rail_rows(&rail, &groups);
                 rail_sel = rail
                     .iter()
@@ -1499,17 +1394,6 @@ pub(crate) fn run_model_panes(
                 model_top = 0;
                 notice = Some(format!("Removed {name}"));
                 removed = Some(name);
-            }
-            for p in &mut rail {
-                p.native_connected = p.installed.as_ref().is_some_and(|installed| {
-                    installed.auth_method.kind != "oauth"
-                        && logins.strip(installed).is_some_and(|strip| {
-                            strip
-                                .items
-                                .iter()
-                                .any(|item| matches!(item, super::logins::Item::Login(_)))
-                        })
-                });
             }
             let sel_provider = match rows.get(rail_sel) {
                 Some(RailRow::Provider(i)) => Some(*i),
@@ -1565,65 +1449,24 @@ pub(crate) fn run_model_panes(
 
             let term = terminal.size()?;
             let term_area = Rect::new(0, 0, term.width, term.height);
-            let strip = provider
-                .and_then(|p| p.installed.as_ref())
-                .and_then(|i| logins.strip(i));
-            match &strip {
-                Some(st) => strip_sel = strip_sel.min(st.items.len().saturating_sub(1)),
-                None => {
-                    adding = None;
-                    if focus == Focus::Logins {
-                        focus = Focus::Rail;
-                    }
-                }
-            }
             let pane_w = geo(term_area, 0).pane.width as usize;
-            let (strip_lines, strip_live) = match pane_section(
-                provider,
-                strip.as_ref(),
-                pty.is_some() || portal.is_some(),
-                portal_in && portal_who.is_some(),
-            ) {
-                PaneSection::Logins(st) => (
-                    logins.lines(
-                        provider.map_or("", |p| p.item.name.as_str()),
-                        st,
-                        (focus == Focus::Logins).then_some(strip_sel),
-                        adding.as_deref(),
-                        pane_w,
-                    ),
-                    true,
-                ),
-                PaneSection::Portal => (
+            let header_lines: Vec<Line<'static>> =
+                if portal_header(provider, portal_in && portal_who.is_some()) {
                     super::logins::portal_section(
                         provider.map_or("Gray", |p| p.item.name.as_str()),
                         portal_who.as_deref(),
                         pane_w,
-                    ),
-                    false,
-                ),
-                PaneSection::None => (Vec::new(), false),
-            };
-            let extra = if pty.is_some() {
-                PTY_EXTRA
-            } else if strip_lines.is_empty() {
+                    )
+                } else {
+                    Vec::new()
+                };
+            let extra = if header_lines.is_empty() {
                 0
             } else {
-                strip_lines.len() as u16 + 1
+                header_lines.len() as u16 + 1
             };
-            if let Some(pt) = pty.as_mut() {
-                let pane = geo(term_area, extra).pane;
-                pt.tick(Rect::new(
-                    pane.x + 1,
-                    pane.y + 1,
-                    pane.width.saturating_sub(2),
-                    pane.height.saturating_sub(2),
-                ));
-            }
             let list_h = list_height(term.height, extra);
-            let model_h = list_h
-                .saturating_sub(strip_rows(list_h, strip_lines.len()))
-                .max(1);
+            let model_h = list_h.max(1);
             if rail_sel < rail_top {
                 rail_top = rail_sel;
             } else if rail_sel >= rail_top + list_h {
@@ -1672,14 +1515,9 @@ pub(crate) fn run_model_panes(
                             config,
                             confirm_remove,
                             notice: notice.as_deref(),
-                            logins: &logins,
-                            strip_lines: &strip_lines,
-                            strip_live,
-                            usage_plugin: strip.as_ref().and_then(|st| st.plugin()),
-                            pty: pty.as_ref(),
+                            header_lines: &header_lines,
                             portal: portal.as_ref(),
                             portal_in,
-                            adding: adding.is_some(),
                             extra,
                         },
                     )
@@ -1689,8 +1527,7 @@ pub(crate) fn run_model_panes(
                 log::debug!(target: "gray_timing", "model_panes first_draw elapsed_ms={}", opened.elapsed().as_millis());
             }
 
-            let wait = if pty.is_some() { 30 } else { 200 };
-            if !poll(std::time::Duration::from_millis(wait))? {
+            if !poll(std::time::Duration::from_millis(200))? {
                 continue;
             }
             let key = match read()? {
@@ -1699,12 +1536,8 @@ pub(crate) fn run_model_panes(
                     let clean = || -> String {
                         text.chars().filter(|c| !c.is_control()).collect::<String>()
                     };
-                    if let Some(pt) = pty.as_mut() {
-                        pt.paste(&text);
-                    } else if let Some(pb) = portal.as_mut() {
+                    if let Some(pb) = portal.as_mut() {
                         pb.buf.push_str(clean().trim());
-                    } else if let Some(buf) = adding.as_mut() {
-                        buf.push_str(clean().trim());
                     }
                     continue;
                 }
@@ -1714,14 +1547,6 @@ pub(crate) fn run_model_panes(
             let shift = key.modifiers.contains(KeyModifiers::SHIFT);
             notice = None;
             let logout_armed = std::mem::take(&mut confirm_logout);
-            if let Some(pt) = pty.as_mut() {
-                if let super::login_pty::PtyKey::Close = pt.key(key) {
-                    let plugin = pt.plugin.clone();
-                    pty = None;
-                    logins.refresh(&plugin);
-                }
-                continue;
-            }
             if let Some(pb) = portal.as_mut() {
                 match key.code {
                     KeyCode::Esc => portal = None,
@@ -1745,145 +1570,7 @@ pub(crate) fn run_model_panes(
                 }
                 continue;
             }
-            if let Some(buf) = adding.as_mut() {
-                match key.code {
-                    KeyCode::Esc => adding = None,
-                    KeyCode::Char('c') if ctrl => adding = None,
-                    KeyCode::Enter => {
-                        let label = buf.trim().to_string();
-                        if label.is_empty() {
-                            continue;
-                        }
-                        adding = None;
-                        let Some(plugin) = strip.as_ref().and_then(|st| st.plugin()) else {
-                            continue;
-                        };
-                        let Some(argv) = logins.has_cli(plugin) else {
-                            continue;
-                        };
-                        let pane = geo(term_area, PTY_EXTRA).pane;
-                        let inner = Rect::new(
-                            pane.x + 1,
-                            pane.y + 1,
-                            pane.width.saturating_sub(2),
-                            pane.height.saturating_sub(2),
-                        );
-                        match super::login_pty::PtyPane::spawn(
-                            plugin,
-                            format!("add login · {label}"),
-                            &argv,
-                            &["account", "add", &label],
-                            inner,
-                        ) {
-                            Ok(p) => pty = Some(p),
-                            Err(e) => notice = Some(format!("add login failed: {e}")),
-                        }
-                    }
-                    KeyCode::Backspace => {
-                        buf.pop();
-                    }
-                    KeyCode::Char(ch) if !ctrl && !ch.is_whitespace() => buf.push(ch),
-                    _ => {}
-                }
-                continue;
-            }
             let moving = crate::keymap::select_move(&key);
-            if focus == Focus::Logins
-                && !(shift && moving.is_some())
-                && let Some(st) = strip.as_ref()
-            {
-                use super::logins::{Item, Verb};
-                let pending = confirm_login.take();
-                let sel_label = match st.items.get(strip_sel) {
-                    Some(Item::Login(Some(l))) => Some(l.clone()),
-                    _ => None,
-                };
-                let can_add = st.plugin().is_some();
-                if let Some(up) = moving {
-                    strip_sel = if up {
-                        strip_sel.saturating_sub(1)
-                    } else {
-                        (strip_sel + 1).min(st.items.len().saturating_sub(1))
-                    };
-                    continue;
-                }
-                match key.code {
-                    KeyCode::Tab | KeyCode::BackTab => focus = Focus::Models,
-                    KeyCode::Esc if pending.is_some() => {}
-                    KeyCode::Esc | KeyCode::Left => focus = Focus::Rail,
-                    KeyCode::Char('c') if ctrl => return Ok(PanesOutcome::Dismissed),
-                    KeyCode::Char('r') if ctrl => toggles.toggle_reasoning(),
-                    KeyCode::Char('a') if can_add => {
-                        adding = Some(String::new());
-                        strip_sel = st.items.len().saturating_sub(1);
-                    }
-                    KeyCode::Enter if can_add && st.items.get(strip_sel) == Some(&Item::Add) => {
-                        adding = Some(String::new());
-                    }
-                    KeyCode::Enter
-                        if sel_label
-                            .as_deref()
-                            .zip(st.plugin())
-                            .is_some_and(|(l, p)| logins.signed_out(p, l)) =>
-                    {
-                        let (Some(label), Some(plugin)) = (sel_label.clone(), st.plugin()) else {
-                            continue;
-                        };
-                        let Some(argv) = logins.has_cli(plugin) else {
-                            continue;
-                        };
-                        let pane = geo(term_area, PTY_EXTRA).pane;
-                        let inner = Rect::new(
-                            pane.x + 1,
-                            pane.y + 1,
-                            pane.width.saturating_sub(2),
-                            pane.height.saturating_sub(2),
-                        );
-                        match super::login_pty::PtyPane::spawn(
-                            plugin,
-                            format!("log in · {label}"),
-                            &argv,
-                            &["account", "login", &label],
-                            inner,
-                        ) {
-                            Ok(p) => pty = Some(p),
-                            Err(e) => notice = Some(format!("log in failed: {e}")),
-                        }
-                    }
-                    KeyCode::Enter => {
-                        if let Some(l) = &sel_label {
-                            notice = Some(logins.act(st, Verb::Pin(l)));
-                        }
-                    }
-                    KeyCode::Char('a') => {
-                        notice = Some("no account CLI for this provider".to_string());
-                    }
-                    KeyCode::Char('p') => {
-                        if let Some(l) = &sel_label {
-                            notice = Some(logins.act(st, Verb::Pin(l)));
-                        }
-                    }
-                    KeyCode::Char('c') => notice = Some(logins.act(st, Verb::Unpin)),
-                    KeyCode::Char('d') => {
-                        if let Some(l) = sel_label {
-                            if pending.as_deref() == Some(l.as_str()) {
-                                notice = Some(logins.act(st, Verb::Remove(&l)));
-                            } else {
-                                notice = Some(format!("press d again to remove {l} · esc cancels"));
-                                confirm_login = Some(l);
-                            }
-                        }
-                    }
-                    KeyCode::Char('s') => notice = Some(logins.act(st, Verb::Strategy)),
-                    KeyCode::Char('r') => {
-                        if let Some(pl) = st.plugin() {
-                            logins.refresh(pl);
-                        }
-                    }
-                    _ => {}
-                }
-                continue;
-            }
             if std::mem::take(&mut confirm_remove) {
                 do_remove = key.code == KeyCode::Enter;
                 continue;
@@ -1894,7 +1581,6 @@ pub(crate) fn run_model_panes(
                     rail_sel = rail_step(&rows, rail_sel, up);
                     place_current = true;
                     model_top = 0;
-                    strip_sel = 0;
                 } else if up {
                     model_sel = model_sel.saturating_sub(1);
                 } else {
@@ -1937,7 +1623,7 @@ pub(crate) fn run_model_panes(
                             return Ok(PanesOutcome::Connect(p.item.id.clone()));
                         }
                     }
-                    Focus::Rail | Focus::Logins => focus = Focus::Models,
+                    Focus::Rail => focus = Focus::Models,
                     Focus::Models => {
                         let (Some(p), Some(id)) = (provider, highlighted.as_deref()) else {
                             continue;
@@ -1961,7 +1647,6 @@ pub(crate) fn run_model_panes(
                     rail_sel = rail_step(&rows, rail_sel, key.code == KeyCode::Up);
                     place_current = true;
                     model_top = 0;
-                    strip_sel = 0;
                 }
                 KeyCode::PageUp => model_sel = model_sel.saturating_sub(model_h),
                 KeyCode::PageDown => model_sel = (model_sel + model_h).min(last_model),
@@ -1993,17 +1678,11 @@ pub(crate) fn run_model_panes(
                     rows = rail_rows(&rail, &groups);
                 }
                 KeyCode::Right => focus = Focus::Models,
-                KeyCode::Tab if strip.is_some() => {
-                    focus = match focus {
-                        Focus::Logins => Focus::Models,
-                        _ => Focus::Logins,
-                    };
-                }
                 KeyCode::Tab => toggles.toggle_fast(fast_supported),
                 KeyCode::BackTab => {
                     focus = match focus {
                         Focus::Rail => Focus::Models,
-                        Focus::Models | Focus::Logins => Focus::Rail,
+                        Focus::Models => Focus::Rail,
                     };
                 }
                 KeyCode::Char('L')

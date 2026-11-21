@@ -48,9 +48,6 @@ libc = { workspace = true }
 unicode-width = { workspace = true }
 regex = { workspace = true }
 rayon = "1.12"
-portable-pty = "0.9"
-vt100 = "0.15"
-
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading", "Win32_System_SystemInformation", "Wdk_System_SystemServices"] }
@@ -58,7 +55,4 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_
 [dev-dependencies]
 serde_json = { workspace = true }
 
-[target.'cfg(windows)'.dev-dependencies]
-portable-pty = "0.9"
-vt100 = "0.15"
 

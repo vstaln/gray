@@ -46,10 +46,6 @@ pub(crate) fn terminal_progress() -> bool {
     flag(|s| &mut s.terminal_progress, true)
 }
 
-pub(crate) fn vim_mode() -> bool {
-    flag(|s| &mut s.vim_mode, false)
-}
-
 pub(crate) fn commit_attribution() -> bool {
     flag(|s| &mut s.commit_attribution, false)
 }
@@ -73,10 +69,6 @@ const CORE: &[CoreRow] = &[
     CoreRow {
         label: "Progress bar in the terminal tab",
         kind: Kind::Bool(|s| &mut s.terminal_progress, true),
-    },
-    CoreRow {
-        label: "Vim keys in the prompt",
-        kind: Kind::Bool(|s| &mut s.vim_mode, false),
     },
     CoreRow {
         label: "Add a Co-Authored-By line to commits",

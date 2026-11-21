@@ -13,7 +13,8 @@ use tokio::sync::{Mutex, oneshot};
 use tokio::time::{Duration, timeout};
 
 use gray_core::agent::{
-    CommandOutcome, InputSubmit, PanelSpec, PickerSpec, Tool, ToolContext, ToolOutput,
+    CommandOutcome, InputSubmit, KeyPress, KeyReply, PanelSpec, PickerSpec, Tool, ToolContext,
+    ToolOutput,
 };
 use gray_core::credential::CredentialMaterial;
 use gray_core::message::{Message, ToolDef};
@@ -59,6 +60,10 @@ pub const PROVIDER_CHAT_TTL: Duration = Duration::from_secs(180);
 pub const TOOLS_CHANGED_DEBOUNCE: Duration = Duration::from_millis(200);
 
 pub const ASK_TTL: Duration = Duration::from_secs(330);
+
+/// A keystroke is on the typing path: a plugin that has not answered in
+/// 150 ms has lost the key, and the composer handles it natively.
+pub const KEY_TTL: Duration = Duration::from_millis(150);
 
 /// A blocking question waits for the user, not a wall clock: the handler,
 /// the asking plugin and the tool call each get a day-long ceiling (only a
@@ -1421,6 +1426,22 @@ impl Plugin for SidecarPlugin {
                 InputSubmit::Pass
             }
         }
+    }
+    async fn input_key(&self, press: &KeyPress) -> Option<KeyReply> {
+        if !self.manifest.claims("input/key") {
+            return None;
+        }
+        if !self.transport.ensure_alive(true).await {
+            return None;
+        }
+        let mut params = press.to_json();
+        params["session"] = session_json(&self.pinned_sid(), &self.cwd);
+        let v = self
+            .transport
+            .request("input/key", Some(params), KEY_TTL)
+            .await
+            .ok()?;
+        KeyReply::from_result(&v)
     }
     async fn agent_before_start(&self) -> Option<String> {
         if !self.manifest.claims("agent/before_start") {

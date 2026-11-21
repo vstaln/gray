@@ -187,7 +187,7 @@ impl CredentialStore {
     /// The account a request should run as: `Some((label, envelope))` —
     /// the pinned or strategy-picked usable account. `None` when there is
     /// no entry, the pool is empty, or every account is cooling (use
-    /// [`Self::pool_retry_hint`] for the error message).
+    /// [`Self::pool_reset_secs`] for the error).
     pub fn serving_plugin(
         &self,
         auth_ref: &str,
@@ -205,8 +205,8 @@ impl CredentialStore {
         })
     }
 
-    /// Human "reset after …" when every account is cooling.
-    pub fn pool_retry_hint(&self, auth_ref: &str) -> anyhow::Result<Option<String>> {
+    /// Seconds until the earliest cooldown ends, when every account is cooling.
+    pub fn pool_reset_secs(&self, auth_ref: &str) -> anyhow::Result<Option<u64>> {
         let store = self.load()?;
         let now = gray_core::time::now_secs();
         Ok(match store.get(auth_ref) {
@@ -217,10 +217,7 @@ impl CredentialStore {
                     .map(|a| a.cooldown_until)
                     .filter(|u| *u > now)
                     .min();
-                earliest.map(|u| {
-                    let secs = u.saturating_sub(now);
-                    format!("reset after {}m {}s", secs / 60, secs % 60)
-                })
+                earliest.map(|u| u.saturating_sub(now))
             }
             _ => None,
         })
@@ -395,25 +392,22 @@ fn validate_parent(parent: &Path) -> anyhow::Result<()> {
 #[path = "store_tests.rs"]
 mod tests;
 
-/// The usable pick: pinned wins when it's not cooling, then `least_used`
-/// (oldest use) or `fill_first` (pool order). `None` when the pool is
-/// empty or every account is cooling.
+/// The usable pick for a plugin pool, by the same rule API key pools use
+/// ([`catalog::pick_from_pool`]). `None` when the pool is empty or every
+/// account is cooling.
 fn pick_account(pool: &PluginAuthPool) -> Option<(&str, &PluginAccount)> {
-    if pool.accounts.is_empty() {
-        return None;
-    }
-    let now = gray_core::time::now_secs();
-    let usable = |a: &PluginAccount| a.cooldown_until <= now;
-    if let Some(sel) = pool.selected.as_deref()
-        && let Some(a) = pool.accounts.iter().find(|a| a.label == sel && usable(a))
-    {
-        return Some((sel, a));
-    }
-    let mut it = pool.accounts.iter().filter(|a| usable(a));
-    if pool.strategy == "least_used" {
-        return it
-            .min_by_key(|a| a.last_used_at)
-            .map(|a| (a.label.as_str(), a));
-    }
-    it.next().map(|a| (a.label.as_str(), a))
+    let slots: Vec<catalog::PoolSlot<'_>> = pool
+        .accounts
+        .iter()
+        .map(|a| catalog::PoolSlot {
+            label: &a.label,
+            cooldown_until: a.cooldown_until,
+            last_used_at: a.last_used_at,
+        })
+        .collect();
+    let picked = catalog::pick_from_pool(pool.selected.as_deref(), &pool.strategy, &slots)?;
+    pool.accounts
+        .iter()
+        .find(|a| a.label == picked.label)
+        .map(|a| (a.label.as_str(), a))
 }

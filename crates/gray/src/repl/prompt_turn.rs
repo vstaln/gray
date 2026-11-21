@@ -476,21 +476,6 @@ pub(crate) async fn run_prompt_turn(
                     .lock()
                     .expect("tui lock")
                     .start_turn_end_action(&answer);
-                let (shared, provider_id) = (shared.clone(), config.provider_id.clone());
-                tokio::spawn(async move {
-                    let Ok(notes) = tokio::task::spawn_blocking(move || {
-                        crate::setup::usage_warnings(&provider_id)
-                    })
-                    .await
-                    else {
-                        return;
-                    };
-                    for note in notes {
-                        let mut t = shared.lock().expect("tui lock");
-                        t.push_warning(&note);
-                        t.ensure_gap();
-                    }
-                });
             }
         }
         Err(CoreError::Cancelled) => {

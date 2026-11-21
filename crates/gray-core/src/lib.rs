@@ -36,9 +36,9 @@ pub fn env_flag(name: &str) -> bool {
 }
 
 pub use agent::{
-    Agent, CommandOutcome, PanelPage, PanelSpan, PanelSpec, PanelStyle, PickerItem, PickerSpec,
-    PluginCommand, PluginHooks, Provider, ProviderError, ProviderStream, ToolBefore, ToolContext,
-    ToolExecutor, ToolOutput,
+    Agent, CommandOutcome, KeyAction, KeyPress, KeyReply, PanelPage, PanelSpan, PanelSpec,
+    PanelStyle, PickerItem, PickerSpec, PluginCommand, PluginHooks, Provider, ProviderError,
+    ProviderStream, ToolBefore, ToolContext, ToolExecutor, ToolOutput,
 };
 pub use compact::price_cliff_ceiling;
 pub use error::CoreError;

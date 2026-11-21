@@ -800,8 +800,6 @@ fn tool_detail(name: &str, args: &serde_json::Value, preview: Option<&str>) -> O
         "skill" | "use_skill" => arg("skill")
             .or_else(|| arg("name"))
             .map(|n| disclose(n, DETAIL_CAP)),
-        "web_search" => arg("query").map(|q| disclose(q, DETAIL_CAP)),
-        "web_fetch" => arg("url").map(|u| disclose(u, DETAIL_CAP)),
         _ => None,
     }
 }

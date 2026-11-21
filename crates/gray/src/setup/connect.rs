@@ -175,6 +175,7 @@ fn migrate_legacy_custom(config: &Config, cat: &catalog::Catalog) {
     };
     let key = match catalog::load_mixed_store(&auth_path).get("custom") {
         Some(catalog::AuthEntry::Key(key)) => Some(key.clone()),
+        Some(catalog::AuthEntry::KeyPool(pool)) => pool.first_key().map(str::to_string),
         _ => None,
     };
 
@@ -883,20 +884,27 @@ fn connect_modal(
                                     key_buf.clear();
                                 }
                                 context::KeyCheck::Valid | context::KeyCheck::Unknown => {
-                                    if existing_key.is_some()
-                                        && item.id != "custom"
-                                        && env_var.is_none()
-                                    {
-                                        save_auth_key(&item.id, &final_key)?;
-                                        connect_saved_key(config, &item.base_url, &final_key)?;
-                                        return Ok(ConnectOutcome::Connected);
-                                    }
-
                                     let pid = if item.id == "custom" {
                                         catalog::custom_key_id(&item.base_url)
                                     } else {
                                         item.id.clone()
                                     };
+                                    if existing_key.is_some()
+                                        && item.id != "custom"
+                                        && env_var.is_none()
+                                    {
+                                        // A provider that already holds a key gains this
+                                        // one as another pool member, pinned; a plain key
+                                        // entry becomes a pool only now.
+                                        if key_buf.is_empty() {
+                                            save_auth_key(&pid, &final_key)?;
+                                        } else {
+                                            catalog::add_auth_key(&pid, &final_key)?;
+                                        }
+                                        connect_saved_key(config, &item.base_url, &final_key)?;
+                                        return Ok(ConnectOutcome::Connected);
+                                    }
+
                                     save_auth_key(&pid, &final_key)?;
                                     config.base_url = item.base_url.clone();
                                     config.api_key = Some(final_key);

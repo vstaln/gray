@@ -1,9 +1,13 @@
 use std::collections::{BTreeMap, HashSet, VecDeque};
+use std::sync::Arc;
 use std::time::Duration;
 
 use eventsource_stream::Eventsource;
 use futures::stream::{self, BoxStream, StreamExt};
 use gray_core::agent::{Provider, ProviderError, current_isolated_stream};
+use gray_core::credential::{
+    API_KEY_SECRET, CredentialError, CredentialFailure, CredentialLease, CredentialSource,
+};
 use gray_core::event::{StopReason, StreamEvent, Usage};
 use gray_core::message::{
     ChatRequest, ContentBlock, IMAGE_OMITTED, IMAGE_TOO_LARGE, Role, resolve_media,
@@ -38,6 +42,7 @@ pub struct AnthropicProvider {
     reasoning_effort: Option<String>,
     temperature: Option<f32>,
     top_p: Option<f32>,
+    credential_source: Option<Arc<dyn CredentialSource>>,
 }
 
 impl std::fmt::Debug for AnthropicProvider {
@@ -75,12 +80,20 @@ impl AnthropicProvider {
             reasoning_effort,
             temperature: None,
             top_p: None,
+            credential_source: None,
         })
     }
 
     pub fn with_sampling(mut self, temperature: Option<f32>, top_p: Option<f32>) -> Self {
         self.temperature = temperature;
         self.top_p = top_p;
+        self
+    }
+
+    /// Serve each request from `source`'s current credential instead of the
+    /// fixed `x-api-key`.
+    pub fn with_credential_source(mut self, source: Arc<dyn CredentialSource>) -> Self {
+        self.credential_source = Some(source);
         self
     }
 
@@ -609,6 +622,27 @@ struct State {
     out: VecDeque<Result<StreamEvent, ProviderError>>,
     decoder: Decoder,
     done: bool,
+    source: Option<Arc<dyn CredentialSource>>,
+    lease: CredentialLease,
+    /// Keys already tried on this request, so a pinned key cannot loop.
+    tried: Vec<String>,
+}
+
+/// The pool verdict for a failed exchange, from the classification the
+/// provider already made. `None` means the failure says nothing about the
+/// key.
+fn credential_failure(
+    err: &ProviderError,
+    retry_after: Option<Duration>,
+) -> Option<CredentialFailure> {
+    match err.class() {
+        ProviderError::RateLimited(_) => Some(CredentialFailure::RateLimited { retry_after }),
+        ProviderError::Quota { resets_in, .. } => Some(CredentialFailure::Quota {
+            resets_in: *resets_in,
+        }),
+        ProviderError::Auth(_) => Some(CredentialFailure::Unauthorized),
+        _ => None,
+    }
 }
 
 async fn connect(
@@ -616,6 +650,7 @@ async fn connect(
     url: &Url,
     api_key: &str,
     body: &Value,
+    pooled: bool,
 ) -> Result<Sse, ProviderError> {
     let mut attempt = 1;
     loop {
@@ -663,13 +698,39 @@ async fn connect(
                 None,
             ),
         };
-        if !err.retryable() || attempt >= MAX_ATTEMPTS {
+        if !err.retryable()
+            || attempt >= MAX_ATTEMPTS
+            || (pooled
+                && matches!(
+                    err.class(),
+                    ProviderError::RateLimited(_) | ProviderError::Auth(_)
+                ))
+        {
             return Err(err);
         }
         log::warn!(target: "gray_provider", "anthropic retrying ({attempt}/{MAX_ATTEMPTS}): {err}");
         tokio::time::sleep(backoff_delay(INITIAL_BACKOFF, attempt, retry_after)).await;
         attempt += 1;
     }
+}
+
+/// Report `err` against the lease this request ran under and hand back the
+/// next key's material. `None` when the failure blames the request rather
+/// than the key, when no source is wired, or when every key has been tried.
+async fn rotate_key(st: &mut State, err: &ProviderError) -> Option<String> {
+    let source = st.source.clone()?;
+    let failure = credential_failure(err, err.detail().and_then(|d| d.retry_after()))?;
+    source.report(&st.lease, failure).await;
+    let previous = st.api_key.clone();
+    st.tried.push(previous);
+    let lease = source.acquire().await.ok()?;
+    let next = lease.secrets.get(API_KEY_SECRET)?.to_string();
+    if st.tried.contains(&next) {
+        return None;
+    }
+    log::info!(target: "gray_provider", "anthropic key failed ({failure:?}); retrying on another pool key");
+    st.lease = lease;
+    Some(next)
 }
 
 async fn step(mut st: State) -> Option<(Result<StreamEvent, ProviderError>, State)> {
@@ -681,12 +742,16 @@ async fn step(mut st: State) -> Option<(Result<StreamEvent, ProviderError>, Stat
             return None;
         }
         let Some(sse) = st.sse.as_mut() else {
-            match connect(&st.http, &st.url, &st.api_key, &st.body).await {
+            let pooled = st.source.is_some();
+            match connect(&st.http, &st.url, &st.api_key, &st.body, pooled).await {
                 Ok(sse) => st.sse = Some(sse),
-                Err(e) => {
-                    st.done = true;
-                    st.out.push_back(Err(e));
-                }
+                Err(e) => match rotate_key(&mut st, &e).await {
+                    Some(next) => st.api_key = next,
+                    None => {
+                        st.done = true;
+                        st.out.push_back(Err(e));
+                    }
+                },
             }
             continue;
         };
@@ -736,17 +801,61 @@ impl Provider for AnthropicProvider {
             Ok(p) => p,
             Err(e) => return stream::once(async move { Err(e) }).boxed(),
         };
-        let state = State {
-            http: self.http.clone(),
-            url,
-            api_key: self.api_key.clone(),
-            body,
-            sse: None,
-            out: VecDeque::new(),
-            decoder: Decoder::default(),
-            done: false,
-        };
-        stream::unfold(state, step).boxed()
+        let source = self.credential_source.clone();
+        let opener = source.clone();
+        let fixed_key = self.api_key.clone();
+        let http = self.http.clone();
+        let state_url = url.clone();
+        let state_body = body.clone();
+        let started = stream::once(async move {
+            let fixed_key = fixed_key;
+            let (api_key, lease) = match opener {
+                Some(source) => {
+                    let lease = source.acquire().await.map_err(|e| match e {
+                        CredentialError::Unavailable(_) => {
+                            ProviderError::Connection(format!("{e}"))
+                        }
+                        CredentialError::Cooling { message, resets_in } => ProviderError::Quota {
+                            message,
+                            resets_in: Some(resets_in),
+                        },
+                        _ => ProviderError::Auth(format!("provider credential unavailable: {e}")),
+                    })?;
+                    let key = lease
+                        .secrets
+                        .get(API_KEY_SECRET)
+                        .map(str::to_string)
+                        .ok_or_else(|| {
+                            ProviderError::Auth("provider credential has no API key".into())
+                        })?;
+                    (key, lease)
+                }
+                None => (fixed_key, CredentialLease::default()),
+            };
+            Ok((api_key, lease))
+        });
+        started
+            .flat_map(move |result| match result {
+                Ok((api_key, lease)) => stream::unfold(
+                    State {
+                        http: http.clone(),
+                        url: state_url.clone(),
+                        api_key: api_key.clone(),
+                        body: state_body.clone(),
+                        sse: None,
+                        out: VecDeque::new(),
+                        decoder: Decoder::default(),
+                        done: false,
+                        source: source.clone(),
+                        lease: lease.clone(),
+                        tried: Vec::new(),
+                    },
+                    step,
+                )
+                .boxed(),
+                Err(error) => stream::once(async move { Err(error) }).boxed(),
+            })
+            .boxed()
     }
 }
 

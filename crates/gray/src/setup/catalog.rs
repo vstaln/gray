@@ -122,9 +122,6 @@ pub struct SavedConfig {
     pub terminal_progress: Option<bool>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub vim_mode: Option<bool>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub commit_attribution: Option<bool>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -255,7 +252,6 @@ fn partial_saved_config(obj: &serde_json::Map<String, serde_json::Value>) -> Sav
         toolbox: opt_field(obj, "toolbox"),
         terminal_title: opt_field(obj, "terminal_title"),
         terminal_progress: opt_field(obj, "terminal_progress"),
-        vim_mode: opt_field(obj, "vim_mode"),
         commit_attribution: opt_field(obj, "commit_attribution"),
         compaction_model: opt_field(obj, "compaction_model"),
         intro: opt_field(obj, "intro"),
@@ -421,6 +417,143 @@ pub struct PluginAccount {
     pub last_used_at: u64,
 }
 
+/// One labeled API key in a [`KeyPool`]. `label` is the row a pool panel
+/// shows; `key` is the secret itself.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PooledKey {
+    pub label: String,
+    pub key: String,
+    /// Unix seconds the cooldown ends; 0 = not cooling.
+    #[serde(default)]
+    pub cooldown_until: u64,
+    #[serde(default)]
+    pub last_used_at: u64,
+}
+
+impl std::fmt::Debug for PooledKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PooledKey")
+            .field("label", &self.label)
+            .field("cooldown_until", &self.cooldown_until)
+            .field("last_used_at", &self.last_used_at)
+            .finish_non_exhaustive()
+    }
+}
+
+/// auth.json entry for an API-key provider holding several keys under the
+/// provider id. Written only once a provider has a second key: a lone key
+/// stays a plain [`AuthEntry::Key`] string, exactly as before.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KeyPool {
+    pub version: u8,
+    #[serde(default)]
+    pub selected: Option<String>,
+    /// "" and "fill_first" both mean pool order; "least_used" takes the
+    /// oldest use.
+    #[serde(default)]
+    pub strategy: String,
+    pub keys: Vec<PooledKey>,
+}
+
+impl std::fmt::Debug for KeyPool {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("KeyPool")
+            .field("version", &self.version)
+            .field("selected", &self.selected)
+            .field("strategy", &self.strategy)
+            .field("keys", &self.keys.len())
+            .finish()
+    }
+}
+
+impl KeyPool {
+    /// Wrap one plain key as a one-key pool labelled `default`.
+    pub fn from_key(key: &str) -> Self {
+        Self {
+            version: 1,
+            selected: None,
+            strategy: String::new(),
+            keys: vec![PooledKey {
+                label: "default".to_string(),
+                key: key.to_string(),
+                cooldown_until: 0,
+                last_used_at: 0,
+            }],
+        }
+    }
+
+    /// The first free `key N` label, so adding never collides.
+    pub fn next_label(&self) -> String {
+        (1..)
+            .map(|n| format!("key {n}"))
+            .find(|label| self.keys.iter().all(|k| &k.label != label))
+            .unwrap_or_else(|| format!("key {}", self.keys.len() + 1))
+    }
+}
+
+/// One pool member, whichever pool kind it is in.
+pub struct PoolSlot<'a> {
+    pub label: &'a str,
+    pub cooldown_until: u64,
+    pub last_used_at: u64,
+}
+
+impl PoolSlot<'_> {
+    fn usable(&self, now: u64) -> bool {
+        self.cooldown_until <= now
+    }
+}
+
+/// The serving pick over any labeled pool: the pinned member when it is
+/// not cooling, else `least_used` (oldest use) or pool order. Shared by
+/// plugin account pools and API key pools so both pick identically.
+pub fn pick_from_pool<'a>(
+    selected: Option<&str>,
+    strategy: &str,
+    slots: &'a [PoolSlot<'a>],
+) -> Option<&'a PoolSlot<'a>> {
+    if slots.is_empty() {
+        return None;
+    }
+    let now = gray_core::time::now_secs();
+    if let Some(sel) = selected
+        && let Some(slot) = slots.iter().find(|s| s.label == sel && s.usable(now))
+    {
+        return Some(slot);
+    }
+    let mut it = slots.iter().filter(|s| s.usable(now));
+    if strategy == "least_used" {
+        return it.min_by_key(|s| s.last_used_at);
+    }
+    it.next()
+}
+
+impl KeyPool {
+    /// The key a request should run as, by the shared pool rule.
+    pub fn pick(&self) -> Option<&PooledKey> {
+        let slots: Vec<PoolSlot<'_>> = self
+            .keys
+            .iter()
+            .map(|k| PoolSlot {
+                label: &k.label,
+                cooldown_until: k.cooldown_until,
+                last_used_at: k.last_used_at,
+            })
+            .collect();
+        let picked = pick_from_pool(self.selected.as_deref(), &self.strategy, &slots)?;
+        self.keys.iter().find(|k| k.label == picked.label)
+    }
+
+    /// The serving key, else the first when every key is cooling: a stale
+    /// key is a better answer than none for read-only uses like showing
+    /// "connected" or naming models.
+    pub fn first_key(&self) -> Option<&str> {
+        self.pick()
+            .or_else(|| self.keys.first())
+            .map(|k| k.key.as_str())
+    }
+}
+
 /// auth.json v2 plugin entry: several labeled credential envelopes under
 /// one `plugin:<lock>:<provider>:<method>` auth_ref. `selected` pins an
 /// account; `strategy` orders the rest (`fill_first`, `least_used`).
@@ -482,6 +615,7 @@ pub enum AuthEntry {
     OAuth(StoredAuth),
     Plugin(CredentialEnvelope),
     PluginPool(PluginAuthPool),
+    KeyPool(KeyPool),
 }
 
 impl std::fmt::Debug for SavedConfig {
@@ -512,6 +646,7 @@ impl std::fmt::Debug for AuthEntry {
                 .field("provider", &pool.provider)
                 .field("accounts", &pool.accounts.len())
                 .finish(),
+            Self::KeyPool(pool) => f.debug_tuple("KeyPool").field(pool).finish(),
         }
     }
 }
@@ -551,9 +686,39 @@ pub fn load_auth_keys() -> BTreeMap<String, String> {
         .into_iter()
         .filter_map(|(k, v)| match v {
             AuthEntry::Key(key) => Some((k, key)),
+            AuthEntry::KeyPool(pool) => pool.first_key().map(|key| (k, key.to_string())),
             AuthEntry::OAuth(_) | AuthEntry::Plugin(_) | AuthEntry::PluginPool(_) => None,
         })
         .collect()
+}
+
+/// Every key a provider holds, in pool order: the one entry a plain string
+/// gives, or one line per pooled key. Secrets for a pool panel and nothing
+/// else.
+pub fn load_auth_key_pool(pid: &str) -> Vec<PooledKey> {
+    let Ok(path) = auth_store_path() else {
+        return Vec::new();
+    };
+    match load_mixed_store(&path).remove(pid) {
+        Some(AuthEntry::Key(key)) => vec![PooledKey {
+            label: "default".to_string(),
+            key,
+            cooldown_until: 0,
+            last_used_at: 0,
+        }],
+        Some(AuthEntry::KeyPool(pool)) => pool.keys,
+        _ => Vec::new(),
+    }
+}
+
+/// The auth.json id a config's API key lives under: the provider id when one
+/// is set, else the `custom:<slug>` id of its base URL.
+pub fn key_pool_id(config: &crate::config::Config) -> String {
+    if config.provider_id.is_empty() {
+        custom_key_id(&config.base_url)
+    } else {
+        config.provider_id.clone()
+    }
 }
 
 pub(crate) fn save_auth_key(pid: &str, key: &str) -> anyhow::Result<()> {
@@ -561,10 +726,59 @@ pub(crate) fn save_auth_key(pid: &str, key: &str) -> anyhow::Result<()> {
     save_auth_key_at(&path, pid, key)
 }
 
+/// [`add_auth_key_at`] against the live auth store.
+pub(crate) fn add_auth_key(pid: &str, key: &str) -> anyhow::Result<()> {
+    let path = auth_store_path()?;
+    add_auth_key_at(&path, pid, key)
+}
+
 pub(crate) fn save_auth_key_at(path: &Path, pid: &str, key: &str) -> anyhow::Result<()> {
     let _lock = crate::auth::CredentialStore::new(path.to_path_buf()).lock()?;
     let mut store = load_mixed_store_strict(path)?;
     store.insert(pid.to_string(), AuthEntry::Key(key.to_string()));
+    save_mixed_store(path, &store)
+}
+
+/// Store `key` under `pid`, appending it to whatever the provider already
+/// holds and pinning it. The first key keeps the plain-string shape; the
+/// second turns the entry into a [`KeyPool`] with the old key labelled
+/// `default`.
+pub(crate) fn add_auth_key_at(path: &Path, pid: &str, key: &str) -> anyhow::Result<()> {
+    let _lock = crate::auth::CredentialStore::new(path.to_path_buf()).lock()?;
+    let mut store = load_mixed_store_strict(path)?;
+    let mut pool = match store.remove(pid) {
+        Some(AuthEntry::Key(existing)) => KeyPool::from_key(&existing),
+        Some(AuthEntry::KeyPool(pool)) => pool,
+        Some(other) => {
+            store.insert(pid.to_string(), other);
+            anyhow::bail!("{pid} holds a non-API-key credential");
+        }
+        None => {
+            store.insert(pid.to_string(), AuthEntry::Key(key.to_string()));
+            save_mixed_store(path, &store)?;
+            return Ok(());
+        }
+    };
+    if pool.keys.iter().any(|k| k.key == key) {
+        pool.selected = Some(
+            pool.keys
+                .iter()
+                .find(|k| k.key == key)
+                .map(|k| k.label.clone())
+                .unwrap_or_default(),
+        );
+        store.insert(pid.to_string(), AuthEntry::KeyPool(pool));
+        return save_mixed_store(path, &store);
+    }
+    let label = pool.next_label();
+    pool.keys.push(PooledKey {
+        label: label.clone(),
+        key: key.to_string(),
+        cooldown_until: 0,
+        last_used_at: 0,
+    });
+    pool.selected = Some(label);
+    store.insert(pid.to_string(), AuthEntry::KeyPool(pool));
     save_mixed_store(path, &store)
 }
 
