@@ -353,9 +353,7 @@ pub fn set_input_key_hooks(hooks: &[Arc<dyn PluginHooks>]) {
         .cloned()
         .collect();
     INPUT_KEY_ANY.store(!claiming.is_empty(), std::sync::atomic::Ordering::Relaxed);
-    *INPUT_KEY_HOOKS
-        .lock()
-        .unwrap_or_else(|e| e.into_inner()) = claiming;
+    *INPUT_KEY_HOOKS.lock().unwrap_or_else(|e| e.into_inner()) = claiming;
 }
 
 pub fn has_input_key_hook() -> bool {
