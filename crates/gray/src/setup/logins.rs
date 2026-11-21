@@ -89,39 +89,6 @@ fn run_json(argv: &[String], args: &[&str], timeout: Duration) -> Result<Value, 
     serde_json::from_str(&out).map_err(|e| format!("bad account json: {e}"))
 }
 
-pub(crate) fn usage_warnings(provider_id: &str) -> Vec<String> {
-    static LAST: std::sync::Mutex<Option<(String, Instant)>> = std::sync::Mutex::new(None);
-    {
-        let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some((id, at)) = last.as_ref()
-            && id == provider_id
-            && at.elapsed() < Duration::from_secs(300)
-        {
-            return Vec::new();
-        }
-        *last = Some((provider_id.to_string(), Instant::now()));
-    }
-    let plugin = provider_id.split(':').next().unwrap_or_default();
-    let Some(argv) = cli_argvs().remove(plugin) else {
-        return Vec::new();
-    };
-    let Ok(list) = run_json(&argv, &["account", "list", "--json"], LIST_TIMEOUT) else {
-        return Vec::new();
-    };
-    let serving = Logins::serving(&list);
-    let Ok(entries) = fetch_usage(&argv, false, serving.as_deref()) else {
-        return Vec::new();
-    };
-    let title = entries
-        .iter()
-        .find_map(|e| e.card.as_ref()?["title"].as_str().map(str::to_string));
-    let provider = list["provider"]
-        .as_str()
-        .or_else(|| list["plugin"].as_str())
-        .unwrap_or(plugin);
-    crate::usage_cache::take_warnings(provider, serving.as_deref(), title.as_deref())
-}
-
 pub(crate) struct UsageEntry {
     label: Option<String>,
     card: Option<Value>,

@@ -110,7 +110,6 @@ mod context_modal;
 mod install_manager;
 mod login_pty;
 mod logins;
-pub(crate) use logins::usage_warnings;
 mod model_dump;
 mod model_modal;
 mod model_panes;
