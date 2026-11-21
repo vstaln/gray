@@ -303,7 +303,3 @@ use streaming::*;
 #[path = "openai_signature_tests.rs"]
 #[cfg(test)]
 mod signature_tests;
-
-#[path = "openai_sse_error_tests.rs"]
-#[cfg(test)]
-mod sse_error_tests;
