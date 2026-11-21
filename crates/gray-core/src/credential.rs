@@ -1,11 +1,18 @@
 use std::collections::BTreeMap;
 use std::fmt;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use zeroize::Zeroizing;
 
 pub const MAX_CREDENTIAL_BYTES: usize = 128 * 1024;
+
+/// Secret name a key-pool lease carries the provider API key under.
+pub const API_KEY_SECRET: &str = "api_key";
+
+/// Lease metadata key naming the pool member a lease came from.
+pub const ACCOUNT_METADATA: &str = "account";
 
 #[derive(Clone, Default, PartialEq, Eq)]
 pub struct SecretString(Zeroizing<String>);
@@ -229,7 +236,19 @@ impl fmt::Debug for CredentialError {
     }
 }
 
+/// Why a request failed, in the terms a pool reacts to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CredentialFailure {
+    RateLimited { retry_after: Option<Duration> },
+    Quota { resets_in: Option<Duration> },
+    Unauthorized,
+}
+
 #[async_trait]
 pub trait CredentialSource: Send + Sync {
     async fn acquire(&self) -> Result<CredentialLease, CredentialError>;
+
+    /// A failed request's verdict on the lease it ran under. The default
+    /// keeps single-credential sources exactly as they were.
+    async fn report(&self, _lease: &CredentialLease, _failure: CredentialFailure) {}
 }

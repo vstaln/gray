@@ -675,6 +675,10 @@ pub struct BuilderOptions {
     pub dynamic_provider_profile: Option<OpenAiProviderProfile>,
 
     pub dynamic_credential_source: Option<Arc<dyn CredentialSource>>,
+
+    /// A key-based provider holding several API keys serves each request
+    /// from this source; `None` when the provider has one key or none.
+    pub key_pool_credential_source: Option<Arc<dyn CredentialSource>>,
     pub prebooted_plugins: Option<Vec<Arc<dyn Plugin>>>,
 }
 
@@ -697,6 +701,7 @@ pub async fn build_agent(opts: BuilderOptions) -> anyhow::Result<Agent> {
         abort_on_spawn_failure,
         dynamic_provider_profile,
         dynamic_credential_source,
+        key_pool_credential_source,
         prebooted_plugins,
     } = opts;
 
@@ -723,6 +728,7 @@ pub async fn build_agent(opts: BuilderOptions) -> anyhow::Result<Agent> {
     }
     let (registry, manifests) = from_plugins(&plugins);
     let dynamic = dynamic_plugins(&plugins);
+    let key_pool = key_pool_credential_source;
     let system = (system_prompt)(&registry, &manifests);
     let provider: Box<dyn gray_core::agent::Provider> =
         match (dynamic_provider_profile, dynamic_credential_source) {
@@ -738,13 +744,22 @@ pub async fn build_agent(opts: BuilderOptions) -> anyhow::Result<Agent> {
                 .with_sampling(temperature, top_p),
             ),
 
-            (None, None) if gray_provider::anthropic::is_anthropic_base_url(&base_url) => Box::new(
-                gray_provider::AnthropicProvider::new(api_key, model, base_url, reasoning_effort)
-                    .map_err(|e| anyhow::anyhow!("failed to initialize Anthropic provider: {e}"))?
-                    .with_sampling(temperature, top_p),
-            ),
-            (None, None) => Box::new(
-                OpenAiProvider::new(
+            (None, None) if gray_provider::anthropic::is_anthropic_base_url(&base_url) => {
+                let provider = gray_provider::AnthropicProvider::new(
+                    api_key,
+                    model,
+                    base_url,
+                    reasoning_effort,
+                )
+                .map_err(|e| anyhow::anyhow!("failed to initialize Anthropic provider: {e}"))?
+                .with_sampling(temperature, top_p);
+                Box::new(match key_pool {
+                    Some(source) => provider.with_credential_source(source),
+                    None => provider,
+                })
+            }
+            (None, None) => {
+                let provider = OpenAiProvider::new(
                     api_key,
                     model,
                     base_url,
@@ -752,8 +767,12 @@ pub async fn build_agent(opts: BuilderOptions) -> anyhow::Result<Agent> {
                     Some(provider_cache_key(session_id.as_deref())),
                 )
                 .map_err(|e| anyhow::anyhow!("failed to initialize OpenAI provider: {e}"))?
-                .with_sampling(temperature, top_p),
-            ),
+                .with_sampling(temperature, top_p);
+                Box::new(match key_pool {
+                    Some(source) => provider.with_credential_source(source),
+                    None => provider,
+                })
+            }
             _ => anyhow::bail!("a dynamic provider needs both a profile and a credential source"),
         };
 

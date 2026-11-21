@@ -395,25 +395,22 @@ fn validate_parent(parent: &Path) -> anyhow::Result<()> {
 #[path = "store_tests.rs"]
 mod tests;
 
-/// The usable pick: pinned wins when it's not cooling, then `least_used`
-/// (oldest use) or `fill_first` (pool order). `None` when the pool is
-/// empty or every account is cooling.
+/// The usable pick for a plugin pool, by the same rule API key pools use
+/// ([`catalog::pick_from_pool`]). `None` when the pool is empty or every
+/// account is cooling.
 fn pick_account(pool: &PluginAuthPool) -> Option<(&str, &PluginAccount)> {
-    if pool.accounts.is_empty() {
-        return None;
-    }
-    let now = gray_core::time::now_secs();
-    let usable = |a: &PluginAccount| a.cooldown_until <= now;
-    if let Some(sel) = pool.selected.as_deref()
-        && let Some(a) = pool.accounts.iter().find(|a| a.label == sel && usable(a))
-    {
-        return Some((sel, a));
-    }
-    let mut it = pool.accounts.iter().filter(|a| usable(a));
-    if pool.strategy == "least_used" {
-        return it
-            .min_by_key(|a| a.last_used_at)
-            .map(|a| (a.label.as_str(), a));
-    }
-    it.next().map(|a| (a.label.as_str(), a))
+    let slots: Vec<catalog::PoolSlot<'_>> = pool
+        .accounts
+        .iter()
+        .map(|a| catalog::PoolSlot {
+            label: &a.label,
+            cooldown_until: a.cooldown_until,
+            last_used_at: a.last_used_at,
+        })
+        .collect();
+    let picked = catalog::pick_from_pool(pool.selected.as_deref(), &pool.strategy, &slots)?;
+    pool.accounts
+        .iter()
+        .find(|a| a.label == picked.label)
+        .map(|a| (a.label.as_str(), a))
 }
