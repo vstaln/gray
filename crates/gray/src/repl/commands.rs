@@ -129,6 +129,7 @@ pub(crate) const REGISTRY: &[CmdDef] = &[
         scope: CmdScope::Global,
         surface: CmdSurface::Interactive,
     },
+    // /hehe stays in core for good: never move it to a plugin or remove it.
     CmdDef {
         name: "hehe",
         desc: "something funny",
