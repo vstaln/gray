@@ -474,7 +474,6 @@ pub(crate) async fn handle_model_panes(
         Ok(outcome) => {
             if let Some(shared) = tui {
                 let mut t = shared.lock().expect("tui lock");
-                t.clear_draft();
                 t.ensure_gap();
                 let _ = t.draw();
             }
@@ -600,7 +599,6 @@ pub(crate) async fn handle_model(
         Ok(false) => {
             if let Some(shared) = tui {
                 let mut t = shared.lock().expect("tui lock");
-                t.clear_draft();
 
                 t.ensure_gap();
                 let _ = t.draw();

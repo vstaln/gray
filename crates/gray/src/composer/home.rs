@@ -98,18 +98,6 @@ impl Tui {
         self.thinking_effort = effort;
     }
 
-    pub(crate) fn clear_draft(&mut self) {
-        self.textarea.set_text("");
-        self.matches.clear();
-        self.muted_text = None;
-        self.search = None;
-        self.sel = 0;
-        self.history_idx = None;
-        self.draft.clear();
-        self.attachments.clear();
-        self.pending_pastes.clear();
-    }
-
     pub(crate) fn set_hint(&mut self, text: &str) {
         self.hint = Some((Instant::now(), text.to_string()));
         self.hint_line = None;

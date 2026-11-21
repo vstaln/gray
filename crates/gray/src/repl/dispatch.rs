@@ -436,7 +436,6 @@ pub(crate) async fn dispatch_command(
                 Ok(crate::setup::ConnectOutcome::Dismissed) => {
                     if let Some((shared, _)) = tui {
                         let mut t = shared.lock().expect("tui lock");
-                        t.clear_draft();
 
                         t.ensure_gap();
                         let _ = t.draw();
@@ -475,7 +474,6 @@ pub(crate) async fn dispatch_command(
                     Ok(false) => {
                         if let Some(shared) = tui_shared {
                             let mut t = shared.lock().expect("tui lock");
-                            t.clear_draft();
                             if !t.retract_slash_echo("/plugins") {
                                 let _ = t.draw();
                             }

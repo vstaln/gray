@@ -755,6 +755,7 @@ struct PaneView<'a> {
     logins: &'a super::logins::Logins,
     strip_lines: &'a [Line<'static>],
     strip_live: bool,
+    usage_plugin: Option<&'a str>,
     pty: Option<&'a super::login_pty::PtyPane>,
     portal: Option<&'a PortalBox>,
     portal_in: bool,
@@ -1166,6 +1167,9 @@ fn draw(frame: &mut Frame, bg: &BackgroundSnapshot, v: &PaneView) {
             }
         }
         _ if v.notice.is_some() => detail.extend(v.notice.map(|n| dim(n.to_string()))),
+        _ if v.usage_plugin.is_some_and(|p| v.logins.refreshing(p)) => {
+            detail.push(dim("refreshing usage…".into()))
+        }
         _ if provider.is_some_and(|p| p.install.is_some()) => {
             detail.push(dim("not installed — enter to install".into()))
         }
@@ -1239,7 +1243,7 @@ fn draw(frame: &mut Frame, bg: &BackgroundSnapshot, v: &PaneView) {
     } else if v.confirm_remove {
         vec![("enter", "remove", true), ("esc", "cancel", true)]
     } else if v.focus == Focus::Logins {
-        vec![
+        let mut keys = vec![
             ("↑↓", "move", true),
             ("tab", "models", true),
             ("a", "add", true),
@@ -1247,9 +1251,12 @@ fn draw(frame: &mut Frame, bg: &BackgroundSnapshot, v: &PaneView) {
             ("c", "unpin", true),
             ("d", "remove", true),
             ("s", "strategy", true),
-            ("r", "refresh", true),
-            ("esc", "back", true),
-        ]
+        ];
+        if v.usage_plugin.is_some() {
+            keys.push(("r", "refresh", true));
+        }
+        keys.push(("esc", "back", true));
+        keys
     } else {
         let mut keys = vec![
             ("↑↓", "move", true),
@@ -1668,6 +1675,7 @@ pub(crate) fn run_model_panes(
                             logins: &logins,
                             strip_lines: &strip_lines,
                             strip_live,
+                            usage_plugin: strip.as_ref().and_then(|st| st.plugin()),
                             pty: pty.as_ref(),
                             portal: portal.as_ref(),
                             portal_in,
@@ -1870,7 +1878,6 @@ pub(crate) fn run_model_panes(
                     KeyCode::Char('r') => {
                         if let Some(pl) = st.plugin() {
                             logins.refresh(pl);
-                            notice = Some("refreshing usage…".to_string());
                         }
                     }
                     _ => {}

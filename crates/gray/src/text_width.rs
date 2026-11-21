@@ -24,11 +24,18 @@ pub fn fit_char_count(chars: &[char], max_w: usize) -> usize {
 }
 
 pub fn fit_chars(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
+    if display_width(s) <= max {
         return s.to_string();
     }
     let keep = max.saturating_sub(1);
-    let mut out: String = s.chars().take(keep).collect();
+    let mut used = 0;
+    let mut out: String = s
+        .chars()
+        .take_while(|c| {
+            used += char_width(*c);
+            used <= keep
+        })
+        .collect();
     if max > 0 {
         out.push('…');
     }

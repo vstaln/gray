@@ -383,9 +383,13 @@ pub fn format_core_error(e: &CoreError, base_url: &str) -> String {
         CoreError::Auth(_) => format!(
             "✗ Auth failed (not retryable):\n  {short}\n  Run /models to sign in again or update your API key."
         ),
-        CoreError::Quota { .. } => format!(
-            "✗ Quota exhausted (not retryable):\n  {short}\n  Wait for the quota window to reset or switch model via /models."
+        CoreError::Quota {
+            resets_in: Some(d), ..
+        } => format!(
+            "✗ Usage limit reached · resets in ~{}m",
+            d.as_secs().div_ceil(60).max(1)
         ),
+        CoreError::Quota { .. } => format!("✗ Usage limit reached · {short}"),
         CoreError::RateLimited(_) => format!(
             "✗ Rate limited (retryable):\n  {short}\n  Try again later or switch model via /models."
         ),

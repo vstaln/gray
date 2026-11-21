@@ -819,10 +819,18 @@ pub(crate) fn dispatch_agent_event(
                 t.flush_markdown();
                 t.end_thinking();
                 t.mark_stream_round_boundary();
-                t.set_status(Some("Reconnecting"));
+                let quota = details.contains("quota exhausted");
+                t.set_status(Some(if quota {
+                    "Waiting for usage limit"
+                } else {
+                    "Reconnecting"
+                }));
                 t.note_cache_reconnect();
 
-                if !details.is_empty() && t.last_retry_detail.as_deref() != Some(details.as_str()) {
+                if !quota
+                    && !details.is_empty()
+                    && t.last_retry_detail.as_deref() != Some(details.as_str())
+                {
                     t.last_retry_detail = Some(details.clone());
                     let trunc = crate::repl::format::truncate_chars(details, 200);
                     // A failed request, not a success: ⚠, not push_action's ✓.

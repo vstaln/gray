@@ -1,149 +1,48 @@
 <div align="center">
-  <img alt="Gray" src="assets/logo-dark.svg" width="160" height="160" />
+  <img alt="Gray logo" src="assets/logo-dark.svg" width="120" height="120" />
   <h1>gray</h1>
-  <p><strong>A minimal, always-on AI agent harness.</strong><br/>One binary. Any model. Runs while you sleep.</p>
-  <p>
-    <a href="https://gray.alignment.id">Website</a> ·
-    <a href="CHANGELOG.md">Changelog</a> ·
-    <a href="https://github.com/vstaln/gray/releases">Releases</a>
-  </p>
-  <p>
-    <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-1c1c20?style=flat-square&labelColor=0a0a0b" /></a>
-    <a href="https://www.rust-lang.org"><img alt="Built with Rust" src="https://img.shields.io/badge/built%20with-rust-1c1c20?style=flat-square&labelColor=0a0a0b&logo=rust&logoColor=d4a373" /></a>
-    <a href="#platform-support"><img alt="Platform: linux, macOS, windows" src="https://img.shields.io/badge/platform-linux%20%C2%B7%20macos%20%C2%B7%20windows-1c1c20?style=flat-square&labelColor=0a0a0b" /></a>
-    <a href="https://github.com/vstaln/gray/releases"><img alt="Latest release" src="https://img.shields.io/github/v/release/vstaln/gray?style=flat-square&labelColor=0a0a0b&color=131316" /></a>
-  </p>
+  <p>A terminal coding agent. One Rust binary, your choice of model.</p>
+  <p><img alt="Gray building HorseTinder in the terminal" src="assets/gray-demo.gif" width="100%" /></p>
+  <p><a href="https://gray.alignment.id">Website</a> · <a href="CHANGELOG.md">Changelog</a> · <a href="https://github.com/vstaln/gray/releases">Releases</a></p>
 </div>
 
-<br/>
+## Get started
 
-Gray is a coding and automation agent in a single Rust binary. Bring any model — Claude, GPT, Gemini, open models, or a local one — give it a shell, and let it work. Schedule it with cron and the gateway daemon keeps it running with no terminal open.
+**Linux and macOS**
 
-```bash
-curl -fsSL https://gray.alignment.id/install.sh | sh && gray
+```sh
+curl -fsSL https://gray.alignment.id/install.sh | sh
+gray
 ```
 
-<div align="center">
-  <img alt="gray building HorseTinder — session replay from gray.alignment.id" src="assets/gray-demo.gif" width="100%" />
-</div>
-
-## Why gray
-
-| | |
-|---|---|
-| **Any model, your keys** | Native Anthropic Messages API for Claude (prompt caching, extended thinking). Every OpenAI-compatible provider — OpenAI, Google, OpenRouter, DeepSeek, Groq, Mistral, xAI, Fireworks, Together and the rest of the 172 in the bundled models.dev catalog — plus local models via Ollama. |
-| **Always on** | The agent schedules its own work with `gray cron add`. `gray gateway install` runs it as a user service, so jobs fire with your terminal closed. |
-| **One binary, no runtime** | Static builds for Linux, macOS and Windows. `gray update` self-updates. |
-| **Bash is the tool** | Read, search, edit, run — all through one `bash` tool, with background jobs for long work. Point `exec_prefix` at a container or SSH box to run it somewhere else. |
-| **Sessions that survive** | JSONL transcripts with branching. `-c` reopens the latest, `/sessions` (alias `/resume`) picks any, `/undo` and `/retry` rewind. Context auto-compacts before the limit. |
-| **Remembers you** | Cross-session memory of your preferences and project decisions (`gray memory`). |
-| **Your setup already works** | Reads project `AGENTS.md` / `CLAUDE.md` — no porting. Extend further with stdio plugins. |
-
-## Install
-
-```bash
-curl -fsSL https://gray.alignment.id/install.sh | sh              # stable
-curl -fsSL https://gray.alignment.id/install.sh | sh -s -- beta   # rebuilt on every main push
-cargo build --release -p gray                                     # from source
-```
-
-**Native Windows 10/11 x64** (no WSL; Git for Windows supplies the shell). In PowerShell:
+**Native Windows 10/11 x64** (Git for Windows supplies the shell). In PowerShell:
 
 ```powershell
 irm https://gray.alignment.id/install.ps1 | iex
 ```
 
-No WSL needed — Git for Windows supplies the shell. For an offline install keep `dist/install.ps1` and the zip together and run `.\dist\install.ps1 -ArchivePath .\gray-stable-x86_64-windows.zip -Sha256 <digest>`. Beta, offline and WSL installs: [Windows guide](docs/windows.md).
+For an offline install, keep `dist/install.ps1` and the zip together and run `.\dist\install.ps1 -ArchivePath .\gray-stable-x86_64-windows.zip -Sha256 <digest>`. Beta and WSL installs are covered in the [Windows guide](docs/windows.md).
 
-## Quick start
+To build from source, run `cargo build --release -p gray` in this repo.
 
-```bash
-gray                 # drops you at the prompt
-```
+In Gray, type `/models` to pick a provider and model. Use Claude, an OpenAI-compatible endpoint, or a local model through Ollama.
 
-| | |
-|---|---|
-| `/models` | sign in to a provider or paste a key (keys already in your environment are detected), then pick a model |
-| `gray -p "fix the failing test"` | one-shot, non-interactive (`--json` for machine-readable events) |
+## Everyday commands
 
-An account at [gray.alignment.id](https://gray.alignment.id/account) is optional — it lives in the [gray-account](https://github.com/vstaln/gray-account) plugin (`gray account login` / `whoami` / `logout`), and nothing in gray is gated on it.
+| Command | What it does |
+| --- | --- |
+| `/models` | Switch provider, model, or effort. |
+| `/sessions` | Reopen a saved conversation. |
+| `gray -c` | Continue the most recent session in this directory. |
+| `gray -p "summarize this repo"` | Run one prompt and exit. Add `--json` for JSONL. |
+| `gray plugin` | Manage plugins for skills, memory, and scheduled jobs. |
 
-## Always on: cron + gateway
+Type `/` at the start of a new input to see available commands. Tab inserts the selected completion. To mention a slash command as text, put it in backticks.
 
-```bash
-gray cron add "0 9 * * 1-5" "summarize yesterday's commits and open issues"
-gray gateway install    # user service: systemd --user, or runit on Void
-gray gateway status
-```
+[Plugins](docs/plugins.md) · [Themes and keybindings](docs/customization.md) · [Security](SECURITY.md)
 
-The model can run `gray cron add` itself, so "check this every morning" just works. Jobs fire from whatever ticks the store: the gateway daemon, `gray cron serve`, a `gray cron tick` host (systemd timer / crontab), or an open REPL. The gateway is a 60s ticker plus a control socket at `$GRAY_HOME/gateway.sock`; it drains an in-flight job on shutdown.
+**Safety:** Gray runs model-generated shell commands with your user privileges and no built-in sandbox. Use a container or VM for untrusted work.
 
-## Commands
+[MIT license](LICENSE) · [Third-party notices](THIRD_PARTY_NOTICES.md)
 
-Slash commands autocomplete — Enter completes and fires, Tab inserts.
-
-| | |
-|---|---|
-| `/new` · `/sessions [id\|--last\|--all]` | fresh conversation, or reopen one |
-| `/models` | switch provider, model & effort without leaving the chat |
-| `/compact [instructions]` | summarize context (also automatic) |
-| `/undo` · `/retry` | drop the last exchange · drop it and ask again (files are git's job) |
-| type during a turn | steers the running turn at its next step |
-| `/context [128k\|1m\|auto]` | inspect or set the window |
-| `/plugins` | plugin manager — list, enable, update |
-| `/agentsmd` | edit the system prompt |
-
-Plugins claim their own slash commands — `/memory`, `/permissions`, `/cron`, `/loop`, … — same autocomplete, dispatched inside the session.
-
-CLI: `gray resume`, `gray gateway`, `gray plugin`, `gray sessions`, `gray update`, plus any plugin-claimed name (`gray cron`, `gray account`, `gray memory`, …). Flags: `-p`, `-c`, `--session <ID>`, `--context-window`, `--json`, `--bare`. `--json` exits `0` success, `1` turn failed, `3` provider/network failure (retryable); error records carry a `code` and a `hint`.
-
-## Extend
-
-**Skills** — not in bare gray. `gray plugin install skills` adds `SKILL.md` discovery across `~/.gray`, Claude Code, opencode and agents locations, a per-turn listing, and `/skills`.
-
-**Plugins** — sidecar processes speaking NDJSON over stdio. More in [docs/plugins.md](docs/plugins.md).
-Themes, keybindings, prompt templates and the status line: [docs/customization.md](docs/customization.md).
-
-## Safety
-
-Gray runs the model's shell commands with **your privileges, no approval prompt, no sandbox**. For untrusted work, run it in a container/VM or set `exec_prefix` to an isolated box. Session transcripts in `~/.gray/sessions` (mode `0600`) keep whatever crossed a tool call, secrets included; `-p` mode scrubs them. Reports: [SECURITY.md](SECURITY.md).
-
-## Reference
-
-**Context window** — `--context-window` / `GRAY_CONTEXT_WINDOW` → provider value → LiteLLM table → fallback. Auto-compacts at `window − 16k`, and compacts + retries once on overflow.
-
-**Environment**
-
-| var | meaning |
-|---|---|
-| `GRAY_HOME` | config root (default `~/.gray`) |
-| `GRAY_API_KEY` · `OPENAI_API_KEY` | API key — `GRAY_API_KEY` beats stored keys; `OPENAI_API_KEY` is a fallback only when nothing is stored (never paired with the default OpenRouter endpoint) |
-| `GRAY_MODEL` · `GRAY_BASE_URL` | defaults before `config.json` |
-| `GRAY_CONTEXT_WINDOW` | `128k`, `1m`, `auto` |
-| `GRAY_EXEC_PREFIX` | run shell commands through this program |
-| `GRAY_NO_MEMORY=1` | disable memory |
-| `GRAY_NO_UPDATE_CHECK=1` · `GRAY_AUTO_UPDATE=1` | update check off, or background self-update |
-| `GRAY_OFFLINE=1` | no unsolicited outbound requests — update checks, model catalogs, index hints. Provider calls and explicit commands still work |
-| `GRAY_LOG` | `error`…`trace` → `~/.gray/logs/gray.log` |
-
-### Platform support
-
-| OS / arch | binary | notes |
-|---|---|---|
-| Linux x86_64 / aarch64 | musl-static | full support, gateway as a user service |
-| macOS arm64 / x86_64 | Rust-static, not notarized | curl installs run fine; browser downloads may hit Gatekeeper |
-| Windows x86_64 | native, Windows 10+ | Git Bash shell; no gateway/cron execution yet |
-
-**Layout** — `gray` (CLI, TUI, sessions, cron, gateway) · `gray-core` (agent loop) · `gray-provider` (OpenAI-compatible + native Anthropic streaming) · `gray-tools` · `gray-plugin` · `gray-pkg` · `gray-markdown`.
-
-**Stability** — CLI flags, session JSONL, plugin wire v1 and the `~/.gray` layout become a contract at 1.0; best-effort on 0.x. Changes per release: [CHANGELOG.md](CHANGELOG.md).
-
----
-
-Informed by the projects in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) — thanks to them. `cargo install gray` is a different crate; use the installer or build from source.
-
----
-
-*Disclaimer: this project is generated with significant AI assistance.*
-
-MIT © 2026 vstaln
+*This project is generated with significant AI assistance.*
