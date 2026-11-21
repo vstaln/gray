@@ -164,8 +164,6 @@ fn extract_partial_scalar(
     Some(serde_json::Value::Object(obj))
 }
 
-/// The argument a declared preview template reads first, so a streaming call
-/// shows the same field the finished card will.
 fn first_placeholder_key(spec: &str) -> Option<&str> {
     let open = spec.find('{')?;
     let inner = &spec[open + 1..spec[open + 1..].find('}')? + open + 1];
