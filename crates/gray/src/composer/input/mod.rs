@@ -237,12 +237,19 @@ fn inline_slash(text: &str, cursor: usize) -> Option<std::ops::Range<usize>> {
     if text.trim_start().starts_with('/') {
         return None;
     }
-    let (start, space) = text[..cursor].char_indices().rfind(|(_, c)| c.is_whitespace())?;
+    let (start, space) = text[..cursor]
+        .char_indices()
+        .rfind(|(_, c)| c.is_whitespace())?;
     let start = start + space.len_utf8();
-    let end = text[cursor..].find(char::is_whitespace).map_or(text.len(), |i| cursor + i);
+    let end = text[cursor..]
+        .find(char::is_whitespace)
+        .map_or(text.len(), |i| cursor + i);
     let name = text[start..end].strip_prefix('/')?;
-    (start < cursor && name.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_')))
-        .then_some(start..end)
+    (start < cursor
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_')))
+    .then_some(start..end)
 }
 
 /// Recompute the slash-completion popup from the draft. While a history
@@ -261,9 +268,10 @@ pub(crate) fn sync_completion(tui: &mut Tui, cwd: &Path) {
         let prefix = token[1..].to_ascii_lowercase();
         let mut matches = crate::repl::completion_matches_dyn(token, cwd);
         matches.retain(|(name, _)| {
-            name.starts_with(&prefix) || crate::repl::commands::REGISTRY.iter().any(|d| {
-                d.name == name && d.aliases.iter().any(|alias| alias.starts_with(&prefix))
-            })
+            name.starts_with(&prefix)
+                || crate::repl::commands::REGISTRY.iter().any(|d| {
+                    d.name == name && d.aliases.iter().any(|alias| alias.starts_with(&prefix))
+                })
         });
         matches
     } else {

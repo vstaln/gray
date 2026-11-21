@@ -15,7 +15,15 @@ curl -fsSL https://gray.alignment.id/install.sh | sh
 gray
 ```
 
-On Windows, follow the [native install guide](docs/windows.md). To build from source, run `cargo build --release -p gray` in this repo.
+**Native Windows 10/11 x64** (Git for Windows supplies the shell). In PowerShell:
+
+```powershell
+irm https://gray.alignment.id/install.ps1 | iex
+```
+
+For an offline install, keep `dist/install.ps1` and the zip together and run `.\dist\install.ps1 -ArchivePath .\gray-stable-x86_64-windows.zip -Sha256 <digest>`. Beta and WSL installs are covered in the [Windows guide](docs/windows.md).
+
+To build from source, run `cargo build --release -p gray` in this repo.
 
 In Gray, type `/models` to pick a provider and model. Use Claude, an OpenAI-compatible endpoint, or a local model through Ollama.
 
