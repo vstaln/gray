@@ -683,6 +683,12 @@ impl OpenAiProvider {
                     gray_core::credential::CredentialError::Unavailable(_) => {
                         ProviderError::Connection(format!("{e:#}"))
                     }
+                    gray_core::credential::CredentialError::Cooling { message, resets_in } => {
+                        ProviderError::Quota {
+                            message,
+                            resets_in: Some(resets_in),
+                        }
+                    }
                     _ => {
                         let text = format!("provider credential unavailable: {e:#}");
                         match super::errors::parse_quota_reset_delay(&text) {

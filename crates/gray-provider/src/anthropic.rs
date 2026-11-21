@@ -650,6 +650,7 @@ async fn connect(
     url: &Url,
     api_key: &str,
     body: &Value,
+    pooled: bool,
 ) -> Result<Sse, ProviderError> {
     let mut attempt = 1;
     loop {
@@ -697,7 +698,14 @@ async fn connect(
                 None,
             ),
         };
-        if !err.retryable() || attempt >= MAX_ATTEMPTS {
+        if !err.retryable()
+            || attempt >= MAX_ATTEMPTS
+            || (pooled
+                && matches!(
+                    err.class(),
+                    ProviderError::RateLimited(_) | ProviderError::Auth(_)
+                ))
+        {
             return Err(err);
         }
         log::warn!(target: "gray_provider", "anthropic retrying ({attempt}/{MAX_ATTEMPTS}): {err}");
@@ -734,7 +742,8 @@ async fn step(mut st: State) -> Option<(Result<StreamEvent, ProviderError>, Stat
             return None;
         }
         let Some(sse) = st.sse.as_mut() else {
-            match connect(&st.http, &st.url, &st.api_key, &st.body).await {
+            let pooled = st.source.is_some();
+            match connect(&st.http, &st.url, &st.api_key, &st.body, pooled).await {
                 Ok(sse) => st.sse = Some(sse),
                 Err(e) => match rotate_key(&mut st, &e).await {
                     Some(next) => st.api_key = next,
@@ -806,6 +815,10 @@ impl Provider for AnthropicProvider {
                         CredentialError::Unavailable(_) => {
                             ProviderError::Connection(format!("{e}"))
                         }
+                        CredentialError::Cooling { message, resets_in } => ProviderError::Quota {
+                            message,
+                            resets_in: Some(resets_in),
+                        },
                         _ => ProviderError::Auth(format!("provider credential unavailable: {e}")),
                     })?;
                     let key = lease

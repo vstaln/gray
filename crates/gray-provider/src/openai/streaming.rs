@@ -183,6 +183,7 @@ pub(super) fn resume_body_and_tool_prefix(
 
 pub(super) fn stream_unfold_step(
     mut state: StreamState,
+    pooled: bool,
 ) -> futures::future::BoxFuture<'static, Option<(Result<StreamEvent, ProviderError>, StreamState)>>
 {
     Box::pin(async move {
@@ -275,6 +276,11 @@ pub(super) fn stream_unfold_step(
                             }
                             if should_retry_request(&err, http_status, attempt)
                                 && attempt < MAX_ATTEMPTS
+                                && !(pooled
+                                    && matches!(
+                                        err.class(),
+                                        ProviderError::RateLimited(_) | ProviderError::Auth(_)
+                                    ))
                             {
                                 log::warn!(target: "gray_provider", "retrying (attempt {attempt}) after error: {err}");
                                 let next = StreamState::Init {
@@ -429,6 +435,11 @@ pub(super) fn stream_unfold_step(
                             }
                             if should_retry_request(&err, http_status, attempt)
                                 && attempt < MAX_ATTEMPTS
+                                && !(pooled
+                                    && matches!(
+                                        err.class(),
+                                        ProviderError::RateLimited(_) | ProviderError::Auth(_)
+                                    ))
                             {
                                 log::warn!(target: "gray_provider", "retrying responses (attempt {attempt}) after error: {err}");
                                 let next = StreamState::ResponsesInit {

@@ -187,7 +187,7 @@ impl CredentialStore {
     /// The account a request should run as: `Some((label, envelope))` —
     /// the pinned or strategy-picked usable account. `None` when there is
     /// no entry, the pool is empty, or every account is cooling (use
-    /// [`Self::pool_retry_hint`] for the error message).
+    /// [`Self::pool_reset_secs`] for the error).
     pub fn serving_plugin(
         &self,
         auth_ref: &str,
@@ -205,8 +205,8 @@ impl CredentialStore {
         })
     }
 
-    /// Human "reset after …" when every account is cooling.
-    pub fn pool_retry_hint(&self, auth_ref: &str) -> anyhow::Result<Option<String>> {
+    /// Seconds until the earliest cooldown ends, when every account is cooling.
+    pub fn pool_reset_secs(&self, auth_ref: &str) -> anyhow::Result<Option<u64>> {
         let store = self.load()?;
         let now = gray_core::time::now_secs();
         Ok(match store.get(auth_ref) {
@@ -217,10 +217,7 @@ impl CredentialStore {
                     .map(|a| a.cooldown_until)
                     .filter(|u| *u > now)
                     .min();
-                earliest.map(|u| {
-                    let secs = u.saturating_sub(now);
-                    format!("reset after {}m {}s", secs / 60, secs % 60)
-                })
+                earliest.map(|u| u.saturating_sub(now))
             }
             _ => None,
         })

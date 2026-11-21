@@ -46,9 +46,8 @@ impl KeyPoolSource {
         }
     }
 
-    /// "reset after 3m 20s" for the earliest cooldown, when every key is
-    /// cooling.
-    async fn retry_hint(&self) -> Option<String> {
+    /// Seconds until the earliest cooldown ends, when every key is cooling.
+    async fn reset_secs(&self) -> Option<u64> {
         let now = gray_core::time::now_secs();
         let pool = self.pool(|_| true).await;
         let earliest = pool
@@ -57,8 +56,7 @@ impl KeyPoolSource {
             .map(|k| k.cooldown_until)
             .filter(|until| *until > now)
             .min()?;
-        let secs = earliest.saturating_sub(now);
-        Some(format!("reset after {}m {}s", secs / 60, secs % 60))
+        Some(earliest.saturating_sub(now))
     }
 
     /// The pool under this provider id, as a value: a plain string entry
@@ -134,11 +132,11 @@ impl CredentialSource for KeyPoolSource {
             return Err(CredentialError::ReauthRequired(self.provider_id.clone()));
         }
         let Some(picked) = pool.pick().map(|k| (k.label.clone(), k.key.clone())) else {
-            let hint = self.retry_hint().await.unwrap_or_default();
-            return Err(CredentialError::Unavailable(format!(
-                "all {} API keys are cooling ({hint})",
-                self.provider_id
-            )));
+            let what = format!("{} API keys", self.provider_id);
+            return Err(match self.reset_secs().await {
+                Some(secs) => CredentialError::cooling(&what, secs),
+                None => CredentialError::Unavailable(format!("all {what} are cooling")),
+            });
         };
         let (label, key) = picked;
         self.update(|pool| {

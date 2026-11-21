@@ -184,7 +184,7 @@ impl OpenAiProvider {
         let mut keyed = self.clone();
         keyed.api_key = api_key.to_string();
         keyed.credential_source = None;
-        keyed.chat_stream(req, caps, session_id, cache_off)
+        keyed.chat_stream(req, caps, session_id, cache_off, true)
     }
 
     fn pool_stream(
@@ -208,6 +208,7 @@ impl OpenAiProvider {
                 inner: None,
                 lease: None,
                 tried: Vec::new(),
+                failed: None,
                 emitted: false,
                 done: false,
             },
@@ -250,7 +251,7 @@ impl Provider for OpenAiProvider {
         let caps = ModelCaps::for_host(&self.base_url);
         let wire_key = (self.base_url.to_string(), self.model.clone());
         if caps.prefer_responses && !chat_wire_models().contains(&wire_key) {
-            let chat = self.chat_stream(req.clone(), caps, session_id.clone(), cache_off);
+            let chat = self.chat_stream(req.clone(), caps, session_id.clone(), cache_off, false);
             let url = match responses_url(&self.base_url) {
                 Ok(u) => u,
                 Err(e) => return stream::once(async move { Err(e) }).boxed(),
@@ -277,7 +278,8 @@ impl Provider for OpenAiProvider {
                 stream_attempt: 1,
                 tools_by_call_id: BTreeMap::new(),
             };
-            let responses = stream::unfold(init_state, stream_unfold_step).boxed();
+            let responses =
+                stream::unfold(init_state, move |state| stream_unfold_step(state, false)).boxed();
             return stream::once(async move {
                 let (first, rest) = responses.into_future().await;
                 match first {
@@ -298,7 +300,7 @@ impl Provider for OpenAiProvider {
             .flatten()
             .boxed();
         }
-        self.chat_stream(req, caps, session_id, cache_off)
+        self.chat_stream(req, caps, session_id, cache_off, false)
     }
 }
 
@@ -319,6 +321,7 @@ impl OpenAiProvider {
         caps: ModelCaps,
         session_id: Option<String>,
         cache_off: bool,
+        pooled: bool,
     ) -> BoxStream<'static, Result<StreamEvent, ProviderError>> {
         let url = match chat_completions_url(&self.base_url) {
             Ok(u) => u,
@@ -350,7 +353,7 @@ impl OpenAiProvider {
             retry_after: None,
         };
 
-        stream::unfold(init_state, stream_unfold_step).boxed()
+        stream::unfold(init_state, move |state| stream_unfold_step(state, pooled)).boxed()
     }
 }
 

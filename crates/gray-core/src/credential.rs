@@ -219,10 +219,28 @@ pub enum CredentialError {
     ReauthRequired(String),
     #[error("provider unavailable: {0}")]
     Unavailable(String),
+    #[error("provider unavailable: {message}")]
+    Cooling {
+        message: String,
+        resets_in: Duration,
+    },
     #[error("credential store rejected: {0}")]
     Store(String),
     #[error("credential rejected: {0}")]
     Invalid(String),
+}
+
+impl CredentialError {
+    pub fn cooling(what: &str, secs: u64) -> Self {
+        Self::Cooling {
+            message: format!(
+                "all {what} are cooling (reset after {}m {}s)",
+                secs / 60,
+                secs % 60
+            ),
+            resets_in: Duration::from_secs(secs),
+        }
+    }
 }
 
 impl fmt::Debug for CredentialError {
@@ -230,6 +248,7 @@ impl fmt::Debug for CredentialError {
         match self {
             Self::ReauthRequired(_) => f.write_str("ReauthRequired(<redacted>)"),
             Self::Unavailable(_) => f.write_str("Unavailable(<redacted>)"),
+            Self::Cooling { .. } => f.write_str("Cooling(<redacted>)"),
             Self::Store(_) => f.write_str("Store(<redacted>)"),
             Self::Invalid(_) => f.write_str("Invalid(<redacted>)"),
         }

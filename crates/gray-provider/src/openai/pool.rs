@@ -15,6 +15,7 @@ pub(super) struct PoolDrive {
     pub(super) inner: Option<BoxStream<'static, Result<StreamEvent, ProviderError>>>,
     pub(super) lease: Option<CredentialLease>,
     pub(super) tried: Vec<String>,
+    pub(super) failed: Option<ProviderError>,
     pub(super) emitted: bool,
     pub(super) done: bool,
 }
@@ -33,6 +34,17 @@ pub(crate) fn credential_failure(
         }),
         ProviderError::Auth(_) => Some(CredentialFailure::Unauthorized),
         _ => None,
+    }
+}
+
+fn unavailable(e: CredentialError) -> ProviderError {
+    match e {
+        CredentialError::Unavailable(msg) => ProviderError::Connection(msg),
+        CredentialError::Cooling { message, resets_in } => ProviderError::Quota {
+            message,
+            resets_in: Some(resets_in),
+        },
+        other => ProviderError::Auth(format!("provider credential unavailable: {other}")),
     }
 }
 
@@ -68,15 +80,13 @@ pub(super) fn pool_step(
                 let lease = match drive.source.acquire().await {
                     Ok(lease) => lease,
                     Err(e) => {
-                        let class = match e {
-                            CredentialError::Unavailable(_) => {
-                                ProviderError::Connection(format!("{e:#}"))
-                            }
-                            _ => ProviderError::Auth(format!(
-                                "provider credential unavailable: {e:#}"
-                            )),
+                        let err = match unavailable(e) {
+                            cooling @ ProviderError::Quota {
+                                resets_in: Some(_), ..
+                            } => cooling,
+                            other => drive.failed.take().unwrap_or(other),
                         };
-                        return finish(drive, class);
+                        return finish(drive, err);
                     }
                 };
                 let Some(key) = lease
@@ -90,12 +100,12 @@ pub(super) fn pool_step(
                     );
                 };
                 if drive.tried.contains(&key) {
-                    return finish(
-                        drive,
+                    let err = drive.failed.take().unwrap_or_else(|| {
                         ProviderError::Auth(
                             "every pooled API key already failed this request".into(),
-                        ),
-                    );
+                        )
+                    });
+                    return finish(drive, err);
                 }
                 log::debug!(
                     target: "gray_provider",
@@ -131,8 +141,7 @@ pub(super) fn pool_step(
                     let (Some(failure), Some(lease), false) =
                         (failure, drive.lease.clone(), drive.emitted)
                     else {
-                        drive.done = true;
-                        return Some((Err(err), drive));
+                        return finish(drive, err);
                     };
                     drive.source.report(&lease, failure).await;
                     let Some(key) = lease
@@ -140,13 +149,13 @@ pub(super) fn pool_step(
                         .get(gray_core::credential::API_KEY_SECRET)
                         .map(str::to_string)
                     else {
-                        drive.done = true;
-                        return Some((Err(err), drive));
+                        return finish(drive, err);
                     };
                     if !drive.tried.contains(&key) {
                         drive.tried.push(key);
                     }
                     let details: String = err.to_string().chars().take(200).collect();
+                    drive.failed = Some(err);
                     return Some((
                         Ok(StreamEvent::stream_error(
                             "Retrying on another API key".to_string(),

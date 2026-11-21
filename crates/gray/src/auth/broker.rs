@@ -156,10 +156,11 @@ impl gray_core::credential::CredentialSource for PluginCredentialSource {
         {
             Some(served) => served,
             None => {
-                if let Ok(Some(hint)) = self.store.pool_retry_hint(&auth_ref) {
-                    return Err(CredentialError::Unavailable(format!(
-                        "all {identity} accounts are cooling ({hint})"
-                    )));
+                if let Ok(Some(secs)) = self.store.pool_reset_secs(&auth_ref) {
+                    return Err(CredentialError::cooling(
+                        &format!("{identity} accounts"),
+                        secs,
+                    ));
                 }
                 return Err(CredentialError::ReauthRequired(identity.clone()));
             }
