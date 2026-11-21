@@ -13,7 +13,7 @@ use crate::text_width::fit_chars;
 use super::catalog::{AuthEntry, PluginAuthPool};
 
 const LIST_TIMEOUT: Duration = Duration::from_secs(4);
-const USAGE_TIMEOUT: Duration = Duration::from_secs(12);
+const USAGE_TIMEOUT: Duration = Duration::from_secs(25);
 const CMD_TIMEOUT: Duration = Duration::from_secs(30);
 pub(crate) const RED: Color = Color::Rgb(232, 112, 112);
 const CELLS: usize = 10;
@@ -233,7 +233,7 @@ fn gauge(w: &Value, now: i64) -> Option<Gauge> {
     Some(Gauge {
         label: match w["label"].as_str() {
             Some(label) => label.to_string(),
-            None => crate::usage_cache::window_label(w["id"].as_str()?),
+            None => w["id"].as_str()?.to_string(),
         },
         pct: w["used_percent"].as_f64()?,
         reset: w["resets_at"].as_str().and_then(|at| countdown(at, now)),
@@ -451,7 +451,7 @@ fn cached_lines(
                 .as_deref()
                 .filter(|s| !s.is_empty())
                 .map(str::to_string)
-                .unwrap_or_else(|| crate::usage_cache::window_label(&window.window)),
+                .unwrap_or_else(|| window.window.clone()),
             pct,
             note,
             short,
@@ -661,15 +661,10 @@ impl Logins {
         );
         std::thread::spawn(move || {
             let list = run_json(&argv, &["account", "list", "--json"], LIST_TIMEOUT);
-            let ok = list.is_ok();
+            let listed = list.as_ref().map(|_| ()).map_err(Clone::clone);
             let _ = tx.send((plugin.clone(), generation, Msg::List(list)));
-            if ok {
-                let _ = tx.send((
-                    plugin,
-                    generation,
-                    Msg::Usage(fetch_usage(&argv, true, None)),
-                ));
-            }
+            let usage = listed.and_then(|()| fetch_usage(&argv, true, None));
+            let _ = tx.send((plugin, generation, Msg::Usage(usage)));
         });
     }
 
@@ -690,10 +685,9 @@ impl Logins {
                             .unwrap_or(plugin.as_str());
                         crate::usage_cache::record_health(provider, &doc["accounts"]);
                     }
-                    if list.is_err() {
-                        st.usage_busy = false;
+                    if list.is_ok() || !st.list.as_ref().is_some_and(Result::is_ok) {
+                        st.list = Some(list);
                     }
-                    st.list = Some(list);
                 }
                 Msg::Usage(usage) => {
                     st.usage_busy = false;
@@ -707,8 +701,20 @@ impl Logins {
         self.plugins.get(plugin)?.list.as_ref()?.as_ref().ok()
     }
 
+    fn provider_doc(&self, installed: &InstalledProvider) -> Option<&Value> {
+        self.doc(&installed.plugin).filter(|doc| {
+            doc["provider"].as_str().is_none_or(|provider| {
+                provider == installed.provider.id || provider == installed.provider_id()
+            })
+        })
+    }
+
+    pub(crate) fn refreshing(&self, plugin: &str) -> bool {
+        self.plugins.get(plugin).is_some_and(|st| st.usage_busy)
+    }
+
     pub(crate) fn strip(&self, installed: &InstalledProvider) -> Option<Strip> {
-        if let Some(doc) = self.doc(&installed.plugin) {
+        if let Some(doc) = self.provider_doc(installed) {
             let mut items: Vec<Item> = doc["accounts"]
                 .as_array()
                 .into_iter()
@@ -760,8 +766,10 @@ impl Logins {
         let Some(st) = self.plugins.get(plugin) else {
             return LoginUsage::Unknown;
         };
+        if st.usage_busy {
+            return LoginUsage::Pending;
+        }
         match &st.usage {
-            None if st.usage_busy => LoginUsage::Pending,
             None => LoginUsage::Unknown,
             Some(Err(e)) => LoginUsage::Failed(e),
             Some(Ok(entries)) => match entries.iter().find(|e| e.label.as_deref() == label) {
@@ -801,12 +809,14 @@ impl Logins {
     }
 
     pub(crate) fn rail_tag(&self, installed: &InstalledProvider) -> Option<Tag> {
-        let doc = self.doc(&installed.plugin)?;
+        let doc = self.provider_doc(installed)?;
         let label = Self::serving(doc);
         if label.is_none() && doc["ambient"] != true {
             return None;
         }
-        if let Some(pct) = self.pool_pct(&installed.plugin) {
+        if !self.refreshing(&installed.plugin)
+            && let Some(pct) = self.pool_pct(&installed.plugin)
+        {
             return Some(Tag::Pct(pct));
         }
         let usage = self.login_usage(&installed.plugin, label.as_deref());
@@ -1168,7 +1178,7 @@ mod tests {
                 provider: "antigravity-subscription".into(),
                 account: None,
                 window: "gemini-weekly".into(),
-                label: None,
+                label: Some("Weekly \u{b7} Gemini".into()),
                 last_seen_pct: Some(10.0),
                 resets_at: Some(now + 86_400),
                 limit: None,
@@ -1178,7 +1188,7 @@ mod tests {
                 provider: "antigravity-subscription".into(),
                 account: None,
                 window: "3p-weekly".into(),
-                label: None,
+                label: Some("Weekly \u{b7} Claude/GPT".into()),
                 last_seen_pct: Some(100.0),
                 resets_at: Some(now + 86_400),
                 limit: Some(now - 7200),
@@ -1188,7 +1198,7 @@ mod tests {
                 provider: "antigravity-subscription".into(),
                 account: None,
                 window: "gemini-argon-wtu-weekly".into(),
-                label: None,
+                label: Some("Weekly \u{b7} Argon".into()),
                 last_seen_pct: Some(1.0),
                 resets_at: Some(now + 86_400),
                 limit: None,

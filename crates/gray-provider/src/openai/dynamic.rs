@@ -236,7 +236,9 @@ pub(super) fn reasoning_summary_text(item: &Value) -> String {
             parts
                 .iter()
                 .filter_map(|p| p.get("text").and_then(Value::as_str))
-                .collect::<String>()
+                .filter(|t| !t.is_empty())
+                .collect::<Vec<_>>()
+                .join("\n\n")
         })
         .unwrap_or_default()
 }
@@ -262,7 +264,8 @@ pub(super) fn process_dynamic_event(
             if value
                 .get("summary_index")
                 .and_then(|v| v.as_u64())
-                .is_some_and(|i| i > 0) =>
+                .is_some_and(|i| i > 0)
+                || !reasoning_deltas.is_empty() =>
         {
             pending.push_back(StreamEvent::thinking_delta("\n\n"));
         }

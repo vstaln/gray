@@ -1731,7 +1731,10 @@ fn scan_lock_completions(
                 command: command.to_string(),
                 description: description_in(&m, command),
                 plugin_description: blurb(&m),
-                args: args.clone(),
+                args: m["command_completions"][format!("/{command}")]
+                    .as_array()
+                    .map(|entries| entries.iter().filter_map(completion_entry).collect())
+                    .unwrap_or_else(|| args.clone()),
             });
         }
     }

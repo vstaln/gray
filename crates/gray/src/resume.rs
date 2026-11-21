@@ -900,14 +900,14 @@ fn run_picker_sync(
                         ("⇧tab", "status", true),
                         ("^g", "system", true),
                         ("^r", "rename", true),
-                        ("^d", "dismiss", true),
+                        ("ctrl+d", "dismiss", true),
                         ("esc", "close", true),
                     ]
                 };
                 frame.render_widget(
                     Paragraph::new(crate::repl::picker::key_hints(
                         keys,
-                        &["^g", "⇧tab", "^d", "^t", "tab"],
+                        &["^g", "⇧tab", "^t", "tab", "^r", "↑↓", "enter"],
                         inner.width as usize,
                     )),
                     Rect::new(inner.x, inner.y + inner.height - 1, inner.width, 1),
