@@ -482,6 +482,16 @@ fn plugin_of(params: &serde_json::Value) -> String {
     if p.is_empty() { "plugin" } else { p }.to_string()
 }
 
+fn status(params: &serde_json::Value) -> serde_json::Value {
+    let key = str_param(params, "key").trim();
+    if key.is_empty() {
+        return serde_json::json!({"error": "host/status: missing key"});
+    }
+    crate::statusline::set_status(key, str_param(params, "text").trim());
+    request_wake();
+    serde_json::json!({"ok": true})
+}
+
 fn notice(params: &serde_json::Value) -> serde_json::Value {
     let text = str_param(params, "text").trim();
     let action = str_param(params, "action").trim();
@@ -733,6 +743,7 @@ pub fn default_handler(cwd: PathBuf) -> HostHandler {
                     "host/restart" => request_restart(&params),
                     "host/sessions" => list_sessions(&params).await,
                     "host/notice" => notice(&params),
+                    "host/status" => status(&params),
                     "host/transcript" => transcript(&params).await,
                     "host/complete" => complete(&params).await,
                     "host/session_title" => session_title(&params),
