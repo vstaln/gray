@@ -874,8 +874,6 @@ fn draw(frame: &mut Frame, bg: &BackgroundSnapshot, v: &PaneView) {
     let list_y = g.pane.y;
     let pane_x = g.pane.x;
     let pane_w = g.pane.width;
-    let strip_h = strip_rows(list_h, v.strip_lines.len());
-    let model_y = list_y + strip_h as u16;
     let row = |x: u16, y: u16, w: u16| Rect::new(x, y, w, 1);
     let provider = v.provider();
     let highlighted = v.highlighted();
@@ -885,7 +883,9 @@ fn draw(frame: &mut Frame, bg: &BackgroundSnapshot, v: &PaneView) {
         .as_ref()
         .map(|sh| sh.slots.len() + 1)
         .unwrap_or(0)
-        .min(list_h.saturating_sub(strip_h + 2));
+        .min(list_h / 2);
+    let strip_h = strip_rows(list_h.saturating_sub(slot_bar_h), v.strip_lines.len());
+    let model_y = list_y + strip_h as u16;
     let model_h = list_h.saturating_sub(strip_h + slot_bar_h);
 
     let filter = if v.filter.is_empty() {
@@ -1723,19 +1723,23 @@ pub(crate) fn run_model_panes(
                 pty.is_some() || portal.is_some(),
                 portal_in && portal_who.is_some(),
             ) {
-                PaneSection::Logins(st) => (
-                    logins.lines(
-                        provider.map_or("", |p| p.item.name.as_str()),
-                        st,
-                        (focus == Focus::Logins).then_some(strip_sel),
-                        strip_sel,
-                        &mut strip_top,
-                        12,
-                        adding.as_deref(),
-                        pane_w,
-                    ),
-                    true,
-                ),
+                PaneSection::Logins(st) => {
+                    let max_list = list_height(term.height, PTY_EXTRA);
+                    let max_body = max_list.saturating_sub(10).clamp(5, 8);
+                    (
+                        logins.lines(
+                            provider.map_or("", |p| p.item.name.as_str()),
+                            st,
+                            (focus == Focus::Logins).then_some(strip_sel),
+                            strip_sel,
+                            &mut strip_top,
+                            max_body,
+                            adding.as_deref(),
+                            pane_w,
+                        ),
+                        true,
+                    )
+                }
                 PaneSection::Portal => (
                     super::logins::portal_section(
                         provider.map_or("Gray", |p| p.item.name.as_str()),
