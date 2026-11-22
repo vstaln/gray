@@ -57,6 +57,8 @@ impl Drop for TurnInFlightGuard {
 
 pub(crate) fn mark_turn_in_flight() -> TurnInFlightGuard {
     TURN_IN_FLIGHT.store(true, std::sync::atomic::Ordering::Relaxed);
+    crate::presence::turn_started();
+    crate::host::drop_card("Recap");
     TurnInFlightGuard
 }
 

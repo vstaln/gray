@@ -273,8 +273,21 @@ pub(crate) fn queue_say(text: String) {
     ));
 }
 
+pub(crate) fn drop_card(title: &str) {
+    if let Ok(mut q) = SAY_QUEUE.lock() {
+        q.retain(|e| !matches!(e, SayEntry::Card(t, _) if t == title));
+    }
+}
+
 pub(crate) fn queue_card(title: String, text: String) {
-    queue_say_inner(SayEntry::Card(title, text));
+    if title == "Recap" && !crate::presence::recap_fresh() {
+        return;
+    }
+    if let Ok(mut q) = SAY_QUEUE.lock() {
+        q.retain(|e| !matches!(e, SayEntry::Card(t, _) if *t == title));
+        push_say(&mut q, SayEntry::Card(title, text));
+    }
+    request_wake();
 }
 
 fn queue_crash_inner(
