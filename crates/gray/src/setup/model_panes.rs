@@ -39,6 +39,7 @@ enum Focus {
     Rail,
     Models,
     Logins,
+    Slots,
 }
 
 #[derive(Default)]
@@ -700,6 +701,78 @@ fn commit_pick(
     save_saved_config_at(&path, &saved)
 }
 
+fn commit_composite_pick(
+    config: &mut Config,
+    p: &PaneProvider,
+    keys: &BTreeMap<String, String>,
+    model: &str,
+    parts: &Parts,
+    effort: Option<&str>,
+    toggles: PickerToggles,
+) -> anyhow::Result<()> {
+    let wire = super::variants::row_shape(model)
+        .and_then(|shape| {
+            shape
+                .variants
+                .iter()
+                .find(|v| v.parts == *parts && (effort.is_none() || v.effort.as_deref() == effort))
+                .or_else(|| shape.variants.iter().find(|v| v.parts == *parts))
+                .map(|v| v.id.clone())
+        })
+        .unwrap_or_else(|| model.to_string());
+    match &p.installed {
+        Some(installed) => activate_plugin_connection(config, installed, &wire)?,
+        None => *config = scoped_config(config, p, keys),
+    }
+    config.model = Some(model.to_string());
+    config.model_parts = parts.clone();
+    let path = saved_config_path()?;
+    let _lock = lock_saved_config_at(&path)?;
+    let mut saved = load_saved_config_at(&path);
+    if p.installed.is_none() {
+        save_key_connection(config, &mut saved);
+    }
+    saved.model = config.model.clone();
+    saved.model_parts = parts.clone();
+    commit_row_effort(config, &mut saved, effort, effort.is_some());
+    toggles.commit(config, &mut saved);
+    save_saved_config_at(&path, &saved)
+}
+
+fn effort_slider_spans(levels: &[&str], current: &str, active: bool) -> Vec<Span<'static>> {
+    let t = crate::theme::theme();
+    let fg = |c| Style::default().fg(c);
+    let pos = levels.iter().position(|l| *l == current).unwrap_or(0);
+    let mut spans = vec![Span::styled("  Effort ", fg(t.text_dim))];
+    for (i, _) in levels.iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::styled(
+                "──",
+                fg(if i <= pos { t.text_body } else { t.bezel_lo }),
+            ));
+        }
+        let dot = if i <= pos { "●" } else { "○" };
+        let color = if i == pos && active {
+            t.accent
+        } else if i <= pos {
+            t.text_body
+        } else {
+            t.text_faint
+        };
+        spans.push(Span::styled(dot, fg(color)));
+    }
+    spans.push(Span::styled(
+        format!("  {current}"),
+        if active {
+            fg(t.accent)
+        } else {
+            fg(t.text_body)
+        },
+    ));
+    spans
+}
+
+#[allow(dead_code)]
 fn delegate_pick(
     terminal: &mut super::ModalTerminal,
     config: &mut Config,
@@ -761,6 +834,9 @@ struct PaneView<'a> {
     portal_in: bool,
     adding: bool,
     extra: u16,
+    slot_sel: usize,
+    slot_parts: &'a Parts,
+    slot_effort: Option<&'a str>,
 }
 
 impl PaneView<'_> {
@@ -840,10 +916,17 @@ fn draw(frame: &mut Frame, bg: &BackgroundSnapshot, v: &PaneView) {
     let pane_w = g.pane.width;
     let strip_h = strip_rows(list_h, v.strip_lines.len());
     let model_y = list_y + strip_h as u16;
-    let model_h = list_h - strip_h;
     let row = |x: u16, y: u16, w: u16| Rect::new(x, y, w, 1);
     let provider = v.provider();
     let highlighted = v.highlighted();
+    let comp_shape = highlighted
+        .and_then(|(id, _)| super::variants::row_shape(id).filter(|sh| sh.is_composite()));
+    let slot_bar_h = comp_shape
+        .as_ref()
+        .map(|sh| sh.slots.len() + 1)
+        .unwrap_or(0)
+        .min(list_h.saturating_sub(strip_h + 2));
+    let model_h = list_h.saturating_sub(strip_h + slot_bar_h);
 
     let filter = if v.filter.is_empty() {
         vec![Span::styled("type to filter ", fg(t.text_faint))]
@@ -1152,6 +1235,74 @@ fn draw(frame: &mut Frame, bg: &BackgroundSnapshot, v: &PaneView) {
                 row(pane_x, model_y + (m - v.model_top) as u16, pane_w),
             );
         }
+        if let (Some((cid, _)), Some(shape)) = (highlighted, comp_shape.as_ref())
+            && slot_bar_h > 1
+        {
+            let bar_y = model_y + model_h as u16;
+            frame.render_widget(
+                Paragraph::new(Span::styled(
+                    "─".repeat(pane_w.saturating_sub(1) as usize),
+                    fg(t.bezel_lo),
+                )),
+                row(pane_x, bar_y, pane_w),
+            );
+            let levels = row_levels(cid, v.toggles.fast, v.slot_parts);
+            let cur_eff = v.slot_effort.or_else(|| levels.first().copied());
+            for (si, slot) in shape.slots.iter().enumerate().take(slot_bar_h - 1) {
+                let active_row = v.focus == Focus::Slots && si == v.slot_sel;
+                let picked_id = v.slot_parts.get(&slot.key).map(String::as_str);
+                let opt_idx = picked_id
+                    .and_then(|oid| slot.options.iter().position(|o| o.id == oid))
+                    .unwrap_or(0);
+                let opt_name = slot
+                    .options
+                    .get(opt_idx)
+                    .map(|o| o.name.as_str())
+                    .unwrap_or("—");
+                let total_opts = slot.options.len().max(1);
+                let mut spans = vec![
+                    Span::styled(
+                        if active_row { " ▸ " } else { "   " },
+                        fg(if active_row { t.accent } else { t.text_dim }),
+                    ),
+                    Span::styled(
+                        format!("{:<10}", fit_chars(&slot.label, 10)),
+                        if active_row {
+                            bold(t.text_bright)
+                        } else {
+                            fg(t.text_dim)
+                        },
+                    ),
+                ];
+                if active_row {
+                    spans.push(Span::styled("◀ ", fg(t.accent)));
+                    spans.push(Span::styled(
+                        format!("[{}]", fit_chars(opt_name, 20)),
+                        bold(t.accent),
+                    ));
+                    spans.push(Span::styled(" ▶", fg(t.accent)));
+                } else {
+                    spans.push(Span::styled(
+                        format!("  {}  ", fit_chars(opt_name, 20)),
+                        fg(t.text_body),
+                    ));
+                }
+                spans.push(Span::styled(
+                    format!("  {} of {}", opt_idx + 1, total_opts),
+                    fg(t.text_faint),
+                ));
+                if si == 0
+                    && let Some(eff) = cur_eff
+                    && levels.len() > 1
+                {
+                    spans.extend(effort_slider_spans(&levels, eff, active_row));
+                }
+                frame.render_widget(
+                    Paragraph::new(Line::from(spans)),
+                    row(pane_x, bar_y + 1 + si as u16, pane_w),
+                );
+            }
+        }
     }
 
     let dim = |s: String| Span::styled(s, fg(t.text_dim));
@@ -1174,7 +1325,11 @@ fn draw(frame: &mut Frame, bg: &BackgroundSnapshot, v: &PaneView) {
             detail.push(dim("not installed — enter to install".into()))
         }
         _ if !v.adoptable => detail.push(dim("enter to sign in".into())),
-        Some((id, _)) if is_composite(id) => detail.push(dim("enter picks its slots".into())),
+        Some((id, _)) if is_composite(id) => detail.push(dim(if v.focus == Focus::Slots {
+            "←→ change slot · tab effort · enter select".into()
+        } else {
+            "enter edits slots · ←→ quick-cycle".into()
+        })),
         Some((id, _)) => {
             let mut parts: Vec<Vec<Span>> = Vec::new();
             if let Some(c) = known_context(id) {
@@ -1226,7 +1381,7 @@ fn draw(frame: &mut Frame, bg: &BackgroundSnapshot, v: &PaneView) {
         (false, _) if provider.is_some_and(|p| p.install.is_some()) => "install",
         (false, _) => "sign in",
         (true, Focus::Rail) => "open",
-        (true, Focus::Models | Focus::Logins) => "select",
+        (true, Focus::Models | Focus::Logins | Focus::Slots) => "select",
     };
     let has_strip = v.strip_live;
     let portal_row = provider.is_some_and(|p| p.item.id == catalog::GRAY_PORTAL_ID);
@@ -1242,6 +1397,14 @@ fn draw(frame: &mut Frame, bg: &BackgroundSnapshot, v: &PaneView) {
         vec![("enter", "add login", true), ("esc", "cancel", true)]
     } else if v.confirm_remove {
         vec![("enter", "remove", true), ("esc", "cancel", true)]
+    } else if v.focus == Focus::Slots {
+        vec![
+            ("↑↓", "slot", true),
+            ("←→", "model", true),
+            ("tab", "effort", true),
+            ("enter", "select", true),
+            ("esc", "back", true),
+        ]
     } else if v.focus == Focus::Logins {
         let mut keys = vec![
             ("↑↓", "move", true),
@@ -1364,6 +1527,10 @@ pub(crate) fn run_model_panes(
     let mut logins = super::logins::Logins::new();
     logins.start(installed_of(&rail));
     let mut strip_sel = 0usize;
+    let mut slot_sel: usize = 0;
+    let mut slot_model: Option<String> = None;
+    let mut slot_parts: Parts = config.model_parts.clone();
+    let mut slot_effort: Option<String> = None;
     let mut adding: Option<String> = None;
     let mut confirm_login: Option<String> = None;
     let mut confirm_logout = false;
@@ -1649,6 +1816,27 @@ pub(crate) fn run_model_panes(
             // highlight trailing behind the input.
             let backlog = !first_draw && poll(std::time::Duration::ZERO)?;
             if !backlog {
+                if let Some(id) = highlighted.as_deref()
+                    && let Some(shape) =
+                        super::variants::row_shape(id).filter(|sh| sh.is_composite())
+                {
+                    if slot_model.as_deref() != Some(id) {
+                        slot_model = Some(id.to_string());
+                        slot_sel = 0;
+                        let seed =
+                            (config.model.as_deref() == Some(id)).then_some(&config.model_parts);
+                        slot_parts = shape.settle_parts(seed);
+                        let levels = row_levels(id, toggles.fast, &slot_parts);
+                        if !slot_effort
+                            .as_deref()
+                            .is_some_and(|e| levels.iter().any(|l| *l == e))
+                        {
+                            slot_effort = levels.first().map(|s| (*s).to_string());
+                        }
+                    }
+                } else if focus == Focus::Slots {
+                    focus = Focus::Models;
+                }
                 terminal.draw(|f| {
                     draw(
                         f,
@@ -1681,6 +1869,9 @@ pub(crate) fn run_model_panes(
                             portal_in,
                             adding: adding.is_some(),
                             extra,
+                            slot_sel,
+                            slot_parts: &slot_parts,
+                            slot_effort: slot_effort.as_deref(),
                         },
                     )
                 })?;
@@ -1884,6 +2075,72 @@ pub(crate) fn run_model_panes(
                 }
                 continue;
             }
+            if focus == Focus::Slots {
+                if let (Some(p), Some(id)) = (provider, highlighted.as_deref())
+                    && let Some(shape) =
+                        super::variants::row_shape(id).filter(|sh| sh.is_composite())
+                {
+                    let n_slots = shape.slots.len().max(1);
+                    if let Some(up) = moving {
+                        slot_sel = if up {
+                            slot_sel.saturating_sub(1)
+                        } else {
+                            (slot_sel + 1).min(n_slots - 1)
+                        };
+                        continue;
+                    }
+                    match key.code {
+                        KeyCode::Esc => focus = Focus::Models,
+                        KeyCode::Left | KeyCode::Right => {
+                            if let Some(slot) = shape.slots.get(slot_sel)
+                                && !slot.options.is_empty()
+                            {
+                                let cur = slot_parts.get(&slot.key).map(String::as_str);
+                                let idx = cur
+                                    .and_then(|c| slot.options.iter().position(|o| o.id == c))
+                                    .unwrap_or(0);
+                                let next_idx = if key.code == KeyCode::Right {
+                                    (idx + 1) % slot.options.len()
+                                } else {
+                                    (idx + slot.options.len() - 1) % slot.options.len()
+                                };
+                                if let Some(next_parts) = shape.option_parts(
+                                    &slot_parts,
+                                    &slot.key,
+                                    &slot.options[next_idx].id,
+                                ) {
+                                    slot_parts = next_parts;
+                                }
+                            }
+                        }
+                        KeyCode::Tab => {
+                            let levels = row_levels(id, toggles.fast, &slot_parts);
+                            if !levels.is_empty() {
+                                let idx = slot_effort
+                                    .as_deref()
+                                    .and_then(|e| levels.iter().position(|l| *l == e))
+                                    .unwrap_or(0);
+                                slot_effort = Some(levels[(idx + 1) % levels.len()].to_string());
+                            }
+                        }
+                        KeyCode::Enter => {
+                            commit_composite_pick(
+                                config,
+                                p,
+                                &keys,
+                                id,
+                                &slot_parts,
+                                slot_effort.as_deref(),
+                                toggles,
+                            )?;
+                            return Ok(PanesOutcome::Picked);
+                        }
+                        _ => {}
+                    }
+                    continue;
+                }
+                focus = Focus::Models;
+            }
             if std::mem::take(&mut confirm_remove) {
                 do_remove = key.code == KeyCode::Enter;
                 continue;
@@ -1937,20 +2194,15 @@ pub(crate) fn run_model_panes(
                             return Ok(PanesOutcome::Connect(p.item.id.clone()));
                         }
                     }
-                    Focus::Rail | Focus::Logins => focus = Focus::Models,
+                    Focus::Rail | Focus::Logins | Focus::Slots => focus = Focus::Models,
                     Focus::Models => {
                         let (Some(p), Some(id)) = (provider, highlighted.as_deref()) else {
                             continue;
                         };
                         if is_composite(id) {
-                            return delegate_pick(
-                                &mut terminal,
-                                config,
-                                &bg_snapshot,
-                                p,
-                                &keys,
-                                id,
-                            );
+                            focus = Focus::Slots;
+                            slot_sel = 0;
+                            continue;
                         }
                         let stepped = efforts.was_stepped(p, id);
                         commit_pick(config, p, &keys, id, shown, stepped, toggles)?;
@@ -1967,8 +2219,36 @@ pub(crate) fn run_model_panes(
                 KeyCode::PageDown => model_sel = (model_sel + model_h).min(last_model),
                 KeyCode::Left | KeyCode::Right if focus == Focus::Models => {
                     let forward = key.code == KeyCode::Right;
-                    let moved = matches!((provider, highlighted.as_deref()), (Some(p), Some(id))
-                        if !is_composite(id) && efforts.step(&scoped, &saved, p, id, forward));
+                    let mut moved = false;
+                    if let (Some(p), Some(id)) = (provider, highlighted.as_deref()) {
+                        if let Some(shape) =
+                            super::variants::row_shape(id).filter(|sh| sh.is_composite())
+                        {
+                            if let Some(slot) = shape.slots.first()
+                                && !slot.options.is_empty()
+                            {
+                                let cur = slot_parts.get(&slot.key).map(String::as_str);
+                                let idx = cur
+                                    .and_then(|c| slot.options.iter().position(|o| o.id == c))
+                                    .unwrap_or(0);
+                                let next_idx = if forward {
+                                    (idx + 1) % slot.options.len()
+                                } else {
+                                    (idx + slot.options.len() - 1) % slot.options.len()
+                                };
+                                if let Some(next_parts) = shape.option_parts(
+                                    &slot_parts,
+                                    &slot.key,
+                                    &slot.options[next_idx].id,
+                                ) {
+                                    slot_parts = next_parts;
+                                    moved = true;
+                                }
+                            }
+                        } else {
+                            moved = efforts.step(&scoped, &saved, p, id, forward);
+                        }
+                    }
                     if !moved && !forward {
                         focus = Focus::Rail;
                     }
@@ -2003,7 +2283,7 @@ pub(crate) fn run_model_panes(
                 KeyCode::BackTab => {
                     focus = match focus {
                         Focus::Rail => Focus::Models,
-                        Focus::Models | Focus::Logins => Focus::Rail,
+                        Focus::Models | Focus::Logins | Focus::Slots => Focus::Rail,
                     };
                 }
                 KeyCode::Char('L')
