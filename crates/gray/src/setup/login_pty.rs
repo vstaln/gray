@@ -86,7 +86,7 @@ impl PtyPane {
             size: (size.rows, size.cols),
             exited: None,
             esc_armed: false,
-            details: false,
+            details: true,
         })
     }
 

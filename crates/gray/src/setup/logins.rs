@@ -689,8 +689,12 @@ impl Logins {
                 .filter_map(|a| a["label"].as_str())
                 .map(|l| Item::Login(Some(l.to_string())))
                 .collect();
-            if items.is_empty() && doc["ambient"] == true {
-                items.push(Item::Login(None));
+            if doc["ambient"] == true
+                && !items
+                    .iter()
+                    .any(|i| matches!(i, Item::Login(Some(l)) if l == "default"))
+            {
+                items.insert(0, Item::Login(None));
             }
             items.push(Item::Add);
             return Some(Strip {
