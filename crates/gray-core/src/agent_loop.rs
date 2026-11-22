@@ -627,7 +627,7 @@ impl Agent {
         let started = std::time::Instant::now();
         let session_id = ctx.session_id.clone();
         *self.turn_billed.lock().unwrap_or_else(|e| e.into_inner()) = Usage::default();
-        let out = self.run_turn_body(ctx, sink).await;
+        let out = Box::pin(self.run_turn_body(ctx, sink)).await;
         if let Some(ref bridge) = self.kit_bridge {
             bridge.set_turn(None, None);
         }
