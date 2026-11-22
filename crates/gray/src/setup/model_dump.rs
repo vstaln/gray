@@ -18,7 +18,8 @@ use super::model_modal::{
     RowOrder, fetch_models_live, is_composite_id, picker_row_order, recent_head_for, row_levels,
 };
 use super::model_panes::{
-    PaneProvider, SavedLists, build_rail, cached_models, place, provider_is_active, scoped_config,
+    PaneProvider, Place, SavedLists, build_rail, cached_models, place, provider_is_active,
+    scoped_config,
 };
 use super::variants::Parts;
 
@@ -219,16 +220,19 @@ fn build_model_catalog(config: &Config, mode: DumpModels) -> Value {
             let (kind, group) = match &p.item.auth {
                 ConnectAuth::Plugin { .. } => (
                     "plugin",
-                    match place(p).group() {
-                        Some(_) => "oauth",
-                        None => "flat",
+                    match place(p) {
+                        Place::Group(g) => match g.label() {
+                            "OAuth" => "oauth",
+                            _ => "logins",
+                        },
+                        _ => "flat",
                     },
                 ),
                 ConnectAuth::ApiKey => (
                     "key",
-                    match place(p).group() {
-                        Some(_) => "apikey",
-                        None => "flat",
+                    match place(p) {
+                        Place::Group(_) => "apikey",
+                        _ => "flat",
                     },
                 ),
                 ConnectAuth::None => ("free", "flat"),
