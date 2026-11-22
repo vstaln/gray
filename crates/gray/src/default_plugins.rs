@@ -6,7 +6,7 @@ use gray_plugin::lock::{LockFile, lock_path};
 
 pub const FALLBACK_DEFAULT_PROFILE: &[&str] = &[
     "account",
-    "quality-of-life",
+    "extras",
     "memory",
     "search",
     "skills",
@@ -36,7 +36,7 @@ pub fn read_profile(home: &Path) -> String {
         let has_default = FALLBACK_DEFAULT_PROFILE.iter().any(|name| {
             let canonical = gray_pkg::ops::canonical_name(name);
             lock.plugins.contains_key(*name) || lock.plugins.contains_key(canonical)
-        });
+        }) || lock.plugins.contains_key("quality-of-life");
         if has_default {
             return "default".to_string();
         }
@@ -107,6 +107,25 @@ async fn load_profile_plugins(profile: &str) -> (Vec<String>, Option<Index>) {
     (fallback, index)
 }
 
+fn preserve_vim_mode(home: &Path) {
+    let dir = home.join("plugin-settings");
+    let dst = dir.join("extras.json");
+    let mut map = std::fs::read_to_string(&dst)
+        .or_else(|_| std::fs::read_to_string(dir.join("quality-of-life.json")))
+        .ok()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+        .and_then(|v| v.as_object().cloned())
+        .unwrap_or_default();
+    if map.contains_key("vim_mode") {
+        return;
+    }
+    map.insert("vim_mode".to_string(), serde_json::Value::Bool(true));
+    let _ = std::fs::create_dir_all(&dir);
+    if let Ok(text) = serde_json::to_string_pretty(&serde_json::Value::Object(map)) {
+        let _ = std::fs::write(&dst, text);
+    }
+}
+
 fn retire_superseded(home: &Path, index: &Index) -> Vec<String> {
     let Ok(lock) = LockFile::load(&lock_path(home)) else {
         return Vec::new();
@@ -120,19 +139,22 @@ fn retire_superseded(home: &Path, index: &Index) -> Vec<String> {
             .or_else(|| index.plugins.get(canonical));
         if let Some(entry) = entry {
             for old in &entry.supersedes {
-                let old_canon = gray_pkg::ops::canonical_name(old);
-                for candidate in [old.as_str(), old_canon] {
-                    if lock.plugins.contains_key(candidate)
-                        && !to_remove.iter().any(|x: &String| x == candidate)
-                    {
-                        to_remove.push(candidate.to_string());
-                    }
+                let candidate = old.as_str();
+                if candidate != installed
+                    && candidate != canonical
+                    && lock.plugins.contains_key(candidate)
+                    && !to_remove.iter().any(|x: &String| x == candidate)
+                {
+                    to_remove.push(candidate.to_string());
                 }
             }
         }
     }
     let mut retired = Vec::new();
     for old in to_remove {
+        if old == "vim" {
+            preserve_vim_mode(home);
+        }
         match gray_pkg::ops::remove(&old) {
             Ok(()) => retired.push(format!("retired superseded plugin {old}")),
             Err(e) => log::warn!("superseded plugin {old}: remove failed: {e:#}"),
