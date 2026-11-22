@@ -10,6 +10,7 @@ pub(crate) mod failed_turn;
 pub(crate) mod ghost;
 pub mod host;
 pub mod keymap;
+pub mod kit_cli;
 pub mod logging;
 pub(crate) mod mascot;
 pub(crate) mod oneshot;
@@ -515,9 +516,14 @@ async fn build_agent_inner(
     agent.set_prefix_rewrite_ok(!config.uses_plugin_credentials() || plugin_warm_replay);
 
     agent.set_lean_prompt(config.lean);
-    agent.set_toolbox(
+    agent.set_kit(
         !config.bare
-            && match std::env::var("GRAY_TOOLBOX").ok().as_deref().map(str::trim) {
+            && match std::env::var("GRAY_KIT")
+                .or_else(|_| std::env::var("GRAY_TOOLBOX"))
+                .ok()
+                .as_deref()
+                .map(str::trim)
+            {
                 Some("1") => true,
                 Some("0") => false,
                 _ => saved.toolbox.unwrap_or(true),
@@ -747,6 +753,12 @@ fn parse_compact_at_cli(s: &str) -> Result<crate::setup::CompactAt, String> {
 
 #[derive(Parser, Debug, Clone)]
 pub enum Commands {
+    #[command(about = "Call a plugin, MCP, or host tool from the live session")]
+    Kit {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+
     #[command(about = "Resume a past session — picker by default, or pass an id / --last")]
     Resume {
         #[arg(value_name = "SESSION_ID", help = "Session id or unique prefix")]

@@ -64,15 +64,22 @@ pub struct BashTool {
 
     cwd: Mutex<BTreeMap<String, (PathBuf, PathBuf)>>,
 
-    plugin_env: PluginEnv,
+    plugin_env: std::sync::RwLock<PluginEnv>,
 }
 
 impl BashTool {
     /// Environment contributed by enabled plugins (`shell_env` manifests);
     /// merged once when the registry is built.
-    pub fn with_plugin_env(mut self, env: PluginEnv) -> Self {
-        self.plugin_env = env;
+    pub fn with_plugin_env(self, env: PluginEnv) -> Self {
+        *self.plugin_env.write().unwrap_or_else(|e| e.into_inner()) = env;
         self
+    }
+
+    pub fn add_host_env(&self, vars: Vec<(String, String)>, path_prepend: Vec<PathBuf>) {
+        self.plugin_env
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .add_host(vars, path_prepend);
     }
 
     fn session_cwd(&self, ctx: &ToolContext) -> PathBuf {
@@ -162,7 +169,13 @@ impl Tool for BashTool {
             ctx.session_id.as_deref(),
             Some(&cwd_report),
             ps_report.as_deref(),
-            Some(&self.plugin_env),
+            Some(
+                &self
+                    .plugin_env
+                    .read()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .clone(),
+            ),
         ) {
             Ok(s) => s,
             Err(e) => return fail(format!("failed to spawn shell: {e}")),

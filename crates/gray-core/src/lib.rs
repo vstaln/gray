@@ -9,6 +9,8 @@ pub mod credential;
 pub mod error;
 pub mod event;
 pub mod input;
+pub mod kit;
+pub mod kit_bridge;
 pub mod message;
 pub mod overflow;
 pub mod parallel;
@@ -19,7 +21,7 @@ pub mod redaction;
 pub mod spill;
 pub mod time;
 pub mod tool_out;
-pub mod toolbox;
+pub use kit as toolbox;
 
 /// `skip_serializing_if` predicate for `bool` fields that default to false.
 pub fn is_false(b: &bool) -> bool {

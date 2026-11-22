@@ -279,6 +279,13 @@ pub trait ToolExecutor: Send + Sync {
         false
     }
 
+    fn inject_shell_env(
+        &self,
+        _vars: Vec<(String, String)>,
+        _path_prepend: Vec<std::path::PathBuf>,
+    ) {
+    }
+
     fn repin_session(&self, _id: &str) {}
 
     fn background_jobs(&self, _ctx: &ToolContext) -> Vec<BackgroundJob> {
@@ -763,6 +770,8 @@ pub struct Agent {
 
     pub(crate) toolbox_announced: std::collections::BTreeSet<String>,
 
+    pub(crate) kit_bridge: Option<crate::kit_bridge::KitBridge>,
+
     pub(crate) last_request_at: Option<std::time::Instant>,
 
     pub(crate) turn_billed: std::sync::Mutex<Usage>,
@@ -831,6 +840,7 @@ impl Agent {
             toolbox: false,
             toolbox_frozen: None,
             toolbox_announced: Default::default(),
+            kit_bridge: None,
             last_request_at: None,
             lean_prompt: false,
             background_compaction: false,
@@ -1012,13 +1022,36 @@ impl Agent {
         }
         self.toolbox_frozen
             .clone()
-            .unwrap_or_else(|| crate::toolbox::request_tools(&self.tools))
+            .unwrap_or_else(|| crate::kit::request_tools(&self.tools))
     }
 
-    pub fn set_toolbox(&mut self, on: bool) {
+    pub fn set_kit(&mut self, on: bool) {
         self.toolbox = on;
         self.toolbox_frozen = None;
         self.toolbox_announced.clear();
+    }
+
+    pub fn set_toolbox(&mut self, on: bool) {
+        self.set_kit(on);
+    }
+
+    pub(crate) fn ensure_kit_bridge(&mut self) {
+        if !self.toolbox {
+            return;
+        }
+        if let Some(ref bridge) = self.kit_bridge {
+            bridge.sync_tools(&self.tools);
+            bridge.sync_hooks(&self.hooks);
+            return;
+        }
+        match crate::kit_bridge::KitBridge::start(
+            self.tools.clone(),
+            std::sync::Arc::clone(&self.executor),
+            self.hooks.clone(),
+        ) {
+            Ok(bridge) => self.kit_bridge = Some(bridge),
+            Err(e) => log::warn!("kit bridge disabled: {e}"),
+        }
     }
 
     pub(crate) fn toolbox_prepare(&mut self) {
@@ -1026,10 +1059,10 @@ impl Agent {
             return;
         }
         if self.toolbox_frozen.is_none() {
-            self.toolbox_frozen = Some(crate::toolbox::request_tools(&self.tools));
+            self.toolbox_frozen = Some(crate::kit::request_tools(&self.tools));
         }
-        if let Some(text) = crate::toolbox::announcement(&self.tools, &self.toolbox_announced) {
-            self.toolbox_announced = crate::toolbox::hidden_names(&self.tools);
+        if let Some(text) = crate::kit::announcement(&self.tools, &self.toolbox_announced) {
+            self.toolbox_announced = crate::kit::hidden_names(&self.tools);
             self.messages.push(Message::user_injected(text));
         }
     }
