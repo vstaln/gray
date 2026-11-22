@@ -181,6 +181,14 @@ pub(super) fn resume_body_and_tool_prefix(
     }
 }
 
+pub(super) fn lower_output_cap(body: &mut OpenAiChatRequest, snippet: &str) -> Option<u32> {
+    let current = output_cap_of(body);
+    let lowered = output_cap_lowered(snippet, current)?;
+    log::warn!(target: "gray_provider", "lowering the output ceiling from {current} to {lowered}: {snippet}");
+    set_output_cap(body, lowered);
+    Some(lowered)
+}
+
 pub(super) fn stream_unfold_step(
     mut state: StreamState,
     pooled: bool,
@@ -193,7 +201,7 @@ pub(super) fn stream_unfold_step(
                     client,
                     url,
                     api_key,
-                    body,
+                    mut body,
                     session_id,
                     attempt,
                     retry_after,
@@ -233,6 +241,25 @@ pub(super) fn stream_unfold_step(
                             };
                         }
                         Err((err, floor, http_status)) => {
+                            if matches!(http_status, 400 | 422)
+                                && matches!(err.class(), ProviderError::BadRequest(_))
+                                && let Some(lowered) = lower_output_cap(&mut body, &err.to_string())
+                            {
+                                let next = StreamState::Init {
+                                    client,
+                                    url,
+                                    api_key,
+                                    body,
+                                    session_id,
+                                    attempt,
+                                    retry_after: floor,
+                                };
+                                let notice = StreamEvent::stream_error(
+                                    format!("Lowering output ceiling to {lowered} tokens"),
+                                    String::new(),
+                                );
+                                return Some((Ok(notice), next));
+                            }
                             if body.prompt_cache_key.is_some()
                                 && should_retry_without_cache_key(http_status, &err.to_string())
                             {
@@ -477,7 +504,7 @@ pub(super) fn stream_unfold_step(
                     client,
                     url,
                     api_key,
-                    body,
+                    mut body,
                     attempt,
                     mut emitted,
                 } => {
@@ -578,14 +605,9 @@ pub(super) fn stream_unfold_step(
                                                 ));
                                             }
                                             if !emitted
-                                                && let Some(lowered) = output_cap_lowered(
-                                                    &detail,
-                                                    body.max_tokens.unwrap_or(0),
-                                                )
+                                                && let Some(lowered) =
+                                                    lower_output_cap(&mut body, &detail)
                                             {
-                                                log::warn!(target: "gray_provider", "lowering max_output_tokens to {lowered}: {detail}");
-                                                let mut body = body;
-                                                body.max_tokens = Some(lowered);
                                                 let next = StreamState::Init {
                                                     client,
                                                     url,
@@ -603,11 +625,10 @@ pub(super) fn stream_unfold_step(
                                                 );
                                                 return Some((Ok(notice), next));
                                             }
-                                            let err = if output_cap_lowered(&detail, u32::MAX)
-                                                .is_some()
-                                            {
+                                            let err = if !emitted && output_cap_rejected(&detail) {
                                                 ProviderError::BadRequest(format!(
-                                                    "output ceiling already at the lowest value Gray will send ({OUTPUT_CAP_MIN} tokens) and the account quota is still lower: {detail}"
+                                                    "the provider rejects the output ceiling Gray sends ({} tokens) and it cannot be lowered any further: {detail}",
+                                                    output_cap_of(&body)
                                                 ))
                                             } else {
                                                 stream_failure(

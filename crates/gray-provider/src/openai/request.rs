@@ -166,27 +166,155 @@ pub(super) fn default_output_cap(reasoning_effort: Option<&str>) -> u32 {
 
 pub(crate) const OUTPUT_CAP_MIN: u32 = 4_096;
 
-pub(crate) fn output_cap_lowered(snippet: &str, current: u32) -> Option<u32> {
+const CAP_FIELDS: [&str; 6] = [
+    "max_tokens",
+    "max_output_tokens",
+    "max_completion_tokens",
+    "max tokens",
+    "max output tokens",
+    "max completion tokens",
+];
+
+const CAP_REJECTION_HINTS: [&str; 17] = [
+    "exceed",
+    "greater than",
+    "larger than",
+    "too large",
+    "at most",
+    "maximum",
+    "max allowed",
+    "less than",
+    "lower than",
+    "limit",
+    "out of range",
+    "only supports",
+    "only allows",
+    "cannot be",
+    "quota",
+    "up to",
+    "must be",
+];
+
+const CAP_EXCLUSION_HINTS: [&str; 19] = [
+    "context length",
+    "context window",
+    "context size",
+    "prompt is too long",
+    "input is too long",
+    "too many tokens",
+    "token limit exceeded",
+    "request_too_large",
+    "not supported",
+    "unsupported",
+    "unrecognized",
+    "unknown parameter",
+    "at least",
+    "minimum",
+    "too small",
+    "greater than or equal to",
+    "positive",
+    "reasoning",
+    "thinking",
+];
+
+const CAP_NUMBER_ANCHORS: [&str; 13] = [
+    "at most",
+    "up to",
+    "maximum is",
+    "maximum of",
+    "maximum allowed",
+    "maximum value",
+    "max is",
+    "max of",
+    "less than or equal to",
+    "less than",
+    "lower than",
+    "limit of",
+    "limited to",
+];
+
+fn number_after_anchor(text: &str) -> Option<u32> {
+    let tail = text.trim_start_matches(|c: char| !c.is_ascii_digit());
+    let digits: String = tail
+        .chars()
+        .take_while(|c| c.is_ascii_digit() || *c == ',' || *c == '_')
+        .filter(|c| c.is_ascii_digit())
+        .collect();
+    digits.parse().ok()
+}
+
+fn largest_number_below(text: &str, current: u32) -> Option<u32> {
+    let mut best: Option<u32> = None;
+    let mut digits = String::new();
+    for c in text.chars().chain(std::iter::once(' ')) {
+        if c.is_ascii_digit() {
+            digits.push(c);
+            continue;
+        }
+        if !digits.is_empty() {
+            if let Ok(n) = digits.parse::<u32>()
+                && (OUTPUT_CAP_MIN..current).contains(&n)
+                && best.is_none_or(|b| n > b)
+            {
+                best = Some(n);
+            }
+            digits.clear();
+        }
+    }
+    best
+}
+
+pub(crate) fn output_cap_rejected(snippet: &str) -> bool {
+    if gray_core::overflow::is_non_overflow_message(snippet) {
+        return false;
+    }
     let lower = snippet.to_lowercase();
-    if !lower.contains("max_output_tokens") || !lower.contains("quota") {
+    if CAP_EXCLUSION_HINTS.iter().any(|h| lower.contains(h)) {
+        return false;
+    }
+    if !CAP_FIELDS.iter().any(|h| lower.contains(h)) {
+        return false;
+    }
+    CAP_REJECTION_HINTS.iter().any(|h| lower.contains(h))
+}
+
+pub(crate) fn output_cap_of(body: &OpenAiChatRequest) -> u32 {
+    body.max_tokens
+        .or(body.max_completion_tokens)
+        .unwrap_or_default()
+}
+
+pub(super) fn set_output_cap(body: &mut OpenAiChatRequest, cap: u32) {
+    if body.max_completion_tokens.is_some() {
+        body.max_completion_tokens = Some(cap);
+    } else {
+        body.max_tokens = Some(cap);
+    }
+    let over_budget = body
+        .thinking
+        .as_ref()
+        .and_then(|t| t.get("budget_tokens"))
+        .and_then(Value::as_u64)
+        .is_some_and(|budget| budget >= u64::from(cap));
+    if over_budget {
+        body.thinking = Some(serde_json::json!({ "type": "disabled" }));
+        body.reasoning_effort = None;
+        body.reasoning = None;
+    }
+}
+
+pub(crate) fn output_cap_lowered(snippet: &str, current: u32) -> Option<u32> {
+    if !output_cap_rejected(snippet) {
         return None;
     }
-    let stated = [
-        "at most",
-        "maximum of",
-        "maximum is",
-        "max of",
-        "less than or equal to",
-    ]
-    .iter()
-    .find_map(|anchor| {
-        let tail = lower.split(anchor).nth(1)?.trim_start();
-        let digits: String = tail.chars().take_while(char::is_ascii_digit).collect();
-        digits.parse::<u32>().ok()
-    });
+    let lower = snippet.to_lowercase();
+    let stated = CAP_NUMBER_ANCHORS
+        .iter()
+        .find_map(|anchor| lower.split(anchor).skip(1).find_map(number_after_anchor))
+        .or_else(|| largest_number_below(&lower, current));
     let next = stated
+        .filter(|n| *n < current)
         .unwrap_or(current / 2)
-        .min(current / 2)
         .max(OUTPUT_CAP_MIN);
     (next < current).then_some(next)
 }

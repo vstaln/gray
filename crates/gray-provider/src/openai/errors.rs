@@ -143,6 +143,10 @@ pub(super) fn classify_http_error_inner(
         return ProviderError::ServerError(format!("provider edge blocked the request ({msg})"));
     }
 
+    if matches!(status.as_u16(), 400 | 422) && output_cap_rejected(snippet) {
+        return ProviderError::BadRequest(msg);
+    }
+
     const CONTEXT_OVERFLOW_HINTS: [&str; 4] = [
         "context length",
         "context window",
