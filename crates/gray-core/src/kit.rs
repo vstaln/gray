@@ -286,7 +286,7 @@ fn coerce_value(raw: &str, schema: Option<&Value>) -> Value {
     }
 }
 
-fn match_prop_key<'a>(props: Option<&'a Map<String, Value>>, raw_key: &str) -> String {
+fn match_prop_key(props: Option<&Map<String, Value>>, raw_key: &str) -> String {
     if let Some(props) = props {
         if props.contains_key(raw_key) {
             return raw_key.to_string();
