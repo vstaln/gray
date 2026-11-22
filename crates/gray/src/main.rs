@@ -568,6 +568,14 @@ async fn run_plugin_inner(cmd: gray::PluginCmd) -> anyhow::Result<()> {
             println!("disabled {name}");
             Ok(())
         }
+        PluginCmd::Sync { profile, yes } => {
+            let home = gray::plugin_cli::home()?;
+            let lines = gray::default_plugins::sync_profile(&home, profile.as_deref(), yes).await?;
+            for line in lines {
+                println!("{line}");
+            }
+            Ok(())
+        }
     }
 }
 

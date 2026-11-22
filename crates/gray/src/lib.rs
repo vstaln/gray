@@ -5,7 +5,7 @@ pub mod cmd;
 pub mod compact;
 pub mod composer;
 pub mod config;
-pub(crate) mod default_plugins;
+pub mod default_plugins;
 pub(crate) mod failed_turn;
 pub(crate) mod ghost;
 pub mod host;
@@ -1042,6 +1042,19 @@ pub enum PluginCmd {
 
         #[arg(long, help = "Grant every declared capability (needs NAME)")]
         all: bool,
+    },
+
+    #[command(about = "Sync plugins for the active profile (default, bare, or custom)")]
+    Sync {
+        #[arg(
+            long,
+            value_name = "NAME",
+            help = "Set and sync a profile (default, bare, custom)"
+        )]
+        profile: Option<String>,
+
+        #[arg(short = 'y', long, help = "Skip the capability/trust prompt")]
+        yes: bool,
     },
 }
 

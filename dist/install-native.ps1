@@ -151,9 +151,15 @@ function Install-NativeGray {
         Write-Host 'Shell commands require Git for Windows (Git Bash). Gray does not install it or WSL.'
         Write-Host 'Uninstall: close Gray, remove this install folder and its user PATH entry; keep your .gray data.'
         $flavor = 'core'
-        if ($env:GRAY_INSTALL_PLUGINS -ne '0') {
+        $grayHome = if ($env:GRAY_HOME) { $env:GRAY_HOME } else { Join-Path $HOME '.gray' }
+        if ($env:GRAY_INSTALL_PLUGINS -eq '0') {
+            New-Item -ItemType Directory -Force -Path $grayHome | Out-Null
+            Set-Content -Path (Join-Path $grayHome 'profile') -Value 'bare'
+        } elseif ($env:GRAY_PLUGINS) {
             $flavor = 'full'
-            $plugins = if ($env:GRAY_PLUGINS) { $env:GRAY_PLUGINS -split '\s+' | Where-Object { $_ } } else { @('account', 'memory', 'search', 'skills', 'quality-of-life', 'voice', 'questions', 'subagents', 'mcp', 'gateway') }
+            New-Item -ItemType Directory -Force -Path $grayHome | Out-Null
+            Set-Content -Path (Join-Path $grayHome 'profile') -Value 'custom'
+            $plugins = $env:GRAY_PLUGINS -split '\s+' | Where-Object { $_ }
             $failed = @()
             foreach ($plugin in $plugins) {
                 try {
@@ -167,6 +173,14 @@ function Install-NativeGray {
                 foreach ($plugin in $failed) {
                     Write-Host "  gray plugin install --yes $plugin"
                 }
+            }
+        } else {
+            $flavor = 'full'
+            $profile = if ($env:GRAY_PROFILE) { $env:GRAY_PROFILE } else { 'default' }
+            try {
+                & $binary plugin sync --profile $profile --yes
+            } catch {
+                Write-Host "Some default plugins could not be installed now -- retry: gray plugin sync --profile $profile --yes"
             }
         }
         if ($env:GRAY_TELEMETRY -ne '0' -and $BaseUri.Host -eq 'gray.alignment.id') {
