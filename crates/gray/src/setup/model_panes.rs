@@ -1216,6 +1216,14 @@ fn draw(frame: &mut Frame, bg: &BackgroundSnapshot, v: &PaneView) {
             );
             let levels = row_levels(cid, v.toggles.fast, v.slot_parts);
             let cur_eff = levels.iter().copied().find(|&l| Some(l) == v.slot_effort).or_else(|| levels.first().copied());
+            let opt_w = shape
+                .slots
+                .iter()
+                .flat_map(|s| &s.options)
+                .map(|o| o.name.chars().count())
+                .max()
+                .unwrap_or(10)
+                .clamp(10, 20);
             for (si, slot) in shape.slots.iter().enumerate().take(slot_bar_h - 1) {
                 let active_row = v.focus == Focus::Slots && si == v.slot_sel;
                 let picked_id = v.slot_parts.get(&slot.key).map(String::as_str);
@@ -1227,6 +1235,7 @@ fn draw(frame: &mut Frame, bg: &BackgroundSnapshot, v: &PaneView) {
                     .get(opt_idx)
                     .map(|o| o.name.as_str())
                     .unwrap_or("—");
+                let padded_opt = format!("{:<width$}", fit_chars(opt_name, opt_w), width = opt_w);
                 let total_opts = slot.options.len().max(1);
                 let mut spans = vec![
                     Span::styled(
@@ -1244,14 +1253,11 @@ fn draw(frame: &mut Frame, bg: &BackgroundSnapshot, v: &PaneView) {
                 ];
                 if active_row {
                     spans.push(Span::styled("◀ ", fg(t.accent)));
-                    spans.push(Span::styled(
-                        format!("[{}]", fit_chars(opt_name, 20)),
-                        bold(t.accent),
-                    ));
+                    spans.push(Span::styled(padded_opt, bold(t.accent)));
                     spans.push(Span::styled(" ▶", fg(t.accent)));
                 } else {
                     spans.push(Span::styled(
-                        format!("  {}  ", fit_chars(opt_name, 20)),
+                        format!("  {padded_opt}  "),
                         fg(t.text_body),
                     ));
                 }
@@ -1500,6 +1506,7 @@ pub(crate) fn run_model_panes(
     let mut logins = super::logins::Logins::new();
     logins.start(installed_of(&rail));
     let mut strip_sel = 0usize;
+    let mut strip_top = 0usize;
     let mut slot_sel: usize = 0;
     let mut slot_model: Option<String> = None;
     let mut slot_parts: Parts = config.model_parts.clone();
@@ -1729,6 +1736,9 @@ pub(crate) fn run_model_panes(
                         provider.map_or("", |p| p.item.name.as_str()),
                         st,
                         (focus == Focus::Logins).then_some(strip_sel),
+                        strip_sel,
+                        &mut strip_top,
+                        12,
                         adding.as_deref(),
                         pane_w,
                     ),
