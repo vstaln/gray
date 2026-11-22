@@ -761,12 +761,8 @@ pub fn list_rows() -> anyhow::Result<Vec<ManagedRow>> {
 pub fn remove_managed(name: &str) -> anyhow::Result<()> {
     let home = home()?;
     migrate_commands_json(&home);
-    validate_name(name)?;
     ensure_installed(&home, name)?;
-    let removed = load_lock(&home)?.plugins.contains_key(name);
-    if removed {
-        gray_pkg::ops::remove(name)?;
-    }
+    gray_pkg::ops::remove(name)?;
     let cli_root = home.join("plugins/cli");
     if cli_root.is_dir() {
         let prefix = format!("{name}-");
@@ -781,7 +777,6 @@ pub fn remove_managed(name: &str) -> anyhow::Result<()> {
             }
         }
     }
-    anyhow::ensure!(removed, "not installed: {name}");
     if crate::default_plugins::MIGRATED_PLUGINS
         .iter()
         .any(|d| *d == name || gray_pkg::ops::canonical_name(d) == name)

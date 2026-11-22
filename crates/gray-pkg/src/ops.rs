@@ -164,15 +164,6 @@ fn supported_index_entry(entry: &crate::index::Entry) -> bool {
     )
 }
 
-fn name_from_url(url: &str) -> String {
-    let path = url.split(['?', '#']).next().unwrap_or(url);
-    let last = path.rsplit('/').next().unwrap_or(path);
-    last.strip_suffix(".tar.gz")
-        .or_else(|| last.strip_suffix(".tgz"))
-        .unwrap_or(last)
-        .to_string()
-}
-
 pub(crate) fn validate_install_key(key: &str) -> anyhow::Result<()> {
     if key.is_empty() || key == "." || key == ".." || key.contains('/') || key.contains('\\') {
         anyhow::bail!("cannot derive a safe plugin name from package (got {key:?})");
@@ -213,8 +204,57 @@ async fn install_inner(spec: NameOrUrl, opts: InstallOpts) -> anyhow::Result<Rep
     }
 }
 
-fn replace_archive(
-    archive: &Path,
+struct Staged {
+    dir: tempfile::TempDir,
+    next: PathBuf,
+}
+
+fn stage_archive(archive: &Path) -> anyhow::Result<Staged> {
+    let root = crate::plugins_dir();
+    std::fs::create_dir_all(&root)?;
+    let dir = tempfile::tempdir_in(&root)?;
+    let next = dir.path().join("next");
+    std::fs::create_dir(&next)?;
+    let unpacked = crate::fetch::unpack_tar_gz(archive, &next);
+    let _ = std::fs::remove_file(archive);
+    unpacked?;
+    Ok(Staged { dir, next })
+}
+
+fn identity_of(manifest: &serde_json::Value) -> Option<(String, String)> {
+    let name = manifest["name"].as_str()?.to_string();
+    let version = manifest["version"].as_str().unwrap_or("0.0.0").to_string();
+    Some((name, version))
+}
+
+async fn manifest_probe(dir: &Path) -> Option<(String, String)> {
+    let argv = gray_plugin::builder::resolve_argv(dir).ok()?;
+    let exe = argv.first()?;
+    let mut command = tokio::process::Command::new(exe);
+    command
+        .arg("manifest")
+        .env("GRAY_HOME", gray_core::paths::gray_home_or_temp());
+    if let Ok(Ok(output)) =
+        tokio::time::timeout(std::time::Duration::from_secs(10), command.output()).await
+        && output.status.success()
+        && let Ok(manifest) = serde_json::from_slice::<serde_json::Value>(&output.stdout)
+    {
+        return identity_of(&manifest);
+    }
+    use gray_plugin::Plugin as _;
+    let plugin = gray_plugin::SidecarPlugin::spawn(vec![exe.clone()])
+        .await
+        .ok()?;
+    let identity = serde_json::to_value(plugin.manifest())
+        .ok()
+        .as_ref()
+        .and_then(identity_of);
+    plugin.shutdown(std::time::Duration::from_secs(2)).await;
+    identity
+}
+
+fn commit_archive(
+    staged: Staged,
     name: &str,
     backup: bool,
     record: impl FnOnce() -> anyhow::Result<()>,
@@ -228,20 +268,13 @@ fn replace_archive(
         "reserved plugin name"
     );
     let root = crate::plugins_dir();
-    std::fs::create_dir_all(&root)?;
-    let stage = tempfile::tempdir_in(&root)?;
-    let next = stage.path().join("next");
-    let previous = stage.path().join("previous");
-    std::fs::create_dir(&next)?;
-    let unpacked = crate::fetch::unpack_tar_gz(archive, &next);
-    let _ = std::fs::remove_file(archive);
-    unpacked?;
+    let previous = staged.dir.path().join("previous");
     let dest = root.join(name);
     let had_previous = dest.symlink_metadata().is_ok();
     if had_previous {
         std::fs::rename(&dest, &previous)?;
     }
-    let installed = std::fs::rename(&next, &dest)
+    let installed = std::fs::rename(&staged.next, &dest)
         .map_err(anyhow::Error::from)
         .and_then(|()| record());
     if let Err(error) = installed {
@@ -255,7 +288,7 @@ fn replace_archive(
             Ok(())
         })();
         if let Err(rollback) = rollback {
-            let recovery = stage.keep();
+            let recovery = staged.dir.keep();
             anyhow::bail!(
                 "{error}; rollback failed: {rollback}; previous install saved at {}",
                 recovery.display()
@@ -389,7 +422,8 @@ async fn install_index(
     } else {
         entry.scope.clone()
     };
-    let dest = replace_archive(&archive, name, backup, || {
+    let staged = stage_archive(&archive)?;
+    let dest = commit_archive(staged, name, backup, || {
         // Register only a dir spawn_lock_plugin can resolve; an empty or
         // wrong-platform payload must roll back instead of churning respawns.
         let argv = if opts.argv.is_empty() {
@@ -427,34 +461,35 @@ async fn install_url(
         "warning: unverified install from {} (no index hash; use an index name for verified installs)",
         crate::fetch::redact(url)
     );
-    let name = name_from_url(url);
-    if name.is_empty() {
-        anyhow::bail!(
-            "cannot derive a plugin name from URL: {}",
-            crate::fetch::redact(url)
-        );
-    }
-    validate_install_key(&name)?;
     let archive = crate::fetch::download(client, url, None).await?;
-    let dest = replace_archive(&archive, &name, false, || {
-        if opts.argv.is_empty() {
+    let staged = stage_archive(&archive)?;
+    let (name, version) = manifest_probe(&staged.next).await.ok_or_else(|| {
+        anyhow::anyhow!(
+            "cannot read a plugin name from {}: its `manifest` printed no name",
+            crate::fetch::redact(url)
+        )
+    })?;
+    let dest = commit_archive(staged, &name, false, || {
+        let argv = if opts.argv.is_empty() {
             gray_plugin::builder::resolve_argv(&crate::plugins_dir().join(&name)).map_err(|e| {
                 anyhow::anyhow!("package '{name}' has no runnable plugin on this platform: {e:#}")
-            })?;
-        }
+            })?
+        } else {
+            opts.argv.clone()
+        };
         record_install(
             &name,
             "url",
-            "0.0.0",
+            &version,
             "",
             url,
             opts.scope.clone().unwrap_or_else(|| "user".to_string()),
-            opts.argv.clone(),
+            argv,
         )
     })?;
     Ok(Report {
         name,
-        version: "0.0.0".to_string(),
+        version,
         path: dest,
         deps: Vec::new(),
         description: None,
