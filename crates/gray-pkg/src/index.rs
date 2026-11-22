@@ -32,6 +32,8 @@ pub fn hub_index_url() -> String {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Index {
     #[serde(default)]
+    pub profiles: BTreeMap<String, Vec<String>>,
+    #[serde(default)]
     pub plugins: BTreeMap<String, Entry>,
 }
 

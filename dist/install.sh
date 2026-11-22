@@ -111,21 +111,18 @@ INSTALLED_VER=$("${DEST}/gray" --version 2>/dev/null || true)
 echo "→ installed to ${DEST}/gray (${INSTALLED_VER:-?}, ${CHANNEL})"
 
 FLAVOR="core"
+GRAY_HOME_DIR="${GRAY_HOME:-$HOME/.gray}"
 SEED="${GRAY_INSTALL_PLUGINS:-auto}"
-if [ "$SEED" = "auto" ]; then
-    if [ "$INSTALLED_BEFORE" = "1" ] && [ -z "${GRAY_PLUGINS:-}" ]; then
-        SEED=0
-    else
-        SEED=1
-    fi
-fi
-if [ "$SEED" != "0" ]; then
+if [ "$SEED" = "0" ]; then
+    mkdir -p "$GRAY_HOME_DIR"
+    printf 'bare\n' > "${GRAY_HOME_DIR}/profile"
+elif [ -n "${GRAY_PLUGINS:-}" ]; then
     FLAVOR="full"
-    DEFAULT_PLUGINS="account connect memory search skills quality-of-life voice gateway permissions"
-    PLUGINS="${GRAY_PLUGINS:-$DEFAULT_PLUGINS}"
+    mkdir -p "$GRAY_HOME_DIR"
+    printf 'custom\n' > "${GRAY_HOME_DIR}/profile"
     FAILED=""
     set -f
-    for plugin in $PLUGINS; do
+    for plugin in $GRAY_PLUGINS; do
         if [ "$plugin" = "fsearch" ] && {
             [ "$(uname -s)" != "Linux" ] || [ "$(uname -m)" != "x86_64" ]
         }; then
@@ -134,9 +131,6 @@ if [ "$SEED" != "0" ]; then
         fi
         if "${DEST}/gray" plugin install --yes "$plugin" >/dev/null 2>&1; then
             echo "→ installed ${plugin}"
-            # installing the default set is the consent; grant declared
-            # capabilities outright (new builds do this under --yes already;
-            # keep it for older binaries, best-effort).
             "${DEST}/gray" plugin capabilities "$plugin" --all >/dev/null 2>&1 || true
         else
             FAILED="${FAILED} ${plugin}"
@@ -153,23 +147,14 @@ if [ "$SEED" != "0" ]; then
     fi
 elif [ "$INSTALLED_BEFORE" = "1" ]; then
     FLAVOR="update"
-fi
-
-# gray <=0.2.12 shipped skills in core; 0.2.13 moved them into the `skills`
-# plugin. An update crossing that line installs it here, in the installer —
-# installer changes ship without a gray release, which is where future
-# core->plugin migrations like this belong. Bare installs
-# (GRAY_INSTALL_PLUGINS=0, e.g. install-core.sh) and custom plugin sets
-# (GRAY_PLUGINS) are left alone.
-if [ "$INSTALLED_BEFORE" = "1" ] && [ -z "${GRAY_PLUGINS:-}" ] && [ "${GRAY_INSTALL_PLUGINS:-auto}" != "0" ]; then
-    OLD_SEMVER=$(printf '%s' "$OLD_VER" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n 1)
-    if [ -n "$OLD_SEMVER" ] && ver_lt "$OLD_SEMVER" "0.2.13" && [ ! -d "${GRAY_HOME:-$HOME/.gray}/plugins/skills" ]; then
-        if "${DEST}/gray" plugin install --yes skills >/dev/null 2>&1; then
-            echo "→ installed skills"
-            "${DEST}/gray" plugin capabilities skills --all >/dev/null 2>&1 || true
-        else
-            echo "  could not install skills plugin -- retry: gray plugin install --yes skills"
-        fi
+    "${DEST}/gray" plugin sync --yes >/dev/null 2>&1 || true
+else
+    FLAVOR="full"
+    PROFILE="${GRAY_PROFILE:-default}"
+    if "${DEST}/gray" plugin sync --profile "$PROFILE" --yes; then
+        :
+    else
+        echo "  some default plugins could not be installed now -- retry: gray plugin sync --profile ${PROFILE} --yes"
     fi
 fi
 

@@ -599,7 +599,12 @@ pub async fn check_update(target: &str) -> anyhow::Result<Vec<UpdateRow>> {
 }
 
 pub const RENAMED: &[(&str, &str)] = &[
-    ("qol", "quality-of-life"),
+    ("qol", "extras"),
+    ("quality-of-life", "extras"),
+    ("vim", "extras"),
+    ("themes", "extras"),
+    ("permissions", "extras"),
+    ("questions", "extras"),
     ("cloud", "account"),
     ("claude-sub", "claude"),
     ("codex-sub", "codex"),

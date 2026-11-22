@@ -782,9 +782,10 @@ pub fn remove_managed(name: &str) -> anyhow::Result<()> {
         }
     }
     anyhow::ensure!(removed, "not installed: {name}");
-    if crate::default_plugins::MIGRATED_PLUGINS
-        .iter()
-        .any(|d| *d == name || gray_pkg::ops::canonical_name(d) == name)
+    if crate::default_plugins::read_profile(&home) != "bare"
+        || crate::default_plugins::FALLBACK_DEFAULT_PROFILE
+            .iter()
+            .any(|d| *d == name || gray_pkg::ops::canonical_name(d) == name)
     {
         let lock_file = gray_plugin::lock::lock_path(&home);
         let mut lock = load_lock(&home)?;

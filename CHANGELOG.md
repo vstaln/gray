@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+## [0.2.29] - 2026-11-23
+
+### Added
+- **Profile-aware plugin sync (`gray plugin sync`).** Installers now record a profile (`default`, `bare`, or `custom`) and sync the default plugin bundle from `gray.alignment.id/plugins/index.json`, respecting user tombstones and automatically retiring superseded plugins.
+
+### Changed
+- **Consolidated UX bundle (`extras`).** `quality-of-life`, `vim`, `themes`, `permissions`, and `questions` now map to `gray-extras`, preserving existing settings and `vim_mode` when migrating.
+
+### Fixed
+- **Restored the Logins strip in `/models`.** Multi-account subscription management, per-login usage, and pool strategy selection are back inside `/models` for Antigravity, Claude, and Devin subscriptions.
+- **Duplicate and stale away Recap cards.** Away recaps no longer duplicate or persist stale cards across turns.
+
 ## [0.2.28] - 2026-11-21
 
 ### Added
