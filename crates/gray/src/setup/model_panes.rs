@@ -739,38 +739,6 @@ fn commit_composite_pick(
     save_saved_config_at(&path, &saved)
 }
 
-fn effort_slider_spans(levels: &[&str], current: &str, active: bool) -> Vec<Span<'static>> {
-    let t = crate::theme::theme();
-    let fg = |c| Style::default().fg(c);
-    let pos = levels.iter().position(|l| *l == current).unwrap_or(0);
-    let mut spans = vec![Span::styled("  Effort ", fg(t.text_dim))];
-    for (i, _) in levels.iter().enumerate() {
-        if i > 0 {
-            spans.push(Span::styled(
-                "──",
-                fg(if i <= pos { t.text_body } else { t.bezel_lo }),
-            ));
-        }
-        let dot = if i <= pos { "●" } else { "○" };
-        let color = if i == pos && active {
-            t.accent
-        } else if i <= pos {
-            t.text_body
-        } else {
-            t.text_faint
-        };
-        spans.push(Span::styled(dot, fg(color)));
-    }
-    spans.push(Span::styled(
-        format!("  {current}"),
-        if active {
-            fg(t.accent)
-        } else {
-            fg(t.text_body)
-        },
-    ));
-    spans
-}
 
 #[allow(dead_code)]
 fn delegate_pick(
@@ -1247,7 +1215,7 @@ fn draw(frame: &mut Frame, bg: &BackgroundSnapshot, v: &PaneView) {
                 row(pane_x, bar_y, pane_w),
             );
             let levels = row_levels(cid, v.toggles.fast, v.slot_parts);
-            let cur_eff = v.slot_effort.or_else(|| levels.first().copied());
+            let cur_eff = levels.iter().copied().find(|&l| Some(l) == v.slot_effort).or_else(|| levels.first().copied());
             for (si, slot) in shape.slots.iter().enumerate().take(slot_bar_h - 1) {
                 let active_row = v.focus == Focus::Slots && si == v.slot_sel;
                 let picked_id = v.slot_parts.get(&slot.key).map(String::as_str);
@@ -1295,7 +1263,12 @@ fn draw(frame: &mut Frame, bg: &BackgroundSnapshot, v: &PaneView) {
                     && let Some(eff) = cur_eff
                     && levels.len() > 1
                 {
-                    spans.extend(effort_slider_spans(&levels, eff, active_row));
+                    let meter = meter_spans(&levels, eff, false);
+                    let used: usize = spans.iter().map(Span::width).sum();
+                    let meter_w: usize = meter.iter().map(Span::width).sum();
+                    let pad = (pane_w as usize).saturating_sub(used + meter_w).max(2);
+                    spans.push(Span::raw(" ".repeat(pad)));
+                    spans.extend(meter);
                 }
                 frame.render_widget(
                     Paragraph::new(Line::from(spans)),
