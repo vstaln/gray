@@ -146,6 +146,8 @@ pub(super) fn is_valid_tool_name(name: &str, id: &str) -> bool {
     }
 }
 
+const DEFAULT_REPLY_TOKENS: u32 = 16_384;
+
 pub(super) fn chat_thinking_budget(effort: &str) -> u32 {
     match effort {
         "low" => 1024,
@@ -155,12 +157,49 @@ pub(super) fn chat_thinking_budget(effort: &str) -> u32 {
     }
 }
 
+pub(super) fn default_output_cap(reasoning_effort: Option<&str>) -> u32 {
+    let budget = reasoning_effort
+        .filter(|eff| *eff != "off")
+        .map_or(0, chat_thinking_budget);
+    budget + DEFAULT_REPLY_TOKENS
+}
+
+pub(crate) const OUTPUT_CAP_MIN: u32 = 4_096;
+
+pub(crate) fn output_cap_lowered(snippet: &str, current: u32) -> Option<u32> {
+    let lower = snippet.to_lowercase();
+    if !lower.contains("max_output_tokens") || !lower.contains("quota") {
+        return None;
+    }
+    let stated = [
+        "at most",
+        "maximum of",
+        "maximum is",
+        "max of",
+        "less than or equal to",
+    ]
+    .iter()
+    .find_map(|anchor| {
+        let tail = lower.split(anchor).nth(1)?.trim_start();
+        let digits: String = tail.chars().take_while(char::is_ascii_digit).collect();
+        digits.parse::<u32>().ok()
+    });
+    let next = stated
+        .unwrap_or(current / 2)
+        .min(current / 2)
+        .max(OUTPUT_CAP_MIN);
+    (next < current).then_some(next)
+}
+
 pub(super) fn map_chat_request(
     req: ChatRequest,
     model: &str,
     reasoning_effort: Option<&str>,
 ) -> Result<OpenAiChatRequest, ProviderError> {
-    let max_tokens = req.max_tokens;
+    let max_tokens = Some(req.max_tokens.map_or_else(
+        || default_output_cap(reasoning_effort),
+        |cap| cap.min(default_output_cap(reasoning_effort)),
+    ));
     let mut messages = Vec::new();
 
     if let Some(system) = req.system {

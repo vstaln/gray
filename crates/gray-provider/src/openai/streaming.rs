@@ -568,11 +568,47 @@ pub(super) fn stream_unfold_step(
                                             );
                                             log::error!(target: "gray_provider", "{detail}");
                                             let lowered = detail.to_lowercase();
-                                            let err = if CONTENT_FILTER_STREAM_HINTS
+                                            if CONTENT_FILTER_STREAM_HINTS
                                                 .iter()
                                                 .any(|h| lowered.contains(h))
                                             {
-                                                ProviderError::BadRequest(detail)
+                                                return Some((
+                                                    Err(ProviderError::BadRequest(detail)),
+                                                    StreamState::Done,
+                                                ));
+                                            }
+                                            if !emitted
+                                                && let Some(lowered) = output_cap_lowered(
+                                                    &detail,
+                                                    body.max_tokens.unwrap_or(0),
+                                                )
+                                            {
+                                                log::warn!(target: "gray_provider", "lowering max_output_tokens to {lowered}: {detail}");
+                                                let mut body = body;
+                                                body.max_tokens = Some(lowered);
+                                                let next = StreamState::Init {
+                                                    client,
+                                                    url,
+                                                    api_key,
+                                                    body,
+                                                    session_id: None,
+                                                    attempt,
+                                                    retry_after: None,
+                                                };
+                                                let notice = StreamEvent::stream_error(
+                                                    format!(
+                                                        "Lowering output ceiling to {lowered} tokens"
+                                                    ),
+                                                    String::new(),
+                                                );
+                                                return Some((Ok(notice), next));
+                                            }
+                                            let err = if output_cap_lowered(&detail, u32::MAX)
+                                                .is_some()
+                                            {
+                                                ProviderError::BadRequest(format!(
+                                                    "output ceiling already at the lowest value Gray will send ({OUTPUT_CAP_MIN} tokens) and the account quota is still lower: {detail}"
+                                                ))
                                             } else {
                                                 stream_failure(
                                                     &serde_json::json!({ "error": err_val }),
