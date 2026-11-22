@@ -165,7 +165,13 @@ fn supported_index_entry(entry: &crate::index::Entry) -> bool {
 }
 
 pub(crate) fn validate_install_key(key: &str) -> anyhow::Result<()> {
-    if key.is_empty() || key == "." || key == ".." || key.contains('/') || key.contains('\\') {
+    let unsafe_key = key.is_empty()
+        || key.starts_with('.')
+        || key.contains("..")
+        || key.contains('/')
+        || key.contains('\\')
+        || key.chars().any(char::is_control);
+    if unsafe_key {
         anyhow::bail!("cannot derive a safe plugin name from package (got {key:?})");
     }
     Ok(())
@@ -304,6 +310,21 @@ fn commit_archive(
         std::fs::rename(&previous, &bak)?;
     }
     Ok(dest)
+}
+
+fn ensure_url_name_free(name: &str, url: &str) -> anyhow::Result<()> {
+    let lock = read_lock()?;
+    let Some(existing) = lock.plugins.get(name) else {
+        return Ok(());
+    };
+    if existing.ecosystem == "url" {
+        return Ok(());
+    }
+    anyhow::bail!(
+        "the archive from {} declares the name '{name}', which is installed from {}; remove it with `gray plugin remove {name}` first",
+        crate::fetch::redact(url),
+        crate::fetch::redact(&existing.source)
+    )
 }
 
 const MAX_DEP_DEPTH: usize = 8;
@@ -469,6 +490,7 @@ async fn install_url(
             crate::fetch::redact(url)
         )
     })?;
+    ensure_url_name_free(&name, url)?;
     let dest = commit_archive(staged, &name, false, || {
         let argv = if opts.argv.is_empty() {
             gray_plugin::builder::resolve_argv(&crate::plugins_dir().join(&name)).map_err(|e| {
