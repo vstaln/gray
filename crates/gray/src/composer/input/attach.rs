@@ -26,6 +26,67 @@ pub(crate) fn sync_attachment_markers(tui: &mut Tui) {
     });
 }
 
+pub(crate) fn recover_attachments(tui: &mut Tui, text: &str) -> String {
+    let cwd = PathBuf::from(&tui.cwd);
+    let mut settled = vec![false; tui.attachments.len()];
+    let mut out = String::with_capacity(text.len());
+    let mut last = 0usize;
+    for (range, name) in crate::repl::attachments::attachment_markers(text) {
+        out.push_str(&text[last..range.start]);
+        if settle_attachment(tui, &name, &cwd, &mut settled) {
+            out.push_str(&text[range.clone()]);
+        } else {
+            out.push_str(&format!("(attachment gone: {name})"));
+        }
+        last = range.end;
+    }
+    out.push_str(&text[last..]);
+    out.trim().to_string()
+}
+
+fn settle_attachment(tui: &mut Tui, name: &str, cwd: &Path, settled: &mut Vec<bool>) -> bool {
+    if let Some(i) = tui
+        .attachments
+        .iter()
+        .enumerate()
+        .position(|(i, p)| !settled[i] && crate::repl::attachments::attachment_label(p) == name)
+    {
+        settled[i] = true;
+        return true;
+    }
+    let Some(path) = locate_attachment(name, cwd) else {
+        return false;
+    };
+    let canon = canonical(&path);
+    if tui.attachments.iter().any(|p| canonical(p) == canon) {
+        return true;
+    }
+    tui.attachments.push(path);
+    settled.push(true);
+    true
+}
+
+fn canonical(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+fn locate_attachment(name: &str, cwd: &Path) -> Option<PathBuf> {
+    let raw = Path::new(name);
+    let mut candidates = Vec::with_capacity(3);
+    if raw.is_absolute() {
+        candidates.push(raw.to_path_buf());
+    } else {
+        if let Some(dir) = gray_core::paths::attachments_dir() {
+            candidates.push(dir.join(raw));
+        }
+        candidates.push(std::env::temp_dir().join(raw));
+        candidates.push(cwd.join(raw));
+    }
+    candidates
+        .into_iter()
+        .find(|c| is_attachable_path(&c.to_string_lossy()))
+}
+
 pub(crate) const MAX_ATTACH_FILE_BYTES: u64 = 100 * 1024 * 1024;
 
 fn decoded_paste_path(raw: &str) -> String {

@@ -12,7 +12,8 @@ mod plugin_key;
 use keys::KeyOutcome;
 
 pub(crate) use attach::{
-    sync_attachment_markers, try_attach_clipboard_image, try_attach_image_paste,
+    recover_attachments, sync_attachment_markers, try_attach_clipboard_image,
+    try_attach_image_paste,
 };
 pub(crate) use clipboard::paste_from_system_clipboard;
 
@@ -635,12 +636,13 @@ fn try_submit(tui: &mut Tui) -> Option<(String, Vec<PathBuf>)> {
         return None;
     }
     tui.pending_pastes.clear();
-    crate::prompt_history::record(&mut tui.history, &trimmed);
     tui.history_idx = None;
     tui.draft.clear();
     attach::sync_attachment_markers(tui);
+    let trimmed = attach::recover_attachments(tui, &trimmed);
     let attached: Vec<PathBuf> = std::mem::take(&mut tui.attachments);
     tui.textarea.set_text("");
+    crate::prompt_history::record(&mut tui.history, &trimmed);
     if tui.is_task_running {
         if !crate::tui::sanitize_user_text(&trimmed).trim().is_empty() || !attached.is_empty() {
             tui.queued_inputs
