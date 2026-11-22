@@ -249,7 +249,7 @@ fn partial_saved_config(obj: &serde_json::Map<String, serde_json::Value>) -> Sav
         cold_confirm_usd: opt_field(obj, "cold_confirm_usd"),
         tool_inline_bytes: opt_field(obj, "tool_inline_bytes"),
         cache_warming: opt_field(obj, "cache_warming"),
-        toolbox: opt_field(obj, "toolbox"),
+        toolbox: opt_field(obj, "kit").or_else(|| opt_field(obj, "toolbox")),
         terminal_title: opt_field(obj, "terminal_title"),
         terminal_progress: opt_field(obj, "terminal_progress"),
         commit_attribution: opt_field(obj, "commit_attribution"),

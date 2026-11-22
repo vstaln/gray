@@ -155,6 +155,10 @@ async fn run() -> anyhow::Result<()> {
         return gray::plugin_cli::forward(&gray::plugin_cli::home()?, "gateway", &argv).await;
     }
 
+    if let Some(gray::Commands::Kit { args }) = &cli.command {
+        return gray::kit_cli::run(args);
+    }
+
     if let Some(gray::Commands::Gateway { args }) = &cli.command {
         return gray::plugin_cli::forward(&gray::plugin_cli::home()?, "gateway", args).await;
     }
@@ -290,7 +294,7 @@ async fn run() -> anyhow::Result<()> {
             gray::Commands::External(_) | gray::Commands::Install { .. } => {
                 unreachable!("plugin CLI dispatch happens before configuration")
             }
-            gray::Commands::Gateway { .. } => {
+            gray::Commands::Kit { .. } | gray::Commands::Gateway { .. } => {
                 unreachable!("gateway CLI dispatch happens before configuration")
             }
             gray::Commands::Spill { .. } => {

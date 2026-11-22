@@ -32,6 +32,10 @@ impl ToolExecutor for LiveRegistry {
         self.static_.drain_notifications(ctx)
     }
 
+    fn inject_shell_env(&self, vars: Vec<(String, String)>, path_prepend: Vec<std::path::PathBuf>) {
+        self.static_.inject_shell_env(vars, path_prepend);
+    }
+
     fn repin_session(&self, id: &str) {
         for p in &self.live {
             p.set_session_id(id);

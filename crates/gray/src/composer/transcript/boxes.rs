@@ -671,9 +671,9 @@ fn replay_tool_result(
         .remove(id)
         .map(|(n, a)| (n, Some(a)))
         .unwrap_or_else(|| ("tool".to_string(), None));
-    let (name, args) = if name == gray_core::toolbox::NAME
-        && let Some((target, inner_args)) = args.as_ref().and_then(gray_core::toolbox::run_request)
-        && !(is_error && content == gray_core::toolbox::unknown_tool_message(&target))
+    let (name, args) = if gray_core::kit::is_kit_name(&name)
+        && let Some((target, inner_args)) = args.as_ref().and_then(gray_core::kit::run_request)
+        && !(is_error && content == gray_core::kit::unknown_tool_message(&target))
     {
         (target, Some(inner_args))
     } else {

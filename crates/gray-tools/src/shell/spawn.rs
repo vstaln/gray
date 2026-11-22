@@ -94,10 +94,32 @@ const RESERVED_ENV: &[&str] = &[
     "GRAY_SESSION_ID",
     "GRAY_CWD_REPORT",
     "GRAY_PS_REPORT",
+    "GRAY_KIT_SOCK",
+    "GRAY_KIT_TOKEN",
+    "GRAY_BIN",
     "PATH",
 ];
 
 impl PluginEnv {
+    pub fn add_host(
+        &mut self,
+        vars: impl IntoIterator<Item = (String, String)>,
+        path_prepend: impl IntoIterator<Item = PathBuf>,
+    ) {
+        for (key, value) in vars {
+            match self.vars.iter_mut().find(|(k, _)| *k == key) {
+                Some(slot) => slot.1 = value,
+                None => self.vars.push((key, value)),
+            }
+        }
+        let mut front: Vec<PathBuf> = path_prepend
+            .into_iter()
+            .filter(|dir| dir.is_absolute())
+            .collect();
+        front.append(&mut self.path_prepend);
+        self.path_prepend = front;
+    }
+
     /// Fold one plugin's `shell_env` contribution into the merged set.
     /// Reserved variable names and non-absolute `path_prepend` entries are
     /// skipped with a warning.

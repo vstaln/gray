@@ -233,6 +233,12 @@ fn coerce_args(def: &ToolDef, args: Value) -> Value {
 
 #[async_trait]
 impl ToolExecutor for Registry {
+    fn inject_shell_env(&self, vars: Vec<(String, String)>, path_prepend: Vec<std::path::PathBuf>) {
+        if let Some(bash) = self.bash() {
+            bash.add_host_env(vars, path_prepend);
+        }
+    }
+
     fn drain_notifications(&self, ctx: &ToolContext) -> Vec<String> {
         self.tools
             .iter()

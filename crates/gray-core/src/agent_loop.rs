@@ -508,8 +508,8 @@ impl Agent {
         name: &str,
         args: &serde_json::Value,
     ) -> Result<serde_json::Value, ToolOutput> {
-        if self.toolbox && name == crate::toolbox::NAME {
-            return Err(crate::toolbox::answer(&self.tools, args));
+        if self.toolbox && crate::kit::is_kit_name(name) {
+            return Err(crate::kit::answer(&self.tools, args));
         }
         if !self.tools.iter().any(|t| t.name == name) {
             return Err(ToolOutput::error(crate::tool_out::unknown_tool(name)));
@@ -628,6 +628,9 @@ impl Agent {
         let session_id = ctx.session_id.clone();
         *self.turn_billed.lock().unwrap_or_else(|e| e.into_inner()) = Usage::default();
         let out = self.run_turn_body(ctx, sink).await;
+        if let Some(ref bridge) = self.kit_bridge {
+            bridge.set_turn(None, None);
+        }
         let usage = *self.turn_billed.lock().unwrap_or_else(|e| e.into_inner());
         let info = crate::agent::TurnEndInfo {
             session_id,
@@ -655,6 +658,11 @@ impl Agent {
         self.session_id = ctx.session_id.clone();
 
         self.refresh_tools();
+        self.ensure_kit_bridge();
+        let (kit_tx, mut kit_rx) = tokio::sync::mpsc::unbounded_channel::<AgentEvent>();
+        if let Some(ref bridge) = self.kit_bridge {
+            bridge.set_turn(Some(ctx.clone()), Some(kit_tx));
+        }
         log::info!(target: "gray_agent", "agent run start ({} messages)", self.messages.len());
         let mut events = Vec::new();
 
@@ -1158,7 +1166,7 @@ impl Agent {
                             {
                                 let live_id = slot.id.clone().unwrap();
                                 let live_name = slot.name.clone().unwrap();
-                                if !self.toolbox || live_name != crate::toolbox::NAME {
+                                if !self.toolbox || !crate::kit::is_kit_name(&live_name) {
                                     emit!(AgentEvent::tool_call_start(live_id, live_name));
                                 }
                                 slot.started = true;
@@ -1167,7 +1175,7 @@ impl Agent {
                             if slot.started
                                 && !arguments_delta.is_empty()
                                 && !(self.toolbox
-                                    && slot.name.as_deref() == Some(crate::toolbox::NAME))
+                                    && slot.name.as_deref().is_some_and(crate::kit::is_kit_name))
                             {
                                 let live_id = slot.id.clone().unwrap();
                                 let live_name = slot.name.clone().unwrap();
@@ -1348,7 +1356,7 @@ impl Agent {
                     if !slot.started {
                         let id = slot.id.clone().unwrap();
                         let name = slot.name.clone().unwrap();
-                        if !self.toolbox || name != crate::toolbox::NAME {
+                        if !self.toolbox || !crate::kit::is_kit_name(&name) {
                             emit!(AgentEvent::tool_call_start(id, name));
                         }
                         slot.started = true;
@@ -1460,8 +1468,8 @@ impl Agent {
                 .iter()
                 .filter_map(|block| match block {
                     ContentBlock::ToolUse { id, name, args, .. } => {
-                        if self.toolbox && name == crate::toolbox::NAME {
-                            let (name, args) = crate::toolbox::run_target(&self.tools, args)
+                        if self.toolbox && crate::kit::is_kit_name(name) {
+                            let (name, args) = crate::kit::run_target(&self.tools, args)
                                 .unwrap_or_else(|| (name.clone(), args.clone()));
                             emit!(AgentEvent::tool_call_start(id.clone(), name.clone()));
                             Some((id.clone(), name, args))
@@ -1817,15 +1825,19 @@ impl Agent {
                         )),
                         None => Box::pin(self.executor.execute(&ctx, name, effective_args)),
                     };
-                let output = tokio::select! {
-                    out = tokio::time::timeout(self.tool_timeout, &mut exec_fut) => match out {
-                        Ok(output) => output,
-                        Err(_) => ToolOutput::error(format!(
+                let deadline = tokio::time::Instant::now() + self.tool_timeout;
+                let output = loop {
+                    tokio::select! {
+                        biased;
+                        Some(ev) = kit_rx.recv() => {
+                            emit!(ev);
+                        }
+                        out = &mut exec_fut => break out,
+                        _ = tokio::time::sleep_until(deadline) => break ToolOutput::error(format!(
                             "Tool '{name}' timed out after {}s",
                             self.tool_timeout.as_secs()
                         )),
-                    },
-                    _ = ctx.cancel.cancelled() => {
+                        _ = ctx.cancel.cancelled() => {
 
                         let report = match tokio::time::timeout(
                             crate::parallel::CANCEL_REPORT_GRACE,
@@ -1859,8 +1871,12 @@ impl Agent {
                         answer_pending_tools(self, &tool_uses, idx + 1, "cancelled by user");
                         self.emit_turn_end(&billed).await;
                         return Err(CoreError::Cancelled);
-                    },
+                        }
+                    }
                 };
+                while let Ok(ev) = kit_rx.try_recv() {
+                    emit!(ev);
+                }
                 let output = self.apply_tool_after(name, &output).await;
                 Self::bill_tool_usage(&mut billed, name, &output, ctx.session_id.as_deref());
                 for hook in &self.hooks {
