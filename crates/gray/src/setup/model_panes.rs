@@ -731,7 +731,6 @@ fn commit_composite_pick(
     save_saved_config_at(&path, &saved)
 }
 
-
 #[allow(dead_code)]
 fn delegate_pick(
     terminal: &mut super::ModalTerminal,
@@ -1207,7 +1206,11 @@ fn draw(frame: &mut Frame, bg: &BackgroundSnapshot, v: &PaneView) {
                 row(pane_x, bar_y, pane_w),
             );
             let levels = row_levels(cid, v.toggles.fast, v.slot_parts);
-            let cur_eff = levels.iter().copied().find(|&l| Some(l) == v.slot_effort).or_else(|| levels.first().copied());
+            let cur_eff = levels
+                .iter()
+                .copied()
+                .find(|&l| Some(l) == v.slot_effort)
+                .or_else(|| levels.first().copied());
             let opt_w = shape
                 .slots
                 .iter()
@@ -1248,10 +1251,7 @@ fn draw(frame: &mut Frame, bg: &BackgroundSnapshot, v: &PaneView) {
                     spans.push(Span::styled(padded_opt, bold(t.accent)));
                     spans.push(Span::styled(" ▶", fg(t.accent)));
                 } else {
-                    spans.push(Span::styled(
-                        format!("  {padded_opt}  "),
-                        fg(t.text_body),
-                    ));
+                    spans.push(Span::styled(format!("  {padded_opt}  "), fg(t.text_body)));
                 }
                 spans.push(Span::styled(
                     format!("  {} of {}", opt_idx + 1, total_opts),

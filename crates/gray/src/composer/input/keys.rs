@@ -155,11 +155,12 @@ pub(super) fn apply(tui: &mut Tui, a: Action) -> Option<KeyOutcome> {
                 return Some(Submit);
             }
             if let Some((name, _)) = tui.matches.get(tui.sel).cloned() {
-                let typed = cur.trim_end().trim_start_matches('/');
+                let trimmed = cur.trim_start();
+                let typed = trimmed.trim_end().trim_start_matches('/');
                 let alias = crate::repl::commands::REGISTRY
                     .iter()
                     .any(|d| d.name == name && d.aliases.contains(&typed));
-                if !alias && cur != format!("/{name}") && cur != format!("/{name} ") {
+                if !alias && trimmed != format!("/{name}") && trimmed != format!("/{name} ") {
                     fill_completion(tui, &name);
                     return edited;
                 }

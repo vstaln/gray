@@ -245,6 +245,7 @@ pub(crate) fn completion_matches_dyn(
     cur_text: &str,
     cwd: &std::path::Path,
 ) -> Vec<(String, String)> {
+    let cur_text = cur_text.trim_start();
     if let Some(inner) = cur_text.strip_prefix('/') {
         if let Some(idx) = inner.find(char::is_whitespace) {
             let (cmd, _) = inner.split_at(idx);

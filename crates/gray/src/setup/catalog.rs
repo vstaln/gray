@@ -219,7 +219,9 @@ fn warn_bad_config(path: &Path, detail: &dyn std::fmt::Display) {
         path.display(),
         detail
     );
-    eprintln!("warning: {msg}");
+    if !crossterm::terminal::is_raw_mode_enabled().unwrap_or(false) {
+        eprintln!("warning: {msg}");
+    }
     log::warn!(target: "gray_config", "{msg}");
 }
 
