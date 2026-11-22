@@ -710,18 +710,8 @@ fn commit_composite_pick(
     effort: Option<&str>,
     toggles: PickerToggles,
 ) -> anyhow::Result<()> {
-    let wire = super::variants::row_shape(model)
-        .and_then(|shape| {
-            shape
-                .variants
-                .iter()
-                .find(|v| v.parts == *parts && (effort.is_none() || v.effort.as_deref() == effort))
-                .or_else(|| shape.variants.iter().find(|v| v.parts == *parts))
-                .map(|v| v.id.clone())
-        })
-        .unwrap_or_else(|| model.to_string());
     match &p.installed {
-        Some(installed) => activate_plugin_connection(config, installed, &wire)?,
+        Some(installed) => activate_plugin_connection(config, installed, model)?,
         None => *config = scoped_config(config, p, keys),
     }
     config.model = Some(model.to_string());
@@ -733,9 +723,11 @@ fn commit_composite_pick(
         save_key_connection(config, &mut saved);
     }
     saved.model = config.model.clone();
-    saved.model_parts = parts.clone();
+    let mem_key = crate::setup::effort_memory_key(&config.provider_id, &config.base_url, model);
+    saved.remember_parts(&mem_key, parts);
     commit_row_effort(config, &mut saved, effort, effort.is_some());
     toggles.commit(config, &mut saved);
+    crate::config::export_provider_env(config);
     save_saved_config_at(&path, &saved)
 }
 

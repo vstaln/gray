@@ -661,8 +661,26 @@ pub(crate) fn split_synthetic_prompt(text: &str) -> (String, Vec<SyntheticNotice
     let mut in_notice = false;
     let mut captured = false;
     let mut hidden = false;
+    let mut in_kit_tag = false;
     let mut report: Option<Vec<&str>> = None;
     for line in text.lines() {
+        let trimmed = line.trim();
+        if matches!(
+            trimmed,
+            "<kit>" | "<kit-update>" | "<toolbox>" | "<toolbox-update>"
+        ) {
+            in_kit_tag = true;
+            continue;
+        }
+        if in_kit_tag {
+            if matches!(
+                trimmed,
+                "</kit>" | "</kit-update>" | "</toolbox>" | "</toolbox-update>"
+            ) {
+                in_kit_tag = false;
+            }
+            continue;
+        }
         if is_notice_marker(line) {
             finish_report(&mut report, &mut notices);
             in_notice = true;
