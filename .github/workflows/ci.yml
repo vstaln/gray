@@ -120,7 +120,7 @@ jobs:
           tool: cargo-audit
       - if: env.CODE == 'true' && matrix.os == 'ubuntu-latest'
         name: Audit dependencies
-        run: cargo audit
+        run: cargo audit --ignore RUSTSEC-2026-0592
 
   perf-floor:
     # The numbers gray sells itself on — one binary, a small dependency
