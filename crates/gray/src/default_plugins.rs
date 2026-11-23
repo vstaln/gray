@@ -4,14 +4,8 @@ use std::time::{Duration, SystemTime};
 use gray_pkg::index::{Index, fetch_index};
 use gray_plugin::lock::{LockFile, lock_path};
 
-pub const FALLBACK_DEFAULT_PROFILE: &[&str] = &[
-    "account",
-    "extras",
-    "memory",
-    "search",
-    "skills",
-    "subagents",
-];
+pub const FALLBACK_DEFAULT_PROFILE: &[&str] =
+    &["account", "extras", "memory", "search", "subagents"];
 
 const RETRY: Duration = Duration::from_secs(24 * 60 * 60);
 const PROFILE_FILE: &str = "profile";
@@ -126,41 +120,104 @@ fn preserve_vim_mode(home: &Path) {
     }
 }
 
-fn retire_superseded(home: &Path, index: &Index) -> Vec<String> {
-    let Ok(lock) = LockFile::load(&lock_path(home)) else {
-        return Vec::new();
-    };
-    let mut to_remove = Vec::new();
-    for installed in lock.plugins.keys() {
+fn needs_upgrade_before_retire(
+    installed: &gray_plugin::lock::LockEntry,
+    index_entry: &gray_pkg::index::Entry,
+) -> bool {
+    if index_entry.version.is_empty() || installed.version == index_entry.version {
+        return false;
+    }
+    if installed.version.eq_ignore_ascii_case("dev") {
+        return false;
+    }
+    // Only upgrade index-managed installs automatically; direct URL and local
+    // path/dev installs keep whatever the user chose.
+    installed.ecosystem != "url"
+        && (installed.source.starts_with("http://") || installed.source.starts_with("https://"))
+}
+
+fn plan_superseded_retirements(lock: &LockFile, index: &Index) -> Vec<(String, bool, Vec<String>)> {
+    // Map installed canonical superseding plugin -> (needs_upgrade, superseded plugins present).
+    let mut plan = Vec::new();
+    for (installed, lock_entry) in &lock.plugins {
         let canonical = gray_pkg::ops::canonical_name(installed);
-        let entry = index
-            .plugins
-            .get(installed)
-            .or_else(|| index.plugins.get(canonical));
-        if let Some(entry) = entry {
-            for old in &entry.supersedes {
-                let candidate = old.as_str();
-                if candidate != installed
-                    && candidate != canonical
-                    && lock.plugins.contains_key(candidate)
-                    && !to_remove.iter().any(|x: &String| x == candidate)
-                {
-                    to_remove.push(candidate.to_string());
+        // Only retire legacy plugins when the canonical replacement itself is
+        // actually installed — never let one legacy plugin retire another.
+        if installed != canonical {
+            continue;
+        }
+        let Some(entry) = index.plugins.get(installed) else {
+            continue;
+        };
+        let mut olds = Vec::new();
+        for old in &entry.supersedes {
+            let candidate = old.as_str();
+            if candidate != installed
+                && lock.plugins.contains_key(candidate)
+                && !olds.iter().any(|x: &String| x == candidate)
+            {
+                olds.push(candidate.to_string());
+            }
+        }
+        if !olds.is_empty() {
+            let upgrade = needs_upgrade_before_retire(lock_entry, entry);
+            plan.push((installed.clone(), upgrade, olds));
+        }
+    }
+    plan
+}
+
+async fn retire_superseded(home: &Path, index: &Index, yes: bool) -> (Vec<String>, bool) {
+    let Ok(lock) = LockFile::load(&lock_path(home)) else {
+        return (Vec::new(), true);
+    };
+    let plan = plan_superseded_retirements(&lock, index);
+    let mut retired = Vec::new();
+    let mut all_ok = true;
+    let mut removed = std::collections::HashSet::new();
+    for (canonical, upgrade, olds) in plan {
+        if upgrade {
+            let res = if yes {
+                crate::plugin_cli::install_spec(home, &canonical, false, true).await
+            } else {
+                crate::plugin_cli::install_spec_default(home, &canonical).await
+            };
+            if let Err(e) = res {
+                log::warn!("superseded retirement skipped: upgrading {canonical} failed: {e:#}");
+                retired.push(format!(
+                    "skipped retiring superseded plugins: upgrading {canonical} failed: {e:#}"
+                ));
+                all_ok = false;
+                continue;
+            }
+            retired.push(format!(
+                "updated {canonical} before retiring superseded plugins"
+            ));
+        }
+        for old in olds {
+            if !removed.insert(old.clone()) {
+                continue;
+            }
+            if old == "vim" {
+                preserve_vim_mode(home);
+            }
+            match gray_pkg::ops::remove(&old) {
+                Ok(()) => {
+                    let plugins_dir = home.join("plugins");
+                    let _ = std::fs::remove_file(plugins_dir.join(format!("{old}-manifest.json")));
+                    let _ =
+                        std::fs::remove_file(plugins_dir.join(format!("{old}-completion.json")));
+                    retired.push(format!("retired superseded plugin {old}"));
+                }
+                Err(e) => {
+                    log::warn!("superseded plugin {old}: remove failed: {e:#}");
+                    retired.push(format!("failed retiring superseded plugin {old}: {e:#}"));
+                    all_ok = false;
                 }
             }
         }
     }
-    let mut retired = Vec::new();
-    for old in to_remove {
-        if old == "vim" {
-            preserve_vim_mode(home);
-        }
-        match gray_pkg::ops::remove(&old) {
-            Ok(()) => retired.push(format!("retired superseded plugin {old}")),
-            Err(e) => log::warn!("superseded plugin {old}: remove failed: {e:#}"),
-        }
-    }
-    retired
+    (retired, all_ok)
 }
 
 pub async fn sync_profile(
@@ -182,6 +239,7 @@ pub async fn sync_profile(
     }
     let (plugins, index) = load_profile_plugins(&profile).await;
     let mut lines = Vec::new();
+    let mut all_ok = true;
     for name in &plugins {
         if !needed(home, name) {
             continue;
@@ -194,13 +252,22 @@ pub async fn sync_profile(
         };
         match res {
             Ok(()) => lines.push(format!("installed {spec}")),
-            Err(e) => lines.push(format!("failed {spec}: {e:#}")),
+            Err(e) => {
+                lines.push(format!("failed {spec}: {e:#}"));
+                all_ok = false;
+            }
         }
     }
     if let Some(ref idx) = index {
-        lines.extend(retire_superseded(home, idx));
+        let (retired, retired_ok) = retire_superseded(home, idx, yes).await;
+        lines.extend(retired);
+        if !retired_ok {
+            all_ok = false;
+        }
     }
-    write_marker(&marker_path(home), env!("CARGO_PKG_VERSION"));
+    if all_ok {
+        write_marker(&marker_path(home), env!("CARGO_PKG_VERSION"));
+    }
     Ok(lines)
 }
 
@@ -249,7 +316,10 @@ pub(crate) async fn migrate_once() {
         }
     }
     if let Some(ref idx) = index {
-        let _ = retire_superseded(&home, idx);
+        let (_, retired_ok) = retire_superseded(&home, idx, false).await;
+        if !retired_ok {
+            all_ok = false;
+        }
     }
     if all_ok && plugins.iter().all(|name| !needed(&home, name)) {
         write_marker(&marker, version);
@@ -258,4 +328,113 @@ pub(crate) async fn migrate_once() {
 
 pub(crate) fn spawn_migrate() {
     tokio::spawn(migrate_once());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gray_pkg::index::{Entry, HashSpec, Source};
+    use gray_plugin::lock::LockEntry;
+
+    fn entry(version: &str) -> Entry {
+        Entry {
+            ecosystem: "gray-native".into(),
+            version: version.into(),
+            description: String::new(),
+            kind: "plugin".into(),
+            source: Source {
+                type_: "tarball".into(),
+                url: "https://example.invalid/extras.tar.gz".into(),
+            },
+            hash: HashSpec::Single("sha256:deadbeef".into()),
+            scope: "user".into(),
+            commands: Vec::new(),
+            official: true,
+            verified: true,
+            requires_plugins: Vec::new(),
+            conflicts: Vec::new(),
+            supersedes: vec!["skills".into()],
+            superseded_by: Vec::new(),
+            providers: Vec::new(),
+        }
+    }
+
+    fn lock_entry(version: &str, source: &str) -> LockEntry {
+        LockEntry {
+            ecosystem: "gray-native".into(),
+            version: version.into(),
+            source: source.into(),
+            scope: "user".into(),
+            ..LockEntry::default()
+        }
+    }
+
+    #[test]
+    fn default_profile_folds_skills_into_extras() {
+        assert!(FALLBACK_DEFAULT_PROFILE.contains(&"extras"));
+        assert!(!FALLBACK_DEFAULT_PROFILE.contains(&"skills"));
+    }
+
+    #[test]
+    fn upgrade_check_guards_stale_index_installs_but_not_current_or_dev() {
+        let idx = entry("0.4.0");
+        assert!(needs_upgrade_before_retire(
+            &lock_entry("0.3.0", "https://example.invalid/extras-0.3.0.tar.gz"),
+            &idx
+        ));
+        assert!(!needs_upgrade_before_retire(
+            &lock_entry("0.4.0", "https://example.invalid/extras-0.4.0.tar.gz"),
+            &idx
+        ));
+        assert!(!needs_upgrade_before_retire(
+            &lock_entry("dev", "/home/user/gray-extras"),
+            &idx
+        ));
+        assert!(!needs_upgrade_before_retire(
+            &lock_entry("0.3.0", "/home/user/gray-extras/target/release/gray-extras"),
+            &idx
+        ));
+        let mut url_install = lock_entry("0.0.0", "https://example.invalid/custom-extras.tar.gz");
+        url_install.ecosystem = "url".into();
+        assert!(!needs_upgrade_before_retire(&url_install, &idx));
+    }
+
+    #[test]
+    fn retirement_plan_requires_installed_canonical_replacement() {
+        let mut idx = Index {
+            profiles: std::collections::BTreeMap::new(),
+            plugins: std::collections::BTreeMap::new(),
+        };
+        let mut extras = entry("0.4.0");
+        extras.supersedes = vec!["secrets".into(), "skills".into()];
+        idx.plugins.insert("extras".into(), extras);
+
+        // Without extras installed, legacy plugins must never retire each other.
+        let mut legacy_only = LockFile::default();
+        legacy_only.plugins.insert(
+            "skills".into(),
+            lock_entry("0.2.3", "https://example.invalid/skills-0.2.3.tar.gz"),
+        );
+        legacy_only.plugins.insert(
+            "secrets".into(),
+            lock_entry("0.1.0", "https://example.invalid/secrets-0.1.0.tar.gz"),
+        );
+        assert!(plan_superseded_retirements(&legacy_only, &idx).is_empty());
+
+        // With stale extras installed, plan upgrades extras before retiring legacy entries.
+        let mut with_stale_extras = legacy_only;
+        with_stale_extras.plugins.insert(
+            "extras".into(),
+            lock_entry("0.3.0", "https://example.invalid/extras-0.3.0.tar.gz"),
+        );
+        let plan = plan_superseded_retirements(&with_stale_extras, &idx);
+        assert_eq!(
+            plan,
+            vec![(
+                "extras".to_string(),
+                true,
+                vec!["secrets".to_string(), "skills".to_string()]
+            )]
+        );
+    }
 }

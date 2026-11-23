@@ -217,8 +217,17 @@ async fn install_spec_gated(
     {
         return register_native_gated(home, Some(spec), &candidate, force, gate).await;
     }
-    let parsed = gray_pkg::ops::parse_spec(spec);
+    let mut parsed = gray_pkg::ops::parse_spec(spec);
     let mut lines = Vec::new();
+    if let gray_pkg::ops::NameOrUrl::Name(ref mut name) = parsed {
+        let canonical = gray_pkg::ops::canonical_name(name);
+        if canonical != name.as_str() {
+            lines.push(format!(
+                "note: '{name}' is now part of '{canonical}' — installing {canonical}"
+            ));
+            *name = canonical.to_string();
+        }
+    }
 
     if let gray_pkg::ops::NameOrUrl::Name(name) = &parsed
         && let Some(entry) = index_entry(name).await
@@ -793,6 +802,7 @@ pub fn remove_managed(name: &str) -> anyhow::Result<()> {
         lock.save(&lock_file)?;
     }
     let _ = std::fs::remove_file(home.join("plugins").join(format!("{name}-manifest.json")));
+    let _ = std::fs::remove_file(home.join("plugins").join(format!("{name}-completion.json")));
     let widgets = home.join("plugins/widgets.json");
     if let Ok(raw) = std::fs::read(&widgets)
         && serde_json::from_slice::<serde_json::Value>(&raw)
@@ -1632,8 +1642,9 @@ fn completion_entry(v: &serde_json::Value) -> Option<(String, Option<String>)> {
 }
 
 /// Completion arguments a plugin publishes at runtime, beside its manifest:
-/// `plugins/<name>-completion.json` holding `{"completion": [...]}` in the
-/// manifest's entry format. Lets a plugin offer arguments that change after
+/// `plugins/<name>-completion.json` holding `{"completion": [...]}` and/or
+/// `{"command_completions": {"/<cmd>": [...]}}` in the manifest's entry format.
+/// Lets a single- or multi-command plugin offer arguments that change after
 /// install (installed items, names from the current project).
 fn dynamic_completion_path(home: &Path, name: &str) -> PathBuf {
     home.join("plugins").join(format!("{name}-completion.json"))
@@ -1728,14 +1739,18 @@ fn scan_lock_completions(
             if crate::repl::is_builtin_command(command) || !seen.insert(command.to_string()) {
                 continue;
             }
+            let cmd_key = format!("/{command}");
+            let cmd_args = dynamic
+                .as_ref()
+                .and_then(|d| d["command_completions"][&cmd_key].as_array())
+                .or_else(|| m["command_completions"][&cmd_key].as_array())
+                .map(|entries| entries.iter().filter_map(completion_entry).collect())
+                .unwrap_or_else(|| args.clone());
             rows.push(CompletionRow {
                 command: command.to_string(),
                 description: description_in(&m, command),
                 plugin_description: blurb(&m),
-                args: m["command_completions"][format!("/{command}")]
-                    .as_array()
-                    .map(|entries| entries.iter().filter_map(completion_entry).collect())
-                    .unwrap_or_else(|| args.clone()),
+                args: cmd_args,
             });
         }
     }
@@ -1995,5 +2010,73 @@ mod completion_entry_tests {
         );
         assert_eq!(completion_entry(&json!({"description": "no arg"})), None);
         assert_eq!(completion_entry(&json!(3)), None);
+    }
+}
+
+#[cfg(test)]
+mod dynamic_completion_tests {
+    use super::*;
+    use gray_plugin::lock::LockEntry;
+
+    #[test]
+    fn dynamic_command_completions_override_only_their_command() {
+        let dir = std::env::temp_dir().join(format!("gray-dyn-comp-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let plugins_dir = dir.join("plugins");
+        std::fs::create_dir_all(&plugins_dir).unwrap();
+
+        let mut lock = LockFile::default();
+        lock.plugins.insert(
+            "extras".into(),
+            LockEntry {
+                ecosystem: "gray-native".into(),
+                version: "0.4.0".into(),
+                scope: "user".into(),
+                argv: vec!["/bin/true".into()],
+                cli_argv: Some(vec!["/bin/true".into()]),
+                ..LockEntry::default()
+            },
+        );
+        std::fs::write(
+            plugins_dir.join("extras-manifest.json"),
+            serde_json::json!({
+                "name": "extras",
+                "commands": ["/export", "/skills"],
+                "command_completions": {
+                    "/export": ["clip", "md"],
+                    "/skills": [{"arg": "list", "description": "list installed skills"}]
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+        std::fs::write(
+            plugins_dir.join("extras-completion.json"),
+            serde_json::json!({
+                "command_completions": {
+                    "/skills": [
+                        {"arg": "list", "description": "list installed skills"},
+                        {"arg": "my-skill", "description": "project skill"}
+                    ]
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let mut stamps = Vec::new();
+        let mut rows = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        scan_lock_completions(&dir, &lock, None, false, &mut stamps, &mut rows, &mut seen);
+
+        let export = rows.iter().find(|r| r.command == "export").unwrap();
+        let export_args: Vec<&str> = export.args.iter().map(|(a, _)| a.as_str()).collect();
+        assert_eq!(export_args, vec!["clip", "md"]);
+
+        let skills = rows.iter().find(|r| r.command == "skills").unwrap();
+        let skills_args: Vec<&str> = skills.args.iter().map(|(a, _)| a.as_str()).collect();
+        assert_eq!(skills_args, vec!["list", "my-skill"]);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

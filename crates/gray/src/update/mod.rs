@@ -570,24 +570,26 @@ pub(crate) async fn ensure_skills_plugin() {
     if stamp.exists() {
         return;
     }
-    let installed = gray_pkg::ops::list()
-        .map(|lock| lock.contains_key("skills"))
+    let already_handled = gray_plugin::lock::LockFile::load(&gray_plugin::lock::lock_path(&home))
+        .map(|lock| {
+            lock.plugins.contains_key("extras")
+                || lock.plugins.contains_key("skills")
+                || lock.is_tombstoned("extras")
+        })
         .unwrap_or(false);
-    if installed {
+    if already_handled {
         let _ = std::fs::write(&stamp, b"");
         return;
     }
-    match crate::plugin_cli::install_spec(&home, "skills", false, true).await {
+    match crate::plugin_cli::install_spec(&home, "extras", false, true).await {
         Ok(()) => {
             let _ = std::fs::write(&stamp, b"");
         }
-        Err(e) => log::warn!("skills plugin auto-install failed: {e:#}"),
+        Err(e) => log::warn!("extras (skills) plugin auto-install failed: {e:#}"),
     }
 }
 
 async fn update_plugins_after_gray() {
-    ensure_skills_plugin().await;
-    crate::default_plugins::migrate_once().await;
     match crate::plugin_cli::update_managed("all").await {
         Ok(rows) => {
             let (mut updated, mut rebuilt, mut failed) = (0usize, 0usize, 0usize);
@@ -610,6 +612,8 @@ async fn update_plugins_after_gray() {
         }
         Err(e) => eprintln!("plugins: update failed: {e:#}"),
     }
+    ensure_skills_plugin().await;
+    crate::default_plugins::migrate_once().await;
 }
 
 pub async fn update_now() -> anyhow::Result<()> {

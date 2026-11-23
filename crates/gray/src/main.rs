@@ -263,7 +263,15 @@ async fn run() -> anyhow::Result<()> {
                 }
                 if everything {
                     let home = gray::plugin_cli::home()?;
-                    let name = if home.join("plugins/quality-of-life").exists() {
+                    let lock =
+                        gray_plugin::lock::LockFile::load(&home.join("plugins/lock.json")).ok();
+                    let has = |n: &str| {
+                        lock.as_ref().is_some_and(|l| l.plugins.contains_key(n))
+                            || home.join("plugins").join(n).exists()
+                    };
+                    let name = if has("extras") {
+                        "extras"
+                    } else if has("quality-of-life") {
                         "quality-of-life"
                     } else {
                         "qol"
