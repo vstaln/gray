@@ -8,10 +8,11 @@ pub(crate) enum PluginAction {
     Update(String),
     Enable(String),
     Disable(String),
+    Parts(String),
     Check(String),
 }
 
-const USAGE: &str = "usage: /plugin <list|install|remove|update|enable|disable|check>";
+const USAGE: &str = "usage: /plugin <list|install|remove|update|enable|disable|parts|check>";
 
 pub(crate) fn parse_plugin_args(raw: &str) -> anyhow::Result<PluginAction> {
     let mut toks = raw.split_whitespace();
@@ -34,6 +35,7 @@ pub(crate) fn parse_plugin_args(raw: &str) -> anyhow::Result<PluginAction> {
         Some("update") => Ok(PluginAction::Update(arg)),
         Some("enable") => Ok(PluginAction::Enable(need("enable")?)),
         Some("disable") => Ok(PluginAction::Disable(need("disable")?)),
+        Some("parts") => Ok(PluginAction::Parts(need("parts")?)),
         Some("check") => Ok(PluginAction::Check(need("check")?)),
         Some(other) => anyhow::bail!("unknown plugin subcommand '{other}' — {USAGE}"),
     }
@@ -114,13 +116,20 @@ pub(crate) async fn handle_plugin_command(raw: &str, tui: Option<&crate::compose
                 Err(e) => say_err(tui, &format!("update failed: {e:#}")),
             }
         }
-        PluginAction::Enable(name) => match crate::plugin_cli::set_managed_enabled(&name, true) {
-            Ok(()) => say(tui, &format!("enabled {name}")),
+        PluginAction::Enable(name) => match crate::plugin_cli::toggle_managed(&name, true) {
+            Ok(line) => say(tui, &line),
             Err(e) => say_err(tui, &format!("enable failed: {e:#}")),
         },
-        PluginAction::Disable(name) => match crate::plugin_cli::set_managed_enabled(&name, false) {
-            Ok(()) => say(tui, &format!("disabled {name}")),
+        PluginAction::Disable(name) => match crate::plugin_cli::toggle_managed(&name, false) {
+            Ok(line) => say(tui, &line),
             Err(e) => say_err(tui, &format!("disable failed: {e:#}")),
+        },
+        PluginAction::Parts(bundle) => match crate::plugin_cli::home() {
+            Ok(home) => match crate::plugin_cli::print_parts(&home, &bundle) {
+                Ok(()) => {}
+                Err(e) => say_err(tui, &format!("{e:#}")),
+            },
+            Err(e) => say_err(tui, &format!("parts failed: {e:#}")),
         },
         PluginAction::Check(dir) => {
             // The conformance probe lives in the plugin-dev plugin now —

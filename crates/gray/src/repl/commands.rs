@@ -372,8 +372,9 @@ fn complete_plugin_args(
         ("install", "install a plugin"),
         ("remove", "remove a plugin"),
         ("update", "update plugins"),
-        ("enable", "enable a plugin"),
-        ("disable", "disable a plugin"),
+        ("enable", "enable a plugin or bundle/part"),
+        ("disable", "disable a plugin or bundle/part"),
+        ("parts", "list a bundle's parts"),
         ("check", "run conformance checks on a plugin dir"),
     ];
     complete_from_table(cmd, arg_text, SUBS)

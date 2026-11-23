@@ -581,7 +581,7 @@ pub(crate) async fn ensure_skills_plugin() {
         let _ = std::fs::write(&stamp, b"");
         return;
     }
-    match crate::plugin_cli::install_spec(&home, "extras", false, true).await {
+    match crate::plugin_cli::install_spec(&home, "extras", false, true, None).await {
         Ok(()) => {
             let _ = std::fs::write(&stamp, b"");
         }

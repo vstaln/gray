@@ -21,6 +21,7 @@ struct Row {
 
     error: Option<String>,
     build_log: Option<PathBuf>,
+    parts: Vec<crate::plugin_cli::PartInfo>,
 }
 
 fn exe_kind(entry: &gray_plugin::lock::LockEntry, cli: bool) -> String {
@@ -120,6 +121,7 @@ fn load_rows() -> Vec<Row> {
             let probe_err = start.as_ref().and_then(|s| s.clone().err());
             let error = probe_err.or_else(|| last_recorded_error(&p.name));
             let build_log = build_log_for(&p.name);
+            let name_of = p.name.clone();
             let kind = exe_kind(&p.entry, p.cli);
             Row {
                 error,
@@ -135,6 +137,7 @@ fn load_rows() -> Vec<Row> {
                 hooks,
                 capabilities,
                 build_log,
+                parts: crate::plugin_cli::parts_of(&home, &name_of),
             }
         })
         .collect()
@@ -148,6 +151,29 @@ fn status_text(row: &Row) -> String {
         Some(Ok(())) => "loaded".to_string(),
         Some(Err(e)) => format!("failed: {e}"),
         None => "not loaded".to_string(),
+    }
+}
+
+fn toggle_part(
+    bundle: &str,
+    parts: &mut [crate::plugin_cli::PartInfo],
+    pi: usize,
+) -> (bool, Option<String>) {
+    let part = parts[pi].name.clone();
+    let now_on = !parts[pi].enabled;
+    match gray_pkg::parts::set(bundle, &part, now_on) {
+        Ok(()) => {
+            parts[pi].enabled = now_on;
+            crate::plugin_status::drop_boot();
+            (
+                true,
+                Some(format!(
+                    "{bundle}/{part} turned {} (applies next session or /restart)",
+                    if now_on { "on" } else { "off" }
+                )),
+            )
+        }
+        Err(e) => (false, Some(format!("toggle {bundle}/{part} failed: {e}"))),
     }
 }
 
@@ -170,11 +196,11 @@ fn toggle_row(rows: &mut [Row], ri: usize) -> (bool, Option<String>) {
     }
 }
 
-fn update_target(all: bool, rows: &[Row], filtered: &[usize], sel: usize) -> Option<String> {
+fn update_target(all: bool, rows: &[Row], items: &[Item], sel: usize) -> Option<String> {
     if all {
         return Some("all".to_string());
     }
-    filtered.get(sel).map(|&ri| rows[ri].name.clone())
+    selected_name(rows, items, sel)
 }
 
 fn spawn_update(tx: Sender<(String, Result<Vec<String>, String>)>, target: String) {
@@ -258,7 +284,74 @@ fn detail_lines(row: &Row) -> Vec<(String, String)> {
     if let Some(log) = &row.build_log {
         lines.push(("build log".to_string(), log.display().to_string()));
     }
+    if !row.parts.is_empty() {
+        lines.push((
+            "parts".to_string(),
+            row.parts
+                .iter()
+                .map(|p| format!("{}{}", p.name, if p.enabled { "" } else { " (off)" }))
+                .collect::<Vec<_>>()
+                .join(", "),
+        ));
+    }
     lines
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Item {
+    Bundle(usize),
+    Part(usize, usize),
+}
+
+fn build_items(rows: &[Row], query: &str) -> Vec<Item> {
+    let q = query.to_lowercase();
+    let mut items = Vec::new();
+    for (ri, row) in rows.iter().enumerate() {
+        if !q.is_empty() && !row.name.to_lowercase().contains(&q) {
+            continue;
+        }
+        items.push(Item::Bundle(ri));
+        for pi in 0..row.parts.len() {
+            items.push(Item::Part(ri, pi));
+        }
+    }
+    items
+}
+
+fn toggle_item(rows: &mut [Row], items: &[Item], sel: usize) -> (bool, Option<String>) {
+    match items.get(sel) {
+        Some(Item::Bundle(ri)) => toggle_row(rows, *ri),
+        Some(Item::Part(ri, pi)) => {
+            let bundle = rows[*ri].name.clone();
+            let parts = &mut rows[*ri].parts;
+            toggle_part(&bundle, parts, *pi)
+        }
+        None => (false, None),
+    }
+}
+
+fn selected_name(rows: &[Row], items: &[Item], sel: usize) -> Option<String> {
+    match items.get(sel)? {
+        Item::Bundle(ri) => Some(rows[*ri].name.clone()),
+        Item::Part(ri, _) => Some(rows[*ri].name.clone()),
+    }
+}
+
+fn binary_parts(row: &Row) -> Option<(usize, usize)> {
+    if row.parts.is_empty() {
+        return None;
+    }
+    Some((
+        row.parts.iter().filter(|p| p.enabled).count(),
+        row.parts.len(),
+    ))
+}
+
+fn rows_label_on(rows: &[Row], item: &Item) -> bool {
+    match item {
+        Item::Bundle(ri) => rows[*ri].enabled,
+        Item::Part(ri, pi) => rows[*ri].parts[*pi].enabled,
+    }
 }
 
 pub(crate) fn run_plugins_manager(bg: Option<&BackgroundSnapshot>) -> anyhow::Result<bool> {
@@ -310,23 +403,16 @@ pub(crate) fn run_plugins_manager(bg: Option<&BackgroundSnapshot>) -> anyhow::Re
                     Err(e) => op_msg = Some(format!("{target}: update failed — {e}")),
                 }
                 let fresh = load_rows();
-                for (i, r) in fresh.into_iter().enumerate() {
-                    if let Some(old) = rows.get_mut(i)
-                        && old.name == r.name
-                    {
-                        let stale = old.stale.take();
-                        *old = r;
-                        old.stale = stale;
-                    }
+                let stale: std::collections::BTreeMap<String, Option<String>> = rows
+                    .iter()
+                    .map(|r| (r.name.clone(), r.stale.clone()))
+                    .collect();
+                rows = fresh;
+                for r in &mut rows {
+                    r.stale = stale.get(&r.name).cloned().flatten();
                 }
             }
-            let q = query.to_lowercase();
-            let filtered: Vec<usize> = rows
-                .iter()
-                .enumerate()
-                .filter(|(_, r)| q.is_empty() || r.name.to_lowercase().contains(&q))
-                .map(|(i, _)| i)
-                .collect();
+            let filtered = build_items(&rows, &query);
             sel = sel.min(filtered.len().saturating_sub(1));
 
             terminal.draw(|frame| {
@@ -346,8 +432,10 @@ pub(crate) fn run_plugins_manager(bg: Option<&BackgroundSnapshot>) -> anyhow::Re
                 let note_y = modal.y + modal.height.saturating_sub(4);
                 let keys_y = note_y + 1;
 
-                if detail && let Some(&ri) = filtered.get(sel) {
-                    let row = &rows[ri];
+                if detail && let Some(name) = selected_name(&rows, &filtered, sel) {
+                    let Some(row) = rows.iter().find(|r| r.name == name) else {
+                        return;
+                    };
                     let head = Line::from(vec![
                         Span::styled(
                             row.name.clone(),
@@ -415,28 +503,58 @@ pub(crate) fn run_plugins_manager(bg: Option<&BackgroundSnapshot>) -> anyhow::Re
                             at(list_y),
                         );
                     }
-                    for (vi, &ri) in filtered.iter().enumerate().skip(start).take(list_h) {
-                        let row = &rows[ri];
+                    for (vi, item) in filtered.iter().enumerate().skip(start).take(list_h) {
                         let y = list_y + (vi - start) as u16;
                         let is_sel = vi == sel;
-                        let mark = if !row.enabled {
-                            "○"
-                        } else if matches!(&row.start, Some(Err(_))) {
-                            "✗"
-                        } else {
-                            "✓"
+                        let (row, mark, label, meta) = match item {
+                            Item::Bundle(ri) => {
+                                let row = &rows[*ri];
+                                (
+                                    row,
+                                    if !row.enabled {
+                                        "○"
+                                    } else if matches!(&row.start, Some(Err(_))) {
+                                        "✗"
+                                    } else {
+                                        "✓"
+                                    },
+                                    row.name.clone(),
+                                    format!(
+                                        "{} {}",
+                                        row.version,
+                                        match binary_parts(row) {
+                                            Some((on, all)) => format!("({on}/{all} parts)"),
+                                            None => status_text(row),
+                                        }
+                                    ),
+                                )
+                            }
+                            Item::Part(ri, pi) => {
+                                let row = &rows[*ri];
+                                let part = &row.parts[*pi];
+                                (
+                                    row,
+                                    if part.enabled { "✓" } else { "○" },
+                                    format!("  └ {}", part.name),
+                                    part.description.clone(),
+                                )
+                            }
                         };
                         let stale = row.stale.as_ref().map(|_| "  [update]").unwrap_or_default();
-                        let text = format!(
-                            "{} {:<26} {:<10} {:<32}{}",
-                            mark,
-                            row.name,
-                            row.version,
-                            status_text(row),
-                            stale,
-                        );
+                        let text = format!("{} {:<26} {:<32}{}", mark, label, meta, stale,);
                         let text: String = text.chars().take(w).collect();
                         let fill = w.saturating_sub(text.chars().count());
+                        let fg = if label.starts_with("  └") {
+                            if rows_label_on(&rows, item) {
+                                th.text_body
+                            } else {
+                                th.text_dim
+                            }
+                        } else if row.enabled {
+                            th.text_bright
+                        } else {
+                            th.text_dim
+                        };
                         let line = if is_sel {
                             Line::from(Span::styled(
                                 format!("{text}{}", " ".repeat(fill)),
@@ -446,11 +564,6 @@ pub(crate) fn run_plugins_manager(bg: Option<&BackgroundSnapshot>) -> anyhow::Re
                                     .add_modifier(Modifier::BOLD),
                             ))
                         } else {
-                            let fg = if row.enabled {
-                                th.text_bright
-                            } else {
-                                th.text_dim
-                            };
                             Line::from(vec![
                                 Span::styled(text, Style::default().fg(fg).bg(th.surface_bg)),
                                 Span::styled(" ".repeat(fill), Style::default().bg(th.surface_bg)),
@@ -562,11 +675,9 @@ pub(crate) fn run_plugins_manager(bg: Option<&BackgroundSnapshot>) -> anyhow::Re
                         match code {
                             KeyCode::Esc | KeyCode::Enter | KeyCode::Backspace => detail = false,
                             KeyCode::Char(' ') => {
-                                if let Some(&ri) = filtered.get(sel) {
-                                    let (toggled, msg) = toggle_row(&mut rows, ri);
-                                    changed |= toggled;
-                                    op_msg = msg;
-                                }
+                                let (toggled, msg) = toggle_item(&mut rows, &filtered, sel);
+                                changed |= toggled;
+                                op_msg = msg;
                             }
                             KeyCode::Char('u') | KeyCode::Char('U') if updating.is_none() => {
                                 if let Some(target) =
@@ -598,11 +709,9 @@ pub(crate) fn run_plugins_manager(bg: Option<&BackgroundSnapshot>) -> anyhow::Re
                             sel = 0;
                         }
                         KeyCode::Tab => {
-                            if let Some(&ri) = filtered.get(sel) {
-                                let (toggled, msg) = toggle_row(&mut rows, ri);
-                                changed |= toggled;
-                                op_msg = msg;
-                            }
+                            let (toggled, msg) = toggle_item(&mut rows, &filtered, sel);
+                            changed |= toggled;
+                            op_msg = msg;
                         }
                         KeyCode::PageUp | KeyCode::PageDown => {
                             let last = filtered.len().saturating_sub(1);

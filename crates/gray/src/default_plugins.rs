@@ -178,7 +178,7 @@ async fn retire_superseded(home: &Path, index: &Index, yes: bool) -> (Vec<String
     for (canonical, upgrade, olds) in plan {
         if upgrade {
             let res = if yes {
-                crate::plugin_cli::install_spec(home, &canonical, false, true).await
+                crate::plugin_cli::install_spec(home, &canonical, false, true, None).await
             } else {
                 crate::plugin_cli::install_spec_default(home, &canonical).await
             };
@@ -246,7 +246,7 @@ pub async fn sync_profile(
         }
         let spec = gray_pkg::ops::canonical_name(name);
         let res = if yes {
-            crate::plugin_cli::install_spec(home, spec, false, true).await
+            crate::plugin_cli::install_spec(home, spec, false, true, None).await
         } else {
             crate::plugin_cli::install_spec_default(home, spec).await
         };

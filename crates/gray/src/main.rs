@@ -516,19 +516,42 @@ async fn run_plugin_inner(cmd: gray::PluginCmd) -> anyhow::Result<()> {
             if rows.is_empty() {
                 println!("no plugins installed");
             }
+            let home = gray::plugin_cli::home()?;
             for r in &rows {
                 let state = if r.on { "" } else { " [disabled]" };
                 let kind = if r.cli { " [command]" } else { "" };
                 let global = if r.global { " [global]" } else { "" };
+                let parts = gray::plugin_cli::part_count(&home, &r.name)
+                    .map(|(on, all)| format!(" ({on}/{all} parts on)"))
+                    .unwrap_or_default();
                 println!(
-                    "{} {} ({}){state}{kind}{global}",
+                    "{} {} ({}){state}{kind}{global}{parts}",
                     r.name, r.version, r.scope
                 );
             }
             Ok(())
         }
-        PluginCmd::Install { specs, force, yes } => {
-            gray::plugin_cli::install_specs(&gray::plugin_cli::home()?, &specs, force, yes).await
+        PluginCmd::Parts { bundle } => {
+            gray::plugin_cli::print_parts(&gray::plugin_cli::home()?, &bundle)
+        }
+        PluginCmd::Install {
+            specs,
+            force,
+            yes,
+            parts,
+        } => {
+            let parts = parts
+                .as_deref()
+                .map(|p| {
+                    p.split(',')
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_string)
+                        .collect::<Vec<_>>()
+                })
+                .filter(|v| !v.is_empty());
+            gray::plugin_cli::install_specs(&gray::plugin_cli::home()?, &specs, force, yes, parts)
+                .await
         }
         PluginCmd::Remove { name } => {
             gray::plugin_cli::remove_managed(&name)?;
@@ -566,18 +589,20 @@ async fn run_plugin_inner(cmd: gray::PluginCmd) -> anyhow::Result<()> {
             Ok(())
         }
         PluginCmd::Enable { name, global } => {
-            gray::plugin_cli::set_managed_enabled(&name, true)?;
+            let line = gray::plugin_cli::toggle_managed(&name, true)?;
             if global {
-                gray::plugin_cli::set_managed_global(&name, true)?;
-                println!("enabled {name} [global]");
+                gray::plugin_cli::set_managed_global(
+                    &gray::plugin_cli::global_target(&name),
+                    true,
+                )?;
+                println!("{line} [global]");
             } else {
-                println!("enabled {name}");
+                println!("{line}");
             }
             Ok(())
         }
         PluginCmd::Disable { name } => {
-            gray::plugin_cli::set_managed_enabled(&name, false)?;
-            println!("disabled {name}");
+            println!("{}", gray::plugin_cli::toggle_managed(&name, false)?);
             Ok(())
         }
         PluginCmd::Sync { profile, yes } => {

@@ -1,3 +1,4 @@
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Mutex;
@@ -111,6 +112,280 @@ pub(crate) fn plugin_description(home: &Path, name: &str) -> Option<String> {
     blurb(&metadata(home, name).ok()?)
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PartInfo {
+    pub name: String,
+    pub default: bool,
+    pub enabled: bool,
+    pub description: String,
+}
+
+pub fn parts_of(home: &Path, bundle: &str) -> Vec<PartInfo> {
+    let Ok(manifest) = metadata(home, bundle) else {
+        return Vec::new();
+    };
+    let overrides = gray_pkg::parts::bundle(bundle);
+    manifest["parts"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|p| {
+            let name = p["name"].as_str()?.to_string();
+            let default = p["default"].as_bool().unwrap_or(true);
+            let enabled = overrides
+                .get(&name)
+                .copied()
+                .or_else(|| p["enabled"].as_bool())
+                .unwrap_or(default);
+            Some(PartInfo {
+                name,
+                default,
+                enabled,
+                description: p["description"].as_str().unwrap_or_default().to_string(),
+            })
+        })
+        .collect()
+}
+
+pub fn part_count(home: &Path, bundle: &str) -> Option<(usize, usize)> {
+    let parts = parts_of(home, bundle);
+    if parts.is_empty() {
+        return None;
+    }
+    let on = parts.iter().filter(|p| p.enabled).count();
+    Some((on, parts.len()))
+}
+
+fn unknown_part(bundle: &str, part: &str, parts: &[PartInfo]) -> anyhow::Error {
+    if parts.is_empty() {
+        return anyhow::anyhow!(
+            "{bundle} has no parts in this version — run: gray plugin update {bundle}"
+        );
+    }
+    let names: Vec<&str> = parts.iter().map(|p| p.name.as_str()).collect();
+    let mut scored: Vec<(String, f64)> = names
+        .iter()
+        .map(|n| (n.to_string(), strsim::jaro_winkler(part, n)))
+        .filter(|(n, score)| *score >= 0.85 && n != part)
+        .collect();
+    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    let hint = scored
+        .first()
+        .map(|(n, _)| format!(" — did you mean '{n}'?"))
+        .unwrap_or_default();
+    anyhow::anyhow!(
+        "unknown part '{part}' for {bundle}{hint} (parts: {})",
+        names.join(", ")
+    )
+}
+
+pub fn print_parts(home: &Path, target: &str) -> anyhow::Result<()> {
+    migrate_commands_json(home);
+    let bundle = gray_pkg::ops::canonical_name(target);
+    ensure_installed(home, bundle)?;
+    let parts = parts_of(home, bundle);
+    if parts.is_empty() {
+        return Err(unknown_part(bundle, "", &parts));
+    }
+    let name_w = parts.iter().map(|p| p.name.len()).max().unwrap_or(0).max(4);
+    let desc_w = parts
+        .iter()
+        .map(|p| p.description.chars().count())
+        .max()
+        .unwrap_or(0)
+        .max(6);
+    println!(
+        "{:<name_w$}  {:<8}  {:<8}  {:<desc_w$}",
+        "part", "state", "default", "description"
+    );
+    for p in &parts {
+        println!(
+            "{:<name_w$}  {:<8}  {:<8}  {:<desc_w$}",
+            p.name,
+            if p.enabled { "on" } else { "off" },
+            if p.default { "on" } else { "off" },
+            p.description
+        );
+    }
+    Ok(())
+}
+
+fn pick_parts(bundle: &str, parts: &[PartInfo]) -> anyhow::Result<Option<BTreeMap<String, bool>>> {
+    use std::io::{BufRead, Write};
+    let mut on: Vec<bool> = parts.iter().map(|p| p.enabled).collect();
+    println!(
+        "{bundle} is made of {} parts — pick the ones to turn on:",
+        parts.len()
+    );
+    let stdin = std::io::stdin();
+    loop {
+        for (i, p) in parts.iter().enumerate() {
+            println!(
+                "  [{}] {}  {}",
+                if on[i] { "x" } else { " " },
+                p.name,
+                p.description
+            );
+        }
+        print!("  numbers to toggle, e.g. 1,3 (enter = keep as shown, q = cancel): ");
+        std::io::stdout().flush().ok();
+        let mut line = String::new();
+        if stdin.lock().read_line(&mut line)? == 0 {
+            break;
+        }
+        let text = line.trim();
+        if text == "q" || text == "quit" {
+            return Ok(None);
+        }
+        if text.is_empty() {
+            break;
+        }
+        for token in text.split(|c: char| c == ',' || c.is_whitespace()) {
+            let Ok(n) = token.parse::<usize>() else {
+                continue;
+            };
+            if n >= 1 && n <= parts.len() {
+                on[n - 1] = !on[n - 1];
+            }
+        }
+    }
+    Ok(Some(
+        parts
+            .iter()
+            .zip(&on)
+            .map(|(p, on)| (p.name.clone(), *on))
+            .collect(),
+    ))
+}
+
+fn write_parts(
+    home: &Path,
+    bundle: &str,
+    parts: &[PartInfo],
+    chosen: &BTreeMap<String, bool>,
+) -> anyhow::Result<()> {
+    gray_pkg::parts::replace(bundle, chosen)?;
+    let on: Vec<&str> = parts
+        .iter()
+        .filter(|p| chosen.get(&p.name).copied().unwrap_or(false))
+        .map(|p| p.name.as_str())
+        .collect();
+    println!(
+        "{bundle}: {} of {} parts on ({}) — applies to new sessions",
+        on.len(),
+        parts.len(),
+        if on.is_empty() {
+            "none".to_string()
+        } else {
+            on.join(", ")
+        }
+    );
+    let _ = home;
+    Ok(())
+}
+
+fn resolve_part(bundle: &str, raw: &str) -> String {
+    let trimmed = raw.trim().trim_start_matches('/');
+    let tail = match trimmed.split_once('/') {
+        Some((head, rest)) if head == bundle => rest,
+        _ => trimmed,
+    };
+    gray_pkg::ops::part_of(tail)
+        .filter(|(b, _)| *b == bundle)
+        .map(|(_, part)| part.to_string())
+        .unwrap_or_else(|| tail.to_string())
+}
+
+fn apply_parts_after_install(
+    home: &Path,
+    bundle: &str,
+    explicit: Option<&[String]>,
+    yes: bool,
+) -> anyhow::Result<()> {
+    let parts = parts_of(home, bundle);
+    if parts.is_empty() {
+        return match explicit {
+            Some(_) => Err(unknown_part(bundle, "", &parts)),
+            None => Ok(()),
+        };
+    }
+    if let Some(list) = explicit {
+        let mut chosen = BTreeMap::new();
+        for p in &parts {
+            chosen.insert(p.name.clone(), false);
+        }
+        for name in list {
+            let part = resolve_part(bundle, name);
+            if part.is_empty() {
+                continue;
+            }
+            match parts.iter().find(|p| p.name == part) {
+                Some(p) => {
+                    chosen.insert(p.name.clone(), true);
+                }
+                None => return Err(unknown_part(bundle, &part, &parts)),
+            }
+        }
+        return write_parts(home, bundle, &parts, &chosen);
+    }
+    if yes || !interactive() || parts.len() < 2 {
+        return Ok(());
+    }
+    match pick_parts(bundle, &parts)? {
+        Some(chosen) => write_parts(home, bundle, &parts, &chosen),
+        None => {
+            println!("{bundle} installed with its default parts");
+            Ok(())
+        }
+    }
+}
+
+fn toggle_part(home: &Path, bundle: &str, part: &str, on: bool) -> anyhow::Result<String> {
+    ensure_installed(home, bundle)?;
+    let parts = parts_of(home, bundle);
+    if !parts.is_empty() && !parts.iter().any(|p| p.name == part) {
+        return Err(unknown_part(bundle, part, &parts));
+    }
+    gray_pkg::parts::set(bundle, part, on)?;
+    Ok(format!(
+        "{part} is part of {bundle}: turned it {} (applies to new sessions)",
+        if on { "on" } else { "off" }
+    ))
+}
+
+fn disabled_bundle_note(lock: &LockFile, bundle: &str, line: String) -> String {
+    if lock.plugins.get(bundle).is_some_and(|e| !e.enabled) {
+        return format!(
+            "{line}\nnote: {bundle} itself is disabled — turn it back on with: gray plugin enable {bundle}"
+        );
+    }
+    line
+}
+
+pub fn toggle_managed(target: &str, on: bool) -> anyhow::Result<String> {
+    let home = home()?;
+    migrate_commands_json(&home);
+    let lock = load_lock(&home)?;
+    if let Some((bundle, raw)) = target.split_once('/')
+        && lock.plugins.contains_key(bundle)
+    {
+        let line = toggle_part(&home, bundle, &resolve_part(bundle, raw), on)?;
+        return Ok(disabled_bundle_note(&lock, bundle, line));
+    }
+    if lock.plugins.contains_key(target) {
+        gray_pkg::ops::set_enabled(target, on)?;
+        return Ok(format!(
+            "{} {target}",
+            if on { "enabled" } else { "disabled" }
+        ));
+    }
+    if let Some((bundle, part)) = gray_pkg::ops::part_of(target) {
+        let line = toggle_part(&home, bundle, part, on)?;
+        return Ok(disabled_bundle_note(&lock, bundle, line));
+    }
+    Err(anyhow::anyhow!("{}", not_installed_message(&home, target)))
+}
+
 fn blurb(manifest: &serde_json::Value) -> Option<String> {
     manifest["description"]
         .as_str()
@@ -188,10 +463,54 @@ pub async fn install_spec_lines(
     spec: &str,
     force: bool,
 ) -> anyhow::Result<Vec<String>> {
-    install_spec_gated(home, spec, force, TrustGate::Lines).await
+    install_spec_gated(home, spec, force, TrustGate::Lines, None).await
 }
 
 async fn install_spec_gated(
+    home: &Path,
+    spec: &str,
+    force: bool,
+    gate: TrustGate,
+    parts: Option<Vec<String>>,
+) -> anyhow::Result<Vec<String>> {
+    let before: BTreeSet<String> = load_lock(home)
+        .map(|l| l.plugins.into_keys().collect())
+        .unwrap_or_default();
+    let mut lines = install_spec_body(home, spec, force, gate).await?;
+    let Ok(after) = load_lock(home) else {
+        return Ok(lines);
+    };
+    let mut wanted: Vec<String> = after
+        .plugins
+        .keys()
+        .filter(|k| !before.contains(*k))
+        .cloned()
+        .collect();
+    if wanted.is_empty()
+        && let gray_pkg::ops::NameOrUrl::Name(name) = gray_pkg::ops::parse_spec(spec)
+    {
+        let canonical = gray_pkg::ops::canonical_name(&name).to_string();
+        if after.plugins.contains_key(&canonical) {
+            wanted.push(canonical);
+        }
+    }
+    for name in wanted {
+        if !after.plugins.contains_key(&name) {
+            continue;
+        }
+        if let Err(e) = apply_parts_after_install(
+            home,
+            &name,
+            parts.as_deref(),
+            matches!(gate, TrustGate::Quiet),
+        ) {
+            lines.push(format!("{e:#}"));
+        }
+    }
+    Ok(lines)
+}
+
+async fn install_spec_body(
     home: &Path,
     spec: &str,
     force: bool,
@@ -222,6 +541,14 @@ async fn install_spec_gated(
     if let gray_pkg::ops::NameOrUrl::Name(ref mut name) = parsed {
         let canonical = gray_pkg::ops::canonical_name(name);
         if canonical != name.as_str() {
+            let installed = load_lock(home)
+                .map(|l| l.plugins.contains_key(canonical))
+                .unwrap_or(false);
+            if installed && let Some((bundle, part)) = gray_pkg::ops::part_of(name) {
+                lines.push(toggle_part(home, bundle, part, true)?);
+                lines.push(format!("{bundle} is already installed — no reinstall"));
+                return Ok(lines);
+            }
             lines.push(format!(
                 "note: '{name}' is now part of '{canonical}' — installing {canonical}"
             ));
@@ -328,22 +655,28 @@ async fn install_spec_gated(
 }
 
 pub(crate) async fn install_spec_default(home: &Path, spec: &str) -> anyhow::Result<()> {
-    install_spec_gated(home, spec, false, TrustGate::Lines)
+    install_spec_gated(home, spec, false, TrustGate::Lines, None)
         .await
         .map(|_| ())
 }
 
 pub(crate) async fn install_spec_consent(home: &Path, spec: &str) -> anyhow::Result<Vec<String>> {
-    install_spec_gated(home, spec, false, TrustGate::Consent).await
+    install_spec_gated(home, spec, false, TrustGate::Consent, None).await
 }
 
-pub async fn install_spec(home: &Path, spec: &str, force: bool, yes: bool) -> anyhow::Result<()> {
+pub async fn install_spec(
+    home: &Path,
+    spec: &str,
+    force: bool,
+    yes: bool,
+    parts: Option<Vec<String>>,
+) -> anyhow::Result<()> {
     let gate = if yes {
         TrustGate::Quiet
     } else {
         TrustGate::Ask
     };
-    for line in install_spec_gated(home, spec, force, gate).await? {
+    for line in install_spec_gated(home, spec, force, gate, parts).await? {
         println!("{line}");
     }
     Ok(())
@@ -359,11 +692,11 @@ pub async fn install(home: &Path, name: &str) -> anyhow::Result<()> {
         return Ok(());
     }
     if name == "background" {
-        install_spec(home, name, false, false).await?;
+        install_spec(home, name, false, false, None).await?;
         return Ok(());
     }
     if index_entry(name).await.is_some() {
-        install_spec(home, name, false, false).await?;
+        install_spec(home, name, false, false, None).await?;
         return Ok(());
     }
     if let Some(candidate) = native_on_path(name) {
@@ -386,10 +719,11 @@ pub async fn install_specs(
     specs: &[String],
     force: bool,
     yes: bool,
+    parts: Option<Vec<String>>,
 ) -> anyhow::Result<()> {
     let mut failed = Vec::new();
     for spec in specs {
-        if let Err(e) = install_spec(home, spec, force, yes).await {
+        if let Err(e) = install_spec(home, spec, force, yes, parts.clone()).await {
             eprintln!("{spec}: {e:#}");
             failed.push(spec.as_str());
         }
@@ -822,6 +1156,16 @@ pub fn set_managed_enabled(name: &str, on: bool) -> anyhow::Result<()> {
     gray_pkg::ops::set_enabled(name, on)
 }
 
+pub fn global_target(name: &str) -> String {
+    match home() {
+        Ok(home) => match load_lock(&home) {
+            Ok(lock) if lock.plugins.contains_key(name) => name.to_string(),
+            _ => gray_pkg::ops::canonical_name(name).to_string(),
+        },
+        Err(_) => name.to_string(),
+    }
+}
+
 pub fn set_managed_global(name: &str, on: bool) -> anyhow::Result<()> {
     let home = home()?;
     migrate_commands_json(&home);
@@ -1125,6 +1469,33 @@ pub(crate) fn forwardable_names() -> std::collections::BTreeSet<String> {
     names
 }
 
+fn alias_cli_target(
+    home: &Path,
+    lock: &LockFile,
+    user_home: Option<&(PathBuf, LockFile)>,
+    name: &str,
+) -> Option<(PathBuf, String, LockEntry, String)> {
+    if lock.plugins.contains_key(name)
+        || user_home.is_some_and(|(_, l)| l.plugins.contains_key(name))
+    {
+        return None;
+    }
+    let (bundle, part) = gray_pkg::ops::part_of(name)?;
+    let (bundle_home, entry) = match lock.plugins.get(bundle) {
+        Some(entry) => (home.to_path_buf(), entry.clone()),
+        None => {
+            let (u, l) = user_home?;
+            (u.clone(), l.plugins.get(bundle)?.clone())
+        }
+    };
+    entry.cli_argv.as_ref()?;
+    let parts = parts_of(&bundle_home, bundle);
+    if !parts.is_empty() && !parts.iter().any(|p| p.name == part) {
+        return None;
+    }
+    Some((bundle_home, bundle.to_string(), entry, part.to_string()))
+}
+
 pub async fn forward(home: &Path, name: &str, rest: &[String]) -> anyhow::Result<()> {
     validate_name(name)?;
     migrate_commands_json(home);
@@ -1201,10 +1572,20 @@ pub async fn forward(home: &Path, name: &str, rest: &[String]) -> anyhow::Result
                         disabled_hint(home, dead_home, project.as_ref(), owner)
                     ));
                 }
+                None if let Some((h, owner, e, part)) =
+                    alias_cli_target(home, &lock, user_home.as_ref(), name) =>
+                {
+                    (e, h, owner, Some(part))
+                }
                 None => {
                     return Err(anyhow::anyhow!(if sidecar_named {
                         sidecar_usage(home, name)
                     } else {
+                        if let Some((bundle, _)) = gray_pkg::ops::part_of(name) {
+                            return Err(anyhow::anyhow!(
+                                "'{name}' is now a part of the {bundle} bundle — install it with: gray plugin install {bundle}"
+                            ));
+                        }
                         match index_owner_hint(name).await {
                             Some(hint) => hint,
                             None => removed_builtin(name).map(str::to_string).unwrap_or_else(

@@ -649,7 +649,41 @@ pub const RENAMED: &[(&str, &str)] = &[
     ("gh-issues", "context-inject"),
     ("todo", "tasks"),
     ("kanban", "tasks"),
+    ("orchestrate", "tasks"),
+    ("loop", "tasks"),
+    ("gsd", "tasks"),
+    ("workflows", "tasks"),
+    ("plan", "tasks"),
+    ("plannotator", "tasks"),
+    ("goal", "tasks"),
+    ("telegram", "gateway"),
+    ("discord", "gateway"),
+    ("slack", "gateway"),
+    ("signal", "gateway"),
+    ("matrix", "gateway"),
+    ("irc", "gateway"),
+    ("email", "gateway"),
+    ("ntfy", "gateway"),
+    ("webchat", "gateway"),
+    ("whatsapp", "gateway"),
+    ("teams", "gateway"),
+    ("twilio", "gateway"),
+    ("gchat", "gateway"),
+    ("mastodon", "gateway"),
+    ("mattermost", "gateway"),
 ];
+
+pub const PART_RENAMES: &[(&str, &str)] = &[("qol", "quality-of-life")];
+
+pub fn part_of(old: &str) -> Option<(&str, &str)> {
+    let bundle = RENAMED.iter().find(|(o, _)| *o == old).map(|(_, n)| *n)?;
+    let part = PART_RENAMES
+        .iter()
+        .find(|(o, _)| *o == old)
+        .map(|(_, p)| *p)
+        .unwrap_or(old);
+    Some((bundle, part))
+}
 
 pub fn canonical_name(name: &str) -> &str {
     RENAMED
@@ -661,6 +695,8 @@ pub fn canonical_name(name: &str) -> &str {
 
 async fn update_inner(target: &str, check: bool) -> anyhow::Result<Vec<UpdateRow>> {
     let lock = read_lock()?;
+    let before = lock.clone();
+    let mut migrations: Vec<(String, String, String, bool)> = Vec::new();
     let names: Vec<String> = if target == "all" {
         lock.plugins.keys().cloned().collect()
     } else {
@@ -786,9 +822,6 @@ async fn update_inner(target: &str, check: bool) -> anyhow::Result<Vec<UpdateRow
             installed.argv.clone()
         };
         let scope = Some(installed.scope.clone());
-        let target_preexisted = read_lock()
-            .map(|l| l.plugins.contains_key(lookup))
-            .unwrap_or_else(|_| lock.plugins.contains_key(lookup));
         match install_index(
             &client,
             lookup,
@@ -800,21 +833,13 @@ async fn update_inner(target: &str, check: bool) -> anyhow::Result<Vec<UpdateRow
         {
             Ok(r) => {
                 if renamed.is_some() {
-                    let want = if lock.plugins.contains_key(lookup) {
-                        None
-                    } else if installed.enabled && target_preexisted {
-                        Some(true)
-                    } else if !installed.enabled && !target_preexisted {
-                        Some(false)
-                    } else {
-                        None
-                    };
-                    if let Some(on) = want
-                        && let Err(e) = set_enabled_inner(lookup, on)
-                    {
-                        log::warn!(
-                            "renamed plugin {name}: could not carry enabled={on} onto {lookup}: {e:#}"
-                        );
+                    if let Some((bundle, part)) = part_of(name) {
+                        migrations.push((
+                            name.clone(),
+                            bundle.to_string(),
+                            part.to_string(),
+                            installed.enabled,
+                        ));
                     }
                     if let Err(e) = remove(name) {
                         log::warn!("renamed plugin {name}: old entry not removed: {e:#}");
@@ -831,7 +856,45 @@ async fn update_inner(target: &str, check: bool) -> anyhow::Result<Vec<UpdateRow
             Err(e) => out.push(UpdateRow::new(name, UpdateAction::Failed(format!("{e:#}")))),
         }
     }
+    migrate_parts(&before, &migrations);
     Ok(out)
+}
+
+fn migrate_parts(before: &LockFile, migrations: &[(String, String, String, bool)]) {
+    let mut groups: BTreeMap<&str, Vec<&(String, String, String, bool)>> = BTreeMap::new();
+    for m in migrations {
+        groups.entry(m.1.as_str()).or_default().push(m);
+    }
+    let Ok(after) = read_lock() else {
+        return;
+    };
+    for (bundle, migrated) in groups {
+        if !after.plugins.contains_key(bundle) {
+            continue;
+        }
+        let preexisting = before.plugins.contains_key(bundle);
+        let mut on = crate::parts::bundle(bundle);
+        for (_, _, part, enabled) in &migrated {
+            on.insert(part.clone(), *enabled);
+        }
+        if !preexisting {
+            for (alias, _) in RENAMED.iter().filter(|(_, group)| *group == bundle) {
+                if migrated.iter().any(|(a, _, _, _)| a == alias) {
+                    continue;
+                }
+                if let Some((_, part)) = part_of(alias) {
+                    on.entry(part.to_string()).or_insert(false);
+                }
+            }
+            let any_on = migrated.iter().any(|(_, _, _, enabled)| *enabled);
+            if let Err(e) = set_enabled_inner(bundle, any_on) {
+                log::warn!("migrated bundle {bundle}: could not set enabled={any_on}: {e:#}");
+            }
+        }
+        if let Err(e) = crate::parts::replace(bundle, &on) {
+            log::warn!("migrated bundle {bundle}: parts.json not written: {e:#}");
+        }
+    }
 }
 
 fn registered_exe_path(e: &LockEntry) -> Option<PathBuf> {
