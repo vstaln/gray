@@ -743,6 +743,9 @@ async fn update_inner(target: &str, check: bool) -> anyhow::Result<Vec<UpdateRow
             installed.argv.clone()
         };
         let scope = Some(installed.scope.clone());
+        let target_preexisted = read_lock()
+            .map(|l| l.plugins.contains_key(lookup))
+            .unwrap_or_else(|_| lock.plugins.contains_key(lookup));
         match install_index(
             &client,
             lookup,
@@ -753,10 +756,18 @@ async fn update_inner(target: &str, check: bool) -> anyhow::Result<Vec<UpdateRow
         .await
         {
             Ok(r) => {
-                if renamed.is_some()
-                    && let Err(e) = remove(name)
-                {
-                    log::warn!("renamed plugin {name}: old entry not removed: {e:#}");
+                if renamed.is_some() {
+                    if !target_preexisted
+                        && !installed.enabled
+                        && let Err(e) = set_enabled_inner(lookup, false)
+                    {
+                        log::warn!(
+                            "renamed plugin {name}: could not preserve disabled state on {lookup}: {e:#}"
+                        );
+                    }
+                    if let Err(e) = remove(name) {
+                        log::warn!("renamed plugin {name}: old entry not removed: {e:#}");
+                    }
                 }
                 let v = r.version.clone();
                 out.push(UpdateRow {
