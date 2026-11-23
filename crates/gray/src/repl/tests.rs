@@ -334,3 +334,62 @@ fn connect_receipt_falls_back_to_the_endpoint_host_not_provider() {
     );
     assert_eq!(super::endpoint_host(""), None);
 }
+
+#[test]
+fn extract_inline_skills_finds_mid_prompt_skills_and_skips_code_and_subcommands() {
+    assert_eq!(
+        super::extract_inline_skills("help me design auth /skills grill-me, please"),
+        vec!["grill-me".to_string()]
+    );
+    assert_eq!(
+        super::extract_inline_skills("use `/skills grill-me` or ```\n/skills fake\n```"),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        super::extract_inline_skills("check /skills list and /skills on"),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        super::extract_inline_skills("a /skills grill-me and /skills grill-me and /skills tdd"),
+        vec!["grill-me".to_string(), "tdd".to_string()]
+    );
+}
+
+#[tokio::test]
+async fn expand_inline_skills_appends_plugin_prompt_output() {
+    struct FakeSkills;
+    #[async_trait::async_trait]
+    impl gray_core::agent::PluginHooks for FakeSkills {
+        fn commands(&self) -> Vec<gray_core::agent::PluginCommand> {
+            vec![gray_core::agent::PluginCommand {
+                name: "/skills".into(),
+                turn_local_verbs: Vec::new(),
+            }]
+        }
+        async fn run_command(
+            &self,
+            _name: &str,
+            argv: Vec<String>,
+            _raw: Option<String>,
+        ) -> Option<gray_core::agent::CommandOutcome> {
+            if argv.first().map(String::as_str) == Some("grill-me") {
+                Some(gray_core::agent::CommandOutcome::Prompt(
+                    "SKILL_BODY: grill-me".into(),
+                ))
+            } else {
+                Some(gray_core::agent::CommandOutcome::Say(
+                    "unknown skill".into(),
+                ))
+            }
+        }
+    }
+    let hooks: Vec<std::sync::Arc<dyn gray_core::agent::PluginHooks>> =
+        vec![std::sync::Arc::new(FakeSkills)];
+    let expanded = super::expand_inline_skills("help me /skills grill-me about auth", &hooks).await;
+    assert_eq!(
+        expanded,
+        "help me /skills grill-me about auth\n\nSKILL_BODY: grill-me"
+    );
+    let unchanged = super::expand_inline_skills("help me /skills nonexistent", &hooks).await;
+    assert_eq!(unchanged, "help me /skills nonexistent");
+}

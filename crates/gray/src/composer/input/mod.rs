@@ -233,23 +233,44 @@ fn tail_line_is(tui: &Tui, text: &str) -> bool {
     }
 }
 
+fn is_inline_slash_name(name: &str) -> bool {
+    name.bytes()
+        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
+}
+
 fn inline_slash(text: &str, cursor: usize) -> Option<std::ops::Range<usize>> {
     if text.trim_start().starts_with('/') {
         return None;
     }
-    let (start, space) = text[..cursor]
+    let cursor = cursor.min(text.len());
+    let (ws_idx, ws_char) = text[..cursor]
         .char_indices()
         .rfind(|(_, c)| c.is_whitespace())?;
-    let start = start + space.len_utf8();
-    let end = text[cursor..]
+    let word_start = ws_idx + ws_char.len_utf8();
+    let word_end = text[cursor..]
         .find(char::is_whitespace)
         .map_or(text.len(), |i| cursor + i);
-    let name = text[start..end].strip_prefix('/')?;
-    (start < cursor
-        && name
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_')))
-    .then_some(start..end)
+    if let Some(name) = text[word_start..word_end].strip_prefix('/') {
+        return (word_start < cursor && is_inline_slash_name(name)).then_some(word_start..word_end);
+    }
+    if !matches!(ws_char, ' ' | '\t') {
+        return None;
+    }
+    let before_ws = &text[..ws_idx];
+    let cmd_start = before_ws
+        .char_indices()
+        .rfind(|(_, c)| c.is_whitespace())
+        .map_or(0, |(i, c)| i + c.len_utf8());
+    let cmd = before_ws[cmd_start..].strip_prefix('/')?;
+    if cmd.is_empty() || !is_inline_slash_name(cmd) {
+        return None;
+    }
+    let end = if word_start == cursor {
+        cursor
+    } else {
+        word_end
+    };
+    Some(cmd_start..end)
 }
 
 /// Recompute the slash-completion popup from the draft. While a history
@@ -267,12 +288,14 @@ pub(crate) fn sync_completion(tui: &mut Tui, cwd: &Path) {
         let token = &cur_text[range.start..tui.textarea.cursor()];
         let prefix = token[1..].to_ascii_lowercase();
         let mut matches = crate::repl::completion_matches_dyn(token, cwd);
-        matches.retain(|(name, _)| {
-            name.starts_with(&prefix)
-                || crate::repl::commands::REGISTRY.iter().any(|d| {
-                    d.name == name && d.aliases.iter().any(|alias| alias.starts_with(&prefix))
-                })
-        });
+        if !prefix.contains(char::is_whitespace) {
+            matches.retain(|(name, _)| {
+                name.starts_with(&prefix)
+                    || crate::repl::commands::REGISTRY.iter().any(|d| {
+                        d.name == name && d.aliases.iter().any(|alias| alias.starts_with(&prefix))
+                    })
+            });
+        }
         matches
     } else {
         crate::repl::completion_matches_dyn(&cur_text, cwd)
@@ -687,5 +710,28 @@ fn needs_cold_confirm(tui: &mut Tui, text: &str) -> bool {
 fn echo_submit(tui: &mut Tui, text: &str, attached: &[PathBuf]) {
     if !crate::repl::parse_command(text).runs_local() {
         tui.push_user_prompt(text, attached, !text.starts_with('/'));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::inline_slash;
+
+    #[test]
+    fn inline_slash_handles_single_and_two_token_skills() {
+        assert_eq!(inline_slash("/skills grill", 13), None);
+        assert_eq!(inline_slash("help me /sk", 11), Some(8..11));
+        assert_eq!(inline_slash("help me /skills ", 16), Some(8..16));
+        assert_eq!(inline_slash("help me /skills gr", 18), Some(8..18));
+        assert_eq!(
+            inline_slash("help me /skills gr| more".replace('|', "").as_str(), 18),
+            Some(8..18)
+        );
+        assert_eq!(inline_slash("help me /skills about", 16), Some(8..16));
+        assert_eq!(inline_slash("help me /skills grill-me next", 29), None);
+        assert_eq!(inline_slash("help me /skills\ngr", 18), None);
+        assert_eq!(inline_slash("line 1\n/skills gr", 17), Some(7..17));
+        assert_eq!(inline_slash("check /etc/hosts", 16), None);
+        assert_eq!(inline_slash("mention `/skills`", 17), None);
     }
 }

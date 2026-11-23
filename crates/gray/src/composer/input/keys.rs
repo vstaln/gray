@@ -104,8 +104,9 @@ pub(super) fn apply(tui: &mut Tui, a: Action) -> Option<KeyOutcome> {
             if let Some(mut range) = super::inline_slash(cur, tui.textarea.cursor()) {
                 let typed = &cur[range.clone()];
                 let command = format!("/{name}");
-                if typed.eq_ignore_ascii_case(&command)
-                    || crate::repl::commands::resolve(typed).is_some_and(|d| d.name == name)
+                if !name.contains(' ')
+                    && (typed.eq_ignore_ascii_case(&command)
+                        || crate::repl::commands::resolve(typed).is_some_and(|d| d.name == name))
                 {
                     if cur[range.end..].starts_with(' ') {
                         range.end += 1;
@@ -139,7 +140,18 @@ pub(super) fn apply(tui: &mut Tui, a: Action) -> Option<KeyOutcome> {
         }
         Action::Submit => {
             let cur = tui.textarea.text();
-            if super::inline_slash(cur, tui.textarea.cursor()).is_some() {
+            if let Some(range) = super::inline_slash(cur, tui.textarea.cursor()) {
+                let before_cursor = &cur[range.start..tui.textarea.cursor()];
+                if let Some((_, arg)) = before_cursor.split_once(char::is_whitespace)
+                    && (!arg.is_empty() || tui.sel > 0)
+                    && let Some((name, _)) = tui.matches.get(tui.sel).cloned()
+                {
+                    let typed = &cur[range.clone()];
+                    if !typed.eq_ignore_ascii_case(&format!("/{name}")) {
+                        fill_completion(tui, &name);
+                        return edited;
+                    }
+                }
                 return Some(Submit);
             }
             if let Some((name, _)) = tui.matches.get(tui.sel).cloned() {
@@ -277,8 +289,15 @@ fn edit(tui: &mut Tui, f: impl FnOnce(&mut Tui)) -> Option<KeyOutcome> {
 
 fn fill_completion(tui: &mut Tui, name: &str) {
     let fill = crate::repl::completion_fill(name);
-    if let Some(range) = super::inline_slash(tui.textarea.text(), tui.textarea.cursor()) {
-        tui.textarea.replace_range(range, fill.trim_end());
+    let cur = tui.textarea.text();
+    if let Some(range) = super::inline_slash(cur, tui.textarea.cursor()) {
+        let replacement =
+            if name.contains(' ') && !cur[range.end..].starts_with(char::is_whitespace) {
+                fill.as_str()
+            } else {
+                fill.trim_end()
+            };
+        tui.textarea.replace_range(range, replacement);
         tui.history_idx = None;
     } else {
         tui.textarea.set_text(&fill);
