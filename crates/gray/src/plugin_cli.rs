@@ -263,8 +263,12 @@ fn write_parts(
     bundle: &str,
     parts: &[PartInfo],
     chosen: &BTreeMap<String, bool>,
+    announce: bool,
 ) -> anyhow::Result<()> {
     gray_pkg::parts::replace(bundle, chosen)?;
+    if !announce {
+        return Ok(());
+    }
     let on: Vec<&str> = parts
         .iter()
         .filter(|p| chosen.get(&p.name).copied().unwrap_or(false))
@@ -326,13 +330,13 @@ fn apply_parts_after_install(
                 None => return Err(unknown_part(bundle, &part, &parts)),
             }
         }
-        return write_parts(home, bundle, &parts, &chosen);
+        return write_parts(home, bundle, &parts, &chosen, true);
     }
     if yes || !interactive() || parts.len() < 2 {
         return Ok(());
     }
     match pick_parts(bundle, &parts)? {
-        Some(chosen) => write_parts(home, bundle, &parts, &chosen),
+        Some(chosen) => write_parts(home, bundle, &parts, &chosen, true),
         None => {
             println!("{bundle} installed with its default parts");
             Ok(())
@@ -495,6 +499,57 @@ pub async fn install_spec_lines(
     install_spec_gated(home, spec, force, TrustGate::Lines, None).await
 }
 
+fn alias_install_target(
+    spec: &str,
+    before: &BTreeSet<String>,
+    explicit: bool,
+) -> Option<(String, String, Vec<String>)> {
+    if explicit {
+        return None;
+    }
+    let gray_pkg::ops::NameOrUrl::Name(name) = gray_pkg::ops::parse_spec(spec) else {
+        return None;
+    };
+    let bundle = gray_pkg::ops::canonical_name(&name).to_string();
+    if bundle == name || before.contains(&bundle) {
+        return None;
+    }
+    let mut wanted: Vec<String> = gray_pkg::ops::alias_part_names(&name)
+        .into_iter()
+        .map(|(_, part)| part.to_string())
+        .collect();
+    wanted.dedup();
+    Some((name, bundle, wanted))
+}
+
+fn apply_alias_parts(
+    home: &Path,
+    bundle: &str,
+    alias: &str,
+    wanted: &[String],
+) -> anyhow::Result<String> {
+    let parts = parts_of(home, bundle);
+    let on: Vec<&str> = parts
+        .iter()
+        .filter(|p| wanted.contains(&p.name))
+        .map(|p| p.name.as_str())
+        .collect();
+    if on.is_empty() {
+        return Ok(format!(
+            "note: '{alias}' is now part of '{bundle}' — installing {bundle}"
+        ));
+    }
+    let mut chosen = BTreeMap::new();
+    for p in &parts {
+        chosen.insert(p.name.clone(), on.contains(&p.name.as_str()));
+    }
+    write_parts(home, bundle, &parts, &chosen, false)?;
+    Ok(format!(
+        "note: '{alias}' is now part of '{bundle}': installed {bundle} with only {} turned on (gray plugin parts {bundle} to add more)",
+        on.join(", ")
+    ))
+}
+
 async fn install_spec_gated(
     home: &Path,
     spec: &str,
@@ -505,7 +560,8 @@ async fn install_spec_gated(
     let before: BTreeSet<String> = load_lock(home)
         .map(|l| l.plugins.into_keys().collect())
         .unwrap_or_default();
-    let lines = install_spec_body(home, spec, force, gate).await?;
+    let renamed_from = alias_install_target(spec, &before, parts.is_some());
+    let mut lines = install_spec_body(home, spec, force, gate).await?;
     let Ok(after) = load_lock(home) else {
         return Ok(lines);
     };
@@ -524,16 +580,29 @@ async fn install_spec_gated(
         }
     }
     let mut parts_failed: Option<String> = None;
+    let mut note: Option<String> = None;
     for name in wanted {
         if !after.plugins.contains_key(&name) {
             continue;
         }
-        if let Err(e) = apply_parts_after_install(
-            home,
-            &name,
-            parts.as_deref(),
-            matches!(gate, TrustGate::Quiet),
-        ) {
+        let applied = match &renamed_from {
+            Some((alias, bundle, only)) if *bundle == name => {
+                match apply_alias_parts(home, &name, alias, only) {
+                    Ok(line) => {
+                        note = Some(line);
+                        Ok(())
+                    }
+                    Err(e) => Err(e),
+                }
+            }
+            _ => apply_parts_after_install(
+                home,
+                &name,
+                parts.as_deref(),
+                matches!(gate, TrustGate::Quiet),
+            ),
+        };
+        if let Err(e) = applied {
             parts_failed.get_or_insert(format!("{e:#}"));
         }
     }
@@ -542,6 +611,9 @@ async fn install_spec_gated(
             println!("{line}");
         }
         anyhow::bail!("{first}");
+    }
+    if let Some(line) = note {
+        lines.insert(0, line);
     }
     Ok(lines)
 }
@@ -581,7 +653,14 @@ async fn install_spec_body(
                 .map(|l| l.plugins.contains_key(canonical))
                 .unwrap_or(false);
             if installed && let Some((bundle, part)) = gray_pkg::ops::part_of(name) {
-                lines.push(toggle_part(home, bundle, part, true)?);
+                let line = toggle_part(home, bundle, part, true)?;
+                let line = match load_lock(home) {
+                    Ok(lock) => disabled_bundle_note(&lock, bundle, line),
+                    Err(_) => line,
+                };
+                for l in line.lines() {
+                    lines.push(l.to_string());
+                }
                 lines.push(format!("{bundle} is already installed — no reinstall"));
                 return Ok(lines);
             }
@@ -590,9 +669,6 @@ async fn install_spec_body(
                 lines.push(format!("{bundle} is already installed — no reinstall"));
                 return Ok(lines);
             }
-            lines.push(format!(
-                "note: '{name}' is now part of '{canonical}' — installing {canonical}"
-            ));
             *name = canonical.to_string();
         }
     }
