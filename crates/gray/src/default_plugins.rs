@@ -4,14 +4,8 @@ use std::time::{Duration, SystemTime};
 use gray_pkg::index::{Index, fetch_index};
 use gray_plugin::lock::{LockFile, lock_path};
 
-pub const FALLBACK_DEFAULT_PROFILE: &[&str] = &[
-    "account",
-    "extras",
-    "memory",
-    "search",
-    "skills",
-    "subagents",
-];
+pub const FALLBACK_DEFAULT_PROFILE: &[&str] =
+    &["account", "extras", "memory", "search", "subagents"];
 
 const RETRY: Duration = Duration::from_secs(24 * 60 * 60);
 const PROFILE_FILE: &str = "profile";
@@ -126,41 +120,92 @@ fn preserve_vim_mode(home: &Path) {
     }
 }
 
-fn retire_superseded(home: &Path, index: &Index) -> Vec<String> {
+fn needs_upgrade_before_retire(
+    installed: &gray_plugin::lock::LockEntry,
+    index_entry: &gray_pkg::index::Entry,
+) -> bool {
+    if index_entry.version.is_empty() || installed.version == index_entry.version {
+        return false;
+    }
+    if installed.version.eq_ignore_ascii_case("dev") {
+        return false;
+    }
+    // Only upgrade index-managed installs automatically; local path/dev installs
+    // keep whatever the user built locally.
+    installed.source.starts_with("http://") || installed.source.starts_with("https://")
+}
+
+async fn retire_superseded(home: &Path, index: &Index, yes: bool) -> (Vec<String>, bool) {
     let Ok(lock) = LockFile::load(&lock_path(home)) else {
-        return Vec::new();
+        return (Vec::new(), true);
     };
-    let mut to_remove = Vec::new();
-    for installed in lock.plugins.keys() {
+    // Map superseding plugin -> list of currently-installed plugins it supersedes.
+    let mut plan: Vec<(String, String, bool, Vec<String>)> = Vec::new();
+    for (installed, lock_entry) in &lock.plugins {
         let canonical = gray_pkg::ops::canonical_name(installed);
         let entry = index
             .plugins
             .get(installed)
             .or_else(|| index.plugins.get(canonical));
-        if let Some(entry) = entry {
-            for old in &entry.supersedes {
-                let candidate = old.as_str();
-                if candidate != installed
-                    && candidate != canonical
-                    && lock.plugins.contains_key(candidate)
-                    && !to_remove.iter().any(|x: &String| x == candidate)
-                {
-                    to_remove.push(candidate.to_string());
+        let Some(entry) = entry else { continue };
+        let mut olds = Vec::new();
+        for old in &entry.supersedes {
+            let candidate = old.as_str();
+            if candidate != installed
+                && candidate != canonical
+                && lock.plugins.contains_key(candidate)
+                && !olds.iter().any(|x: &String| x == candidate)
+            {
+                olds.push(candidate.to_string());
+            }
+        }
+        if !olds.is_empty() {
+            let upgrade = needs_upgrade_before_retire(lock_entry, entry);
+            plan.push((installed.clone(), canonical.to_string(), upgrade, olds));
+        }
+    }
+    let mut retired = Vec::new();
+    let mut all_ok = true;
+    let mut removed = std::collections::HashSet::new();
+    for (_installed, canonical, upgrade, olds) in plan {
+        if upgrade {
+            let res = if yes {
+                crate::plugin_cli::install_spec(home, &canonical, false, true).await
+            } else {
+                crate::plugin_cli::install_spec_default(home, &canonical).await
+            };
+            if let Err(e) = res {
+                log::warn!("superseded retirement skipped: upgrading {canonical} failed: {e:#}");
+                all_ok = false;
+                continue;
+            }
+            retired.push(format!(
+                "updated {canonical} before retiring superseded plugins"
+            ));
+        }
+        for old in olds {
+            if !removed.insert(old.clone()) {
+                continue;
+            }
+            if old == "vim" {
+                preserve_vim_mode(home);
+            }
+            match gray_pkg::ops::remove(&old) {
+                Ok(()) => {
+                    let plugins_dir = home.join("plugins");
+                    let _ = std::fs::remove_file(plugins_dir.join(format!("{old}-manifest.json")));
+                    let _ =
+                        std::fs::remove_file(plugins_dir.join(format!("{old}-completion.json")));
+                    retired.push(format!("retired superseded plugin {old}"));
+                }
+                Err(e) => {
+                    log::warn!("superseded plugin {old}: remove failed: {e:#}");
+                    all_ok = false;
                 }
             }
         }
     }
-    let mut retired = Vec::new();
-    for old in to_remove {
-        if old == "vim" {
-            preserve_vim_mode(home);
-        }
-        match gray_pkg::ops::remove(&old) {
-            Ok(()) => retired.push(format!("retired superseded plugin {old}")),
-            Err(e) => log::warn!("superseded plugin {old}: remove failed: {e:#}"),
-        }
-    }
-    retired
+    (retired, all_ok)
 }
 
 pub async fn sync_profile(
@@ -198,7 +243,8 @@ pub async fn sync_profile(
         }
     }
     if let Some(ref idx) = index {
-        lines.extend(retire_superseded(home, idx));
+        let (retired, _) = retire_superseded(home, idx, yes).await;
+        lines.extend(retired);
     }
     write_marker(&marker_path(home), env!("CARGO_PKG_VERSION"));
     Ok(lines)
@@ -249,7 +295,10 @@ pub(crate) async fn migrate_once() {
         }
     }
     if let Some(ref idx) = index {
-        let _ = retire_superseded(&home, idx);
+        let (_, retired_ok) = retire_superseded(&home, idx, false).await;
+        if !retired_ok {
+            all_ok = false;
+        }
     }
     if all_ok && plugins.iter().all(|name| !needed(&home, name)) {
         write_marker(&marker, version);
@@ -258,4 +307,71 @@ pub(crate) async fn migrate_once() {
 
 pub(crate) fn spawn_migrate() {
     tokio::spawn(migrate_once());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gray_pkg::index::{Entry, HashSpec, Source};
+    use gray_plugin::lock::LockEntry;
+
+    fn entry(version: &str) -> Entry {
+        Entry {
+            ecosystem: "gray-native".into(),
+            version: version.into(),
+            description: String::new(),
+            kind: "plugin".into(),
+            source: Source {
+                type_: "tarball".into(),
+                url: "https://example.invalid/extras.tar.gz".into(),
+            },
+            hash: HashSpec::Single("sha256:deadbeef".into()),
+            scope: "user".into(),
+            commands: Vec::new(),
+            official: true,
+            verified: true,
+            requires_plugins: Vec::new(),
+            conflicts: Vec::new(),
+            supersedes: vec!["skills".into()],
+            superseded_by: Vec::new(),
+            providers: Vec::new(),
+        }
+    }
+
+    fn lock_entry(version: &str, source: &str) -> LockEntry {
+        LockEntry {
+            ecosystem: "gray-native".into(),
+            version: version.into(),
+            source: source.into(),
+            scope: "user".into(),
+            ..LockEntry::default()
+        }
+    }
+
+    #[test]
+    fn default_profile_folds_skills_into_extras() {
+        assert!(FALLBACK_DEFAULT_PROFILE.contains(&"extras"));
+        assert!(!FALLBACK_DEFAULT_PROFILE.contains(&"skills"));
+    }
+
+    #[test]
+    fn upgrade_check_guards_stale_index_installs_but_not_current_or_dev() {
+        let idx = entry("0.4.0");
+        assert!(needs_upgrade_before_retire(
+            &lock_entry("0.3.0", "https://example.invalid/extras-0.3.0.tar.gz"),
+            &idx
+        ));
+        assert!(!needs_upgrade_before_retire(
+            &lock_entry("0.4.0", "https://example.invalid/extras-0.4.0.tar.gz"),
+            &idx
+        ));
+        assert!(!needs_upgrade_before_retire(
+            &lock_entry("dev", "/home/user/gray-extras"),
+            &idx
+        ));
+        assert!(!needs_upgrade_before_retire(
+            &lock_entry("0.3.0", "/home/user/gray-extras/target/release/gray-extras"),
+            &idx
+        ));
+    }
 }

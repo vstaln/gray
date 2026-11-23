@@ -263,7 +263,9 @@ async fn run() -> anyhow::Result<()> {
                 }
                 if everything {
                     let home = gray::plugin_cli::home()?;
-                    let name = if home.join("plugins/quality-of-life").exists() {
+                    let name = if home.join("plugins/extras").exists() {
+                        "extras"
+                    } else if home.join("plugins/quality-of-life").exists() {
                         "quality-of-life"
                     } else {
                         "qol"

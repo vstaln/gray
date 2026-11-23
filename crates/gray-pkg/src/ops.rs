@@ -207,7 +207,8 @@ async fn install_inner(spec: NameOrUrl, opts: InstallOpts) -> anyhow::Result<Rep
     let client = crate::fetch::client()?;
     match spec {
         NameOrUrl::Name(name) => {
-            install_index(&client, &name, opts, false, &mut BTreeSet::new()).await
+            let lookup = canonical_name(&name);
+            install_index(&client, lookup, opts, false, &mut BTreeSet::new()).await
         }
         NameOrUrl::Url(url) => install_url(&client, &url, opts).await,
     }
@@ -305,7 +306,7 @@ async fn install_index(
     match entry.kind.as_str() {
         "" | "plugin" => {}
         "skill" => {
-            anyhow::bail!("'{name}' is a skill — `gray plugin install skills` adds skill support")
+            anyhow::bail!("'{name}' is a skill — `gray plugin install extras` adds skill support")
         }
         other => {
             anyhow::bail!("package '{name}' is kind '{other}' — not installable yet")
@@ -605,6 +606,8 @@ pub const RENAMED: &[(&str, &str)] = &[
     ("themes", "extras"),
     ("permissions", "extras"),
     ("questions", "extras"),
+    ("secrets", "extras"),
+    ("skills", "extras"),
     ("cloud", "account"),
     ("claude-sub", "claude"),
     ("codex-sub", "codex"),
@@ -986,5 +989,19 @@ async fn repo_build_row(name: &str, exe: &Path, repo: &Path, check: bool) -> Upd
         }
         Ok(Err(e)) => UpdateRow::new(name, UpdateAction::Failed(e)),
         Err(e) => UpdateRow::new(name, UpdateAction::Failed(format!("{e}"))),
+    }
+}
+
+#[cfg(test)]
+mod rename_tests {
+    use super::*;
+
+    #[test]
+    fn skills_and_secrets_canonicalize_to_extras() {
+        assert_eq!(canonical_name("skills"), "extras");
+        assert_eq!(canonical_name("secrets"), "extras");
+        assert_eq!(canonical_name("qol"), "extras");
+        assert_eq!(canonical_name("extras"), "extras");
+        assert_eq!(canonical_name("memory"), "memory");
     }
 }
