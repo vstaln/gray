@@ -497,6 +497,89 @@ async fn run_plugin_command(
     owner.run_command(name, argv, raw).await
 }
 
+const SKILLS_SUBCOMMANDS: &[&str] = &[
+    "list", "search", "install", "remove", "on", "off", "enable", "disable",
+];
+
+/// Extract inline `/skills <name>` references from a user prompt, skipping
+/// fenced code blocks, inline code spans, and `/skills` management subcommands.
+pub(crate) fn extract_inline_skills(prompt: &str) -> Vec<String> {
+    let bytes = prompt.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0usize;
+    let mut in_fence = false;
+    let mut in_code = false;
+    while i < bytes.len() {
+        if !in_code && bytes[i..].starts_with(b"```") {
+            in_fence = !in_fence;
+            i += 3;
+            continue;
+        }
+        if !in_fence && bytes[i] == b'`' {
+            in_code = !in_code;
+            i += 1;
+            continue;
+        }
+        if !in_fence
+            && !in_code
+            && bytes[i..].starts_with(b"/skills")
+            && (i == 0
+                || prompt[..i]
+                    .chars()
+                    .next_back()
+                    .is_some_and(char::is_whitespace))
+        {
+            let after_cmd = i + "/skills".len();
+            if let Some(&b) = bytes.get(after_cmd)
+                && matches!(b, b' ' | b'\t')
+            {
+                let mut arg_start = after_cmd;
+                while arg_start < bytes.len() && matches!(bytes[arg_start], b' ' | b'\t') {
+                    arg_start += 1;
+                }
+                let arg_end = prompt[arg_start..]
+                    .find(char::is_whitespace)
+                    .map_or(prompt.len(), |off| arg_start + off);
+                let raw_arg = prompt[arg_start..arg_end].trim_end_matches(|c: char| {
+                    matches!(c, ',' | '.' | ';' | ':' | ')' | ']' | '?' | '!')
+                });
+                if !raw_arg.is_empty()
+                    && !SKILLS_SUBCOMMANDS
+                        .iter()
+                        .any(|sub| sub.eq_ignore_ascii_case(raw_arg))
+                    && !out.iter().any(|seen: &String| seen == raw_arg)
+                {
+                    out.push(raw_arg.to_string());
+                }
+                i = arg_end;
+                continue;
+            }
+        }
+        let ch_len = prompt[i..].chars().next().map_or(1, char::len_utf8);
+        i += ch_len;
+    }
+    out
+}
+
+/// Expand any inline `/skills <name>` references in `prompt` via the installed
+/// `skills` plugin, appending each expanded skill prompt to the user message.
+pub(crate) async fn expand_inline_skills(prompt: &str, hooks: &[Arc<dyn PluginHooks>]) -> String {
+    let skills = extract_inline_skills(prompt);
+    if skills.is_empty() {
+        return prompt.to_string();
+    }
+    let mut out = prompt.to_string();
+    for skill in skills {
+        if let Some(CommandOutcome::Prompt(expanded)) =
+            run_plugin_command(hooks, "/skills", vec![skill.clone()], Some(skill)).await
+        {
+            out.push_str("\n\n");
+            out.push_str(&expanded);
+        }
+    }
+    out
+}
+
 pub(crate) async fn shutdown_shell_tasks(
     agent: Option<&gray_core::agent::Agent>,
     session_state: &Option<SessionState>,

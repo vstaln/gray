@@ -1849,9 +1849,10 @@ pub(crate) fn completions(query: &str) -> Vec<(String, String)> {
                     .unwrap_or_default(),
             ));
         }
+        let query_lower = query.to_lowercase();
         for (arg, desc) in &row.args {
             let full = format!("{} {arg}", row.command);
-            if query.contains(' ') && full.starts_with(query) {
+            if query.contains(' ') && full.to_lowercase().starts_with(&query_lower) {
                 let desc = desc
                     .clone()
                     .or_else(|| row.plugin_description.clone())
