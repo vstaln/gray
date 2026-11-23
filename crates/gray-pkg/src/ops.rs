@@ -671,18 +671,48 @@ pub const RENAMED: &[(&str, &str)] = &[
     ("gchat", "gateway"),
     ("mastodon", "gateway"),
     ("mattermost", "gateway"),
+    ("gate", "extras"),
+    ("confirm", "extras"),
+    ("tool-gate", "extras"),
+    ("guard", "extras"),
+    ("repguard", "extras"),
 ];
 
-pub const PART_RENAMES: &[(&str, &str)] = &[("qol", "quality-of-life")];
+pub const PART_RENAMES: &[(&str, &str)] = &[
+    ("qol", "quality-of-life"),
+    ("confirm", "permissions"),
+    ("tool-gate", "permissions"),
+];
+
+pub const ALIAS_PARTS: &[(&str, &[&str])] = &[("gate", &["permissions", "guard", "repguard"])];
 
 pub fn part_of(old: &str) -> Option<(&str, &str)> {
     let bundle = RENAMED.iter().find(|(o, _)| *o == old).map(|(_, n)| *n)?;
+    if ALIAS_PARTS.iter().any(|(o, _)| *o == old) {
+        return None;
+    }
     let part = PART_RENAMES
         .iter()
         .find(|(o, _)| *o == old)
         .map(|(_, p)| *p)
         .unwrap_or(old);
     Some((bundle, part))
+}
+
+pub fn alias_parts(old: &str) -> Option<(&str, &'static [&'static str])> {
+    let bundle = RENAMED.iter().find(|(o, _)| *o == old).map(|(_, n)| *n)?;
+    let parts = ALIAS_PARTS
+        .iter()
+        .find(|(o, _)| *o == old)
+        .map(|(_, p)| *p)?;
+    Some((bundle, parts))
+}
+
+pub fn alias_part_names(old: &str) -> Vec<(&str, &str)> {
+    if let Some((bundle, parts)) = alias_parts(old) {
+        return parts.iter().map(|p| (bundle, *p)).collect();
+    }
+    part_of(old).into_iter().collect()
 }
 
 pub fn canonical_name(name: &str) -> &str {
@@ -833,7 +863,7 @@ async fn update_inner(target: &str, check: bool) -> anyhow::Result<Vec<UpdateRow
         {
             Ok(r) => {
                 if renamed.is_some() {
-                    if let Some((bundle, part)) = part_of(name) {
+                    for (bundle, part) in alias_part_names(name) {
                         migrations.push((
                             name.clone(),
                             bundle.to_string(),
@@ -882,7 +912,7 @@ fn migrate_parts(before: &LockFile, migrations: &[(String, String, String, bool)
                 if migrated.iter().any(|(a, _, _, _)| a == alias) {
                     continue;
                 }
-                if let Some((_, part)) = part_of(alias) {
+                for (_, part) in alias_part_names(alias) {
                     on.entry(part.to_string()).or_insert(false);
                 }
             }

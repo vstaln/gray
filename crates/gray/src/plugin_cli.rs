@@ -353,6 +353,26 @@ fn toggle_part(home: &Path, bundle: &str, part: &str, on: bool) -> anyhow::Resul
     ))
 }
 
+fn multi_part_note(alias: &str, bundle: &str, installed: bool) -> String {
+    let parts = gray_pkg::ops::alias_parts(alias)
+        .map(|(_, p)| p.to_vec())
+        .unwrap_or_default();
+    let list = parts.join(", ");
+    if !installed {
+        return format!(
+            "'{alias}' is now part of the {bundle} bundle — install it with: gray plugin install {bundle}"
+        );
+    }
+    let hints: Vec<String> = parts
+        .iter()
+        .map(|p| format!("gray plugin enable {bundle}/{p}"))
+        .collect();
+    format!(
+        "'{alias}' is now part of the {bundle} bundle, split across its parts ({list}) — toggle them with: {}",
+        hints.join(", ")
+    )
+}
+
 fn disabled_bundle_note(lock: &LockFile, bundle: &str, line: String) -> String {
     if lock.plugins.get(bundle).is_some_and(|e| !e.enabled) {
         return format!(
@@ -378,6 +398,15 @@ pub fn toggle_managed(target: &str, on: bool) -> anyhow::Result<String> {
             "{} {target}",
             if on { "enabled" } else { "disabled" }
         ));
+    }
+    if let Some((bundle, _)) = gray_pkg::ops::alias_parts(target) {
+        let installed = lock.plugins.contains_key(bundle);
+        anyhow::ensure!(
+            installed,
+            "{}",
+            not_installed_message(&home, gray_pkg::ops::canonical_name(target))
+        );
+        return Err(anyhow::anyhow!("{}", multi_part_note(target, bundle, true)));
     }
     if let Some((bundle, part)) = gray_pkg::ops::part_of(target) {
         let line = toggle_part(&home, bundle, part, on)?;
@@ -476,7 +505,7 @@ async fn install_spec_gated(
     let before: BTreeSet<String> = load_lock(home)
         .map(|l| l.plugins.into_keys().collect())
         .unwrap_or_default();
-    let mut lines = install_spec_body(home, spec, force, gate).await?;
+    let lines = install_spec_body(home, spec, force, gate).await?;
     let Ok(after) = load_lock(home) else {
         return Ok(lines);
     };
@@ -494,6 +523,7 @@ async fn install_spec_gated(
             wanted.push(canonical);
         }
     }
+    let mut parts_failed: Option<String> = None;
     for name in wanted {
         if !after.plugins.contains_key(&name) {
             continue;
@@ -504,8 +534,14 @@ async fn install_spec_gated(
             parts.as_deref(),
             matches!(gate, TrustGate::Quiet),
         ) {
-            lines.push(format!("{e:#}"));
+            parts_failed.get_or_insert(format!("{e:#}"));
         }
+    }
+    if let Some(first) = parts_failed.into_iter().next() {
+        for line in &lines {
+            println!("{line}");
+        }
+        anyhow::bail!("{first}");
     }
     Ok(lines)
 }
@@ -546,6 +582,11 @@ async fn install_spec_body(
                 .unwrap_or(false);
             if installed && let Some((bundle, part)) = gray_pkg::ops::part_of(name) {
                 lines.push(toggle_part(home, bundle, part, true)?);
+                lines.push(format!("{bundle} is already installed — no reinstall"));
+                return Ok(lines);
+            }
+            if installed && let Some((bundle, _)) = gray_pkg::ops::alias_parts(name) {
+                lines.push(multi_part_note(name, bundle, true));
                 lines.push(format!("{bundle} is already installed — no reinstall"));
                 return Ok(lines);
             }
@@ -1581,6 +1622,16 @@ pub async fn forward(home: &Path, name: &str, rest: &[String]) -> anyhow::Result
                     return Err(anyhow::anyhow!(if sidecar_named {
                         sidecar_usage(home, name)
                     } else {
+                        if let Some((bundle, _)) = gray_pkg::ops::alias_parts(name) {
+                            let installed = lock.plugins.contains_key(bundle)
+                                || user_home
+                                    .as_ref()
+                                    .is_some_and(|(_, l)| l.plugins.contains_key(bundle));
+                            return Err(anyhow::anyhow!(
+                                "{}",
+                                multi_part_note(name, bundle, installed)
+                            ));
+                        }
                         if let Some((bundle, _)) = gray_pkg::ops::part_of(name) {
                             return Err(anyhow::anyhow!(
                                 "'{name}' is now a part of the {bundle} bundle — install it with: gray plugin install {bundle}"
