@@ -614,6 +614,41 @@ pub const RENAMED: &[(&str, &str)] = &[
     ("antigravity-sub", "antigravity"),
     ("devin-sub", "devin"),
     ("zai-sub", "zai"),
+    ("observe", "telemetry"),
+    ("stamp", "telemetry"),
+    ("usage", "telemetry"),
+    ("bookmark", "session"),
+    ("session-name", "session"),
+    ("share", "session"),
+    ("handoff", "session"),
+    ("summarize", "session"),
+    ("commands", "input"),
+    ("preset", "input"),
+    ("transform", "input"),
+    ("inline-bash", "input"),
+    ("send-message", "inbound"),
+    ("webhooks", "inbound"),
+    ("file-trigger", "inbound"),
+    ("control", "inbound"),
+    ("checkpoint", "git-flow"),
+    ("autocommit", "git-flow"),
+    ("git-merge", "git-flow"),
+    ("review", "git-flow"),
+    ("lens", "diagnostics"),
+    ("shadcn-lint", "diagnostics"),
+    ("uv", "diagnostics"),
+    ("truncate", "context-budget"),
+    ("compact", "context-budget"),
+    ("cacheopt", "context-budget"),
+    ("header", "context-inject"),
+    ("context-pin", "context-inject"),
+    ("resources", "context-inject"),
+    ("rules", "context-inject"),
+    ("include", "context-inject"),
+    ("dirty-guard", "context-inject"),
+    ("gh-issues", "context-inject"),
+    ("todo", "tasks"),
+    ("kanban", "tasks"),
 ];
 
 pub fn canonical_name(name: &str) -> &str {
@@ -629,10 +664,18 @@ async fn update_inner(target: &str, check: bool) -> anyhow::Result<Vec<UpdateRow
     let names: Vec<String> = if target == "all" {
         lock.plugins.keys().cloned().collect()
     } else {
-        if !lock.plugins.contains_key(target) {
+        let group = canonical_name(target);
+        let mut names: Vec<String> = lock
+            .plugins
+            .keys()
+            .filter(|k| canonical_name(k) == group)
+            .cloned()
+            .collect();
+        if names.is_empty() {
             anyhow::bail!("not installed: {target}");
         }
-        vec![target.to_string()]
+        names.sort_by_key(|k| k.as_str() != group);
+        names
     };
     let client = crate::fetch::client()?;
     let mut hub: Option<crate::index::Index> = None;
@@ -757,12 +800,20 @@ async fn update_inner(target: &str, check: bool) -> anyhow::Result<Vec<UpdateRow
         {
             Ok(r) => {
                 if renamed.is_some() {
-                    if !target_preexisted
-                        && !installed.enabled
-                        && let Err(e) = set_enabled_inner(lookup, false)
+                    let want = if lock.plugins.contains_key(lookup) {
+                        None
+                    } else if installed.enabled && target_preexisted {
+                        Some(true)
+                    } else if !installed.enabled && !target_preexisted {
+                        Some(false)
+                    } else {
+                        None
+                    };
+                    if let Some(on) = want
+                        && let Err(e) = set_enabled_inner(lookup, on)
                     {
                         log::warn!(
-                            "renamed plugin {name}: could not preserve disabled state on {lookup}: {e:#}"
+                            "renamed plugin {name}: could not carry enabled={on} onto {lookup}: {e:#}"
                         );
                     }
                     if let Err(e) = remove(name) {
