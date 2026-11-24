@@ -727,6 +727,7 @@ async fn update_inner(target: &str, check: bool) -> anyhow::Result<Vec<UpdateRow
     let lock = read_lock()?;
     let before = lock.clone();
     let mut migrations: Vec<(String, String, String, bool)> = Vec::new();
+    let mut done: BTreeSet<String> = BTreeSet::new();
     let names: Vec<String> = if target == "all" {
         lock.plugins.keys().cloned().collect()
     } else {
@@ -778,6 +779,20 @@ async fn update_inner(target: &str, check: bool) -> anyhow::Result<Vec<UpdateRow
         }
         let lookup = canonical_name(name);
         let renamed = (lookup != name.as_str()).then_some(lookup);
+        if done.contains(lookup) {
+            if renamed.is_some() {
+                for (bundle, part) in alias_part_names(name) {
+                    migrations.push((
+                        name.clone(),
+                        bundle.to_string(),
+                        part.to_string(),
+                        installed.enabled,
+                    ));
+                }
+                retire_alias(name);
+            }
+            continue;
+        }
         let entry = match hub.as_ref().and_then(|i| i.plugins.get(lookup)) {
             Some(e) => e,
             None => {
@@ -871,10 +886,9 @@ async fn update_inner(target: &str, check: bool) -> anyhow::Result<Vec<UpdateRow
                             installed.enabled,
                         ));
                     }
-                    if let Err(e) = remove(name) {
-                        log::warn!("renamed plugin {name}: old entry not removed: {e:#}");
-                    }
+                    retire_alias(name);
                 }
+                done.insert(lookup.to_string());
                 let v = r.version.clone();
                 out.push(UpdateRow {
                     name: r.name,
@@ -888,6 +902,13 @@ async fn update_inner(target: &str, check: bool) -> anyhow::Result<Vec<UpdateRow
     }
     migrate_parts(&before, &migrations);
     Ok(out)
+}
+
+fn retire_alias(name: &str) {
+    if let Err(e) = remove(name) {
+        log::warn!("renamed plugin {name}: old entry not removed: {e:#}");
+    }
+    let _ = std::fs::remove_file(crate::plugins_dir().join(format!("{name}-manifest.json")));
 }
 
 fn migrate_parts(before: &LockFile, migrations: &[(String, String, String, bool)]) {

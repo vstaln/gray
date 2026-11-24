@@ -579,6 +579,12 @@ async fn install_spec_gated(
             wanted.push(canonical);
         }
     }
+    if let gray_pkg::ops::NameOrUrl::Name(name) = gray_pkg::ops::parse_spec(spec) {
+        let canonical = gray_pkg::ops::canonical_name(&name);
+        if wanted.iter().any(|w| w == canonical) {
+            wanted.retain(|w| w == canonical);
+        }
+    }
     let mut parts_failed: Option<String> = None;
     let mut note: Option<String> = None;
     for name in wanted {
