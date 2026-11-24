@@ -2566,7 +2566,7 @@ mod dynamic_completion_tests {
 
         let mut lock = LockFile::default();
         lock.plugins.insert(
-            "extras".into(),
+            "essentials".into(),
             LockEntry {
                 ecosystem: "gray-native".into(),
                 version: "0.4.0".into(),
@@ -2577,9 +2577,9 @@ mod dynamic_completion_tests {
             },
         );
         std::fs::write(
-            plugins_dir.join("extras-manifest.json"),
+            plugins_dir.join("essentials-manifest.json"),
             serde_json::json!({
-                "name": "extras",
+                "name": "essentials",
                 "commands": ["/export", "/skills"],
                 "command_completions": {
                     "/export": ["clip", "md"],
@@ -2590,7 +2590,7 @@ mod dynamic_completion_tests {
         )
         .unwrap();
         std::fs::write(
-            plugins_dir.join("extras-completion.json"),
+            plugins_dir.join("essentials-completion.json"),
             serde_json::json!({
                 "command_completions": {
                     "/skills": [

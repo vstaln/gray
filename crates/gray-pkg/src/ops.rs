@@ -1006,7 +1006,19 @@ fn retire_alias(name: &str) {
     if let Err(e) = remove(name) {
         log::warn!("renamed plugin {name}: old entry not removed: {e:#}");
     }
-    let _ = std::fs::remove_file(crate::plugins_dir().join(format!("{name}-manifest.json")));
+    let dir = crate::plugins_dir();
+    let _ = std::fs::remove_file(dir.join(format!("{name}-manifest.json")));
+    let _ = std::fs::remove_file(dir.join(format!("{name}-completion.json")));
+    let Some(home) = dir.parent() else {
+        return;
+    };
+    let settings = home.join("plugin-settings");
+    let old = settings.join(format!("{name}.json"));
+    let new = settings.join(format!("{}.json", canonical_name(name)));
+    if old.exists() && !new.exists() {
+        let _ = std::fs::create_dir_all(&settings);
+        let _ = std::fs::rename(&old, &new);
+    }
 }
 
 fn migrate_parts(before: &LockFile, migrations: &[(String, String, String, bool)]) {

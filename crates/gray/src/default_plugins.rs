@@ -405,11 +405,11 @@ mod tests {
             profiles: std::collections::BTreeMap::new(),
             plugins: std::collections::BTreeMap::new(),
         };
-        let mut extras = entry("0.4.0");
-        extras.supersedes = vec!["secrets".into(), "skills".into()];
-        idx.plugins.insert("extras".into(), extras);
+        let mut essentials = entry("0.4.0");
+        essentials.supersedes = vec!["secrets".into(), "skills".into()];
+        idx.plugins.insert("essentials".into(), essentials);
 
-        // Without extras installed, legacy plugins must never retire each other.
+        // Without essentials installed, legacy plugins must never retire each other.
         let mut legacy_only = LockFile::default();
         legacy_only.plugins.insert(
             "skills".into(),
@@ -421,17 +421,17 @@ mod tests {
         );
         assert!(plan_superseded_retirements(&legacy_only, &idx).is_empty());
 
-        // With stale extras installed, plan upgrades extras before retiring legacy entries.
-        let mut with_stale_extras = legacy_only;
-        with_stale_extras.plugins.insert(
-            "extras".into(),
+        // With stale essentials installed, plan upgrades it before retiring legacy entries.
+        let mut with_stale = legacy_only;
+        with_stale.plugins.insert(
+            "essentials".into(),
             lock_entry("0.3.0", "https://example.invalid/extras-0.3.0.tar.gz"),
         );
-        let plan = plan_superseded_retirements(&with_stale_extras, &idx);
+        let plan = plan_superseded_retirements(&with_stale, &idx);
         assert_eq!(
             plan,
             vec![(
-                "extras".to_string(),
+                "essentials".to_string(),
                 true,
                 vec!["secrets".to_string(), "skills".to_string()]
             )]
