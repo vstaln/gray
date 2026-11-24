@@ -164,7 +164,29 @@ fn announces_action(text: &str) -> bool {
         return false;
     }
     let tail = last_line(body);
-    ANNOUNCE_LEADS.iter().any(|lead| tail.contains(lead)) || last_sentence(tail).ends_with(':')
+    let sentence = last_sentence(tail);
+    if conditional_offer(sentence) {
+        return false;
+    }
+    ANNOUNCE_LEADS.iter().any(|lead| tail.contains(lead)) || sentence.ends_with(':')
+}
+
+const CONDITIONAL_LEADS: [&str; 4] = ["if ", "say ", "tell me", "unless "];
+
+const CONDITIONAL_HINTS: [&str; 5] = [
+    "if you ",
+    "once you ",
+    "when you ",
+    "whenever you ",
+    "unless you ",
+];
+
+fn conditional_offer(sentence: &str) -> bool {
+    let sentence = sentence.trim_start_matches(['"', '*', '_', ' ']);
+    CONDITIONAL_LEADS
+        .iter()
+        .any(|lead| sentence.starts_with(lead))
+        || CONDITIONAL_HINTS.iter().any(|hint| sentence.contains(hint))
 }
 
 const MAX_TURN_RETRIES: u8 = 8;
